@@ -68,7 +68,6 @@ import Kernel, only: [
   panic: 1,
   raise: 1,
   raise: 2,
-  raise_kind: 2,
   reraise: 2,
   range: 3,
   refute: 1,

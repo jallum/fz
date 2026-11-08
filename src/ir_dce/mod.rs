@@ -96,6 +96,10 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
             used.insert(*message);
             used.extend(*subject);
         }
+        Term::Reraise { kind, value } => {
+            used.insert(*kind);
+            used.insert(*value);
+        }
         Term::Unreachable => {}
         Term::ReturnLanes(lanes) => {
             for v in lanes {

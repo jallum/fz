@@ -18,6 +18,7 @@ use crate::compiler2::{
     ControlDestination, ExecutableDispatch, ValueId,
 };
 use crate::compiler2::{ExecutableKey, FunctionId, RunFailure};
+use crate::dispatch_matrix::pattern::LastResort;
 use crate::exec::runtime::emit_runtime_event;
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::CallableShape;
@@ -2147,29 +2148,46 @@ fn continue_after_extern(
     continue_backend_value(runtime, transport, program, value, continuations)
 }
 
-/// A decision's last resort: raise the plan's exception through the one
-/// raise route, as compiled code does at the same point, and carry on as after
-/// any raise: into the nearest handler, or the process has failed. A message
-/// that shows the subject reads the plan's first input.
+/// A decision's last resort: raise the plan's exception, or continue the raise
+/// a handler was delivered, through the one raise route, as compiled code does
+/// at the same point, and carry on as after any raise: into the nearest
+/// handler, or the process has failed. A message that shows the subject reads
+/// the plan's first input; a re-raise reads its first two, the kind and the
+/// value.
 fn raise_last_resort(
     runtime: &mut IrInterpRuntime,
     transport: &TransportStore,
     program: &BackendProgram,
-    last_resort: &crate::dispatch_matrix::pattern::LastResort,
+    last_resort: &LastResort,
     inputs: &[Option<BackendBoundValue>],
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     let proc = runtime.cur_proc();
-    let exception = fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(last_resort.exception));
-    if last_resort.shows_subject {
-        let subject = inputs
-            .first()
+    let input = |index: usize| -> Result<_, String> {
+        let input = inputs
+            .get(index)
             .and_then(Option::as_ref)
-            .ok_or("internal error: a last resort that shows its subject has no subject")?;
-        let subject = materialize_backend_value(transport, proc, subject)?.value(proc)?;
-        fz_runtime::failure::raise_exception_showing(proc, exception, &last_resort.message, subject);
-    } else {
-        fz_runtime::failure::raise_exception(proc, exception, &last_resort.message);
+            .ok_or_else(|| format!("internal error: a last resort reads input {index}, which the plan lacks"))?;
+        materialize_backend_value(transport, proc, input)?.value(proc)
+    };
+    match last_resort {
+        LastResort::Reraise => {
+            let (kind, value) = (input(0)?, input(1)?);
+            let value = unsafe { &mut *proc }.heap.box_any_value_ref(value).raw_word();
+            fz_runtime::failure::reraise(proc, kind, value);
+        }
+        LastResort::Exception {
+            exception,
+            message,
+            shows_subject,
+        } => {
+            let exception = fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(exception));
+            if *shows_subject {
+                fz_runtime::failure::raise_exception_showing(proc, exception, message, input(0)?);
+            } else {
+                fz_runtime::failure::raise_exception(proc, exception, message);
+            }
+        }
     }
     match runtime.take_callback_error() {
         Some(error) => Err(error),

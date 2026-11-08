@@ -2476,12 +2476,23 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         let params = vec![self.fresh_value(), self.fresh_value(), self.fresh_value()];
         let mut handler_steps = Vec::new();
         self.lower_expr(after, &mut env.clone(), &mut handler_steps)?;
-        let reraise = self.reraise_block(span, params[0], params[1])?;
-        handler_steps.extend(reraise.steps);
+        let reraise = self.compile_match_dispatch("after", span, 2, Vec::new(), Some(LastResort::reraise()))?;
+        let bindings = self.lower_dispatch_bindings(&reraise, env, &mut handler_steps)?;
+        let reraised = self.fresh_value();
+        handler_steps.push(ExprStep::Dispatch {
+            value: reraised,
+            inputs: vec![params[0], params[1]],
+            bindings,
+            dispatch: Box::new(ExprDispatch {
+                plan: Rc::new(reraise),
+                arm_blocks: Vec::new(),
+                miss_block: None,
+            }),
+        });
         let handler = ExprBlock {
             span,
             steps: handler_steps,
-            result: reraise.result,
+            result: reraised,
         };
 
         let mut free = HashSet::new();
@@ -2508,8 +2519,9 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
 
     /// `try do body rescue clauses catch clauses else clauses end`: the body
     /// runs under a handler whose block dispatches over the delivered (kind,
-    /// value, exception name); a raise no clause matches is re-raised, with
-    /// its kind, to the next handler out. The `else` clauses match the body's
+    /// value, exception name) whose last resort is the re-raise: a raise no
+    /// clause matches continues, with its kind, to the next handler out. The
+    /// `else` clauses match the body's
     /// value after the handler is popped, so neither the handler's clauses nor
     /// a miss reach them.
     fn lower_handled(
@@ -2527,7 +2539,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             return self.push_try_else(span, body.result, else_clauses, env, steps);
         }
         let params = vec![self.fresh_value(), self.fresh_value(), self.fresh_value()];
-        let (kind, raised) = (params[0], params[1]);
+        let raised = params[1];
         body.steps.push(ExprStep::PopHandler);
         body.result = self.push_try_else(span, body.result, else_clauses, env, &mut body.steps)?;
 
@@ -2538,7 +2550,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             span,
             params.len(),
             rows,
-            None,
+            Some(LastResort::reraise()),
         )?;
         let mut handler_steps = Vec::new();
         let bindings = self.lower_dispatch_bindings(&plan, env, &mut handler_steps)?;
@@ -2554,7 +2566,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 self.lower_handler_arm(outcome, arm.clause, (rescue, catch), raised, env.clone())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let miss_block = self.reraise_block(span, kind, raised)?;
         let dispatch_value = self.fresh_value();
         handler_steps.push(ExprStep::Dispatch {
             value: dispatch_value,
@@ -2563,7 +2574,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             dispatch: Box::new(ExprDispatch {
                 plan: Rc::new(plan),
                 arm_blocks,
-                miss_block: Some(miss_block),
+                miss_block: None,
             }),
         });
         let handler = ExprBlock {
@@ -2751,35 +2762,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             quoted_span: None,
         });
         value
-    }
-
-    /// The handler's miss: no clause matched, so the raise continues to the
-    /// next handler out through the same route it arrived by, with the kind it
-    /// arrived with.
-    fn reraise_block(&mut self, span: Span, kind: ValueId, raised: ValueId) -> Result<ExprBlock, FatalError> {
-        self.call_raising_block(span, "raise_kind", &[kind, raised])
-    }
-
-    fn call_raising_block(&mut self, span: Span, callee: &str, args: &[ValueId]) -> Result<ExprBlock, FatalError> {
-        let callee = self.resolve_direct_callee(callee, args.len(), span)?;
-        let value = self.fresh_value();
-        Ok(ExprBlock {
-            span,
-            steps: vec![ExprStep::DirectCall {
-                value,
-                callsite: self.fresh_callsite(span),
-                callee,
-                args: args
-                    .iter()
-                    .map(|&value| CallArg {
-                        value,
-                        ascription: None,
-                        ownership: crate::fz_ir::OwnershipMode::Share,
-                    })
-                    .collect(),
-            }],
-            result: value,
-        })
     }
 
     fn capture_values(&mut self, free: HashSet<Var>, env: &HashMap<Var, ValueId>) -> Vec<ValueId> {

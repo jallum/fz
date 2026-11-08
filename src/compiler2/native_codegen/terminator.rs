@@ -11,7 +11,7 @@ use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Sig
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
-use fz_runtime::failure::{fz_raise, fz_raise_showing};
+use fz_runtime::failure::{fz_raise, fz_raise_showing, fz_reraise};
 use fz_runtime::ir_runtime::{
     fz_receive_park_matched, fz_try_push, fz_yield_mid_flight_report, fz_yield_slow_path_begin,
 };
@@ -317,6 +317,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
             message,
             subject,
         } => emit_raise(body, var_env, *exception, *message, *subject),
+        Term::Reraise { kind, value } => emit_reraise(body, var_env, *kind, *value),
         Term::Unreachable => {
             body.b.ins().trap(TrapCode::user(1).unwrap());
             Ok(())
@@ -498,6 +499,22 @@ fn emit_raise<M: cranelift_module::Module>(
             runtime_call!(body, fz_raise, [process, exception, message]);
         }
     }
+    continue_after_raise(body);
+    Ok(())
+}
+
+/// `Term::Reraise` is a handler's last resort: the process continues the raise
+/// the handler was delivered, and what follows is what follows any raise.
+fn emit_reraise<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    kind: Var,
+    value: Var,
+) -> Result<(), CodegenError> {
+    let kind = body.any_ref_for_var(var_env, kind.0);
+    let value = body.any_ref_for_var(var_env, value.0);
+    let process = body.process_arg();
+    runtime_call!(body, fz_reraise, [process, kind, value]);
     continue_after_raise(body);
     Ok(())
 }

@@ -101,7 +101,7 @@ their block. A new epic claims the next free block and adds a row here.
 | Block         | Owner                             | State                  |
 | ------------- | --------------------------------- | ---------------------- |
 | `00600-00799` | fz-sc8                            | full                   |
-| `00800-00899` | fz-3ul                            | reserved               |
+| `00800-00899` | fz-3ul                            | in use through `00850` |
 | `00900-00999` | fz-a9y                            | reserved               |
 | `01000-01039` | fz-sc8 (stack #274)               | in use through `01034` |
 | `01040-01059` | fz-sc8 (session fz-38: .77, .105) | in use through `01042` |

@@ -252,7 +252,7 @@ sequence, collections and per-process `dtors_dispatched` equal `run`'s.
 
 ## `fz.runtime.raise`
 
-The raise route (`fz_panic`, `fz_raise_kind`, `fz_raise`) reports every raise before deciding
+The raise route (`fz_panic`, `fz_throw`, `fz_exit`, `fz_reraise`, `fz_raise`, `fz_raise_showing`) reports every raise before deciding
 where it goes, through the
 `ExecCtx.raise` hook; the JIT runtime and the interpreter's scheduler adapter
 emit `RuntimeEvent::Raise` with a `Raise { kind, exception, handler_depth,

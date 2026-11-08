@@ -771,6 +771,13 @@ pub enum Term {
         message: Var,
         subject: Option<Var>,
     },
+    /// The process continues the raise a handler was delivered: `kind` is the
+    /// atom the handler received for its kind, `value` the raised value. The
+    /// process ends here, as at `Raise`.
+    Reraise {
+        kind: Var,
+        value: Var,
+    },
     /// Control analysis proved no execution reaches. Reaching it anyway is a
     /// compiler fault, and the code traps.
     Unreachable,
@@ -1442,6 +1449,7 @@ impl fmt::Display for Term {
                 message,
                 subject: None,
             } => write!(f, "raise {exception} {message}"),
+            Term::Reraise { kind, value } => write!(f, "reraise {kind} {value}"),
             Term::Unreachable => write!(f, "unreachable"),
             Term::Try {
                 handler,

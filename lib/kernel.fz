@@ -13,8 +13,8 @@ defmodule Kernel do
     * process primitives: `self/0`, `send/2`, `spawn/1`,
       `make_ref/0` and `make_resource/2`
     * `panic/1`, `raise/1`, `raise/2`, `reraise/2`, `throw/1`, `exit/1`,
-      `raise_kind/2`, `inspect/1`, `assert/1`, `assert/2`, `refute/1` and
-      `refute/2`, for failing the current process
+      `inspect/1`, `assert/1`, `assert/2`, `refute/1` and `refute/2`, for
+      failing the current process
     * `dbg/1`, `to_string/1`, `div/2`, `rem/2` and `range/3`
     * the sizes and accessors `byte_size/1`, `map_size/1`, `tuple_size/1`,
       `length/1` and `elem/2`, and the type tests `is_integer/1`,
@@ -107,7 +107,9 @@ defmodule Kernel do
   is `** (throw) :found`, and a failed main process exits with status 1.
   """
   @spec throw(any) :: never
-  def throw(value), do: raise_kind(:throw, value)
+  def throw(value), do: fz_throw(value)
+
+  extern "fz" defp fz_throw(any) :: never
 
   @doc """
   Ends the current process with `reason`: the nearest `catch :exit, reason`
@@ -126,7 +128,9 @@ defmodule Kernel do
   other reason prints `** (exit) reason` and exits the program with status 1.
   """
   @spec exit(any) :: never
-  def exit(reason), do: raise_kind(:exit, reason)
+  def exit(reason), do: fz_exit(reason)
+
+  extern "fz" defp fz_exit(any) :: never
 
   @doc """
   Raises the exception `exception` again. The stacktrace is accepted for
@@ -140,17 +144,6 @@ defmodule Kernel do
   """
   @spec reraise(any, any) :: never
   def reraise(exception, _stacktrace), do: panic(exception)
-
-  @doc """
-  Raises `value` with the kind `kind`, which is `:error`, `:throw` or `:exit`:
-  `raise_kind(:throw, v)` is `throw(v)`. A `try` that no clause matches
-  continues the raise through this function, so the raise keeps the kind it
-  arrived with. Any other kind fails with `:badarg`.
-  """
-  @spec raise_kind(atom, any) :: never
-  def raise_kind(kind, value), do: fz_raise_kind(kind, value)
-
-  extern "fz" defp fz_raise_kind(any, any) :: never
 
   @doc """
   Raises a `RuntimeError` with `message`.

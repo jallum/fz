@@ -322,15 +322,14 @@ fn pair(process: &mut Process, first: AnyValue, second: AnyValue) -> AnyValue {
     AnyValue::from_ref(object).expect("tuple value")
 }
 
-/// Raise `value` with the kind named `kind` and return what a closure handler
-/// was delivered as its kind and value.
-fn delivered_kind_and_value(process: &mut Process, kind: &str, value: AnyValue) -> (AnyValue, AnyValue) {
+/// Raise `value` through `raise` with a closure handler installed and return
+/// what the handler was delivered as its kind and value.
+fn delivered_by(process: &mut Process, value: AnyValue, raise: impl FnOnce(*mut Process, u64)) -> (AnyValue, AnyValue) {
     let template = handler_template(process);
     process.push_handler(Handler::Closure(template));
-    let kind_ref = process.heap.box_any_value_ref(atom(process, kind));
     let value_ref = process.heap.box_any_value_ref(value);
 
-    fz_raise_kind(process, kind_ref.raw_word(), value_ref.raw_word());
+    raise(process, value_ref.raw_word());
 
     let handler = process
         .delivered
@@ -345,11 +344,11 @@ fn delivered_kind_and_value(process: &mut Process, kind: &str, value: AnyValue) 
 fn a_throw_delivers_kind_throw_and_an_exit_delivers_kind_exit() {
     with_observed_process(|process, observed| {
         let ball = atom(process, "ball");
-        let (kind, value) = delivered_kind_and_value(process, "throw", ball);
+        let (kind, value) = delivered_by(process, ball, |process, value| fz_throw(process, value));
         assert_eq!((kind, value), (atom(process, "throw"), ball));
 
         let reason = atom(process, "gone");
-        let (kind, value) = delivered_kind_and_value(process, "exit", reason);
+        let (kind, value) = delivered_by(process, reason, |process, value| fz_exit(process, value));
         assert_eq!((kind, value), (atom(process, "exit"), reason));
 
         assert!(!process.failed, "a caught throw or exit is not a failure");
@@ -360,9 +359,10 @@ fn a_throw_delivers_kind_throw_and_an_exit_delivers_kind_exit() {
 #[test]
 fn a_raise_event_carries_the_kind_text_with_no_exception_name_for_a_throw_or_an_exit() {
     with_observed_process(|process, observed| {
-        for kind in ["error", "throw", "exit"] {
+        let raises: [extern "C" fn(*mut Process, u64); 3] = [fz_panic, fz_throw, fz_exit];
+        for raise in raises {
             let value = atom(process, "v");
-            delivered_kind_and_value(process, kind, value);
+            delivered_by(process, value, |process, value| raise(process, value));
         }
         assert_eq!(
             observed.raises,
@@ -376,12 +376,49 @@ fn a_raise_event_carries_the_kind_text_with_no_exception_name_for_a_throw_or_an_
 }
 
 #[test]
-fn a_kind_that_is_not_error_throw_or_exit_is_a_badarg_error() {
+fn a_reraise_continues_with_the_kind_it_was_delivered() {
     with_observed_process(|process, observed| {
-        let value = atom(process, "v");
-        let (kind, value) = delivered_kind_and_value(process, "bogus", value);
-        assert_eq!((kind, value), (atom(process, "error"), atom(process, "badarg")));
-        assert_eq!(observed.raises, [("error".to_string(), String::new(), 1)]);
+        for kind in ["error", "throw", "exit"] {
+            let value = atom(process, "v");
+            let kind_ref = process.heap.box_any_value_ref(atom(process, kind));
+            let (delivered_kind, delivered_value) = delivered_by(process, value, |process, value_ref| {
+                fz_reraise(process, kind_ref.raw_word(), value_ref)
+            });
+            assert_eq!((delivered_kind, delivered_value), (atom(process, kind), value));
+        }
+        assert_eq!(
+            observed.raises,
+            [
+                ("error".to_string(), String::new(), 1),
+                ("throw".to_string(), String::new(), 1),
+                ("exit".to_string(), String::new(), 1),
+            ]
+        );
+        assert!(!process.failed, "a re-raise a handler takes is not a failure");
+    });
+}
+
+#[test]
+fn a_reraise_nothing_handles_fails_the_process_like_the_original_raise() {
+    with_observed_process(|process, observed| {
+        let ball = pair(process, atom(process, "ball"), AnyValue::int(1));
+        let value_ref = process.heap.box_any_value_ref(ball);
+        let kind_ref = process.heap.box_any_value_ref(atom(process, "throw"));
+
+        fz_reraise(process, kind_ref.raw_word(), value_ref.raw_word());
+
+        assert!(process.failed);
+        assert_eq!(observed.lines, ["** (throw) {:ball, 1}"]);
+    });
+}
+
+#[test]
+#[should_panic(expected = "fz_reraise: the kind")]
+fn a_reraise_of_a_kind_the_runtime_never_delivered_is_an_invariant_violation() {
+    with_observed_process(|process, _| {
+        let value_ref = process.heap.box_any_value_ref(atom(process, "v"));
+        let bogus = atom(process, "bogus");
+        reraise(process, bogus, value_ref.raw_word());
     });
 }
 
@@ -390,9 +427,8 @@ fn an_uncaught_throw_prints_its_value_and_ends_the_process_with_status_1() {
     with_observed_process(|process, observed| {
         let ball = pair(process, atom(process, "ball"), AnyValue::int(1));
         let value_ref = process.heap.box_any_value_ref(ball);
-        let kind_ref = process.heap.box_any_value_ref(atom(process, "throw"));
 
-        fz_raise_kind(process, kind_ref.raw_word(), value_ref.raw_word());
+        fz_throw(process, value_ref.raw_word());
 
         assert!(process.failed);
         assert_eq!(process.exit_status, 1);
@@ -403,10 +439,9 @@ fn an_uncaught_throw_prints_its_value_and_ends_the_process_with_status_1() {
 
 fn uncaught_exit(process: &mut Process, reason: AnyValue) -> Option<String> {
     let reason = process.heap.box_any_value_ref(reason);
-    let kind = process.heap.box_any_value_ref(atom(process, "exit"));
     process.failed = false;
     process.exit_status = 0;
-    fz_raise_kind(process, kind.raw_word(), reason.raw_word());
+    fz_exit(process, reason.raw_word());
     assert!(process.failed, "an exit nothing handles ends the process");
     failure_line(process, RaiseKind::Exit, reason)
 }

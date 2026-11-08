@@ -1,8 +1,9 @@
 //! A process raising: the one route every failure takes.
 //!
-//! `fz_raise_kind` is the runtime primitive behind `Kernel.raise_kind/2`, and so
-//! behind `throw` and `exit`; `fz_panic` is the same route with kind `error`,
-//! behind `Kernel.panic/1` and so `raise`. A raise reports itself, then goes to
+//! `fz_panic`, `fz_throw` and `fz_exit` are the one route with a fixed kind,
+//! behind `Kernel.panic/1`, `throw/1` and `exit/1`; `fz_reraise` continues a
+//! raise a handler was delivered, with the kind it arrived with. A raise
+//! reports itself, then goes to
 //! the innermost handler on the process's handler stack: a compiled handler is
 //! a continuation template that becomes the process's delivered handler closure
 //! applied to the raise, the way a receive outcome is materialized; an
@@ -183,29 +184,46 @@ pub extern "C" fn fz_panic(process: *mut Process, value_ref: u64) {
     raise(process, RaiseKind::Error, value_ref);
 }
 
-/// Raise `value` in the current process with the kind named by the atom
-/// `kind_ref`: the primitive behind `Kernel.raise_kind/2`, and so behind
-/// `throw` and `exit`. A kind that is not `error`, `throw` or `exit` is itself
-/// an error, `:badarg`.
+/// Raise `value` in the current process as a throw: the primitive behind
+/// `Kernel.throw/1`.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_raise_kind(process: *mut Process, kind_ref: u64, value_ref: u64) {
-    assert!(!process.is_null(), "fz_raise_kind: no current process");
+pub extern "C" fn fz_throw(process: *mut Process, value_ref: u64) {
+    raise(process, RaiseKind::Throw, value_ref);
+}
+
+/// Raise `reason` in the current process as an exit: the primitive behind
+/// `Kernel.exit/1`.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_exit(process: *mut Process, reason_ref: u64) {
+    raise(process, RaiseKind::Exit, reason_ref);
+}
+
+/// Continue the raise a handler was delivered: raise `value_ref` with the kind
+/// the handler received, as the atom `kind`. The compiler re-raises only what a
+/// handler was delivered, so a kind the runtime never delivers is a fault in
+/// the compiler, not a program's error.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn reraise(process: *mut Process, kind: AnyValue, value_ref: u64) {
+    assert!(!process.is_null(), "reraise: no current process");
     let node = unsafe { &*process }.node.clone();
-    let kind = value_of_word(kind_ref)
-        .and_then(|kind| match kind {
-            AnyValue::Atom(id) => node.atom_name(id),
-            _ => None,
-        })
-        .and_then(|name| RaiseKind::from_name(&name));
-    match kind {
-        Some(kind) => raise(process, kind, value_ref),
-        None => {
-            let badarg = AnyValue::atom(node.intern_atom("badarg"));
-            let badarg = unsafe { &mut *process }.heap.box_any_value_ref(badarg);
-            raise(process, RaiseKind::Error, badarg.raw_word());
-        }
-    }
+    let name = match kind {
+        AnyValue::Atom(id) => node.atom_name(id),
+        _ => None,
+    };
+    let kind = name
+        .as_deref()
+        .and_then(RaiseKind::from_name)
+        .unwrap_or_else(|| panic!("fz_reraise: the kind {name:?} is not one the runtime delivers"));
+    raise(process, kind, value_ref);
+}
+
+/// [`reraise`] for compiled code: `kind_ref` is the atom the handler received.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_reraise(process: *mut Process, kind_ref: u64, value_ref: u64) {
+    reraise(process, value_from_word(kind_ref, "fz_reraise kind"), value_ref);
 }
 
 /// Report the raise to the context's raise observer, then deliver it to the

@@ -9,7 +9,7 @@ use std::rc::Rc;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
+use crate::dispatch_matrix::pattern::{LastResort, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, ProjectionKind, Region, SubjectSource};
 use crate::ground_value::GroundValue;
 use crate::source::Span;
@@ -1190,8 +1190,13 @@ fn collect_dispatch_atoms(
     for prepared in &plan.prepared_keys {
         collect_dispatch_const_atoms(prepared, seen, atoms);
     }
-    if let Some(last_resort) = plan.last_resort.as_ref().filter(|_| plan.can_fail()) {
-        push_atom(seen, atoms, last_resort.exception);
+    if let Some(exception) = plan
+        .last_resort
+        .as_ref()
+        .filter(|_| plan.can_fail())
+        .and_then(LastResort::exception)
+    {
+        push_atom(seen, atoms, exception);
     }
     for subject in &plan.graph.subjects {
         match &subject.source {

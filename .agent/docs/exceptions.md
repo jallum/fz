@@ -1,8 +1,8 @@
 # Exceptions
 
 A raise takes one route on every execution path: `raise` in
-`runtime/src/failure.rs`, entered through `fz_panic`, `fz_raise_kind`,
-`fz_raise` or `fz_raise_showing`. This doc
+`runtime/src/failure.rs`, entered through `fz_panic`, `fz_throw`, `fz_exit`,
+`fz_reraise`, `fz_raise` or `fz_raise_showing`. This doc
 covers that route end to end: the primitive and the three kinds of raise, the
 handler stack a `try` pushes, how a raise reaches the nearest handler on each
 path, what `try` with `rescue` and `catch` lowers to, the line an uncaught raise
@@ -11,12 +11,15 @@ follows.
 
 ## The primitive
 
-`Kernel.panic/1` and `Kernel.raise_kind/2` are the raise primitives. `panic`
-wraps `extern "fz" defp fz_panic(any) :: never`, whose physical export is
-`fz_runtime::failure::fz_panic(process, value_ref)`; `raise_kind` wraps
-`extern "fz" defp fz_raise_kind(any, any) :: never`, whose export is
-`fz_raise_kind(process, kind_ref, value_ref)`. `fz_panic` is `raise` with kind
-`error`; `fz_raise_kind` reads the kind from its atom and is `raise` with it.
+`Kernel.panic/1`, `Kernel.throw/1` and `Kernel.exit/1` are the raise
+primitives, one per kind. Each wraps an `extern "fz" defp ... :: never` whose
+physical export is `fz_runtime::failure::fz_panic(process, value_ref)`,
+`fz_throw(process, value_ref)` or `fz_exit(process, value_ref)`; each is `raise`
+with its fixed kind (`error`, `throw`, `exit`). Nothing in Kernel takes a kind
+from a program. The compiler continues a raise a handler was delivered through
+`fz_reraise(process, kind_ref, value_ref)`, which reads the kind from the atom
+the handler received and is `raise` with it; a kind the runtime never delivers
+panics, as a fault in the compiler.
 `raise_exception(process, name, message)` and `raise_exception_showing(process,
 name, lead, term)` each build an exception map and are `raise` with kind
 `error`. There is one route behind all of them, which:
@@ -65,14 +68,13 @@ that raised:
 | `exit(reason)` | `exit` |
 | a `try` that no clause matches, or an `after` | the kind the raise arrived with |
 
-`throw/1`, `exit/1` and `raise_kind/2` are plain fz code in `lib/kernel.fz`:
-`throw(v)` is `raise_kind(:throw, v)`, `exit(r)` is `raise_kind(:exit, r)`, and
-`raise_kind(kind, value)` is `fz_raise_kind(kind, value)`. A kind that is not one of
-the three is itself an error, `:badarg`. `reraise(exception, stacktrace)` is
-`panic(exception)`: fz carries no stacktraces, so the second argument is
-accepted and ignored. `raise_kind/2` is not Elixir's; a `try` whose handler
-matches nothing continues the raise through it, which is how the original kind
-survives. Because it is public Kernel surface, a program can call it too.
+`throw/1` and `exit/1` are plain fz code in `lib/kernel.fz`: `throw(v)` is
+`fz_throw(v)` and `exit(r)` is `fz_exit(r)`, each over a fixed-kind extern.
+`reraise(exception, stacktrace)` is `panic(exception)`: fz carries no
+stacktraces, so the second argument is accepted and ignored. A `try` whose
+handler matches nothing, and an `after`, continue the raise with `fz_reraise`
+(below), which is how the original kind survives; no function a program can
+call takes a kind.
 
 ## The handler stack
 
@@ -111,7 +113,9 @@ is by kind, whatever it holds).
   `lower_extern_generic` emits `continue_after_raise`
   (`native_codegen/prim.rs`); `Term::Raise`, which lowering emits at a decision's
   arm of last resort, calls `fz_raise` (or `fz_raise_showing` when the message
-  shows the subject) and then the same.
+  shows the subject) and then the same; `Term::Reraise`, which lowering emits
+  at a handler's arm of last resort, calls `fz_reraise` with the plan's first
+  two inputs and then the same.
   The raising frame returns 0, as a yield does, and every frame above it
   returns that 0 to the quantum entry: the machine frames between the `try` and
   the raise are gone before the handler runs, so a loop that raises on every
@@ -163,10 +167,10 @@ and from the dispatch step, below. A `try` with `rescue` or `catch` has:
   runs. A catch row is `[kind pattern, value pattern, _]` with the clause's guard
   as the row's guard; a clause written with one head is a clause for throws, so
   its kind pattern is the atom `:throw`, and `catch :error, r` binds the raised
-  value as it is, with no `ErlangError` wrap. The miss row re-raises the
-  delivered kind and value through `Kernel.raise_kind/2`, so a raise no clause
-  takes continues to the next handler out by the route it arrived by, and a
-  throw stays a throw;
+  value as it is, with no `ErlangError` wrap. The dispatch has no miss row:
+  its last resort is `LastResort::Reraise`, which continues the delivered kind
+  and value (the plan's first two inputs) to the next handler out by the route
+  it arrived by, so a throw stays a throw;
 - one join, typed as the union of the body and the arms.
 
 Body calls are non-tail by construction (their continuation pops the handler),
@@ -184,7 +188,7 @@ nesting Erlang's `try` compiles to (`v3_core`):
 ```text
 try do B rescue R else E after A end
   =>
-Try#outer {                      handler: A ; panic(raised)
+Try#outer {                      handler: A ; dispatch (no rows) -> reraise
   body: Try#inner {              handler: dispatch over R
           body: B ; PopHandler ; case value of E
         }
@@ -194,10 +198,10 @@ A                                (success path, after the join)
 ```
 
 - `after` is the outermost layer, so `try ... rescue ... after` is two nested
-  `Try` steps and `try ... after` alone is one. The outer handler's only row
-  runs the after body and re-raises its first two params through the same
-  `Kernel.raise_kind/2` call the handler miss makes, so the original exception
-  continues outward by the route it arrived by: a raise through an `after` is
+  `Try` steps and `try ... after` alone is one. The outer handler
+  runs the after body, then a dispatch over its first two params (kind and
+  value) with no rows, whose last resort is the same re-raise the handler miss
+  uses, so the original exception continues outward by the route it arrived by: a raise through an `after` is
   two `fz.runtime.raise` events, the original at the full handler depth and the
   re-raise one frame shallower. The success path runs the after body once, right
   after the outer join; its value is dropped, so the try's value is the body's
@@ -430,8 +434,9 @@ the raise. `Process::ended_in_failure` and
 ## Where it lives
 
 - `runtime/src/failure.rs` — `RaiseKind`, `failure_line`, `exit_status`,
-  `fz_panic`, `fz_raise_kind`, `raise_exception`, `raise_exception_showing`,
-  `fz_raise`, `fz_raise_showing`, `STDERR_FAULT_HOOK`.
+  `fz_panic`, `fz_throw`, `fz_exit`, `reraise`, `fz_reraise`,
+  `raise_exception`, `raise_exception_showing`, `fz_raise`,
+  `fz_raise_showing`, `STDERR_FAULT_HOOK`.
 - `src/dispatch_matrix/pattern/last_resort.rs` — `LastResort`.
 - `runtime/src/process.rs` — `Handler`, `Raised`, `handlers`, `raised`,
   `delivered`, `raises_delivered`, `exit_status`, `push_handler`, `pop_handler`,
@@ -440,7 +445,7 @@ the raise. `Process::ended_in_failure` and
 - `runtime/src/process_abi.rs` — `PROCESS_DELIVERED_OFFSET`, read by
   `continue_after_raise`.
 - `lib/kernel.fz` — `panic/1`, `raise/1`, `raise/2`, `inspect/1`, `throw/1`,
-  `exit/1`, `reraise/2`, `raise_kind/2`; `lib/runtime.fz` lists the raise
+  `exit/1`, `reraise/2`; `lib/runtime.fz` lists the raise
   functions for auto-import.
 - `src/ast/mod.rs` — `Expr::Try`, `RescueClause`, `CatchClause`.
 - `src/compiler2/quoted_function.rs` — `decode_try`, `decode_rescue_head`,
@@ -449,7 +454,7 @@ the raise. `Process::ended_in_failure` and
   `catch`).
 - `src/compiler2/source_sugar.rs` — the `in` rewrite and its operator stamp.
 - `src/compiler2/jobs/body.rs` — `lower_try`, `lower_handled`, `handler_arms`, `rescue_arms`, `reraise_block`, `push_try_else`.
-- `src/compiler2/jobs/native.rs` — `raise_last_resort` (emits `Term::Raise`).
+- `src/compiler2/jobs/native.rs` — `raise_last_resort` (emits `Term::Raise` and `Term::Reraise`).
 - `src/compiler2/native_codegen/terminator.rs` — `emit_try`, `emit_raise`.
 - `src/compiler2/native_codegen/prim.rs` — `continue_after_raise`,
   `Prim::PopHandler`.

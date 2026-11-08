@@ -1182,15 +1182,20 @@ reports them as internal errors. There is no residual protocol-stub outcome in
 the matrix.
 
 A decision that can end with no outcome names what it raises:
-`PatternDispatchPlan::last_resort` is a `LastResort` (exception module, message,
-and whether the message shows input 0), set when the rows are built through
+`PatternDispatchPlan::last_resort` is a `LastResort`, set when the rows are built through
 `SourcePatternRows::raising` and kept through narrowing and type mapping. A
-plan with no last resort belongs to a construct that handles the miss itself:
-a `with` binding (its `else` takes the value, or without one the `with` yields
-it), a guard, `receive`. Native lowering of a reached
-fail emits `Term::Raise`, which calls `fz_raise` or `fz_raise_showing`; the
+`LastResort` has two forms: `Exception` (exception module, message, and whether
+the message shows input 0) and `Reraise`, which continues the raise a handler
+was delivered, with inputs 0 and 1 as its kind and value; a `try` handler's
+dispatch, and an `after`'s dispatch with no rows, end in it. A plan with no last
+resort belongs to a construct that handles the miss itself: a `with` binding
+(its `else` takes the value, or without one the `with` yields it), a guard,
+`receive`. Native
+lowering of a reached fail emits `Term::Raise`, which calls `fz_raise` or
+`fz_raise_showing`, or `Term::Reraise`, which calls `fz_reraise`; the
 interpreter's `raise_last_resort` calls `failure::raise_exception` (or
-`failure::raise_exception_showing` with the subject) and then `after_panic`. The raise goes to the nearest handler, so a `rescue` around the
+`failure::raise_exception_showing` with the subject), or `failure::reraise`,
+and then `after_panic`. The raise goes to the nearest handler, so a `rescue` around the
 decision catches it like any raise; with no handler the process prints Elixir's
 line for that exception and ends, and drivers read `Process.failed`, never
 `halt_value`. See [exceptions](exceptions.md).

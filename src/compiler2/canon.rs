@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::dispatch_matrix::pattern::{
-    PatternDispatchOutcome, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr, PatternPinnedInput,
+    LastResort, PatternDispatchOutcome, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr, PatternPinnedInput,
 };
 use crate::dispatch_matrix::{
     BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchEdge, DispatchGraph,
@@ -1507,16 +1507,17 @@ impl ProgramCanon<'_> {
             "prepared_keys",
             plan.prepared_keys.iter().map(ground).collect::<Vec<_>>(),
         );
-        if let Some(last_resort) = &plan.last_resort {
-            let showing = if last_resort.shows_subject {
-                " showing input 0"
-            } else {
-                ""
-            };
-            out.put(&format!(
-                "raises {} {:?}{showing}",
-                last_resort.exception, last_resort.message
-            ));
+        match &plan.last_resort {
+            Some(LastResort::Exception {
+                exception,
+                message,
+                shows_subject,
+            }) => {
+                let showing = if *shows_subject { " showing input 0" } else { "" };
+                out.put(&format!("raises {exception} {message:?}{showing}"));
+            }
+            Some(LastResort::Reraise) => out.put("reraises input 0 as kind, input 1 as value"),
+            None => {}
         }
         lines(out)
     }

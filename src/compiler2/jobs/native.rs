@@ -16,7 +16,9 @@ use std::sync::Arc;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
-use crate::dispatch_matrix::pattern::{GuardExtern, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr};
+use crate::dispatch_matrix::pattern::{
+    GuardExtern, LastResort, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr,
+};
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
     BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DirectCallTarget, ExternAbi,
@@ -2952,8 +2954,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     }
 
     /// A decision's last resort: the plan's exception, raised through the one
-    /// panic route. A message that shows the subject reads the plan's first
-    /// input.
+    /// panic route, or the raise a handler was delivered, continued. A message
+    /// that shows the subject reads the plan's first input; a re-raise reads
+    /// its first two, the kind and the value.
     fn raise_last_resort(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -2967,14 +2970,29 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 format!("a dispatch with no last resort reached its fail in {:?}", ctx.origin),
             ));
         };
-        let subject = if last_resort.shows_subject {
+        let (exception, message, shows_subject) = match last_resort {
+            LastResort::Exception {
+                exception,
+                message,
+                shows_subject,
+            } => (exception, message, *shows_subject),
+            LastResort::Reraise => {
+                let kind = state.dispatch_inputs.first().ok_or(FatalError)?;
+                let kind = self.materialize_native_value(ctx, None, kind)?;
+                let value = state.dispatch_inputs.get(1).ok_or(FatalError)?;
+                let value = self.materialize_native_value(ctx, None, value)?;
+                ctx.set_term(Term::Reraise { kind, value });
+                return Ok(());
+            }
+        };
+        let subject = if shows_subject {
             let input = state.dispatch_inputs.first().ok_or(FatalError)?;
             Some(self.materialize_native_value(ctx, None, input)?)
         } else {
             None
         };
-        let (exception, _) = ctx.emit_let(Prim::Const(Const::Atom(self.atom_id(last_resort.exception))));
-        let message = last_resort.message.as_bytes().to_vec();
+        let (exception, _) = ctx.emit_let(Prim::Const(Const::Atom(self.atom_id(exception))));
+        let message = message.as_bytes().to_vec();
         let bit_len = 8 * message.len() as u64;
         let (message, _) = ctx.emit_let(Prim::ConstBitstring(message, bit_len));
         ctx.set_term(Term::Raise {
@@ -4639,6 +4657,7 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
                 | Term::Return(_)
                 | Term::ReturnLanes(_)
                 | Term::Raise { .. }
+                | Term::Reraise { .. }
                 | Term::Unreachable => {}
             }
         }

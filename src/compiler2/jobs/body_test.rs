@@ -1,6 +1,7 @@
 use super::super::drive::Job;
 use super::super::drive_harness::{Drive, Settled, module_name};
 use super::super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission, RunFailure};
+use crate::dispatch_matrix::pattern::LastResort;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 
 fn run(source_name: &str, source: &str) -> (Result<i64, RunFailure>, Capture) {
@@ -119,7 +120,7 @@ struct TryShape {
     tries: usize,
     handlers: usize,
     pops: usize,
-    handler_tails_that_call: usize,
+    reraising_dispatches: usize,
     atom_consts: std::collections::HashMap<String, usize>,
 }
 
@@ -133,14 +134,17 @@ fn try_shape(fixture: u32, name: &str, arity: u64) -> TryShape {
         tries: 0,
         handlers: 0,
         pops: 0,
-        handler_tails_that_call: 0,
+        reraising_dispatches: 0,
         atom_consts: Default::default(),
     };
     for entry in entries {
         shape.tries += usize::from(matches!(entry.tail, LoweredTail::Try { .. }));
         if entry.origin == ControlEntryOrigin::Handler {
             shape.handlers += 1;
-            shape.handler_tails_that_call += usize::from(matches!(entry.tail, LoweredTail::DirectCall { .. }));
+        }
+        if let LoweredTail::Dispatch { dispatch, .. } = &entry.tail {
+            shape.reraising_dispatches +=
+                usize::from(dispatch.plan.last_resort == Some(LastResort::reraise()) && dispatch.miss_entry.is_none());
         }
         for step in &entry.steps {
             match step {
@@ -163,7 +167,10 @@ fn try_shape(fixture: u32, name: &str, arity: u64) -> TryShape {
 fn an_after_is_one_handler_that_runs_the_after_body_and_re_raises() {
     let shape = try_shape(832, "main", 0);
     assert_eq!((shape.tries, shape.handlers, shape.pops), (1, 1, 1));
-    assert_eq!(shape.handler_tails_that_call, 1, "the handler ends in the re-raise");
+    assert_eq!(
+        shape.reraising_dispatches, 1,
+        "the handler ends in a dispatch whose last resort is the re-raise, with no miss entry"
+    );
     assert_eq!(
         shape.atom_consts["after_value"], 2,
         "the after body appears on both ways out"
@@ -178,6 +185,10 @@ fn rescue_with_after_is_two_nested_tries() {
     let shape = try_shape(803, "attempt", 1);
     assert_eq!((shape.tries, shape.handlers, shape.pops), (2, 2, 2));
     assert_eq!(shape.atom_consts["after"], 2);
+    assert_eq!(
+        shape.reraising_dispatches, 2,
+        "each handler's miss is the re-raise: the rescue's clauses and the after's none"
+    );
 }
 
 /// `else` adds no handler of its own: it is a case on the body's value inside

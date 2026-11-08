@@ -2212,14 +2212,12 @@ fn inline_dispatch_input_demands(
 ) -> Vec<RuntimeDemand> {
     let plan = &dispatch.plan;
     let mut asked = plan.input_demand().to_vec();
-    let raises_showing = plan.can_fail()
-        && dispatch.miss_entry.is_none()
-        && plan
-            .last_resort
-            .as_ref()
-            .is_some_and(|last_resort| last_resort.shows_subject);
-    if raises_showing && let Some(subject) = asked.first_mut() {
-        *subject = DispatchDemand::Whole;
+    let consumed = match &plan.last_resort {
+        Some(last_resort) if plan.can_fail() && dispatch.miss_entry.is_none() => last_resort.consumed_inputs(),
+        _ => 0,
+    };
+    for input in asked.iter_mut().take(consumed) {
+        *input = DispatchDemand::Whole;
     }
     let mut input_demands = asked
         .iter()

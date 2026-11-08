@@ -737,6 +737,7 @@ pub(super) fn ir_control_fn_ids(function: &IrFn) -> Vec<FnId> {
             | IrTerm::Return(_)
             | IrTerm::ReturnLanes(_)
             | IrTerm::Raise { .. }
+            | IrTerm::Reraise { .. }
             | IrTerm::Unreachable => {}
         }
     }
@@ -818,6 +819,10 @@ pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
                 other_uses.insert(*message);
                 other_uses.extend(*subject);
             }
+            IrTerm::Reraise { kind, value } => {
+                other_uses.insert(*kind);
+                other_uses.insert(*value);
+            }
             IrTerm::Unreachable => {}
             IrTerm::ReturnLanes(vars) => other_uses.extend(vars.iter().copied()),
             IrTerm::ReceiveMatched {
@@ -876,6 +881,7 @@ fn visit_ir_control_fn_ids(function: &mut IrFn, mut visit: impl FnMut(&mut FnId)
             | IrTerm::Return(_)
             | IrTerm::ReturnLanes(_)
             | IrTerm::Raise { .. }
+            | IrTerm::Reraise { .. }
             | IrTerm::Unreachable => {}
         }
     }
@@ -1707,6 +1713,7 @@ fn native_terms_equal(left: &IrTerm, right: &IrTerm) -> bool {
         }
         (IrTerm::Return(left_var), IrTerm::Return(right_var)) => left_var == right_var,
         (left @ IrTerm::Raise { .. }, right @ IrTerm::Raise { .. }) => left == right,
+        (left @ IrTerm::Reraise { .. }, right @ IrTerm::Reraise { .. }) => left == right,
         (IrTerm::Unreachable, IrTerm::Unreachable) => true,
         (IrTerm::ReturnLanes(left_lanes), IrTerm::ReturnLanes(right_lanes)) => left_lanes == right_lanes,
         (
