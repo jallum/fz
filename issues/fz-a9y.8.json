@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-a9y.9"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-a9y",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Heap scaffolding that nothing reads is deleted",
   "type": "task",
-  "updated_at": "2026-11-08T11:18:09Z"
+  "updated_at": "2026-11-08T11:23:47Z"
 }
