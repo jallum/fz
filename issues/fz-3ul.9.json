@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-3ul.5"
@@ -10,7 +10,7 @@
   "labels": [],
   "parent": "fz-3ul",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "A raise reports its machine-stack depth, and the constant-stack test reads it",
   "type": "bug",
   "updated_at": "2026-11-08T06:24:07Z"
