@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T03:34:29Z",
+  "description": "Elixir's TryClauseError message is \"no try clause matching:\\n\\n    \u003cinspect value\u003e\\n\" and MatchError, CaseClauseError, WithClauseError, FunctionClauseError (once fz-sc8.64 names them) all embed Exception.format/inspect renderings of a value. fz-3ul.2 built TryClauseError with the struct fields Elixir has (term, message) but the message stops at the colon because fz has no inspect primitive; fixture 00733 pins Elixir's full banner in expected.txt and fz's shorter line in expected.stderr. Once fz-sc8.10 (inspect/1,2) lands, the message is built with it and the uncaught line matches Elixir's banner.\n\nAcceptance: 00733's expected.stderr equals Elixir's banner text (first line plus indented value); the same for every library exception whose message embeds a value, found by grep over lib/*.fz for message strings that end at a colon; oracle fixtures on interp, run and build; .agent/docs/exceptions.md 'The line' updated; gate green.",
+  "id": "fz-3ul.7",
+  "labels": [],
+  "parent": "fz-3ul",
+  "priority": 2,
+  "status": "open",
+  "title": "An exception message that embeds a value renders it with inspect",
+  "type": "feature",
+  "updated_at": "2026-11-08T03:34:29Z"
+}
