@@ -30,6 +30,11 @@ fn the_decisions_that_show_their_subject_lead_with_elixirs_words() {
             "no with clause matching:",
         ),
         (
+            LastResort::try_clause(),
+            "Elixir.TryClauseError",
+            "no try clause matching:",
+        ),
+        (
             LastResort::bad_boolean("or"),
             "Elixir.BadBooleanError",
             "expected a boolean on left-side of \"or\", got:",

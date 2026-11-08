@@ -148,16 +148,6 @@ struct TrySections<'a> {
 }
 
 const ERROR_KIND: &str = "error";
-/// What a decision does when no clause matches.
-enum DecisionMiss {
-    /// It raises the exception its last resort names.
-    Raises(LastResort),
-    /// It runs this block.
-    Runs(ExprBlock),
-}
-
-const TRY_CLAUSE_ERROR: &str = "Elixir.TryClauseError";
-const TRY_CLAUSE_MESSAGE: &str = "no try clause matching:";
 const ERLANG_ERROR: &str = "Elixir.ErlangError";
 
 #[derive(Debug, Clone)]
@@ -2350,32 +2340,21 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 result: failed,
             });
         }
-        self.lower_clause_dispatch_block(
-            "with else",
-            span,
-            failed,
-            else_clauses,
-            DecisionMiss::Raises(LastResort::with_clause()),
-            env,
-        )
+        self.lower_clause_dispatch_block("with else", span, failed, else_clauses, LastResort::with_clause(), env)
     }
 
-    /// A case over `subject` whose arms are `clauses`; `miss` says what
-    /// happens when none matches.
+    /// A case over `subject` whose arms are `clauses`; `last_resort` is what
+    /// is raised when none matches.
     fn lower_clause_dispatch_block(
         &mut self,
         label: &str,
         span: Span,
         subject: ValueId,
         clauses: &[MatchClause],
-        miss: DecisionMiss,
+        last_resort: LastResort,
         env: HashMap<Var, ValueId>,
     ) -> Result<ExprBlock, FatalError> {
-        let (last_resort, miss_block) = match miss {
-            DecisionMiss::Raises(last_resort) => (Some(last_resort), None),
-            DecisionMiss::Runs(block) => (None, Some(block)),
-        };
-        let plan = self.compile_match_dispatch(label, span, 1, match_rows(clauses), last_resort)?;
+        let plan = self.compile_match_dispatch(label, span, 1, match_rows(clauses), Some(last_resort))?;
         let mut steps = Vec::new();
         let bindings = self.lower_dispatch_bindings(&plan, &env, &mut steps)?;
         let arm_blocks = clauses
@@ -2391,7 +2370,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             dispatch: Box::new(ExprDispatch {
                 plan: Rc::new(plan),
                 arm_blocks,
-                miss_block,
+                miss_block: None,
             }),
         });
         Ok(ExprBlock {
@@ -2618,58 +2597,16 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         if else_clauses.is_empty() {
             return Ok(value);
         }
-        let miss = self.try_clause_block(span, value)?;
         let block = self.lower_clause_dispatch_block(
             "try else",
             span,
             value,
             else_clauses,
-            DecisionMiss::Runs(miss),
+            LastResort::try_clause(),
             env.clone(),
         )?;
         steps.extend(block.steps);
         Ok(block.result)
-    }
-
-    /// `%TryClauseError{term: value}`, raised. The message is the lead alone,
-    /// "no try clause matching:"; the value is carried in `term`.
-    fn try_clause_block(&mut self, span: Span, term: ValueId) -> Result<ExprBlock, FatalError> {
-        let mut steps = Vec::new();
-        let module = self.push_const(&mut steps, GroundValue::Atom(TRY_CLAUSE_ERROR.to_string()));
-        let flag = self.push_const(&mut steps, GroundValue::Bool(true));
-        let message = self.push_const(&mut steps, GroundValue::Binary(TRY_CLAUSE_MESSAGE.as_bytes().to_vec()));
-        let entries = [
-            ("__struct__", module),
-            ("__exception__", flag),
-            ("term", term),
-            ("message", message),
-        ]
-        .into_iter()
-        .map(|(key, value)| {
-            let literal = GroundValue::Atom(key.to_string());
-            let key = self.push_const(&mut steps, literal.clone());
-            (
-                LoweredMapKey {
-                    value: key,
-                    literal: Some(literal),
-                },
-                value,
-            )
-        })
-        .collect();
-        let exception = self.fresh_value();
-        steps.push(ExprStep::Map {
-            value: exception,
-            entries,
-            quoted_span: None,
-        });
-        let raise = self.panic_block(span, exception)?;
-        steps.extend(raise.steps);
-        Ok(ExprBlock {
-            span,
-            steps,
-            result: raise.result,
-        })
     }
 
     /// The handler's dispatch rows over the subjects (kind, value, exception
@@ -2821,11 +2758,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     /// arrived with.
     fn reraise_block(&mut self, span: Span, kind: ValueId, raised: ValueId) -> Result<ExprBlock, FatalError> {
         self.call_raising_block(span, "raise_kind", &[kind, raised])
-    }
-
-    /// An error raised by the compiler's own lowering: `Kernel.panic/1` of `value`.
-    fn panic_block(&mut self, span: Span, value: ValueId) -> Result<ExprBlock, FatalError> {
-        self.call_raising_block(span, "panic", &[value])
     }
 
     fn call_raising_block(&mut self, span: Span, callee: &str, args: &[ValueId]) -> Result<ExprBlock, FatalError> {

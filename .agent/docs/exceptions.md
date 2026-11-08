@@ -17,8 +17,9 @@ wraps `extern "fz" defp fz_panic(any) :: never`, whose physical export is
 `extern "fz" defp fz_raise_kind(any, any) :: never`, whose export is
 `fz_raise_kind(process, kind_ref, value_ref)`. `fz_panic` is `raise` with kind
 `error`; `fz_raise_kind` reads the kind from its atom and is `raise` with it.
-`raise_exception(process, name, message)` builds an exception map and is `raise`
-with kind `error`. There is one route behind all of them, which:
+`raise_exception(process, name, message)` and `raise_exception_showing(process,
+name, lead, term)` each build an exception map and are `raise` with kind
+`error`. There is one route behind all of them, which:
 
 1. reports the raise to the execution context's raise observer, `ExecCtx.raise`
    (kind, exception name, handler depth);
@@ -134,7 +135,8 @@ is by kind, whatever it holds).
   when the process has diverged (`Process::diverged`: failed, or a raise is
   waiting), and an error naming the broken contract when it has not.
   A decision's arm of last resort calls `raise_last_resort`, which raises the
-  plan's exception through `failure::raise_exception` and continues in
+  plan's exception through `failure::raise_exception`, or
+  `failure::raise_exception_showing` with the subject, and continues in
   `after_panic`. `after_panic` (`ir_interp/backend.rs`) takes `Process::raised`, pops the
   continuation frames above the handler frame, and runs the handler entry with
   the three values as its params. With no raise waiting, the step becomes
@@ -207,8 +209,9 @@ A                                (success path, after the join)
   `PopHandler`, still inside the body block, so a rescue arm's value never
   reaches them and a raise in an `else` arm or in the miss is outside the
   `rescue`. It is inside the `after` layer, so `after` still runs. A value no
-  clause matches raises `%TryClauseError{term: value}`. Its `message` is the
-  lead alone, `no try clause matching:`; the term is in `e.term`.
+  clause matches reaches the plan's `LastResort`, like any other decision (below):
+  it raises `TryClauseError` with the full banner as its `message` and the value
+  in `e.term`.
 - A `try` with `else` and none of `rescue`, `catch` and `after` has no handler
   to push: it lowers as the case it is, and carries Elixir's warning
   `"else" shouldn't be used as the only clause in "try", use "case" instead`
@@ -288,6 +291,10 @@ into named exceptions (`:badarith` becomes `ArithmeticError`); fz does not, so
 the library raises the named exception itself, and `rescue e in ErlangError`
 takes a raw reason and `e.original` is the reason.
 
+A showing exception (a decision's miss that shows its value, above) is a map with
+`term` beside `message`: the line prints the message, `e.term` is the value
+itself.
+
 ## The library's exceptions
 
 Every library failure raises the exception, with the message, Elixir does.
@@ -322,8 +329,8 @@ exception its arm of last resort raises: `PatternDispatchPlan.last_resort`, a
 `LastResort` (`src/dispatch_matrix/pattern/last_resort.rs`) set when the plan's
 rows are built (`SourcePatternRows::raising`). `=` is a decision like the others:
 its pattern is a one-row plan. Reaching the plan's fail raises the exception
-through `fz_runtime::failure::raise_exception`, which raises the exception map
-exactly as `raise/2` does, so the raise goes to the nearest handler, a `rescue`
+through `fz_runtime::failure::raise_exception`, or `raise_exception_showing` when
+the message shows the subject, which raise the exception map as `raise/2` does, so the raise goes to the nearest handler, a `rescue`
 around the decision catches it, and with no handler it prints the same line and
 ends the process the same way.
 
@@ -335,12 +342,15 @@ ends the process the same way.
 | `case` | `** (CaseClauseError) no case clause matching:` then the value |
 | `cond` | `** (CondClauseError) no cond clause evaluated to a truthy value` |
 | `with`'s `else` | `** (WithClauseError) no with clause matching:` then the value |
+| `try`'s `else` | `** (TryClauseError) no try clause matching:` then the value |
 | `and` / `or` on a non-boolean | `** (BadBooleanError) expected a boolean on left-side of "and", got:` then the value |
 | `not` on a non-boolean | `** (ArgumentError) argument error` |
 
 A message that shows a value is Elixir's multi-line form: the lead, a blank
 line, and the value rendered by dbg and indented four spaces
-(`failure::message_showing`). The value is the plan's input 0.
+(`failure::raise_exception_showing`), and the exception carries the value itself in
+its `term` field, as Elixir's `CaseClauseError`, `MatchError`, `WithClauseError`,
+`TryClauseError` and `BadBooleanError` do. The value is the plan's input 0.
 
 A `with` whose binding fails without an `else`, and a `receive`, have no last
 resort: the first yields the value, the second waits for another message.
@@ -420,7 +430,7 @@ the raise. `Process::ended_in_failure` and
 ## Where it lives
 
 - `runtime/src/failure.rs` — `RaiseKind`, `failure_line`, `exit_status`,
-  `fz_panic`, `fz_raise_kind`, `raise_exception`, `message_showing`,
+  `fz_panic`, `fz_raise_kind`, `raise_exception`, `raise_exception_showing`,
   `fz_raise`, `fz_raise_showing`, `STDERR_FAULT_HOOK`.
 - `src/dispatch_matrix/pattern/last_resort.rs` — `LastResort`.
 - `runtime/src/process.rs` — `Handler`, `Raised`, `handlers`, `raised`,
@@ -454,3 +464,5 @@ the raise. `Process::ended_in_failure` and
 - `fixtures/00841` through `fixtures/00847` and
   `fixtures/00807` through `fixtures/00814` — `throw`, `exit`, `catch`,
   `reraise/2`, the uncaught lines and statuses, and the refused `catch` forms.
+- `fixtures/00848` and `fixtures/00850` — a rescued decision's exception name,
+  `term` and message.

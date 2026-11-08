@@ -493,17 +493,6 @@ fn a_raise_panics_with_the_exception_elixir_raises() {
 }
 
 #[test]
-fn a_message_about_a_term_sets_the_term_on_its_own_indented_line() {
-    with_process(|process| {
-        assert_eq!(
-            message_showing(process, "no case clause matching:", AnyValue::Int(3)),
-            "no case clause matching:\n\n    3\n",
-            "Elixir 1.19 words CaseClauseError's message this way"
-        );
-    });
-}
-
-#[test]
 fn the_raise_exports_take_value_words_and_reach_the_same_route() {
     let (lines, failed) = recording(|process| {
         let name = atom(process, "Elixir.MatchError");
@@ -526,4 +515,44 @@ fn a_plain_raise_export_carries_its_message_unchanged() {
     });
     assert!(failed);
     assert_eq!(lines, ["** (ArgumentError) argument error"]);
+}
+
+#[test]
+fn a_raise_showing_a_term_prints_the_lead_a_blank_line_and_the_term_indented() {
+    let (lines, failed) = recording(|process| {
+        let name = atom(process, "Elixir.TryClauseError");
+        let term = atom(process, "unexpected");
+        raise_exception_showing(process, name, "no try clause matching:", term);
+    });
+    assert!(failed);
+    assert_eq!(
+        lines,
+        ["** (TryClauseError) no try clause matching:\n\n    :unexpected\n"],
+        "the banner is Elixir's three lines"
+    );
+}
+
+#[test]
+fn a_raise_showing_a_term_delivers_an_exception_carrying_the_term_and_the_banner() {
+    with_observed_process(|process, _| {
+        process.push_handler(Handler::Interpreter);
+        let name = atom(process, "Elixir.CaseClauseError");
+
+        raise_exception_showing(process, name, "no case clause matching:", AnyValue::Int(3));
+
+        let raised = process.raised.expect("the raise waits in the process");
+        let exception = AnyValue::from_ref(raised.value).expect("exception");
+        assert_eq!(exception_name(process, exception), Some(name));
+        assert_eq!(
+            exception_field(process, exception, "term"),
+            Some(AnyValue::Int(3)),
+            "the subject is the exception's term, as in Elixir"
+        );
+        let message = exception_field(process, exception, "message").expect("message");
+        assert_eq!(
+            binary_text(message).as_deref(),
+            Some("no case clause matching:\n\n    3\n"),
+            "the message is the whole banner"
+        );
+    });
 }

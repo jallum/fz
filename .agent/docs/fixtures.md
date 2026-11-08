@@ -432,8 +432,7 @@ Fixtures `00832` through `00840`, with `00800` through `00806`, are the `after` 
 oracle discipline: `after` on success, on a raise, masked by its own raise, and
 beside `rescue` (`00832` through `00835`, `00803`, `00804`, `00840`); `else`
 matching, missing (`00837` is caught by the enclosing `rescue`, `00800` is an
-`expect: abort` whose `.expected.stderr` holds the line fz prints, shorter than
-Elixir's because the message is the lead alone), raising from an arm, and bypassed by
+`expect: abort` whose `.expected.stderr` holds Elixir's banner, the lead and the value), raising from an arm, and bypassed by
 rescue arms (`00836`, `00801`, `00802`); all four sections together (`00806`);
 `00838` is an `else`-only `try`, a success fixture whose
 `.expected.diagnostics` holds Elixir's warning; `00839` is `expect: diagnostic`

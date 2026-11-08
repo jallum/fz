@@ -1,7 +1,7 @@
 # Dispatch Matrix
 
 `src/dispatch_matrix` is the shared model for source-pattern and type-directed
-dispatch. Function heads, `case`, `with else`, selective receive, guard helper
+dispatch. Function heads, `case`, `with else`, `try else`, selective receive, guard helper
 dispatch, and protocol finite-union dispatch all build a `DispatchMatrix`,
 compile it to a `DispatchGraph`, and let producer policy decide what a winning
 outcome means. `SourcePatternRows` normalizes AST patterns into rows, but the
@@ -1189,8 +1189,8 @@ plan with no last resort belongs to a construct that handles the miss itself:
 a `with` binding (its `else` takes the value, or without one the `with` yields
 it), a guard, `receive`. Native lowering of a reached
 fail emits `Term::Raise`, which calls `fz_raise` or `fz_raise_showing`; the
-interpreter's `raise_last_resort` calls `failure::raise_exception` and then
-`after_panic`. The raise goes to the nearest handler, so a `rescue` around the
+interpreter's `raise_last_resort` calls `failure::raise_exception` (or
+`failure::raise_exception_showing` with the subject) and then `after_panic`. The raise goes to the nearest handler, so a `rescue` around the
 decision catches it like any raise; with no handler the process prints Elixir's
 line for that exception and ends, and drivers read `Process.failed`, never
 `halt_value`. See [exceptions](exceptions.md).
@@ -1218,7 +1218,7 @@ it was carved from, so a callable taken out of a call's result by `case` or
 AST-facing `SourcePatternRows`, extracts positive proof paths into `Order::Source`
 arms, and keeps pattern-specific payloads as opaque outcome metadata: body id,
 leaf bindings, pinned inputs, prepared keys, and guard expressions.
-Inline lowering for function heads, `case`, `=`, and `with else`, plus interpreter
+Inline lowering for function heads, `case`, `=`, `with else`, and `try else`, plus interpreter
 receive probes and native receive codegen, walk the resulting
 `PatternDispatchPlan` directly. Receive accept/reject policy is not encoded in
 `DispatchMatrix`; selective receive remains a producer/outcome policy layered

@@ -1,0 +1,8 @@
+3
+"no case clause matching:\n\n    3\n"
+{1, 2}
+"no match of right hand side value:\n\n    {1, 2}\n"
+{:bad, 1}
+"no with clause matching:\n\n    {:bad, 1}\n"
+:unexpected
+"no try clause matching:\n\n    :unexpected\n"

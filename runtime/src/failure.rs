@@ -22,7 +22,8 @@
 //! reason is a shutdown, which prints nothing.
 //!
 //! `raise_exception` builds an exception from a name and a message and raises
-//! it as an error. Compiled code reaches it through `fz_raise` and
+//! it as an error; `raise_exception_showing` also carries the term the message
+//! shows, in the exception's `term` field. Compiled code reaches it through `fz_raise` and
 //! `fz_raise_showing` when a decision raises the exception Elixir raises for
 //! it, and `Kernel.raise/2` calls `fz_raise`.
 
@@ -301,29 +302,33 @@ fn report_raise(
 /// Raise the exception `name` carrying `message` in the current process, as an
 /// error, through the one route.
 pub fn raise_exception(process: *mut Process, name: AnyValue, message: &str) {
-    let exception = exception(process, name, message);
+    let message = text(process, message);
+    let exception = exception(process, name, &[("message", message)]);
     raise(process, RaiseKind::Error, exception);
 }
 
-/// The message of an exception about a term, the way Elixir words one: the
-/// lead, then the term on a line of its own, indented.
-pub fn message_showing(process: *mut Process, lead: &str, term: AnyValue) -> String {
-    format!("{lead}\n\n    {}\n", render_value(process, term))
+/// Raise the exception `name` about `term`, the way Elixir's `CaseClauseError`
+/// and its kin do: `message` is `lead`, then the term on a line of its own,
+/// indented, and the exception carries the term itself in `term`.
+pub fn raise_exception_showing(process: *mut Process, name: AnyValue, lead: &str, term: AnyValue) {
+    let message = text(process, &format!("{lead}\n\n    {}\n", render_value(process, term)));
+    let exception = exception(process, name, &[("message", message), ("term", term)]);
+    raise(process, RaiseKind::Error, exception);
 }
 
-/// `%{__struct__: name, __exception__: true, message: message}` on the
-/// process heap, as a value word.
-fn exception(process: *mut Process, name: AnyValue, message: &str) -> u64 {
+fn text(process: *mut Process, text: &str) -> AnyValue {
+    let process = unsafe { &mut *process };
+    process.heap.alloc_bitstring(text.as_bytes(), 8 * text.len() as u64)
+}
+
+/// `%{__struct__: name, __exception__: true, ..fields}` on the process heap, as
+/// a value word.
+fn exception(process: *mut Process, name: AnyValue, fields: &[(&str, AnyValue)]) -> u64 {
     let process = unsafe { &mut *process };
     let atom = |name: &str| AnyValue::atom(process.node.intern_atom(name));
-    let (struct_key, exception_key, message_key, flag) =
-        (atom("__struct__"), atom("__exception__"), atom("message"), atom("true"));
-    let message = process
-        .heap
-        .alloc_bitstring(message.as_bytes(), 8 * message.len() as u64);
-    let bits = process
-        .heap
-        .alloc_map_slots(&[(struct_key, name), (exception_key, flag), (message_key, message)]);
+    let mut entries = vec![(atom("__struct__"), name), (atom("__exception__"), atom("true"))];
+    entries.extend(fields.iter().map(|&(key, value)| (atom(key), value)));
+    let bits = process.heap.alloc_map_slots(&entries);
     let addr = map_addr_from_tagged(bits).expect("an exception is a map");
     AnyValueRef::from_heap_object(ValueKind::MAP, addr)
         .expect("an exception map ref")
@@ -355,8 +360,7 @@ pub extern "C" fn fz_raise_showing(process: *mut Process, name_ref: u64, lead_re
     let lead =
         binary_text(value_from_word(lead_ref, "fz_raise_showing lead")).expect("fz_raise_showing: a binary lead");
     let term = value_from_word(term_ref, "fz_raise_showing term");
-    let message = message_showing(process, &lead, term);
-    raise_exception(process, name, &message);
+    raise_exception_showing(process, name, &lead, term);
 }
 
 #[cfg(test)]

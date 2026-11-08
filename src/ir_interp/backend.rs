@@ -2160,18 +2160,17 @@ fn raise_last_resort(
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     let proc = runtime.cur_proc();
-    let message = if last_resort.shows_subject {
+    let exception = fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(last_resort.exception));
+    if last_resort.shows_subject {
         let subject = inputs
             .first()
             .and_then(Option::as_ref)
             .ok_or("internal error: a last resort that shows its subject has no subject")?;
         let subject = materialize_backend_value(transport, proc, subject)?.value(proc)?;
-        fz_runtime::failure::message_showing(proc, &last_resort.message, subject)
+        fz_runtime::failure::raise_exception_showing(proc, exception, &last_resort.message, subject);
     } else {
-        last_resort.message.clone()
-    };
-    let exception = fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(last_resort.exception));
-    fz_runtime::failure::raise_exception(proc, exception, &message);
+        fz_runtime::failure::raise_exception(proc, exception, &last_resort.message);
+    }
     match runtime.take_callback_error() {
         Some(error) => Err(error),
         None => after_panic(runtime, transport, program, continuations),

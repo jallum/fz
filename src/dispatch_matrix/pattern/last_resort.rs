@@ -52,6 +52,11 @@ impl LastResort {
         Self::showing("Elixir.WithClauseError", "no with clause matching:")
     }
 
+    /// No `else` clause of a `try` matches the value its body produced.
+    pub(crate) fn try_clause() -> Self {
+        Self::showing("Elixir.TryClauseError", "no try clause matching:")
+    }
+
     /// The left side of `and` or `or` is not a boolean.
     pub(crate) fn bad_boolean(operator: &str) -> Self {
         Self::showing(
