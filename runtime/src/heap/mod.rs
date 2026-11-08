@@ -2,17 +2,19 @@
 //!
 //! One block per `Process`. Allocation is pure bump: `bump_top += size`. When
 //! `bump_top` would cross `block_end`, we allocate a fresh (larger) block and
-//! park the old one in `abandoned_blocks`. At the next park-time GC, the
-//! collector copies everything reachable from scheduler-owned roots into a
-//! fresh to-space block; the old current block and all abandoned blocks are
-//! then freed.
+//! park the old one in `blocks`; a grafted gift segment parks its blocks there
+//! too. At the next park-time GC, the collector copies everything reachable
+//! from scheduler-owned roots into a fresh to-space block; the old current
+//! block and all parked blocks are then freed.
 //!
-//! GC is *not* synchronous on allocation. `note_alloc_pressure` sets a flag
-//! when occupancy crosses `gc_threshold_bytes`; the scheduler reads the flag at
-//! the next natural boundary and calls GC over process roots. The flag never
-//! expires the reduction budget. All SSA values are gone (Cranelift's Tail CC
-//! popped them), so only scheduler-owned closures, mailbox roots, and
-//! interpreter-owned explicit roots are traced.
+//! GC is *not* synchronous on allocation. `Heap::should_gc` is a pure
+//! function of the heap's state: the bytes a collection could copy (the tip's
+//! fill plus every parked block's fill) against half
+//! the tip's capacity. The scheduler asks at the next natural boundary and
+//! calls GC over process roots; the question never expires the reduction
+//! budget. All SSA values are gone (Cranelift's Tail CC popped them), so only
+//! scheduler-owned closures, mailbox roots, and interpreter-owned explicit
+//! roots are traced.
 //!
 //! Forwarding marker: a copied from-space object gets `(to_addr & !0xF) |
 //! TAG_FWD` written into word 0. Strict pointer tags carry the object kind.
@@ -41,7 +43,6 @@ use crate::process::Node;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::sync::atomic::AtomicBool;
 
 #[cfg(test)]
 pub use self::block_pool::pool_drain_for_test;
@@ -81,16 +82,12 @@ pub struct Heap {
     /// this without coupling the `fz-runtime` crate to the compiler telemetry
     /// bus.
     pub last_gc_stats: GcStats,
-    /// Old blocks abandoned by `grow`, each with its fill and size class so
-    /// `Drop` / gc() can return it to the pool (§6.6). Cheney frees the
-    /// entire list at every collection.
-    abandoned_blocks: Vec<Block>,
-    /// Blocks grafted from other heaps' gift segments. They are from-space
-    /// for the next Cheney pass like abandoned blocks, but they are kept
-    /// apart so that "an abandoned block exists" keeps meaning "allocation
-    /// overflowed mid-quantum". Their bytes count by fill, never by
-    /// capacity.
-    adopted_blocks: Vec<Block>,
+    /// Blocks the heap has stopped bumping into: old tips abandoned by `grow`
+    /// and blocks grafted from other heaps' gift segments. Each records its
+    /// fill and size class, so `Drop` / gc() can return it to the pool (§6.6)
+    /// and the collector counts it by fill. Cheney frees the entire list at
+    /// every collection.
+    blocks: Vec<Block>,
     /// The open gift window, if `begin_gift` has set the tip aside and
     /// `end_gift` has not yet cut the segment.
     gift: Option<GiftWindow>,
@@ -100,13 +97,6 @@ pub struct Heap {
     /// process state.
     pub(crate) node: Rc<Node>,
     pub(crate) schemas: Rc<RefCell<SchemaRegistry>>,
-    /// Park-time GC flag. Set by `note_alloc_pressure` when occupancy
-    /// crosses `gc_threshold_bytes`; cleared by the scheduler after `gc()`.
-    /// AtomicBool: the libdispatch worker pool may observe this from a
-    /// thread other than the one that set it (one task per worker at a
-    /// time, but the flag is read at scheduler boundaries).
-    pressure: AtomicBool,
-    pub gc_threshold_bytes: usize,
     /// Count of GC invocations. Stub in fz-siu.7; real body lands in .8.
     pub gc_run_count: u64,
     /// Total allocations made since last successful GC. Backs `live_count()`

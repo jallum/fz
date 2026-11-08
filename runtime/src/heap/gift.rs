@@ -9,7 +9,7 @@
 //! opened into a `GiftSegment` and puts the saved tip back. The receiver later
 //! calls `graft` and owns the segment's blocks, fragments and off-heap stubs
 //! as if it had allocated them. Its next Cheney pass
-//! treats the adopted blocks as from-space and copies the live data out.
+//! treats the grafted blocks as from-space and copies the live data out.
 //!
 //! No process ever writes into another process's live heap: the sender only
 //! writes into blocks that are not yet anyone's, and the receiver only moves
@@ -20,14 +20,13 @@ use super::fragment::Fragment;
 use super::{Heap, SIZE_TABLE};
 use crate::procbin::{mso_release_chain, mso_set_next};
 use std::alloc::dealloc;
-use std::sync::atomic::Ordering;
 
 /// What `begin_gift` records so `end_gift` can cut the segment with splits
 /// alone: the tip to restore, the list lengths at which the window opened, the
 /// mso head at that moment, and the oldest stub pushed since.
 pub(super) struct GiftWindow {
     pub(super) saved_tip: Block,
-    abandoned_len: usize,
+    blocks_len: usize,
     fragments_len: usize,
     alloc_count: u64,
     saved_mso_head: u64,
@@ -107,7 +106,7 @@ impl Heap {
         let saved_tip = self.current_block();
         self.gift = Some(GiftWindow {
             saved_tip,
-            abandoned_len: self.abandoned_blocks.len(),
+            blocks_len: self.blocks.len(),
             fragments_len: self.fragments.len(),
             alloc_count: self.alloc_count,
             saved_mso_head: self.mso_head,
@@ -122,13 +121,11 @@ impl Heap {
     }
 
     /// Cut everything allocated since `begin_gift` into a segment and restore
-    /// the saved tip. The pressure flag is recomputed for the restored heap,
-    /// since allocation inside the window may have raised it for bytes that
-    /// are no longer here. Allocation statistics stay with this heap: the
-    /// sender did the work.
+    /// the saved tip. Allocation statistics stay with this heap: the sender did
+    /// the work.
     pub fn end_gift(&mut self) -> GiftSegment {
         let window = self.gift.take().expect("end_gift without an open gift window");
-        let mut blocks = self.abandoned_blocks.split_off(window.abandoned_len);
+        let mut blocks = self.blocks.split_off(window.blocks_len);
         blocks.push(self.current_block());
         let fragments = self.fragments.split_off(window.fragments_len);
         let mso_head = if window.oldest_mso == 0 {
@@ -141,8 +138,6 @@ impl Heap {
         let objects = self.alloc_count - window.alloc_count;
         self.alloc_count = window.alloc_count;
         self.install_block(window.saved_tip);
-        self.pressure
-            .store(self.bytes_used() >= self.gc_threshold_bytes, Ordering::Relaxed);
         GiftSegment {
             blocks,
             fragments,
@@ -152,13 +147,12 @@ impl Heap {
         }
     }
 
-    /// Take ownership of a segment: its blocks become adopted from-space, its
-    /// fragments join this heap's, its mso prefix is spliced ahead of this
-    /// heap's chain.
-    /// Adopted bytes count toward allocation pressure by fill, so a heap that
-    /// receives many gifts collects them.
+    /// Take ownership of a segment: its blocks join this heap's parked blocks
+    /// as from-space, its fragments join this heap's, its mso prefix is
+    /// spliced ahead of this heap's chain. Their fill counts toward
+    /// `should_gc`, so a heap that receives many gifts collects them.
     pub fn graft(&mut self, mut segment: GiftSegment) {
-        self.adopted_blocks.append(&mut segment.blocks);
+        self.blocks.append(&mut segment.blocks);
         self.fragments.append(&mut segment.fragments);
         if segment.mso_head != 0 {
             mso_set_next(segment.oldest_mso, self.mso_head);
@@ -166,9 +160,6 @@ impl Heap {
             segment.mso_head = 0;
         }
         self.alloc_count += segment.objects;
-        if self.bytes_used() >= self.gc_threshold_bytes {
-            self.pressure.store(true, Ordering::Relaxed);
-        }
     }
 
     /// Make `bits` the head of the mso chain and return the previous head,

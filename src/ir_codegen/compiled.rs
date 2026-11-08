@@ -143,7 +143,6 @@ impl CompiledModule {
                 process.set_runnable_closure(closure_bits(roots[idx]));
             }
 
-            process.heap.clear_should_gc_flag();
             process.clear_yield_reasons();
         }
 

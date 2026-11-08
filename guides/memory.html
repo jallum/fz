@@ -346,8 +346,8 @@ stub that points into the <a href="#shared-zone">shared zone</a>.</p>
 
 <p>Blocks come from a per-thread pool sized by a Fibonacci-then-geometric size
 table (1 KiB up to ~6 MiB). When a block fills before GC fires, a new (larger)
-block is allocated and the old one joins <code>abandoned_blocks</code>, recorded
-with its fill and size class. All abandoned blocks are reclaimed at the next
+block is allocated and the old one joins <code>blocks</code>, recorded
+with its fill and size class. All parked blocks are reclaimed at the next
 GC.</p>
 
 <h3 id="the-gift-window">The gift window</h3>
@@ -365,16 +365,13 @@ the suffix of fragments, the prefix of the MSO chain that the window
 produced, and the number of objects allocated. Each
 of those is a split of a list the heap already keeps, not a walk. The heap's
 allocation statistics stay with it, its <code>live_count</code> goes back to
-what it was, and its pressure flag is recomputed from the restored footprint.
-A collection cannot run while a window is open.</p>
+what it was. A collection cannot run while a window is open.</p>
 
 <p>The receiving heap calls <code>Heap::graft</code>: the segment's blocks join
-its <code>adopted_blocks</code>, its fragments join the fragment list, its MSO
-prefix is spliced ahead of the receiver's chain. Adopted blocks are kept apart from abandoned
-blocks so that "an abandoned block exists" keeps meaning "allocation overflowed
-mid-quantum". Their bytes count toward <code>bytes_used</code> by fill, never by
-capacity, so a kilobyte block holding one cons cell costs sixteen bytes of
-pressure. A segment that is dropped without being grafted returns its blocks to
+its <code>blocks</code>, its fragments join the fragment list, its MSO
+prefix is spliced ahead of the receiver's chain. Every parked block counts
+toward <code>bytes_used</code> by fill, never by capacity, so a kilobyte block
+holding one cons cell costs sixteen bytes toward <code>should_gc</code>. A segment that is dropped without being grafted returns its blocks to
 the pool, frees its fragments and releases every stub's off-heap reference.</p>
 
 <h3>The MSO chain</h3>
@@ -399,26 +396,28 @@ their off-heap payload. See
 <p>Processes run on a reduction budget. Every compiled or interpreted loop
 back-edge spends budget. When the budget reaches zero, the process materializes
 a scheduler-owned continuation closure and yields. Allocation pressure is
-separate: it marks the heap as needing GC, but it does not spend reductions and
+separate: it makes the heap due for GC, but it does not spend reductions and
 does not force a yield.</p>
 
-<h3>gc_threshold_bytes</h3>
+<h3>should_gc</h3>
 
-<p>Every <code>Heap::alloc()</code> call keeps the hot path to a bump plus a
-pressure check. Crossing <code>gc_threshold_bytes</code> sets the heap pressure
-flag. If an allocation no longer fits in the current block, the heap allocates a
-larger block and parks the old one in <code>abandoned_blocks</code> for the
-next Cheney pass.</p>
+<p>Every <code>Heap::alloc()</code> call is a bump and nothing else. Whether a
+collection is due is a question about the heap's state, answered by
+<code>Heap::should_gc</code> when the scheduler asks at a boundary: the tip's
+fill plus the fill of every parked block, against half the
+tip's capacity. A collection that reclaims those bytes answers the question by
+itself; nothing is cleared. If an allocation no longer fits in the current
+block, the heap allocates a larger block and parks the old one in
+<code>blocks</code> for the next Cheney pass.</p>
 
 <pre>
   bump_top += size
-  if bytes_used >= gc_threshold_bytes {
-      heap.should_gc = true
-  }
   if bump_top would cross block_end {
       grow to a larger block
-      abandoned_blocks.push(old_block)
+      blocks.push(old_block)
   }
+
+  should_gc = copyable_bytes >= block_size / 2
 </pre>
 
 <p>Compiled yield telemetry still samples the margin before and after the
@@ -468,7 +467,7 @@ from scheduler-owned roots: mailbox values, receive outcome closure templates,
 and runnable continuation closures. No stack scan, no register enumeration.</p>
 
 <pre>
-  from-space (current block + abandoned blocks + adopted blocks)
+  from-space (current block + parked blocks)
   ┌────────────────────────────────┐
   │ [dead]  [dead]  <span class="live">[live]</span>  [dead]  │
   │      scheduler roots point ──►│──►<span class="live">closures + AnyValueRefs</span>
@@ -492,24 +491,23 @@ ride.
 
 <h3>Sizing to-space</h3>
 
+<p>To-space holds at least every byte a pass can copy: the tip's fill plus
+every parked block's fill. The size class that holds those bytes is the floor,
+and three bands choose between the floor and a larger class. Fragment bytes
+are tracked separately because oversized fragments do not move.</p>
+
 <ul>
-  <li><strong>First GC:</strong> bump-arena bytes used — a safe upper bound
-  for the moving to-space block. Fragment bytes are tracked separately because
-  oversized fragments do not move.</li>
-  <li><strong>Subsequent GCs:</strong> <code>last_gc_live_bytes × 2</code>
-  — the exact bump-arena bytes that survived the previous GC, doubled for
-  slack. Accurate, no pre-pass needed.</li>
+  <li><strong>Grow:</strong> the copyable bytes fill 75% or more of the tip.
+  To-space holds twice the copyable bytes, and is at least one class up.</li>
+  <li><strong>Shrink:</strong> the last GC's survivors fill 25% or less of the
+  tip. To-space is <code>last_gc_live_bytes × 2</code> (the copyable bytes on
+  the first GC), raised to the floor.</li>
+  <li><strong>Keep:</strong> otherwise the current size, raised to the floor.</li>
 </ul>
 
-<p>The grow, keep and shrink bands are decided from the heap's own footprint
-alone: a gift arriving is not this heap's allocation rate, so adopted blocks
-never push the heap into the grow band. Their fill is then added to the band's
-target: to-space is the band's own target plus the adopted fill, because every
-adopted byte may be live. With nothing adopted the sizing is exactly what it
-was. After the pass the adopted blocks go back to the pool with the rest of
-from-space, and <code>GcStats</code> reports how many were consumed
-(<code>adopted_blocks</code>) and what they held
-(<code>adopted_bytes</code>).</p>
+<p>Gifts are parked blocks like any other, so their fill is part of the
+copyable bytes whatever raised <code>should_gc</code>. After the pass the
+parked blocks go back to the pool with the rest of from-space.</p>
 
 <p>After the BFS scan: <code>last_gc_live_bytes = free - to_start</code>.
 That feeds the next GC. Fragment survivors are counted in telemetry as

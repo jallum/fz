@@ -766,27 +766,35 @@ fn alloc_grows_to_next_size_class_on_overflow() {
     assert_ne!(h.block_start, initial_block, "grow must move block_start");
     assert!(h.size_class > initial_class, "grow must bump size_class");
     assert_eq!(h.block_size, SIZE_TABLE[h.size_class as usize]);
-    assert!(!h.abandoned_blocks.is_empty());
+    assert!(!h.blocks.is_empty());
     assert_eq!(h.live_count(), 80);
 }
 
-/// `should_gc` flips once `bytes_used` crosses `gc_threshold_bytes`;
-/// `clear_should_gc_flag` resets it. The flag is independent of `gc()`
-/// itself — the scheduler reads it at park-time.
+/// `should_gc` is a function of the heap's state: it turns true once the
+/// bytes in use reach half the tip, and a collection that reclaims them turns
+/// it false again with nothing cleared in between.
 #[test]
-fn pressure_flag_set_when_threshold_crossed() {
+fn should_gc_follows_bytes_in_use_against_half_the_tip_and_a_collection_answers_it() {
     let mut h = Heap::new(1024, fresh_registry());
-    h.gc_threshold_bytes = 64; // two cons cells.
     assert!(!h.should_gc());
+    for _ in 0..31 {
+        let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
+    }
+    assert!(!h.should_gc(), "31 cells at 496 bytes are under 512");
     let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
-    assert!(!h.should_gc(), "1 cell at 16 bytes under 64");
-    let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
-    assert!(!h.should_gc(), "2 cells at 32 bytes under 64");
-    let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
-    let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
-    assert!(h.should_gc(), "4 cells at 64 bytes at threshold");
-    h.clear_should_gc_flag();
-    assert!(!h.should_gc());
+    assert!(h.should_gc(), "32 cells at 512 bytes reach half of 1024");
+
+    let mut root: *mut u8 = null_mut();
+    h.gc(&mut root);
+    assert!(!h.should_gc(), "nothing was live, so nothing is due");
+
+    for _ in 0..32 {
+        let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
+    }
+    assert!(
+        h.should_gc(),
+        "enough allocation after the collection makes it due again"
+    );
 }
 
 /// With a null root, Cheney recycles the arena: from-space is freed,
@@ -1627,9 +1635,8 @@ fn gc_updates_last_gc_live_bytes() {
 #[test]
 fn allocation_pressure_marks_gc_without_spending_reductions() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    h.gc_threshold_bytes = 16;
 
-    let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
+    let _ = h.alloc(SIZE_TABLE[0] / 2);
 
     assert!(h.should_gc(), "allocation pressure should request boundary GC");
 }
@@ -1947,7 +1954,7 @@ fn gc_keeps_arena_bounded_across_many_cycles() {
         h.gc_with_extra_root_slots(&mut root, &mut roots);
         // Post-gc invariants.
         assert_eq!(h.live_count(), 3, "rooted chain survives");
-        assert_eq!(h.abandoned_blocks.len(), 0, "abandoned blocks reclaimed");
+        assert_eq!(h.blocks.len(), 0, "abandoned blocks reclaimed");
     }
     // After the working-set-fits-in-block point, block_size stays put.
     // Generous upper bound: 32× initial guards against runaway growth.

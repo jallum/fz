@@ -66,9 +66,10 @@ pub(super) fn is_active_from_space_object(
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &[Fragment],
 ) -> bool {
-    !p.is_null() && (ptr_in_from_space(p, from_ranges) || classify_fragment(p, fragments).is_some())
+    !p.is_null() && (ptr_in_ranges(p, from_ranges.iter().copied()) || classify_fragment(p, fragments).is_some())
 }
 
-pub(super) fn ptr_in_from_space(p: *mut u8, from_ranges: &[(*mut u8, *mut u8)]) -> bool {
-    from_ranges.iter().any(|&(start, end)| p >= start && p < end)
+/// The one membership predicate: `p` lies in one of the half-open ranges.
+pub(super) fn ptr_in_ranges(p: *mut u8, ranges: impl IntoIterator<Item = (*mut u8, *mut u8)>) -> bool {
+    ranges.into_iter().any(|(start, end)| p >= start && p < end)
 }

@@ -1,7 +1,7 @@
 //! Cheney forwarding: copy objects from from-space into to-space.
 
 use super::super::fragment::{CopiedObject, Fragment, classify_fragment, mark_fragment_for_tracing};
-use super::super::ref_io::{is_active_from_space_object, ptr_in_from_space, strict_object_size};
+use super::super::ref_io::{is_active_from_space_object, ptr_in_ranges, strict_object_size};
 use super::super::schema::SchemaRegistry;
 use super::super::stats::GcStats;
 use super::forwarding::{
@@ -30,7 +30,7 @@ pub fn cheney_forward_strict_bits(
         return None;
     }
     let p = addr as *mut u8;
-    let in_block = ptr_in_from_space(p, from_ranges);
+    let in_block = ptr_in_ranges(p, from_ranges.iter().copied());
     let in_frag = classify_fragment(p, fragments).is_some();
     if !in_block && !in_frag {
         return None;

@@ -96,7 +96,7 @@ fn end_gift_restores_the_senders_tip_and_leaves_its_earlier_allocations_untouche
     let _ = sender.alloc(1008);
     let _ = sender.alloc(64);
     assert_eq!(
-        sender.abandoned_blocks.len(),
+        sender.blocks.len(),
         1,
         "overflow inside the window abandons the gift block"
     );
@@ -112,10 +112,7 @@ fn end_gift_restores_the_senders_tip_and_leaves_its_earlier_allocations_untouche
         (sender.block_start, sender.bump_top, sender.size_class),
         (start, top, class)
     );
-    assert!(
-        sender.abandoned_blocks.is_empty(),
-        "the sender's own chain is as it was"
-    );
+    assert!(sender.blocks.is_empty(), "the sender's own chain is as it was");
     assert_eq!(sender.bytes_used(), bytes_used);
     assert_eq!(
         sender.live_count(),
@@ -151,7 +148,7 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
     assert_eq!(mso_chain(&receiver), vec![gifted]);
     let mut root = gifted as *mut u8;
     assert_eq!(pool_total_cached_blocks(), 0);
-    let stats = receiver.gc(&mut root);
+    receiver.gc(&mut root);
 
     let moved = procbin_addr_from_tagged(root as u64).expect("procbin root");
     assert_ne!(moved, pb.as_raw(), "the stub was copied out of the adopted block");
@@ -162,7 +159,6 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
     );
     assert_eq!(unsafe { ProcBin::from_raw(moved) }.shared_raw(), witness.as_raw());
     assert_eq!(shared_refs(&witness), 2, "the refcount is unchanged by the move");
-    assert_eq!(stats.adopted_blocks, 1);
     assert_eq!(
         pool_total_cached_blocks(),
         2,
@@ -251,7 +247,6 @@ fn a_gift_with_an_oversize_object_travels_as_a_fragment_and_is_marked_not_copied
     assert!(!receiver.fragments[0].mark, "its mark is reset for the next pass");
     assert_eq!(stats.fragment_survivors, 1);
     assert_eq!(stats.copied_objects, 0, "no bytes were copied for it");
-    assert_eq!((stats.adopted_blocks, stats.adopted_bytes), (1, 0));
 }
 
 #[test]
@@ -288,7 +283,7 @@ fn thousands_of_small_unread_gifts_leave_the_receivers_size_class_unchanged_afte
         own_live + adopted_fill,
         "adopted bytes count by fill"
     );
-    assert!(receiver.should_gc(), "adoption raises allocation pressure");
+    assert!(receiver.should_gc(), "adopted fill counts toward should_gc");
 
     let mut root = null_mut();
     let mut roots = [heap_root(list)];
@@ -297,12 +292,10 @@ fn thousands_of_small_unread_gifts_leave_the_receivers_size_class_unchanged_afte
     assert_eq!(receiver.size_class, class_before, "dead gifts do not grow the heap");
     assert_eq!(
         stats.to_space_capacity_bytes, SIZE_TABLE[11] as u64,
-        "to-space is the band's own target (the 32000-byte footprint) plus the 96000-byte adopted fill"
+        "to-space is sized from the 128000 copyable bytes (32000 own, 96000 adopted) and the gifts are dead"
     );
-    assert_eq!(stats.adopted_blocks, gifts);
-    assert_eq!(stats.adopted_bytes, adopted_fill as u64);
     assert_eq!(stats.live_bytes, own_live as u64, "none of the gifts was reachable");
-    assert!(receiver.adopted_blocks.is_empty());
+    assert!(receiver.blocks.is_empty());
     assert_eq!(
         pool_total_cached_blocks(),
         gifts as usize + 1,
@@ -314,9 +307,9 @@ fn thousands_of_small_unread_gifts_leave_the_receivers_size_class_unchanged_afte
 }
 
 #[test]
-fn end_gift_leaves_the_senders_pressure_flag_equal_to_bytes_used_against_the_threshold() {
-    // Under the threshold before the window: pressure raised inside the
-    // window is for bytes that left with the segment.
+fn end_gift_leaves_the_senders_should_gc_answering_for_the_restored_heap_alone() {
+    // Under the threshold before the window: the gift block's bytes left with
+    // the segment.
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
     let _ = sender.alloc(256);
     assert!(!sender.should_gc());
@@ -327,7 +320,7 @@ fn end_gift_leaves_the_senders_pressure_flag_equal_to_bytes_used_against_the_thr
     assert_eq!(sender.bytes_used(), 256);
     assert!(!sender.should_gc(), "the restored heap is under its threshold");
 
-    // Already pressured before the window: the window does not clear it.
+    // Over the threshold before the window: the window does not change that.
     let mut pressured = Heap::new(SIZE_TABLE[0], fresh_registry());
     let _ = pressured.alloc(608);
     assert!(pressured.should_gc());
@@ -344,7 +337,7 @@ fn an_empty_segment_grafts_as_a_no_op_and_never_touches_the_pool() {
     let mut receiver = Heap::new(SIZE_TABLE[0], fresh_registry());
     let _ = alloc_int_list_cons(&mut receiver, 1, EMPTY_LIST);
     let bytes_before = receiver.bytes_used();
-    let adopted_before = receiver.adopted_blocks.len();
+    let adopted_before = receiver.blocks.len();
     let cached_before = pool_total_cached_blocks();
 
     let segment = GiftSegment::empty();
@@ -356,7 +349,7 @@ fn an_empty_segment_grafts_as_a_no_op_and_never_touches_the_pool() {
     receiver.graft(segment);
 
     assert_eq!(receiver.bytes_used(), bytes_before, "nothing was adopted");
-    assert_eq!(receiver.adopted_blocks.len(), adopted_before);
+    assert_eq!(receiver.blocks.len(), adopted_before);
     assert_eq!(
         pool_total_cached_blocks(),
         cached_before,
@@ -395,30 +388,6 @@ fn dropping_an_ungrafted_segment_returns_its_blocks_frees_its_fragments_and_rele
 }
 
 #[test]
-fn gc_stats_report_adopted_blocks_and_bytes_for_the_pass_that_consumed_them() {
-    let reg = fresh_registry();
-    let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
-    let mut receiver = Heap::new(SIZE_TABLE[0], reg);
-
-    sender.begin_gift();
-    let tail = alloc_int_list_cons(&mut sender, 3, EMPTY_LIST);
-    let mid = alloc_int_list_cons(&mut sender, 2, tail);
-    let _ = alloc_int_list_cons(&mut sender, 1, mid);
-    receiver.graft(sender.end_gift());
-    let (single, _) = gift_one_cons(&mut sender, 9);
-    receiver.graft(single);
-    assert_eq!(receiver.adopted_blocks.len(), 2);
-
-    let mut root = null_mut();
-    let first = receiver.gc(&mut root);
-    assert_eq!((first.adopted_blocks, first.adopted_bytes), (2, 48 + 16));
-    assert_eq!(receiver.last_gc_stats, first);
-
-    let second = receiver.gc(&mut root);
-    assert_eq!((second.adopted_blocks, second.adopted_bytes), (0, 0));
-}
-
-#[test]
 fn a_grafted_list_is_readable_and_survives_the_receivers_gc() {
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
@@ -451,4 +420,77 @@ fn a_collection_inside_a_window_is_refused() {
     sender.begin_gift();
     let mut root = null_mut();
     sender.gc(&mut root);
+}
+
+/// A receiver in the SHRINK band: its last collection kept 2000 bytes in a
+/// block of 192768, then it allocated 80000 bytes that all stay reachable.
+fn receiver_with_live_allocation_since_a_small_collection(reg: &Rc<RefCell<SchemaRegistry>>) -> (Heap, u64) {
+    let mut receiver = Heap::new(SIZE_TABLE[9], reg.clone());
+    for _ in 0..60 {
+        let _ = receiver.alloc(1000);
+    }
+    let mut live = EMPTY_LIST;
+    for i in 0..125 {
+        live = alloc_int_list_cons(&mut receiver, i, live);
+    }
+    let mut root = null_mut();
+    let mut roots = [heap_root(live)];
+    receiver.gc_with_extra_root_slots(&mut root, &mut roots);
+    let mut live = roots[0].heap_object_word().expect("live list");
+    for i in 0..5000 {
+        live = alloc_int_list_cons(&mut receiver, i, live);
+    }
+    (receiver, live)
+}
+
+fn gift_of_cons_cells(sender: &mut Heap, cells: i64) -> GiftSegment {
+    sender.begin_gift();
+    let mut list = EMPTY_LIST;
+    for i in 0..cells {
+        list = alloc_int_list_cons(sender, i, list);
+    }
+    sender.end_gift()
+}
+
+#[test]
+fn gifts_alone_make_should_gc_true_and_to_space_holds_every_live_byte() {
+    let reg = fresh_registry();
+    let (mut receiver, live) = receiver_with_live_allocation_since_a_small_collection(&reg);
+    assert!(
+        !receiver.should_gc(),
+        "80000 live bytes in a 192768-byte block are under half"
+    );
+    let mut sender = Heap::new(SIZE_TABLE[0], reg);
+    for _ in 0..16 {
+        receiver.graft(gift_of_cons_cells(&mut sender, 60));
+    }
+    assert!(
+        receiver.should_gc(),
+        "the gifts' fill carried the heap over half its block"
+    );
+
+    let mut root = null_mut();
+    let mut roots = [heap_root(live)];
+    let stats = receiver.gc_with_extra_root_slots(&mut root, &mut roots);
+
+    assert!(
+        stats.to_space_capacity_bytes >= stats.copied_bytes,
+        "to-space of {} cannot hold the {} bytes copied",
+        stats.to_space_capacity_bytes,
+        stats.copied_bytes
+    );
+    assert_eq!(stats.live_bytes, 2000 + 5000 * 16, "every own live byte survived");
+}
+
+#[test]
+fn a_direct_collection_in_the_shrink_band_holds_every_live_byte_without_gifts() {
+    let reg = fresh_registry();
+    let (mut receiver, live) = receiver_with_live_allocation_since_a_small_collection(&reg);
+
+    let mut root = null_mut();
+    let mut roots = [heap_root(live)];
+    let stats = receiver.gc_with_extra_root_slots(&mut root, &mut roots);
+
+    assert!(stats.to_space_capacity_bytes >= stats.copied_bytes);
+    assert_eq!(stats.live_bytes, 2000 + 5000 * 16, "every own live byte survived");
 }

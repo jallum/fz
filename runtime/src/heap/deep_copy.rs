@@ -11,6 +11,7 @@ use std::ptr::{copy_nonoverlapping, null_mut, read, write};
 use std::rc::Rc;
 use std::slice::from_raw_parts;
 
+use super::ref_io::ptr_in_ranges;
 use super::schema::{FieldKind, SchemaRegistry};
 use super::{Heap, HeapAllocKind};
 use crate::any_value::AnyValueRef;
@@ -34,7 +35,7 @@ pub struct HeapView {
 
 impl HeapView {
     fn contains(&self, p: *mut u8) -> bool {
-        self.ranges.iter().any(|&(start, end)| p >= start && p < end)
+        ptr_in_ranges(p, self.ranges.iter().copied())
     }
 
     fn read_field_slot(&self, obj: *mut u8, field_offset: u32) -> AnyValue {
@@ -51,19 +52,9 @@ impl HeapView {
 
 impl Heap {
     /// A snapshot of every address range this heap owns right now: the tip,
-    /// the tip set aside by an open gift window, abandoned and adopted blocks,
-    /// and fragments.
+    /// the tip set aside by an open gift window, parked blocks, and fragments.
     pub fn view(&self) -> HeapView {
-        let mut ranges = vec![(self.block_start, self.block_end)];
-        if let Some(window) = &self.gift {
-            ranges.push((window.saved_tip.start, window.saved_tip.end()));
-        }
-        ranges.extend(
-            self.abandoned_blocks
-                .iter()
-                .chain(&self.adopted_blocks)
-                .map(|block| (block.start, block.end())),
-        );
+        let mut ranges: Vec<_> = self.block_ranges().collect();
         ranges.extend(self.fragments.iter().map(|f| (f.ptr, unsafe { f.ptr.add(f.size) })));
         HeapView {
             ranges,
