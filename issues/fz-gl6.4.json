@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-gl6.3"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-gl6",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A pointer's space is decided by testing the static area and the stack, not by walking the from-space chain",
   "type": "task",
-  "updated_at": "2026-11-08T22:51:55Z"
+  "updated_at": "2026-11-09T01:46:33Z"
 }
