@@ -787,3 +787,24 @@ fn system_argv_is_the_empty_list_when_the_driver_gave_no_arguments() {
         assert!(list_of_binaries(fz_system_argv(process)).is_empty());
     });
 }
+
+#[test]
+fn a_module_name_atom_renders_as_its_alias_like_elixir_inspect() {
+    with_process(|process| {
+        let process_ptr = process as *mut Process;
+        // A linked module seeds the reserved ids first; this bare process does not.
+        for reserved in ["nil", "true", "false"] {
+            process.node.intern_atom(reserved);
+        }
+        let render = |name: &str| render_value(process_ptr, AnyValue::atom(process.node.intern_atom(name)));
+
+        assert_eq!(render("Elixir.Foo.Bar"), "Foo.Bar");
+        assert_eq!(render("Elixir"), "Elixir");
+        assert_eq!(
+            render("Foo"),
+            ":Foo",
+            "a capitalised atom outside the Elixir root is a plain atom"
+        );
+        assert_eq!(render("ok"), ":ok");
+    });
+}

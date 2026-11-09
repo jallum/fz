@@ -1,0 +1,4 @@
+Foo.Bar
+"Elixir.Foo.Bar.Baz"
+true
+false

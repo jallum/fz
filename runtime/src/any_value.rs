@@ -1261,15 +1261,18 @@ pub mod debug {
         struct_schema_id,
     };
     use crate::heap::FieldKind;
+    use crate::module_name::{alias_spelling, is_alias_namespace_atom};
     use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
     use crate::process::Process;
     use std::slice;
     use std::str;
 
-    /// Render an atom id as `:name` if `proc` has a name for it; fall back
-    /// to `:atom_N` otherwise. `proc` is nullable — render may be called
-    /// without a process (unit tests poking the renderer directly, or the
-    /// panic path) — in which case the fallback fires. Threading the process
+    /// Render an atom id as Elixir's `inspect` does when `proc` has a name for
+    /// it: a module-name atom (`Elixir.Foo.Bar`) as its alias (`Foo.Bar`),
+    /// any other as `:name`. Falls back to `:atom_N` otherwise. `proc` is
+    /// nullable — render may be called without a process (unit tests poking
+    /// the renderer directly, or the panic path) — in which case the fallback
+    /// fires. Threading the process
     /// explicitly is what lets two schedulers render concurrently without an
     /// ambient `CURRENT_PROCESS`.
     fn render_atom(proc: *mut Process, id: u32) -> String {
@@ -1279,14 +1282,20 @@ pub mod debug {
             FALSE_ATOM_ID => return "false".to_string(),
             _ => {}
         }
+        match named_atom(proc, id) {
+            Some(name) => match alias_spelling(&name) {
+                Some(alias) => alias.to_string(),
+                None => format!(":{}", name),
+            },
+            None => format!(":atom_{}", id),
+        }
+    }
+
+    fn named_atom(proc: *mut Process, id: u32) -> Option<String> {
         if proc.is_null() {
-            return format!(":atom_{}", id);
+            return None;
         }
-        let proc_ref = unsafe { &*proc };
-        match proc_ref.node.atom_name(id) {
-            Some(name) if !name.is_empty() => format!(":{}", name),
-            _ => format!(":atom_{}", id),
-        }
+        unsafe { &*proc }.node.atom_name(id).filter(|name| !name.is_empty())
     }
 
     fn is_proc_heap_list(proc: *mut Process, bits: u64) -> bool {
@@ -1397,7 +1406,10 @@ pub mod debug {
             return None;
         };
         let key = heap.read_field_slot(p, *key_offset);
-        if key.kind() != ValueKind::ATOM {
+        let AnyValue::Atom(key_id) = key else {
+            return None;
+        };
+        if named_atom(proc, key_id).is_some_and(|name| is_alias_namespace_atom(&name)) {
             return None;
         }
         let name = render_value(proc, key);

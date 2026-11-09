@@ -1,0 +1,16 @@
+#---
+# purpose: "an alias in value position is the atom of the module it names, both for `alias X, as: Y` and for a plain `alias X.Y`"
+# oracle: 00696_an_alias_stands_for_the_full_module_name.oracle.exs
+#---
+alias Foo.Bar, as: B
+alias Foo.Baz
+
+def aliased(), do: B
+
+def main() do
+  dbg(aliased())
+  dbg(B == Foo.Bar)
+  dbg(Atom.to_string(B))
+  dbg(Baz)
+  dbg(B.Inner)
+end

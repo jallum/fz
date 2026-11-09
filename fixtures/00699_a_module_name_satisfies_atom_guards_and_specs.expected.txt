@@ -1,0 +1,5 @@
+"Elixir.Foo.Bar"
+:atom
+:other
+true
+false

@@ -115,6 +115,22 @@ module a qualified name names. Nothing splits a rendered `Module.function`
 string back into a module and a name: a callable that was already resolved
 travels as the function itself.
 
+## A module name is a value
+
+In value position a module alias is an atom, as in Elixir. The decoder turns
+`{:__aliases__, meta, [:Foo, :Bar]}` into `Expr::Alias(ModuleName)`, keeping
+the segments it was written with. `World::module_alias_atom` answers which atom
+that is: it resolves the alias through `resolve_module_name`, so a name the
+namespace binds (`alias Foo.Bar, as: B` makes `B` mean `Foo.Bar`) gives its
+target and any other name gives itself, and returns
+`ModuleName::atom_name`, the full path under the `Elixir` root
+(`Elixir.Foo.Bar`). Body lowering and guard reification both ask it, so `B` in
+an expression and `x == B` in a guard are the same constant atom, typed as that
+singleton atom. A name no module defines is still its atom: resolving it mints
+a placeholder id and starts no module work. A qualified callee
+(`Foo.Bar.f()`) reads the same segments as its `ModuleTarget::Unresolved`
+qualifier.
+
 ## Scoping a body
 
 `define_scope` walks a scope's items in two passes so bodies can reference names

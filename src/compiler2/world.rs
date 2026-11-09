@@ -2457,6 +2457,19 @@ impl World {
             .or_else(|| Some(self.reference_module(path.clone())))
     }
 
+    /// The atom a module alias is in value position: the full name of the
+    /// module it resolves to, under the `Elixir` root (`B` after
+    /// `alias Foo.Bar, as: B` is `Elixir.Foo.Bar`).
+    pub(crate) fn module_alias_atom(
+        &mut self,
+        current_module: ModuleId,
+        head: Namespace,
+        alias: &ModuleName,
+    ) -> Option<String> {
+        let module = self.resolve_module_name(current_module, head, alias)?;
+        self.module_name(module).map(ModuleName::atom_name)
+    }
+
     pub(crate) fn resolve_module_target(
         &mut self,
         owner: ModuleId,

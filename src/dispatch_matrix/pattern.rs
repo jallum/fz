@@ -211,6 +211,10 @@ pub(crate) enum PatternSubjectRef {
 pub(crate) trait PatternResolver<TypeHandle> {
     fn struct_type(&mut self, module: &crate::ast::ModuleTarget, span: Span) -> Result<TypeHandle, SourcePatternError>;
 
+    /// The atom a module alias written in a guard stands for.
+    fn module_alias_atom(&mut self, alias: &crate::modules::identity::ModuleName)
+    -> Result<String, SourcePatternError>;
+
     fn guard_call(
         &mut self,
         callee: &crate::ast::Callee,
@@ -295,6 +299,13 @@ where
         _span: Span,
     ) -> Result<TypeHandle, SourcePatternError> {
         Err(SourcePatternError::UnresolvedStruct(module.clone()))
+    }
+
+    fn module_alias_atom(
+        &mut self,
+        _alias: &crate::modules::identity::ModuleName,
+    ) -> Result<String, SourcePatternError> {
+        Err(SourcePatternError::UnsupportedGuardExpr)
     }
 
     fn guard_call(
@@ -574,6 +585,7 @@ where
         Expr::Atom(name) => PatternGuardExpr::Const(GroundValue::Atom(name.clone())),
         Expr::Bool(value) => PatternGuardExpr::Const(GroundValue::Bool(*value)),
         Expr::Nil => PatternGuardExpr::Const(GroundValue::Nil),
+        Expr::Alias(alias) => PatternGuardExpr::Const(GroundValue::Atom(resolver.module_alias_atom(alias)?)),
         Expr::Var(name) => {
             if let Some(subject) = bindings.get(name) {
                 PatternGuardExpr::Subject(*subject)

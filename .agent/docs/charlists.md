@@ -26,18 +26,32 @@ as `[5, 3, 1]`, and `[42]` renders as `[42]`. There is no codepoint-printability
 branch anywhere in list rendering, so the renderer never emits charlist syntax
 (`~c"..."`) for any value. An improper tail renders as `[h | t]`.
 
+An atom renders through `render_atom`. `nil`, `true` and `false` print bare.
+An atom whose name `module_name::alias_spelling` recognises prints as its
+alias, as Elixir's `inspect` does: `Elixir` followed by `.`-separated segments
+that each start with an ASCII capital letter and continue with ASCII letters,
+digits or `_`. The module name `Foo.Bar` is the atom `Elixir.Foo.Bar` and prints
+`Foo.Bar`. Every other atom prints as `:name`. A two-tuple whose first element
+is an atom under `Elixir.` is never a keyword entry, so `[{Foo, 1}]` prints as
+a list of tuples, as in Elixir.
+
 A binary takes the other shape. `render_bitstring` prints a byte-aligned, valid,
 printable (`is_printable_utf8`) UTF-8 binary as a quoted string `"..."`, and
 anything else as the `<<...>>` byte-list form.
 
 ## Difference from Elixir
 
-This is the one place fz's rendering differs from Elixir's `IO.inspect` on the
-same data. Elixir prints a list whose every element is a printable codepoint
+Charlists are one place fz's rendering differs from Elixir's `IO.inspect` on
+the same data. Elixir prints a list whose every element is a printable codepoint
 (`?\s`/32 through `?~`/126) as a charlist: `IO.inspect([42])` prints `~c"*"`,
 while `IO.inspect([5, 3, 1])` prints `[5, 3, 1]` (1, 3, and 5 are control
 codepoints, so it stays a list). fz prints `[42]` and `[5, 3, 1]` both as plain
 lists.
+
+Two other differences are atom-shaped. An atom whose name Elixir must quote
+prints unquoted: `:"foo bar"` prints `:foo bar` and `:"Elixir.lower"` prints
+`:Elixir.lower`. An atom-keyed map prints `%{:a => 1}` where Elixir prints
+`%{a: 1}`.
 
 ## Fixtures
 
