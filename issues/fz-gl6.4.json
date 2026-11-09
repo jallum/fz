@@ -1,9 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [
-    "fz-gl6.5"
-  ],
+  "blocks": [],
   "created": "2026-11-08T22:51:54Z",
   "description": "ptr_in_ranges (runtime/src/heap/ref_io.rs:68) tests each pointer the collector examines against every from-space range in turn, so a collection on a heap with N grafted gifts is O(edges x N). cheney_forward_strict_bits uses it to skip static closures and the halt singletons; is_active_from_space_object uses it to tell a heap box from a stack slot for scalar refs. Nothing is sorted and nothing should be.\n\nInvert the question, as BEAM's ErtsInYoungGen tests \"not a literal and not in the old heap\": under process isolation a heap-kinded pointer is either in from-space or in the static area, and a scalar ref's storage is either a heap box or a stack slot; to-space is new. Test the small fixed areas, so the chain's length enters no pointer test.\n\nDone when:\n- The collector's membership question is answered by a predicate over the static area (static closure table, halt singletons) and the stack extent, with from_ranges no longer consulted per pointer. ptr_in_ranges is deleted or survives only behind cfg(test) for the heap tests that assert ranges.\n- A debug assertion (or the gc event's walked-ranges count from .1) shows the count is 0 after this change; the event field is deleted if it has nothing left to count.\n- A heap unit test grafts many small gifts and collects, asserting every gift survivor is forwarded and every static closure is left in place.\n- No fixture pin changes.\n- Documentation in the same commit: every .agent/docs page, guide (guides/*.html), README.md section and fixture README that describes a mechanism this ticket changes or removes is rewritten to the present fact in the same commit, and a grep for the old names and phrases over .agent, guides, README.md and fixtures returns nothing. Full gate green (--workspace --all-targets plus doc tests, fixture matrix with --test-threads=1). Commit in Why / What changed / Verification form. No co-author trailer, no attribution line.",
   "id": "fz-gl6.4",
