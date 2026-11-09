@@ -364,6 +364,17 @@ bitstrings shown before <code>...</code>; it defaults to 100, as in Elixir, and
 rest) is not built and raises <code>ArgumentError</code>, as does a bad
 limit.</p>
 
+<p><code>MapSet</code> (<code>lib/map_set.fz</code>) is a set of unique values
+stored as a struct over a map. Its built functions are <code>new/0</code>,
+<code>new/1</code>, <code>put/2</code>, <code>delete/2</code>,
+<code>member?/2</code>, <code>size/1</code> and <code>to_list/1</code>; it
+implements <code>Enumerable</code> and <code>Collectable</code>, so <code>Enum</code>,
+<code>in</code> and <code>for ..., into: MapSet.new()</code> work on it. The rest
+of Elixir's <code>MapSet</code> (<code>union</code>, <code>intersection</code>,
+<code>difference</code>, <code>subset?</code>, <code>disjoint?</code>,
+<code>equal?</code>, <code>filter</code>, <code>reject</code>, <code>new/2</code>,
+<code>symmetric_difference</code>) is not built.</p>
+
 <p>Generated qualified calls from source production request runtime
 interfaces the same way imports do, so operator sugar can depend on modules
 such as <code>List</code> without importing those names into every program.</p>

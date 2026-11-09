@@ -15,6 +15,7 @@ alias Kernel
 alias Keyword
 alias List
 alias Map
+alias MapSet
 alias OptionParser
 alias Process
 alias Range

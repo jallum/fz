@@ -1,0 +1,17 @@
+#---
+# purpose: "MapSet is Collectable (Enum.into, for ... into:) and Enumerable's member? answers the in operator"
+# oracle: 01032_mapset_collects_and_answers_in.oracle.exs
+#---
+def sorted(set), do: Enum.sort(MapSet.to_list(set))
+
+def main() do
+  into = Enum.into([2, 1, 2], MapSet.new())
+  dbg(sorted(into))
+  grown = Enum.into([5, 1], MapSet.new([1, 9]))
+  dbg(sorted(grown))
+  comp = for x <- ["x", "y", "x"], into: MapSet.new(), do: x
+  dbg(sorted(comp))
+  dbg("x" in comp)
+  dbg("z" in comp)
+  dbg(2 in into)
+end
