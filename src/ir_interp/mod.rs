@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use crate::compiler2::transport::BoundValue;
 use crate::exec::runtime::ExitRecord;
+use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::heap::{Schema, SchemaRegistry};
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
 use fz_runtime::sched_core::SchedulingCore;
@@ -61,6 +62,25 @@ struct BackendParkRecord {
     /// The timer that wakes this receive's `after` entry; `None` when the
     /// receive has no positive timeout.
     after_timer: Option<TimerId>,
+}
+
+impl BackendParkRecord {
+    /// Every heap ref this parked receive holds: its environment and each
+    /// continuation's. They are the roots a collection of the parked process
+    /// forwards in place.
+    fn heap_refs_mut(&mut self) -> Vec<&mut AnyValueRef> {
+        let continuation_envs = self.continuations.iter_mut().map(|frame| &mut frame.env);
+        std::iter::once(&mut self.env)
+            .chain(continuation_envs)
+            .flat_map(|env| env.values_mut())
+            .flat_map(|value| match value {
+                BoundValue::Absent => Vec::new(),
+                BoundValue::Runtime(word) => vec![word],
+                BoundValue::Transport { lanes, .. } => lanes.iter_mut().collect(),
+            })
+            .filter_map(AnyValue::heap_ref_mut)
+            .collect()
+    }
 }
 
 pub(crate) struct IrInterpRuntime {

@@ -612,8 +612,9 @@ a gift points into its own segment. <code>Process::collect</code> holds the
 delivery lock for the whole pass, so a sender cannot probe the park record
 while it moves.</p>
 
-<p>The interpreter keeps its resume arguments and parked receives in its own
-structures and does not collect.</p>
+<p>The interpreter keeps a parked receive's environment and continuations in its
+own structures. It passes their heap refs to <code>Process::collect</code> as
+transient roots and writes the forwarded refs back.</p>
 
 <h3>MSO sweep — keeping shared-zone refcounts honest</h3>
 
@@ -675,8 +676,9 @@ exited, such as one parked on a receive; no destructor closure runs for those.</
        run each queued resource destructor as fz code, oldest first
   3. Requeue: re-enqueue.  Parked: wait for a send or the timer.  Exited: done.
 
-  (The JIT and AOT schedulers both run step 2 after every quantum, in every
-  state. The interpreter does not collect.)
+  (The JIT, AOT and interpreter schedulers all run step 2 after every quantum,
+  in every state. The interpreter never yields, so it reaches it at a park or
+  an exit.)
 </pre>
 
 <!-- ─────────────────────────────── 8. MESSAGES ─────────────────────────────── -->

@@ -299,8 +299,13 @@ continuation and is a fault. The JIT enters `fz_drain_dtor_entry` through
 `fz_aot_set_drain_dtor_entry` registered, and the interpreter interprets the
 closure. It returns a `QuantumEnd`: the `Disposition` (`Requeue`, `Parked`,
 `Exited`) the driver acts on and the `Collection`, if any, the JIT reports as
-`fz.runtime.gc`. The interpreter does not collect, so at exit it calls
-`Heap::release_resources_at_exit` and `sched_core::drain_destructors` itself.
+`fz.runtime.gc`. The interpreter calls it too, after a park or an exit; it
+never yields. A parked receive's environment and continuations live in the
+interpreter, so `Scheduler::collect_heap` (default: `Process::collect` with no
+transient roots) is overridden to pass their heap refs as the transient roots
+and write the forwarded refs back. A process a caller lends the interpreter
+(`run_backend_entry_on_process`) ends without `end_quantum`: its caller holds
+refs into its heap, so it is neither collected nor swept.
 
 ## Mid-flight Reduction Yield
 

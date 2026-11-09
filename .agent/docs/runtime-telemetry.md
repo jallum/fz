@@ -185,13 +185,15 @@ signature:    (&Collection)
 
 `GcStats` carries more (object counts, capacities, root and per-container edge
 counts); `Heap::collect` and `Process::collect` return all of it to their
-callers and the heap's unit tests read it there. The interpreter never
-collects, so it emits no `fz.runtime.gc`. The AOT scheduler collects but
+callers and the heap's unit tests read it there. The interpreter emits it from
+`QuantumEnd::collection` as the JIT does. The AOT scheduler collects but
 carries no telemetry bus and emits nothing, as for the other runtime events.
 `tests/fixture_matrix.rs`
-(`a_matched_reply_fixture_collects_on_run_and_never_on_interp_until_the_interpreter_collects`)
+(`a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run`)
 pins fixture 00901: 75 collections on `run` (73 child yields, one parent park,
-one parent exit) copying 33019136 bytes in all, and none on `interp`.
+one parent exit) copying 33019136 bytes in all, and 3 on `interp` (the parent's
+park, the child's exit, the parent's exit) copying 592, since the interpreter
+charges no reductions and never yields mid-run.
 `sched_core_test.rs` pins the `Collection` that `end_quantum` returns and the
 destructors it dispatches.
 

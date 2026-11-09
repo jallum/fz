@@ -236,8 +236,12 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue,
         ),
         (
-            "a_matched_reply_fixture_collects_on_run_and_never_on_interp_until_the_interpreter_collects",
-            a_matched_reply_fixture_collects_on_run_and_never_on_interp_until_the_interpreter_collects,
+            "a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run",
+            a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run,
+        ),
+        (
+            "a_receiver_parked_on_a_pinned_list_is_collected_on_every_path_and_still_matches",
+            a_receiver_parked_on_a_pinned_list_is_collected_on_every_path_and_still_matches,
         ),
         (
             "a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path",
@@ -3022,8 +3026,8 @@ fn dtors_dispatched_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, 
 fn a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path() {
     // The resource is dropped inside `drop_one`, then 20000 list cells are
     // built. The JIT collects while they are built and finds the stub dead; the
-    // interpreter never collects and destroys it at exit. One destructor
-    // either way.
+    // interpreter, which never yields, collects as the process exits and
+    // finds it dead then. One destructor either way.
     let midlife = FixtureCase::new(
         "fixtures/00906_a_resource_dropped_mid_run_runs_its_destructor_once_when_a_collection_frees_it.fz",
     );
@@ -3102,9 +3106,9 @@ fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_que
     }
 }
 
-/// The interpreter never collects, so its zero is the parity gap the
-/// interpreter's boundary collection closes; the `run` pins move with it.
-fn a_matched_reply_fixture_collects_on_run_and_never_on_interp_until_the_interpreter_collects() {
+/// Every path collects at its scheduler boundaries. The interpreter charges no
+/// reductions, so it never yields mid-run and its counts differ from `run`'s.
+fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run() {
     let fixture =
         FixtureCase::new("fixtures/00901_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent.fz");
 
@@ -3128,11 +3132,39 @@ fn a_matched_reply_fixture_collects_on_run_and_never_on_interp_until_the_interpr
         "run: the bytes every collection copied"
     );
 
+    // The interpreter never yields, so the child builds and sends its whole
+    // log inside one quantum and is collected only as it exits, when nothing
+    // is live (0 bytes). The parent is collected as it parks (592 bytes, the
+    // values its parked receive holds: the JIT's 640 also counts the closures
+    // its park record holds) and as it exits (0 bytes).
+    let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
+    let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
     assert_eq!(
-        gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp").len(),
-        0,
-        "interp: the interpreter does not collect at scheduler boundaries"
+        (count("yield"), count("park"), count("exit")),
+        (0, 1, 2),
+        "interp: the parent's park, then the child's and the parent's exits"
     );
+    assert_eq!(
+        events.iter().map(|e| e.copied_bytes).sum::<usize>(),
+        592,
+        "interp: only the parent's park copies anything"
+    );
+}
+
+/// The parked receiver's pinned list is a root of the collection that follows
+/// its park, on the interpreter as on the JIT, so the matcher still finds it.
+fn a_receiver_parked_on_a_pinned_list_is_collected_on_every_path_and_still_matches() {
+    let fixture =
+        FixtureCase::new("fixtures/00905_a_receiver_parked_on_a_pinned_list_is_collected_and_still_matches.fz");
+    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+        let events = gc_events_for_fixture(&fixture, path, label);
+        assert!(
+            events
+                .iter()
+                .any(|event| event.boundary == "park" && event.copied_bytes >= 32_000),
+            "{label}: the parked parent is collected with its 2000-cell pinned list live"
+        );
+    }
 }
 
 fn a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe() {

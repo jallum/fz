@@ -56,6 +56,10 @@ impl HeapRef {
     pub(crate) fn raw(self) -> AnyValueRef {
         self.0
     }
+
+    fn raw_mut(&mut self) -> &mut AnyValueRef {
+        &mut self.0
+    }
 }
 
 impl AnyValue {
@@ -70,6 +74,15 @@ impl AnyValue {
         let p = closure_addr_from_tagged(bits).expect("new fn ref closure ptr");
         unsafe { std::ptr::write(p.add(8) as *mut u64, fn_id.0 as u64) };
         Ok(RuntimeAnyValue::heap_ptr(p, ValueKind::CLOSURE))
+    }
+
+    /// The heap ref this value holds, if it holds one. A collection forwards
+    /// it in place.
+    pub(super) fn heap_ref_mut(&mut self) -> Option<&mut AnyValueRef> {
+        match self {
+            AnyValue::Ref(value) => Some(value.raw_mut()),
+            _ => None,
+        }
     }
 
     pub(super) fn value(self, proc: *mut Process) -> Result<RuntimeAnyValue, String> {

@@ -15,6 +15,7 @@
 //! the exit freed, and says whether the process is requeued, parked or gone.
 
 use crate::any_value::{AnyValueRef, ValueKind};
+use crate::heap::GcStats;
 use crate::process::{Collection, GcBoundary, PidId, Process, ProcessState};
 use crate::scheduler_hooks::{TimerCancelHook, TimerScheduleHook};
 use crate::timer::{TimerId, TimerWheel};
@@ -90,6 +91,14 @@ pub trait Scheduler {
     /// register, the interpreter interprets the closure. The call returns when
     /// the destructor has finished.
     fn run_destructor(&mut self, process: &mut Process, closure: u64, payload: u64);
+
+    /// Collect `process`'s heap. A driver that holds heap values of `process`
+    /// outside it, across the boundary, gathers them as the `transient` roots
+    /// of [`Process::collect`] and writes the forwarded values back. The
+    /// default holds none.
+    fn collect_heap(&mut self, process: &mut Process) -> GcStats {
+        process.collect(&mut [])
+    }
 }
 
 /// What a scheduler does with a process whose quantum has ended.
@@ -123,7 +132,7 @@ pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Proce
     let collection = process.needs_boundary_gc().then(|| Collection {
         pid: process.pid,
         boundary,
-        stats: process.collect(&mut []),
+        stats: scheduler.collect_heap(process),
     });
     process.clear_yield_reasons();
     let disposition = match boundary {
