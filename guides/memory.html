@@ -346,9 +346,11 @@ stub that points into the <a href="#shared-zone">shared zone</a>.</p>
 
 <p>Blocks come from a per-thread pool sized by a Fibonacci-then-geometric size
 table (1 KiB up to ~7 MiB); a heap's tip starts at the first entry and climbs
-the table. When a block fills before GC fires, a new (larger)
-block is allocated and the old one joins <code>blocks</code>, recorded
-with its fill and capacity. All parked blocks are reclaimed at the next
+the table. When a block fills before GC fires, a new block one step
+up becomes the tip and the old one joins <code>blocks</code>, recorded
+with its fill and capacity. An object larger than that step is not made the
+tip: it gets a block sized for it, parked on <code>blocks</code> straight away,
+and the tip keeps filling. All parked blocks are reclaimed at the next
 GC.</p>
 
 <p>The table has neither a floor nor a ceiling on what a block may be. A
@@ -420,14 +422,18 @@ collection is due is a question about the heap's state, answered by
 fill plus the fill of every parked block, against half the
 tip's capacity. A collection that reclaims those bytes answers the question by
 itself; nothing is cleared. If an allocation no longer fits in the current
-block, the heap allocates a larger block and parks the old one in
-<code>blocks</code> for the next Cheney pass.</p>
+block, the heap parks it in <code>blocks</code> for the next Cheney pass and
+installs a tip one step up, unless the object is larger than that step: then
+the object gets a parked block of its own and the tip stays.</p>
 
 <pre>
   bump_top += size
   if bump_top would cross block_end {
-      grow to a larger block
-      blocks.push(old_block)
+      if size &gt; next_block_capacity(block_size) {
+          blocks.push(block sized for the object)   // tip unchanged
+      } else {
+          blocks.push(tip); tip = block one step up
+      }
   }
 
   should_gc = bytes_used >= block_size / 2

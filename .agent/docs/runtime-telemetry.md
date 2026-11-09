@@ -179,12 +179,16 @@ signature:    (&Collection)
 
 - `copied_bytes`: bytes the pass copied into to-space;
 - `live_bytes`: bytes in use once the pass installed its to-space;
+- `from_space_capacity_bytes`: capacity of every block the pass collected (the
+  tip, a gift's saved tip and every parked block);
+- `to_space_capacity_bytes`: capacity of the block the pass installed as the
+  new tip;
 - `blocks_released`: from-space blocks the pass released;
 - `blocks_after`: blocks the heap holds once the to-space is installed;
 - `from_ranges_walked`: length of the from-space range list `ptr_in_ranges`
   scans for every edge the pass follows.
 
-`GcStats` carries more (object counts, capacities, root and per-container edge
+`GcStats` carries more (object counts, root and per-container edge
 counts); `Heap::collect` and `Process::collect` return all of it to their
 callers and the heap's unit tests read it there. The interpreter emits it from
 `QuantumEnd::collection` as the JIT does. The AOT scheduler collects but

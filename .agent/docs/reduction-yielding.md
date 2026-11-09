@@ -32,8 +32,9 @@ and every loop still crosses a tail call.
 - **`Heap`** (`runtime/src/heap`) owns allocation, block growth, and
   `should_gc`, a pure function of the heap's state: the tip's fill plus the fill
   of every parked block (`bytes_used`) against half the
-  tip's capacity. Exhausting the current block allocates a larger block and
-  parks the old block in `blocks` for the next Cheney pass. Blocks grafted from
+  tip's capacity. Exhausting the current block parks it in `blocks` for the next
+  Cheney pass and installs a tip one capacity step up; an object larger than
+  that step is parked in a block of its own and the tip is left as it was. Blocks grafted from
   another heap's gift segment (`Heap::graft`) join `blocks`, are from-space for
   the next pass, and count by fill like any other parked block.
 - **The schedulers** (JIT `src/exec/runtime.rs` with `CompiledModule::run_quantum`
@@ -100,9 +101,12 @@ interpreter runs synchronously: it forwards the next iteration's `resume_fn` and
 ## Allocation and block growth
 
 Allocation is pure bump on the fast path. When the current block cannot fit an
-object, `Heap::alloc_kind` allocates a fresh block one capacity step up, or
-exactly large enough for the object when that is more, records the old block in
-`blocks`, and continues. This is why allocation does not need to force a
+object, `Heap::alloc_kind` takes one of two paths. An object no larger than
+`next_block_capacity(block_size)` parks the tip in `blocks` and installs a fresh
+tip one capacity step up. A larger (huge) object is placed at the start of a
+block of `pick_block_capacity(size)` that is parked in `blocks` at once, with its
+fill ending at the object; the tip, its bump pointer and its capacity do not
+move, so the next small allocation lands in the tip it was already filling. This is why allocation does not need to force a
 scheduler yield to remain total.
 
 `SIZE_TABLE` lists the capacities the block pool recycles, from 1 KiB to about
@@ -112,7 +116,7 @@ request rounded up to 16 bytes, whether the request is below the first entry
 or above the last. An exact block is allocated at that size and is returned to
 the system allocator, not the pool, when it is released;
 `pool_outstanding_blocks` counts pooled blocks only. An object above the table
-is part of `bytes_used` and is copied by Cheney like any other, so to-space
+is parked in an exact block, is part of `bytes_used` and is copied by Cheney like any other, so to-space
 grows past the table to hold it.
 
 ## The gift window

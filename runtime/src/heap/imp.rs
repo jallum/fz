@@ -120,11 +120,11 @@ impl Heap {
     }
 
     /// Bump-only allocator. Rounds `size` up to 16 and advances `bump_top`.
-    /// On overflow, abandons the current block and allocates a fresh block
-    /// one capacity step up, or exactly large enough when `size` needs more
-    /// than that, which may lie above the whole `SIZE_TABLE`. The next
-    /// park-time Cheney copies what is live out of the abandoned chain and
-    /// releases it.
+    /// On overflow, an object larger than the capacity one step above the tip
+    /// is placed alone in a block sized for it, parked on `blocks` with the tip
+    /// unchanged; any other object abandons the tip for a fresh tip one capacity
+    /// step up. The next park-time Cheney copies what is live out of the
+    /// parked blocks and releases them.
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         self.alloc_kind(HeapAllocKind::Other, size)
     }
@@ -135,19 +135,56 @@ impl Heap {
         self.alloc_stats.record(kind, size as u64);
         let new_top = unsafe { self.bump_top.add(size) };
         if new_top > self.block_end {
-            let capacity = pick_block_capacity(size).max(next_block_capacity(self.block_size));
-            self.blocks.push(self.current_block());
-            let start = pool_alloc(capacity);
-            self.install_block(Block {
-                start,
-                top: start,
-                capacity,
-            });
+            if self.parks_alone(size) {
+                return self.alloc_parked(size);
+            }
+            self.climb_tip();
         }
         let p = self.bump_top;
         self.bump_top = unsafe { self.bump_top.add(size) };
         self.alloc_count += 1;
         p
+    }
+
+    /// Whether an object of `size` bytes is huge: larger than the capacity one
+    /// step above the tip. Such an object gets a block of its own beside the
+    /// tip; anything smaller moves the tip up a step and lands in it.
+    fn parks_alone(&self, size: usize) -> bool {
+        size > next_block_capacity(self.block_size)
+    }
+
+    /// Place a huge object at the start of a block sized for it and park the
+    /// block on `blocks`, full. The tip is untouched, so the allocations after
+    /// it keep filling the block they were filling.
+    ///
+    /// A gift window never reaches this: its copy allocates exactly the
+    /// measured bytes into a block of that size, and the object is part of them.
+    fn alloc_parked(&mut self, size: usize) -> *mut u8 {
+        assert!(
+            self.gift.is_none(),
+            "a huge object was allocated inside a gift window: the measure and the copy disagree"
+        );
+        let capacity = pick_block_capacity(size);
+        let start = pool_alloc(capacity);
+        self.blocks.push(Block {
+            start,
+            top: unsafe { start.add(size) },
+            capacity,
+        });
+        self.alloc_count += 1;
+        start
+    }
+
+    /// Park the tip and install a fresh tip one capacity step above it.
+    fn climb_tip(&mut self) {
+        let capacity = next_block_capacity(self.block_size);
+        self.blocks.push(self.current_block());
+        let start = pool_alloc(capacity);
+        self.install_block(Block {
+            start,
+            top: start,
+            capacity,
+        });
     }
 
     /// The block being bumped into, with its fill so far.

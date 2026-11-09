@@ -2324,8 +2324,8 @@ fn struct_root(p: *mut u8) -> *mut u8 {
 }
 
 /// An object larger than the table's last entry takes a block of exactly its
-/// size, and that block is outside the pool: the pool's outstanding count is
-/// the same before and after.
+/// size, parked beside the tip, and that block is outside the pool: the pool's
+/// outstanding count is the same before and after.
 #[test]
 fn an_object_above_the_table_allocates_into_an_exact_unpooled_block() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
@@ -2335,20 +2335,99 @@ fn an_object_above_the_table_allocates_into_an_exact_unpooled_block() {
     let p = h.alloc(want);
 
     assert!(!p.is_null());
-    assert_eq!(h.block_size, TABLE_CEILING + 16, "capacity is the size rounded to 16");
+    assert_eq!(h.block_size, SIZE_TABLE[0], "the tip did not move");
+    assert_eq!(h.bytes_remaining_in_block(), SIZE_TABLE[0]);
+    let parked = h.blocks.last().expect("the huge object's block is parked");
+    assert_eq!(parked.start, p);
     assert_eq!(
-        h.bytes_remaining_in_block(),
-        0,
+        parked.capacity,
+        TABLE_CEILING + 16,
+        "capacity is the size rounded to 16"
+    );
+    assert_eq!(
+        parked.fill(),
+        TABLE_CEILING + 16,
         "the block holds the object and nothing else"
     );
-    assert_eq!(h.block_start, p);
-    assert_eq!(h.blocks.len(), 1, "the tiny first block was abandoned");
+    assert_eq!(h.blocks.len(), 1);
     assert_eq!(
         pool_outstanding_blocks(),
         pooled_before,
         "an exact block never touches the pool"
     );
     assert!(h.bytes_used() >= TABLE_CEILING + 16);
+}
+
+/// A huge object is parked alone and the tip keeps serving small allocations:
+/// the tip's capacity does not move and the small object lands in it.
+#[test]
+fn a_huge_object_parks_and_the_next_small_allocation_lands_in_the_unmoved_tip() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let (tip_start, tip_capacity) = (h.block_start, h.block_size);
+    let huge = next_block_capacity(tip_capacity) + 16;
+
+    let big = h.alloc(huge);
+    let small = h.alloc(16);
+
+    assert_eq!(h.block_size, tip_capacity, "the tip's capacity did not move");
+    assert_eq!(h.block_start, tip_start);
+    assert_eq!(small, tip_start, "the small object is the tip's first");
+    assert_eq!(h.bump_top, unsafe { tip_start.add(16) });
+    assert_eq!(h.blocks.len(), 1);
+    assert_eq!(h.blocks[0].start, big);
+    assert_eq!(h.blocks[0].capacity, pick_block_capacity(huge));
+    assert_eq!(h.live_count(), 2);
+}
+
+/// An allocation that exactly fills the capacity one step up is not huge: the
+/// tip is parked and climbs a step as before.
+#[test]
+fn an_allocation_within_one_step_of_the_tip_still_climbs_the_tip() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let (tip_start, tip_capacity) = (h.block_start, h.block_size);
+    let step = next_block_capacity(tip_capacity);
+    h.alloc(tip_capacity);
+
+    let p = h.alloc(step);
+
+    assert_eq!(h.block_size, step, "the tip climbed one step");
+    assert_eq!(h.block_start, p);
+    assert_eq!(h.blocks.len(), 1);
+    assert_eq!(h.blocks[0].start, tip_start, "the old tip is what was parked");
+    assert_eq!(h.blocks[0].capacity, tip_capacity);
+}
+
+/// A live huge object parked beside the tip is copied by a collection and its
+/// exact block goes back to the system allocator.
+#[test]
+fn a_collection_copies_a_parked_huge_object_and_releases_its_block() {
+    let reg = fresh_registry();
+    let id = above_table_schema(&reg);
+    let mut h = Heap::new(SIZE_TABLE[0], reg);
+    let big = h.alloc_struct(id);
+    assert_eq!(h.blocks.len(), 1, "the huge object is parked");
+    let mut root = struct_root(big);
+
+    let stats = h.collect_tagged(&mut root);
+
+    let moved = struct_addr_from_tagged(root as u64).expect("root is still a struct");
+    assert_ne!(moved, big);
+    assert!(h.contains_heap_addr(moved));
+    assert!(!h.contains_heap_addr(big), "the parked exact block was released");
+    assert!(h.blocks.is_empty());
+    assert_eq!(stats.copied_objects, 1);
+    assert_eq!(stats.blocks_released, 2, "the tip and the parked block");
+}
+
+/// A gift window sizes its one block to the measured bytes, so a huge
+/// allocation inside it is a disagreement between measure and copy.
+#[test]
+#[should_panic(expected = "huge object was allocated inside a gift window")]
+fn a_huge_allocation_inside_a_gift_window_is_refused() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    h.begin_gift(SIZE_TABLE[0]);
+    h.alloc(SIZE_TABLE[0]);
+    h.alloc(next_block_capacity(SIZE_TABLE[0]) + 16);
 }
 
 /// A rooted object above the table is copied like any other: it moves, the
