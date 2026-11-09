@@ -528,7 +528,7 @@ fn compiler2_root_drive_timeout_reports_the_configured_limit() {
         .run_root_interp(root)
         .expect_err("zero drive timeout should abort before compiler work runs");
     assert!(
-        error.contains("exceeded 0 ms drive limit after 0 jobs"),
+        error.to_string().contains("exceeded 0 ms drive limit after 0 jobs"),
         "timeout should report the configured compiler drive limit, got: {error}"
     );
 }

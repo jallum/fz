@@ -69,42 +69,6 @@ fn scheduler_exports_forward_exact_words_and_send_returns_the_original_message()
 }
 
 #[test]
-fn panic_export_forwards_the_exact_value_to_the_context_fault_channel_and_returns() {
-    #[derive(Default)]
-    struct FaultCapture {
-        process: *mut Process,
-        value: u64,
-    }
-
-    extern "C" fn fault(process: *mut Process, context: *mut (), value: u64) {
-        let capture = unsafe { &mut *(context as *mut FaultCapture) };
-        capture.process = process;
-        capture.value = value;
-    }
-
-    with_process(|process| {
-        let process_ptr = process as *mut Process;
-        let message = process
-            .heap
-            .alloc_list_cons_int(7, AnyValueRef::empty_list())
-            .expect("composite panic value")
-            .raw_word();
-        let mut capture = FaultCapture::default();
-        let mut ctx = ExecCtx {
-            scheduler: &mut capture as *mut FaultCapture as *mut (),
-            fault: Some(fault),
-            ..ExecCtx::empty()
-        };
-        process.ctx = &mut ctx;
-
-        crate::fz_panic(process_ptr, message);
-
-        assert_eq!(capture.process, process_ptr);
-        assert_eq!(capture.value, message);
-    });
-}
-
-#[test]
 fn total_arithmetic_exports_return_initialized_result_and_canonical_status_at_boundaries() {
     assert_eq!(
         fz_op_neg_i(i64::MIN),

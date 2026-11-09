@@ -51,7 +51,7 @@ use super::super::pull::{
     WorldProductProducers,
 };
 use super::super::scheduler::{DriveOutcome, FatalError, WorkStartReason};
-use super::super::{CodeSubmission, Compiler2, RootSubmission};
+use super::super::{CodeSubmission, Compiler2, RootSubmission, RunFailure};
 use crate::diag::codes;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 
@@ -1962,11 +1962,11 @@ fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
     let fact = FactUse::settled(FactKey::RootEntry(root));
     assert_eq!(
         error,
-        format!(
+        RunFailure::Error(format!(
             "compiler2 root {} product path waited on {} with no ready producer",
             root.as_u32(),
             fact.fact().kind_label()
-        ),
+        )),
         "the String path's own fallback should still name the undefined entry's RootEntry keying wait, got: {error}"
     );
 
@@ -2224,12 +2224,12 @@ fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
     let job = Job::SeedRoot(root);
     assert_eq!(
         error,
-        format!(
+        RunFailure::Error(format!(
             "compiler2 root {} product path failed while producing {:?}: {:?}",
             root.as_u32(),
             fact,
             job
-        ),
+        )),
         "the String path should report the RootEntry fact-wait's SeedRoot job failure, got: {error}"
     );
     let mut finished_work = super::super::WorkStartTally::default();

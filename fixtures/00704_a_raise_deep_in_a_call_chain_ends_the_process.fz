@@ -1,0 +1,12 @@
+#---
+# purpose: "a raise five calls deep, under calls still waiting for their results, ends the process and nothing after it runs"
+# expect: abort
+# oracle: 00704_a_raise_deep_in_a_call_chain_ends_the_process.oracle.exs
+#---
+def depth(0), do: raise "deep"
+def depth(n), do: depth(n - 1) + 1
+
+def main() do
+  dbg(depth(5))
+  dbg(:never_printed)
+end

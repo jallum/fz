@@ -1,0 +1,8 @@
+#---
+# purpose: "raise with an exception name and a message prints that name and message"
+# expect: abort
+# oracle: 00703_raise_with_a_name_raises_that_exception.oracle.exs
+#---
+def main() do
+  raise ArgumentError, "bad"
+end

@@ -27,6 +27,31 @@ pub(crate) enum BackendRequestEvent {
     Failed,
 }
 
+/// Why running a root's program did not complete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunFailure {
+    /// The program ran and its main process failed. The failure's
+    /// `** (Name) message` line is already on stderr; there is nothing to add.
+    MainFailed,
+    /// The program could not run to completion; the message says why.
+    Error(String),
+}
+
+impl From<String> for RunFailure {
+    fn from(message: String) -> Self {
+        Self::Error(message)
+    }
+}
+
+impl std::fmt::Display for RunFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MainFailed => f.write_str("the main process failed"),
+            Self::Error(message) => f.write_str(message),
+        }
+    }
+}
+
 /// Public front door for the incremental compiler.
 ///
 /// Code enters Compiler2 as compiler-owned source text, receives stable
@@ -298,8 +323,8 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     }
 
     /// Drives one root to `BackendProgram` and runs that published artifact
-    /// through the backend interpreter.
-    pub fn run_root_interp(&mut self, root: RootId) -> Result<i64, String> {
+    /// through the backend interpreter. Answers the main process's halt value.
+    pub fn run_root_interp(&mut self, root: RootId) -> Result<i64, RunFailure> {
         let program = self.product_backend_program_for_root(root)?;
         let tel = &self.telemetry;
         let (types, transport) = self.world.types_mut_and_transport();
@@ -457,7 +482,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
 
     /// Drives one root to `NativeProgram`, JIT-compiles it, and runs the
     /// result through the shared runtime with the native module attached.
-    pub fn run_root_jit(&mut self, root: RootId) -> Result<(), String> {
+    pub fn run_root_jit(&mut self, root: RootId) -> Result<(), RunFailure> {
         let program = self.native_program_for_root(root)?;
         let compiled = self
             .compile_native_backend(&program, super::native_codegen::JitBackend::new())
@@ -469,17 +494,8 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         signal_execution_ready(tel);
         let root_pid = runtime.spawn(program.entry);
         runtime.run_until_idle();
-        // A fault-halted root must not report success (fz-bdk). The exit
-        // kind is set by the fault trap itself; render the reason atom the
-        // same way interp's abort names it.
-        if let Some(atom) = runtime.exit_fault(root_pid) {
-            let reason = program
-                .module
-                .atom_names
-                .get(atom as usize)
-                .map(String::as_str)
-                .unwrap_or("unknown_fault");
-            return Err(format!("{reason}: the root process halted through a fault trap"));
+        if runtime.failed(root_pid) {
+            return Err(RunFailure::MainFailed);
         }
         Ok(())
     }

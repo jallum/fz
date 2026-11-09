@@ -1,1 +1,1 @@
-fz panic: {:json_encode, :invalid_utf8, <<1::4>>}
+** (ErlangError) Erlang error: {:json_encode, :invalid_utf8, <<1::4>>}

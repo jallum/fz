@@ -999,3 +999,49 @@ fn a_scheduler_sleep_renders_its_wait_in_nanoseconds() {
     assert_eq!(events.len(), 1, "one sleep is one record: {log}");
     assert_eq!(events[0]["metadata"]["wait_ns"], 10_000_000);
 }
+
+#[test]
+fn process_exited_says_whether_the_process_failed() {
+    use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission, RunFailure};
+
+    for ((source, failed), jit) in [
+        ("def main(), do: 0\n", false),
+        ("def main(), do: raise(\"boom\")\n", true),
+    ]
+    .into_iter()
+    .flat_map(|case| [(case, false), (case, true)])
+    {
+        let (buf, writer) = vec_writer();
+        let tel = ConfiguredTelemetry::new();
+        JsonlBackend::new_writer(writer).install(&tel);
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("process_exited_failed.fz".into()),
+            text: source.into(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        let main_failed = if jit {
+            compiler.run_root_jit(root).map(|_| ())
+        } else {
+            compiler.run_root_interp(root).map(|_| ())
+        }
+        .is_err_and(|failure| failure == RunFailure::MainFailed);
+        assert_eq!(main_failed, failed, "jit: {jit}");
+        drop(compiler);
+
+        let output = String::from_utf8(buf.borrow().clone()).unwrap();
+        let exited = output
+            .lines()
+            .find(|line| line.contains("\"process_exited\""))
+            .expect("the main process exits through the exit event");
+        assert!(
+            exited.contains(&format!("\"failed\":{failed}")),
+            "the exit event carries `failed: {failed}` (jit: {jit}): {exited}"
+        );
+    }
+}

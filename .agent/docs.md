@@ -34,4 +34,5 @@ Read:
 - [pinned process register](docs/pinned-process-register.md) — how compiled code carries the current `Process*` and spends its reduction budget.
 - [scheduler zero-arg closures](docs/scheduler-zero-arg-closures.md) — scheduler re-entry is one verb (run a closure): receive, timeout, spawn, and halt continuations, plus the shared scheduling core (run queue, timer wheel, the one idle definition).
 - [reduction yielding](docs/reduction-yielding.md) — the per-process reduction budget that drives scheduler fairness while GC pressure stays heap-local until a natural boundary.
+- [process failure](docs/process-failure.md) — the one route a failing process takes: `panic`/`raise`, the `** (Name) message` line, the fault sink, how each path ends the process, and the exit status from main.
 - [fixtures](docs/fixtures.md) — the compiler2 fixture matrix: frontmatter, goldens, the Elixir oracle, and compiler-shape signals.

@@ -352,19 +352,6 @@ pub extern "C" fn fz_halt_implicit_atom(process: *mut Process, atom_id: u64) {
     (unsafe { &mut *process }).halt_value = atom_id as i64;
 }
 
-/// fz-bdk — mark this process's halt as a fault at the exit boundary.
-/// Called by fault traps (compiler2 `Term::Halt` codegen: `function_clause`,
-/// `match_error`, unreachable-control) immediately after the matching
-/// `fz_halt_implicit_*` recorded the reason atom into `halt_value`. The
-/// snapshot makes the exit KIND a structural fact set at the trap site;
-/// drivers must never re-derive it by inspecting `halt_value`, which a
-/// program can legitimately set to any atom by returning one.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_exit_fault(process: *mut Process) {
-    let process = unsafe { &mut *process };
-    process.exit_fault = Some(process.halt_value as u32);
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_halt_implicit_ref(process: *mut Process, ref_word: u64) {
     (unsafe { &mut *process }).halt_value =
@@ -717,7 +704,7 @@ fn bitstring_like_ptr(bits: u64) -> Option<*mut u8> {
     }
 }
 
-fn bitstring_like_ptr_from_ref(word: u64) -> Option<*mut u8> {
+pub(crate) fn bitstring_like_ptr_from_ref(word: u64) -> Option<*mut u8> {
     let value = AnyValueRef::from_raw_word(word).ok()?;
     match value.tag() {
         ValueKind::BITSTRING => value

@@ -296,7 +296,7 @@ pub extern "C" fn fz_aot_setup(
         argv: unsafe { command_line(argc, argv) },
         ctx: ExecCtx {
             output: Some(crate::output::STDOUT_OUTPUT_HOOK),
-            fault: Some(crate::STDERR_FAULT_HOOK),
+            fault: Some(crate::failure::STDERR_FAULT_HOOK),
             spawn: Some(aot_spawn_hook),
             send: Some(aot_send_hook),
             timer_schedule: Some(timer_schedule_hook::<AotScheduler>()),
@@ -538,7 +538,8 @@ extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiv
 }
 
 /// Run main and all spawned processes via the cooperative run-queue, then
-/// tear down AOT scheduler state. Returns 0 on clean completion.
+/// tear down AOT scheduler state. Returns the program's exit status: 0 when
+/// main completed, 1 when it failed.
 /// # Safety
 /// `proc`, `main_fp`, `main_trampoline_addr` must be valid pointers produced
 /// by AOT codegen and `fz_aot_setup`; `main_halt_kind` must match the entry
@@ -581,28 +582,15 @@ pub extern "C" fn fz_aot_run_main(
 
     aot_run_queue_loop(sched);
 
-    // A fault-halted main must not report success (fz-bdk). The exit kind is
-    // set by the fault trap itself (`fz_exit_fault`); read it before teardown
-    // frees the process, and name the reason atom on stderr like the other
-    // drivers do.
-    let fault = process.exit_fault.map(|atom| {
-        process
-            .node
-            .atom_name(atom)
-            .unwrap_or_else(|| "unknown_fault".to_string())
-    });
+    // A failed main process is the program's failure; its line is already on
+    // stderr. Read the flag before teardown frees the process.
+    let failed = process.failed;
 
     // Teardown: reclaim the leaked scheduler box. Its drop frees the task
     // table (and every process heap), the timer wheel, and the run-queue in
     // one shot — replacing the per-thread-local clears the old code ran here.
     drop(unsafe { Box::from_raw(sched) });
-    match fault {
-        Some(reason) => {
-            eprintln!("fz: {reason}: the main process halted through a fault trap");
-            1
-        }
-        None => 0,
-    }
+    i32::from(failed)
 }
 
 /// fz-4mk.3b — register the `fz_drain_dtor_entry` shim address. Called from

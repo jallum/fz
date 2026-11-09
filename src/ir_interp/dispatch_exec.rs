@@ -762,6 +762,12 @@ impl<'a> Dispatch<'a> {
                             extern_fn.symbol
                         )));
                     }
+                    ExternCallValue::ProcessFailed => {
+                        return Err(DispatchStop::broken(format!(
+                            "guard extern `{}` failed the process, which a guard never calls",
+                            extern_fn.symbol
+                        )));
+                    }
                 }
             }
         })

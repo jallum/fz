@@ -142,7 +142,7 @@ surfaced as `Deferred` on that leg because compiler2 does not run `test`
 fixtures through an AOT-built binary — there is no single `main/0` to build
 against, since each discovered test is its own root.
 
-Each runner captures a `Ran { success, stdout, diagnostics }` with *no* verdict
+Each runner captures a `Ran { status, stdout, diagnostics }` with *no* verdict
 applied. `check()` then applies the fixture's `expect:` policy in one place, so
 the pass/fail rule is not re-derived per path.
 
@@ -156,10 +156,13 @@ no stdout (or no diagnostics). Any nonzero exit fails before output is compared.
 
 A fixture flips that contract to pin a *negative* claim:
 
-- `expect: abort` — a run-time abort. The path passes when the process exits
-  *nonzero* and its stderr **contains** the `expected.stderr` golden as a
-  substring. A substring (not exact match) keeps per-path prefixes and absolute
-  source paths out of the pin.
+- `expect: abort` — a run-time abort: the main process fails. The path passes
+  when the process exits *1* and its stderr **contains** the `expected.stderr`
+  golden as a substring. A substring (not exact match) keeps per-path prefixes
+  and absolute source paths out of the pin. An abort fixture's oracle prints
+  Elixir's `** (Name) message` line with `Exception.format_banner/3`, so
+  `expected.txt` holds the line Elixir prints and `expected.stderr` the line fz
+  prints.
 - `expect: diagnostic` — a compile-time rejection. Same nonzero-exit
   requirement, but when the fixture declares `diagnostic.code`, the matrix
   reruns the path with telemetry and asserts a `["fz","diag","error"]` event
@@ -402,9 +405,9 @@ Behavioural fixtures call the same runtime library that user programs do
 (`Kernel.assert`/`refute`/`panic`, `Enum`, `Enumerable`, `Process`), so the
 assertion machinery a fixture uses is itself fz source under `lib/`.
 `assert`/`refute` route a failure through
-`Kernel.panic`, whose private `fz_panic` foreign declaration reports the reason
-through the execution context and has a `never` return contract; that is why a
-failed assertion is a nonzero exit on every path without requiring the
-interpreter to abort its host. A fixture that exercises a runtime-library
+`Kernel.panic`, whose private `fz_panic` foreign declaration prints the failure
+line through the execution context and has a `never` return contract; that is
+why a failed assertion exits 1 on every path without requiring the interpreter
+to abort its host (see [process failure](process-failure.md)). A fixture that exercises a runtime-library
 function both proves the function and (via allocation goldens) pins its
 allocation floor.

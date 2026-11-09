@@ -1889,7 +1889,7 @@ fn native_enum_every_functions_reject_negative_intervals_consistently() {
         assert!(out.stdout.is_empty(), "Enum.{name} should not write stdout");
         assert_eq!(
             String::from_utf8_lossy(&out.stderr),
-            "fz panic: \"Enum.OutOfBoundsError\"\n",
+            "** (ErlangError) Erlang error: \"Enum.OutOfBoundsError\"\n",
             "Enum.{name} should use the established out-of-bounds failure"
         );
 

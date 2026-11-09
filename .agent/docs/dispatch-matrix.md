@@ -1180,17 +1180,14 @@ through a copied body-id table. Dispatch misses are unreachable for closed
 receiver unions and lower to an explicit halt/trap path; there is no residual
 protocol-stub outcome in the matrix.
 
-A fired trap is reported at the process-exit boundary as a fault, not unified
-with normal completion. Compiler2's `Term::Halt` codegen (the only producer is
-the fault traps: `function_clause`, `match_error`, unreachable-control) calls
-`fz_exit_fault` after recording the reason atom into `halt_value`, setting
-`Process.exit_fault = Some(atom)`. Normal completion never touches the field,
-and drivers never infer fault-ness from `halt_value` (a program may
-legitimately return a fault-shaped atom). `Compiler2::run_root_jit` reads the
-root task's `exit_fault` after `run_until_idle` and returns the reason as an
-`Err`; `fz_aot_run_main` reads it before teardown, names the reason on stderr,
-and exits nonzero. The backend interpreter needs no marker — its trap is a
-Rust `Err` that already propagates to the CLI.
+A fired trap fails the process through the one failure route, not unified with
+normal completion. Compiler2 lowering emits `Term::Halt` only for the fault
+traps (`function_clause`, `match_error`, unreachable-control); native codegen
+lowers it to `fz_panic` with the reason atom, and the interpreter's clause miss
+and `BackendTail::Halt` do the same through `fail_with_atom`. The process prints
+`** (ErlangError) Erlang error: :function_clause` and ends; drivers read
+`Process.failed`, never `halt_value` (a program may legitimately return a
+fault-shaped atom). See [process failure](process-failure.md).
 
 `pattern_dispatch_from_source` is the source-pattern producer. It consumes the
 AST-facing `SourcePatternRows`, extracts positive proof paths into `Order::Source`

@@ -1689,6 +1689,10 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "halt_value");
         out.push(':');
         push_i64(out, process.halt_value);
+        out.push(',');
+        write_str_lit(out, "failed");
+        out.push(':');
+        out.push_str(if process.failed { "true" } else { "false" });
     } else if let Some(code) = opaque.downcast_ref::<crate::source::SourceVersion>() {
         out.push(',');
         write_str_lit(out, "source_version");

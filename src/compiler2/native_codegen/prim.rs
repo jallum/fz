@@ -9,7 +9,7 @@ use crate::fz_ir::{
 };
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
-    self, BlockArg, InstBuilder, MemFlags,
+    self, BlockArg, InstBuilder, MemFlags, TrapCode,
     condcodes::{FloatCC, IntCC},
     types,
 };
@@ -29,6 +29,7 @@ use fz_runtime::ir_runtime::{
     fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref,
     fz_value_eq_widening_ref,
 };
+use fz_runtime::process_abi::PROCESS_FAILED_OFFSET;
 use std::collections::HashMap;
 use target_lexicon::{Architecture, OperatingSystem, Triple};
 
@@ -1846,6 +1847,9 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         None => arg_vals,
     };
     let inst = body.b.ins().call(fref, &call_args);
+    if ret == ExternTy::Never {
+        end_failed_process(body);
+    }
     if returns_value {
         let raw = body.b.inst_results(inst)[0];
         // The declared RETURN says what came back, and each wire type has its
@@ -1874,6 +1878,25 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         return Ok(LowerOut::Strict(strict_const_value(body.b, AnyValue::nil_atom())));
     }
     Ok(LowerOut::DeadUnit)
+}
+
+/// A `Never` extern has failed the process by the time it returns: the
+/// process ends here, through the normal return to the scheduler. An extern
+/// that returns without marking the process failed broke its declaration,
+/// and that traps rather than running on. Code after the call is unreachable
+/// and lands in a block nothing enters.
+fn end_failed_process<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>) {
+    let process = body.process_arg();
+    let failed = body
+        .b
+        .ins()
+        .uload8(types::I64, MemFlags::trusted(), process, PROCESS_FAILED_OFFSET);
+    body.b.ins().trapz(failed, TrapCode::user(1).unwrap());
+    let done = body.b.ins().iconst(types::I64, 0);
+    body.b.ins().return_(&[done]);
+    let after = body.b.create_block();
+    body.b.switch_to_block(after);
+    body.b.seal_block(after);
 }
 
 pub(crate) fn lower_extern_pair<M: cranelift_module::Module>(

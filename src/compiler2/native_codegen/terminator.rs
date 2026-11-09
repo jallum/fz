@@ -12,10 +12,9 @@ use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
 use fz_runtime::any_value::AnyValue;
+use fz_runtime::failure::fz_panic;
 use fz_runtime::heap::Schema;
-use fz_runtime::ir_runtime::{
-    fz_exit_fault, fz_receive_park_matched, fz_yield_mid_flight_report, fz_yield_slow_path_begin,
-};
+use fz_runtime::ir_runtime::{fz_receive_park_matched, fz_yield_mid_flight_report, fz_yield_slow_path_begin};
 use fz_runtime::process::YIELD_REASON_REDUCTIONS;
 use fz_runtime::process_abi::PROCESS_REDUCTIONS_REMAINING_OFFSET;
 use fz_runtime::scheduler_hooks::YIELD_PTR;
@@ -387,7 +386,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
         Term::If {
             cond, then_b, else_b, ..
         } => emit_if(body, var_env, block_map, caller_fn_id, blk.id, cond, then_b, else_b),
-        Term::Halt(v) => emit_halt(body, var_env, is_native, host_ctx, v),
+        Term::Halt(v) => emit_halt(body, var_env, v),
         Term::ReturnLanes(lanes) => emit_return_lanes(
             body,
             env,
@@ -565,36 +564,19 @@ fn emit_if<M: cranelift_module::Module>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// `Term::Halt` is a fault trap (function_clause, match_error, an unreachable
+/// control edge): the process fails with the trap's reason, exactly as a
+/// `panic` of that reason would, and returns to the scheduler.
 fn emit_halt<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    is_native: bool,
-    host_ctx: Option<ir::Value>,
     v: &Var,
 ) -> Result<(), CodegenError> {
-    let _ = host_ctx;
-    let binding = *var_env.get(&v.0).expect("unbound halt val");
-    emit_halt_for_binding(body, var_env, v.0, binding);
-    // Compiler2 lowering emits `Term::Halt` only from fault traps
-    // (`halt_with_atom` / `assert_truthy`: function_clause, match_error,
-    // unreachable-control) — normal completion delivers through halt
-    // continuations instead. Mark the exit as a fault at this one site so
-    // drivers can distinguish it from success without inspecting the value.
+    let reason = body.any_ref_for_var(var_env, v.0);
     let process = body.process_arg();
-    runtime_call!(body, fz_exit_fault, [process]);
-    if is_native {
-        // fz_halt already recorded process.halt_value; the
-        // returned bits are unobservable but the sig requires
-        // a typed return. iconst(0) also covers dead-code halt
-        // blocks (match_error etc.) without depending on val's repr.
-        let zero = body.b.ins().iconst(types::I64, 0);
-        body.b.ins().return_(&[zero]);
-    } else {
-        // Uniform fn: trampoline sentinel is null.
-        let null = body.b.ins().iconst(types::I64, 0);
-        body.b.ins().return_(&[null]);
-    }
+    runtime_call!(body, fz_panic, [process, reason]);
+    let done = body.b.ins().iconst(types::I64, 0);
+    body.b.ins().return_(&[done]);
     Ok(())
 }
 

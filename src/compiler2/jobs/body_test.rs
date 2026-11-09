@@ -1,9 +1,9 @@
 use super::super::drive::Job;
 use super::super::drive_harness::{Drive, Settled, module_name};
-use super::super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+use super::super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission, RunFailure};
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 
-fn run(source_name: &str, source: &str) -> (Result<i64, String>, Capture) {
+fn run(source_name: &str, source: &str) -> (Result<i64, RunFailure>, Capture) {
     let tel = ConfiguredTelemetry::new();
     let diagnostics = Capture::new();
     diagnostics.install(&tel, &["fz", "diag"]);

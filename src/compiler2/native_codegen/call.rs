@@ -3,30 +3,6 @@
 use super::*;
 use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlags, condcodes::IntCC, types};
 use fz_runtime::heap::Schema;
-use std::collections::HashMap;
-
-pub(crate) fn emit_halt_for_binding<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    var: u32,
-    binding: CodegenValue,
-) {
-    match binding.repr() {
-        ArgRepr::RawInt => {
-            body.halt_implicit(ArgRepr::RawInt, binding.value());
-        }
-        ArgRepr::RawF64 => {
-            body.halt_implicit(ArgRepr::RawF64, binding.value());
-        }
-        ArgRepr::RawAtom => {
-            body.halt_implicit(ArgRepr::RawAtom, binding.value());
-        }
-        ArgRepr::ValueRef | ArgRepr::Condition => {
-            let value_ref = body.any_ref_for_var(var_env, var);
-            body.halt_implicit(ArgRepr::ValueRef, value_ref);
-        }
-    }
-}
 
 pub(crate) fn emit_halt_from_codegen_value<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,

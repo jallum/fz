@@ -25,3 +25,12 @@ fn yield_reasons_offset_matches_process_layout() {
 
     assert_eq!(PROCESS_YIELD_REASONS_OFFSET, (field - base) as i32);
 }
+
+#[test]
+fn failed_offset_matches_process_layout() {
+    let process = process();
+    let base = (&process as *const Process).addr();
+    let field = (&process.failed as *const bool).addr();
+
+    assert_eq!(PROCESS_FAILED_OFFSET, (field - base) as i32);
+}

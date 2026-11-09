@@ -387,7 +387,7 @@ node once:
 An extern whose return is `never` fails the guard and is not called. That is
 decided by the declared return, not by the name `panic`: `Kernel.panic/1` reaches
 `fz_panic :: never`, so a helper clause `def map_size(_), do: panic(:badmap)`
-makes the guard false for a non-map and aborts the process in a body. A
+makes the guard false for a non-map and fails the process in a body. A
 function's domain is therefore written once, in its Kernel heads, and the extern
 under it is only called inside the domain.
 
