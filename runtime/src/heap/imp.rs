@@ -91,7 +91,7 @@ impl Heap {
             capacity > 0 && capacity.is_multiple_of(16),
             "capacity must be 16-aligned"
         );
-        let block_size = pick_block_capacity(capacity);
+        let block_size = pick_block_capacity(capacity.max(SIZE_TABLE[0]));
         let block_start = pool_alloc(block_size);
         let block_end = unsafe { block_start.add(block_size) };
         Self {

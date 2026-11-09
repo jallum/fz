@@ -106,10 +106,13 @@ exactly large enough for the object when that is more, records the old block in
 scheduler yield to remain total.
 
 `SIZE_TABLE` lists the capacities the block pool recycles, from 1 KiB to about
-7 MiB (32 entries). A block above the table is allocated at the object's size rounded up to
-16 bytes and is returned to the system allocator, not the pool, when it is
-released; `pool_outstanding_blocks` counts pooled blocks only. Such an object is
-part of `bytes_used` and is copied by Cheney like any other, so to-space
+7 MiB (32 entries). A tip starts at the first entry and climbs the table. A
+block outside the table's range is exact: `pick_block_capacity` returns the
+request rounded up to 16 bytes, whether the request is below the first entry
+or above the last. An exact block is allocated at that size and is returned to
+the system allocator, not the pool, when it is released;
+`pool_outstanding_blocks` counts pooled blocks only. An object above the table
+is part of `bytes_used` and is copied by Cheney like any other, so to-space
 grows past the table to hold it.
 
 ## The gift window
@@ -119,8 +122,9 @@ copy will allocate: it walks the same kinds under the same ownership test and
 the same sharing as `deep_copy_any_value_ref`, so an object reached twice is
 counted once, and each object is the size `strict_object_size` states for its
 source. `Heap::begin_gift(measured_bytes)` sets the current tip aside and
-installs one fresh block of `pick_block_capacity(measured_bytes)`: a table
-entry, or an exact block above the table. The copy allocates through
+installs one fresh block of `pick_block_capacity(measured_bytes)`: an exact
+block of the measured bytes below the table, a table entry within it, and an
+exact block above it. The copy allocates through
 `alloc_kind` into that block and cannot overflow it. `Heap::end_gift` asserts
 the block's fill is exactly the measured bytes, turns the block and the MSO
 stubs produced since the window opened

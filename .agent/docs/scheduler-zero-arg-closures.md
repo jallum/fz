@@ -204,7 +204,7 @@ receiver's lock for the pending-match decision and the in-queue.
 
 `delivery` is declared before `heap` in `Process`, so a process dropped with
 gifts still queued drops them first: each `GiftSegment` returns its block to
-the pool (or the allocator, for an exact block) and releases its stubs. A receiver left parked
+the pool (a table-sized block) or the allocator (an exact block) and releases its stubs. A receiver left parked
 when the run ends is torn down this way, and `fz.runtime.run_ended` reports that
 the pool got every block back ([runtime telemetry](runtime-telemetry.md)). With
 one worker the lock is never contended.

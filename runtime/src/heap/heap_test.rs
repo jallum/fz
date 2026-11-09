@@ -1521,12 +1521,28 @@ fn size_table_tail_is_geometric_ish() {
 
 #[test]
 fn pick_block_capacity_is_the_smallest_table_entry_that_fits() {
-    assert_eq!(pick_block_capacity(0), SIZE_TABLE[0]);
     assert_eq!(pick_block_capacity(1024), SIZE_TABLE[0]);
     assert_eq!(pick_block_capacity(1025), SIZE_TABLE[1]);
     assert_eq!(pick_block_capacity(SIZE_TABLE[5]), SIZE_TABLE[5]);
     assert_eq!(pick_block_capacity(SIZE_TABLE[5] + 1), SIZE_TABLE[6]);
     assert_eq!(pick_block_capacity(TABLE_CEILING), TABLE_CEILING);
+}
+
+#[test]
+fn pick_block_capacity_below_the_table_is_the_request_rounded_to_16() {
+    assert_eq!(pick_block_capacity(16), 16);
+    assert_eq!(pick_block_capacity(17), 32);
+    assert_eq!(pick_block_capacity(1000), 1008);
+    assert_eq!(pick_block_capacity(SIZE_TABLE[0] - 1), SIZE_TABLE[0]);
+    assert_eq!(pick_block_capacity(0), 16, "a block is at least one 16-byte slot");
+}
+
+#[test]
+fn a_heap_built_with_a_small_capacity_still_has_a_tip_at_the_first_table_entry() {
+    for capacity in [16, 64, 1008] {
+        let h = Heap::new(capacity, fresh_registry());
+        assert_eq!(h.block_size, SIZE_TABLE[0], "capacity {capacity}");
+    }
 }
 
 #[test]

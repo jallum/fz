@@ -345,16 +345,18 @@ stub that points into the <a href="#shared-zone">shared zone</a>.</p>
 <h3>Block pool and block capacities</h3>
 
 <p>Blocks come from a per-thread pool sized by a Fibonacci-then-geometric size
-table (1 KiB up to ~7 MiB). When a block fills before GC fires, a new (larger)
+table (1 KiB up to ~7 MiB); a heap's tip starts at the first entry and climbs
+the table. When a block fills before GC fires, a new (larger)
 block is allocated and the old one joins <code>blocks</code>, recorded
 with its fill and capacity. All parked blocks are reclaimed at the next
 GC.</p>
 
-<p>The table has no ceiling on what a block may be. An object larger than the
-last table entry gets a block of exactly its size (rounded up to 16 bytes); that
-block comes from the system allocator, not the pool, and goes back to it when
-the collection that copies the object out releases the block. Such an object is
-copied like any other.</p>
+<p>The table has neither a floor nor a ceiling on what a block may be. A
+request below the first entry or above the last gets a block of exactly its size
+(rounded up to 16 bytes); that block comes from the system allocator, not the
+pool, and goes back to it when it is released. An object larger than the last
+entry is copied like any other when the collection that reaches it releases the
+block.</p>
 
 <h3 id="the-gift-window">The gift window</h3>
 
@@ -367,7 +369,8 @@ bound values, inside one, and the segment waits on the receiver's
 set the way the copy will and returns the bytes it will allocate, counting
 shared structure once. <code>Heap::begin_gift</code> takes that figure, sets the
 current tip aside and installs one block of the smallest capacity that holds it
-(an exact block when it exceeds the table). The copy runs through the ordinary
+(an exact block when it is below or above the table, so a 16-byte message
+occupies a 16-byte block). The copy runs through the ordinary
 bump path and fills the block without overflowing it. <code>Heap::end_gift</code>
 asserts the block's fill is exactly the measured bytes, turns the block into a
 <code>GiftSegment</code> and puts

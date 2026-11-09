@@ -119,7 +119,8 @@ pool_cached_blocks }`, all block counts of the thread's block pool. Outstanding
 is the count `pool_alloc` has handed out minus the count `pool_free` has taken
 back (`heap::pool_outstanding_blocks`), sampled when the run began and again
 once every process has been torn down; `pool_cached_blocks` is the blocks
-resting in the pool's free lists. The compiler's own heaps live on the same
+resting in the pool's free lists. Exact blocks (a gift below or above the
+table) belong to the system allocator and appear in neither count. The compiler's own heaps live on the same
 thread for the whole run, so the absolute outstanding count is never zero. The
 run's guarantee is `pool_outstanding_after_run == pool_outstanding_before_run`:
 it returned every block it took. `JsonlBackend` renders

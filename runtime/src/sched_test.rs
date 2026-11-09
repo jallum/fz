@@ -371,8 +371,8 @@ fn a_dropped_receiver_returns_its_pending_gifts_to_the_pool_and_releases_their_b
     drop(task);
     assert_eq!(
         pool_total_cached_blocks(),
-        cached_before + 3,
-        "the receiver's own block and both gift blocks are back in the pool"
+        cached_before + 1,
+        "the receiver's own block is back in the pool; both exact gift blocks went to the system allocator"
     );
     assert_eq!(shared_refs(&witness), 2, "the dropped gift released its reference");
     drop(sender);

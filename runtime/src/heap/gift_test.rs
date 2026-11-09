@@ -87,6 +87,25 @@ fn gift_one_cons(sender: &mut Heap, value: i64) -> (GiftSegment, u64) {
 }
 
 #[test]
+fn a_gift_below_the_table_occupies_an_exact_block_of_its_measured_size() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let pooled_before = pool_outstanding_blocks();
+    for (measured, block) in [(16, 16), (64, 64), (1008, 1008)] {
+        sender.begin_gift(measured);
+        assert_eq!(sender.block_size, block, "{measured} measured bytes");
+        let _ = sender.alloc(measured);
+        let segment = sender.end_gift();
+        assert_eq!(segment.fill_bytes(), measured);
+        assert_eq!(
+            pool_outstanding_blocks(),
+            pooled_before,
+            "an exact block is not a pooled block"
+        );
+    }
+    assert_eq!(sender.block_size, SIZE_TABLE[0], "the tip is untouched by the gifts");
+}
+
+#[test]
 fn end_gift_restores_the_senders_tip_and_leaves_its_earlier_allocations_untouched() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
     let kept = alloc_int_list_cons(&mut sender, 42, EMPTY_LIST);
@@ -163,8 +182,8 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
     assert_eq!(shared_refs(&witness), 2, "the refcount is unchanged by the move");
     assert_eq!(
         pool_total_cached_blocks(),
-        2,
-        "the receiver's old tip and the gift block are back in the pool"
+        1,
+        "the receiver's old tip is back in the pool; the exact gift block went to the system allocator"
     );
     drop(receiver);
     assert_eq!(
@@ -281,11 +300,6 @@ fn thousands_of_small_unread_gifts_leave_the_receivers_capacity_unchanged_after_
         receiver.graft(segment);
     }
     let adopted_fill = gifts as usize * 16;
-    let adopted_capacity = gifts as usize * SIZE_TABLE[0];
-    assert!(
-        adopted_capacity > receiver.block_size,
-        "by capacity the gifts outweigh the whole heap; by fill they fit beside the live list"
-    );
     assert!(own_live + adopted_fill < receiver.block_size);
     assert_eq!(
         receiver.bytes_used(),
@@ -305,8 +319,8 @@ fn thousands_of_small_unread_gifts_leave_the_receivers_capacity_unchanged_after_
     assert!(receiver.blocks.is_empty());
     assert_eq!(
         pool_total_cached_blocks(),
-        gifts as usize + 1,
-        "every gift block and the old tip went back to the pool"
+        1,
+        "the old tip went back to the pool; each exact gift block went to the system allocator"
     );
     drop(receiver);
     drop(sender);
@@ -376,7 +390,11 @@ fn dropping_an_ungrafted_segment_returns_its_blocks_and_releases_its_stubs() {
     let _ = sender.alloc(32);
     let segment = sender.end_gift();
     assert_eq!(segment.block_count(), 1);
-    assert_eq!(pool_outstanding_blocks(), pooled_before + 1, "the gift block is pooled");
+    assert_eq!(
+        pool_outstanding_blocks(),
+        pooled_before,
+        "the gift block is exact, below the table, and not pooled"
+    );
     assert_eq!(shared_refs(&witness), 2);
     assert_eq!(pool_total_cached_blocks(), 0);
 
@@ -384,8 +402,8 @@ fn dropping_an_ungrafted_segment_returns_its_blocks_and_releases_its_stubs() {
 
     assert_eq!(
         pool_total_cached_blocks(),
-        1,
-        "the pooled gift block is back in the pool"
+        0,
+        "an exact gift block goes back to the system allocator, not the pool"
     );
     assert_eq!(
         pool_outstanding_blocks(),
