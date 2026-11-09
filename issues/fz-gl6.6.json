@@ -4,6 +4,7 @@
     "fz-gl6.5"
   ],
   "blocks": [
+    "fz-gl6.10",
     "fz-gl6.7"
   ],
   "created": "2026-11-08T22:51:54Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "A huge object parks on blocks and leaves the tip alone",
   "type": "task",
-  "updated_at": "2026-11-08T22:51:55Z"
+  "updated_at": "2026-11-09T23:09:56Z"
 }
