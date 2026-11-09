@@ -9,9 +9,15 @@
   "id": "fz-sc8.10",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Proposal page /Users/j5n/Workspace/fz-sc8.10.html (2026-11-08, awaiting approval; artifact https://claude.ai/artifact/2TLaf1WDZcJgjj2Fng81ys): inspect/2 in lib/kernel.fz over fz_inspect(any, any); inspect: 1, 2 join the prelude import; renderer carries Elixir's limit budget (default 100, container_each rules), atom quoting classes, one keyword-key speller for lists and maps (%{a: 1}), ~c charlists (ascii_printable?), n::size(k) bitstrings; unknown options and bad limits raise ArgumentError (louder than Elixir, stated). Struct form stays .77's; closures stay #fn\u003c\u003e. 14 expected files re-bless %{:a =\u003e 1} -\u003e %{a: 1}. Fixtures from 01015. Map order facts: string keys sort bytewise on both sides (distiller input max 12 keys, all strings), atom/numeric/large-map orders differ and fixtures avoid them. Rest of Inspect.Opts proposed as one P3 ticket.",
+      "timestamp": "2026-11-09T00:50:15Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "inspect/1,2 returns Elixir's rendering, with limit:",
   "type": "feature",
-  "updated_at": "2026-11-08T16:40:11Z"
+  "updated_at": "2026-11-09T00:50:15Z"
 }
