@@ -4,14 +4,15 @@
     "fz-gl6.2"
   ],
   "blocks": [],
+  "closed_at": "2026-11-09T01:19:26Z",
   "created": "2026-11-08T16:12:31Z",
   "description": "Found while building fz-sc8.8. Reproduces on b870f5a87, so it predates .8.\n\nThree resources with a printing destructor are made in main; twelve small binaries are then built and concatenated and the result printed; main returns :before. `fz2 interp` prints the concatenation and then `dtor:30`, `dtor:20`, `dtor:10`. `fz2 run` prints the concatenation and no `dtor:` line at all, exit 0. With fewer allocations before the return, run prints the destructors too.\n\nSurfaced as `matrix::resource_lifecycle::run` on the first .8 build (when `fz_io_write` was declared `:: :ok` and boxed one atom per print); with `:: unit` the fixture is green again, so the bug is latent, not fixed. Repro: session scratchpad p8/bug_jit_resource_dtor_lost_after_allocation.fz.\n\nRoot cause (2026-11-08, confirmed on fz-a9y head b7b792b01): fz_make_resource installs fz_resource_destructor_noop as the C destructor and keeps the fz closure on the stub. mso_sweep releases every dead stub through fz_resource_release, which calls the noop, so a resource freed by a collection never runs its fz closure; only the exit-time mso_drop_all_deferred queues closures. The JIT's run_quantum collects an Exited process (boundary_maintenance runs before the state check) and the AOT dispatch does not, which is why this repro loses the destructors on run only. A second probe (resource dropped inside a function, then 20,000 list allocations) loses the destructor on both run and build; interp prints it only because the interpreter never collects. The fix is fz-gl6.2 (one dead-resource path that queues the closure, one post-quantum step on the scheduling core), which blocks this ticket and closes it with its fixture.",
   "id": "fz-sc8.98",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "A JIT process skips its resource destructors once enough heap has been allocated",
   "type": "bug",
-  "updated_at": "2026-11-08T22:52:24Z"
+  "updated_at": "2026-11-09T01:19:26Z"
 }
