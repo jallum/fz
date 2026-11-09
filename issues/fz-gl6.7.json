@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-gl6.6"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-gl6.8"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "A gift is a survivor: the trigger counts allocation since the last collection against the live baseline",
   "type": "task",
-  "updated_at": "2026-11-08T23:57:25Z"
+  "updated_at": "2026-11-09T23:09:56Z"
 }
