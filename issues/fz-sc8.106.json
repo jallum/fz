@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-09T23:18:12Z",
+  "description": "fz-sc8.15 builds MapSet with new/0,1, put/2, delete/2, member?/2, size/1, to_list/1 and its Enumerable and Collectable impls, which is what the distiller uses (approved page /Users/j5n/Workspace/fz-sc8.15.html). The rest of Elixir's MapSet surface is not built: union/2, intersection/2, difference/2, symmetric_difference/2, subset?/2, disjoint?/2, equal?/2, filter/2, reject/2, new/2, split_with/2. Each is short over Map; match Elixir on interp, run and build with oracle fixtures. Inspect prints a set as MapSet.new([1, 2]) in Elixir; ours prints the struct, so it belongs here or with the struct-rendering ticket once that lands.",
+  "id": "fz-sc8.106",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "MapSet's remaining API: union, intersection, difference, symmetric_difference, subset?, disjoint?, equal?, filter, reject, new/2, and Inspect as MapSet.new([...])",
+  "type": "feature",
+  "updated_at": "2026-11-09T23:18:12Z"
+}
