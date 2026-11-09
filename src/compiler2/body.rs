@@ -4,7 +4,7 @@
 //! pattern/destructure steps, and compiler-generated lambda definitions, but
 //! it stops above old-world CPS IR and planner concerns.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use crate::ast::{BinOp, BitType, Endian, TypeExprBody, UnOp};
@@ -53,7 +53,7 @@ impl CallSiteId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ControlEntryId(u32);
 
 impl ControlEntryId {
@@ -416,6 +416,18 @@ pub enum LoweredBody {
 }
 
 impl LoweredBody {
+    /// Adopt the plan each `case` an activation reached is left with by that
+    /// activation's types. A `case` it never reached keeps its plan.
+    pub(crate) fn adopt_trimmed_plans(&mut self, plans: &BTreeMap<ControlEntryId, Rc<PatternDispatchPlan<Ty>>>) {
+        let Self::Clauses { entries, .. } = self;
+        for (entry, plan) in plans {
+            let LoweredTail::Dispatch { dispatch, .. } = &mut entries[entry.as_u32() as usize].tail else {
+                unreachable!("a trimmed case plan belongs to a dispatch entry");
+            };
+            dispatch.adopt_trimmed(plan.clone());
+        }
+    }
+
     /// The one way to build a clause body: the tables are recorded here, from
     /// the steps themselves, so they cannot disagree with what they index.
     pub(crate) fn clauses(clauses: Vec<LoweredClause>, entries: Vec<LoweredEntry>, generated: Vec<FunctionId>) -> Self {
@@ -617,7 +629,9 @@ impl<V> Default for DispatchBindings<V> {
 pub struct ControlDispatch {
     pub(crate) plan: Rc<PatternDispatchPlan<Ty>>,
     pub(crate) outcomes: Vec<OutcomeEdge>,
-    pub(crate) miss_entry: ControlEntryId,
+    /// Where a subject that no outcome claims goes. Present exactly when the
+    /// plan has a decision that ends with no outcome.
+    pub(crate) miss_entry: Option<ControlEntryId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -659,8 +673,30 @@ impl ControlDispatch {
         Self {
             plan,
             outcomes,
-            miss_entry,
+            miss_entry: Some(miss_entry),
         }
+    }
+
+    /// Every entry this dispatch can hand control to: the entry of each
+    /// outcome, then the miss.
+    pub(crate) fn successors(&self) -> impl Iterator<Item = ControlEntryId> + '_ {
+        self.outcomes.iter().map(|edge| edge.target).chain(self.miss_entry)
+    }
+
+    pub(crate) fn successors_mut(&mut self) -> impl Iterator<Item = &mut ControlEntryId> {
+        self.outcomes
+            .iter_mut()
+            .map(|edge| &mut edge.target)
+            .chain(self.miss_entry.as_mut())
+    }
+
+    /// Adopt the plan an activation's types leave. Without a decision that
+    /// ends with no outcome, there is no miss to go to.
+    pub(crate) fn adopt_trimmed(&mut self, plan: Rc<PatternDispatchPlan<Ty>>) {
+        if !plan.can_fail() {
+            self.miss_entry = None;
+        }
+        self.plan = plan;
     }
 
     pub(crate) fn outcome(&self, outcome: crate::dispatch_matrix::OutcomeId) -> &OutcomeEdge {

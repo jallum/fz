@@ -3,9 +3,10 @@ use self::source::{collect_pinned_names, direct_bitfield_bindings};
 use super::DispatchMatrix;
 use super::{
     BitstringEndian, BitstringFieldKind, BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue,
-    DispatchCompileError, DispatchGraph, DispatchMatrixBuilder, DispatchMatrixError, EdgeEvidence, GroundValue,
-    GuardId, GuardLeaf, OutcomeId, OutcomeMultiplicity, PinnedValueId, PlanInputs, PreparedKeyId, ProjectionKind,
-    Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix, demand::DispatchDemand,
+    DispatchCompileError, DispatchGraph, DispatchMatrixBuilder, DispatchMatrixError, EdgeEvidence, GraphNodeId,
+    GroundValue, GuardId, GuardLeaf, LiveEdges, OutcomeId, OutcomeMultiplicity, PinnedValueId, PlanInputs,
+    PreparedKeyId, ProjectionKind, Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix,
+    demand::DispatchDemand,
 };
 use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned, Var};
 use crate::function_surface::CallableSurface;
@@ -76,6 +77,46 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
             panic!("a bitstring shape must name exact extraction subjects");
         };
         extraction
+    }
+
+    /// Whether some decision of this plan ends with no outcome.
+    pub(crate) fn can_fail(&self) -> bool {
+        self.graph.can_fail()
+    }
+
+    /// Whether this plan wins its one outcome without asking anything.
+    pub(crate) fn is_direct_outcome(&self) -> bool {
+        self.graph.is_outcome_at_root()
+    }
+
+    /// This plan with every test `live` narrows replaced by the one child it
+    /// keeps, or `None` when no test a decision can reach is narrowed. Subject
+    /// ids, outcome ids, guards and pins are the plan's own, so everything that
+    /// names them reads the trimmed plan unchanged.
+    pub(crate) fn trimmed(&self, live: &impl Fn(GraphNodeId) -> LiveEdges) -> Option<Self>
+    where
+        TypeHandle: Clone + Eq,
+    {
+        let pinned = self.pinned.iter().map(|pin| pin.input).collect::<Vec<_>>();
+        let guard_leaves = self.guards.iter().map(PatternGuardExpr::leaves).collect::<Vec<_>>();
+        let graph = self.graph.trimmed(
+            PlanInputs {
+                count: self.input_count,
+                pinned: &pinned,
+                guard_leaves: &guard_leaves,
+            },
+            live,
+        )?;
+        Some(Self {
+            graph,
+            #[cfg(test)]
+            source_matrix: self.source_matrix.clone(),
+            input_count: self.input_count,
+            outcomes: self.outcomes.clone(),
+            guards: self.guards.clone(),
+            pinned: self.pinned.clone(),
+            prepared_keys: self.prepared_keys.clone(),
+        })
     }
 
     pub(crate) fn map_type_handle<MappedHandle>(

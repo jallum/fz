@@ -500,6 +500,84 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
         self.nodes.get(id.0 as usize)
     }
 
+    /// The nodes a decision can pass through, root first, each once.
+    pub(crate) fn reachable(&self) -> Vec<GraphNodeId> {
+        let mut seen = vec![false; self.nodes.len()];
+        let mut order = Vec::new();
+        let mut pending = vec![self.root];
+        while let Some(id) = pending.pop() {
+            if std::mem::replace(&mut seen[id.0 as usize], true) {
+                continue;
+            }
+            order.push(id);
+            if let Some(DispatchNode::Test { on_match, on_miss, .. }) = self.node(id) {
+                pending.push(on_miss.target);
+                pending.push(on_match.target);
+            }
+        }
+        order
+    }
+
+    /// How many questions a decision can ask.
+    pub(crate) fn test_count(&self) -> usize {
+        self.reachable()
+            .into_iter()
+            .filter(|id| matches!(self.node(*id), Some(DispatchNode::Test { .. })))
+            .count()
+    }
+
+    /// Whether some decision ends with no outcome.
+    pub(crate) fn can_fail(&self) -> bool {
+        self.reachable()
+            .into_iter()
+            .any(|id| matches!(self.node(id), Some(DispatchNode::Fail)))
+    }
+
+    /// Whether the first thing a decision does is win an outcome.
+    pub(crate) fn is_outcome_at_root(&self) -> bool {
+        matches!(self.node(self.root), Some(DispatchNode::Outcome { .. }))
+    }
+
+    /// This graph with every test that `live` narrows replaced by the one
+    /// child it keeps, or `None` when `live` narrows no test a decision can
+    /// reach.
+    ///
+    /// The graph is a DAG that shares one fail among its tests, so it is
+    /// rebuilt children first, once per old node, through the one graph
+    /// constructor. Node ids are compacted. Subjects and outcomes are kept as
+    /// they are, so nothing that names one has to change. A fail or an arm no
+    /// surviving test reaches is left out, and the builder charges the inputs
+    /// only what the surviving questions ask.
+    pub(crate) fn trimmed(
+        &self,
+        inputs: PlanInputs<'_>,
+        live: &impl Fn(GraphNodeId) -> LiveEdges,
+    ) -> Option<DispatchGraph<TypeHandle>>
+    where
+        TypeHandle: Clone + Eq,
+    {
+        let narrows = self
+            .reachable()
+            .into_iter()
+            .any(|id| matches!(self.node(id), Some(DispatchNode::Test { .. })) && live(id) != LiveEdges::Both);
+        if !narrows {
+            return None;
+        }
+        let mut rebuild = Rebuild {
+            old: self,
+            live,
+            builder: DispatchGraphBuilder::typed(self.subjects.clone(), inputs),
+            rebuilt: vec![None; self.nodes.len()],
+        };
+        let root = rebuild.node(self.root);
+        Some(
+            rebuild
+                .builder
+                .build(root)
+                .expect("a rebuilt graph names only nodes it added"),
+        )
+    }
+
     pub(crate) fn map_type_handle<MappedHandle>(
         &self,
         map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
@@ -510,6 +588,62 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
             root: self.root,
             input_demand: self.input_demand.clone(),
         }
+    }
+}
+
+/// Which edges of a test a decision can take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LiveEdges {
+    Both,
+    /// The test always matches, so it is its match child.
+    Match,
+    /// The test never matches, so it is its miss child.
+    Miss,
+}
+
+struct Rebuild<'a, 'b, TypeHandle, Live> {
+    old: &'a DispatchGraph<TypeHandle>,
+    live: &'a Live,
+    builder: DispatchGraphBuilder<'b, TypeHandle>,
+    rebuilt: Vec<Option<GraphNodeId>>,
+}
+
+impl<TypeHandle: Clone + Eq, Live: Fn(GraphNodeId) -> LiveEdges> Rebuild<'_, '_, TypeHandle, Live> {
+    fn node(&mut self, id: GraphNodeId) -> GraphNodeId {
+        if let Some(done) = self.rebuilt[id.0 as usize] {
+            return done;
+        }
+        let old = self.old.node(id).expect("a graph names only nodes it holds").clone();
+        let done = match old {
+            DispatchNode::Test {
+                predicate,
+                on_match,
+                on_miss,
+            } => match (self.live)(id) {
+                LiveEdges::Match => self.node(on_match.target),
+                LiveEdges::Miss => self.node(on_miss.target),
+                LiveEdges::Both => {
+                    let match_target = self.node(on_match.target);
+                    let miss_target = self.node(on_miss.target);
+                    if match_target == miss_target {
+                        // Trimming left both answers at one node: the question
+                        // no longer separates anything.
+                        self.rebuilt[id.0 as usize] = Some(match_target);
+                        return match_target;
+                    }
+                    let on_match = DispatchEdge::with_evidence(match_target, on_match.evidence);
+                    let on_miss = DispatchEdge::with_evidence(miss_target, on_miss.evidence);
+                    self.builder.add_node(DispatchNode::Test {
+                        predicate,
+                        on_match,
+                        on_miss,
+                    })
+                }
+            },
+            leaf => self.builder.add_node(leaf),
+        };
+        self.rebuilt[id.0 as usize] = Some(done);
+        done
     }
 }
 
@@ -895,13 +1029,20 @@ pub(crate) struct DispatchGraphBuilder<'a, TypeHandle> {
 }
 
 impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
+    /// A builder for a plan over `inputs`. A pin the rows' prematch bound is
+    /// read from the input that delivers it whether or not a question survives
+    /// to ask it, so every such input is charged up front.
     pub(crate) fn typed(subjects: Vec<Subject>, inputs: PlanInputs<'a>) -> Self {
-        Self {
+        let mut builder = Self {
             subjects,
             nodes: Vec::new(),
             input_demand: vec![DispatchDemand::Ignore; inputs.count],
             inputs,
+        };
+        for pinned in 0..inputs.pinned.len() {
+            builder.charge_pin(PinnedValueId(pinned as u32));
         }
+        builder
     }
 
     pub(crate) fn add_node(&mut self, node: DispatchNode<TypeHandle>) -> GraphNodeId {
@@ -919,7 +1060,6 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
                 self.ensure_node(on_miss.target)?;
             }
         }
-        self.ensure_projections_ride_a_charged_input();
         Ok(DispatchGraph {
             subjects: self.subjects,
             nodes: self.nodes,
@@ -1012,11 +1152,6 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
         subject_demand(&self.subjects, subject, demand).unwrap_or_else(|| missing_subject(subject))
     }
 
-    /// The input a subject descends from, for a caller that asks nothing of it.
-    fn subject_root(&self, subject: SubjectId) -> u32 {
-        subject_root(&self.subjects, subject).unwrap_or_else(|| missing_subject(subject))
-    }
-
     /// Every ordinal charged here names a declared input of THIS plan. A
     /// backend is entitled to pass anything else as nil, so an ordinal that
     /// escapes the declared count is not a conservative over-approximation --
@@ -1029,33 +1164,6 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
             .get_mut(ordinal as usize)
             .unwrap_or_else(|| panic!("dispatch plan requires input {ordinal} but has only {count} semantic input(s)"));
         slot.join_assign(demand);
-    }
-
-    /// A projection is a binding, not a question: it names where a value comes
-    /// from once a test on its source has succeeded. Every projection therefore
-    /// sits under a test that charged its root input, which is what entitles
-    /// the fold to ignore evidence.
-    fn ensure_projections_ride_a_charged_input(&self) {
-        for node in &self.nodes {
-            let (first, second) = match node {
-                DispatchNode::Fail => (None, None),
-                DispatchNode::Outcome { evidence, .. } => (Some(evidence), None),
-                DispatchNode::Test { on_match, on_miss, .. } => (Some(&on_match.evidence), Some(&on_miss.evidence)),
-            };
-            for projection in first
-                .into_iter()
-                .chain(second)
-                .flat_map(|evidence| &evidence.projections)
-            {
-                let ordinal = self.subject_root(*projection);
-                assert!(
-                    self.input_demand
-                        .get(ordinal as usize)
-                        .is_some_and(DispatchDemand::asks_anything),
-                    "dispatch projects from input {ordinal}, which no question charged",
-                );
-            }
-        }
     }
 }
 
@@ -1085,23 +1193,12 @@ fn missing_subject(subject: SubjectId) -> ! {
     )
 }
 
-/// The input a subject descends from. A projection names its source, so the
-/// chain climbs to the input the subject was carved out of.
-fn subject_root(subjects: &[Subject], mut subject: SubjectId) -> Option<u32> {
-    loop {
-        match &subjects.get(subject.0 as usize)?.source {
-            SubjectSource::Input { ordinal } => return Some(*ordinal),
-            SubjectSource::Projection(projection) => subject = projection.source,
-        }
-    }
-}
-
 /// The input a subject descends from, and what a demand on that subject asks
 /// of that input.
 ///
-/// The walk climbs the same chain as `subject_root`, and each step it climbs
-/// wraps the demand in the projection that reached it, so the demand that
-/// arrives at the input is the one the input carries.
+/// The walk climbs a projection chain to the input the subject was carved out
+/// of, and each step it climbs wraps the demand in the projection that reached
+/// it, so the demand that arrives at the input is the one the input carries.
 fn subject_demand(
     subjects: &[Subject],
     mut subject: SubjectId,

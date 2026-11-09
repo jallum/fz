@@ -209,6 +209,18 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
         }],
     ))
     .unwrap();
+    // The plan the analysis hands an activation whose parameter is known to be
+    // a pair: the arity question is already answered.
+    let plan = plan
+        .trimmed(&|id| match plan.graph.node(id) {
+            Some(crate::dispatch_matrix::DispatchNode::Test { predicate, .. })
+                if matches!(predicate.region, crate::dispatch_matrix::Region::TupleArity(_)) =>
+            {
+                crate::dispatch_matrix::LiveEdges::Match
+            }
+            _ => crate::dispatch_matrix::LiveEdges::Both,
+        })
+        .expect("the arity question is settled by the parameter's shape");
     let dispatch = crate::compiler2::ExecutableDispatch::new(Rc::new(plan), vec![0]);
     assert_eq!(
         dispatch.plan().input_demand(),

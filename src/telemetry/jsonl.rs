@@ -1351,13 +1351,13 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
                 out.push_str(",\"semantic\":{\"reachable_clauses\":");
                 push_u64(out, analysis.entry_reachability.clauses().len() as u64);
                 out.push_str(",\"fail_reachable\":");
-                out.push_str(if analysis.entry_reachability.fail_reachable() {
-                    "true"
-                } else {
-                    "false"
-                });
+                out.push_str(if analysis.fail_reachable() { "true" } else { "false" });
                 out.push_str(",\"reachable_entries\":");
                 push_u64(out, analysis.reachable_entries.len() as u64);
+                out.push_str(",\"trimmed_tests\":");
+                push_u64(out, analysis.trimmed.trimmed_tests as u64);
+                out.push_str(",\"removed_fails\":");
+                push_u64(out, analysis.trimmed.removed_fails as u64);
                 out.push_str(",\"callsites\":");
                 push_u64(out, analysis.callsites.len() as u64);
                 out.push_str(",\"values\":");

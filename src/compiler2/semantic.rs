@@ -4,10 +4,14 @@
 //! shapes, reachable callsites, settled return types, and runtime demand.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
+use std::rc::Rc;
+
+use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
+use super::dispatch_reachability::ReachedEdges;
 use super::facts::FactUse;
 use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId};
 use super::types::{Ty, Types};
@@ -739,7 +743,6 @@ impl ExecutableRuntimeDemand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryReachability {
     clauses: Vec<u32>,
-    fail_reachable: bool,
 }
 
 impl EntryReachability {
@@ -750,25 +753,14 @@ impl EntryReachability {
     /// and required to ascend with source priority by the dispatch planner —
     /// which leaves the fact, and every artifact materialized from it,
     /// schedule-independent (fz-kdt.91).
-    pub fn new(mut clauses: Vec<u32>, fail_reachable: bool) -> Self {
+    pub fn new(mut clauses: Vec<u32>) -> Self {
         clauses.sort_unstable();
         clauses.dedup();
-        Self {
-            clauses,
-            fail_reachable,
-        }
+        Self { clauses }
     }
 
     pub fn clauses(&self) -> &[u32] {
         &self.clauses
-    }
-
-    pub fn fail_reachable(&self) -> bool {
-        self.fail_reachable
-    }
-
-    pub fn is_direct_clause(&self) -> bool {
-        !self.fail_reachable && self.clauses.len() == 1
     }
 }
 
@@ -777,9 +769,55 @@ pub struct ActivationAnalysis {
     /// Correlated rows already read by the activation analysis.
     pub input_rows: Vec<Vec<Ty>>,
     pub entry_reachability: EntryReachability,
+    /// The dispatch plans these inputs leave.
+    pub(crate) trimmed: TrimmedPlans,
     pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
     pub value_types: HashMap<ValueId, Ty>,
+}
+
+/// The dispatch plans an activation's inputs leave, which are the plans it
+/// runs: one for its entry dispatch, and one for each `case` it reaches. A
+/// plan its types narrow nothing in is the shared plan itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct TrimmedPlans {
+    /// `None` for an extern, which has no clauses to select among.
+    pub(crate) entry: Option<Rc<PatternDispatchPlan<Ty>>>,
+    pub(crate) cases: BTreeMap<ControlEntryId, Rc<PatternDispatchPlan<Ty>>>,
+    /// How many questions the types answered, over the entry and the cases.
+    pub(crate) trimmed_tests: usize,
+    /// How many of those plans no longer have a decision that ends with no
+    /// outcome.
+    pub(crate) removed_fails: usize,
+}
+
+impl ActivationAnalysis {
+    /// Whether some decision of the entry dispatch ends with no clause.
+    pub fn fail_reachable(&self) -> bool {
+        self.trimmed.entry.as_ref().is_some_and(|plan| plan.can_fail())
+    }
+}
+
+impl TrimmedPlans {
+    pub(crate) fn of(entry: Option<ReachedEdges>, cases: BTreeMap<ControlEntryId, ReachedEdges>) -> Self {
+        let mut plans = Self::default();
+        plans.entry = entry.map(|reached| plans.trim(&reached));
+        plans.cases = cases
+            .into_iter()
+            .map(|(entry, reached)| (entry, plans.trim(&reached)))
+            .collect();
+        plans
+    }
+
+    fn trim(&mut self, reached: &ReachedEdges) -> Rc<PatternDispatchPlan<Ty>> {
+        let shared = reached.shared();
+        let trimmed = reached.trimmed();
+        if !Rc::ptr_eq(shared, &trimmed) {
+            self.trimmed_tests += shared.graph.test_count() - trimmed.graph.test_count();
+            self.removed_fails += usize::from(shared.can_fail() && !trimmed.can_fail());
+        }
+        trimmed
+    }
 }
 
 #[derive(Debug, Clone)]

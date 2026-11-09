@@ -603,6 +603,186 @@ fn graph_builder_rejects_unknown_root_or_edge_node() {
     );
 }
 
+/// Two tests ask `nil` of one input and then `true`, both missing to the one
+/// shared fail: `nil -> o0`, `true -> o1`, anything else fails.
+fn two_tests_sharing_a_fail() -> (DispatchGraph<Ty>, [GraphNodeId; 2]) {
+    let mut builder = DispatchGraphBuilder::<Ty>::typed(vec![input_subject()], one_input());
+    let fail = builder.add_node(DispatchNode::Fail);
+    let first = builder.add_node(DispatchNode::Outcome {
+        outcome: OutcomeId(0),
+        evidence: EdgeEvidence::empty(),
+    });
+    let second = builder.add_node(DispatchNode::Outcome {
+        outcome: OutcomeId(1),
+        evidence: EdgeEvidence::empty(),
+    });
+    let asks_true = builder.add_node(DispatchNode::Test {
+        predicate: RegionPredicate::new(
+            SubjectId(0),
+            Region::Equal(ComparisonValue::Const(GroundValue::Bool(true))),
+        ),
+        on_match: DispatchEdge::new(second),
+        on_miss: DispatchEdge::new(fail),
+    });
+    let asks_nil = builder.add_node(DispatchNode::Test {
+        predicate: RegionPredicate::new(SubjectId(0), Region::Equal(ComparisonValue::Const(GroundValue::Nil))),
+        on_match: DispatchEdge::new(first),
+        on_miss: DispatchEdge::new(asks_true),
+    });
+    let graph = builder.build(asks_nil).expect("all node edges are valid");
+    (graph, [asks_nil, asks_true])
+}
+
+#[test]
+fn trimming_a_graph_nothing_narrows_returns_nothing_new() {
+    let (graph, _) = two_tests_sharing_a_fail();
+
+    assert_eq!(graph.trimmed(one_input(), &|_| LiveEdges::Both), None);
+}
+
+#[test]
+fn a_test_that_never_matches_is_its_miss_child_and_the_arm_behind_it_goes() {
+    let (graph, [asks_nil, _]) = two_tests_sharing_a_fail();
+
+    let trimmed = graph
+        .trimmed(one_input(), &|node| {
+            if node == asks_nil {
+                LiveEdges::Miss
+            } else {
+                LiveEdges::Both
+            }
+        })
+        .expect("one test is narrowed");
+
+    assert_eq!(
+        trimmed.nodes.len(),
+        3,
+        "the `nil` question and its outcome are gone: what is left is the outcome, the fail and `true`"
+    );
+    assert!(matches!(trimmed.node(trimmed.root), Some(DispatchNode::Test { .. })));
+    assert_eq!(
+        trimmed
+            .reachable()
+            .into_iter()
+            .filter_map(|id| match trimmed.node(id) {
+                Some(DispatchNode::Outcome { outcome, .. }) => Some(*outcome),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        [OutcomeId(1)],
+        "outcome ids are the plan's own, so the surviving outcome keeps its id"
+    );
+    assert_eq!(trimmed.subjects, graph.subjects, "subject ids are kept");
+}
+
+#[test]
+fn a_test_whose_two_answers_trim_to_one_node_asks_nothing() {
+    let mut builder = DispatchGraphBuilder::<Ty>::typed(vec![input_subject()], one_input());
+    let fail = builder.add_node(DispatchNode::Fail);
+    let only = builder.add_node(DispatchNode::Outcome {
+        outcome: OutcomeId(0),
+        evidence: EdgeEvidence::empty(),
+    });
+    let ask = |builder: &mut DispatchGraphBuilder<Ty>, value| {
+        builder.add_node(DispatchNode::Test {
+            predicate: RegionPredicate::new(SubjectId(0), Region::Equal(ComparisonValue::Const(value))),
+            on_match: DispatchEdge::new(only),
+            on_miss: DispatchEdge::new(fail),
+        })
+    };
+    let asks_true = ask(&mut builder, GroundValue::Bool(true));
+    let asks_nil = ask(&mut builder, GroundValue::Nil);
+    let root = builder.add_node(DispatchNode::Test {
+        predicate: RegionPredicate::new(
+            SubjectId(0),
+            Region::Equal(ComparisonValue::Const(GroundValue::Bool(false))),
+        ),
+        on_match: DispatchEdge::new(asks_true),
+        on_miss: DispatchEdge::new(asks_nil),
+    });
+    let graph = builder.build(root).expect("all node edges are valid");
+
+    let trimmed = graph
+        .trimmed(one_input(), &|node| {
+            if node == root {
+                LiveEdges::Both
+            } else {
+                LiveEdges::Match
+            }
+        })
+        .expect("two tests are narrowed");
+
+    assert!(
+        trimmed.is_outcome_at_root() && trimmed.test_count() == 0,
+        "both answers reach the one outcome, so the question that told them apart is not asked"
+    );
+}
+
+#[test]
+fn a_fail_no_surviving_test_reaches_is_not_rebuilt() {
+    let (graph, [_, asks_true]) = two_tests_sharing_a_fail();
+
+    let trimmed = graph
+        .trimmed(one_input(), &|node| {
+            if node == asks_true {
+                LiveEdges::Match
+            } else {
+                LiveEdges::Both
+            }
+        })
+        .expect("one test is narrowed");
+
+    assert!(
+        !trimmed.can_fail(),
+        "`true` always matches, so nothing ends without an outcome"
+    );
+    assert!(graph.can_fail());
+    assert_eq!(trimmed.test_count(), 1);
+}
+
+#[test]
+fn a_trimmed_graph_asks_its_inputs_only_what_its_surviving_questions_ask() {
+    let mut builder = DispatchGraphBuilder::<Ty>::typed(vec![input_subject()], one_input());
+    let fail = builder.add_node(DispatchNode::Fail);
+    let outcome = builder.add_node(DispatchNode::Outcome {
+        outcome: OutcomeId(0),
+        evidence: EdgeEvidence::empty(),
+    });
+    let is_pair = builder.add_node(DispatchNode::Test {
+        predicate: RegionPredicate::new(SubjectId(0), Region::TupleArity(2)),
+        on_match: DispatchEdge::new(outcome),
+        on_miss: DispatchEdge::new(fail),
+    });
+    let graph = builder.build(is_pair).expect("all node edges are valid");
+    assert_eq!(graph.input_demand, [DispatchDemand::TupleFields(BTreeMap::new())]);
+
+    let trimmed = graph
+        .trimmed(one_input(), &|_| LiveEdges::Match)
+        .expect("the one test is settled");
+
+    assert_eq!(trimmed.input_demand, [DispatchDemand::Ignore]);
+    assert!(trimmed.is_outcome_at_root());
+}
+
+#[test]
+fn a_pinned_input_is_read_whether_or_not_a_question_survives_to_ask_it() {
+    let pinned = [Some(1)];
+    let inputs = PlanInputs {
+        count: 2,
+        pinned: &pinned,
+        guard_leaves: &[],
+    };
+    let mut builder = DispatchGraphBuilder::<Ty>::typed(vec![input_subject()], inputs);
+    let outcome = builder.add_node(DispatchNode::Outcome {
+        outcome: OutcomeId(0),
+        evidence: EdgeEvidence::empty(),
+    });
+
+    let graph = builder.build(outcome).expect("a lone outcome is a graph");
+
+    assert_eq!(graph.input_demand, [DispatchDemand::Ignore, DispatchDemand::Whole]);
+}
+
 /// The non-subject inputs of a plan whose questions read one declared input
 /// and neither pins nor guards.
 fn one_input() -> PlanInputs<'static> {

@@ -1106,7 +1106,16 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         .collect::<Result<Vec<_>, String>>()?;
                     (edge.target, params)
                 }
-                None => (dispatch.miss_entry, Vec::new()),
+                None => {
+                    let miss_entry = dispatch.miss_entry.ok_or_else(|| {
+                        format!(
+                            "internal error: the case at entry {} of executable {:?} reached its fail, which type analysis proved unreachable",
+                            entry_id.as_u32(),
+                            executable.key
+                        )
+                    })?;
+                    (miss_entry, Vec::new())
+                }
             };
             Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                 executable: executable.clone(),

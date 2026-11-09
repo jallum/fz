@@ -1446,10 +1446,9 @@ fn collect_reachable_entries(
             collect_reachable_entries(entries, *else_entry, reachable_entries, order, out);
         }
         LoweredTail::Dispatch { dispatch, .. } => {
-            for edge in &dispatch.outcomes {
-                collect_reachable_entries(entries, edge.target, reachable_entries, order, out);
+            for target in dispatch.successors() {
+                collect_reachable_entries(entries, target, reachable_entries, order, out);
             }
-            collect_reachable_entries(entries, dispatch.miss_entry, reachable_entries, order, out);
         }
         LoweredTail::Receive(receive) => {
             if let super::super::body::ControlDestination::Deliver(target) = &receive.dest {
@@ -1501,10 +1500,9 @@ fn reindex_entries(
                 *else_entry = ids[else_entry];
             }
             LoweredTail::Dispatch { dispatch, .. } => {
-                for edge in &mut dispatch.outcomes {
-                    edge.target = ids[&edge.target];
+                for target in dispatch.successors_mut() {
+                    *target = ids[target];
                 }
-                dispatch.miss_entry = ids[&dispatch.miss_entry];
             }
             LoweredTail::Receive(receive) => {
                 if let super::super::body::ControlDestination::Deliver(target) = &mut receive.dest {

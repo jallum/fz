@@ -2484,13 +2484,18 @@ def main(), do: Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end)
             .map(|input| input.layout.reprs.as_ref()),
         Some([].as_slice()),
     );
-    let reachability = &world
+    let analysis = world
         .activation_analysis(&executable.activation)
-        .expect("the mapper overload should have settled semantic analysis")
-        .entry_reachability;
-    assert_eq!(reachability.clauses(), &[1]);
-    assert!(!reachability.fail_reachable());
-    assert!(reachability.is_direct_clause());
+        .expect("the mapper overload should have settled semantic analysis");
+    assert_eq!(analysis.entry_reachability.clauses(), &[1]);
+    assert!(!analysis.fail_reachable());
+    assert!(
+        analysis
+            .trimmed
+            .entry
+            .as_ref()
+            .is_some_and(|plan| plan.is_direct_outcome())
+    );
     assert!(
         materialized.entry_dispatch.is_none(),
         "a settled single-clause activation with no reachable failure should not re-test its lane-free mapper input",
@@ -5412,16 +5417,19 @@ fn assert_entry_dispatch_control(
         .materialized_executables()
         .find(|(executable, _)| function_is(&world, executable.activation.function, function_name, 1))
         .unwrap_or_else(|| panic!("{function_name}/1 should materialize"));
-    let reachability = &world
+    let analysis = world
         .activation_analysis(&executable.activation)
-        .unwrap_or_else(|| panic!("{function_name}/1 should have settled semantic analysis"))
-        .entry_reachability;
+        .unwrap_or_else(|| panic!("{function_name}/1 should have settled semantic analysis"));
 
-    assert_eq!(reachability.clauses().len(), expected_clause_count);
-    assert_eq!(reachability.fail_reachable(), expected_fail_reachable);
+    assert_eq!(analysis.entry_reachability.clauses().len(), expected_clause_count);
+    assert_eq!(analysis.fail_reachable(), expected_fail_reachable);
     assert_eq!(
         materialized.entry_dispatch.is_none(),
-        reachability.is_direct_clause(),
+        analysis
+            .trimmed
+            .entry
+            .as_ref()
+            .is_some_and(|plan| plan.is_direct_outcome()),
         "runtime dispatch should be omitted exactly for a proven direct clause",
     );
 }

@@ -1298,11 +1298,10 @@ impl ProgramCanon<'_> {
             .enumerate()
             .map(|(index, edge)| self.outcome_edge(index, edge))
             .collect();
-        out.put(&format!(
-            "arms [{}] miss=e{}",
-            arms.join(", "),
-            dispatch.miss_entry.as_u32()
-        ));
+        let miss = dispatch
+            .miss_entry
+            .map_or_else(|| "none".to_string(), |entry| format!("e{}", entry.as_u32()));
+        out.put(&format!("arms [{}] miss={miss}", arms.join(", ")));
         let plan = self.plan(&dispatch.plan);
         out.section("plan", plan);
     }
