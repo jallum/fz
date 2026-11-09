@@ -400,3 +400,61 @@ fn a_plan_carries_the_exception_its_rows_raise_through_every_rebuild() {
         "rows that do not say what they raise leave the miss to their construct"
     );
 }
+
+fn aborting_extern() -> Arc<GuardExtern> {
+    use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
+    Arc::new(
+        GuardExtern::new(
+            ExternAbi::C,
+            "abort",
+            &[ExternTy::Any],
+            ExternReturn::Scalar(ExternTy::Never),
+            false,
+        )
+        .expect("an aborting extern is a guard extern"),
+    )
+}
+
+/// `def fails(_), do: abort(1)` over an aborting extern.
+fn failing_helper() -> Arc<PatternGuardDispatch<Ty>> {
+    let surface = Surface(vec![clause(1, None, call("abort", vec![Expr::Int(1)]))]);
+    let mut resolver = |callee: &Callee, _arity: usize| -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {
+        let Callee::Name(name) = callee else { return Ok(None) };
+        Ok((name.name == "abort").then(|| GuardCallee::Extern(aborting_extern())))
+    };
+    Arc::new(guard_dispatch_from_rows(&surface, vec![row(1, &[], 0)], &mut resolver).expect("a failing helper reifies"))
+}
+
+fn guard_of(expr: &Expr, helper: Arc<PatternGuardDispatch<Ty>>) -> Result<PatternGuardExpr<Ty>, SourcePatternError> {
+    let mut resolver = |callee: &Callee, _arity: usize| -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {
+        let Callee::Name(name) = callee else { return Ok(None) };
+        Ok(match name.name.as_str() {
+            "abort" => Some(GuardCallee::Extern(aborting_extern())),
+            "fails" => Some(GuardCallee::Helper(Arc::clone(&helper))),
+            _ => None,
+        })
+    };
+    guard_expr_from_ast(
+        expr,
+        &Default::default(),
+        &Default::default(),
+        &mut Default::default(),
+        &mut resolver,
+    )
+}
+
+#[test]
+fn a_call_to_an_aborting_extern_is_a_failing_node_whose_arguments_are_never_built() {
+    // `nothing(1)` resolves to no callee, so building it is an error: the
+    // call below can only succeed if its arguments are not visited.
+    let call_with_unbuildable_argument = call("abort", vec![call("nothing", vec![Expr::Int(1)])]);
+    let built = guard_of(&call_with_unbuildable_argument, failing_helper());
+    assert!(matches!(built, Ok(PatternGuardExpr::Fails)), "{built:?}");
+}
+
+#[test]
+fn a_call_to_a_helper_whose_callee_always_fails_is_a_failing_node_whose_arguments_are_never_built() {
+    let call_with_unbuildable_argument = call("fails", vec![call("nothing", vec![Expr::Int(1)])]);
+    let built = guard_of(&call_with_unbuildable_argument, failing_helper());
+    assert!(matches!(built, Ok(PatternGuardExpr::Fails)), "{built:?}");
+}

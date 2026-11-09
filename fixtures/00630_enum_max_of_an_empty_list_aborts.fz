@@ -1,5 +1,5 @@
 #---
-# purpose: "Enum.max/1 of an empty list aborts with Enum.EmptyError, as Elixir raises Enum.EmptyError"
+# purpose: "Enum.max/1 of an empty list aborts with Enum.EmptyError and Elixir's message"
 # expect: abort
 # oracle: 00630_enum_max_of_an_empty_list_aborts.oracle.exs
 #---

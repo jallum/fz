@@ -1,0 +1,6 @@
+#---
+# purpose: "JSON.decode!/1 of an invalid byte aborts with JSON.DecodeError and Elixir's message"
+# expect: abort
+# oracle: 00730_json_decode_bang_of_an_invalid_byte_raises_decode_error.oracle.exs
+#---
+def main(), do: JSON.decode!("x")

@@ -1,5 +1,5 @@
 #---
-# purpose: "JSON.encode!/1 rejects an invalid UTF-8 string value on every path"
+# purpose: "JSON.encode!/1 of an invalid UTF-8 string value aborts with Elixir's ErlangError"
 # expect: abort
 # oracle: json_encode_invalid_utf8_value.oracle.exs
 #---

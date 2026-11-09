@@ -1,0 +1,6 @@
+#---
+# purpose: "Enum.drop_every/2 with a negative step aborts with FunctionClauseError and Elixir's message"
+# expect: abort
+# oracle: 00726_enum_drop_every_of_a_negative_step_raises_function_clause_error.oracle.exs
+#---
+def main(), do: Enum.drop_every([1], -1)

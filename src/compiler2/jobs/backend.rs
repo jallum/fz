@@ -1271,7 +1271,7 @@ fn collect_guard_atoms(
                 collect_guard_atoms(world, arg, seen, atoms);
             }
         }
-        PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => {}
+        PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) | PatternGuardExpr::Fails => {}
     }
 }
 

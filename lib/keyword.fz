@@ -132,11 +132,12 @@ defmodule Keyword do
 
   """
   @spec fetch!(keyword(), atom) :: any
-  def fetch!(keywords, key), do: fetch_result(fetch(keywords, key), key)
+  def fetch!(keywords, key), do: fetch_result(fetch(keywords, key), keywords, key)
 
-  @spec fetch_result({:ok, any} | :error, atom) :: any
-  defp fetch_result({:ok, value}, _key), do: value
-  defp fetch_result(:error, key), do: Kernel.panic("key not found in keyword list: #{key}")
+  @spec fetch_result({:ok, any} | :error, keyword(), atom) :: any
+  defp fetch_result({:ok, value}, _keywords, _key), do: value
+
+  defp fetch_result(:error, keywords, key), do: Map.key_error(keywords, key)
 
   @doc """
   Returns every value stored under `key`, in list order.

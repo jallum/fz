@@ -12,7 +12,7 @@ defmodule JSON do
     * an object becomes a map with binary keys
 
   Decoding can fail, so there is both `decode/1` and `decode!/1`. Encoding
-  halts for unsupported values or invalid string binaries, so `encode!/1`
+  raises for unsupported values or invalid string binaries, so `encode!/1`
   is the only spelling.
 
   ## Examples
@@ -112,18 +112,17 @@ defmodule JSON do
   defp decode_trailing(raw, _skipped, _v, input), do: {:error, reason(raw, input)}
 
   @doc """
-  Decodes a JSON binary, or halts.
+  Decodes a JSON binary, or raises `JSON.DecodeError`.
 
-  Returns the decoded value, like `decode/1`, but halts the process instead
-  of returning an `{:error, reason}` tuple.
+  Returns the decoded value, like `decode/1`, but raises instead of returning an `{:error, reason}` tuple.
 
   ## Examples
 
       JSON.decode!("[1,2,3]")
       #=> [1, 2, 3]
 
-  On invalid input, `decode!/1` halts the process rather than returning; for
-  example `JSON.decode!("not json")` halts with `"JSON.decode!: invalid JSON"`.
+  On invalid input, `decode!/1` raises rather than returning; for example
+  `JSON.decode!("not json")` raises `JSON.DecodeError`.
 
   """
   @spec decode!(binary) :: any
@@ -131,7 +130,17 @@ defmodule JSON do
 
   @spec decode_result({:ok, any} | {:error, any}) :: any
   defp decode_result({:ok, v}), do: v
-  defp decode_result({:error, _reason}), do: Kernel.panic("JSON.decode!: invalid JSON")
+  defp decode_result({:error, reason}), do: raise(JSON.DecodeError, decode_message(reason))
+
+  @spec decode_message(any) :: binary
+  defp decode_message({:unexpected_end, at}),
+    do: "unexpected end of JSON binary at position (byte offset) #{at}"
+
+  defp decode_message({:invalid_byte, at, byte}),
+    do: "invalid byte #{byte} at position (byte offset) #{at}"
+
+  defp decode_message({:unexpected_sequence, at, bytes}),
+    do: "unexpected sequence #{Kernel.inspect(bytes)} at position (byte offset) #{at}"
 
   # The parser skips whitespace before deciding, so the rest at a failure
   # starts at the offending byte: the offset is the difference in lengths and
@@ -151,15 +160,17 @@ defmodule JSON do
   defp invalid_byte(_rest, at), do: {:unexpected_end, at}
 
   @doc """
-  Encodes an fz value as a JSON binary, or halts.
+  Encodes an fz value as a JSON binary, or raises.
 
-  Accepts `true`, `false`, `nil`, an integer, a float, a binary, a list, or
-  a map. Map keys may be binaries, atoms, integers, or floats; every key is
-  converted to a JSON string. Any other value or map key halts with a reason
-  containing the rejected term, so there is no plain `encode/1`. Binary
-  string values and binary keys must be byte-aligned, valid UTF-8. A
-  non-byte-aligned bitstring or an invalid UTF-8 binary halts with
-  `{:json_encode, :invalid_utf8, value}` instead of being encoded as a JSON
+  Accepts `true`, `false`, `nil`, an integer, a float, a binary, an atom
+  (encoded as the string of its name), a list, or a map. Map keys may be
+  binaries, atoms, integers, or floats; every key is converted to a JSON
+  string. Any other value raises `Protocol.UndefinedError` for `JSON.Encoder`
+  and any other map key for `String.Chars`, so there is no plain `encode/1`.
+  Binary string values and binary keys must be byte-aligned, valid UTF-8. An
+  invalid UTF-8 binary fails with Elixir's raw `ErlangError`
+  (`{:invalid_byte, byte}` or `:unexpected_end`) and a non-byte-aligned
+  bitstring with a `FunctionClauseError`, instead of being encoded as a JSON
   string. Quotes, backslashes, and every control byte are escaped in both
   string values and object keys.
 
@@ -185,13 +196,50 @@ defmodule JSON do
   def encode!(v :: integer), do: Integer.to_string(v)
   def encode!(v :: float), do: Float.to_string(v)
   def encode!(v :: binary), do: encode_binary!(v, Utf8.from_bytes(v))
+  def encode!(v :: atom), do: encode!(Atom.to_string(v))
   def encode!(v :: [any]), do: "[" <> elements(v, "") <> "]"
   def encode!(v :: map), do: "{" <> pairs(Map.to_list(v), "") <> "}"
-  def encode!(v), do: Kernel.panic({:json_encode, :unsupported_value, v})
+  def encode!(v), do: unsupported_value(v)
+
+  @spec unsupported_value(any) :: never
+  defp unsupported_value(v) do
+    raise(
+      Protocol.UndefinedError,
+      "protocol JSON.Encoder not implemented for #{type_name(v)}, the protocol must be explicitly implemented.\n\n" <>
+        "If you have a struct, you can derive the implementation specifying which fields should be encoded to JSON:\n\n" <>
+        "    @derive {JSON.Encoder, only: [....]}\n    defstruct ...\n\n" <>
+        "It is also possible to encode all fields, although this should be used carefully to avoid accidentally leaking private information when new fields are added:\n\n" <>
+        "    @derive JSON.Encoder\n    defstruct ...\n\n" <>
+        "Finally, if you don't own the struct you want to encode to JSON, you may use Protocol.derive/3 placed outside of any module:\n\n" <>
+        "    Protocol.derive(JSON.Encoder, NameOfTheStruct, only: [...])\n    Protocol.derive(JSON.Encoder, NameOfTheStruct)\n\n" <>
+        "Got value:\n\n    #{Kernel.inspect(v)}\n"
+    )
+  end
+
+  @spec type_name(any) :: binary
+  defp type_name(_v :: tuple), do: "Tuple"
+  defp type_name(_v :: pid), do: "PID"
+  defp type_name(_v :: ref), do: "Reference"
+  defp type_name(_v :: resource), do: "Reference"
+  # A pattern can name tuple, pid, ref and resource and nothing else JSON cannot encode, so a function is what remains.
+  defp type_name(_v), do: "Function"
 
   @spec encode_binary!(binary, {:ok, utf8} | {:error, :invalid_utf8}) :: binary
   defp encode_binary!(_v, {:ok, string}), do: "\"" <> escape(string, "") <> "\""
-  defp encode_binary!(v, {:error, :invalid_utf8}), do: Kernel.panic({:json_encode, :invalid_utf8, v})
+  defp encode_binary!(v, {:error, :invalid_utf8}), do: invalid_utf8(v, fz_bitstring_is_binary(v))
+
+  extern "C" defp fz_bitstring_is_binary(any) :: integer
+
+  # What Elixir's encoder fails with: a function clause for a bitstring that
+  # is not a binary, otherwise the first offending byte as a raw Erlang error.
+  @spec invalid_utf8(binary, integer) :: never
+  defp invalid_utf8(_v, 0), do: raise(FunctionClauseError, "no function clause matching in :elixir_json.encode_binary/1")
+  defp invalid_utf8(v, _aligned), do: invalid_utf8_at(Utf8.next(v))
+
+  @spec invalid_utf8_at({:ok, utf8, binary} | {:error, binary} | nil) :: never
+  defp invalid_utf8_at({:ok, _codepoint, rest}), do: invalid_utf8_at(Utf8.next(rest))
+  defp invalid_utf8_at({:error, <<byte, _rest :: binary>>}), do: Kernel.panic({:invalid_byte, byte})
+  defp invalid_utf8_at(_truncated), do: Kernel.panic(:unexpected_end)
 
   @spec escape(binary, binary) :: binary
   defp escape("", acc), do: acc
@@ -204,7 +252,6 @@ defmodule JSON do
   defp escape(<<13, r :: binary>>, acc), do: escape(r, acc <> "\\r")
   defp escape(<<c, r :: binary>>, acc) when c < 32, do: escape(r, acc <> control_escape(c))
   defp escape(<<c, r :: binary>>, acc), do: escape(r, acc <> <<c>>)
-  defp escape(_bits, _acc), do: Kernel.panic("JSON.encode!: binary is not byte-aligned")
 
   @spec control_escape(integer) :: binary
   defp control_escape(c), do: "\\u00" <> <<hex_digit(div(c, 16)), hex_digit(rem(c, 16))>>
@@ -228,7 +275,8 @@ defmodule JSON do
   defp encode_key!(key :: atom), do: encode!(Atom.to_string(key))
   defp encode_key!(key :: integer), do: encode!(Integer.to_string(key))
   defp encode_key!(key :: float), do: encode!(Float.to_string(key))
-  defp encode_key!(key), do: Kernel.panic({:json_encode, :unsupported_key, key})
+  defp encode_key!(key),
+    do: raise(Protocol.UndefinedError, "protocol String.Chars not implemented for #{type_name(key)}\n\nGot value:\n\n    #{Kernel.inspect(key)}\n")
 
   @spec skip_ws(binary) :: binary
   defp skip_ws(<<" ", r :: binary>>), do: skip_ws(r)

@@ -1,1 +1,5 @@
-** (ErlangError) Erlang error: {:json_encode, :unsupported_key, {:tuple, 1}}
+** (Protocol.UndefinedError) protocol String.Chars not implemented for Tuple
+
+Got value:
+
+    {:tuple, 1}

@@ -1,6 +1,7 @@
 #---
 # purpose: "to_string of a bitstring that is not byte-aligned panics rather than laundering it into a binary"
 # expect: abort
+# oracle: to_string_bitstring_panics.oracle.exs
 #---
 #
 # # to_string_bitstring_panics

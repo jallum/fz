@@ -1,5 +1,5 @@
 #---
-# purpose: "map_size/1 of a non-map aborts with :badmap in a body, as Elixir raises BadMapError"
+# purpose: "map_size/1 of a non-map aborts with BadMapError and Elixir's message"
 # expect: abort
 # oracle: 00617_map_size_of_a_non_map_aborts.oracle.exs
 #---

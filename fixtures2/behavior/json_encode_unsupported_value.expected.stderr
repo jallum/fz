@@ -1,1 +1,20 @@
-** (ErlangError) Erlang error: {:json_encode, :unsupported_value, :not_json}
+** (Protocol.UndefinedError) protocol JSON.Encoder not implemented for Tuple, the protocol must be explicitly implemented.
+
+If you have a struct, you can derive the implementation specifying which fields should be encoded to JSON:
+
+    @derive {JSON.Encoder, only: [....]}
+    defstruct ...
+
+It is also possible to encode all fields, although this should be used carefully to avoid accidentally leaking private information when new fields are added:
+
+    @derive JSON.Encoder
+    defstruct ...
+
+Finally, if you don't own the struct you want to encode to JSON, you may use Protocol.derive/3 placed outside of any module:
+
+    Protocol.derive(JSON.Encoder, NameOfTheStruct, only: [...])
+    Protocol.derive(JSON.Encoder, NameOfTheStruct)
+
+Got value:
+
+    {:not_json}

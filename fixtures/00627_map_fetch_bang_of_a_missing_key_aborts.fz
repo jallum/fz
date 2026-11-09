@@ -1,5 +1,5 @@
 #---
-# purpose: "Map.fetch!/2 of a missing key aborts with KeyError, as Elixir raises KeyError"
+# purpose: "Map.fetch!/2 of a missing key aborts with KeyError and Elixir's message"
 # expect: abort
 # oracle: 00627_map_fetch_bang_of_a_missing_key_aborts.oracle.exs
 #---

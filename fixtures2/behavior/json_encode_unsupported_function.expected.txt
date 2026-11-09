@@ -1,0 +1,1 @@
+** (Protocol.UndefinedError) protocol JSON.Encoder not implemented for Function, the protocol must be explicitly implemented.

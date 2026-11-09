@@ -1,5 +1,5 @@
 #---
-# purpose: "byte_size/1 of a non-binary aborts with :badarg in a body, as Elixir raises ArgumentError"
+# purpose: "byte_size/1 of a non-binary aborts with ArgumentError and Elixir's message"
 # expect: abort
 # oracle: 00621_byte_size_of_a_non_binary_aborts.oracle.exs
 #---

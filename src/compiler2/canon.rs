@@ -1637,6 +1637,7 @@ impl ProgramCanon<'_> {
                 self.guard_dispatch(out, dispatch);
                 out.exit();
             }
+            PatternGuardExpr::Fails => out.put("guard_fails"),
             PatternGuardExpr::Extern { extern_fn, args } => {
                 out.enter(&format!("guard_extern {} {}", extern_fn.abi, extern_fn.symbol));
                 for arg in args {

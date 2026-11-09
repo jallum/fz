@@ -1237,10 +1237,8 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
                 .collect::<Result<Vec<_>, _>>()?;
             emit_guard_dispatch(body, ctx, dispatch, prepared, values, fail)?
         }
+        PatternGuardExpr::Fails => fail_guard(body, fail),
         PatternGuardExpr::Extern { extern_fn, args } => {
-            if extern_fn.fails_the_guard() {
-                return Ok(fail_guard(body, fail));
-            }
             let values = args
                 .iter()
                 .map(|arg| emit_dispatch_guard_expr(body, ctx, arg, fail, state))
@@ -1672,7 +1670,7 @@ fn collect_binary_literals_in_guard(expr: &ReceiveGuardExpr, out: &mut Vec<Vec<u
                 collect_binary_literals_in_guard(arg, out);
             }
         }
-        PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => {}
+        PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) | PatternGuardExpr::Fails => {}
     }
 }
 

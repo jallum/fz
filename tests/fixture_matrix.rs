@@ -275,6 +275,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             diagnostic_build_path_cleans_every_output,
         ),
         ("oracle_goldens_match_elixir", oracle_goldens_match_elixir),
+        (
+            "abort_stderr_goldens_are_in_oracle_output",
+            abort_stderr_goldens_are_in_oracle_output,
+        ),
     ]
 }
 
@@ -2343,6 +2347,44 @@ fn oracle_goldens_match_elixir() {
     assert!(
         failures.is_empty(),
         "oracle golden mismatches ({}):\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
+
+/// An `expect: abort` fixture with an oracle pins fz's failure line in
+/// `expected.stderr`; that line must be a substring of `expected.txt`, the
+/// output Elixir printed, so the pinned text is Elixir's own.
+fn abort_stderr_goldens_are_in_oracle_output() {
+    let mut failures: Vec<String> = Vec::new();
+    for fixture in discover() {
+        let Ok(header) = parse_header(&fixture) else {
+            continue;
+        };
+        if header.expect != Expect::Abort || header.oracle.is_none() {
+            continue;
+        }
+        let stderr_path = fixture.sidecar_path("expected.stderr");
+        let txt_path = fixture.sidecar_path("expected.txt");
+        let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
+        let needle = stderr.trim();
+        let txt = fs::read_to_string(&txt_path).unwrap_or_default();
+        if needle.is_empty() || !txt.contains(needle) {
+            failures.push(format!(
+                "{}: {} is not a substring of {}\n--- {}\n{}\n--- {}\n{}",
+                fixture.display_path().display(),
+                stderr_path.display(),
+                txt_path.display(),
+                stderr_path.display(),
+                needle,
+                txt_path.display(),
+                txt.trim_end()
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "abort stderr goldens outside their oracle output ({}):\n\n{}",
         failures.len(),
         failures.join("\n\n")
     );

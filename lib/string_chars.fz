@@ -8,7 +8,7 @@
 # compile time, naming this protocol, because fz knows the receiver's type
 # where Elixir has to wait until the call happens. A receiver whose family has
 # an implementation but whose value is out of range -- a bitstring that is not
-# byte-aligned -- cannot be known statically and panics at runtime, below.
+# byte-aligned -- cannot be known statically and raises at runtime, below.
 # Either way, there is no generic fallback: an unconvertible value never gets
 # printed as some structural approximation.
 #
@@ -65,7 +65,10 @@ defimpl String.Chars, for: Binary do
     if fz_bitstring_is_binary(s) == 1 do
       s
     else
-      Kernel.panic({:string_chars, :cannot_convert_a_bitstring_to_a_string, s})
+      raise(
+        Protocol.UndefinedError,
+        "protocol String.Chars not implemented for BitString, cannot convert a bitstring to a string\n\nGot value:\n\n    #{Kernel.inspect(s)}\n"
+      )
     end
   end
 

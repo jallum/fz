@@ -1,0 +1,6 @@
+#---
+# purpose: "Enum.map_every/3 with a negative step aborts with FunctionClauseError and Elixir's message"
+# expect: abort
+# oracle: 00724_enum_map_every_of_a_negative_step_raises_function_clause_error.oracle.exs
+#---
+def main(), do: Enum.map_every([1], -1, fn x -> x end)

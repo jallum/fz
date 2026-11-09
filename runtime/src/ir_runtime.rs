@@ -1140,7 +1140,7 @@ fn byte_aligned_binary_slice(word: u64, context: &str) -> (*const u8, usize) {
 
 /// Allocate `text` on the process heap as an fz binary.
 ///
-/// The three to-string primitives all end here, so the choice between an inline
+/// The to-string primitives and `fz_inspect` all end here, so the choice between an inline
 /// bitstring and a shared procbin is made once rather than per primitive.
 fn alloc_text(process: *mut Process, text: &str) -> u64 {
     let bytes = text.as_bytes();
@@ -1179,6 +1179,13 @@ pub extern "C" fn fz_integer_to_binary(process: *mut Process, value: i64) -> u64
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_float_to_binary(process: *mut Process, value: f64) -> u64 {
     alloc_text(process, &crate::any_value::debug::float_to_string(value))
+}
+
+/// The text `dbg` prints for the value, as a binary.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_inspect(process: *mut Process, ref_word: u64) -> u64 {
+    let value = any_value_from_ref_word(ref_word, "fz_inspect");
+    alloc_text(process, &render_value(process, value))
 }
 
 #[unsafe(no_mangle)]

@@ -1,1 +1,3 @@
-** (ErlangError) Erlang error: "KeyError"
+** (KeyError) key 2 not found in:
+
+    %{1 => :a}

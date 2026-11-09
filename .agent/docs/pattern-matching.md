@@ -408,11 +408,15 @@ node once:
   integer, and a reference word (`emit_receive_value_ref`).
 
 An extern whose return is `never` fails the guard and is not called. That is
-decided by the declared return, not by the name `panic`: `Kernel.panic/1` reaches
-`fz_panic :: never`, so a helper clause `def map_size(_), do: panic(:badmap)`
-makes the guard false for a non-map and fails the process in a body. A
-function's domain is therefore written once, in its Kernel heads, and the extern
-under it is only called inside the domain.
+decided by the declared return, not by a name: `Kernel.raise/2` reaches
+`fz_raise :: never`, so a helper clause
+`def tuple_size(_), do: raise(ArgumentError, "...")` makes the guard false for a
+non-tuple and raises `ArgumentError` in a body. A call that can only abort is
+one `PatternGuardExpr::Fails` node, made in `guard_expr_from_ast` for an extern
+returning `never` and for a helper whose every body is itself `Fails`: the callee
+is resolved before its arguments, so they are never built and no evaluator
+lowers them. A function's domain is therefore written once, in its Kernel heads,
+and the extern under it is only called inside the domain.
 
 Failing is propagated to the guard, not to the helper: a helper that matches
 nothing, or an extern that aborts, makes the whole guard false however deeply it

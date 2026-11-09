@@ -1,8 +1,7 @@
-value = hd([[]])
-
 try do
+  value = hd([[]])
   Enum.max(value)
-  raise "Enum.max accepted an empty list"
+  raise "no exception was raised"
 rescue
-  Enum.EmptyError -> :ok
+  e -> IO.puts(Exception.format_banner(:error, e, __STACKTRACE__))
 end

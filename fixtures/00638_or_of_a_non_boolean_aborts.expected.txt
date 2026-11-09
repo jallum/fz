@@ -1,0 +1,4 @@
+** (BadBooleanError) expected a boolean on left-side of "or", got:
+
+    nil
+

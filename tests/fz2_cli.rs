@@ -54,7 +54,11 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // whose proper-list check and abort path are bodies of their own.
         // fz-sc8.37: 619 -> 620. Kernel defines `&&`, `||` and `!` as macros.
         // 620 -> 624: a tuple-field demand derived from an `=` arm settles one round after the floor it replaces, with the same final facts.
-        runtime_demand_walks: 624,
+        // fz-sc8.64: 624 -> 626. `raise/2` and `fz_raise/2` are walked beside
+        // `panic/1` and `fz_panic/1`, and `main`'s lambdas 13 and 14 each run
+        // once more because `raise/2`'s demand concludes after their first
+        // runs.
+        runtime_demand_walks: 626,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -1766,8 +1770,7 @@ fn run_and_built_binary_report_runtime_dispatch_faults() {
 }
 
 /// Arithmetic is total at the foreign boundary; the single Kernel policy
-/// helper turns its status lane into the currently-approved loud `:badarith`
-/// endpoint.  Each invocation is a child process so that this intentionally
+/// helper turns its status lane into the loud `ArithmeticError`.  Each invocation is a child process so that this intentionally
 /// fatal policy is proven without taking down the test harness.  The result is
 /// deliberately unused: DCE must not erase a failed checked operation.
 #[test]
@@ -1789,7 +1792,7 @@ fn interp_run_and_built_binary_report_unused_arithmetic_failure() {
             "fz2 {command} must not continue after the arithmetic helper panics: {stdout:?}"
         );
         assert!(
-            stderr.contains("badarith"),
+            stderr.contains("** (ArithmeticError) bad argument in arithmetic expression"),
             "fz2 {command} must report the Kernel arithmetic reason: {stderr:?}"
         );
     }
@@ -1820,7 +1823,7 @@ fn interp_run_and_built_binary_report_unused_arithmetic_failure() {
         "built binary must not continue after arithmetic failure: {stdout:?}"
     );
     assert!(
-        stderr.contains("badarith"),
+        stderr.contains("** (ArithmeticError) bad argument in arithmetic expression"),
         "built binary must report the Kernel arithmetic reason: {stderr:?}"
     );
 
@@ -1873,10 +1876,10 @@ fn native_enum_take_positive_single_call_survives_reduction_yield() {
 
 #[test]
 fn native_enum_every_functions_reject_negative_intervals_consistently() {
-    for (name, expression) in [
-        ("map_every", "Enum.map_every([1, 2, 3], -1, fn (value) -> value end)"),
-        ("take_every", "Enum.take_every([1, 2, 3], -1)"),
-        ("drop_every", "Enum.drop_every([1, 2, 3], -1)"),
+    for (name, arity, expression) in [
+        ("map_every", 3, "Enum.map_every([1, 2, 3], -1, fn (value) -> value end)"),
+        ("take_every", 2, "Enum.take_every([1, 2, 3], -1)"),
+        ("drop_every", 2, "Enum.drop_every([1, 2, 3], -1)"),
     ] {
         let source_path = unique_temp_path(&format!("fz2_enum_{name}_negative"), ".fz");
         write(&source_path, format!("def main(), do: {expression}\n"))
@@ -1891,8 +1894,8 @@ fn native_enum_every_functions_reject_negative_intervals_consistently() {
         assert!(out.stdout.is_empty(), "Enum.{name} should not write stdout");
         assert_eq!(
             String::from_utf8_lossy(&out.stderr),
-            "** (ErlangError) Erlang error: \"Enum.OutOfBoundsError\"\n",
-            "Enum.{name} should use the established out-of-bounds failure"
+            format!("** (FunctionClauseError) no function clause matching in Enum.{name}/{arity}\n"),
+            "Enum.{name} should fail as Elixir's guard on the interval does"
         );
 
         let _ = remove_file(&source_path);
@@ -2108,7 +2111,12 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             ("ActivationInputs", 13),
             ("CallSiteSummary", 15),
             ("CallSiteTargets", 15),
-            ("IncomingInputSlot", 26),
+            // fz-sc8.64: 26 -> 28. Kernel's failure heads now reach `raise/2`
+            // and `fz_raise/2` where they reached `panic/1` and `fz_panic/1`;
+            // each of the pair has one more parameter than its predecessor
+            // (`raise/2` two, `panic/1` one), so each publishes one more
+            // slot.
+            ("IncomingInputSlot", 28),
             ("ReturnType", 14),
             ("RuntimeDemand", 14),
             ("RuntimeDemandInput", 13),
@@ -2377,7 +2385,15 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // function or executable a reach question touches) are among them.
         // fz-sc8.37: 308 -> 330 settled products, all changed. Kernel defines `&&`, `||` and `!`
         // as macros.
-        (330, 330, 330, 0, 12, 0),
+        // fz-sc8.64: 330 -> 335 settled products, all changed. The
+        // `raise/2` and `fz_raise/2` pair replaces `panic/1` and `fz_panic/1`
+        // one for one in every product kind but `transport_shape`
+        // (207 -> 212): `raise/2` and `fz_raise/2` carry two parameters where
+        // the pair they replace carried one, so each has one more
+        // `ExecutableInput` shape, `raise/2` one more `CallArg`, and
+        // `arithmetic_error/0`, which now calls `raise/2` with a message,
+        // gains a `CallArg` and a `Value` shape.
+        (335, 335, 335, 0, 12, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(
@@ -2465,14 +2481,18 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
     // never get a `DefineFunction` job either now: nothing calls them, so
     // nothing demands their definition at all.
     // fz-sc8.37: 15 -> 16. Kernel defines `&&`, `||` and `!` as macros.
-    assert_eq!(functions, 16, "the fixture compiles its known function population");
+    // fz-sc8.64: 16 -> 18. The fixture's `assert` keeps `panic/1` and
+    // `fz_panic/1` live, and Kernel's failure heads now also define `raise/2`
+    // and `fz_raise/2`.
+    assert_eq!(functions, 18, "the fixture compiles its known function population");
     assert_eq!(
         counter("fz.compiler2.entry_dispatch.defined"),
         // fz-xxd.11: 24 -> 15. The nine uncalled typed-clause externs named
         // above never get a `PlanEntryDispatch` job: nothing demands their
         // `EntryDispatch` once nothing calls them.
         // fz-sc8.37: 15 -> 16. Kernel defines `&&`, `||` and `!` as macros.
-        16,
+        // fz-sc8.64: 16 -> 18, the same `raise/2` and `fz_raise/2` pair.
+        18,
         "every called function plans its own entry dispatch",
     );
 }

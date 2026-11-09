@@ -1,1 +1,3 @@
-** (ErlangError) Erlang error: :badmap
+** (BadMapError) expected a map, got:
+
+    :x

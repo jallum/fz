@@ -1,8 +1,7 @@
-value = hd([:x])
-
 try do
+  value = hd([:x])
   map_size(value)
-  raise "map_size accepted a value outside its domain"
+  raise "no exception was raised"
 rescue
-  BadMapError -> :ok
+  e -> IO.puts(Exception.format_banner(:error, e, __STACKTRACE__))
 end

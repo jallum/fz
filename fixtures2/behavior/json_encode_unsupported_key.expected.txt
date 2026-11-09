@@ -1,0 +1,6 @@
+** (Protocol.UndefinedError) protocol String.Chars not implemented for Tuple
+
+Got value:
+
+    {:tuple, 1}
+

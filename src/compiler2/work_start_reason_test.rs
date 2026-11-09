@@ -329,7 +329,18 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.37: 2317 -> 2327 steps, 19 -> 21 runs-with-wake, 235 -> 236
         // executable facts. Kernel defines `&&`, `||` and `!` as macros.
         // 2327 -> 2331 steps: a tuple-field demand derived from an `=` arm settles one round after the floor it replaces, with the same final facts.
-        (2331, 9, 21, 236),
+        // fz-sc8.64: 2331 -> 2346 steps, executable facts stay 236. The
+        // fixture's own `panic("late ...")` calls keep `panic/1` and
+        // `fz_panic/1` live, while Kernel's heads and `arithmetic_error/0`
+        // now reach `raise/2` and `fz_raise/2`. Nine steps define that second
+        // pair (DefineFunction, ExpandFunctionSource, DeriveFunctionContract
+        // and PlanEntryDispatch two each, LowerFunction one). Six are
+        // ordering knock-ons: `raise/2`'s contract and `panic/1`'s demand now
+        // conclude after their callers' first runs (AnalyzeActivation:
+        // `arithmetic_error/0` +1, the panic/raise pair +1, `main`'s lambdas
+        // 12, 13 and 14 +1 each, `split_counted_finish` -1;
+        // DeriveRuntimeDemand: lambdas 13 and 14 +1 each).
+        (2346, 9, 21, 236),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -415,7 +426,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.9: 869 -> 870, the `@spec` that declares `proper_length`'s
         // domains.
         // fz-sc8.37: 870 -> 874. Kernel defines `&&`, `||` and `!` as macros.
-        874,
+        // fz-sc8.64: 874 -> 885, measured with the fifteen-step rise
+        // decomposed above; the two DeriveRuntimeDemand reruns are charged
+        // in the demand census below.
+        885,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -474,7 +488,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.9: 416 -> 417, the `@spec` that declares `proper_length`'s
         // domains.
         // fz-sc8.37: 417 -> 418. Kernel defines `&&`, `||` and `!` as macros.
-        418,
+        // fz-sc8.64: 418 -> 416, measured alongside the fifteen-step rise
+        // decomposed above.
+        416,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -527,7 +543,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // their own.
         // fz-sc8.37: (566, 568, [24, 235, 79, 230, 0]) -> (567, 569, [24, 236, 79, 230, 0]). Kernel defines `&&`, `||` and `!` as macros.
         // (567, 569, [24, 236, 79, 230, 0]) -> (571, 573, [24, 236, 82, 231, 0]): a tuple-field demand derived from an `=` arm settles one round after the floor it replaces, with the same final facts.
-        (571, 573, [24, 236, 82, 231, 0]),
+        // fz-sc8.64: (571, 573, [24, 236, 82, 231, 0]) -> (573, 575, [24, 236, 82, 233, 0]).
+        // `main`'s lambdas 13 and 14 each run `DeriveRuntimeDemand` once more
+        // because `raise/2`'s demand concludes after their first runs; both
+        // reruns are charged to the fourth cause.
+        (573, 575, [24, 236, 82, 233, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
@@ -657,7 +677,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.9: 619 holds; the three added frontier activations below
         // are each analyzed once.
         // fz-sc8.37: 619 -> 620. Kernel defines `&&`, `||` and `!` as macros.
-        620,
+        // fz-sc8.64: 620 -> 624. `arithmetic_error/0` is analyzed once more,
+        // the panic/raise pair once more, and `main`'s lambdas 12, 13 and 14
+        // once more each, while `split_counted_finish` is analyzed once
+        // fewer: `raise/2`'s contract concludes after its callers' first
+        // runs.
+        624,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();

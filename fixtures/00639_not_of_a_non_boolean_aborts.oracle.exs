@@ -1,8 +1,7 @@
-value = List.first([3])
-
 try do
+  value = List.first([3])
   not value
-  raise "not accepted a non-boolean"
+  raise "no exception was raised"
 rescue
-  ArgumentError -> :ok
+  e -> IO.puts(Exception.format_banner(:error, e, __STACKTRACE__))
 end

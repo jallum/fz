@@ -265,11 +265,26 @@ defmodule Map do
 
   """
   @spec fetch!(any, any) :: any
-  def fetch!(map, key), do: fetch_value(fetch(map, key))
+  def fetch!(map, key), do: fetch_value(fetch(map, key), map, key)
 
-  @spec fetch_value({:ok, any} | :error) :: any
-  defp fetch_value({:ok, value}), do: value
-  defp fetch_value(:error), do: panic("KeyError")
+  @spec fetch_value({:ok, any} | :error, any, any) :: any
+  defp fetch_value({:ok, value}, _map, _key), do: value
+  defp fetch_value(:error, map, key), do: key_error(map, key)
+
+  @doc """
+  Aborts with the `KeyError` for a `key` absent from `container`. `Map` and
+  `Keyword` both fail a missing key through it, so the message is built once.
+
+  ## Examples
+
+      Map.key_error([], :b)
+      # ** (KeyError) key :b not found in:
+      #
+      #     []
+  """
+  @spec key_error(any, any) :: never
+  def key_error(container, key),
+    do: raise(KeyError, "key " <> Kernel.inspect(key) <> " not found in:\n\n    " <> Kernel.inspect(container) <> "\n")
 
   @doc """
   Returns the map with `fun` applied to the value at `key`, and aborts with

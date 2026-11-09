@@ -18,11 +18,17 @@ and how the program's exit status follows from the main process.
 The export returns so each caller can end the process through its normal exit
 path. Nothing after a panic runs.
 
-`Kernel.raise/1` and `Kernel.raise/2` are plain fz code over `panic`.
-`raise(name, message)` panics with the exception map
+`Kernel.raise/1` and `Kernel.raise/2` are the door every library failure takes.
+`raise(name, message)` is `extern "fz" defp fz_raise(any, any) :: never`, whose
+physical export `fz_runtime::failure::fz_raise` panics with the exception map
 `%{__struct__: name, __exception__: true, message: message}`;
 `raise(message)` is `raise(RuntimeError, message)`. Both are imported into
-every namespace by `lib/runtime.fz`, beside `panic/1`.
+every namespace by `lib/runtime.fz`, beside `panic/1`. Outside `assert` and
+`refute`, the library calls `panic/1` only where Elixir itself raises a raw
+Erlang error (`JSON.encode!/1` of an invalid UTF-8 binary).
+
+`Kernel.inspect/1` renders a value as `dbg` does, as a binary, for the messages
+that show one; a map prints as `%{:a => 1}`, not `%{a: 1}`.
 
 ## The line
 
@@ -38,7 +44,35 @@ stacktrace:
 (`ArgumentError`, not `:"Elixir.ArgumentError"`). A reason atom such as
 `:badarg` prints as `** (ErlangError) Erlang error: :badarg`, as
 `:erlang.error(:badarg)` would in Elixir. Elixir normalizes a few reason atoms
-into named exceptions (`:badarith` becomes `ArithmeticError`); fz does not.
+into named exceptions (`:badarith` becomes `ArithmeticError`); fz does not, so
+the library raises the named exception itself.
+
+## The library's exceptions
+
+Every library failure raises the exception, with the message, Elixir does.
+`Kernel.raise/2` is the only caller of the primitive; a clause that cannot
+match is left to the decision's own `FunctionClauseError`.
+
+| failure | prints |
+|---|---|
+| `byte_size/1`, `tuple_size/1`, `length/1`, `elem/2` of the wrong kind | `** (ArgumentError) errors were found at the given arguments:` then the argument and what is wrong with it |
+| `map_size/1` of a non-map | `** (BadMapError) expected a map, got:` then the value |
+| `elem/2` with a non-integer index | `** (ArithmeticError) bad argument in arithmetic expression`, as Elixir adds one to the index |
+| `div/2`, `rem/2`, `/` and the other arithmetic that fails | `** (ArithmeticError) bad argument in arithmetic expression` |
+| `Map.fetch!/2`, `Map.update!/3`, `Keyword.fetch!/2` | `** (KeyError) key <key> not found in:` then the collection |
+| `Enum.max/1` and the other empty reductions | `** (Enum.EmptyError) empty error` |
+| `Enum.fetch!/2` | `** (Enum.OutOfBoundsError) out of bounds error at position <n> when traversing enumerable <enumerable>` |
+| `Enum.map_every/3`, `take_every/2`, `drop_every/2` with a negative step | `** (FunctionClauseError) no function clause matching in Enum.map_every/3` |
+| `String.to_integer/1`, `String.to_float/1` | `** (ArgumentError) errors were found at the given arguments:` then `not a textual representation of an integer` / `of a float` |
+| `JSON.decode!/1` | `** (JSON.DecodeError) invalid byte <n> at position (byte offset) <at>`, `unexpected end of JSON binary at ...` or `unexpected sequence <bytes> at ...` |
+| `JSON.encode!/1` of a value or key with no encoding | `** (Protocol.UndefinedError)` for `JSON.Encoder`, or for `String.Chars` on a key |
+| `JSON.encode!/1` of an invalid UTF-8 binary | `** (ErlangError) Erlang error: {:invalid_byte, <byte>}` or `:unexpected_end` |
+| `JSON.encode!/1` of a bitstring that is not a binary | `** (FunctionClauseError) no function clause matching in :elixir_json.encode_binary/1` |
+| `to_string/1` of a bitstring that is not a binary | `** (Protocol.UndefinedError) protocol String.Chars not implemented for BitString, cannot convert a bitstring to a string` |
+| `File` bang functions | `** (File.Error)`, `File.CopyError`, `File.RenameError` or `File.LinkError`, with reason `I/O error` |
+
+`assert/1,2` and `refute/1,2` are not Elixir's `Kernel`; they panic with their
+message as the raw reason.
 
 ## Decisions that run out of clauses
 
@@ -135,7 +169,7 @@ The fixture matrix pins this: an `expect: abort` fixture must exit exactly 1.
 - `runtime/src/failure.rs` — `failure_line`, `fz_panic`, `raise`,
   `message_showing`, `fz_raise`, `fz_raise_showing`, `STDERR_FAULT_HOOK`.
 - `src/dispatch_matrix/pattern/last_resort.rs` — `LastResort`.
-- `lib/kernel.fz` — `panic/1`, `raise/1`, `raise/2`.
+- `lib/kernel.fz` — `panic/1`, `raise/1`, `raise/2`, `inspect/1`.
 - `src/compiler2/native_codegen/prim.rs` — `end_failed_process`.
 - `src/compiler2/jobs/native.rs` — `raise_last_resort` (emits `Term::Raise`).
 - `src/compiler2/native_codegen/terminator.rs` — `emit_raise`.

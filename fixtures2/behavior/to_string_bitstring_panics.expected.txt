@@ -1,0 +1,6 @@
+** (Protocol.UndefinedError) protocol String.Chars not implemented for BitString, cannot convert a bitstring to a string
+
+Got value:
+
+    <<1::size(4)>>
+

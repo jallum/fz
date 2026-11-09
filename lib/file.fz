@@ -4,7 +4,9 @@ defmodule File do
 
   `File` calls libc directly. Successful operations return `:ok` or
   `{:ok, value}`; a failed C status becomes `{:error, :io}`. The bang forms
-  panic with that reason because fz does not yet provide Elixir exceptions.
+  raise the exception Elixir raises (`File.Error`, `File.CopyError`,
+  `File.RenameError` or `File.LinkError`), whose reason reads `I/O error`
+  for every failed C call: libc's `errno` is not read.
 
   `open/2` returns a resource and `close/1` claims that resource before
   closing it. A handle therefore closes exactly once across every alias. The
@@ -34,7 +36,7 @@ defmodule File do
   extern "C" defp libc::fopen(c_string, c_string) :: c_pointer
 
   @spec read!(binary) :: binary
-  def read!(path), do: read_value!(read(path))
+  def read!(path), do: read_value!(read(path), path)
 
   @doc "Writes `content` to `path`, replacing any prior contents."
   @spec write(binary, binary) :: :ok | {:error, :io}
@@ -47,10 +49,10 @@ defmodule File do
   def write(_path, _content, _modes), do: {:error, :badarg}
 
   @spec write!(binary, binary) :: :ok
-  def write!(path, content), do: result!(write(path, content))
+  def write!(path, content), do: result!(write(path, content), {:write, path})
 
   @spec write!(binary, binary, [atom]) :: :ok
-  def write!(path, content, modes), do: result!(write(path, content, modes))
+  def write!(path, content, modes), do: result!(write(path, content, modes), {:write, path})
 
   @doc "Creates one directory with mode `0o777` (subject to the process umask)."
   @spec mkdir(binary) :: :ok | {:error, :io}
@@ -62,10 +64,10 @@ defmodule File do
   extern "C" defp libc::mkdir(c_string, integer) :: c_int
 
   @spec mkdir!(binary) :: :ok
-  def mkdir!(path), do: result!(mkdir(path))
+  def mkdir!(path), do: result!(mkdir(path), {:mkdir, path})
 
   @spec mkdir!(binary, integer) :: :ok
-  def mkdir!(path, mode), do: result!(mkdir(path, mode))
+  def mkdir!(path, mode), do: result!(mkdir(path, mode), {:mkdir, path})
 
   @spec rm(binary) :: :ok | {:error, :io}
   def rm(path), do: status(libc::unlink(path))
@@ -73,7 +75,7 @@ defmodule File do
   extern "C" defp libc::unlink(c_string) :: c_int
 
   @spec rm!(binary) :: :ok
-  def rm!(path), do: result!(rm(path))
+  def rm!(path), do: result!(rm(path), {:rm, path})
 
   @spec rmdir(binary) :: :ok | {:error, :io}
   def rmdir(path), do: status(libc::rmdir(path))
@@ -81,7 +83,7 @@ defmodule File do
   extern "C" defp libc::rmdir(c_string) :: c_int
 
   @spec rmdir!(binary) :: :ok
-  def rmdir!(path), do: result!(rmdir(path))
+  def rmdir!(path), do: result!(rmdir(path), {:rmdir, path})
 
   @spec rename(binary, binary) :: :ok | {:error, :io}
   def rename(source, destination), do: status(libc::rename(source, destination))
@@ -89,19 +91,19 @@ defmodule File do
   extern "C" defp libc::rename(c_string, c_string) :: c_int
 
   @spec rename!(binary, binary) :: :ok
-  def rename!(source, destination), do: result!(rename(source, destination))
+  def rename!(source, destination), do: result!(rename(source, destination), {:rename, source, destination})
 
   @spec copy(binary, binary) :: {:ok, integer} | {:error, :io}
   def copy(source, destination), do: copy_read(read(source), destination)
 
   @spec copy!(binary, binary) :: integer
-  def copy!(source, destination), do: copy_value!(copy(source, destination))
+  def copy!(source, destination), do: copy_value!(copy(source, destination), source, destination)
 
   @spec cp(binary, binary) :: :ok | {:error, :io}
   def cp(source, destination), do: copy_result(copy(source, destination))
 
   @spec cp!(binary, binary) :: :ok
-  def cp!(source, destination), do: result!(cp(source, destination))
+  def cp!(source, destination), do: result!(cp(source, destination), {:copy, source, destination})
 
   @spec ln(binary, binary) :: :ok | {:error, :io}
   def ln(source, destination), do: status(libc::link(source, destination))
@@ -109,7 +111,7 @@ defmodule File do
   extern "C" defp libc::link(c_string, c_string) :: c_int
 
   @spec ln!(binary, binary) :: :ok
-  def ln!(source, destination), do: result!(ln(source, destination))
+  def ln!(source, destination), do: result!(ln(source, destination), {:ln, source, destination})
 
   @spec ln_s(binary, binary) :: :ok | {:error, :io}
   def ln_s(source, destination), do: status(libc::symlink(source, destination))
@@ -117,7 +119,7 @@ defmodule File do
   extern "C" defp libc::symlink(c_string, c_string) :: c_int
 
   @spec ln_s!(binary, binary) :: :ok
-  def ln_s!(source, destination), do: result!(ln_s(source, destination))
+  def ln_s!(source, destination), do: result!(ln_s(source, destination), {:ln_s, source, destination})
 
   @spec chmod(binary, integer) :: :ok | {:error, :io}
   def chmod(path, mode), do: status(libc::chmod(path, mode))
@@ -125,7 +127,7 @@ defmodule File do
   extern "C" defp libc::chmod(c_string, integer) :: c_int
 
   @spec chmod!(binary, integer) :: :ok
-  def chmod!(path, mode), do: result!(chmod(path, mode))
+  def chmod!(path, mode), do: result!(chmod(path, mode), {:chmod, path})
 
   @doc "Opens `path` as a C stream resource."
   @spec open(binary) :: {:ok, t} | {:error, :badarg | :io}
@@ -141,17 +143,17 @@ defmodule File do
   def open(_path, _modes), do: {:error, :badarg}
 
   @spec open!(binary) :: t
-  def open!(path), do: open_value!(open(path))
+  def open!(path), do: open_value!(open(path), path)
 
   @spec open!(binary, [atom]) :: t
-  def open!(path, modes), do: open_value!(open(path, modes))
+  def open!(path, modes), do: open_value!(open(path, modes), path)
 
   @doc "Closes an open handle once; every later alias receives `:closed`."
   @spec close(t) :: :ok | {:error, :closed | :io}
   def close(handle :: t), do: close_claim(Kernel.claim_resource(handle))
 
   @spec close!(t) :: :ok
-  def close!(handle), do: result!(close(handle))
+  def close!(handle), do: result!(close(handle), :close)
 
   @spec read_open(c_pointer) :: {:ok, binary} | {:error, :io}
   defp read_open(0), do: {:error, :io}
@@ -227,19 +229,53 @@ defmodule File do
   defp status(0), do: :ok
   defp status(_status), do: {:error, :io}
 
-  @spec read_value!({:ok, binary} | {:error, :io}) :: binary
-  defp read_value!({:ok, value}), do: value
-  defp read_value!({:error, reason}), do: panic(reason)
+  @spec read_value!({:ok, binary} | {:error, :io}, binary) :: binary
+  defp read_value!({:ok, value}, _path), do: value
+  defp read_value!({:error, reason}, path), do: raise_file({:read, path}, reason)
 
-  @spec copy_value!({:ok, integer} | {:error, :io}) :: integer
-  defp copy_value!({:ok, value}), do: value
-  defp copy_value!({:error, reason}), do: panic(reason)
+  @spec copy_value!({:ok, integer} | {:error, :io}, binary, binary) :: integer
+  defp copy_value!({:ok, value}, _source, _destination), do: value
+  defp copy_value!({:error, reason}, source, destination), do: raise_file({:copy, source, destination}, reason)
 
-  @spec open_value!({:ok, t} | {:error, :badarg | :io}) :: t
-  defp open_value!({:ok, value}), do: value
-  defp open_value!({:error, reason}), do: panic(reason)
+  @spec open_value!({:ok, t} | {:error, :badarg | :io}, binary) :: t
+  defp open_value!({:ok, value}, _path), do: value
+  defp open_value!({:error, reason}, path), do: raise_file({:open, path}, reason)
 
-  @spec result!(:ok | {:error, :badarg | :closed | :io}) :: :ok
-  defp result!(:ok), do: :ok
-  defp result!({:error, reason}), do: panic(reason)
+  @spec result!(:ok | {:error, :badarg | :closed | :io}, tuple | :close) :: :ok
+  defp result!(:ok, _operation), do: :ok
+  defp result!({:error, reason}, operation), do: raise_file(operation, reason)
+
+  # The exception and message Elixir's bang functions raise. `:io` is the
+  # failure of a C call, which Elixir spells `:eio`.
+  @spec raise_file(tuple | :close, atom) :: never
+  defp raise_file({:rename, source, destination}, reason),
+    do: raise(File.RenameError, "could not rename from #{Kernel.inspect(source)} to #{Kernel.inspect(destination)}: #{reason_text(reason)}")
+
+  defp raise_file({:copy, source, destination}, reason),
+    do: raise(File.CopyError, "could not copy from #{Kernel.inspect(source)} to #{Kernel.inspect(destination)}: #{reason_text(reason)}")
+
+  defp raise_file({:ln, existing, new}, reason),
+    do: raise(File.LinkError, "could not create hard link from #{Kernel.inspect(new)} to #{Kernel.inspect(existing)}: #{reason_text(reason)}")
+
+  defp raise_file({:ln_s, existing, new}, reason),
+    do: raise(File.LinkError, "could not create symlink from #{Kernel.inspect(new)} to #{Kernel.inspect(existing)}: #{reason_text(reason)}")
+
+  defp raise_file({operation, path}, reason),
+    do: raise(File.Error, "could not #{action(operation)} #{Kernel.inspect(path)}: #{reason_text(reason)}")
+
+  defp raise_file(:close, reason), do: raise(File.Error, "could not close file: #{reason_text(reason)}")
+
+  @spec action(atom) :: binary
+  defp action(:read), do: "read file"
+  defp action(:write), do: "write to file"
+  defp action(:mkdir), do: "make directory"
+  defp action(:rm), do: "remove file"
+  defp action(:rmdir), do: "remove directory"
+  defp action(:chmod), do: "change mode for"
+  defp action(:open), do: "open"
+
+  @spec reason_text(atom) :: binary
+  defp reason_text(:io), do: "I/O error"
+  defp reason_text(:badarg), do: "bad argument"
+  defp reason_text(:closed), do: "file already closed"
 end

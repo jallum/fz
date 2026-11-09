@@ -1,0 +1,6 @@
+#---
+# purpose: "JSON.decode!/1 of a bad escape sequence aborts with JSON.DecodeError and Elixir's message"
+# expect: abort
+# oracle: 00732_json_decode_bang_of_a_bad_escape_raises_decode_error.oracle.exs
+#---
+def main(), do: JSON.decode!("\"\\u00zz\"")
