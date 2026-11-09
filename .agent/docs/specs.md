@@ -32,15 +32,33 @@ Compiler2 owns the active contract path:
   arrows with obligations are skipped for fatal
   `spec/violation` decisions until protocol-domain validation is implemented;
   concrete arrows in the same overload set remain enforceable.
-- A call refines its inputs by each matched arrow's STRUCTURAL SURFACE
-  (`ContractArrow::structural`, `Types::structural_surface`): the arrow's
-  parameters and bounds with every protocol-domain marker read as `any`, the
-  reading the runtime type predicate gives the marker. `FunctionContract::apply`
-  returns `matched_arrows` from that surface, so `refine_contract_inputs` never
-  intersects an argument with a marker. A value typed only at runtime (a decoded
-  JSON list) therefore reaches `Enum.count(Enumerable.t(a))` as `any` and
-  dispatches on the protocol at runtime. Obligations, enforceability and
-  diagnostics keep reading the declared arrow.
+- A call's open inputs are instantiated by each matched arrow's STRUCTURAL
+  SURFACE (`ContractArrow::structural`, `Types::structural_surface`): the
+  arrow's parameters and bounds with every protocol-domain marker read as `any`,
+  the reading the runtime type predicate gives the marker.
+  `FunctionContract::apply` returns `matched_arrows` from that surface, and
+  `instantiate_open_inputs` (`compiler2/jobs/semantic.rs`) intersects it only
+  with a column whose observed type still carries type variables: evidence in
+  flight, such as an unannotated lambda's `fp[va0] a0`. That is how a contract
+  tells a callable argument what it will be called with: `make_resource(42,
+  fn x -> ... end)` keys the lambda on the integer its `(t) -> nil` parameter
+  instantiates to. Obligations, enforceability and diagnostics keep reading the
+  declared arrow.
+- A GROUND column is what the caller has and is never rewritten, whether it is
+  `any`, `int | nil` or `int`: the contract answers the call's verdict and
+  return, and the callee is keyed on the observed type. A caller that holds
+  `any` therefore keys its callee under `any`, whatever the callee's `@spec`
+  lists, so the callee's dispatch plan keeps its arm of last resort and a value
+  outside every clause raises `FunctionClauseError`. The plan's arm of last
+  resort goes only where the caller's own types prove nothing can miss
+  (`a_spec_does_not_narrow_the_any_a_caller_holds_into_its_callees_key`,
+  `a_caller_that_knows_its_argument_still_trims_the_callees_arm_of_last_resort`
+  in `compiler2/jobs/semantic_test.rs`; fixtures `00740` and `00749`). A value
+  typed only at runtime (a decoded JSON list) reaches
+  `Enum.count(Enumerable.t(a))` as `any` and dispatches on the protocol at
+  runtime. A ground column partly outside a clause's domain (`int | nil` into an
+  `integer` parameter) matches no arrow (`match_arrow`'s subset gate), so it
+  contributes nothing to any instantiation either.
 - Contract satisfaction is arrow-SET coverage, not just single-arrow
   subsumption: when no single arrow accepts a ground argument row,
   `FunctionContract::apply` checks whether the tuple of arguments is a subtype
@@ -73,7 +91,9 @@ Compiler2 owns the active contract path:
   ever sees it, to the clause's own declared domain — the parameter pattern
   closed from the clause's bounds alone, the same domain
   `ContractArrow::input_domain_row` reads for coverage — and matches on that
-  narrowed part. A column witnessed something merely PARTLY imprecise, such
+  narrowed part. The verdict and the result answer for that part; the call's
+  callee is still keyed on the `any` the caller holds (see above). A column
+  witnessed something merely PARTLY imprecise, such
   as a union with one member outside the domain, is not `any`, so it still
   needs the ordinary subset test to pass whole: `resource(t)` applied to a
   handle typed `any` answers on the resource domain, but applied to
@@ -173,10 +193,15 @@ Compiler2 owns the active contract path:
   `defp name/arity` under `lib/` and requires a matching `@spec name/arity`,
   while activated fixtures prove those declared domains remove the warnings
   without hiding genuine user fallthroughs.
-- Kernel arithmetic (`+ - * / %`) is fully specced in
+- Kernel arithmetic (`+ - * / % div rem` and `negate`) is fully specced in
   `lib/kernel.fz`, so provably non-numeric operands at
   a user callsite (e.g. `:bad + 1`) are fatal compile-time spec violations on
-  every path. `send/2` is specced `(pid, t)`: the receiver is a pid, gotten
+  every path. Each ends in a default clause outside its `@spec`
+  (`def _left + _right, do: arithmetic_error()`): the contract is the `@spec`,
+  so the clause adds no refusal and no result type (it returns `never`), and an
+  operand known only at runtime that is not a number reaches it and raises
+  `ArithmeticError` instead of a clause miss or a trap in a typed extern.
+  `send/2` is specced `(pid, t)`: the receiver is a pid, gotten
   from `self()` or `spawn`, and an integer such as `send(1, msg)` is rejected
   the same way.
 

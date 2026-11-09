@@ -1,0 +1,11 @@
+#---
+# purpose: "An integer-or-nil argument alongside an any one is keyed as the caller holds it, so the nil meets the callee's arm of last resort and aborts with FunctionClauseError"
+# expect: abort
+# oracle: 00749_a_partly_matching_argument_raises_function_clause_error.oracle.exs
+#---
+defmodule M do
+  @spec f(integer, integer) :: integer
+  def f(x :: integer, y :: integer), do: x + y
+end
+
+def main(), do: M.f(Enum.at([1], 5), JSON.decode!("1"))

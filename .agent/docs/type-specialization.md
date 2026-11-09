@@ -105,8 +105,12 @@ A call does not recurse into the callee's body. `resolve_function_call` computes
 the callee activation key (reading `Recursive`/`InputDemand`, see
 [`semantic-fixpoint`](semantic-fixpoint.md)), contributes the callee's input
 types to its `Activation` fact, and asks `World::answer_use` how to read its
-`ReturnType`. A partner reads it current and re-runs and re-unions on every
-later widen. Any other callee is read once concluded; until then the call
+`ReturnType`. The key is built from the argument types the caller observed.
+A ground argument is keyed as observed, `any` included, so a callee called with
+`any` keeps its dispatch plan's arm of last resort; only an argument still
+carrying type variables is instantiated from the callee's `@spec`
+(`instantiate_open_inputs`, see [`specs`](specs.md)). A partner reads it current and re-runs and
+re-unions on every later widen. Any other callee is read once concluded; until then the call
 returns `CallReturn::Awaited`, the value it would have delivered is marked
 unknown, and that mark propagates through every value computed from it
 (`SemanticValues::any_unknown`) to the activation's own return: an unknown

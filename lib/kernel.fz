@@ -21,10 +21,12 @@ defmodule Kernel do
       `is_atom/1`, `is_boolean/1` and `is_nil/1`, all of which a guard may call
 
   Every arithmetic and comparison operator is a typed clause family: one
-  clause per pair of operand types it supports. Arithmetic has no catch-all,
-  so a pair outside that set is refused at compile time rather than answered.
-  Ordering, equality and identity are total, and add an `any`/`any` clause
-  for every other pair of values.
+  clause per pair of operand types it supports. The `@spec` of an arithmetic
+  operator lists only the number pairs, so a call whose operands are proven
+  not to be numbers is refused at compile time. Operands known only at runtime
+  reach a final default clause, which raises `ArithmeticError`. Ordering,
+  equality and identity are total, and add an `any`/`any` clause for every
+  other pair of values.
   """
 
   @doc """
@@ -332,6 +334,10 @@ defmodule Kernel do
   # Arithmetic exports are total and communicate domain failures as an
   # unboxed `{result, boolean}` pair. This is the sole source-level policy
   # point: every failed arithmetic operation raises through `arithmetic_error/0`.
+  # Each arithmetic function ends in a default clause outside its `@spec` that
+  # calls it, so an operand that is not a number, known only at runtime, raises
+  # `ArithmeticError` where a typed clause would otherwise be missed. The
+  # default clause returns `never`, so it adds nothing to the result type.
   @spec arithmetic_error() :: never
   defp arithmetic_error(), do: raise(ArithmeticError, "bad argument in arithmetic expression")
 
@@ -365,6 +371,8 @@ defmodule Kernel do
   @doc """
   Returns the negation of `x`.
 
+  Raises `ArithmeticError` when `x` is not a number.
+
   This is what `-x` compiles to when `x` is not a literal.
 
   ## Examples
@@ -380,12 +388,15 @@ defmodule Kernel do
   @spec negate(float) :: float
   def negate(x :: integer), do: arithmetic_result(fz_op_neg_i(x))
   def negate(x :: float), do: fz_op_neg_f(x)
+  def negate(_), do: arithmetic_error()
 
   extern "C" defp fz_op_neg_i(integer) :: {integer, boolean}
   extern "C" defp fz_op_neg_f(float) :: float
 
   @doc """
   Returns the sum of `left` and `right`.
+
+  Raises `ArithmeticError` when an operand is not a number.
 
   Mixing an integer and a float returns a float.
 
@@ -406,6 +417,7 @@ defmodule Kernel do
   def (left :: integer) + (right :: float), do: arithmetic_result(fz_op_add_if(left, right))
   def (left :: float) + (right :: integer), do: arithmetic_result(fz_op_add_if(right, left))
   def (left :: float) + (right :: float), do: arithmetic_result(fz_op_add_ff(left, right))
+  def _left + _right, do: arithmetic_error()
 
   extern "C" defp fz_op_add_ii(integer, integer) :: {integer, boolean}
   extern "C" defp fz_op_add_if(integer, float) :: {float, boolean}
@@ -413,6 +425,8 @@ defmodule Kernel do
 
   @doc """
   Returns the difference of `left` and `right`.
+
+  Raises `ArithmeticError` when an operand is not a number.
 
   Mixing an integer and a float returns a float.
 
@@ -433,6 +447,7 @@ defmodule Kernel do
   def (left :: integer) - (right :: float), do: arithmetic_result(fz_op_sub_if(left, right))
   def (left :: float) - (right :: integer), do: arithmetic_result(fz_op_sub_fi(left, right))
   def (left :: float) - (right :: float), do: arithmetic_result(fz_op_sub_ff(left, right))
+  def _left - _right, do: arithmetic_error()
 
   extern "C" defp fz_op_sub_ii(integer, integer) :: {integer, boolean}
   extern "C" defp fz_op_sub_if(integer, float) :: {float, boolean}
@@ -441,6 +456,8 @@ defmodule Kernel do
 
   @doc """
   Returns the product of `left` and `right`.
+
+  Raises `ArithmeticError` when an operand is not a number.
 
   Mixing an integer and a float returns a float.
 
@@ -461,6 +478,7 @@ defmodule Kernel do
   def (left :: integer) * (right :: float), do: arithmetic_result(fz_op_mul_if(left, right))
   def (left :: float) * (right :: integer), do: arithmetic_result(fz_op_mul_if(right, left))
   def (left :: float) * (right :: float), do: arithmetic_result(fz_op_mul_ff(left, right))
+  def _left * _right, do: arithmetic_error()
 
   extern "C" defp fz_op_mul_ii(integer, integer) :: {integer, boolean}
   extern "C" defp fz_op_mul_if(integer, float) :: {float, boolean}
@@ -472,6 +490,8 @@ defmodule Kernel do
   # `3 + 5 / 10` needs `3.5`.
   @doc """
   Returns the quotient of `left` and `right`, as a float.
+
+  Raises `ArithmeticError` when an operand is not a number.
 
   For the truncating integer quotient, see `div/2`.
 
@@ -492,6 +512,7 @@ defmodule Kernel do
   def (left :: integer) / (right :: float), do: arithmetic_result(fz_op_div_if(left, right))
   def (left :: float) / (right :: integer), do: arithmetic_result(fz_op_div_fi(left, right))
   def (left :: float) / (right :: float), do: arithmetic_result(fz_op_div_ff(left, right))
+  def _left / _right, do: arithmetic_error()
 
   extern "C" defp fz_op_div_ii_to_float(integer, integer) :: {float, boolean}
   extern "C" defp fz_op_div_if(integer, float) :: {float, boolean}
@@ -500,6 +521,8 @@ defmodule Kernel do
 
   @doc """
   Returns the truncating integer quotient of `left` divided by `right`.
+
+  Raises `ArithmeticError` when an operand is not an integer, or `right` is zero.
 
   Unlike `/`, which always returns a float, `div/2` discards the remainder.
 
@@ -510,13 +533,16 @@ defmodule Kernel do
 
   """
   @spec div(integer, integer) :: integer
-  def div(left, right), do: arithmetic_result(fz_op_div_ii(left, right))
+  def div(left :: integer, right :: integer), do: arithmetic_result(fz_op_div_ii(left, right))
+  def div(_, _), do: arithmetic_error()
 
   extern "C" defp fz_op_div_ii(integer, integer) :: {integer, boolean}
 
   @doc """
   Returns the remainder of `left` divided by `right`, with the sign of
   `left`.
+
+  Raises `ArithmeticError` when an operand is not an integer, or `right` is zero.
 
   ## Examples
 
@@ -528,11 +554,14 @@ defmodule Kernel do
 
   """
   @spec rem(integer, integer) :: integer
-  def rem(left, right), do: arithmetic_result(fz_op_rem_ii(left, right))
+  def rem(left :: integer, right :: integer), do: arithmetic_result(fz_op_rem_ii(left, right))
+  def rem(_, _), do: arithmetic_error()
 
   @doc """
   Returns the remainder of `left` divided by `right`; the operator form of
   `rem/2`.
+
+  Raises `ArithmeticError` when an operand is not a number.
 
   ## Examples
 
@@ -551,6 +580,7 @@ defmodule Kernel do
   def (left :: integer) % (right :: float), do: arithmetic_result(fz_op_rem_if(left, right))
   def (left :: float) % (right :: integer), do: arithmetic_result(fz_op_rem_fi(left, right))
   def (left :: float) % (right :: float), do: arithmetic_result(fz_op_rem_ff(left, right))
+  def _left % _right, do: arithmetic_error()
 
   extern "C" defp fz_op_rem_ii(integer, integer) :: {integer, boolean}
   extern "C" defp fz_op_rem_if(integer, float) :: {float, boolean}

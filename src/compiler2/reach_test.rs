@@ -163,7 +163,12 @@ fn static_reach_work_on_enum_take_drop_split_is_proportional_to_edges() {
     // of `Enum.map_every/2`, `take_every/2` and `drop_every/2` and the three
     // `reduce_first` catch-alls are gone, so four fewer call edges are
     // reached; the function and evaluation counts are unchanged.
-    assert_eq!((functions, edges, evaluations), (106, 145, 208));
+    // fz-sc8.62: (106, 145, 208) -> (106, 147, 207). `Kernel.+/2` and
+    // `Kernel.-/2` end in a default clause that calls `arithmetic_error/0`,
+    // so each gains that successor; `arithmetic_result/1` is evaluated twice
+    // instead of three times, one fewer wait on a callee the operators now
+    // reach directly. The function count is unchanged.
+    assert_eq!((functions, edges, evaluations), (106, 147, 207));
     assert!(
         evaluations <= functions + edges,
         "each function evaluates once to discover its callees and once more for each callee it waits on"

@@ -1984,7 +1984,7 @@ fn apply_function_contract(
             violation_span,
         ));
     }
-    let refined_inputs = refine_contract_inputs(
+    let refined_inputs = instantiate_open_inputs(
         world,
         input_types,
         application.matched_arrows.iter().map(|params| params.as_slice()),
@@ -2080,7 +2080,23 @@ fn emit_spec_violation(
     FatalError
 }
 
-fn refine_contract_inputs<'a>(world: &mut World, observed: Vec<Ty>, arrows: impl Iterator<Item = &'a [Ty]>) -> Vec<Ty> {
+/// Instantiates the open columns of a call's inputs from the matched clauses.
+/// A column whose observed type still carries type variables is evidence in
+/// flight, and intersecting it with what the clauses instantiated for it is
+/// how a contract tells a callable argument what it will be called with:
+/// `make_resource(42, fn x -> ... end)` turns the lambda's `fp[va0] a0` into
+/// the integer its `(t) -> nil` parameter instantiates to.
+///
+/// A ground column is what the caller has, and is never touched, whether it is
+/// `any`, `int | nil` or `int`. A spec's domain must not stand in for it: keyed
+/// on the domain, the callee's plan would prove its clauses cover and drop its
+/// arm of last resort, and a value outside the spec would run a clause it does
+/// not belong to.
+fn instantiate_open_inputs<'a>(
+    world: &mut World,
+    observed: Vec<Ty>,
+    arrows: impl Iterator<Item = &'a [Ty]>,
+) -> Vec<Ty> {
     let mut joined = Vec::<Option<Ty>>::new();
     for params in arrows {
         if joined.len() < params.len() {
@@ -2100,6 +2116,9 @@ fn refine_contract_inputs<'a>(world: &mut World, observed: Vec<Ty>, arrows: impl
             let Some(surface) = joined.get(index).and_then(|ty| *ty) else {
                 return input;
             };
+            if !world.types().has_vars(&input) {
+                return input;
+            }
             let refined = world.types_mut().intersect(input, surface);
             if world.types().is_empty(&refined) {
                 input
