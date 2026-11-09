@@ -12,11 +12,15 @@
     {
       "text": "Sequencing: based off 243d62f89 (#278 head) now by the user's instruction; rebase onto fz-sc8.63/.64 when they land. The abort fixtures' rescuing twins come with that rebase (needs .64's exception names).",
       "timestamp": "2026-11-08T00:15:25Z"
+    },
+    {
+      "text": "2026-11-09, coordinator fz-xxd13-build-8d: stack #274's prefix #268-#284 (develop through fz-sc8.62) is SQUASH-MERGED into develop (develop now 4bab6bba1, tree identical to 678f06df1). PR #280 was retargeted to develop but still carries the pre-squash commits, so GitHub shows it CONFLICTING and CI will not run. The fix is a pure rebase with no conflicts (trial-run: resulting tree identical to 13688c71a): in /Users/j5n/Workspace/fz-exceptions, git fetch origin \u0026\u0026 git rebase --onto origin/develop 678f06df1 fz-3ul/exceptions \u0026\u0026 git push --force-with-lease=fz-3ul/exceptions:13688c71a origin fz-3ul/exceptions. Separately, before #280 lands: its fixtures 00733-00739 and 00750-00793 (51 files) sit in fz-sc8's block, and 44 of those numbers are taken on develop's upcoming stack (#285 and up) by other fixtures; git reports no conflict because the names differ. Renumber them into fz-3ul's block 00800-00899. The fz-sc8 stack above develop is now #285 (.57) through #294 (.10, head a3bc3efce).",
+      "timestamp": "2026-11-09T22:52:45Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Exceptions: try, rescue, catch and after over the one failure route",
   "type": "epic",
-  "updated_at": "2026-11-08T23:07:55Z"
+  "updated_at": "2026-11-09T22:52:45Z"
 }
