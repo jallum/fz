@@ -52,9 +52,8 @@ pub type OutputHook = unsafe extern "C" fn(context: *const (), line_ptr: *const 
 /// later cancellation.
 pub type TimerScheduleHook = extern "C" fn(scheduler: *mut (), pid: u32, after_ms: u64) -> u64;
 
-/// fz-yxs/fz-st5 — counterpart cancel hook, fired when a matcher hit
-/// (sender-probe or initial-scan) wakes the receiver before the timer
-/// expires. No-op when `timer_id` is unknown (already fired).
+/// fz-yxs/fz-st5 — counterpart cancel hook, fired when a sender-probe
+/// matcher hit wakes the receiver before the timer expires. No-op when `timer_id` is unknown (already fired).
 pub type TimerCancelHook = extern "C" fn(scheduler: *mut (), timer_id: u64);
 
 // fz-vdt ctx.4-6: the per-thread scheduler-hook slots are gone. Each callback

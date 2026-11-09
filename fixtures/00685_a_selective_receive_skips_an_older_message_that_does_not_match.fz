@@ -1,0 +1,20 @@
+#---
+# purpose: "a receive for a later message leaves the older one in the mailbox for the next receive"
+# oracle: 00685_a_selective_receive_skips_an_older_message_that_does_not_match.oracle.exs
+#---
+def main() do
+  me = self()
+  spawn(fn () -> send(me, :child) end)
+  send(me, :x)
+  send(me, :y)
+  a = receive do
+    :y -> :y
+  end
+  b = receive do
+    :x -> :x
+  end
+  c = receive do
+    :child -> :child
+  end
+  dbg({a, b, c})
+end

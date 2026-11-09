@@ -20,8 +20,8 @@
 //!
 //! Concurrency: a cooperative run-queue scheduler (fz-sched.1/2). Spawned
 //! processes are enqueued and driven by `aot_run_queue_loop` in
-//! `fz_aot_run_main`. `fz_receive_park_matched` parks a process (sets state =
-//! Blocked / Ready); `aot_send_hook` wakes blocked receivers through the
+//! `fz_aot_run_main`. `fz_receive_park_matched` decides a receive where it is reached and
+//! parks the process (state = Blocked) only on a miss; `aot_send_hook` wakes blocked receivers through the
 //! selective-receive probe path. This matches the JIT's `run_until_idle`
 //! semantics.
 
@@ -32,9 +32,7 @@ use crate::heap::{Heap, Schema, SchemaRegistry, deep_copy_any_value_ref};
 use crate::pinned_abi::{call1, call2};
 use crate::procbin::mso_drop_all_deferred;
 use crate::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
-use crate::sched::{
-    ProbeOutcome, ScanOutcome, fire_after_timer, initial_scan, mint_entry_thunk, mint_main_inner, probe_sender,
-};
+use crate::sched::{ProbeOutcome, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender};
 use crate::timer::TimerWheel;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -535,8 +533,8 @@ extern "C" fn aot_timer_cancel_hook(scheduler: *mut (), timer_id: u64) {
 }
 
 /// Send hook (fz-sched.2). Pushes a message into the receiver's mailbox.
-/// Selective-receive arrivals route through `sched::probe_sender`, which
-/// flips a matched blocked receiver to Ready and enqueues it.
+/// Every arrival routes through `sched::probe_sender`, which flips a
+/// matched waiting receiver to Ready and enqueues it.
 extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64) {
     let msg = AnyValueRef::from_raw_word(msg_ref_word).expect("aot_send message ref");
     assert!(!sender_ptr.is_null(), "aot_send_hook: no sender process");
@@ -555,17 +553,7 @@ extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiv
             let sender = unsafe { &*sender_ptr };
             deep_copy_send_ref_for_aot(sender, task, msg)
         };
-        if task.wait.is_some() {
-            matches!(probe_sender(task, msg), ProbeOutcome::Hit)
-        } else {
-            task.mailbox.push_back(msg);
-            if task.state == ProcessState::Blocked {
-                task.state = ProcessState::Ready;
-                true
-            } else {
-                false
-            }
-        }
+        matches!(probe_sender(task, msg), ProbeOutcome::Hit)
     };
     if wake {
         unsafe { (*sched).run_queue.push_back(receiver_pid) };
@@ -716,25 +704,13 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
     });
 
     // Mark Running so a clean halt (no selective-receive park call) is
-    // distinguishable from Blocked/Ready after dispatch.
+    // distinguishable from Blocked after dispatch.
     unsafe {
         (*proc_ptr).state = ProcessState::Running;
         (*proc_ptr).reset_reduction_budget();
         (*proc_ptr).ctx = &mut (*sched).ctx;
         debug_assert!(!(*proc_ptr).ctx.is_null(), "aot ctx installed");
     };
-
-    // fz-qw6 — selective-receive initial scan lifted to runtime::sched.
-    let process = unsafe { &mut *proc_ptr };
-    match initial_scan(process) {
-        ScanOutcome::Hit => {
-            // Fall through to the resume below.
-        }
-        ScanOutcome::Miss => {
-            return;
-        }
-        ScanOutcome::NotApplicable => {}
-    }
 
     fn run_scheduler_closure(resume_addr: *const u8, process: *mut Process, closure: *mut u8) {
         let _ = unsafe { call1(resume_addr, process, closure_ref_word(closure)) };
@@ -743,9 +719,8 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
     // One re-entry verb: resume the task's `runnable` closure (a fresh entry
     // thunk for a spawned task / main, or a continuation for a receive or
     // mid-flight wakeup). Bound args travel in the closure env.
-    if let Some(closure) = unsafe { (*proc_ptr).take_runnable_closure() } {
-        run_scheduler_closure(addrs.resume, proc_ptr, closure);
-    }
+    let closure = unsafe { (*proc_ptr).take_runnable_closure() }.expect("a dispatched process has a runnable closure");
+    run_scheduler_closure(addrs.resume, proc_ptr, closure);
     // Post-quantum state check.
     let state = unsafe { (*proc_ptr).state };
     let has_runnable = unsafe { (*proc_ptr).runnable.is_some() };
@@ -764,9 +739,7 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
             (*proc_ptr).state = ProcessState::Ready;
             (*sched).run_queue.push_back(pid);
         }
-    } else if state == ProcessState::Ready {
-        unsafe { (*sched).run_queue.push_back(pid) };
-    } else if state == ProcessState::Running && unsafe { (*proc_ptr).wait.is_none() } {
+    } else if state == ProcessState::Running {
         // fz-4mk.3b — task halted; flush MSO resources through the dtor
         // drain shim before the heap drops.
         unsafe { (*proc_ptr).state = ProcessState::Exited };
@@ -787,9 +760,7 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
 /// dispatch one quantum.
 ///
 /// Dispatch inside `dispatch_quantum`:
-///   1. selective-receive initial scan (fz-qw6 helper) — Hit moves the
-///      outcome into `runnable`; Miss returns the task to Blocked.
-///   2. resume `runnable` through `fz_resume` — the one re-entry verb,
+///   resume `runnable` through `fz_resume` — the one re-entry verb,
 ///      whether it holds a fresh-task entry thunk or a continuation.
 fn aot_run_queue_loop(sched: *mut AotScheduler) {
     let addrs = unsafe {

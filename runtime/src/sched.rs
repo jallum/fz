@@ -1,6 +1,6 @@
 //! fz-qw6 — selective-receive scheduler primitives.
 //!
-//! The same three operations — sender-probe, initial-scan, after-timer
+//! The same three operations — receive-reach, sender-probe, after-timer
 //! fire — drive `Term::ReceiveMatched` on every execution path. JIT
 //! state lives in `Runtime` (src/runtime.rs); AOT state lives in the
 //! thread-locals on `aot_shim`. Both call into the same pure helpers
@@ -12,12 +12,11 @@
 //! whichever wheel the caller installed.
 
 use crate::any_value::{self, AnyValue, AnyValueRef, ValueKind};
-use crate::exec_ctx::timer_cancel;
+use crate::exec_ctx::{timer_cancel, timer_schedule};
 use crate::heap::Heap;
-use crate::park::materialize_outcome_closure;
+use crate::park::{ParkRecord, materialize_outcome_closure};
 use crate::process::{Process, ProcessState};
 use crate::timer::TimerId;
-use std::collections::VecDeque;
 use std::ptr::write;
 
 /// Mint a fresh-task entry thunk on `heap`: a one-capture closure whose code
@@ -75,23 +74,24 @@ pub fn mint_main_inner(
 pub enum ProbeOutcome {
     /// Matcher hit: caller should enqueue the receiver for dispatch.
     Hit,
-    /// No matcher hit (either no `wait` or the matcher
-    /// rejected). Message is in the mailbox; caller must NOT do the
-    /// non-selective Blocked→Ready wake — a selective-receive park is not
-    /// satisfied by a generic arrival.
+    /// No matcher hit (either no `wait` or the matcher rejected). Message is
+    /// in the mailbox and nothing wakes: a parked receive is not satisfied by
+    /// a generic arrival.
     Miss,
 }
 
-/// Sender-side selective-receive probe. Called on `send` arrival.
+/// Sender-side selective-receive probe. Called on `send` arrival, with `msg`
+/// already copied into the receiver's heap. One answer to "does this send
+/// wake a waiting receive?" for every execution path.
 ///
-/// If `task.wait.is_some()`, run its matcher against `msg`:
+/// If `task.wait.is_some()`, the receive has already searched the mailbox, so
+/// only `msg` is tested against its matcher:
 /// - Hit: clear `wait`, cancel after-timer (via
 ///   `dispatch_timer_cancel`), set `runnable_closure`, flip
 ///   Ready. Caller enqueues.
 /// - Miss: push msg to mailbox. Caller does NOT wake.
 ///
-/// If not parked: push msg to mailbox. Returns Miss; caller may apply
-/// the non-selective wake rule itself.
+/// If not parked: push msg to mailbox. Returns Miss.
 pub fn probe_sender(task: &mut Process, msg: AnyValueRef) -> ProbeOutcome {
     let task_ptr: *mut Process = task;
     if let Some(park) = task.wait.as_ref() {
@@ -121,65 +121,44 @@ pub fn probe_sender(task: &mut Process, msg: AnyValueRef) -> ProbeOutcome {
     }
 }
 
-/// Outcome of `initial_scan`.
+/// What reaching a `receive` does to the running process.
 #[derive(Debug, PartialEq, Eq)]
-pub enum ScanOutcome {
-    /// Matcher hit during the mailbox walk; `runnable_closure`
-    /// is set, caller should dispatch.
-    Hit,
-    /// `wait` was set but no message matched. Task is now
-    /// Blocked; mailbox left intact (save-queue semantics).
-    Miss,
-    /// No `wait` or empty mailbox. No state change.
-    NotApplicable,
+pub enum ReceiveStep {
+    /// The receive is decided: run this closure now (the matched clause's
+    /// outcome closure, or the `after` body). The process keeps running.
+    Continue(*mut u8),
+    /// Nothing matched and the receive must wait. `wait` is recorded, the
+    /// after-timer (if any) is armed and the process is Blocked.
+    Parked,
 }
 
-/// Initial-scan entry. Called when a task wakes Ready with a
-/// `wait` and mailbox messages already present.
+/// A receive, decided where it is reached. Walks the mailbox oldest first
+/// trying the matcher on each message:
+/// - Hit: splice the message out (the rest keep their order) and continue
+///   with the clause's outcome closure.
+/// - Miss with `after 0`: continue with the `after` body.
+/// - Miss otherwise: record `park` as `wait`, arm the after-timer for a
+///   positive `after`, and Block. The mailbox is left intact (save-queue rule).
 ///
-/// Walks mailbox in arrival order trying the matcher on each message.
-/// First hit: splice the message out, restore the rejected prefix in
-/// original order, cancel after-timer, set `runnable_closure`.
-/// No hit: state ← Blocked; mailbox untouched (Erlang save-queue rule).
-pub fn initial_scan(task: &mut Process) -> ScanOutcome {
-    if task.wait.is_none() || task.mailbox.is_empty() {
-        return ScanOutcome::NotApplicable;
-    }
+/// A process with `wait` set has therefore always searched its whole
+/// mailbox, so a sender only has to test its own message.
+pub fn reach_receive(task: &mut Process, mut park: ParkRecord) -> ReceiveStep {
     let task_ptr: *mut Process = task;
-
-    let mut hit: Option<(usize, Vec<AnyValueRef>)> = None;
-    let mut scanned: VecDeque<AnyValueRef> = VecDeque::new();
-    while let Some(msg) = task.mailbox.pop_front() {
-        let park = task.wait.as_ref().expect("checked above");
-        match park.try_match(task_ptr, msg) {
-            Some(h) => {
-                hit = Some(h);
-                break;
-            }
-            None => scanned.push_back(msg),
-        }
+    let hit = (0..task.mailbox.len()).find_map(|i| {
+        park.try_match(task_ptr, task.mailbox[i])
+            .map(|(clause_idx, bound_vals)| (i, clause_idx, bound_vals))
+    });
+    if let Some((i, clause_idx, bound_vals)) = hit {
+        task.mailbox.remove(i);
+        return ReceiveStep::Continue(park.outcome_closure(&mut task.heap, clause_idx, &bound_vals));
     }
-    while let Some(m) = scanned.pop_back() {
-        task.mailbox.push_front(m);
-    }
-
-    match hit {
-        Some((clause_idx, bound_vals)) => {
-            let (template, timer_id) = {
-                let park = task.wait.as_ref().expect("checked above");
-                (park.clause_bodies[clause_idx], park.after_timer_id)
-            };
-            let cont = materialize_outcome_closure(&mut task.heap, template, &bound_vals);
-            task.wait = None;
-            if let Some(id) = timer_id {
-                timer_cancel(task, id);
-            }
-            task.set_runnable_closure(cont);
-            ScanOutcome::Hit
-        }
-        None => {
+    match park.after_deadline_ms {
+        Some(0) => ReceiveStep::Continue(park.after_cont),
+        after_ms => {
+            park.after_timer_id = after_ms.and_then(|ms| timer_schedule(task, task.pid, ms));
+            task.wait = Some(Box::new(park));
             task.state = ProcessState::Blocked;
-            ScanOutcome::Miss
+            ReceiveStep::Parked
         }
     }
 }

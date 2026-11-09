@@ -8,7 +8,6 @@ use fz_runtime::any_value::{AnyValue, AnyValueRef, ValueKind};
 use fz_runtime::heap::SchemaRegistry;
 use fz_runtime::pinned_abi::call1;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
-use fz_runtime::sched::{ScanOutcome, initial_scan};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr::null_mut;
@@ -146,15 +145,6 @@ impl CompiledModule {
             process.clear_yield_reasons();
         }
 
-        match initial_scan(process) {
-            ScanOutcome::Hit => {}
-            ScanOutcome::Miss => {
-                process.next_frame = null_mut();
-                return;
-            }
-            ScanOutcome::NotApplicable => {}
-        }
-
         fn run_scheduler_closure(resume_addr: *const u8, process: &mut Process, closure: *mut u8) {
             let closure = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure as *const u8)
                 .expect("scheduler closure ref")
@@ -163,13 +153,12 @@ impl CompiledModule {
             let _ = unsafe { call1(resume_addr, process_ptr, closure) };
         }
 
-        if let Some(closure) = process.take_runnable_closure() {
-            run_scheduler_closure(self.resume_addr, process, closure);
-            process.next_frame = null_mut();
-            park_time_gc(process);
-        } else {
-            process.next_frame = null_mut();
-        }
+        let closure = process
+            .take_runnable_closure()
+            .expect("a dispatched process has a runnable closure");
+        run_scheduler_closure(self.resume_addr, process, closure);
+        process.next_frame = null_mut();
+        park_time_gc(process);
     }
 }
 

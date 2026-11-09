@@ -1,0 +1,20 @@
+#---
+# purpose: "three receives with no selection take a self-send first and then each child's message in the order the children ran"
+# oracle: 00681_three_bare_receives_take_messages_in_arrival_order.oracle.exs
+#---
+def main() do
+  me = self()
+  spawn(fn () -> send(me, :c1) end)
+  spawn(fn () -> send(me, :c2) end)
+  send(me, :p)
+  a = receive do
+    x -> x
+  end
+  b = receive do
+    x -> x
+  end
+  c = receive do
+    x -> x
+  end
+  dbg({a, b, c})
+end

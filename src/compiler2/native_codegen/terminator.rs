@@ -18,6 +18,7 @@ use fz_runtime::ir_runtime::{
 };
 use fz_runtime::process::YIELD_REASON_REDUCTIONS;
 use fz_runtime::process_abi::PROCESS_REDUCTIONS_REMAINING_OFFSET;
+use fz_runtime::scheduler_hooks::YIELD_PTR;
 use std::collections::HashMap;
 
 fn resolve_cont_sid(env: &CodegenEnv<'_>, blk: &fz_ir::Block) -> u32 {
@@ -495,6 +496,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
             env,
             var_env,
             blk,
+            is_native,
             is_cont_fn,
             caller_fn_id,
             frame_ptr,
@@ -1370,14 +1372,17 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
 //     else the unboxed timeout in ms.
 //   - after_cont: closure ptr when after is Some, else null.
 //
-// After laying these out the helper calls fz_receive_park_matched
-// and returns the YIELD sentinel so the trampoline parks.
+// After laying these out the helper calls fz_receive_park_matched, which
+// decides the receive. Anything but the YIELD sentinel is the closure to run
+// next (the matched clause, or the `after 0` body): the receive tail-calls
+// it. The sentinel is returned so the trampoline parks.
 #[allow(clippy::too_many_arguments)]
 fn emit_receive_matched<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     blk: &fz_ir::Block,
+    is_native: bool,
     is_cont_fn: bool,
     caller_fn_id: FnId,
     frame_ptr: Option<ir::Value>,
@@ -1392,7 +1397,7 @@ fn emit_receive_matched<M: cranelift_module::Module>(
         .get(&(caller_fn_id.0, blk.id.0))
         .expect("receive dispatch fn pre-declared by planned codegen pass");
     let dispatch_addr = fn_addr(body.jmod, dispatch_fid, body.b);
-    let yield_sentinel = build_park_record(
+    let park_result = build_park_record(
         body,
         env,
         var_env,
@@ -1405,16 +1410,49 @@ fn emit_receive_matched<M: cranelift_module::Module>(
         captures,
         dispatch_addr,
     );
-    // Both native and uniform bodies return the YIELD sentinel so the
-    // trampoline parks.
-    body.b.ins().return_(&[yield_sentinel]);
+    let yield_sentinel = body.b.ins().iconst(types::I64, YIELD_PTR as i64);
+    let parked = body.b.ins().icmp(IntCC::Equal, park_result, yield_sentinel);
+    let yield_blk = body.b.create_block();
+    let run_blk = body.b.create_block();
+    let no_args: Vec<BlockArg> = Vec::new();
+    body.b.ins().brif(parked, yield_blk, &no_args, run_blk, &no_args);
+
+    body.b.switch_to_block(yield_blk);
+    body.b.seal_block(yield_blk);
+    body.b.ins().return_(&[park_result]);
+
+    body.b.switch_to_block(run_blk);
+    body.b.seal_block(run_blk);
+    emit_resume_closure(body, is_native, park_result);
     Ok(())
+}
+
+// Run a zero-arg outcome closure the way `fz_resume` does: Tail-CC call
+// through its code pointer with the closure as `self`. Native bodies tail-call;
+// uniform bodies call and return the result.
+fn emit_resume_closure<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    is_native: bool,
+    closure: ir::Value,
+) {
+    let code = body.closure_code_ref(closure);
+    let mut sig = Signature::new(CallConv::Tail);
+    sig.params.push(AbiParam::new(types::I64)); // self
+    sig.returns.push(AbiParam::new(types::I64));
+    let sig_ref = body.b.func.import_signature(sig);
+    if is_native {
+        body.b.ins().return_call_indirect(sig_ref, code, &[closure]);
+    } else {
+        let call_inst = body.b.ins().call_indirect(sig_ref, code, &[closure]);
+        let result = body.b.inst_results(call_inst)[0];
+        body.b.ins().return_(&[result]);
+    }
 }
 
 // Lay out the ParkRecord fields described in
 // `fz_runtime::park::ParkRecord` (pinned inputs, clause cont
 // closures, optional after closure, bound-arity), then call
-// fz_receive_park_matched and return the YIELD sentinel.
+// fz_receive_park_matched and return its result.
 #[allow(clippy::too_many_arguments)]
 fn build_park_record<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,

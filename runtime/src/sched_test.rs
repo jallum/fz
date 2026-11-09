@@ -41,9 +41,9 @@ fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
     bits as *mut u8
 }
 
-fn park_on_42(task: &mut Process, timer: Option<TimerId>) {
+fn record_on_42(task: &mut Process, timer: Option<TimerId>) -> ParkRecord {
     let template = template_closure(task, 0xdead_beef);
-    task.wait = Some(Box::new(ParkRecord {
+    ParkRecord {
         matcher_fn: match_42,
         pinned: vec![],
         clause_bodies: vec![template],
@@ -52,8 +52,23 @@ fn park_on_42(task: &mut Process, timer: Option<TimerId>) {
         after_deadline_ms: timer.map(|_| 0),
         after_cont: 0xcafe_babe as *mut u8,
         after_timer_id: timer,
-    }));
+    }
+}
+
+fn park_on_42(task: &mut Process, timer: Option<TimerId>) {
+    let record = record_on_42(task, timer);
+    task.wait = Some(Box::new(record));
     task.state = ProcessState::Blocked;
+}
+
+fn running_task() -> Process {
+    let mut task = fresh_task();
+    task.state = ProcessState::Running;
+    task
+}
+
+fn mailbox_ints(task: &Process) -> Vec<i64> {
+    task.mailbox.iter().map(|v| v.load_int().unwrap()).collect()
 }
 
 #[test]
@@ -94,71 +109,96 @@ fn probe_sender_not_parked_pushes_mailbox_returns_miss() {
 }
 
 #[test]
-fn initial_scan_not_applicable_without_park() {
-    let mut task = fresh_task();
-    task.mailbox.push_back(int_ref(42));
-    assert_eq!(initial_scan(&mut task), ScanOutcome::NotApplicable);
-    assert_eq!(task.mailbox.len(), 1);
-}
-
-#[test]
-fn initial_scan_not_applicable_with_empty_mailbox() {
-    let mut task = fresh_task();
-    park_on_42(&mut task, None);
-    assert_eq!(initial_scan(&mut task), ScanOutcome::NotApplicable);
+fn reach_receive_with_an_empty_mailbox_parks() {
+    let mut task = running_task();
+    let record = record_on_42(&mut task, None);
+    assert_eq!(reach_receive(&mut task, record), ReceiveStep::Parked);
     assert!(task.wait.is_some());
+    assert_eq!(task.state, ProcessState::Blocked);
 }
 
 #[test]
-fn initial_scan_hit_splices_and_preserves_prefix_order() {
-    let mut task = fresh_task();
-    park_on_42(&mut task, None);
+fn reach_receive_hit_continues_with_the_clause_and_splices_the_message_out() {
+    let mut task = running_task();
     task.mailbox.push_back(int_ref(1));
     task.mailbox.push_back(int_ref(2));
     task.mailbox.push_back(int_ref(42));
     task.mailbox.push_back(int_ref(3));
-    assert_eq!(initial_scan(&mut task), ScanOutcome::Hit);
+    let record = record_on_42(&mut task, None);
+    let ReceiveStep::Continue(cont) = reach_receive(&mut task, record) else {
+        panic!("a matching message in the mailbox must continue the receive");
+    };
+    unsafe {
+        assert_eq!(read(cont.add(8) as *const u64), 0xdead_beef);
+        let capture_ref =
+            AnyValueRef::from_raw_word(any_value::closure_capture_ref_word(cont, 1)).expect("capture ref");
+        assert_eq!(capture_ref.load_int().expect("capture int ref"), 42);
+    }
     assert!(task.wait.is_none());
-    assert!(!task.runnable_ptr().is_null());
-    // 1, 2, 3 stay in arrival order; 42 was spliced out.
-    let mb: Vec<i64> = task.mailbox.iter().map(|v| v.load_int().unwrap()).collect();
-    assert_eq!(mb, vec![1, 2, 3]);
+    assert_eq!(task.state, ProcessState::Running);
+    assert_eq!(mailbox_ints(&task), vec![1, 2, 3]);
 }
 
 #[test]
-fn initial_scan_miss_blocks_and_preserves_mailbox() {
-    let mut task = fresh_task();
-    park_on_42(&mut task, None);
+fn reach_receive_takes_the_oldest_matching_message() {
+    let mut task = running_task();
+    task.mailbox.push_back(int_ref(42));
+    task.mailbox.push_back(int_ref(42));
+    task.mailbox.push_back(int_ref(7));
+    let record = record_on_42(&mut task, None);
+    assert!(matches!(reach_receive(&mut task, record), ReceiveStep::Continue(_)));
+    assert_eq!(mailbox_ints(&task), vec![42, 7]);
+}
+
+#[test]
+fn reach_receive_miss_parks_blocked_and_keeps_the_mailbox() {
+    let mut task = running_task();
     task.mailbox.push_back(int_ref(1));
     task.mailbox.push_back(int_ref(2));
-    assert_eq!(initial_scan(&mut task), ScanOutcome::Miss);
+    let record = record_on_42(&mut task, None);
+    assert_eq!(reach_receive(&mut task, record), ReceiveStep::Parked);
     assert_eq!(task.state, ProcessState::Blocked);
     assert!(task.wait.is_some());
-    let mb: Vec<i64> = task.mailbox.iter().map(|v| v.load_int().unwrap()).collect();
-    assert_eq!(mb, vec![1, 2]);
+    assert_eq!(mailbox_ints(&task), vec![1, 2]);
 }
 
 #[test]
-fn fire_after_timer_matches_id_and_transitions() {
-    let mut task = fresh_task();
-    park_on_42(&mut task, Some(7));
-    assert!(fire_after_timer(&mut task, 7));
+fn reach_receive_after_zero_miss_continues_with_the_after_body() {
+    let mut task = running_task();
+    task.mailbox.push_back(int_ref(1));
+    let mut record = record_on_42(&mut task, None);
+    record.after_deadline_ms = Some(0);
+    assert_eq!(
+        reach_receive(&mut task, record),
+        ReceiveStep::Continue(0xcafe_babe as *mut u8)
+    );
     assert!(task.wait.is_none());
-    assert_eq!(task.state, ProcessState::Ready);
-    assert_eq!(task.runnable_ptr() as usize, 0xcafe_babe);
+    assert_eq!(task.state, ProcessState::Running);
+    assert_eq!(mailbox_ints(&task), vec![1]);
 }
 
 #[test]
-fn fire_after_timer_stale_id_no_transition() {
-    let mut task = fresh_task();
-    park_on_42(&mut task, Some(7));
-    assert!(!fire_after_timer(&mut task, 99));
-    assert!(task.wait.is_some());
-    assert_eq!(task.state, ProcessState::Blocked);
+fn reach_receive_after_zero_hit_prefers_the_clause_to_the_after_body() {
+    let mut task = running_task();
+    task.mailbox.push_back(int_ref(42));
+    let mut record = record_on_42(&mut task, None);
+    record.after_deadline_ms = Some(0);
+    let ReceiveStep::Continue(cont) = reach_receive(&mut task, record) else {
+        panic!("a matching message must continue the receive");
+    };
+    assert_ne!(cont, 0xcafe_babe as *mut u8);
+    assert!(task.mailbox.is_empty());
 }
 
 #[test]
-fn fire_after_timer_unparked_no_transition() {
-    let mut task = fresh_task();
-    assert!(!fire_after_timer(&mut task, 7));
+fn reach_receive_never_leaves_the_process_ready() {
+    for messages in [vec![], vec![1], vec![42], vec![1, 42]] {
+        let mut task = running_task();
+        for m in &messages {
+            task.mailbox.push_back(int_ref(*m));
+        }
+        let record = record_on_42(&mut task, None);
+        reach_receive(&mut task, record);
+        assert_ne!(task.state, ProcessState::Ready, "mailbox {messages:?}");
+    }
 }
