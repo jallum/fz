@@ -351,7 +351,7 @@ pub(crate) fn discover_modules(
                 discover_modules(world, tel, source_owner, module_id, &nested, outputs, changed)?;
             }
             ScopeForm::Protocol(protocol) => {
-                let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
+                let module_id = reference_declared_module(world, parent_module, &protocol.name);
                 let source_map = world.source_map();
                 let protocol_surface = read_protocol_body_surface(protocol, &source_map.borrow())
                     .map_err(|error| emit_surface_read_error(tel, "quoted protocol body read failed", &error))?;
@@ -403,7 +403,7 @@ pub(crate) fn discover_modules(
                         discover_modules(world, tel, source_owner, module_id, &nested, outputs, changed)?;
                     }
                     (ReservedSourceDefinition::Protocol { .. }, ScopeForm::Protocol(protocol)) => {
-                        let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
+                        let module_id = reference_declared_module(world, parent_module, &protocol.name);
                         let protocol_surface =
                             read_protocol_body_surface(protocol, &source_map.borrow()).map_err(|error| {
                                 emit_surface_read_error(tel, "quoted protocol body read failed", &error)
@@ -729,19 +729,17 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 }
                 ScopeForm::Module(module) => {
                     let module_id = reference_declared_module(self.world, self.current_module, &module.name);
-                    self.namespace = self.world.bind_namespace(
-                        self.namespace,
-                        module.name.last_segment().to_string(),
-                        NamespaceSymbol::Module(module_id),
-                    );
+                    self.namespace =
+                        bind_declared_module(self.world, self.namespace, self.current_module, &module.name, module_id);
                 }
                 ScopeForm::Protocol(protocol) => {
-                    let protocol_id =
-                        reference_declared_protocol_module(self.world, self.current_module, &protocol.name);
-                    self.namespace = self.world.bind_namespace(
+                    let protocol_id = reference_declared_module(self.world, self.current_module, &protocol.name);
+                    self.namespace = bind_declared_module(
+                        self.world,
                         self.namespace,
-                        protocol.name.last_segment().to_string(),
-                        NamespaceSymbol::Module(protocol_id),
+                        self.current_module,
+                        &protocol.name,
+                        protocol_id,
                     );
                 }
                 ScopeForm::Alias(_)
@@ -775,19 +773,17 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                         }
                         ReservedSourceDefinition::Module { name } => {
                             let module_id = reference_declared_module(self.world, self.current_module, &name);
-                            self.namespace = self.world.bind_namespace(
-                                self.namespace,
-                                name.last_segment().to_string(),
-                                NamespaceSymbol::Module(module_id),
-                            );
+                            self.namespace =
+                                bind_declared_module(self.world, self.namespace, self.current_module, &name, module_id);
                         }
                         ReservedSourceDefinition::Protocol { name } => {
-                            let protocol_id =
-                                reference_declared_protocol_module(self.world, self.current_module, &name);
-                            self.namespace = self.world.bind_namespace(
+                            let protocol_id = reference_declared_module(self.world, self.current_module, &name);
+                            self.namespace = bind_declared_module(
+                                self.world,
                                 self.namespace,
-                                name.last_segment().to_string(),
-                                NamespaceSymbol::Module(protocol_id),
+                                self.current_module,
+                                &name,
+                                protocol_id,
                             );
                         }
                         // A `defimpl` binds no local name; its provider mapping is
@@ -1035,7 +1031,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 self.register_protocol_impl_providers(module_id, &body)
             }
             ScopeForm::Protocol(protocol) => {
-                let protocol_id = reference_declared_protocol_module(self.world, self.current_module, &protocol.name);
+                let protocol_id = reference_declared_module(self.world, self.current_module, &protocol.name);
                 self.world.scope_module(protocol_id, self.namespace);
                 Ok(None)
             }
@@ -1183,20 +1179,12 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             let definition = match form {
                 ScopeForm::Module(child) => {
                     let child_id = reference_declared_module(self.world, module, &child.name);
-                    namespace = self.world.bind_namespace(
-                        namespace,
-                        child.name.last_segment().to_string(),
-                        NamespaceSymbol::Module(child_id),
-                    );
+                    namespace = bind_declared_module(self.world, namespace, module, &child.name, child_id);
                     None
                 }
                 ScopeForm::Protocol(protocol) => {
-                    let protocol_id = reference_declared_protocol_module(self.world, module, &protocol.name);
-                    namespace = self.world.bind_namespace(
-                        namespace,
-                        protocol.name.last_segment().to_string(),
-                        NamespaceSymbol::Module(protocol_id),
-                    );
+                    let protocol_id = reference_declared_module(self.world, module, &protocol.name);
+                    namespace = bind_declared_module(self.world, namespace, module, &protocol.name, protocol_id);
                     None
                 }
                 ScopeForm::MacroCall(macro_call) => {
@@ -1208,19 +1196,11 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                     match &definition {
                         Some(ReservedSourceDefinition::Module { name }) => {
                             let child_id = reference_declared_module(self.world, module, name);
-                            namespace = self.world.bind_namespace(
-                                namespace,
-                                name.last_segment().to_string(),
-                                NamespaceSymbol::Module(child_id),
-                            );
+                            namespace = bind_declared_module(self.world, namespace, module, name, child_id);
                         }
                         Some(ReservedSourceDefinition::Protocol { name }) => {
-                            let protocol_id = reference_declared_protocol_module(self.world, module, name);
-                            namespace = self.world.bind_namespace(
-                                namespace,
-                                name.last_segment().to_string(),
-                                NamespaceSymbol::Module(protocol_id),
-                            );
+                            let protocol_id = reference_declared_module(self.world, module, name);
+                            namespace = bind_declared_module(self.world, namespace, module, name, protocol_id);
                         }
                         Some(ReservedSourceDefinition::Function { .. } | ReservedSourceDefinition::ProtocolImpl)
                         | None => {}
@@ -2278,8 +2258,39 @@ fn bind_callable(world: &mut World, scope: Namespace, callable: &ModuleInterface
     )
 }
 
-fn reference_declared_protocol_module(world: &mut World, current_module: ModuleId, name: &ModuleName) -> ModuleId {
-    world.reference_module(qualified_child_module_name(world, current_module, name))
+/// The namespace binding a module declaration makes in the scope that
+/// declares it, as Elixir's `defmodule` does: a single-segment name binds
+/// itself to the declared module; a dotted name declared at the root binds
+/// nothing; a dotted name nested in a module binds its first segment to the
+/// parent's child of that segment, so `H.T.me()` inside `M` reaches `M.H.T`.
+fn declared_module_binding(
+    world: &mut World,
+    parent: ModuleId,
+    name: &ModuleName,
+    declared: ModuleId,
+) -> Option<(String, ModuleId)> {
+    let first = name.segments().first()?.clone();
+    if name.segments().len() == 1 {
+        return Some((first, declared));
+    }
+    if parent.is_global() {
+        return None;
+    }
+    let first_module = world.reference_child_module(parent, &first);
+    Some((first, first_module))
+}
+
+fn bind_declared_module(
+    world: &mut World,
+    namespace: Namespace,
+    parent: ModuleId,
+    name: &ModuleName,
+    declared: ModuleId,
+) -> Namespace {
+    match declared_module_binding(world, parent, name, declared) {
+        Some((local, module)) => world.bind_namespace(namespace, local, NamespaceSymbol::Module(module)),
+        None => namespace,
+    }
 }
 
 fn reference_declared_module(world: &mut World, parent: ModuleId, name: &ModuleName) -> ModuleId {
@@ -2310,24 +2321,6 @@ fn reference_impl_target_module(
     world
         .resolve_module_name(current_module, head, name)
         .expect("module resolution should always mint a module id for defimpl target names")
-}
-
-fn qualified_child_module_name(world: &World, current_module: ModuleId, name: &ModuleName) -> ModuleName {
-    if name.segments().len() != 1 || current_module.is_global() {
-        return name.clone();
-    }
-    qualify_local_child_name(world, current_module, name.last_segment())
-}
-
-fn qualify_local_child_name(world: &World, current_module: ModuleId, local: &str) -> ModuleName {
-    let current_name = world
-        .module_name(current_module)
-        .expect("named scoped modules should have reverse lookups");
-    if local == current_name.last_segment() {
-        current_name.clone()
-    } else {
-        current_name.child(local)
-    }
 }
 
 #[cfg(test)]
