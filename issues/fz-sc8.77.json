@@ -9,9 +9,15 @@
   "id": "fz-sc8.77",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Fixture numbering (coordinator fz-xxd13-build-8d, 2026-11-08): fixtures 01000-01014 are LANDED by fz-sc8.17 at d1000e018 on stack #274, so the numbers used in the fz-sc8-77 worktree (01001, 01002) and the fz-sc8-binding worktree (01000) collide and must be renumbered. The fz-sc8 block 01000-01099 is split: 01000-01039 stack #274 (fz-sc8.10, building, continues from 01015, capped at 01039); 01040-01059 session fz-38's fz-sc8 tickets (.77, .105); 01060-01099 unallocated. The .10 commit writes these rows into .agent/docs/fixtures.md. For .77 also: fz-sc8.10 is approved and lands first off d1000e018; a trial rebase of d5d522cd8 onto d1000e018 applied cleanly. Please rebase .77 onto .10's commit once it lands and spell struct fields in render_struct through .10's shared keyword-key speller (name:, \"foo bar\":, Foo:) instead of format!(\"{name}: {value}\"). .10 also creates runtime/src/any_value_test.rs, which .77 creates too: expect a trivial merge there. Cross-session messages to fz-38 were held and expired twice, hence this comment.",
+      "timestamp": "2026-11-09T01:04:53Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "A struct carries __struct__ and prints as %Name{...}",
   "type": "bug",
-  "updated_at": "2026-11-08T16:45:17Z"
+  "updated_at": "2026-11-09T01:04:53Z"
 }
