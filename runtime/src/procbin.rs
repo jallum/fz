@@ -344,11 +344,66 @@ pub(crate) fn mso_set_next(bits: u64, next: u64) {
 
 // ===== MSO sweep + drop =====================================================
 
-/// Walk `heap.mso_head` after Cheney BFS completes. Strict ProcBin/Resource
-/// survivors carry a headerless forwarding marker at offset 0, so their
-/// off-heap pointer must be read from the to-space copy.
-pub fn mso_sweep(heap: &mut Heap) {
-    use crate::resource::{ResourceStub, fz_resource_release};
+/// A resource whose last reference a sweep dropped: the fz closure that
+/// destroys it and the payload that closure receives. `closure` is the
+/// closure's value-ref word and `payload` the C payload word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeadResource {
+    pub closure: u64,
+    pub payload: u64,
+}
+
+/// The destructor closures of the resource stubs a collection's trace has not
+/// reached, keyed by stub address. Those closures are about to be orphaned
+/// with the from-space, so the collector forwards them before the sweep
+/// decides the stubs. Claimed resources are skipped: their owner cleans up
+/// deterministically and no closure will run.
+pub(crate) fn mso_unreached_closures(heap: &Heap) -> Vec<(usize, AnyValue)> {
+    use crate::resource::ResourceStub;
+    let mut unreached = Vec::new();
+    let mut cur_bits = heap.mso_head;
+    while cur_bits != 0 {
+        let kind = cur_bits & TAG_MASK;
+        let cur = mso_addr(cur_bits);
+        let first = unsafe { read(cur as *const u64) };
+        let survived = first & TAG_MASK == TAG_FWD;
+        cur_bits = match kind {
+            TAG_PROCBIN => unsafe { ProcBin::from_raw(cur).mso_next() },
+            TAG_RESOURCE => {
+                let rs = unsafe { ResourceStub::from_raw(cur) };
+                if !survived && !rs.is_claimed() {
+                    unreached.push((cur as usize, rs.closure_value()));
+                }
+                rs.mso_next()
+            }
+            _ => panic!("mso_unreached_closures: invalid MSO tag {kind:#x}"),
+        };
+    }
+    unreached
+}
+
+/// Decide every stub on `heap.mso_head`'s chain. This is the one place a dead
+/// resource is handled, after a collection's trace and when a process exits
+/// (a process exit is the same walk with nothing live).
+///
+/// A stub carrying a forwarding marker survived: it is relinked to its
+/// to-space copy. Any other stub is dead and drops its off-heap reference. A
+/// dead ProcBin releases its SharedBin synchronously. A dead Resource whose
+/// last reference this was returns a `DeadResource`, unless it was claimed;
+/// its destructor is fz code and runs at the scheduler boundary, never inside
+/// the sweep. `closure_of` yields the destructor closure of a dead stub as a
+/// value that is valid once the sweep returns: the forwarded closure after a
+/// collection, the closure as it stands at exit.
+///
+/// Survivors carry a headerless forwarding marker at offset 0, so their
+/// off-heap pointer is read from the to-space copy. Must run before the
+/// from-space is released, since dead stubs live there.
+pub fn mso_sweep(
+    heap: &mut Heap,
+    mut closure_of: impl FnMut(&crate::resource::ResourceStub) -> AnyValue,
+) -> Vec<DeadResource> {
+    use crate::resource::{ResourceStub, fz_resource_release_deferred};
+    let mut dead = Vec::new();
     let mut new_head = 0_u64;
     let mut cur_bits = heap.mso_head;
     while cur_bits != 0 {
@@ -383,55 +438,19 @@ pub fn mso_sweep(heap: &mut Heap) {
             TAG_RESOURCE => {
                 let rs = unsafe { ResourceStub::from_raw(cur) };
                 let next = rs.mso_next();
-                unsafe { fz_resource_release(rs.shared_raw()) };
+                if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
+                    dead.push(DeadResource {
+                        closure: closure_of(&rs).ref_word().raw_word(),
+                        payload,
+                    });
+                }
                 cur_bits = next;
             }
             _ => panic!("mso_sweep: invalid MSO tag {kind:#x}"),
         }
     }
     heap.mso_head = new_head;
-}
-
-/// fz-4mk — deferred variant of `mso_drop_all`. Walks the MSO chain at
-/// process shutdown and, for each dead resource, instead of invoking the
-/// stored C destructor inline, snapshots the closure value and payload
-/// onto `heap.pending_dtors` so the scheduler can dispatch the dtor as
-/// real fz code while the process is still alive. ProcBin entries
-/// continue to release synchronously (their dtor is owned by the runtime,
-/// not user fz code, and has nothing to print or branch on).
-///
-/// Currently called only by the interpreter leg's shutdown path; the
-/// JIT/AOT scheduler loops still use the inline `mso_drop_all` until
-/// phase 3 wires their drain. After this returns, the MSO chain is
-/// empty and `Heap::drop` -> `mso_drop_all` is a no-op.
-pub fn mso_drop_all_deferred(heap: &mut Heap) {
-    use crate::resource::{ResourceStub, fz_resource_release_deferred};
-    let mut cur_bits = heap.mso_head;
-    while cur_bits != 0 {
-        let kind = cur_bits & TAG_MASK;
-        let cur = mso_addr(cur_bits);
-        match kind {
-            TAG_PROCBIN => {
-                let pb = unsafe { ProcBin::from_raw(cur) };
-                let next = pb.mso_next();
-                unsafe { shared_bin_release(pb.shared_raw()) };
-                cur_bits = next;
-            }
-            TAG_RESOURCE => {
-                let rs = unsafe { ResourceStub::from_raw(cur) };
-                let next = rs.mso_next();
-                let closure = rs.closure_value();
-                if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
-                    let payload_ref = heap.box_any_value_ref(AnyValue::int(payload as i64)).raw_word();
-                    let closure_bits = closure.ref_word().raw_word();
-                    heap.pending_dtors.push_back((closure_bits, payload_ref));
-                }
-                cur_bits = next;
-            }
-            _ => panic!("mso_drop_all_deferred: invalid MSO tag {kind:#x}"),
-        }
-    }
-    heap.mso_head = 0;
+    dead
 }
 
 fn mso_addr(bits: u64) -> *mut u8 {

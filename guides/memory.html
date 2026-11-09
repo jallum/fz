@@ -621,7 +621,9 @@ structures and does not collect.</p>
 walks the heap's MSO chain once. Each entry is a ProcBin or Resource stub that
 <em>was</em> in from-space. The forwarding marker Cheney writes into the first
 word of every copied object is the entire liveness signal — no separate
-bookkeeping:</p>
+bookkeeping. One function, <code>procbin::mso_sweep</code>, decides every stub,
+after a collection and when a process exits (an exit is the same walk with
+nothing live):</p>
 
 <pre>
   cur = heap.mso_head
@@ -635,31 +637,46 @@ bookkeeping:</p>
           link (new_addr | tag) into new_head   <span class="note">// survived; rejoin the chain</span>
       else:
           next = read_mso_next(tag, cur)
-          release_payload(tag, cur)             <span class="note">// dead MSO stub; drop its ref</span>
+          release_payload(tag, cur)             <span class="note">// dead MSO stub; drop its ref;</span>
+                                                <span class="note">// a Resource's last ref queues (closure, payload)</span>
       cur = next
   heap.mso_head = new_head
 </pre>
 
 <p>The sweep is O(number of MSO stubs on this heap), not O(heap size). This
-pass runs in every collection. When a heap itself is dropped
-(process exited), <code>Heap::drop</code> releases every ProcBin and Resource
-stub still on the chain.</p>
+pass runs in every collection.</p>
+
+<p>A dead Resource's destructor is fz code, so it never runs inside the sweep.
+Its closure lives in the from-space that is about to be released, so before the
+sweep the collector forwards the closure of every unreached, unclaimed Resource
+stub, along with whatever the closure captures. The sweep then queues
+<code>(closure, payload)</code> on <code>heap.pending_dtors</code> for the
+resource whose last reference it dropped. A stub that a forwarded closure
+captures is reached by that, so it survives until a later collection. A process
+that halts takes the same sweep without a collection:
+<code>Heap::release_resources_at_exit</code> decides every stub on the chain
+with nothing live and allocates no to-space. <code>Heap::drop</code> releases
+only what a process still holds when the program tears it down without having
+exited, such as one parked on a receive; no destructor closure runs for those.</p>
 
 <!-- ─────────────────────────────── 7. SCHEDULER ─────────────────────────────── -->
 <h2 id="scheduler">7. Scheduler dispatch</h2>
 
-<h3>run_quantum dispatch order</h3>
+<h3>Dispatch order</h3>
 
 <pre>
   1. resume the runnable closure
-  2. process.boundary_maintenance(boundary):
+  2. sched_core::end_quantum(scheduler, process):
+       boundary = yield (runnable), park (blocked on a receive) or exit
        if heap.should_gc:
          process.collect()          (the JIT emits fz.runtime.gc)
        clear yield reasons
-  3. runnable: re-enqueue.  blocked on a receive: wait for a send or the timer.
+       exit: mark Exited; release the MSO chain with nothing live
+       run each queued resource destructor as fz code, oldest first
+  3. Requeue: re-enqueue.  Parked: wait for a send or the timer.  Exited: done.
 
-  (The JIT and AOT schedulers both run step 2; the JIT after every quantum, AOT
-  when the process is runnable or parked.)
+  (The JIT and AOT schedulers both run step 2 after every quantum, in every
+  state. The interpreter does not collect.)
 </pre>
 
 <!-- ─────────────────────────────── 8. MESSAGES ─────────────────────────────── -->

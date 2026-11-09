@@ -237,7 +237,9 @@ wheel. The JIT `Runtime`, the AOT `AotScheduler`, and the interpreter's
 `BackendSchedulerAdapter` each hold one and implement `Scheduler`: `core()`
 exposes it, `wake_expired(pid, timer)` says how an expired timer wakes that
 path's process (`fire_after_timer` for JIT and AOT; the interpreter queues the
-parked receive's `after` entry), and `about_to_sleep(wait)` observes a sleep.
+parked receive's `after` entry), `about_to_sleep(wait)` observes a sleep, and
+`run_destructor(process, closure, payload)` runs one resource destructor closure
+as fz code (see [`end_quantum`](#the-step-after-a-quantum)).
 
 `SchedulingCore::make_runnable(pid, &mut state)` is the one way a process
 becomes Ready. It takes the process's state word, moves New, Running or Blocked
@@ -271,6 +273,34 @@ send cancels it, and an expired one queues the receive's `after` entry. The
 interpreter's macro path (`keepalive_pid`) leaves its finished process Blocked
 (off the queue, holding no timer) until the next entry queues it, so the core
 reports idle once only that process remains.
+
+
+### The step after a quantum
+
+`sched_core::end_quantum(scheduler, process)` is the one step that follows every
+quantum on the JIT and AOT paths, in every state. It reads the boundary off the
+process (`Process::quantum_boundary`: runnable means yield, `Blocked` means park,
+anything else means exit), collects when `Heap::should_gc` holds, clears the
+quantum's yield reasons, and, for a halted process, marks it `Exited` and releases
+every stub on its MSO chain with `Heap::release_resources_at_exit`, since
+nothing is live. The sweep (`procbin::mso_sweep`) decides each stub the same way
+after a collection and at exit: a survivor is relinked, a dead ProcBin releases
+its SharedBin, and a dead Resource whose last reference this was queues
+`(closure, payload)` on `heap.pending_dtors`. A collection first forwards the
+destructor closure of every unreached, unclaimed stub, with what it captures, so
+the closure outlives the from-space.
+
+`end_quantum` then drains `pending_dtors` oldest first, calling
+`Scheduler::run_destructor` for each and counting it in
+`Process::dtors_dispatched`. A destructor runs to completion under a fresh
+reduction budget; one that yielded would overwrite the process's own
+continuation and is a fault. The JIT enters `fz_drain_dtor_entry` through
+`pinned_abi::call2`, the AOT scheduler does the same through the address
+`fz_aot_set_drain_dtor_entry` registered, and the interpreter interprets the
+closure. It returns a `QuantumEnd`: the `Disposition` (`Requeue`, `Parked`,
+`Exited`) the driver acts on and the `Collection`, if any, the JIT reports as
+`fz.runtime.gc`. The interpreter does not collect, so at exit it calls
+`Heap::release_resources_at_exit` and `sched_core::drain_destructors` itself.
 
 ## Mid-flight Reduction Yield
 
@@ -376,6 +406,15 @@ arena being collected, not a root.
   whole message in one block (800032 bytes for the 50000-element log), a hit gifts exactly the bound cells (48 bytes for `[1, 2, 3]`),
   the receiver is woken once, and its own heap allocates no list cells for the
   delivery.
+- `runtime/src/sched_core_test.rs` (`end_quantum` tests) — a resource freed by a
+  collection has its destructor closure, captures included, dispatched at the
+  same boundary; a held resource is left alone; a halted process dispatches every
+  destructor without collecting; a claimed resource dispatches none; a
+  destructor that yields is a fault.
+- `cargo test --test fixture_matrix a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path`
+  — fixtures 00906 and 00907: `process_exited` reports one dispatched destructor
+  for the resource dropped mid-run and three for the resources held at exit, on
+  `run` and `interp`; both fixtures run on all three paths for output parity.
 - `runtime/src/sched_test.rs` — the probe, drain and delivery primitives: a hit
   leaves the receiver's heap untouched until it runs, two bindings of one cell
   copy it once, a second sender does not re-probe a matched receive, a dropped

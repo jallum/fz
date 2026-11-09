@@ -9,9 +9,13 @@
 //! [`next_runnable`] is the single place that answers "what runs next?": it
 //! wakes expired timers, hands out the next runnable process, sleeps until the
 //! next deadline when only timers remain, and reports idle only when nothing is
-//! runnable and no timer is pending.
+//! runnable and no timer is pending. [`end_quantum`] is the single place that
+//! answers "what happens to a process after its quantum?": it collects when
+//! the heap is due, runs the destructors of the resources that collection or
+//! the exit freed, and says whether the process is requeued, parked or gone.
 
-use crate::process::{PidId, ProcessState};
+use crate::any_value::{AnyValueRef, ValueKind};
+use crate::process::{Collection, GcBoundary, PidId, Process, ProcessState};
 use crate::scheduler_hooks::{TimerCancelHook, TimerScheduleHook};
 use crate::timer::{TimerId, TimerWheel};
 use std::collections::VecDeque;
@@ -79,6 +83,88 @@ pub trait Scheduler {
 
     /// The core is about to sleep for `wait` because only timers remain.
     fn about_to_sleep(&mut self, _wait: Duration) {}
+
+    /// Run the destructor closure `closure` of a freed resource on `process`
+    /// with the boxed `payload`, both value-ref words. Only a driver can run
+    /// fz code: compiled drivers enter the drain shim through the pinned
+    /// register, the interpreter interprets the closure. The call returns when
+    /// the destructor has finished.
+    fn run_destructor(&mut self, process: &mut Process, closure: u64, payload: u64);
+}
+
+/// What a scheduler does with a process whose quantum has ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Disposition {
+    /// The process yielded and is still runnable: queue it behind the others.
+    Requeue,
+    /// The process parked on a receive that found nothing: a send or its
+    /// after-timer wakes it.
+    Parked,
+    /// The process halted; its heap and its resources are released.
+    Exited,
+}
+
+/// The outcome of [`end_quantum`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuantumEnd {
+    pub disposition: Disposition,
+    /// The collection the boundary performed, if the heap was due.
+    pub collection: Option<Collection>,
+}
+
+/// The step after every quantum, for every state. It reads the boundary off
+/// `process`, collects when the heap is due, and clears the quantum's yield
+/// reasons. A halted process is marked Exited and releases every stub on its
+/// MSO chain, since nothing is live. Every destructor the collection or the
+/// exit queued then runs through `scheduler`, and `process.dtors_dispatched`
+/// counts them.
+pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Process) -> QuantumEnd {
+    let boundary = process.quantum_boundary();
+    let collection = process.needs_boundary_gc().then(|| Collection {
+        pid: process.pid,
+        boundary,
+        stats: process.collect(&mut []),
+    });
+    process.clear_yield_reasons();
+    let disposition = match boundary {
+        GcBoundary::Yield => Disposition::Requeue,
+        GcBoundary::Park => Disposition::Parked,
+        GcBoundary::Exit => {
+            process.state = ProcessState::Exited;
+            process.heap.release_resources_at_exit();
+            Disposition::Exited
+        }
+    };
+    drain_destructors(scheduler, process);
+    QuantumEnd {
+        disposition,
+        collection,
+    }
+}
+
+/// Run every queued destructor on `process`, oldest first. A destructor runs
+/// to completion with a full reduction budget; one that yielded would
+/// overwrite the process's own continuation, so that is a fault.
+pub fn drain_destructors<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Process) {
+    while let Some((closure, payload)) = process.heap.pending_dtors.pop_front() {
+        let payload_tag = AnyValueRef::from_raw_word(payload)
+            .expect("a queued destructor payload is a valid value ref")
+            .tag();
+        assert_eq!(
+            payload_tag,
+            ValueKind::INT,
+            "a queued destructor payload stays boxed as an integer"
+        );
+        let continuation = process.runnable_ptr();
+        process.reset_reduction_budget();
+        scheduler.run_destructor(process, closure, payload);
+        process.dtors_dispatched += 1;
+        assert_eq!(
+            process.runnable_ptr(),
+            continuation,
+            "a destructor must finish within one quantum; it yielded"
+        );
+    }
 }
 
 /// The next process to run, or `None` when the scheduler is idle: nothing is

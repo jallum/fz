@@ -30,12 +30,14 @@ use crate::exec_ctx::{Argv, ExecCtx};
 use crate::function_denotation::decode_closure_denotations;
 use crate::heap::{AddressMap, Schema, SchemaRegistry, deep_copy_any_value_ref};
 use crate::pinned_abi::{call1, call2};
-use crate::procbin::mso_drop_all_deferred;
-use crate::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, GcBoundary, Node, Process, ProcessState};
+use crate::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
 use crate::sched::{
     ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
 };
-use crate::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
+use crate::sched_core::{
+    Disposition, QuantumEnd, Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook,
+    timer_schedule_hook,
+};
 use crate::timer::TimerId;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -83,10 +85,10 @@ struct AotScheduler {
     /// The run queue and timer wheel; `next_runnable` decides what runs next
     /// and when the program is idle.
     core: SchedulingCore,
-    /// fz-4mk.3b — `fz_drain_dtor_entry(closure, payload)` shim
-    /// address. Set by `fz_aot_set_drain_dtor_entry` after setup. The
-    /// run-queue loop calls this once per pending dtor at task-exit; the
-    /// shim Tail-CC dispatches the closure body with a fresh halt-cont.
+    /// `fz_drain_dtor_entry(closure, payload)` shim address. Set by
+    /// `fz_aot_set_drain_dtor_entry` after setup. `Scheduler::run_destructor`
+    /// calls it once per pending dtor; the shim Tail-CC dispatches the
+    /// closure body with a fresh halt-cont.
     drain_dtor_entry: *const u8,
     /// fz-xx8.1 — `fz_resume(cont)` shim address. Set by
     /// `fz_aot_set_resume_addr` after setup. The run-queue loop calls this to
@@ -578,10 +580,10 @@ pub extern "C" fn fz_aot_run_main(
     i32::from(failed)
 }
 
-/// fz-4mk.3b — register the `fz_drain_dtor_entry` shim address. Called from
+/// Register the `fz_drain_dtor_entry` shim address. Called from
 /// AOT-emitted C main after `fz_aot_setup`. The run-queue loop dispatches
-/// each entry on `process.heap.pending_dtors` through this shim when a
-/// task exits.
+/// each entry on `process.heap.pending_dtors` through this shim after a
+/// collection and when a task exits.
 ///
 /// # Safety
 /// `proc` must be a process produced by `fz_aot_setup`. `addr` must be the
@@ -619,10 +621,9 @@ fn closure_ref_word(closure: *mut u8) -> u64 {
         .raw_word()
 }
 
-/// Run one quantum for `pid`: pick dispatch branch by Process state,
-/// invoke the matching shim, then handle the post-quantum state
-/// transition (re-enqueue / halt / mid-flight yield). Returns nothing;
-/// scheduler state is mutated in place.
+/// Run one quantum for `pid`: resume its runnable closure, then let the
+/// scheduling core end the quantum and requeue the process if it yielded.
+/// Returns nothing; scheduler state is mutated in place.
 fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
     let proc_ptr = unsafe {
         (*sched)
@@ -656,29 +657,11 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
     // mid-flight wakeup). Bound args travel in the closure env.
     let closure = unsafe { (*proc_ptr).take_runnable_closure() }.expect("a dispatched process has a runnable closure");
     run_scheduler_closure(addrs.resume, proc_ptr, closure);
-    // Post-quantum state check.
-    let state = unsafe { (*proc_ptr).state };
-    let has_runnable = unsafe { (*proc_ptr).runnable.is_some() };
-    if state == ProcessState::Running && has_runnable {
-        let process = unsafe { &mut *proc_ptr };
-        process.boundary_maintenance(GcBoundary::Yield);
+    let process = unsafe { &mut *proc_ptr };
+    // The collection report has no bus to reach on this path.
+    let QuantumEnd { disposition, .. } = end_quantum(unsafe { &mut *sched }, process);
+    if disposition == Disposition::Requeue {
         unsafe { (*sched).core.make_runnable(pid, &mut process.state) };
-    } else if state == ProcessState::Blocked {
-        // Parked on a receive: the park record's closures and pinned values
-        // are roots, so the heap is trimmed while the process waits.
-        unsafe { (*proc_ptr).boundary_maintenance(GcBoundary::Park) };
-    } else if state == ProcessState::Running {
-        // fz-4mk.3b — task halted; flush MSO resources through the dtor
-        // drain shim before the heap drops.
-        unsafe { (*proc_ptr).state = ProcessState::Exited };
-        let drain_addr = unsafe { (*sched).drain_dtor_entry };
-        if !drain_addr.is_null() {
-            let process = unsafe { &mut *proc_ptr };
-            mso_drop_all_deferred(&mut process.heap);
-            while let Some((closure, payload_ref)) = process.heap.pending_dtors.pop_front() {
-                let _ = unsafe { call2(drain_addr, proc_ptr, closure, payload_ref) };
-            }
-        }
     }
 }
 
@@ -693,6 +676,14 @@ impl Scheduler for AotScheduler {
         {
             self.core.make_runnable(pid, &mut task.state);
         }
+    }
+
+    fn run_destructor(&mut self, process: &mut Process, closure: u64, payload: u64) {
+        assert!(
+            !self.drain_dtor_entry.is_null(),
+            "fz_aot_set_drain_dtor_entry must register the drain shim before a process runs"
+        );
+        let _ = unsafe { call2(self.drain_dtor_entry, process, closure, payload) };
     }
 }
 

@@ -133,10 +133,10 @@ while run_queue has a pid:
       drain the after-chain first; each link feeds val + captures to the next fn
       record completion
       keepalive pid? -> mark Ready, leave intact, move on
-      else -> drop deferred MSOs, drain pending dtors, record halt_value,
+      else -> release the MSO chain, drain destructors, record halt_value,
               emit process_exited, mark Exited
     Yielded {...}:
-      finish_yield_report + boundary_maintenance (GC over resume/after roots)
+      finish_yield_report (the interpreter does not collect)
       store resume entry, re-enqueue, mark Ready
     BlockedMatched(park, after):
       store the park record, mark Blocked

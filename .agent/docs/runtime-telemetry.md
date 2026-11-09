@@ -58,12 +58,13 @@ signature:    (&PidId, &Process)
 
 `ExitRecord` is a handler-side projection: `{ pid, halt_value: i64, live_count:
 usize, bytes_used: usize, list_retention_attempts: u64,
-list_retention_hits: u64, failed: bool }`. `failed` is `Process.failed`: whether
-the process ended through `fz_panic` (see [process failure](process-failure.md));
-a failed process's `halt_value` is not a return value. `ProcessExitCapture`
-builds it during dispatch by reading the live process. `JsonlBackend` performs
-the same projection only when it handles the event, writing `failed` as a JSON
-boolean. The emitter does not traverse the process for telemetry.
+list_retention_hits: u64, failed: bool, dtors_dispatched: u64 }`. `failed` is
+`Process.failed`: whether the process ended through `fz_panic` (see
+[process failure](process-failure.md)); a failed process's `halt_value` is not a
+return value. `ProcessExitCapture` builds it during dispatch by reading the
+live process. `JsonlBackend` performs the same projection only when it handles
+the event, writing `failed` as a JSON boolean. The emitter does not traverse the
+process for telemetry.
 
 List-retention fallbacks are derived, not emitted separately:
 `fallback_count = list_retention_attempts - list_retention_hits`. The runtime
@@ -71,6 +72,18 @@ FFI helper increments `attempts` for every `fz_list_reuse_or_cons_parts` call,
 and increments `hits` when the heap returns the original source cell, either
 unchanged or after guarded rewrite. That keeps the runtime telemetry seam at one
 boundary event instead of a per-attempt side channel.
+
+`dtors_dispatched` is `Process::dtors_dispatched`: the resource destructors the
+scheduling core ran for the process over its whole life, whether a collection
+freed the resource at a yield or park or the exit swept it (see
+[scheduler](scheduler-zero-arg-closures.md#the-step-after-a-quantum)).
+`JsonlBackend` renders it on `process_exited` as a number beside
+`list_retention_hits`. There is no separate destructor event; a destructor
+dispatched mid-life is visible on the exit record of the process that ran it,
+and the `fz.runtime.gc` event of the collection that freed it precedes it.
+`tests/fixture_matrix.rs`
+(`a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path`)
+pins it on the `run` and `interp` paths: 1 for fixture 00906 and 3 for 00907.
 
 The raw `&Process` is valid only during dispatch. A handler that needs data
 after the callback must project and copy that data itself. `JsonlBackend`
@@ -148,12 +161,11 @@ block each).
 
 ## `fz.runtime.gc`
 
-`Process::boundary_maintenance(boundary)` (`runtime/src/process.rs`) collects
-the process's heap when `Heap::should_gc` holds and returns the
-`Collection` it performed, or `None`. The JIT `CompiledModule::run_quantum`
-returns that value to `Runtime::run_until_idle`, which hands it to `emit_gc`
-(`exec/runtime.rs`), the single emit site. The boundary is read off the process
-after the quantum (`Process::quantum_boundary`):
+`sched_core::end_quantum` (`runtime/src/sched_core.rs`) collects the process's
+heap when `Heap::should_gc` holds and returns the `Collection` it performed, or
+`None`, in `QuantumEnd::collection`. `Runtime::run_until_idle` hands it to
+`emit_gc` (`exec/runtime.rs`), the single emit site. The boundary is read off
+the process after the quantum (`Process::quantum_boundary`):
 
 ```text
 raw event:    fz.runtime.gc
@@ -180,7 +192,8 @@ carries no telemetry bus and emits nothing, as for the other runtime events.
 (`a_matched_reply_fixture_collects_on_run_and_never_on_interp_until_the_interpreter_collects`)
 pins fixture 00901: 75 collections on `run` (73 child yields, one parent park,
 one parent exit) copying 33019136 bytes in all, and none on `interp`.
-`process_test.rs` pins the `Collection` that `boundary_maintenance` returns.
+`sched_core_test.rs` pins the `Collection` that `end_quantum` returns and the
+destructors it dispatches.
 
 ## Program Output
 

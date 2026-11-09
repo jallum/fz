@@ -378,10 +378,11 @@ function call.</p>
 <div class="aside">
 <strong>Behind the curtain.</strong> fz doesn't run dtors while the
 garbage collector is in the middle of a sweep (that would be a recipe for
-re-entrant disaster). Instead, when a resource is no longer reachable, it
-gets queued up. The scheduler drains the queue at quiet moments — between
-quanta, at task exit — and dispatches each dtor closure body through the
-normal fz call machinery. From your code's perspective: by the time fz
+re-entrant disaster). Instead, when a collection finds a resource no longer
+reachable, or its process exits holding it, it gets queued up. The scheduler
+drains the queue at the boundary that follows — when the process yields, parks
+or exits — and dispatches each dtor closure body through the normal fz call
+machinery. From your code's perspective: by the time fz
 "notices" you're done, the dtor has run.
 </div>
 
@@ -390,7 +391,7 @@ normal fz call machinery. From your code's perspective: by the time fz
 <p>A library that needs deterministic cleanup can claim a resource. Exactly
 one alias wins, even if another process received the same handle. The winner
 gets the raw payload and takes responsibility for closing it; fz then skips the
-fallback dtor at GC or process exit.</p>
+fallback dtor when a collection frees the resource or its process exits.</p>
 
 <pre><span class="kw">def</span> <span class="fn">close</span>(handle) <span class="kw">do</span>
   <span class="kw">case</span> <span class="ty">Kernel</span>.<span class="fn">claim_resource</span>(handle) <span class="kw">do</span>

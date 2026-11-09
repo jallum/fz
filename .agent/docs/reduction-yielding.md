@@ -26,9 +26,9 @@ and every loop still crosses a tail call.
 
 - **`Process`** (`runtime/src/process.rs`) owns the budget cell, cumulative
   reduction counters, and transient per-quantum yield reason bits. Its budget
-  accounting methods are `reset_reduction_budget`, `finish_yield_report`, and
-  `boundary_maintenance`. `Process::collect` is the one place a process's roots
-  are assembled (see "Accounting at the boundary").
+  accounting methods are `reset_reduction_budget` and `finish_yield_report`.
+  `Process::collect` is the one place a process's roots are assembled (see
+  "Accounting at the boundary").
 - **`Heap`** (`runtime/src/heap`) owns allocation, block growth, and
   `should_gc`, a pure function of the heap's state: the tip's fill plus the fill
   of every parked block (`bytes_used`) against half the
@@ -38,9 +38,12 @@ and every loop still crosses a tail call.
   the next pass, and count by fill like any other parked block.
 - **The schedulers** (JIT `src/exec/runtime.rs` with `CompiledModule::run_quantum`
   in `src/ir_codegen/compiled.rs`, AOT `runtime/src/aot_shim.rs`, interpreter
-  `src/ir_interp`) own dispatch and the boundary decision: install a fresh
-  budget, run the process, then call `Process::boundary_maintenance`, which
-  collects if `Heap::should_gc` holds. The interpreter does not collect.
+  `src/ir_interp`) own dispatch: install a fresh budget and run the process.
+  The scheduling core (`runtime/src/sched_core.rs`) owns the boundary decision:
+  the JIT and AOT schedulers call `end_quantum` after every quantum, which
+  collects if `Heap::should_gc` holds, runs the destructors of the resources
+  that collection or the exit freed, and returns the process's `Disposition`.
+  The interpreter does not collect.
 
 ## Process budget state
 
@@ -161,12 +164,15 @@ boundaries, never per back edge. Gifts waiting in the delivery in-queue are not
 roots: their blocks join the heap only when grafted, and every reference in a
 gift points into its own segment.
 
-`Process::boundary_maintenance` packages this decision (collect if needed,
-then clear the reason bits) and returns the `Collection` it performed, which
-the JIT reports as `fz.runtime.gc` (see [runtime telemetry](runtime-telemetry.md)).
-The JIT calls it after every quantum, whatever state the process is in. The AOT shim calls it after a quantum that leaves the
-process runnable or parked on a receive. The interpreter keeps its resume args
-and parked receives in its own structures and never collects.
+`sched_core::end_quantum` packages this decision (collect if needed, clear the
+reason bits, run the queued destructors) and returns a `QuantumEnd`: the
+`Disposition` (`Requeue`, `Parked` or `Exited`) and the `Collection` it
+performed, which the JIT reports as `fz.runtime.gc` (see
+[runtime telemetry](runtime-telemetry.md)). The JIT and the AOT shim call it
+after every quantum, whatever state the process is in. A halted process whose
+heap is not due is not collected; its resource stubs are swept without a
+to-space. The interpreter keeps its resume args and parked receives in its own
+structures and never collects.
 
 ## A tiny walkthrough
 
@@ -194,7 +200,7 @@ reduction budget. The next yield still happens when reductions run out.
 
 The budget model is identical in the interpreter, JIT, and AOT: the same
 `Process` budget fields and the same `Heap::should_gc`. The compiled paths (JIT
-and AOT) share the boundary collection through `Process::boundary_maintenance`.
+and AOT) share the boundary collection through `sched_core::end_quantum`.
 The resume carrier differs — a zero-arg continuation closure in compiled code,
 forwarded `resume_fn` + `resume_args` in the interpreter, which does not collect.
 Pure fz code yields automatically by reduction budget. Tests pin both sides:

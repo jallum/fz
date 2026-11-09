@@ -34,10 +34,11 @@ use fz_runtime::ir_runtime::{
     fz_struct_get_named_field_ref,
 };
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
-use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
 use fz_runtime::sched::{ProbeOutcome, SendProbe, drain_in_queue, gift_match, gift_message, self_send};
-use fz_runtime::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
+use fz_runtime::sched_core::{
+    Scheduler, SchedulingCore, drain_destructors, next_runnable, timer_cancel_hook, timer_schedule_hook,
+};
 use fz_runtime::timer::TimerId;
 use std::time::Duration;
 
@@ -528,6 +529,25 @@ impl<T: Telemetry + ?Sized> Scheduler for BackendSchedulerAdapter<T> {
     fn about_to_sleep(&mut self, wait: Duration) {
         unsafe { &*self.tel }.raw_event1(&crate::exec::runtime::SCHEDULER_SLEPT, &wait);
     }
+
+    /// Interpret the destructor closure on `process`. A failure is recorded
+    /// for `take_backend_callback_error`, which the run loop surfaces.
+    fn run_destructor(&mut self, _process: &mut Process, closure: u64, payload: u64) {
+        let runtime = unsafe { &mut *self.runtime };
+        let ran = run_pending_dtor(
+            runtime,
+            unsafe { &mut *self.types },
+            unsafe { &*self.transport },
+            unsafe { &*self.tel },
+            unsafe { &*self.program },
+            unsafe { &*self.module },
+            closure,
+            payload,
+        );
+        if let Err(error) = ran {
+            runtime.record_callback_error(error);
+        }
+    }
 }
 
 /// The next process to run, or `None` once the interpreter is idle. A wake
@@ -675,11 +695,11 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
                     continue;
                 }
                 let exit = ProcessExit::Completed(value);
-                exit_backend_process(runtime, types, transport, tel, program, module, pid, proc_ptr, exit)?;
+                exit_backend_process(adapter, tel, pid, proc_ptr, exit)?;
             }
             BackendRunStep::Failed => {
                 let exit = ProcessExit::Failed;
-                exit_backend_process(runtime, types, transport, tel, program, module, pid, proc_ptr, exit)?;
+                exit_backend_process(adapter, tel, pid, proc_ptr, exit)?;
             }
             BackendRunStep::Blocked => {
                 runtime.set_process_state(pid, ProcessState::Blocked);
@@ -700,20 +720,20 @@ enum ProcessExit {
 /// process's halt value, report its exit, and mark it exited.
 #[allow(clippy::too_many_arguments)]
 fn exit_backend_process<T: Telemetry + ?Sized>(
-    runtime: &mut IrInterpRuntime,
-    types: &mut crate::compiler2::Types,
-    transport: &TransportStore,
+    adapter: *mut BackendSchedulerAdapter<T>,
     tel: &T,
-    program: &BackendProgram,
-    module: &Module,
     pid: u32,
     proc_ptr: *mut Process,
     exit: ProcessExit,
 ) -> Result<(), String> {
     unsafe {
-        mso_drop_all_deferred(&mut (*proc_ptr).heap);
+        (*proc_ptr).heap.release_resources_at_exit();
+        drain_destructors(&mut *adapter, &mut *proc_ptr);
     }
-    drain_pending_dtors_backend(runtime, types, transport, tel, program, module)?;
+    let runtime = unsafe { &mut *(*adapter).runtime };
+    if let Some(error) = runtime.take_callback_error() {
+        return Err(error);
+    }
     unsafe {
         if let ProcessExit::Completed(value) = exit {
             (*proc_ptr).halt_value = value_to_halt(proc_ptr, value);
@@ -3304,48 +3324,41 @@ fn make_closure(
     make_closure_on_proc(runtime.cur_proc(), code, denotation, arity, captures)
 }
 
-fn drain_pending_dtors_backend<T: Telemetry + ?Sized>(
+fn run_pending_dtor<T: Telemetry + ?Sized>(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
     tel: &T,
     program: &BackendProgram,
     module: &Module,
+    closure_bits: u64,
+    payload_ref: u64,
 ) -> Result<(), String> {
-    loop {
-        let entry = {
-            let process = unsafe { &mut *runtime.cur_proc() };
-            process.heap.pending_dtors.pop_front()
-        };
-        let Some((closure_bits, payload_ref)) = entry else {
-            break;
-        };
-        let closure_ref = AnyValueRef::from_raw_word(closure_bits)
-            .map_err(|err| format!("backend dtor drain: invalid closure ref {closure_bits:#x}: {err:?}"))?;
-        let closure = RuntimeAnyValue::heap_ptr(
-            closure_ref
-                .closure_addr()
-                .map_err(|err| format!("backend dtor drain: ref is not a closure: {err:?}"))?,
-            ValueKind::CLOSURE,
-        );
-        let (fn_id, captures) = unpack_pending_dtor_closure(closure)?;
-        let payload = interp_value_from_ref_word(payload_ref, "backend dtor drain payload")?;
-        let (target, args) =
-            construction_wrapper_invocation(runtime, types, transport, program, module, fn_id, &captures, &[payload])?;
-        let _ = run_backend_resume(
-            runtime,
-            types,
-            transport,
-            tel,
-            program,
-            module,
-            BackendResumeEntry::Executable {
-                executable: target,
-                args,
-                continuations: Vec::new(),
-            },
-        )?;
-    }
+    let closure_ref = AnyValueRef::from_raw_word(closure_bits)
+        .map_err(|err| format!("backend dtor drain: invalid closure ref {closure_bits:#x}: {err:?}"))?;
+    let closure = RuntimeAnyValue::heap_ptr(
+        closure_ref
+            .closure_addr()
+            .map_err(|err| format!("backend dtor drain: ref is not a closure: {err:?}"))?,
+        ValueKind::CLOSURE,
+    );
+    let (fn_id, captures) = unpack_pending_dtor_closure(closure)?;
+    let payload = interp_value_from_ref_word(payload_ref, "backend dtor drain payload")?;
+    let (target, args) =
+        construction_wrapper_invocation(runtime, types, transport, program, module, fn_id, &captures, &[payload])?;
+    run_backend_resume(
+        runtime,
+        types,
+        transport,
+        tel,
+        program,
+        module,
+        BackendResumeEntry::Executable {
+            executable: target,
+            args,
+            continuations: Vec::new(),
+        },
+    )?;
     Ok(())
 }
 

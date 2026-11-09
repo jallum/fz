@@ -7,7 +7,7 @@ use cranelift_module::FuncId;
 use fz_runtime::any_value::{AnyValueRef, ValueKind};
 use fz_runtime::heap::SchemaRegistry;
 use fz_runtime::pinned_abi::call1;
-use fz_runtime::process::{Collection, CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
+use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr::null_mut;
@@ -76,7 +76,7 @@ impl CompiledModule {
     }
 
     /// Run one quantum for a Process.
-    pub(crate) fn run_quantum(&self, process: &mut Process) -> Option<Collection> {
+    pub(crate) fn run_quantum(&self, process: &mut Process) {
         fn run_scheduler_closure(resume_addr: *const u8, process: &mut Process, closure: *mut u8) {
             let closure = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure as *const u8)
                 .expect("scheduler closure ref")
@@ -90,7 +90,6 @@ impl CompiledModule {
             .expect("a dispatched process has a runnable closure");
         run_scheduler_closure(self.resume_addr, process, closure);
         process.next_frame = null_mut();
-        process.boundary_maintenance(process.quantum_boundary())
     }
 }
 

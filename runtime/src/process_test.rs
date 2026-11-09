@@ -200,30 +200,6 @@ fn collect_roots_only_what_the_process_holds() {
     assert!(process.delivery.lock().park().unwrap().after_cont.is_null());
 }
 
-/// A heap below its collection threshold is left alone and reports nothing; a
-/// heap past it is collected and the report names the process, the boundary
-/// that asked, and what the collection did.
-#[test]
-fn boundary_maintenance_reports_a_collection_only_when_one_ran() {
-    let mut process = Process::new(Rc::new(RefCell::new(SchemaRegistry::new())));
-    let capture = int_list(&mut process.heap, 7);
-    let runnable = closure_capturing(&mut process, capture);
-    process.set_runnable_closure(runnable);
-    assert_eq!(process.boundary_maintenance(GcBoundary::Yield), None);
-
-    while !process.needs_boundary_gc() {
-        int_list(&mut process.heap, 0);
-    }
-    let collection = process
-        .boundary_maintenance(GcBoundary::Park)
-        .expect("a heap past its threshold is collected");
-    assert_eq!(collection.pid, process.pid);
-    assert_eq!(collection.boundary, GcBoundary::Park);
-    assert_eq!(collection.stats.blocks_released, collection.stats.from_ranges_walked);
-    assert_eq!(collection.stats.blocks_after, 1);
-    assert_eq!(collection.stats.root_heap_edges, 1, "only the runnable closure is live");
-}
-
 /// The boundary after a quantum is read off the process: runnable means it
 /// yielded, blocked means it parked, anything else means it halted.
 #[test]

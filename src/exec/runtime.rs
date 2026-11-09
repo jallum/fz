@@ -35,13 +35,15 @@ use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV};
 use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
 use fz_runtime::pinned_abi::call2;
-use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::process::Collection;
 use fz_runtime::sched::{
     ProbeOutcome, SendProbe, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender,
     self_send,
 };
-use fz_runtime::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
+use fz_runtime::sched_core::{
+    Disposition, QuantumEnd, Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook,
+    timer_schedule_hook,
+};
 use fz_runtime::timer::TimerId;
 #[cfg(test)]
 use std::cell::RefCell;
@@ -80,6 +82,7 @@ pub struct ExitRecord {
     pub list_retention_attempts: u64,
     pub list_retention_hits: u64,
     pub failed: bool,
+    pub dtors_dispatched: u64,
 }
 
 impl ExitRecord {
@@ -358,49 +361,23 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             // Gifts queued by senders become this heap's before any code
             // runs; a matched receive becomes the runnable closure here.
             deliver_in_queue(&mut task);
-            if let Some(collection) = self.compiled.run_quantum(&mut task) {
+            self.compiled.run_quantum(&mut task);
+            let QuantumEnd {
+                disposition,
+                collection,
+            } = end_quantum(self, &mut task);
+            if let Some(collection) = collection {
                 emit_gc(self.tel, &collection);
             }
-            // After a quantum the task is in one of three states: still
-            // Running with a continuation in `runnable` (a mid-flight
-            // yield), Blocked on a receive that found nothing, or halted.
-            if task.state == ProcessState::Running && task.runnable.is_some() {
-                self.queue_task(pid, task);
-                continue;
-            } else if task.state == ProcessState::Blocked {
-                // Parked on a receive: keep in registry, no re-enqueue. A
-                // send or the after-timer wakes it.
-            } else if task.next_frame.is_null() {
-                task.state = ProcessState::Exited;
-                // fz-4mk.3a — task is exiting; before the Heap drops at
-                // task-cleanup time, flush surviving MSO resources onto
-                // `pending_dtors` and dispatch each dtor closure body as
-                // real fz code through the `fz_drain_dtor_entry` shim. The dtor
-                // body reaches this process through the pinned register set by
-                // the `pinned_abi::call2` entry below.
-                let ptr: *mut Process = &mut *task;
-                mso_drop_all_deferred(&mut task.heap);
-                // Enter the dtor body through pinned_abi so the pinned register
-                // holds this process: the dtor is real fz code and its closure
-                // BIFs (alloc_closure, get_halt_cont, …) read the process from
-                // the pinned register, like every other scheduler-facing entry.
-                let drain_addr = self.compiled.drain_dtor_entry_addr;
-                while let Some((closure, payload_ref)) = task.heap.pending_dtors.pop_front() {
-                    let payload_tag = AnyValueRef::from_raw_word(payload_ref)
-                        .expect("pending dtor payload should be a valid value ref")
-                        .tag();
-                    assert_eq!(
-                        payload_tag,
-                        fz_runtime::any_value::ValueKind::INT,
-                        "pending dtor payload should stay boxed as an integer ref",
-                    );
-                    let _ = unsafe { call2(drain_addr, ptr, closure, payload_ref) };
+            match disposition {
+                Disposition::Requeue => {
+                    self.queue_task(pid, task);
+                    continue;
                 }
-                ExitRecord::emit(self.tel, &pid, &task);
-            } else if task.state == ProcessState::Running {
-                // Other cooperative yield (future builtin).
-                self.queue_task(pid, task);
-                continue;
+                // Parked on a receive: keep in registry, no re-enqueue. A send
+                // or the after-timer wakes it.
+                Disposition::Parked => {}
+                Disposition::Exited => ExitRecord::emit(self.tel, &pid, &task),
             }
             // Keep Exited / Blocked tasks in the registry so callers can
             // inspect halt_value / mailbox after the runtime drains, and
@@ -435,6 +412,15 @@ impl<T: Telemetry + ?Sized> Scheduler for Runtime<'_, T> {
     fn about_to_sleep(&mut self, wait: Duration) {
         self.tel.raw_event1(&SCHEDULER_SLEPT, &wait);
     }
+
+    /// Enter the destructor through `pinned_abi` so the pinned register holds
+    /// this process: the destructor is real fz code and its closure BIFs
+    /// (alloc_closure, get_halt_cont, ...) read the process from the pinned
+    /// register, like every other scheduler-facing entry.
+    fn run_destructor(&mut self, process: &mut Process, closure: u64, payload: u64) {
+        let process: *mut Process = process;
+        let _ = unsafe { call2(self.compiled.drain_dtor_entry_addr, process, closure, payload) };
+    }
 }
 
 #[cfg(test)]
@@ -463,6 +449,7 @@ impl ProcessExitCapture {
                     list_retention_attempts: process.list_retention_attempts,
                     list_retention_hits: process.list_retention_hits,
                     failed: process.failed,
+                    dtors_dispatched: process.dtors_dispatched,
                 });
             },
         );

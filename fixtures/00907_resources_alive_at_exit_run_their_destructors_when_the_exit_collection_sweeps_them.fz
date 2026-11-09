@@ -1,0 +1,29 @@
+#---
+# purpose: "three resources still held when main finishes run their destructors, newest first, after main's own output, on the interpreter, the JIT and the AOT, even when allocation has made the exit collection due"
+#---
+#
+# `main` makes three resources and keeps them in scope while it concatenates
+# enough strings that its heap is due for collection when it returns. The
+# process exits with the resources dead: the exit sweep queues one destructor
+# per resource and the scheduler runs them after the `dbg` line.
+extern "C" defp fz_resource_test_print_dtor(integer) :: nil
+def dwrap(x), do: fz_resource_test_print_dtor(x)
+def main() do
+  a = make_resource(10, &dwrap/1)
+  b = make_resource(20, &dwrap/1)
+  c = make_resource(30, &dwrap/1)
+  s1 = Integer.to_string(1) <> "a"
+  s2 = Integer.to_string(2) <> "b"
+  s3 = Integer.to_string(3) <> "c"
+  s4 = Integer.to_string(4) <> "d"
+  s5 = Integer.to_string(5) <> "e"
+  s6 = Integer.to_string(6) <> "f"
+  s7 = Integer.to_string(7) <> "g"
+  s8 = Integer.to_string(8) <> "h"
+  s9 = Integer.to_string(9) <> "i"
+  s10 = Integer.to_string(10) <> "j"
+  s11 = Integer.to_string(11) <> "k"
+  s12 = Integer.to_string(12) <> "l"
+  dbg(s1 <> s2 <> s3 <> s4 <> s5 <> s6 <> s7 <> s8 <> s9 <> s10 <> s11 <> s12)
+  :before
+end

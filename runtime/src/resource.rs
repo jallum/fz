@@ -215,13 +215,12 @@ pub unsafe extern "C" fn fz_resource_release(p: *mut Resource) {
     }
 }
 
-/// fz-4mk — release variant for the deferred-dispatch path.
+/// Release variant for resources whose destructor is fz code.
 ///
 /// Decrements the refcount, frees the wrapper if this was the final ref,
-/// and returns the payload (so the caller can enqueue it onto a per-heap
-/// `pending_dtors` queue for fz-side dispatch later). Does **not** invoke
-/// the stored C destructor — the new contract is "the closure runs the
-/// dtor as fz code at the next scheduler boundary."
+/// and returns the payload so the caller can queue it with the stub's closure
+/// on the heap's `pending_dtors`. Does **not** invoke the stored C destructor:
+/// the closure runs as fz code at the next scheduler boundary.
 ///
 /// Returns `Some(payload)` on the final-ref transition (1 → 0), `None`
 /// otherwise (another stub still holds the resource alive).
@@ -342,8 +341,8 @@ impl ResourceStub {
         }
     }
 
-    /// fz-4mk — the dtor closure value. Filled in by `alloc_resource` and
-    /// traced by Cheney like any other heap edge.
+    /// The dtor closure value. Filled in by `alloc_resource` and traced by
+    /// Cheney like any other heap edge while the stub is reachable.
     pub fn closure_value(&self) -> AnyValue {
         let raw = unsafe { read(self.as_raw().add(RESOURCE_STUB_CLOSURE_RAW_OFFSET) as *const u64) };
         let kind = unsafe { read(self.as_raw().add(RESOURCE_STUB_CLOSURE_KIND_OFFSET) as *const u8) };
@@ -374,6 +373,12 @@ impl ResourceStub {
 
     pub fn payload(&self) -> u64 {
         unsafe { (*self.shared_raw()).payload }
+    }
+
+    /// Whether a deterministic-cleanup owner has claimed the shared resource,
+    /// so that no destructor runs at final release.
+    pub fn is_claimed(&self) -> bool {
+        unsafe { (*self.shared_raw()).is_claimed() }
     }
 
     /// Claims the shared resource. A successful caller owns deterministic
@@ -407,7 +412,7 @@ impl ResourceStub {
 
 /// Allocate a strict 48-byte Resource stub on `heap`, taking ownership of the
 /// Resource reference encapsulated in `handle`. `closure` is the dtor
-/// closure value — recorded for fz-4mk's deferred fz-side dispatch. The
+/// closure value, which the scheduler runs when the stub dies. The
 /// new stub is pushed onto `heap.mso_head` as the new chain head.
 pub fn alloc_resource(heap: &mut Heap, handle: ResourceHandle, closure: AnyValue) -> ResourceStub {
     let p = heap.alloc_kind(HeapAllocKind::Resource, RESOURCE_STUB_SIZE);

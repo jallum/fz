@@ -512,6 +512,12 @@ A "server" without a <code>receive</code> loop is a one-shot fire-and-forget.
       forever, slowing every future scan. A wildcard
       <code>_ -&gt; …</code> clause that drains junk is sometimes the
       right answer.</li>
+  <li><strong>A process's resources are destroyed at its boundaries.</strong>
+      A resource the process dropped has its destructor run when a collection
+      frees it, at the scheduler boundary that follows; a resource it still
+      holds when it exits has its destructor run as part of the exit. A
+      process left parked when the program ends is torn down without running
+      destructors.</li>
   <li><strong>Pids can outlive their processes.</strong> A pid is just
       an integer. If you hold one for a process that has exited,
       <code>send</code>ing to it is silently a no-op — the message goes

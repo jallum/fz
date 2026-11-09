@@ -181,9 +181,12 @@ pub struct Process {
     pub list_retention_attempts: u64,
     /// Attempts that returned the source cell, unchanged or after guarded rewrite.
     pub list_retention_hits: u64,
+    /// Cumulative resource destructors the scheduler dispatched for this
+    /// process, after collections and at exit.
+    pub dtors_dispatched: u64,
     /// Compact reason bits pending for the next scheduler boundary. A yielding
     /// back edge sets the reduction bit, and the boundary consumes it via
-    /// `finish_yield_report` and `boundary_maintenance`. Collection timing is
+    /// `finish_yield_report` and `end_quantum`. Collection timing is
     /// decided by the heap, not here: collection has no authority to force a
     /// scheduler yield. See `YIELD_REASON_*`.
     pub yield_reasons: u8,
@@ -481,6 +484,7 @@ impl Process {
             reduction_yields: 0,
             list_retention_attempts: 0,
             list_retention_hits: 0,
+            dtors_dispatched: 0,
             yield_reasons: 0,
             pending_yield_continuation_margin_before_bytes: 0,
             max_yield_continuation_bytes: 0,
@@ -624,20 +628,6 @@ impl Process {
             ProcessState::Blocked => GcBoundary::Park,
             _ => GcBoundary::Exit,
         }
-    }
-
-    /// Scheduler-boundary maintenance shared by every execution path: collect
-    /// when the heap is due, and clear the yield-reason signals so the next
-    /// quantum starts clean. The returned `Collection` is the one record of a
-    /// collection the runtime hands its driver to report.
-    pub fn boundary_maintenance(&mut self, boundary: GcBoundary) -> Option<Collection> {
-        let collection = self.needs_boundary_gc().then(|| Collection {
-            pid: self.pid,
-            boundary,
-            stats: self.collect(&mut []),
-        });
-        self.clear_yield_reasons();
-        collection
     }
 
     /// Collect this process's heap. The roots are everything the process

@@ -104,7 +104,7 @@ pub struct Heap {
     /// Total allocation requests made by kind since the last explicit
     /// process/user-code reset. Unlike `alloc_count`, GC never rewrites this.
     alloc_stats: HeapAllocStats,
-    /// fz-q8d.1 — intrusive MSO ("Mixed Set / Off-heap") chain. Tagged head
+    /// Intrusive MSO ("Mixed Set / Off-heap") chain. Tagged head
     /// bits for a singly-linked list of live strict ProcBin and Resource
     /// stubs allocated on this heap; each entry's `mso_next` slot stores the
     /// previous tagged chain entry.
@@ -112,11 +112,10 @@ pub struct Heap {
     /// their to-space copies; `Heap::drop` calls `procbin::mso_drop_all`
     /// before pool reclaim so SharedBin references are balanced.
     pub mso_head: u64,
-    /// fz-4mk — pending dtor invocations. When an MSO sweep finds a
-    /// Resource stub whose off-heap refcount transitioned to
-    /// zero, instead of firing the dtor inline (which would mean running
-    /// fz code from inside the GC pause), we enqueue
-    /// `(closure_bits, payload)` here and the scheduler drains the queue
-    /// at the next quantum boundary. See ticket fz-4mk.
+    /// Pending dtor invocations. When the MSO sweep finds a Resource stub
+    /// whose off-heap refcount transitioned to zero, it enqueues
+    /// `(closure_bits, payload_ref)` here instead of running fz code from
+    /// inside the collection; the scheduler drains the queue before the
+    /// process next runs, after a collection and at exit.
     pub pending_dtors: VecDeque<(u64, u64)>,
 }

@@ -1744,6 +1744,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
             ("bytes_used", process.heap.bytes_used() as u64),
             ("list_retention_attempts", process.list_retention_attempts),
             ("list_retention_hits", process.list_retention_hits),
+            ("dtors_dispatched", process.dtors_dispatched),
         ] {
             out.push(',');
             write_str_lit(out, name);

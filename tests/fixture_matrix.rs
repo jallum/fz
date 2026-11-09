@@ -240,6 +240,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_matched_reply_fixture_collects_on_run_and_never_on_interp_until_the_interpreter_collects,
         ),
         (
+            "a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path",
+            a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path,
+        ),
+        (
             "a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe",
             a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe,
         ),
@@ -3002,6 +3006,52 @@ fn gc_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: 
             copied_bytes: required_json_u64_field(line, "copied_bytes", "gc event"),
         })
         .collect()
+}
+
+/// The destructors the fixture's exiting processes report having dispatched.
+fn dtors_dispatched_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> usize {
+    telemetry_log_for_fixture(fixture, path, label)
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"process_exited\"]"))
+        .map(|line| required_json_u64_field(line, "dtors_dispatched", "process_exited event"))
+        .sum()
+}
+
+/// A resource the heap frees is destroyed by its own fz closure at the next
+/// scheduler boundary, whichever path ran the program.
+fn a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path() {
+    // The resource is dropped inside `drop_one`, then 20000 list cells are
+    // built. The JIT collects while they are built and finds the stub dead; the
+    // interpreter never collects and destroys it at exit. One destructor
+    // either way.
+    let midlife = FixtureCase::new(
+        "fixtures/00906_a_resource_dropped_mid_run_runs_its_destructor_once_when_a_collection_frees_it.fz",
+    );
+    let collections = gc_events_for_fixture(&midlife, FixtureMatrixPath::Run, "run");
+    assert!(
+        collections.iter().any(|event| event.boundary == "yield"),
+        "run: the allocation makes the heap due at a yield, before the process exits"
+    );
+    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+        assert_eq!(
+            dtors_dispatched_for_fixture(&midlife, path, label),
+            1,
+            "{label}: the dropped resource's destructor is dispatched once"
+        );
+    }
+
+    // Three resources are still held when main returns; the exit sweep queues
+    // one destructor each.
+    let at_exit = FixtureCase::new(
+        "fixtures/00907_resources_alive_at_exit_run_their_destructors_when_the_exit_collection_sweeps_them.fz",
+    );
+    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+        assert_eq!(
+            dtors_dispatched_for_fixture(&at_exit, path, label),
+            3,
+            "{label}: one destructor per resource held at exit"
+        );
+    }
 }
 
 fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue() {
