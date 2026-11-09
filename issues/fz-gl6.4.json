@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A pointer's space is decided by testing the static area and the stack, not by walking the from-space chain",
   "type": "task",
-  "updated_at": "2026-11-09T01:54:20Z"
+  "updated_at": "2026-11-09T01:54:28Z"
 }
