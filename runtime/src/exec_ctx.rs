@@ -21,6 +21,26 @@ use crate::process::Process;
 use crate::scheduler_hooks::{FaultHook, OutputHook, SendHook, SpawnHook, TimerCancelHook, TimerScheduleHook};
 use std::ptr::{null, null_mut};
 
+/// The program's command line: the tokens after the program's own name or
+/// source path, each as the raw bytes the operating system handed over.
+/// Owned by the driver that starts the program; `System.argv/0` reads it
+/// through `ExecCtx::argv`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Argv(Vec<Vec<u8>>);
+
+impl Argv {
+    pub fn new(args: Vec<Vec<u8>>) -> Self {
+        Self(args)
+    }
+
+    pub fn as_slice(&self) -> &[Vec<u8>] {
+        &self.0
+    }
+}
+
+/// The command line of a program whose driver supplied none.
+pub static NO_ARGV: Argv = Argv(Vec::new());
+
 /// The execution-context dispatch table for a running task. See module docs.
 ///
 /// All pointers are type-erased and owned by the scheduler that built the
@@ -39,6 +59,9 @@ pub struct ExecCtx {
     pub output: Option<OutputHook>,
     pub timer_schedule: Option<TimerScheduleHook>,
     pub timer_cancel: Option<TimerCancelHook>,
+    /// The program's command line, owned by the driver. Null reads as `[]`:
+    /// macros run at compile time on a context that carries none.
+    pub argv: *const Argv,
 }
 
 impl ExecCtx {
@@ -54,6 +77,16 @@ impl ExecCtx {
             output: None,
             timer_schedule: None,
             timer_cancel: None,
+            argv: null(),
+        }
+    }
+
+    /// The program's arguments; empty when the driver supplied none.
+    pub fn argv(&self) -> &[Vec<u8>] {
+        if self.argv.is_null() {
+            &[]
+        } else {
+            unsafe { &*self.argv }.as_slice()
         }
     }
 }

@@ -26,7 +26,7 @@
 //! semantics.
 
 use crate::any_value::{AnyValueRef, ValueKind};
-use crate::exec_ctx::ExecCtx;
+use crate::exec_ctx::{Argv, ExecCtx};
 use crate::function_denotation::decode_closure_denotations;
 use crate::heap::{Heap, Schema, SchemaRegistry, deep_copy_any_value_ref};
 use crate::pinned_abi::{call1, call2};
@@ -38,6 +38,7 @@ use crate::sched::{
 use crate::timer::TimerWheel;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::ffi::{CStr, c_char};
 use std::process::abort;
 use std::ptr::{null, read_unaligned};
 use std::rc::Rc;
@@ -100,6 +101,9 @@ struct AotScheduler {
     /// `aot_timer_cancel_hook`, drained at the top of each
     /// `aot_run_queue_loop` iteration.
     timers: TimerWheel,
+    /// The program's command line, copied from the C `main`'s `argv`. The
+    /// dispatch table below points at it.
+    argv: Argv,
     /// Per-run dispatch table. Its handles (Runtime/tel/module) stay null —
     /// AOT has none — and `scheduler` points back at this struct. Every AOT
     /// task points its `Process.ctx` here; the spawn/send/timer
@@ -119,6 +123,18 @@ unsafe fn sched_of(proc: *mut Process) -> *mut AotScheduler {
     let scheduler = unsafe { (*ctx).scheduler };
     debug_assert!(!scheduler.is_null(), "aot ctx has no scheduler");
     scheduler as *mut AotScheduler
+}
+
+/// The program's command line from the C `main(argc, argv)`: every argument
+/// after the program name, as the bytes the OS passed.
+///
+/// # Safety
+/// `argv` must point at `argc` NUL-terminated strings when `argc > 0`.
+unsafe fn command_line(argc: i32, argv: *const *const c_char) -> Argv {
+    let args = (1..argc.max(0) as usize)
+        .map(|index| unsafe { CStr::from_ptr(*argv.add(index)) }.to_bytes().to_vec())
+        .collect();
+    Argv::new(args)
 }
 
 /// Decode an atom-name blob emitted by AOT codegen into a `Vec<String>`.
@@ -238,8 +254,10 @@ fn parse_named_schema_blob(blob: *const u8, len: u32) -> Vec<(crate::module_name
 /// install scheduler hooks, parse the atom blob. Returns the process pointer
 /// for subsequent register/run calls. `atom_blob` may be null (program has no
 /// atom literals); `atom_blob_len` bounds the scan — parsing used to terminate
-/// on the double-NUL sentinel.
+/// on the double-NUL sentinel. `argc`/`argv` are the C `main`'s own; the
+/// program sees everything after `argv[0]` through `System.argv/0`.
 #[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_aot_setup(
     atom_blob: *const u8,
     atom_blob_len: u32,
@@ -248,6 +266,8 @@ pub extern "C" fn fz_aot_setup(
     halt_cont_body_f64: *const u8,
     halt_cont_body_atom: *const u8,
     entry_thunk_addr: *const u8,
+    argc: i32,
+    argv: *const *const c_char,
 ) -> *mut Process {
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
 
@@ -283,6 +303,7 @@ pub extern "C" fn fz_aot_setup(
         drain_dtor_entry: null(),
         resume_addr: null(),
         timers: TimerWheel::new(),
+        argv: unsafe { command_line(argc, argv) },
         ctx: ExecCtx {
             output: Some(crate::output::STDOUT_OUTPUT_HOOK),
             fault: Some(crate::STDERR_FAULT_HOOK),
@@ -300,6 +321,7 @@ pub extern "C" fn fz_aot_setup(
     // at dispatch. Both targets are stable — the box never moves.
     unsafe {
         (*sched).ctx.scheduler = sched as *mut ();
+        (*sched).ctx.argv = &(*sched).argv;
         let proc_ptr = (*sched).tasks.get_mut(&1).map(|b| b.as_mut() as *mut Process).unwrap();
         (*proc_ptr).ctx = &mut (*sched).ctx;
         proc_ptr

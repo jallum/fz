@@ -1,0 +1,8 @@
+#---
+# purpose: "System.argv() lists each token after the source path as a binary, in order, as in Elixir"
+# oracle: 00655_a_program_reads_its_arguments_as_binaries_in_order.oracle.exs
+# args: a b
+#---
+def main() do
+  dbg(System.argv())
+end

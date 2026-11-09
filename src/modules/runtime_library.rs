@@ -33,6 +33,10 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/process.fz"),
     },
     RuntimeModuleSource {
+        name: "System",
+        source: include_str!("../../lib/system.fz"),
+    },
+    RuntimeModuleSource {
         name: "File",
         source: include_str!("../../lib/file.fz"),
     },

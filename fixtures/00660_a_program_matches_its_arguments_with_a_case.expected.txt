@@ -1,0 +1,3 @@
+{:path, "trace.jsonl"}
+:none
+:too_many

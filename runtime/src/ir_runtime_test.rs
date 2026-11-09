@@ -2,6 +2,7 @@ use super::*;
 use crate::any_value::{
     AnyValue, AnyValueRef, EMPTY_LIST_BITS, ValueKind, closure_size_for_count, list_addr_from_tagged, map_entry,
 };
+use crate::exec_ctx::Argv;
 use crate::heap::{Schema, SchemaRegistry};
 use crate::procbin::{PROCBIN_BYTES, bitstring_bit_len, bitstring_byte_ptr};
 use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Process, YIELD_REASON_REDUCTIONS};
@@ -731,5 +732,58 @@ fn list_length_counts_a_proper_list_and_refuses_every_other_value() {
 
         let integer = process.heap.box_any_value_ref(AnyValue::int(5));
         assert_eq!(fz_list_length(integer.raw_word()), -1);
+    });
+}
+
+fn binary_bytes(word: u64) -> Vec<u8> {
+    let p = bitstring_like_ptr_from_ref(word).expect("a binary");
+    unsafe { std::slice::from_raw_parts(bitstring_byte_ptr(p), (bitstring_bit_len(p) / 8) as usize).to_vec() }
+}
+
+fn list_of_binaries(mut word: u64) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    loop {
+        let list = AnyValueRef::from_raw_word(word).expect("a list");
+        if list.is_empty_list() {
+            return out;
+        }
+        out.push(binary_bytes(list_head_ref(list).expect("head").raw_word()));
+        word = list_tail_ref(list).expect("tail").raw_word();
+    }
+}
+
+#[test]
+fn system_argv_lists_each_driver_argument_as_a_binary_of_its_exact_bytes() {
+    let argv = Argv::new(vec![
+        b"--flag=1".to_vec(),
+        Vec::new(),
+        vec![0xff, 0xfe],
+        "é ü".as_bytes().to_vec(),
+    ]);
+    with_process(|process| {
+        let mut ctx = ExecCtx {
+            argv: &argv,
+            ..ExecCtx::empty()
+        };
+        process.ctx = &mut ctx;
+        let list = fz_system_argv(process);
+        assert_eq!(
+            list_of_binaries(list),
+            [
+                b"--flag=1".to_vec(),
+                Vec::new(),
+                vec![0xff, 0xfe],
+                "é ü".as_bytes().to_vec()
+            ]
+        );
+    });
+}
+
+#[test]
+fn system_argv_is_the_empty_list_when_the_driver_gave_no_arguments() {
+    with_process(|process| {
+        let mut ctx = ExecCtx::empty();
+        process.ctx = &mut ctx;
+        assert!(list_of_binaries(fz_system_argv(process)).is_empty());
     });
 }

@@ -740,3 +740,28 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
         "reprovisioning a retired macro backend must execute the invocation against the new product"
     );
 }
+
+/// A macro runs while the program is being compiled, before the program has a
+/// command line, so `System.argv()` is `[]` there even when the program run
+/// that follows is given arguments.
+#[test]
+fn a_macro_reads_an_empty_command_line_while_the_program_reads_its_own() {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.set_program_args(fz_runtime::exec_ctx::Argv::new(vec![b"a".to_vec(), b"b".to_vec()]));
+    compiler.submit_code(CodeSubmission {
+        name: Some("macro_reads_argv.fz".into()),
+        text: "defmacro compile_time_argc() do\n n = length(System.argv())\n quote do: unquote(n)\nend\ndef main(), do: compile_time_argc() * 10 + length(System.argv())\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_eq!(
+        compiler.run_root_interp(root),
+        Ok(2),
+        "the macro saw no arguments (0 * 10) and the program saw both (+ 2)"
+    );
+}

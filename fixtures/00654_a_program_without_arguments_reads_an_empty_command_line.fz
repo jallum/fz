@@ -1,0 +1,7 @@
+#---
+# purpose: "a program run with no arguments after its source path reads System.argv() as the empty list, as in Elixir"
+# oracle: 00654_a_program_without_arguments_reads_an_empty_command_line.oracle.exs
+#---
+def main() do
+  dbg(System.argv())
+end

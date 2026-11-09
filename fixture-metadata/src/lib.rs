@@ -43,6 +43,8 @@ pub struct FixtureMatrixMetadata {
     pub defer: Option<String>,
     pub path_deferrals: Vec<PathDeferral>,
     pub oracle: Option<String>,
+    /// The program's command line: the tokens after the source path.
+    pub args: Vec<String>,
     pub path_timeouts: Vec<PathTimeout>,
 }
 
@@ -235,6 +237,12 @@ pub fn parse_fixture_metadata(source: &str) -> Result<Option<FixtureMetadata>, F
             }
             "defer" => set_singleton(&mut metadata.matrix.defer, unquote(value).to_string(), line_no, key)?,
             "oracle" => set_singleton(&mut metadata.matrix.oracle, unquote(value).to_string(), line_no, key)?,
+            "args" => {
+                if !metadata.matrix.args.is_empty() {
+                    return Err(FixtureMetadataError::new(line_no, "`args` may only appear once"));
+                }
+                metadata.matrix.args = parse_args(value, line_no)?;
+            }
             "root" => set_singleton(&mut metadata.compiler.root, parse_root(value, line_no)?, line_no, key)?,
             "assert.edge" => metadata
                 .compiler
@@ -313,6 +321,43 @@ fn unquote(value: &str) -> &str {
     } else {
         value
     }
+}
+
+/// Splits a command line on whitespace outside double quotes. A quoted token
+/// keeps its spaces and may be empty; there are no escapes.
+fn parse_args(value: &str, line_no: usize) -> Result<Vec<String>, FixtureMetadataError> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut started = false;
+    let mut quoted = false;
+    for ch in value.chars() {
+        match ch {
+            '"' => {
+                quoted = !quoted;
+                started = true;
+            }
+            ch if ch.is_whitespace() && !quoted => {
+                if started {
+                    args.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            ch => {
+                current.push(ch);
+                started = true;
+            }
+        }
+    }
+    if quoted {
+        return Err(FixtureMetadataError::new(
+            line_no,
+            "`args` has an unterminated double quote",
+        ));
+    }
+    if started {
+        args.push(current);
+    }
+    Ok(args)
 }
 
 fn parse_kind(value: &str, line_no: usize) -> Result<FixtureKind, FixtureMetadataError> {

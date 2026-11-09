@@ -1,0 +1,21 @@
+defmodule System do
+  @moduledoc "Access to the program's surroundings."
+
+  @doc """
+  Returns the program's command line: one binary per argument, holding every
+  token after the source path (or the built executable's name), verbatim.
+
+  fz's own options come before the source path, and `--` is an ordinary
+  argument.
+
+  ## Examples
+
+      # fz2 run script.fz a -x --flag=1
+      System.argv()
+      #=> ["a", "-x", "--flag=1"]
+  """
+  @spec argv() :: [binary]
+  def argv(), do: fz_system_argv()
+
+  extern "fz" defp fz_system_argv() :: any
+end
