@@ -170,9 +170,7 @@ pub(crate) trait QuotedExpansionCtx {
             if allow_root_sugar
                 && *self.guard_depth() == 0
                 && let Some(rewritten) = rewrite_source_sugar(owner, cursor.root(), &node, &source_map.borrow())
-                    .map_err(|error| {
-                        emit_internal_surface_error(self.telemetry(), format!("source sugar rewrite failed: {error}"))
-                    })?
+                    .map_err(|error| emit_surface_read_error(self.telemetry(), "source sugar rewrite failed", &error))?
             {
                 return match self.expand_root(owner.subroot(rewritten), scope, depth)? {
                     ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),

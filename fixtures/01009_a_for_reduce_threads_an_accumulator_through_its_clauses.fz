@@ -1,0 +1,10 @@
+#---
+# purpose: "reduce: threads an accumulator through the do clauses, one clause choosing per element"
+# oracle: 01009_a_for_reduce_threads_an_accumulator_through_its_clauses.oracle.exs
+#---
+def main() do
+  dbg(for x <- [1, 2, 3, 4, 5], reduce: {0, 0} do
+    {big, small} when x > 3 -> {big + x, small}
+    {big, small} -> {big, small + x}
+  end)
+end

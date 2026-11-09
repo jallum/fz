@@ -1,0 +1,7 @@
+#---
+# purpose: "A for over a list collects the body of each element in order"
+# oracle: 01000_a_for_over_a_list_collects_the_body_for_each_element.oracle.exs
+#---
+def main() do
+  dbg(for x <- [1, 2, 3], do: x * 2)
+end

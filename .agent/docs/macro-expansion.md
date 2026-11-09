@@ -149,8 +149,9 @@ The shared recursive walk does three things:
 
 1. Rewrite source sugar first.
    `rewrite_source_sugar(...)` runs before macro-call handling, so source-only
-   sugars such as `|>`, capture shorthand, multi-clause lambda sugar, and
-   operator sugar collapse into ordinary quoted forms before function decoding.
+   sugars such as `|>`, capture shorthand, multi-clause lambda sugar, `for`
+   comprehensions, and operator sugar collapse into ordinary quoted forms
+   before function decoding.
    Each successful rewrite is memoized in its owning `QuotedSourceHeap` by the
    original node identity. Retries therefore revisit the same rewritten root
    and every synthesized descendant macro keeps one invocation identity (a

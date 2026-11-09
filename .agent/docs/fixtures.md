@@ -100,10 +100,10 @@ their block. A new epic claims the next free block and adds a row here.
 
 | Block         | Owner   | State                   |
 | ------------- | ------- | ----------------------- |
-| `00600-00799` | fz-sc8  | in use through `00788`  |
+| `00600-00799` | fz-sc8  | full                    |
 | `00800-00899` | fz-3ul  | reserved                |
 | `00900-00999` | fz-a9y  | reserved                |
-| `01000-01099` | -       | next free block         |
+| `01000-01099` | fz-sc8  | in use through `01014`  |
 
 Behavioural routing lives in the filename when a fixture is path-specific.
 Ordinary fixtures run on all three compiler2 paths by default. A prefix before

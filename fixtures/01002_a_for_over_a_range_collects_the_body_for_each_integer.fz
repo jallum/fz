@@ -1,0 +1,7 @@
+#---
+# purpose: "A for over a range collects the body for each integer"
+# oracle: 01002_a_for_over_a_range_collects_the_body_for_each_integer.oracle.exs
+#---
+def main() do
+  dbg(for x <- 1..4, do: x * x)
+end

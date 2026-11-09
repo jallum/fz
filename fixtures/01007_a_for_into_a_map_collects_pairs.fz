@@ -1,0 +1,8 @@
+#---
+# purpose: "into: %{} collects the body pairs into a map"
+# oracle: 01007_a_for_into_a_map_collects_pairs.oracle.exs
+#---
+def main() do
+  m = for x <- [1, 2, 3], into: %{}, do: {x, x * x}
+  dbg(Enum.sort(Map.to_list(m)))
+end

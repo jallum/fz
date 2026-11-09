@@ -1,0 +1,7 @@
+#---
+# purpose: "into: with a non-empty list keeps that prefix and appends the body in order"
+# oracle: 01008_a_for_into_a_list_keeps_the_prefix_and_appends_in_order.oracle.exs
+#---
+def main() do
+  dbg(for x <- [2, 3], into: [1], do: x)
+end
