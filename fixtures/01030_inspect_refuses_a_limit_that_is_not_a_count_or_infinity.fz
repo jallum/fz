@@ -1,0 +1,7 @@
+#---
+# purpose: "inspect(1, limit: -1) raises ArgumentError at the call; Elixir fails only when the bad limit meets a container, so there is no oracle"
+# expect: abort
+#---
+def main() do
+  dbg(inspect(1, limit: -1))
+end

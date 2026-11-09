@@ -1,0 +1,10 @@
+#---
+# purpose: "inspect/2 limit: spends one budget through nested maps, each container closing with ... for what is left"
+# oracle: 01020_inspect_limit_hands_the_remaining_budget_back_out_of_a_nested_map.oracle.exs
+#---
+def main() do
+  dbg(inspect(%{"metadata" => %{"a" => 1, "b" => 2, "c" => 3, "d" => 4, "e" => 5, "f" => 6}, "x" => 1}, limit: 6))
+  dbg(inspect(%{"m" => %{"a" => 1, "b" => 2}, "n" => %{"c" => 3}}, limit: 4))
+  dbg(inspect(%{"m" => %{"a" => 1, "b" => 2}, "n" => %{"c" => 3}}, limit: 100))
+  dbg(inspect(%{"m" => %{}}, limit: 1))
+end

@@ -12,52 +12,68 @@ lexes to `Tok::Binary`.
 ## Rendering
 
 The value renderer is `any_value::debug` in the runtime crate. `render_value`
-and `render` dispatch on a value's `ValueKind`/heap tag and produce the printed
-form. Every print path shares it: `IO.inspect/1` and `dbg/1` (which is
-`IO.inspect/1`) through `Kernel.inspect/1`, the IR interpreter, and the REPL all
-call the same `render_value`. The
-decision is purely payload-driven, reading only the tagged bits and heap layout,
-never the type system's brand slot, so the interpreter, JIT, and AOT paths agree
-on output without sharing type information at runtime.
+and `render_with_limit` dispatch on a value's `ValueKind`/heap tag and produce
+the printed form. Every print path shares it: `IO.inspect/1` and `dbg/1` (which
+is `IO.inspect/1`) through `Kernel.inspect/1`, the IR interpreter, and the REPL
+all call `render_value`, which means `Limit::DEFAULT` (100, Elixir's
+`%Inspect.Opts{}.limit`); `Kernel.inspect/2` reaches `render_with_limit`
+through `fz_inspect/2`. The decision is purely payload-driven, reading only the
+tagged bits and heap layout, never the type system's brand slot, so the
+interpreter, JIT, and AOT paths agree on output without sharing type
+information at runtime.
 
-`render_list` walks the cons cells and renders each head with
-`render_typed_list_head`. An `INT` head renders as its decimal digits, so a list
-of integers renders as a list of integers and nothing else: `[5, 3, 1]` renders
-as `[5, 3, 1]`, and `[42]` renders as `[42]`. There is no codepoint-printability
-branch anywhere in list rendering, so the renderer never emits charlist syntax
-(`~c"..."`) for any value. An improper tail renders as `[h | t]`.
+A `Renderer` carries the process and the remaining `Limit`. Each element of a
+list, tuple, map entry, keyword entry or bitstring byte costs one before it is
+rendered, and what it renders inside spends from the same budget; once the
+budget is spent, `...` replaces the elements left. Numbers, atoms, strings,
+charlists, ranges and closures cost nothing of their own.
 
-An atom renders through `render_atom`. `nil`, `true` and `false` print bare.
-An atom whose name `module_name::alias_spelling` recognises prints as its
-alias, as Elixir's `inspect` does: `Elixir` followed by `.`-separated segments
-that each start with an ASCII capital letter and continue with ASCII letters,
-digits or `_`. The module name `Foo.Bar` is the atom `Elixir.Foo.Bar` and prints
-`Foo.Bar`. Every other atom prints as `:name`. A two-tuple whose first element
-is an atom under `Elixir.` is never a keyword entry, so `[{Foo, 1}]` prints as
-a list of tuples, as in Elixir.
+A list renders in one of three shapes, decided from its cells. A non-empty list
+whose every element is an integer in 7..=13, 27 or 32..=126
+(`List.ascii_printable?/1`) renders as `~c"..."` with the string escapes:
+`[104, 105]` is `~c"hi"`, `[7, 104]` is `~c"\ah"`. Any other integer list, such
+as `[0]`, `[128]` or `[126, 127]`, stays a list. A list whose every element is a
+two-tuple with a non-alias atom key renders as a keyword list, `[a: 1]`.
+Every other list renders its elements. A list's tail is always a list or `[]`,
+so there is no improper form to print.
 
-A binary takes the other shape. `render_bitstring` prints a byte-aligned, valid,
-printable (`is_printable_utf8`) UTF-8 binary as a quoted string `"..."`, and
-anything else as the `<<...>>` byte-list form.
+The `~c"..."` text has no source form in fz: the lexer rejects every sigil, so
+the renderer prints text the language cannot read back.
+
+An atom renders as `Macro.inspect_atom(:literal, atom)` does. `nil`, `true` and
+`false` print bare. An atom whose name `module_name::alias_spelling` recognises
+prints as its alias: `Elixir` followed by `.`-separated segments that each
+start with an ASCII capital letter and continue with ASCII letters, digits or
+`_`. The module name `Foo.Bar` is the atom `Elixir.Foo.Bar` and prints
+`Foo.Bar`. An identifier (a letter or `_`, then letters, digits, `_` or `@`,
+then at most one `?` or `!`) and the operators and special forms Elixir leaves
+unquoted print as `:name`, `:+`, `:<>`. Every other atom prints quoted through
+the string escaper: `:"foo bar"`, `:"1abc"`, `:"Elixir.lower"`. As a keyword
+key the same classes print `name:`, `"foo bar":`, `+:`.
+
+`Renderer::keyword_key` is the one place
+that decides keyword style, for lists and maps alike: a key can head a keyword
+entry when it is an atom that is not under `Elixir.`. A map whose every key
+can prints `%{a: 1}`; any other map prints `%{k => v}`, in the map's own
+order. A two-tuple keyed by an alias is never a keyword entry, so `[{Foo, 1}]`
+prints as a list of tuples, as in Elixir.
+
+A binary takes the other shape. `Renderer::bitstring` prints a byte-aligned,
+valid, printable (`is_printable_utf8`) UTF-8 binary as a quoted string `"..."`,
+which ignores the limit, and anything else as `<<...>>`: one element per byte,
+trailing bits as `n::size(k)`. One escaper, `escape_for_display`, writes
+strings, quoted atoms and charlists with Elixir's escapes: `\a \b \t \n \v \f
+\r \e \d \\ \"`, `\#{`, and `\uXXXX` for the invisible and lookalike
+codepoints.
 
 ## Difference from Elixir
 
-Charlists are one place fz's rendering differs from Elixir's `IO.inspect` on
-the same data. Elixir prints a list whose every element is a printable codepoint
-(`?\s`/32 through `?~`/126) as a charlist: `IO.inspect([42])` prints `~c"*"`,
-while `IO.inspect([5, 3, 1])` prints `[5, 3, 1]` (1, 3, and 5 are control
-codepoints, so it stays a list). fz prints `[42]` and `[5, 3, 1]` both as plain
-lists.
-
-Two other differences are atom-shaped. An atom whose name Elixir must quote
-prints unquoted: `:"foo bar"` prints `:foo bar` and `:"Elixir.lower"` prints
-`:Elixir.lower`. An atom-keyed map prints `%{:a => 1}` where Elixir prints
-`%{a: 1}`.
+Floats, ranges, closures (`#fn<n/a>`) and struct bodies (`{...}`) keep their
+own forms; closures are an opaque identity no other runtime reproduces. Map
+order is the map's own: Erlang orders atom keys by atom index, and fz by name,
+so a multi-key atom-keyed map is not comparable with Elixir's output.
 
 ## Fixtures
 
-A fixture whose golden comes from Elixir (see [fixtures](fixtures.md)) and that
-builds an all-printable integer list mismatches on rendering alone: Elixir emits
-`~c"..."`, fz emits the plain list. Such fixtures use element sets with at least
-one non-printable codepoint — a small control value, or a value above 126 — or
-non-integer elements, so Elixir renders a plain list that fz reproduces exactly.
+A fixture whose golden comes from Elixir (see [fixtures](fixtures.md)) matches
+it on charlists: an all-printable integer list prints `~c"..."` on both sides.

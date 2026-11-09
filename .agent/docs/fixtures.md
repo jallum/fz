@@ -98,12 +98,14 @@ Fixture numbers are allocated in blocks of 100 per stack. A new fixture takes
 the next free number inside its own block, and nobody takes a number outside
 their block. A new epic claims the next free block and adds a row here.
 
-| Block         | Owner   | State                   |
-| ------------- | ------- | ----------------------- |
-| `00600-00799` | fz-sc8  | full                    |
-| `00800-00899` | fz-3ul  | reserved                |
-| `00900-00999` | fz-a9y  | reserved                |
-| `01000-01099` | fz-sc8  | in use through `01014`  |
+| Block         | Owner                             | State                  |
+| ------------- | --------------------------------- | ---------------------- |
+| `00600-00799` | fz-sc8                            | full                   |
+| `00800-00899` | fz-3ul                            | reserved               |
+| `00900-00999` | fz-a9y                            | reserved               |
+| `01000-01039` | fz-sc8 (stack #274)               | in use through `01030` |
+| `01040-01059` | fz-sc8 (session fz-38: .77, .105) | reserved               |
+| `01060-01099` | unallocated                       | free                   |
 
 Behavioural routing lives in the filename when a fixture is path-specific.
 Ordinary fixtures run on all three compiler2 paths by default. A prefix before

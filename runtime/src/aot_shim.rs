@@ -189,7 +189,7 @@ unsafe fn command_line(argc: i32, argv: *const *const c_char) -> Argv {
 /// the end of the blob, so `:""` truncated the table and every atom interned
 /// after it vanished -- `dbg(:hello)` printed `:atom_4` on the AOT door alone,
 /// and `Atom.to_string` of any of them aborted the process. The renderer has
-/// always known empty names exist (`any_value::debug::render_atom`); the
+/// always known empty names exist (`any_value::debug::Renderer::atom`); the
 /// encoding was the one place that assumed they do not.
 fn parse_atom_blob(blob: *const u8, len: u32) -> Vec<String> {
     let mut out = Vec::new();

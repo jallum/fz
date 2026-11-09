@@ -1,0 +1,2 @@
+"%{\"duration\" => 6, \"fz.compiler2.job\" => 2, \"kind\" => 3, \"name\" => 1, \"parent\" => 5, \"span_id\" => 4, ...}"
+"%{\"kind\" => \"job\", \"name\" => \"x\"}"

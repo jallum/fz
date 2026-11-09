@@ -1,0 +1,7 @@
+#---
+# purpose: "inspect(1, foo: 1) raises ArgumentError naming the option; Elixir ignores the key, so there is no oracle"
+# expect: abort
+#---
+def main() do
+  dbg(inspect(1, foo: 1))
+end

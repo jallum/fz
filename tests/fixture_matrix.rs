@@ -3115,7 +3115,7 @@ fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_que
     let unmatched = FixtureCase::new("fixtures/00902_an_unmatched_message_is_gifted_whole_and_waits_in_the_mailbox.fz");
     let expected = fs::read_to_string(unmatched.sidecar_path("expected.txt")).expect("read 00902 expected.txt");
     assert_eq!(
-        expected, ":go\n[7, 8]\n0\n",
+        expected, ":go\n~c\"\\a\\b\"\n0\n",
         "the parent takes :go first, then the earlier unmatched tuple from its mailbox, and allocates no list cells for either"
     );
 

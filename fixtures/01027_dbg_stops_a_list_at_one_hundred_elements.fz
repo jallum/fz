@@ -1,0 +1,10 @@
+#---
+# purpose: "dbg/1 prints at most 100 elements of a list and then ..., as Elixir's default inspect limit does"
+# oracle: 01027_dbg_stops_a_list_at_one_hundred_elements.oracle.exs
+#---
+def main() do
+  dbg(Enum.to_list(1..100))
+  dbg(Enum.to_list(1..101))
+  dbg(Enum.map(1..101, fn n -> "e" <> inspect(n) end))
+  dbg([Enum.to_list(1..60), Enum.to_list(1..60)])
+end

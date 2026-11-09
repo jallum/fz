@@ -1,0 +1,13 @@
+#---
+# purpose: "inspect/1 and inspect/2 are imported into every module: a module's functions call them bare"
+# oracle: 01028_inspect_is_callable_bare_inside_a_module.oracle.exs
+#---
+defmodule Shape do
+  def show(value), do: inspect(value)
+  def show(value, limit), do: inspect(value, limit: limit)
+end
+def main() do
+  dbg(Shape.show(%{"a" => [1, 2]}))
+  dbg(Shape.show([1, 2, 3], 2))
+  dbg(Shape.show({:ok, "v"}, :infinity))
+end

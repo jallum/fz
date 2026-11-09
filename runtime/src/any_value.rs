@@ -1326,9 +1326,9 @@ mod any_value_test;
 pub mod debug {
     use super::{
         AnyValue, AnyValueRef, EMPTY_LIST, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
-        bitstring_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_denotation, heap_object_word,
-        list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry_raw_kinds, procbin_addr_from_tagged,
-        struct_addr_from_tagged, struct_schema_id,
+        bitstring_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_denotation, list_addr_from_tagged,
+        map_addr_from_tagged, map_count, map_entry_raw_kinds, procbin_addr_from_tagged, struct_addr_from_tagged,
+        struct_schema_id,
     };
     use crate::heap::FieldKind;
     use crate::module_name::{alias_spelling, is_alias_namespace_atom};
@@ -1337,114 +1337,397 @@ pub mod debug {
     use std::slice;
     use std::str;
 
-    /// Render an atom id as Elixir's `inspect` does when `proc` has a name for
-    /// it: a module-name atom (`Elixir.Foo.Bar`) as its alias (`Foo.Bar`),
-    /// any other as `:name`. Falls back to `:atom_N` otherwise. `proc` is
-    /// nullable — render may be called without a process (unit tests poking
-    /// the renderer directly, or the panic path) — in which case the fallback
-    /// fires. Threading the process
-    /// explicitly is what lets two schedulers render concurrently without an
-    /// ambient `CURRENT_PROCESS`.
-    fn render_atom(proc: *mut Process, id: u32) -> String {
-        match id {
-            NIL_ATOM_ID => return "nil".to_string(),
-            TRUE_ATOM_ID => return "true".to_string(),
-            FALSE_ATOM_ID => return "false".to_string(),
-            _ => {}
+    /// How many more elements a rendering may print. A container spends one
+    /// per element before it renders that element, and whatever the element
+    /// renders inside spends from the same budget, so one `Limit` threads
+    /// through the nesting the way `Inspect.Algebra.container_doc_with_opts`
+    /// threads `Inspect.Opts.limit`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Limit {
+        Count(u64),
+        Infinity,
+    }
+
+    impl Limit {
+        /// `%Inspect.Opts{}.limit`.
+        pub const DEFAULT: Self = Self::Count(100);
+
+        /// The `limit:` of an option keyword list `Kernel.inspect/2` has
+        /// already checked: the last one wins, and none means the default.
+        pub fn from_options(proc: *mut Process, options: AnyValue) -> Self {
+            let Some(bits) = options.heap_object_word() else {
+                return Self::DEFAULT;
+            };
+            list_cells(bits)
+                .into_iter()
+                .filter_map(|cell| pair(proc, cell.head_value()))
+                .filter(
+                    |(key, _)| matches!(key, AnyValue::Atom(id) if atom_name(proc, *id).as_deref() == Some("limit")),
+                )
+                .fold(Self::DEFAULT, |_, (_, limit)| match limit {
+                    AnyValue::Int(count) if count >= 0 => Self::Count(count as u64),
+                    AnyValue::Atom(id) if atom_name(proc, id).as_deref() == Some("infinity") => Self::Infinity,
+                    other => panic!("inspect: a checked limit is a non-negative integer or :infinity, got {other:?}"),
+                })
         }
-        match named_atom(proc, id) {
-            Some(name) => match alias_spelling(&name) {
-                Some(alias) => alias.to_string(),
-                None => format!(":{}", name),
-            },
-            None => format!(":atom_{}", id),
+
+        fn is_spent(self) -> bool {
+            self == Self::Count(0)
+        }
+
+        fn less(self, spent: u64) -> Self {
+            match self {
+                Self::Count(count) => Self::Count(count.saturating_sub(spent)),
+                Self::Infinity => Self::Infinity,
+            }
         }
     }
 
-    fn named_atom(proc: *mut Process, id: u32) -> Option<String> {
+    /// An atom's name, when `proc` has one for it.
+    fn atom_name(proc: *mut Process, id: u32) -> Option<String> {
+        match id {
+            NIL_ATOM_ID => return Some("nil".to_string()),
+            TRUE_ATOM_ID => return Some("true".to_string()),
+            FALSE_ATOM_ID => return Some("false".to_string()),
+            _ => {}
+        }
         if proc.is_null() {
             return None;
         }
         unsafe { &*proc }.node.atom_name(id).filter(|name| !name.is_empty())
     }
 
-    /// A list or map the formatter walks: a non-null address that is not a
-    /// literal. No program ships a list or a map as read-only data, so the
-    /// literal bit is clear on every one.
-    fn is_proc_heap_container(proc: *mut Process, bits: u64, addr_of: fn(u64) -> Option<*mut u8>) -> bool {
-        let Some(p) = addr_of(bits) else {
-            return false;
-        };
-        !p.is_null() && !proc.is_null() && !super::AnyValueRefPacking::current().is_literal(bits)
+    /// The operators and special forms Elixir writes without quotes:
+    /// `Macro.classify_atom/1`'s unquoted operators and non-callable forms.
+    /// `::`, `^^^`, `~~~`, `<|>`, `=>`, `//` and `?` are not among them.
+    const UNQUOTED_ATOMS: &[&str] = &[
+        "@", ".", "+", "-", "!", "^", "not", "&&", "&&&", "||", "|||", "and", "or", "in", "<>", "++", "--", "+++",
+        "---", "..", "..//", "<<<", ">>>", "<<~", "~>>", "<~", "~>", "<~>", "*", "/", "=", "==", "!=", "=~", "===",
+        "!==", "<", ">", "<=", ">=", "|>", "|", "&", "when", "**", "->", "<-", "\\\\", "...", "%{}", "{}", "<<>>", "%",
+    ];
+
+    enum AtomClass<'a> {
+        Alias(&'a str),
+        Unquoted,
+        Quoted,
     }
 
-    pub fn render(proc: *mut Process, bits: u64) -> String {
-        if is_proc_heap_container(proc, bits, list_addr_from_tagged) {
-            return render_list(proc, bits);
+    /// `Macro.classify_atom/1` for a named atom. An identifier starts with a
+    /// letter or `_`, continues with letters, digits, `_` or `@`, and may end
+    /// in one `?` or `!`.
+    fn classify_atom(name: &str) -> AtomClass<'_> {
+        if UNQUOTED_ATOMS.contains(&name) {
+            return AtomClass::Unquoted;
         }
-        if is_proc_heap_container(proc, bits, map_addr_from_tagged) {
-            return render_map(proc, bits);
-        }
-        if closure_addr_from_tagged(bits).is_some() {
-            return render_closure(bits);
-        }
-        if struct_addr_from_tagged(bits).is_some() {
-            return render_struct(proc, bits);
-        }
-        if bitstring_addr_from_tagged(bits).is_some() {
-            return render_bitstring(bits);
-        }
-        if procbin_addr_from_tagged(bits).is_some() {
-            return render_bitstring(bits);
-        }
-        // An empty list reaches here two ways: as the `EMPTY_LIST` sentinel,
-        // and as a LIST-tagged word whose address is null, which is what a
-        // nested `[]` is stored as. Both are the empty list.
-        if bits == EMPTY_LIST || list_addr_from_tagged(bits).is_some_and(|p| p.is_null()) {
-            "[]".into()
-        } else {
-            format!("#ptr<{:#x}>", bits)
+        match alias_spelling(name) {
+            // `Elixir.Elixir.Foo` is spelled in full: `Elixir.Foo` would name
+            // another atom.
+            Some(_) if name.starts_with("Elixir.Elixir") => AtomClass::Alias(name),
+            Some(path) => AtomClass::Alias(path),
+            None if is_identifier(name) => AtomClass::Unquoted,
+            None => AtomClass::Quoted,
         }
     }
 
-    /// Render a heap-typed Struct (currently only emitted for tuples). Reads
-    /// the schema from the current Process's SchemaRegistry to determine
-    /// field count. Each value field renders inline; non-value fields
-    /// are elided (no callers emit them yet).
-    fn render_struct(proc: *mut Process, bits: u64) -> String {
-        let p = struct_addr_from_tagged(bits).expect("struct bits");
-        let schema_id = unsafe { struct_schema_id(p) };
-        let heap = &unsafe { &*proc }.heap;
-        {
-            let reg = heap.schemas_registry();
-            let registry = reg.borrow();
-            if registry.get(schema_id).is_range() {
-                return render_range(proc, bits);
+    fn is_identifier(name: &str) -> bool {
+        let body = name.strip_suffix(['?', '!']).unwrap_or(name);
+        let mut chars = body.chars();
+        chars.next().is_some_and(|first| first == '_' || first.is_alphabetic())
+            && chars.all(|c| c == '_' || c == '@' || c.is_alphanumeric())
+    }
+
+    /// An atom as source writes it: `Macro.inspect_atom(:literal, atom)`.
+    fn atom_literal(name: &str) -> String {
+        if matches!(name, "nil" | "true" | "false") {
+            return name.to_string();
+        }
+        match classify_atom(name) {
+            AtomClass::Alias(text) => text.to_string(),
+            AtomClass::Unquoted => format!(":{name}"),
+            AtomClass::Quoted => format!(":\"{}\"", escape_for_display(name)),
+        }
+    }
+
+    /// An atom as a keyword key writes it: `Macro.inspect_atom(:key, atom)`.
+    fn atom_key(name: &str) -> String {
+        match classify_atom(name) {
+            AtomClass::Unquoted => format!("{name}:"),
+            AtomClass::Alias(_) => format!("\"{name}\":"),
+            AtomClass::Quoted => format!("\"{}\":", escape_for_display(name)),
+        }
+    }
+
+    /// `inspect/1` with Elixir's default options.
+    pub fn render_value(proc: *mut Process, value: AnyValue) -> String {
+        render_with_limit(proc, value, Limit::DEFAULT)
+    }
+
+    /// `inspect/2` with `limit:`.
+    pub fn render_with_limit(proc: *mut Process, value: AnyValue, limit: Limit) -> String {
+        Renderer { proc, limit }.value(value)
+    }
+
+    /// The process is the heap's schema registry and the atom table; `limit`
+    /// is what is left to spend.
+    struct Renderer {
+        proc: *mut Process,
+        limit: Limit,
+    }
+
+    impl Renderer {
+        fn value(&mut self, value: AnyValue) -> String {
+            match value.kind() {
+                ValueKind::INT => (value.raw() as i64).to_string(),
+                ValueKind::FLOAT => render_float(f64::from_bits(value.raw())),
+                ValueKind::ATOM => self.atom(value.raw() as u32),
+                ValueKind::LIST if value.raw() == 0 => "[]".to_string(),
+                kind if kind.is_heap() => self.bits(value.heap_object_word().expect("heap object")),
+                ValueKind::NULL => "null".to_string(),
+                _ => format!("#value<{:#x}:{}>", value.raw(), value.kind().tag()),
             }
         }
-        let field_offsets: Vec<u32> = {
-            let reg = heap.schemas_registry();
-            let registry = reg.borrow();
-            let schema = registry.get(schema_id);
-            schema
-                .fields
+
+        /// An atom id as Elixir's `inspect` writes it, or `:atom_N` when the
+        /// process has no name for it. `proc` is nullable: the panic path and
+        /// unit tests render without one.
+        fn atom(&self, id: u32) -> String {
+            match atom_name(self.proc, id) {
+                Some(name) => atom_literal(&name),
+                None => format!(":atom_{id}"),
+            }
+        }
+
+        /// A list or map the renderer walks: a non-null address that is not a
+        /// literal. No program ships a list or a map as read-only data, so the
+        /// literal bit is clear on every one.
+        fn is_proc_heap_container(&self, bits: u64, addr_of: fn(u64) -> Option<*mut u8>) -> bool {
+            addr_of(bits).is_some_and(|p| {
+                !p.is_null() && !self.proc.is_null() && !super::AnyValueRefPacking::current().is_literal(bits)
+            })
+        }
+
+        fn bits(&mut self, bits: u64) -> String {
+            if self.is_proc_heap_container(bits, list_addr_from_tagged) {
+                return self.list(bits);
+            }
+            if self.is_proc_heap_container(bits, map_addr_from_tagged) {
+                return self.map(bits);
+            }
+            if closure_addr_from_tagged(bits).is_some() {
+                return render_closure(bits);
+            }
+            if struct_addr_from_tagged(bits).is_some() {
+                return self.struct_value(bits);
+            }
+            if bitstring_addr_from_tagged(bits).is_some() || procbin_addr_from_tagged(bits).is_some() {
+                return self.bitstring(bits);
+            }
+            // An empty list reaches here two ways: as the `EMPTY_LIST` sentinel,
+            // and as a LIST-tagged word whose address is null, which is what a
+            // nested `[]` is stored as.
+            if bits == EMPTY_LIST || list_addr_from_tagged(bits).is_some_and(|p| p.is_null()) {
+                "[]".into()
+            } else {
+                format!("#ptr<{:#x}>", bits)
+            }
+        }
+
+        /// One element of a container: it costs one, and what it renders inside
+        /// spends from what is left.
+        fn element(&mut self, render: impl FnOnce(&mut Self) -> String) -> String {
+            self.limit = self.limit.less(1);
+            render(self)
+        }
+
+        /// `open`, the elements joined by commas, `close`. Once the budget is
+        /// spent, `...` stands for whatever elements are left; an empty
+        /// container has none and never shows it.
+        fn container<T>(
+            &mut self,
+            open: &str,
+            close: &str,
+            items: impl IntoIterator<Item = T>,
+            mut render: impl FnMut(&mut Self, T) -> String,
+        ) -> String {
+            let mut parts: Vec<String> = Vec::new();
+            for item in items {
+                if self.limit.is_spent() {
+                    parts.push("...".to_string());
+                    break;
+                }
+                parts.push(self.element(|renderer| render(renderer, item)));
+            }
+            format!("{open}{}{close}", parts.join(", "))
+        }
+
+        /// A heap Struct: a tuple, a range, or a record. Its fields print
+        /// inline as `{…}`; non-value fields are elided.
+        fn struct_value(&mut self, bits: u64) -> String {
+            let p = struct_addr_from_tagged(bits).expect("struct bits");
+            let schema_id = unsafe { struct_schema_id(p) };
+            let heap = &unsafe { &*self.proc }.heap;
+            {
+                let reg = heap.schemas_registry();
+                let registry = reg.borrow();
+                if registry.get(schema_id).is_range() {
+                    return self.range(bits);
+                }
+            }
+            let field_offsets: Vec<u32> = {
+                let reg = heap.schemas_registry();
+                let registry = reg.borrow();
+                let schema = registry.get(schema_id);
+                schema
+                    .fields
+                    .iter()
+                    .filter(|f| matches!(f.kind, FieldKind::AnyValue))
+                    .map(|f| f.offset)
+                    .collect()
+            };
+            self.container("{", "}", field_offsets, |renderer, offset| {
+                renderer.value(heap.read_field_slot(p, offset))
+            })
+        }
+
+        fn range(&self, bits: u64) -> String {
+            let range_ref = AnyValueRef::from_heap_object(
+                ValueKind::STRUCT,
+                struct_addr_from_tagged(bits).expect("range struct bits"),
+            )
+            .expect("range ref");
+            let (first, last, step) = unsafe { &*self.proc }
+                .heap
+                .range_fields(range_ref)
+                .expect("range fields");
+            if step == 1 {
+                format!("{}..{}", first, last)
+            } else {
+                format!("{}..{}//{}", first, last, step)
+            }
+        }
+
+        /// A keyword key spelled as it prints (`a:`, `"foo bar":`), when `key`
+        /// can head a keyword entry: an atom that is not an alias
+        /// (`Inspect.List.keyword?/1`). This is the one place that decides
+        /// keyword style, for lists of pairs and for maps alike.
+        fn keyword_key(&self, key: AnyValue) -> Option<String> {
+            let AnyValue::Atom(id) = key else {
+                return None;
+            };
+            match atom_name(self.proc, id) {
+                Some(name) if is_alias_namespace_atom(&name) => None,
+                Some(name) => Some(atom_key(&name)),
+                None => Some(format!("atom_{id}:")),
+            }
+        }
+
+        /// `open`, `key: value` entries, `close`.
+        fn keyword_container(&mut self, open: &str, close: &str, entries: Vec<(String, AnyValue)>) -> String {
+            self.container(open, close, entries, |renderer, (key, value)| {
+                format!("{key} {}", renderer.value(value))
+            })
+        }
+
+        /// A heap Map as `%{k => v}`, or `%{k: v}` when every key can head a
+        /// keyword entry, in the map's own order.
+        fn map(&mut self, bits: u64) -> String {
+            let p = map_addr_from_tagged(bits).unwrap();
+            let count = unsafe { map_count(p) };
+            let entries: Vec<(AnyValue, AnyValue)> = (0..count)
+                .map(|i| {
+                    let (kr, kk, vr, vk) = unsafe { map_entry_raw_kinds(p, i) };
+                    (
+                        AnyValue::decode_parts(kr, kk.tag()).expect("map key"),
+                        AnyValue::decode_parts(vr, vk.tag()).expect("map value"),
+                    )
+                })
+                .collect();
+            let keywords: Option<Vec<(String, AnyValue)>> = entries
                 .iter()
-                .filter(|f| matches!(f.kind, FieldKind::AnyValue))
-                .map(|f| f.offset)
-                .collect()
-        };
-        let parts: Vec<String> = field_offsets
-            .into_iter()
-            .map(|offset| render_value(proc, heap.read_field_slot(p, offset)))
-            .collect();
-        format!("{{{}}}", parts.join(", "))
+                .map(|(key, value)| Some((self.keyword_key(*key)?, *value)))
+                .collect();
+            match keywords {
+                Some(keywords) if !keywords.is_empty() => self.keyword_container("%{", "}", keywords),
+                _ => self.container("%{", "}", entries, |renderer, (key, value)| {
+                    let key = renderer.value(key);
+                    format!("{key} => {}", renderer.value(value))
+                }),
+            }
+        }
+
+        fn bitstring(&mut self, bits: u64) -> String {
+            assert!(
+                procbin_addr_from_tagged(bits).is_some() || bitstring_addr_from_tagged(bits).is_some(),
+                "bitstring expects a bitstring-like heap word"
+            );
+            let bit_len = unsafe { bitstring_bit_len(bits) } as usize;
+            let total_bytes = bit_len.div_ceil(8);
+            let byte_ptr = unsafe { bitstring_byte_ptr(bits) };
+            let bytes = unsafe { slice::from_raw_parts(byte_ptr, total_bytes) };
+            let full_bytes = bit_len / 8;
+            let trailing_bits = bit_len % 8;
+
+            // Byte-aligned, valid UTF-8 and Elixir's `String.printable?/1`
+            // renders as a quoted string. The decision is purely
+            // payload-driven (not the type system's brand axis), so every
+            // execution path agrees without sharing type info at runtime.
+            if trailing_bits == 0
+                && let Ok(s) = str::from_utf8(&bytes[..full_bytes])
+                && is_printable_utf8(s)
+            {
+                return format!("\"{}\"", escape_for_display(s));
+            }
+
+            // Anything else is `<<…>>`: one element per byte, then the
+            // trailing bits as `n::size(k)`.
+            let mut elements: Vec<String> = bytes[..full_bytes].iter().map(|b| b.to_string()).collect();
+            if trailing_bits > 0 {
+                elements.push(format!(
+                    "{}::size({})",
+                    bytes[full_bytes] >> (8 - trailing_bits),
+                    trailing_bits
+                ));
+            }
+            self.container("<<", ">>", elements, |_, element| element)
+        }
+
+        /// A list: a charlist as `~c"…"`, a keyword list as `[a: 1]`, any
+        /// other as `[1, 2]`. A list's tail is always a list, so there is no
+        /// improper form to print.
+        fn list(&mut self, bits: u64) -> String {
+            let cells = list_cells(bits);
+            if is_ascii_printable(&cells) {
+                return charlist(&cells);
+            }
+            let keywords: Option<Vec<(String, AnyValue)>> = cells
+                .iter()
+                .map(|cell| {
+                    let (key, value) = pair(self.proc, cell.head_value())?;
+                    Some((self.keyword_key(key)?, value))
+                })
+                .collect();
+            match keywords {
+                Some(keywords) => self.keyword_container("[", "]", keywords),
+                None => self.container("[", "]", cells, |renderer, cell| renderer.cons_head(cell)),
+            }
+        }
+
+        fn cons_head(&mut self, cons: &ListCons) -> String {
+            match cons.head_kind() {
+                ValueKind::INT => (cons.head as i64).to_string(),
+                // `render_float`, not Rust's `to_string`: a whole float has to
+                // keep its `.0` wherever it appears, or `JSON.encode` would
+                // encode `[1.0]` as `[1]`.
+                ValueKind::FLOAT => render_float(f64::from_bits(cons.head)),
+                ValueKind::ATOM => self.atom(cons.head as u32),
+                kind if kind.is_heap() => self.bits(super::heap_object_word(cons.head as *const u8, kind)),
+                _ => format!("#slot<{:#x}:{}>", cons.head, cons.head_kind().tag()),
+            }
+        }
     }
 
-    /// A keyword ENTRY: a two-tuple whose first field is an atom, rendered the
-    /// way Elixir renders one inside a keyword list — `a: 1`, not `{:a, 1}`.
-    /// Answers `None` for anything else, which is what decides whether a list
-    /// is a keyword list at all.
-    fn render_keyword_entry(proc: *mut Process, value: AnyValue) -> Option<String> {
+    /// The two fields of a two-tuple.
+    fn pair(proc: *mut Process, value: AnyValue) -> Option<(AnyValue, AnyValue)> {
         let p = struct_addr_from_tagged(value.heap_object_word()?)?;
         let heap = &unsafe { &*proc }.heap;
         let schema_id = unsafe { struct_schema_id(p) };
@@ -1465,60 +1748,36 @@ pub mod debug {
         let [key_offset, value_offset] = offsets.as_slice() else {
             return None;
         };
-        let key = heap.read_field_slot(p, *key_offset);
-        let AnyValue::Atom(key_id) = key else {
-            return None;
-        };
-        if named_atom(proc, key_id).is_some_and(|name| is_alias_namespace_atom(&name)) {
-            return None;
-        }
-        let name = render_value(proc, key);
-        let name = name.strip_prefix(':').unwrap_or(&name).to_string();
-        Some(format!(
-            "{}: {}",
-            name,
-            render_value(proc, heap.read_field_slot(p, *value_offset))
+        Some((
+            heap.read_field_slot(p, *key_offset),
+            heap.read_field_slot(p, *value_offset),
         ))
     }
 
-    fn render_range(proc: *mut Process, bits: u64) -> String {
-        let range_ref = AnyValueRef::from_heap_object(
-            ValueKind::STRUCT,
-            struct_addr_from_tagged(bits).expect("range struct bits"),
-        )
-        .expect("range ref");
-        let (first, last, step) = unsafe { &*proc }.heap.range_fields(range_ref).expect("range fields");
-        if step == 1 {
-            format!("{}..{}", first, last)
-        } else {
-            format!("{}..{}//{}", first, last, step)
+    /// The cells of a list in order.
+    fn list_cells<'a>(bits: u64) -> Vec<&'a ListCons> {
+        let mut cells = Vec::new();
+        let mut current = bits;
+        while let Some(cell) = list_addr_from_tagged(current).filter(|cell| !cell.is_null()) {
+            let cons = unsafe { &*(cell as *const ListCons) };
+            cells.push(cons);
+            current = cons.tail_bits();
         }
+        cells
     }
 
-    /// Render a heap Map as `%{k => v, ...}` in canonical sorted order.
-    fn render_map(proc: *mut Process, bits: u64) -> String {
-        let p = map_addr_from_tagged(bits).unwrap();
-        let count = unsafe { map_count(p) };
-        let mut parts: Vec<String> = Vec::with_capacity(count);
-        for i in 0..count {
-            let (kr, kk, vr, vk) = unsafe { map_entry_raw_kinds(p, i) };
-            let k = AnyValue::decode_parts(kr, kk.tag()).expect("map key");
-            let v = AnyValue::decode_parts(vr, vk.tag()).expect("map value");
-            parts.push(format!("{} => {}", render_value(proc, k), render_value(proc, v)));
-        }
-        format!("%{{{}}}", parts.join(", "))
+    /// `List.ascii_printable?/1`: a non-empty list of integers that are bell
+    /// through carriage return, escape, or printable ASCII.
+    fn is_ascii_printable(cells: &[&ListCons]) -> bool {
+        !cells.is_empty()
+            && cells
+                .iter()
+                .all(|cell| cell.head_kind() == ValueKind::INT && matches!(cell.head as i64, 7..=13 | 27 | 32..=126))
     }
 
-    pub fn render_value(proc: *mut Process, value: AnyValue) -> String {
-        match value.kind() {
-            ValueKind::INT => (value.raw() as i64).to_string(),
-            ValueKind::FLOAT => render_float(f64::from_bits(value.raw())),
-            ValueKind::ATOM => render_atom(proc, value.raw() as u32),
-            ValueKind::LIST if value.raw() == 0 => "[]".to_string(),
-            kind if kind.is_heap() => render(proc, value.heap_object_word().expect("heap object")),
-            ValueKind::NULL => "null".to_string(),
-            _ => format!("#value<{:#x}:{}>", value.raw(), value.kind().tag()),
-        }
+    fn charlist(cells: &[&ListCons]) -> String {
+        let text: String = cells.iter().map(|cell| cell.head as u8 as char).collect();
+        format!("~c\"{}\"", escape_for_display(&text))
     }
 
     /// A float, rendered the way Elixir's `inspect/1` renders it -- which is
@@ -1642,40 +1901,6 @@ pub mod debug {
         format!("{whole}.{fraction}")
     }
 
-    fn render_bitstring(bits: u64) -> String {
-        assert!(
-            procbin_addr_from_tagged(bits).is_some() || bitstring_addr_from_tagged(bits).is_some(),
-            "render_bitstring expects a bitstring-like heap word"
-        );
-        let bit_len = unsafe { bitstring_bit_len(bits) } as usize;
-        let total_bytes = bit_len.div_ceil(8);
-        let byte_ptr = unsafe { bitstring_byte_ptr(bits) };
-        let bytes = unsafe { slice::from_raw_parts(byte_ptr, total_bytes) };
-        let full_bytes = bit_len / 8;
-        let trailing_bits = bit_len % 8;
-
-        // UTF-8-aware rendering: byte-aligned + valid
-        // UTF-8 + Elixir-style String.printable?/1 heuristic renders as
-        // a quoted string. Anything else falls back to the `<<...>>`
-        // byte-list form. Print intentionally doesn't read the type
-        // system's brand axis — the rendering decision is purely
-        // payload-driven so AOT and JIT agree without sharing type
-        // info at runtime.
-        if trailing_bits == 0
-            && let Ok(s) = str::from_utf8(&bytes[..full_bytes])
-            && is_printable_utf8(s)
-        {
-            return format!("\"{}\"", escape_for_display(s));
-        }
-
-        let mut parts: Vec<String> = bytes[..full_bytes].iter().map(|b| b.to_string()).collect();
-        if trailing_bits > 0 {
-            let last = bytes[full_bytes] >> (8 - trailing_bits);
-            parts.push(format!("{}::{}", last, trailing_bits));
-        }
-        format!("<<{}>>", parts.join(", "))
-    }
-
     fn is_printable_utf8(s: &str) -> bool {
         for c in s.chars() {
             let cp = c as u32;
@@ -1690,26 +1915,78 @@ pub mod debug {
         true
     }
 
-    /// Escape the bytes that would corrupt the surrounding `"…"` form.
-    /// Inverse of the lexer's canonical escapes (`\n \t \r \\ \"`).
+    /// Elixir's string escaper (`Code.Identifier.escape/2` with `"` as the
+    /// quote), shared by strings, quoted atoms and charlists.
     fn escape_for_display(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
         let mut chars = s.chars().peekable();
         while let Some(c) = chars.next() {
             match c {
-                '\n' => out.push_str("\\n"),
-                '\r' => out.push_str("\\r"),
-                '\t' => out.push_str("\\t"),
-                '\\' => out.push_str("\\\\"),
                 '"' => out.push_str("\\\""),
-                // `#{` is escaped so the rendering round-trips as source:
-                // an unescaped one would read back as interpolation. Elixir's inspect does the same, and only for
-                // `#` immediately before `{`.
+                // `#{` is escaped so the rendering cannot read back as
+                // interpolation, and only `#` immediately before `{`.
                 '#' if chars.peek() == Some(&'{') => out.push_str("\\#"),
-                other => out.push(other),
+                other => push_escaped(&mut out, other),
             }
         }
         out
+    }
+
+    fn push_escaped(out: &mut String, c: char) {
+        let named = match c {
+            '\x07' => "\\a",
+            '\x08' => "\\b",
+            '\x7f' => "\\d",
+            '\x1b' => "\\e",
+            '\x0c' => "\\f",
+            '\n' => "\\n",
+            '\r' => "\\r",
+            '\t' => "\\t",
+            '\x0b' => "\\v",
+            '\\' => "\\\\",
+            '\0' => "\\0",
+            _ => "",
+        };
+        let code = c as u32;
+        if !named.is_empty() {
+            out.push_str(named);
+        } else if is_invisible(code) {
+            out.push_str(&format!("\\u{code:04X}"));
+        } else if matches!(code, 0x20..=0x7E | 0xA0..=0xD7FF | 0xE000..=0xFFFD | 0x10000..=0x10FFFF) {
+            out.push(c);
+        } else if code < 0x100 {
+            out.push_str(&format!("\\x{code:02X}"));
+        } else if code < 0x10000 {
+            out.push_str(&format!("\\x{{{code:04X}}}"));
+        } else {
+            out.push_str(&format!("\\x{{{code:06X}}}"));
+        }
+    }
+
+    /// Characters that print as nothing or as a lookalike: Elixir writes them
+    /// as `\uXXXX` so the text shows what is there.
+    fn is_invisible(code: u32) -> bool {
+        matches!(
+            code,
+            0xFEFF
+                | 0x2061..=0x2064
+                | 0x061C
+                | 0x200E
+                | 0x200F
+                | 0x202A..=0x202E
+                | 0x2066..=0x2069
+                | 0xFFF9..=0xFFFC
+                | 0x200C
+                | 0x200D
+                | 0x034F
+                | 0x00A0
+                | 0x200B
+                | 0x2060
+                | 0x2028
+                | 0x2029
+                | 0x2000..=0x200A
+                | 0x205F
+        )
     }
 
     /// Elixir renders a fun as `#Function<index.uniq/arity>`: an opaque
@@ -1720,61 +1997,6 @@ pub mod debug {
         let denotation = unsafe { closure_denotation(p) }.user_index();
         let arity = unsafe { closure_arity(p) };
         format!("#fn<{denotation}/{arity}>")
-    }
-
-    fn render_list(proc: *mut Process, bits: u64) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        let mut keyword_entries: Option<Vec<String>> = Some(Vec::new());
-        let mut cur_bits = bits;
-        let mut tail_render: Option<String> = None;
-        loop {
-            if cur_bits == EMPTY_LIST {
-                break;
-            }
-            let cp = match list_addr_from_tagged(cur_bits) {
-                Some(p) => p,
-                None => {
-                    tail_render = Some(render(proc, cur_bits));
-                    break;
-                }
-            };
-            let cons = unsafe { &*(cp as *const ListCons) };
-            parts.push(render_typed_list_head(proc, cons));
-            keyword_entries = keyword_entries.and_then(|mut entries| {
-                let entry = render_keyword_entry(proc, cons.head_value())?;
-                entries.push(entry);
-                Some(entries)
-            });
-            cur_bits = cons.tail_bits();
-        }
-        match tail_render {
-            Some(t) => format!("[{} | {}]", parts.join(", "), t),
-            // A KEYWORD LIST prints as `[a: 1]`, not `[{:a, 1}]`. Elixir
-            // inspects a PROPER list whose every element is a two-tuple with an
-            // atom key that way, and only then. The decision is
-            // made from the values; the rendered strings are output, never
-            // input.
-            None => match keyword_entries {
-                Some(entries) if !entries.is_empty() => format!("[{}]", entries.join(", ")),
-                _ => format!("[{}]", parts.join(", ")),
-            },
-        }
-    }
-
-    fn render_typed_list_head(proc: *mut Process, cons: &ListCons) -> String {
-        match cons.head_kind() {
-            ValueKind::INT => (cons.head as i64).to_string(),
-            // `render_float`, not Rust's `to_string`: a whole float has to keep
-            // its `.0` wherever it appears -- `[1.0]` must not encode as `[1]`,
-            // which `JSON.encode` cannot survive.
-            ValueKind::FLOAT => render_float(f64::from_bits(cons.head)),
-            ValueKind::ATOM => render_atom(proc, cons.head as u32),
-            kind if kind.is_heap() => {
-                let bits = heap_object_word(cons.head as *const u8, kind);
-                render(proc, bits)
-            }
-            _ => format!("#slot<{:#x}:{}>", cons.head, cons.head_kind().tag()),
-        }
     }
 
     #[cfg(test)]

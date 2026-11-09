@@ -1,0 +1,17 @@
+#---
+# purpose: "A map whose keys are all non-alias atoms, and a list of such pairs, print as key: value, quoting the keys that need it"
+# oracle: 01023_atom_keys_print_in_keyword_style.oracle.exs
+#---
+def main() do
+  dbg(%{a: 1})
+  dbg(%{"foo bar": 1})
+  dbg(%{Foo => 1})
+  dbg(%{nil: 1})
+  dbg([a: 1])
+  dbg([a: 1, b: 2])
+  dbg(["foo bar": 1, b: 2])
+  dbg([{Foo, 1}])
+  dbg([{:a, 1}, {:b, 2}])
+  dbg([{:a, 1}, {1, 2}])
+  dbg([ok?: 1])
+end
