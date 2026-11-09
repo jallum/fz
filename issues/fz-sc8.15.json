@@ -4,6 +4,7 @@
     "fz-sc8.12"
   ],
   "blocks": [
+    "fz-sc8.106",
     "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:43Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "MapSet: new/0,1, member?, Enumerable and Collectable",
   "type": "feature",
-  "updated_at": "2026-11-08T23:48:08Z"
+  "updated_at": "2026-11-09T23:18:12Z"
 }
