@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-09T00:26:28Z",
+  "description": "Found while building fz-sc8.77. A top-level `defmodule Geo.Pt` binds the name `Pt` in its file's namespace, so a later `%Pt{x: 1}` or `Pt.name()` in the same file means Geo.Pt: `defmodule Pt do defstruct [:x, :y] end` followed by `defmodule Geo.Pt do defstruct [:lat, :lon] end` and `%Pt{x: 1, y: 2}` fails with \"struct Geo.Pt has no field x\" on every path, on the base and new binaries. Elixir prints %Pt{x: 1, y: 2}: a dotted defmodule at the root binds nothing, and a dotted `defmodule H.T` nested in M defines M.H.T and aliases only its first segment, H -\u003e M.H (Kernel's alias_defmodule).\n\nMechanism: src/compiler2/source_publish.rs binds a declared module or protocol under name.last_segment() at eight sites (four in the reservation pass, four in the definition pass). Nothing in the tree depends on the binding: the only dotted declarations are lib File.Stream, lib defprotocol String.Chars (the prelude aliases it explicitly), the cross-file Foo.Bar drive tests and the A.B reservation test; no nested dotted declaration exists. Also found: a nested dotted defprotocol stays unqualified (reference_declared_protocol_module via qualified_child_module_name) while a nested dotted defmodule is parent-qualified; Elixir qualifies both.\n\nBuild: one helper answers what a declaration binds (single segment binds itself; dotted at root binds nothing; dotted nested binds its first segment to the parent-qualified module of that segment); the eight sites call it, modules and protocols alike, and protocols take the module qualification rule. Unit rows for the three cases in source_publish_test.rs; one oracle fixture where root Pt and Geo.Pt coexist as structs and print, and a nested H.T is reached as H.T.me() inside its parent. .agent/docs/modules.md states the binding rule beside its require paragraph. No pin expected to move.\n\nNot this ticket: `Geo.Pt.name()` at the root is unresolved because the qualified-callee path has no fallback; that is fz-sc8.74 / fz-sc8.25. Lands as its own branch off b870f5a87 beneath fz-sc8.77, whose fixtures then use Geo.Pt.",
+  "id": "fz-sc8.105",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A dotted defmodule binds its first segment, as Elixir does",
+  "type": "bug",
+  "updated_at": "2026-11-09T00:26:28Z"
+}
