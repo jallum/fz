@@ -427,13 +427,29 @@ entry resume_k:
   tail = ...
 ```
 
-The backend products and native lowering preserve this shape mechanically.
-Native entry helpers are allocated only when a lowered control edge references
+The backend products preserve this shape mechanically. Native lowering
+decides, once per executable, where each entry lives (`EntryFns::for_entries`
+in `src/compiler2/jobs/native.rs`, counting `BackendTail::transfers`):
+
+- An entry whose only way in is a single direct transfer -- an `if` arm, a
+  decision's outcome or miss, or the join one value delivers to -- is a block
+  of the function that makes that transfer. The transfer is a `Goto` carrying
+  the same arguments a call would; the block's parameters follow the entry's
+  signature, and the entry's steps and tail are lowered into it before that
+  function is finished. A dispatch graph that reaches one outcome from several
+  leaves reaches the same block.
+- Every other entry is a function of its own: a join several transfers reach,
+  the entry a call's return resumes, and the entries the runtime enters from a
+  `receive` (its outcomes, its timeout, and the entry its value continues in).
+  Only these functions carry the entry-function parameter markings (physical
+  parameters and captures, unread delivered lanes).
+
+Entry functions are allocated only when a lowered control edge references
 them. A typed entry-to-function map queues each first reference; draining that
-queue discovers further helpers without rebuilding unused backend entries.
+queue discovers further functions without rebuilding unused backend entries.
 Repeated and recursive references reuse the same function. Thus a no-return
 call's unused delivery destination and a dispatch graph's unselected arms
-produce no native helper, body facts, or codegen work.
+produce no native function, block, body facts, or codegen work.
 The ABI for resume entries, clause-entry helpers, and continuations comes from the same entry
 graph instead of rebuilding hidden CPS structure from "tail position" guesses.
 The backend interpreter preserves the same distinction: tail calls can park on

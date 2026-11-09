@@ -16,6 +16,11 @@ return to the scheduler.
 The unit charged today is the loop back edge. An unbounded pure loop is a
 tail-recursive SCC; the compiler marks those edges (`is_back_edge`), so they are
 the natural place to spend budget. Each back edge spends exactly one reduction.
+A back edge is a tail call between native functions of one SCC
+(`annotate_back_edges` in `src/compiler2/jobs/native.rs`). Control that stays
+inside a function moves by `Goto` and spends nothing; an entry is a block only
+when one direct transfer reaches it, so blocks never form a loop of their own
+and every loop still crosses a tail call.
 
 ## Who owns what
 
