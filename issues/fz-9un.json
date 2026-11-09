@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-09T02:15:38Z",
+  "description": "Kernel.inspect/2 accepts only limit: (fz-sc8.10, 49f85b767); every other Inspect.Opts key raises ArgumentError in lib/kernel.fz checked_inspect_options/2, where Elixir accepts them. The distiller uses limit: only, so these were not built (approved on /Users/j5n/Workspace/fz-sc8.10.html). Most visible gap: Elixir's inspect wraps at width 80 when pretty: true and IO.inspect is pretty by default, so IO.inspect of a long container differs today (fixture 01027's oracle passes width: :infinity to compare). Each option belongs in the Renderer in runtime/src/any_value.rs and in the option check, matched against elixir on interp, run and build.",
+  "id": "fz-9un",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "Inspect options beyond limit: (pretty, width, printable_limit, charlists, binaries, base, structs, safe, syntax_colors, custom_options)",
+  "type": "feature",
+  "updated_at": "2026-11-09T02:15:38Z"
+}
