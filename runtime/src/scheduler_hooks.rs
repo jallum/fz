@@ -43,13 +43,12 @@ pub type FaultHook = extern "C" fn(process: *mut Process, context: *mut (), valu
 
 pub type OutputHook = unsafe extern "C" fn(context: *const (), line_ptr: *const u8, line_len: usize);
 
-/// fz-yxs/fz-st5 — after-timer schedule hook. Called by
-/// `fz_receive_park_matched` when the park record carries a non-`None`
-/// after_deadline_ms. The binary owns the `Runtime` (and its
-/// `TimerWheel`) so the actual schedule lives there; this hook is the
-/// crossing through the staticlib boundary. Returns the fresh
-/// `TimerId` (u64) so the FFI can stash it on the park record for
-/// later cancellation.
+/// fz-yxs/fz-st5 — after-timer schedule hook. Called when a receive with a
+/// positive timeout parks. Each scheduler owns its `SchedulingCore` (and its
+/// `TimerWheel`), so the actual schedule lives there;
+/// `sched_core::timer_schedule_hook` is the one implementation, instantiated
+/// per scheduler type. Returns the fresh `TimerId` (u64) so the caller can
+/// stash it on the park record for later cancellation.
 pub type TimerScheduleHook = extern "C" fn(scheduler: *mut (), pid: u32, after_ms: u64) -> u64;
 
 /// fz-yxs/fz-st5 — counterpart cancel hook, fired when a sender-probe

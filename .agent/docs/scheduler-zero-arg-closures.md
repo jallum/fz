@@ -146,7 +146,7 @@ body closure (`after_cont`) is stored on the `WaitState`.
 ```text
 receive ... after 500 -> :timeout:
   WaitState.after_cont       = after-body closure
-  timer wheel schedule(pid, 500ms) -> TimerId
+  scheduling core schedule_timer(pid, 500ms) -> TimerId
   WaitState.after_timer_id   = TimerId
   state = Blocked
 ```
@@ -157,6 +157,38 @@ then moves `after_cont` into `runnable` and flips Ready. If a message matches
 first, the matcher-hit path cancels the timer via `timer_cancel` and schedules
 the matched outcome instead. Either way the runnable result has the same shape:
 `runnable()`.
+
+## The Scheduling Core
+
+`SchedulingCore` (`runtime/src/sched_core.rs`) owns the run queue and the timer
+wheel. The JIT `Runtime`, the AOT `AotScheduler`, and the interpreter's
+`BackendSchedulerAdapter` each hold one and implement `Scheduler`: `core()`
+exposes it, `wake_expired(pid, timer)` says how an expired timer wakes that
+path's process (`fire_after_timer` for JIT and AOT; the interpreter stages the
+parked receive's `after` entry), and `about_to_sleep(wait)` observes a sleep.
+
+`next_runnable` is the single loop and the single definition of idle:
+
+```text
+loop:
+  wake every process whose timer expired (enqueue those that woke)
+  if a process is runnable: return it
+  if a timer is pending:   about_to_sleep(wait); sleep until its deadline
+  else:                    return None   # idle
+```
+
+A program is idle only when nothing is runnable and no timer is pending. The
+JIT's `run_until_idle`, `aot_run_queue_loop` and the interpreter's
+`drive_backend_until_idle` all loop on it. `timer_schedule_hook::<S>()` and
+`timer_cancel_hook::<S>()` give the one pair of `ExecCtx` timer hooks,
+instantiated per scheduler type.
+
+The interpreter arms a timer for a receive with a positive timeout through the
+same `ExecCtx` hooks and records its id on the `BackendParkRecord`; a matching
+send cancels it, and an expired one stages the receive's `after` entry. The
+interpreter's macro path (`keepalive_pid`) leaves its finished process Ready but
+not queued and holding no timer, so the core reports idle once only that process
+remains.
 
 ## Mid-flight Reduction Yield
 

@@ -1,0 +1,12 @@
+#---
+# purpose: "a receive waits out a 1500ms timeout when nothing else can run, then continues"
+# oracle: 00688_a_receive_after_waits_out_a_long_timeout.oracle.exs
+#---
+def main() do
+  receive do
+    :never -> dbg(:got)
+  after
+    1500 -> dbg(:timeout)
+  end
+  dbg(:end)
+end

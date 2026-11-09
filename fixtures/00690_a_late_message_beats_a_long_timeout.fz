@@ -1,0 +1,20 @@
+#---
+# purpose: "a child that sends after its own timer wakes a parent waiting on a much longer timeout, so :timeout never prints"
+# oracle: 00690_a_late_message_beats_a_long_timeout.oracle.exs
+#---
+def main() do
+  parent = self()
+  spawn(fn () ->
+    receive do
+      :never -> :ok
+    after
+      30 -> send(parent, :late)
+    end
+  end)
+  receive do
+    :late -> dbg(:late)
+  after
+    2000 -> dbg(:timeout)
+  end
+  dbg(:end)
+end

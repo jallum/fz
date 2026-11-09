@@ -1,0 +1,16 @@
+#---
+# purpose: "a receive timeout computed at runtime waits and then yields the after value"
+# oracle: 00689_a_receive_after_timeout_can_be_computed.oracle.exs
+#---
+def wait_for(ms) do
+  receive do
+    :never -> :got
+  after
+    ms -> :timeout
+  end
+end
+
+def main() do
+  dbg(wait_for(2 * 5))
+  dbg(:end)
+end

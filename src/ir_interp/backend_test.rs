@@ -311,7 +311,7 @@ fn scheduler_adapter_copies_spawn_inputs_and_dead_send_is_observation_free() {
     let receiver = runtime.process_ref(receiver_pid).unwrap();
     let before_heap = receiver.heap.alloc_stats_snapshot();
     let before_mailbox = receiver.mailbox.clone();
-    let before_queue = runtime.run_queue.clone();
+    let before_queue = runtime.core.queued().clone();
     let before_resume_len = runtime.backend_resume.len();
     let before_parked_len = runtime.backend_parked.len();
 
@@ -333,7 +333,7 @@ fn scheduler_adapter_copies_spawn_inputs_and_dead_send_is_observation_free() {
     assert_eq!(receiver.heap.alloc_stats_snapshot(), before_heap);
     assert_eq!(receiver.mailbox, before_mailbox);
     assert_eq!(receiver.state, ProcessState::Exited);
-    assert_eq!(runtime.run_queue, before_queue);
+    assert_eq!(runtime.core.queued(), &before_queue);
     assert_eq!(runtime.backend_resume.len(), before_resume_len);
     assert_eq!(runtime.backend_parked.len(), before_parked_len);
 }
@@ -393,6 +393,7 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
             entry: crate::compiler2::ControlEntryId::from_u32(owner as u32),
             env: HashMap::new(),
             continuations: Vec::new(),
+            after_timer: None,
         },
     );
     let mut ignored = AnyValue::EmptyList;

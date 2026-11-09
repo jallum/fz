@@ -1,0 +1,24 @@
+#---
+# purpose: "a child's 20ms timeout fires before its parent's 80ms timeout and the parent outlives the child"
+# oracle: 00691_a_child_and_its_parent_both_time_out_in_order.oracle.exs
+#---
+def main() do
+  parent = self()
+  spawn(fn () ->
+    receive do
+      :never -> :ok
+    after
+      20 ->
+        dbg(:child_timeout)
+        send(parent, :child_done)
+    end
+  end)
+  receive do
+    :never -> dbg(:got)
+  after
+    80 -> dbg(:main_timeout)
+  end
+  receive do
+    :child_done -> dbg(:joined)
+  end
+end
