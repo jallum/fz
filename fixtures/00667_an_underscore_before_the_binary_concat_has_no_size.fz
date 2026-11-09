@@ -1,0 +1,10 @@
+#---
+# purpose: an underscore on the left of <> in a pattern has no known size and is refused.
+# expect: diagnostic
+# diagnostic.code: parse/concat-pattern-operand
+#---
+def main() do
+  case "abc" do
+    _ <> rest -> dbg(rest)
+  end
+end

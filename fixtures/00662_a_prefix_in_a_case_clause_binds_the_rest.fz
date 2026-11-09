@@ -1,0 +1,82 @@
+#---
+# purpose: "a literal prefix before <> in a case clause matches a binary that starts with it and binds the remainder, with a guard, nested in a tuple, or against a non-binary subject, as in Elixir"
+# oracle: 00662_a_prefix_in_a_case_clause_binds_the_rest.oracle.exs
+#---
+def option(s) do
+  case s do
+    "--" <> rest -> {:long, rest}
+    "-" <> rest -> {:short, rest}
+    _ -> :operand
+  end
+end
+
+def guarded(s) do
+  case s do
+    "--" <> rest when rest != "" -> {:long, rest}
+    "--" <> _ -> :bare_dashes
+    _ -> :operand
+  end
+end
+
+def nested(pair) do
+  case pair do
+    {:ok, "id:" <> id} -> {:id, id}
+    {:ok, other} -> {:other, other}
+    {:error, "e:" <> reason} -> {:error, reason}
+    _ -> :unknown
+  end
+end
+
+def whole_literals(s) do
+  case s do
+    "a" <> "b" -> :ab
+    "a" <> "bc" -> :abc
+    _ -> :no
+  end
+end
+
+def chained(s) do
+  case s do
+    "a" <> "b" <> rest -> rest
+    _ -> :no
+  end
+end
+
+def utf8(s) do
+  case s do
+    "é✓" <> rest -> rest
+    _ -> :no
+  end
+end
+
+def empty_prefix(s) do
+  case s do
+    "" <> rest -> rest
+  end
+end
+
+def main() do
+  dbg(option("--verbose"))
+  dbg(option("-v"))
+  dbg(option("file"))
+  dbg(option(7))
+  dbg(guarded("--x"))
+  dbg(guarded("--"))
+  dbg(guarded("x"))
+  dbg(nested({:ok, "id:42"}))
+  dbg(nested({:ok, "name"}))
+  dbg(nested({:error, "e:boom"}))
+  dbg(nested({:error, "boom"}))
+  dbg(nested(:nope))
+  dbg(whole_literals("ab"))
+  dbg(whole_literals("abc"))
+  dbg(whole_literals("abcd"))
+  dbg(whole_literals("a"))
+  dbg(whole_literals(:ab))
+  dbg(chained("abz"))
+  dbg(chained("a"))
+  dbg(utf8("é✓!"))
+  dbg(utf8("é"))
+  dbg(empty_prefix("anything"))
+  dbg(empty_prefix(""))
+end

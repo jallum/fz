@@ -76,3 +76,34 @@ mod tests {
         }
     }
 }
+
+fn stamp_after_rewriting(text: &str) -> Option<String> {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some("operator.fz"), text);
+    let root = super::super::parse_quoted_program(&sources, version, &tel).expect("quoted parse");
+    let operator = root.cursor().list_items().expect("items").remove(0);
+    let node = operator.ast_node(&sources).expect("node").expect("operator node");
+    let rewritten = rewrite_source_sugar(&root, operator.root(), &node, &sources)
+        .expect("rewrite")
+        .expect("operator sugar");
+    let call = root.builder().root(rewritten).expect("rewritten root");
+    let rewritten_node = call.cursor().ast_node(&sources).expect("node").expect("call");
+    rewritten_node
+        .meta
+        .map_value(super::super::source::META_FROM_OPERATOR_KEY)
+        .expect("meta is a map")
+        .map(|stamp| stamp.atom_name().expect("the stamp is an atom"))
+}
+
+#[test]
+fn a_rewritten_concatenation_operator_carries_the_operator_it_came_from() {
+    assert_eq!(stamp_after_rewriting("a <> b\n").as_deref(), Some("<>"));
+    assert_eq!(stamp_after_rewriting("a ++ b\n").as_deref(), Some("++"));
+}
+
+#[test]
+fn the_other_rewritten_operators_carry_no_stamp() {
+    assert_eq!(stamp_after_rewriting("a -- b\n"), None);
+    assert_eq!(stamp_after_rewriting("a in b\n"), None);
+}

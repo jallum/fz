@@ -8,6 +8,7 @@ use crate::parser::lexer::{Tok, Token};
 use crate::source::{SourceMap, Span};
 
 use super::identity::FunctionId;
+use super::quoted_concat_pattern::{concat_operands, decode_concat_pattern, refuse_concat_call};
 use super::quoted_surface::function_head_args;
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::token_payload;
@@ -275,7 +276,7 @@ fn decode_function_head(
     let mut annotations = Vec::new();
     for arg in function_head_args(&node.tail)? {
         if let Some(ascribe) = arg.ast_node(sources)?
-            && atom_name(&ascribe.head)? == "::"
+            && node_head_is_atom_named(&ascribe, "::")?
         {
             let parts = ascribe.tail.list_items()?;
             if parts.len() != 2 {
@@ -522,7 +523,7 @@ fn decode_named_expr(
     }
 }
 
-fn decode_pattern(
+pub(super) fn decode_pattern(
     cursor: &QuotedSourceCursor,
     fallback_span: Option<Span>,
     sources: &SourceMap,
@@ -544,6 +545,10 @@ fn decode_pattern(
             ));
         }
         let args = node.tail.list_items()?;
+        if let Some(concat) = concat_operands(&node, &args)? {
+            return decode_concat_pattern(&concat, span, sources);
+        }
+        refuse_concat_call(&node, span, sources)?;
         return match atom_name(&node.head)?.as_str() {
             "=" => {
                 let Some(name) = pattern_var_name(&args[0], Some(span), sources)? else {
@@ -762,7 +767,7 @@ fn decode_with(
     let mut bindings = Vec::new();
     for binding in binding_args {
         if let Some(node) = binding.ast_node(sources)?
-            && atom_name(&node.head)? == "<-"
+            && node_head_is_atom_named(&node, "<-")?
         {
             let parts = node.tail.list_items()?;
             if parts.len() != 2 {
@@ -912,7 +917,7 @@ fn decode_map_expr(
 ) -> Result<Spanned<Expr>, QuotedSourceError> {
     if args.len() == 1
         && let Some(node) = args[0].ast_node(sources)?
-        && atom_name(&node.head)? == "|"
+        && node_head_is_atom_named(&node, "|")?
     {
         let parts = node.tail.list_items()?;
         if parts.len() != 2 {
@@ -963,7 +968,7 @@ fn decode_bitstring_expr(
     let mut fields = Vec::new();
     for field in args {
         if let Some(node) = field.ast_node(sources)?
-            && atom_name(&node.head)? == "::"
+            && node_head_is_atom_named(&node, "::")?
         {
             let parts = node.tail.list_items()?;
             if parts.len() != 2 {
@@ -1027,7 +1032,7 @@ fn decode_match_clause(
         return Err(QuotedSourceError::new("quoted match clause expects one pattern"));
     }
     let (pattern, guard) = if let Some(when) = patterns[0].ast_node(sources)?
-        && atom_name(&when.head)? == "when"
+        && node_head_is_atom_named(&when, "when")?
     {
         let args = when.tail.list_items()?;
         if args.len() != 2 {
@@ -1094,7 +1099,7 @@ fn decode_lambda_clause(
     let params_root = parts[0].list_items()?;
     let (params, guard) = if params_root.len() == 1 {
         if let Some(when) = params_root[0].ast_node(sources)?
-            && atom_name(&when.head)? == "when"
+            && node_head_is_atom_named(&when, "when")?
         {
             let args = when.tail.list_items()?;
             let Some((guard_cursor, param_cursors)) = args.split_last() else {
@@ -1188,14 +1193,21 @@ fn binary_literal_bit_spec(mut spec: BitFieldSpec, byte_len: usize, size_when_mi
     spec
 }
 
-fn sized_for_binary_literal(value: &Pattern, spec: BitFieldSpec) -> BitFieldSpec {
-    let Pattern::Binary(bytes) = value else {
-        return spec;
-    };
-    binary_literal_bit_spec(spec, bytes.len(), true)
+/// A `binary` segment whose value is already known has the length of that
+/// value: a literal is as long as its bytes, and a pinned variable as long as
+/// the binary it holds. An authored size stays authoritative.
+pub(super) fn sized_for_known_binary(value: &Pattern, mut spec: BitFieldSpec) -> BitFieldSpec {
+    match value {
+        Pattern::Binary(bytes) => binary_literal_bit_spec(spec, bytes.len(), true),
+        Pattern::Pinned(name) if spec.ty == BitType::Binary && spec.size.is_none() => {
+            spec.size = Some(BitSize::ByteSizeOf(name.clone()));
+            spec
+        }
+        _ => spec,
+    }
 }
 
-fn decode_bitstring_pattern(
+pub(super) fn decode_bitstring_pattern(
     args: &[QuotedSourceCursor],
     span: Span,
     sources: &SourceMap,
@@ -1203,7 +1215,7 @@ fn decode_bitstring_pattern(
     let mut fields = Vec::new();
     for field in args {
         if let Some(node) = field.ast_node(sources)?
-            && atom_name(&node.head)? == "::"
+            && node_head_is_atom_named(&node, "::")?
         {
             let parts = node.tail.list_items()?;
             if parts.len() != 2 {
@@ -1213,12 +1225,12 @@ fn decode_bitstring_pattern(
             }
             let field_span = node.span.unwrap_or(Span::DUMMY);
             let value = decode_pattern(&parts[0], Some(span), sources)?;
-            let spec = sized_for_binary_literal(&value.node, decode_bit_spec(&parts[1], field_span, sources)?);
+            let spec = sized_for_known_binary(&value.node, decode_bit_spec(&parts[1], field_span, sources)?);
             fields.push(BitField { value, spec });
             continue;
         }
         let value = decode_pattern(field, Some(span), sources)?;
-        let spec = sized_for_binary_literal(&value.node, BitFieldSpec::default());
+        let spec = sized_for_known_binary(&value.node, BitFieldSpec::default());
         fields.push(BitField { value, spec });
     }
     Ok(Spanned::new(Pattern::Bitstring(fields), span))

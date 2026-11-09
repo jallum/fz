@@ -1,0 +1,48 @@
+#---
+# purpose: "a literal prefix before <> in a function head matches a binary that starts with it and binds the remainder, as in Elixir"
+# oracle: 00661_a_prefix_in_a_function_head_binds_the_rest.oracle.exs
+#---
+def option("--" <> rest), do: {:long, rest}
+def option("-" <> rest), do: {:short, rest}
+def option(_), do: :operand
+
+def everything("" <> rest), do: rest
+
+def chained("a" <> "b" <> rest), do: rest
+def chained(_), do: :no
+
+def whole("a" <> "b"), do: :ab
+def whole(_), do: :no
+
+def nothing_after("--" <> ""), do: :exactly_dashes
+def nothing_after(_), do: :no
+
+def utf8("é✓" <> rest), do: rest
+def utf8(_), do: :no
+
+def continued("--" <> <<c, rest::binary>>), do: {c, rest}
+def continued(_), do: :no
+
+def main() do
+  dbg(option("--verbose"))
+  dbg(option("-v"))
+  dbg(option("file"))
+  dbg(option("--"))
+  dbg(option(""))
+  dbg(option(7))
+  dbg(option(:atom))
+  dbg(everything("anything"))
+  dbg(everything(""))
+  dbg(chained("abc"))
+  dbg(chained("ab"))
+  dbg(chained("ba"))
+  dbg(whole("ab"))
+  dbg(whole("abcd"))
+  dbg(whole("bc"))
+  dbg(nothing_after("--"))
+  dbg(nothing_after("--x"))
+  dbg(utf8("é✓ok"))
+  dbg(utf8("e✓ok"))
+  dbg(continued("--xyz"))
+  dbg(continued("--"))
+end

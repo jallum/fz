@@ -1,0 +1,19 @@
+{:ok, "c"}
+{:ok, ""}
+:no
+:no
+{:ok, "abc"}
+:no
+{:ok, "z"}
+{:ok, "c"}
+:no
+:no
+{:ok, "z"}
+:no
+:closed
+:open
+{:ok, "c"}
+:no
+"c"
+{:ok, "c"}
+:no

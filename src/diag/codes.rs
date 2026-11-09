@@ -16,6 +16,7 @@ pub const PARSE_SPEC_NAME_MISMATCH: DiagCode = DiagCode("parse/spec-name-mismatc
 pub const PARSE_SPEC_ARITY_MISMATCH: DiagCode = DiagCode("parse/spec-arity-mismatch");
 pub const PARSE_BITSTRING_BAD_MODIFIER: DiagCode = DiagCode("parse/bitstring-bad-modifier");
 pub const PARSE_BITSTRING_BAD_SIZE: DiagCode = DiagCode("parse/bitstring-bad-size");
+pub const PARSE_CONCAT_PATTERN_OPERAND: DiagCode = DiagCode("parse/concat-pattern-operand");
 
 // ----- resolver -----
 

@@ -25,7 +25,7 @@ use crate::runtime_type_predicate::{
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, AnyValueRef, TRUE_ATOM_ID, ValueKind, struct_schema_id};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_field_spec, fz_bs_finalize, fz_bs_read_field_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref,
-    fz_list_head_ref, fz_list_tail_ref, fz_matcher_map_get_ref, fz_struct_get_field_ref,
+    fz_list_head_ref, fz_list_tail_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref,
 };
 use fz_runtime::procbin::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
 use fz_runtime::process::Process;
@@ -899,6 +899,11 @@ impl<'a> Dispatch<'a> {
                 .pin_value(*pin_id)
                 .and_then(|value| value.as_i64())
                 .map(|n| (1, n as u32)),
+            Some(BitstringFieldSize::PinnedByteSize(pin_id)) => {
+                let proc = self.proc();
+                let pinned = self.pin_value(*pin_id)?.as_ref_word(proc).ok()?;
+                Some((1, fz_pinned_binary_segment_size(pinned)))
+            }
         }
     }
 

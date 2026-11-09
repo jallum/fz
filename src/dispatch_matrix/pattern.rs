@@ -1071,6 +1071,9 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                     // began.
                     None => BitstringFieldSize::Pinned(self.pin_for_name(name, field.value.span)),
                 }),
+                Some(BitSize::ByteSizeOf(name)) => Some(BitstringFieldSize::PinnedByteSize(
+                    self.pin_for_name(name, field.value.span),
+                )),
             };
             let extraction = super::BitstringExtraction {
                 previous: shapes.last().copied(),

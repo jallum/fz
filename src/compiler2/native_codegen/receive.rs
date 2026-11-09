@@ -44,8 +44,8 @@ use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_I
 use fz_runtime::ir_runtime::{
     fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_bs_field_spec, fz_bs_read_field_ref,
     fz_bs_reader_init_ref, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_matcher_eq_bytes,
-    fz_matcher_map_get_ref, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_schema_id_ref,
-    fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_value_eq_ref,
+    fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref, fz_struct_get_named_field_ref,
+    fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_value_eq_ref,
 };
 use std::collections::HashMap;
 
@@ -1087,6 +1087,13 @@ fn emit_dispatch_bit_size<M: cranelift_module::Module>(
         Some(BitstringFieldSize::Pinned(pinned)) => {
             let value = load_pinned_dispatch_value(ctx, *pinned)?;
             Ok((1, strict_int_i32(body, value)?))
+        }
+        Some(BitstringFieldSize::PinnedByteSize(pinned)) => {
+            let ReceiveValue::AnyRef(binary) = load_pinned_dispatch_value(ctx, *pinned)? else {
+                // A scalar is no binary, so the segment gets a size no subject can hold.
+                return Ok((1, body.b.ins().iconst(types::I32, i64::from(u32::MAX))));
+            };
+            Ok((1, runtime_call1!(body, fz_pinned_binary_segment_size, [binary])))
         }
     }
 }
