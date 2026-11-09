@@ -306,6 +306,16 @@ fn decode_do_body(
     decode_expr(occurrences, &body, fallback_span, sources)
 }
 
+/// A guard expression decoded from an expansion, outside any function's own
+/// lambda numbering.
+pub(crate) fn decode_guard_expr(
+    cursor: &QuotedSourceCursor,
+    fallback_span: Option<Span>,
+    sources: &SourceMap,
+) -> Result<Spanned<Expr>, QuotedSourceError> {
+    decode_expr(&mut LambdaOccurrences::default(), cursor, fallback_span, sources)
+}
+
 fn decode_expr(
     occurrences: &mut LambdaOccurrences,
     cursor: &QuotedSourceCursor,

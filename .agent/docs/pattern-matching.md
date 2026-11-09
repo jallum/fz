@@ -132,8 +132,18 @@ Elixir's wording: `undefined variable ^NAME. No variable "NAME" has been
 defined before the current pattern` for a pin, `undefined variable "NAME"` for
 a guard name or a bitstring size.
 
-A reified guard helper is an ordinary function, so `guard_dispatch_from_surface`
-builds its rows with an empty `Inputs` list and a pin in the helper's head is
+A clause becomes a dispatch row in one place, `compiler2::dispatch::surface_pattern_rows`:
+its patterns after the leading inputs, one type precondition per annotated
+parameter (the annotation resolved by `resolve_type_expr_body` and wrapped in
+`runtime_type_test_envelope`), and its guard. `entry_source_patterns` and the
+reification of a guard helper both take their rows from it, so a helper's
+typed head asks in a guard the same type question a direct call asks. Both
+wait on the same facts through `collect_annotation_requirements`: the
+`TypeDefined` facts the annotations name and the `StructDefined` facts behind
+any `%Mod{}` they spell.
+
+A reified guard helper is an ordinary function, so `guard_dispatch_from_rows`
+builds its plan with an empty `Inputs` list and a pin in the helper's head is
 refused while the helper's own plan is built. The diagnostic therefore lands on
 the helper, which is the locus Elixir names too, not on the guard that calls it.
 
@@ -206,7 +216,8 @@ and the run that produced it. A winning outcome's arguments are read through
 `Decided::subject_word`, off the operands the decision was made on, so nothing
 rebuilds them and no caller can ask a run that never decided what it bound. A
 guard's nested dispatch runs the helper plan through the same door; a helper
-that matches nothing is a guard that does not hold. `OutcomeId` is dense and
+that matches nothing is a guard that does not hold, however deep in the guard
+it was called. `OutcomeId` is dense and
 plan-owned: every retained target table is built in that order, validates one
 slot per outcome, and indexes its winner directly. Entry dispatch therefore
 routes an `OutcomeId` straight to `ExecutableDispatch::clause_index`; call
@@ -302,19 +313,51 @@ publication rules live in [AnyValue's list ownership section](any-value.md#list-
 
 ## Guards
 
-Guards compile into `PatternGuardExpr`. A pure helper call in a guard lowers to a
-nested `PatternGuardExpr::Dispatch` whose `PatternGuardDispatch` contains a
-full `PatternDispatchPlan` for the helper clauses plus one expression per helper
-body. That helper is shared, not copied: the node holds an
-`Arc<PatternGuardDispatch>`, so every reference to a helper — across guards,
-across clauses and across caller plans — names the one artifact
-`Job::ReifyGuardDispatch` built, and `World::guard_dispatch` hands out that same
+Guards compile into `PatternGuardExpr`. A call in a guard resolves, through
+`PatternResolver::guard_call`, to a `GuardCallee`: either a helper or an extern.
+
+A helper call lowers to a nested `PatternGuardExpr::Dispatch` whose
+`PatternGuardDispatch` contains a full `PatternDispatchPlan` for the helper
+clauses plus one expression per helper body. That helper is shared, not copied:
+the node holds an `Arc<PatternGuardDispatch>`, so every reference to a helper --
+across guards, across clauses and across caller plans -- names the one artifact
+`Job::ReifyGuardDispatch` built, and `World::guard_callee` hands out that same
 pointer. The share is atomic because a plan travels between scheduler threads
 inside `fz_ir::Term::ReceiveMatched`. Guard helper lowering tracks a call stack
 and rejects cycles with `GuardCallCycle`.
 
-Nested guard dispatch returns a boolean-ish guard value: no matching helper arm
-means the guard fails, not that the surrounding match halts.
+An extern call lowers to `PatternGuardExpr::Extern { extern_fn, args }`. Every
+extern is guard-callable. `Job::ReifyGuardDispatch` publishes the same
+`GuardDispatch(function)` fact for an extern, holding a `GuardExtern` built from
+the extern's settled wire, so a guard waits on the extern's `FunctionContract`.
+`GuardExtern::new` admits only parameters of class `I64` or `Any` and a return of
+`I64`, `Any` or `Never`; any other class (a float, a binary, a pair, a variadic
+extern) is refused with `GuardExternClass` where the node is made, so no
+evaluator is handed a call it cannot carry. The three evaluators each handle the
+node once:
+
+- the interpreter's `eval_guard` calls `call_lowered_extern`;
+- native entry and case lowering (`lower_guard_extern`) emits `Prim::Extern`
+  and declares the extern the first time a guard names it;
+- the receive matcher (`emit_guard_extern`) carries exactly two classes: an
+  integer, and a reference word (`emit_receive_value_ref`).
+
+An extern whose return is `never` fails the guard and is not called. That is
+decided by the declared return, not by the name `panic`: `Kernel.panic/1` reaches
+`fz_panic :: never`, so a helper clause `def map_size(_), do: panic(:badmap)`
+makes the guard false for a non-map and aborts the process in a body. A
+function's domain is therefore written once, in its Kernel heads, and the extern
+under it is only called inside the domain.
+
+Failing is propagated to the guard, not to the helper: a helper that matches
+nothing, or an extern that aborts, makes the whole guard false however deeply it
+was called, so `not (map_size(x) == 0)` is false for a non-map. `and` and `or`
+evaluate their right side only when the left leaves it open, in all three
+evaluators. The Kernel functions a guard may call this way are `map_size/1`,
+`tuple_size/1`, `elem/2`, `length/1`, `byte_size/1` and the `is_*` type tests;
+`is_tuple/1` is a typed-head helper over `tuple`, like the other type tests.
+Unsupported guard expressions (a list or tuple literal, say) are still refused as
+not dispatch-pure.
 
 ## Diagnostics
 

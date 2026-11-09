@@ -9,6 +9,7 @@ use super::{
 };
 use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned, Var};
 use crate::function_surface::CallableSurface;
+use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 use crate::source::Span;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -173,12 +174,79 @@ pub(crate) trait PatternResolver<TypeHandle> {
         &mut self,
         callee: &crate::ast::Callee,
         arity: usize,
-    ) -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError>;
+    ) -> Result<Option<GuardCallee<TypeHandle>>, SourcePatternError>;
+}
+
+/// What a call in a guard reaches: a helper whose clauses are reified into
+/// their own plan, or an extern, which has no clauses and is called as it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GuardCallee<TypeHandle> {
+    Helper(Arc<PatternGuardDispatch<TypeHandle>>),
+    Extern(Arc<GuardExtern>),
+}
+
+/// An extern a guard calls. Every parameter and the return are one of the two
+/// classes all three guard evaluators can carry: an integer, or a reference
+/// word. A return of `never` is the call that fails the guard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GuardExtern {
+    pub(crate) abi: ExternAbi,
+    pub(crate) symbol: String,
+    pub(crate) params: Vec<ExternTy>,
+    pub(crate) ret: ExternTy,
+}
+
+impl GuardExtern {
+    /// The extern a guard may call, or what keeps it out. The class rule lives
+    /// here, where the node is made, so no evaluator is handed a call it
+    /// cannot carry.
+    pub(crate) fn new(
+        abi: ExternAbi,
+        symbol: &str,
+        params: &[ExternTy],
+        ret: ExternReturn,
+        variadic: bool,
+    ) -> Result<Self, SourcePatternError> {
+        let refuse = |why: String| SourcePatternError::GuardExternClass {
+            symbol: symbol.to_string(),
+            why,
+        };
+        if variadic {
+            return Err(refuse("a variadic extern has no fixed argument classes".to_string()));
+        }
+        if let Some(param) = params.iter().find(|ty| !matches!(ty, ExternTy::I64 | ExternTy::Any)) {
+            return Err(refuse(format!(
+                "parameter class {param:?} is neither an integer nor a reference word"
+            )));
+        }
+        let ExternReturn::Scalar(ret) = ret else {
+            return Err(refuse(
+                "a pair return is neither an integer nor a reference word".to_string(),
+            ));
+        };
+        if !matches!(ret, ExternTy::I64 | ExternTy::Any | ExternTy::Never) {
+            return Err(refuse(format!(
+                "return class {ret:?} is neither an integer nor a reference word"
+            )));
+        }
+        Ok(Self {
+            abi,
+            symbol: symbol.to_string(),
+            params: params.to_vec(),
+            ret,
+        })
+    }
+
+    /// A call to this extern aborts the process, so in a guard it is the
+    /// guard's failure.
+    pub(crate) fn fails_the_guard(&self) -> bool {
+        self.ret == ExternTy::Never
+    }
 }
 
 impl<TypeHandle, F> PatternResolver<TypeHandle> for F
 where
-    F: FnMut(&crate::ast::Callee, usize) -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError>,
+    F: FnMut(&crate::ast::Callee, usize) -> Result<Option<GuardCallee<TypeHandle>>, SourcePatternError>,
 {
     fn struct_type(
         &mut self,
@@ -192,7 +260,7 @@ where
         &mut self,
         callee: &crate::ast::Callee,
         arity: usize,
-    ) -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError> {
+    ) -> Result<Option<GuardCallee<TypeHandle>>, SourcePatternError> {
         self(callee, arity)
     }
 }
@@ -223,6 +291,12 @@ pub(crate) enum PatternGuardExpr<TypeHandle> {
         /// inside `fz_ir::Term::ReceiveMatched`.
         dispatch: Arc<PatternGuardDispatch<TypeHandle>>,
     },
+    /// A call to an extern. Externs are assumed pure for now, so a guard may
+    /// make the call; one that returns `never` fails the guard instead.
+    Extern {
+        extern_fn: Arc<GuardExtern>,
+        args: Vec<PatternGuardExpr<TypeHandle>>,
+    },
 }
 
 impl<TypeHandle> PatternGuardExpr<TypeHandle> {
@@ -248,6 +322,11 @@ impl<TypeHandle> PatternGuardExpr<TypeHandle> {
             PatternGuardExpr::Dispatch { inputs, .. } => {
                 for input in inputs {
                     input.collect_leaves(leaves);
+                }
+            }
+            PatternGuardExpr::Extern { args, .. } => {
+                for arg in args {
+                    arg.collect_leaves(leaves);
                 }
             }
         }
@@ -278,6 +357,10 @@ impl<TypeHandle> PatternGuardExpr<TypeHandle> {
                 inputs: inputs.iter().map(|input| input.map_type_handle(map)).collect(),
                 prepared: prepared.clone(),
                 dispatch: Arc::new(dispatch.map_type_handle(map)),
+            },
+            PatternGuardExpr::Extern { extern_fn, args } => PatternGuardExpr::Extern {
+                extern_fn: Arc::clone(extern_fn),
+                args: args.iter().map(|arg| arg.map_type_handle(map)).collect(),
             },
         }
     }
@@ -331,8 +414,12 @@ pub(crate) enum PatternDispatchError {
     Compile(DispatchCompileError),
 }
 
-pub(crate) fn guard_dispatch_from_surface<F, TypeHandle>(
+/// Reifies a helper from its clause rows. The caller builds the rows with the
+/// same clause-to-row function an entry uses, so a helper's typed heads ask
+/// the questions a direct call asks.
+pub(crate) fn guard_dispatch_from_rows<F, TypeHandle>(
     surface: &impl CallableSurface,
+    rows: Vec<PatternRow<TypeHandle>>,
     resolver: &mut F,
 ) -> Result<PatternGuardDispatch<TypeHandle>, SourcePatternError>
 where
@@ -347,21 +434,7 @@ where
     // A helper is an ordinary function, entered with nothing bound before its
     // patterns, so a pin in one of its heads names a binding that never
     // existed and its own plan is where that is found.
-    let source_patterns = SourcePatternRows::entry(
-        arity,
-        surface
-            .clauses()
-            .iter()
-            .enumerate()
-            .map(|(i, clause)| PatternRow {
-                patterns: clause.params.clone(),
-                preconditions: Vec::new(),
-                guard: clause.guard.clone(),
-                body_id: i as PatternBodyId,
-            })
-            .collect(),
-        Vec::new(),
-    );
+    let source_patterns = SourcePatternRows::entry(arity, rows, Vec::new());
     let mut plan = pattern_dispatch_from_source_with_resolver(source_patterns, resolver).map_err(|err| match err {
         PatternDispatchError::SourcePattern(err) => err,
         other => SourcePatternError::DispatchMatrix(format!("{other:?}")),
@@ -497,19 +570,24 @@ where
                 .iter()
                 .map(|arg| guard_expr_from_ast(&arg.node, bindings, pinned_by_name, prepared_keys, resolver))
                 .collect::<Result<Vec<_>, _>>()?;
-            let dispatch = resolver
+            match resolver
                 .guard_call(&callee, arity)?
-                .ok_or(SourcePatternError::UnsupportedGuardExpr)?;
-            let prepared = dispatch
-                .plan
-                .prepared_keys
-                .iter()
-                .map(|key| intern_prepared_key(prepared_keys, key))
-                .collect();
-            PatternGuardExpr::Dispatch {
-                inputs: args,
-                prepared,
-                dispatch,
+                .ok_or(SourcePatternError::UnsupportedGuardExpr)?
+            {
+                GuardCallee::Helper(dispatch) => {
+                    let prepared = dispatch
+                        .plan
+                        .prepared_keys
+                        .iter()
+                        .map(|key| intern_prepared_key(prepared_keys, key))
+                        .collect();
+                    PatternGuardExpr::Dispatch {
+                        inputs: args,
+                        prepared,
+                        dispatch,
+                    }
+                }
+                GuardCallee::Extern(extern_fn) => PatternGuardExpr::Extern { extern_fn, args },
             }
         }
         _ => return Err(SourcePatternError::UnsupportedGuardExpr),
@@ -521,7 +599,7 @@ pub(crate) fn pattern_dispatch_from_source<TypeHandle: Clone + PartialEq + Eq>(
 ) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
     let mut resolver = |_callee: &crate::ast::Callee,
                         _arity: usize|
-     -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError> { Ok(None) };
+     -> Result<Option<GuardCallee<TypeHandle>>, SourcePatternError> { Ok(None) };
     pattern_dispatch_from_source_with_resolver(patterns, &mut resolver)
 }
 

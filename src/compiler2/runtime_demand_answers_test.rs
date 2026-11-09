@@ -159,7 +159,8 @@ fn a_recursive_pair_sends_demand_out_of_the_cycle_once() {
         "def f(0), do: 0\ndef f(n), do: g(n - 1)\ndef g(n), do: f(n)\ndef main(), do: f(3)\n",
         0,
     );
-    assert_eq!((work.runs, work.shift_wakes), (19, 0));
+    // fz-sc8.37: 19 -> 20. Kernel defines `&&`, `||` and `!` as macros.
+    assert_eq!((work.runs, work.shift_wakes), (20, 0));
 }
 
 /// A cycle made of closure calls, which the static call graph cannot see:
@@ -188,5 +189,6 @@ fn a_self_call_sends_demand_down_from_its_own_answer() {
         "def loop(acc, 0), do: 0\ndef loop(acc, n), do: loop(acc, n - 1)\ndef main(), do: loop(1, 3)\n",
         0,
     );
-    assert_eq!((work.runs, work.shift_wakes), (17, 0));
+    // fz-sc8.37: 17 -> 18. Kernel defines `&&`, `||` and `!` as macros.
+    assert_eq!((work.runs, work.shift_wakes), (18, 0));
 }

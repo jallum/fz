@@ -1,0 +1,20 @@
+#---
+# purpose: "A file's top-level expressions run as main/0 in order: bindings flow between them, they call modules and top-level defs defined anywhere in the file"
+# kind: run
+# oracle: 00633_top_level_expressions_run_as_main_in_order.oracle.exs
+#---
+defmodule Greeter do
+  def greet(name), do: "hello " <> name
+end
+
+x = 20
+dbg(Greeter.greet("world"))
+:ignored
+y = x + 1
+dbg(y)
+dbg(later(y))
+if y > 20 do
+  dbg(:big)
+end
+
+def later(n), do: n * 2

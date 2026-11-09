@@ -1634,22 +1634,22 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         push_u64(out, physical_capture_count);
     } else if let Some(session) = opaque.downcast_ref::<crate::compiler2::PullSession>() {
         let work_starts = session.work_starts();
-        for (name, value) in [
-            ("producer_pokes", session.producer_pokes()),
-            ("work_starts_ignition", work_starts.ignition),
-            ("work_starts_changed_revision_wake", work_starts.changed_revision_wake),
-            ("work_starts_activation_published", work_starts.activation_published),
-            (
-                "work_starts_blocked_waiter_expansion",
-                work_starts.blocked_waiter_expansion,
-            ),
-            ("unsanctioned_work_starts", work_starts.unclassified),
-        ] {
-            out.push(',');
-            write_str_lit(out, name);
+        out.push(',');
+        write_str_lit(out, "producer_pokes");
+        out.push(':');
+        push_u64(out, session.producer_pokes());
+        out.push(',');
+        write_str_lit(out, "work_starts");
+        out.push_str(":{");
+        for (position, reason) in crate::compiler2::WorkStartReason::ALL.into_iter().enumerate() {
+            if position > 0 {
+                out.push(',');
+            }
+            write_str_lit(out, reason.name());
             out.push(':');
-            push_u64(out, value);
+            push_u64(out, work_starts[reason]);
         }
+        out.push('}');
     } else if let Some(context) = opaque.downcast_ref::<cranelift_codegen::Context>() {
         note_codegen_projection();
         out.push(',');

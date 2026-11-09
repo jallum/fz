@@ -510,9 +510,18 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-5xp.22: 26 -> 27. `List.member?` asks `===` for identity where
             // it used to spell that `==` in a guard and rely on guards being
             // strict, so the strict operator becomes an executable of its own.
-            31,
+            // fz-sc8.9: 31 -> 34. `Enumerable`'s list `count` reads Kernel's `length`, which keeps Elixir's
+            // proper-list check: `proper_length` aborts with `:badarg` on an improper
+            // list, so the check and its abort path become executables of their own.
+            34,
         ),
-        (567, 64), // fz_f98_range_map_converges
+        (
+            567, // fz_f98_range_map_converges
+            // fz-sc8.9: 64 -> 65.
+            // `Enumerable`'s map `count` reads Kernel's `map_size`, a typed wrapper
+            // over `fz_map_count`, where it used to call the extern directly.
+            65,
+        ),
         (
             569, // enum_map_family
             // fz-5xp.30 re-measured 113 -> 114: binary-concat sugar now
@@ -554,7 +563,11 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // reach their list arguments through `Enum.to_list/1`'s `[a]`
             // clause, so the reduce-and-reverse activations they used to mint
             // on the way in are never specialized.
-            230,
+            // fz-sc8.9: 230 -> 233.
+            // `Enumerable`'s list `count` reads Kernel's `length`, which keeps Elixir's
+            // proper-list check: `proper_length` aborts with `:badarg` on an improper
+            // list, so the check and its abort path become executables of their own.
+            233,
         ),
     ] {
         let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);

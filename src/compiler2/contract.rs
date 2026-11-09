@@ -54,6 +54,32 @@ impl ResolvedContractArrow {
     }
 }
 
+impl StructuralSurface {
+    /// `None` when the clause declares no protocol-domain marker, so the
+    /// declared arrow already is its surface.
+    fn of(types: &mut Types, arrow: &ResolvedContractArrow) -> Option<Self> {
+        if arrow.protocol_domain_obligations.is_empty() {
+            return None;
+        }
+        let params: Vec<Ty> = arrow
+            .decl
+            .params
+            .iter()
+            .map(|param| types.structural_surface(*param))
+            .collect();
+        let bounds = arrow
+            .decl
+            .constraints
+            .iter()
+            .map(|(var, bound)| (*var, types.structural_surface(*bound)))
+            .collect();
+        Some(Self {
+            arrow: types.arrow(&params, arrow.decl.result),
+            bounds,
+        })
+    }
+}
+
 /// One resolved contract clause: the addressed arrow surface and its
 /// address-keyed variable bounds. Protocol-domain obligations are classified
 /// from the resolved `Ty` marker tags, so current structural enforceability is
@@ -63,9 +89,22 @@ pub struct ContractArrow {
     pub arrow: Ty,
     pub bounds: HashMap<TypeVarId, Ty>,
     pub protocol_domain_obligations: BTreeSet<ProtocolDomainObligation>,
+    /// The arrow read for the values it admits, present only when it differs
+    /// from `arrow` (when it declares protocol-domain markers).
+    pub structural: Option<StructuralSurface>,
     /// A variadic extern's tail: the type every argument past the arrow's
     /// declared parameters must belong to. `None` for an ordinary arrow.
     pub variadic_tail: Option<Ty>,
+}
+
+/// A clause's arrow and bounds with every protocol-domain marker read as
+/// `any` (`Types::structural_surface`). Refining a call's inputs reads this,
+/// so a marker never reaches a callee as the type of a value; obligations,
+/// enforceability and diagnostics keep reading the declared arrow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuralSurface {
+    pub arrow: Ty,
+    pub bounds: HashMap<TypeVarId, Ty>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +168,7 @@ impl FunctionContract {
             arrows: arrows
                 .into_iter()
                 .map(|arrow| ContractArrow {
+                    structural: StructuralSurface::of(types, &arrow),
                     // params/result arrive addressed from the resolver binder
                     // (fz-hwn.27.14), so this packs them into the interned arrow
                     // surface; the bounds are already keyed by those addresses.
@@ -173,12 +213,12 @@ impl FunctionContract {
                         Some(current) => types.union(current, matched),
                         None => matched,
                     });
-                    matched_arrows.push(params);
+                    matched_arrows.push(clause.structural_params(types, params, arg_tys));
                     matched_any = true;
                     enforceable_matched |= clause_enforceable;
                 }
                 ArrowMatch::Underconstrained { params, result: _ } => {
-                    matched_arrows.push(params);
+                    matched_arrows.push(clause.structural_params(types, params, arg_tys));
                     matched_any = true;
                     enforceable_matched |= clause_enforceable;
                 }
@@ -205,7 +245,7 @@ impl FunctionContract {
                         Some(current) => types.union(current, matched),
                         None => matched,
                     });
-                    matched_arrows.push(params);
+                    matched_arrows.push(clause.structural_params(types, params, &narrowed));
                 }
             }
         }
@@ -279,7 +319,10 @@ impl ContractArrow {
     /// length. A row no longer than the parameters is untouched, so
     /// `match_arrow`'s own arity check still refuses one that is too short.
     fn matched_params(&self, types: &Types, row_len: usize) -> Vec<Ty> {
-        let params = types.arrow_params(&self.arrow);
+        self.widened_to_row(types.arrow_params(&self.arrow), row_len)
+    }
+
+    fn widened_to_row(&self, params: Vec<Ty>, row_len: usize) -> Vec<Ty> {
         let Some(tail) = self.variadic_tail else {
             return params;
         };
@@ -289,6 +332,25 @@ impl ContractArrow {
         let mut widened = params;
         widened.resize(row_len, tail);
         widened
+    }
+
+    /// The parameters a matched call refines its inputs by: the declared
+    /// `params` the call matched, re-matched against the structural surface
+    /// when the clause declares protocol-domain markers.
+    fn structural_params(&self, types: &mut Types, declared: Vec<Ty>, arg_tys: &[Ty]) -> Vec<Ty> {
+        let Some(surface) = &self.structural else {
+            return declared;
+        };
+        let params = self.widened_to_row(types.arrow_params(&surface.arrow), arg_tys.len());
+        let result = types
+            .arrow_result(&surface.arrow)
+            .expect("a contract clause is an arrow with a result slot");
+        match types.match_arrow(&params, &result, &surface.bounds, arg_tys) {
+            ArrowMatch::Known { params, .. } | ArrowMatch::Underconstrained { params, .. } => params,
+            ArrowMatch::Invalid => unreachable!(
+                "the structural surface reads every protocol-domain marker as any, so it admits whatever the declared clause matched"
+            ),
+        }
     }
 
     pub(crate) fn input_domain_row(&self, types: &mut Types) -> Vec<Ty> {

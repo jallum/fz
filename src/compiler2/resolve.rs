@@ -91,20 +91,14 @@ struct ConstructorEntry {
 }
 
 /// The single authoritative source for every builtin type-constructor name:
-/// the thirteen nullary scalars (including `map`, the fully-unconstrained
-/// "any map" type — the named counterpart to the structural `%{k => v}`
-/// syntax) plus the two parametric constructors, `list` (0 or 1 type
-/// argument — `list()`/`list(any)` and `[T]` mint the identical `Ty`) and
-/// `resource` (0 or 1 type argument, defaulting the payload to `any`).
+/// the fourteen nullary scalars (including `map` and `tuple`, the
+/// fully-unconstrained "any map" and "any tuple" types — the named
+/// counterparts to the structural `%{k => v}` and `{T, U}` syntax) plus the
+/// two parametric constructors, `list` (0 or 1 type argument —
+/// `list()`/`list(any)` and `[T]` mint the identical `Ty`) and `resource`
+/// (0 or 1 type argument, defaulting the payload to `any`).
 ///
-/// `tuple` is deliberately absent. `{T, U}` is the sole tuple syntax; there
-/// is no `tuple`/`tuple(T, U)` named form, unlike `list`/`[T]` or
-/// `map`/`%{k => v}` which each have both a name and a structural spelling.
-/// Adding named-tuple parity is an open question for a future ticket, not a
-/// gap to patch here speculatively — see
-/// `resolve_test::bare_tuple_is_not_a_registered_constructor_name` and
-/// `applied_tuple_is_not_a_registered_constructor_name`, which pin today's
-/// "unknown type name" as the deliberate answer.
+/// `tuple` takes no arguments: `{T, U}` is the only fixed-arity spelling.
 #[rustfmt::skip]
 const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "nil",      arity: Arity::Fixed(0), build: |t, _| t.nil() },
@@ -122,6 +116,7 @@ const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "list",     arity: Arity::Range(0, 1), build: |t, a| { let inner = a.first().copied().unwrap_or_else(|| t.any()); t.list(inner) } },
     ConstructorEntry { name: "resource", arity: Arity::Range(0, 1), build: |t, a| { let inner = a.first().copied().unwrap_or_else(|| t.any()); t.resource(inner) } },
     ConstructorEntry { name: "map",      arity: Arity::Fixed(0), build: |t, _| t.map_top() },
+    ConstructorEntry { name: "tuple",    arity: Arity::Fixed(0), build: |t, _| t.tuple_top() },
 ];
 
 fn find_constructor(name: &str) -> Option<&'static ConstructorEntry> {

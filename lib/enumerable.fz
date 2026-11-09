@@ -63,7 +63,7 @@ end
 defimpl Enumerable, for: List do
   def reduce(list, acc, reducer), do: List.reduce(list, acc, reducer)
   def reduce_while(list, acc, reducer), do: List.reduce_while(list, acc, reducer)
-  def count(list), do: {:ok, List.count(list)}
+  def count(list), do: {:ok, length(list)}
   def member?(list, value), do: {:ok, List.member?(list, value)}
   def slice(_list), do: {:error, :unsupported}
 end
@@ -71,7 +71,7 @@ end
 defimpl Enumerable, for: Map do
   def reduce(map, acc, reducer), do: Map.reduce(map, acc, reducer)
   def reduce_while(map, acc, reducer), do: Map.reduce_while(map, acc, reducer)
-  def count(map), do: {:ok, Map.count(map)}
+  def count(map), do: {:ok, map_size(map)}
   def member?(map, pair), do: {:ok, Map.member?(map, pair)}
   def slice(map), do: Map.slice(map)
 end

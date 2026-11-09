@@ -225,6 +225,13 @@ impl Descr {
         d
     }
 
+    /// Every tuple of every arity: the tuple axis's factor-less clause.
+    pub(super) fn tuple_top() -> Self {
+        let mut d = Self::unbranded();
+        d.tuples.push(Conj::top());
+        d
+    }
+
     pub(super) fn map_top() -> Self {
         Self::record(MapTag::Plain, [])
     }

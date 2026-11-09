@@ -1,0 +1,5 @@
+[:tuple, :tuple, :tuple]
+[:other, :other, :other, :other]
+[:tuple, :tuple, :tuple]
+[:other, :other, :other, :other]
+[true, true, false, false]

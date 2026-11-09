@@ -313,30 +313,32 @@ fn map_with_a_type_argument_reports_the_uniform_arity_error() {
     assert_eq!(error.msg, "expected 0 type argument(s), got 1 `map`");
 }
 
-/// Parity audit: `list`/`resource`/`map` all got a named-constructor form
-/// alongside their structural syntax ([`fz-usm.1`–`.4`]); `tuple` deliberately
-/// did not. `{T, U}` stays the sole tuple syntax — there is no `tuple` or
-/// `tuple(T, U)` registry entry, and a source program that writes one gets the
-/// same "unknown type name" every other undeclared name gets, not a silent
-/// fallback. This pins that gap as intentional so a future registry edit
-/// can't reintroduce it un-reviewed.
+/// `tuple` is the named counterpart to the structural `{T, U}`: the top of
+/// the tuple axis, every tuple of every arity.
 #[test]
-fn bare_tuple_is_not_a_registered_constructor_name() {
+fn bare_tuple_resolves_to_the_tuple_top() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
 
-    let error = resolve(&tel, &mut world, "tuple").expect_err("`tuple` is not a builtin constructor name");
+    let ty = resolve(&tel, &mut world, "tuple").expect("`tuple` is a builtin constructor name");
 
-    assert_eq!(error.msg, "unknown type name `tuple`");
+    let t = world.types_mut();
+    let expected = t.tuple_top();
+    assert_eq!(ty, expected);
+    let pair = {
+        let int = t.int();
+        t.tuple(&[int, int])
+    };
+    assert!(t.is_subtype(&pair, &ty), "`{{T, U}}` is a tuple");
 }
 
+/// `{T, U}` is the only fixed-arity spelling; `tuple` takes no arguments, as `map` does.
 #[test]
-fn applied_tuple_is_not_a_registered_constructor_name() {
+fn applied_tuple_reports_the_uniform_arity_error() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
 
-    let error =
-        resolve(&tel, &mut world, "tuple(integer, atom)").expect_err("`tuple(...)` is not a builtin constructor form");
+    let error = resolve(&tel, &mut world, "tuple(integer, atom)").expect_err("nullary `tuple` applied should fail");
 
-    assert_eq!(error.msg, "unknown type name `tuple`");
+    assert_eq!(error.msg, "expected 0 type argument(s), got 2 `tuple`");
 }

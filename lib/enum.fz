@@ -794,7 +794,7 @@ defmodule Enum do
   defp reduce_first_finish({:suspended, state, _continuation}), do: reduce_first_acc(state)
   defp reduce_first_finish(_result), do: panic("Enum.ReduceStateError")
   @spec reduce_first_acc(:first | {:acc, a}) :: a
-  defp reduce_first_acc(:first), do: panic("Enum.EmptyError")
+  defp reduce_first_acc(:first), do: empty_error()
   defp reduce_first_acc({:acc, acc}), do: acc
   defp reduce_first_acc(_state), do: panic("Enum.ReduceStateError")
 
@@ -1033,7 +1033,23 @@ defmodule Enum do
 
   """
   @spec max([a]) :: a
-  def max(enumerable), do: extreme(to_list(enumerable), 1, "Enum.max: empty")
+  def max(enumerable), do: max(enumerable, &empty_error/0)
+
+  @doc """
+  Returns the largest element of `enumerable`, by term order, or the result of
+  calling `empty_fallback` if `enumerable` is empty.
+
+  ## Examples
+
+      Enum.max([3, 1, 2], fn -> 0 end)
+      #=> 3
+
+      Enum.max([], fn -> 0 end)
+      #=> 0
+
+  """
+  @spec max([a], () -> b) :: a | b
+  def max(enumerable, empty_fallback), do: extreme(to_list(enumerable), 1, empty_fallback)
 
   @doc """
   Returns the smallest element of `enumerable`, by term order.
@@ -1047,7 +1063,23 @@ defmodule Enum do
 
   """
   @spec min([a]) :: a
-  def min(enumerable), do: extreme(to_list(enumerable), -1, "Enum.min: empty")
+  def min(enumerable), do: min(enumerable, &empty_error/0)
+
+  @doc """
+  Returns the smallest element of `enumerable`, by term order, or the result of
+  calling `empty_fallback` if `enumerable` is empty.
+
+  ## Examples
+
+      Enum.min([3, 1, 2], fn -> 0 end)
+      #=> 1
+
+      Enum.min([], fn -> 0 end)
+      #=> 0
+
+  """
+  @spec min([a], () -> b) :: a | b
+  def min(enumerable, empty_fallback), do: extreme(to_list(enumerable), -1, empty_fallback)
 
   @doc """
   Returns a `{minimum, maximum}` pair for `enumerable`, by term order.
@@ -1063,9 +1095,12 @@ defmodule Enum do
   @spec min_max([a]) :: {a, a}
   def min_max(enumerable), do: {min(enumerable), max(enumerable)}
 
-  @spec extreme([a], integer, binary) :: a
-  defp extreme([], _want, message), do: Kernel.panic(message)
-  defp extreme([head | tail], want, _message), do: extreme_fold(tail, head, want)
+  @spec empty_error() :: never
+  defp empty_error(), do: Kernel.panic("Enum.EmptyError")
+
+  @spec extreme([a], integer, () -> b) :: a | b
+  defp extreme([], _want, empty_fallback), do: empty_fallback.()
+  defp extreme([head | tail], want, _empty_fallback), do: extreme_fold(tail, head, want)
 
   @spec extreme_fold([a], a, integer) :: a
   defp extreme_fold([], best, _want), do: best
@@ -1090,7 +1125,7 @@ defmodule Enum do
 
   """
   @spec max_by([a], (a) -> any) :: a
-  def max_by(enumerable, fun), do: extreme_by(to_list(enumerable), fun, 1, "Enum.max_by: empty")
+  def max_by(enumerable, fun), do: extreme_by(to_list(enumerable), fun, 1, &empty_error/0)
 
   @doc """
   Returns the element of `enumerable` for which `fun` returns the smallest
@@ -1105,7 +1140,7 @@ defmodule Enum do
 
   """
   @spec min_by([a], (a) -> any) :: a
-  def min_by(enumerable, fun), do: extreme_by(to_list(enumerable), fun, -1, "Enum.min_by: empty")
+  def min_by(enumerable, fun), do: extreme_by(to_list(enumerable), fun, -1, &empty_error/0)
 
   @doc """
   Returns a `{min_by, max_by}` pair for `enumerable`, both computed from
@@ -1122,9 +1157,9 @@ defmodule Enum do
   @spec min_max_by([a], (a) -> any) :: {a, a}
   def min_max_by(enumerable, fun), do: {min_by(enumerable, fun), max_by(enumerable, fun)}
 
-  @spec extreme_by([a], (a) -> any, integer, binary) :: a
-  defp extreme_by([], _fun, _want, message), do: Kernel.panic(message)
-  defp extreme_by([head | tail], fun, want, _message), do: extreme_by_fold(tail, head, fun.(head), fun, want)
+  @spec extreme_by([a], (a) -> any, integer, () -> b) :: a | b
+  defp extreme_by([], _fun, _want, empty_fallback), do: empty_fallback.()
+  defp extreme_by([head | tail], fun, want, _empty_fallback), do: extreme_by_fold(tail, head, fun.(head), fun, want)
 
   @spec extreme_by_fold([a], a, any, (a) -> any, integer) :: a
   defp extreme_by_fold([], best, _best_key, _fun, _want), do: best
@@ -1415,11 +1450,47 @@ defmodule Enum do
   def zip(left, right), do: zip_lists(to_list(left), to_list(right))
 
   @spec zip_lists([a], [b]) :: [{a, b}]
-  defp zip_lists([], _right), do: []
-  defp zip_lists(_left, []), do: []
-  defp zip_lists([left_head | left_tail], [right_head | right_tail]) do
-    [{left_head, right_head} | zip_lists(left_tail, right_tail)]
+  defp zip_lists(left, right) do
+    case zip_advance([left, right]) do
+      :done -> []
+      {[left_head, right_head], [left_tail, right_tail]} -> [{left_head, right_head} | zip_lists(left_tail, right_tail)]
+    end
   end
+
+  @doc """
+  Applies `fun` to the list of the n-th elements of each of `enumerables`,
+  for each position n, and returns the results.
+
+  Stops as soon as the shortest of the enumerables runs out.
+
+  ## Examples
+
+      Enum.zip_with([[1, 2, 3], [4, 5, 6]], fn [a, b] -> a + b end)
+      #=> [5, 7, 9]
+
+      Enum.zip_with([[1, 2, 3], [10, 20]], fn [a, b] -> a * b end)
+      #=> [10, 40]
+
+  """
+  @spec zip_with([Enumerable.t(a)], ([a]) -> b) :: [b]
+  def zip_with(enumerables, fun), do: zip_with_lists(Enum.map(enumerables, &to_list/1), fun)
+
+  @spec zip_with_lists([[a]], ([a]) -> b) :: [b]
+  defp zip_with_lists(lists, fun) do
+    case zip_advance(lists) do
+      :done -> []
+      {heads, tails} -> [fun.(heads) | zip_with_lists(tails, fun)]
+    end
+  end
+
+  @spec zip_advance([[a]]) :: :done | {[a], [[a]]}
+  defp zip_advance([]), do: :done
+  defp zip_advance(lists), do: zip_advance(lists, [], [])
+
+  @spec zip_advance([[a]], [a], [[a]]) :: :done | {[a], [[a]]}
+  defp zip_advance([], heads, tails), do: {reverse(heads), reverse(tails)}
+  defp zip_advance([[] | _rest], _heads, _tails), do: :done
+  defp zip_advance([[head | tail] | rest], heads, tails), do: zip_advance(rest, [head | heads], [tail | tails])
 
   @doc """
   Splits `enumerable`, a list of two-element tuples, into a

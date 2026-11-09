@@ -335,6 +335,7 @@ fn addressed_function_contract_keeps_reduce_halt_payload_free_until_callable_ret
             arrow,
             bounds: HashMap::new(),
             protocol_domain_obligations: BTreeSet::new(),
+            structural: None,
             variadic_tail: None,
         }],
         extern_wire: None,
@@ -1414,5 +1415,53 @@ fn variadic_extern_violation_names_the_tail_domain_past_the_fixed_params() {
         message.contains("declared domain is (binary, ..."),
         "the domain should name the fixed `fmt` parameter and then the tail's own domain \
          marked `...`, not stop at the fixed parameters, got: {message}",
+    );
+}
+
+#[test]
+fn a_protocol_domain_parameter_refines_an_untyped_argument_as_any_and_keeps_its_obligation() {
+    let mut types = Types::new();
+    let domain = types.protocol_domain_of(enumerable_protocol());
+    let int = types.int();
+    let any = types.any();
+    let resolved = ResolvedSpecDecl {
+        params: vec![domain],
+        result: int,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    let applied = contract.apply(&mut types, &[any]);
+
+    assert_eq!(
+        applied.matched_arrows,
+        vec![vec![any]],
+        "a call refines its inputs by the structural surface, where the marker is any value"
+    );
+    assert_eq!(
+        contract.arrows[0].protocol_domain_obligations,
+        BTreeSet::from([ProtocolDomainObligation::from_protocol(enumerable_protocol())]),
+        "the declared arrow still carries the obligation the surface does not"
+    );
+}
+
+#[test]
+fn a_protocol_domain_nested_in_a_parameter_is_read_as_any_in_the_surface() {
+    let mut types = Types::new();
+    let domain = types.protocol_domain_of(enumerable_protocol());
+    let int = types.int();
+    let any = types.any();
+    let list_of_any = types.list(any);
+    let list_of_domain = types.list(domain);
+
+    assert_eq!(
+        types.structural_surface(list_of_domain),
+        list_of_any,
+        "a marker inside a list element is any value"
+    );
+    assert_eq!(
+        types.structural_surface(int),
+        int,
+        "a type with no marker is its own surface"
     );
 }

@@ -154,8 +154,15 @@ runs <em>after</em> the structural tests for that clause have passed:</p>
 
 <p>Guards are restricted to things the matcher can safely evaluate
 itself: arithmetic, comparisons, boolean
-connectives, simple field access, and calls to user-defined guard
-helpers. No allocations, no arbitrary function calls.</p>
+connectives, simple field access, calls to user-defined guard
+helpers, and the Kernel guard functions (<code>is_integer</code>,
+<code>is_binary</code>, <code>is_list</code>, <code>is_map</code>,
+<code>is_atom</code>, <code>is_float</code>, <code>is_boolean</code>,
+<code>is_nil</code>, <code>is_tuple</code>, <code>map_size</code>,
+<code>tuple_size</code>, <code>byte_size</code>, <code>length</code>,
+<code>elem</code>). No allocations, and no other function calls. A guard
+function that is given a value outside its domain makes the guard false,
+where the same call in a body raises.</p>
 
 <p>A guard is a predicate on a <code>Test</code> node, like the structural
 questions in section 2. On <code>true</code>, the matcher proceeds to the

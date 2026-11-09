@@ -1,0 +1,16 @@
+#---
+# purpose: "A defmodule that requires a module defined inside its own body is refused: the nested module is defined in the requiring context"
+# kind: run
+# expect: diagnostic
+# diagnostic.code: resolve/module-not-loaded
+#---
+defmodule N do
+  defmodule M do
+    def f(), do: 7
+  end
+
+  require M
+  def g(), do: M.f()
+end
+
+dbg(N.g())

@@ -179,7 +179,8 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // small knock-ons of the same drop.
 // 232 -> 229: a function's recursion is read from its shared reach product
 // instead of a walk of the static graph, so DeriveRecursive reruns less.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 229;
+// fz-sc8.37: 229 -> 239. Kernel defines `&&`, `||` and `!` as macros.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 239;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {
@@ -6279,11 +6280,12 @@ fn assert_materialized_executable_fact_authority(world: &World, session: &PullSe
     let producer_pokes = session.producer_pokes();
     let starts = world.work_start_tally();
     assert!(
-        starts.blocked_waiter_expansion >= producer_pokes,
+        starts[crate::compiler2::WorkStartReason::BlockedWaiterExpansion] >= producer_pokes,
         "each product-triggered fact producer poke must be attributed to BlockedWaiterExpansion: {starts:?}",
     );
     assert_eq!(
-        starts.unclassified, 0,
+        starts.unsanctioned_work_starts(),
+        0,
         "direct fact production must not start unsanctioned work"
     );
     for (executable, _) in session.memo().materialized_executables() {

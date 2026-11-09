@@ -1697,7 +1697,7 @@ pub mod debug {
             // `render_float`, not Rust's `to_string`: a whole float has to keep
             // its `.0` wherever it appears. This arm answered `[1, 2]` for
             // `[1.0, 2.0]` because it had its own idea of how to print a float
-            // (fz-5xp.36), which `Json.encode` cannot survive -- `[1.0]` must
+            // (fz-5xp.36), which `JSON.encode` cannot survive -- `[1.0]` must
             // not encode as `[1]`.
             ValueKind::FLOAT => render_float(f64::from_bits(cons.head)),
             ValueKind::ATOM => render_atom(proc, cons.head as u32),

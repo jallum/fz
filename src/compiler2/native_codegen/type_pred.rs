@@ -95,9 +95,9 @@ pub(crate) fn ty_is_map<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var,
     var_ty_satisfies(t, value_types, v, want)
 }
 
-pub(crate) fn ty_has_tuple<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {
+pub(crate) fn ty_is_tuple<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {
     let got = value_types.get(&v).cloned().unwrap_or_else(|| t.any());
-    t.max_tuple_arity(&got) > 0
+    t.is_tuple_type(&got)
 }
 
 /// True when `v` is statically nil-or-bool. Both occupy disjoint, fixed raw

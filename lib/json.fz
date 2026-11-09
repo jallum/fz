@@ -1,4 +1,4 @@
-defmodule Json do
+defmodule JSON do
   @moduledoc """
   JSON decoding and encoding over fz values, following Elixir's `JSON` module.
 
@@ -17,10 +17,10 @@ defmodule Json do
 
   ## Examples
 
-      Json.decode("{\\"a\\": 1}")
+      JSON.decode("{\\"a\\": 1}")
       #=> {:ok, %{"a" => 1}}
 
-      Json.encode!(%{"a" => 1, "b" => [1, 2, true, nil, "x"]})
+      JSON.encode!(%{"a" => 1, "b" => [1, 2, true, nil, "x"]})
       #=> "{\\"a\\":1,\\"b\\":[1,2,true,null,\\"x\\"]}"
 
   """
@@ -72,28 +72,28 @@ defmodule Json do
 
   ## Examples
 
-      Json.decode("{\\"a\\": 1}")
+      JSON.decode("{\\"a\\": 1}")
       #=> {:ok, %{"a" => 1}}
 
-      Json.decode("[1, 2")
+      JSON.decode("[1, 2")
       #=> {:error, {:unexpected_end, 5}}
 
-      Json.decode("[1, 2] junk")
+      JSON.decode("[1, 2] junk")
       #=> {:error, {:invalid_byte, 6, 32}}
 
-      Json.decode("\\"a\\\\uZZZZb\\"")
+      JSON.decode("\\"a\\\\uZZZZb\\"")
       #=> {:error, {:unexpected_sequence, 2, "\\\\uZZZZ"}}
 
-      Json.decode(<<34, 255, 34>>)
+      JSON.decode(<<34, 255, 34>>)
       #=> {:error, {:invalid_byte, 1, 255}}
 
-      Json.decode(<<34, 10, 34>>)
+      JSON.decode(<<34, 10, 34>>)
       #=> {:error, {:invalid_byte, 1, 10}}
 
-      Json.decode("\\"\\\\uD83D\\\\uDE00\\"")
+      JSON.decode("\\"\\\\uD83D\\\\uDE00\\"")
       #=> {:ok, "😀"}
 
-      Json.decode("\\"\\\\uDE00\\"")
+      JSON.decode("\\"\\\\uDE00\\"")
       #=> {:error, {:unexpected_sequence, 1, "\\\\uDE00"}}
 
   """
@@ -119,11 +119,11 @@ defmodule Json do
 
   ## Examples
 
-      Json.decode!("[1,2,3]")
+      JSON.decode!("[1,2,3]")
       #=> [1, 2, 3]
 
   On invalid input, `decode!/1` halts the process rather than returning; for
-  example `Json.decode!("not json")` halts with `"JSON.decode!: invalid JSON"`.
+  example `JSON.decode!("not json")` halts with `"JSON.decode!: invalid JSON"`.
 
   """
   @spec decode!(binary) :: any
@@ -165,16 +165,16 @@ defmodule Json do
 
   ## Examples
 
-      Json.encode!(%{"a" => 1, "b" => [1, 2, true, nil, "x"]})
+      JSON.encode!(%{"a" => 1, "b" => [1, 2, true, nil, "x"]})
       #=> "{\\"a\\":1,\\"b\\":[1,2,true,null,\\"x\\"]}"
 
-      Json.encode!(%{answer: 42})
+      JSON.encode!(%{answer: 42})
       #=> "{\\"answer\\":42}"
 
-      Json.encode!(1.5)
+      JSON.encode!(1.5)
       #=> "1.5"
 
-      Json.encode!(<<0, 10, 31>>)
+      JSON.encode!(<<0, 10, 31>>)
       #=> "\\\"\\\\u0000\\\\n\\\\u001F\\\""
 
   """

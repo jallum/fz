@@ -6,18 +6,19 @@ use super::backend::{
     backend_callable_identity, decode_field, env_get, field_spans_for, materialize_transport_value,
     transport_field_view,
 };
+use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::*;
 use crate::compiler2::transport::TransportStore;
-use crate::compiler2::{BackendProgram, DispatchBindings, Ty, Types, ValueId};
+use crate::compiler2::{BackendProgram, DispatchBindings, LoweredExtern, Ty, Types, ValueId};
 use crate::dispatch_matrix::pattern::{
-    PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp, PatternPinnedInput,
+    GuardExtern, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp, PatternPinnedInput,
 };
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
     EdgeEvidence, GraphNodeId, GroundValue, ListRegion, OutcomeId, PinnedValueId, PreparedKeyId, ProjectionKind,
     Region, SubjectId, SubjectSource,
 };
-use crate::fz_ir::Module;
+use crate::fz_ir::{ExternReturn, Module};
 use crate::runtime_type_predicate::{
     RuntimeTypePredicate, RuntimeValueReader, TuplePositions, matches_runtime_type_predicate, surface_membership,
 };
@@ -153,6 +154,18 @@ fn or_miss<T>(result: Result<T, DispatchStop>) -> Result<Option<T>, DispatchStop
         Ok(value) => Ok(Some(value)),
         Err(DispatchStop::NoMatch) => Ok(None),
         Err(broken) => Err(broken),
+    }
+}
+
+/// An operand of `and`, `or` or `not` in a guard. An error fails the guard,
+/// and a non-boolean operand is an error.
+fn guard_boolean(value: AnyValue) -> Result<bool, DispatchStop> {
+    if value.is_atom_id(TRUE_ATOM_ID) {
+        Ok(true)
+    } else if value.is_false() {
+        Ok(false)
+    } else {
+        Err(DispatchStop::NoMatch)
     }
 }
 
@@ -658,7 +671,7 @@ impl<'a> Dispatch<'a> {
             PatternGuardExpr::Unary { op, expr } => {
                 let v = self.eval_guard(expr)?;
                 match op {
-                    PatternGuardUnaryOp::Not => interp_bool_value(v.is_false() || v.is_nil()),
+                    PatternGuardUnaryOp::Not => interp_bool_value(!guard_boolean(v)?),
                     // The same negation an EXPRESSION gets. Forcing the operand
                     // to an integer here made `when -x > 0.0` silently fail its
                     // guard for a float and fall to the next clause, so `interp`
@@ -669,8 +682,8 @@ impl<'a> Dispatch<'a> {
             PatternGuardExpr::Binary { op, lhs, rhs } => {
                 let l = self.eval_guard(lhs)?;
                 let short = match op {
-                    PatternGuardBinOp::And if l.is_false() || l.is_nil() => Some(interp_bool_value(false)),
-                    PatternGuardBinOp::Or if !(l.is_false() || l.is_nil()) => Some(interp_bool_value(true)),
+                    PatternGuardBinOp::And if !guard_boolean(l)? => Some(interp_bool_value(false)),
+                    PatternGuardBinOp::Or if guard_boolean(l)? => Some(interp_bool_value(true)),
                     _ => None,
                 };
                 if let Some(v) = short {
@@ -699,7 +712,7 @@ impl<'a> Dispatch<'a> {
                     PatternGuardBinOp::LtEq => interp_bool_value(required(guard_cmp(proc, l, r))? <= 0),
                     PatternGuardBinOp::Gt => interp_bool_value(required(guard_cmp(proc, l, r))? > 0),
                     PatternGuardBinOp::GtEq => interp_bool_value(required(guard_cmp(proc, l, r))? >= 0),
-                    PatternGuardBinOp::And | PatternGuardBinOp::Or => interp_bool_value(!(r.is_false() || r.is_nil())),
+                    PatternGuardBinOp::And | PatternGuardBinOp::Or => interp_bool_value(guard_boolean(r)?),
                 }
             }
             PatternGuardExpr::Dispatch {
@@ -736,6 +749,28 @@ impl<'a> Dispatch<'a> {
                 let mut decided = required(helper.run().map_err(DispatchStop::Broken)?)?;
                 let body = required(dispatch.bodies.get(dispatch.plan.body_id(decided.outcome()) as usize))?;
                 decided.run.eval_guard(body)?
+            }
+            PatternGuardExpr::Extern { extern_fn, args } => {
+                // A call that aborts the process is not made: in a guard it is
+                // the guard that fails.
+                if extern_fn.fails_the_guard() {
+                    return Err(DispatchStop::NoMatch);
+                }
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args {
+                    values.push(self.eval_guard(arg)?);
+                }
+                match call_lowered_extern(self.runtime, &guard_extern_wire(extern_fn), None, &values)
+                    .map_err(DispatchStop::Broken)?
+                {
+                    ExternCallValue::Scalar(value) => value,
+                    ExternCallValue::Pair(_) => {
+                        return Err(DispatchStop::broken(format!(
+                            "guard extern `{}` returned a pair, which no guard evaluator carries",
+                            extern_fn.symbol
+                        )));
+                    }
+                }
             }
         })
     }
@@ -882,6 +917,17 @@ impl<'a> Dispatch<'a> {
 
     fn proc(&self) -> *mut Process {
         self.runtime.cur_proc()
+    }
+}
+
+/// The wire a guard's extern call is made through.
+fn guard_extern_wire(extern_fn: &GuardExtern) -> LoweredExtern {
+    LoweredExtern {
+        abi: extern_fn.abi,
+        symbol: extern_fn.symbol.clone(),
+        params: extern_fn.params.clone(),
+        variadic: false,
+        ret: ExternReturn::Scalar(extern_fn.ret),
     }
 }
 

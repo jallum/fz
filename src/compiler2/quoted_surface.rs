@@ -36,6 +36,16 @@ pub enum ScopeForm {
     ProtocolImpl(ProtocolImplForm),
     Struct(StructForm),
     MacroCall(MacroCallForm),
+    Statement(StatementForm),
+}
+
+/// A top-level item that is not a call: nothing can make it a definition, so
+/// it can only be an expression of the file's `main/0`. A literal carries no
+/// source position of its own, so its span is `Span::DUMMY`.
+#[derive(Debug, Clone)]
+pub struct StatementForm {
+    pub source: QuotedSourceRoot,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -199,7 +209,13 @@ fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeS
 
     for quoted_item in quoted_items {
         let Some(node) = quoted_item.ast_node(sources)? else {
-            return Err(QuotedSourceError::new("expected quoted item AST node"));
+            flush_function_groups(source, &mut forms, &mut group_order, &mut groups, sources)?;
+            reject_dangling_function_attrs(source, &pending_function_attrs, sources)?;
+            forms.push(ScopeForm::Statement(StatementForm {
+                source: source.subroot(quoted_item.root()),
+                span: Span::DUMMY,
+            }));
+            continue;
         };
         if node.head.root().tag() != fz_runtime::any_value::ValueKind::ATOM {
             flush_function_groups(source, &mut forms, &mut group_order, &mut groups, sources)?;
@@ -919,10 +935,11 @@ fn parse_function_head_key_inner(
         return parse_function_head_key_inner(inner, allow_reserved_macro_name, false, sources);
     }
     let arity = function_head_args(&node.tail)?.len();
-    if is_definable_operator(&name) {
-        if arity != 2 {
+    if let Some(operator_arity) = definable_operator_arity(&name) {
+        if arity != operator_arity {
             return Err(QuotedSourceError::new(format!(
-                "operator function `{name}` must have two parameters"
+                "operator function `{name}` must have {} parameters",
+                if operator_arity == 1 { "one" } else { "two" }
             )));
         }
         return Ok(FunctionGroupKey { name, arity });
@@ -935,11 +952,13 @@ fn parse_function_head_key_inner(
     )))
 }
 
-fn is_definable_operator(name: &str) -> bool {
-    matches!(
-        name,
-        "+" | "-" | "*" | "/" | "%" | "<>" | "==" | "!=" | "===" | "!==" | "<" | "<=" | ">" | ">=" | "|>"
-    )
+fn definable_operator_arity(name: &str) -> Option<usize> {
+    match name {
+        "+" | "-" | "*" | "/" | "%" | "<>" | "==" | "!=" | "===" | "!==" | "<" | "<=" | ">" | ">=" | "|>" | "&&"
+        | "||" => Some(2),
+        "!" => Some(1),
+        _ => None,
+    }
 }
 
 fn is_local_function_name(name: &str, allow_reserved_macro_name: bool) -> bool {

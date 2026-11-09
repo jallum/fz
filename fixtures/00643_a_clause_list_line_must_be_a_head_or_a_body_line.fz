@@ -1,0 +1,13 @@
+#---
+# purpose: "a line in a fn clause list that is neither a body line nor a `head ->` clause is reported at that line"
+# expect: diagnostic
+#---
+def main() do
+  f =
+    fn x ->
+      y = x
+      a, b
+    end
+
+  dbg(f.(1))
+end

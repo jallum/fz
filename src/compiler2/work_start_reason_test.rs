@@ -37,7 +37,7 @@
 use std::collections::HashSet;
 
 use super::drive::Job;
-use super::{CodeSubmission, Compiler2, ExecutableNeed, FactKey, FactUse, RootSubmission};
+use super::{CodeSubmission, Compiler2, ExecutableNeed, FactKey, FactUse, RootSubmission, WorkStartReason};
 use crate::telemetry::ConfiguredTelemetry;
 
 /// `submit_code`'s own `IndexCode` is the only external ignition for a
@@ -76,11 +76,12 @@ fn assert_pull_only(name: &str, source: &str) {
         tally.unsanctioned_work_starts(),
     );
     assert_eq!(
-        tally.ignition, EXTERNAL_IGNITIONS,
+        tally[WorkStartReason::Ignition],
+        EXTERNAL_IGNITIONS,
         "{name}: Ignition fired {} times but only {EXTERNAL_IGNITIONS} external front-door \
          ignitions exist (one submit_code, one submit_root) -- any excess is an internal \
          (mid-job) caller mislabeling its work-start as the external front door",
-        tally.ignition,
+        tally[WorkStartReason::Ignition],
     );
 }
 
@@ -321,7 +322,13 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // rising further for this fixture's genuinely polymorphic callers.
         // 2338 -> 2303: recursion is read from one shared reach product per
         // function instead of a walk per caller; DeriveRecursive 113 -> 78.
-        (2303, 9, 19, 232),
+        // fz-sc8.9: 2303 -> 2317 steps (two of them `proper_length`'s `@spec`),
+        // 232 -> 235 executable facts. `Enumerable`'s list `count` reads
+        // Kernel's `length`, which keeps Elixir's proper-list check: `proper_length` aborts with `:badarg` on an improper
+        // list, so the check and its abort path become executables of their own.
+        // fz-sc8.37: 2317 -> 2327 steps, 19 -> 21 runs-with-wake, 235 -> 236
+        // executable facts. Kernel defines `&&`, `||` and `!` as macros.
+        (2327, 9, 21, 236),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -336,7 +343,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     // Two consumers wait for macro definitions directly; content readiness
     // then wakes those same consumers through the retained product dependency.
     assert_eq!(
-        starts.changed_revision_wake - demand_wake_starts,
+        starts[WorkStartReason::ChangedRevisionWake] - demand_wake_starts,
         // fz-5xp.30: 1430 -> 1447. The generic result/status helper facts
         // publish sixteen additional non-demand changed revisions.
         // The typed `==` clauses and their externs publish non-demand changed
@@ -404,11 +411,14 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // more runs; DeriveStaticCallees -53, DeriveInputDemand -42,
         // DefineFunction -18.
         // 898 -> 869: the same DeriveRecursive drop (shared reach products).
-        869,
+        // fz-sc8.9: 869 -> 870, the `@spec` that declares `proper_length`'s
+        // domains.
+        // fz-sc8.37: 870 -> 874. Kernel defines `&&`, `||` and `!` as macros.
+        874,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
-        starts.blocked_waiter_expansion,
+        starts[WorkStartReason::BlockedWaiterExpansion],
         // fz-5xp.30: 1162 -> 1184 (as the count beyond the 304-key demand
         // frontier, below). The ordinary generic result/status contracts
         // retain twenty-two more blocked prerequisite waits.
@@ -460,7 +470,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // expand.
         // 434 -> 416: DeriveRecursive no longer blocks once per level of a
         // static walk; it waits once on its reach product.
-        416,
+        // fz-sc8.9: 416 -> 417, the `@spec` that declares `proper_length`'s
+        // domains.
+        // fz-sc8.37: 417 -> 418. Kernel defines `&&`, `||` and `!` as macros.
+        418,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -505,18 +518,34 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // on the concluded answer alone; the wake count and its cause
         // split are unaffected, since each formula already waits on the
         // same fact it completes against.
-        (560, 562, [24, 232, 79, 227, 0]),
+        // fz-sc8.9: (560, 562) -> (566, 568), three more wakes each on settled
+        // executable facts and on the whole input vector.
+        // `Enumerable`'s list `count` reads Kernel's `length`, which keeps Elixir's
+        // proper-list check: `proper_length` aborts with `:badarg` on an improper
+        // list, so the check and its abort path are analyzed as functions of
+        // their own.
+        // fz-sc8.37: (566, 568, [24, 235, 79, 230, 0]) -> (567, 569, [24, 236, 79, 230, 0]). Kernel defines `&&`, `||` and `!` as macros.
+        (567, 569, [24, 236, 79, 230, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
         demanded_formula_keys.len(),
         // fz-5xp.30: the ordinary generic result/status boundary contributes
         // four exact RuntimeDemand/construction-target keys.
-        304,
+        // fz-sc8.9: 304 -> 307.
+        // `Enumerable`'s list `count` reads Kernel's `length`, which keeps Elixir's
+        // proper-list check: `proper_length` aborts with `:badarg` on an improper
+        // list, so the check and its abort path become executables of their own.
+        // fz-sc8.37: 307 -> 308. Kernel defines `&&`, `||` and `!` as macros.
+        308,
         "the demand frontier retains every ordinary generic helper key",
     );
     assert_eq!(
-        (starts.ignition, starts.activation_published, starts.unclassified),
+        (
+            starts[WorkStartReason::Ignition],
+            starts[WorkStartReason::ActivationPublished],
+            starts[WorkStartReason::Unclassified],
+        ),
         // fz-5xp.30: 261 -> 265. Four ordinary generic result/status helper
         // activations enter through the same attributed frontier.
         // fz-afu.10: 265 -> 266. `Enum.drop_positive/2` is now analyzed once
@@ -623,7 +652,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // than a run later -- settles two activations one run earlier,
         // which this fixture's schedule-dependent convergence turns into
         // two extra completions rather than two fewer.
-        619,
+        // fz-sc8.9: 619 holds; the three added frontier activations below
+        // are each analyzed once.
+        // fz-sc8.37: 619 -> 620. Kernel defines `&&`, `||` and `!` as macros.
+        620,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();
@@ -636,7 +668,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     // naming a new function.
     assert_eq!(
         frontier_analyses.len(),
-        232,
+        // fz-sc8.9: 232 -> 235.
+        // Kernel's `length`, `fz_list_length`, `proper_length`, `panic` and
+        // `fz_panic` replace `List.count/1` and `List.count/2`: the list
+        // `count` keeps Elixir's proper-list check and its abort path.
+        // fz-sc8.37: 235 -> 236. Kernel defines `&&`, `||` and `!` as macros.
+        236,
         "the demand frontier's distinct activations, deduplicated across repeats",
     );
 

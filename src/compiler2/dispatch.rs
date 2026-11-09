@@ -9,10 +9,12 @@
 //! identity and the caller's guard-helper resolution.
 
 use std::rc::Rc;
-use std::sync::Arc;
 
-use crate::ast::{Callee, ModuleTarget};
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternResolver, SourcePatternError};
+use crate::ast::{Callee, ModuleTarget, Pattern, Spanned};
+use crate::dispatch_matrix::pattern::{
+    GuardCallee, PatternBodyId, PatternDispatchPlan, PatternResolver, PatternRow, PatternSubjectRef, SourcePatternError,
+};
+use crate::function_surface::FunctionSurface;
 use crate::source::Span;
 
 use super::identity::{FunctionId, ModuleId};
@@ -31,10 +33,10 @@ pub(crate) struct FunctionDispatchMap<T> {
     slots: Vec<DispatchState<T>>,
 }
 
-/// A reified helper is shared atomically because callers embed it in their own
-/// plans, and a plan travels between scheduler threads inside
+/// A reified helper (or the extern a guard calls as it is) is shared atomically
+/// because callers embed it in their own plans, and a plan travels between scheduler threads inside
 /// `fz_ir::Term::ReceiveMatched`. An entry plan stays inside the compiler.
-pub(crate) type GuardDispatchMap = FunctionDispatchMap<Arc<PatternGuardDispatch<Ty>>>;
+pub(crate) type GuardDispatchMap = FunctionDispatchMap<GuardCallee<Ty>>;
 pub(crate) type EntryDispatchMap = FunctionDispatchMap<Rc<PatternDispatchPlan<Ty>>>;
 
 impl<T> FunctionDispatchMap<T>
@@ -85,6 +87,45 @@ impl<T: PartialEq> DispatchState<T> {
     }
 }
 
+/// Turns each clause of a function into the dispatch row that selects it: the
+/// clause's patterns after `leading` inputs, one type precondition per
+/// annotated parameter, and the guard. An entry and a reified guard helper both
+/// take their rows from here, so a call and a guard ask the same type question.
+pub(crate) fn surface_pattern_rows(
+    world: &mut World,
+    namespace: Namespace,
+    surface: &FunctionSurface,
+    leading: &[Spanned<Pattern>],
+) -> Result<Vec<PatternRow<Ty>>, SourcePatternError> {
+    let mut rows = Vec::with_capacity(surface.clauses.len());
+    for (body_id, clause) in surface.clauses.iter().enumerate() {
+        let mut preconditions = Vec::new();
+        for (index, tokens) in clause.param_annotations.iter().enumerate() {
+            let Some(tokens) = tokens else {
+                continue;
+            };
+            let ty = world.resolve_type_expr_body(namespace, tokens).map_err(|error| {
+                SourcePatternError::ParamAnnotation {
+                    index,
+                    message: error.msg,
+                    span: error.span,
+                }
+            })?;
+            let ty = world.types_mut().runtime_type_test_envelope(ty);
+            preconditions.push((PatternSubjectRef::Input((leading.len() + index) as u32), ty));
+        }
+        let mut patterns = leading.to_vec();
+        patterns.extend(clause.params.clone());
+        rows.push(PatternRow {
+            patterns,
+            preconditions,
+            guard: clause.guard.clone(),
+            body_id: body_id as PatternBodyId,
+        });
+    }
+    Ok(rows)
+}
+
 pub(crate) struct SourcePatternResolver<'a, F> {
     pub(crate) world: &'a mut World,
     pub(crate) namespace: Namespace,
@@ -94,7 +135,7 @@ pub(crate) struct SourcePatternResolver<'a, F> {
 
 impl<F> PatternResolver<Ty> for SourcePatternResolver<'_, F>
 where
-    F: FnMut(&mut World, &Callee, usize) -> Result<Option<Arc<PatternGuardDispatch<Ty>>>, SourcePatternError>,
+    F: FnMut(&mut World, &Callee, usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError>,
 {
     fn struct_type(&mut self, module: &ModuleTarget, _span: Span) -> Result<Ty, SourcePatternError> {
         let module_id = self
@@ -104,11 +145,7 @@ where
         Ok(self.world.struct_value_ty(module_id, &[], &[]))
     }
 
-    fn guard_call(
-        &mut self,
-        callee: &Callee,
-        arity: usize,
-    ) -> Result<Option<Arc<PatternGuardDispatch<Ty>>>, SourcePatternError> {
+    fn guard_call(&mut self, callee: &Callee, arity: usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {
         (self.guard)(self.world, callee, arity)
     }
 }

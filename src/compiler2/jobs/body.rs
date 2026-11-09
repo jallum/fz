@@ -9,8 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::{
-    AfterClause, BitField, BitSize, CallableName, Callee, Expr, FnClause, LambdaClause, MatchClause, Pattern, Spanned,
-    Var, VarContext, WithBinding,
+    AfterClause, BinOp, BitField, BitSize, CallableName, Callee, Expr, FnClause, LambdaClause, MatchClause, Pattern,
+    Spanned, UnOp, Var, VarContext, WithBinding,
 };
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -1399,6 +1399,10 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 });
                 Ok(value)
             }
+            Expr::BinOp(op @ (BinOp::And | BinOp::Or), left, right) => {
+                self.lower_strict_boolean_binop(*op, expr.span, left, right, env, steps)
+            }
+            Expr::UnOp(UnOp::Not, input) => self.lower_strict_not(expr.span, input, env, steps),
             Expr::BinOp(op, left, right) => {
                 let left = self.lower_expr(left, env, steps)?;
                 let right = self.lower_expr(right, env, steps)?;
@@ -1906,6 +1910,74 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
+        self.lower_case_or_halt(span, subject, clauses, "case_clause", env, steps)
+    }
+
+    /// `left and right` and `left or right` are a `case` on `left`: the one
+    /// boolean that does not decide hands over to `right`, which is evaluated
+    /// only then, and a left that is no boolean at all halts with
+    /// `BadBooleanError`. A left whose type is a boolean cannot reach that
+    /// halt, so the dispatch leaves it out.
+    fn lower_strict_boolean_binop(
+        &mut self,
+        op: BinOp,
+        span: Span,
+        left: &Spanned<Expr>,
+        right: &Spanned<Expr>,
+        env: &mut HashMap<Var, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let decides_on = matches!(op, BinOp::Or);
+        let arms = [
+            (decides_on, Spanned::new(Expr::Bool(decides_on), span)),
+            (!decides_on, right.clone()),
+        ];
+        self.lower_boolean_case(span, left, arms, "BadBooleanError", env, steps)
+    }
+
+    /// `not input` is a `case` on `input` that swaps the two booleans and
+    /// halts with `ArgumentError` on anything else.
+    fn lower_strict_not(
+        &mut self,
+        span: Span,
+        input: &Spanned<Expr>,
+        env: &mut HashMap<Var, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let arms = [
+            (true, Spanned::new(Expr::Bool(false), span)),
+            (false, Spanned::new(Expr::Bool(true), span)),
+        ];
+        self.lower_boolean_case(span, input, arms, "ArgumentError", env, steps)
+    }
+
+    fn lower_boolean_case(
+        &mut self,
+        span: Span,
+        subject: &Spanned<Expr>,
+        arms: [(bool, Spanned<Expr>); 2],
+        halt_atom: &str,
+        env: &mut HashMap<Var, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let clauses = arms.map(|(literal, body)| MatchClause {
+            pattern: Spanned::new(Pattern::Bool(literal), span),
+            guard: None,
+            body,
+            span,
+        });
+        self.lower_case_or_halt(span, subject, &clauses, halt_atom, env, steps)
+    }
+
+    fn lower_case_or_halt(
+        &mut self,
+        span: Span,
+        subject: &Spanned<Expr>,
+        clauses: &[MatchClause],
+        halt_atom: &str,
+        env: &mut HashMap<Var, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
         let subject_value = self.lower_expr(subject, env, steps)?;
         let plan = self.compile_match_dispatch("case", span, match_rows(clauses))?;
         let bindings = self.lower_dispatch_bindings(&plan, env, steps)?;
@@ -1922,7 +1994,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             dispatch: Box::new(ExprDispatch {
                 plan: Rc::new(plan),
                 arm_blocks,
-                miss_block: self.halt_block(span, "case_clause"),
+                miss_block: self.halt_block(span, halt_atom),
             }),
         });
         Ok(value)
@@ -2184,7 +2256,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             owner: self.source.owner_module,
             guard: |world: &mut World, callee: &Callee, arity: usize| {
                 let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
-                Ok(Some(world.guard_dispatch(callee)))
+                Ok(Some(world.guard_callee(callee)))
             },
         };
         let plan = pattern_dispatch_from_source_with_resolver(source, &mut resolver)
@@ -3629,11 +3701,9 @@ fn value_may_retain_source(
                 LoweredStep::Const { .. }
                 | LoweredStep::FunctionRef { .. }
                 | LoweredStep::UnaryOp { .. }
+                | LoweredStep::BinaryOp { .. }
                 | LoweredStep::Bitstring { .. },
             ) => false,
-            Some(LoweredStep::BinaryOp { op, .. }) if !matches!(op, crate::ast::BinOp::And | crate::ast::BinOp::Or) => {
-                false
-            }
             Some(step) => {
                 let mut operands = Vec::new();
                 step_used_values(step, &mut operands);
@@ -4356,7 +4426,9 @@ fn emit_local_dispatch_error(
             | SourcePatternError::UnresolvedStruct(_)
             | SourcePatternError::RowPatternArity { .. }
             | SourcePatternError::NonMonotonicBodyId { .. }
-            | SourcePatternError::UndefinedPins(_),
+            | SourcePatternError::UndefinedPins(_)
+            | SourcePatternError::GuardExternClass { .. }
+            | SourcePatternError::ParamAnnotation { .. },
         ) => {
             panic!("compiler2 built an invalid local dispatch row set: {error:?}")
         }

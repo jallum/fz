@@ -1,0 +1,12 @@
+#---
+# purpose: "A top-level import of a module the same file defines at top level is refused, as Elixir refuses it"
+# kind: run
+# expect: diagnostic
+# diagnostic.code: resolve/module-not-loaded
+#---
+defmodule M do
+  def f(), do: 7
+end
+
+import M
+dbg(f())

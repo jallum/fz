@@ -39,6 +39,19 @@ defmodule Map do
   def new(pairs), do: build(pairs, [], [])
 
   @doc """
+  Builds a map from the `{key, value}` pairs that `fun` returns for each
+  element of `enumerable`. When a key repeats, the last pair wins.
+
+  ## Examples
+
+      Map.new([1, 2, 3], fn (n) -> {n, n * n} end)
+      #=> %{1 => 1, 2 => 4, 3 => 9}
+
+  """
+  @spec new(any, (any) -> {any, any}) :: any
+  def new(enumerable, fun), do: new(Enum.map(enumerable, fun))
+
+  @doc """
   Merges `a` and `b` into one map. Where both have a key, `b`'s value wins.
 
   One pass, one allocation.
@@ -211,11 +224,67 @@ defmodule Map do
 
   """
   @spec get(any, any, any) :: any
-  def get(map, key, default), do: get_or(map, key, default, has_key?(map, key))
+  def get(map, key, default), do: value_or(fetch(map, key), default)
 
-  @spec get_or(any, any, any, boolean) :: any
-  defp get_or(map, key, _default, true), do: map[key]
-  defp get_or(_map, _key, default, false), do: default
+  @spec value_or({:ok, any} | :error, any) :: any
+  defp value_or({:ok, value}, _default), do: value
+  defp value_or(:error, default), do: default
+
+  @doc """
+  Returns `{:ok, value}` for `key`, or `:error` when the key is absent.
+
+  Unlike `get/2`, a stored `nil` is told apart from a missing key.
+
+  ## Examples
+
+      Map.fetch(%{a: 1}, :a)
+      #=> {:ok, 1}
+
+      Map.fetch(%{a: nil}, :a)
+      #=> {:ok, nil}
+
+      Map.fetch(%{a: 1}, :b)
+      #=> :error
+
+  """
+  @spec fetch(any, any) :: {:ok, any} | :error
+  def fetch(map, key), do: fetched(map, key, has_key?(map, key))
+
+  @spec fetched(any, any, boolean) :: {:ok, any} | :error
+  defp fetched(map, key, true), do: {:ok, map[key]}
+  defp fetched(_map, _key, false), do: :error
+
+  @doc """
+  Returns the value for `key`, and aborts with `KeyError` when the key is
+  absent.
+
+  ## Examples
+
+      Map.fetch!(%{a: 1}, :a)
+      #=> 1
+
+  """
+  @spec fetch!(any, any) :: any
+  def fetch!(map, key), do: fetch_value(fetch(map, key))
+
+  @spec fetch_value({:ok, any} | :error) :: any
+  defp fetch_value({:ok, value}), do: value
+  defp fetch_value(:error), do: panic("KeyError")
+
+  @doc """
+  Returns the map with `fun` applied to the value at `key`, and aborts with
+  `KeyError` when the key is absent.
+
+  Copies the whole array, like `put/3`.
+
+  ## Examples
+
+      Map.update!(%{a: 1}, :a, fn (v) -> v + 1 end)
+      #=> %{:a => 2}
+
+  """
+  @spec update!(any, any, (any) -> any) :: any
+  def update!(map, key, fun), do: put(map, key, fun.(fetch!(map, key)))
 
   @doc """
   Returns the map without `key`, or `map` unchanged if `key` is absent.
@@ -237,23 +306,6 @@ defmodule Map do
   extern "fz" defp fz_map_delete(any, any) :: any
 
   @doc """
-  Returns the number of entries in `map`.
-
-  ## Examples
-
-      Map.size(%{a: 1, b: 2})
-      #=> 2
-
-      Map.size(%{})
-      #=> 0
-
-  """
-  @spec size(any) :: integer
-  def size(map), do: fz_map_count(map)
-
-  extern "C" defp fz_map_count(any) :: integer
-
-  @doc """
   Returns the entries as a `{key, value}` list, in key order.
 
   ## Examples
@@ -263,7 +315,7 @@ defmodule Map do
 
   """
   @spec to_list(any) :: [{any, any}]
-  def to_list(map), do: to_list(map, fz_map_count(map), 0, [])
+  def to_list(map), do: to_list(map, map_size(map), 0, [])
 
   @doc """
   Returns just the keys, in key order.
@@ -275,7 +327,7 @@ defmodule Map do
 
   """
   @spec keys(any) :: [any]
-  def keys(map), do: keys(map, fz_map_count(map), 0, [])
+  def keys(map), do: keys(map, map_size(map), 0, [])
 
   @doc """
   Returns just the values, in key order.
@@ -287,7 +339,7 @@ defmodule Map do
 
   """
   @spec values(any) :: [any]
-  def values(map), do: values(map, fz_map_count(map), 0, [])
+  def values(map), do: values(map, map_size(map), 0, [])
 
   @doc """
   Returns true when `key` is present in `map`.
@@ -304,7 +356,7 @@ defmodule Map do
 
   """
   @spec has_key?(any, any) :: boolean
-  def has_key?(map, key), do: has_key?(map, fz_map_count(map), 0, key)
+  def has_key?(map, key), do: has_key?(map, map_size(map), 0, key)
 
   @spec has_key?(any, integer, integer, any) :: boolean
   defp has_key?(map, count, index, key) do
@@ -354,7 +406,7 @@ defmodule Map do
 
   """
   @spec reduce(any, {:cont, b} | {:halt, b} | {:suspend, b}, (any, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
-  def reduce(map, acc, reducer), do: reduce(map, fz_map_count(map), acc, reducer)
+  def reduce(map, acc, reducer), do: reduce(map, map_size(map), acc, reducer)
 
   @doc """
   The `Enumerable.reduce_while/3` callback body for maps.
@@ -375,20 +427,7 @@ defmodule Map do
 
   """
   @spec reduce_while(any, b, (any, b) -> {:cont, b} | {:halt, c}) :: b | c
-  def reduce_while(map, acc, reducer), do: reduce_while_cont(map, fz_map_count(map), 0, acc, reducer)
-
-  @doc """
-  Returns the number of entries in `map`, the `Enumerable.count/1`
-  callback. Same as `size/1`.
-
-  ## Examples
-
-      Map.count(%{a: 1, b: 2})
-      #=> 2
-
-  """
-  @spec count(any) :: integer
-  def count(map), do: fz_map_count(map)
+  def reduce_while(map, acc, reducer), do: reduce_while_cont(map, map_size(map), 0, acc, reducer)
 
   @doc """
   Returns true when the `{key, value}` pair appears in `map`, the
@@ -409,7 +448,7 @@ defmodule Map do
 
   """
   @spec member?(any, any) :: boolean
-  def member?(map, {key, value}), do: member_pair?(map, fz_map_count(map), 0, key, value)
+  def member?(map, {key, value}), do: member_pair?(map, map_size(map), 0, key, value)
   def member?(_map, _value), do: false
 
   @doc """
@@ -429,7 +468,7 @@ defmodule Map do
   """
   @spec slice(any) :: {:ok, integer, any}
   def slice(map) do
-    {:ok, fz_map_count(map), (fn (_map) -> to_list(map) end)}
+    {:ok, map_size(map), (fn (_map) -> to_list(map) end)}
   end
 
   @spec reduce(any, integer, {:cont, b} | {:halt, b} | {:suspend, b}, (any, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}

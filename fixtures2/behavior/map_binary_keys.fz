@@ -24,7 +24,7 @@
 # Lookup survived only because it was a linear scan using the correct relation,
 # which is why this hid: the slow path was the right one.
 #
-# `Json.decode` builds maps whose keys are binaries constructed at runtime, and
+# `JSON.decode` builds maps whose keys are binaries constructed at runtime, and
 # duplicate keys are legal in JSON with last-one-wins, so this is the goal
 # program's central data structure.
 #

@@ -1646,6 +1646,13 @@ impl ProgramCanon<'_> {
                 self.guard_dispatch(out, dispatch);
                 out.exit();
             }
+            PatternGuardExpr::Extern { extern_fn, args } => {
+                out.enter(&format!("guard_extern {} {}", extern_fn.abi, extern_fn.symbol));
+                for arg in args {
+                    self.guard_expr(out, arg);
+                }
+                out.exit();
+            }
         }
     }
 

@@ -16,12 +16,12 @@ use std::sync::Arc;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
+use crate::dispatch_matrix::pattern::{GuardExtern, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr};
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
-    BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DirectCallTarget, ExternArg,
-    ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FnBuilder, FnCategory, FnId, InitTokenId,
-    ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
+    BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DirectCallTarget, ExternAbi,
+    ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FnBuilder, FnCategory, FnId,
+    InitTokenId, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
 };
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate, TuplePositions};
@@ -83,6 +83,9 @@ struct NativeLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
     extern_ids: HashMap<usize, ExternId>,
     extern_marshals: HashMap<usize, Vec<ExternTy>>,
     extern_decls: Vec<ExternDecl>,
+    /// The externs guards call. A guard names its extern directly, with no
+    /// executable behind it, so each is declared the first time one is lowered.
+    guard_extern_ids: HashMap<(ExternAbi, String), ExternId>,
     native_bodies: Vec<NativeBody>,
     return_continuation_count: u32,
 }
@@ -230,6 +233,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             extern_ids,
             extern_marshals,
             extern_decls,
+            guard_extern_ids: HashMap::new(),
             native_bodies: Vec::new(),
             return_continuation_count: 0,
         })
@@ -3235,7 +3239,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         format!("dispatch guard {:?} is out of bounds", guard),
                     )
                 })?;
-                self.lower_guard_expr(ctx, plan, state, expr)?
+                self.lower_guard_answer(ctx, plan, state, expr)?
             }
             Region::Equal(ComparisonValue::Pinned(pinned)) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
@@ -3247,18 +3251,51 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }))
     }
 
-    fn lower_guard_expr(
+    /// A guard's truth. A call inside it that fails the guard (a helper that
+    /// matches nothing, or an extern that aborts) leaves through one block and
+    /// answers false, however deep in the expression it was made.
+    fn lower_guard_answer(
         &mut self,
         ctx: &mut NativeFnCtx,
         plan: &PatternDispatchPlan<Ty>,
         state: &mut DispatchState,
         expr: &PatternGuardExpr<Ty>,
     ) -> Result<Var, FatalError> {
+        let mut fail = None;
+        let value = self.lower_guard_expr(ctx, plan, state, expr, &mut fail)?;
+        let Some(fail_b) = fail else {
+            return Ok(value);
+        };
+        let answer = ctx.builder.fresh_var();
+        let done_b = ctx.builder.block(vec![answer]);
+        ctx.set_term(Term::Goto(done_b, vec![value]));
+        ctx.current_block = fail_b;
+        let (false_value, _) = ctx.emit_let(Prim::Const(Const::False));
+        ctx.set_term(Term::Goto(done_b, vec![false_value]));
+        ctx.current_block = done_b;
+        Ok(answer)
+    }
+
+    fn lower_guard_expr(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        expr: &PatternGuardExpr<Ty>,
+        fail: &mut Option<BlockId>,
+    ) -> Result<Var, FatalError> {
         Ok(match expr {
             PatternGuardExpr::Const(value) => lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), value)?,
             PatternGuardExpr::Subject(subject) => self.dispatch_subject_var(ctx, plan, state, *subject)?,
             PatternGuardExpr::Unary { op, expr } => {
-                let input = self.lower_guard_expr(ctx, plan, state, expr)?;
+                let input = match op {
+                    crate::dispatch_matrix::pattern::PatternGuardUnaryOp::Not => {
+                        self.lower_guard_boolean(ctx, plan, state, expr, fail)?
+                    }
+                    crate::dispatch_matrix::pattern::PatternGuardUnaryOp::Neg => {
+                        self.lower_guard_expr(ctx, plan, state, expr, fail)?
+                    }
+                };
                 let (var, _) = ctx.emit_let(Prim::UnOp(
                     match op {
                         crate::dispatch_matrix::pattern::PatternGuardUnaryOp::Not => IrUnOp::Not,
@@ -3268,9 +3305,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ));
                 var
             }
+            PatternGuardExpr::Binary {
+                op: op @ (PatternGuardBinOp::And | PatternGuardBinOp::Or),
+                lhs,
+                rhs,
+            } => self.lower_guard_short_circuit(ctx, plan, state, *op, lhs, rhs, fail)?,
             PatternGuardExpr::Binary { op, lhs, rhs } => {
-                let lhs = self.lower_guard_expr(ctx, plan, state, lhs)?;
-                let rhs = self.lower_guard_expr(ctx, plan, state, rhs)?;
+                let lhs = self.lower_guard_expr(ctx, plan, state, lhs, fail)?;
+                let rhs = self.lower_guard_expr(ctx, plan, state, rhs, fail)?;
                 let (var, _) = ctx.emit_let(Prim::BinOp(lower_guard_binop(*op), lhs, rhs));
                 var
             }
@@ -3278,11 +3320,156 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 inputs,
                 prepared,
                 dispatch,
-            } => self.lower_guard_dispatch(ctx, plan, state, inputs, prepared, dispatch)?,
+            } => self.lower_guard_dispatch(ctx, plan, state, inputs, prepared, dispatch, fail)?,
+            PatternGuardExpr::Extern { extern_fn, args } => {
+                self.lower_guard_extern(ctx, plan, state, extern_fn, args, fail)?
+            }
             PatternGuardExpr::Pinned(pinned) => self.dispatch_pinned_var(state, *pinned)?,
         })
     }
 
+    /// An operand of `and`, `or` or `not`. In a guard an error fails the
+    /// guard, and a non-boolean operand is an error, so one the type does not
+    /// already prove a boolean is tested and leaves through the failure block.
+    fn lower_guard_boolean(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        expr: &PatternGuardExpr<Ty>,
+        fail: &mut Option<BlockId>,
+    ) -> Result<Var, FatalError> {
+        let value = self.lower_guard_expr(ctx, plan, state, expr, fail)?;
+        let proven = ctx.value_types.get(&value).copied().is_some_and(|ty| {
+            let boolean = self.world.types_mut().bool();
+            self.world.types().is_subtype(&ty, &boolean)
+        });
+        if proven {
+            return Ok(value);
+        }
+        let (true_v, _) = ctx.emit_let(Prim::Const(Const::True));
+        let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
+        let (is_true, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, value, true_v));
+        let (is_false, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, value, false_v));
+        let (is_boolean, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Or, is_true, is_false));
+        let boolean_b = ctx.builder.block(vec![]);
+        let fail_b = *fail.get_or_insert_with(|| ctx.builder.block(vec![]));
+        ctx.set_term(Term::If {
+            cond: is_boolean,
+            then_b: boolean_b,
+            else_b: fail_b,
+            origin: BranchOrigin::ClauseDispatch,
+        });
+        ctx.current_block = boolean_b;
+        Ok(value)
+    }
+
+    /// `and` / `or` evaluate their right side only when the left leaves it
+    /// open, so a right side that fails the guard is never reached when the
+    /// left has already decided.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_guard_short_circuit(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        op: PatternGuardBinOp,
+        lhs: &PatternGuardExpr<Ty>,
+        rhs: &PatternGuardExpr<Ty>,
+        fail: &mut Option<BlockId>,
+    ) -> Result<Var, FatalError> {
+        let lhs = self.lower_guard_boolean(ctx, plan, state, lhs, fail)?;
+        let answer = ctx.builder.fresh_var();
+        let done_b = ctx.builder.block(vec![answer]);
+        let rhs_b = ctx.builder.block(vec![]);
+        let decided_b = ctx.builder.block(vec![]);
+        let decided_when_truthy = match op {
+            PatternGuardBinOp::And => false,
+            PatternGuardBinOp::Or => true,
+            _ => unreachable!("only `and` and `or` short-circuit"),
+        };
+        let (then_b, else_b) = if decided_when_truthy {
+            (decided_b, rhs_b)
+        } else {
+            (rhs_b, decided_b)
+        };
+        ctx.set_term(Term::If {
+            cond: lhs,
+            then_b,
+            else_b,
+            origin: BranchOrigin::ClauseDispatch,
+        });
+        ctx.current_block = decided_b;
+        let (decided, _) = ctx.emit_let(Prim::Const(if decided_when_truthy {
+            Const::True
+        } else {
+            Const::False
+        }));
+        ctx.set_term(Term::Goto(done_b, vec![decided]));
+        ctx.current_block = rhs_b;
+        let rhs = self.lower_guard_boolean(ctx, plan, state, rhs, fail)?;
+        ctx.set_term(Term::Goto(done_b, vec![rhs]));
+        ctx.current_block = done_b;
+        Ok(answer)
+    }
+
+    /// A call to an extern. One that returns `never` aborts the process, so
+    /// here it is the guard's failure and is not made.
+    fn lower_guard_extern(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        extern_fn: &GuardExtern,
+        args: &[PatternGuardExpr<Ty>],
+        fail: &mut Option<BlockId>,
+    ) -> Result<Var, FatalError> {
+        if extern_fn.fails_the_guard() {
+            return Ok(Self::fail_guard(ctx, fail));
+        }
+        let mut extern_args = Vec::with_capacity(args.len());
+        for (arg, ty) in args.iter().zip(&extern_fn.params) {
+            let var = self.lower_guard_expr(ctx, plan, state, arg, fail)?;
+            extern_args.push(ExternArg::fixed(var, *ty));
+        }
+        let extern_id = self.guard_extern_id(extern_fn);
+        let callsite = ctx.fresh_callsite();
+        let (var, _) = ctx.emit_let(Prim::Extern(callsite, extern_id, extern_args));
+        if extern_fn.ret == ExternTy::I64 {
+            let int = self.world.types_mut().int();
+            ctx.value_types.insert(var, int);
+        }
+        Ok(var)
+    }
+
+    /// Leaves the guard through its failure block. What follows in the
+    /// expression is unreachable, and goes on in a block nothing enters.
+    fn fail_guard(ctx: &mut NativeFnCtx, fail: &mut Option<BlockId>) -> Var {
+        let fail_b = *fail.get_or_insert_with(|| ctx.builder.block(vec![]));
+        ctx.set_term(Term::Goto(fail_b, vec![]));
+        ctx.current_block = ctx.builder.block(vec![]);
+        ctx.emit_let(Prim::Const(Const::False)).0
+    }
+
+    fn guard_extern_id(&mut self, extern_fn: &GuardExtern) -> ExternId {
+        let key = (extern_fn.abi, extern_fn.symbol.clone());
+        if let Some(id) = self.guard_extern_ids.get(&key) {
+            return *id;
+        }
+        let id = ExternId(self.extern_decls.len() as u32);
+        self.extern_decls.push(ExternDecl {
+            id,
+            symbol: extern_fn.symbol.clone(),
+            params: extern_fn.params.clone(),
+            variadic: false,
+            ret: ExternReturn::Scalar(extern_fn.ret),
+            abi: extern_fn.abi,
+        });
+        self.guard_extern_ids.insert(key, id);
+        id
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn lower_guard_dispatch(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -3291,14 +3478,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         inputs: &[PatternGuardExpr<Ty>],
         prepared_keys: &[crate::dispatch_matrix::PreparedKeyId],
         dispatch: &crate::dispatch_matrix::pattern::PatternGuardDispatch<Ty>,
+        fail: &mut Option<BlockId>,
     ) -> Result<Var, FatalError> {
         let input_vars = inputs
             .iter()
-            .map(|input| self.lower_guard_expr(ctx, parent_plan, state, input))
+            .map(|input| self.lower_guard_expr(ctx, parent_plan, state, input, fail))
             .collect::<Result<Vec<_>, _>>()?;
         let done_value = ctx.builder.fresh_var();
         let done_b = ctx.builder.block(vec![done_value]);
-        let fail_b = ctx.builder.block(vec![]);
         let prepared = prepared_keys
             .iter()
             .map(|id| {
@@ -3325,12 +3512,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             &dispatch.bodies,
             dispatch.plan.graph.root,
             done_b,
-            fail_b,
+            fail,
             &mut dispatch_state,
         )?;
-        ctx.current_block = fail_b;
-        let (false_value, _) = ctx.emit_let(Prim::Const(Const::False));
-        ctx.set_term(Term::Goto(done_b, vec![false_value]));
         ctx.current_block = done_b;
         Ok(done_value)
     }
@@ -3343,7 +3527,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         bodies: &[PatternGuardExpr<Ty>],
         node_id: GraphNodeId,
         done_b: BlockId,
-        fail_b: BlockId,
+        fail: &mut Option<BlockId>,
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
         let Some(node) = plan.graph.node(node_id).cloned() else {
@@ -3355,6 +3539,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         };
         match node {
             DispatchNode::Fail => {
+                let fail_b = *fail.get_or_insert_with(|| ctx.builder.block(vec![]));
                 ctx.set_term(Term::Goto(fail_b, vec![]));
                 Ok(())
             }
@@ -3373,7 +3558,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         format!("guard dispatch body {} is out of bounds", outcome.body_id),
                     )
                 })?;
-                let value = self.lower_guard_expr(ctx, plan, state, body)?;
+                let value = self.lower_guard_expr(ctx, plan, state, body, fail)?;
                 ctx.set_term(Term::Goto(done_b, vec![value]));
                 Ok(())
             }
@@ -3390,7 +3575,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 BranchOrigin::ClauseDispatch,
                 state,
                 &mut |lowerer, ctx, target, state| {
-                    lowerer.lower_guard_dispatch_node(ctx, plan, bodies, target, done_b, fail_b, state)
+                    lowerer.lower_guard_dispatch_node(ctx, plan, bodies, target, done_b, fail, state)
                 },
             ),
         }
@@ -5025,8 +5210,6 @@ fn lower_binop(op: crate::ast::BinOp) -> IrBinOp {
         crate::ast::BinOp::LtEq => IrBinOp::Le,
         crate::ast::BinOp::Gt => IrBinOp::Gt,
         crate::ast::BinOp::GtEq => IrBinOp::Ge,
-        crate::ast::BinOp::And => IrBinOp::And,
-        crate::ast::BinOp::Or => IrBinOp::Or,
         other => panic!("unsupported backend binop in native lowering: {other:?}"),
     }
 }
@@ -5052,7 +5235,7 @@ fn lower_guard_binop(op: crate::dispatch_matrix::pattern::PatternGuardBinOp) -> 
 fn lower_unop(op: crate::ast::UnOp) -> IrUnOp {
     match op {
         crate::ast::UnOp::Neg => IrUnOp::Neg,
-        crate::ast::UnOp::Not => IrUnOp::Not,
+        crate::ast::UnOp::Not => panic!("lowering should route `not` through a case"),
     }
 }
 

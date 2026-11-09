@@ -1,0 +1,24 @@
+:fn_first
+:fn_second
+[1]
+:fn_zero
+:fn_other
+5
+{:zero, 5}
+:fn_pair
+3
+:case_first
+:case_second
+20
+:receive_first
+:receive_second
+6
+:cond_first
+:cond_second
+3
+:else_first
+:else_second
+10
+:nested_fn
+:nested_case
+:four

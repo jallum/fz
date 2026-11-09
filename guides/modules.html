@@ -77,6 +77,21 @@ qualified as <code>Math.double(21)</code>.</p>
 
 <p>The full name of that function is <code>App.Clock.tick/0</code>.</p>
 
+<p>A file can also be a script. Expressions written at the top level run in
+order as the program's <code>main/0</code>, after every definition in the file
+is available, so a statement can call a function or module defined further
+down:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">Math</span> <span class="kw">do</span>
+  <span class="kw">def</span> <span class="fn">double</span>(x), <span class="kw">do:</span> x * <span class="num">2</span>
+<span class="kw">end</span>
+
+n = <span class="num">21</span>
+<span class="fn">dbg</span>(<span class="ty">Math</span>.<span class="fn">double</span>(n))</pre>
+
+<p>A file that has top-level expressions and its own <code>def main()</code>
+is an error that names both.</p>
+
 <!-- ─────────────────────────────── 3. CALL ─────────────────────────────── -->
 <h2 id="call">3. Calling across modules</h2>
 
@@ -149,6 +164,15 @@ not permission by itself: <code>alias Math, as: M</code> lets
 dotted module path such as <code>Foo.Bar</code>, <code>require Foo.Bar</code>
 supports <code>Foo.Bar.some_macro(...)</code>; it does not create the short
 alias <code>Bar</code>.</p>
+
+<p>A module is not loaded until the scope that defines it has finished, so
+that scope cannot <code>require</code> or <code>import</code> it. A file that
+defines <code>M</code> and then says <code>require M</code> or
+<code>import M</code> at the top level, or a <code>defmodule</code> that
+requires a module nested inside itself, is refused with
+<code>module M is not loaded but was defined</code>, as in Elixir. Calling
+<code>M.f()</code> or aliasing <code>M</code> needs neither, and a separate
+<code>defmodule</code> may require a module defined before it.</p>
 
 <!-- ─────────────────────────────── 5. INTERFACE ─────────────────────────────── -->
 <h2 id="interface">5. Interfaces - the public contract</h2>

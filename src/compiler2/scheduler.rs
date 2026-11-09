@@ -82,28 +82,70 @@ pub enum WorkStartReason {
     Unclassified,
 }
 
-/// A snapshot of a scheduler's cumulative work-start attribution: how many
-/// jobs entered the agenda under each `WorkStartReason`. Carried out of the
-/// scheduler as a single value so the pull session can record and emit the
-/// full breakdown (`pull.session.finished`) without reaching back into the
-/// world.
+impl WorkStartReason {
+    /// Every reason, in the order a `WorkStartTally` stores them. This list
+    /// and `name` are the only places the reasons are spelled out; the tally,
+    /// the telemetry writer and its readers all iterate it.
+    pub const ALL: [WorkStartReason; 6] = [
+        WorkStartReason::Ignition,
+        WorkStartReason::ChangedRevisionWake,
+        WorkStartReason::ActivationPublished,
+        WorkStartReason::GateExpansion,
+        WorkStartReason::BlockedWaiterExpansion,
+        WorkStartReason::Unclassified,
+    ];
+
+    /// The reason's spelling in telemetry.
+    pub const fn name(self) -> &'static str {
+        match self {
+            WorkStartReason::Ignition => "ignition",
+            WorkStartReason::ChangedRevisionWake => "changed_revision_wake",
+            WorkStartReason::ActivationPublished => "activation_published",
+            WorkStartReason::GateExpansion => "gate_expansion",
+            WorkStartReason::BlockedWaiterExpansion => "blocked_waiter_expansion",
+            WorkStartReason::Unclassified => "unclassified",
+        }
+    }
+}
+
+/// A scheduler's cumulative work-start attribution: how many jobs entered
+/// the agenda under each `WorkStartReason`, read as `tally[reason]`. Carried
+/// out of the scheduler as a single value so the pull session can record and
+/// emit the full breakdown (`pull.session.finished`) without reaching back
+/// into the world.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct WorkStartTally {
-    pub ignition: u64,
-    pub changed_revision_wake: u64,
-    pub activation_published: u64,
-    pub gate_expansion: u64,
-    pub blocked_waiter_expansion: u64,
-    pub unclassified: u64,
+pub struct WorkStartTally([u64; WorkStartReason::ALL.len()]);
+
+impl std::ops::Index<WorkStartReason> for WorkStartTally {
+    type Output = u64;
+
+    fn index(&self, reason: WorkStartReason) -> &u64 {
+        &self.0[reason as usize]
+    }
+}
+
+impl std::ops::IndexMut<WorkStartReason> for WorkStartTally {
+    fn index_mut(&mut self, reason: WorkStartReason) -> &mut u64 {
+        &mut self.0[reason as usize]
+    }
 }
 
 impl WorkStartTally {
+    /// A tally holding exactly the given counts; every other reason is zero.
+    pub fn of(counts: &[(WorkStartReason, u64)]) -> Self {
+        let mut tally = Self::default();
+        for &(reason, count) in counts {
+            tally[reason] = count;
+        }
+        tally
+    }
+
     /// Jobs that entered the agenda with no attributable sanctioned reason.
     /// Must stay zero on every sanctioned path: a reintroduced push (a
     /// follow-up-style enqueue that forgets to name a reason) lands here by
     /// construction, since `WorkStartReason` defaults to `Unclassified`.
     pub fn unsanctioned_work_starts(&self) -> u64 {
-        self.unclassified
+        self[WorkStartReason::Unclassified]
     }
 
     /// Every run this tally has ever charged, summed across every reason.
@@ -111,37 +153,23 @@ impl WorkStartTally {
     /// each job is popped and committed to run, so this total is also the
     /// number of runs the scheduler has completed.
     pub fn total(&self) -> u64 {
-        self.ignition
-            + self.changed_revision_wake
-            + self.activation_published
-            + self.gate_expansion
-            + self.blocked_waiter_expansion
-            + self.unclassified
+        self.0.iter().sum()
     }
 
     pub(crate) fn delta_since(self, earlier: Self) -> Self {
-        let delta = |current: u64, previous: u64| {
-            current
-                .checked_sub(previous)
-                .expect("cumulative work-start counters cannot move backwards")
-        };
-        Self {
-            ignition: delta(self.ignition, earlier.ignition),
-            changed_revision_wake: delta(self.changed_revision_wake, earlier.changed_revision_wake),
-            activation_published: delta(self.activation_published, earlier.activation_published),
-            gate_expansion: delta(self.gate_expansion, earlier.gate_expansion),
-            blocked_waiter_expansion: delta(self.blocked_waiter_expansion, earlier.blocked_waiter_expansion),
-            unclassified: delta(self.unclassified, earlier.unclassified),
+        let mut delta = self;
+        for reason in WorkStartReason::ALL {
+            delta[reason] = self[reason]
+                .checked_sub(earlier[reason])
+                .expect("cumulative work-start counters cannot move backwards");
         }
+        delta
     }
 
     pub(crate) fn add(&mut self, other: Self) {
-        self.ignition += other.ignition;
-        self.changed_revision_wake += other.changed_revision_wake;
-        self.activation_published += other.activation_published;
-        self.gate_expansion += other.gate_expansion;
-        self.blocked_waiter_expansion += other.blocked_waiter_expansion;
-        self.unclassified += other.unclassified;
+        for reason in WorkStartReason::ALL {
+            self[reason] += other[reason];
+        }
     }
 }
 
@@ -312,7 +340,7 @@ pub struct Scheduler<P: Publisher, F> {
     /// Work-start attribution tally: how many jobs ran, under the reason
     /// named by the agenda entry that led to that run. Observation-only —
     /// see `WorkStartReason`.
-    work_starts: HashMap<WorkStartReason, u64>,
+    work_starts: WorkStartTally,
     /// The reason named by each job's current agenda entry, while that
     /// entry is still unspent. `enqueue`/`enqueue_step` record a reason only
     /// when the job was not already queued, so a coalesced demand on a
@@ -431,7 +459,7 @@ where
             deps: DependencyIndex::new(),
             rebased: HashSet::new(),
             read_finality: HashMap::new(),
-            work_starts: HashMap::new(),
+            work_starts: WorkStartTally::default(),
             pending_reason: HashMap::new(),
         }
     }
@@ -440,15 +468,7 @@ where
     /// counts (coalesced re-demands of an already-pending job do not count —
     /// they are not a new work start).
     pub fn work_start_tally(&self) -> WorkStartTally {
-        let count = |reason| *self.work_starts.get(&reason).unwrap_or(&0);
-        WorkStartTally {
-            ignition: count(WorkStartReason::Ignition),
-            changed_revision_wake: count(WorkStartReason::ChangedRevisionWake),
-            activation_published: count(WorkStartReason::ActivationPublished),
-            gate_expansion: count(WorkStartReason::GateExpansion),
-            blocked_waiter_expansion: count(WorkStartReason::BlockedWaiterExpansion),
-            unclassified: count(WorkStartReason::Unclassified),
-        }
+        self.work_starts
     }
 
     /// Whether `job`'s ground has shifted since it last concluded.
@@ -577,7 +597,7 @@ where
     /// a fresh one.
     pub(crate) fn record_run_start(&mut self, job: &P::Run) {
         let reason = self.pending_reason.remove(job).unwrap_or_default();
-        *self.work_starts.entry(reason).or_insert(0) += 1;
+        self.work_starts[reason] += 1;
     }
 
     /// Leaves `job` waiting on `waits` without running it, as a run that

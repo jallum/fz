@@ -144,7 +144,7 @@ pub(crate) fn expected_runtime_value_kind<T: Types<Ty = Ty>>(
         Some(ValueKind::LIST)
     } else if ty_is_map(t, value_types, v) {
         Some(ValueKind::MAP)
-    } else if ty_has_tuple(t, value_types, v) {
+    } else if ty_is_tuple(t, value_types, v) {
         Some(ValueKind::STRUCT)
     } else {
         None

@@ -32,6 +32,15 @@ Compiler2 owns the active contract path:
   arrows with obligations are skipped for fatal
   `spec/violation` decisions until protocol-domain validation is implemented;
   concrete arrows in the same overload set remain enforceable.
+- A call refines its inputs by each matched arrow's STRUCTURAL SURFACE
+  (`ContractArrow::structural`, `Types::structural_surface`): the arrow's
+  parameters and bounds with every protocol-domain marker read as `any`, the
+  reading the runtime type predicate gives the marker. `FunctionContract::apply`
+  returns `matched_arrows` from that surface, so `refine_contract_inputs` never
+  intersects an argument with a marker. A value typed only at runtime (a decoded
+  JSON list) therefore reaches `Enum.count(Enumerable.t(a))` as `any` and
+  dispatches on the protocol at runtime. Obligations, enforceability and
+  diagnostics keep reading the declared arrow.
 - Contract satisfaction is arrow-SET coverage, not just single-arrow
   subsumption: when no single arrow accepts a ground argument row,
   `FunctionContract::apply` checks whether the tuple of arguments is a subtype

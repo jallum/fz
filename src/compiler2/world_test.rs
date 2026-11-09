@@ -2121,3 +2121,86 @@ fn lowered_body_reads_share_one_allocation_not_a_fresh_clone() {
         "two reads of one function's lowered body must share the producer's allocation, not each deep-clone it",
     );
 }
+
+/// A drained drive that still waits on a module's definition or interface
+/// names that module and the first place the source referred to it. These
+/// waits are forged on a module nothing ever defines.
+#[test]
+fn a_stalled_module_wait_names_the_module_and_its_reference() {
+    for wait in [
+        FactKey::ModuleDefined as fn(ModuleId) -> FactKey,
+        FactKey::ModuleInterface,
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        let capture = Capture::new();
+        capture.install(&tel, &[]);
+        let mut world = World::new();
+        let owner = world.submit_code(Some("missing.fz".to_string()), "require Missing\n".to_string());
+        let missing = world.reference_module(crate::modules::identity::ModuleName::parse_dotted("Missing").unwrap());
+        let reference = crate::source::Span {
+            source_version: crate::source::SourceVersion::NONE,
+            start: 0,
+            end: 15,
+        };
+        world.note_module_reference_expectation(
+            missing,
+            super::InterfaceRequester {
+                owner,
+                module: ModuleId::GLOBAL,
+                span: reference,
+            },
+        );
+        let fact = wait(missing);
+        world.complete_job(
+            Job::ScopeCode(owner),
+            JobEffects {
+                waits: vec![FactUse::current(fact.clone())],
+                ..JobEffects::default()
+            },
+        );
+
+        super::drive::ExecutionContext::new(&mut world, &tel).report_unresolved_waits();
+
+        let diagnostic = capture
+            .last(&["fz", "diag", "error"])
+            .unwrap_or_else(|| panic!("a stalled {fact:?} must be reported"));
+        assert_eq!(
+            super::drive_harness::metadata_str(&diagnostic, "code"),
+            crate::diag::codes::RESOLVE_UNKNOWN_MODULE.0
+        );
+        assert_eq!(
+            super::drive_harness::metadata_str(&diagnostic, "message"),
+            "module `Missing` is not defined"
+        );
+        let primary = diagnostic.diagnostic.as_ref().expect("diagnostic payload").primary.span;
+        assert_eq!(primary, reference, "the issue points at the reference, not nowhere");
+    }
+}
+
+/// A wait the user's source cannot cause is the compiler's own stall, and is
+/// reported as such rather than dropped.
+#[test]
+fn a_stalled_compiler_internal_wait_is_reported_as_an_internal_error() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let mut world = World::new();
+    let owner = world.submit_code(Some("internal.fz".to_string()), "def main(), do: 0\n".to_string());
+    world.complete_job(
+        Job::ScopeCode(owner),
+        JobEffects {
+            waits: vec![FactUse::current(FactKey::CodeScoped(owner))],
+            ..JobEffects::default()
+        },
+    );
+
+    super::drive::ExecutionContext::new(&mut world, &tel).report_unresolved_waits();
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("an internal stall must be reported");
+    assert_eq!(
+        super::drive_harness::metadata_str(&diagnostic, "code"),
+        crate::diag::codes::INTERNAL_UNRESOLVED_WAIT.0
+    );
+}

@@ -303,9 +303,9 @@ and that same file reaches 380 activations, 1,476 analyses, a deepest climb of
 seventeen, and five widenings.
 
 The extra climb is a population, not an edge. The pull does not add a demand
-that pushes `Json.value/1` higher; it adds 103 activations, and their evidence
-flows into returns they share. Three keys carry it: `Json.decode/1` goes from 9
-to 17, `Json.val/1` from 8 to 17, and `Json.value/1` from 8 to 17, all three on
+that pushes `JSON.value/1` higher; it adds 103 activations, and their evidence
+flows into returns they share. Three keys carry it: `JSON.decode/1` goes from 9
+to 17, `JSON.val/1` from 8 to 17, and `JSON.value/1` from 8 to 17, all three on
 the same arrow. A recursive value type keys a new activation per level, each new
 activation publishes into the shared return, and the shared return climbs again.
 That is why a number taken from the standalone drive describes no door, and why
@@ -325,10 +325,10 @@ times that ends at the widening budget. Its caller pays too, without climbing:
 costs and only one of them is the ladder.
 
 `json_roundtrip.fz` is the goal program and shows the same defect at scale:
-thirty-one activations past the ceiling, of which `Json.array_item/2` and
-`Json.array_next/2` supply a dozen each — one per level of the recursive value
-type — and five reach seventeen and widen (`Json.value/1`, `Json.val/1`,
-`Json.decode/1`, `Json.array/2`, `Json.array_element/2`). The other four `json_*`
+thirty-one activations past the ceiling, of which `JSON.array_item/2` and
+`JSON.array_next/2` supply a dozen each — one per level of the recursive value
+type — and five reach seventeen and widen (`JSON.value/1`, `JSON.val/1`,
+`JSON.decode/1`, `JSON.array/2`, `JSON.array_element/2`). The other four `json_*`
 fixtures share its decode loop and measure the same climb, so pinning the goal
 program pins them too.
 

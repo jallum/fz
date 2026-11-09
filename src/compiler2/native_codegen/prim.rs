@@ -1725,8 +1725,8 @@ where
 }
 
 /// Lower a `Prim::BinOp` short-circuit-free boolean op (And/Or).
-/// Both operands are coerced to truthy i8s and combined with
-/// `band`/`bor`.
+/// Both operands are booleans -- the language-level operators halt on
+/// anything else before one is made -- so they combine with `band`/`bor`.
 fn lower_bool_binop<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,

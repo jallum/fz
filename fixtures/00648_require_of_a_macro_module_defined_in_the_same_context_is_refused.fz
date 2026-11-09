@@ -1,0 +1,12 @@
+#---
+# purpose: "Requiring a macro module defined in the same context is refused as any other module is"
+# kind: run
+# expect: diagnostic
+# diagnostic.code: resolve/module-not-loaded
+#---
+defmodule M do
+  defmacro m(), do: 5
+end
+
+require M
+dbg(M.m())

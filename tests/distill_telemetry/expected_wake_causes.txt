@@ -1,0 +1,25 @@
+cause of every wake
+  job kind                            changed fact (use)         completing job  disposition  count
+  AnalyzeActivation              EntryDispatch (current)      PlanEntryDispatch     enqueued      2
+  DefineFunction        ExpandedFunctionSource (current)   ExpandFunctionSource     enqueued      2
+  DeriveRuntimeDemand          ExecutableFacts (settled)  DeriveExecutableFacts     enqueued      2
+  ExpandFunctionSource             CodeIndexed (current)              IndexCode     enqueued      1
+  ExpandFunctionSource              CodeScoped (current)              ScopeCode     enqueued      1
+  ScopeCode                         CodeScoped (current)              ScopeCode     enqueued      1
+  ScopeCode                    FunctionDefined (current)         DefineFunction     enqueued      1
+  ScopeCode                            Product (settled)     dependencies_moved     enqueued      1
+  SeedRoot                     FunctionDefined (current)         DefineFunction     enqueued      1
+
+  coalesced: an additional cause landing on a job already enqueued by the row above, not a separate start
+  none
+
+  work starts by reason
+  reason                    count
+  changed_revision_wake        11
+  gate_expansion                9
+  blocked_waiter_expansion      1
+  ignition                      1
+  activation_published          0
+  unclassified                  0
+
+  sum of work_starts (22) == job runs (22)
