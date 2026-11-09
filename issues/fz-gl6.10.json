@@ -4,6 +4,7 @@
     "fz-gl6.6"
   ],
   "blocks": [
+    "fz-gl6.4",
     "fz-gl6.7"
   ],
   "created": "2026-11-09T23:09:56Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "The low nibble belongs only to the forwarding marker",
   "type": "bug",
-  "updated_at": "2026-11-09T23:09:56Z"
+  "updated_at": "2026-11-09T23:27:53Z"
 }
