@@ -370,6 +370,9 @@ impl<TypeHandle> PatternGuardExpr<TypeHandle> {
 pub(crate) struct PatternGuardDispatch<TypeHandle> {
     pub(crate) plan: Box<PatternDispatchPlan<TypeHandle>>,
     pub(crate) bodies: Vec<PatternGuardExpr<TypeHandle>>,
+    /// Set when the helper only asks of each listed argument whether it has a
+    /// type: a call to it holds exactly when every listed argument has its type.
+    pub(crate) type_predicate: Option<Vec<(u32, TypeHandle)>>,
 }
 
 impl<TypeHandle> PatternGuardDispatch<TypeHandle> {
@@ -380,6 +383,10 @@ impl<TypeHandle> PatternGuardDispatch<TypeHandle> {
         PatternGuardDispatch {
             plan: Box::new(self.plan.map_type_handle(map)),
             bodies: self.bodies.iter().map(|body| body.map_type_handle(map)).collect(),
+            type_predicate: self
+                .type_predicate
+                .as_ref()
+                .map(|asked| asked.iter().map(|(argument, ty)| (*argument, map(ty))).collect()),
         }
     }
 }
@@ -431,6 +438,8 @@ where
         return Err(SourcePatternError::UnsupportedGuardExpr);
     }
 
+    let type_predicate = type_predicate_of(surface, &rows);
+
     // A helper is an ordinary function, entered with nothing bound before its
     // patterns, so a pin in one of its heads names a binding that never
     // existed and its own plan is where that is found.
@@ -470,7 +479,40 @@ where
     Ok(PatternGuardDispatch {
         plan: Box::new(plan),
         bodies,
+        type_predicate,
     })
+}
+
+/// What a helper asks when it is only a type test: exactly two clauses, the
+/// first answering `true` for annotated parameters and the second `false` for
+/// anything, with every parameter a plain variable or `_` and no guard.
+fn type_predicate_of<TypeHandle: Clone>(
+    surface: &impl CallableSurface,
+    rows: &[PatternRow<TypeHandle>],
+) -> Option<Vec<(u32, TypeHandle)>> {
+    let ([yes, no], [yes_row, no_row]) = (surface.clauses(), rows) else {
+        return None;
+    };
+    let plain = |clause: &crate::ast::FnClause| {
+        clause.guard.is_none()
+            && clause
+                .params
+                .iter()
+                .all(|param| matches!(param.node, Pattern::Var(_) | Pattern::Wildcard))
+    };
+    let answers = matches!(yes.body.node, Expr::Bool(true)) && matches!(no.body.node, Expr::Bool(false));
+    if !(answers && plain(yes) && plain(no) && no_row.preconditions.is_empty()) {
+        return None;
+    }
+    let asked = yes_row
+        .preconditions
+        .iter()
+        .map(|(subject, ty)| match subject {
+            PatternSubjectRef::Input(argument) => Some((*argument, ty.clone())),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (!asked.is_empty()).then_some(asked)
 }
 
 /// Builds one guard expression from its source form.
@@ -703,19 +745,43 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             for binding in &bindings {
                 bound.insert(binding.name.clone(), binding.source);
             }
-            let guard_expr = guard_expr_from_ast(
-                &guard.node,
-                &bound,
-                &self.pinned_by_name,
-                &mut self.prepared_keys,
-                resolver,
-            )?;
-            let guard_id = GuardId(self.guards.len() as u32);
-            self.guards.push(guard_expr);
-            questions.push(RegionQuestion::new(RegionPredicate::new(
-                self.guard_subject,
-                Region::Guard(guard_id),
-            )));
+            let mut remaining = Vec::new();
+            for conjunct in and_chain(guard) {
+                match type_test_of(conjunct, &bound, resolver)? {
+                    Some(asked) => {
+                        for (subject, ty) in asked {
+                            let question = RegionQuestion::type_region(subject, ty);
+                            if !questions.contains(&question) {
+                                questions.push(question);
+                            }
+                        }
+                    }
+                    None => remaining.push(conjunct),
+                }
+            }
+            let mut guard_exprs = Vec::with_capacity(remaining.len());
+            for conjunct in remaining {
+                guard_exprs.push(guard_expr_from_ast(
+                    &conjunct.node,
+                    &bound,
+                    &self.pinned_by_name,
+                    &mut self.prepared_keys,
+                    resolver,
+                )?);
+            }
+            let guard_expr = guard_exprs.into_iter().reduce(|lhs, rhs| PatternGuardExpr::Binary {
+                op: PatternGuardBinOp::And,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            });
+            if let Some(guard_expr) = guard_expr {
+                let guard_id = GuardId(self.guards.len() as u32);
+                self.guards.push(guard_expr);
+                questions.push(RegionQuestion::new(RegionPredicate::new(
+                    self.guard_subject,
+                    Region::Guard(guard_id),
+                )));
+            }
         }
         let outcome = self.builder.add_outcome(OutcomeMultiplicity::Unique);
         self.builder
@@ -1123,6 +1189,57 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     }
 }
 
+/// The conjuncts of a guard, left to right. Only a top-level `and` splits:
+/// under `or` or `not` a conjunct cannot be asked on its own.
+fn and_chain(guard: &Spanned<Expr>) -> Vec<&Spanned<Expr>> {
+    match &guard.node {
+        Expr::BinOp(crate::ast::BinOp::And, lhs, rhs) => {
+            let mut chain = and_chain(lhs);
+            chain.extend(and_chain(rhs));
+            chain
+        }
+        _ => vec![guard],
+    }
+}
+
+/// The type questions a conjunct amounts to: it calls a type predicate and
+/// hands it only variables its row binds. Anything else stays a guard.
+fn type_test_of<F, TypeHandle>(
+    conjunct: &Spanned<Expr>,
+    bound: &HashMap<Var, SubjectId>,
+    resolver: &mut F,
+) -> Result<Option<Vec<(SubjectId, TypeHandle)>>, SourcePatternError>
+where
+    F: PatternResolver<TypeHandle>,
+    TypeHandle: Clone,
+{
+    let Expr::Call(target, args) = &conjunct.node else {
+        return Ok(None);
+    };
+    let Some(callee) = crate::ast::Callee::for_call(&target.node, args.len()) else {
+        return Ok(None);
+    };
+    let subjects = args
+        .iter()
+        .map(|arg| match &arg.node {
+            Expr::Var(name) => bound.get(name).copied(),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(subjects) = subjects else {
+        return Ok(None);
+    };
+    let Some(GuardCallee::Helper(helper)) = resolver.guard_call(&callee, args.len())? else {
+        return Ok(None);
+    };
+    Ok(helper.type_predicate.as_ref().map(|asked| {
+        asked
+            .iter()
+            .map(|(argument, ty)| (subjects[*argument as usize], ty.clone()))
+            .collect()
+    }))
+}
+
 fn intern_prepared_key(keys: &mut Vec<GroundValue>, key: &GroundValue) -> PreparedKeyId {
     let index = keys.iter().position(|prepared| prepared == key).unwrap_or_else(|| {
         keys.push(key.clone());
@@ -1171,3 +1288,7 @@ fn bitstring_endian(endian: Endian) -> BitstringEndian {
         Endian::Native => BitstringEndian::Native,
     }
 }
+
+#[cfg(test)]
+#[path = "pattern_test.rs"]
+mod pattern_test;

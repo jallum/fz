@@ -933,14 +933,16 @@ thirteen-fixture list by
 told apart — dissolved when fz-kdt.199 gave a returned accumulator position its
 own type.
 
-THE SOURCE-ORDER CLASS READS 0, and that zero speaks for 9 plans of 174: a
+THE SOURCE-ORDER CLASS READS 0, and that zero speaks for 15 plans of 168: a
 clause dispatch asks whatever the source patterns ask, and the reader compares
-`Region::Type` questions only, so 165 are skipped — on entry plans
-`Region::List` 103, `Region::Equal` 19, `Region::TupleArity` 25,
-`Region::Guard` 15, and all three `case` plans on a `Region::Equal`. The gate
-prints the breakdown and pins the plans and the skips per kind. A `Guard`
-cannot be read statically; a `List` or a `TupleArity` can, and reading them is
-**fz-kdt.187**'s.
+`Region::Type` questions only, so 153 are skipped — on entry plans
+`Region::List` 73, `Region::Equal` 11, `Region::TupleArity` 45,
+`Region::Guard` 13, and all eleven `case` plans on a `Region::Equal`. The gate
+prints the breakdown and pins the plans and the skips per kind. A guard that
+only calls type predicates is not among the 13: it is read as the type
+questions it is (see pattern-matching.md), and the 13 are guards the reader
+cannot see into. A `Guard` cannot be read statically; a `List` or a
+`TupleArity` can, and reading them is **fz-kdt.187**'s.
 
 The `case` and `receive` kinds contribute nothing to any of those columns
 ANYWHERE, not just here: a corpus walk of the 469 drivable fixtures finds 70

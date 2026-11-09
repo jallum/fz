@@ -142,6 +142,26 @@ wait on the same facts through `collect_annotation_requirements`: the
 `TypeDefined` facts the annotations name and the `StructDefined` facts behind
 any `%Mod{}` they spell.
 
+A helper is a type predicate when it has exactly two guardless clauses over
+plain variable or `_` parameters: the first answers `true` with at least one
+parameter annotated, the second answers `false` with none annotated.
+`guard_dispatch_from_rows` records which arguments it asks about and their types
+in `PatternGuardDispatch::type_predicate`; no name is matched, so `is_integer`,
+`is_boolean`, `is_nil` and a user's own helper qualify alike. In
+`PatternDispatchProducer::add_row` the guard's top-level `and` chain is read
+left to right, and a conjunct that calls a type predicate with every argument a
+variable the row binds becomes a type question on that variable's subject,
+placed after the pattern and precondition questions and before the guard (a
+question already asked of that subject is not asked twice). The other conjuncts
+stay the guard in their order, and a guard with none left disappears. Names
+resolve through the same `bound` map the guard uses, so the fold cannot
+disagree with the guard about which value a name means. A call under `or` or
+`not`, one with an expression argument, and one naming an unbound (pinned)
+variable stays a guard. Every row source passes through `add_row`, so entry
+clauses, `case` arms, `receive` arms and lambda clauses fold alike, and the
+analysis reads the folded question like a typed parameter's: the body narrows by
+it and an activation whose type decides the clause skips the test.
+
 A reified guard helper is an ordinary function, so `guard_dispatch_from_rows`
 builds its plan with an empty `Inputs` list and a pin in the helper's head is
 refused while the helper's own plan is built. The diagnostic therefore lands on
