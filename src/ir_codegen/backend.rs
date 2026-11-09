@@ -173,8 +173,6 @@ impl Backend for JitBackend {
             fn_ptrs,
             user_schemas: meta.user_schemas,
             node,
-            bs_tuple_arity1_schema: meta.bs_tuple_arity1_schema,
-            bs_tuple_arity3_schema: meta.bs_tuple_arity3_schema,
             diagnostics: meta.diagnostics,
             static_closure_targets,
             entry_thunk_addr,

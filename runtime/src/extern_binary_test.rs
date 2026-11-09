@@ -6,7 +6,7 @@ use std::process::{Command, exit};
 use std::rc::Rc;
 use std::slice::from_raw_parts;
 
-fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
+fn fresh_registry() -> Rc<RefCell<SchemaRegistry>> {
     Rc::new(RefCell::new(SchemaRegistry::new()))
 }
 
@@ -14,7 +14,7 @@ fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
 /// byte at `bytes_len` reads as 0 via the c_string helper.
 #[test]
 fn ptr_and_cstring_on_inline_bitstring() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let payload = b"/tmp/fz-fixture";
     let p = h
         .alloc_bitstring(payload, (payload.len() as u64) * 8)
@@ -39,7 +39,7 @@ fn ptr_and_cstring_on_inline_bitstring() {
 /// helpers still work and the NUL is reachable.
 #[test]
 fn ptr_and_cstring_on_procbin() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     // Large enough to cross SHARED_BIN_THRESHOLD_BYTES.
     let payload: Vec<u8> = (0..4096u32).map(|i| (i & 0xff) as u8).collect();
     let p = h

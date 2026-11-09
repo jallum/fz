@@ -361,12 +361,7 @@ pub extern "C" fn fz_aot_register_tuple_schemas(proc: *mut Process, arities: *co
             // Data section alignment isn't guaranteed on all platforms; read
             // unaligned so we don't trip the alignment check on aarch64-darwin.
             let arity = unsafe { read_unaligned(arities.add(i as usize)) };
-            let id = reg.register(Schema::tuple_of_arity(arity as usize));
-            match arity {
-                1 => process.bs_tuple_arity1_schema = Some(id),
-                3 => process.bs_tuple_arity3_schema = Some(id),
-                _ => {}
-            }
+            reg.register(Schema::tuple_of_arity(arity as usize));
         }
     }
     process.init_halt_cont_singletons(halt_cont_bodies);

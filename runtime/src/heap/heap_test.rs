@@ -17,7 +17,7 @@ use std::f64::consts::PI;
 use std::ptr::{null_mut, read, write};
 use std::rc::Rc;
 
-fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
+fn fresh_registry() -> Rc<RefCell<SchemaRegistry>> {
     Rc::new(RefCell::new(SchemaRegistry::new()))
 }
 
@@ -36,7 +36,7 @@ fn schema_identity_preserves_module_segments_across_display_collisions() {
 #[test]
 #[should_panic(expected = "map is already published")]
 fn published_map_cannot_reenter_mutable_construction() {
-    let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let map = heap.alloc_map_slots(&[(AnyValue::int(1), AnyValue::int(2))]);
     heap.map_destination_freeze(map);
 }
@@ -44,7 +44,7 @@ fn published_map_cannot_reenter_mutable_construction() {
 #[test]
 fn map_publication_shares_list_keys_and_values() {
     for construction in 0..3 {
-        let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
+        let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
         let key = heap.alloc_list_cons_slot(AnyValue::int(1), EMPTY_LIST);
         let value = heap.alloc_list_cons_slot(AnyValue::int(2), EMPTY_LIST);
         match construction {
@@ -74,7 +74,7 @@ fn map_publication_shares_list_keys_and_values() {
 
 #[test]
 fn map_freeze_keeps_one_allocation_and_gc_preserves_structural_lookup() {
-    let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let a = heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST);
     let b = heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST);
     heap.reset_alloc_stats();
@@ -133,7 +133,7 @@ fn tuple_display_name_cannot_alias_a_named_struct_identity() {
 
 #[test]
 fn named_struct_key_order_is_independent_of_schema_registration_order() {
-    let registry = empty_registry();
+    let registry = fresh_registry();
     let z = registry.borrow_mut().register(Schema::named_struct(
         crate::module_name::ModuleName::from_segments(vec!["Zed".into()]),
         ["x".into()],
@@ -161,7 +161,7 @@ fn named_struct_key_order_is_independent_of_schema_registration_order() {
 
 #[test]
 fn map_publication_collapses_independently_allocated_structural_keys_last_wins() {
-    let registry = empty_registry();
+    let registry = fresh_registry();
     let tuple_schema = registry.borrow_mut().register(Schema::tuple_of_arity(2));
     let mut heap = Heap::new(SIZE_TABLE[0], registry);
     let keys: Vec<_> = (0..3)
@@ -216,12 +216,13 @@ fn map_publication_collapses_independently_allocated_structural_keys_last_wins()
 
 #[test]
 fn closure_allocation_does_not_change_struct_schema_identity() {
-    let registry = empty_registry();
+    let registry = fresh_registry();
+    let first_free_id = registry.borrow().len() as u32;
     let mut heap = Heap::new(SIZE_TABLE[0], Rc::clone(&registry));
     heap.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 1, 2, 0);
     assert_eq!(
         registry.borrow_mut().register(Schema::tuple_of_arity(2)),
-        0,
+        first_free_id,
         "closure capture layout must not consume a struct schema identity",
     );
 }
@@ -229,15 +230,15 @@ fn closure_allocation_does_not_change_struct_schema_identity() {
 #[test]
 #[should_panic(expected = "internal continuation is not a user closure")]
 fn internal_continuation_cannot_render_as_a_user_closure() {
-    let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let bits = heap.alloc_closure_slots(crate::any_value::ClosureDenotationId::INTERNAL, 0, 0, 0);
     crate::any_value::debug::render_value(null_mut(), heap_root(bits));
 }
 
 #[test]
 fn closure_denotation_survives_cross_heap_copy_and_gc() {
-    let mut source = Heap::new(SIZE_TABLE[0], empty_registry());
-    let mut destination = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut source = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut destination = Heap::new(SIZE_TABLE[0], fresh_registry());
     let bits = source.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(73), 1, 1, 0);
     let closure = closure_addr_from_tagged(bits).expect("source closure");
     unsafe { closure_capture_set(closure, 0, AnyValue::int(42)) };
@@ -288,7 +289,7 @@ fn list_ref_from_bits(bits: u64) -> AnyValueRef {
 
 #[test]
 fn alloc_stats_record_heap_allocations_by_kind() {
-    let registry = empty_registry();
+    let registry = fresh_registry();
     let pair_schema = {
         let mut schemas = registry.borrow_mut();
         schemas.register(Schema::tuple_of_arity(2))
@@ -330,7 +331,7 @@ fn alloc_stats_record_heap_allocations_by_kind() {
 
 #[test]
 fn any_value_ref_list_reads_scalar_head_and_heap_tail() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let tail_bits = h.alloc_list_cons_slot(AnyValue::atom(9), EMPTY_LIST_BITS);
     let tail_addr = list_addr_from_tagged(tail_bits).expect("tail addr");
     let list_bits = h.alloc_list_cons_slot(AnyValue::int(42), tail_bits);
@@ -348,7 +349,7 @@ fn any_value_ref_list_reads_scalar_head_and_heap_tail() {
 
 #[test]
 fn any_value_ref_list_reads_heap_object_head() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let child_bits = h.alloc_map_slots(&[(AnyValue::atom(1), AnyValue::int(2))]);
     let child_addr = map_addr_from_tagged(child_bits).expect("map addr");
     let list_bits = h.alloc_list_cons_slot(AnyValue::heap_ptr(child_addr, ValueKind::MAP), EMPTY_LIST_BITS);
@@ -360,7 +361,7 @@ fn any_value_ref_list_reads_heap_object_head() {
 
 #[test]
 fn any_value_ref_map_lookup_reads_scalar_and_heap_values() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let child_atom = h.node.intern_atom("child");
     let key_atom = h.node.intern_atom("key");
     let missing_atom = h.node.intern_atom("missing");
@@ -409,7 +410,7 @@ fn any_value_ref_map_lookup_reads_scalar_and_heap_values() {
 
 #[test]
 fn any_value_ref_struct_reads_scalar_and_heap_fields() {
-    let reg = empty_registry();
+    let reg = fresh_registry();
     let schema_id = reg.borrow_mut().register(Schema::tuple_of_arity(2));
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let child_bits = h.alloc_list_cons_slot(AnyValue::atom(1), EMPTY_LIST_BITS);
@@ -425,7 +426,7 @@ fn any_value_ref_struct_reads_scalar_and_heap_fields() {
 
 #[test]
 fn any_value_ref_closure_capture_reads_are_ported() {
-    let reg = empty_registry();
+    let reg = fresh_registry();
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let child_bits = h.alloc_map_slots(&[(AnyValue::atom(1), AnyValue::int(2))]);
     let child_addr = map_addr_from_tagged(child_bits).expect("child addr");
@@ -449,7 +450,7 @@ fn any_value_ref_closure_capture_reads_are_ported() {
 
 #[test]
 fn typed_list_construction_writes_scalar_head_and_heap_tail() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let tail_bits = h.alloc_list_cons_slot(AnyValue::atom(1), EMPTY_LIST_BITS);
     let tail_addr = list_addr_from_tagged(tail_bits).expect("tail addr");
     let tail_ref = AnyValueRef::from_heap_object(ValueKind::LIST, tail_addr).expect("tail ref");
@@ -463,7 +464,7 @@ fn typed_list_construction_writes_scalar_head_and_heap_tail() {
 #[test]
 #[should_panic(expected = "alloc_list_cons_ref head requires a heap/sentinel ref; use the typed scalar write path")]
 fn list_ref_construction_rejects_scalar_head() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let head_slot = 42u64;
     let head_ref = AnyValueRef::from_scalar_slot(ValueKind::INT, &head_slot).expect("head ref");
 
@@ -472,7 +473,7 @@ fn list_ref_construction_rejects_scalar_head() {
 
 #[test]
 fn any_value_ref_list_construction_rejects_non_list_tail() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let head_bits = h.alloc_map_slots(&[(AnyValue::atom(1), AnyValue::int(2))]);
     let head_addr = map_addr_from_tagged(head_bits).expect("head addr");
     let tail_slot = 2u64;
@@ -490,7 +491,7 @@ fn any_value_ref_list_construction_rejects_non_list_tail() {
 
 #[test]
 fn any_value_ref_map_construction_and_put_write_scalar_and_heap_values() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let child_atom = h.node.intern_atom("child");
     let key_atom = h.node.intern_atom("key");
     let child_bits = h.alloc_list_cons_slot(AnyValue::atom(child_atom), EMPTY_LIST_BITS);
@@ -554,7 +555,7 @@ fn any_value_ref_map_construction_and_put_write_scalar_and_heap_values() {
 #[test]
 #[should_panic(expected = "map_put_ref value requires a heap/sentinel ref; use the typed scalar write path")]
 fn map_put_ref_rejects_scalar_value() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let key_slot = 1u64;
     let any_value = 2u64;
     let key_ref = AnyValueRef::from_scalar_slot(ValueKind::INT, &key_slot).expect("key ref");
@@ -568,7 +569,7 @@ fn map_put_ref_rejects_scalar_value() {
 
 #[test]
 fn any_value_ref_struct_and_closure_writes_store_scalar_and_heap_values() {
-    let reg = empty_registry();
+    let reg = fresh_registry();
     let struct_schema = reg.borrow_mut().register(Schema::tuple_of_arity(2));
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let child_bits = h.alloc_map_slots(&[(AnyValue::atom(1), AnyValue::int(2))]);
@@ -601,7 +602,7 @@ fn any_value_ref_struct_and_closure_writes_store_scalar_and_heap_values() {
 
 #[test]
 fn any_value_ref_heap_writes_are_traced_by_gc() {
-    let reg = empty_registry();
+    let reg = fresh_registry();
     let struct_schema = reg.borrow_mut().register(Schema::tuple_of_arity(1));
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let key_slot = 1u64;
@@ -674,6 +675,7 @@ fn schema_identity_cannot_silently_replace_its_published_layout() {
 #[test]
 fn schema_registry_register_and_get() {
     let mut reg = SchemaRegistry::new();
+    let first_free_id = reg.len() as u32;
     let id_a = reg.register(Schema {
         identity: SchemaIdentity::Internal("A".into()),
         size: 0,
@@ -695,8 +697,8 @@ fn schema_registry_register_and_get() {
             },
         ],
     });
-    assert_eq!(id_a, 0);
-    assert_eq!(id_b, 1);
+    assert_eq!(id_a, first_free_id);
+    assert_eq!(id_b, first_free_id + 1);
     assert_eq!(reg.get(id_a).identity.display_name(), "A");
     assert_eq!(reg.get(id_b).identity.display_name(), "Pair");
 }
@@ -707,7 +709,7 @@ fn schema_registry_register_and_get() {
 /// by procbin.rs::shared_bin_alloc_has_trailing_nul.
 #[test]
 fn alloc_bitstring_inline_has_trailing_nul() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     // Cover lengths around the 16-byte-alignment boundary so the
     // formerly-zero pad cases get exercised.
     for n in [0usize, 1, 7, 8, 9, 15, 16, 17, 24, 25] {
@@ -731,7 +733,7 @@ fn alloc_bitstring_inline_has_trailing_nul() {
 
 #[test]
 fn alloc_bumps_and_tracks() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let p = h.alloc_list_cons_slot(AnyValue::int(1), EMPTY_LIST);
     assert!(list_addr_from_tagged(p).is_some());
     assert_eq!(h.live_count(), 1);
@@ -740,7 +742,7 @@ fn alloc_bumps_and_tracks() {
 
 #[test]
 fn heap_pointers_are_16_aligned() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     for _ in 0..10 {
         let p = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
         let addr = list_addr_from_tagged(p).expect("tagged list ptr");
@@ -753,7 +755,7 @@ fn heap_pointers_are_16_aligned() {
 /// covers both. The next gc() returns both blocks to the pool.
 #[test]
 fn alloc_grows_to_next_size_class_on_overflow() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     // SIZE_TABLE[0] = 1024 bytes -> 64 headerless cons cells fit exactly.
     // Allocate 80 to force grow.
     let initial_block = h.block_start;
@@ -773,7 +775,7 @@ fn alloc_grows_to_next_size_class_on_overflow() {
 /// itself — the scheduler reads it at park-time.
 #[test]
 fn pressure_flag_set_when_threshold_crossed() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     h.gc_threshold_bytes = 64; // two cons cells.
     assert!(!h.should_gc());
     let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
@@ -791,7 +793,7 @@ fn pressure_flag_set_when_threshold_crossed() {
 /// to-space is a fresh empty block, live_count goes to zero.
 #[test]
 fn gc_with_null_root_recycles_arena() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
     let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
     assert_eq!(h.live_count(), 2);
@@ -808,7 +810,7 @@ fn gc_with_null_root_recycles_arena() {
 /// freed. Live count matches the chain length.
 #[test]
 fn gc_copies_rooted_list_and_rewrites_root() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     // Build [1, 2, 3] — head ptr is n1.
     let n3 = alloc_int_list_cons(&mut h, 3, EMPTY_LIST);
     let n2 = alloc_int_list_cons(&mut h, 2, n3);
@@ -840,7 +842,7 @@ fn gc_copies_rooted_list_and_rewrites_root() {
 
 #[test]
 fn gc_preserves_list_alias_metadata() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let n2 = alloc_int_list_cons(&mut h, 2, EMPTY_LIST);
     let n1 = alloc_int_list_cons(&mut h, 1, n2);
     let n2_ref = list_ref_from_bits(n2);
@@ -859,7 +861,7 @@ fn gc_preserves_list_alias_metadata() {
 
 #[test]
 fn published_ref_alias_marking_marks_every_reachable_list_cons() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let n3 = alloc_int_list_cons(&mut h, 3, EMPTY_LIST);
     let n2 = alloc_int_list_cons(&mut h, 2, n3);
     let n1 = alloc_int_list_cons(&mut h, 1, n2);
@@ -877,7 +879,7 @@ fn published_ref_alias_marking_marks_every_reachable_list_cons() {
 
 #[test]
 fn shared_spine_publication_visits_only_newly_protected_cells() {
-    let mut heap = Heap::new(1024, empty_registry());
+    let mut heap = Heap::new(1024, fresh_registry());
     let tail = alloc_int_list_cons(&mut heap, 3, EMPTY_LIST);
     let middle = alloc_int_list_cons(&mut heap, 2, tail);
     let head = alloc_int_list_cons(&mut heap, 1, middle);
@@ -894,7 +896,7 @@ fn shared_spine_publication_visits_only_newly_protected_cells() {
 
 #[test]
 fn published_ref_alias_marking_ignores_non_list_refs_and_empty_list() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let scalar = 42u64;
     let int_ref = AnyValueRef::from_scalar_slot(ValueKind::INT, &scalar).expect("int ref");
 
@@ -908,7 +910,7 @@ fn published_ref_alias_marking_ignores_non_list_refs_and_empty_list() {
 
 #[test]
 fn unchanged_list_retention_needs_no_rewrite_permission_even_when_published() {
-    let mut heap = Heap::new(1024, empty_registry());
+    let mut heap = Heap::new(1024, fresh_registry());
     let tail = alloc_int_list_cons(&mut heap, 2, EMPTY_LIST);
     let source = alloc_int_list_cons(&mut heap, 1, tail);
     let source_ref = list_ref_from_bits(source);
@@ -923,7 +925,7 @@ fn unchanged_list_retention_needs_no_rewrite_permission_even_when_published() {
 
 #[test]
 fn retained_unaliased_source_without_permission_allocates_for_changed_contents() {
-    let mut heap = Heap::new(1024, empty_registry());
+    let mut heap = Heap::new(1024, fresh_registry());
     let source = alloc_int_list_cons(&mut heap, 1, EMPTY_LIST);
     let source_ref = list_ref_from_bits(source);
     heap.reset_alloc_stats();
@@ -938,7 +940,7 @@ fn retained_unaliased_source_without_permission_allocates_for_changed_contents()
 
 #[test]
 fn unaliased_reuse_or_alloc_rewrites_cons_in_place() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     h.reset_alloc_stats();
     let old_tail = alloc_int_list_cons(&mut h, 1, EMPTY_LIST);
     let new_tail = alloc_int_list_cons(&mut h, 2, EMPTY_LIST);
@@ -966,7 +968,7 @@ fn unaliased_reuse_or_alloc_rewrites_cons_in_place() {
 
 #[test]
 fn aliased_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let old_tail = alloc_int_list_cons(&mut h, 1, EMPTY_LIST);
     let new_tail = alloc_int_list_cons(&mut h, 2, EMPTY_LIST);
     let head = alloc_int_list_cons(&mut h, 0, old_tail);
@@ -994,7 +996,7 @@ fn aliased_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
 
 #[test]
 fn published_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let old_tail = alloc_int_list_cons(&mut h, 1, EMPTY_LIST);
     let new_tail = alloc_int_list_cons(&mut h, 2, EMPTY_LIST);
     let head = alloc_int_list_cons(&mut h, 0, old_tail);
@@ -1021,7 +1023,7 @@ fn published_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
 
 #[test]
 fn any_value_roots_forward_only_heap_values() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let list_bits = alloc_int_list_cons(&mut h, 1, EMPTY_LIST);
     let old_list = list_addr_from_tagged(list_bits).unwrap();
     let mut roots = [
@@ -1044,7 +1046,7 @@ fn any_value_roots_forward_only_heap_values() {
 
 #[test]
 fn any_value_ref_root_gc_forwards_heap_ref() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let list_bits = alloc_int_list_cons(&mut h, 1, EMPTY_LIST);
     let old_list = list_addr_from_tagged(list_bits).unwrap();
     let mut roots = [AnyValueRef::from_heap_object(ValueKind::LIST, old_list).expect("list ref")];
@@ -1062,7 +1064,7 @@ fn any_value_ref_root_gc_forwards_heap_ref() {
 
 #[test]
 fn any_value_ref_root_gc_copies_scalar_box_without_tracing_payload() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let decoy_bits = alloc_int_list_cons(&mut h, 99, EMPTY_LIST);
     let decoy_addr = list_addr_from_tagged(decoy_bits).unwrap();
     let scalar = h.alloc(8);
@@ -1085,7 +1087,7 @@ fn any_value_ref_root_gc_copies_scalar_box_without_tracing_payload() {
 #[test]
 fn any_value_ref_root_gc_preserves_static_scalar_ref() {
     static STATIC_INT: u64 = 42;
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let original = AnyValueRef::from_scalar_slot(ValueKind::INT, &STATIC_INT).expect("static scalar ref");
     let mut roots = [original];
     let mut root = null_mut();
@@ -1100,7 +1102,7 @@ fn any_value_ref_root_gc_preserves_static_scalar_ref() {
 
 #[test]
 fn gc_stats_prove_scalar_list_head_is_copied_but_not_traced() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let decoy_bits = alloc_int_list_cons(&mut h, 99, EMPTY_LIST);
     let decoy_addr = list_addr_from_tagged(decoy_bits).unwrap();
     let live_bits = h.alloc_list_cons_slot(any_value(decoy_addr as u64, ValueKind::INT), EMPTY_LIST);
@@ -1123,7 +1125,7 @@ fn gc_stats_prove_scalar_list_head_is_copied_but_not_traced() {
 
 #[test]
 fn gc_stats_count_struct_slots_by_layout_kind() {
-    let reg = empty_registry();
+    let reg = fresh_registry();
     let schema_id = reg.borrow_mut().register(Schema::tuple_of_arity(2));
     let mut h = Heap::new(1024, reg);
     let decoy_bits = alloc_int_list_cons(&mut h, 1, EMPTY_LIST);
@@ -1149,7 +1151,7 @@ fn gc_stats_count_struct_slots_by_layout_kind() {
 
 #[test]
 fn gc_stats_count_map_and_closure_slots_by_layout_kind() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let map_child_bits = alloc_int_list_cons(&mut h, 3, EMPTY_LIST);
     let map_child_addr = list_addr_from_tagged(map_child_bits).unwrap();
     let closure_child_bits = alloc_int_list_cons(&mut h, 4, EMPTY_LIST);
@@ -1188,7 +1190,7 @@ fn gc_stats_count_map_and_closure_slots_by_layout_kind() {
 
 #[test]
 fn process_root_gc_forwards_runnable_closure_and_process_roots() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let captured_bits = alloc_int_list_cons(&mut h, 10, EMPTY_LIST);
     let mailbox_bits = alloc_int_list_cons(&mut h, 20, EMPTY_LIST);
     let closure_bits = h.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 1, 0);
@@ -1223,7 +1225,7 @@ fn process_root_gc_forwards_runnable_closure_and_process_roots() {
 /// shrinks to the chain length.
 #[test]
 fn gc_drops_unreachable_objects() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let _orphan = alloc_int_list_cons(&mut h, 99, EMPTY_LIST);
     let kept = alloc_int_list_cons(&mut h, 7, EMPTY_LIST);
     assert_eq!(h.live_count(), 2);
@@ -1238,7 +1240,7 @@ fn gc_drops_unreachable_objects() {
 
 #[test]
 fn list_head_can_be_a_tagged_list_without_int_collision() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let child_bits = alloc_int_list_cons(&mut h, 7, EMPTY_LIST);
     let parent_bits = h.alloc_list_cons_slot(heap_root(child_bits), EMPTY_LIST);
     let parent = list_addr_from_tagged(parent_bits).expect("parent list ptr");
@@ -1249,8 +1251,8 @@ fn list_head_can_be_a_tagged_list_without_int_collision() {
 
 #[test]
 fn deep_copy_tagged_list_preserves_nested_list_head() {
-    let mut src = Heap::new(1024, empty_registry());
-    let mut dst = Heap::new(1024, empty_registry());
+    let mut src = Heap::new(1024, fresh_registry());
+    let mut dst = Heap::new(1024, fresh_registry());
     let child_bits = alloc_int_list_cons(&mut src, 7, EMPTY_LIST);
     let parent_bits = src.alloc_list_cons_slot(heap_root(child_bits), EMPTY_LIST);
     let mut forwarding = HashMap::new();
@@ -1270,7 +1272,7 @@ fn deep_copy_tagged_list_preserves_nested_list_head() {
 
 #[test]
 fn deep_copy_repeated_list_reference_establishes_receiver_owned_sharing() {
-    let registry = empty_registry();
+    let registry = fresh_registry();
     let pair = registry.borrow_mut().register(Schema::tuple_of_arity(2));
     let mut source = Heap::new(1024, registry.clone());
     let mut destination = Heap::new(1024, registry);
@@ -1310,7 +1312,7 @@ fn deep_copy_duplicate_outer_box_keeps_nested_list_publication() {
 }
 
 fn assert_copied_boxed_list_is_published(duplicate: bool) {
-    let registry = empty_registry();
+    let registry = fresh_registry();
     let boxed = registry.borrow_mut().register(Schema::tuple_of_arity(1));
     let pair = registry.borrow_mut().register(Schema::tuple_of_arity(2));
     let mut source = Heap::new(1024, registry.clone());
@@ -1352,7 +1354,7 @@ fn assert_copied_boxed_list_is_published(duplicate: bool) {
 
 #[test]
 fn deep_copy_closure_publishes_its_list_capture() {
-    let registry = empty_registry();
+    let registry = fresh_registry();
     let mut source = Heap::new(1024, registry.clone());
     let mut destination = Heap::new(1024, registry);
     let list = alloc_int_list_cons(&mut source, 7, EMPTY_LIST);
@@ -1370,8 +1372,8 @@ fn deep_copy_closure_publishes_its_list_capture() {
 
 #[test]
 fn deep_copy_clears_list_alias_metadata() {
-    let mut src = Heap::new(1024, empty_registry());
-    let mut dst = Heap::new(1024, empty_registry());
+    let mut src = Heap::new(1024, fresh_registry());
+    let mut dst = Heap::new(1024, fresh_registry());
     let list_bits = alloc_int_list_cons(&mut src, 7, EMPTY_LIST);
     src.mark_published_ref_aliased(list_ref_from_bits(list_bits))
         .expect("mark aliased");
@@ -1389,7 +1391,7 @@ fn deep_copy_clears_list_alias_metadata() {
 fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
     use crate::resource::{ResourceHandle, ResourceStub, alloc_resource, fz_resource_destructor_noop};
 
-    let reg = empty_registry();
+    let reg = fresh_registry();
     let pair_id = reg.borrow_mut().register(Schema::tuple_of_arity(2));
     let mut src = Heap::new(SIZE_TABLE[0], reg.clone());
     let mut dst = Heap::with_node(SIZE_TABLE[0], reg, Rc::clone(&src.node));
@@ -1488,7 +1490,7 @@ fn pool_caches_blocks_across_heap_drops() {
 
     // Warm-up: create + drop one Heap. Drop returns the block.
     {
-        let _h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let _h = Heap::new(SIZE_TABLE[0], fresh_registry());
     }
     assert_eq!(pool_total_cached_blocks(), 1, "first drop fills the pool");
 
@@ -1497,7 +1499,7 @@ fn pool_caches_blocks_across_heap_drops() {
     // block. The acceptance "no per-spawn malloc": occupancy stays at
     // 1 across N create+drop cycles.
     for _ in 0..50 {
-        let _h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let _h = Heap::new(SIZE_TABLE[0], fresh_registry());
         assert_eq!(pool_total_cached_blocks(), 0, "alloc drained the cache");
         // _h dropped here → returns the block to the pool.
     }
@@ -1567,7 +1569,7 @@ fn pick_size_class_clamps_on_tail_no_panic() {
 /// climbing as `live` doubles — is what proves the heap genuinely grows.
 #[test]
 fn gc_sizes_to_fit_and_never_shrinks_below_live_as_load_grows() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let mut last_class: i32 = -1;
     for power in 6..=12 {
         let len = 1usize << power; // 64, 128, ..., 4096 cells
@@ -1604,7 +1606,7 @@ fn gc_sizes_to_fit_and_never_shrinks_below_live_as_load_grows() {
 /// last_gc_live_bytes * 2 (50% post-GC target occupancy).
 #[test]
 fn gc_updates_last_gc_live_bytes() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     assert_eq!(h.last_gc_live_bytes, 0, "zero before first gc");
     // Build [1, 2, 3].
     let n3 = alloc_int_list_cons(&mut h, 3, EMPTY_LIST);
@@ -1624,7 +1626,7 @@ fn gc_updates_last_gc_live_bytes() {
 
 #[test]
 fn allocation_pressure_marks_gc_without_spending_reductions() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     h.gc_threshold_bytes = 16;
 
     let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
@@ -1636,7 +1638,7 @@ fn allocation_pressure_marks_gc_without_spending_reductions() {
 /// allocates without panic; grow promotes to a larger size_class as needed.
 #[test]
 fn alloc_large_struct_succeeds_and_grows_size_class() {
-    let reg = empty_registry();
+    let reg = fresh_registry();
     // Build a schema whose payload is 200 bytes of typed value fields.
     let n_fields = 200 / 8; // 25 any values
     let mut fields = Vec::with_capacity(n_fields);
@@ -1663,7 +1665,7 @@ fn alloc_large_struct_succeeds_and_grows_size_class() {
 
 #[test]
 fn struct_layout_size_correct() {
-    let reg = empty_registry();
+    let reg = fresh_registry();
     let id = reg.borrow_mut().register(Schema::tuple_of_arity(3));
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let before = h.bytes_used();
@@ -1680,7 +1682,7 @@ fn struct_layout_size_correct() {
 
 #[test]
 fn struct_field_read_at_new_offset() {
-    let reg = empty_registry();
+    let reg = fresh_registry();
     let id = reg.borrow_mut().register(Schema::tuple_of_arity(2));
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let p = h.alloc_struct(id);
@@ -1700,7 +1702,7 @@ fn struct_field_read_at_new_offset() {
 
 #[test]
 fn struct_forwarding_marker_through_gc() {
-    let reg = empty_registry();
+    let reg = fresh_registry();
     let id = reg.borrow_mut().register(Schema::tuple_of_arity(1));
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let p = h.alloc_struct(id);
@@ -1720,7 +1722,7 @@ fn struct_forwarding_marker_through_gc() {
 /// (Map walks each entry's typed children).
 #[test]
 fn alloc_large_map_round_trips_through_gc() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let entries: Vec<(AnyValue, AnyValue)> = (0..5)
         .map(|i| {
             (
@@ -1752,7 +1754,7 @@ fn map_layout_size_correct() {
                 )
             })
             .collect();
-        let mut h = Heap::new(1024, empty_registry());
+        let mut h = Heap::new(1024, fresh_registry());
         let bits = h.alloc_map_slots(&entries);
         assert_eq!(object_size(bits), map_size_for_count(count));
     }
@@ -1760,7 +1762,7 @@ fn map_layout_size_correct() {
 
 #[test]
 fn closure_layout_zero_captures() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let bits = h.alloc_closure(
         crate::any_value::ClosureDenotationId::user(0),
         42,
@@ -1779,7 +1781,7 @@ fn closure_layout_zero_captures() {
 
 #[test]
 fn closure_layout_n_captures() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let captures = [AnyValue::int(10), AnyValue::int(20)];
     let bits = h.alloc_closure(
         crate::any_value::ClosureDenotationId::user(0),
@@ -1800,7 +1802,7 @@ fn closure_layout_n_captures() {
 
 #[test]
 fn closure_forwarding_marker() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let bits = h.alloc_closure(crate::any_value::ClosureDenotationId::user(0), 12, 0, 0, 0x7777, &[]);
     let old = closure_addr_from_tagged(bits).unwrap();
     let mut root = bits as *mut u8;
@@ -1831,7 +1833,7 @@ fn strict_heap_decoder_accepts_static_closure_pointer() {
 fn map_packed_tags_round_trip() {
     let cases = [1usize, 2, 3, 7, 8, 9];
     for count in cases {
-        let mut h = Heap::new(1024, empty_registry());
+        let mut h = Heap::new(1024, fresh_registry());
         let entries: Vec<(AnyValue, AnyValue)> = (0..count)
             .map(|i| {
                 let key = if i % 2 == 0 {
@@ -1859,7 +1861,7 @@ fn map_packed_tags_round_trip() {
 
 #[test]
 fn map_float_value_is_unboxed_raw_bits() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let f = PI;
     let bits = h.alloc_map_slots(&[(any_value(0, ValueKind::ATOM), any_value(f.to_bits(), ValueKind::FLOAT))]);
     let p = map_addr_from_tagged(bits).unwrap();
@@ -1871,7 +1873,7 @@ fn map_float_value_is_unboxed_raw_bits() {
 
 #[test]
 fn map_int_value_stores_full_i64_range() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     let value = i64::MIN;
     let bits = h.alloc_map_slots(&[(any_value(1, ValueKind::ATOM), any_value(value as u64, ValueKind::INT))]);
     let p = map_addr_from_tagged(bits).unwrap();
@@ -1882,8 +1884,8 @@ fn map_int_value_stores_full_i64_range() {
 
 #[test]
 fn deep_copy_tagged_map_preserves_nested_list_value() {
-    let mut src = Heap::new(1024, empty_registry());
-    let mut dst = Heap::new(1024, empty_registry());
+    let mut src = Heap::new(1024, fresh_registry());
+    let mut dst = Heap::new(1024, fresh_registry());
     let child_bits = alloc_int_list_cons(&mut src, 7, EMPTY_LIST);
     let child_ptr = list_addr_from_tagged(child_bits).unwrap();
     let map_bits = src.alloc_map_slots(&[(
@@ -1903,7 +1905,7 @@ fn deep_copy_tagged_map_preserves_nested_list_value() {
 
 #[test]
 fn gc_map_count_twelve_does_not_collide_with_forwarding_tag() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let entries: Vec<(AnyValue, AnyValue)> = (0..12)
         .map(|i| {
             (
@@ -1929,7 +1931,7 @@ fn gc_map_count_twelve_does_not_collide_with_forwarding_tag() {
 /// (§6.4 / fz-siu.8 acceptance.)
 #[test]
 fn gc_keeps_arena_bounded_across_many_cycles() {
-    let mut h = Heap::new(1024, empty_registry());
+    let mut h = Heap::new(1024, fresh_registry());
     // Rooted [1, 2, 3] — the live working set across every cycle.
     let n3 = alloc_int_list_cons(&mut h, 3, EMPTY_LIST);
     let n2 = alloc_int_list_cons(&mut h, 2, n3);
@@ -1960,7 +1962,7 @@ fn gc_keeps_arena_bounded_across_many_cycles() {
 /// pointers in from-space short-circuit revisits.
 #[test]
 fn gc_handles_cycle_via_forwarding() {
-    let reg = empty_registry();
+    let reg = fresh_registry();
     let pair_id = reg.borrow_mut().register(Schema {
         identity: SchemaIdentity::Internal("Pair".into()),
         size: 16,
@@ -2020,7 +2022,7 @@ fn mso_chain(h: &Heap) -> Vec<u64> {
 fn alloc_procbin_pushes_into_mso_chain_with_strict_layout() {
     let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32);
     {
-        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
         let pb = alloc_procbin(&mut h, witness.clone(), 0);
         let tagged = heap_object_word(pb.as_raw() as *const u8, ValueKind::PROCBIN);
         assert_eq!(tagged & TAG_MASK, TAG_PROCBIN);
@@ -2035,7 +2037,7 @@ fn alloc_procbin_pushes_into_mso_chain_with_strict_layout() {
 #[test]
 fn procbin_survives_gc_via_mso_rewrite() {
     let witness = SharedBinHandle::from_bytes(&[0xaa; 8], 64);
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let pb = alloc_procbin(&mut h, witness.clone(), 0);
     let shared_p = pb.shared_raw();
     let from_pb = pb.as_raw();
@@ -2060,7 +2062,7 @@ fn procbin_survives_gc_via_mso_rewrite() {
 #[test]
 fn procbin_dies_in_gc_and_sweep_releases_shared_bin() {
     let witness = SharedBinHandle::from_bytes(&[0x55; 16], 128);
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let _ = alloc_procbin(&mut h, witness.clone(), 0);
     assert_eq!(shared_refs(&witness), 2);
     let mut root: *mut u8 = null_mut();
@@ -2074,7 +2076,7 @@ fn procbin_dies_in_gc_and_sweep_releases_shared_bin() {
 #[test]
 fn procbin_mso_chain_intact_through_gc_partial_survival() {
     let witnesses = [1, 2, 3].map(|value| SharedBinHandle::from_bytes(&[value], 8));
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let _dead_tail = alloc_procbin(&mut h, witnesses[0].clone(), 0);
     let live = alloc_procbin(&mut h, witnesses[1].clone(), 0);
     let _dead_head = alloc_procbin(&mut h, witnesses[2].clone(), 0);
@@ -2110,7 +2112,7 @@ fn heap_drop_releases_all_mso_shared_refs() {
         SharedBinHandle::from_bytes(&[3, 4, 5], 24),
     ];
     {
-        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
         for witness in &witnesses {
             alloc_procbin(&mut h, witness.clone(), 0);
         }
@@ -2126,8 +2128,8 @@ fn heap_drop_releases_all_mso_shared_refs() {
 #[test]
 fn deep_copy_procbin_shares_via_retain() {
     let witness = SharedBinHandle::from_bytes(&[7, 8, 9, 10], 32);
-    let mut src = Heap::new(SIZE_TABLE[0], empty_registry());
-    let mut dst = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut src = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut dst = Heap::new(SIZE_TABLE[0], fresh_registry());
     let src_pb = alloc_procbin(&mut src, witness.clone(), 0);
     let shared_p = src_pb.shared_raw();
     let mut fwd = HashMap::new();
@@ -2156,7 +2158,7 @@ fn deep_copy_procbin_shares_via_retain() {
 #[test]
 fn deep_copy_procbin_dedup_via_forwarding_map() {
     let witness = SharedBinHandle::from_bytes(&[0xab, 0xcd], 16);
-    let reg = empty_registry();
+    let reg = fresh_registry();
     let pair_id = reg.borrow_mut().register(Schema {
         identity: SchemaIdentity::Internal("Pair".into()),
         size: 16,
@@ -2199,7 +2201,7 @@ fn deep_copy_procbin_dedup_via_forwarding_map() {
 
 #[test]
 fn alloc_bitstring_small_stays_inline() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let bytes: Vec<u8> = (0..32u8).collect();
     let p = h.alloc_bitstring(&bytes, 256).heap_addr().expect("bitstring");
     let tagged = heap_object_word(p, ValueKind::BITSTRING);
@@ -2216,7 +2218,7 @@ fn alloc_bitstring_small_stays_inline() {
 
 #[test]
 fn alloc_bitstring_large_routes_to_shared_zone() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let bytes: Vec<u8> = (0..128u8).collect();
     let p = h.alloc_bitstring(&bytes, 1024).heap_addr().expect("procbin");
     let witness = unsafe { SharedBinHandle::retain_from_raw(ProcBin::from_raw(p).shared_raw()) };
@@ -2241,12 +2243,12 @@ fn alloc_bitstring_large_routes_to_shared_zone() {
 fn shared_heap_acceptance_spawn_and_share() {
     const N: usize = 4;
     let payload: Vec<u8> = (0..128u8).collect();
-    let mut sender = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
     let bs_in_sender = sender.alloc_bitstring(&payload, 1024).heap_addr().expect("procbin");
     let witness = unsafe { SharedBinHandle::retain_from_raw(ProcBin::from_raw(bs_in_sender).shared_raw()) };
     assert_eq!(shared_refs(&witness), 2);
 
-    let mut receivers: Vec<Heap> = (0..N).map(|_| Heap::new(SIZE_TABLE[0], empty_registry())).collect();
+    let mut receivers: Vec<Heap> = (0..N).map(|_| Heap::new(SIZE_TABLE[0], fresh_registry())).collect();
     let sender_bits = heap_object_word(bs_in_sender as *const u8, ValueKind::PROCBIN);
     let mut receiver_roots: Vec<u64> = Vec::with_capacity(N);
     for r in receivers.iter_mut() {
@@ -2294,7 +2296,7 @@ fn shared_heap_acceptance_spawn_and_share() {
 /// arena, and report their size via `bytes_used()`.
 #[test]
 fn alloc_oversized_routes_to_fragment_list() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let want = SIZE_TABLE[SIZE_TABLE.len() - 1] + 16;
     let p = h.alloc(want);
     assert!(!p.is_null());
@@ -2307,7 +2309,7 @@ fn alloc_oversized_routes_to_fragment_list() {
 /// Rooted oversized struct survives GC; mark bit cycles back to false.
 #[test]
 fn rooted_fragment_survives_gc() {
-    let reg = empty_registry();
+    let reg = fresh_registry();
     // A schema large enough that alloc_struct routes to fragments.
     let n_fields = (FRAGMENT_THRESHOLD + 256) / 8; // payload size > threshold
     let mut fields = Vec::with_capacity(n_fields);
@@ -2339,7 +2341,7 @@ fn rooted_fragment_survives_gc() {
 /// Unrooted oversized object is freed by GC; fragment list shrinks.
 #[test]
 fn unrooted_fragment_is_freed_by_gc() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let _ = h.alloc(FRAGMENT_THRESHOLD + 16);
     assert_eq!(h.fragments.len(), 1);
     let mut root: *mut u8 = null_mut();
@@ -2350,7 +2352,7 @@ fn unrooted_fragment_is_freed_by_gc() {
 /// Three fragments, two rooted: the unrooted one is reclaimed.
 #[test]
 fn mixed_fragment_liveness() {
-    let reg = empty_registry();
+    let reg = fresh_registry();
     let n_fields = (FRAGMENT_THRESHOLD + 256) / 8;
     let mut fields = Vec::with_capacity(n_fields);
     for i in 0..n_fields {
@@ -2402,7 +2404,7 @@ fn mixed_fragment_liveness() {
 /// keep both alive.
 #[test]
 fn fragment_to_fragment_edge_survives_gc() {
-    let reg = empty_registry();
+    let reg = fresh_registry();
     let n_fields = (FRAGMENT_THRESHOLD + 256) / 8;
     let mut fields = Vec::with_capacity(n_fields);
     for i in 0..n_fields {
@@ -2431,7 +2433,7 @@ fn fragment_to_fragment_edge_survives_gc() {
 /// preserve the cons and move it to to-space.
 #[test]
 fn fragment_to_block_edge_promotes_block_object() {
-    let reg = empty_registry();
+    let reg = fresh_registry();
     let n_fields = (FRAGMENT_THRESHOLD + 256) / 8;
     let mut fields = Vec::with_capacity(n_fields);
     for i in 0..n_fields {
@@ -2472,18 +2474,18 @@ fn heap_drop_releases_fragments_without_leak() {
     // drop frees the fragment. Second heap can allocate without
     // tripping anything in the allocator's reuse path.
     {
-        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
         let _ = h.alloc(FRAGMENT_THRESHOLD + 16);
         assert_eq!(h.fragments.len(), 1);
     }
-    let mut h2 = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h2 = Heap::new(SIZE_TABLE[0], fresh_registry());
     let p = h2.alloc(FRAGMENT_THRESHOLD + 16);
     assert!(!p.is_null());
 }
 
 #[test]
 fn procbin_round_trips_through_bitstring_dispatchers() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let bytes: Vec<u8> = (0..100u8).collect();
     let p = h.alloc_bitstring(&bytes, 800).heap_addr().expect("procbin");
     let tagged = heap_object_word(p, ValueKind::PROCBIN);

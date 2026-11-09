@@ -96,16 +96,10 @@ impl IrInterpRuntime {
         let mut runtime = Self::fresh();
         runtime.node = Rc::new(Node::new(atom_names, Vec::new()));
         let user_schemas = runtime.schemas();
-        let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) = runtime.register_bitstring_tuple_schemas();
-        let consts = CompiledModuleConsts {
-            bs_tuple_arity1_schema: Some(bs_tuple_arity1_schema),
-            bs_tuple_arity3_schema: Some(bs_tuple_arity3_schema),
-            ..CompiledModuleConsts::empty()
-        };
         let process = Box::new(Process::from_consts(
             Rc::clone(&runtime.node),
             user_schemas,
-            &consts,
+            &CompiledModuleConsts::empty(),
             1,
             DEFAULT_REDUCTIONS_PER_QUANTUM,
         ));
@@ -120,9 +114,6 @@ impl IrInterpRuntime {
         let mut runtime = Self::fresh();
         runtime.node = Rc::clone(&process.node);
         runtime.schemas = process.heap.schemas_registry();
-        let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) = runtime.register_bitstring_tuple_schemas();
-        process.bs_tuple_arity1_schema = Some(bs_tuple_arity1_schema);
-        process.bs_tuple_arity3_schema = Some(bs_tuple_arity3_schema);
         process.pid = 1;
         process.state = ProcessState::New;
         process.detach_runtime_state();
@@ -155,19 +146,6 @@ impl IrInterpRuntime {
 
     fn schemas(&self) -> Rc<RefCell<SchemaRegistry>> {
         self.schemas.clone()
-    }
-
-    fn register_bitstring_tuple_schemas(&mut self) -> (u32, u32) {
-        let (arity1, arity3) = {
-            let mut reg = self.schemas.borrow_mut();
-            (
-                reg.register(Schema::tuple_of_arity(1)),
-                reg.register(Schema::tuple_of_arity(3)),
-            )
-        };
-        self.tuple_schema_ids.insert(1, arity1);
-        self.tuple_schema_ids.insert(3, arity3);
-        (arity1, arity3)
     }
 
     fn tuple_schema_id(&mut self, arity: usize) -> u32 {
