@@ -10,6 +10,10 @@
 //! `%{__struct__: Name, __exception__: true, message: "..."}`, and prints as
 //! `** (Name) message`. Any other value prints the way Elixir prints a raw
 //! Erlang error: `** (ErlangError) Erlang error: <value>`.
+//!
+//! `raise` builds that exception from a name and a message and panics with it.
+//! Compiled code reaches it through `fz_raise` and `fz_raise_showing` when a
+//! decision raises the exception Elixir raises for it.
 
 use crate::any_value::debug::render_value;
 use crate::any_value::{AnyValue, AnyValueRef, ValueKind, map_addr_from_tagged, map_count, map_entry};
@@ -92,6 +96,67 @@ pub extern "C" fn fz_panic(process: *mut Process, value_ref: u64) {
     unsafe { &mut *process }.failed = true;
     let sink = ctx.fault.expect("fz_panic: fault sink installed");
     unsafe { sink(ctx.scheduler, line.as_ptr(), line.len()) };
+}
+
+/// Fail the current process with the exception `name` carrying `message`,
+/// through `fz_panic`.
+pub fn raise(process: *mut Process, name: AnyValue, message: &str) {
+    let exception = exception(process, name, message);
+    fz_panic(process, exception);
+}
+
+/// The message of an exception about a term, the way Elixir words one: the
+/// lead, then the term on a line of its own, indented.
+pub fn message_showing(process: *mut Process, lead: &str, term: AnyValue) -> String {
+    format!("{lead}\n\n    {}\n", render_value(process, term))
+}
+
+/// `%{__struct__: name, __exception__: true, message: message}` on the
+/// process heap, as a value word.
+fn exception(process: *mut Process, name: AnyValue, message: &str) -> u64 {
+    let process = unsafe { &mut *process };
+    let atom = |name: &str| AnyValue::atom(process.node.intern_atom(name));
+    let (struct_key, exception_key, message_key, flag) =
+        (atom("__struct__"), atom("__exception__"), atom("message"), atom("true"));
+    let message = process
+        .heap
+        .alloc_bitstring(message.as_bytes(), 8 * message.len() as u64);
+    let bits = process
+        .heap
+        .alloc_map_slots(&[(struct_key, name), (exception_key, flag), (message_key, message)]);
+    let addr = map_addr_from_tagged(bits).expect("an exception is a map");
+    AnyValueRef::from_heap_object(ValueKind::MAP, addr)
+        .expect("an exception map ref")
+        .raw_word()
+}
+
+fn value_from_word(word: u64, context: &str) -> AnyValue {
+    AnyValueRef::from_raw_word(word)
+        .and_then(AnyValue::from_ref)
+        .unwrap_or_else(|error| panic!("{context}: a value ref ({error:?})"))
+}
+
+/// Raise the exception named by the atom `name_ref` with the binary
+/// `message_ref` as its message.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_raise(process: *mut Process, name_ref: u64, message_ref: u64) {
+    let name = value_from_word(name_ref, "fz_raise name");
+    let message = binary_text(value_from_word(message_ref, "fz_raise message")).expect("fz_raise: a binary message");
+    raise(process, name, &message);
+}
+
+/// Raise the exception named by the atom `name_ref` with a message about the
+/// term `term_ref`, led by the binary `lead_ref`.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_raise_showing(process: *mut Process, name_ref: u64, lead_ref: u64, term_ref: u64) {
+    let name = value_from_word(name_ref, "fz_raise_showing name");
+    let lead =
+        binary_text(value_from_word(lead_ref, "fz_raise_showing lead")).expect("fz_raise_showing: a binary lead");
+    let term = value_from_word(term_ref, "fz_raise_showing term");
+    let message = message_showing(process, &lead, term);
+    raise(process, name, &message);
 }
 
 #[cfg(test)]

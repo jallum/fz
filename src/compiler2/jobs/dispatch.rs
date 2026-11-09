@@ -20,7 +20,7 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
-    GuardCallee, GuardExtern, PatternDispatchError, PatternPinnedInput, PatternRow, SourcePatternError,
+    GuardCallee, GuardExtern, LastResort, PatternDispatchError, PatternPinnedInput, PatternRow, SourcePatternError,
     SourcePatternRows, guard_dispatch_from_rows, pattern_dispatch_from_source_with_resolver,
 };
 use crate::function_surface::FunctionSurface;
@@ -147,7 +147,8 @@ pub(super) fn plan_entry_dispatch(
         });
     }
 
-    let source_patterns = entry_source_patterns(world, tel, function, &source, &surface)?;
+    let source_patterns = entry_source_patterns(world, tel, function, &source, &surface)?
+        .raising(LastResort::function_clause(&world.function_ref(function).elixir_name()));
     let namespace = source.namespace;
     let fn_span = surface.span;
     let redundancy_check = (source_patterns.rows.len() > 1).then(|| source_patterns.clone());

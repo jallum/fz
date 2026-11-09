@@ -457,15 +457,6 @@ impl<W: Copy> BoundValue<W> {
             Self::Absent | Self::Transport { .. } => None,
         }
     }
-
-    /// The transport shape this value travels as, if it travels as lanes. What
-    /// that shape admits is a question for the interners.
-    pub(crate) fn transport_shape(&self) -> Option<ShapeId> {
-        match self {
-            Self::Transport { shape, .. } => Some(*shape),
-            Self::Absent | Self::Runtime(_) => None,
-        }
-    }
 }
 
 #[derive(Debug, Default)]

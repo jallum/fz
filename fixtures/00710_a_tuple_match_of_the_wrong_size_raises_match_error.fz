@@ -1,0 +1,12 @@
+#---
+# purpose: "= against a tuple of another size raises MatchError showing the value"
+# expect: abort
+# oracle: 00710_a_tuple_match_of_the_wrong_size_raises_match_error.oracle.exs
+#---
+defp pair(), do: {1, 2}
+
+def main() do
+  dbg(:before)
+  {only} = pair()
+  dbg(only)
+end

@@ -37,8 +37,6 @@ use super::super::transport::{
 use super::super::types::Ty;
 use super::super::world::World;
 
-const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
-
 /// Reports `RootBackendProduct` pull-drive failures as `FatalError`.
 ///
 /// The three hooks that forward carry a failure that already said why:
@@ -771,7 +769,7 @@ fn lower_backend_tail(
             after: receive.after.clone(),
             dest: receive.dest.clone(),
         })),
-        LoweredTail::Halt { atom } => BackendTail::Halt { atom: atom.clone() },
+        LoweredTail::Unreachable => BackendTail::Unreachable,
     })
 }
 
@@ -853,7 +851,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 value: *value,
                 literal: literal.clone(),
             },
-            LoweredStep::Tuple { value, items } => self.construction_step_or_omitted(
+            LoweredStep::Tuple { value, items } => self.step_or_omitted_when_absent(
                 *value,
                 BackendStep::Tuple {
                     value: *value,
@@ -865,7 +863,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 items,
                 tail,
                 retention,
-            } => self.construction_step_or_omitted(
+            } => self.step_or_omitted_when_absent(
                 *value,
                 BackendStep::List {
                     value: *value,
@@ -878,7 +876,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 value,
                 entries,
                 quoted_span,
-            } => self.construction_step_or_omitted(
+            } => self.step_or_omitted_when_absent(
                 *value,
                 BackendStep::Map {
                     value: *value,
@@ -886,7 +884,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                     quoted_span: *quoted_span,
                 },
             ),
-            LoweredStep::MapUpdate { value, base, entries } => self.construction_step_or_omitted(
+            LoweredStep::MapUpdate { value, base, entries } => self.step_or_omitted_when_absent(
                 *value,
                 BackendStep::MapUpdate {
                     value: *value,
@@ -894,7 +892,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                     entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
                 },
             ),
-            LoweredStep::Struct { value, module, fields } => self.construction_step_or_omitted(
+            LoweredStep::Struct { value, module, fields } => self.step_or_omitted_when_absent(
                 *value,
                 BackendStep::Struct {
                     value: *value,
@@ -906,14 +904,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                     fields: fields.clone(),
                 },
             ),
-            LoweredStep::Bitstring { value, fields } => self.construction_step_or_omitted(
+            LoweredStep::Bitstring { value, fields } => self.step_or_omitted_when_absent(
                 *value,
                 BackendStep::Bitstring {
                     value: *value,
                     fields: fields.clone(),
                 },
             ),
-            LoweredStep::FunctionRef { value, function } => self.construction_step_or_omitted(
+            LoweredStep::FunctionRef { value, function } => self.step_or_omitted_when_absent(
                 *value,
                 BackendStep::FunctionRef {
                     value: *value,
@@ -925,7 +923,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 value,
                 function,
                 captures,
-            } => self.construction_step_or_omitted(
+            } => self.step_or_omitted_when_absent(
                 *value,
                 BackendStep::Lambda {
                     value: *value,
@@ -950,42 +948,27 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 base: *base,
                 key: key.value,
             },
-            LoweredStep::FieldAccess { value, base, field } => BackendStep::FieldAccess {
-                value: *value,
-                base: *base,
-                field: field.clone(),
-            },
-            LoweredStep::AssertLiteral { source, literal } => BackendStep::AssertLiteral {
-                source: *source,
-                literal: literal.clone(),
-            },
-            LoweredStep::AssertStruct { source, module } => BackendStep::AssertStruct {
-                source: *source,
-                module_name: self
-                    .world
-                    .module_name(*module)
-                    .unwrap_or_else(|| panic!("struct module {} should have a name", module.as_u32()))
-                    .clone(),
-            },
+            LoweredStep::FieldAccess { value, base, field } => self.step_or_omitted_when_absent(
+                *value,
+                BackendStep::FieldAccess {
+                    value: *value,
+                    base: *base,
+                    field: field.clone(),
+                },
+            ),
             LoweredStep::RequireMapValue { value, source, key } => BackendStep::RequireMapValue {
                 value: *value,
                 source: *source,
                 key: key.clone(),
             },
-            LoweredStep::AssertTuple { source, arity } => BackendStep::AssertTuple {
-                source: *source,
-                arity: *arity,
-            },
-            LoweredStep::TupleField { value, source, index } => BackendStep::TupleField {
-                value: *value,
-                source: *source,
-                index: *index,
-            },
-            LoweredStep::AssertEmptyList { source } => BackendStep::AssertEmptyList { source: *source },
-            LoweredStep::AssertSame { source, value } => BackendStep::AssertSame {
-                source: *source,
-                value: *value,
-            },
+            LoweredStep::TupleField { value, source, index } => self.step_or_omitted_when_absent(
+                *value,
+                BackendStep::TupleField {
+                    value: *value,
+                    source: *source,
+                    index: *index,
+                },
+            ),
             LoweredStep::SplitList { source, head, tail } => BackendStep::SplitList {
                 source: *source,
                 head: *head,
@@ -1010,7 +993,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 spec: spec.clone(),
                 is_last: *is_last,
             },
-            LoweredStep::AssertBitstringDone { reader } => BackendStep::AssertBitstringDone { reader: *reader },
         })
     }
 
@@ -1022,14 +1004,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
     }
 
     /// Every fresh-construction step (Tuple/List/Map/MapUpdate/Struct/
-    /// Bitstring/FunctionRef/Lambda) must respect the absence proof: when
-    /// transport proves the constructed value runtime-absent, its operands were
-    /// never demanded and may be unbound at runtime, so the step lowers as
-    /// `Omitted` instead of executing a read of never-materialized values
+    /// Bitstring/FunctionRef/Lambda) and every projection (FieldAccess/
+    /// TupleField) must respect the absence proof: when transport proves the
+    /// value runtime-absent, its operands were never demanded and may be
+    /// unbound at runtime, so the step lowers as `Omitted` instead of
+    /// executing a read of never-materialized values
     /// (fz-9in: a dead binding whose construction call survives because it
     /// allocates; fz-kdt.111: a predicate closure a shared `Enum` body proves
     /// it never invokes, whose ignored capture the eager interp still read).
-    fn construction_step_or_omitted(&self, value: ValueId, step: BackendStep) -> BackendStep {
+    fn step_or_omitted_when_absent(&self, value: ValueId, step: BackendStep) -> BackendStep {
         if self.value_is_proven_semantically_absent(value) {
             BackendStep::Omitted { value }
         } else {
@@ -1080,12 +1063,12 @@ fn lower_entry_origin(executable: &AbiReadyExecutable, entry_index: usize, entry
                 .expect("resume ABI owns its return endpoint");
             return BackendEntryOrigin::DeliveredResume { value, layout };
         }
-        if matches!(&entry.tail, LoweredTail::Halt { atom } if atom == UNREACHABLE_CONTROL_ATOM) {
+        if matches!(entry.tail, LoweredTail::Unreachable) {
             return BackendEntryOrigin::Branch;
         }
         panic!("resume entry {entry_index} should have a settled transport position: {entry:?}");
     }
-    if matches!(&entry.tail, LoweredTail::Halt { atom } if atom == UNREACHABLE_CONTROL_ATOM) {
+    if matches!(entry.tail, LoweredTail::Unreachable) {
         return BackendEntryOrigin::Branch;
     }
     match entry.origin {
@@ -1135,7 +1118,7 @@ fn collect_entry_atoms(world: &mut World, entry: &BackendEntry, seen: &mut HashS
 fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     for step in steps {
         match step {
-            BackendStep::Const { literal, .. } | BackendStep::AssertLiteral { literal, .. } => {
+            BackendStep::Const { literal, .. } => {
                 collect_literal_atoms(literal, seen, atoms);
             }
             BackendStep::FieldAccess { field, .. } => {
@@ -1158,15 +1141,10 @@ fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut Hash
             | BackendStep::BinaryOp { .. }
             | BackendStep::UnaryOp { .. }
             | BackendStep::MapIndex { .. }
-            | BackendStep::AssertStruct { .. }
-            | BackendStep::AssertTuple { .. }
             | BackendStep::TupleField { .. }
-            | BackendStep::AssertEmptyList { .. }
-            | BackendStep::AssertSame { .. }
             | BackendStep::SplitList { .. }
             | BackendStep::BitstringInit { .. }
-            | BackendStep::BitstringRead { .. }
-            | BackendStep::AssertBitstringDone { .. } => {}
+            | BackendStep::BitstringRead { .. } => {}
         }
     }
 }
@@ -1178,12 +1156,11 @@ fn collect_tail_atoms(world: &mut World, tail: &BackendTail, seen: &mut HashSet<
             ..
         } => {
             collect_dispatch_atoms(world, &dispatch.plan, seen, atoms);
-            push_atom(seen, atoms, UNREACHABLE_CONTROL_ATOM);
         }
         BackendTail::Dispatch { dispatch, .. } => collect_dispatch_atoms(world, &dispatch.plan, seen, atoms),
         BackendTail::Receive(receive) => collect_dispatch_atoms(world, &receive.dispatch, seen, atoms),
-        BackendTail::Halt { atom } => push_atom(seen, atoms, atom),
         BackendTail::Value { .. }
+        | BackendTail::Unreachable
         | BackendTail::DirectCall { .. }
         | BackendTail::ClosureCall { .. }
         | BackendTail::If { .. } => {}
@@ -1204,6 +1181,9 @@ fn collect_dispatch_atoms(
 ) {
     for prepared in &plan.prepared_keys {
         collect_dispatch_const_atoms(prepared, seen, atoms);
+    }
+    if let Some(last_resort) = plan.last_resort.as_ref().filter(|_| plan.can_fail()) {
+        push_atom(seen, atoms, last_resort.exception);
     }
     for subject in &plan.graph.subjects {
         match &subject.source {

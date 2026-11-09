@@ -16,7 +16,7 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
-    PatternBodyId, PatternDispatchError, PatternRow, SourcePatternError, SourcePatternRows,
+    LastResort, PatternBodyId, PatternDispatchError, PatternRow, SourcePatternError, SourcePatternRows,
     pattern_dispatch_from_source, pattern_dispatch_from_source_with_resolver,
 };
 use fz_runtime::any_value::ValueKind;
@@ -64,7 +64,9 @@ struct ExprBlock {
 struct ExprDispatch {
     plan: Rc<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>>,
     arm_blocks: Vec<ExprOutcome>,
-    miss_block: ExprBlock,
+    /// Where a subject no arm claims goes, or `None` when the plan raises
+    /// its last resort instead.
+    miss_block: Option<ExprBlock>,
 }
 
 #[derive(Debug, Clone)]
@@ -179,37 +181,15 @@ enum ExprStep {
         dispatch: Box<ExprDispatch>,
     },
     Receive(Box<ExprReceive>),
-    Halt {
-        atom: String,
-    },
-    AssertLiteral {
-        source: ValueId,
-        literal: GroundValue,
-    },
-    AssertStruct {
-        source: ValueId,
-        module: super::super::identity::ModuleId,
-    },
     RequireMapValue {
         value: ValueId,
         source: ValueId,
         key: GroundValue,
     },
-    AssertTuple {
-        source: ValueId,
-        arity: usize,
-    },
     TupleField {
         value: ValueId,
         source: ValueId,
         index: usize,
-    },
-    AssertEmptyList {
-        source: ValueId,
-    },
-    AssertSame {
-        source: ValueId,
-        value: ValueId,
     },
     SplitList {
         source: ValueId,
@@ -227,9 +207,6 @@ enum ExprStep {
         reader: ValueId,
         spec: LoweredBitFieldSpec,
         is_last: bool,
-    },
-    AssertBitstringDone {
-        reader: ValueId,
     },
 }
 
@@ -1156,14 +1133,48 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn lower_expr_as_block(
         &mut self,
         expr: &Spanned<Expr>,
+        env: HashMap<Var, ValueId>,
+    ) -> Result<ExprBlock, FatalError> {
+        match &expr.node {
+            Expr::Block(statements) if !statements.is_empty() => self.lower_statements(expr.span, statements, env),
+            _ => self.lower_statements(expr.span, std::slice::from_ref(expr), env),
+        }
+    }
+
+    /// Lowers a body's statements in order. A match among them is a decision
+    /// whose one arm is the rest of the statements, so the names it binds are
+    /// the arm's and its value waits at no join; the arm's result is the
+    /// body's, or the matched value when the match comes last.
+    fn lower_statements(
+        &mut self,
+        span: Span,
+        statements: &[Spanned<Expr>],
         mut env: HashMap<Var, ValueId>,
     ) -> Result<ExprBlock, FatalError> {
         let mut steps = Vec::new();
-        let result = self.lower_expr(expr, &mut env, &mut steps)?;
+        let mut result = None;
+        for (index, statement) in statements.iter().enumerate() {
+            let Expr::Match(pattern, rhs) = &statement.node else {
+                result = Some(self.lower_expr(statement, &mut env, &mut steps)?);
+                continue;
+            };
+            let value = self.lower_expr(rhs, &mut env, &mut steps)?;
+            let rest = &statements[index + 1..];
+            match self.lower_match(pattern, value, &mut env, &mut steps, MatchArm::Rest(span, rest))? {
+                Some(decided) => {
+                    return Ok(ExprBlock {
+                        span,
+                        steps,
+                        result: decided,
+                    });
+                }
+                None => result = Some(value),
+            }
+        }
         Ok(ExprBlock {
-            span: expr.span,
+            span,
             steps,
-            result,
+            result: result.expect("a body has at least one statement"),
         })
     }
 
@@ -1448,7 +1459,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             Expr::Ascribe(inner, _) => self.lower_expr(inner, env, steps),
             Expr::Match(pattern, rhs) => {
                 let value = self.lower_expr(rhs, env, steps)?;
-                self.apply_pattern(&pattern.node, pattern.span, value, env, steps)?;
+                self.lower_match(pattern, value, env, steps, MatchArm::Value)?;
                 Ok(value)
             }
             Expr::Block(exprs) => {
@@ -1939,14 +1950,14 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
-        self.lower_case_or_halt(span, subject, clauses, "case_clause", env, steps)
+        self.lower_case_raising(span, subject, clauses, LastResort::case_clause(), env, steps)
     }
 
     /// `left and right` and `left or right` are a `case` on `left`: the one
     /// boolean that does not decide hands over to `right`, which is evaluated
-    /// only then, and a left that is no boolean at all halts with
+    /// only then, and a left that is no boolean at all raises
     /// `BadBooleanError`. A left whose type is a boolean cannot reach that
-    /// halt, so the dispatch leaves it out.
+    /// raise, so the dispatch leaves it out.
     fn lower_strict_boolean_binop(
         &mut self,
         op: BinOp,
@@ -1961,11 +1972,12 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             (decides_on, Spanned::new(Expr::Bool(decides_on), span)),
             (!decides_on, right.clone()),
         ];
-        self.lower_boolean_case(span, left, arms, "BadBooleanError", env, steps)
+        let operator = if decides_on { "or" } else { "and" };
+        self.lower_boolean_case(span, left, arms, LastResort::bad_boolean(operator), env, steps)
     }
 
     /// `not input` is a `case` on `input` that swaps the two booleans and
-    /// halts with `ArgumentError` on anything else.
+    /// raises `ArgumentError` on anything else.
     fn lower_strict_not(
         &mut self,
         span: Span,
@@ -1977,7 +1989,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             (true, Spanned::new(Expr::Bool(false), span)),
             (false, Spanned::new(Expr::Bool(true), span)),
         ];
-        self.lower_boolean_case(span, input, arms, "ArgumentError", env, steps)
+        self.lower_boolean_case(span, input, arms, LastResort::argument_error(), env, steps)
     }
 
     fn lower_boolean_case(
@@ -1985,7 +1997,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         span: Span,
         subject: &Spanned<Expr>,
         arms: [(bool, Spanned<Expr>); 2],
-        halt_atom: &str,
+        last_resort: LastResort,
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
@@ -1995,20 +2007,20 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             body,
             span,
         });
-        self.lower_case_or_halt(span, subject, &clauses, halt_atom, env, steps)
+        self.lower_case_raising(span, subject, &clauses, last_resort, env, steps)
     }
 
-    fn lower_case_or_halt(
+    fn lower_case_raising(
         &mut self,
         span: Span,
         subject: &Spanned<Expr>,
         clauses: &[MatchClause],
-        halt_atom: &str,
+        last_resort: LastResort,
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let subject_value = self.lower_expr(subject, env, steps)?;
-        let plan = self.compile_match_dispatch("case", span, match_rows(clauses))?;
+        let plan = self.compile_match_dispatch("case", span, match_rows(clauses), Some(last_resort))?;
         let bindings = self.lower_dispatch_bindings(&plan, env, steps)?;
         let arm_blocks = clauses
             .iter()
@@ -2023,7 +2035,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             dispatch: Box::new(ExprDispatch {
                 plan: Rc::new(plan),
                 arm_blocks,
-                miss_block: self.halt_block(span, halt_atom),
+                miss_block: None,
             }),
         });
         Ok(value)
@@ -2061,17 +2073,24 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         arms: &[(Spanned<Expr>, Spanned<Expr>)],
         mut env: HashMap<Var, ValueId>,
     ) -> Result<ExprBlock, FatalError> {
-        let Some((cond, body)) = arms.first() else {
-            return Ok(self.halt_block(span, "cond_clause"));
+        let Some(((cond, body), rest)) = arms.split_first() else {
+            return Err(emit_job_diagnostic(
+                self.telemetry,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    "expected -> clauses for :do in \"cond\"".to_string(),
+                    span,
+                ),
+            ));
         };
 
         let mut steps = Vec::new();
         let cond_value = self.lower_expr(cond, &mut env, &mut steps)?;
         let arm_block = self.lower_expr_as_block(body, env.clone())?;
-        let miss_block = if arms.len() == 1 {
-            self.halt_block(span, "cond_clause")
+        let (last_resort, miss_block) = if rest.is_empty() {
+            (Some(LastResort::cond_clause()), None)
         } else {
-            self.lower_cond_block(span, &arms[1..], env)?
+            (None, Some(self.lower_cond_block(span, rest, env)?))
         };
         let value = self.fresh_value();
         steps.push(ExprStep::Dispatch {
@@ -2082,7 +2101,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 prepared: Vec::new(),
             },
             dispatch: Box::new(ExprDispatch {
-                plan: Rc::new(self.compile_bool_true_dispatch(span)?),
+                plan: Rc::new(self.compile_bool_true_dispatch(span, last_resort)?),
                 arm_blocks: vec![ExprOutcome {
                     arguments: Box::default(),
                     block: arm_block,
@@ -2123,11 +2142,11 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             WithBinding::Match(pattern, expr) => {
                 let mut steps = Vec::new();
                 let matched = self.lower_expr(expr, &mut env, &mut steps)?;
-                let plan = self.compile_single_pattern_dispatch("with", pattern, span)?;
+                let plan = self.compile_single_pattern_dispatch("with", pattern, span, None)?;
                 let mut success_env = env.clone();
                 let arguments = self.bind_outcome_arguments(&plan.outcomes[0], &mut success_env);
                 let success_block = self.lower_with_block(span, rest, body, else_clauses, success_env)?;
-                let miss_block = self.lower_with_fail_block(span, matched, else_clauses, env.clone())?;
+                let miss_block = Some(self.lower_with_fail_block(span, matched, else_clauses, env.clone())?);
                 let bindings = self.lower_dispatch_bindings(&plan, &env, &mut steps)?;
                 let value = self.fresh_value();
                 steps.push(ExprStep::Dispatch {
@@ -2166,7 +2185,12 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 result: failed,
             });
         }
-        let plan = self.compile_match_dispatch("with else", span, match_rows(else_clauses))?;
+        let plan = self.compile_match_dispatch(
+            "with else",
+            span,
+            match_rows(else_clauses),
+            Some(LastResort::with_clause()),
+        )?;
         let mut steps = Vec::new();
         let bindings = self.lower_dispatch_bindings(&plan, &env, &mut steps)?;
         let arm_blocks = else_clauses
@@ -2185,7 +2209,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                     dispatch: Box::new(ExprDispatch {
                         plan: Rc::new(plan),
                         arm_blocks,
-                        miss_block: self.halt_block(span, "with_clause"),
+                        miss_block: None,
                     }),
                 });
                 steps
@@ -2216,7 +2240,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         let timeout = after
             .map(|after| self.lower_expr(&after.timeout, env, steps))
             .transpose()?;
-        let plan = self.compile_match_dispatch("receive", span, match_rows(clauses))?;
+        let plan = self.compile_match_dispatch("receive", span, match_rows(clauses), None)?;
         let bindings = self.lower_dispatch_bindings(&plan, env, steps)?;
         let captures = self.receive_capture_values(clauses, after, env);
         let outcomes = plan
@@ -2275,8 +2299,13 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         label: &str,
         span: Span,
         rows: Vec<PatternRow<super::super::types::Ty>>,
+        last_resort: Option<LastResort>,
     ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
         let source = SourcePatternRows::lexical(1, rows);
+        let source = match last_resort {
+            Some(last_resort) => source.raising(last_resort),
+            None => source,
+        };
         let namespace = self.namespace;
         let redundancy_check = (source.rows.len() > 1).then(|| source.clone());
         let mut resolver = super::super::dispatch::SourcePatternResolver {
@@ -2314,6 +2343,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         label: &str,
         pattern: &Spanned<Pattern>,
         span: Span,
+        last_resort: Option<LastResort>,
     ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
         self.compile_match_dispatch(
             label,
@@ -2324,14 +2354,16 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 guard: None,
                 body_id: 0,
             }],
+            last_resort,
         )
     }
 
     fn compile_bool_true_dispatch(
         &mut self,
         span: Span,
+        last_resort: Option<LastResort>,
     ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
-        pattern_dispatch_from_source(SourcePatternRows::lexical(
+        let rows = SourcePatternRows::lexical(
             1,
             vec![PatternRow {
                 patterns: vec![Spanned::new(Pattern::Bool(true), span)],
@@ -2339,8 +2371,13 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 guard: None,
                 body_id: 0,
             }],
-        ))
-        .map_err(|error| emit_local_dispatch_error(self.telemetry, "cond", span, error))
+        );
+        let rows = match last_resort {
+            Some(last_resort) => rows.raising(last_resort),
+            None => rows,
+        };
+        pattern_dispatch_from_source(rows)
+            .map_err(|error| emit_local_dispatch_error(self.telemetry, "cond", span, error))
     }
 
     /// Local dispatch rows carry no prematch, so every pin names a binding the
@@ -2443,21 +2480,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             timeout,
             body: self.lower_expr_as_block(&after.body, env.clone())?,
         })
-    }
-
-    fn halt_block(&mut self, span: Span, atom: &str) -> ExprBlock {
-        let value = self.fresh_value();
-        ExprBlock {
-            span,
-            steps: vec![
-                ExprStep::Const {
-                    value,
-                    literal: GroundValue::Nil,
-                },
-                ExprStep::Halt { atom: atom.to_string() },
-            ],
-            result: value,
-        }
     }
 
     fn lower_lambda(
@@ -2571,6 +2593,11 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         for (entry, step, head, origin) in &sources {
             let source = match origin {
                 TransportOrigin::LocalValue(source) => *source,
+                TransportOrigin::OutcomeSubject { owner, subject }
+                    if let Some(input) = decision_input_value(body, *owner, *subject) =>
+                {
+                    input
+                }
                 TransportOrigin::OutcomeSubject { owner, subject } => {
                     let LoweredBody::Clauses { entries, .. } = body;
                     let (target, existing) = {
@@ -2852,14 +2879,16 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                             }
                         })
                         .collect::<Vec<_>>();
-                    let miss_entry = self.plan_block(
-                        dispatch.miss_block.clone(),
-                        ControlEntryOrigin::Branch,
-                        branch_dest,
-                        Vec::new(),
-                        Vec::new(),
-                        entries,
-                    );
+                    let miss_entry = dispatch.miss_block.clone().map(|miss_block| {
+                        self.plan_block(
+                            miss_block,
+                            ControlEntryOrigin::Branch,
+                            branch_dest,
+                            Vec::new(),
+                            Vec::new(),
+                            entries,
+                        )
+                    });
                     return (
                         lowered,
                         LoweredTail::Dispatch {
@@ -2937,9 +2966,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                         })),
                     );
                 }
-                ExprStep::Halt { atom } => {
-                    return (lowered, LoweredTail::Halt { atom: atom.clone() });
-                }
                 _ => lowered.push(lower_projection_step(step)),
             }
         }
@@ -2952,122 +2978,59 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         )
     }
 
-    fn apply_pattern(
+    /// `pattern = value` is a decision of one row that raises `MatchError`
+    /// when the row does not match. Its arm binds the pattern's names, and
+    /// what follows the match reads them there. A pattern that binds without
+    /// asking anything, such as a lone name, needs no decision at all.
+    /// Lowers `pattern = value`. A pattern that wins at its root binds in
+    /// place and answers `None`. Otherwise the match is a decision: when its
+    /// value is consumed, its arm binds the names into `env` and delivers the
+    /// value onward; when the rest of a body follows it, that rest is its
+    /// arm, and the decision's own value is the body's result.
+    fn lower_match(
         &mut self,
-        pattern: &Pattern,
-        span: Span,
-        source: ValueId,
+        pattern: &Spanned<Pattern>,
+        value: ValueId,
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
-    ) -> Result<(), FatalError> {
-        match pattern {
-            Pattern::Wildcard => Ok(()),
-            Pattern::Var(name) => {
-                env.insert(name.clone(), source);
-                Ok(())
-            }
-            Pattern::Int(value) => {
-                steps.push(ExprStep::AssertLiteral {
-                    source,
-                    literal: GroundValue::Int(*value),
-                });
-                Ok(())
-            }
-            Pattern::Float(value) => {
-                steps.push(ExprStep::AssertLiteral {
-                    source,
-                    literal: GroundValue::from_f64(*value),
-                });
-                Ok(())
-            }
-            Pattern::Binary(value) => {
-                steps.push(ExprStep::AssertLiteral {
-                    source,
-                    literal: GroundValue::Binary(value.clone()),
-                });
-                Ok(())
-            }
-            Pattern::Atom(value) => {
-                steps.push(ExprStep::AssertLiteral {
-                    source,
-                    literal: GroundValue::Atom(value.clone()),
-                });
-                Ok(())
-            }
-            Pattern::Bool(value) => {
-                steps.push(ExprStep::AssertLiteral {
-                    source,
-                    literal: GroundValue::Bool(*value),
-                });
-                Ok(())
-            }
-            Pattern::Nil => {
-                steps.push(ExprStep::AssertLiteral {
-                    source,
-                    literal: GroundValue::Nil,
-                });
-                Ok(())
-            }
-            Pattern::Tuple(items) => {
-                steps.push(ExprStep::AssertTuple {
-                    source,
-                    arity: items.len(),
-                });
-                for (index, item) in items.iter().enumerate() {
-                    let value = self.fresh_value();
-                    steps.push(ExprStep::TupleField { value, source, index });
-                    self.apply_pattern(&item.node, item.span, value, env, steps)?;
-                }
-                Ok(())
-            }
-            Pattern::List(items, tail) => {
-                if items.is_empty() && tail.is_none() {
-                    steps.push(ExprStep::AssertEmptyList { source });
-                    return Ok(());
-                }
-                let mut current = source;
-                for item in items {
-                    let head = self.fresh_value();
-                    let tail_value = self.fresh_value();
-                    steps.push(ExprStep::SplitList {
-                        source: current,
-                        head,
-                        tail: tail_value,
-                    });
-                    self.apply_pattern(&item.node, item.span, head, env, steps)?;
-                    current = tail_value;
-                }
-                if let Some(tail) = tail {
-                    self.apply_pattern(&tail.node, tail.span, current, env, steps)?;
-                } else {
-                    steps.push(ExprStep::AssertEmptyList { source: current });
-                }
-                Ok(())
-            }
-            Pattern::As(name, inner) => {
-                env.insert(name.clone(), source);
-                self.apply_pattern(&inner.node, inner.span, source, env, steps)
-            }
-            Pattern::Pinned(name) => {
-                let Some(pinned) = env.get(name).copied() else {
-                    return Err(emit_job_diagnostic(
-                        self.telemetry,
-                        Diagnostic::error(
-                            codes::LOWER_UNBOUND,
-                            format!("compiler2 lowering found unbound pinned name `{name}`"),
-                            span,
-                        ),
-                    ));
-                };
-                steps.push(ExprStep::AssertSame { source, value: pinned });
-                Ok(())
-            }
-            Pattern::Map(entries) => self.lower_map_pattern(entries, span, source, env, steps, true),
-            Pattern::Struct { module, fields } => {
-                self.lower_struct_pattern(module, fields, span, source, env, steps, true)
-            }
-            Pattern::Bitstring(fields) => self.lower_bitstring_pattern(fields, span, source, env, steps, true),
+        arm: MatchArm<'_>,
+    ) -> Result<Option<ValueId>, FatalError> {
+        let plan =
+            self.compile_single_pattern_dispatch("match", pattern, pattern.span, Some(LastResort::match_error()))?;
+        if plan.is_direct_outcome() {
+            self.bind_pattern(&pattern.node, pattern.span, value, env, steps)?;
+            return Ok(None);
         }
+        let bindings = self.lower_dispatch_bindings(&plan, env, steps)?;
+        let matched_value = ExprBlock {
+            span: pattern.span,
+            steps: Vec::new(),
+            result: value,
+        };
+        let (arguments, block, decided) = match arm {
+            MatchArm::Value => (self.bind_outcome_arguments(&plan.outcomes[0], env), matched_value, None),
+            MatchArm::Rest(span, rest) => {
+                let mut arm_env = env.clone();
+                let arguments = self.bind_outcome_arguments(&plan.outcomes[0], &mut arm_env);
+                let block = if rest.is_empty() {
+                    matched_value
+                } else {
+                    self.lower_statements(span, rest, arm_env)?
+                };
+                (arguments, block, Some(self.fresh_value()))
+            }
+        };
+        steps.push(ExprStep::Dispatch {
+            value: decided.unwrap_or_else(|| self.fresh_value()),
+            inputs: vec![value],
+            bindings,
+            dispatch: Box::new(ExprDispatch {
+                plan: Rc::new(plan),
+                arm_blocks: vec![ExprOutcome { arguments, block }],
+                miss_block: None,
+            }),
+        });
+        Ok(decided)
     }
 
     fn bind_pattern(
@@ -3121,22 +3084,18 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 env.insert(name.clone(), source);
                 self.bind_pattern(&inner.node, inner.span, source, env, steps)
             }
-            Pattern::Map(entries) => self.lower_map_pattern(entries, span, source, env, steps, false),
-            Pattern::Struct { module, fields } => {
-                self.lower_struct_pattern(module, fields, span, source, env, steps, false)
-            }
-            Pattern::Bitstring(fields) => self.lower_bitstring_pattern(fields, span, source, env, steps, false),
+            Pattern::Map(entries) => self.lower_map_pattern(entries, source, env, steps),
+            Pattern::Struct { module, fields } => self.lower_struct_pattern(module, fields, span, source, env, steps),
+            Pattern::Bitstring(fields) => self.lower_bitstring_pattern(fields, source, env, steps),
         }
     }
 
     fn lower_map_pattern(
         &mut self,
         entries: &[(Spanned<Pattern>, Spanned<Pattern>)],
-        span: Span,
         source: ValueId,
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
-        with_asserts: bool,
     ) -> Result<(), FatalError> {
         for (key_pattern, value_pattern) in entries {
             let Some(key) = literal_from_pattern(&key_pattern.node) else {
@@ -3154,13 +3113,8 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             };
             let value = self.fresh_value();
             steps.push(ExprStep::RequireMapValue { value, source, key });
-            if with_asserts {
-                self.apply_pattern(&value_pattern.node, value_pattern.span, value, env, steps)?;
-            } else {
-                self.bind_pattern(&value_pattern.node, value_pattern.span, value, env, steps)?;
-            }
+            self.bind_pattern(&value_pattern.node, value_pattern.span, value, env, steps)?;
         }
-        let _ = span;
         Ok(())
     }
 
@@ -3172,7 +3126,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         source: ValueId,
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
-        with_asserts: bool,
     ) -> Result<(), FatalError> {
         let module_id = self.resolve_struct_module(module, span)?;
         // Same invariant as `lower_struct_expr`: `collect_local_pattern_requirements`'s
@@ -3190,10 +3143,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             .iter()
             .map(|(name, pattern)| (name.as_str(), pattern))
             .collect::<HashMap<_, _>>();
-        steps.push(ExprStep::AssertStruct {
-            source,
-            module: module_id,
-        });
         for field in &order {
             let Some(pattern) = by_name.remove(field.as_str()) else {
                 continue;
@@ -3204,11 +3153,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 base: source,
                 field: field.clone(),
             });
-            if with_asserts {
-                self.apply_pattern(&pattern.node, pattern.span, value, env, steps)?;
-            } else {
-                self.bind_pattern(&pattern.node, pattern.span, value, env, steps)?;
-            }
+            self.bind_pattern(&pattern.node, pattern.span, value, env, steps)?;
         }
         Ok(())
     }
@@ -3216,11 +3161,9 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn lower_bitstring_pattern(
         &mut self,
         fields: &[BitField<Spanned<Pattern>>],
-        span: Span,
         source: ValueId,
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
-        with_asserts: bool,
     ) -> Result<(), FatalError> {
         let mut reader = self.fresh_value();
         steps.push(ExprStep::BitstringInit { reader, source });
@@ -3244,19 +3187,9 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 )?,
                 is_last: index + 1 == fields.len(),
             });
-            steps.push(ExprStep::AssertLiteral {
-                source: ok,
-                literal: GroundValue::Bool(true),
-            });
-            if with_asserts {
-                self.apply_pattern(&field.value.node, field.value.span, value, env, steps)?;
-            } else {
-                self.bind_pattern(&field.value.node, field.value.span, value, env, steps)?;
-            }
+            self.bind_pattern(&field.value.node, field.value.span, value, env, steps)?;
             reader = next_reader;
         }
-        steps.push(ExprStep::AssertBitstringDone { reader });
-        let _ = span;
         Ok(())
     }
 
@@ -3352,32 +3285,15 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
             base: *base,
             field: field.clone(),
         },
-        ExprStep::AssertLiteral { source, literal } => LoweredStep::AssertLiteral {
-            source: *source,
-            literal: literal.clone(),
-        },
-        ExprStep::AssertStruct { source, module } => LoweredStep::AssertStruct {
-            source: *source,
-            module: *module,
-        },
         ExprStep::RequireMapValue { value, source, key } => LoweredStep::RequireMapValue {
             value: *value,
             source: *source,
             key: key.clone(),
         },
-        ExprStep::AssertTuple { source, arity } => LoweredStep::AssertTuple {
-            source: *source,
-            arity: *arity,
-        },
         ExprStep::TupleField { value, source, index } => LoweredStep::TupleField {
             value: *value,
             source: *source,
             index: *index,
-        },
-        ExprStep::AssertEmptyList { source } => LoweredStep::AssertEmptyList { source: *source },
-        ExprStep::AssertSame { source, value } => LoweredStep::AssertSame {
-            source: *source,
-            value: *value,
         },
         ExprStep::SplitList { source, head, tail } => LoweredStep::SplitList {
             source: *source,
@@ -3403,16 +3319,39 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
             spec: spec.clone(),
             is_last: *is_last,
         },
-        ExprStep::AssertBitstringDone { reader } => LoweredStep::AssertBitstringDone { reader: *reader },
         ExprStep::DirectCall { .. }
         | ExprStep::ClosureCall { .. }
         | ExprStep::If { .. }
         | ExprStep::Dispatch { .. }
-        | ExprStep::Receive(_)
-        | ExprStep::Halt { .. } => {
+        | ExprStep::Receive(_) => {
             panic!("control steps should be lowered into tails before projection conversion")
         }
     }
+}
+
+/// What the arm of a match decision does once the pattern has bound.
+enum MatchArm<'a> {
+    /// The match's value is consumed where it stands: the arm delivers it.
+    Value,
+    /// The rest of a body follows the match: the arm is that rest.
+    Rest(Span, &'a [Spanned<Expr>]),
+}
+
+/// The value a decision was handed for `subject`, when `subject` is one of
+/// its inputs: that value is the subject.
+fn decision_input_value(
+    body: &LoweredBody,
+    owner: ControlEntryId,
+    subject: crate::dispatch_matrix::SubjectId,
+) -> Option<ValueId> {
+    let LoweredBody::Clauses { entries, .. } = body;
+    let LoweredTail::Dispatch { inputs, dispatch, .. } = &entries[owner.as_u32() as usize].tail else {
+        return None;
+    };
+    let crate::dispatch_matrix::SubjectSource::Input { ordinal } = &dispatch.plan.graph.subject(subject)?.source else {
+        return None;
+    };
+    inputs.get(*ordinal as usize).copied()
 }
 
 /// The values a clause binds before its entry runs: the clause parameters and
@@ -4105,7 +4044,7 @@ fn child_entries(tail: &LoweredTail) -> Vec<ControlEntryId> {
             }
             children
         }
-        LoweredTail::Halt { .. } => Vec::new(),
+        LoweredTail::Unreachable => Vec::new(),
     }
 }
 

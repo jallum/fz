@@ -1,5 +1,5 @@
 #---
-# purpose: a function with only literal clauses and no wildcard is inexhaustive; an unmatched call aborts at runtime with a no-matching-clause fault
+# purpose: a function with only literal clauses and no wildcard is inexhaustive; an unmatched call raises FunctionClauseError
 # expect: abort
 #---
 def classify(0), do: :zero

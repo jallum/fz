@@ -2,8 +2,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use super::super::body::{
-    CallArg, CallInputMode, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody,
-    LoweredEntry, LoweredStep, LoweredTail, ValueId, callsite_call_args, callsite_input_modes,
+    CallArg, CallInputMode, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DeliveredValueSource,
+    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId, callsite_call_args, callsite_input_modes,
 };
 use super::super::callsite_dispatch::dispatch_stress;
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, settled_uses};
@@ -21,6 +21,9 @@ use super::super::semantic::{
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
+use crate::dispatch_matrix::demand::DispatchDemand;
+use crate::dispatch_matrix::pattern::PatternDispatchPlan;
+use crate::dispatch_matrix::{ProjectionKind, SubjectId, SubjectSource};
 use crate::telemetry::Telemetry;
 
 #[cfg(test)]
@@ -102,6 +105,9 @@ struct DerivedExecutableDemand {
 #[derive(Default)]
 struct EntryDemandWalkTable {
     answers: HashMap<(ControlEntryId, RuntimeDemand), HashMap<ValueId, RuntimeDemand>>,
+    /// What each walked entry reads of its parameters. A decision that hands
+    /// an arm its parameters reads the subjects behind them this much.
+    parameters: HashMap<ValueId, RuntimeDemand>,
     /// How many entries this walk actually visited, as opposed to answered
     /// from the memo. [`emit_runtime_demand_walk`] reports it.
     entries_walked: u64,
@@ -119,6 +125,17 @@ impl EntryDemandWalkTable {
     fn record(&mut self, key: (ControlEntryId, RuntimeDemand), answer: HashMap<ValueId, RuntimeDemand>) {
         self.answers.insert(key, answer);
         self.entries_walked += 1;
+    }
+
+    fn note_parameter(&mut self, parameter: ValueId, demand: RuntimeDemand) {
+        join_map_demand(&mut self.parameters, parameter, demand);
+    }
+
+    fn parameter(&self, parameter: ValueId) -> RuntimeDemand {
+        self.parameters
+            .get(&parameter)
+            .cloned()
+            .unwrap_or_else(RuntimeDemand::ignore)
     }
 }
 
@@ -1415,7 +1432,9 @@ fn collect_entry_external_demands(
         }
     }
     for param in &entry.params {
-        live.remove(param);
+        if let Some(demand) = live.remove(param) {
+            walks.note_parameter(*param, demand);
+        }
     }
     merge_live_demands(&mut external, live);
     walks.record(key, external.clone());
@@ -1593,9 +1612,6 @@ fn collect_entry_live_demands(
             bindings,
             dispatch,
         } => {
-            for input in inputs {
-                note_live_demand(out, &mut live, *input, RuntimeDemand::whole());
-            }
             for value in bindings.pinned.iter().chain(bindings.prepared.iter()) {
                 note_live_demand(out, &mut live, *value, RuntimeDemand::whole());
             }
@@ -1616,6 +1632,12 @@ fn collect_entry_live_demands(
                         walks,
                     ),
                 );
+            }
+            let input_demands = inline_dispatch_input_demands(dispatch, |parameter| {
+                handed_to_arm_demand(facts, callable_flows, parameter, walks.parameter(parameter))
+            });
+            for (input, demand) in inputs.iter().zip(input_demands) {
+                note_live_demand(out, &mut live, *input, demand);
             }
         }
         LoweredTail::Receive(receive) => {
@@ -1673,7 +1695,7 @@ fn collect_entry_live_demands(
                 record_entry_capture_demands(out, target, &shared);
             }
         }
-        LoweredTail::Halt { .. } => {}
+        LoweredTail::Unreachable => {}
     }
 
     propagate_steps_reverse(
@@ -1807,8 +1829,27 @@ fn callsite_returns_feeding(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> H
         for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
             pending.extend(step_sources_of(step, value));
         }
+        pending.extend(
+            entries
+                .iter()
+                .filter_map(|entry| decision_source_of(&entry.tail, value)),
+        );
     }
     feeding
+}
+
+/// The input an inline decision carves `value` out of when it hands `value`
+/// to one of its arms.
+fn decision_source_of(tail: &LoweredTail, value: ValueId) -> Option<ValueId> {
+    let LoweredTail::Dispatch { inputs, dispatch, .. } = tail else {
+        return None;
+    };
+    dispatch
+        .outcomes
+        .iter()
+        .flat_map(|edge| edge.arguments.iter())
+        .find(|argument| argument.parameter == value)
+        .map(|argument| inputs[subject_input_ordinal(&dispatch.plan, argument.subject) as usize])
 }
 
 /// The values `step` reads to define `value`; empty when `step` does not
@@ -1884,12 +1925,6 @@ fn step_sources_of(step: &LoweredStep, value: ValueId) -> Vec<ValueId> {
         LoweredStep::Const { .. }
         | LoweredStep::FunctionRef { .. }
         | LoweredStep::Lambda { .. }
-        | LoweredStep::AssertLiteral { .. }
-        | LoweredStep::AssertStruct { .. }
-        | LoweredStep::AssertTuple { .. }
-        | LoweredStep::AssertEmptyList { .. }
-        | LoweredStep::AssertSame { .. }
-        | LoweredStep::AssertBitstringDone { .. }
         | LoweredStep::Tuple { .. }
         | LoweredStep::List { .. }
         | LoweredStep::Map { .. }
@@ -1960,7 +1995,6 @@ pub(super) fn propagate_steps_reverse(
     out: &mut ExecutableRuntimeDemand,
     callable_flows: &mut CallableFlowBuilder,
 ) {
-    let asserted_tuple_arities = step_asserted_tuple_arities(steps);
     for step in steps.iter().rev() {
         match step {
             LoweredStep::Const { .. } => {}
@@ -2089,42 +2123,22 @@ pub(super) fn propagate_steps_reverse(
                     note_live_demand(out, live, *base, RuntimeDemand::whole());
                 }
             }
-            LoweredStep::AssertLiteral { source, .. } => {
-                note_live_demand(out, live, *source, RuntimeDemand::whole());
-            }
-            LoweredStep::AssertStruct { source, .. } => {
-                note_live_demand(out, live, *source, RuntimeDemand::whole());
-            }
             LoweredStep::RequireMapValue { value, source, .. } => {
                 if !take_live_demand(live, *value).is_ignore() {
-                    note_live_demand(out, live, *source, RuntimeDemand::whole());
-                }
-            }
-            LoweredStep::AssertTuple { source, arity } => {
-                if !live.contains_key(source) || asserted_tuple_arities.get(source).copied() != Some(*arity) {
                     note_live_demand(out, live, *source, RuntimeDemand::whole());
                 }
             }
             LoweredStep::TupleField { value, source, index } => {
                 let demand = take_live_demand(live, *value);
                 if !demand.is_ignore() {
-                    // Without an assertion to say how wide the tuple is, this
-                    // names the fields up to the one it reads and stops. That
-                    // is a prefix, not a guess about the arity: a sibling
+                    // This names the fields up to the one it reads and stops.
+                    // That is a prefix, not a guess about the arity: a sibling
                     // projection that reaches further joins its own longer
                     // prefix onto this one.
-                    let arity = asserted_tuple_arities.get(source).copied().unwrap_or(index + 1);
-                    let mut fields = vec![RuntimeDemand::ignore(); arity];
+                    let mut fields = vec![RuntimeDemand::ignore(); index + 1];
                     fields[*index] = demand;
                     note_live_demand(out, live, *source, RuntimeDemand::tuple_fields(fields));
                 }
-            }
-            LoweredStep::AssertEmptyList { source } => {
-                note_live_demand(out, live, *source, RuntimeDemand::whole());
-            }
-            LoweredStep::AssertSame { source, value } => {
-                note_live_demand(out, live, *source, RuntimeDemand::whole());
-                note_live_demand(out, live, *value, RuntimeDemand::whole());
             }
             LoweredStep::SplitList { source, head, tail } => {
                 let head_demand = take_live_demand(live, *head);
@@ -2160,73 +2174,112 @@ pub(super) fn propagate_steps_reverse(
                     }
                 }
             }
-            LoweredStep::AssertBitstringDone { reader } => {
-                note_live_demand(out, live, *reader, RuntimeDemand::whole());
-            }
-        }
-    }
-    // `jobs/backend.rs::lower_step` packages a `TupleField` step into a real
-    // `BackendStep::TupleField` unconditionally — unlike the fresh-construction
-    // steps (`construction_step_or_omitted`), it
-    // has no `Omitted` fallback for a provably-unread projection. Native
-    // codegen therefore always reads `source` to extract the field, even
-    // when every field ever projected from it goes unused downstream (e.g.
-    // a guard-passed match arm that destructures `{:ok, s}` but returns a
-    // literal without touching `s`). The per-step handling above already
-    // keeps `source` live whenever ANY projected field carries real demand
-    // (the ordinary, common case — no change needed there), but when EVERY
-    // field projected from a given `source` is ignored, `source` never
-    // enters `live` at all and its transport lane starves — the fz-xvq
-    // "materialize absent value" crash. This closing sweep is the exact,
-    // minimal net for only that starved case: for any `source` this steps
-    // slice projects a `TupleField` from that isn't already live by any
-    // other means, float it to a per-field `Whole` (`tuple_fields`, not a
-    // bare `whole()`) so the transport layer keeps the same field-split
-    // freedom an already-demanded source has — a bare `whole()` would
-    // instead assert the *opaque box* is needed, forcing a single boxed
-    // lane and coarsening an otherwise-splittable tuple (e.g. a `{:cont,
-    // acc}` HOF continuation whose split raw lanes another clause of the
-    // same shared body legitimately demands). Sources that already carry
-    // demand from a live field are untouched, so this cannot regress the
-    // split-lane shape of an already-working case.
-    let mut floored = HashSet::new();
-    for step in steps {
-        if let LoweredStep::TupleField { source, .. } = step
-            && !live.contains_key(source)
-            && floored.insert(*source)
-        {
-            let arity = asserted_tuple_arities.get(source).copied().unwrap_or_else(|| {
-                steps
-                    .iter()
-                    .filter_map(|step| match step {
-                        LoweredStep::TupleField {
-                            source: candidate,
-                            index,
-                            ..
-                        } if candidate == source => Some(*index + 1),
-                        _ => None,
-                    })
-                    .max()
-                    .unwrap_or(1)
-            });
-            note_live_demand(
-                out,
-                live,
-                *source,
-                RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(); arity]),
-            );
         }
     }
 }
 
-fn step_asserted_tuple_arities(steps: &[LoweredStep]) -> HashMap<ValueId, usize> {
-    let mut arities = HashMap::new();
-    for step in steps {
-        if let LoweredStep::AssertTuple { source, arity } = step {
-            arities.insert(*source, *arity);
+/// What an inline decision reads of each input: what its questions ask, each
+/// subject it hands an arm (whole, since an arm takes its parameters as whole
+/// values, and as that arm reads it, so a callable keeps the calls made on
+/// it), and the whole input when its last resort shows the value that matched
+/// nothing. A tuple it takes apart is read field by field, so it can travel as
+/// lanes.
+fn inline_dispatch_input_demands(
+    dispatch: &ControlDispatch,
+    mut parameter_demand: impl FnMut(ValueId) -> RuntimeDemand,
+) -> Vec<RuntimeDemand> {
+    let plan = &dispatch.plan;
+    let mut asked = plan.input_demand().to_vec();
+    let raises_showing = plan.can_fail()
+        && dispatch.miss_entry.is_none()
+        && plan
+            .last_resort
+            .as_ref()
+            .is_some_and(|last_resort| last_resort.shows_subject);
+    if raises_showing && let Some(subject) = asked.first_mut() {
+        *subject = DispatchDemand::Whole;
+    }
+    let mut input_demands = asked
+        .iter()
+        .enumerate()
+        .map(|(ordinal, demand)| {
+            let proven_arity = (!plan.can_fail()).then(|| plan.proven_tuple_arity(ordinal)).flatten();
+            runtime_demand_of_dispatch(demand, proven_arity)
+        })
+        .collect::<Vec<_>>();
+    for argument in dispatch.outcomes.iter().flat_map(|edge| edge.arguments.iter()) {
+        let mut handed = RuntimeDemand::whole();
+        handed.join_assign(&parameter_demand(argument.parameter));
+        let (ordinal, demand) = input_demand_through_subject(plan, argument.subject, handed);
+        input_demands[ordinal as usize].join_assign(&demand);
+    }
+    input_demands
+}
+
+/// An arm takes its parameters as whole values, so a callable a decision
+/// hands to one is a first-class value from there on, whatever the arm then
+/// does with it.
+fn handed_to_arm_demand(
+    facts: &RuntimeDemandFacts<'_>,
+    callable_flows: &mut CallableFlowBuilder,
+    parameter: ValueId,
+    mut demand: RuntimeDemand,
+) -> RuntimeDemand {
+    if demand.is_callable() {
+        demand.callable.escape = true;
+    }
+    record_first_class_boundary_demand(facts, callable_flows, parameter, demand, None)
+}
+
+/// What reading `subject` with `demand` asks of the input it is carved out
+/// of. A tuple field is read as the fields up to it, as a `TupleField` step
+/// reads it; every other projection reads its source whole.
+fn input_demand_through_subject(
+    plan: &PatternDispatchPlan<Ty>,
+    mut subject: SubjectId,
+    mut demand: RuntimeDemand,
+) -> (u32, RuntimeDemand) {
+    loop {
+        match plan.subject(subject) {
+            SubjectSource::Input { ordinal } => return (*ordinal, demand),
+            SubjectSource::Projection(projection) => {
+                if !demand.is_ignore() {
+                    demand = match projection.kind {
+                        ProjectionKind::TupleField(index) => {
+                            let mut fields = vec![RuntimeDemand::ignore(); index as usize + 1];
+                            fields[index as usize] = demand;
+                            RuntimeDemand::tuple_fields(fields)
+                        }
+                        _ => RuntimeDemand::whole(),
+                    };
+                }
+                subject = projection.source;
+            }
         }
     }
-    arities
+}
+
+fn subject_input_ordinal(plan: &PatternDispatchPlan<Ty>, subject: SubjectId) -> u32 {
+    input_demand_through_subject(plan, subject, RuntimeDemand::ignore()).0
+}
+
+/// A dispatch demand as a runtime demand. A tuple whose fields are read is
+/// read field by field up to the last field asked for, as a `TupleField`
+/// step reads it, or across the whole proven arity; any other question needs
+/// the value itself.
+fn runtime_demand_of_dispatch(demand: &DispatchDemand, proven_arity: Option<usize>) -> RuntimeDemand {
+    match demand {
+        DispatchDemand::Ignore => RuntimeDemand::ignore(),
+        DispatchDemand::TupleFields(fields) if !fields.is_empty() || proven_arity.is_some() => {
+            let read = fields.keys().map(|field| *field as usize + 1).max().unwrap_or(0);
+            let mut lanes = vec![RuntimeDemand::ignore(); read.max(proven_arity.unwrap_or(0))];
+            for (field, demand) in fields {
+                lanes[*field as usize] = runtime_demand_of_dispatch(demand, None);
+            }
+            RuntimeDemand::tuple_fields(lanes)
+        }
+        DispatchDemand::TupleFields(_) | DispatchDemand::Whole | DispatchDemand::ListShape(_) => RuntimeDemand::whole(),
+    }
 }
 
 fn note_clause_matcher_demands(
@@ -2237,23 +2290,13 @@ fn note_clause_matcher_demands(
 ) {
     for step in steps {
         match step {
-            LoweredStep::AssertLiteral { source, .. }
-            | LoweredStep::AssertStruct { source, .. }
-            | LoweredStep::AssertTuple { source, .. }
-            | LoweredStep::AssertEmptyList { source }
-            | LoweredStep::BitstringInit { source, .. } => {
+            LoweredStep::BitstringInit { source, .. } => {
                 let demand = boundary_value_demand(facts, *source, RuntimeDemand::whole());
                 note_live_demand(out, live, *source, demand);
             }
             LoweredStep::RequireMapValue { source, .. } => {
                 let source_demand = boundary_value_demand(facts, *source, RuntimeDemand::whole());
                 note_live_demand(out, live, *source, source_demand);
-            }
-            LoweredStep::AssertSame { source, value } => {
-                let source_demand = boundary_value_demand(facts, *source, RuntimeDemand::whole());
-                note_live_demand(out, live, *source, source_demand);
-                let value_demand = boundary_value_demand(facts, *value, RuntimeDemand::whole());
-                note_live_demand(out, live, *value, value_demand);
             }
             LoweredStep::SplitList { source, .. } => {
                 let demand = boundary_value_demand(facts, *source, RuntimeDemand::whole());
@@ -2269,10 +2312,6 @@ fn note_clause_matcher_demands(
                 {
                     note_live_demand(out, live, size, RuntimeDemand::whole());
                 }
-            }
-            LoweredStep::AssertBitstringDone { reader } => {
-                let demand = boundary_value_demand(facts, *reader, RuntimeDemand::whole());
-                note_live_demand(out, live, *reader, demand);
             }
             LoweredStep::Const { .. }
             | LoweredStep::Tuple { .. }

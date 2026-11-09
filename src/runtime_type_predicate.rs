@@ -242,12 +242,6 @@ impl RuntimeTypePredicate {
         predicate
     }
 
-    pub(crate) fn named_struct(name: ModuleName) -> Self {
-        let mut predicate = Self::none();
-        predicate.named_structs = FiniteSet::lit(name);
-        predicate
-    }
-
     pub(crate) fn map_kind() -> Self {
         let mut predicate = Self::none();
         predicate.maps = true;

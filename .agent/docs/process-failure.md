@@ -40,6 +40,39 @@ stacktrace:
 `:erlang.error(:badarg)` would in Elixir. Elixir normalizes a few reason atoms
 into named exceptions (`:badarith` becomes `ArithmeticError`); fz does not.
 
+## Decisions that run out of clauses
+
+Every decision is a dispatch plan, and a plan that can fail carries the
+exception its arm of last resort raises: `PatternDispatchPlan.last_resort`, a
+`LastResort` (`src/dispatch_matrix/pattern/last_resort.rs`) set when the plan's
+rows are built (`SourcePatternRows::raising`). `=` is a decision like the others:
+its pattern is a one-row plan. Reaching the plan's fail raises the exception
+through `fz_runtime::failure::raise`, which panics with the exception map exactly
+as `raise/2` does, so it prints the same line and ends the process the same way.
+
+| decision | prints |
+|---|---|
+| a function's clauses | `** (FunctionClauseError) no function clause matching in M.f/1` |
+| an anonymous function's clauses | `** (FunctionClauseError) no function clause matching in anonymous fn/1 in M.g/0` |
+| `pattern = value` | `** (MatchError) no match of right hand side value:` then the value |
+| `case` | `** (CaseClauseError) no case clause matching:` then the value |
+| `cond` | `** (CondClauseError) no cond clause evaluated to a truthy value` |
+| `with`'s `else` | `** (WithClauseError) no with clause matching:` then the value |
+| `and` / `or` on a non-boolean | `** (BadBooleanError) expected a boolean on left-side of "and", got:` then the value |
+| `not` on a non-boolean | `** (ArgumentError) argument error` |
+
+A message that shows a value is Elixir's multi-line form: the lead, a blank
+line, and the value rendered by dbg and indented four spaces
+(`failure::message_showing`). The value is the plan's input 0.
+
+A `with` whose binding fails without an `else`, and a `receive`, have no last
+resort: the first yields the value, the second waits for another message.
+
+A fail that no plan can reach is not a raise. An entry with no clause to run, a
+call dispatch with no matching callee, and a construction-selection miss end in
+`Term::Unreachable` in native code, which traps, and in an `internal error`
+from the interpreter.
+
 ## The fault sink
 
 `FaultHook` (`runtime/src/scheduler_hooks.rs`) is a line sink:
@@ -61,15 +94,15 @@ uses a signal or a trap.
   `failed` byte (`PROCESS_FAILED_OFFSET`), traps if it is clear (an extern broke
   its `never` contract), and otherwise returns 0. Native code is
   continuation-passing, so the return unwinds to the scheduler, which finds no
-  runnable closure and marks the process exited. `Term::Halt`, which lowering
-  emits only for dispatch traps (`function_clause`, `case_clause`,
-  `match_error` and the like), calls `fz_panic` with its reason atom and returns
-  0 the same way.
+  runnable closure and marks the process exited. `Term::Raise`, which lowering
+  emits at a decision's arm of last resort, calls `fz_raise` (or
+  `fz_raise_showing` when the message shows the subject) and returns 0 the same
+  way.
 - **Interpreter.** A `never` extern answers `ExternCallValue::ProcessFailed`
   when the process is marked failed, and an error naming the broken contract
-  when it is not. The executable step becomes `BackendRunStep::Failed`. A clause
-  miss and `BackendTail::Halt` call `fail_with_atom`, which panics with the
-  reason atom through the same export. The drive loop exits a failed process
+  when it is not. The executable step becomes `BackendRunStep::Failed`. A
+  decision's arm of last resort calls `raise_last_resort`, which raises the
+  plan's exception through `failure::raise`. The drive loop exits a failed process
   through `exit_backend_process` with `ProcessExit::Failed`: destructors drain,
   the exit record is emitted, and `halt_value` is left unset.
 
@@ -99,10 +132,13 @@ The fixture matrix pins this: an `expect: abort` fixture must exit exactly 1.
 
 ## Where it lives
 
-- `runtime/src/failure.rs` — `failure_line`, `fz_panic`, `STDERR_FAULT_HOOK`.
+- `runtime/src/failure.rs` — `failure_line`, `fz_panic`, `raise`,
+  `message_showing`, `fz_raise`, `fz_raise_showing`, `STDERR_FAULT_HOOK`.
+- `src/dispatch_matrix/pattern/last_resort.rs` — `LastResort`.
 - `lib/kernel.fz` — `panic/1`, `raise/1`, `raise/2`.
 - `src/compiler2/native_codegen/prim.rs` — `end_failed_process`.
-- `src/compiler2/native_codegen/terminator.rs` — `emit_halt`.
-- `src/ir_interp/backend.rs` — `fail_with_atom`, `exit_backend_process`,
+- `src/compiler2/jobs/native.rs` — `raise_last_resort` (emits `Term::Raise`).
+- `src/compiler2/native_codegen/terminator.rs` — `emit_raise`.
+- `src/ir_interp/backend.rs` — `raise_last_resort`, `exit_backend_process`,
   `BackendRun`, `macro_fault_hook`.
 - `src/compiler2/compiler.rs` — `RunFailure`.

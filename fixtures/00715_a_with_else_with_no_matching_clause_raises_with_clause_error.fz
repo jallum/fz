@@ -1,0 +1,15 @@
+#---
+# purpose: "a with whose else matches nothing raises WithClauseError showing the value"
+# expect: abort
+# oracle: 00715_a_with_else_with_no_matching_clause_raises_with_clause_error.oracle.exs
+#---
+defp fetch(), do: {:bad, 1}
+
+def main() do
+  result = with {:ok, v} <- fetch() do
+    v
+  else
+    :error -> :e
+  end
+  dbg(result)
+end

@@ -1026,8 +1026,9 @@ callable wrapper. `BackendLowerer` reads this proof from
 That table includes clause parameters' semantic input layouts; lowering does
 not derive a second table from transport positions. Every fresh construction step
 (`Tuple`/`List`/`Map`/`MapUpdate`/`Struct`/`Bitstring`/`FunctionRef`/`Lambda`)
-goes through `construction_step_or_omitted` and becomes `BackendStep::Omitted`
-when its own value is proven absent — a closure the plan proves is never invoked
+and every projection (`FieldAccess`/`TupleField`) goes through
+`step_or_omitted_when_absent` and becomes `BackendStep::Omitted` when its own
+value is proven absent — a closure the plan proves is never invoked
 is never built, on any path. For example, a callback captured but proven dead
 along every branch the planner keeps needs no wrapper allocated for it at all.
 Runtime consumers therefore read an artifact that already carries no dead

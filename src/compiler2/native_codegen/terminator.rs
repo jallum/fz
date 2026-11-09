@@ -12,7 +12,7 @@ use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
 use fz_runtime::any_value::AnyValue;
-use fz_runtime::failure::fz_panic;
+use fz_runtime::failure::{fz_raise, fz_raise_showing};
 use fz_runtime::heap::Schema;
 use fz_runtime::ir_runtime::{fz_receive_park_matched, fz_yield_mid_flight_report, fz_yield_slow_path_begin};
 use fz_runtime::process::YIELD_REASON_REDUCTIONS;
@@ -386,7 +386,15 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
         Term::If {
             cond, then_b, else_b, ..
         } => emit_if(body, var_env, block_map, caller_fn_id, blk.id, cond, then_b, else_b),
-        Term::Halt(v) => emit_halt(body, var_env, v),
+        Term::Raise {
+            exception,
+            message,
+            subject,
+        } => emit_raise(body, var_env, *exception, *message, *subject),
+        Term::Unreachable => {
+            body.b.ins().trap(TrapCode::user(1).unwrap());
+            Ok(())
+        }
         Term::ReturnLanes(lanes) => emit_return_lanes(
             body,
             env,
@@ -564,17 +572,27 @@ fn emit_if<M: cranelift_module::Module>(
     Ok(())
 }
 
-/// `Term::Halt` is a fault trap (function_clause, match_error, an unreachable
-/// control edge): the process fails with the trap's reason, exactly as a
-/// `panic` of that reason would, and returns to the scheduler.
-fn emit_halt<M: cranelift_module::Module>(
+/// `Term::Raise` is a decision's last resort: the process raises its
+/// exception through the one panic route and returns to the scheduler.
+fn emit_raise<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    v: &Var,
+    exception: Var,
+    message: Var,
+    subject: Option<Var>,
 ) -> Result<(), CodegenError> {
-    let reason = body.any_ref_for_var(var_env, v.0);
+    let exception = body.any_ref_for_var(var_env, exception.0);
+    let message = body.any_ref_for_var(var_env, message.0);
     let process = body.process_arg();
-    runtime_call!(body, fz_panic, [process, reason]);
+    match subject {
+        Some(subject) => {
+            let subject = body.any_ref_for_var(var_env, subject.0);
+            runtime_call!(body, fz_raise_showing, [process, exception, message, subject]);
+        }
+        None => {
+            runtime_call!(body, fz_raise, [process, exception, message]);
+        }
+    }
     let done = body.b.ins().iconst(types::I64, 0);
     body.b.ins().return_(&[done]);
     Ok(())

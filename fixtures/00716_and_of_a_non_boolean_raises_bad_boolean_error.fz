@@ -1,0 +1,8 @@
+#---
+# purpose: "and with a non-boolean left operand raises BadBooleanError showing the operand"
+# expect: abort
+# oracle: 00716_and_of_a_non_boolean_raises_bad_boolean_error.oracle.exs
+#---
+defp five(), do: 5
+
+def main(), do: dbg(five() and true)

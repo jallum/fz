@@ -1,0 +1,4 @@
+** (MatchError) no match of right hand side value:
+
+    {:error, :closed}
+

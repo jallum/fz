@@ -54,11 +54,8 @@ fn an_exception_prints_its_name_and_message() {
 #[test]
 fn a_value_that_is_not_an_exception_prints_as_an_erlang_error() {
     with_process(|process| {
-        let reason = atom(process, "function_clause");
-        assert_eq!(
-            failure_line(process, reason),
-            "** (ErlangError) Erlang error: :function_clause"
-        );
+        let reason = atom(process, "badarg");
+        assert_eq!(failure_line(process, reason), "** (ErlangError) Erlang error: :badarg");
         let text = binary(process, "boom");
         assert_eq!(failure_line(process, text), "** (ErlangError) Erlang error: \"boom\"");
     });
@@ -106,4 +103,71 @@ fn a_panic_hands_its_line_to_the_fault_sink_marks_the_process_failed_and_returns
             "the sink receives exactly one line, without a newline"
         );
     });
+}
+
+/// Runs `f` on a process whose fault sink records lines; answers the lines
+/// and whether the process failed.
+fn recording(f: impl FnOnce(&mut Process)) -> (Vec<String>, bool) {
+    with_process(|process| {
+        let mut lines: Vec<String> = Vec::new();
+        let mut ctx = ExecCtx {
+            scheduler: &mut lines as *mut Vec<String> as *mut (),
+            fault: Some(recording_sink),
+            ..ExecCtx::empty()
+        };
+        process.ctx = &mut ctx;
+        f(process);
+        process.ctx = std::ptr::null_mut();
+        (lines, process.failed)
+    })
+}
+
+#[test]
+fn a_raise_panics_with_the_exception_elixir_raises() {
+    let (lines, failed) = recording(|process| {
+        let name = atom(process, "Elixir.CondClauseError");
+        raise(process, name, "no cond clause evaluated to a truthy value");
+    });
+    assert!(failed, "a raise fails the process through the panic route");
+    assert_eq!(
+        lines,
+        ["** (CondClauseError) no cond clause evaluated to a truthy value"],
+        "the exception prints as Elixir prints it"
+    );
+}
+
+#[test]
+fn a_message_about_a_term_sets_the_term_on_its_own_indented_line() {
+    with_process(|process| {
+        assert_eq!(
+            message_showing(process, "no case clause matching:", AnyValue::Int(3)),
+            "no case clause matching:\n\n    3\n",
+            "Elixir 1.19 words CaseClauseError's message this way"
+        );
+    });
+}
+
+#[test]
+fn the_raise_exports_take_value_words_and_reach_the_same_route() {
+    let (lines, failed) = recording(|process| {
+        let name = atom(process, "Elixir.MatchError");
+        let name = process.heap.box_any_value_ref(name).raw_word();
+        let lead = binary(process, "no match of right hand side value:");
+        let term = process.heap.box_any_value_ref(AnyValue::Int(7)).raw_word();
+        fz_raise_showing(process, name, lead.ref_word().raw_word(), term);
+    });
+    assert!(failed);
+    assert_eq!(lines, ["** (MatchError) no match of right hand side value:\n\n    7\n"]);
+}
+
+#[test]
+fn a_plain_raise_export_carries_its_message_unchanged() {
+    let (lines, failed) = recording(|process| {
+        let name = atom(process, "Elixir.ArgumentError");
+        let name = process.heap.box_any_value_ref(name).raw_word();
+        let message = binary(process, "argument error");
+        fz_raise(process, name, message.ref_word().raw_word());
+    });
+    assert!(failed);
+    assert_eq!(lines, ["** (ArgumentError) argument error"]);
 }

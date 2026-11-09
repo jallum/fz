@@ -1,0 +1,16 @@
+#---
+# purpose: "a call no clause of an anonymous function matches raises FunctionClauseError naming the function it was defined in"
+# expect: abort
+# oracle: 00717_an_anonymous_function_with_no_matching_clause_raises_function_clause_error.oracle.exs
+#---
+defmodule Words do
+  def name(n) do
+    to_word = fn 1 -> :one end
+    to_word.(n)
+  end
+end
+
+def main() do
+  dbg(Words.name(1))
+  dbg(Words.name(2))
+end

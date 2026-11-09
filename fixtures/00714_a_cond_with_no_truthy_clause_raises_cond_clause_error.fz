@@ -1,0 +1,15 @@
+#---
+# purpose: "a cond none of whose conditions is truthy raises CondClauseError"
+# expect: abort
+# oracle: 00714_a_cond_with_no_truthy_clause_raises_cond_clause_error.oracle.exs
+#---
+defp two(), do: 2
+
+def main() do
+  x = two()
+  result = cond do
+    x == 1 -> :one
+    x > 5 -> :many
+  end
+  dbg(result)
+end

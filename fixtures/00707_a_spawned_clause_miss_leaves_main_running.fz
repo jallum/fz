@@ -1,10 +1,10 @@
 #---
-# purpose: "a spawned process whose call matches no clause prints a function_clause failure and ends; main carries on"
+# purpose: "a spawned process whose call matches no clause raises FunctionClauseError and ends; main carries on"
 # oracle: 00707_a_spawned_clause_miss_leaves_main_running.oracle.exs
 #---
-# Elixir names this failure FunctionClauseError and says which function
-# missed; fz prints the reason atom as an Erlang error. The oracle silences
-# the logger, so only the program's own output is compared.
+# The failure line names the function that missed. Elixir qualifies it with
+# its module; a top-level fz function has none. The oracle silences the
+# logger, so only the program's own output is compared.
 def zero(0), do: :zero
 
 def main() do

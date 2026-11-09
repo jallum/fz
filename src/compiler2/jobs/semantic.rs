@@ -20,7 +20,7 @@ use super::super::body::{
 use super::super::contract::{AppliedFunctionContract, FunctionContract};
 use super::super::dispatch_reachability::{ReachedEdges, calculate_dispatch_reachability};
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, current_uses};
-use super::super::identity::{ActivationKey, FunctionId, ModuleId, TypeName, function_id_of_closure_target};
+use super::super::identity::{ActivationKey, FunctionId, ModuleId, function_id_of_closure_target};
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
@@ -31,24 +31,14 @@ use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::{BodyShape, World};
 use super::keying;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct TupleFieldProjection {
-    source: ValueId,
-    index: usize,
-    arity: usize,
-}
-
 /// A walk's incoming scope, keyed in canonical (sorted) form so two walks
 /// that saw the same values compare equal regardless of insertion order.
 /// This is what makes `SemanticValues` usable as half of a walk-table key:
 /// [`analyze_entry`] reuses a stored answer only when the whole scope --
-/// delivered value, captures, and the tuple evidence carried alongside them
-/// -- matches exactly.
+/// delivered value and captures -- matches exactly.
 #[derive(Clone, Default, PartialEq, Eq, Hash)]
 struct SemanticValues {
     types: BTreeMap<ValueId, Ty>,
-    tuple_arities: BTreeMap<ValueId, usize>,
-    tuple_fields: BTreeMap<ValueId, TupleFieldProjection>,
     /// Values whose content is not known on this walk: an awaited call's
     /// result, or anything built from one. A value in this set still carries
     /// a placeholder type in `types` so ordinary steps have something to
@@ -69,22 +59,6 @@ impl SemanticValues {
         self.types.contains_key(value)
     }
 
-    fn assert_tuple(&mut self, value: ValueId, arity: usize) {
-        self.tuple_arities.insert(value, arity);
-    }
-
-    fn project_tuple_field(&mut self, value: ValueId, source: ValueId, index: usize) {
-        let Some(&arity) = self.tuple_arities.get(&source) else {
-            return;
-        };
-        self.tuple_fields
-            .insert(value, TupleFieldProjection { source, index, arity });
-    }
-
-    fn tuple_field(&self, value: ValueId) -> Option<TupleFieldProjection> {
-        self.tuple_fields.get(&value).copied()
-    }
-
     fn mark_unknown(&mut self, value: ValueId) {
         self.unknown.insert(value);
     }
@@ -100,8 +74,6 @@ impl SemanticValues {
     fn empty_scope(&self) -> Self {
         Self {
             types: BTreeMap::new(),
-            tuple_arities: self.tuple_arities.clone(),
-            tuple_fields: self.tuple_fields.clone(),
             unknown: self.unknown.clone(),
         }
     }
@@ -585,7 +557,7 @@ fn apply_step(
     let mut used = Vec::new();
     super::super::body::step_used_values(step, &mut used);
     let step_saw_unknown = values.any_unknown(used);
-    apply_step_evidence(world, step, values, calls, activation, walk.uses)?;
+    apply_step_evidence(world, step, values, calls, activation)?;
     if step_saw_unknown {
         walk.mark_unknown();
         for defined in super::super::body::step_defined_values(step) {
@@ -601,7 +573,6 @@ fn apply_step_evidence(
     values: &mut SemanticValues,
     _calls: &mut Vec<CallEmission>,
     _activation: &ActivationKey,
-    uses: &mut UseCollector,
 ) -> Result<(), FatalError> {
     match step {
         LoweredStep::Const { value, literal } => {
@@ -724,22 +695,6 @@ fn apply_step_evidence(
                 .unwrap_or_else(|| any_ty(world));
             values.insert(*value, field_ty);
         }
-        LoweredStep::AssertLiteral { source, literal } => {
-            let Some(source_ty) = value_ty(values, *source) else {
-                return Ok(());
-            };
-            let literal_ty = literal_ty(world, literal);
-            let refined = world.types_mut().intersect(source_ty, literal_ty);
-            refine_value(world, values, *source, refined);
-        }
-        LoweredStep::AssertStruct { source, module } => {
-            let Some(source_ty) = value_ty(values, *source) else {
-                return Ok(());
-            };
-            let asserted = struct_assertion_ty(world, *module, uses);
-            let refined = world.types_mut().intersect(source_ty, asserted);
-            refine_value(world, values, *source, refined);
-        }
         LoweredStep::RequireMapValue { value, source, key } => {
             let Some(source_ty) = value_ty(values, *source) else {
                 return Ok(());
@@ -749,40 +704,12 @@ fn apply_step_evidence(
                 .unwrap_or_else(|| any_ty(world));
             values.insert(*value, field_ty);
         }
-        LoweredStep::AssertTuple { source, arity } => {
-            let any = world.types_mut().any();
-            let fields = world.types_mut().repeat(any, *arity);
-            let tuple = world.types_mut().tuple(&fields);
-            let Some(source_ty) = value_ty(values, *source) else {
-                return Ok(());
-            };
-            let refined = world.types_mut().intersect(source_ty, tuple);
-            values.assert_tuple(*source, *arity);
-            refine_value(world, values, *source, refined);
-        }
         LoweredStep::TupleField { value, source, index } => {
             let Some(source_ty) = value_ty(values, *source) else {
                 return Ok(());
             };
             let field_ty = world.types_mut().tuple_field_type(&source_ty, *index);
             values.insert(*value, field_ty);
-            values.project_tuple_field(*value, *source, *index);
-        }
-        LoweredStep::AssertEmptyList { source } => {
-            let empty = world.types_mut().empty_list();
-            let Some(source_ty) = value_ty(values, *source) else {
-                return Ok(());
-            };
-            let refined = world.types_mut().intersect(source_ty, empty);
-            refine_value(world, values, *source, refined);
-        }
-        LoweredStep::AssertSame { source, value } => {
-            let (Some(source_ty), Some(value_ty)) = (value_ty(values, *source), value_ty(values, *value)) else {
-                return Ok(());
-            };
-            let both = world.types_mut().intersect(source_ty, value_ty);
-            refine_value(world, values, *source, both);
-            refine_value(world, values, *value, both);
         }
         LoweredStep::SplitList { source, head, tail } => {
             let Some(source_ty) = value_ty(values, *source) else {
@@ -791,15 +718,14 @@ fn apply_step_evidence(
             let elem = world.types_mut().list_element_type(&source_ty);
             let rest = world.types_mut().list(elem);
             // A successful split proves the source is a non-empty list. Record
-            // that refinement on the source, mirroring how `AssertEmptyList`
-            // refines its source to the empty list: the proof a clause was
+            // that refinement on the source: the proof a clause was
             // entered must reach the source's type, or typed head/tail
             // projection (and the owned-cons reuse it unlocks) is left on the
             // table for any list whose static type is the proper `[T] | []`.
             let any = world.types_mut().any();
             let non_empty = world.types_mut().non_empty_list(any);
             let refined_source = world.types_mut().intersect(source_ty, non_empty);
-            refine_value(world, values, *source, refined_source);
+            values.insert(*source, refined_source);
             values.insert(*head, elem);
             values.insert(*tail, rest);
         }
@@ -822,28 +748,8 @@ fn apply_step_evidence(
                 values.insert(*next_reader, reader_ty);
             }
         }
-        LoweredStep::AssertBitstringDone { reader: _ } => {}
     }
     Ok(())
-}
-
-/// A successful assertion on a tuple field is evidence about the tuple, not
-/// merely the temporary field value. Preserve that proof before a later
-/// sibling projection asks the tuple for its field type.
-fn refine_value(world: &mut World, values: &mut SemanticValues, value: ValueId, refined: Ty) {
-    values.insert(value, refined);
-    let Some(projection) = values.tuple_field(value) else {
-        return;
-    };
-    let Some(source_ty) = value_ty(values, projection.source) else {
-        return;
-    };
-    let any = world.types_mut().any();
-    let mut fields = world.types_mut().repeat(any, projection.arity);
-    fields[projection.index] = refined;
-    let asserted = world.types_mut().tuple(&fields);
-    let source_refined = world.types_mut().intersect(source_ty, asserted);
-    refine_value(world, values, projection.source, source_refined);
 }
 
 /// Join two path results. `None` ("no evidence on this path yet") is the
@@ -1224,8 +1130,9 @@ fn analyze_tail(
             }
             Ok(merged)
         }
-        // A halt path contributes no value: the join identity, not a type.
-        LoweredTail::Halt { .. } => Ok(None),
+        // Control no execution reaches contributes no value: the join
+        // identity, not a type.
+        LoweredTail::Unreachable => Ok(None),
     }
 }
 
@@ -2498,53 +2405,6 @@ fn lowered_map_key(
     }
     let key_ty = value_ty(values, key.value)?;
     Some(map_key_from_ty(world, key_ty))
-}
-
-fn struct_assertion_ty(world: &mut World, module: ModuleId, uses: &mut UseCollector) -> Ty {
-    // Honor the struct's declared field types (`@type t`) so a destructure
-    // recovers them even after a value crossed a protocol boundary that erased
-    // its concrete shape (fz-f98.8: an integer `Range` whose fields graduate to
-    // `any` makes `current + step` an `any + any` the `+` overload widens to
-    // `int | float`). The declared type is a fact, so wait on it like any other
-    // (mirrors the `TypeDefined` wait-set in body/contract derivation): a struct
-    // that declares `@type t` but whose definition has not settled defers here
-    // rather than baking in the `any` default. Only a struct with no `@type`
-    // declaration defaults its fields to `any`.
-    let name = TypeName {
-        module,
-        name: "t".to_string(),
-        arity: 0,
-    };
-    if world.type_decl(&name).is_some() {
-        let fact = FactKey::TypeDefined(name);
-        if world.has_fact(&fact) {
-            uses.read(fact);
-            if let Some(declared) = world.declared_struct_value_ty(module) {
-                return declared;
-            }
-        } else {
-            uses.wait(fact);
-        }
-    }
-    // The field schema itself is fact-backed too: `module` is always a real
-    // struct here (body lowering already fataled on `%Module{}` patterns
-    // whose module has no `defstruct`), so `StructDefined(module)` is
-    // guaranteed to publish eventually — waiting on it, unlike the impl-target
-    // classification above, carries no deadlock risk.
-    let struct_fact = FactKey::StructDefined(module);
-    let field_names = match world.struct_def(module) {
-        Some(def) => {
-            uses.read(struct_fact);
-            def.fields.clone()
-        }
-        None => {
-            uses.wait(struct_fact);
-            Vec::new()
-        }
-    };
-    let any = world.types_mut().any();
-    let field_tys = vec![any; field_names.len()];
-    world.struct_module_value_ty(module, &field_names, &field_tys)
 }
 
 fn map_key_from_ty(world: &World, ty: Ty) -> Option<super::super::types::MapKey> {

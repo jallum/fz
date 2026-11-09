@@ -196,18 +196,23 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
     let result = ValueId::from_u32(1);
     abi.value_layouts.insert(param, tuple_layout);
     abi.value_layouts.insert(result, scalar_layout);
-    let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
-        1,
-        vec![PatternRow {
-            patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Tuple(vec![
-                crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard),
-                crate::ast::Spanned::dummy(crate::ast::Pattern::Int(7)),
-            ]))],
-            preconditions: Vec::new(),
-            guard: None,
-            body_id: 0,
-        }],
-    ))
+    let plan = pattern_dispatch_from_source(
+        SourcePatternRows::lexical(
+            1,
+            vec![PatternRow {
+                patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Tuple(vec![
+                    crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard),
+                    crate::ast::Spanned::dummy(crate::ast::Pattern::Int(7)),
+                ]))],
+                preconditions: Vec::new(),
+                guard: None,
+                body_id: 0,
+            }],
+        )
+        .raising(crate::dispatch_matrix::pattern::LastResort::function_clause(
+            "unwrap_tuple/1",
+        )),
+    )
     .unwrap();
     // The plan the analysis hands an activation whose parameter is known to be
     // a pair: the arity question is already answered.
@@ -260,6 +265,17 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
         entries: entries.clone(),
         generated: Vec::new(),
     };
+    // A pair whose second field is not 7 raises, so the executable names the
+    // exception among its atoms.
+    let raised = executable
+        .abi
+        .materialized
+        .entry_dispatch
+        .as_ref()
+        .and_then(|dispatch| dispatch.plan().last_resort.as_ref())
+        .map(|last_resort| last_resort.exception)
+        .expect("the clause head raises when nothing matches");
+    executable.atom_names = Box::from([Rc::new(raised.to_string())]);
     let executable = Rc::new(executable);
     let mut program = BackendProgram::empty(key);
     program.add_executable(executable.clone(), world.types());
@@ -417,7 +433,7 @@ fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
         .expect("an identical layout keeps the direct lane-copy path");
     assert_eq!(identical, params);
 
-    ctx.set_term(Term::Halt(encoded[0]));
+    ctx.set_term(Term::Return(encoded[0]));
     let (function, body) = ctx.finish();
     assert_eq!(body.value_types.get(&encoded[0]), Some(&inner_tuple_ty));
     assert_eq!(body.value_types.get(&present_discarded[0]), Some(&inner_tuple_ty));

@@ -1,5 +1,5 @@
 #---
-# purpose: nil does not match the empty-list pattern; calling with nil aborts with a function-clause fault
+# purpose: nil does not match the empty-list pattern; calling with nil raises FunctionClauseError
 # expect: abort
 #---
 def f([]), do: 1

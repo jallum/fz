@@ -234,13 +234,30 @@ fn term_tail_call() {
 }
 
 #[test]
-fn term_halt_pretty_prints() {
+fn term_raise_pretty_prints_what_it_raises_and_shows() {
     let mut b = FnBuilder::new(FnId(5), "top");
     let entry = b.block(vec![]);
-    let v = b.let_(entry, Prim::Const(Const::Int(42)));
-    b.set_terminator(entry, Term::Halt(v));
+    let exception = b.let_(entry, Prim::Const(Const::Atom(0)));
+    let message = b.let_(entry, Prim::ConstBitstring(b"no case clause matching:".to_vec(), 192));
+    let subject = b.let_(entry, Prim::Const(Const::Int(3)));
+    b.set_terminator(
+        entry,
+        Term::Raise {
+            exception,
+            message,
+            subject: Some(subject),
+        },
+    );
     let s = format!("{}", b.build());
-    assert!(s.contains("halt v0"));
+    assert!(s.contains("raise v0 v1 showing v2"), "{s}");
+}
+
+#[test]
+fn a_block_left_without_a_terminator_is_unreachable() {
+    let mut b = FnBuilder::new(FnId(5), "top");
+    b.block(vec![]);
+    let s = format!("{}", b.build());
+    assert!(s.contains("unreachable"), "{s}");
 }
 
 #[test]

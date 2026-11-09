@@ -123,12 +123,13 @@ fn compiler2_pinned_equality_does_not_define_or_merge_value_origins() {
 
     let (source, value) = entries
         .iter()
-        .flat_map(|entry| &entry.steps)
-        .find_map(|step| match step {
-            LoweredStep::AssertSame { source, value } => Some((*source, *value)),
+        .find_map(|entry| match &entry.tail {
+            LoweredTail::Dispatch { inputs, bindings, .. } if !bindings.pinned.is_empty() => {
+                Some((inputs[0], bindings.pinned[0]))
+            }
             _ => None,
         })
-        .expect("pinned equality constraint");
+        .expect("a pinned match is a decision over the matched value and the pin");
 
     assert_ne!(source, value, "the equal lists are distinct construction values");
     assert!(
@@ -598,31 +599,21 @@ fn compiler2_join_walk_visits_each_entry_and_scope_once() {
     let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, main);
     assert_eq!(
         entries.len(),
-        // fz-sc8.37: 29 -> 38. Each of the three `or`s lowers to a `case` with a
-        // halting `BadBooleanError` miss arm: a value branch, a dispatch resume,
-        // a direct_call branch and the halt, where the old native `or` op had one
-        // delivered resume.
-        38,
-        "if/case/cond/with chained once each, an assert after each, lower main/0 to 38 resume entries"
+        // Each construct lowers to its arms and the join they deliver to, and each
+        // `or` to a decision whose miss raises in place: one clause entry, 18 arm
+        // entries and 14 delivered resumes.
+        33,
+        "if/case/cond/with chained once each, an assert after each, lower main/0 to 33 resume entries"
     );
 
     // Type analysis re-runs main/0's activation as callee facts settle (`assert`
     // and the comparisons it chains are ordinary calls, so early rounds see
-    // absent evidence and stop short); each round's own walk still visits an
-    // entry once per distinct scope, so the last round -- the settled one --
-    // is what this test pins. Ten of the 38 entries are reached with two
-    // different delivered values, so the walk answers each of those twice and
-    // the other 28 once: the `with`, `cond` and `case` joins, the `or` after
-    // the `cond` and the one after the `case` (each now two entries, the
-    // operand's dispatch resume and the second operand's direct_call branch),
-    // and the three `or` result joins.
-    // fz-sc8.37: 34 -> 48 walks. Each `or` lowers to a `case` with a halting
-    // miss arm; the 5 doubled entries became 10 (the two `or`s after a
-    // multi-valued join each split in two, and each of the three `or` result
-    // joins is reached with `true` and with a boolean).
-    // fz-sc8.44: 48 -> 40. Each activation's `case` plans are trimmed to what
-    // its types leave, so a miss arm or an arm the types rule out is no longer
-    // an entry the walk reaches.
+    // absent evidence and stop short); each round's own walk visits an entry
+    // once per distinct scope, so the last round -- the settled one -- is what
+    // this test pins. Each activation's plans are trimmed to what its types
+    // leave, so an arm the types rule out is not an entry the walk reaches, and
+    // a join reached with more than one delivered value is walked once per
+    // value: 40 visits.
     assert_eq!(
         entries_walked(&["fz", "compiler2", "semantic", "walk"]).last().copied(),
         Some(40),
@@ -630,11 +621,8 @@ fn compiler2_join_walk_visits_each_entry_and_scope_once() {
     );
     // Runtime demand and executable facts walk backwards from a constant
     // outgoing demand/need, so every entry answers from one scope: one walk
-    // apiece. Runtime demand does not reach the entry the `case` clause
-    // dispatch never selects at this call's fixed input, one fewer than the
-    // 38 lowering keeps for type analysis's broader reachability.
-    // fz-sc8.37: 28 -> 37 and 29 -> 38, the nine added resume entries.
-    // fz-sc8.44: 37 -> 30 and 38 -> 31, for the same trimmed plans.
+    // apiece, over the entries the trimmed plans reach. Executable facts walks
+    // 31 of the 33 entries and runtime demand 30.
     assert_eq!(
         entries_walked(&["fz", "compiler2", "runtime_demand", "walk"])
             .last()
@@ -3720,7 +3708,7 @@ fn compiler2_backend_struct_schemas_are_fed_from_struct_def_facts_not_a_source_s
     // lookup), and its schema field ORDER must match the `defstruct`
     // declaration (x, y), not construction-site literal order (the literal
     // below writes y before x); `Pair` is only ever pattern-destructured
-    // (`Prim::TupleField`/`AssertStruct`'s schema-identity check), never
+    // (the match decision's struct question and field projections), never
     // dot-accessed, proving the map serves both consumers.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -12266,8 +12254,13 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// `map_enumerable`, twice in the latter; `Range.contains?/4` twice in
 /// `00277_enum_tier0_fixture` and twice in `range_enumerable`;
 /// `Enum.reject/2#lambda@0/1` in `00569`.
+/// `case` 11 -> 17 plans, 11 -> 17 unreadable: a tuple match with `=` is a
+/// decision of the same class as a `case`, and six of them are on the census:
+/// both matches in `Enum.map_reduce_list/3` in `00569`, at each of its two
+/// activations, and one in `main/0` of `map_enumerable` and of
+/// `range_enumerable`.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 11, 11), ("entry", 155, 142), ("receive", 2, 0)];
+    &[("case", 17, 17), ("entry", 155, 142), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -13847,7 +13840,7 @@ fn compiler2_jit_halts_a_reduce_under_every_arm_order() {
 /// `case` is told it cannot fail, but which fails, stops loudly and names the
 /// `case` rather than falling through to a miss that was never built.
 #[test]
-fn compiler2_interp_reports_a_fail_that_analysis_proved_unreachable() {
+fn compiler2_interp_reports_a_fail_with_no_last_resort_as_an_internal_error() {
     let (mut compiler, program) = driven_backend_program("fixtures/00638_or_of_a_non_boolean_aborts.fz");
     let mut forged = (*program).clone();
     let mut forged_cases = 0;
@@ -13865,28 +13858,30 @@ fn compiler2_interp_reports_a_fail_that_analysis_proved_unreachable() {
         };
         for (entry, forged_entry) in entries.iter().zip(forged_entries.iter_mut()) {
             if let BackendTail::Dispatch { dispatch, .. } = &entry.tail
-                && dispatch.miss_entry.is_some()
+                && dispatch.plan.last_resort.is_some()
                 && let BackendTail::Dispatch {
                     dispatch: forged_dispatch,
                     ..
                 } = &mut forged_entry.tail
             {
-                forged_dispatch.miss_entry = None;
+                let mut plan = (*forged_dispatch.plan).clone();
+                plan.last_resort = None;
+                forged_dispatch.plan = Rc::new(plan);
                 forged_cases += 1;
             }
         }
         forged.add_executable(Rc::new(forged_executable), compiler.world().types());
     }
-    assert!(forged_cases > 0, "00638 carries a `case` that can fail");
+    assert!(forged_cases > 0, "00638 carries an `or` that raises");
 
     let dbg = DbgCapture::new();
     let tel = ConfiguredTelemetry::new();
     let (types, transport) = compiler.world_mut().types_mut_and_transport();
     let error = crate::ir_interp::run_backend_main(types, transport, &tel, &dbg, &Default::default(), &forged)
-        .expect_err("a fail with no miss entry is an internal error");
+        .expect_err("a fail with neither a miss entry nor a last resort is an internal error");
     let error = error.to_string();
     assert!(
-        error.contains("internal error: the case at entry") && error.contains("proved unreachable"),
+        error.contains("internal error: the decision at entry") && error.contains("has no last resort"),
         "the interpreter names the dispatch it could not leave: {error}"
     );
 }
@@ -15057,7 +15052,7 @@ fn compiler2_generated_lambda_body_binds_captures_as_leading_inputs() {
 }
 
 #[test]
-fn compiler2_lowered_body_keeps_local_match_asserts_inside_the_body() {
+fn compiler2_lowered_body_decides_a_local_match_inside_the_body() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
@@ -15105,13 +15100,12 @@ fn compiler2_lowered_body_keeps_local_match_asserts_inside_the_body() {
         "main/0 has no head params to project after entry dispatch",
     );
     assert!(
-        entries[clauses[0].entry.as_u32() as usize].steps.iter().any(|step| {
-            matches!(
-                step,
-                LoweredStep::AssertTuple { .. } | LoweredStep::AssertLiteral { .. } | LoweredStep::AssertSame { .. }
-            )
-        }),
-        "local match expressions should still lower their own assert steps inside the body",
+        matches!(
+            &entries[clauses[0].entry.as_u32() as usize].tail,
+            LoweredTail::Dispatch { dispatch, .. }
+                if dispatch.plan.last_resort == Some(crate::dispatch_matrix::pattern::LastResort::match_error())
+        ),
+        "a local match is a decision inside the body whose last resort raises MatchError",
     );
 }
 
@@ -15249,6 +15243,72 @@ fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_ent
     }
 }
 
+/// A match in statement position is a decision whose one arm is the rest of
+/// the block, the way `pattern = expr; rest` reads as `case expr do pattern ->
+/// rest end`: the names it binds belong to the arm, so nothing waits for the
+/// match's value at a join.
+#[test]
+fn compiler2_a_statement_match_lowers_to_one_decision_whose_arm_is_the_rest_of_the_block() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    let source_owner = compiler.submit_code(CodeSubmission {
+        name: Some("statement_match.fz".to_string()),
+        text: r#"
+def swap(pair) do
+  {a, b} = pair
+  {b, a}
+end
+"#
+        .to_string(),
+    });
+    assert_resolved(compiler.drive(), "statement-match fixture should index cleanly");
+    assert!(compiler.demand(Job::ScopeCode(source_owner)));
+    assert_resolved(
+        compiler.drive(),
+        "statement-match fixture should define its functions cleanly",
+    );
+    let swap = function_id(&functions, "swap", 1);
+    assert!(compiler.demand(Job::LowerFunction(swap)));
+    assert_resolved(compiler.drive(), "lowering swap/1 should settle");
+
+    let LoweredBody::Clauses { clauses, entries, .. } = lowered_body(&bodies, swap);
+    let decision = &entries[clauses[0].entry.as_u32() as usize];
+    let LoweredTail::Dispatch { dispatch, .. } = &decision.tail else {
+        panic!("the match is the clause's decision: {:?}", decision.tail);
+    };
+    let [arm] = dispatch.outcomes.as_slice() else {
+        panic!("one pattern, one arm: {:?}", dispatch.outcomes);
+    };
+    let arm = &entries[arm.target.as_u32() as usize];
+    assert!(
+        arm.steps.iter().any(|step| matches!(step, LoweredStep::Tuple { .. })),
+        "the rest of the block is the arm's own steps: {:?}",
+        arm.steps
+    );
+    assert!(
+        matches!(
+            &arm.tail,
+            LoweredTail::Value {
+                dest: crate::compiler2::body::ControlDestination::Return,
+                ..
+            }
+        ),
+        "the arm returns the block's result itself: {:?}",
+        arm.tail
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|entry| !matches!(entry.origin, ControlEntryOrigin::DeliveredResume { .. })),
+        "no join waits for the match's value"
+    );
+}
+
 #[test]
 fn compiler2_lowered_body_records_list_retention_sources_on_delivered_entries() {
     let tel = ConfiguredTelemetry::new();
@@ -15319,18 +15379,18 @@ end
         })
         .expect("the construction directly names its retained source");
 
-    let source = clauses
+    // The retained source is the decision's input, the clause's own `xs`; the head is the arm's parameter.
+    let arm = entries
         .iter()
-        .flat_map(|clause| clause.projections.iter())
-        .chain(entries.iter().flat_map(|entry| entry.steps.iter()))
-        .find_map(|step| match step {
-            LoweredStep::SplitList { source, head, .. } if *head == head_value => Some(*source),
-            _ => None,
-        });
+        .find(|entry| matches!(entry.origin, ControlEntryOrigin::Branch))
+        .expect("the `=` match lowers to a decision with one arm entry");
     assert_eq!(
-        source,
-        Some(source_operand),
-        "the delivered entry should capture the exact source cons paired with its rebuilt head",
+        source_operand, clauses[0].params[0],
+        "the delivered entry should capture the decision's input, the exact source cons",
+    );
+    assert!(
+        arm.params.contains(&head_value) && arm.physical_captures.contains(&source_operand),
+        "the arm receives the rebuilt head as its parameter and captures the source it never reads",
     );
 }
 
@@ -15370,7 +15430,8 @@ def main(), do: rebuild([1, 2])
         panic!("list-retention telemetry fixture should run end-to-end: {error}");
     });
 
-    assert_eq!(list_retention.last(), Some((root_id, 1, 1)));
+    // The `=` arm never reads `xs`, so it captures the decision's input physically, as does the call's resume.
+    assert_eq!(list_retention.last(), Some((root_id, 1, 2)));
 
     let program = native.last(root_id).program;
     let continuation = program
@@ -15477,7 +15538,8 @@ def main(), do: rebuild([1, 2])
         panic!("direct list-retention fixture should run end-to-end: {error}");
     });
 
-    assert_eq!(list_retention.last(), Some((root_id, 1, 0)));
+    // The `=` arm never reads `xs`, so it captures the decision's input physically.
+    assert_eq!(list_retention.last(), Some((root_id, 1, 1)));
 
     let exit = exits.last().expect("runtime process exit telemetry");
     assert_eq!(exit.list_retention_attempts, 1);

@@ -106,6 +106,18 @@ impl FunctionDenotation {
             }
         }
     }
+
+    /// The name Elixir's messages give this function: `M.f/1` for a named
+    /// one, and `anonymous fn/1 in M.g/0` for a lambda, which Elixir places in
+    /// the named function its source sits in, however deeply it is nested.
+    pub fn elixir_name(&self) -> String {
+        match &self.origin {
+            FunctionOrigin::Named { .. } => self.label(),
+            FunctionOrigin::Generated { .. } => {
+                format!("anonymous fn/{} in {}", self.arity, self.lexical_owner().label())
+            }
+        }
+    }
 }
 
 /// Encode the host-native AOT carrier directly from typed source fields.

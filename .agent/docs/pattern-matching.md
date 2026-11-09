@@ -297,18 +297,37 @@ readings of "did this input arrive" cannot disagree quietly.
 
 ## Lowering Sites
 
-- Multi-clause functions build one subject per parameter and route successful
-  outcomes to `fn_clause_N` continuation functions. Exhaustion halts with
-  `:function_clause`.
-- `case` builds one subject for the scrutinee and routes outcomes to
-  `case_clause_N`; exhaustion halts with `:case_clause`.
-- `with else` dispatches the unmatched value through the same machinery.
+- Multi-clause functions build one subject per parameter and route each
+  outcome to its clause's body, which native code lowers as a function of its
+  own (`<name>__clause_N`). Exhaustion raises `FunctionClauseError`.
+- `case` builds one subject for the scrutinee and routes each outcome to an arm
+  entry. An arm has one way in, so native code lowers it as a block of the
+  function that decides (see [pipeline](pipeline.md)). Exhaustion raises
+  `CaseClauseError` showing the scrutinee.
+- `pattern = value` is a one-row decision over the value
+  (`Lowerer::lower_match`); exhaustion raises `MatchError` showing the value.
+  In statement position the match reads as `case value do pattern -> rest
+  end`: `Lowerer::lower_statements` hands the rest of the block to
+  `lower_match`, whose single arm binds the pattern's names and runs the rest,
+  and the arm's result is the block's result. A match that ends its block runs
+  an arm that yields the value. A match whose value an enclosing expression
+  consumes, such as `foo(x = 1)`, binds into the enclosing scope and yields the
+  value. A pattern whose plan wins at its root, such as a bare name, binds
+  directly with no decision.
+- `cond`'s last condition, `and`, `or` and `not` are decisions over a value;
+  exhaustion raises `CondClauseError`, `BadBooleanError` or `ArgumentError`.
+- `with else` dispatches the unmatched value through the same machinery and
+  raises `WithClauseError` when no `else` clause matches.
+
+Each of these plans carries the exception it raises
+(`PatternDispatchPlan::last_resort`); see
+[process failure](process-failure.md) for the table of what each prints.
 - `receive` builds one subject for the candidate message. The receive term
   stores an `Arc<PatternDispatchPlan>`; the interpreter and native receive probe
   both run that cached plan against mailbox messages.
 - Function heads retain their separate `bind_pattern` lowering until
-  fz-5xp.56. Inline `case`, `with`, and `with else` outcomes do not re-walk
-  syntax to bind values. Standalone asserting matches retain `apply_pattern`.
+  fz-5xp.56. Inline `case`, `with`, `with else` and `=` outcomes do not re-walk
+  syntax to bind values.
 
 ## Outcome Values and Retained Lists
 
@@ -333,7 +352,11 @@ one forwarding map. Misses and timeouts expose no outcome arguments.
 
 A one-cons `List` construction may carry `ListRetention { source, permission }`.
 The source is an ordinary traced physical operand through entries, captures,
-and `Prim::MakeList`, not a head-to-source capability map. Identical head/tail
+and `Prim::MakeList`, not a head-to-source capability map. A source that is
+the decision's own input is that input value, captured by the arm like any
+other value; only a subject with no value of its own in the deciding entry,
+such as a projected tail or a received message, reaches the arm as a
+`Physical` outcome argument. Identical head/tail
 contents retain the source even when published. Changed contents require both
 construction-owned `Rewrite` permission and a runtime unaliased cell; otherwise
 they allocate. Body-local permission examines the existing origins and reachable
@@ -405,8 +428,8 @@ not dispatch-pure.
 
 A missing clause is not a compile-time diagnostic. A function or `case`/`with`
 whose clauses do not cover every input compiles clean; an input that reaches
-none of them halts at runtime with `:function_clause` or `:case_clause`, the
-same fault Elixir raises for the same program.
+none of them raises `FunctionClauseError` or `CaseClauseError` at runtime, the
+same exception Elixir raises for the same program.
 
 What the compiler does flag at compile time is the opposite shape: a clause
 that can *never* run because an earlier clause already matches everything it

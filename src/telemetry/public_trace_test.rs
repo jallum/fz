@@ -1502,7 +1502,8 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // 00420's cold scenario walks five more (617 -> 622): its
                 // list `count` reads Kernel's `length`, whose proper-list
                 // check and abort path are bodies of their own.
-                [[151, 0, 0, 9, 4], [476, 0, 0, 64, 4], [623, 0, 0, 69, 4]][fixture_index][scenario],
+                // 00420 cold 623 -> 627: a tuple-field demand derived from an `=` arm settles one round after the floor it replaces, with the same final facts.
+                [[151, 0, 0, 9, 4], [476, 0, 0, 64, 4], [627, 0, 0, 69, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()

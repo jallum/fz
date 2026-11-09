@@ -1,5 +1,5 @@
 #---
-# purpose: a case with only literal arms and no wildcard is inexhaustive; an unmatched value aborts at runtime with a no-matching-clause fault
+# purpose: a case with only literal arms and no wildcard is inexhaustive; an unmatched value raises CaseClauseError showing the value
 # expect: abort
 #---
 def f(v) do

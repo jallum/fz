@@ -27,6 +27,9 @@ pub(crate) struct SourcePatternRows<TypeHandle> {
     /// The bindings that existed before these patterns began. A pin resolves
     /// against this snapshot and nothing else.
     pub(crate) prematch: Prematch,
+    /// What the plan raises when no row claims the subject; see
+    /// [`PatternDispatchPlan::last_resort`](super::PatternDispatchPlan::last_resort).
+    pub(crate) last_resort: Option<super::LastResort>,
 }
 
 impl<TypeHandle> SourcePatternRows<TypeHandle> {
@@ -39,6 +42,7 @@ impl<TypeHandle> SourcePatternRows<TypeHandle> {
             input_count,
             rows,
             prematch: Prematch::Lexical,
+            last_resort: None,
         }
     }
 
@@ -52,6 +56,16 @@ impl<TypeHandle> SourcePatternRows<TypeHandle> {
             input_count,
             rows,
             prematch: Prematch::Inputs(inputs),
+            last_resort: None,
+        }
+    }
+
+    /// These rows as the rows of a decision that raises `last_resort` when
+    /// none of them claims the subject.
+    pub(crate) fn raising(self, last_resort: super::LastResort) -> Self {
+        Self {
+            last_resort: Some(last_resort),
+            ..self
         }
     }
 }
@@ -330,6 +344,7 @@ fn earliest_row_that_already_matches<TypeHandle: Clone + PartialEq + Eq>(
             input_count: patterns.input_count,
             rows: candidate_rows,
             prematch: patterns.prematch.clone(),
+            last_resort: None,
         };
         let plan = super::pattern_dispatch_from_source_with_resolver(candidate, resolver)
             .expect("a prefix of already-compiled rows must still compile");

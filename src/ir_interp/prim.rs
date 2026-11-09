@@ -50,7 +50,9 @@ pub(super) fn interp_map_put(
 pub(super) fn interp_list_head(proc: *mut Process, value: AnyValue) -> Result<AnyValue, String> {
     let slot = value.value(proc)?;
     if !interp_is_list_cons(slot) {
-        return Err(format!("ListHead: subject is not a list cons ({:?})", slot));
+        return Err(format!(
+            "internal error: ListHead of a value that is not a list cons ({slot:?})"
+        ));
     }
     with_value_ref(proc, value, "ListHead", |list_ref| fz_list_head_ref(list_ref))
         .and_then(|ref_word| interp_value_from_ref_word(ref_word, "ListHead"))
@@ -59,7 +61,9 @@ pub(super) fn interp_list_head(proc: *mut Process, value: AnyValue) -> Result<An
 pub(super) fn interp_list_tail(proc: *mut Process, value: AnyValue) -> Result<AnyValue, String> {
     let slot = value.value(proc)?;
     if !interp_is_list_cons(slot) {
-        return Err(format!("ListTail: subject is not a list cons ({:?})", slot));
+        return Err(format!(
+            "internal error: ListTail of a value that is not a list cons ({slot:?})"
+        ));
     }
     with_value_ref(proc, value, "ListTail", |list_ref| fz_list_tail_ref(list_ref))
         .and_then(|ref_word| interp_value_from_ref_word(ref_word, "ListTail"))

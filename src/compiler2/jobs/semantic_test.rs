@@ -184,9 +184,7 @@ end
         .into_iter()
         .map(|entry| LoweredEntry {
             steps: Vec::new(),
-            tail: LoweredTail::Halt {
-                atom: "withdrawn".to_string(),
-            },
+            tail: LoweredTail::Unreachable,
             ..entry
         })
         .collect();
