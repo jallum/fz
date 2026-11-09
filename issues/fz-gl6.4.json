@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-gl6.10",
+    "fz-gl6.11",
     "fz-gl6.9"
   ],
   "blocks": [],
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "Literals carry a tag: the collector, deep copy and the formatter test one bit, not the from-space chain",
   "type": "task",
-  "updated_at": "2026-11-09T23:27:53Z"
+  "updated_at": "2026-11-09T23:29:42Z"
 }
