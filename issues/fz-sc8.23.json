@@ -4,14 +4,15 @@
   "blocks": [
     "fz-sc8.14"
   ],
+  "closed_at": "2026-11-10T01:03:51Z",
   "created": "2026-10-17T19:10:40Z",
   "description": "lib/string.fz next_grapheme_size (:688) is codepoint_size(first_byte(s)), so next_grapheme/1 (:703), graphemes/1 (:720) and length/1 (:108, codepoint_count) count codepoints. Elixir's are Unicode extended grapheme clusters: \"e\\u0301\" is one grapheme, an emoji ZWJ sequence is one. String.slice/pad (fz-sc8.14) are built on these.",
   "id": "fz-sc8.23",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "String graphemes are extended grapheme clusters, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-10-17T19:10:41Z"
+  "updated_at": "2026-11-10T01:03:51Z"
 }
