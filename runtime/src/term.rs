@@ -21,6 +21,13 @@ pub enum NumericMode {
     Widening,
 }
 
+/// The raw address of a heap value: what dereferencing and identity
+/// comparison use, never its payload word. The empty list has no object; its
+/// word is the null address the list comparator expects.
+fn address(value: AnyValue) -> *mut u8 {
+    value.heap_addr().unwrap_or(value.raw() as *mut u8)
+}
+
 pub struct TermComparator<'a> {
     node: &'a Node,
     schemas: &'a SchemaRegistry,
@@ -38,7 +45,7 @@ impl<'a> TermComparator<'a> {
             assert_ne!(value.kind(), ValueKind::NULL, "absent carrier is not a language value");
             if value.kind() == ValueKind::MAP {
                 assert_eq!(
-                    unsafe { read(value.raw() as *const u64) } & MAP_DESTINATION_FLAG,
+                    unsafe { read(value.heap_addr().expect("map address") as *const u64) } & MAP_DESTINATION_FLAG,
                     0,
                     "unpublished map is not a language value"
                 );
@@ -68,18 +75,18 @@ impl<'a> TermComparator<'a> {
                 NumericMode::Widening => compare_int_float(b, f64::from_bits(a)).reverse(),
             },
             (AnyValue::Atom(a), AnyValue::Atom(b)) => self.node.cmp_atom_names(a, b),
-            _ if a.kind() == ValueKind::STRUCT => self.struct_cmp(a.raw() as *const u8, b.raw() as *const u8, mode),
-            _ if a.kind() == ValueKind::CLOSURE => self.closure_cmp(a.raw() as *const u8, b.raw() as *const u8),
+            _ if a.kind() == ValueKind::STRUCT => self.struct_cmp(address(a), address(b), mode),
+            _ if a.kind() == ValueKind::CLOSURE => self.closure_cmp(address(a), address(b)),
             _ if a == b => Ordering::Equal,
             _ if a.kind().is_binary_repr() => bitstring_cmp(
                 a.heap_object_word().expect("bitstring"),
                 b.heap_object_word().expect("bitstring"),
             ),
-            _ if a.kind() == ValueKind::MAP => self.map_cmp(a.raw() as *const u8, b.raw() as *const u8, mode),
-            _ if a.kind() == ValueKind::LIST => self.list_cmp(a.raw() as *const u8, b.raw() as *const u8, mode),
+            _ if a.kind() == ValueKind::MAP => self.map_cmp(address(a), address(b), mode),
+            _ if a.kind() == ValueKind::LIST => self.list_cmp(address(a), address(b), mode),
             _ if a.kind() == ValueKind::RESOURCE => {
-                let a = unsafe { ResourceStub::from_raw(a.raw() as *mut u8) };
-                let b = unsafe { ResourceStub::from_raw(b.raw() as *mut u8) };
+                let a = unsafe { ResourceStub::from_raw(address(a)) };
+                let b = unsafe { ResourceStub::from_raw(address(b)) };
                 a.id().cmp(&b.id())
             }
             _ => unreachable!("unpublished runtime value"),

@@ -143,6 +143,18 @@ impl TaggedRefArch {
     }
 }
 
+/// A ref word is `address | kind << tag_shift | literal bit`. The kind field is
+/// `TAG_BITS` wide; the literal bit sits `LITERAL_BIT_OFFSET` above its base,
+/// clear of the list link's alias bit one position below it.
+///
+/// The literal bit lives in the ADDRESS: a payload word that stores an object's
+/// address (a struct field, closure capture, map key or value, list head) has
+/// the same bit at the same position, so moving an address between a ref word
+/// and a payload keeps it. An object a program ships as read-only data (a
+/// static struct, a static closure, a halt continuation, the nil slot) is
+/// referenced only through addresses that carry the bit; nothing else sets it.
+const LITERAL_BIT_OFFSET: u8 = TAG_BITS as u8 + 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnyValueRefPacking {
     tag_shift: u8,
@@ -172,23 +184,45 @@ impl AnyValueRefPacking {
         self.tag_shift
     }
 
+    /// The bits that name an object: its raw address only.
     pub const fn address_mask(self) -> u64 {
         self.address_mask
     }
 
+    /// The one bit that says the address names read-only program data.
+    pub const fn literal_bit(self) -> u64 {
+        1 << (self.tag_shift + LITERAL_BIT_OFFSET)
+    }
+
+    /// The bits an address word keeps: the raw address and the literal bit.
+    pub const fn payload_mask(self) -> u64 {
+        self.address_mask | self.literal_bit()
+    }
+
+    /// `word` as the raw address it names, with the literal bit and kind dropped.
+    /// Dereferencing, identity comparison and forwarding-map keys use this.
+    pub const fn raw_address(self, word: u64) -> usize {
+        (word & self.address_mask) as usize
+    }
+
+    /// Whether `word` names read-only program data.
+    pub const fn is_literal(self, word: u64) -> bool {
+        word & self.literal_bit() != 0
+    }
+
     fn pack(self, tag: ValueKind, address: usize) -> AnyValueRef {
         AnyValueRef {
-            word: ((tag.tag() as u64) << self.tag_shift) | ((address as u64) & self.address_mask),
+            word: ((tag.tag() as u64) << self.tag_shift) | ((address as u64) & self.payload_mask()),
         }
     }
 
     pub fn tag(self, value: AnyValueRef) -> Result<ValueKind, AnyValueRefError> {
-        let raw = (value.word >> self.tag_shift) as u8;
-        ValueKind::new(raw).ok_or(AnyValueRefError::UnknownTag(raw))
+        let field = ((value.word & !self.literal_bit()) >> self.tag_shift) as u8;
+        ValueKind::new(field).ok_or(AnyValueRefError::UnknownTag(field))
     }
 
     fn address(self, value: AnyValueRef) -> usize {
-        (value.word & self.address_mask) as usize
+        self.raw_address(value.word)
     }
 }
 
@@ -247,6 +281,19 @@ impl AnyValueRef {
         AnyValueRefPacking::current().address(self) as *mut u8
     }
 
+    /// Whether this ref names read-only program data. A literal is never
+    /// copied by the collector or deep copy.
+    pub fn is_literal(self) -> bool {
+        AnyValueRefPacking::current().is_literal(self.word)
+    }
+
+    /// This ref, marked as naming read-only program data.
+    pub fn literal(self) -> Self {
+        Self {
+            word: self.word | AnyValueRefPacking::current().literal_bit(),
+        }
+    }
+
     pub fn storage_addr(self) -> *mut u8 {
         self.cleared_addr()
     }
@@ -260,7 +307,7 @@ impl AnyValueRef {
             ValueKind::INT => self.load_int()? as u64,
             ValueKind::FLOAT => self.load_float()?.to_bits(),
             ValueKind::ATOM => self.load_atom()?,
-            tag if tag.is_heap() => self.cleared_addr() as u64,
+            tag if tag.is_heap() => self.word & AnyValueRefPacking::current().payload_mask(),
             _ => unreachable!("AnyValueRef tag set is exhaustive"),
         })
     }
@@ -270,7 +317,7 @@ impl AnyValueRef {
         if !tag.is_heap() {
             return Err(AnyValueRefError::ExpectedHeapObjectTag(tag));
         }
-        Ok(heap_object_word(self.cleared_addr(), tag))
+        Ok(self.word)
     }
 
     pub fn is_heap_root(self) -> bool {
@@ -422,13 +469,15 @@ impl AnyValue {
 
     pub fn decode_tagged_heap_bits(bits: u64) -> Option<Self> {
         let kind = heap_kind_from_tagged(bits)?;
-        let addr = heap_word_addr(bits);
+        let addr = (bits & AnyValueRefPacking::current().payload_mask()) as *mut u8;
         if kind == ValueKind::LIST && addr.is_null() {
             return Some(Self::EmptyList);
         }
         Some(Self::heap_ptr(addr, kind))
     }
 
+    /// The payload word of a value: a scalar's bits, or a heap object's
+    /// address with its literal bit. Containers store this word.
     pub fn raw(self) -> u64 {
         match self {
             Self::Null | Self::EmptyList => 0,
@@ -452,15 +501,17 @@ impl AnyValue {
 
     pub fn heap_addr(self) -> Option<*mut u8> {
         match self {
-            Self::HeapRef(_) => Some(self.raw() as *mut u8),
+            Self::HeapRef(value) => Some(value.storage_addr()),
             _ => None,
         }
     }
 
     pub fn heap_object_word(self) -> Option<u64> {
-        self.kind()
-            .is_heap()
-            .then(|| heap_object_word(self.raw() as *const u8, self.kind()))
+        match self {
+            Self::EmptyList => Some(AnyValueRef::empty_list().raw_word()),
+            Self::HeapRef(value) => value.heap_object_word().ok(),
+            _ => None,
+        }
     }
 
     pub fn ref_word(self) -> AnyValueRef {
@@ -881,6 +932,10 @@ const LIST_LINK_ALIAS_SHIFT: u8 = LIST_LINK_KIND_SHIFT + TAG_BITS as u8;
 const LIST_LINK_KIND_MASK: u64 = KIND_FIELD_MASK << LIST_LINK_KIND_SHIFT;
 pub const LIST_LINK_ALIAS_MASK: u64 = 1u64 << LIST_LINK_ALIAS_SHIFT;
 const LIST_LINK_ADDR_MASK: u64 = AnyValueRefPacking::current().address_mask();
+const _: () = assert!(
+    AnyValueRefPacking::current().literal_bit() != LIST_LINK_ALIAS_MASK,
+    "the literal bit and the alias bit are distinct"
+);
 const LIST_LINK_METADATA_MASK: u64 = LIST_LINK_KIND_MASK | LIST_LINK_ALIAS_MASK;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1352,31 +1407,21 @@ pub mod debug {
         unsafe { &*proc }.node.atom_name(id).filter(|name| !name.is_empty())
     }
 
-    fn is_proc_heap_list(proc: *mut Process, bits: u64) -> bool {
-        let Some(p) = list_addr_from_tagged(bits) else {
+    /// A list or map the formatter walks: a non-null address that is not a
+    /// literal. No program ships a list or a map as read-only data, so the
+    /// literal bit is clear on every one.
+    fn is_proc_heap_container(proc: *mut Process, bits: u64, addr_of: fn(u64) -> Option<*mut u8>) -> bool {
+        let Some(p) = addr_of(bits) else {
             return false;
         };
-        if p.is_null() {
-            return false;
-        }
-        !proc.is_null() && unsafe { (*proc).heap.contains_heap_addr(p) }
-    }
-
-    fn is_proc_heap_map(proc: *mut Process, bits: u64) -> bool {
-        let Some(p) = map_addr_from_tagged(bits) else {
-            return false;
-        };
-        if p.is_null() {
-            return false;
-        }
-        !proc.is_null() && unsafe { (*proc).heap.contains_heap_addr(p) }
+        !p.is_null() && !proc.is_null() && !super::AnyValueRefPacking::current().is_literal(bits)
     }
 
     pub fn render(proc: *mut Process, bits: u64) -> String {
-        if is_proc_heap_list(proc, bits) {
+        if is_proc_heap_container(proc, bits, list_addr_from_tagged) {
             return render_list(proc, bits);
         }
-        if is_proc_heap_map(proc, bits) {
+        if is_proc_heap_container(proc, bits, map_addr_from_tagged) {
             return render_map(proc, bits);
         }
         if closure_addr_from_tagged(bits).is_some() {

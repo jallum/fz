@@ -53,7 +53,6 @@ use crate::term::{NumericMode, TermComparator};
 use std::alloc::{Layout, alloc_zeroed, handle_alloc_error};
 use std::cell::Cell;
 use std::mem::{size_of, transmute};
-use std::ptr::null_mut;
 use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -69,24 +68,7 @@ fn any_value_ref_from_word(word: u64, context: &str) -> AnyValueRef {
 }
 
 fn any_value_from_ref_word(word: u64, context: &str) -> AnyValue {
-    let value = any_value_ref_from_word(word, context);
-    if value.is_empty_list() {
-        return AnyValue::empty_list();
-    }
-    match value.tag() {
-        ValueKind::NULL => AnyValue::null(),
-        ValueKind::INT => AnyValue::int(value.load_int().expect(context)),
-        ValueKind::FLOAT => AnyValue::float(value.load_float().expect(context)),
-        ValueKind::ATOM => AnyValue::atom(value.load_atom().expect(context) as u32),
-        ValueKind::LIST => AnyValue::heap_ptr(value.list_addr().expect(context), ValueKind::LIST),
-        ValueKind::MAP => AnyValue::heap_ptr(value.map_addr().expect(context), ValueKind::MAP),
-        ValueKind::STRUCT => AnyValue::heap_ptr(value.struct_addr().expect(context), ValueKind::STRUCT),
-        ValueKind::CLOSURE => AnyValue::heap_ptr(value.closure_addr().expect(context), ValueKind::CLOSURE),
-        ValueKind::BITSTRING => AnyValue::heap_ptr(value.bitstring_addr().expect(context), ValueKind::BITSTRING),
-        ValueKind::PROCBIN => AnyValue::heap_ptr(value.procbin_addr().expect(context), ValueKind::PROCBIN),
-        ValueKind::RESOURCE => AnyValue::heap_ptr(value.resource_addr().expect(context), ValueKind::RESOURCE),
-        _ => unreachable!("AnyValueRef tag set is exhaustive"),
-    }
+    AnyValue::from_ref(any_value_ref_from_word(word, context)).expect(context)
 }
 
 fn heap_object_word_from_ref_word(word: u64, context: &str) -> u64 {
@@ -105,6 +87,12 @@ fn heap_ref_word(tag: ValueKind, addr: *const u8) -> u64 {
 fn closure_ref_word_from_bits(bits: u64) -> u64 {
     let addr = closure_addr_from_tagged(bits).expect("closure heap bits");
     heap_ref_word(ValueKind::CLOSURE, addr)
+}
+
+fn closure_ref_from_word(word: u64, context: &str) -> AnyValueRef {
+    let closure = any_value_ref_from_word(word, context);
+    closure.closure_addr().expect(context);
+    closure
 }
 
 fn closure_addr_from_ref_word(word: u64, context: &str) -> *mut u8 {
@@ -502,13 +490,13 @@ pub extern "C" fn fz_receive_park_matched(
     } else {
         unsafe { from_raw_parts(pinned_ptr, n_pinned as usize).to_vec() }
     };
-    let clause_bodies: Vec<*mut u8> = if n_clauses == 0 {
+    let clause_bodies: Vec<AnyValueRef> = if n_clauses == 0 {
         Vec::new()
     } else {
         unsafe {
             from_raw_parts(clause_bodies_ptr, n_clauses as usize)
                 .iter()
-                .map(|&bits| closure_addr_from_ref_word(bits, "fz_receive_park_matched clause body"))
+                .map(|&bits| closure_ref_from_word(bits, "fz_receive_park_matched clause body"))
                 .collect()
         }
     };
@@ -528,11 +516,8 @@ pub extern "C" fn fz_receive_park_matched(
         Some(after_deadline_or_neg1 as u64)
     };
 
-    let after_cont = if after_cont_bits == 0 {
-        null_mut()
-    } else {
-        closure_addr_from_ref_word(after_cont_bits, "fz_receive_park_matched after cont")
-    };
+    let after_cont =
+        (after_cont_bits != 0).then(|| closure_ref_from_word(after_cont_bits, "fz_receive_park_matched after cont"));
 
     let park = ParkRecord {
         matcher_fn,
@@ -547,7 +532,7 @@ pub extern "C" fn fz_receive_park_matched(
 
     let p = unsafe { &mut *process };
     match reach_receive(p, park) {
-        ReceiveStep::Continue(closure) => heap_ref_word(ValueKind::CLOSURE, closure) as *mut u8,
+        ReceiveStep::Continue(closure) => closure.raw_word() as *mut u8,
         ReceiveStep::Parked => YIELD_PTR as *mut u8,
     }
 }
@@ -570,12 +555,11 @@ pub extern "C" fn fz_yield_mid_flight_report(
     // Allocation-pressure reasons already stand on `p.yield_reasons`;
     // finish_yield_report folds them in when attributing the cause.
     p.finish_yield_report(remaining_reductions, reason as u8);
-    let closure_addr = closure_addr_from_ref_word(cont_closure_bits, "fz_yield_mid_flight_report cont");
-    let closure_bits = heap_object_word(closure_addr, ValueKind::CLOSURE);
-    let continuation_bytes = object_size(closure_bits);
+    let closure = closure_ref_from_word(cont_closure_bits, "fz_yield_mid_flight_report cont");
+    let continuation_bytes = object_size(closure.raw_word());
     let margin_after = p.heap.bytes_remaining_in_block();
     p.note_yield_continuation_allocation(continuation_bytes, margin_after);
-    p.set_runnable_closure(closure_addr);
+    p.set_runnable_closure(closure);
     YIELD_PTR as *mut u8
 }
 
@@ -1571,8 +1555,12 @@ fn resource_payload_ref(resource: AnyValueRef) -> AnyValueRef {
     AnyValueRef::from_scalar_slot(ValueKind::INT, stub.payload_slot()).expect("resource integer payload ref")
 }
 
+/// A ref to the one immutable nil payload word, marked as a literal because it
+/// lies outside every heap.
 fn nil_atom_ref() -> AnyValueRef {
-    AnyValueRef::from_scalar_slot(ValueKind::ATOM, &NIL_ATOM_REF_SLOT).expect("static nil atom ref")
+    AnyValueRef::from_scalar_slot(ValueKind::ATOM, &NIL_ATOM_REF_SLOT)
+        .expect("static nil atom ref")
+        .literal()
 }
 
 #[unsafe(no_mangle)]

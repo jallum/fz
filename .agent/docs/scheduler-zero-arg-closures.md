@@ -378,9 +378,9 @@ the boundary's function. Every process of the program, on the JIT and under AOT,
 holds the same address. The interpreter has no such objects.
 
 These objects are not in any process heap. The collector and deep copy
-recognize a heap object by testing its address against the heap's block ranges,
-so an address outside every range passes through by pointer and is never written.
-A write to one faults. They are not heap allocations, so they never appear in
+recognize them by the literal bit every reference to one carries (see
+`any-value.md`, "The literal bit"): a literal passes through by pointer and is
+never written. A write to one faults. They are not heap allocations, so they never appear in
 heap alloc stats.
 
 ## What the scheduler owns vs. what closures carry

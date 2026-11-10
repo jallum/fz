@@ -1503,3 +1503,40 @@ fn bad_heap_projection_reports_expected_and_found_tags() {
         Err(AnyValueRefError::ExpectedHeapObjectTag(ValueKind::INT))
     );
 }
+
+/// The literal bit sits above the kind field in every address word, and the
+/// raw address, the kind and the heap/literal distinction are read from it
+/// independently of one another.
+#[test]
+fn the_literal_bit_rides_the_address_word_without_disturbing_kind_or_address() {
+    let packing = AnyValueRefPacking::current();
+    let addr = 0x1234_5670usize as *mut u8;
+    let plain = AnyValueRef::from_heap_object(ValueKind::STRUCT, addr).expect("plain ref");
+    let literal = plain.literal();
+
+    assert!(!plain.is_literal());
+    assert!(literal.is_literal());
+    assert_eq!(literal.tag(), ValueKind::STRUCT, "the kind is read around the bit");
+    assert_eq!(
+        literal.struct_addr(),
+        Ok(addr),
+        "the raw address is read around the bit"
+    );
+    assert_ne!(literal, plain, "the bit is part of the word");
+    assert_eq!(packing.raw_address(literal.raw_word()), addr as usize);
+    assert!(packing.is_literal(literal.raw_word()));
+    assert!(!packing.is_literal(plain.raw_word()));
+    assert_eq!(literal.literal(), literal, "tagging twice is tagging once");
+}
+
+#[test]
+fn a_literal_value_stored_in_a_payload_word_keeps_its_bit_and_reports_the_raw_address() {
+    let addr = 0x4000usize as *mut u8;
+    let literal = AnyValueRef::from_heap_object(ValueKind::CLOSURE, addr)
+        .expect("ref")
+        .literal();
+    let value = AnyValue::HeapRef(literal);
+
+    assert!(AnyValueRefPacking::current().is_literal(value.raw()));
+    assert_eq!(value.heap_addr(), Some(addr));
+}

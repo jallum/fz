@@ -2,7 +2,7 @@
 
 use super::block_pool::{Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pool_alloc, round_up_16};
 use super::gc::{
-    CopiedObject, cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
+    CopiedObject, FromSpace, cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
     cheney_trace_struct, forward_any_value_ref_root, forward_heap_value,
 };
 use super::ref_io::{
@@ -16,10 +16,10 @@ use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, ValueKind, bitstring_header_word,
     bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot,
     closure_capture_set, closure_capture_value, closure_header_word, closure_header_write, closure_size_for_count,
-    heap_kind_from_tagged, heap_object_word, heap_word_addr, list_addr_from_tagged, map_addr_from_tagged, map_count,
-    map_destination_header_word, map_destination_state, map_entry, map_header_word, map_keys_ptr, map_pack_tag,
-    map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot, struct_field_raw_slot,
-    struct_header_word, struct_schema_id, struct_size_for_payload,
+    heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count, map_destination_header_word,
+    map_destination_state, map_entry, map_header_word, map_keys_ptr, map_pack_tag, map_size_for_count,
+    map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot, struct_field_raw_slot, struct_header_word,
+    struct_schema_id, struct_size_for_payload,
 };
 use crate::procbin::{
     DeadResource, SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep, mso_unreached_closures,
@@ -352,17 +352,6 @@ impl Heap {
         let list_bits = self.alloc_list_cons_slot(AnyValue::atom(atom_id), tail_bits);
         let list_addr = list_addr_from_tagged(list_bits).expect("new list addr");
         AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
-    }
-
-    pub fn current_heap_tagged_addr(&self, bits: u64) -> Option<(ValueKind, *mut u8)> {
-        let kind = heap_kind_from_tagged(bits)?;
-        let p = heap_word_addr(bits);
-        (!p.is_null() && self.contains_heap_addr(p)).then_some((kind, p))
-    }
-
-    pub fn current_heap_addr_for_kind(&self, bits: u64, kind: ValueKind) -> Option<*mut u8> {
-        self.current_heap_tagged_addr(bits)
-            .and_then(|(actual, p)| (actual == kind).then_some(p))
     }
 
     pub fn contains_heap_addr(&self, p: *mut u8) -> bool {
@@ -930,7 +919,16 @@ impl Heap {
         let kind_offset = schema.get(schema_id).value_field_kind_offset(field_offset);
         let raw_slot = unsafe { struct_field_raw_slot(addr as *const u8, field_offset) };
         let kind = unsafe { read(struct_field_kind_slot(addr as *const u8, kind_offset)) };
-        any_value_ref_from_storage(raw_slot as *const u64, ValueKind::new(kind).expect("struct field kind"))
+        let field =
+            any_value_ref_from_storage(raw_slot as *const u64, ValueKind::new(kind).expect("struct field kind"))?;
+        // A scalar field's ref points into the struct's own payload, so it is
+        // read-only data exactly when the struct is. A heap field's ref is its
+        // stored address and already says what it names.
+        Ok(if obj.is_literal() && field.tag().is_scalar() {
+            field.literal()
+        } else {
+            field
+        })
     }
 
     pub fn read_struct_named_field_ref(
@@ -1034,11 +1032,12 @@ impl Heap {
             self.gift.is_none(),
             "a gift window is open; the heap collects only between end_gift and the next begin_gift"
         );
-        // Snapshot from-space block ranges before to-space is installed.
-        let from_ranges: Vec<(*mut u8, *mut u8)> = self.block_ranges().collect();
-        let from_space_capacity_bytes: usize = from_ranges
-            .iter()
-            .map(|(start, end)| unsafe { end.offset_from(*start) as usize })
+        // From-space is every block the heap owns before to-space is installed.
+        let from_space = FromSpace::of(self);
+        let from_block_count = self.block_ranges().count();
+        let from_space_capacity_bytes: usize = self
+            .block_ranges()
+            .map(|(start, end)| unsafe { end.offset_from(start) as usize })
             .sum();
 
         let from_tip = self.current_block();
@@ -1054,8 +1053,7 @@ impl Heap {
         let mut copied_objects: Vec<CopiedObject> = Vec::new();
         let mut stats = GcStats {
             from_space_capacity_bytes: from_space_capacity_bytes as u64,
-            from_ranges_walked: from_ranges.len() as u64,
-            blocks_released: from_ranges.len() as u64,
+            blocks_released: from_block_count as u64,
             ..GcStats::default()
         };
         let schemas_handle = self.schemas.clone();
@@ -1063,7 +1061,7 @@ impl Heap {
         for value in roots.iter_mut() {
             forward_any_value_ref_root(
                 value,
-                &from_ranges,
+                &from_space,
                 self,
                 &schemas_handle.borrow(),
                 &mut copied_objects,
@@ -1075,7 +1073,7 @@ impl Heap {
         let mut scan_idx = 0usize;
         cheney_scan(
             &mut scan_idx,
-            &from_ranges,
+            &from_space,
             self,
             &schemas,
             &mut copied_objects,
@@ -1089,12 +1087,12 @@ impl Heap {
         let unreached = mso_unreached_closures(self);
         let mut dead_closures: HashMap<usize, AnyValue> = HashMap::with_capacity(unreached.len());
         for (stub, closure) in unreached {
-            let forwarded = forward_heap_value(closure, &from_ranges, self, &schemas, &mut copied_objects, &mut stats);
+            let forwarded = forward_heap_value(closure, &from_space, self, &schemas, &mut copied_objects, &mut stats);
             dead_closures.insert(stub, forwarded);
         }
         cheney_scan(
             &mut scan_idx,
-            &from_ranges,
+            &from_space,
             self,
             &schemas,
             &mut copied_objects,
@@ -1153,7 +1151,7 @@ impl Heap {
 /// one references, until the scan catches up with the copy frontier.
 fn cheney_scan(
     scan_idx: &mut usize,
-    from_ranges: &[(*mut u8, *mut u8)],
+    from_space: &FromSpace,
     heap: &mut Heap,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
@@ -1165,17 +1163,17 @@ fn cheney_scan(
         match copied.kind {
             ValueKind::LIST => cheney_trace_list(
                 copied.ptr as *mut ListCons,
-                from_ranges,
+                from_space,
                 heap,
                 schemas,
                 copied_objects,
                 stats,
             ),
-            ValueKind::MAP => cheney_trace_map(copied.ptr, from_ranges, heap, schemas, copied_objects, stats),
-            ValueKind::CLOSURE => cheney_trace_closure(copied.ptr, from_ranges, heap, schemas, copied_objects, stats),
-            ValueKind::STRUCT => cheney_trace_struct(copied.ptr, from_ranges, heap, schemas, copied_objects, stats),
+            ValueKind::MAP => cheney_trace_map(copied.ptr, from_space, heap, schemas, copied_objects, stats),
+            ValueKind::CLOSURE => cheney_trace_closure(copied.ptr, from_space, heap, schemas, copied_objects, stats),
+            ValueKind::STRUCT => cheney_trace_struct(copied.ptr, from_space, heap, schemas, copied_objects, stats),
             ValueKind::BITSTRING | ValueKind::PROCBIN => {}
-            ValueKind::RESOURCE => cheney_trace_resource(copied.ptr, from_ranges, heap, schemas, copied_objects, stats),
+            ValueKind::RESOURCE => cheney_trace_resource(copied.ptr, from_space, heap, schemas, copied_objects, stats),
             kind => panic!("Cheney scan: invalid copied object kind {kind:?}"),
         }
     }

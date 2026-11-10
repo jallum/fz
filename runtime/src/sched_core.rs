@@ -164,12 +164,12 @@ pub fn drain_destructors<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut
             ValueKind::INT,
             "a queued destructor payload stays boxed as an integer"
         );
-        let continuation = process.runnable_ptr();
+        let continuation = process.runnable_closure();
         process.reset_reduction_budget();
         scheduler.run_destructor(process, closure, payload);
         process.dtors_dispatched += 1;
         assert_eq!(
-            process.runnable_ptr(),
+            process.runnable_closure(),
             continuation,
             "a destructor must finish within one quantum; it yielded"
         );

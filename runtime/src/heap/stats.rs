@@ -85,9 +85,6 @@ pub struct GcStats {
     pub blocks_released: u64,
     /// Blocks the heap holds once the collection finishes: the tip and every parked to-space block.
     pub blocks_after: u64,
-    /// Length of the from-space range list the membership test
-    /// (`ptr_in_ranges`) scans for every edge the collection follows.
-    pub from_ranges_walked: u64,
     pub root_heap_edges: u64,
     pub root_scalar_slots: u64,
     pub list_head_heap_edges: u64,

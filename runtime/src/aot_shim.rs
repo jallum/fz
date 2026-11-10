@@ -24,7 +24,7 @@
 //! selective-receive probe path. This matches the JIT's `run_until_idle`
 //! semantics.
 
-use crate::any_value::{AnyValueRef, ValueKind};
+use crate::any_value::AnyValueRef;
 use crate::exec_ctx::{Argv, ExecCtx};
 use crate::function_denotation::decode_closure_denotations;
 use crate::heap::{AddressMap, Schema, SchemaRegistry, deep_copy_any_value_ref};
@@ -409,14 +409,14 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
     let mut forwarding = AddressMap::default();
     let closure_ref = AnyValueRef::from_raw_word(closure_bits).expect("aot_spawn_hook: closure ref");
     let copied = deep_copy_any_value_ref(closure_ref, &parent.heap.view(), &mut child.heap, &mut forwarding);
-    let copied_addr = copied
+    copied
         .closure_addr()
         .expect("aot_spawn_hook: copied closure must be a closure");
 
     // Wrap the copied closure in an entry thunk queued as `runnable`; the
     // run-queue loop resumes it via `fz_resume`. `parent`/`sender` are no
     // longer read past this point, so mutating `sched.tasks` is safe.
-    let thunk = mint_entry_thunk(&mut child.heap, entry_thunk_addr, copied_addr);
+    let thunk = mint_entry_thunk(&mut child.heap, entry_thunk_addr, copied);
     child.set_runnable_closure(thunk);
     // Scaffolding is prepared before the child runs; reset so its alloc
     // telemetry measures only the child's execution.
@@ -546,12 +546,6 @@ struct ShimAddrs {
     resume: *const u8,
 }
 
-fn closure_ref_word(closure: *mut u8) -> u64 {
-    AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure as *const u8)
-        .expect("scheduler closure ref")
-        .raw_word()
-}
-
 /// Run one quantum for `pid`: resume its runnable closure, then let the
 /// scheduling core end the quantum and requeue the process if it yielded.
 /// Returns nothing; scheduler state is mutated in place.
@@ -579,8 +573,8 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
     // matched receive becomes the runnable closure here.
     deliver_in_queue(unsafe { &mut *proc_ptr });
 
-    fn run_scheduler_closure(resume_addr: *const u8, process: *mut Process, closure: *mut u8) {
-        let _ = unsafe { call1(resume_addr, process, closure_ref_word(closure)) };
+    fn run_scheduler_closure(resume_addr: *const u8, process: *mut Process, closure: AnyValueRef) {
+        let _ = unsafe { call1(resume_addr, process, closure.raw_word()) };
     }
 
     // One re-entry verb: resume the task's `runnable` closure (a fresh entry

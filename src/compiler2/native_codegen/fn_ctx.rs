@@ -143,10 +143,19 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         runtime_call1!(self, fz_alloc_frame, [process, schema_id, size])
     }
 
-    /// The tagged ref to a read-only object the program emitted.
+    /// The tagged ref to a read-only object the program emitted, marked as a
+    /// literal so the collector and deep copy leave it where it is.
     pub(crate) fn static_object_ref(&mut self, data_id: DataId, kind: ValueKind) -> ir::Value {
         let addr = data_addr(self.jmod, data_id, self.b);
-        self.heap_ref_word_from_addr(addr, kind)
+        self.literal_ref_word_from_addr(addr, kind)
+    }
+
+    /// The tagged ref to the read-only object at `addr`, marked as a literal.
+    pub(crate) fn literal_ref_word_from_addr(&mut self, addr: ir::Value, kind: ValueKind) -> ir::Value {
+        let ref_word = self.heap_ref_word_from_addr(addr, kind);
+        self.b
+            .ins()
+            .bor_imm(ref_word, AnyValueRefPacking::current().literal_bit() as i64)
     }
 
     /// The program's halt continuation for a return in `repr`'s lane.

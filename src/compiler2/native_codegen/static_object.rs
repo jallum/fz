@@ -10,7 +10,7 @@ use super::*;
 use cranelift_codegen::ir::{self, InstBuilder, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
-use fz_runtime::any_value::{ClosureDenotationId, closure_header_word, closure_size_for_count};
+use fz_runtime::any_value::{AnyValueRefPacking, ClosureDenotationId, closure_header_word, closure_size_for_count};
 
 /// An address stored into an object's bytes.
 #[derive(Clone, Copy)]
@@ -37,7 +37,8 @@ pub(crate) fn define_read_only_object<M: Module>(
         match *target {
             StaticAddress::Data(target) => {
                 let gv = jmod.declare_data_in_data(target, &mut desc);
-                desc.write_data_addr(*offset as u32, gv, 0);
+                // A stored address names read-only data, so it carries the literal bit.
+                desc.write_data_addr(*offset as u32, gv, AnyValueRefPacking::current().literal_bit() as i64);
             }
             StaticAddress::Function(target) => {
                 let fref = jmod.declare_func_in_data(target, &mut desc);

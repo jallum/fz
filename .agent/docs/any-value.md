@@ -233,6 +233,37 @@ address-mask clear. On x86_64 canonical refs the high bits are cleared with
 `AnyValueRefPacking` rather than a hardcoded mask is what keeps
 compiler2 CLIF dumps aligned with the runtime packing model.
 
+## The literal bit
+
+A *literal* is an object the program carries in read-only data rather than on a
+heap: a static struct (`.fz_static_struct_*`), a static closure, a halt
+continuation, and the nil slot. Every reference to a literal has one bit set
+above the kind field of its address word: `1 << (tag_shift + 5)`, bit 61 on
+arm64 and bit 62 on x86_64, owned by `AnyValueRefPacking`
+(`literal_bit`, `is_literal`, `raw_address`, `payload_mask`). The bit sits in the
+*address* word, so the same position holds in the ref word, a struct field or
+closure capture payload, a map key or value payload, a list head payload and a
+list link's tail. `ValueKind`, kind bytes and the map key/value kind byte are
+unchanged, and `AnyValueRef::tag()` ignores the bit.
+
+The bit is set only where a literal is named: `static_object_ref`, the entry
+thunk, the child-literal payload words of a static struct (a relocation whose
+addend is the bit), `nil_atom_ref`, and a scalar field read from a literal
+struct (`read_struct_field_ref`; a heap child keeps the bit its stored payload
+word carries). Fresh heap allocations never set it. Anything that dereferences,
+compares identity, hashes or keys on an address reads it through
+`AnyValueRefPacking::raw_address` (`AnyValue::heap_addr`, `storage_addr`,
+`AnyValueRef::*_addr`), so a literal and its raw address agree; code that
+re-packs an address must carry the bit (`AnyValueRef::literal`) or it names a
+heap object that is not there.
+
+The collector, deep copy and the debug formatter test this one bit: a tagged
+reference is left in place (collector) or shared (deep copy), an untagged one is
+a heap pointer in from-space. Debug builds keep the from-space range walk as a
+cross-check (`FromSpace::assert_classified`, `HeapView::assert_classified`): an
+untagged pointer must lie in from-space, a tagged one must not, and none may lie
+in to-space. Release builds never walk the from-space ranges.
+
 ## Container Storage
 
 Containers *appear* to store `AnyValueRef`s when dynamic code reads them, but

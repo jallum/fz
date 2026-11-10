@@ -368,7 +368,10 @@ fn yield_mid_flight_report_stashes_runnable_closure() {
             .raw_word();
         let ret = fz_yield_mid_flight_report(process, closure_ref, -1, YIELD_REASON_REDUCTIONS as u32);
         assert_eq!(ret as u64, YIELD_PTR);
-        assert_eq!(process.runnable_ptr(), closure_addr);
+        assert_eq!(
+            process.runnable_closure().map(|closure| closure.storage_addr()),
+            Some(closure_addr)
+        );
         assert_eq!(process.scheduler_yields, 1);
         assert_eq!(process.reductions_remaining, -1);
         assert_eq!(process.reduction_yields, 1);

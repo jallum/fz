@@ -477,7 +477,7 @@ fn emit_entry_thunk<M: cranelift_module::Module>(
         let pick_i64_or_tagged = cg.b.ins().select(is_i64, a_i64, a_strict);
         let pick_f64 = cg.b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
         let hcb_addr = cg.b.ins().select(is_atom, a_atom, pick_f64);
-        let halt_cl = cg.heap_ref_word_from_addr(hcb_addr, ValueKind::CLOSURE);
+        let halt_cl = cg.literal_ref_word_from_addr(hcb_addr, ValueKind::CLOSURE);
         // Read inner closure body addr through the runtime ABI and invoke as
         // closure-target sig `(self, cont) tail` (zero user args).
         let code = cg.closure_code_ref(closure);

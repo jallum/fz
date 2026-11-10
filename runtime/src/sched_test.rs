@@ -36,7 +36,7 @@ fn fresh_task() -> Process {
     Process::new(schemas)
 }
 
-fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
+fn template_closure(task: &mut Process, stub: usize) -> AnyValueRef {
     let bits = task
         .heap
         .alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 1, 0);
@@ -45,7 +45,12 @@ fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
         write(p.add(8) as *mut u64, stub as u64);
         any_value::closure_capture_set(p, 0, AnyValue::null());
     }
-    p
+    AnyValueRef::from_heap_object(ValueKind::CLOSURE, p).expect("template closure ref")
+}
+
+/// A closure ref to an address nothing dereferences, for a record that is only compared.
+fn fake_closure(addr: usize) -> AnyValueRef {
+    AnyValueRef::from_heap_object(ValueKind::CLOSURE, addr as *const u8).expect("fake closure ref")
 }
 
 fn record_on_42(task: &mut Process, timer: Option<TimerId>) -> ParkRecord {
@@ -57,7 +62,7 @@ fn record_on_42(task: &mut Process, timer: Option<TimerId>) -> ParkRecord {
         clause_bound_counts: vec![1],
         bound_arity: 1,
         after_deadline_ms: timer.map(|_| 0),
-        after_cont: 0xcafe_babe as *mut u8,
+        after_cont: Some(fake_closure(0xcafe_babe)),
         after_timer_id: timer,
     }
 }
@@ -126,7 +131,7 @@ fn park_binding_nothing(task: &mut Process) {
         clause_bound_counts: vec![0],
         bound_arity: 0,
         after_deadline_ms: None,
-        after_cont: 0xcafe_babe as *mut u8,
+        after_cont: Some(fake_closure(0xcafe_babe)),
         after_timer_id: None,
     });
     task.state = ProcessState::Blocked;
@@ -141,7 +146,7 @@ fn park_binding_twice(task: &mut Process) {
         clause_bound_counts: vec![2],
         bound_arity: 2,
         after_deadline_ms: None,
-        after_cont: 0xcafe_babe as *mut u8,
+        after_cont: Some(fake_closure(0xcafe_babe)),
         after_timer_id: None,
     });
     task.state = ProcessState::Blocked;
@@ -180,7 +185,7 @@ fn probe_sender_hit_queues_the_match_and_leaves_the_receiver_untouched_until_it_
         ProcessState::Blocked,
         "only the scheduling core flips Ready"
     );
-    assert!(task.runnable_ptr().is_null());
+    assert!(task.runnable_closure().is_none());
     assert_eq!(
         task.heap.bytes_used(),
         receiver_bytes,
@@ -202,8 +207,11 @@ fn deliver_in_queue_finishes_a_matched_receive_with_the_gifted_values() {
     deliver_in_queue(&mut task);
     assert!(task.delivery.lock().park().is_none());
     assert!(task.delivery.lock().queued_gifts().next().is_none());
-    let runnable = task.runnable_ptr();
-    assert!(!runnable.is_null());
+    let runnable = task
+        .runnable_closure()
+        .expect("the match queued a runnable closure")
+        .closure_addr()
+        .expect("runnable closure addr");
     unsafe {
         assert_eq!(read((runnable as *const u8).add(8) as *const u64), 0xdead_beef);
         let capture_ref =
@@ -225,7 +233,7 @@ fn probe_sender_miss_queues_the_message_and_keeps_the_park() {
     assert_eq!(probe.gift_blocks, 1);
     assert!(task.delivery.lock().park().is_some());
     assert_eq!(task.state, ProcessState::Blocked);
-    assert!(task.runnable_ptr().is_null());
+    assert!(task.runnable_closure().is_none());
     assert!(task.mailbox.is_empty(), "the message waits in the in-queue");
     assert_eq!(task.delivery.lock().queued_gifts().count(), 1);
     deliver_in_queue(&mut task);
@@ -285,7 +293,7 @@ fn a_hit_that_binds_nothing_gifts_nothing() {
     assert_eq!((clause_idx, bound.len()), (0, 0));
     deliver_in_queue(&mut task);
     assert!(task.delivery.lock().park().is_none());
-    assert!(!task.runnable_ptr().is_null());
+    assert!(task.runnable_closure().is_some());
     drop(task);
     drop(sender);
     pool_drain_for_test();
@@ -423,6 +431,7 @@ fn reach_receive_hit_continues_with_the_clause_and_splices_the_message_out() {
     let ReceiveStep::Continue(cont) = reach_receive(&mut task, record) else {
         panic!("a matching message in the mailbox must continue the receive");
     };
+    let cont = cont.closure_addr().expect("continuation closure addr");
     unsafe {
         assert_eq!(read(cont.add(8) as *const u64), 0xdead_beef);
         let capture_ref =
@@ -465,7 +474,7 @@ fn reach_receive_after_zero_miss_continues_with_the_after_body() {
     record.after_deadline_ms = Some(0);
     assert_eq!(
         reach_receive(&mut task, record),
-        ReceiveStep::Continue(0xcafe_babe as *mut u8)
+        ReceiveStep::Continue(fake_closure(0xcafe_babe))
     );
     assert!(task.delivery.lock().park().is_none());
     assert_eq!(task.state, ProcessState::Running);
@@ -481,7 +490,7 @@ fn reach_receive_after_zero_hit_prefers_the_clause_to_the_after_body() {
     let ReceiveStep::Continue(cont) = reach_receive(&mut task, record) else {
         panic!("a matching message must continue the receive");
     };
-    assert_ne!(cont, 0xcafe_babe as *mut u8);
+    assert_ne!(cont, fake_closure(0xcafe_babe));
     assert!(task.mailbox.is_empty());
 }
 
@@ -545,10 +554,10 @@ fn a_hit_then_the_timer_decides_the_receive_once_and_the_timer_finds_it_stale() 
         !fire_after_timer(&mut task, TIMER),
         "the hit cancelled the timer, so its firing is stale"
     );
-    assert!(task.runnable_ptr().is_null(), "the stale timer woke nothing");
+    assert!(task.runnable_closure().is_none(), "the stale timer woke nothing");
 
     deliver_in_queue(&mut task);
-    assert!(!task.runnable_ptr().is_null(), "the hit's delivery is the one wake");
+    assert!(task.runnable_closure().is_some(), "the hit's delivery is the one wake");
     assert!(task.delivery.lock().park().is_none());
 }
 
@@ -564,8 +573,8 @@ fn the_timer_then_a_sender_decides_the_receive_once_and_the_sender_delivers_a_mi
 
     assert!(fire_after_timer(&mut task, TIMER), "the timer took the park");
     assert_eq!(
-        task.runnable_ptr(),
-        0xcafe_babe as *mut u8,
+        task.runnable_closure(),
+        Some(fake_closure(0xcafe_babe)),
         "the timer woke the after body"
     );
 
@@ -583,7 +592,11 @@ fn the_timer_then_a_sender_decides_the_receive_once_and_the_sender_delivers_a_mi
     assert!(!task.delivery.lock().has_pending_match());
     deliver_in_queue(&mut task);
     assert_eq!(mailbox_ints(&task), vec![42], "the message waits for a later receive");
-    assert_eq!(task.runnable_ptr(), 0xcafe_babe as *mut u8, "the sender woke nothing");
+    assert_eq!(
+        task.runnable_closure(),
+        Some(fake_closure(0xcafe_babe)),
+        "the sender woke nothing"
+    );
 }
 
 #[test]

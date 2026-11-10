@@ -33,17 +33,16 @@ use std::ptr::write;
 /// `inner` must already live in `heap` (deep-copied closure, or a freshly
 /// minted main inner). The capture is a real closure reference, so GC traces
 /// through the thunk to the inner closure.
-pub fn mint_entry_thunk(heap: &mut Heap, entry_thunk_addr: *const u8, inner: *mut u8) -> *mut u8 {
+pub fn mint_entry_thunk(heap: &mut Heap, entry_thunk_addr: *const u8, inner: AnyValueRef) -> AnyValueRef {
     let bits = heap.alloc_closure_slots(crate::any_value::ClosureDenotationId::INTERNAL, SCAFFOLDING_ARITY, 1, 0);
     let p = any_value::closure_addr_from_tagged(bits).expect("entry thunk closure ptr");
-    let inner_av = AnyValue::HeapRef(
-        AnyValueRef::from_heap_object(ValueKind::CLOSURE, inner as *const u8).expect("entry thunk inner closure ref"),
-    );
+    let inner_av = AnyValue::from_ref(inner).expect("entry thunk inner closure ref");
+    assert_eq!(inner.tag(), ValueKind::CLOSURE, "an entry thunk wraps a closure");
     unsafe {
         write(p.add(8) as *mut u64, entry_thunk_addr as u64);
         any_value::closure_capture_set(p, 0, inner_av);
     }
-    p
+    AnyValueRef::from_heap_object(ValueKind::CLOSURE, p).expect("entry thunk closure ref")
 }
 
 /// Scheduler scaffolding closures are entered by `fz_resume`, never applied to
@@ -60,7 +59,7 @@ pub fn mint_main_inner(
     main_trampoline_addr: *const u8,
     main_fp: *const u8,
     halt_kind: u16,
-) -> *mut u8 {
+) -> AnyValueRef {
     let bits = heap.alloc_closure_slots(
         crate::any_value::ClosureDenotationId::INTERNAL,
         SCAFFOLDING_ARITY,
@@ -72,7 +71,7 @@ pub fn mint_main_inner(
         write(p.add(8) as *mut u64, main_trampoline_addr as u64);
         any_value::closure_capture_set(p, 0, AnyValue::Int(main_fp as i64));
     }
-    p
+    AnyValueRef::from_heap_object(ValueKind::CLOSURE, p).expect("main inner closure ref")
 }
 
 /// Storage one process allocated for another, with what the receiver does
@@ -293,7 +292,7 @@ pub fn self_send(task: &mut Process, msg: AnyValueRef) {
 pub enum ReceiveStep {
     /// The receive is decided: run this closure now (the matched clause's
     /// outcome closure, or the `after` body). The process keeps running.
-    Continue(*mut u8),
+    Continue(AnyValueRef),
     /// Nothing matched and the receive must wait. The park is recorded, the
     /// after-timer (if any) is armed and the process is Blocked.
     Parked,
@@ -326,7 +325,7 @@ pub fn reach_receive(task: &mut Process, mut park: ParkRecord) -> ReceiveStep {
         return ReceiveStep::Continue(park.outcome_closure(&mut task.heap, clause_idx, &bound_vals));
     }
     match park.after_deadline_ms {
-        Some(0) => ReceiveStep::Continue(park.after_cont),
+        Some(0) => ReceiveStep::Continue(park.after_cont.expect("an `after 0` receive has an after body")),
         after_ms => {
             park.after_timer_id = after_ms.and_then(|ms| timer_schedule(task, task.pid, ms));
             delivery.install_park(park);
@@ -353,7 +352,10 @@ pub fn fire_after_timer(task: &mut Process, id: TimerId) -> bool {
     }
     let park = delivery.take_park().expect("checked above");
     drop(delivery);
-    task.set_runnable_closure(park.after_cont);
+    task.set_runnable_closure(
+        park.after_cont
+            .expect("an after timer fires only for a receive with an after body"),
+    );
     true
 }
 

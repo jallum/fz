@@ -1,0 +1,26 @@
+#---
+# purpose: "a map holding a compiled-in closure and a compiled-in struct survives collections: the map moves, the two literals it holds stay where the program put them and still work"
+#---
+#
+# `double` as a function value and `%Point{x: 3, y: 4}` as a constant are built
+# into the program, not on any heap, and the collector recognises them by the
+# bit their references carry. The map holds both while 20000 cells of garbage
+# force collections; the entries are then read back through the moved map.
+defmodule Point do
+  defstruct [:x, :y]
+  @type t :: %Point{x: integer, y: integer}
+end
+
+def double(n), do: n * 2
+
+def churn(0, acc), do: acc
+def churn(n, acc), do: churn(n - 1, [n | acc])
+
+def main() do
+  held = %{fun: &double/1, point: %Point{x: 3, y: 4}}
+  dbg(Enum.count(churn(20000, [])))
+  f = held.fun
+  dbg(f.(21))
+  p = held.point
+  dbg(p.x + p.y)
+end

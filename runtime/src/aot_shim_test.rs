@@ -209,7 +209,10 @@ fn timer_drain_wakes_after_cont() {
         clause_bound_counts: vec![],
         bound_arity: 0,
         after_deadline_ms: Some(1),
-        after_cont: after_cont_addr as *mut u8,
+        after_cont: Some(
+            AnyValueRef::from_heap_object(crate::any_value::ValueKind::CLOSURE, after_cont_addr as *const u8)
+                .expect("after body ref"),
+        ),
         after_timer_id: Some(timer_id),
     });
     p.state = ProcessState::Blocked;
@@ -222,7 +225,10 @@ fn timer_drain_wakes_after_cont() {
     let task = sched.tasks.get(&7).unwrap();
     assert_eq!(task.state, ProcessState::Ready);
     assert!(task.delivery.lock().park().is_none());
-    assert_eq!(task.runnable_ptr() as usize, after_cont_addr);
+    assert_eq!(
+        task.runnable_closure().map(|closure| closure.storage_addr() as usize),
+        Some(after_cont_addr)
+    );
     assert_eq!(next_runnable(&mut sched), None, "nothing else runs or waits");
 }
 

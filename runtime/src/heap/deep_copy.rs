@@ -1,8 +1,8 @@
 //! Deep copies between heaps and into a heap's own gift window.
 //!
 //! A copy reads one heap and allocates into another. The source is read
-//! through a `HeapView`, an owned snapshot of the source's address ranges and
-//! schema table, so a sender that copies into a gift window on its own heap
+//! through a `HeapView`, an owned snapshot of the source's schema table (and,
+//! in debug builds, its address ranges), so a sender that copies into a gift window on its own heap
 //! holds one `&mut Heap` and no second reference to the same heap.
 
 use std::cell::RefCell;
@@ -13,7 +13,9 @@ use std::rc::Rc;
 use std::slice::from_raw_parts;
 
 use super::block_pool::round_up_16;
-use super::ref_io::{ptr_in_ranges, strict_object_size};
+#[cfg(debug_assertions)]
+use super::ref_io::ptr_in_ranges;
+use super::ref_io::strict_object_size;
 use super::schema::{FieldKind, SchemaRegistry};
 use super::{Heap, HeapAllocKind};
 use crate::any_value::AnyValueRef;
@@ -26,18 +28,47 @@ use crate::any_value::{
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
 
-/// What a deep copy needs to know about the heap it reads: which addresses
-/// belong to it, and how its structs are laid out. Taken by value, so reading
-/// a heap and allocating into a gift window on that same heap needs no second
-/// reference to it.
+/// What a deep copy needs to know about the heap it reads: how its structs are
+/// laid out, and, in debug builds, which addresses belong to it. Taken by
+/// value, so reading a heap and allocating into a gift window on that same
+/// heap needs no second reference to it.
+///
+/// A copy shares an object named by a literal address and copies every other
+/// object, which is the source heap's own.
 pub struct HeapView {
+    #[cfg(debug_assertions)]
     ranges: Vec<(*mut u8, *mut u8)>,
     schemas: Rc<RefCell<SchemaRegistry>>,
 }
 
 impl HeapView {
-    fn contains(&self, p: *mut u8) -> bool {
-        ptr_in_ranges(p, self.ranges.iter().copied())
+    /// Whether a copy passes `value` through by pointer. Debug builds check
+    /// that the literal bit agrees with where the object lies.
+    fn shares(&self, value: AnyValue) -> bool {
+        let AnyValue::HeapRef(value_ref) = value else {
+            return false;
+        };
+        let literal = value_ref.is_literal();
+        self.assert_classified(value_ref.storage_addr(), literal);
+        literal
+    }
+
+    /// Debug-only: a source object is in the source heap exactly when it is not a literal.
+    fn assert_classified(&self, p: *mut u8, literal: bool) {
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            ptr_in_ranges(p, self.ranges.iter().copied()),
+            !literal,
+            "{p:p} is {} but lies {} the source heap",
+            if literal {
+                "a tagged literal"
+            } else {
+                "an untagged object"
+            },
+            if literal { "inside" } else { "outside" },
+        );
+        #[cfg(not(debug_assertions))]
+        let _ = (p, literal);
     }
 
     fn read_field_slot(&self, obj: *mut u8, field_offset: u32) -> AnyValue {
@@ -57,6 +88,7 @@ impl Heap {
     /// the tip set aside by an open gift window, and parked blocks.
     pub fn view(&self) -> HeapView {
         HeapView {
+            #[cfg(debug_assertions)]
             ranges: self.block_ranges().collect(),
             schemas: Rc::clone(&self.schemas),
         }
@@ -143,7 +175,7 @@ impl CopyMeasure<'_> {
         let Some(sp) = src.heap_addr() else {
             return;
         };
-        if sp.is_null() || !self.src_heap.contains(sp) {
+        if sp.is_null() || self.src_heap.shares(src) {
             return;
         }
         match src.kind() {
@@ -195,7 +227,7 @@ impl CopyMeasure<'_> {
     }
 
     /// A list is walked along its spine, like the copy: it stops at the empty
-    /// list, at a cell already reached, or at a tail that is not this heap's.
+    /// list or at a cell already reached.
     fn list(&mut self, first: *mut u8) {
         let mut cell = first;
         while self.reached.insert(cell) {
@@ -203,9 +235,10 @@ impl CopyMeasure<'_> {
             let cons = unsafe { &*(cell as *const ListCons) };
             self.slot(cons.head_value());
             cell = cons.tail_addr() as *mut u8;
-            if cell.is_null() || !self.src_heap.contains(cell) {
+            if cell.is_null() {
                 return;
             }
+            self.src_heap.assert_classified(cell, false);
         }
     }
 }
@@ -246,7 +279,7 @@ pub fn deep_copy_any_value(
     let Some(sp) = src.heap_addr() else {
         return src;
     };
-    if sp.is_null() || !src_heap.contains(sp) {
+    if sp.is_null() || src_heap.shares(src) {
         return src;
     }
 
@@ -329,7 +362,7 @@ pub fn deep_copy_any_value(
 /// Copy a list cell by cell along its spine, so a long list costs stack for
 /// its deepest head, not for its length. The spine stops at the empty list, at
 /// a cell already copied (which is then shared and published in the
-/// destination), or at a tail that is not this heap's.
+/// destination).
 fn deep_copy_list(
     sp: *mut u8,
     src_heap: &HeapView,
@@ -345,10 +378,6 @@ fn deep_copy_list(
     loop {
         let tail_bits = if cur.is_null() {
             EMPTY_LIST
-        } else if !src_heap.contains(cur) {
-            AnyValue::heap_ptr(cur, ValueKind::LIST)
-                .heap_object_word()
-                .expect("foreign list tail")
         } else if let Some(&dp) = forwarding.get(&cur) {
             share_copied_list(dp, dst_heap)
                 .heap_object_word()

@@ -190,9 +190,7 @@ signature:    (&Collection)
   tip, a gift's saved tip and every parked block);
 - `blocks_released`: from-space blocks the pass released;
 - `blocks_after`: blocks the heap holds once the pass finished (the new tip and every
-  to-space block it parked);
-- `from_ranges_walked`: length of the from-space range list `ptr_in_ranges`
-  scans for every edge the pass follows.
+  to-space block it parked).
 
 `GcStats` carries more (object counts, root and per-container edge
 counts); `Heap::collect` and `Process::collect` return all of it to their

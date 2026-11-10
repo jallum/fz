@@ -62,11 +62,9 @@ pub(super) fn list_tail_bits_from_ref(value: AnyValueRef) -> Result<u64, AnyValu
     }
 }
 
-pub(super) fn is_active_from_space_object(p: *mut u8, from_ranges: &[(*mut u8, *mut u8)]) -> bool {
-    !p.is_null() && ptr_in_ranges(p, from_ranges.iter().copied())
-}
-
-/// The one membership predicate: `p` lies in one of the half-open ranges.
+/// `p` lies in one of the half-open ranges. The collector uses it only to
+/// cross-check the literal bit in debug builds; `Heap::contains_heap_addr` asks
+/// it of a heap's own blocks.
 pub(super) fn ptr_in_ranges(p: *mut u8, ranges: impl IntoIterator<Item = (*mut u8, *mut u8)>) -> bool {
     ranges.into_iter().any(|(start, end)| p >= start && p < end)
 }

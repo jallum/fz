@@ -123,6 +123,16 @@ live value has a clear low nibble: a struct, closure, bitstring or map header
 keeps four clear bits below its fields, and a ProcBin or Resource keeps a
 16-aligned pointer there. One read decides; no second word is consulted.</p>
 
+<p>Objects the program carries in read-only data (static structs, static
+closures, halt continuations and the nil slot) are never on a heap. Every
+reference to one has a single literal bit set in its address word, above the
+kind field and at the same position in a ref word, a field or capture payload, a
+map entry, a list head and a list link. The collector and deep copy read that
+bit: a tagged reference is left in place or shared, an untagged one is a heap
+pointer and is copied. Nothing walks the heap's block list to decide. Debug
+builds cross-check the bit against the block ranges and assert that an untagged
+pointer lies in from-space and a tagged one does not.</p>
+
 <div class="aside">
 Old per-float heap objects are retired. Floats in typed code travel as native
 <code>f64</code>; floats stored in containers are raw bits. A boxed scalar is

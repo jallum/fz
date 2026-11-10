@@ -313,7 +313,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             .closure_addr()
             .expect("spawn_closure: closure must be a closure");
         let copied = deep_copy_any_value_ref(closure_ref, &sender.heap.view(), &mut process.heap, &mut forwarding);
-        let copied_addr = copied
+        copied
             .closure_addr()
             .expect("spawn_closure: copied closure must be a closure");
 
@@ -322,7 +322,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         // quantum. The registry holds the child before it runs so a
         // cross-task send() during its quantum can find this pid.
         process.next_frame = null_mut();
-        let thunk = mint_entry_thunk(&mut process.heap, self.compiled.entry_thunk_addr, copied_addr);
+        let thunk = mint_entry_thunk(&mut process.heap, self.compiled.entry_thunk_addr, copied);
         process.set_runnable_closure(thunk);
         // Scheduler scaffolding (entry thunk + copied entry closure) is
         // prepared before the child runs; reset so its alloc telemetry

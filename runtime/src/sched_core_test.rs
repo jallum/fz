@@ -272,11 +272,15 @@ fn int_list(heap: &mut Heap, head: i64) -> AnyValueRef {
 }
 
 /// A closure capturing `value`, as a destructor or a continuation does.
-fn closure_capturing(process: &mut Process, value: AnyValue) -> AnyValue {
+fn closure_ref_capturing(process: &mut Process, value: AnyValue) -> AnyValueRef {
     let bits = process.heap.alloc_closure_slots(ClosureDenotationId::user(0), 0, 1, 0);
     let closure = closure_addr_from_tagged(bits).expect("closure addr");
     unsafe { closure_capture_set(closure, 0, value) };
-    AnyValue::heap_ptr(closure, ValueKind::CLOSURE)
+    AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure).expect("closure ref")
+}
+
+fn closure_capturing(process: &mut Process, value: AnyValue) -> AnyValue {
+    AnyValue::HeapRef(closure_ref_capturing(process, value))
 }
 
 /// Make a resource whose destructor closure captures a one-cell list headed by
@@ -293,8 +297,8 @@ fn make_resource(process: &mut Process, payload: u64, tag: i64) -> AnyValue {
 }
 
 fn make_yielding(process: &mut Process) {
-    let runnable = closure_capturing(process, AnyValue::int(0));
-    process.set_runnable_closure(runnable.heap_addr().expect("closure addr"));
+    let runnable = closure_ref_capturing(process, AnyValue::int(0));
+    process.set_runnable_closure(runnable);
     process.state = ProcessState::Running;
 }
 
@@ -362,8 +366,8 @@ fn a_resource_the_process_still_holds_survives_the_collection_undisturbed() {
     let mut scheduler = Recording::new();
     let mut process = new_process();
     let stub = make_resource(&mut process, 5, 1);
-    let runnable = closure_capturing(&mut process, stub);
-    process.set_runnable_closure(runnable.heap_addr().expect("closure addr"));
+    let runnable = closure_ref_capturing(&mut process, stub);
+    process.set_runnable_closure(runnable);
     process.state = ProcessState::Running;
     allocate_until_due(&mut process);
 
@@ -472,8 +476,8 @@ fn a_destructor_that_yields_is_a_fault() {
             self.0.wake_expired(pid, timer);
         }
         fn run_destructor(&mut self, process: &mut Process, _closure: u64, _payload: u64) {
-            let continuation = closure_capturing(process, AnyValue::int(1));
-            process.set_runnable_closure(continuation.heap_addr().expect("closure addr"));
+            let continuation = closure_ref_capturing(process, AnyValue::int(1));
+            process.set_runnable_closure(continuation);
         }
     }
     let mut process = new_process();

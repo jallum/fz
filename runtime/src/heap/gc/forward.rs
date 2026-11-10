@@ -1,17 +1,17 @@
 //! Cheney forwarding: copy objects from from-space into to-space.
 
 use super::super::Heap;
-use super::super::ref_io::{is_active_from_space_object, strict_object_size};
+use super::super::ref_io::strict_object_size;
 use super::super::schema::SchemaRegistry;
 use super::super::stats::GcStats;
-use super::CopiedObject;
 use super::forwarding::{forwarded_target, write_forwarding_marker};
+use super::{CopiedObject, FromSpace};
 use crate::any_value::{AnyValue, AnyValueRef, ValueKind};
 use std::ptr::copy_nonoverlapping;
 
 pub fn forward_any_value_ref_root(
     value: &mut AnyValueRef,
-    from_ranges: &[(*mut u8, *mut u8)],
+    from_space: &FromSpace,
     heap: &mut Heap,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
@@ -28,7 +28,8 @@ pub fn forward_any_value_ref_root(
         tag if tag.is_scalar() => {
             stats.root_scalar_slots += 1;
             let p = value.storage_addr();
-            if !is_active_from_space_object(p, from_ranges) {
+            from_space.assert_classified(heap, p, value.is_literal());
+            if value.is_literal() {
                 return;
             }
             let dst = copy_scalar_box_to_space(p, heap, stats);
@@ -37,7 +38,8 @@ pub fn forward_any_value_ref_root(
         tag if tag.is_heap() => {
             stats.root_heap_edges += 1;
             let p = value.storage_addr();
-            if !is_active_from_space_object(p, from_ranges) {
+            from_space.assert_classified(heap, p, value.is_literal());
+            if value.is_literal() {
                 return;
             }
             let new_p = cheney_forward_object(tag, p, heap, schemas, copied_objects, stats);
@@ -88,17 +90,21 @@ pub fn copy_object_to_space(p: *mut u8, size: usize, heap: &mut Heap) -> *mut u8
 
 pub fn forward_heap_value(
     value: AnyValue,
-    from_ranges: &[(*mut u8, *mut u8)],
+    from_space: &FromSpace,
     heap: &mut Heap,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
     stats: &mut GcStats,
 ) -> AnyValue {
     let kind = value.kind();
-    let Some(p) = value.heap_addr() else {
+    let (AnyValue::HeapRef(value_ref), Some(p)) = (value, value.heap_addr()) else {
         return value;
     };
-    if !is_active_from_space_object(p, from_ranges) {
+    if p.is_null() {
+        return value;
+    }
+    from_space.assert_classified(heap, p, value_ref.is_literal());
+    if value_ref.is_literal() {
         return value;
     }
     let new = cheney_forward_object(kind, p, heap, schemas, copied_objects, stats);

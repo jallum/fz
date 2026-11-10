@@ -1072,10 +1072,12 @@ fn any_value_ref_root_gc_copies_scalar_box_without_tracing_payload() {
 }
 
 #[test]
-fn any_value_ref_root_gc_preserves_static_scalar_ref() {
+fn any_value_ref_root_gc_preserves_tagged_literal_scalar_ref() {
     static STATIC_INT: u64 = 42;
     let mut h = Heap::new(1024, fresh_registry());
-    let original = AnyValueRef::from_scalar_slot(ValueKind::INT, &STATIC_INT).expect("static scalar ref");
+    let original = AnyValueRef::from_scalar_slot(ValueKind::INT, &STATIC_INT)
+        .expect("static scalar ref")
+        .literal();
     let mut roots = [original];
 
     let stats = h.collect(&mut roots);
@@ -1882,8 +1884,13 @@ impl ReadOnlyClosure {
         }
     }
 
+    /// The closure as compiled code names it: a literal.
     fn value(&self) -> AnyValue {
-        AnyValue::heap_ptr(self.page, ValueKind::CLOSURE)
+        AnyValue::HeapRef(
+            AnyValueRef::from_heap_object(ValueKind::CLOSURE, self.page)
+                .expect("static closure ref")
+                .literal(),
+        )
     }
 }
 
@@ -2684,4 +2691,144 @@ fn procbin_round_trips_through_bitstring_dispatchers() {
     assert_eq!(bl, 800);
     let recovered: Vec<u8> = (0..100).map(|i| unsafe { *bp.add(i) }).collect();
     assert_eq!(recovered, bytes);
+}
+
+/// A receiver that has grafted many small gifts holds a block per gift. A
+/// collection forwards every gifted object and leaves every tagged literal
+/// where it is, reading one bit per pointer rather than searching the chain.
+#[test]
+fn many_grafted_gifts_collect_with_every_survivor_forwarded_and_every_literal_left_in_place() {
+    const GIFTS: usize = 64;
+    let closure = ReadOnlyClosure::new();
+    let registry = fresh_registry();
+    let mut sender = Heap::new(SIZE_TABLE[0], registry.clone());
+    let mut receiver = Heap::new(SIZE_TABLE[0], registry);
+    let mut roots = Vec::new();
+    for _ in 0..GIFTS {
+        let holder = sender.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(73), 1, 1, 0);
+        unsafe { closure_capture_set(closure_addr_from_tagged(holder).expect("holder"), 0, closure.value()) };
+        let (segment, copied) = crate::sched::gift_copy(&mut sender, &[heap_ref(holder)]);
+        receiver.graft(segment);
+        roots.push(copied[0]);
+    }
+    let gifted: Vec<*mut u8> = roots
+        .iter()
+        .map(|root| root.closure_addr().expect("gifted closure"))
+        .collect();
+    roots.push(closure.value().ref_word());
+
+    receiver.collect(&mut roots);
+
+    for (root, before) in roots[..GIFTS].iter().zip(&gifted) {
+        let moved = root.closure_addr().expect("forwarded closure");
+        assert_ne!(moved, *before, "a gifted survivor is forwarded");
+        assert!(receiver.contains_heap_addr(moved));
+        assert_eq!(
+            unsafe { closure_capture_value(moved, 0) },
+            closure.value(),
+            "the literal it captures is still the tagged static closure"
+        );
+    }
+    assert!(roots[GIFTS].is_literal());
+    assert_eq!(
+        roots[GIFTS].closure_addr(),
+        Ok(closure.page),
+        "a literal root is left in place"
+    );
+}
+
+/// A scalar field's ref points into the struct's own payload, so it is
+/// read-only data exactly when the struct is.
+#[test]
+fn a_scalar_field_read_from_a_tagged_literal_is_tagged() {
+    let registry = fresh_registry();
+    let pair = registry.borrow_mut().register(Schema::tuple_of_arity(2));
+    let mut h = Heap::new(SIZE_TABLE[0], registry);
+    let obj = h.alloc_struct(pair);
+    unsafe { h.write_field_slot(obj, 0, AnyValue::int(7)) };
+    let plain = AnyValueRef::from_heap_object(ValueKind::STRUCT, obj).expect("struct ref");
+
+    let from_heap = h.read_struct_field_ref(plain, 0).expect("heap field");
+    let from_literal = h.read_struct_field_ref(plain.literal(), 0).expect("literal field");
+
+    assert!(!from_heap.is_literal(), "a field of a heap struct is heap data");
+    assert!(from_literal.is_literal(), "a field of a literal struct is literal data");
+    assert_eq!(from_literal.load_int().unwrap(), 7);
+}
+
+/// A heap child stored in a literal parent keeps the bit its payload word
+/// carries; the parent being literal does not tag it.
+#[test]
+fn a_literal_child_read_from_a_struct_keeps_its_stored_tag() {
+    let closure = ReadOnlyClosure::new();
+    let registry = fresh_registry();
+    let pair = registry.borrow_mut().register(Schema::tuple_of_arity(2));
+    let mut h = Heap::new(SIZE_TABLE[0], registry);
+    let obj = h.alloc_struct(pair);
+    unsafe { h.write_field_slot(obj, 0, closure.value()) };
+    let parent = AnyValueRef::from_heap_object(ValueKind::STRUCT, obj).expect("struct ref");
+
+    let child = h.read_struct_field_ref(parent, 0).expect("child");
+
+    assert!(child.is_literal());
+    assert_eq!(child.closure_addr(), Ok(closure.page));
+}
+
+/// The debug cross-check makes a literal that lost its tag loud: its address
+/// lies outside from-space while an untagged pointer must lie inside.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "an untagged heap pointer")]
+fn a_literal_that_lost_its_tag_faults_the_collection() {
+    let closure = ReadOnlyClosure::new();
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut roots = [AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure.page).expect("untagged ref")];
+
+    h.collect(&mut roots);
+}
+
+/// A map holding a static closure and a static struct survives a collection
+/// with both left in place. The struct stands in for a compiled literal: it
+/// lives outside the collected heap and its references carry the bit.
+#[test]
+fn a_map_holding_a_literal_closure_and_a_literal_struct_survives_a_collection_with_both_in_place() {
+    let closure = ReadOnlyClosure::new();
+    let registry = fresh_registry();
+    let pair = registry.borrow_mut().register(Schema::tuple_of_arity(2));
+    let mut elsewhere = Heap::new(SIZE_TABLE[0], registry.clone());
+    let static_struct = elsewhere.alloc_struct(pair);
+    let literal_struct = AnyValue::HeapRef(
+        AnyValueRef::from_heap_object(ValueKind::STRUCT, static_struct)
+            .expect("struct ref")
+            .literal(),
+    );
+    let mut h = Heap::new(SIZE_TABLE[0], registry);
+    let (k1, k2) = (h.node.intern_atom("closure"), h.node.intern_atom("struct"));
+    let map = h.alloc_map_slots(&[
+        (AnyValue::atom(k1), closure.value()),
+        (AnyValue::atom(k2), literal_struct),
+    ]);
+    let mut roots = [heap_ref(map)];
+
+    h.collect(&mut roots);
+
+    let moved = roots[0].map_addr().expect("moved map");
+    assert!(h.contains_heap_addr(moved), "the map itself was forwarded");
+    let held = |key: u32| {
+        h.read_map_value_for_any_key(roots[0], AnyValue::atom(key))
+            .expect("map")
+            .expect("entry")
+    };
+    assert!(held(k1).is_literal());
+    assert_eq!(
+        held(k1).closure_addr(),
+        Ok(closure.page),
+        "the static closure stays in place"
+    );
+    assert!(held(k2).is_literal());
+    assert_eq!(
+        held(k2).struct_addr(),
+        Ok(static_struct),
+        "the static struct stays in place"
+    );
 }

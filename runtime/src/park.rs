@@ -8,8 +8,8 @@
 //! See `docs/receive-matched.md §2.5` / §2.6 for the design rationale.
 
 use crate::any_value::{
-    AnyValueRef, closure_addr_from_tagged, closure_arity, closure_capture_copy, closure_capture_set_ref_word,
-    closure_flags, closure_flags_captured, closure_flags_halt_kind,
+    AnyValueRef, ValueKind, closure_addr_from_tagged, closure_arity, closure_capture_copy,
+    closure_capture_set_ref_word, closure_flags, closure_flags_captured, closure_flags_halt_kind,
 };
 use crate::heap::Heap;
 use crate::process::Process;
@@ -47,9 +47,9 @@ pub struct ParkRecord {
     pub matcher_fn: MatcherFn,
     /// Pinned-value snapshot in matcher order.
     pub pinned: Vec<AnyValueRef>,
-    /// One closure pointer per clause body, in source order. `k-1`
+    /// One closure ref per clause body, in source order. `k-1`
     /// from the matcher's return indexes here.
-    pub clause_bodies: Vec<*mut u8>,
+    pub clause_bodies: Vec<AnyValueRef>,
     /// One bound-variable count per clause body, in source order.
     pub clause_bound_counts: Vec<u16>,
     /// Maximum bound-var count across clauses — sizes the `out`
@@ -59,8 +59,8 @@ pub struct ParkRecord {
     /// `Runtime`'s `TimerWheel` understands). `None` means no timer
     /// (`after :infinity` or no `after` clause at all).
     pub after_deadline_ms: Option<u64>,
-    /// After-body closure pointer; null when there is no `after`.
-    pub after_cont: *mut u8,
+    /// After-body closure ref; `None` when there is no `after`.
+    pub after_cont: Option<AnyValueRef>,
     /// Timer wheel id, if a timer was scheduled. The scheduler clears
     /// this when the timer fires or when a matcher-hit cancels.
     pub after_timer_id: Option<TimerId>,
@@ -96,10 +96,13 @@ impl ParkRecord {
     /// template env: [outer_cont, cap0, cap1, ...]
     /// outcome  env: [outer_cont, bound0, ..., cap0, cap1, ...]
     /// ```
-    pub fn outcome_closure(&self, heap: &mut Heap, clause_idx: usize, bound_vals: &[AnyValueRef]) -> *mut u8 {
-        let template = self.clause_bodies[clause_idx];
+    pub fn outcome_closure(&self, heap: &mut Heap, clause_idx: usize, bound_vals: &[AnyValueRef]) -> AnyValueRef {
+        let template = self.clause_bodies[clause_idx]
+            .closure_addr()
+            .expect("a clause body is a closure ref");
         // SAFETY: a park record's clause bodies are live closures it owns and the collector keeps current.
-        unsafe { materialize_outcome_closure(heap, template, bound_vals) }
+        let outcome = unsafe { materialize_outcome_closure(heap, template, bound_vals) };
+        AnyValueRef::from_heap_object(ValueKind::CLOSURE, outcome).expect("outcome closure ref")
     }
 }
 

@@ -7,6 +7,11 @@ static INT_99: u64 = 99;
 static INT_100: u64 = 100;
 static INT_123: u64 = 123;
 
+/// A clause body no test dereferences.
+fn placeholder_closure() -> AnyValueRef {
+    AnyValueRef::from_heap_object(ValueKind::CLOSURE, 0x10 as *const u8).expect("placeholder closure ref")
+}
+
 fn int_ref(slot: &'static u64) -> AnyValueRef {
     AnyValueRef::from_scalar_slot(ValueKind::INT, slot).expect("int ref")
 }
@@ -37,11 +42,11 @@ fn park_record_holds_matcher_and_pinned() {
     let p = ParkRecord {
         matcher_fn: mock_eq_matcher,
         pinned: vec![int_ref(&INT_42)],
-        clause_bodies: vec![null_mut()],
+        clause_bodies: vec![placeholder_closure()],
         clause_bound_counts: vec![1],
         bound_arity: 1,
         after_deadline_ms: None,
-        after_cont: null_mut(),
+        after_cont: None,
         after_timer_id: None,
     };
     assert_eq!(p.pinned, vec![int_ref(&INT_42)]);
@@ -54,11 +59,11 @@ fn try_match_hit_returns_clause_and_bound_vals() {
     let p = ParkRecord {
         matcher_fn: mock_eq_matcher,
         pinned: vec![int_ref(&INT_99)],
-        clause_bodies: vec![null_mut()],
+        clause_bodies: vec![placeholder_closure()],
         clause_bound_counts: vec![1],
         bound_arity: 1,
         after_deadline_ms: None,
-        after_cont: null_mut(),
+        after_cont: None,
         after_timer_id: None,
     };
     let hit = p.try_match(null_mut(), int_ref(&INT_99));
@@ -85,11 +90,11 @@ fn try_match_trims_scratch_to_winning_clause_bound_count() {
     let p = ParkRecord {
         matcher_fn: second_clause,
         pinned: vec![],
-        clause_bodies: vec![null_mut(), null_mut()],
+        clause_bodies: vec![placeholder_closure(), placeholder_closure()],
         clause_bound_counts: vec![1, 0],
         bound_arity: 1,
         after_deadline_ms: None,
-        after_cont: null_mut(),
+        after_cont: None,
         after_timer_id: None,
     };
     let (idx, vals) = p.try_match(null_mut(), int_ref(&INT_99)).expect("match");
@@ -102,11 +107,11 @@ fn try_match_miss_returns_none() {
     let p = ParkRecord {
         matcher_fn: mock_eq_matcher,
         pinned: vec![int_ref(&INT_99)],
-        clause_bodies: vec![null_mut()],
+        clause_bodies: vec![placeholder_closure()],
         clause_bound_counts: vec![1],
         bound_arity: 1,
         after_deadline_ms: None,
-        after_cont: null_mut(),
+        after_cont: None,
         after_timer_id: None,
     };
     assert!(p.try_match(null_mut(), int_ref(&INT_100)).is_none());

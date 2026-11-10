@@ -17,7 +17,7 @@ use std::ptr::null_mut;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::any_value::{AnyValueRef, ValueKind};
+use crate::any_value::AnyValueRef;
 use crate::bitstr::BitWriter;
 use crate::delivery::DeliveryLock;
 use crate::exec_ctx::ExecCtx;
@@ -182,29 +182,25 @@ pub enum ProcessState {
 /// pinned values, clause bodies, and after-timer continuation all live on it.
 pub type WaitState = ParkRecord;
 
-/// A non-null pointer to a `(self)`-callable closure the scheduler can resume
-/// through the `fz_resume` shim. Construction rejects null, so a
-/// `Some(ClosureRef)` always names a real closure to run.
+/// A `(self)`-callable closure the scheduler can resume through the `fz_resume`
+/// shim. It is a closure ref, so a closure the program ships as read-only data
+/// keeps its literal bit. A `ClosureRef` always names a real closure to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ClosureRef(*mut u8);
+pub struct ClosureRef(AnyValueRef);
 
 impl ClosureRef {
-    /// Wrap a closure heap address; `None` if null (no work).
-    pub fn new(ptr: *mut u8) -> Option<Self> {
-        if ptr.is_null() { None } else { Some(Self(ptr)) }
+    pub fn new(closure: AnyValueRef) -> Self {
+        closure.closure_addr().expect("a runnable closure is a closure ref");
+        assert!(
+            !closure.is_empty_list() && !closure.storage_addr().is_null(),
+            "a runnable closure is not null"
+        );
+        Self(closure)
     }
 
-    pub fn as_ptr(self) -> *mut u8 {
+    pub fn as_ref(self) -> AnyValueRef {
         self.0
     }
-}
-
-fn closure_root(closure: *mut u8) -> AnyValueRef {
-    AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure).expect("a closure root is a non-null closure address")
-}
-
-fn closure_addr(root: AnyValueRef) -> *mut u8 {
-    root.closure_addr().expect("a forwarded closure root stays a closure")
 }
 
 /// The node-global atom table: text↔id, append-only. Seeded from a module's
@@ -420,19 +416,19 @@ impl Process {
     }
 
     /// Queue a `(self)`-callable closure (continuation or entry thunk) as the
-    /// next thing to resume. A null pointer clears the slot.
-    pub fn set_runnable_closure(&mut self, closure: *mut u8) {
-        self.runnable = ClosureRef::new(closure);
+    /// next thing to resume.
+    pub fn set_runnable_closure(&mut self, closure: AnyValueRef) {
+        self.runnable = Some(ClosureRef::new(closure));
     }
 
     /// Take the queued runnable closure, clearing the slot.
-    pub fn take_runnable_closure(&mut self) -> Option<*mut u8> {
-        self.runnable.take().map(ClosureRef::as_ptr)
+    pub fn take_runnable_closure(&mut self) -> Option<AnyValueRef> {
+        self.runnable.take().map(ClosureRef::as_ref)
     }
 
-    /// The queued runnable closure pointer, if any, without clearing it.
-    pub fn runnable_ptr(&self) -> *mut u8 {
-        self.runnable.map(ClosureRef::as_ptr).unwrap_or(null_mut())
+    /// The queued runnable closure, if any, without clearing it.
+    pub fn runnable_closure(&self) -> Option<AnyValueRef> {
+        self.runnable.map(ClosureRef::as_ref)
     }
 
     pub fn reset_reduction_budget(&mut self) {
@@ -480,10 +476,10 @@ impl Process {
         let mut delivery = self.delivery.lock();
         let park = delivery.park_mut();
         let mut roots: Vec<AnyValueRef> = Vec::new();
-        roots.extend(self.runnable.map(|closure| closure_root(closure.as_ptr())));
+        roots.extend(self.runnable_closure());
         if let Some(park) = park.as_deref() {
-            roots.extend(park.clause_bodies.iter().map(|&body| closure_root(body)));
-            roots.extend((!park.after_cont.is_null()).then(|| closure_root(park.after_cont)));
+            roots.extend(park.clause_bodies.iter().copied());
+            roots.extend(park.after_cont);
             roots.extend(park.pinned.iter().copied());
         }
         roots.extend(self.mailbox.iter().copied());
@@ -494,14 +490,14 @@ impl Process {
         let mut forwarded = roots.into_iter();
         let mut next = || forwarded.next().expect("one forwarded root per gathered root");
         if self.runnable.is_some() {
-            self.runnable = ClosureRef::new(closure_addr(next()));
+            self.runnable = Some(ClosureRef::new(next()));
         }
         if let Some(park) = park {
             for body in park.clause_bodies.iter_mut() {
-                *body = closure_addr(next());
+                *body = next();
             }
-            if !park.after_cont.is_null() {
-                park.after_cont = closure_addr(next());
+            if park.after_cont.is_some() {
+                park.after_cont = Some(next());
             }
             for pinned in park.pinned.iter_mut() {
                 *pinned = next();
