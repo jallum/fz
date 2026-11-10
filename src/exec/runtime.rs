@@ -415,7 +415,7 @@ impl<T: Telemetry + ?Sized> Scheduler for Runtime<'_, T> {
 
     /// Enter the destructor through `pinned_abi` so the pinned register holds
     /// this process: the destructor is real fz code and its closure BIFs
-    /// (alloc_closure, get_halt_cont, ...) read the process from the pinned
+    /// (alloc_closure, ...) read the process from the pinned
     /// register, like every other scheduler-facing entry.
     fn run_destructor(&mut self, process: &mut Process, closure: u64, payload: u64) {
         let process: *mut Process = process;

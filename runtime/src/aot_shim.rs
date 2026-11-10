@@ -3,16 +3,15 @@
 //! AOT codegen emits a C-callable `main` that drives the cps-in-clif
 //! execution model:
 //!
-//!   1. `proc = fz_aot_setup(atom_blob, atom_blob_len, halt_cont_body_addr,
-//!                            entry_thunk_addr)`
-//!   2. for each static closure target:
-//!      `fz_aot_register_static_closure(proc, cl_sid, fn_id, code_addr)`
+//!   1. `proc = fz_aot_setup(atom_blob, atom_blob_len, entry_thunk_addr, argc, argv)`
+//!   2. the schema and denotation registrations
 //!   3. `exit = fz_aot_run_main(proc, main_fp, main_trampoline_addr, main_halt_kind)`
 //!   4. `return exit`
 //!
 //! `fz_entry_thunk`, `fz_main_trampoline`, `fz_resume`, `fz_halt_cont_body`,
 //! and the Tail-CC `fz_fn_<id>` bodies are emitted as Local symbols in the
-//! same object — the C main resolves each via `func_addr` and passes them
+//! same object, alongside the read-only halt continuation and static closure
+//! data objects code addresses directly — the C main resolves each via `func_addr` and passes them
 //! by raw pointer. No per-program dispatch / frame-size shim, no trampoline.
 //! Every task is resumed through the one `fz_resume` verb: a spawned task's
 //! `runnable` is an entry thunk; main's wraps a synthetic `fz_main_trampoline`
@@ -30,7 +29,7 @@ use crate::exec_ctx::{Argv, ExecCtx};
 use crate::function_denotation::decode_closure_denotations;
 use crate::heap::{AddressMap, Schema, SchemaRegistry, deep_copy_any_value_ref};
 use crate::pinned_abi::{call1, call2};
-use crate::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
+use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
 use crate::sched::{
     ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
 };
@@ -79,9 +78,6 @@ struct AotScheduler {
     /// task's entry thunk (spawn / main) on its heap; the scheduler resumes
     /// every task through the one `fz_resume` verb.
     entry_thunk: *const u8,
-    /// fz-ul4.27.22.3 — four halt_cont_body addrs retained so spawned
-    /// children can initialize their own halt_cont_singletons.
-    halt_cont_bodies: [*const u8; 4],
     /// The run queue and timer wheel; `next_runnable` decides what runs next
     /// and when the program is idle.
     core: SchedulingCore,
@@ -245,7 +241,7 @@ fn parse_named_schema_blob(blob: *const u8, len: u32) -> Vec<(crate::module_name
 }
 
 /// AOT setup: create the main Process, register it in the AOT task table,
-/// initialize the halt-cont singleton, register the spawn-entry address,
+/// register the spawn-entry address,
 /// install scheduler hooks, parse the atom blob. Returns the process pointer
 /// for subsequent register/run calls. `atom_blob` may be null (program has no
 /// atom literals); `atom_blob_len` bounds the scan — parsing used to terminate
@@ -256,10 +252,6 @@ fn parse_named_schema_blob(blob: *const u8, len: u32) -> Vec<(crate::module_name
 pub extern "C" fn fz_aot_setup(
     atom_blob: *const u8,
     atom_blob_len: u32,
-    halt_cont_body_tagged: *const u8,
-    halt_cont_body_i64: *const u8,
-    halt_cont_body_f64: *const u8,
-    halt_cont_body_atom: *const u8,
     entry_thunk_addr: *const u8,
     argc: i32,
     argv: *const *const c_char,
@@ -269,13 +261,7 @@ pub extern "C" fn fz_aot_setup(
     // The AOT run's node-global atom table, seeded from the program's atom
     // blob and shared (Rc) by every spawned process.
     let node = Rc::new(Node::new(parse_atom_blob(atom_blob, atom_blob_len), Vec::new()));
-    let proc_box = Box::new(Process::from_consts(
-        node,
-        schemas,
-        &CompiledModuleConsts::empty(),
-        1,
-        DEFAULT_REDUCTIONS_PER_QUANTUM,
-    ));
+    let proc_box = Box::new(Process::with_node(node, schemas, 1, DEFAULT_REDUCTIONS_PER_QUANTUM));
 
     // Box and leak the scheduler so it outlives this call's stack frame and
     // stays reachable from `proc.ctx.scheduler` through the AOT C-main entry
@@ -288,12 +274,6 @@ pub extern "C" fn fz_aot_setup(
         next_pid: 2,
         tasks,
         entry_thunk: entry_thunk_addr,
-        halt_cont_bodies: [
-            halt_cont_body_tagged,
-            halt_cont_body_i64,
-            halt_cont_body_f64,
-            halt_cont_body_atom,
-        ],
         core: SchedulingCore::new(),
         drain_dtor_entry: null(),
         resume_addr: null(),
@@ -340,9 +320,6 @@ pub extern "C" fn fz_aot_setup(
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_aot_register_tuple_schemas(proc: *mut Process, arities: *const u32, len: u32) {
     assert!(!proc.is_null(), "fz_aot_register_tuple_schemas: null process");
-    // Read the shim addrs off the scheduler before taking the &mut Process —
-    // `sched_of` reads `proc.ctx`, which must not alias the live &mut below.
-    let halt_cont_bodies = unsafe { (*sched_of(proc)).halt_cont_bodies };
     let process = unsafe { &mut *proc };
     if len > 0 {
         assert!(
@@ -358,7 +335,6 @@ pub extern "C" fn fz_aot_register_tuple_schemas(proc: *mut Process, arities: *co
             reg.register(Schema::tuple_of_arity(arity as usize));
         }
     }
-    process.init_halt_cont_singletons(halt_cont_bodies);
 }
 
 /// Register named source `defstruct` schemas with the AOT process in the
@@ -404,36 +380,6 @@ pub extern "C" fn fz_aot_register_closure_denotations(proc: *mut Process, blob: 
     }
 }
 
-/// Register one static closure target. AOT codegen emits one call per
-/// `MakeClosure` with zero captures. `code_addr` is the body fn's
-/// address (Cranelift `func_addr` of the fz_fn_<body_id>).
-/// # Safety
-/// `proc` must point at a valid `Process` produced by `fz_aot_setup`.
-/// `code_addr` must point at a Cranelift-emitted closure-target body.
-/// Called only from the AOT-emitted C `main`; clippy's
-/// `not_unsafe_ptr_arg_deref` is silenced because the C ABI signature
-/// is fixed by AOT codegen.
-#[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_aot_register_static_closure(
-    proc: *mut Process,
-    cl_sid: u32,
-    arity: u32,
-    code_addr: *const u8,
-    halt_kind: u32,
-    denotation: u32,
-) {
-    assert!(!proc.is_null(), "fz_aot_register_static_closure: null process");
-    let process = unsafe { &mut *proc };
-    process.init_static_closures(&[(
-        cl_sid,
-        arity,
-        code_addr,
-        halt_kind,
-        crate::any_value::ClosureDenotationId::user(denotation),
-    )]);
-}
-
 /// Spawn hook (fz-sched.2). Allocates a child Process, deep-copies the
 /// closure into its heap, sets pending_closure_entry, and enqueues the
 /// child — returning immediately to the caller. The run-queue loop in
@@ -449,30 +395,15 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
         (*sched).next_pid = p + 1;
         p
     };
-    let halt_cont_body_addrs = unsafe { (*sched).halt_cont_bodies };
     let entry_thunk_addr = unsafe { (*sched).entry_thunk };
 
     let parent = unsafe { &*sender };
     let schemas = parent.heap.schemas_registry();
-    let static_closures = parent.static_closures.clone();
     // Child shares the parent's node (the same atom table) by Rc clone — a
     // pointer copy, not a table copy.
     let node = Rc::clone(&parent.node);
 
-    let consts = CompiledModuleConsts {
-        halt_cont_body_addrs,
-        ..CompiledModuleConsts::empty()
-    };
-    let mut child = Box::new(Process::from_consts(
-        node,
-        schemas,
-        &consts,
-        pid,
-        DEFAULT_REDUCTIONS_PER_QUANTUM,
-    ));
-    // Inherit the parent's already-built static-closure singletons by copying
-    // the pointers (they alias the parent's process-lifetime buffers).
-    child.static_closures = static_closures;
+    let mut child = Box::new(Process::with_node(node, schemas, pid, DEFAULT_REDUCTIONS_PER_QUANTUM));
 
     // Deep-copy the closure into the child's heap.
     let mut forwarding = AddressMap::default();

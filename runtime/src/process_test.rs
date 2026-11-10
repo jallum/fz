@@ -10,14 +10,6 @@ use std::ptr::null_mut;
 use std::rc::Rc;
 
 #[test]
-fn aligned_closure_storage_is_sixteen_byte_aligned() {
-    for _ in 0..128 {
-        let mut buf = super::AlignedClosureStorage::zeroed();
-        assert_eq!(buf.as_ptr() as u64 % 16, 0);
-    }
-}
-
-#[test]
 fn node_compares_atoms_by_name_not_intern_id() {
     let node = Node::new(vec!["z".into(), "a".into(), "m".into()], Vec::new());
 

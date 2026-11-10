@@ -311,7 +311,7 @@ fn emit_list_axis<'f, E: RuntimeTestEmitter<'f>>(
 /// "Is this value one of THESE constructions?"
 ///
 /// A closure object's word at `+8` is the address of the callable boundary that
-/// minted it, and a thin `MakeFnRef` singleton carries the same address, so one
+/// minted it, and a thin `MakeFnRef` static closure carries the same address, so one
 /// comparison covers both shapes. A boundary is one function at one capture
 /// layout, so WHICH boundaries a test enumerates is decided here at codegen
 /// from each boundary's own construction shape, and the value pays one address

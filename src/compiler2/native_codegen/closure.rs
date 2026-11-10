@@ -6,19 +6,6 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
 use fz_runtime::any_value::{AnyValueRefPacking, TAG_LAZY_CONT, TaggedRefArch};
 
-/// Allocate and return a halt-cont singleton for `repr` via `fz_get_halt_cont`.
-/// Used when the caller has no cont_param and needs a halt-cont to pass to the
-/// callee — the callee's Term::Return chains through it to record halt_value.
-pub(crate) fn synthesize_halt_cont<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, M>,
-    locals: &LocalBodies,
-    repr: ArgRepr,
-) -> ir::Value {
-    let hcb_addr = fn_addr(body.jmod, locals.halt_cont_body_id(repr), body.b);
-    let kind_v = body.b.ins().iconst(types::I32, repr.halt_kind() as i64);
-    body.get_halt_cont(hcb_addr, kind_v)
-}
-
 /// Resolve the outer-cont ref to forward into a new cont closure.
 /// For cont fns: loaded from closure env field 0. For non-cont native:
 /// `cont_param` already is the outer cont.

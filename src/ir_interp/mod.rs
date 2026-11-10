@@ -8,7 +8,7 @@ use crate::compiler2::transport::BoundValue;
 use crate::exec::runtime::ExitRecord;
 use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::heap::{Schema, SchemaRegistry};
-use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
+use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
 use fz_runtime::sched_core::SchedulingCore;
 use fz_runtime::timer::TimerId;
 
@@ -122,10 +122,9 @@ impl IrInterpRuntime {
         let mut runtime = Self::fresh();
         runtime.node = Rc::new(Node::new(atom_names, Vec::new()));
         let user_schemas = runtime.schemas();
-        let process = Box::new(Process::from_consts(
+        let process = Box::new(Process::with_node(
             Rc::clone(&runtime.node),
             user_schemas,
-            &CompiledModuleConsts::empty(),
             1,
             DEFAULT_REDUCTIONS_PER_QUANTUM,
         ));

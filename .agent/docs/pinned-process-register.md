@@ -58,8 +58,8 @@ memoizes it. The register value is constant for the whole invocation, so keying
 the memo by block keeps each use dominated by its definition without a cross-block
 dominance argument. Runtime helper functions (BIFs) called from generated code
 take the process as their leading argument; `call1_p` / `call_p` prepend
-`process_arg()` to the BIF's args. (Halt-cont bodies and the static-closure
-fetch read `get_pinned_reg` directly for the same purpose.)
+`process_arg()` to the BIF's args. (Halt-cont bodies read `get_pinned_reg`
+directly for the same purpose.)
 
 Installing the register is the host's job. The Rust-side wrappers in
 `runtime/src/pinned_abi.rs` — `call1` and `call2` — save the host's pinned

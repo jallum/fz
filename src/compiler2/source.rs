@@ -13,7 +13,7 @@ use fz_runtime::any_value::{
 use fz_runtime::heap::{Schema, SchemaRegistry};
 use fz_runtime::procbin::bitstring_bit_len as tagged_bitstring_bit_len;
 use fz_runtime::procbin::bitstring_byte_ptr as procbin_byte_ptr;
-use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
+use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 
 use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::source::{SourceMap, Span};
@@ -206,13 +206,7 @@ impl QuotedSourceHeap {
             vec![NIL_ATOM.to_string(), TRUE_ATOM.to_string(), FALSE_ATOM.to_string()],
             Vec::new(),
         ));
-        Process::from_consts(
-            node,
-            schemas,
-            &CompiledModuleConsts::empty(),
-            0,
-            DEFAULT_REDUCTIONS_PER_QUANTUM,
-        )
+        Process::with_node(node, schemas, 0, DEFAULT_REDUCTIONS_PER_QUANTUM)
     }
 
     pub(crate) fn lend_process<R, E>(&self, f: impl FnOnce(Process) -> (Process, Result<R, E>)) -> Result<R, E> {

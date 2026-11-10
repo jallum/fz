@@ -10,15 +10,14 @@
 
 use crate::any_value::ClosureDenotationId;
 use crate::function_denotation::FunctionDenotation;
-use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
-use std::ptr::{NonNull, null, null_mut, write};
+use std::ptr::null_mut;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::any_value::{AnyValueRef, ValueKind, closure_header_word, closure_header_write, closure_size_for_count};
+use crate::any_value::{AnyValueRef, ValueKind};
 use crate::bitstr::BitWriter;
 use crate::delivery::DeliveryLock;
 use crate::exec_ctx::ExecCtx;
@@ -28,35 +27,6 @@ use crate::park::ParkRecord;
 pub const DEFAULT_REDUCTIONS_PER_QUANTUM: i32 = 4000;
 pub const YIELD_REASON_REDUCTIONS: u8 = 1 << 0;
 pub const YIELD_REASON_EXPLICIT: u8 = 1 << 1;
-
-pub struct AlignedClosureStorage {
-    ptr: NonNull<u8>,
-    layout: Layout,
-}
-
-impl AlignedClosureStorage {
-    pub fn zeroed() -> Self {
-        let layout = Layout::from_size_align(closure_size_for_count(0), 16).expect("zero-capture closure layout");
-        let ptr = unsafe { alloc_zeroed(layout) };
-        let Some(ptr) = NonNull::new(ptr) else {
-            handle_alloc_error(layout);
-        };
-        debug_assert!((ptr.as_ptr() as usize).is_multiple_of(16));
-        Self { ptr, layout }
-    }
-
-    pub fn as_ptr(&mut self) -> *mut u8 {
-        self.ptr.as_ptr()
-    }
-}
-
-impl Drop for AlignedClosureStorage {
-    fn drop(&mut self) {
-        unsafe {
-            dealloc(self.ptr.as_ptr(), self.layout);
-        }
-    }
-}
 
 /// The scheduler boundary that asked for a collection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -139,26 +109,6 @@ pub struct Process {
     /// entry closure; the thunk supplies the halt continuation and enters it
     /// on first resume). `None` means no work is queued.
     pub runnable: Option<ClosureRef>,
-    /// fz-ul4.27.22.3 — per-Process halt-cont singletons indexed by
-    /// repr kind (0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom). Each slot holds a
-    /// 24-byte closure whose +8 slot points at the matching
-    /// `fz_halt_cont_body_<kind>` Cranelift body. Lazily allocated by
-    /// `fz_get_halt_cont(addr, kind)` per kind, or pre-populated by
-    /// `init_halt_cont_singletons` at make_process. Pointers alias
-    /// aligned buffers in `static_closure_bufs`.
-    pub halt_cont_singletons: [*mut u8; 4],
-    /// fz-cps.1.7 — per-Process static zero-capture closure singletons.
-    /// Indexed by lambda spec id (cl_sid). Null entries indicate "no
-    /// singleton registered for this cl_sid." Each non-null entry points
-    /// to a 16-byte-aligned off-heap buffer owned by `static_closure_bufs`
-    /// (closure metadata + code_ptr, zero captures). Off-heap so the per-process
-    /// GC arena does not own them — singletons live for the Process's
-    /// lifetime. See docs/cps-in-clif.md §8.2.
-    pub static_closures: Vec<*mut u8>,
-    /// fz-cps.1.7 — backing storage for `static_closures`. One aligned
-    /// allocation per registered singleton. The raw pointer in
-    /// `static_closures` aliases the start of the corresponding allocation.
-    pub static_closure_bufs: Vec<AlignedClosureStorage>,
 
     /// Cumulative compiled-code mid-flight yields for this process. Each
     /// increment means native code built a scheduler-owned continuation
@@ -415,48 +365,17 @@ impl Node {
     }
 }
 
-/// Per-`CompiledModule` construction inputs applied to a Process at spawn —
-/// the bitstring-tuple schemas plus the static-closure and halt-cont singleton
-/// seeds — as distinct from the per-spawn scheduler state (pid, mailbox, run
-/// state) the spawner sets, and from the shared `Node` tables. `from_consts` is
-/// the single construction site that applies them, so a newly-added field flows
-/// through one path instead of diverging across the JIT, interpreter, and AOT
-/// spawners.
-pub struct CompiledModuleConsts {
-    pub static_closure_targets: Vec<(
-        u32,       /* cl_sid */
-        u32,       /* arity */
-        *const u8, /* code_ptr */
-        u32,       /* halt_kind */
-        crate::any_value::ClosureDenotationId,
-    )>,
-    pub halt_cont_body_addrs: [*const u8; 4],
-}
-
-impl CompiledModuleConsts {
-    /// No construction inputs: the shape a bare `Process::new` and the
-    /// minimal-setup interpreter/AOT spawners carry.
-    pub fn empty() -> Self {
-        Self {
-            static_closure_targets: Vec::new(),
-            halt_cont_body_addrs: [null(); 4],
-        }
-    }
-}
-
 impl Process {
     /// The single Process construction site. Builds the heap and field
-    /// defaults, applies the module constants, and seeds the static-closure
-    /// and halt-cont singleton tables. Per-spawn scheduler state (run state,
-    /// mailbox, pending entries) stays at defaults for the spawner to set.
-    pub fn from_consts(
+    /// defaults. Per-spawn scheduler state (run state, mailbox, pending
+    /// entries) stays at defaults for the spawner to set.
+    pub fn with_node(
         node: Rc<Node>,
         schemas: Rc<RefCell<SchemaRegistry>>,
-        consts: &CompiledModuleConsts,
         pid: PidId,
         reductions_per_quantum: i32,
     ) -> Self {
-        let mut p = Self {
+        Self {
             // §6.3: initial size on spawn = SIZE_TABLE[0] (1 KiB). Cheney
             // promotes to a larger block capacity on first GC if the working
             // set demands it; shrink hysteresis (§6.5 / fz-siu.11) brings
@@ -473,9 +392,6 @@ impl Process {
             next_frame: null_mut(),
             mailbox: VecDeque::new(),
             runnable: None,
-            halt_cont_singletons: [null_mut(); 4],
-            static_closures: Vec::new(),
-            static_closure_bufs: Vec::new(),
             scheduler_yields: 0,
             interpreter_yields: 0,
             reductions_remaining: reductions_per_quantum,
@@ -490,93 +406,17 @@ impl Process {
             max_yield_continuation_bytes: 0,
             min_yield_continuation_margin_before_bytes: 0,
             min_yield_continuation_margin_after_bytes: 0,
-        };
-        // An empty target set leaves `static_closures` empty (no cl_sid is
-        // ever looked up); only build the table when the module carries one.
-        if !consts.static_closure_targets.is_empty() {
-            p.init_static_closures(&consts.static_closure_targets);
         }
-        p.init_halt_cont_singletons(consts.halt_cont_body_addrs);
-        p
     }
 
     pub fn new(schemas: Rc<RefCell<SchemaRegistry>>) -> Self {
-        Self::from_consts(
-            Rc::new(Node::empty()),
-            schemas,
-            &CompiledModuleConsts::empty(),
-            0,
-            DEFAULT_REDUCTIONS_PER_QUANTUM,
-        )
+        Self::with_node(Rc::new(Node::empty()), schemas, 0, DEFAULT_REDUCTIONS_PER_QUANTUM)
     }
 
     /// Clear scheduler-owned pointers before handing this process back to a
     /// non-scheduler subsystem such as the quoted-source heap.
     pub fn detach_runtime_state(&mut self) {
         self.ctx = null_mut();
-    }
-
-    /// fz-cps.1.7 — populate the static closure singleton table. Each
-    /// target `(cl_sid, arity, code_ptr, halt_kind)` allocates one off-heap
-    /// strict zero-capture closure and registers its tagged value at
-    /// `static_closures[cl_sid as usize]`. Idempotent only
-    /// in the sense that re-calling with the same targets re-allocates;
-    /// callers (`CompiledModule::make_process`) call this exactly once
-    /// per Process at construction time.
-    pub fn init_static_closures(
-        &mut self,
-        targets: &[(
-            u32,       /* cl_sid */
-            u32,       /* arity */
-            *const u8, /* code_ptr */
-            u32,       /* halt_kind */
-            crate::any_value::ClosureDenotationId,
-        )],
-    ) {
-        // Size table by max cl_sid encountered.
-        let max = targets.iter().map(|(s, _, _, _, _)| *s).max().unwrap_or(0) as usize;
-        if self.static_closures.len() < max + 1 {
-            self.static_closures.resize(max + 1, null_mut());
-        }
-        for (cl_sid, arity, code_ptr, halt_kind, denotation) in targets {
-            let mut buf = AlignedClosureStorage::zeroed();
-            let base = buf.as_ptr();
-            unsafe {
-                closure_header_write(
-                    base,
-                    closure_header_word(*denotation, 0, *halt_kind as u16, *arity as u16),
-                );
-                write(base.add(8) as *mut u64, *code_ptr as u64);
-            }
-            self.static_closures[*cl_sid as usize] = base;
-            self.static_closure_bufs.push(buf);
-        }
-    }
-
-    /// fz-ul4.27.22.3 — pre-allocate halt-cont singletons for each kind
-    /// (0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom). Non-null `body_addrs[k]` seeds
-    /// the corresponding slot; null entries leave the slot null
-    /// (lazily filled by `fz_get_halt_cont` on first use). Called once
-    /// per Process by `make_process`.
-    pub fn init_halt_cont_singletons(&mut self, body_addrs: [*const u8; 4]) {
-        for (slot, addr) in body_addrs.iter().enumerate() {
-            if addr.is_null() {
-                continue;
-            }
-            let mut buf = AlignedClosureStorage::zeroed();
-            let base = buf.as_ptr();
-            unsafe {
-                // A continuation is applied to exactly the one value it
-                // receives, so its arity is 1.
-                closure_header_write(
-                    base,
-                    closure_header_word(crate::any_value::ClosureDenotationId::INTERNAL, 0, slot as u16, 1),
-                );
-                write(base.add(8) as *mut u64, *addr as u64);
-            }
-            self.halt_cont_singletons[slot] = base;
-            self.static_closure_bufs.push(buf);
-        }
     }
 
     /// Queue a `(self)`-callable closure (continuation or entry thunk) as the

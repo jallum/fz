@@ -8,8 +8,8 @@ use cranelift_codegen::verifier::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
 use fz_runtime::aot_shim::{
-    fz_aot_register_closure_denotations, fz_aot_register_named_schemas, fz_aot_register_static_closure,
-    fz_aot_register_tuple_schemas, fz_aot_run_main, fz_aot_set_drain_dtor_entry, fz_aot_set_resume_addr, fz_aot_setup,
+    fz_aot_register_closure_denotations, fz_aot_register_named_schemas, fz_aot_register_tuple_schemas, fz_aot_run_main,
+    fz_aot_set_drain_dtor_entry, fz_aot_set_resume_addr, fz_aot_setup,
 };
 use fz_runtime::procbin::{SHARED_BIN_BYTES, shared_bin_destructor_noop};
 use std::collections::HashMap;
@@ -67,10 +67,9 @@ impl<M: ClModule> AotMain<'_, '_, M> {
 }
 
 /// Emit the AOT C-callable main entry `main(argc, argv)`. Drives the cps-in-clif startup:
-/// `fz_aot_setup` -> per-closure `fz_aot_register_static_closure` ->
-/// `fz_aot_run_main`. Entry-body addresses (fz_entry_thunk,
-/// fz_main_trampoline, fz_halt_cont_body) are taken via Cranelift `func_addr`
-/// against the Local symbols emitted by planned codegen.
+/// `fz_aot_setup` -> the schema and denotation registrations -> `fz_aot_run_main`.
+/// Entry-body addresses (fz_entry_thunk, fz_main_trampoline) are taken via
+/// Cranelift `func_addr` against the Local symbols emitted by planned codegen.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_aot_c_main<M: ClModule>(
     jmod: &mut M,
@@ -80,15 +79,7 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
     main_fz_func_id: FuncId,
     main_halt_kind: u32,
     main_trampoline_id: FuncId,
-    halt_cont_body_ids: [FuncId; 4],
     entry_thunk_id: FuncId,
-    static_closure_targets: &[(
-        u32, /* cl_sid */
-        u32, /* arity */
-        FuncId,
-        u32, /* halt_kind */
-        fz_runtime::any_value::ClosureDenotationId,
-    )],
     atom_blob_data: Option<DataId>,
     atom_blob_len: u32,
     closure_denotations_data: Option<DataId>,
@@ -121,10 +112,6 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
         let atom_blob_len_v = main.iconst32(atom_blob_len);
 
         // Shim addresses (Local symbols in this object).
-        let hcb_strict_addr = main.local_addr(halt_cont_body_ids[0]);
-        let hcb_i64_addr = main.local_addr(halt_cont_body_ids[1]);
-        let hcb_f64_addr = main.local_addr(halt_cont_body_ids[2]);
-        let hcb_atom_addr = main.local_addr(halt_cont_body_ids[3]);
         let mt_addr = main.local_addr(main_trampoline_id);
         let et_addr = main.local_addr(entry_thunk_id);
         let main_fp = main.local_addr(main_fz_func_id);
@@ -132,17 +119,7 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
         let setup = runtime_call!(
             main,
             fz_aot_setup,
-            [
-                atom_blob_addr,
-                atom_blob_len_v,
-                hcb_strict_addr,
-                hcb_i64_addr,
-                hcb_f64_addr,
-                hcb_atom_addr,
-                et_addr,
-                argc,
-                argv,
-            ]
+            [atom_blob_addr, atom_blob_len_v, et_addr, argc, argv,]
         );
         let proc_v = main.sole_result(setup);
 
@@ -180,19 +157,6 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
                 main,
                 fz_aot_register_named_schemas,
                 [proc_v, named_schemas_addr, named_schemas_len_v]
-            );
-        }
-
-        for (cl_sid, arity, body_func_id, halt_kind, denotation) in static_closure_targets {
-            let cl_sid_v = main.iconst32(*cl_sid);
-            let arity_v = main.iconst32(*arity);
-            let body_addr = main.local_addr(*body_func_id);
-            let hk_v = main.iconst32(*halt_kind);
-            let denotation_v = main.iconst32(denotation.as_u32());
-            runtime_call!(
-                main,
-                fz_aot_register_static_closure,
-                [proc_v, cl_sid_v, arity_v, body_addr, hk_v, denotation_v]
             );
         }
 

@@ -362,18 +362,26 @@ alloc telemetry then measures only the task's own execution.
 ## Halt continuations
 
 When a resumed body finishes, it calls a halt continuation that records the final
-value into the process. These are per-process singletons in
-`halt_cont_singletons: [*mut u8; 4]`, indexed by return repr kind: `0=ValueRef`,
-`1=RawInt`, `2=RawF64`, `3=RawAtom`. Each slot is a closure whose code pointer is
-the matching `fz_halt_cont_body_*` Cranelift body. The JIT pre-populates them at
-process construction; under AOT a slot may be null at first use, so
-`fz_get_halt_cont(process, body_addr, kind)` lazily allocates it. The closure
-header packs `halt_kind` into its flags (low 14 bits = capture count, high 2 bits =
-halt kind), which is how `fz_entry_thunk` selects the right halt continuation for
-the inner body.
+value into the process. There are four per program, one per return repr kind:
+`0=ValueRef`, `1=RawInt`, `2=RawF64`, `3=RawAtom`. Each is a zero-capture closure
+whose code pointer is the matching `fz_halt_cont_body_*` Cranelift body. Codegen
+emits them once, as read-only data objects (`fz_halt_cont_strict`,
+`fz_halt_cont_i64`, `fz_halt_cont_f64`, `fz_halt_cont_atom`), and code takes their
+address directly. The closure header packs `halt_kind` into its flags (low 14 bits
+= capture count, high 2 bits = halt kind), which is how `fz_entry_thunk` selects
+the right halt continuation for the inner body.
 
-The singleton buffers are off-heap (`static_closure_bufs`), so the per-process GC
-arena does not own them and they live for the process's lifetime.
+A thin function reference (a `MakeFnRef`, a function value with no captures) is
+the same kind of object: one read-only data object per zero-capture callable
+boundary (`fz_static_closure_<boundary id>`), emitted once, whose code pointer is
+the boundary's function. Every process of the program, on the JIT and under AOT,
+holds the same address. The interpreter has no such objects.
+
+These objects are not in any process heap. The collector and deep copy
+recognize a heap object by testing its address against the heap's block ranges,
+so an address outside every range passes through by pointer and is never written.
+A write to one faults. They are not heap allocations, so they never appear in
+heap alloc stats.
 
 ## What the scheduler owns vs. what closures carry
 

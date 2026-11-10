@@ -9,7 +9,6 @@ fn test_scheduler() -> AotScheduler {
         next_pid: 2,
         tasks: HashMap::new(),
         entry_thunk: null(),
-        halt_cont_bodies: [null(); 4],
         core: SchedulingCore::new(),
         drain_dtor_entry: null(),
         resume_addr: null(),
@@ -268,17 +267,7 @@ fn aot_setup_gives_the_program_every_argument_after_the_program_name() {
     use std::ffi::CString;
     let words = ["./prog", "--", "", "-x"].map(|w| CString::new(w).unwrap());
     let pointers: Vec<*const std::ffi::c_char> = words.iter().map(|w| w.as_ptr()).collect();
-    let process = fz_aot_setup(
-        null(),
-        0,
-        null(),
-        null(),
-        null(),
-        null(),
-        null(),
-        pointers.len() as i32,
-        pointers.as_ptr(),
-    );
+    let process = fz_aot_setup(null(), 0, null(), pointers.len() as i32, pointers.as_ptr());
     let ctx = unsafe { &*(*process).ctx };
     assert_eq!(ctx.argv(), [b"--".to_vec(), Vec::new(), b"-x".to_vec()]);
 }
@@ -288,7 +277,7 @@ fn aot_setup_with_only_the_program_name_gives_the_empty_command_line() {
     use std::ffi::CString;
     let name = CString::new("./prog").unwrap();
     let pointers = [name.as_ptr()];
-    let process = fz_aot_setup(null(), 0, null(), null(), null(), null(), null(), 1, pointers.as_ptr());
+    let process = fz_aot_setup(null(), 0, null(), 1, pointers.as_ptr());
     let ctx = unsafe { &*(*process).ctx };
     assert!(ctx.argv().is_empty());
 }

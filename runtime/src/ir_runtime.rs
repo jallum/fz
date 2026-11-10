@@ -28,8 +28,8 @@ use crate::any_value::debug::render_value;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_LAZY_CONT, ValueKind,
     closure_addr_from_tagged, closure_capture_value, closure_captured_count, closure_denotation, closure_fn_ptr,
-    closure_halt_kind, closure_header_word, closure_header_write, heap_object_word, map_addr_from_tagged, map_count,
-    object_size, procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id,
+    closure_halt_kind, heap_object_word, map_addr_from_tagged, map_count, object_size, procbin_addr_from_tagged,
+    struct_addr_from_tagged, struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -45,7 +45,7 @@ use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
     ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
 };
-use crate::process::{AlignedClosureStorage, Process};
+use crate::process::Process;
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource, fz_resource_destructor_noop};
 use crate::sched::{ReceiveStep, reach_receive};
 use crate::scheduler_hooks::YIELD_PTR;
@@ -594,9 +594,8 @@ pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
 /// Allocate a closure heap object with `captured_count` capture slots.
 /// The runtime stores the body pointer while the tagged closure ref is still
 /// opaque to generated code; callers populate captures through accessors.
-/// `halt_kind` (fz-ul4.27.22.6) is packed into the closure header's
-/// `flags` so `fz_spawn_entry` can pick the matching halt-cont singleton
-/// at task launch. `arity` (fz-gk4) rides the header's high half; it is the
+/// `halt_kind` is packed into the closure header's `flags` so
+/// `fz_entry_thunk` can pick the matching halt continuation at task launch. `arity` (fz-gk4) rides the header's high half; it is the
 /// closure's user-visible parameter count, taken from the callable boundary
 /// that decides the call surface.
 #[unsafe(no_mangle)]
@@ -633,64 +632,6 @@ pub extern "C" fn fz_closure_code_ref(closure_ref_word: u64) -> u64 {
 pub extern "C" fn fz_closure_halt_kind_ref(closure_ref_word: u64) -> u32 {
     let addr = closure_addr_from_ref_word(closure_ref_word, "fz_closure_halt_kind_ref closure");
     unsafe { closure_halt_kind(addr) as u32 }
-}
-
-/// fz-cps.1.11 — return the per-Process singleton halt-cont closure.
-/// Lazily initialized on first call using the provided
-/// `halt_cont_body_addr` (taken at each call site via `func_addr`).
-/// JIT path: `make_process` pre-populates the singleton; this is a
-/// hot-path direct return. AOT path: the singleton may be null at
-/// first call, so this allocates with the supplied body addr.
-/// Reusing one singleton instead of allocating per uniform→native
-/// call site preserves test invariants that count heap allocations
-/// exactly (`gc_traces_closure_captured_via_jit`).
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_get_halt_cont(process: *mut Process, halt_cont_body_addr: u64, kind: u32) -> u64 {
-    // fz-ul4.27.22.3 — `kind` selects which of four per-Process halt-cont
-    // singletons to return (0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom). Each holds a
-    // body whose Tail-CC sig matches its repr. Producer's Term::Return
-    // uses sig (return_repr, i64); the code pointer at +8 must agree.
-    let p = unsafe { &mut *process };
-    let slot = kind as usize;
-    if !p.halt_cont_singletons[slot].is_null() {
-        return heap_ref_word(ValueKind::CLOSURE, p.halt_cont_singletons[slot] as *const u8);
-    }
-    let mut buf = AlignedClosureStorage::zeroed();
-    let base = buf.as_ptr();
-    unsafe {
-        closure_header_write(
-            base,
-            closure_header_word(crate::any_value::ClosureDenotationId::INTERNAL, 0, kind as u16, 0),
-        );
-        std::ptr::write(base.add(8) as *mut u64, halt_cont_body_addr);
-    }
-    p.halt_cont_singletons[slot] = base;
-    p.static_closure_bufs.push(buf);
-    heap_ref_word(ValueKind::CLOSURE, p.halt_cont_singletons[slot] as *const u8)
-}
-
-/// fz-cps.1.7 — return the per-Process static zero-capture singleton for
-/// the given callable-entry spec id. Populated at `make_process` time from
-/// `CompiledModule::static_closure_targets`. Used by thin `Prim::MakeFnRef`
-/// values and by any remaining zero-capture callable singleton sites, instead
-/// of allocating a fresh closure object per use. See docs/cps-in-clif.md §8.2
-/// acceptance: "Module-init region produces double/neg static closures exactly
-/// once."
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_get_static_closure(process: *mut Process, cl_sid: u32) -> u64 {
-    let p = unsafe { &mut *process };
-    let idx = cl_sid as usize;
-    if idx < p.static_closures.len() {
-        let ptr = p.static_closures[idx];
-        if !ptr.is_null() {
-            return heap_ref_word(ValueKind::CLOSURE, ptr as *const u8);
-        }
-    }
-    panic!(
-        "fz_get_static_closure: no singleton for cl_sid {} ({} entries)",
-        cl_sid,
-        p.static_closures.len()
-    );
 }
 
 // ===== Bitstring cluster (fz-ul4.23.4.9) =====

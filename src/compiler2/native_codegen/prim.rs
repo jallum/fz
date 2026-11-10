@@ -227,21 +227,11 @@ fn define_static_struct_literal<M: cranelift_module::Module>(
         ".fz_static_struct_{}_{}_{}_{}",
         env.active_body_fn_id.0, env.active_spec_id, dest_var.0, idx
     );
-    let data_id = body
-        .jmod
-        .declare_data(&name, Linkage::Local, /*writable=*/ false, false)
-        .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
-    let mut desc = DataDescription::new();
-    desc.define(buf.into_boxed_slice());
-    desc.set_align(16);
-    for (offset, child_id) in child_relocs {
-        let child_gv = body.jmod.declare_data_in_data(child_id, &mut desc);
-        desc.write_data_addr(offset as u32, child_gv, 0);
-    }
-    body.jmod
-        .define_data(data_id, &desc)
-        .map_err(|e| CodegenError::new(format!("define {}: {}", name, e)))?;
-    Ok(data_id)
+    let addresses = child_relocs
+        .into_iter()
+        .map(|(offset, child)| (offset, StaticAddress::Data(child)))
+        .collect::<Vec<_>>();
+    define_read_only_object(body.jmod, &name, buf, &addresses)
 }
 
 fn static_struct_ref_word<M: cranelift_module::Module>(
@@ -249,9 +239,7 @@ fn static_struct_ref_word<M: cranelift_module::Module>(
     dest_var: Var,
     data_id: DataId,
 ) -> ir::Value {
-    let gv = body.jmod.declare_data_in_func(data_id, body.b.func);
-    let addr = body.b.ins().symbol_value(types::I64, gv);
-    let ref_word = body.heap_ref_word_from_addr(addr, ValueKind::STRUCT);
+    let ref_word = body.static_object_ref(data_id, ValueKind::STRUCT);
     body.cache
         .static_struct_refs
         .insert(dest_var.0, StaticStructRef { data_id });
@@ -2061,7 +2049,7 @@ fn settled_callable_boundary_id(env: &CodegenEnv<'_>, fn_id: FnId) -> Result<u32
 }
 
 /// Lower a `Prim::MakeFnRef`. Thin callable values carry no env, so codegen
-/// materializes the planned callable-boundary singleton directly instead of
+/// references the planned callable-boundary static closure directly instead of
 /// routing through closure allocation.
 pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
@@ -2069,7 +2057,7 @@ pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module>(
     fn_id: FnId,
 ) -> Result<LowerOut, CodegenError> {
     let cl_sid = settled_callable_boundary_id(env, fn_id)?;
-    Ok(LowerOut::ValueRef(fetch_static_closure(body, cl_sid)))
+    Ok(LowerOut::ValueRef(static_closure_ref(body, env, cl_sid)?))
 }
 
 /// Lower a `Prim::MakeClosure`. Env-carrying closures allocate a closure

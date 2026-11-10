@@ -990,8 +990,10 @@ observer may still hold.</p>
 
 <p>Each process heap records allocation requests by kind. The counters are
 runtime process facts, separate from compiler2 telemetry, which reports
-compiler decisions. They are reset after process setup, so static
-closure singletons and bootstrap wiring do not pollute fixture baselines.</p>
+compiler decisions. They are reset after process setup, so bootstrap wiring
+does not pollute fixture baselines. Static closures and halt continuations
+are read-only data in the compiled program, not heap allocations, so they never
+appear in the counters.</p>
 
 <p><code>Process.heap_alloc_stats()</code> exposes the current process snapshot
 as a map. The runtime reads the counters first and then allocates the map, so

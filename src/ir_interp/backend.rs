@@ -34,7 +34,7 @@ use fz_runtime::ir_runtime::{
     fz_struct_get_named_field_ref,
 };
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
-use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
+use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
 use fz_runtime::sched::{ProbeOutcome, SendProbe, drain_in_queue, gift_match, gift_message, self_send};
 use fz_runtime::sched_core::{
     Disposition, QuantumEnd, Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook,
@@ -264,11 +264,9 @@ impl IrInterpRuntime {
         let pid = self.next_pid();
         let user_schemas = self.schemas();
         let node = Rc::clone(&self.node);
-        let consts = CompiledModuleConsts::empty();
-        let mut child = Box::new(Process::from_consts(
+        let mut child = Box::new(Process::with_node(
             node,
             user_schemas,
-            &consts,
             pid,
             DEFAULT_REDUCTIONS_PER_QUANTUM,
         ));

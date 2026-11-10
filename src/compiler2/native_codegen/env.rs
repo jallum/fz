@@ -20,6 +20,8 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) active_body_name: &'a str,
     pub(super) fn_ids: &'a HashMap<u32, FuncId>,
     pub(super) callable_boundary_fn_ids: &'a HashMap<u32, FuncId>,
+    /// The static closure object per zero-capture callable boundary.
+    pub(super) static_closure_data_ids: &'a HashMap<u32, DataId>,
     pub(super) mid_flight_cont_tail_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
     pub(super) tuple_schema_ids: &'a HashMap<usize, u32>,
     pub(super) named_schema_ids: &'a HashMap<fz_runtime::module_name::ModuleName, u32>,

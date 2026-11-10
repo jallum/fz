@@ -846,7 +846,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + C
                 synth_halt_cont = true;
                 let callee_ret_repr = scalar_or_never_body_return_halt_repr(env, callee_sid)
                     .expect("synthesized halt continuation requires one delivered value lane");
-                synthesize_halt_cont(body, env.locals, callee_ret_repr)
+                body.halt_cont_ref(env.locals, callee_ret_repr)
             }
         }
     };
@@ -1033,7 +1033,7 @@ fn emit_native_tail_call<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 synth_halt_cont = true;
                 let caller_ret_repr = scalar_or_never_body_return_halt_repr(env, this_spec_id)
                     .expect("top-level native tail delivery must end in one value lane");
-                synthesize_halt_cont(body, env.locals, caller_ret_repr)
+                body.halt_cont_ref(env.locals, caller_ret_repr)
             }
         }
     };

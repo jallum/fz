@@ -6,7 +6,6 @@ use crate::any_value::{
     list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_size_for_count, object_size,
     procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id, struct_size_for_payload,
 };
-use crate::process::AlignedClosureStorage;
 use crate::resource::ResourceStub;
 use crate::sync::Ordering;
 use std::cell::RefCell;
@@ -1853,15 +1852,105 @@ fn closure_forwarding_marker() {
     assert_eq!(forwarded_target(old, ValueKind::CLOSURE), Some(new_p));
 }
 
+/// A zero-capture closure on its own read-only page, the way the compiled
+/// program's static closures sit: outside every heap, and a write to it faults.
+struct ReadOnlyClosure {
+    page: *mut u8,
+}
+
+impl ReadOnlyClosure {
+    const PAGE_BYTES: usize = 4096;
+
+    fn new() -> Self {
+        unsafe {
+            let page = libc::mmap(
+                null_mut(),
+                Self::PAGE_BYTES,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_ANON | libc::MAP_PRIVATE,
+                -1,
+                0,
+            ) as *mut u8;
+            assert_ne!(page as *mut libc::c_void, libc::MAP_FAILED);
+            crate::any_value::closure_header_write(
+                page,
+                crate::any_value::closure_header_word(crate::any_value::ClosureDenotationId::user(5), 0, 0, 1),
+            );
+            write(page.add(8) as *mut u64, 0x5757);
+            assert_eq!(libc::mprotect(page.cast(), Self::PAGE_BYTES, libc::PROT_READ), 0);
+            Self { page }
+        }
+    }
+
+    fn value(&self) -> AnyValue {
+        AnyValue::heap_ptr(self.page, ValueKind::CLOSURE)
+    }
+}
+
+impl Drop for ReadOnlyClosure {
+    fn drop(&mut self) {
+        unsafe { libc::munmap(self.page.cast(), Self::PAGE_BYTES) };
+    }
+}
+
 #[test]
 fn strict_heap_decoder_accepts_static_closure_pointer() {
-    let mut storage = AlignedClosureStorage::zeroed();
-    let bits = heap_object_word(storage.as_ptr() as *const u8, ValueKind::CLOSURE);
+    let closure = ReadOnlyClosure::new();
+    let bits = heap_object_word(closure.page as *const u8, ValueKind::CLOSURE);
 
     let value = heap_root(bits);
 
     assert_eq!(value.kind(), ValueKind::CLOSURE);
-    assert_eq!(value.raw(), storage.as_ptr() as u64);
+    assert_eq!(value.raw(), closure.page as u64);
+}
+
+#[test]
+fn collection_leaves_a_read_only_static_closure_in_place() {
+    let closure = ReadOnlyClosure::new();
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let holder = heap.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(73), 1, 1, 0);
+    unsafe { closure_capture_set(closure_addr_from_tagged(holder).expect("holder"), 0, closure.value()) };
+    let mut roots = [heap_ref(holder), closure.value().ref_word()];
+
+    heap.collect(&mut roots);
+
+    let moved = roots[0].closure_addr().expect("moved holder");
+    assert_eq!(
+        unsafe { closure_capture_value(moved, 0) },
+        closure.value(),
+        "a reference held by a moved object still names the static closure"
+    );
+    assert_eq!(roots[1].closure_addr(), Ok(closure.page), "a root is left as it was");
+}
+
+#[test]
+fn deep_copy_leaves_a_read_only_static_closure_in_place() {
+    let closure = ReadOnlyClosure::new();
+    let mut source = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut destination = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let holder = source.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(73), 1, 1, 0);
+    unsafe { closure_capture_set(closure_addr_from_tagged(holder).expect("holder"), 0, closure.value()) };
+
+    let copied = deep_copy_slot(
+        heap_root(holder),
+        &source.view(),
+        &mut destination,
+        &mut AddressMap::default(),
+    );
+
+    let copy = copied.ref_word().closure_addr().expect("copied holder");
+    assert_eq!(unsafe { closure_capture_value(copy, 0) }, closure.value());
+    let alone = deep_copy_slot(
+        closure.value(),
+        &source.view(),
+        &mut destination,
+        &mut AddressMap::default(),
+    );
+    assert_eq!(
+        alone,
+        closure.value(),
+        "a static closure sent on its own is passed by pointer"
+    );
 }
 
 #[test]

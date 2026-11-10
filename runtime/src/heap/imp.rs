@@ -1017,7 +1017,7 @@ impl Heap {
     ///
     /// Every slot of `roots` holds its forwarded value on return. A slot
     /// that is not a pointer into this heap's from-space (a scalar immediate,
-    /// the empty list, a static closure or halt-continuation singleton) is
+    /// the empty list, a static closure or halt continuation) is
     /// left as it was; a scalar box in from-space is copied without tracing
     /// its payload.
     ///

@@ -45,7 +45,7 @@ impl ArgRepr {
         }
     }
 
-    /// Halt-cont singleton kind. 0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom.
+    /// Halt continuation kind. 0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom.
     pub(crate) fn halt_kind(&self) -> u32 {
         match self {
             ArgRepr::ValueRef => 0,
