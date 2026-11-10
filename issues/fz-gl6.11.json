@@ -6,14 +6,15 @@
   "blocks": [
     "fz-gl6.4"
   ],
+  "closed_at": "2026-11-10T02:37:48Z",
   "created": "2026-11-09T23:29:42Z",
   "description": "Step 1 of the approved literal-tag plan (/Users/j5n/Workspace/fz-gl6.4.html, approved 2026-11-09). Precedes fz-gl6.4.\n\nToday every process allocates its own static zero-capture closures and halt-continuation singletons as writable 24-byte system allocations (runtime/src/process.rs init_static_closures ~:530 and init_halt_cont_singletons ~:573, stored in static_closures / halt_cont_singletons / static_closure_bufs; JIT seeds them in src/ir_codegen/compiled.rs make_process via CompiledModuleConsts; AOT in runtime/src/aot_shim.rs ~:428, and AOT children alias the parent's table at ~:457/:475). Code fetches them through fz_get_static_closure and fz_get_halt_cont (runtime/src/ir_runtime.rs ~:661-710; the latter has a lazy allocating fallback). Deep copy passes them through by pointer, so one process's heap can hold pointers into another process's buffers; nothing dangles only because exited tasks stay in the registry. The interpreter has none (CompiledModuleConsts::empty()).\n\nTheir contents are process-independent (denotation, closure header word, code address). Make each one a read-only data object emitted once by codegen, the way static struct literals already are (native_codegen/prim.rs define_static_struct_literal: declare_data writable=false, a function-address relocation for the code pointer), and have code take its address directly (symbol_value) instead of calling the fetch externs. Same on JIT and AOT.\n\nDone when:\n- Deleted: Process::static_closures, halt_cont_singletons, static_closure_bufs, init_static_closures, init_halt_cont_singletons, AlignedClosureStorage if nothing else uses it, fz_get_static_closure, fz_get_halt_cont and its lazy fallback, AOT child aliasing, the static fields of CompiledModuleConsts (and the struct if it empties), compiled.rs static_closure_targets / halt_cont_body_addrs plumbing.\n- Every static closure and halt continuation lives in read-only memory: a heap unit or JIT test shows a write to one faults (or documents the probe), and the collector leaves them in place on all paths.\n- A test shows two processes of one program reference the same static closure address.\n- Heap allocation counts and every fixture pin are unchanged (these were system allocations); report any that move with the mechanism.\n- Documentation in the same commit: every .agent/docs page (scheduler-zero-arg-closures.md and others that describe per-process singletons), guide (guides/*.html), README.md section and fixture README that describes a mechanism this ticket changes or removes is rewritten to the present fact in the same commit, and a grep for the old names and phrases over .agent, guides, README.md and fixtures returns nothing. Full gate green (--workspace --all-targets plus doc tests, fixture matrix with --test-threads=1). Commit in Why / What changed / Verification form. No co-author trailer, no attribution line.",
   "id": "fz-gl6.11",
   "labels": [],
   "parent": "fz-gl6",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Static closures and halt continuations are program-wide read-only data",
   "type": "task",
-  "updated_at": "2026-11-09T23:29:42Z"
+  "updated_at": "2026-11-10T02:37:48Z"
 }
