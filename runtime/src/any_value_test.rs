@@ -3,6 +3,14 @@ use std::mem;
 
 const LOW_NIBBLE: u64 = 0xF;
 
+fn test_heap() -> Heap {
+    Heap::new(4096, Rc::new(RefCell::new(SchemaRegistry::new())))
+}
+
+fn list_cell(heap: &mut Heap, head: i64, tail: u64) -> u64 {
+    heap.alloc_list_cons_slot(AnyValue::int(head), tail)
+}
+
 #[test]
 fn list_cons_size_is_16() {
     assert_eq!(mem::size_of::<ListCons>(), 16);
@@ -10,7 +18,8 @@ fn list_cons_size_is_16() {
 
 #[test]
 fn list_cons_layout() {
-    let bits = alloc_list_cons_raw_kind(7, ValueKind::INT, EMPTY_LIST);
+    let mut heap = test_heap();
+    let bits = list_cell(&mut heap, 7, EMPTY_LIST);
     let p = list_addr_from_tagged(bits).expect("tagged list ptr");
     unsafe {
         let cons = &*(p as *mut ListCons);
@@ -26,9 +35,10 @@ fn list_cons_layout() {
 #[test]
 fn list_cons_chain() {
     // [1, 2, 3]
-    let l3 = alloc_list_cons_raw_kind(3, ValueKind::INT, EMPTY_LIST);
-    let l2 = alloc_list_cons_raw_kind(2, ValueKind::INT, l3);
-    let l1 = alloc_list_cons_raw_kind(1, ValueKind::INT, l2);
+    let mut heap = test_heap();
+    let l3 = list_cell(&mut heap, 3, EMPTY_LIST);
+    let l2 = list_cell(&mut heap, 2, l3);
+    let l1 = list_cell(&mut heap, 1, l2);
     unsafe {
         let c1 = &*(list_addr_from_tagged(l1).unwrap() as *mut ListCons);
         assert_eq!(c1.head_value(), AnyValue::int(1));
@@ -42,9 +52,11 @@ fn list_cons_chain() {
 
 #[test]
 fn alloc_struct_zeros_payload_and_sets_prefix() {
-    let p = alloc_struct(7, 24);
+    let mut heap = test_heap();
+    let schema_id = heap.register_schema(Schema::tuple_of_arity(3));
+    let p = heap.alloc_struct(schema_id);
     unsafe {
-        assert_eq!(struct_schema_id(p), 7);
+        assert_eq!(struct_schema_id(p), schema_id);
         assert_eq!(ptr::read(p as *const u64) & LOW_NIBBLE, 0);
         assert_eq!(struct_size_for_payload(24), 32);
         let payload = p.add(8);
@@ -56,7 +68,9 @@ fn alloc_struct_zeros_payload_and_sets_prefix() {
 
 #[test]
 fn allocations_are_sixteen_byte_aligned() {
-    let p = alloc_struct(0, 0);
+    let mut heap = test_heap();
+    let schema_id = heap.register_schema(Schema::tuple_of_arity(0));
+    let p = heap.alloc_struct(schema_id);
     assert_eq!((p as u64) & LOW_NIBBLE, 0);
 }
 
@@ -225,7 +239,8 @@ fn list_cons_stores_canonical_head_kind_in_link_high_bits() {
 
 #[test]
 fn list_link_keeps_alias_bit_in_high_metadata() {
-    let tail = alloc_list_cons_raw_kind(3, ValueKind::INT, EMPTY_LIST);
+    let mut heap = test_heap();
+    let tail = list_cell(&mut heap, 3, EMPTY_LIST);
     let mut cons = ListCons::new(7, ValueKind::INT, tail);
 
     assert_eq!(cons.tail_bits(), tail);
@@ -242,8 +257,9 @@ fn list_link_keeps_alias_bit_in_high_metadata() {
 
 #[test]
 fn list_link_rewrite_preserves_high_metadata() {
-    let old_tail = alloc_list_cons_raw_kind(1, ValueKind::INT, EMPTY_LIST);
-    let new_tail = alloc_list_cons_raw_kind(2, ValueKind::INT, EMPTY_LIST);
+    let mut heap = test_heap();
+    let old_tail = list_cell(&mut heap, 1, EMPTY_LIST);
+    let new_tail = list_cell(&mut heap, 2, EMPTY_LIST);
     let mut cons = ListCons::new(7, ValueKind::ATOM, old_tail);
     cons.mark_aliased();
 
@@ -306,7 +322,9 @@ fn object_size_dispatches_from_pointer_tag_and_object_local_metadata() {
 
 #[test]
 fn pointers_leave_the_low_nibble_clear() {
-    let p = alloc_struct(0, 0) as u64;
+    let mut heap = test_heap();
+    let schema_id = heap.register_schema(Schema::tuple_of_arity(0));
+    let p = heap.alloc_struct(schema_id) as u64;
     assert_eq!(p & LOW_NIBBLE, 0);
 }
 

@@ -4,7 +4,6 @@
 //! Containers may store payload words plus object-local kind bytes, but this
 //! module does not expose a reusable `{value, kind}` carrier.
 
-use std::alloc::{Layout, alloc};
 use std::mem;
 use std::ptr;
 
@@ -887,27 +886,6 @@ unsafe fn size_of_resource(_addr: *const u8) -> usize {
     crate::resource::RESOURCE_STUB_SIZE
 }
 
-/// A 16-byte-aligned allocation outside any heap, never freed. Only tests
-/// call it, through `alloc_struct` and `alloc_list_cons_raw_kind`.
-unsafe fn raw_alloc(total_size: usize) -> *mut u8 {
-    let layout = Layout::from_size_align(total_size, 16).expect("bad layout");
-    let p = unsafe { alloc(layout) };
-    assert!(!p.is_null(), "allocation failed");
-    p
-}
-
-pub fn alloc_struct(schema_id: u32, payload_size: u32) -> *mut u8 {
-    let total = struct_size_for_payload(payload_size as usize);
-    unsafe {
-        let p = raw_alloc(total);
-        ptr::write(p as *mut u64, struct_header_word(schema_id));
-        // Zero payload.
-        let payload = p.add(8);
-        ptr::write_bytes(payload, 0, total - 8);
-        p
-    }
-}
-
 /// vrx.A.1 — List cons cell: head (8) + link/head-kind (8) = 16 bytes.
 ///
 /// `head` is raw payload. `link` stores an architecture-local tail address plus
@@ -1339,15 +1317,6 @@ pub unsafe fn map_entry(addr: *const u8, index: usize) -> (AnyValue, AnyValue) {
         AnyValue::decode_parts(kr, kk.tag()).expect("map key value"),
         AnyValue::decode_parts(vr, vk.tag()).expect("map entry value"),
     )
-}
-
-#[cfg(test)]
-fn alloc_list_cons_raw_kind(head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> u64 {
-    unsafe {
-        let p = raw_alloc(16) as *mut ListCons;
-        ptr::write(p, ListCons::new(head_raw, head_kind, tail_bits));
-        heap_object_word(p as *const u8, ValueKind::LIST)
-    }
 }
 
 #[cfg(test)]
