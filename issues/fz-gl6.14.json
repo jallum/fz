@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-10T00:33:15Z",
+  "description": "Comment style: plain present-tense facts, no ticket numbers. runtime/src/any_value.rs alone cites vrx.0.2 (TAG_LIST, TAG_MAP, TAG_STRUCT docs), fz-yan.1 (TAG_SPECIAL note and reserved atom ids), fz-s9y.2 (EMPTY_LIST_BITS), vrx.A.1 (ListCons), and procbin.rs cites fz-5xp.55. The same pattern is likely across runtime/src and src.\n\nDone when: a census (grep for ticket-id patterns such as '\\bfz-[a-z0-9]{2,4}(\\.[0-9]+)*\\b' and 'vrx\\.' in comments under runtime/src and src) is recorded in the commit; each hit is rewritten to the fact it was carrying, or deleted when the code already says it; the grep over comments returns nothing. Identifiers, test names and fixture data that contain ids are reported, not renamed. Done when also: comments are plain present-tense facts with no ticket numbers; full gate green (cargo fmt --all -- --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace --all-targets --no-fail-fast -- --test-threads=1; cargo test --workspace --doc); no pin or golden moves; commit in Why / What changed / Verification form; no co-author trailer, no attribution line.",
+  "id": "fz-gl6.14",
+  "labels": [],
+  "parent": "fz-gl6",
+  "priority": 3,
+  "status": "open",
+  "title": "Runtime comments state facts, not ticket numbers",
+  "type": "task",
+  "updated_at": "2026-11-10T00:33:15Z"
+}
