@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-10T21:34:33Z",
+  "description": "Comment style is plain present-tense facts with no ticket numbers. A census on fz-gl6/chain-is-the-heap @ b55d0e3ff (grep -rnE '//.*(\\bfz-[a-z0-9]{2,4}(\\.[0-9]+)*\\b|\\bvrx\\.)' src) finds 1,154 comment lines under src citing ticket ids: 410 in source files, 744 in _test.rs files. Heaviest: src/telemetry/public_trace_test.rs 220, src/compiler2/drive_test.rs 179, work_start_reason_test.rs 65, callsite_dispatch.rs 60, callsite_dispatch_test.rs 57, types/mod.rs 46, canon_test.rs 39, types/arrow_match_test.rs 38, runtime_type_predicate.rs 33, types/types_test.rs 31. Split from fz-gl6.14 (which sweeps runtime/src) so the sweep lands when stack #274 and the exceptions branch are not editing the same files. Re-run the census at build time.\n\nDone when: the census is recorded in the commit; each hit is rewritten to the fact it was carrying, or deleted when the code already says it; the grep over comments under src returns nothing. Identifiers, test names and fixture data that contain ids are reported, not renamed. Comments are plain present-tense facts; full gate green (cargo fmt --all -- --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace --all-targets --no-fail-fast -- --test-threads=1; cargo test --workspace --doc); no pin or golden moves; commit in Why / What changed / Verification form; no co-author trailer, no attribution line.",
+  "id": "fz-n8q",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "Compiler comments state facts, not ticket numbers",
+  "type": "task",
+  "updated_at": "2026-11-10T21:34:33Z"
+}
