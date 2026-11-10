@@ -1,11 +1,11 @@
-//! fz-q8d.1 — sealed procbin / off-heap binary abstraction.
+//! Sealed procbin / off-heap binary abstraction.
 //!
 //! This module owns the entire off-heap binary story:
 //!
 //!   * `SharedBin` — refcounted byte buffer carrying its own destructor
 //!     pointer. The destructor is a permanent property set at allocation
 //!     time. Heap-allocated bins use `shared_bin_destructor_heap`; future
-//!     compiler-baked static bins (fz-q8d.2) use `shared_bin_destructor_noop`.
+//!     compiler-baked static bins use `shared_bin_destructor_noop`.
 //!   * `SharedBinHandle` — Arc-shaped owning wrapper. `Drop` releases.
 //!   * `ProcBin` — `#[repr(transparent)]` newtype over the per-heap
 //!     `u8*` stub. All offset arithmetic for ProcBin payload lives
@@ -20,7 +20,7 @@
 //!
 //! Refcount ordering uses the canonical `Arc` pattern (Relaxed on retain,
 //! Release on release, Acquire fence on final drop). Loom verification
-//! lands in fz-q8d.3 via the `crate::sync` abstraction module.
+//! runs through the `crate::sync` abstraction module.
 
 use crate::any_value::{
     AnyValue, ValueKind, bitstring_bit_len as any_bitstring_bit_len, bitstring_bytes_ptr, heap_kind_from_tagged,
@@ -77,14 +77,14 @@ unsafe impl Sync for SharedBin {}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn shared_bin_destructor_heap(p: *mut SharedBin) {
     let bin = unsafe { Box::from_raw(p) };
-    // The buffer was overallocated by 1 for the invisible trailing NUL
-    // ([[fz-wu9]]). Free the full allocation.
+    // The buffer was overallocated by 1 for the invisible trailing NUL.
+    // Free the full allocation.
     let bytes = unsafe { Box::from_raw(slice_from_raw_parts_mut(bin.bytes_ptr as *mut u8, bin.bytes_len + 1)) };
     drop(bytes);
     drop(bin);
 }
 
-/// No-op destructor for compiler-baked static SharedBins (fz-q8d.2). The
+/// No-op destructor for compiler-baked static SharedBins. The
 /// bytes and the struct itself live in the program binary's `.data`
 /// section; this destructor is reachable in principle but in practice
 /// never fires because the static refcount is anchored at 1.
@@ -100,7 +100,7 @@ pub unsafe extern "C" fn shared_bin_destructor_noop(_p: *mut SharedBin) {}
 /// destructor installed. Bytes are leaked separately as a `Box<[u8]>` so
 /// the destructor can reconstruct both boxes independently.
 pub fn shared_bin_alloc(bytes: &[u8], bit_len: u64) -> *mut SharedBin {
-    // fz-wu9 — overallocate one byte beyond bytes_len and zero it.
+    // Overallocate one byte beyond bytes_len and zero it.
     // The trailing NUL is invisible to the language (bytes_len/bit_len
     // unchanged) and underwrites the c_string extern marshal contract.
     let bytes_len = bytes.len();
@@ -227,10 +227,10 @@ impl Drop for SharedBinHandle {
 ///
 /// A whole binary is the suffix at offset 0. A tail match allocates another
 /// stub over the SAME SharedBin at a later offset, which is what makes
-/// `<<_c, rest :: binary>>` copy nothing (fz-5xp.55).
+/// `<<_c, rest :: binary>>` copy nothing.
 ///
 /// SUFFIX, not an arbitrary window, is the load-bearing constraint. The
-/// buffer carries one invisible trailing NUL ([[fz-wu9]]), and a suffix
+/// buffer carries one invisible trailing NUL, and a suffix
 /// ends where the buffer ends -- so the parent's NUL is also every
 /// suffix's NUL and `fz_binary_as_cstring` needs no flattening copy. An
 /// arbitrary window would not have that, which is why one cannot be built:

@@ -33,7 +33,7 @@ use std::ptr::{copy_nonoverlapping, read, write, write_bytes};
 use std::rc::Rc;
 use std::slice::from_raw_parts;
 
-// fz-vdt.16 — pure reads that need no heap state. Reading a list head/tail or a
+// Pure reads that need no heap state. Reading a list head/tail or a
 // closure capture is a dereference of the self-describing value pointer, so these
 // are free functions (the `Heap::read_*` methods below delegate). BIFs call them
 // directly, with no `current_process()` and no process argument — which is also
@@ -616,7 +616,7 @@ impl Heap {
     /// Caller supplies a fully-built byte buffer + bit_len; this performs the
     /// heap copy.
     ///
-    /// fz-cty.5 — payloads larger than `SHARED_BIN_THRESHOLD_BYTES` route
+    /// Payloads larger than `SHARED_BIN_THRESHOLD_BYTES` route
     /// through the shared zone: a SharedBin is allocated off-heap and the
     /// per-process heap gets a tagged ProcBin stub referencing
     /// it. Render and bit-match dispatch via
@@ -625,7 +625,7 @@ impl Heap {
     /// This always COPIES `bytes`. To view an existing shared buffer
     /// without copying it, use `alloc_bitstring_suffix`.
     ///
-    /// fz-5xp.45 — returns the VALUE, kind included. The storage choice is
+    /// Returns the VALUE, kind included. The storage choice is
     /// made here and only here; four callers used to re-derive it from
     /// `bytes.len()` against the same threshold, which meant the threshold was
     /// a constant five places had to agree about and a caller could disagree
@@ -636,7 +636,7 @@ impl Heap {
             self.alloc_stats.record_shared_bin(bytes.len() as u64);
             return AnyValue::heap_ptr(alloc_procbin(self, handle, 0).as_raw(), ValueKind::PROCBIN);
         }
-        // fz-wu9 — reserve at least 1 byte past the payload for the
+        // Reserve at least 1 byte past the payload for the
         // invisible trailing NUL. The pad-zeroing below guarantees it reads
         // as 0; bytes_len / bit_len are unchanged.
         let total = bitstring_size_for_bit_len(bit_len);
@@ -657,7 +657,7 @@ impl Heap {
     /// Allocate the byte-aligned SUFFIX `[byte_offset ..]` of an existing
     /// `SharedBin`, returning it as a value.
     ///
-    /// fz-5xp.55 — above `SHARED_BIN_THRESHOLD_BYTES` the suffix SHARES the
+    /// Above `SHARED_BIN_THRESHOLD_BYTES` the suffix SHARES the
     /// parent's bytes: a new stub retains the same SharedBin at its own
     /// offset, and nothing is copied. That is what stops a byte scanner
     /// being quadratic, because every `<<_c, rest :: binary>>` step is a
@@ -974,10 +974,8 @@ impl Heap {
         self.schemas.clone()
     }
 
-    /// Total allocations made on this heap (since last GC). Under the
-    /// fz-siu.7 stub GC, all allocations remain "live" because nothing is
-    /// reclaimed. .8's Cheney pass resets this to the surviving-object
-    /// count after each copy.
+    /// Total allocations made on this heap (since last GC). Each Cheney
+    /// pass resets this to the surviving-object count after the copy.
     pub fn live_count(&self) -> usize {
         self.alloc_count as usize
     }

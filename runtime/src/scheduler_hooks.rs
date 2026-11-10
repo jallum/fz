@@ -19,13 +19,12 @@ use crate::process::Process;
 /// Non-pointer trampoline sentinel: fz_receive_attempt returns this when
 /// the mailbox is empty so the JIT trampoline parks the task instead of
 /// dispatching the returned ptr. 0x1 is never 16-aligned so it cannot
-/// collide with a real heap pointer. (Originally lived in the binary's
-/// ir_codegen.rs; lifted here for fz-ul4.23.10 since both the scheduler
+/// collide with a real heap pointer. (Defined here because both the scheduler
 /// — in the binary's Runtime — and fz_receive_attempt
 /// — in this crate — need it.)
 pub const YIELD_PTR: u64 = 0x1;
 
-/// fz_spawn FFI signature on the binary side. fz-ul4.29.5: takes the
+/// fz_spawn FFI signature on the binary side. Takes the
 /// closure_bits (AnyValue ptr) and returns the new pid. The hook handles
 /// deep-copy of the closure into the new task's heap, dispatch via the
 /// closure's code pointer to materialize the initial frame, and enqueue.
@@ -44,7 +43,7 @@ pub type FaultHook = unsafe extern "C" fn(context: *mut (), line_ptr: *const u8,
 
 pub type OutputHook = unsafe extern "C" fn(context: *const (), line_ptr: *const u8, line_len: usize);
 
-/// fz-yxs/fz-st5 — after-timer schedule hook. Called when a receive with a
+/// After-timer schedule hook. Called when a receive with a
 /// positive timeout parks. Each scheduler owns its `SchedulingCore` (and its
 /// `TimerWheel`), so the actual schedule lives there;
 /// `sched_core::timer_schedule_hook` is the one implementation, instantiated
@@ -52,11 +51,11 @@ pub type OutputHook = unsafe extern "C" fn(context: *const (), line_ptr: *const 
 /// stash it on the park record for later cancellation.
 pub type TimerScheduleHook = extern "C" fn(scheduler: *mut (), pid: u32, after_ms: u64) -> u64;
 
-/// fz-yxs/fz-st5 — counterpart cancel hook, fired when a sender-probe
+/// Counterpart cancel hook, fired when a sender-probe
 /// matcher hit wakes the receiver before the timer expires. No-op when `timer_id` is unknown (already fired).
 pub type TimerCancelHook = extern "C" fn(scheduler: *mut (), timer_id: u64);
 
-// fz-vdt ctx.4-6: the per-thread scheduler-hook slots are gone. Each callback
-// now lives on the running task's `ExecCtx` (see exec_ctx.rs) — per-context,
+// There are no per-thread scheduler-hook slots. Each callback
+// lives on the running task's `ExecCtx` (see exec_ctx.rs) — per-context,
 // not per-thread — so independent schedulers can be live at once. Only the
 // callback *type* definitions above remain, as the shape of those ExecCtx fields.

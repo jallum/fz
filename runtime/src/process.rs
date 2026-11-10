@@ -1,12 +1,12 @@
 //! Per-task runtime state.
 //!
-//! Lifted out of ir_codegen.rs by fz-ul4.23.4.2 so that any execution path
+//! Any execution path
 //! (JIT, interp, AOT) can stand up a Process without dragging the codegen
 //! module along. The Process owns the per-task heap and builders; the Runtime
 //! in src/runtime.rs schedules Processes. FFI/BIF fns in src/ir_runtime.rs
 //! receive their `*mut Process` explicitly — compiled code passes the pinned
 //! register, the interpreter threads it as a parameter — so there is no
-//! ambient current-process and two schedulers can be live at once (fz-vdt).
+//! ambient current-process and two schedulers can be live at once.
 
 use crate::any_value::ClosureDenotationId;
 use crate::function_denotation::FunctionDenotation;
@@ -77,8 +77,7 @@ pub struct Process {
     /// `Runtime`, interpreter, or AOT shim) at each quantum entry; the pointee
     /// outlives any FFI call made under this process. Null until a scheduler
     /// installs one. The spawn/send/fault/timer/output BIFs dispatch
-    /// through it — this is what replaced the `CURRENT_PROCESS`-era thread-local
-    /// singletons (removed in `fz-vdt`), so two schedulers can be live at once.
+    /// through it, so two schedulers can be live at once.
     pub ctx: *mut ExecCtx,
     pub halt_value: i64,
     /// Whether the process failed: set only by `fz_panic`, the one route an
@@ -92,7 +91,7 @@ pub struct Process {
     /// shared and append-only across the context's processes — runtime atom
     /// interning is visible to every process, like the BEAM's node-global table.
     pub node: Rc<Node>,
-    // fz-ul4.19.1 scheduler-level fields. Populated when a Process is
+    // Scheduler-level fields. Populated when a Process is
     // owned by a Runtime; the standalone `make_process()` path
     // leaves these at defaults.
     pub pid: PidId,
@@ -374,7 +373,7 @@ impl Process {
         Self {
             // §6.3: initial size on spawn = SIZE_TABLE[0] (1 KiB). Cheney
             // promotes to a larger block capacity on first GC if the working
-            // set demands it; shrink hysteresis (§6.5 / fz-siu.11) brings
+            // set demands it; shrink hysteresis (§6.5) brings
             // it back down for short-lived spikes.
             delivery: DeliveryLock::default(),
             heap: Heap::with_node(SIZE_TABLE[0], schemas, Rc::clone(&node)),
@@ -547,9 +546,7 @@ fn min_nonzero(current: u64, candidate: u64) -> u64 {
     }
 }
 
-// fz-vdt ctx.8: the ambient `CURRENT_PROCESS` thread-local, its
-// `CurrentProcessGuard`, and the `current_process()`/`try_current_process()`
-// accessors are gone. Every FFI/BIF now receives its `*mut Process` explicitly
+// There is no ambient current-process. Every FFI/BIF receives its `*mut Process` explicitly
 // (in the pinned register for compiled code, threaded as a parameter for the
 // interpreter). This is what lets two schedulers be live at once on one thread.
 

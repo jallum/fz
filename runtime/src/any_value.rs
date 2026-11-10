@@ -13,11 +13,11 @@ pub const TAG_BITS: u64 = 4;
 const KIND_FIELD_MASK: u64 = (1 << TAG_BITS) - 1;
 /// Zero-init memory and typed-List end-of-list sentinel.
 pub const TAG_NULL: u64 = 0x0;
-/// Heap cons cell; side-band list layout is pinned in vrx.0.2.
+/// Heap cons cell.
 pub const TAG_LIST: u64 = 0x1;
-/// Heap flat map; one tag byte per key/value entry, pinned in vrx.0.2.
+/// Heap flat map; one tag byte per key/value entry.
 pub const TAG_MAP: u64 = 0x2;
-/// Heap tuple/struct; schema-driven typed fields, pinned in vrx.0.2.
+/// Heap tuple/struct; schema-driven typed fields.
 pub const TAG_STRUCT: u64 = 0x3;
 /// Heap closure; denotation header and self-describing typed capture slots.
 pub const TAG_CLOSURE: u64 = 0x4;
@@ -36,13 +36,13 @@ pub const TAG_KIND_INT: u64 = 0xD;
 pub const TAG_KIND_FLOAT: u64 = 0xE;
 /// Side-band immediate tag for raw atom-id slots.
 pub const TAG_KIND_ATOM: u64 = 0xF;
-// fz-yan.1 — TAG_SPECIAL (0b011) is not a user value. The former occupants
-// (nil/true/false) are now regular atoms with reserved compile-time IDs; see
+// TAG_SPECIAL (0b011) is not a user value. nil/true/false are regular atoms
+// with reserved compile-time IDs; see
 // NIL_ATOM_ID etc. below. Matchers use one reserved bit pattern internally as
 // a non-value sentinel.
 pub const MATCHER_MAP_MISS_BITS: u64 = 0b011;
 
-/// fz-yan.1 — reserved atom IDs. `AtomTable::new()` pre-interns
+/// Reserved atom IDs. `AtomTable::new()` pre-interns
 /// "nil"/"true"/"false" in this order at module construction time,
 /// so every module has these well-known IDs available. The `*_BITS`
 /// constants below are raw atom payloads; side-band `ValueKind::ATOM`
@@ -56,7 +56,7 @@ pub const NIL_BITS: u64 = NIL_ATOM_ID as u64;
 pub const TRUE_BITS: u64 = TRUE_ATOM_ID as u64;
 pub const FALSE_BITS: u64 = FALSE_ATOM_ID as u64;
 
-/// fz-s9y.2 — object-storage empty-list sentinel. This is not the public
+/// Object-storage empty-list sentinel. This is not the public
 /// `AnyValueRef` representation of `[]`; public refs use a null-address
 /// List tag. Address 0x8 sits inside page 0, which the OS reserves as
 /// unmapped, so the sentinel can't collide with a real heap pointer.
@@ -105,8 +105,7 @@ impl ValueKind {
     /// two representations -- inline below `SHARED_BIN_THRESHOLD_BYTES`,
     /// a shared-buffer view above it -- and every question of the form
     /// "is this a binary" is a question about both. Asking about
-    /// `BITSTRING` alone made every binary over 64 bytes answer NO
-    /// (fz-5xp.57).
+    /// `BITSTRING` alone made every binary over 64 bytes answer NO.
     pub const BINARY_REPRS: [Self; 2] = [Self::BITSTRING, Self::PROCBIN];
 
     pub const fn is_binary_repr(self) -> bool {
@@ -525,7 +524,7 @@ impl AnyValue {
     }
 }
 
-// Bitstring storage dispatchers moved to `crate::procbin` in fz-q8d.1.
+// Bitstring storage dispatchers live in `crate::procbin`.
 // `any_value.rs` does not own bitstring layout; render uses the procbin
 // helpers like every other read site.
 
@@ -886,7 +885,7 @@ unsafe fn size_of_resource(_addr: *const u8) -> usize {
     crate::resource::RESOURCE_STUB_SIZE
 }
 
-/// vrx.A.1 — List cons cell: head (8) + link/head-kind (8) = 16 bytes.
+/// List cons cell: head (8) + link/head-kind (8) = 16 bytes.
 ///
 /// `head` is raw payload. `link` stores an architecture-local tail address plus
 /// a high metadata field: 4 bits of head kind followed by one alias flag bit.
@@ -1323,9 +1322,8 @@ pub unsafe fn map_entry(addr: *const u8, index: usize) -> (AnyValue, AnyValue) {
 #[path = "any_value_test.rs"]
 mod any_value_test;
 
-/// Debug rendering of AnyValues. Lifted out of ir_codegen.rs by
-/// fz-ul4.23.4.3 so that any execution path (JIT, future interp/AOT) can
-/// use the same rendering — values are uniformly tagged, regardless of
+/// Debug rendering of AnyValues. Any execution path (JIT, future
+/// interp/AOT) can use the same rendering — values are uniformly tagged, regardless of
 /// what produced them. The single runtime dependency is the heap's schema
 /// registry + atom-name table on a `Process`, threaded in explicitly (a
 /// nullable `*mut Process`) so two schedulers can render concurrently
@@ -1406,7 +1404,7 @@ pub mod debug {
         }
         // An empty list reaches here two ways: as the `EMPTY_LIST` sentinel,
         // and as a LIST-tagged word whose address is null, which is what a
-        // nested `[]` is stored as. Both are the empty list (fz-5xp.63).
+        // nested `[]` is stored as. Both are the empty list.
         if bits == EMPTY_LIST || list_addr_from_tagged(bits).is_some_and(|p| p.is_null()) {
             "[]".into()
         } else {
@@ -1661,7 +1659,7 @@ pub mod debug {
         let full_bytes = bit_len / 8;
         let trailing_bits = bit_len % 8;
 
-        // fz-axu.15 (R2) — UTF-8-aware rendering: byte-aligned + valid
+        // UTF-8-aware rendering: byte-aligned + valid
         // UTF-8 + Elixir-style String.printable?/1 heuristic renders as
         // a quoted string. Anything else falls back to the `<<...>>`
         // byte-list form. Print intentionally doesn't read the type
@@ -1710,8 +1708,7 @@ pub mod debug {
                 '\\' => out.push_str("\\\\"),
                 '"' => out.push_str("\\\""),
                 // `#{` is escaped so the rendering round-trips as source:
-                // an unescaped one would read back as interpolation
-                // (fz-5xp.5). Elixir's inspect does the same, and only for
+                // an unescaped one would read back as interpolation. Elixir's inspect does the same, and only for
                 // `#` immediately before `{`.
                 '#' if chars.peek() == Some(&'{') => out.push_str("\\#"),
                 other => out.push(other),
@@ -1759,7 +1756,7 @@ pub mod debug {
             Some(t) => format!("[{} | {}]", parts.join(", "), t),
             // A KEYWORD LIST prints as `[a: 1]`, not `[{:a, 1}]`. Elixir
             // inspects a PROPER list whose every element is a two-tuple with an
-            // atom key that way, and only then (fz-5xp.13). The decision is
+            // atom key that way, and only then. The decision is
             // made from the values; the rendered strings are output, never
             // input.
             None => match keyword_entries {
@@ -1773,10 +1770,8 @@ pub mod debug {
         match cons.head_kind() {
             ValueKind::INT => (cons.head as i64).to_string(),
             // `render_float`, not Rust's `to_string`: a whole float has to keep
-            // its `.0` wherever it appears. This arm answered `[1, 2]` for
-            // `[1.0, 2.0]` because it had its own idea of how to print a float
-            // (fz-5xp.36), which `JSON.encode` cannot survive -- `[1.0]` must
-            // not encode as `[1]`.
+            // its `.0` wherever it appears -- `[1.0]` must not encode as `[1]`,
+            // which `JSON.encode` cannot survive.
             ValueKind::FLOAT => render_float(f64::from_bits(cons.head)),
             ValueKind::ATOM => render_atom(proc, cons.head as u32),
             kind if kind.is_heap() => {

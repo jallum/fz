@@ -1,4 +1,4 @@
-//! Runtime entry point for AOT-compiled fz binaries (fz-siu.6.1 / .6.2).
+//! Runtime entry point for AOT-compiled fz binaries.
 //!
 //! AOT codegen emits a C-callable `main` that drives the cps-in-clif
 //! execution model:
@@ -86,7 +86,7 @@ struct AotScheduler {
     /// calls it once per pending dtor; the shim Tail-CC dispatches the
     /// closure body with a fresh halt-cont.
     drain_dtor_entry: *const u8,
-    /// fz-xx8.1 — `fz_resume(cont)` shim address. Set by
+    /// `fz_resume(cont)` shim address. Set by
     /// `fz_aot_set_resume_addr` after setup. The run-queue loop calls this to
     /// resume the task's `runnable` closure (a fresh entry thunk or a
     /// continuation); the shim reads the closure code pointer through the
@@ -267,7 +267,7 @@ pub extern "C" fn fz_aot_setup(
     // stays reachable from `proc.ctx.scheduler` through the AOT C-main entry
     // sequence. `fz_aot_run_main` reclaims and drops it at teardown.
     //
-    // fz-xx8.3 — timer schedule/cancel hooks for `receive ... after N`.
+    // Timer schedule/cancel hooks for `receive ... after N`.
     let mut tasks = HashMap::new();
     tasks.insert(1u32, proc_box);
     let sched = Box::into_raw(Box::new(AotScheduler {
@@ -302,7 +302,7 @@ pub extern "C" fn fz_aot_setup(
     }
 }
 
-/// fz-ul4.38 — register the program's tuple schemas with the AOT process,
+/// Register the program's tuple schemas with the AOT process,
 /// in the order baked into the `fz_aot_tuple_arities` data symbol. Codegen
 /// iterates arities in sorted order; this function registers in that same order
 /// so the schema ids match what was iconst'd
@@ -380,7 +380,7 @@ pub extern "C" fn fz_aot_register_closure_denotations(proc: *mut Process, blob: 
     }
 }
 
-/// Spawn hook (fz-sched.2). Allocates a child Process, deep-copies the
+/// Spawn hook. Allocates a child Process, deep-copies the
 /// closure into its heap, sets pending_closure_entry, and enqueues the
 /// child — returning immediately to the caller. The run-queue loop in
 /// fz_aot_run_main drives the child when the parent yields or halts.
@@ -525,7 +525,7 @@ pub unsafe extern "C" fn fz_aot_set_drain_dtor_entry(proc: *mut Process, addr: *
     unsafe { (*sched_of(proc)).drain_dtor_entry = addr };
 }
 
-/// fz-xx8.1 — register the `fz_resume` shim address. Called from AOT-emitted
+/// Register the `fz_resume` shim address. Called from AOT-emitted
 /// C main after `fz_aot_setup` and before `fz_aot_run_main`. The run-queue
 /// loop resumes each task's `runnable` closure through this shim
 /// (mirrors the JIT path in `src/ir_codegen.rs:335`).

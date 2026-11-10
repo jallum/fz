@@ -1,4 +1,4 @@
-//! fz-yxs/fz-st5 — selective-receive park record.
+//! Selective-receive park record.
 //!
 //! Holds the snapshot the receiver needs when it parks on a selective
 //! `receive do … end`. Lives on `Process::wait` while the
@@ -16,7 +16,7 @@ use crate::process::Process;
 use crate::timer::TimerId;
 use std::ptr::{read, write};
 
-/// fz-yxs/fz-st5 — matcher ABI.
+/// Matcher ABI.
 ///
 /// Called from both fz-compiled code (sender's `fz_send`, receiver's
 /// mailbox scan) and runtime code. It is a leaf in the scheduling sense: it

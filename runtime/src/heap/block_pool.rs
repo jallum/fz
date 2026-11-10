@@ -105,8 +105,7 @@ impl Block {
 /// Per-thread block pool (§6.6). One free list per table capacity. Spawn /
 /// grow / gc pull from here; Heap::drop and gc()'s old-block release
 /// return blocks here. Avoids per-spawn `malloc`/`free` churn under
-/// heavy spawn pressure. Single-threaded for v1 (worker pool = 1, per
-/// fz-ul4.19.1); the multi-worker follow-up will switch to either
+/// heavy spawn pressure. Single-threaded for v1 (worker pool = 1); the multi-worker follow-up will switch to either
 /// per-worker pools or a Mutex-guarded shared pool.
 struct BlockPool {
     free_lists: [Vec<*mut u8>; SIZE_TABLE.len()],

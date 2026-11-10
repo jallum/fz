@@ -57,7 +57,7 @@ fn resolve_symbol_addr(name: *const c_char) -> usize {
 
 /// The standard C libraries, opened so their symbols can be searched.
 ///
-/// fz-5xp.59 — `RTLD_DEFAULT` searches what the process has ALREADY LOADED, and
+/// `RTLD_DEFAULT` searches what the process has ALREADY LOADED, and
 /// a declaration like `extern "C" def libc::sqrt(float) :: float` names a symbol
 /// nothing in the process referenced. On macOS that never shows: the C library
 /// and the math library are one thing (libSystem) and every process has it. On
@@ -70,7 +70,7 @@ fn resolve_symbol_addr(name: *const c_char) -> usize {
 /// that only fz source names.
 ///
 /// This is a stand-in for the thing fz cannot say yet: which library a foreign
-/// declaration comes from (fz-5xp.61). Until it can, these are the libraries a
+/// declaration comes from. Until it can, these are the libraries a
 /// `libc::` declaration is allowed to mean.
 #[cfg(unix)]
 fn standard_c_library_handles() -> &'static [*mut c_void] {

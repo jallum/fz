@@ -174,7 +174,7 @@ fn aot_send_to_exited_or_unknown_pid_does_not_copy_or_schedule() {
     assert_eq!(sched.core.queued(), &before_queue);
 }
 
-/// fz-xx8.3 — schedule→expire→wake flow on the AOT scheduler. We can't
+/// Schedule→expire→wake flow on the AOT scheduler. We can't
 /// drive aot_run_queue_loop directly (it would call into codegen'd shim
 /// pointers we don't have), but `next_runnable` is the loop's whole
 /// pre-dispatch step: schedule → expiry → the task's wait becomes a
@@ -232,7 +232,7 @@ fn timer_drain_wakes_after_cont() {
     assert_eq!(next_runnable(&mut sched), None, "nothing else runs or waits");
 }
 
-/// fz-xx8.3 — the AOT timer cancel hook retires a previously scheduled
+/// The AOT timer cancel hook retires a previously scheduled
 /// timer so a sender-probe hit can prevent the after
 /// from firing.
 #[test]
@@ -245,7 +245,7 @@ fn timer_cancel_removes_pending_entry() {
     assert!(sched.core.next_deadline().is_none());
 }
 
-/// fz-xx8.1 — `fz_aot_set_resume_addr` records the shim address on the
+/// `fz_aot_set_resume_addr` records the shim address on the
 /// scheduler reached through `proc.ctx.scheduler`. We can't drive a full
 /// setup→run→teardown cycle from a unit test (it needs a real codegen'd
 /// shim), so we wire one process at the scheduler and assert the setter

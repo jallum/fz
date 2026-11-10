@@ -66,7 +66,7 @@ pub use self::schema::{
 };
 pub use self::stats::{AllocStat, GcStats, HeapAllocKind, HeapAllocStats};
 
-/// fz-cty.5 — bitstrings above this many bytes are routed through the
+/// Bitstrings above this many bytes are routed through the
 /// shared zone (refcounted off-heap `SharedBin` + per-process `ProcBin`
 /// stub) instead of being inlined on the per-process heap. Matches
 /// BEAM's refc-binary threshold.
@@ -100,7 +100,7 @@ pub struct Heap {
     /// process state.
     pub(crate) node: Rc<Node>,
     pub(crate) schemas: Rc<RefCell<SchemaRegistry>>,
-    /// Count of GC invocations. Stub in fz-siu.7; real body lands in .8.
+    /// Count of GC invocations.
     pub gc_run_count: u64,
     /// Total allocations made since last successful GC. Backs `live_count()`
     /// — under bump-only with no reclaim, every alloc since-start is "live".

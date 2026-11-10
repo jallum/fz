@@ -1,4 +1,4 @@
-//! fz-swt.7 — refcounted off-heap opaque resource with user-supplied dtor.
+//! Refcounted off-heap opaque resource with user-supplied dtor.
 //!
 //! Structurally a copy of `procbin.rs`: an off-heap refcounted object
 //! (`Resource`) with an on-heap stub (`ValueKind::RESOURCE`)
@@ -11,7 +11,7 @@
 //!     `unsafe extern "C" fn(payload: u64)` pointer.
 //!   * The dtor receives the **payload only**, not the wrapper. The
 //!     runtime frees the wrapper (Box::from_raw drop) after the dtor
-//!     returns. This keeps fz-side externs ergonomic
+//!     returns. This keeps externs called from fz ergonomic
 //!     (`extern "C" def fd_close(integer) :: nil` rather than wrapping/unwrapping).
 //!
 //! FFI constraint for v0: payload is a raw 64-bit integer handle. That
@@ -26,7 +26,7 @@
 //! observes it. A claim disarms the fallback destructor; the library that
 //! claims the capability owns deterministic cleanup of its payload.
 //!
-//! # Lifetime contract (fz-swt.9 — interp leg)
+//! # Lifetime contract
 //!
 //! fz is value-semantics + immutable: a heap handle is a tagged 64-bit
 //! word. Let-binding a resource handle (`r2 = r1`) copies the tag bits;
@@ -132,7 +132,7 @@ const RESOURCE_CLAIMED: usize = 1;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_resource_destructor_noop(_payload: u64) {}
 
-/// fz-swt.11 — test/fixture dtor: prints `dtor:<n>` to stdout where `n`
+/// Test/fixture dtor: prints `dtor:<n>` to stdout where `n`
 /// is the raw integer payload.
 /// Always exported (not `cfg(test)`) so AOT-linked fixtures can name it
 /// in an `extern "C" def` declaration and observe dtor invocation through

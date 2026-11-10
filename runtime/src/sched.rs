@@ -1,4 +1,4 @@
-//! fz-qw6 — selective-receive scheduler primitives.
+//! Selective-receive scheduler primitives.
 //!
 //! The same three operations — receive-reach, sender-probe, after-timer
 //! fire — drive `Term::ReceiveMatched` on every execution path. The JIT

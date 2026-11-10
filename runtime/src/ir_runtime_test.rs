@@ -277,7 +277,7 @@ fn frame_alloc_records_on_installed_process() {
     assert_eq!(stats.total.bytes, 32);
 }
 
-/// fz-axu.14 (R1) — valid UTF-8 byte-aligned bitstring → 1.
+/// Valid UTF-8 byte-aligned bitstring → 1.
 #[test]
 fn fz_bitstring_valid_utf8_accepts_byte_aligned_utf8() {
     with_process(|process| {
@@ -470,7 +470,7 @@ fn map_typed_get_panics_on_wrong_scalar_type() {
     });
 }
 
-/// fz-cty.8 — small (<= threshold) payload allocates inline Bitstring.
+/// Small (<= threshold) payload allocates inline Bitstring.
 #[test]
 fn alloc_bitstring_const_small_payload_is_inline() {
     with_process(|process| {
@@ -492,7 +492,7 @@ fn alloc_bitstring_const_small_payload_is_inline() {
     });
 }
 
-/// fz-q8d.2 — `fz_alloc_procbin_from_static` retains the static
+/// `fz_alloc_procbin_from_static` retains the static
 /// SharedBin's anchor (climbing 1 → 2), allocates a ProcBin that
 /// owns the new edge, and returns it as a tagged ProcBin pointer. When
 /// the holding heap drops, the anchor is preserved (refcount stays
@@ -534,7 +534,7 @@ fn alloc_procbin_from_static_preserves_anchor() {
     assert_eq!(sb.refcount.load(Ordering::Relaxed), 1, "anchor preserved");
 }
 
-/// fz-cty.8 — large (> threshold) payload routes through ProcBin / SharedBin.
+/// Large (> threshold) payload routes through ProcBin / SharedBin.
 #[test]
 fn alloc_bitstring_const_large_payload_is_procbin() {
     with_process(|process| {

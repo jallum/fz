@@ -1,4 +1,4 @@
-//! fz-9ss — runtime helpers for the `binary` and `c_string` extern marshal
+//! Runtime helpers for the `binary` and `c_string` extern marshal
 //! classes.
 //!
 //! Each helper takes tagged heap bits known to the *declaration* to be a
@@ -6,7 +6,7 @@
 //! suitable for passing into a System V C function.
 //!
 //! Today both helpers do the same thing — return `bytes_ptr` — because every
-//! binary's underlying buffer owns its trailing NUL via [[fz-wu9]] and there
+//! binary's underlying buffer owns its trailing NUL and there
 //! are no SubBin slices yet (every slice allocates fresh). The split into two
 //! symbols is deliberate so the *call sites* in interp/JIT/AOT commit to the
 //! contract today. When SubBin lands, only these helper bodies change:
@@ -56,7 +56,7 @@ pub unsafe extern "C" fn fz_binary_as_ptr(v: u64) -> *const u8 {
 }
 
 /// `c_string` marshal class: pointer to the bytes with a guaranteed
-/// trailing NUL. Underwritten by the +1-NUL invariant from [[fz-wu9]].
+/// trailing NUL. Underwritten by the +1-NUL invariant.
 ///
 /// # Safety
 /// `v` must be tagged heap bits for a binary-like value.

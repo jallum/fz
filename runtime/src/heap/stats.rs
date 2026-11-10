@@ -26,7 +26,7 @@ pub struct HeapAllocStats {
     pub frame: AllocStat,
     pub resource: AllocStat,
     pub other: AllocStat,
-    /// Off-heap binary buffers allocated by this process (fz-5xp.55).
+    /// Off-heap binary buffers allocated by this process.
     /// Deliberately NOT part of `total`: these bytes do not live on the
     /// process heap, do not move under Cheney and are not what `bytes`
     /// measures. They are counted because they are otherwise invisible --

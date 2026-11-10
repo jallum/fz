@@ -65,7 +65,7 @@ fn ptr_and_cstring_on_procbin() {
 /// cases through a child process via `std::process::Command` only when
 /// requested — under normal `cargo test` we just verify that valid
 /// inputs work. The arg-exception path is exercised end-to-end by the
-/// integration fixture in [[fz-vw1]].
+/// integration fixtures.
 ///
 /// However we can still confirm one negative shape statically: a raw
 /// integer payload is not a binary heap pointer, which causes
@@ -98,6 +98,6 @@ fn non_binary_aborts_in_subprocess() {
     // The child should not exit cleanly — coerce_binary_ptr aborts.
     // cargo's libtest harness captures stderr unless --nocapture, so
     // we only assert the non-zero status here. The integration fixture
-    // in [[fz-vw1]] exercises the arg-exception message end-to-end.
+    // exercises the arg-exception message end-to-end.
     assert!(!out.status.success(), "child must abort, got {:?}", out.status);
 }

@@ -1,17 +1,15 @@
 //! Runtime helpers for the fz JIT — the `extern "C"` fns the generated
-//! Cranelift code calls into. Lifted out of ir_codegen.rs by fz-ul4.23.4
-//! so that ir_codegen can become purely codegen and a future AOT backend
-//! can link against the same FFI surface without dragging the JIT module
-//! along.
+//! Cranelift code calls into. Any execution path (JIT, AOT) can
+//! link against this FFI surface without dragging the JIT module along.
 //!
-//! This file holds the **arith / cmp / eq** cluster (fz-ul4.23.4.1)
-//! and the **alloc** cluster (fz-ul4.23.4.7). Other clusters land in
-//! sibling tickets:
-//!   .8  map     (fz_map_*, fz_key_*)
-//!   .9  bitstring (fz_bs_*, decode_*/encode_* bit helpers)
-//!   .11 closure (fz_closure_*, fz_tail_closure)
-//!   .12 concurrency (fz_spawn, fz_self, fz_send, fz_receive_attempt)
-//!   .13 halt/print (fz_halt, fz_dbg_value)
+//! The file is organised in clusters:
+//!   arith / cmp / eq
+//!   alloc
+//!   map         (fz_map_*, fz_key_*)
+//!   bitstring   (fz_bs_*, decode_*/encode_* bit helpers)
+//!   closure     (fz_closure_*, fz_tail_closure)
+//!   concurrency (fz_spawn, fz_self, fz_send, fz_receive_attempt)
+//!   halt/print  (fz_halt, fz_dbg_value)
 //!
 //! All fns here have unstable `extern "C"` ABI — they're called by
 //! Cranelift-emitted code via the symbol-binding list in
@@ -300,7 +298,7 @@ pub extern "C" fn fz_box_atom_for_any(process: *mut Process, raw: u64) -> u64 {
     box_scalar_for_any(process, raw, ValueKind::ATOM)
 }
 
-// ===== Halt + print cluster (fz-ul4.23.4.13) =====
+// ===== Halt + print cluster =====
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_dbg_value_ref(process: *mut Process, ref_word: u64) {
@@ -319,7 +317,7 @@ pub extern "C" fn fz_dynamic_float_arith_unsupported() -> u64 {
     panic!("dynamic float arithmetic needs a typed float result carrier")
 }
 
-/// fz-ul4.27.22.3 — typed halt for narrow-int seams. The cont chain
+/// Typed halt for narrow-int seams. The cont chain
 /// carries a raw i64 all the way to halt-cont's RawInt body; no
 /// unboxing — value is already a machine int.
 #[unsafe(no_mangle)]
@@ -327,7 +325,7 @@ pub extern "C" fn fz_halt_implicit_i64(process: *mut Process, val: i64) {
     (unsafe { &mut *process }).halt_value = val;
 }
 
-/// fz-ul4.27.22.3 — typed halt for narrow-float seams. Mirrors
+/// Typed halt for narrow-float seams. Mirrors
 /// fz_halt's Boxed-float branch: store `to_bits() as i64` so tests
 /// can round-trip via f64::from_bits.
 #[unsafe(no_mangle)]
@@ -357,9 +355,9 @@ fn halt_value_from_slot(value: AnyValue) -> i64 {
     }
 }
 
-// ===== Concurrency cluster (fz-ul4.23.4.12) =====
+// ===== Concurrency cluster =====
 
-/// fz-ul4.19.2: scheduler-bound builtins.
+/// Scheduler-bound builtins.
 ///
 /// Both dispatch through the scheduler callbacks installed on the current
 /// process's execution context. Calling either without that context panics.
@@ -418,7 +416,7 @@ pub extern "C" fn fz_self(process: *mut Process) -> u64 {
     (unsafe { &mut *process }).pid as u64
 }
 
-/// fz-ht5 — process-global monotonic counter feeding `fz_make_ref`.
+/// Process-global monotonic counter feeding `fz_make_ref`.
 /// Starts at 1 so 0 can remain a "no ref" sentinel if a future ticket
 /// needs one. AtomicU64 + Relaxed is sufficient under single-worker
 /// today and remains correct under future multi-worker.
@@ -443,7 +441,7 @@ pub extern "C" fn fz_send(process: *mut Process, receiver_pid_bits: u64, msg_ref
     msg_ref_word
 }
 
-/// fz-yxs/fz-st5 — selective receive entry. Called by JIT/AOT
+/// Selective receive entry. Called by JIT/AOT
 /// codegen at the `Term::ReceiveMatched` seam after the matcher fn,
 /// pinned snapshot, clause-body table, and (optional) after-cont
 /// closure have been laid out by `build_park_record` (B3).
@@ -481,7 +479,7 @@ pub extern "C" fn fz_receive_park_matched(
     after_cont_bits: u64,
 ) -> *mut u8 {
     let matcher_fn: MatcherFn = unsafe { transmute(matcher_fn_bits as usize) };
-    // fz-70q.3 — codegen passes `null` for `pinned_ptr` / `clause_bodies_ptr`
+    // Codegen passes `null` for `pinned_ptr` / `clause_bodies_ptr`
     // when the corresponding count is 0. `slice::from_raw_parts` rejects
     // null even with len 0 (its safety contract requires a valid aligned
     // pointer), so guard the zero-len case explicitly.
@@ -569,7 +567,7 @@ pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
     p.begin_yield_continuation_allocation(p.heap.bytes_remaining_in_block());
 }
 
-// ===== Closure cluster (fz-ul4.23.4.11) =====
+// ===== Closure cluster =====
 //
 // Closures carry source denotation, a self-describing environment, and code at +8.
 // Invocation is a call_indirect through that code pointer; captures are
@@ -579,7 +577,7 @@ pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
 /// The runtime stores the body pointer while the tagged closure ref is still
 /// opaque to generated code; callers populate captures through accessors.
 /// `halt_kind` is packed into the closure header's `flags` so
-/// `fz_entry_thunk` can pick the matching halt continuation at task launch. `arity` (fz-gk4) rides the header's high half; it is the
+/// `fz_entry_thunk` can pick the matching halt continuation at task launch. `arity` rides the header's high half; it is the
 /// closure's user-visible parameter count, taken from the callable boundary
 /// that decides the call surface.
 #[unsafe(no_mangle)]
@@ -618,7 +616,7 @@ pub extern "C" fn fz_closure_halt_kind_ref(closure_ref_word: u64) -> u32 {
     unsafe { closure_halt_kind(addr) as u32 }
 }
 
-// ===== Bitstring cluster (fz-ul4.23.4.9) =====
+// ===== Bitstring cluster =====
 
 /// `word` itself when it is the heap object word of a Bitstring or ProcBin.
 pub(crate) fn bitstring_like_word(word: u64) -> Option<u64> {
@@ -982,7 +980,7 @@ pub extern "C" fn fz_binary_to_atom(process: *mut Process, ref_word: u64) -> u64
 }
 
 /// The number of BYTES in a binary. Refuses a partial bitstring, which has no
-/// byte size (fz-5xp.42 is the type-level half of the same question).
+/// byte size.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bitstring_byte_size(ref_word: u64) -> i64 {
     let Some(p) = bitstring_like_word(ref_word) else {
@@ -1019,7 +1017,7 @@ pub extern "C" fn fz_pinned_binary_segment_size(ref_word: u64) -> u32 {
 /// `bitstring`?
 ///
 /// fz's type system does not draw this line: `<<1::4>>` has type `binary` and a
-/// `s :: binary` clause head accepts it (fz-5xp.42). Elixir's does, and
+/// `s :: binary` clause head accepts it. Elixir's does, and
 /// `String.Chars` turns on it -- identity for a binary, raise for anything
 /// else. So the distinction has to be asked at runtime.
 #[unsafe(no_mangle)]
@@ -1108,7 +1106,7 @@ pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_r
     value.ref_word().raw_word()
 }
 
-/// fz-cty.8 — single-shot bitstring allocation from module-interned bytes.
+/// Single-shot bitstring allocation from module-interned bytes.
 ///
 /// Replaces the begin/write-per-field/finalize sequence for the common
 /// case of an all-constant byte-literal bitstring (e.g. `<<1, 2, ..., 70>>`).
@@ -1125,7 +1123,7 @@ pub extern "C" fn fz_alloc_bitstring_const(process: *mut Process, ptr: u64, byte
     value.ref_word().raw_word()
 }
 
-/// fz-q8d.2 — allocate a ProcBin on the current heap referencing a
+/// Allocate a ProcBin on the current heap referencing a
 /// compiler-baked static SharedBin in `.data`. The static SharedBin's
 /// refcount anchor (initial value 1) is kept; we retain to climb to 2,
 /// then the new ProcBin's lifetime release brings it back to 1 (anchor
@@ -1328,7 +1326,7 @@ fn fz_bs_read_field_bits(
             if pos + needed_bits > bit_len {
                 return fail();
             }
-            // fz-5xp.55 — a byte-aligned TAIL of a shared binary is another
+            // A byte-aligned TAIL of a shared binary is another
             // view of the same bytes, not a copy. This is the step every byte
             // scanner performs, and copying it is what made scanning
             // quadratic. Only a suffix qualifies, which is exactly what
@@ -1423,7 +1421,7 @@ fn fz_bs_read_field_bits(
     heap_ref_word(ValueKind::STRUCT, result_p as *const u8)
 }
 
-// ===== Map cluster (fz-ul4.23.4.8) =====
+// ===== Map cluster =====
 //
 // Maps publish one sorted sequence with unique strict structural keys.
 // Construction freezes once; immutable updates preserve the same order.
@@ -1796,7 +1794,7 @@ pub extern "C" fn fz_map_is_map(map_ref_word: u64) -> u8 {
     (any_value_ref_from_word(map_ref_word, "fz_map_is_map").tag() == ValueKind::MAP) as u8
 }
 
-// ===== Alloc cluster (fz-ul4.23.4.7) =====
+// ===== Alloc cluster =====
 
 /// `System.argv/0`: the program's command line, as a list of binaries holding
 /// each argument's exact bytes, read from the driver's execution context.
@@ -1873,9 +1871,7 @@ pub extern "C" fn fz_list_cons_atom(process: *mut Process, atom_id: u64, tail_re
 }
 
 // Reading a list head/tail is a pure dereference of the self-describing list
-// pointer — no allocation, no heap state — so these take no process. (The
-// `current_process().heap` receiver is vestigial: the read methods take `&self`
-// and ignore it; fz-vdt ctx.8 makes them process-free free functions.)
+// pointer — no allocation, no heap state — so these take no process.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_list_head_ref(list_ref_word: u64) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_head_ref");
@@ -2174,8 +2170,7 @@ pub extern "C" fn fz_closure_set_capture_atom(process: *mut Process, closure_ref
 }
 
 const LAZY_CONT_CODE_OFF: usize = 0;
-// +8 is reserved. It held the cont's spec id, which materialization passed to
-// the allocator as a target id that the closure header discarded (fz-gk4).
+// +8 is reserved.
 const LAZY_CONT_COUNT_OFF: usize = 16;
 const LAZY_CONT_RAW_OFF: usize = 32;
 
@@ -2338,11 +2333,10 @@ pub extern "C" fn fz_alloc_frame(process: *mut Process, schema_id: u32, total_si
     p
 }
 
-// ===== Arith / cmp / eq cluster (fz-ul4.23.4.1) =====
+// ===== Arith / cmp / eq cluster =====
 
 /// Tag-promotion helper for the JIT's mixed-type arithmetic slow path.
-/// fz-ul4.27.9: replaced the per-op fz_arith_* / fz_cmp_* helpers — JIT now
-/// promotes integer operands here; raw float operands stay in typed lanes.
+/// The JIT promotes integer operands here; raw float operands stay in typed lanes.
 /// f64 remainder (fmod-style: truncated, sign of dividend). Cranelift has no
 /// frem opcode, so the JIT's float-mod slow path calls out here.
 #[unsafe(no_mangle)]
@@ -2508,7 +2502,7 @@ pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_ref: u64, b_ref: u64)
     u64::from(compare_values(process, a, b, NumericMode::Strict).is_eq())
 }
 
-// fz-axu.14 (R1) — utf8 runtime support.
+// UTF-8 runtime support.
 
 /// Length of the first valid UTF-8 codepoint, or the byte offset at which its
 /// prefix becomes invalid. An error at `bytes.len()` means the prefix is
@@ -2563,8 +2557,7 @@ fn utf8_byte_in(bytes: &[u8], index: usize, min: u8, max: u8) -> Result<(), usiz
 /// Bitstrings that aren't byte-aligned cannot be UTF-8 (UTF-8 is a
 /// byte-oriented encoding); this function rejects them up front.
 ///
-/// Called by Utf8.valid?/Utf8.from_bytes/Utf8.from_bytes! (S2,
-/// fz-axu.13).
+/// Called by Utf8.valid?, Utf8.from_bytes and Utf8.from_bytes!.
 ///
 /// # Safety
 /// The caller must pass a tagged heap pointer that points at a
@@ -2637,7 +2630,7 @@ pub extern "C" fn fz_matcher_map_get_ref(process: *mut Process, map_ref_word: u6
         .raw_word()
 }
 
-/// fz-puj.45 (X4) — selective-receive matcher comparison against a
+/// Selective-receive matcher comparison against a
 /// constant byte literal. Returns 1 if `val_bits` points at a
 /// bitstring-like heap value (Bitstring or ProcBin) whose bit-length is
 /// `byte_len * 8` and whose bytes equal the slice

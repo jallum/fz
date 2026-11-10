@@ -710,7 +710,7 @@ fn schema_registry_register_and_get() {
     assert_eq!(reg.get(id_b).identity.display_name(), "Pair");
 }
 
-/// fz-wu9 / fz-3ld.9 — every strict inline Bitstring allocation reserves
+/// Every strict inline Bitstring allocation reserves
 /// at least one zero byte past its payload at offset
 /// `bytes_ptr + ceil(bit_len/8)`. Mirrors the SharedBin invariant covered
 /// by procbin.rs::shared_bin_alloc_has_trailing_nul.
@@ -1455,7 +1455,7 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
     assert_eq!(copied_resource.payload(), 0xfeed);
 }
 
-/// Acceptance (fz-siu.10 / §6.6): spawn under load shows no per-spawn
+/// Acceptance (§6.6): spawn under load shows no per-spawn
 /// malloc after warm-up. After dropping a Heap, its block goes to the
 /// pool; the next Heap::new of the same capacity pulls from the
 /// pool, no malloc required. Repeating spawn+drop with a fixed pool
@@ -1979,7 +1979,7 @@ fn map_packed_tags_round_trip() {
         let bits = h.alloc_map_slots(&entries);
         let p = map_addr_from_tagged(bits).unwrap();
         // The SET of entries round-trips, not their positions. A map is a
-        // sorted array and `alloc_map_slots` sorts (fz-5xp.49), so where an
+        // sorted array and `alloc_map_slots` sorts, so where an
         // entry lands is the map's business; what this test is about is that
         // the packed key/value KIND tags survive the write and read back as the
         // same values.
@@ -2058,7 +2058,7 @@ fn gc_map_count_twelve_does_not_collide_with_forwarding_tag() {
 /// keep the arena bounded. Block size may grow once to fit per-cycle
 /// garbage but does not increase without bound; no abandoned blocks
 /// remain post-GC; live_count stays at the rooted chain length.
-/// (§6.4 / fz-siu.8 acceptance.)
+/// (§6.4 acceptance.)
 #[test]
 fn gc_keeps_arena_bounded_across_many_cycles() {
     let mut h = Heap::new(1024, fresh_registry());
@@ -2120,7 +2120,7 @@ fn gc_handles_cycle_via_forwarding() {
     assert_eq!(h.live_count(), 2);
 }
 
-// ===== fz-q8d.1 — ProcBin + intrusive MSO + post-Cheney sweep =========
+// ===== ProcBin + intrusive MSO + post-Cheney sweep =================
 
 use crate::procbin::{PROCBIN_BYTES, ProcBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr};
 

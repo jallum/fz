@@ -132,7 +132,7 @@ fn concurrent_retain_release_frees_on_the_last_workers_release() {
     );
 }
 
-/// fz-wu9 — every heap-allocated SharedBin's buffer has a trailing
+/// Every heap-allocated SharedBin's buffer has a trailing
 /// zero byte at offset `bytes_len` (not counted toward bytes_len /
 /// bit_len). Underwrites the c_string extern marshal contract.
 #[test]
@@ -283,7 +283,7 @@ fn copied_shared_bin_is_freed_only_when_the_last_heap_releases_it() {
     assert_eq!(Arc::strong_count(&drops), 1);
 }
 
-// ===== fz-5xp.55 — suffix views =============================================
+// ===== suffix views ==========================================================
 
 /// A tail of a shared binary is another view of the SAME bytes: same
 /// SharedBin, pointer advanced by the offset, length shortened. Nothing is
@@ -309,7 +309,7 @@ fn a_suffix_stub_views_the_parents_bytes_rather_than_copying_them() {
 }
 
 /// A suffix ends where the parent's buffer ends, so it inherits the
-/// invisible trailing NUL that [[fz-wu9]] guarantees. That is what lets
+/// invisible trailing NUL that every SharedBin buffer carries. That is what lets
 /// `fz_binary_as_cstring` hand a tail straight to C without flattening it.
 #[test]
 fn a_suffix_inherits_the_parents_trailing_nul() {
@@ -377,7 +377,7 @@ fn a_shared_bin_address_is_never_mistakable_for_a_forwarding_marker() {
     }
 }
 
-// ===== fz-q8d.3 — loom verification of retain/release ordering ==============
+// ===== loom verification of retain/release ordering =========================
 //
 // Enabled only under `RUSTFLAGS="--cfg loom"`. The two-thread model
 // constructs a SharedBin with an observed destructor, spawns two children that
