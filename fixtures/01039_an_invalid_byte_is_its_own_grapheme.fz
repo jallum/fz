@@ -1,0 +1,12 @@
+#---
+# purpose: "graphemes, length and next_grapheme_size treat an invalid byte as one grapheme and never join a cluster across it"
+# oracle: 01039_an_invalid_byte_is_its_own_grapheme.oracle.exs
+#---
+def main() do
+  bad = <<"a", 255, "e", 204, 129, 195>>
+  dbg(String.graphemes(bad))
+  dbg(String.length(bad))
+  dbg(String.next_grapheme_size(<<255, "a">>))
+  dbg(String.next_grapheme_size(<<"e", 204, 129, 195>>))
+  dbg(String.next_grapheme(<<195>>))
+end

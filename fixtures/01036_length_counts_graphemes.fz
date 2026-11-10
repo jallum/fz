@@ -1,0 +1,9 @@
+#---
+# purpose: "String.length counts extended grapheme clusters, not codepoints or bytes"
+# oracle: 01036_length_counts_graphemes.oracle.exs
+#---
+def main() do
+  strings = ["abc", "é", "\r\n", "éx", "👨‍👩‍👧x", "🇫🇷🇫", "각x", "क्षx", "x́̂y"]
+  Enum.each(strings, fn s -> dbg(String.length(s)) end)
+  dbg(String.length(""))
+end

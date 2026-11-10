@@ -496,6 +496,7 @@ dependencies = [
  "libc",
  "loom",
  "ryu",
+ "unicode-segmentation",
 ]
 
 [[package]]

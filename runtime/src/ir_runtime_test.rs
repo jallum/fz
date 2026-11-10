@@ -884,3 +884,42 @@ fn try_push_stores_the_closure_reference_word_codegen_emits_and_try_pop_removes_
         assert!(process.handlers.is_empty());
     });
 }
+
+/// Byte length of the first grapheme of `bytes`, asked through the extern.
+fn first_grapheme_size(bytes: &[u8]) -> i64 {
+    with_process(|process| {
+        let bits = fz_alloc_bitstring_const(
+            process,
+            bytes.as_ptr() as u64,
+            bytes.len() as u64,
+            bytes.len() as u64 * 8,
+        );
+        fz_grapheme_size(process, bits)
+    })
+}
+
+/// A grapheme is an extended grapheme cluster, so the first one of each
+/// string below spans every codepoint a reader sees as one character.
+#[test]
+fn grapheme_size_spans_the_whole_extended_cluster() {
+    let cases: [(&str, i64); 7] = [
+        ("abc", 1),
+        ("\r\nx", 2),
+        ("e\u{301}x", 3),
+        ("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}x", 18),
+        ("\u{1F1EB}\u{1F1F7}\u{1F1EB}", 8),
+        ("\u{1100}\u{1161}\u{11A8}x", 9),
+        ("\u{0915}\u{094D}\u{0937}x", 9),
+    ];
+    for (text, expected) in cases {
+        assert_eq!(first_grapheme_size(text.as_bytes()), expected, "{text:?}");
+    }
+}
+
+/// An invalid byte is its own grapheme, and a cluster never runs across one.
+#[test]
+fn grapheme_size_treats_an_invalid_byte_as_its_own_grapheme() {
+    assert_eq!(first_grapheme_size(&[0xFF]), 1);
+    assert_eq!(first_grapheme_size(&[0xFF, b'a']), 1);
+    assert_eq!(first_grapheme_size(&[b'e', 0xCC, 0x81, 0xC3]), 3);
+}

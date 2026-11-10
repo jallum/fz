@@ -1,0 +1,11 @@
+#---
+# purpose: "String.next_grapheme and next_grapheme_size answer the first cluster, {size, rest} or nil for empty"
+# oracle: 01037_next_grapheme_takes_a_whole_cluster.oracle.exs
+#---
+def main() do
+  strings = ["abc", "é", "\r\n", "éx", "👨‍👩‍👧x", "🇫🇷🇫", "각x", "क्षx", "x́̂y"]
+  Enum.each(strings, fn s -> dbg(String.next_grapheme(s)) end)
+  Enum.each(strings, fn s -> dbg(String.next_grapheme_size(s)) end)
+  dbg(String.next_grapheme(""))
+  dbg(String.next_grapheme_size(""))
+end
