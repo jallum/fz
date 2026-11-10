@@ -156,10 +156,13 @@ impl Heap {
 
     /// Take ownership of a segment: its block joins this heap's parked blocks
     /// as from-space, its mso prefix is spliced ahead of this heap's chain.
-    /// Its fill counts toward `should_gc`, so a heap that receives many gifts
-    /// collects them.
+    /// The gift is packed and fully live, like the heap after a collection, so
+    /// its fill raises `live_baseline` rather than counting as allocation.
     pub fn graft(&mut self, mut segment: GiftSegment) {
-        self.blocks.extend(segment.block.take());
+        if let Some(block) = segment.block.take() {
+            self.live_baseline += block.fill();
+            self.blocks.push(block);
+        }
         if segment.mso_head != 0 {
             mso_set_next(segment.oldest_mso, self.mso_head);
             self.mso_head = segment.mso_head;

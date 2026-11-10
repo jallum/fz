@@ -78,10 +78,12 @@ pub struct Heap {
     /// The tip's capacity in bytes: a `SIZE_TABLE` entry, or an exact size
     /// above the table for a block made to hold a larger object.
     block_size: usize,
-    /// Exact live bytes after the most recent GC. Zero until the first GC.
-    /// Used by proactive shrinkage to size the to-space and detect low-live
-    /// quiet periods.
-    pub last_gc_live_bytes: usize,
+    /// The bytes known to be live: set by a collection to the bytes that
+    /// survived, raised by a graft by the gift's fill, left alone by
+    /// allocation. Zero until the first collection or graft. `should_gc`
+    /// counts allocation against it, and to-space sizing reads it as the
+    /// last survivors.
+    pub live_baseline: usize,
     /// Blocks the heap has stopped bumping into: old tips abandoned by `grow`
     /// and blocks grafted from other heaps' gift segments. Each records its
     /// fill and capacity, so `Drop` / gc() can return it to the pool (§6.6)

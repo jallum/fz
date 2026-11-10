@@ -389,7 +389,9 @@ run while a window is open.</p>
 its <code>blocks</code>, its MSO
 prefix is spliced ahead of the receiver's chain. Every parked block counts
 toward <code>bytes_used</code> by fill, never by capacity, so a kilobyte block
-holding one cons cell costs sixteen bytes toward <code>should_gc</code>. A segment that is dropped without being grafted releases its block
+holding one cons cell is sixteen bytes of <code>bytes_used</code>. The same fill
+raises <code>live_baseline</code>: a gift is packed and fully live, so it is
+survivor data and never allocation pressure. A segment that is dropped without being grafted releases its block
 and every stub's off-heap reference.</p>
 
 <h3>The MSO chain</h3>
@@ -422,9 +424,13 @@ does not force a yield.</p>
 <p>Every <code>Heap::alloc()</code> call is a bump and nothing else. Whether a
 collection is due is a question about the heap's state, answered by
 <code>Heap::should_gc</code> when the scheduler asks at a boundary: the tip's
-fill plus the fill of every parked block, against half the
-tip's capacity. A collection that reclaims those bytes answers the question by
-itself; nothing is cleared. If an allocation no longer fits in the current
+fill plus the fill of every parked block, less the heap's
+<code>live_baseline</code>, against the larger of that baseline and half the
+smallest tip. The baseline is the bytes known to be live: a collection sets it
+to the bytes that survived, <code>graft</code> raises it by the gift's fill, and
+allocation leaves it alone. A heap holding N live bytes is therefore due a
+collection once it has allocated N more. A collection that reclaims those bytes
+answers the question by itself; nothing is cleared. If an allocation no longer fits in the current
 block, the heap parks it in <code>blocks</code> for the next Cheney pass and
 installs a tip one step up, unless the object is larger than that step: then
 the object gets a parked block of its own and the tip stays.</p>
@@ -439,7 +445,7 @@ the object gets a parked block of its own and the tip stays.</p>
       }
   }
 
-  should_gc = bytes_used >= block_size / 2
+  should_gc = bytes_used - live_baseline >= max(live_baseline, SIZE_TABLE[0] / 2)
 </pre>
 
 <p>Compiled yield telemetry still samples the margin before and after the
@@ -512,6 +518,12 @@ Once you're done, you walk out and burn the old room. Nothing dead gets a
 ride.
 </div>
 
+<p>The accepted consequence: a receiver that consumed a lot of mail keeps the
+dead blocks, once the mail is dropped, until its own allocation reaches the
+baseline the gifts raised. A process that receives a large gift, drops it and
+then goes quiet holds that memory; shrinking an idle heap is a separate policy,
+for which the census would have to show a need.</p>
+
 <h3>Sizing to-space</h3>
 
 <p>To-space holds at least every byte a pass can copy: the tip's fill plus
@@ -523,18 +535,18 @@ past the table to hold it.</p>
 <ul>
   <li><strong>Grow:</strong> the bytes in use fill 75% or more of the tip.
   To-space holds twice the bytes in use, and is at least one capacity step up.</li>
-  <li><strong>Shrink:</strong> the last GC's survivors fill 25% or less of the
-  tip. To-space is <code>last_gc_live_bytes × 2</code> (the bytes in use on
+  <li><strong>Shrink:</strong> the live baseline (the last survivors plus any grafted gifts) fills 25% or less of the
+  tip. To-space is <code>live_baseline × 2</code> (the bytes in use on
   the first GC), raised to the floor.</li>
   <li><strong>Keep:</strong> otherwise the current size, raised to the floor.</li>
 </ul>
 
 <p>A gift is one parked block like any other, so its fill is part of the
-bytes in use whatever raised <code>should_gc</code>. After the pass the
+bytes in use. After the pass the
 parked blocks go back to the pool with the rest of from-space.</p>
 
-<p>After the BFS scan: <code>last_gc_live_bytes = free - to_start</code>.
-That feeds the next GC, and is the <code>live_bytes</code> of the pass's
+<p>After the BFS scan: <code>live_baseline = free - to_start</code>.
+That feeds the next GC's trigger and sizing, and is the <code>live_bytes</code> of the pass's
 <code>GcStats</code>.</p>
 
 <p>Each copied from-space object gets an in-band forwarding marker written into

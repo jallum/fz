@@ -85,7 +85,7 @@ impl Heap {
             bump_top: block_start,
             block_end,
             block_size,
-            last_gc_live_bytes: 0,
+            live_baseline: 0,
             blocks: Vec::new(),
             gift: None,
             node,
@@ -98,11 +98,17 @@ impl Heap {
         }
     }
 
-    /// Whether a collection is due: the bytes a collection could copy have
-    /// reached half the tip's capacity. A pure function of the heap's state,
-    /// so a collection that reclaims the bytes answers the question by itself.
+    /// Whether a collection is due: the bytes allocated since the heap was
+    /// last known to be all live have reached the larger of that live
+    /// baseline and half the smallest tip. A collection sets the baseline to
+    /// its survivors and a graft raises it by the gift's fill, so only the
+    /// heap's own allocation counts, and a heap that holds N live bytes
+    /// collects after allocating N more. A pure function of the heap's
+    /// state, so a collection that reclaims the bytes answers the question by
+    /// itself.
     pub fn should_gc(&self) -> bool {
-        self.bytes_used() >= self.block_size / 2
+        let allocated_since = self.bytes_used().saturating_sub(self.live_baseline);
+        allocated_since >= self.live_baseline.max(SIZE_TABLE[0] / 2)
     }
 
     /// Bump-only allocator. Rounds `size` up to 16 and advances `bump_top`.
@@ -999,7 +1005,8 @@ impl Heap {
     /// Three bands, biased toward holding size: a copy GC here costs a
     /// scheduler yield, so frequent collection is expensive and oscillation is
     /// worth avoiding. The steady-state target is ~2x live (a 50% post-GC
-    /// fill), where `prev_live` is the last GC's survivor bytes.
+    /// fill), where `prev_live` is the live baseline: the last GC's survivor bytes
+    /// plus any grafted gifts.
     ///
     ///   GROW   - the bytes in use fill 75% or more of the tip. A collection
     ///            becomes due at 50%, so reaching the threshold is not by
@@ -1007,12 +1014,12 @@ impl Heap {
     ///            the same hysteresis point BEAM uses to grow after a sweep.
     ///            Size to hold the bytes in use doubled for headroom, never
     ///            less than one capacity step up.
-    ///   SHRINK - the last survivors fill 25% or less of the tip; refit to
+    ///   SHRINK - the live baseline fills 25% or less of the tip; refit to
     ///            ~2x those survivors.
     ///   KEEP   - otherwise hold the current size.
     fn to_space_capacity(&self) -> usize {
         let used = self.bytes_used();
-        let prev_live = self.last_gc_live_bytes;
+        let prev_live = self.live_baseline;
         let fit_to_live = if prev_live > 0 {
             prev_live.saturating_mul(2)
         } else {
@@ -1158,9 +1165,9 @@ impl Heap {
         let live_count = copied_objects.len() as u64;
         self.alloc_count = live_count;
         self.gc_run_count += 1;
-        self.last_gc_live_bytes = unsafe { free.offset_from(to_start) } as usize;
+        self.live_baseline = unsafe { free.offset_from(to_start) } as usize;
         stats.live_objects = live_count;
-        stats.live_bytes = self.last_gc_live_bytes as u64;
+        stats.live_bytes = self.live_baseline as u64;
         stats.blocks_after = 1 + self.blocks.len() as u64;
         self.queue_dead_resources(dead);
         stats

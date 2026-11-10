@@ -268,7 +268,7 @@ fn a_gift_with_an_object_above_the_table_grafts_and_is_copied_by_the_receivers_c
     assert!(!receiver.contains_heap_addr(big));
     assert_eq!(stats.copied_objects, 1);
     assert!(stats.to_space_capacity_bytes as usize >= size);
-    assert_eq!(stats.live_bytes, receiver.last_gc_live_bytes as u64);
+    assert_eq!(stats.live_bytes, receiver.live_baseline as u64);
     drop(receiver);
     drop(sender);
     assert_eq!(
@@ -293,7 +293,10 @@ fn thousands_of_small_unread_gifts_leave_the_receivers_capacity_unchanged_after_
     }
     let own_live = 2000 * 16;
     assert_eq!(receiver.bytes_used(), own_live);
-    assert!(!receiver.should_gc());
+    assert!(
+        receiver.should_gc(),
+        "a heap never collected is due at half the smallest tip"
+    );
 
     let gifts: u64 = 6000;
     for i in 0..gifts as i64 {
@@ -307,7 +310,14 @@ fn thousands_of_small_unread_gifts_leave_the_receivers_capacity_unchanged_after_
         own_live + adopted_fill,
         "adopted bytes count by fill"
     );
-    assert!(receiver.should_gc(), "adopted fill counts toward should_gc");
+    assert_eq!(
+        receiver.live_baseline, adopted_fill,
+        "adopted fill is baseline, not allocation"
+    );
+    assert!(
+        !receiver.should_gc(),
+        "32000 allocated bytes are under the 96000 the gifts raised the baseline to"
+    );
     let mut roots = [heap_ref(list)];
     let stats = receiver.collect(&mut roots);
 
@@ -479,20 +489,26 @@ fn gift_of_cons_cells(sender: &mut Heap, cells: i64) -> GiftSegment {
 }
 
 #[test]
-fn gifts_alone_make_should_gc_true_and_to_space_holds_every_live_byte() {
+fn gifts_raise_the_baseline_and_to_space_holds_every_live_byte() {
     let reg = fresh_registry();
     let (mut receiver, live) = receiver_with_live_allocation_since_a_small_collection(&reg);
+    assert_eq!(receiver.live_baseline, 2000);
     assert!(
-        !receiver.should_gc(),
-        "80000 live bytes in a 192768-byte block are under half"
+        receiver.should_gc(),
+        "80000 allocated bytes are past the 2000-byte baseline"
     );
     let mut sender = Heap::new(SIZE_TABLE[0], reg);
     for _ in 0..16 {
         receiver.graft(gift_of_cons_cells(&mut sender, 60));
     }
+    assert_eq!(
+        receiver.live_baseline,
+        2000 + 16 * 960,
+        "the gifts' fill raised the baseline"
+    );
     assert!(
         receiver.should_gc(),
-        "the gifts' fill carried the heap over half its block"
+        "80000 allocated bytes are still past the 17360-byte baseline"
     );
     let mut roots = [heap_ref(live)];
     let stats = receiver.collect(&mut roots);
@@ -546,4 +562,35 @@ fn a_gift_of_the_exact_measured_bytes_fills_its_block_without_overflow() {
         assert_eq!(segment.block_count(), 1, "{bytes} bytes");
         assert_eq!(segment.fill_bytes(), bytes);
     }
+}
+
+/// A gift arrives packed and fully live, which is the state of a heap after a
+/// collection: its fill raises the baseline instead of counting as allocation,
+/// and the receiver is due a collection only once its own allocation reaches
+/// that baseline.
+#[test]
+fn a_grafted_gift_raises_the_baseline_and_the_receiver_collects_after_allocating_as_much_again() {
+    let reg = fresh_registry();
+    let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
+    let mut receiver = Heap::new(SIZE_TABLE[0], reg);
+    assert_eq!(receiver.live_baseline, 0);
+
+    receiver.graft(gift_of_cons_cells(&mut sender, 100));
+    assert_eq!(receiver.live_baseline, 1600, "the gift's fill is survivor data");
+    assert_eq!(receiver.bytes_used(), 1600);
+    assert!(
+        !receiver.should_gc(),
+        "1600 grafted bytes are over half the 1024-byte tip, yet nothing has been allocated"
+    );
+
+    for _ in 0..99 {
+        let _ = receiver.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
+    }
+    assert!(
+        !receiver.should_gc(),
+        "1584 allocated bytes are under the 1600 baseline"
+    );
+    let _ = receiver.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
+    assert!(receiver.should_gc(), "1600 allocated bytes reach the baseline");
+    assert_eq!(receiver.live_baseline, 1600, "allocation leaves the baseline alone");
 }

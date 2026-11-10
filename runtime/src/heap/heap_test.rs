@@ -779,10 +779,10 @@ fn alloc_grows_to_next_capacity_on_overflow() {
 }
 
 /// `should_gc` is a function of the heap's state: it turns true once the
-/// bytes in use reach half the tip, and a collection that reclaims them turns
+/// bytes allocated reach half the smallest tip while nothing is live, and a collection that reclaims them turns
 /// it false again with nothing cleared in between.
 #[test]
-fn should_gc_follows_bytes_in_use_against_half_the_tip_and_a_collection_answers_it() {
+fn should_gc_follows_bytes_in_use_against_half_the_smallest_tip_and_a_collection_answers_it() {
     let mut h = Heap::new(1024, fresh_registry());
     assert!(!h.should_gc());
     for _ in 0..31 {
@@ -1603,25 +1603,25 @@ fn gc_sizes_to_fit_and_never_shrinks_below_live_as_load_grows() {
     }
 }
 
-/// last_gc_live_bytes is set correctly after GC and used for to-space sizing.
+/// live_baseline is set correctly after GC and used for to-space sizing.
 /// First GC uses bytes_used() as upper bound; subsequent GCs use
-/// last_gc_live_bytes * 2 (50% post-GC target occupancy).
+/// live_baseline * 2 (50% post-GC target occupancy).
 #[test]
-fn gc_updates_last_gc_live_bytes() {
+fn gc_updates_live_baseline() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    assert_eq!(h.last_gc_live_bytes, 0, "zero before first gc");
+    assert_eq!(h.live_baseline, 0, "zero before first gc");
     // Build [1, 2, 3].
     let n3 = alloc_int_list_cons(&mut h, 3, EMPTY_LIST);
     let n2 = alloc_int_list_cons(&mut h, 2, n3);
     let n1 = alloc_int_list_cons(&mut h, 1, n2);
     let mut roots = [heap_ref(n1)];
     h.collect(&mut roots);
-    assert_eq!(h.last_gc_live_bytes, 3 * 16, "three cons cells = 48 bytes");
+    assert_eq!(h.live_baseline, 3 * 16, "three cons cells = 48 bytes");
 
     // Second GC with same live set: to-space sizing = 48 * 2 = 96,
     // clamped to SIZE_TABLE[0]. live bytes stay the same.
     h.collect(&mut roots);
-    assert_eq!(h.last_gc_live_bytes, 3 * 16, "live bytes unchanged");
+    assert_eq!(h.live_baseline, 3 * 16, "live bytes unchanged");
     assert_eq!(h.block_size, SIZE_TABLE[0], "tiny live set stays at smallest block");
 }
 
@@ -2448,7 +2448,7 @@ fn a_rooted_object_above_the_table_survives_a_collection_by_being_copied() {
     assert_eq!(stats.copied_objects, 1);
     assert_eq!(stats.live_objects, 1);
     assert_eq!(
-        stats.live_bytes, h.last_gc_live_bytes as u64,
+        stats.live_bytes, h.live_baseline as u64,
         "live bytes are the to-space fill"
     );
     assert!(stats.live_bytes as usize >= size);

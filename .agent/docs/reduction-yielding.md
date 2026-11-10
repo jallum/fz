@@ -30,9 +30,11 @@ and every loop still crosses a tail call.
   `Process::collect` is the one place a process's roots are assembled (see
   "Accounting at the boundary").
 - **`Heap`** (`runtime/src/heap`) owns allocation, block growth, and
-  `should_gc`, a pure function of the heap's state: the tip's fill plus the fill
-  of every parked block (`bytes_used`) against half the
-  tip's capacity. Exhausting the current block parks it in `blocks` for the next
+  `should_gc`, a pure function of the heap's state: the bytes allocated since
+  the heap was last all live (`bytes_used - live_baseline`) against the larger
+  of `live_baseline` and half the smallest tip. A collection sets
+  `live_baseline` to its survivors and `graft` raises it by the gift's fill;
+  allocation leaves it alone. Exhausting the current block parks it in `blocks` for the next
   Cheney pass and installs a tip one capacity step up; an object larger than
   that step is parked in a block of its own and the tip is left as it was. Blocks grafted from
   another heap's gift segment (`Heap::graft`) join `blocks`, are from-space for
@@ -86,7 +88,7 @@ allocation        bump_top += size
                     allocate a larger block
                     move old current block to blocks
 
-boundary          if heap.should_gc():   (bytes_used >= block_size / 2)
+boundary          if heap.should_gc():   (bytes_used - live_baseline >= max(live_baseline, SIZE_TABLE[0] / 2))
                     Process::collect
                   clear yield_reasons
 ```
@@ -141,12 +143,15 @@ message, or a match's bound values, and copies it inside one, and the segment tr
 receiver on its `in_queue` (see [scheduler](scheduler-zero-arg-closures.md)).
 
 Grafted blocks are parked blocks like any other, so a gift's fill is part of
-`bytes_used`. A collection sizes to-space from `bytes_used` first: the
+`bytes_used`; it is also part of `live_baseline`, because a gift arrives packed
+and fully live, the state of a heap after a collection. A gift therefore never
+makes a collection due: only the receiver's own allocation does, once it
+reaches the baseline. A collection sizes to-space from `bytes_used` first: the
 capacity holding every byte in use is the floor, and the grow, keep and
 shrink bands choose between that floor and a larger capacity. Grow applies when
-`bytes_used` fills 75% or more of the tip; shrink when the last survivors
-fill 25% or less of it; keep otherwise. To-space capacity is therefore at
-least the bytes a pass can copy, whatever raised `should_gc`.
+`bytes_used` fills 75% or more of the tip; shrink when the live baseline
+fills 25% or less of it; keep otherwise. To-space capacity is therefore at
+least the bytes a pass can copy.
 
 Compiled yield telemetry still samples the slow path that materializes a
 continuation closure:

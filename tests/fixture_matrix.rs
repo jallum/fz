@@ -2996,6 +2996,7 @@ fn send_probe_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath,
 
 /// One `fz.runtime.gc` event as the jsonl log renders it.
 struct GcEvent {
+    pid: usize,
     boundary: String,
     copied_bytes: usize,
 }
@@ -3006,6 +3007,7 @@ fn gc_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: 
         .lines()
         .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"gc\"]"))
         .map(|line| GcEvent {
+            pid: required_json_u64_field(line, "pid", "gc event"),
             boundary: json_str_field(line, "boundary").unwrap_or_else(|| panic!("gc event missing boundary")),
             copied_bytes: required_json_u64_field(line, "copied_bytes", "gc event"),
         })
@@ -3113,22 +3115,25 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
         FixtureCase::new("fixtures/00901_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent.fz");
 
     // The child yields on its reduction budget while it builds and sends the
-    // 50000-element log, and every yield finds its heap due a collection that
-    // copies all of the log built so far, up to 800208 bytes once the log is
+    // 50000-element log. A yield collects once the child has allocated as many
+    // bytes as it held live after its last collection, and a quantum allocates
+    // about 12.8 KB, so the child is collected at live sizes of 13024, 38624,
+    // 77024, 153824, 307424 and 614624 bytes, then at 800160 once the log is
     // complete. The parent is collected once as it parks on its receive (640
-    // bytes, the closures its park record holds) and once as it exits, when
-    // nothing is live.
+    // bytes, the closures its park record holds). The gifts it grafts afterwards
+    // raise its baseline to its fill, so it is not collected again, and the
+    // child's exit finds nothing due.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
     let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
     assert_eq!(
         (count("yield"), count("park"), count("exit")),
-        (73, 1, 1),
-        "run: the child's reduction yields, the parent's park, the parent's exit"
+        (7, 1, 0),
+        "run: the child's reduction yields, the parent's park, no exit"
     );
-    assert_eq!(events.len(), 75, "run: one gc event per collection");
+    assert_eq!(events.len(), 8, "run: one gc event per collection");
     assert_eq!(
         events.iter().map(|e| e.copied_bytes).sum::<usize>(),
-        33_019_136,
+        2_005_344,
         "run: the bytes every collection copied"
     );
 
@@ -3136,13 +3141,14 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     // log inside one quantum and is collected only as it exits, when nothing
     // is live (0 bytes). The parent is collected as it parks (592 bytes, the
     // values its parked receive holds: the JIT's 640 also counts the closures
-    // its park record holds) and as it exits (0 bytes).
+    // its park record holds); the gifts it grafts afterwards are baseline, so
+    // its exit collects nothing.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
     let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
     assert_eq!(
         (count("yield"), count("park"), count("exit")),
-        (0, 1, 2),
-        "interp: the parent's park, then the child's and the parent's exits"
+        (0, 1, 1),
+        "interp: the parent's park, then the child's exit"
     );
     assert_eq!(
         events.iter().map(|e| e.copied_bytes).sum::<usize>(),
@@ -3159,10 +3165,14 @@ fn a_receiver_parked_on_a_pinned_list_is_collected_on_every_path_and_still_match
     for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
         let events = gc_events_for_fixture(&fixture, path, label);
         assert!(
+            !events.iter().any(|event| event.pid == 1 && event.boundary == "yield"),
+            "{label}: nothing is collected before the parent parks, so its heap is due at the park"
+        );
+        assert!(
             events
                 .iter()
-                .any(|event| event.boundary == "park" && event.copied_bytes >= 32_000),
-            "{label}: the parked parent is collected with its 2000-cell pinned list live"
+                .any(|event| event.boundary == "park" && event.copied_bytes >= 1_600),
+            "{label}: the parked parent is collected with its 100-cell pinned list live"
         );
     }
 }
