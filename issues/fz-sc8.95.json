@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "fz-da",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-08T13:06:21Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "defstruct takes field defaults",
   "type": "feature",
-  "updated_at": "2026-11-08T13:06:21Z"
+  "updated_at": "2026-11-10T21:58:17Z"
 }
