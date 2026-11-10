@@ -433,6 +433,15 @@ arena being collected, not a root.
   `run` and `interp`, each one block of exactly its measured bytes; the run ends with them still queued and `run_ended` shows
   the pool's outstanding count back at its starting value. The fixture runs on
   all three paths for output parity.
+- `cargo test --test fixture_matrix many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued`
+  — fixture 00910, on `run` and `interp`: a hundred senders into a guarded
+  receive; fifty misses, the one hit, forty-nine misses, each miss one 80-byte
+  block and the hit 48 bytes, with the same gift bytes on both paths and the
+  pool census back at its starting value.
+- `cargo test --test fixture_matrix a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_path`
+  — fixture 00911, on `run` and `interp`: a 20000-element list passed for four
+  rounds; every message is a hit gifting 320016 bytes in one block. Both
+  fixtures run on all three paths for output parity.
 - `cargo test --test fixture_matrix spawn_with_captures` — a spawned task is
   resumed as an entry thunk through `fz_resume`, the same verb a continuation
   uses.

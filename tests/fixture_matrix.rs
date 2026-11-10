@@ -255,6 +255,14 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown",
             a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown,
         ),
+        (
+            "many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued",
+            many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued,
+        ),
+        (
+            "a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_path",
+            a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_path,
+        ),
         ("fixture_hang_guard_policy", fixture_hang_guard_policy),
         (
             "execution_ready_writer_uses_multi_digit_descriptor",
@@ -2939,7 +2947,7 @@ fn self_send_pushes_the_senders_reference_and_the_send_site_publishes_it() {
 }
 
 /// One `fz.runtime.send.probe` event as the jsonl log renders it.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SendProbeEvent {
     outcome: String,
     receiver: usize,
@@ -3238,6 +3246,125 @@ fn a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown() {
             "{label}: the run returned every block it took, including the gifts still queued on the parked child"
         );
     }
+}
+
+/// `(pid, boundary, copied_bytes)` of every collection, in emission order.
+fn collections_as_tuples(events: &[GcEvent]) -> Vec<(usize, &str, usize)> {
+    events
+        .iter()
+        .map(|event| (event.pid, event.boundary.as_str(), event.copied_bytes))
+        .collect()
+}
+
+fn many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued() {
+    let fixture = FixtureCase::new(
+        "fixtures/00910_many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued.fz",
+    );
+    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00910 expected.txt");
+    assert_eq!(
+        expected, "11375\n3875\n",
+        "the parent sums jobs 51..=100 then jobs 1..=50, each as the job number plus its two-element payload sum"
+    );
+
+    // The guard accepts jobs above 50, so jobs 1..=50 miss, job 51 hits, and
+    // the receive is then decided: jobs 52..=100 miss without a second probe.
+    // A miss gifts the whole message (a three-slot tuple, 48 bytes, and two
+    // cells, 32); the hit gifts the bound number as a boxed scalar (16) and the
+    // two payload cells (32).
+    let mut probes = vec![SendProbeEvent::new("miss", 1, 80, 1); 50];
+    probes.push(SendProbeEvent::new("hit", 1, 48, 1));
+    probes.extend(vec![SendProbeEvent::new("miss", 1, 80, 1); 49]);
+    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+        let events = send_probe_events_for_fixture(&fixture, path, label);
+        assert_eq!(
+            events, probes,
+            "{label}: fifty misses, the one hit, then forty-nine misses"
+        );
+        assert_eq!(
+            events.iter().map(|e| e.gift_bytes).sum::<usize>(),
+            7_968,
+            "{label}: 99 misses of 80 bytes and one hit of 48"
+        );
+        let (before, after) = run_ended_pool_census(&fixture, path, label);
+        assert_eq!(
+            after, before,
+            "{label}: the run returned every block it took, queued gifts included"
+        );
+    }
+
+    // The interpreter collects the parent once, as it parks (48 bytes live).
+    // The JIT collects it as it parks (288 bytes, which include the closures
+    // its park record holds) and again as it exits after grafting 99 gifts,
+    // when nothing is live. Neither path collects a child.
+    let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
+    assert_eq!(
+        collections_as_tuples(&events),
+        vec![(1, "park", 48)],
+        "interp: the parent's park only"
+    );
+    let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
+    assert_eq!(
+        collections_as_tuples(&events),
+        vec![(1, "park", 288), (1, "exit", 0)],
+        "run: the parent's park, then its exit"
+    );
+}
+
+fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_path() {
+    let fixture = FixtureCase::new(
+        "fixtures/00911_two_processes_pass_a_large_list_back_and_forth_and_each_message_crosses_in_one_gift.fz",
+    );
+    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00911 expected.txt");
+    assert_eq!(
+        expected, ":child_is_parked\n4\n20000\n200010000\n",
+        "four rounds, and the list the parent ends with is the 20000 elements it began with"
+    );
+
+    // Every send finds its receiver parked on a matching receive, so every
+    // message is a hit. The child's announcement binds nothing and gifts
+    // nothing. Each ball gifts its 20000 cells (320000 bytes) and the bound
+    // number as a boxed scalar (16), alternating child, parent.
+    let ball = |receiver| SendProbeEvent::new("hit", receiver, 320_016, 1);
+    let mut probes = vec![SendProbeEvent::new("hit", 1, 0, 0)];
+    for _ in 0..4 {
+        probes.push(ball(2));
+        probes.push(ball(1));
+    }
+    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+        let events = send_probe_events_for_fixture(&fixture, path, label);
+        assert_eq!(events, probes, "{label}: the announcement, then eight balls, all hits");
+        assert_eq!(
+            events.iter().map(|e| e.gift_bytes).sum::<usize>(),
+            2_560_128,
+            "{label}: eight balls of 320016 bytes"
+        );
+        let (before, after) = run_ended_pool_census(&fixture, path, label);
+        assert_eq!(after, before, "{label}: the run returned every block it took");
+    }
+
+    // The interpreter never yields, so it collects the parent once, at its
+    // park for the announcement, with nothing live. The JIT yields while the
+    // parent builds the list and collects at live sizes that double until the
+    // list is complete (320128 bytes); neither path collects the child.
+    let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
+    assert_eq!(
+        collections_as_tuples(&events),
+        vec![(1, "park", 0)],
+        "interp: the parent's park only"
+    );
+    let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
+    assert_eq!(
+        collections_as_tuples(&events),
+        vec![
+            (1, "yield", 12_992),
+            (1, "yield", 38_592),
+            (1, "yield", 76_992),
+            (1, "yield", 153_792),
+            (1, "yield", 307_392),
+            (1, "yield", 320_128),
+        ],
+        "run: six yields while the parent builds the list"
+    );
 }
 
 /// `(pool_outstanding_before_run, pool_outstanding_after_run)` from the one

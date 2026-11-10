@@ -159,6 +159,13 @@ pins the event sequence of fixtures 00901 and 00902 on the `run` and `interp`
 paths, and `a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`
 pins each of fixture 00903's three gifts (`gift_bytes` 16032, 64 and 16, one
 block each).
+`many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued`
+pins fixture 00910's hundred probes on `run` and `interp` (fifty misses of 80
+bytes, the one hit of 48, then forty-nine misses; 7968 bytes in all), and
+`a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_path`
+pins fixture 00911's nine hits (the empty announcement, then eight balls of
+320016 bytes: 20000 cells plus the bound number as a boxed scalar). Both
+fixtures have the same probes on both paths.
 
 ## `fz.runtime.gc`
 
@@ -199,6 +206,11 @@ park) copying 1804848 bytes in all, and 2 on `interp` (the parent's park, the
 child's exit) copying 592, since the interpreter charges no reductions and
 never yields mid-run. Neither parent collects after its graft: the gifts raised
 its baseline to its fill.
+The same file pins fixture 00910 (`interp`: the parent's park at 48 bytes;
+`run`: its park at 288 bytes, then its exit at 0) and fixture 00911 (`interp`:
+the parent's park at 0 bytes; `run`: six parent yields copying 10848, 32192,
+64192, 128192, 256192 and 320176 bytes while it builds the list). The
+run-ended equality is pinned for both fixtures on `run` and `interp`.
 `sched_core_test.rs` pins the `Collection` that `end_quantum` returns and the
 destructors it dispatches.
 

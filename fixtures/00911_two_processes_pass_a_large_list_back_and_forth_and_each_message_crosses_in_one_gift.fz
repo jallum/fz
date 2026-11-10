@@ -1,0 +1,41 @@
+#---
+# purpose: "a 20000-element list passed between two processes for four rounds crosses as one gift per message, and the list the receiver keeps is intact after every round"
+#---
+#
+# The child announces that it is about to park and then parks on its receive;
+# the parent waits for that announcement before it sends anything, so every
+# send finds its receiver parked on a matching receive. The matcher runs on the
+# sender and only the bound number and list cross, as one gift per message.
+# Eight messages cross in all, and the list the parent holds at the end is
+# the one it started with.
+def main() do
+  child = spawn_ball_returner(self())
+  receive do
+    :ready -> dbg(:child_is_parked)
+  end
+  list = Enum.to_list(1..20000)
+  send(child, {:ball, 0, list})
+  {rounds, ball} = Enum.reduce(1..4, {0, []}, fn round, _ ->
+    receive do
+      {:ball, n, xs} ->
+        if round < 4 do
+          send(child, {:ball, n, xs})
+        end
+        {n, xs}
+    end
+  end)
+  dbg(rounds)
+  dbg(Enum.count(ball))
+  dbg(Enum.sum(ball))
+end
+
+defp spawn_ball_returner(parent) do
+  spawn(fn () ->
+    send(parent, :ready)
+    Enum.each(1..4, fn _ ->
+      receive do
+        {:ball, n, xs} -> send(parent, {:ball, n + 1, xs})
+      end
+    end)
+  end)
+end
