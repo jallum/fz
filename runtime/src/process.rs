@@ -18,7 +18,7 @@ use std::ptr::{NonNull, null, null_mut, write};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::any_value::{AnyValueRef, TAG_MASK, ValueKind, closure_header_word, closure_size_for_count};
+use crate::any_value::{AnyValueRef, ValueKind, closure_header_word, closure_header_write, closure_size_for_count};
 use crate::bitstr::BitWriter;
 use crate::delivery::DeliveryLock;
 use crate::exec_ctx::ExecCtx;
@@ -41,7 +41,7 @@ impl AlignedClosureStorage {
         let Some(ptr) = NonNull::new(ptr) else {
             handle_alloc_error(layout);
         };
-        debug_assert_eq!(ptr.as_ptr() as u64 & TAG_MASK, 0);
+        debug_assert!((ptr.as_ptr() as usize).is_multiple_of(16));
         Self { ptr, layout }
     }
 
@@ -542,10 +542,9 @@ impl Process {
             let mut buf = AlignedClosureStorage::zeroed();
             let base = buf.as_ptr();
             unsafe {
-                write(base as *mut u32, denotation.as_u32());
-                write(
-                    base.add(4) as *mut u32,
-                    closure_header_word(0, *halt_kind as u16, *arity as u16),
+                closure_header_write(
+                    base,
+                    closure_header_word(*denotation, 0, *halt_kind as u16, *arity as u16),
                 );
                 write(base.add(8) as *mut u64, *code_ptr as u64);
             }
@@ -567,13 +566,12 @@ impl Process {
             let mut buf = AlignedClosureStorage::zeroed();
             let base = buf.as_ptr();
             unsafe {
-                write(
-                    base as *mut u32,
-                    crate::any_value::ClosureDenotationId::INTERNAL.as_u32(),
-                );
                 // A continuation is applied to exactly the one value it
                 // receives, so its arity is 1.
-                write(base.add(4) as *mut u32, closure_header_word(0, slot as u16, 1));
+                closure_header_write(
+                    base,
+                    closure_header_word(crate::any_value::ClosureDenotationId::INTERNAL, 0, slot as u16, 1),
+                );
                 write(base.add(8) as *mut u64, *addr as u64);
             }
             self.halt_cont_singletons[slot] = base;

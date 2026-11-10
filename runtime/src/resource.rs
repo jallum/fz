@@ -1,7 +1,7 @@
 //! fz-swt.7 — refcounted off-heap opaque resource with user-supplied dtor.
 //!
 //! Structurally a copy of `procbin.rs`: an off-heap refcounted object
-//! (`Resource`) with an on-heap strict tagged stub (`TAG_RESOURCE`)
+//! (`Resource`) with an on-heap stub (`ValueKind::RESOURCE`)
 //! threaded into the per-heap intrusive MSO chain. The MSO sweep handles
 //! retain/release across GC exactly the same way it does for ProcBin.
 //!
@@ -56,9 +56,9 @@
 //! within a process collapse to a single 1→0 transition — the dtor
 //! fires exactly once per `make_resource` call, regardless of aliasing.
 
-use crate::any_value::{AnyValue, TAG_MASK, ValueKind, heap_object_word};
+use crate::any_value::{AnyValue, ValueKind, heap_object_word};
 #[cfg(test)]
-use crate::any_value::{TAG_RESOURCE, object_size, resource_addr_from_tagged};
+use crate::any_value::{object_size, resource_addr_from_tagged};
 use crate::heap::{Heap, HeapAllocKind};
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::mem::{align_of, forget, size_of};
@@ -93,9 +93,9 @@ pub(crate) const RESOURCE_STUB_MAGIC: u64 = 0xF75E_5012_CE57_0B0B;
 /// is invoked exactly once with `payload` when the refcount transitions to
 /// zero. The runtime frees the wrapper itself after the dtor returns.
 /// 16-ALIGNED for the same reason as `SharedBin`: a ResourceStub holds this
-/// address in word 0, which is also where Cheney writes a `TAG_FWD` (0x8)
-/// forwarding marker. At 8-byte alignment half of all Resource addresses
-/// would read as forwarded (fz-5xp.60).
+/// address in word 0, which is also the word where the collector writes its
+/// forwarding marker. A forwarded stub is told from a live one by a set low
+/// nibble, so a live pointer's low nibble must be clear.
 #[repr(C, align(16))]
 pub struct Resource {
     pub refcount: AtomicUsize,                          // offset 0..8
@@ -350,13 +350,11 @@ impl ResourceStub {
     }
 
     pub(crate) fn closure_value_set(&self, value: AnyValue) {
-        let raw = if value.kind().is_heap() {
-            value.raw() & !TAG_MASK
-        } else {
-            value.raw()
-        };
         unsafe {
-            write(self.as_raw().add(RESOURCE_STUB_CLOSURE_RAW_OFFSET) as *mut u64, raw);
+            write(
+                self.as_raw().add(RESOURCE_STUB_CLOSURE_RAW_OFFSET) as *mut u64,
+                value.raw(),
+            );
             write(self.as_raw().add(RESOURCE_STUB_CLOSURE_KIND_OFFSET), value.kind().tag());
         }
     }

@@ -26,10 +26,10 @@
 
 use crate::any_value::debug::render_value;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_BITSTRING, TAG_FWD, TAG_MASK,
-    TAG_PROCBIN, ValueKind, closure_addr_from_tagged, closure_capture_value, closure_captured_count,
-    closure_denotation, closure_flags_pack, closure_fn_ptr, closure_halt_kind, heap_object_word, map_addr_from_tagged,
-    map_count, object_size, procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id,
+    AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_LAZY_CONT, ValueKind,
+    closure_addr_from_tagged, closure_capture_value, closure_captured_count, closure_denotation, closure_fn_ptr,
+    closure_halt_kind, closure_header_word, closure_header_write, heap_object_word, map_addr_from_tagged, map_count,
+    object_size, procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -658,11 +658,10 @@ pub extern "C" fn fz_get_halt_cont(process: *mut Process, halt_cont_body_addr: u
     let mut buf = AlignedClosureStorage::zeroed();
     let base = buf.as_ptr();
     unsafe {
-        std::ptr::write(
-            base as *mut u32,
-            crate::any_value::ClosureDenotationId::INTERNAL.as_u32(),
+        closure_header_write(
+            base,
+            closure_header_word(crate::any_value::ClosureDenotationId::INTERNAL, 0, kind as u16, 0),
         );
-        std::ptr::write(base.add(4) as *mut u32, closure_flags_pack(0, kind as u16) as u32);
         std::ptr::write(base.add(8) as *mut u64, halt_cont_body_addr);
     }
     p.halt_cont_singletons[slot] = base;
@@ -696,27 +695,9 @@ pub extern "C" fn fz_get_static_closure(process: *mut Process, cl_sid: u32) -> u
 
 // ===== Bitstring cluster (fz-ul4.23.4.9) =====
 
-fn bitstring_like_ptr(bits: u64) -> Option<*mut u8> {
-    if matches!(bits & TAG_MASK, TAG_BITSTRING | TAG_PROCBIN) {
-        Some(bits as *mut u8)
-    } else {
-        None
-    }
-}
-
-pub(crate) fn bitstring_like_ptr_from_ref(word: u64) -> Option<*mut u8> {
-    let value = AnyValueRef::from_raw_word(word).ok()?;
-    match value.tag() {
-        ValueKind::BITSTRING => value
-            .bitstring_addr()
-            .ok()
-            .map(|addr| heap_object_word(addr, ValueKind::BITSTRING) as *mut u8),
-        ValueKind::PROCBIN => value
-            .procbin_addr()
-            .ok()
-            .map(|addr| heap_object_word(addr, ValueKind::PROCBIN) as *mut u8),
-        _ => None,
-    }
+/// `word` itself when it is the heap object word of a Bitstring or ProcBin.
+pub(crate) fn bitstring_like_word(word: u64) -> Option<u64> {
+    is_bitstring_like(word).then_some(word)
 }
 
 #[unsafe(no_mangle)]
@@ -799,8 +780,8 @@ fn fz_bs_write_field_value(
                     .heap_object_word()
                     .unwrap_or_else(|| panic!("binary/bits bit field expects heap bitstring"));
                 let p =
-                    bitstring_like_ptr(bits).unwrap_or_else(|| panic!("binary/bits bit field expects heap bitstring"));
-                if !unsafe { is_bitstring_like(p) } {
+                    bitstring_like_word(bits).unwrap_or_else(|| panic!("binary/bits bit field expects heap bitstring"));
+                if !is_bitstring_like(p) {
                     panic!("binary/bits bit field source is not a Bitstring");
                 }
                 let src_bit_len = unsafe { bitstring_bit_len(p) } as usize;
@@ -1026,7 +1007,7 @@ pub extern "C" fn fz_binary_downcase(process: *mut Process, ref_word: u64) -> u6
 }
 
 fn map_case(process: *mut Process, ref_word: u64, upper: bool) -> u64 {
-    let Some(p) = bitstring_like_ptr_from_ref(ref_word) else {
+    let Some(p) = bitstring_like_word(ref_word) else {
         panic!("case mapping expects a binary");
     };
     let bit_len = unsafe { bitstring_bit_len(p) };
@@ -1060,7 +1041,7 @@ fn map_case(process: *mut Process, ref_word: u64, upper: bool) -> u64 {
 /// already has.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_binary_to_atom(process: *mut Process, ref_word: u64) -> u64 {
-    let Some(p) = bitstring_like_ptr_from_ref(ref_word) else {
+    let Some(p) = bitstring_like_word(ref_word) else {
         panic!("String.to_atom expects a binary");
     };
     let bit_len = unsafe { bitstring_bit_len(p) };
@@ -1079,7 +1060,7 @@ pub extern "C" fn fz_binary_to_atom(process: *mut Process, ref_word: u64) -> u64
 /// byte size (fz-5xp.42 is the type-level half of the same question).
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bitstring_byte_size(ref_word: u64) -> i64 {
-    let Some(p) = bitstring_like_ptr_from_ref(ref_word) else {
+    let Some(p) = bitstring_like_word(ref_word) else {
         panic!("byte_size expects a binary");
     };
     let bit_len = unsafe { bitstring_bit_len(p) };
@@ -1096,10 +1077,10 @@ pub extern "C" fn fz_bitstring_byte_size(ref_word: u64) -> i64 {
 /// it gets a size no subject can hold and the read misses.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_pinned_binary_segment_size(ref_word: u64) -> u32 {
-    let Some(p) = bitstring_like_ptr_from_ref(ref_word).or_else(|| bitstring_like_ptr(ref_word)) else {
+    let Some(p) = bitstring_like_word(ref_word) else {
         return u32::MAX;
     };
-    if !unsafe { is_bitstring_like(p) } {
+    if !is_bitstring_like(p) {
         return u32::MAX;
     }
     let bit_len = unsafe { bitstring_bit_len(p) } as usize;
@@ -1118,20 +1099,18 @@ pub extern "C" fn fz_pinned_binary_segment_size(ref_word: u64) -> u32 {
 /// else. So the distinction has to be asked at runtime.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bitstring_is_binary(ref_word: u64) -> i64 {
-    let Some(p) = bitstring_like_ptr_from_ref(ref_word).or_else(|| bitstring_like_ptr(ref_word)) else {
+    let Some(p) = bitstring_like_word(ref_word) else {
         return 0;
     };
-    if !unsafe { is_bitstring_like(p) } {
+    if !is_bitstring_like(p) {
         return 0;
     }
     i64::from((unsafe { bitstring_bit_len(p) } as usize).is_multiple_of(8))
 }
 
 fn byte_aligned_binary_slice(word: u64, context: &str) -> (*const u8, usize) {
-    let p = bitstring_like_ptr_from_ref(word)
-        .or_else(|| bitstring_like_ptr(word))
-        .unwrap_or_else(|| panic!("{context}: expected binary"));
-    assert!(unsafe { is_bitstring_like(p) }, "{context}: expected binary");
+    let p = bitstring_like_word(word).unwrap_or_else(|| panic!("{context}: expected binary"));
+    assert!(is_bitstring_like(p), "{context}: expected binary");
     let bit_len = unsafe { bitstring_bit_len(p) } as usize;
     assert!(bit_len.is_multiple_of(8), "{context}: expected byte-aligned binary");
     let ptr = unsafe { bitstring_byte_ptr(p) };
@@ -1305,8 +1284,8 @@ pub extern "C" fn fz_bs_reader_init_ref(process: *mut Process, bs_ref: u64) -> u
 }
 
 fn fz_bs_reader_init_bits(process: *mut Process, bs_bits: u64) -> u64 {
-    let p = bitstring_like_ptr(bs_bits).unwrap_or_else(|| panic!("reader_init expects heap value"));
-    if !unsafe { is_bitstring_like(p) } {
+    let p = bitstring_like_word(bs_bits).unwrap_or_else(|| panic!("reader_init expects heap value"));
+    if !is_bitstring_like(p) {
         panic!("reader_init source is not a Bitstring");
     }
     let bit_len = unsafe { bitstring_bit_len(p) } as i64;
@@ -1382,8 +1361,8 @@ fn fz_bs_read_field_bits(
     let pos = (unsafe { &mut *process }).heap.read_field_slot(rp, 16).raw() as usize;
 
     // Bytes pointer from bs.
-    let bsp = bitstring_like_ptr(bs_bits).expect("read_field: reader bs not a ptr");
-    if !unsafe { is_bitstring_like(bsp) } {
+    let bsp = bitstring_like_word(bs_bits).expect("read_field: reader bs not a ptr");
+    if !is_bitstring_like(bsp) {
         panic!("read_field reader bs is not a Bitstring");
     }
     let bytes_ptr = unsafe { bitstring_byte_ptr(bsp) };
@@ -2047,7 +2026,7 @@ pub extern "C" fn fz_list_reuse_or_cons_parts(
 
 /// Allocate a heap-typed Struct. `schema_id` must already be registered in
 /// the current Process's heap SchemaRegistry (shared with CompiledModule).
-/// Returns a TAG_STRUCT-tagged heap pointer. Caller is
+/// Returns a Struct ref word. Caller is
 /// responsible for writing field values into payload slots after allocation.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_struct(process: *mut Process, schema_id: u32) -> u64 {
@@ -2281,7 +2260,7 @@ const LAZY_CONT_KIND_ATOM: u8 = 3;
 #[inline]
 fn is_lazy_cont_ref(word: u64) -> bool {
     let tag_shift = AnyValueRefPacking::current().tag_shift();
-    (word >> tag_shift) == TAG_FWD
+    (word >> tag_shift) == TAG_LAZY_CONT
 }
 
 #[inline]
@@ -2665,11 +2644,11 @@ fn utf8_byte_in(bytes: &[u8], index: usize, min: u8, max: u8) -> Result<(), usiz
 /// `bitstring_bit_len`/`bitstring_byte_ptr`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
-    let p = match bitstring_like_ptr_from_ref(bs_bits) {
+    let p = match bitstring_like_word(bs_bits) {
         Some(p) => p,
         None => return 0,
     };
-    if !unsafe { is_bitstring_like(p) } {
+    if !is_bitstring_like(p) {
         return 0;
     }
     let bit_len = unsafe { bitstring_bit_len(p) } as usize;
@@ -2698,10 +2677,10 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
 /// in the runtime.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bitstring_utf8_prefix(bs_bits: u64) -> i64 {
-    let Some(p) = bitstring_like_ptr_from_ref(bs_bits) else {
+    let Some(p) = bitstring_like_word(bs_bits) else {
         return -1;
     };
-    if !unsafe { is_bitstring_like(p) } {
+    if !is_bitstring_like(p) {
         return -1;
     }
     let bit_len = unsafe { bitstring_bit_len(p) } as usize;
@@ -2746,10 +2725,10 @@ pub extern "C" fn fz_matcher_map_get_ref(process: *mut Process, map_ref_word: u6
 /// initialized bytes. `val_bits` is treated as an opaque AnyValue.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_matcher_eq_bytes(val_bits: u64, bytes_ptr: u64, byte_len: u64) -> u32 {
-    let Some(p) = bitstring_like_ptr_from_ref(val_bits) else {
+    let Some(p) = bitstring_like_word(val_bits) else {
         return 0;
     };
-    if !unsafe { is_bitstring_like(p) } {
+    if !is_bitstring_like(p) {
         return 0;
     }
     let want_bits = byte_len * 8;

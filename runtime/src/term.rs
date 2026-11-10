@@ -72,8 +72,8 @@ impl<'a> TermComparator<'a> {
             _ if a.kind() == ValueKind::CLOSURE => self.closure_cmp(a.raw() as *const u8, b.raw() as *const u8),
             _ if a == b => Ordering::Equal,
             _ if a.kind().is_binary_repr() => bitstring_cmp(
-                a.heap_object_word().expect("bitstring") as *const u8,
-                b.heap_object_word().expect("bitstring") as *const u8,
+                a.heap_object_word().expect("bitstring"),
+                b.heap_object_word().expect("bitstring"),
             ),
             _ if a.kind() == ValueKind::MAP => self.map_cmp(a.raw() as *const u8, b.raw() as *const u8, mode),
             _ if a.kind() == ValueKind::LIST => self.list_cmp(a.raw() as *const u8, b.raw() as *const u8, mode),
@@ -224,11 +224,11 @@ pub fn compare_int_float(integer: i64, float: f64) -> Ordering {
         .then_with(|| float_cmp(integer as f64, float, NumericMode::Widening))
 }
 
-fn bitstring_cmp(a: *const u8, b: *const u8) -> Ordering {
-    let a_bits = unsafe { bitstring_bit_len(a as *mut u8) } as usize;
-    let b_bits = unsafe { bitstring_bit_len(b as *mut u8) } as usize;
-    let a_bytes = unsafe { from_raw_parts(bitstring_byte_ptr(a as *mut u8), a_bits.div_ceil(8)) };
-    let b_bytes = unsafe { from_raw_parts(bitstring_byte_ptr(b as *mut u8), b_bits.div_ceil(8)) };
+fn bitstring_cmp(a: u64, b: u64) -> Ordering {
+    let a_bits = unsafe { bitstring_bit_len(a) } as usize;
+    let b_bits = unsafe { bitstring_bit_len(b) } as usize;
+    let a_bytes = unsafe { from_raw_parts(bitstring_byte_ptr(a), a_bits.div_ceil(8)) };
+    let b_bytes = unsafe { from_raw_parts(bitstring_byte_ptr(b), b_bits.div_ceil(8)) };
     let common_bits = a_bits.min(b_bits);
     let common_bytes = common_bits / 8;
     let bytes = a_bytes[..common_bytes].cmp(&b_bytes[..common_bytes]);

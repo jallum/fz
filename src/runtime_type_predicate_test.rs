@@ -61,9 +61,13 @@ mod value_membership_tests {
     /// reader closures resolve, so no value is ever dereferenced except a
     /// tuple's schema id, which the runtime's own `struct_schema_id` reads off
     /// the pointer.
+    /// A struct's first word as the heap lays it out, 16-aligned like a real object.
+    #[repr(align(16))]
+    struct StructHeader(#[allow(dead_code)] u64);
+
     struct FakeHeap {
         cells: Vec<(RuntimeAnyValue, RuntimeAnyValue)>,
-        tuples: Vec<(Box<u32>, Vec<RuntimeAnyValue>)>,
+        tuples: Vec<(Box<StructHeader>, Vec<RuntimeAnyValue>)>,
         module: Module,
     }
 
@@ -121,11 +125,11 @@ mod value_membership_tests {
             cell
         }
 
-        /// Its schema id is a real `u32` behind a `Box`, because
+        /// Its header is a real struct header word behind a `Box`, because
         /// `struct_schema_id` reads it off the value itself.
         fn tuple(&mut self, schema: u32, fields: Vec<RuntimeAnyValue>) -> RuntimeAnyValue {
-            let boxed = Box::new(schema);
-            let addr = (&*boxed) as *const u32 as *const u8;
+            let boxed = Box::new(StructHeader(fz_runtime::any_value::struct_header_word(schema)));
+            let addr = (&*boxed) as *const StructHeader as *const u8;
             self.tuples.push((boxed, fields));
             RuntimeAnyValue::HeapRef(AnyValueRef::from_heap_object(ValueKind::STRUCT, addr).expect("a struct ref"))
         }
@@ -145,7 +149,7 @@ mod value_membership_tests {
             let addr = value.heap_addr()?;
             self.tuples
                 .iter()
-                .find(|(schema, _)| (&**schema) as *const u32 as *mut u8 == addr)
+                .find(|(header, _)| (&**header) as *const StructHeader as *mut u8 == addr)
                 .map(|(_, fields)| fields)
         }
     }

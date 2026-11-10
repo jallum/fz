@@ -207,8 +207,9 @@ continuation arguments, and typed frame slots.
 3  Struct
 ```
 
-`8` (`TAG_FWD`) is the Cheney forwarding marker, not a value; `9`–`12` are
-unused; `ValueKind::new` rejects all of them. The empty list is `List` with a
+`8`–`12` are unused; `ValueKind::new` rejects them. (`TAG_LAZY_CONT`, also
+`8`, is a ref-word field code for a stack-resident lazy continuation, never a
+`ValueKind`.) The empty list is `List` with a
 null address (`AnyValueRef::empty_list`). Object storage also uses an
 `EMPTY_LIST` tail sentinel (`0x8`, an address inside the OS-reserved unmapped
 page 0, distinct from `nil`), but that sentinel is internal list-tail
@@ -241,13 +242,31 @@ read:
 
 ```text
 List cons (16 bytes): head payload word
-                      link word = tail address + head-kind nibble + alias bit
+                      link word = tail address + head kind and alias bit in the
+                                  high bits; the low nibble is clear
 Map:                  count, one packed key/value kind byte per entry,
                       then key payload words, then value payload words
                       -- ENTRIES ARE SORTED BY KEY, see below
 Closure:              ClosureDenotationId + header word, code pointer,
                       capture payload words, capture kind bytes
 ```
+
+Every header word keeps its low nibble clear, because the low nibble belongs to
+the Cheney forwarding marker (see "GC: Roots, Edges, And Lifetime" below). Little-endian:
+
+```text
+Struct:    schema_id << 32
+Closure:   (denotation << 32) | (flags << 4) | (arity << 20)   arity < 4096
+Bitstring: bit_len << 4
+Map:       count << 4                                  (published)
+           FLAG(bit 63) | filled << 33 | capacity << 4  (destination, 29-bit fields)
+```
+
+Accessors (`struct_schema_id`, `closure_denotation`, `closure_arity`,
+`bitstring_bit_len`, `map_count`) and constructors (`struct_header_word`,
+`closure_header_word`, `bitstring_header_word`, `map_header_word`,
+`map_destination_header_word`) in `runtime/src/any_value.rs` are the only code
+that knows these layouts.
 
 The closure header separates user arity from captured count and scheduler halt
 kind. A user closure has exactly one slot per lexical capture, in the immutable
@@ -383,11 +402,16 @@ Off-heap binaries and resources have their own atomic reference counts. A
 32-byte `ProcBin` stub owns one edge to a `SharedBin`; a resource stub owns one
 edge to a `Resource`. Both off-heap objects are 16-ALIGNED, the same invariant
 the process heap keeps, and for the same reason: a stub holds the address in
-word 0, and word 0 is where Cheney writes a forwarding marker — a pointer with
-`TAG_FWD` (`0x8`) in the low four bits. At 8-byte alignment half of those
-addresses end in 8 and a live stub reads as forwarded, which made the sweep
-write into the object it was supposed to be releasing (fz-5xp.60). Alignment is
-what keeps a real pointer and a tag distinguishable by construction. Copying a stub into another heap retains
+word 0, and word 0 is where Cheney writes a forwarding marker — a pointer with a
+set low nibble. At 8-byte alignment half of those addresses have a set nibble
+and a live stub reads as forwarded, which made the sweep write into the object
+it was supposed to be releasing (fz-5xp.60). Alignment is what keeps a live
+pointer and a marker distinguishable by construction.
+
+The marker is the only use of the low nibble. Each kind names one marker word —
+word 1 of a list cons, word 0 of every other kind — whose live value has a clear
+low nibble, so "low nibble set" is the whole forwarding test: one read, no
+confirming word (`runtime/src/heap/gc/forwarding.rs`). Copying a stub into another heap retains
 one edge. Moving it during GC preserves that edge; sweeping an unreachable stub
 or dropping its heap releases it. An immediate last release invokes the
 allocation's destructor and reclaims its storage. Deferred resource release

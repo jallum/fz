@@ -5,8 +5,8 @@ use super::super::stats::GcStats;
 use super::CopiedObject;
 use super::forward::forward_heap_value;
 use crate::any_value::{
-    AnyValue, ListCons, TAG_MASK, ValueKind, closure_capture_set, closure_capture_value, closure_captured_count,
-    map_count, map_key_kind, map_keys_ptr, map_tag_ptr, map_value_kind, map_values_ptr, struct_field_kind_slot,
+    AnyValue, ListCons, ValueKind, closure_capture_set, closure_capture_value, closure_captured_count, map_count,
+    map_key_kind, map_keys_ptr, map_tag_ptr, map_value_kind, map_values_ptr, struct_field_kind_slot,
     struct_field_raw_slot, struct_schema_id,
 };
 use crate::resource::ResourceStub;
@@ -74,7 +74,7 @@ pub fn cheney_trace_struct(
         if value.kind().is_heap() {
             stats.struct_heap_edges += 1;
             let forwarded = forward_heap_value(value, from_ranges, free, to_end, schemas, copied_objects, stats);
-            let raw = forwarded.raw() & !TAG_MASK;
+            let raw = forwarded.raw();
             unsafe {
                 write(struct_field_raw_slot(obj as *const u8, field.offset), raw);
                 write(

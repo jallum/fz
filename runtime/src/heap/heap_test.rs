@@ -1,11 +1,10 @@
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, EMPTY_LIST_BITS, ListCons, TAG_BITSTRING, TAG_CLOSURE,
-    TAG_FWD, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, ValueKind, bitstring_bytes_ptr, bitstring_size_for_bit_len,
-    closure_addr_from_tagged, closure_capture_set, closure_capture_value, closure_captured_count, closure_fn_ptr,
-    closure_halt_kind, heap_kind_from_tagged, heap_object_word, is_forwarded, list_addr_from_tagged,
-    map_addr_from_tagged, map_count, map_entry, map_size_for_count, object_size, procbin_addr_from_tagged,
-    struct_addr_from_tagged, struct_flags, struct_schema_id, struct_size_for_payload,
+    AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, EMPTY_LIST_BITS, ListCons, ValueKind, bitstring_bytes_ptr,
+    bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_set, closure_capture_value,
+    closure_captured_count, closure_fn_ptr, closure_halt_kind, heap_kind_from_tagged, heap_object_word, heap_word_addr,
+    list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_size_for_count, object_size,
+    procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id, struct_size_for_payload,
 };
 use crate::process::AlignedClosureStorage;
 use crate::resource::ResourceStub;
@@ -263,7 +262,9 @@ fn heap_root(bits: u64) -> AnyValue {
 
 fn heap_ref(bits: u64) -> AnyValueRef {
     let kind = heap_kind_from_tagged(bits).expect("tagged heap root");
-    AnyValueRef::from_heap_object(kind, (bits & !TAG_MASK) as *const u8).expect("heap root ref")
+    AnyValueRef::from_raw_word(bits)
+        .inspect(|root| assert_eq!(root.tag(), kind))
+        .expect("heap root ref")
 }
 
 fn ref_bits(value: AnyValueRef) -> u64 {
@@ -1437,12 +1438,7 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
         .collect::<Vec<_>>();
     for (i, value) in copied_values.iter().enumerate() {
         assert_eq!(value.kind(), entries[i].1.kind());
-        assert_ne!(
-            value.raw() & !TAG_MASK,
-            entries[i].1.raw() & !TAG_MASK,
-            "heap entry {} moved/copied",
-            i
-        );
+        assert_ne!(value.raw(), entries[i].1.raw(), "heap entry {} moved/copied", i);
     }
 
     let copied_struct = copied_values[1].raw() as *mut u8;
@@ -1680,7 +1676,11 @@ fn struct_layout_size_correct() {
     assert_eq!(h.bytes_used() - before, 48);
     unsafe {
         assert_eq!(struct_schema_id(p), id);
-        assert_eq!(struct_flags(p), 0);
+        assert_eq!(
+            read(p as *const u64) & 0xF,
+            0,
+            "a live struct header leaves the low nibble clear"
+        );
     }
 }
 
@@ -1719,7 +1719,7 @@ fn struct_forwarding_marker_through_gc() {
     let new_p = struct_addr_from_tagged(root as u64).expect("forwarded root");
     assert_ne!(new_p as *const u8, old_addr);
     assert_eq!(h.read_field_slot(new_p, 0), AnyValue::int(9));
-    assert_eq!(is_forwarded(old_addr), Some(new_p as *const u8));
+    assert_eq!(forwarded_target(old_addr, ValueKind::STRUCT), Some(new_p));
 }
 
 /// Map with 5 entries exercises both alloc and the Cheney trace path
@@ -1774,7 +1774,7 @@ fn closure_layout_zero_captures() {
         0xfeed_beef,
         &[],
     );
-    assert_eq!(bits & TAG_MASK, TAG_CLOSURE);
+    assert_eq!(heap_kind_from_tagged(bits), Some(ValueKind::CLOSURE));
     assert_eq!(object_size(bits), 16);
     let p = closure_addr_from_tagged(bits).unwrap();
     assert_eq!(unsafe { closure_captured_count(p) }, 0);
@@ -1815,10 +1815,7 @@ fn closure_forwarding_marker() {
     assert_ne!(old, new_p);
     assert_eq!(unsafe { closure_captured_count(new_p) }, 0);
     assert_eq!(unsafe { closure_fn_ptr(new_p as *const u8) }, 0x7777);
-    let marker = unsafe { read(old as *const u64) };
-    assert_eq!(marker & TAG_MASK, TAG_FWD);
-    let confirm = unsafe { read(old.add(8) as *const u64) };
-    assert_eq!(confirm, TAG_FWD);
+    assert_eq!(forwarded_target(old, ValueKind::CLOSURE), Some(new_p));
 }
 
 #[test]
@@ -2006,11 +2003,11 @@ fn mso_chain(h: &Heap) -> Vec<u64> {
     let mut out = Vec::new();
     let mut cur_bits = h.mso_head;
     while cur_bits != 0 {
-        let addr = (cur_bits & !TAG_MASK) as *mut u8;
-        let next = match cur_bits & TAG_MASK {
-            TAG_PROCBIN => unsafe { ProcBin::from_raw(addr).mso_next() },
-            TAG_RESOURCE => unsafe { ResourceStub::from_raw(addr).mso_next() },
-            tag => panic!("unexpected MSO tag {tag:#x}"),
+        let addr = heap_word_addr(cur_bits);
+        let next = match heap_kind_from_tagged(cur_bits) {
+            Some(ValueKind::PROCBIN) => unsafe { ProcBin::from_raw(addr).mso_next() },
+            Some(ValueKind::RESOURCE) => unsafe { ResourceStub::from_raw(addr).mso_next() },
+            kind => panic!("unexpected MSO kind {kind:?}"),
         };
         out.push(cur_bits);
         cur_bits = next;
@@ -2026,7 +2023,7 @@ fn alloc_procbin_pushes_into_mso_chain_with_strict_layout() {
         let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
         let pb = alloc_procbin(&mut h, witness.clone(), 0);
         let tagged = heap_object_word(pb.as_raw() as *const u8, ValueKind::PROCBIN);
-        assert_eq!(tagged & TAG_MASK, TAG_PROCBIN);
+        assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::PROCBIN));
         assert_eq!(object_size(tagged), PROCBIN_BYTES);
         assert_eq!(mso_chain(&h), vec![tagged]);
         assert_eq!(shared_refs(&witness), 2);
@@ -2212,9 +2209,9 @@ fn alloc_bitstring_small_stays_inline() {
     let p = h.alloc_bitstring(&bytes, 256).heap_addr().expect("bitstring");
     let tagged = heap_object_word(p, ValueKind::BITSTRING);
     unsafe {
-        assert_eq!(tagged & TAG_MASK, TAG_BITSTRING);
-        assert_eq!(bitstring_bit_len(tagged as *const u8), 256);
-        let pay = bitstring_byte_ptr(tagged as *const u8);
+        assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::BITSTRING));
+        assert_eq!(bitstring_bit_len(tagged), 256);
+        let pay = bitstring_byte_ptr(tagged);
         for (i, expected) in bytes.iter().enumerate().take(32) {
             assert_eq!(*pay.add(i), *expected);
         }
@@ -2230,10 +2227,10 @@ fn alloc_bitstring_large_routes_to_shared_zone() {
     let witness = unsafe { SharedBinHandle::retain_from_raw(ProcBin::from_raw(p).shared_raw()) };
     let tagged = heap_object_word(p, ValueKind::PROCBIN);
     unsafe {
-        assert_eq!(tagged & TAG_MASK, TAG_PROCBIN);
+        assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::PROCBIN));
         assert_eq!(object_size(tagged), PROCBIN_BYTES);
-        assert_eq!(bitstring_bit_len(tagged as *const u8), 1024);
-        let pay = bitstring_byte_ptr(tagged as *const u8);
+        assert_eq!(bitstring_bit_len(tagged), 1024);
+        let pay = bitstring_byte_ptr(tagged);
         for (i, expected) in bytes.iter().enumerate().take(128) {
             assert_eq!(*pay.add(i), *expected);
         }
@@ -2280,8 +2277,8 @@ fn shared_heap_acceptance_spawn_and_share() {
 
     for root_ptr in &receiver_roots {
         unsafe {
-            assert_eq!(bitstring_bit_len(*root_ptr as *const u8), 1024);
-            let bp = bitstring_byte_ptr(*root_ptr as *const u8);
+            assert_eq!(bitstring_bit_len(*root_ptr), 1024);
+            let bp = bitstring_byte_ptr(*root_ptr);
             for (i, expected) in payload.iter().enumerate() {
                 assert_eq!(*bp.add(i), *expected);
             }
@@ -2558,8 +2555,8 @@ fn procbin_round_trips_through_bitstring_dispatchers() {
     let bytes: Vec<u8> = (0..100u8).collect();
     let p = h.alloc_bitstring(&bytes, 800).heap_addr().expect("procbin");
     let tagged = heap_object_word(p, ValueKind::PROCBIN);
-    let bl = unsafe { bitstring_bit_len(tagged as *const u8) };
-    let bp = unsafe { bitstring_byte_ptr(tagged as *const u8) };
+    let bl = unsafe { bitstring_bit_len(tagged) };
+    let bp = unsafe { bitstring_byte_ptr(tagged) };
     assert_eq!(bl, 800);
     let recovered: Vec<u8> = (0..100).map(|i| unsafe { *bp.add(i) }).collect();
     assert_eq!(recovered, bytes);

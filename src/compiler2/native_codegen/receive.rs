@@ -1722,9 +1722,9 @@ fn emit_list_empty_test(b: &mut FunctionBuilder<'_>, val: ReceiveValue, match_b:
     }
 }
 
-/// Verify `val` is a List cons cell. Strict list cells are headerless
-/// and carried by the `TAG_LIST` low nibble, so this routes through the
-/// runtime predicate instead of reading a prefix kind.
+/// Verify `val` is a List cons cell. A list cell has no header; the ref
+/// word's kind says it is a list, so this routes through the runtime
+/// predicate instead of reading a prefix kind.
 fn emit_list_cons_test<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,

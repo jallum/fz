@@ -21,8 +21,8 @@
 //! byte-aligned binary. They predate the process-aware `fz_panic` path and do
 //! not participate in its execution-context fault channel.
 
-use crate::any_value::{AnyValueRef, ValueKind, heap_object_word};
-use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
+use crate::any_value::AnyValueRef;
+use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
 use std::process::abort;
 
 fn panic_arg(msg: &str) -> ! {
@@ -36,27 +36,14 @@ fn panic_arg(msg: &str) -> ! {
 /// # Safety
 /// `v` must be an any value ref for a binary-like value.
 unsafe fn coerce_binary_ptr(v: u64) -> *const u8 {
-    let p = match AnyValueRef::from_raw_word(v).ok().and_then(|value| match value.tag() {
-        ValueKind::BITSTRING => value
-            .bitstring_addr()
-            .ok()
-            .map(|addr| heap_object_word(addr, ValueKind::BITSTRING) as *mut u8),
-        ValueKind::PROCBIN => value
-            .procbin_addr()
-            .ok()
-            .map(|addr| heap_object_word(addr, ValueKind::PROCBIN) as *mut u8),
-        _ => None,
-    }) {
-        Some(p) => p,
-        _ => panic_arg("extern binary/c_string arg: expected a binary value"),
-    };
-    if !unsafe { is_bitstring_like(p) } {
+    let is_binary = AnyValueRef::from_raw_word(v).is_ok_and(|value| value.tag().is_binary_repr());
+    if !is_binary {
         panic_arg("extern binary/c_string arg: expected a binary value");
     }
-    if unsafe { bitstring_bit_len(p) } % 8 != 0 {
+    if unsafe { bitstring_bit_len(v) } % 8 != 0 {
         panic_arg("extern binary/c_string arg: non-byte-aligned bitstring");
     }
-    unsafe { bitstring_byte_ptr(p) }
+    unsafe { bitstring_byte_ptr(v) }
 }
 
 /// `binary` marshal class: pointer to the bytes; no NUL guarantee.

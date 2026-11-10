@@ -213,7 +213,7 @@ fn alloc_procbin_pushes_into_mso_chain() {
         let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
         let pb = alloc_procbin(&mut h, handle, 0);
         let tagged = heap_object_word(pb.as_raw() as *const u8, ValueKind::PROCBIN);
-        assert_eq!(tagged & TAG_MASK, TAG_PROCBIN);
+        assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::PROCBIN));
         assert_eq!(object_size(tagged), PROCBIN_BYTES);
         assert_eq!(h.mso_head, tagged);
         assert_eq!(pb.mso_next(), 0);
@@ -359,12 +359,12 @@ fn gc_preserves_a_suffixs_offset() {
     assert_eq!(unsafe { *moved.bytes_ptr() }, 70);
 }
 
-/// fz-5xp.60 — a ProcBin stub holds its SharedBin's address in word 0, and
-/// that is the word Cheney overwrites with a `TAG_FWD` (0x8) forwarding
-/// marker. At 8-byte alignment half of all SharedBin addresses end in 8 and
-/// a LIVE stub reads as forwarded, so the sweep treats the SharedBin itself
-/// as a to-space stub and writes into it. 16-alignment is what makes a real
-/// pointer and a tag distinguishable.
+/// A ProcBin stub holds its SharedBin's address in word 0, and that is the
+/// word the collector overwrites with a forwarding marker, which is a set low
+/// nibble. A live stub whose SharedBin address had a set low nibble would read
+/// as forwarded, so the sweep would treat the SharedBin itself as a to-space
+/// stub and write into it. 16-alignment is what makes a real pointer and a
+/// marker distinguishable.
 #[test]
 fn a_shared_bin_address_is_never_mistakable_for_a_forwarding_marker() {
     assert_eq!(align_of::<SharedBin>(), 16);
@@ -373,7 +373,7 @@ fn a_shared_bin_address_is_never_mistakable_for_a_forwarding_marker() {
     for bin in &bins {
         let addr = bin.as_raw() as u64;
         assert_eq!(addr % 16, 0, "SharedBin at {addr:#x} is not 16-aligned");
-        assert_ne!(addr & TAG_MASK, TAG_FWD);
+        assert_eq!(addr & 0xF, 0, "SharedBin at {addr:#x} has a set low nibble");
     }
 }
 

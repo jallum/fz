@@ -10,10 +10,10 @@ use std::ptr::null_mut;
 use std::rc::Rc;
 
 #[test]
-fn aligned_closure_storage_is_taggable() {
+fn aligned_closure_storage_is_sixteen_byte_aligned() {
     for _ in 0..128 {
         let mut buf = super::AlignedClosureStorage::zeroed();
-        assert_eq!(buf.as_ptr() as u64 & crate::any_value::TAG_MASK, 0);
+        assert_eq!(buf.as_ptr() as u64 % 16, 0);
     }
 }
 

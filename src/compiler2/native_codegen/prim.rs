@@ -15,7 +15,9 @@ use cranelift_codegen::ir::{
 };
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
-use fz_runtime::any_value::{AnyValue, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind, struct_size_for_payload};
+use fz_runtime::any_value::{
+    AnyValue, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind, struct_header_word, struct_size_for_payload,
+};
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::{
@@ -199,8 +201,7 @@ fn define_static_struct_literal<M: cranelift_module::Module>(
     let payload_size = raw_bytes + kind_bytes;
     let total_size = struct_size_for_payload(payload_size);
     let mut buf = vec![0u8; total_size];
-    buf[0..4].copy_from_slice(&schema_id.to_le_bytes());
-    buf[4..8].copy_from_slice(&0u32.to_le_bytes());
+    buf[0..8].copy_from_slice(&struct_header_word(schema_id).to_le_bytes());
 
     let mut child_relocs = Vec::new();
     let raw_base = 8;

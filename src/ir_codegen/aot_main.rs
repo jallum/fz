@@ -252,10 +252,9 @@ pub(crate) struct BsConstSyms {
 ///   offset 40..48  padding to the type's 16-byte alignment
 ///
 /// The alignment is not cosmetic and must match `SharedBin`'s: a ProcBin
-/// stub carries this address in the word Cheney forwards through, so an
-/// address ending in `TAG_FWD`'s 0x8 makes a live stub read as forwarded
-/// (fz-5xp.60). Two statics emitted back to back at 8-alignment put the
-/// second one exactly there.
+/// stub carries this address in the word the collector overwrites with a
+/// forwarding marker, and a marker is a set low nibble, so a live pointer's
+/// low nibble must be clear.
 ///
 /// The destructor relocation is to `shared_bin_destructor_noop`, declared
 /// as `Linkage::Import` so the linker resolves it to the runtime export.

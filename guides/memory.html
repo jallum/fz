@@ -53,9 +53,10 @@ and generic runtime calls.</p>
 </ul>
 
 <p>Heap objects are 16-byte aligned, so the low 4 bits of any real heap address
-are free for the heap-object kind tag. <code>AnyValueRef</code> words use
-architecture-owned high bits for their logical tag and must only be inspected
-through the <code>AnyValueRef</code> API.</p>
+are clear. The only use of those bits is the GC's forwarding marker.
+<code>AnyValueRef</code> words, and every heap-object word that names another
+object, carry the logical kind in architecture-owned high bits and must only be
+inspected through the <code>AnyValueRef</code> API.</p>
 
 <p><code>AnyValueRef</code> uses the runtime <code>ValueKind</code> tag values:
 <code>0</code> Null, <code>1</code> List, <code>2</code> Map,
@@ -84,12 +85,11 @@ because the container layout already says where the stamp lives.
     <tr><td class="tag">0x0</td><td>NULL</td><td>sentinel</td><td>zero-init memory; local empty value</td></tr>
     <tr><td class="tag">0x1</td><td>List</td><td>heap</td><td>cons cell, 16 bytes, no header</td></tr>
     <tr><td class="tag">0x2</td><td>Map</td><td>heap</td><td>flat sorted array with packed tag bytes</td></tr>
-    <tr><td class="tag">0x3</td><td>Struct</td><td>heap</td><td>tuple/struct; 8-byte prefix (schema_id + flags)</td></tr>
-    <tr><td class="tag">0x4</td><td>Closure</td><td>heap</td><td>8-byte prefix (schema_id + flags); captures typed by schema</td></tr>
-    <tr><td class="tag">0x5</td><td>Bitstring</td><td>heap</td><td>small inline; 8-byte prefix (bit_len)</td></tr>
+    <tr><td class="tag">0x3</td><td>Struct</td><td>heap</td><td>tuple/struct; 8-byte prefix (schema_id in the high 32 bits)</td></tr>
+    <tr><td class="tag">0x4</td><td>Closure</td><td>heap</td><td>8-byte prefix (denotation in the high 32 bits; flags and arity above four clear bits in the low 32); captures carry their own kind bytes</td></tr>
+    <tr><td class="tag">0x5</td><td>Bitstring</td><td>heap</td><td>small inline; 8-byte prefix (bit_len above four clear bits)</td></tr>
     <tr><td class="tag">0x6</td><td>ProcBin</td><td>heap</td><td>32 bytes total (shared_ptr + mso_next + byte_offset)</td></tr>
     <tr><td class="tag">0x7</td><td>Resource</td><td>heap</td><td>off-heap handles with destructors</td></tr>
-    <tr><td class="tag">0x8</td><td>Forwarded</td><td>gc-marker</td><td>written into first word during Cheney copy; high 60 bits = to-space address</td></tr>
     <tr><td class="tag">0xD</td><td>Int</td><td>immediate</td><td>container-local scalar tag; payload is raw <code>i64</code></td></tr>
     <tr><td class="tag">0xE</td><td>Float</td><td>immediate</td><td>container-local scalar tag; payload is raw <code>f64::to_bits()</code></td></tr>
     <tr><td class="tag">0xF</td><td>Atom</td><td>immediate</td><td>container-local scalar tag; payload is raw atom id (32-bit, zero-extended)</td></tr>
@@ -99,11 +99,10 @@ because the container layout already says where the stamp lives.
 <p>A few consequences of this layout:</p>
 
 <ul>
-  <li><strong>Pointer reads need one <code>and !0xF</code>.</strong> Heap
-  objects are 16-byte aligned, so the bottom 4 bits of any real address are
-  zero. Heap tags <code>0x1</code> through <code>0x7</code> identify the
-  object kind; masking off the low nibble recovers the address.
-  Mixed paths just <code>and</code> off the tag bits and go.</li>
+  <li><strong>The low nibble of a live pointer is zero.</strong> Heap
+  objects are 16-byte aligned. Heap tags <code>0x1</code> through
+  <code>0x7</code> identify the object kind in the high bits; masking them off
+  recovers the address, and the low nibble is never part of either.</li>
   <li><strong>Integers and floats are raw in typed storage.</strong> A local
   tag <code>0xD</code> means the payload is a full signed <code>i64</code>.
   A local tag <code>0xE</code> means the payload is raw
@@ -116,9 +115,13 @@ because the container layout already says where the stamp lives.
 
 <p>The GC follows heap-kind tags <code>0x1</code> through <code>0x7</code>.
 Immediate side-band tags pass through unchanged. When Cheney relocates an
-object, it writes <code>(to_space_address &amp; ~0xF) | 0x8</code> into the
-first word of the from-space copy; later scans recognize tag <code>0x8</code>
-as a forwarding marker.</p>
+object, it overwrites one marker word of the from-space copy with
+<code>to_space_address | 1</code>; later scans read that word and treat any set
+low nibble as "already forwarded". The marker word is word 1 (the link) of a
+list cons and word 0 of every other kind, and each kind lays that word out so a
+live value has a clear low nibble: a struct, closure, bitstring or map header
+keeps four clear bits below its fields, and a ProcBin or Resource keeps a
+16-aligned pointer there. One read decides; no second word is consulted.</p>
 
 <div class="aside">
 Old per-float heap objects are retired. Floats in typed code travel as native
@@ -535,9 +538,9 @@ That feeds the next GC, and is the <code>live_bytes</code> of the pass's
 <code>GcStats</code>.</p>
 
 <p>Each copied from-space object gets an in-band forwarding marker written into
-its first word: <code>(to_space_address &amp; ~0xF) | TAG_FWD</code>. Any other
+its marker word: <code>to_space_address | 1</code>. Any other
 pointer to the same object reads that marker, strips the low nibble, and is
-rewritten to the same-kind tagged to-space pointer. This is how shared
+rewritten to the same-kind to-space pointer. This is how shared
 structure stays shared after collection without side tables.</p>
 
 <!-- ─────────────────────────────── 5. MID-FLIGHT GC ─────────────────────────────── -->
@@ -639,15 +642,15 @@ nothing live):</p>
   cur = heap.mso_head
   new_head = null
   while cur != null:
-      tag = low4(cur)                 <span class="note">// ProcBin or Resource from the pointer bits</span>
-      marker = read u64 at strip_low4(cur)+0
-      if low4(marker) == TAG_FWD:
-          next = read_mso_next(tag, cur)        <span class="note">// from-space link survives</span>
+      kind = kind_of(cur)             <span class="note">// ProcBin or Resource from the link's high bits</span>
+      marker = read u64 at addr_of(cur)+0
+      if low4(marker) != 0:
+          next = read_mso_next(kind, cur)       <span class="note">// from-space link survives</span>
           new_addr = strip_low4(marker)         <span class="note">// to-space copy</span>
-          link (new_addr | tag) into new_head   <span class="note">// survived; rejoin the chain</span>
+          link (new_addr, kind) into new_head   <span class="note">// survived; rejoin the chain</span>
       else:
-          next = read_mso_next(tag, cur)
-          release_payload(tag, cur)             <span class="note">// dead MSO stub; drop its ref;</span>
+          next = read_mso_next(kind, cur)
+          release_payload(kind, cur)             <span class="note">// dead MSO stub; drop its ref;</span>
                                                 <span class="note">// a Resource's last ref queues (closure, payload)</span>
       cur = next
   heap.mso_head = new_head
@@ -785,11 +788,11 @@ destructor runs and the memory goes back to the system allocator.</p>
 <p>The struct is <strong>16-byte aligned</strong>, the same as everything on
 the process heap, and that is load-bearing rather than cosmetic. A ProcBin keeps
 this address in its first word, and the first word is also where the collector
-writes a forwarding marker — a pointer carrying the tag <code>0x8</code> in its
-low four bits. At 8-byte alignment about half of all SharedBin addresses end in
-8, so a perfectly live ProcBin would read as <em>already forwarded</em>: the
-sweep would take the SharedBin itself for a relocated stub and write into it.
-Aligning to 16 means no real address can ever be mistaken for a tag.</p>
+writes a forwarding marker — a pointer with a set low nibble. At 8-byte
+alignment about half of all SharedBin addresses have a set low nibble, so a
+perfectly live ProcBin would read as <em>already forwarded</em>: the sweep
+would take the SharedBin itself for a relocated stub and write into it.
+Aligning to 16 means no real address can ever be mistaken for a marker.</p>
 
 <p>The bytes live in a separate <code>Box&lt;[u8]&gt;</code> rather than
 inline, so the destructor can free the bytes and the SharedBin struct
@@ -823,8 +826,8 @@ small heap object:</p>
 treats the ProcBin as a raw payload object with no fz value children.</p>
 
 <p>The <code>mso_next</code> link at +8 makes ProcBins their own intrusive
-linked list. When a ProcBin survives, Cheney writes only a low-4-bit
-<code>TAG_FWD</code> forwarding marker at +0; +8 is left intact so the MSO
+linked list. When a ProcBin survives, Cheney writes only a forwarding marker
+(to-space address with a set low nibble) at +0; +8 is left intact so the MSO
 sweep can continue through the from-space chain. The surviving
 <code>shared_ptr</code> is read from the to-space copy, while a dead ProcBin's
 <code>shared_ptr</code> is still read from +0 in from-space.</p>
@@ -845,7 +848,7 @@ the storage based on size:</p>
 <p>Render, bit-matching, and equality all go through small dispatch helpers
 (<code>bitstring_bit_len</code>, <code>bitstring_byte_ptr</code>,
 <code>is_bitstring_like</code>) that read from the right place based on the
-pointer's low 4-bit kind tag. Callers don't know or care which storage they're
+ref's high-bit kind tag. Callers don't know or care which storage they're
 looking at — the behaviour is identical.</p>
 
 <h3>Matching a tail copies nothing</h3>

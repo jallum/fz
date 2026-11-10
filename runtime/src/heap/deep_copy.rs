@@ -18,10 +18,10 @@ use super::schema::{FieldKind, SchemaRegistry};
 use super::{Heap, HeapAllocKind};
 use crate::any_value::AnyValueRef;
 use crate::any_value::{
-    AnyValue, EMPTY_LIST, ListCons, TAG_MASK, ValueKind, bitstring_bit_len, bitstring_bytes_ptr,
-    closure_addr_from_tagged, closure_arity, closure_capture_set, closure_capture_value, closure_captured_count,
-    closure_fn_ptr, closure_halt_kind, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry,
-    struct_field_kind_slot, struct_field_raw_slot, struct_schema_id,
+    AnyValue, EMPTY_LIST, ListCons, ValueKind, bitstring_bit_len, bitstring_bytes_ptr, closure_addr_from_tagged,
+    closure_arity, closure_capture_set, closure_capture_value, closure_captured_count, closure_fn_ptr,
+    closure_halt_kind, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, struct_field_kind_slot,
+    struct_field_raw_slot, struct_schema_id,
 };
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
@@ -126,8 +126,7 @@ impl CopyMeasure<'_> {
             ValueKind::NULL => {}
             tag if tag.is_scalar() => self.bytes += round_up_16(size_of::<u64>()),
             tag if tag.is_heap() => {
-                let bits = value.heap_object_word().expect("heap ref bits");
-                self.value(AnyValue::decode_tagged_heap_bits(bits).expect("heap bits"));
+                self.value(AnyValue::from_ref(value).expect("heap ref value"));
             }
             _ => unreachable!("AnyValueRef tag set is exhaustive"),
         }
@@ -165,8 +164,7 @@ impl CopyMeasure<'_> {
         if !self.reached.insert(sp) {
             return;
         }
-        let bits = src.heap_object_word().expect("heap object bits");
-        self.bytes += strict_object_size(bits, &self.src_heap.schemas.borrow());
+        self.bytes += strict_object_size(src.kind(), sp, &self.src_heap.schemas.borrow());
         self.children(sp, src.kind());
     }
 
@@ -232,30 +230,11 @@ pub fn deep_copy_any_value_ref(
             AnyValueRef::from_scalar_slot(tag, dst as *const u64).expect("deep-copied scalar ref")
         }
         tag if tag.is_heap() => {
-            let bits = value.heap_object_word().expect("heap ref bits");
-            let copied = deep_copy_tagged_bits(bits, src_heap, dst_heap, forwarding);
-            let addr = (copied & !TAG_MASK) as *const u8;
-            AnyValueRef::from_heap_object(tag, addr).expect("deep-copied heap ref")
+            let src = AnyValue::from_ref(value).expect("heap ref value");
+            deep_copy_any_value(src, src_heap, dst_heap, forwarding).ref_word()
         }
         _ => unreachable!("AnyValueRef tag set is exhaustive"),
     }
-}
-
-pub fn deep_copy_tagged_bits(
-    bits: u64,
-    src_heap: &HeapView,
-    dst_heap: &mut Heap,
-    forwarding: &mut AddressMap<*mut u8>,
-) -> u64 {
-    let copied = deep_copy_any_value(
-        AnyValue::decode_tagged_heap_bits(bits).expect("deep_copy_tagged_bits expects heap bits"),
-        src_heap,
-        dst_heap,
-        forwarding,
-    );
-    copied
-        .heap_object_word()
-        .expect("deep_copy_tagged_bits copied heap bits")
 }
 
 pub fn deep_copy_any_value(

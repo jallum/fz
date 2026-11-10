@@ -1,4 +1,5 @@
 use super::*;
+use crate::any_value::heap_kind_from_tagged;
 use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -52,7 +53,7 @@ fn independent_allocators_do_not_share_lifetime_observations() {
 #[test]
 fn a_resource_is_16_aligned_so_its_address_is_never_a_forwarding_marker() {
     // The stub holds this address in the word Cheney forwards through, so
-    // an address ending in TAG_FWD's 0x8 would read as forwarded.
+    // an address with a set low nibble would read as forwarded.
     assert_eq!(align_of::<Resource>(), 16);
     assert_eq!(size_of::<Resource>(), RESOURCE_BYTES);
     let (handle, _drops) = observed_resource();
@@ -202,7 +203,7 @@ fn alloc_resource_pushes_into_mso_chain() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let rs = alloc_resource(&mut heap, handle, AnyValue::nil_atom());
     let tagged = heap_object_word(rs.as_raw() as *const u8, ValueKind::RESOURCE);
-    assert_eq!(tagged & TAG_MASK, TAG_RESOURCE);
+    assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::RESOURCE));
     assert_eq!(object_size(tagged), RESOURCE_STUB_SIZE);
     assert_eq!(heap.mso_head, tagged);
     assert_eq!(rs.mso_next(), 0);
@@ -282,7 +283,7 @@ fn mixed_mso_chain_with_procbin_and_resource() {
         assert_eq!(rs2.mso_next(), pb2_bits);
         assert_eq!(pb2.mso_next(), rs1_bits);
         assert_eq!(rs1.mso_next(), pb1_bits);
-        assert_eq!(pb2.mso_next() & TAG_MASK, TAG_RESOURCE);
+        assert_eq!(heap_kind_from_tagged(pb2.mso_next()), Some(ValueKind::RESOURCE));
         assert_eq!(pb1.mso_next(), 0);
     }
     assert_eq!(first_drops.load(Ordering::Relaxed), 1);

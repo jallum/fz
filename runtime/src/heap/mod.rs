@@ -18,8 +18,10 @@
 //! scheduler-owned closures, mailbox roots, and interpreter-owned explicit
 //! roots are traced.
 //!
-//! Forwarding marker: a copied from-space object gets `(to_addr & !0xF) |
-//! TAG_FWD` written into word 0. Strict pointer tags carry the object kind.
+//! Forwarding marker: every heap object is 16-byte aligned, so a live
+//! pointer's low nibble is clear. A copied from-space object has the one
+//! marker word of its kind (`gc::forwarding`) overwritten with the to-space
+//! address plus a set low nibble; nothing else uses the low bits.
 
 mod block_pool;
 mod deep_copy;
@@ -51,9 +53,9 @@ pub use self::block_pool::pool_drain_for_test;
 pub use self::block_pool::{SIZE_TABLE, next_block_capacity, pick_block_capacity};
 pub use self::block_pool::{pool_outstanding_blocks, pool_total_cached_blocks};
 pub use self::deep_copy::{
-    AddressMap, AddressSet, HeapView, deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot,
-    deep_copy_tagged_bits, measure_deep_copy,
+    AddressMap, AddressSet, HeapView, deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, measure_deep_copy,
 };
+pub(crate) use self::gc::forwarding::forwarded_target;
 pub use self::gift::GiftSegment;
 pub use self::imp::{closure_capture_ref, list_head_ref, list_tail_ref};
 pub(crate) use self::ref_io::map_entry_refs;

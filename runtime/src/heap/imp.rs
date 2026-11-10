@@ -13,13 +13,13 @@ use super::schema::{Schema, SchemaRegistry};
 use super::stats::GcStats;
 use super::{Heap, HeapAllocKind, HeapAllocStats, SHARED_BIN_THRESHOLD_BYTES};
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MAP_DESTINATION_FLAG,
-    TAG_BITSTRING, TAG_CLOSURE, TAG_LIST, TAG_MAP, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, TAG_STRUCT, ValueKind,
+    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, ValueKind, bitstring_header_word,
     bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot,
-    closure_capture_set, closure_capture_value, closure_header_word, closure_size_for_count, heap_kind_from_tagged,
-    heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_keys_ptr, map_pack_tag,
+    closure_capture_set, closure_capture_value, closure_header_word, closure_header_write, closure_size_for_count,
+    heap_kind_from_tagged, heap_object_word, heap_word_addr, list_addr_from_tagged, map_addr_from_tagged, map_count,
+    map_destination_header_word, map_destination_state, map_entry, map_header_word, map_keys_ptr, map_pack_tag,
     map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot, struct_field_raw_slot,
-    struct_schema_id, struct_size_for_payload,
+    struct_header_word, struct_schema_id, struct_size_for_payload,
 };
 use crate::procbin::{
     DeadResource, SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep, mso_unreached_closures,
@@ -38,20 +38,6 @@ use std::slice::from_raw_parts;
 // are free functions (the `Heap::read_*` methods below delegate). BIFs call them
 // directly, with no `current_process()` and no process argument — which is also
 // why the receive matcher can project list/closure shapes without a process.
-
-fn map_destination_header(capacity: usize, filled: usize) -> u64 {
-    assert!(capacity < (1 << 31) && filled <= capacity, "map destination capacity");
-    MAP_DESTINATION_FLAG | ((filled as u64) << 32) | capacity as u64
-}
-
-fn map_destination_state(addr: *const u8) -> (usize, usize) {
-    let header = unsafe { read(addr.cast::<u64>()) };
-    assert_ne!(header & MAP_DESTINATION_FLAG, 0, "map is already published");
-    (
-        header as u32 as usize,
-        ((header & !MAP_DESTINATION_FLAG) >> 32) as usize,
-    )
-}
 
 pub fn list_head_ref(list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
     let addr = list.list_addr()?;
@@ -221,8 +207,7 @@ impl Heap {
         let total = struct_size_for_payload(payload_size);
         let p = self.alloc_kind(HeapAllocKind::Struct, total);
         unsafe {
-            write(p as *mut u32, schema_id);
-            write(p.add(4) as *mut u32, 0);
+            write(p as *mut u64, struct_header_word(schema_id));
             // Zero payload.
             write_bytes(p.add(8), 0, total - 8);
         }
@@ -354,7 +339,7 @@ impl Heap {
 
     pub fn current_heap_tagged_addr(&self, bits: u64) -> Option<(ValueKind, *mut u8)> {
         let kind = heap_kind_from_tagged(bits)?;
-        let p = (bits & !TAG_MASK) as *mut u8;
+        let p = heap_word_addr(bits);
         (!p.is_null() && self.contains_heap_addr(p)).then_some((kind, p))
     }
 
@@ -422,7 +407,7 @@ impl Heap {
         entries: impl Iterator<Item = (AnyValue, AnyValue)>,
     ) {
         unsafe {
-            write(p as *mut u64, count as u64);
+            write(p as *mut u64, map_header_word(count));
             let tag_p = map_tag_ptr(p);
             write_bytes(tag_p, 0, map_tag_bytes_len(count));
             let keys = map_keys_ptr(p, count);
@@ -451,7 +436,7 @@ impl Heap {
         let total = map_size_for_count(count);
         let p = self.alloc_kind(HeapAllocKind::Map, total);
         unsafe {
-            write(p as *mut u64, map_destination_header(count, base_count));
+            write(p as *mut u64, map_destination_header_word(count, base_count));
             let tag_p = map_tag_ptr(p);
             write_bytes(tag_p, 0, map_tag_bytes_len(count));
             let keys = map_keys_ptr(p, count);
@@ -477,7 +462,7 @@ impl Heap {
     /// or any other unfinished destination. Freezing publishes the stored fields.
     pub unsafe fn map_destination_put(&mut self, dest_bits: u64, key: AnyValue, value: AnyValue) {
         let dest = map_addr_from_tagged(dest_bits).expect("map_destination_put dest");
-        let (count, filled) = map_destination_state(dest);
+        let (count, filled) = unsafe { map_destination_state(dest) };
         assert!(filled < count, "map destination has no free entry slot");
         assert_ne!(key.kind(), ValueKind::NULL, "unpublished map key");
         unsafe {
@@ -487,13 +472,13 @@ impl Heap {
             write(tag_p.add(filled), map_pack_tag(key.kind(), value.kind()));
             write_any_value_to_storage(keys.add(filled), None, key);
             write_any_value_to_storage(values.add(filled), None, value);
-            write(dest as *mut u64, map_destination_header(count, filled + 1));
+            write(dest as *mut u64, map_destination_header_word(count, filled + 1));
         }
     }
 
     pub fn map_destination_freeze(&mut self, dest_bits: u64) -> u64 {
         let dest = map_addr_from_tagged(dest_bits).expect("map destination");
-        let (_, filled) = map_destination_state(dest);
+        let (_, filled) = unsafe { map_destination_state(dest) };
         let mut entries: Vec<_> = (0..filled).map(|i| unsafe { map_entry(dest, i) }).collect();
         self.normalize_map_entries(&mut entries);
         self.write_ordered_map_entries(dest, entries.len(), entries.into_iter());
@@ -651,8 +636,7 @@ impl Heap {
         let total = bitstring_size_for_bit_len(bit_len);
         let p = self.alloc_kind(HeapAllocKind::Bitstring, total);
         unsafe {
-            let bit_len_p = p as *mut u64;
-            write(bit_len_p, bit_len);
+            write(p as *mut u64, bitstring_header_word(bit_len));
             let bytes_p = p.add(8);
             copy_nonoverlapping(bytes.as_ptr(), bytes_p, bytes.len());
             // Zero the trailing padding so renders / debug aren't garbage.
@@ -718,10 +702,9 @@ impl Heap {
         let total = closure_size_for_count(captured_count);
         let p = self.alloc_kind(HeapAllocKind::Closure, total);
         unsafe {
-            write(p as *mut u32, denotation.as_u32());
-            write(
-                p.add(4) as *mut u32,
-                closure_header_word(captured_count as u16, halt_kind, arity),
+            closure_header_write(
+                p,
+                closure_header_word(denotation, captured_count as u16, halt_kind, arity),
             );
             write(p.add(8) as *mut u64, 0);
             if total > 16 {
@@ -1215,8 +1198,8 @@ fn cheney_scan(
     while *scan_idx < copied_objects.len() {
         let copied = copied_objects[*scan_idx];
         *scan_idx += 1;
-        match copied.tag {
-            TAG_LIST => cheney_trace_list(
+        match copied.kind {
+            ValueKind::LIST => cheney_trace_list(
                 copied.ptr as *mut ListCons,
                 from_ranges,
                 free,
@@ -1225,14 +1208,18 @@ fn cheney_scan(
                 copied_objects,
                 stats,
             ),
-            TAG_MAP => cheney_trace_map(copied.ptr, from_ranges, free, to_end, schemas, copied_objects, stats),
-            TAG_CLOSURE => cheney_trace_closure(copied.ptr, from_ranges, free, to_end, schemas, copied_objects, stats),
-            TAG_STRUCT => cheney_trace_struct(copied.ptr, from_ranges, free, to_end, schemas, copied_objects, stats),
-            TAG_BITSTRING | TAG_PROCBIN => {}
-            TAG_RESOURCE => {
+            ValueKind::MAP => cheney_trace_map(copied.ptr, from_ranges, free, to_end, schemas, copied_objects, stats),
+            ValueKind::CLOSURE => {
+                cheney_trace_closure(copied.ptr, from_ranges, free, to_end, schemas, copied_objects, stats)
+            }
+            ValueKind::STRUCT => {
+                cheney_trace_struct(copied.ptr, from_ranges, free, to_end, schemas, copied_objects, stats)
+            }
+            ValueKind::BITSTRING | ValueKind::PROCBIN => {}
+            ValueKind::RESOURCE => {
                 cheney_trace_resource(copied.ptr, from_ranges, free, to_end, schemas, copied_objects, stats)
             }
-            tag => panic!("Cheney scan: invalid copied object tag {tag:#x}"),
+            kind => panic!("Cheney scan: invalid copied object kind {kind:?}"),
         }
     }
 }

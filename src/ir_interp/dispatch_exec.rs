@@ -819,10 +819,7 @@ impl<'a> Dispatch<'a> {
         let Some(value_bits) = value.heap_object_word() else {
             return false;
         };
-        let Some(p) = bitstring_like_ptr(value_bits) else {
-            return false;
-        };
-        if !unsafe { is_bitstring_like(p) } {
+        if !is_bitstring_like(value_bits) {
             return false;
         }
         let plan = self.plan;
@@ -1156,18 +1153,17 @@ fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyValue, value: 
         DispatchShape::Utf8Binary(bytes) => match val {
             AnyValue::FnRef(..) => false,
             other => other.value(proc).ok().is_some_and(|val| {
-                val.heap_object_word().and_then(bitstring_like_ptr).is_some_and(|p| {
-                    if !unsafe { is_bitstring_like(p) } {
-                        return false;
-                    }
-                    let bit_len = unsafe { bitstring_bit_len(p) };
-                    if bit_len != (bytes.len() as u64) * 8 {
-                        return false;
-                    }
-                    let ptr = unsafe { bitstring_byte_ptr(p) };
-                    let slice = unsafe { from_raw_parts(ptr, bytes.len()) };
-                    slice == bytes
-                })
+                val.heap_object_word()
+                    .filter(|word| is_bitstring_like(*word))
+                    .is_some_and(|p| {
+                        let bit_len = unsafe { bitstring_bit_len(p) };
+                        if bit_len != (bytes.len() as u64) * 8 {
+                            return false;
+                        }
+                        let ptr = unsafe { bitstring_byte_ptr(p) };
+                        let slice = unsafe { from_raw_parts(ptr, bytes.len()) };
+                        slice == bytes
+                    })
             }),
         },
     }

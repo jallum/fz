@@ -478,12 +478,12 @@ fn alloc_bitstring_const_small_payload_is_inline() {
         let bits = heap_object_word(addr, ValueKind::BITSTRING);
         unsafe {
             assert_eq!(
-                bits & TAG_MASK,
-                TAG_BITSTRING,
-                "small payload should pick the strict inline Bitstring tag"
+                bitstring_ref.tag(),
+                ValueKind::BITSTRING,
+                "small payload should pick the inline Bitstring kind"
             );
-            assert_eq!(bitstring_bit_len(bits as *const u8), 24);
-            let bp = bitstring_byte_ptr(bits as *const u8);
+            assert_eq!(bitstring_bit_len(bits), 24);
+            let bp = bitstring_byte_ptr(bits);
             assert_eq!(from_raw_parts(bp, 3), &bytes);
         }
     });
@@ -516,10 +516,10 @@ fn alloc_procbin_from_static_preserves_anchor() {
         let addr = procbin_ref.procbin_addr().expect("procbin addr");
         let bits = heap_object_word(addr, ValueKind::PROCBIN);
         unsafe {
-            assert_eq!(bits & TAG_MASK, TAG_PROCBIN);
+            assert_eq!(procbin_ref.tag(), ValueKind::PROCBIN);
             assert_eq!(object_size(bits), PROCBIN_BYTES);
-            assert_eq!(bitstring_bit_len(bits as *const u8), 64);
-            let bp = bitstring_byte_ptr(bits as *const u8);
+            assert_eq!(bitstring_bit_len(bits), 64);
+            let bp = bitstring_byte_ptr(bits);
             assert_eq!(from_raw_parts(bp, 8), &PAYLOAD[..]);
             // retain climbed anchor 1 -> 2.
             assert_eq!(sb.refcount.load(Ordering::Relaxed), 2);
@@ -541,10 +541,10 @@ fn alloc_bitstring_const_large_payload_is_procbin() {
         let addr = procbin_ref.procbin_addr().expect("procbin addr");
         let bits = heap_object_word(addr, ValueKind::PROCBIN);
         unsafe {
-            assert_eq!(bits & TAG_MASK, TAG_PROCBIN);
+            assert_eq!(procbin_ref.tag(), ValueKind::PROCBIN);
             assert_eq!(object_size(bits), PROCBIN_BYTES);
-            assert_eq!(bitstring_bit_len(bits as *const u8), 70 * 8);
-            let bp = bitstring_byte_ptr(bits as *const u8);
+            assert_eq!(bitstring_bit_len(bits), 70 * 8);
+            let bp = bitstring_byte_ptr(bits);
             assert_eq!(from_raw_parts(bp, payload.len()), payload.as_slice());
         }
     });
@@ -700,7 +700,7 @@ fn list_length_counts_a_proper_list_and_refuses_every_other_value() {
 }
 
 fn binary_bytes(word: u64) -> Vec<u8> {
-    let p = bitstring_like_ptr_from_ref(word).expect("a binary");
+    let p = bitstring_like_word(word).expect("a binary");
     unsafe { std::slice::from_raw_parts(bitstring_byte_ptr(p), (bitstring_bit_len(p) / 8) as usize).to_vec() }
 }
 

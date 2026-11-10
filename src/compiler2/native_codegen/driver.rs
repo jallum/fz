@@ -408,11 +408,9 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
 /// — exactly the launch the retired `fz_spawn_entry` performed, but driven
 /// off the captured inner instead of a scheduler argument.
 ///
-/// Closure metadata layout:
-///   off 0  : kind (u16)         off 4  : size_bytes (u32)
-///   off 2  : flags (u16)        off 8  : schema_id (u32)
-///                               off 12 : _reserved (u32)
-/// flags low 14 bits = captured_count; high 2 bits = halt_kind.
+/// Closure header (word 0, see `closure_header_word`): the low 32 bits hold
+/// four clear bits, then flags, then arity; the high 32 bits hold the
+/// denotation. Flags low 14 bits = captured_count; high 2 bits = halt_kind.
 fn emit_entry_thunk<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,

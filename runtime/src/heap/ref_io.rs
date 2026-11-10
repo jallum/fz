@@ -4,12 +4,14 @@ use std::ptr::{read, write};
 
 use super::schema::SchemaRegistry;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, ValueKind, map_count, map_key_kind, map_keys_ptr, map_tag_ptr,
-    map_value_kind, map_values_ptr, object_size_with_struct_payload,
+    AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, ValueKind, heap_object_word, map_count, map_key_kind,
+    map_keys_ptr, map_tag_ptr, map_value_kind, map_values_ptr, object_size_with_struct_payload,
 };
 
-pub(super) fn strict_object_size(bits: u64, schemas: &SchemaRegistry) -> usize {
-    object_size_with_struct_payload(bits, |schema_id| schemas.get(schema_id).allocation_payload_size())
+pub(super) fn strict_object_size(kind: ValueKind, addr: *const u8, schemas: &SchemaRegistry) -> usize {
+    object_size_with_struct_payload(heap_object_word(addr, kind), |schema_id| {
+        schemas.get(schema_id).allocation_payload_size()
+    })
 }
 
 pub(super) fn any_value_ref_from_storage(

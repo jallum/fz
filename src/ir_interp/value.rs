@@ -3,8 +3,8 @@ use crate::fz_ir::{FnId, Module};
 use crate::runtime_type_predicate::RuntimeTypePredicate;
 use fz_runtime::any_value::debug::render_value;
 use fz_runtime::any_value::{
-    AnyValue as RuntimeAnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_BITSTRING, TAG_MASK, TAG_PROCBIN,
-    TRUE_ATOM_ID, ValueKind, closure_addr_from_tagged,
+    AnyValue as RuntimeAnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
+    closure_addr_from_tagged,
 };
 use fz_runtime::heap::Schema;
 use fz_runtime::ir_runtime::{fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_struct_get_field_ref};
@@ -195,14 +195,6 @@ impl AnyValue {
                 RuntimeAnyValue::from_ref(value.raw()).unwrap_or(RuntimeAnyValue::null()),
             ),
         }
-    }
-}
-
-pub(super) fn bitstring_like_ptr(bits: u64) -> Option<*mut u8> {
-    if matches!(bits & TAG_MASK, TAG_BITSTRING | TAG_PROCBIN) {
-        Some(bits as *mut u8)
-    } else {
-        None
     }
 }
 

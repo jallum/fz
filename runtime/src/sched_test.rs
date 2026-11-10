@@ -45,7 +45,7 @@ fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
         write(p.add(8) as *mut u64, stub as u64);
         any_value::closure_capture_set(p, 0, AnyValue::null());
     }
-    bits as *mut u8
+    p
 }
 
 fn record_on_42(task: &mut Process, timer: Option<TimerId>) -> ParkRecord {

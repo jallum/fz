@@ -98,14 +98,16 @@ impl ParkRecord {
     /// ```
     pub fn outcome_closure(&self, heap: &mut Heap, clause_idx: usize, bound_vals: &[AnyValueRef]) -> *mut u8 {
         let template = self.clause_bodies[clause_idx];
-        materialize_outcome_closure(heap, template, bound_vals)
+        // SAFETY: a park record's clause bodies are live closures it owns and the collector keeps current.
+        unsafe { materialize_outcome_closure(heap, template, bound_vals) }
     }
 }
 
-pub fn materialize_outcome_closure(heap: &mut Heap, template: *mut u8, bound_vals: &[AnyValueRef]) -> *mut u8 {
-    let template_bits = template as u64;
-    let template_addr = closure_addr_from_tagged(template_bits).unwrap_or(template);
-    let flags = unsafe { closure_flags(template_addr as *const u8) };
+/// # Safety
+///
+/// `template` must point at a live closure whose first capture is the outer continuation.
+pub unsafe fn materialize_outcome_closure(heap: &mut Heap, template: *mut u8, bound_vals: &[AnyValueRef]) -> *mut u8 {
+    let flags = unsafe { closure_flags(template as *const u8) };
     let template_slots = closure_flags_captured(flags) as usize;
     assert!(
         template_slots >= 1,
@@ -113,15 +115,15 @@ pub fn materialize_outcome_closure(heap: &mut Heap, template: *mut u8, bound_val
     );
     let outcome_slots = template_slots + bound_vals.len();
     let outcome_bits = heap.alloc_closure_slots(
-        unsafe { crate::any_value::closure_denotation(template_addr) },
-        unsafe { closure_arity(template_addr as *const u8) },
+        unsafe { crate::any_value::closure_denotation(template) },
+        unsafe { closure_arity(template as *const u8) },
         outcome_slots,
         closure_flags_halt_kind(flags),
     );
     let outcome = closure_addr_from_tagged(outcome_bits).expect("materialized closure ptr");
 
     unsafe {
-        let template_u8 = template_addr as *const u8;
+        let template_u8 = template as *const u8;
         let outcome_u8 = outcome;
         let code_ptr = read(template_u8.add(8) as *const u64);
         write(outcome_u8.add(8) as *mut u64, code_ptr);

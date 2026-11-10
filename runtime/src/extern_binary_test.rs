@@ -1,4 +1,5 @@
 use super::*;
+use crate::any_value::ValueKind;
 use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
 use std::cell::RefCell;
 use std::env::{current_exe, var};

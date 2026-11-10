@@ -3,9 +3,8 @@
 
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, EMPTY_LIST, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, ValueKind, heap_kind_from_tagged,
-    heap_object_word, list_addr_from_tagged, procbin_addr_from_tagged, struct_addr_from_tagged,
-    struct_size_for_payload,
+    AnyValue, AnyValueRef, EMPTY_LIST, ValueKind, heap_kind_from_tagged, heap_object_word, heap_word_addr,
+    list_addr_from_tagged, procbin_addr_from_tagged, struct_addr_from_tagged, struct_size_for_payload,
 };
 use crate::procbin::{PROCBIN_BYTES, ProcBin, SharedBinHandle, alloc_procbin};
 use crate::resource::ResourceStub;
@@ -33,7 +32,9 @@ fn list_ref_from_bits(bits: u64) -> AnyValueRef {
 
 fn heap_ref(bits: u64) -> AnyValueRef {
     let kind = heap_kind_from_tagged(bits).expect("tagged heap root");
-    AnyValueRef::from_heap_object(kind, (bits & !TAG_MASK) as *const u8).expect("heap root ref")
+    AnyValueRef::from_raw_word(bits)
+        .inspect(|root| assert_eq!(root.tag(), kind))
+        .expect("heap root ref")
 }
 
 fn procbin_word(pb: &ProcBin) -> u64 {
@@ -45,11 +46,11 @@ fn mso_chain(h: &Heap) -> Vec<u64> {
     let mut out = Vec::new();
     let mut cur_bits = h.mso_head;
     while cur_bits != 0 {
-        let addr = (cur_bits & !TAG_MASK) as *mut u8;
-        let next = match cur_bits & TAG_MASK {
-            TAG_PROCBIN => unsafe { ProcBin::from_raw(addr).mso_next() },
-            TAG_RESOURCE => unsafe { ResourceStub::from_raw(addr).mso_next() },
-            tag => panic!("unexpected MSO tag {tag:#x}"),
+        let addr = heap_word_addr(cur_bits);
+        let next = match heap_kind_from_tagged(cur_bits) {
+            Some(ValueKind::PROCBIN) => unsafe { ProcBin::from_raw(addr).mso_next() },
+            Some(ValueKind::RESOURCE) => unsafe { ResourceStub::from_raw(addr).mso_next() },
+            kind => panic!("unexpected MSO kind {kind:?}"),
         };
         out.push(cur_bits);
         cur_bits = next;

@@ -4,7 +4,7 @@ use cranelift_codegen::ir::{
 };
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
-use fz_runtime::any_value::{AnyValueRefPacking, TAG_FWD, TaggedRefArch};
+use fz_runtime::any_value::{AnyValueRefPacking, TAG_LAZY_CONT, TaggedRefArch};
 
 /// Allocate and return a halt-cont singleton for `repr` via `fz_get_halt_cont`.
 /// Used when the caller has no cont_param and needs a halt-cont to pass to the
@@ -241,7 +241,7 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
         }
     });
     let ptr = body.b.ins().stack_addr(types::I64, slot, 0);
-    emit_tagged_pointer_ref_word(body.b, ptr, TAG_FWD)
+    emit_tagged_pointer_ref_word(body.b, ptr, TAG_LAZY_CONT)
 }
 
 fn emit_tagged_pointer_ref_word(b: &mut FunctionBuilder<'_>, ptr: ir::Value, tag: u64) -> ir::Value {
