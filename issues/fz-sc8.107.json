@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-10T00:22:52Z",
+  "description": "String.codepoints(\u003c\u003c\"a\", 255, \"b\"\u003e\u003e) is [\"a\", \u003c\u003c255, 98\u003e\u003e] in fz (measured on bea9d1ae5) and [\"a\", \u003c\u003c255\u003e\u003e, \"b\"] in Elixir 1.19.4. lib/string.fz codepoint_size(first_byte(s)) trusts the lead byte: 255 claims four bytes. It feeds next_codepoint (:651) and the walkers at :973, :1000 and :1021. Elixir treats a byte that does not start a valid UTF-8 sequence, or a truncated sequence, as a one-byte codepoint. Graphemes already get this rule from fz-sc8.23 (fz_grapheme_size). The distiller reads valid UTF-8 only.",
+  "id": "fz-sc8.107",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "An invalid byte is its own codepoint, as in Elixir",
+  "type": "bug",
+  "updated_at": "2026-11-10T00:22:52Z"
+}
