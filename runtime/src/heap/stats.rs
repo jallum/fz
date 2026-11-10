@@ -81,10 +81,9 @@ pub struct GcStats {
     pub live_objects: u64,
     pub live_bytes: u64,
     pub from_space_capacity_bytes: u64,
-    pub to_space_capacity_bytes: u64,
     /// Blocks of the from-space the collection released.
     pub blocks_released: u64,
-    /// Blocks the heap holds once the collection installs its to-space.
+    /// Blocks the heap holds once the collection finishes: the tip and every parked to-space block.
     pub blocks_after: u64,
     /// Length of the from-space range list the membership test
     /// (`ptr_in_ranges`) scans for every edge the collection follows.

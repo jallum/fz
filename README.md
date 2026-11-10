@@ -319,8 +319,7 @@ about; the sender does the work on its own time and its own heap.
 A message is measured, then copied once by the sender into one block of
 memory the receiver adopts. No process ever writes into another process's heap: the receiver
 grafts the sender's block onto its own heap with pointer moves, and its
-next garbage collection, sized to hold everything that could survive, copies
-out whatever is still live. Because the
+next garbage collection copies out whatever is still live. Because the
 receiver's matcher runs on the sender, a `when` guard in a `receive`
 runs there too, so it must be pure; a call such as `self()` in a guard
 names the receiver, because the receiver evaluates it before it parks.

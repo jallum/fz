@@ -6,8 +6,9 @@
 //! too. Block capacities are `SIZE_TABLE` entries, which the pool recycles, or
 //! for an object larger than the whole table exactly that object's size, which
 //! the system allocator provides and takes back. At the next park-time GC, the collector copies everything reachable
-//! from scheduler-owned roots into a fresh to-space block; the old current
-//! block and all parked blocks are then freed.
+//! from scheduler-owned roots into a fresh tip through the same bump path
+//! (a copy that fills the tip parks it and climbs the table, like an
+//! allocation); the old current block and all parked blocks are then freed.
 //!
 //! GC is *not* synchronous on allocation. `Heap::should_gc` is a pure
 //! function of the heap's state: the bytes a collection could copy (the tip's
@@ -81,8 +82,8 @@ pub struct Heap {
     /// The bytes known to be live: set by a collection to the bytes that
     /// survived, raised by a graft by the gift's fill, left alone by
     /// allocation. Zero until the first collection or graft. `should_gc`
-    /// counts allocation against it, and to-space sizing reads it as the
-    /// last survivors.
+    /// counts allocation against it, and a collection's fresh tip is sized
+    /// to it.
     pub live_baseline: usize,
     /// Blocks the heap has stopped bumping into: old tips abandoned by `grow`
     /// and blocks grafted from other heaps' gift segments. Each records its

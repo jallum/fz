@@ -118,8 +118,8 @@ request rounded up to 16 bytes, whether the request is below the first entry
 or above the last. An exact block is allocated at that size and is returned to
 the system allocator, not the pool, when it is released;
 `pool_outstanding_blocks` counts pooled blocks only. An object above the table
-is parked in an exact block, is part of `bytes_used` and is copied by Cheney like any other, so to-space
-grows past the table to hold it.
+is parked in an exact block, is part of `bytes_used` and is copied by Cheney like any other, into an
+exact block of its own.
 
 ## The gift window
 
@@ -146,12 +146,12 @@ Grafted blocks are parked blocks like any other, so a gift's fill is part of
 `bytes_used`; it is also part of `live_baseline`, because a gift arrives packed
 and fully live, the state of a heap after a collection. A gift therefore never
 makes a collection due: only the receiver's own allocation does, once it
-reaches the baseline. A collection sizes to-space from `bytes_used` first: the
-capacity holding every byte in use is the floor, and the grow, keep and
-shrink bands choose between that floor and a larger capacity. Grow applies when
-`bytes_used` fills 75% or more of the tip; shrink when the live baseline
-fills 25% or less of it; keep otherwise. To-space capacity is therefore at
-least the bytes a pass can copy.
+reaches the baseline. A collection installs a fresh tip whose capacity is a guess, the live
+baseline (the smallest tip when the baseline is empty), and copies through the
+ordinary bump path: a copy that fills the tip parks it and the next capacity up
+is installed, and an object above the next step parks alone. A wrong guess
+costs a block. The heap after a collection is the new tip plus the parked
+to-space blocks, and the live baseline is the bytes copied.
 
 Compiled yield telemetry still samples the slow path that materializes a
 continuation closure:

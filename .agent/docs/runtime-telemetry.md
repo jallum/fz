@@ -177,14 +177,13 @@ signature:    (&Collection)
 `JsonlBackend` renders `pid` and the `boundary` as `"yield"`, `"park"` or
 `"exit"`, then these `GcStats` fields as numbers:
 
-- `copied_bytes`: bytes the pass copied into to-space;
-- `live_bytes`: bytes in use once the pass installed its to-space;
+- `copied_bytes`: bytes the pass copied;
+- `live_bytes`: bytes in use once the pass finished (the bytes copied);
 - `from_space_capacity_bytes`: capacity of every block the pass collected (the
   tip, a gift's saved tip and every parked block);
-- `to_space_capacity_bytes`: capacity of the block the pass installed as the
-  new tip;
 - `blocks_released`: from-space blocks the pass released;
-- `blocks_after`: blocks the heap holds once the to-space is installed;
+- `blocks_after`: blocks the heap holds once the pass finished (the new tip and every
+  to-space block it parked);
 - `from_ranges_walked`: length of the from-space range list `ptr_in_ranges`
   scans for every edge the pass follows.
 

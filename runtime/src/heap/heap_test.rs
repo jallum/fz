@@ -1560,66 +1560,101 @@ fn next_block_capacity_climbs_the_table_then_grows_by_a_fifth() {
     assert!(next_block_capacity(past) > past, "it never stops climbing");
 }
 
-/// Acceptance: under increasing load, gc sizes the heap to fit the live
-/// set and never shrinks below it as the working set grows. Build
-/// progressively longer rooted chains; each gc must land on a class that
-/// holds the live bytes, and the class must be monotonic non-decreasing.
-///
-/// Note: the post-GC sizing is pressure-aware (it grows on allocation
-/// *need*, not strictly on `2 * live` — see `Heap::gc`), so the class may
-/// jump ahead of the live set and then plateau for an iteration while the
-/// working set catches up. That is correct: the invariant is "always fits
-/// live, never shrinks below it," not "climbs by exactly one step each
-/// time." The fit-to-live assertion below — with `expected_min` itself
-/// climbing as `live` doubles — is what proves the heap genuinely grows.
+/// Under increasing load, the blocks a collection leaves hold exactly the
+/// live bytes: build progressively longer rooted chains and collect each.
+/// Early rounds outgrow the guessed tip (the last live bytes), so the copy
+/// parks to-space blocks; the heap is the tip plus those blocks either way.
 #[test]
-fn gc_sizes_to_fit_and_never_shrinks_below_live_as_load_grows() {
+fn the_heaps_blocks_hold_the_live_bytes_as_load_grows() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let mut last_capacity = 0usize;
     for power in 6..=12 {
         let len = 1usize << power; // 64, 128, ..., 4096 cells
-        // Build a chain of `len` cons cells, rooted at head.
         let mut tail = EMPTY_LIST;
         for i in 0..len {
             tail = alloc_int_list_cons(&mut h, i as i64, tail);
         }
         let mut roots = [heap_ref(tail)];
-        h.collect(&mut roots);
+        let stats = h.collect(&mut roots);
         let live_bytes = len * 16;
-        let expected_min = pick_block_capacity(live_bytes); // without slack
+        assert_eq!(h.bytes_used(), live_bytes, "the heap's blocks hold every live byte");
+        assert_eq!(h.live_baseline, live_bytes);
+        assert_eq!(stats.live_bytes, live_bytes as u64);
+        assert_eq!(stats.blocks_after, 1 + h.blocks.len() as u64);
+        let capacity = h.block_size + h.blocks.iter().map(|block| block.capacity).sum::<usize>();
         assert!(
-            h.block_size >= expected_min,
-            "capacity {} should fit live_bytes {}",
-            h.block_size,
-            live_bytes
+            capacity >= live_bytes,
+            "capacity {capacity} holds live bytes {live_bytes}"
         );
-        assert!(
-            h.block_size >= last_capacity,
-            "capacity shrank below the growing working set: prev={}, now={}",
-            last_capacity,
-            h.block_size
-        );
-        last_capacity = h.block_size;
     }
 }
 
-/// live_baseline is set correctly after GC and used for to-space sizing.
-/// First GC uses bytes_used() as upper bound; subsequent GCs use
-/// live_baseline * 2 (50% post-GC target occupancy).
+/// To-space starts as a tip sized by a guess, the last live bytes. When the
+/// live bytes outgrow the guess, the copy fills the tip, parks it, and
+/// continues in the next capacity up, exactly as allocation does.
 #[test]
-fn gc_updates_live_baseline() {
+fn a_copy_larger_than_the_guessed_tip_parks_to_space_blocks() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    assert_eq!(h.live_baseline, 0, "no collection yet: the guess is the smallest tip");
+    let len = SIZE_TABLE[0] / 16 * 4;
+    let mut tail = EMPTY_LIST;
+    for i in 0..len {
+        tail = alloc_int_list_cons(&mut h, i as i64, tail);
+    }
+    let mut roots = [heap_ref(tail)];
+
+    let stats = h.collect(&mut roots);
+
+    assert!(!h.blocks.is_empty(), "the copy overflowed its guessed tip");
+    assert_eq!(stats.blocks_after, 1 + h.blocks.len() as u64);
+    assert_eq!(stats.live_bytes, (len * 16) as u64);
+    assert_eq!(
+        h.bytes_used(),
+        len * 16,
+        "tip and parked to-blocks hold every copied byte"
+    );
+    assert_eq!(h.live_count(), len);
+    let mut cursor = roots[0];
+    let mut seen = 0;
+    while !cursor.is_empty_list() {
+        assert!(
+            h.contains_heap_addr(cursor.storage_addr()),
+            "every cell is in a heap block"
+        );
+        cursor = h.read_list_tail_ref(cursor).expect("tail");
+        seen += 1;
+    }
+    assert_eq!(seen, len);
+}
+
+/// A collection's survivors are the next collection's guess for the tip, so
+/// a steady live set of N bytes collects into a single block.
+#[test]
+fn a_steady_live_set_collects_into_one_block() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut tail = EMPTY_LIST;
+    for i in 0..(SIZE_TABLE[0] / 16 * 4) {
+        tail = alloc_int_list_cons(&mut h, i as i64, tail);
+    }
+    let mut roots = [heap_ref(tail)];
+    h.collect(&mut roots);
+    let stats = h.collect(&mut roots);
+    assert_eq!(stats.blocks_after, 1, "the guess now holds the live bytes");
+    assert!(h.blocks.is_empty());
+}
+
+/// live_baseline is the bytes the collection copied.
+#[test]
+fn a_collection_sets_the_live_baseline_to_the_bytes_it_copied() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     assert_eq!(h.live_baseline, 0, "zero before first gc");
-    // Build [1, 2, 3].
     let n3 = alloc_int_list_cons(&mut h, 3, EMPTY_LIST);
     let n2 = alloc_int_list_cons(&mut h, 2, n3);
     let n1 = alloc_int_list_cons(&mut h, 1, n2);
     let mut roots = [heap_ref(n1)];
-    h.collect(&mut roots);
+    let stats = h.collect(&mut roots);
     assert_eq!(h.live_baseline, 3 * 16, "three cons cells = 48 bytes");
+    assert_eq!(stats.copied_bytes, 3 * 16);
 
-    // Second GC with same live set: to-space sizing = 48 * 2 = 96,
-    // clamped to SIZE_TABLE[0]. live bytes stay the same.
     h.collect(&mut roots);
     assert_eq!(h.live_baseline, 3 * 16, "live bytes unchanged");
     assert_eq!(h.block_size, SIZE_TABLE[0], "tiny live set stays at smallest block");
@@ -2411,8 +2446,9 @@ fn a_collection_copies_a_parked_huge_object_and_releases_its_block() {
     assert_ne!(moved, big);
     assert!(h.contains_heap_addr(moved));
     assert!(!h.contains_heap_addr(big), "the parked exact block was released");
-    assert!(h.blocks.is_empty());
+    assert_eq!(h.blocks.len(), 1, "the copy is parked alone in a block of its own");
     assert_eq!(stats.copied_objects, 1);
+    assert_eq!(stats.blocks_after, 2, "the fresh tip and the copy's block");
     assert_eq!(stats.blocks_released, 2, "the tip and the parked block");
 }
 
@@ -2427,8 +2463,8 @@ fn a_huge_allocation_inside_a_gift_window_is_refused() {
     h.alloc(next_block_capacity(SIZE_TABLE[0]) + 16);
 }
 
-/// A rooted object above the table is copied like any other: it moves, the
-/// to-space is at least as large as it, and the root follows it.
+/// A rooted object above the table is copied like any other: it moves, it
+/// lands alone in its own block, and the root follows it.
 #[test]
 fn a_rooted_object_above_the_table_survives_a_collection_by_being_copied() {
     let reg = fresh_registry();
@@ -2444,12 +2480,11 @@ fn a_rooted_object_above_the_table_survives_a_collection_by_being_copied() {
     assert_ne!(moved, big, "the object was copied, not marked in place");
     assert!(h.contains_heap_addr(moved));
     assert!(!h.contains_heap_addr(big), "its old block went back");
-    assert!(stats.to_space_capacity_bytes as usize >= size);
     assert_eq!(stats.copied_objects, 1);
     assert_eq!(stats.live_objects, 1);
     assert_eq!(
         stats.live_bytes, h.live_baseline as u64,
-        "live bytes are the to-space fill"
+        "live bytes are the bytes in the heap's blocks"
     );
     assert!(stats.live_bytes as usize >= size);
 }
@@ -2471,8 +2506,8 @@ fn an_unrooted_object_above_the_table_is_freed_by_a_collection() {
     assert_eq!(stats.live_objects, 0);
     assert_eq!(
         pool_outstanding_blocks(),
-        pooled_before - 1,
-        "only the tiny first block was pooled, and it went back"
+        pooled_before,
+        "the old tip went back to the pool and the fresh tip took its place"
     );
 
     h.collect_tagged(&mut root);

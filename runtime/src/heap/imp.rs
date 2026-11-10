@@ -125,6 +125,17 @@ impl Heap {
         let size = round_up_16(size);
         assert!(size >= 16, "alloc must reserve at least one 16-byte object slot");
         self.alloc_stats.record(kind, size as u64);
+        self.bump(size)
+    }
+
+    /// Place `size` bytes (already a multiple of 16) in the tip, or beyond it
+    /// when the tip is full. Allocation and the collector's copies both
+    /// place through here, so a copy overflows exactly as an allocation does.
+    pub(super) fn bump(&mut self, size: usize) -> *mut u8 {
+        debug_assert!(
+            size >= 16 && size.is_multiple_of(16),
+            "placements are whole 16-byte slots"
+        );
         let new_top = unsafe { self.bump_top.add(size) };
         if new_top > self.block_end {
             if self.parks_alone(size) {
@@ -994,57 +1005,15 @@ impl Heap {
         unsafe { self.block_end.offset_from(self.bump_top) as usize }
     }
 
-    /// The capacity of the next to-space.
+    /// The one collection entry: a Cheney copy of everything `roots` reaches
+    /// into a fresh tip, after which the old blocks are released.
     ///
-    /// To-space holds at least the bytes a collection can copy: the sizing
-    /// starts from `bytes_used`, and the bands only choose between that
-    /// floor and something larger. An object larger than any table entry is
-    /// part of those bytes like any other, so the to-space grows past the
-    /// table to hold it.
-    ///
-    /// Three bands, biased toward holding size: a copy GC here costs a
-    /// scheduler yield, so frequent collection is expensive and oscillation is
-    /// worth avoiding. The steady-state target is ~2x live (a 50% post-GC
-    /// fill), where `prev_live` is the live baseline: the last GC's survivor bytes
-    /// plus any grafted gifts.
-    ///
-    ///   GROW   - the bytes in use fill 75% or more of the tip. A collection
-    ///            becomes due at 50%, so reaching the threshold is not by
-    ///            itself evidence the heap is too small; 75% is, and it is
-    ///            the same hysteresis point BEAM uses to grow after a sweep.
-    ///            Size to hold the bytes in use doubled for headroom, never
-    ///            less than one capacity step up.
-    ///   SHRINK - the live baseline fills 25% or less of the tip; refit to
-    ///            ~2x those survivors.
-    ///   KEEP   - otherwise hold the current size.
-    fn to_space_capacity(&self) -> usize {
-        let used = self.bytes_used();
-        let prev_live = self.live_baseline;
-        let fit_to_live = if prev_live > 0 {
-            prev_live.saturating_mul(2)
-        } else {
-            used
-        };
-        let grows = used.saturating_mul(4) >= self.block_size.saturating_mul(3);
-        let band_target = if grows {
-            fit_to_live.max(used.saturating_mul(2))
-        } else if prev_live == 0 || prev_live.saturating_mul(4) <= self.block_size {
-            fit_to_live
-        } else {
-            self.block_size
-        };
-        let floor = pick_block_capacity(used.max(SIZE_TABLE[0]));
-        let capacity = pick_block_capacity(band_target.max(SIZE_TABLE[0])).max(floor);
-        if grows {
-            capacity.max(next_block_capacity(self.block_size))
-        } else {
-            capacity
-        }
-    }
-
-    /// The one collection entry: a Cheney two-finger copy of everything
-    /// `roots` reaches into a fresh to-space block, after which the old
-    /// blocks are released.
+    /// The fresh tip's capacity is a guess, the live baseline (the smallest
+    /// tip on an empty baseline). Every copy is placed by the ordinary bump
+    /// path, so a copy that outgrows the guess parks the tip and climbs the
+    /// table, and a huge object parks alone; a wrong guess costs a block,
+    /// never correctness. The scan reads a worklist of copied objects, not an
+    /// address, so to-space needs no contiguity.
     ///
     /// Every slot of `roots` holds its forwarded value on return. A slot
     /// that is not a pointer into this heap's from-space (a scalar immediate,
@@ -1065,45 +1034,49 @@ impl Heap {
             self.gift.is_none(),
             "a gift window is open; the heap collects only between end_gift and the next begin_gift"
         );
-        // Snapshot from-space block ranges before we allocate to-space.
+        // Snapshot from-space block ranges before to-space is installed.
         let from_ranges: Vec<(*mut u8, *mut u8)> = self.block_ranges().collect();
         let from_space_capacity_bytes: usize = from_ranges
             .iter()
             .map(|(start, end)| unsafe { end.offset_from(*start) as usize })
             .sum();
 
-        let to_size = self.to_space_capacity();
-        let to_start = pool_alloc(to_size);
-        let to_end = unsafe { to_start.add(to_size) };
-        let mut free = to_start;
+        let from_tip = self.current_block();
+        let from_blocks = std::mem::take(&mut self.blocks);
+        let to_capacity = pick_block_capacity(self.live_baseline.max(SIZE_TABLE[0]));
+        let to_start = pool_alloc(to_capacity);
+        self.install_block(Block {
+            start: to_start,
+            top: to_start,
+            capacity: to_capacity,
+        });
+        self.alloc_count = 0;
         let mut copied_objects: Vec<CopiedObject> = Vec::new();
         let mut stats = GcStats {
             from_space_capacity_bytes: from_space_capacity_bytes as u64,
             from_ranges_walked: from_ranges.len() as u64,
             blocks_released: from_ranges.len() as u64,
-            to_space_capacity_bytes: to_size as u64,
             ..GcStats::default()
         };
+        let schemas_handle = self.schemas.clone();
 
         for value in roots.iter_mut() {
             forward_any_value_ref_root(
                 value,
                 &from_ranges,
-                &mut free,
-                to_end,
-                &self.schemas.borrow(),
+                self,
+                &schemas_handle.borrow(),
                 &mut copied_objects,
                 &mut stats,
             );
         }
 
-        let schemas = self.schemas.borrow();
+        let schemas = schemas_handle.borrow();
         let mut scan_idx = 0usize;
         cheney_scan(
             &mut scan_idx,
             &from_ranges,
-            &mut free,
-            to_end,
+            self,
             &schemas,
             &mut copied_objects,
             &mut stats,
@@ -1116,22 +1089,13 @@ impl Heap {
         let unreached = mso_unreached_closures(self);
         let mut dead_closures: HashMap<usize, AnyValue> = HashMap::with_capacity(unreached.len());
         for (stub, closure) in unreached {
-            let forwarded = forward_heap_value(
-                closure,
-                &from_ranges,
-                &mut free,
-                to_end,
-                &schemas,
-                &mut copied_objects,
-                &mut stats,
-            );
+            let forwarded = forward_heap_value(closure, &from_ranges, self, &schemas, &mut copied_objects, &mut stats);
             dead_closures.insert(stub, forwarded);
         }
         cheney_scan(
             &mut scan_idx,
             &from_ranges,
-            &mut free,
-            to_end,
+            self,
             &schemas,
             &mut copied_objects,
             &mut stats,
@@ -1151,21 +1115,15 @@ impl Heap {
 
         // Release old from-space (current + parked blocks): pooled capacities
         // return to the pool (§6.6), exact blocks to the system allocator.
-        self.current_block().release();
-        for block in self.blocks.drain(..) {
+        from_tip.release();
+        for block in from_blocks {
             block.release();
         }
 
-        // Install to-space as the new current block.
-        self.install_block(Block {
-            start: to_start,
-            top: free,
-            capacity: to_size,
-        });
         let live_count = copied_objects.len() as u64;
         self.alloc_count = live_count;
         self.gc_run_count += 1;
-        self.live_baseline = unsafe { free.offset_from(to_start) } as usize;
+        self.live_baseline = stats.copied_bytes as usize;
         stats.live_objects = live_count;
         stats.live_bytes = self.live_baseline as u64;
         stats.blocks_after = 1 + self.blocks.len() as u64;
@@ -1196,8 +1154,7 @@ impl Heap {
 fn cheney_scan(
     scan_idx: &mut usize,
     from_ranges: &[(*mut u8, *mut u8)],
-    free: &mut *mut u8,
-    to_end: *mut u8,
+    heap: &mut Heap,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
     stats: &mut GcStats,
@@ -1209,23 +1166,16 @@ fn cheney_scan(
             ValueKind::LIST => cheney_trace_list(
                 copied.ptr as *mut ListCons,
                 from_ranges,
-                free,
-                to_end,
+                heap,
                 schemas,
                 copied_objects,
                 stats,
             ),
-            ValueKind::MAP => cheney_trace_map(copied.ptr, from_ranges, free, to_end, schemas, copied_objects, stats),
-            ValueKind::CLOSURE => {
-                cheney_trace_closure(copied.ptr, from_ranges, free, to_end, schemas, copied_objects, stats)
-            }
-            ValueKind::STRUCT => {
-                cheney_trace_struct(copied.ptr, from_ranges, free, to_end, schemas, copied_objects, stats)
-            }
+            ValueKind::MAP => cheney_trace_map(copied.ptr, from_ranges, heap, schemas, copied_objects, stats),
+            ValueKind::CLOSURE => cheney_trace_closure(copied.ptr, from_ranges, heap, schemas, copied_objects, stats),
+            ValueKind::STRUCT => cheney_trace_struct(copied.ptr, from_ranges, heap, schemas, copied_objects, stats),
             ValueKind::BITSTRING | ValueKind::PROCBIN => {}
-            ValueKind::RESOURCE => {
-                cheney_trace_resource(copied.ptr, from_ranges, free, to_end, schemas, copied_objects, stats)
-            }
+            ValueKind::RESOURCE => cheney_trace_resource(copied.ptr, from_ranges, heap, schemas, copied_objects, stats),
             kind => panic!("Cheney scan: invalid copied object kind {kind:?}"),
         }
     }

@@ -503,7 +503,7 @@ closure. No stack scan, no register enumeration.</p>
   └────────────────────────────────┘
            │ Cheney BFS copy │
            ▼
-  to-space (new block, sized to hold every byte that can be copied)
+  to-space (a fresh tip; copies park blocks as it fills)
   ┌─────────────────┐
   │ <span class="live">[live][live][live]</span>│
   │         bump_top│
@@ -513,7 +513,7 @@ closure. No stack scan, no register enumeration.</p>
 
 <div class="aside">
 Cheney is the world's tidiest move-out. You bring a fresh empty room
-(to-space). Starting from one pointer, you copy every live object across.
+(a fresh tip). Starting from one pointer, you copy every live object across.
 Once you're done, you walk out and burn the old room. Nothing dead gets a
 ride.
 </div>
@@ -524,30 +524,30 @@ baseline the gifts raised. A process that receives a large gift, drops it and
 then goes quiet holds that memory; shrinking an idle heap is a separate policy,
 for which the census would have to show a need.</p>
 
-<h3>Sizing to-space</h3>
+<h3>To-space is a chain</h3>
 
-<p>To-space holds at least every byte a pass can copy: the tip's fill plus
-every parked block's fill. The capacity that holds those bytes is the floor,
-and three bands choose between the floor and a larger capacity. An object
-larger than the table's last entry is part of those bytes, so to-space grows
-past the table to hold it.</p>
+<p>A copy is placed by the same bump path as an allocation. The collector
+installs a fresh tip and every copied object goes through
+<code>Heap::bump</code>: when the tip is full it is parked on <code>blocks</code>
+and a tip one capacity step up is installed, and an object larger than that step
+is parked alone in a block of its own with the tip untouched. The scan pops a
+worklist of copied objects rather than walking an address, so to-space needs no
+contiguity: it is the new tip plus the parked blocks.</p>
 
-<ul>
-  <li><strong>Grow:</strong> the bytes in use fill 75% or more of the tip.
-  To-space holds twice the bytes in use, and is at least one capacity step up.</li>
-  <li><strong>Shrink:</strong> the live baseline (the last survivors plus any grafted gifts) fills 25% or less of the
-  tip. To-space is <code>live_baseline × 2</code> (the bytes in use on
-  the first GC), raised to the floor.</li>
-  <li><strong>Keep:</strong> otherwise the current size, raised to the floor.</li>
-</ul>
+<p>The tip's capacity has one job, how far the bump pointer runs before a block
+is parked, and one rule, climb the table on overflow. The fresh tip's capacity
+is only a starting point: <code>pick_block_capacity(live_baseline)</code>, the
+last survivors plus any grafted gifts (the smallest tip when the baseline is
+empty). A heap whose live set is steady collects into one block; a guess that
+is too small costs the extra blocks the copy parks, and the next collection's
+guess is the bytes this one copied. A gift is one parked block like any other,
+so its fill is part of the bytes in use. After the pass the old tip and every
+parked block go back to the pool, or to the system allocator when exact, with
+the rest of from-space.</p>
 
-<p>A gift is one parked block like any other, so its fill is part of the
-bytes in use. After the pass the
-parked blocks go back to the pool with the rest of from-space.</p>
-
-<p>After the BFS scan: <code>live_baseline = free - to_start</code>.
-That feeds the next GC's trigger and sizing, and is the <code>live_bytes</code> of the pass's
-<code>GcStats</code>.</p>
+<p>After the BFS scan, <code>live_baseline</code> is the sum of the sizes of the
+objects copied. That feeds the next GC's trigger and tip guess, and is the
+<code>live_bytes</code> of the pass's <code>GcStats</code>.</p>
 
 <p>Each copied from-space object gets an in-band forwarding marker written into
 its marker word: <code>to_space_address | 1</code>. Any other
@@ -680,7 +680,7 @@ resource whose last reference it dropped. A stub that a forwarded closure
 captures is reached by that, so it survives until a later collection. A process
 that halts takes the same sweep without a collection:
 <code>Heap::release_resources_at_exit</code> decides every stub on the chain
-with nothing live and allocates no to-space. <code>Heap::drop</code> releases
+with nothing live and copies nothing. <code>Heap::drop</code> releases
 only what a process still holds when the program tears it down without having
 exited, such as one parked on a receive; no destructor closure runs for those.</p>
 

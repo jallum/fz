@@ -796,7 +796,6 @@ impl JsonlBackend {
                         ("copied_bytes", Value::U64(stats.copied_bytes)),
                         ("live_bytes", Value::U64(stats.live_bytes)),
                         ("from_space_capacity_bytes", Value::U64(stats.from_space_capacity_bytes)),
-                        ("to_space_capacity_bytes", Value::U64(stats.to_space_capacity_bytes)),
                         ("blocks_released", Value::U64(stats.blocks_released)),
                         ("blocks_after", Value::U64(stats.blocks_after)),
                         ("from_ranges_walked", Value::U64(stats.from_ranges_walked)),

@@ -267,7 +267,7 @@ fn a_gift_with_an_object_above_the_table_grafts_and_is_copied_by_the_receivers_c
     assert!(receiver.contains_heap_addr(moved));
     assert!(!receiver.contains_heap_addr(big));
     assert_eq!(stats.copied_objects, 1);
-    assert!(stats.to_space_capacity_bytes as usize >= size);
+    assert!(receiver.bytes_used() >= size, "the heap's blocks hold the object");
     assert_eq!(stats.live_bytes, receiver.live_baseline as u64);
     drop(receiver);
     drop(sender);
@@ -279,7 +279,7 @@ fn a_gift_with_an_object_above_the_table_grafts_and_is_copied_by_the_receivers_c
 }
 
 #[test]
-fn thousands_of_small_unread_gifts_leave_the_receivers_capacity_unchanged_after_gc() {
+fn thousands_of_small_unread_gifts_do_not_grow_the_receivers_tip_after_gc() {
     pool_drain_for_test();
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
@@ -321,10 +321,19 @@ fn thousands_of_small_unread_gifts_leave_the_receivers_capacity_unchanged_after_
     let mut roots = [heap_ref(list)];
     let stats = receiver.collect(&mut roots);
 
-    assert_eq!(receiver.block_size, capacity_before, "dead gifts do not grow the heap");
     assert_eq!(
-        stats.to_space_capacity_bytes, SIZE_TABLE[11] as u64,
-        "to-space is sized from the 128000 bytes in use (32000 own, 96000 adopted) and the gifts are dead"
+        receiver.block_size,
+        pick_block_capacity(adopted_fill),
+        "the fresh tip is fitted to the baseline the gifts raised"
+    );
+    assert!(
+        receiver.block_size <= capacity_before,
+        "dead gifts do not grow the heap"
+    );
+    assert_eq!(
+        receiver.bytes_used(),
+        own_live,
+        "only the 32000 own live bytes remain of the 128000 in use; the gifts are dead"
     );
     assert_eq!(stats.live_bytes, own_live as u64, "none of the gifts was reachable");
     assert!(receiver.blocks.is_empty());
@@ -459,8 +468,7 @@ fn a_collection_inside_a_window_is_refused() {
     sender.collect_tagged(&mut root);
 }
 
-/// A receiver in the SHRINK band: its last collection kept 2000 bytes in a
-/// block of 192768, then it allocated 80000 bytes that all stay reachable.
+/// A receiver whose last collection kept 2000 bytes in a block of 192768, then it allocated 80000 bytes that all stay reachable.
 fn receiver_with_live_allocation_since_a_small_collection(reg: &Rc<RefCell<SchemaRegistry>>) -> (Heap, u64) {
     let mut receiver = Heap::new(SIZE_TABLE[9], reg.clone());
     for _ in 0..60 {
@@ -489,7 +497,7 @@ fn gift_of_cons_cells(sender: &mut Heap, cells: i64) -> GiftSegment {
 }
 
 #[test]
-fn gifts_raise_the_baseline_and_to_space_holds_every_live_byte() {
+fn gifts_raise_the_baseline_and_the_heaps_blocks_hold_every_live_byte() {
     let reg = fresh_registry();
     let (mut receiver, live) = receiver_with_live_allocation_since_a_small_collection(&reg);
     assert_eq!(receiver.live_baseline, 2000);
@@ -513,23 +521,23 @@ fn gifts_raise_the_baseline_and_to_space_holds_every_live_byte() {
     let mut roots = [heap_ref(live)];
     let stats = receiver.collect(&mut roots);
 
-    assert!(
-        stats.to_space_capacity_bytes >= stats.copied_bytes,
-        "to-space of {} cannot hold the {} bytes copied",
-        stats.to_space_capacity_bytes,
+    assert_eq!(
+        receiver.bytes_used() as u64,
+        stats.copied_bytes,
+        "the heap's blocks hold the {} bytes copied",
         stats.copied_bytes
     );
     assert_eq!(stats.live_bytes, 2000 + 5000 * 16, "every own live byte survived");
 }
 
 #[test]
-fn a_direct_collection_in_the_shrink_band_holds_every_live_byte_without_gifts() {
+fn a_direct_collection_after_a_small_one_holds_every_live_byte_without_gifts() {
     let reg = fresh_registry();
     let (mut receiver, live) = receiver_with_live_allocation_since_a_small_collection(&reg);
     let mut roots = [heap_ref(live)];
     let stats = receiver.collect(&mut roots);
 
-    assert!(stats.to_space_capacity_bytes >= stats.copied_bytes);
+    assert_eq!(receiver.bytes_used() as u64, stats.copied_bytes);
     assert_eq!(stats.live_bytes, 2000 + 5000 * 16, "every own live byte survived");
 }
 
