@@ -7,13 +7,13 @@
     "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:42Z",
-  "description": "`:erlang.abs(-3)` compiles as field access and fails at runtime (fz_struct_get_named_field_ref: ExpectedTag). Cause: decode makes (\".\",2) an Expr::Index; direct_callee (jobs/body.rs:4435) and CallableName::from_expr (src/ast/mod.rs:62) accept only Var/Module/Index chains, so an Expr::Atom base falls through to FieldAccess (body.rs:1345).\n\nDecision (2026-10-17): atom module names, as in Elixir where a module's identity is an atom. Module paths may be a single atom; `defmodule :erlang` parses (parse_module/parse_upper_path, frontdoor.rs:292,1647, accept Tok::Atom); an atom-based remote call resolves through the same module lookup; an unknown `:foo.bar()` gets a diagnostic naming :foo. lib/erlang.fz defines :erlang with float_to_binary/2 and decimals: N (fixed notation, correctly rounded, as Rust format!(\"{:.*}\", n, x)); runtime extern via alloc_text (runtime/src/ir_runtime.rs:1142).",
+  "description": "`:erlang.abs(-3)` compiles as field access and fails at runtime (fz_struct_get_named_field_ref: ExpectedTag). Cause: decode makes (\".\",2) an Expr::Index; direct_callee (jobs/body.rs) and CallableName::from_expr (src/ast/mod.rs:62) accept only Var/Module/Index chains, so an Expr::Atom base falls through to FieldAccess.\n\nScope split (2026-11-10, user-approved): the CALL half, where an atom-valued receiver (literal or variable) makes a remote call, moved to session fz-da's lane as part of fz-3ul.4 (defexception), as \"calls on a module value\". The literal atom base is that ticket's known-atom case. Its atom -\u003e ModuleId resolution goes through the one module-name authority that fz-sc8.25 establishes, not a second lookup. That ticket blocks this one once filed.\n\nThis ticket keeps: atom module names, as in Elixir where a module's identity is an atom. Module paths may be a single atom, and `defmodule :erlang` parses (parse_module/parse_upper_path in frontdoor.rs accept Tok::Atom). lib/erlang.fz defines :erlang with float_to_binary/2 and decimals: N (fixed notation, correctly rounded, as Rust format!(\"{:.*}\", n, x)), with a runtime extern via alloc_text (runtime/src/ir_runtime.rs).",
   "id": "fz-sc8.3",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
   "status": "open",
-  "title": "`:atom.fun(args)` is a remote call; :erlang.float_to_binary/2",
+  "title": "`defmodule :erlang` and :erlang.float_to_binary/2",
   "type": "bug",
-  "updated_at": "2026-10-17T21:40:20Z"
+  "updated_at": "2026-11-10T21:58:17Z"
 }
