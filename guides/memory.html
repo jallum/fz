@@ -15,8 +15,8 @@
 <ul>
   <li><a href="#anyvalue">1. Values — any value refs and container storage</a></li>
   <li><a href="#heap">2. The process heap — bump allocation</a></li>
-  <li><a href="#pressure">3. Watermark and back-edge yield</a></li>
-  <li><a href="#gc-parktime">4. Park-time GC — Cheney with one root</a></li>
+  <li><a href="#pressure">3. Reductions, collection timing, and boundary GC</a></li>
+  <li><a href="#gc-parktime">4. Park-time GC — Cheney with explicit roots</a></li>
   <li><a href="#gc-midflight">5. Mid-flight GC — collecting a running loop</a></li>
   <li><a href="#roots">6. GC roots and the MSO sweep</a></li>
   <li><a href="#scheduler">7. Scheduler dispatch</a></li>
@@ -167,7 +167,7 @@ requested tail.</p>
 <p><strong>Map:</strong></p>
 
 <pre>
-  offset 0:                      count: u64
+  offset 0:                      header: count &lt;&lt; 4
   offset 8:                      tag_bytes: [u8; N], padded to 8-byte alignment
   offset 8 + pad(N, 8):          keys:   [u64; N]
   offset 8 + pad(N, 8) + 8N:     values: [u64; N]
@@ -175,7 +175,10 @@ requested tail.</p>
 
 <p>Each map entry has one tag byte: high nibble = key kind, low nibble = value
 kind. Total size is <code>8 + ceil(N/8) * 8 + 16N</code>, then rounded to the
-next 16-byte boundary.</p>
+next 16-byte boundary. A map still under construction (an unpublished
+destination) has a different header: bit 63 set, the number of entries filled
+so far at bit 33 and the capacity at bit 4, each 29 bits wide. Freezing it
+writes the published header.</p>
 
 <p><strong>Dynamic roots:</strong></p>
 
@@ -286,14 +289,17 @@ of that tail. In <code>fixtures/quicksort</code>, the native paths pin
 <p><strong>Other heap layouts:</strong></p>
 
 <ul>
-  <li><strong>Struct:</strong> offset 0 <code>schema_id: u32, flags:
-  u32</code>; offset 8 typed fields declared by the schema; total size is
+  <li><strong>Struct:</strong> offset 0 header <code>schema_id &lt;&lt;
+  32</code>; offset 8 typed fields declared by the schema; total size is
   <code>align16(8 + schema payload)</code>.</li>
-  <li><strong>Closure:</strong> offset 0 <code>schema_id: u32, flags:
-  u32</code>; offset 8 <code>fn_ptr: u64</code>; offset 16 raw capture words;
-  capture kind bytes follow the raw words and are padded to 8-byte alignment.</li>
-  <li><strong>Bitstring:</strong> offset 0 <code>bit_len: u64</code>; offset 8
-  bytes, padded to 16-byte alignment.</li>
+  <li><strong>Closure:</strong> offset 0 header <code>(denotation &lt;&lt; 32)
+  | (arity &lt;&lt; 20) | (flags &lt;&lt; 4)</code>, where flags hold the
+  captured count and halt kind and arity is below 4096; offset 8
+  <code>fn_ptr: u64</code>; offset 16 raw capture words; capture kind bytes
+  follow the raw words and are padded to 8-byte alignment.</li>
+  <li><strong>Bitstring:</strong> offset 0 header <code>bit_len &lt;&lt;
+  4</code>; offset 8 the bytes and one trailing zero byte, padded to 16-byte
+  alignment.</li>
   <li><strong>ProcBin:</strong> offset 0 <code>shared_ptr</code>; offset 8
   <code>mso_next</code>; offset 16 <code>byte_offset</code>; 32 bytes total.</li>
   <li><strong>Resource:</strong> offset 0 <code>resource_ptr</code>; offset 8
@@ -327,9 +333,9 @@ on top and move a finger (the bump pointer) down by however many lines you
 used. Nothing else needs to happen on the fast path.
 </div>
 
-<p>Heap objects are 16-byte aligned, but they no longer share a universal
-16-byte header. The low 4 bits of the pointer identify the heap kind, and each
-kind has its own prefix and size function.</p>
+<p>Heap objects are 16-byte aligned and share no universal header. The kind
+rides in the high bits of the reference that names the object, and each kind
+has its own prefix and size function.</p>
 
 <p>Per-kind layouts:</p>
 
@@ -340,19 +346,19 @@ kind has its own prefix and size function.</p>
   <tbody>
     <tr><td>cons cell</td><td class="size">16 bytes</td><td>8 head + 8 next/head-kind link</td></tr>
     <tr><td>map, N entries</td><td class="size">align16(8 + ceil(N/8)×8 + 16N)</td><td>count + tag bytes + keys + values</td></tr>
-    <tr><td>tuple / struct</td><td class="size">align16(8 + schema payload)</td><td>schema_id+flags prefix + typed fields</td></tr>
-    <tr><td>closure, 0 captures</td><td class="size">16 bytes</td><td>schema_id+flags prefix + fn_ptr</td></tr>
+    <tr><td>tuple / struct</td><td class="size">align16(8 + schema payload)</td><td>schema_id header + typed fields</td></tr>
+    <tr><td>closure, 0 captures</td><td class="size">16 bytes</td><td>denotation/arity/flags header + fn_ptr</td></tr>
     <tr><td>closure, n captures</td><td class="size">align16(16 + n×8 + align8(n))</td><td>raw captures + one kind byte per capture</td></tr>
-    <tr><td>bitstring (small, inline)</td><td class="size">align16(8 + ⌈bits/8⌉)</td><td>bit_len + bytes</td></tr>
+    <tr><td>bitstring (small, inline)</td><td class="size">align16(8 + ⌈bits/8⌉ + 1)</td><td>bit_len header + bytes + trailing zero</td></tr>
     <tr><td>ProcBin (large bin stub)</td><td class="size">32 bytes</td><td>8 shared_ptr + 8 mso_next + 8 byte_offset</td></tr>
-    <tr><td>Resource</td><td class="size">48 bytes</td><td>shared ptr + discriminator + destructor closure + mso_next</td></tr>
+    <tr><td>Resource</td><td class="size">48 bytes</td><td>resource ptr + discriminator + destructor closure + mso_next</td></tr>
   </tbody>
 </table>
 
 <p>Ordinary large objects — tuples with many fields and maps with many entries
 — live on the process heap and grow into bigger blocks as needed. Bitstrings
 above <code>SHARED_BIN_THRESHOLD_BYTES</code> (64 bytes) <em>don't</em>
-live on the process heap. Instead the heap carries a 16-byte <strong>ProcBin</strong>
+live on the process heap. Instead the heap carries a 32-byte <strong>ProcBin</strong>
 stub that points into the <a href="#shared-zone">shared zone</a>.</p>
 
 <h3>Block pool and block capacities</h3>
@@ -654,8 +660,8 @@ transient roots and writes the forwarded refs back.</p>
 
 <p>After Cheney's BFS scan completes and before from-space is freed, the GC
 walks the heap's MSO chain once. Each entry is a ProcBin or Resource stub that
-<em>was</em> in from-space. The forwarding marker Cheney writes into the first
-word of every copied object is the entire liveness signal — no separate
+<em>was</em> in from-space. The forwarding marker Cheney writes into word 0 of
+every copied stub is the entire liveness signal — no separate
 bookkeeping. One function, <code>procbin::mso_sweep</code>, decides every stub,
 after a collection and when a process exits (an exit is the same walk with
 nothing live):</p>
@@ -835,12 +841,12 @@ wouldn't know what to do with it. Instead, each reference goes through a
 small heap object:</p>
 
 <pre>
-  ProcBin (16 bytes, lives on the process heap):
+  ProcBin (32 bytes, lives on the process heap):
 
-  ┌───────────────────┬───────────────────┐
-  │  shared_ptr (8)   │  mso_next (8)     │
-  │  → SharedBin      │  → next ProcBin   │
-  └───────────────────┴───────────────────┘
+  ┌───────────────────┬───────────────────┬───────────────────┬─────────┐
+  │  shared_ptr (8)   │  mso_next (8)     │  byte_offset (8)  │ pad (8) │
+  │  → SharedBin      │  → next MSO stub  │  suffix start     │         │
+  └───────────────────┴───────────────────┴───────────────────┴─────────┘
 </pre>
 
 <p>ProcBin refs use the heap-object <code>TAG_PROCBIN</code> kind. The
@@ -942,9 +948,9 @@ is no central registry to contend on.
 <p>Because binaries above 64 bytes go off-heap, the process heap deals only
 with small inline objects, cons cells, tuples, maps, closures, resources, and
 ProcBin stubs — in practice well under the table's last entry (~7 MiB).
-The grow logic in <code>Heap::alloc()</code> picks the smallest capacity that
-fits any individual object; an object larger than the whole table gets a block
-of exactly its size.</p>
+When an allocation no longer fits, the heap installs a tip one table step up;
+an object larger than that step gets a parked block of its own, exact when it
+is larger than the whole table (see <a href="#pressure">§3</a>).</p>
 
 <!-- ─────────────────────────────── 10. RETURN DEMAND ─────────────────────────────── -->
 <h2 id="return-demand">10. Return-demand destination planning</h2>
@@ -1058,13 +1064,14 @@ never modified. Old objects can never gain new-object references after
 promotion. <strong>No write barriers needed.</strong>
 </div>
 
-<p>The watermark already exists. After any GC, objects below the watermark
-are "old"; objects above are "new." A minor-collection pass would:</p>
+<p>The heap has no generation boundary; a minor collection would add
+one. After a collection, everything the pass copied would be "old" and objects
+allocated since would be "new". A minor-collection pass would:</p>
 <ul>
   <li>Trace from <code>runnable_closure</code> and <code>mailbox</code> as roots.</li>
-  <li>Copy only objects above the watermark (young generation).</li>
-  <li>Leave objects below the watermark untouched.</li>
-  <li>Reset the watermark to <code>bump_top</code> after collection.</li>
+  <li>Copy only objects allocated since the last collection (young generation).</li>
+  <li>Leave older objects untouched.</li>
+  <li>Mark every survivor old after collection.</li>
 </ul>
 
 <p>The MSO sweep changes in form but not in kind: minor collections release

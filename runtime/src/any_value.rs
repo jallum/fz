@@ -887,9 +887,8 @@ unsafe fn size_of_resource(_addr: *const u8) -> usize {
     crate::resource::RESOURCE_STUB_SIZE
 }
 
-/// Allocator stubs for v1. These leak — real GC-managed allocator lands in .11.2.
-///
-/// All allocations are 16-byte aligned so low-bit pointer tags are available.
+/// A 16-byte-aligned allocation outside any heap, never freed. Only tests
+/// call it, through `alloc_struct` and `alloc_list_cons_raw_kind`.
 unsafe fn raw_alloc(total_size: usize) -> *mut u8 {
     let layout = Layout::from_size_align(total_size, 16).expect("bad layout");
     let p = unsafe { alloc(layout) };

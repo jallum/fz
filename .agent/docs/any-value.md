@@ -77,10 +77,9 @@ builds copies those values into fresh containers before publishing them.
 `fz_binary_concat` validates byte-aligned binary inputs and copies their bytes
 into the caller process heap through `Heap::alloc_bitstring`, which returns the
 VALUE — `ProcBin` past `SHARED_BIN_THRESHOLD_BYTES` (64), `Bitstring` below it.
-The storage choice is made there and only there. Four callers used to re-derive
-it from `bytes.len()` against the same threshold (fz-5xp.45), which made the
-threshold a constant five places had to agree about and let a caller disagree
-with what was actually allocated.
+The storage choice for every value the runtime builds is made there; the one
+other place that splits on the threshold is `Prim::ConstBitstring` lowering,
+which emits a static `SharedBin` above it.
 
 Two questions still read the threshold, and they are different questions:
 `alloc_bitstring_suffix` asks whether a VIEW is worth a stub, and native
@@ -100,8 +99,8 @@ That is what makes matching a tail free. `<<_c, rest :: binary>>` asks for a
 suffix, so `fz_bs_read_field_bits` hands back another view of the same bytes
 instead of copying them; `Heap::alloc_bitstring_suffix` decides whether the view
 is worth a stub, copying suffixes at or below `SHARED_BIN_THRESHOLD_BYTES` so a
-short tail cannot pin a long buffer. Before this, scanning n bytes copied
-n + (n-1) + … bytes, and decoding a 919-byte JSON document copied 1.4 MB.
+short tail cannot pin a long buffer. Scanning n bytes copies at most that short
+tail per step, where a copy per step would cost n + (n-1) + … bytes.
 
 Suffix — rather than an arbitrary window — is load-bearing. The buffer carries
 one invisible trailing NUL, so a suffix ends where the NUL is and
@@ -160,9 +159,10 @@ child_ref = fz_map_get_ref(parent_map_ref, atom_child_ref)
 ## Generated-Code Value Lanes
 
 Generated code keeps a value in the narrowest representation the typer can
-prove. The codegen-side enum is `CodegenValue` (`src/ir_codegen/value.rs`); the
-ABI-side enum threaded through call signatures is `ArgRepr`
-(`src/ir_codegen/repr.rs`). The lanes:
+prove. The codegen-side enum is `CodegenValue`
+(`src/compiler2/native_codegen/value.rs`); the ABI-side enum threaded through
+call signatures is `ArgRepr` (`src/compiler2/native_codegen/repr.rs`). The
+lanes:
 
 ```text
 ValueRef  // one AnyValueRef word; the only `any`-shaped lane
@@ -172,7 +172,8 @@ RawAtom   // proven atom id
 Condition // raw i1 from a comparison/type-test whose result is only branched on
 ```
 
-`ArgRepr::from_ty` picks the lane: float -> `RawF64`, integer -> `RawInt`,
+compiler2 picks each lane (`AbiValueRepr`) and codegen copies it with
+`arg_repr_from_compiler2`: float -> `RawF64`, integer -> `RawInt`,
 atom-subtype -> `RawAtom`, else `ValueRef`. `CodegenValue` adds `AnyRef` (an
 `any` ref value) and `Known { payload, kind }` (a compile-time-constant scalar);
 both report `ArgRepr::ValueRef`. Every lane has `abi_arity() == 1`: a value is
@@ -226,7 +227,8 @@ x86_64 (canonical):   tagged = address | (tag << 57)
 difference.
 
 Compiler-emitted pointer refs follow the same split, in
-`src/ir_codegen/closure.rs` and `src/ir_codegen/fn_ctx.rs`. On arm64/TBI a fresh
+`src/compiler2/native_codegen/closure.rs` and
+`src/compiler2/native_codegen/fn_ctx.rs`. On arm64/TBI a fresh
 stack/heap pointer is tagged by OR-ing the top-byte tag word directly, with no
 address-mask clear. On x86_64 canonical refs the high bits are cleared with
 `ishl_imm` then `ushr_imm` before OR-ing the tag word. Keeping codegen on
@@ -435,9 +437,9 @@ edge to a `Resource`. Both off-heap objects are 16-ALIGNED, the same invariant
 the process heap keeps, and for the same reason: a stub holds the address in
 word 0, and word 0 is where Cheney writes a forwarding marker — a pointer with a
 set low nibble. At 8-byte alignment half of those addresses have a set nibble
-and a live stub reads as forwarded, which made the sweep write into the object
-it was supposed to be releasing (fz-5xp.60). Alignment is what keeps a live
-pointer and a marker distinguishable by construction.
+and a live stub would read as forwarded, so the sweep would write into the
+object it is releasing. Alignment is what keeps a live pointer and a marker
+distinguishable by construction.
 
 The marker is the only use of the low nibble. Each kind names one marker word —
 word 1 of a list cons, word 0 of every other kind — whose live value has a clear
