@@ -7,6 +7,12 @@
   "id": "fz-sc8.95",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "2026-11-10 (user-approved): moved to session fz-da's lane, ahead of fz-3ul.4 (defexception message: default needs field defaults). Drop File.stream!/1's explicit defaults (fz-sc8.18) in the same change.",
+      "timestamp": "2026-11-10T21:58:17Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "defstruct takes field defaults",
