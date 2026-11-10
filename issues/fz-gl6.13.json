@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-10T00:33:15Z",
+  "description": "runtime/src/any_value.rs has raw_alloc (16-aligned std::alloc, never freed) and pub fn alloc_struct built on it. Their only callers are runtime/src/any_value_test.rs (alloc_struct at lines 45, 59, 309 at 52ad3bf47) and the cfg(test) alloc_list_cons_raw_kind. Production code never calls them, yet they are compiled into the runtime and alloc_struct is public.\n\nDone when: raw_alloc and alloc_struct live behind cfg(test) (or in the test module), nothing outside tests can name them, and the test callers still pass. If a test can use a real Heap instead of a leaking allocation, prefer that. Done when also: comments are plain present-tense facts with no ticket numbers; full gate green (cargo fmt --all -- --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace --all-targets --no-fail-fast -- --test-threads=1; cargo test --workspace --doc); no pin or golden moves; commit in Why / What changed / Verification form; no co-author trailer, no attribution line.",
+  "id": "fz-gl6.13",
+  "labels": [],
+  "parent": "fz-gl6",
+  "priority": 3,
+  "status": "open",
+  "title": "Leaking test allocators leave the shipping runtime",
+  "type": "task",
+  "updated_at": "2026-11-10T00:33:15Z"
+}
