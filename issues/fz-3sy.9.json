@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-3ul.4"
+  ],
   "blocks": [],
   "created": "2026-11-11T15:21:29Z",
   "description": "As Elixir's CLI (cli.ex:134-183): a bottom handler written in fz formats the uncaught banner via Exception.message, computed only when uncaught; failure_line's exception branch leaves Rust. Earlier cost proxy: hello-world products 401 -\u003e 876, protocol_dispatch facts 2 -\u003e 18 (dispatch on any pulls every impl). Re-measure first; own proposal page.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The uncaught banner is rendered through Exception.message by an fz handler at the bottom of every process",
   "type": "feature",
-  "updated_at": "2026-11-11T15:21:29Z"
+  "updated_at": "2026-11-11T15:21:31Z"
 }
