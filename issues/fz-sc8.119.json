@@ -9,9 +9,15 @@
   "id": "fz-sc8.119",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Item 1 (boxed closure call expects [RawInt], wrapper publishes [ValueRef]) is likely the GH #302 fault: Types::closure_lit mints closure types with free arrow vars, so has_vars(closure) is always true and ground_dispatch_surfaces drops the closure surface (boxed_contract.rs:273). #302's proposal (page /Users/j5n/Workspace/gh-302.html, fz-50's session) fixes it with one predicate ignoring a closure literal's own arrow vars. Not reproducible on develop (no File.stream/Stream there). Re-check item 1 once #302 lands under #274; fold only if it no longer reproduces.",
+      "timestamp": "2026-11-11T22:43:03Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Minimize and ticket two failures over a map built from file lines",
   "type": "bug",
-  "updated_at": "2026-11-11T21:56:02Z"
+  "updated_at": "2026-11-11T22:43:03Z"
 }
