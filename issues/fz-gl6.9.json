@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-gl6.19",
     "fz-gl6.8"
   ],
   "blocks": [
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Fan-in and large-message fixtures pin collection anatomy and gift equality across paths",
   "type": "task",
-  "updated_at": "2026-11-09T23:29:42Z"
+  "updated_at": "2026-11-11T19:11:23Z"
 }
