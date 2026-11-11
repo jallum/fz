@@ -28,11 +28,13 @@
 use crate::any_value::{AnyValueRef, ValueKind};
 use crate::exec_ctx::{Argv, ExecCtx};
 use crate::function_denotation::decode_closure_denotations;
-use crate::heap::{Heap, Schema, SchemaRegistry, deep_copy_any_value_ref};
+use crate::heap::{AddressMap, Schema, SchemaRegistry, deep_copy_any_value_ref};
 use crate::pinned_abi::{call1, call2};
 use crate::procbin::mso_drop_all_deferred;
 use crate::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
-use crate::sched::{ProbeOutcome, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender};
+use crate::sched::{
+    ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
+};
 use crate::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
 use crate::timer::TimerId;
 use std::cell::RefCell;
@@ -471,9 +473,9 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
     child.static_closures = static_closures;
 
     // Deep-copy the closure into the child's heap.
-    let mut forwarding = HashMap::new();
+    let mut forwarding = AddressMap::default();
     let closure_ref = AnyValueRef::from_raw_word(closure_bits).expect("aot_spawn_hook: closure ref");
-    let copied = deep_copy_any_value_ref(closure_ref, &parent.heap, &mut child.heap, &mut forwarding);
+    let copied = deep_copy_any_value_ref(closure_ref, &parent.heap.view(), &mut child.heap, &mut forwarding);
     let copied_addr = copied
         .closure_addr()
         .expect("aot_spawn_hook: copied closure must be a closure");
@@ -486,54 +488,37 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
     // Scaffolding is prepared before the child runs; reset so its alloc
     // telemetry measures only the child's execution.
     child.heap.reset_alloc_stats();
-    child.state = ProcessState::Ready;
 
     unsafe {
+        (*sched).core.make_runnable(pid, &mut child.state);
         (*sched).tasks.insert(pid, child);
-        (*sched).core.enqueue(pid);
     }
 
     pid
 }
 
-fn deep_copy_send_ref_for_aot(sender: &Process, receiver: &mut Process, msg: AnyValueRef) -> AnyValueRef {
-    let mut forwarding = HashMap::new();
-    deep_copy_any_value_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding)
-}
-
-fn deep_copy_self_send_ref_for_aot(sender: &mut Process, msg: AnyValueRef) -> AnyValueRef {
-    let mut forwarding = HashMap::new();
-    let heap_ptr: *mut Heap = &mut sender.heap as *mut _;
-    let src_heap: &Heap = unsafe { &*heap_ptr };
-    let dst_heap: &mut Heap = unsafe { &mut *heap_ptr };
-    deep_copy_any_value_ref(msg, src_heap, dst_heap, &mut forwarding)
-}
-
-/// Send hook (fz-sched.2). Pushes a message into the receiver's mailbox.
-/// Every arrival routes through `sched::probe_sender`, which flips a
-/// matched waiting receiver to Ready and enqueues it.
+/// Send hook. A self-send is a mailbox push on the sender's own heap. Every
+/// other arrival routes through `sched::probe_sender`, which matches and
+/// copies on the sender and queues the gift on the receiver; a matched
+/// waiting receiver is made runnable through the scheduling core.
 extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64) {
     let msg = AnyValueRef::from_raw_word(msg_ref_word).expect("aot_send message ref");
     assert!(!sender_ptr.is_null(), "aot_send_hook: no sender process");
     let sched = scheduler as *mut AotScheduler;
-    let wake = {
-        let tasks = unsafe { &mut (*sched).tasks };
-        let Some(task) = tasks.get_mut(&receiver_pid) else {
-            return;
-        };
-        if task.state == ProcessState::Exited {
-            return;
-        }
-        let msg = if task.pid == unsafe { (*sender_ptr).pid } {
-            deep_copy_self_send_ref_for_aot(task, msg)
-        } else {
-            let sender = unsafe { &*sender_ptr };
-            deep_copy_send_ref_for_aot(sender, task, msg)
-        };
-        matches!(probe_sender(task, msg), ProbeOutcome::Hit)
+    let tasks = unsafe { &mut (*sched).tasks };
+    let Some(task) = tasks.get_mut(&receiver_pid) else {
+        return;
     };
-    if wake {
-        unsafe { (*sched).core.enqueue(receiver_pid) };
+    if task.state == ProcessState::Exited {
+        return;
+    }
+    if task.pid == unsafe { (*sender_ptr).pid } {
+        self_send(task, msg);
+        return;
+    }
+    let sender = unsafe { &mut *sender_ptr };
+    if probe_sender(sender, task, msg).outcome == ProbeOutcome::Hit {
+        unsafe { (*sched).core.make_runnable(receiver_pid, &mut task.state) };
     }
 }
 
@@ -577,7 +562,7 @@ pub extern "C" fn fz_aot_run_main(
     // measures only main's execution.
     process.heap.reset_alloc_stats();
     unsafe {
-        (*sched).core.enqueue(1);
+        (*sched).core.make_runnable(1, &mut process.state);
     }
 
     aot_run_queue_loop(sched);
@@ -658,6 +643,9 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
         (*proc_ptr).ctx = &mut (*sched).ctx;
         debug_assert!(!(*proc_ptr).ctx.is_null(), "aot ctx installed");
     };
+    // Gifts queued by senders become this heap's before any code runs; a
+    // matched receive becomes the runnable closure here.
+    deliver_in_queue(unsafe { &mut *proc_ptr });
 
     fn run_scheduler_closure(resume_addr: *const u8, process: *mut Process, closure: *mut u8) {
         let _ = unsafe { call1(resume_addr, process, closure_ref_word(closure)) };
@@ -673,19 +661,12 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
     let has_runnable = unsafe { (*proc_ptr).runnable.is_some() };
     if state == ProcessState::Running && has_runnable {
         let process = unsafe { &mut *proc_ptr };
-        if process.needs_boundary_gc() {
-            let mut root = process.runnable_ptr();
-            process.heap.gc_process_roots(&mut root, &mut process.mailbox);
-            process.set_runnable_closure(root);
-            process.quiet_quanta = 0;
-        } else {
-            process.quiet_quanta = process.quiet_quanta.saturating_add(1);
-        }
-        process.clear_yield_reasons();
-        unsafe {
-            (*proc_ptr).state = ProcessState::Ready;
-            (*sched).core.enqueue(pid);
-        }
+        process.boundary_maintenance();
+        unsafe { (*sched).core.make_runnable(pid, &mut process.state) };
+    } else if state == ProcessState::Blocked {
+        // Parked on a receive: the park record's closures and pinned values
+        // are roots, so the heap is trimmed while the process waits.
+        unsafe { (*proc_ptr).boundary_maintenance() };
     } else if state == ProcessState::Running {
         // fz-4mk.3b — task halted; flush MSO resources through the dtor
         // drain shim before the heap drops.
@@ -706,10 +687,12 @@ impl Scheduler for AotScheduler {
         &mut self.core
     }
 
-    fn wake_expired(&mut self, pid: u32, timer: TimerId) -> bool {
-        self.tasks
-            .get_mut(&pid)
-            .is_some_and(|task| fire_after_timer(task, timer))
+    fn wake_expired(&mut self, pid: u32, timer: TimerId) {
+        if let Some(task) = self.tasks.get_mut(&pid)
+            && fire_after_timer(task, timer)
+        {
+            self.core.make_runnable(pid, &mut task.state);
+        }
     }
 }
 

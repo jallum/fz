@@ -422,6 +422,7 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
     let tail = interp_list_cons(sender, AnyValue::Int(2), AnyValue::EmptyList, "tail").unwrap();
     let retained = interp_list_cons(sender, AnyValue::Int(1), tail, "source").unwrap();
     let message = interp_list_cons(sender, ignored, retained, "message").unwrap();
+    let sender_cons_before = unsafe { &*sender }.heap.alloc_stats_snapshot().list_cons.allocs;
     runtime
         .send_ref(
             compiler.world_mut().types_mut(),
@@ -432,6 +433,9 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
             &receiver_pid,
             message.as_any_value_ref(sender).unwrap(),
         )
+        .unwrap();
+    runtime
+        .deliver_in_queue(&TransportStore::new(), &program, receiver_pid)
         .unwrap();
     let BackendResumeEntry::Entry { env, .. } = runtime.take_backend_resume(receiver_pid).expect("winning wake") else {
         panic!("direct outcome entry")
@@ -445,14 +449,17 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
     assert!(unsafe { &*receiver }.heap.contains_heap_addr(address));
     assert!(!unsafe { &*sender }.heap.contains_heap_addr(address));
     assert_eq!(
-        unsafe { &*receiver }.heap.alloc_stats_snapshot().list_cons.allocs,
+        unsafe { &*sender }.heap.alloc_stats_snapshot().list_cons.allocs - sender_cons_before,
         2,
-        "only the two-cell winning source crosses heaps; ignored list and outer cell do not"
+        "the sender copies only the two-cell winning source; the ignored list and outer cell stay behind"
+    );
+    assert_eq!(
+        unsafe { &*receiver }.heap.alloc_stats_snapshot().list_cons.allocs,
+        0,
+        "the receiver allocates nothing for a delivery"
     );
     let mut roots = [copied];
-    unsafe { &mut *receiver }
-        .heap
-        .gc_with_any_value_ref_roots(&mut std::ptr::null_mut(), &mut roots);
+    unsafe { &mut *receiver }.heap.collect(&mut roots);
     let source = roots[0].raw_word();
     let retained = fz_runtime::ir_runtime::fz_list_reuse_or_cons_ref(
         receiver,

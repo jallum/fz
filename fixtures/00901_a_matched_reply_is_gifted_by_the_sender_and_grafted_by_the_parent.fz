@@ -1,0 +1,28 @@
+#---
+# purpose: "a child's reply that matches the parent's parked receive is copied by the child into a gift the parent grafts at its next dispatch, so the parent's heap allocates no list cells for the delivery; the earlier unmatched 50000-element log is gifted whole and waits in the mailbox"
+#---
+#
+# The parent parks on `{:ok, xs}` before the child runs. The child's first
+# send is a 50000-element list the matcher rejects: the child copies the whole
+# message into a gift and queues it on the parent without waking it. The second
+# send matches: the child runs the matcher, copies the three bound cells into a
+# gift, and wakes the parent once. The parent grafts both gifts when it is
+# dispatched, before any of its code runs, so the `list_cons_allocs` delta
+# across its receive is 0. The log is already in the mailbox when the second
+# receive asks for it.
+def main() do
+  parent = self()
+  spawn(fn () ->
+    send(parent, {:log, Enum.to_list(1..50000)})
+    send(parent, {:ok, [1, 2, 3]})
+  end)
+  before = Process.heap_alloc_stats()
+  receive do
+    {:ok, xs} -> dbg(xs)
+  end
+  after_receive = Process.heap_alloc_stats()
+  dbg(after_receive[:list_cons_allocs] - before[:list_cons_allocs])
+  receive do
+    {:log, log} -> dbg(Enum.count(log))
+  end
+end

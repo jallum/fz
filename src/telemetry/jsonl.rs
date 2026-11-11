@@ -759,6 +759,50 @@ impl JsonlBackend {
                 );
             },
         );
+        let ended_backend = Rc::clone(backend);
+        telemetry.attach_raw_event1::<crate::exec::runtime::RunEnded, _>(
+            &crate::exec::runtime::RUN_ENDED,
+            move |name, span_id, parent_span_id, ended| {
+                ended_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    Metadata::from_pairs([
+                        (
+                            "pool_outstanding_before_run",
+                            Value::U64(ended.pool_outstanding_before_run as u64),
+                        ),
+                        (
+                            "pool_outstanding_after_run",
+                            Value::U64(ended.pool_outstanding_after_run as u64),
+                        ),
+                        ("pool_cached_blocks", Value::U64(ended.pool_cached_blocks as u64)),
+                    ]),
+                );
+            },
+        );
+        let probe_backend = Rc::clone(backend);
+        telemetry.attach_raw_event1::<fz_runtime::sched::SendProbe, _>(
+            &crate::exec::runtime::SEND_PROBE,
+            move |name, span_id, parent_span_id, probe| {
+                let outcome = match probe.outcome {
+                    fz_runtime::sched::ProbeOutcome::Hit => "hit",
+                    fz_runtime::sched::ProbeOutcome::Miss => "miss",
+                };
+                probe_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    Metadata::from_pairs([
+                        ("outcome", Value::Str(outcome.into())),
+                        ("receiver", Value::U64(u64::from(probe.receiver))),
+                        ("reductions", Value::I64(probe.reductions)),
+                        ("gift_bytes", Value::U64(probe.gift_bytes as u64)),
+                        ("gift_blocks", Value::U64(probe.gift_blocks as u64)),
+                    ]),
+                );
+            },
+        );
         let ready_backend = Rc::clone(backend);
         telemetry.attach_raw_event0(
             &["fz", "runtime", "execution_ready"],

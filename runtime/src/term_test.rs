@@ -4,11 +4,11 @@ use crate::any_value::{
     map_addr_from_tagged,
 };
 use crate::function_denotation::FunctionDenotation;
+use crate::heap::AddressMap;
 use crate::heap::{Heap, Schema, deep_copy_slot};
 use crate::procbin::{SharedBinHandle, alloc_procbin};
 use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -273,14 +273,20 @@ fn typed_closure_and_resource_identity_survive_transport_without_comparison_allo
         (heap_value(changed), AnyValue::int(3)),
     ]);
     assert_eq!(unsafe { map_count(map_addr_from_tagged(map).unwrap()) }, 2);
-    let copied = deep_copy_slot(heap_value(map), &source, &mut destination, &mut HashMap::new());
-    let mut roots = [copied];
-    destination.gc_with_extra_root_slots(&mut std::ptr::null_mut(), &mut roots);
+    let copied = deep_copy_slot(
+        heap_value(map),
+        &source.view(),
+        &mut destination,
+        &mut AddressMap::default(),
+    );
+    let mut roots = [copied.ref_word()];
+    destination.collect(&mut roots);
+    let moved = AnyValue::decode_tagged_heap_bits(roots[0].heap_object_word().unwrap()).unwrap();
     let before = destination.alloc_stats_snapshot();
     let registry = schemas.borrow();
     let cmp = TermComparator::new(&node, &registry);
     assert_eq!(
-        cmp.compare(heap_value(map), roots[0], NumericMode::Strict),
+        cmp.compare(heap_value(map), moved, NumericMode::Strict),
         Ordering::Equal
     );
     assert_ne!(
@@ -288,7 +294,7 @@ fn typed_closure_and_resource_identity_survive_transport_without_comparison_allo
         Ordering::Equal,
         "equal payloads do not merge generative resources"
     );
-    let moved = AnyValueRef::from_heap_object(ValueKind::MAP, roots[0].raw() as *const u8).unwrap();
+    let moved = roots[0];
     assert_eq!(
         destination
             .read_map_value_for_any_key(moved, heap_value(b))

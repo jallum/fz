@@ -1,0 +1,23 @@
+#---
+# purpose: "self() in a receive guard names the receiver, so a message is matched against the receiver's pid even though a different process runs the probe"
+#---
+#
+# The parent parks on a receive whose guard compares the message's pid field
+# with `self()`. The child sends two messages: first one carrying its own pid,
+# then one carrying the parent's pid. The first probe must miss and the second
+# must hit, because the guard asks for the receiver's pid, not the sender's.
+# The message the first receive rejected waits in the mailbox for the second.
+def main() do
+  parent = self()
+  spawn(fn () ->
+    me = self()
+    send(parent, {:tag, me, :carried_the_senders_pid})
+    send(parent, {:tag, parent, :carried_the_receivers_pid})
+  end)
+  receive do
+    {:tag, who, label} when who == self() -> dbg(label)
+  end
+  receive do
+    {:tag, _who, label} -> dbg(label)
+  end
+end

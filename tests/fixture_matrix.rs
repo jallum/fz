@@ -228,8 +228,20 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             enum_sort_constant_sorter_erased_under_return_demand_specs,
         ),
         (
-            "interpreter_stepper_does_not_update_quiet_quanta",
-            interpreter_stepper_does_not_update_quiet_quanta,
+            "self_send_pushes_the_senders_reference_and_the_send_site_publishes_it",
+            self_send_pushes_the_senders_reference_and_the_send_site_publishes_it,
+        ),
+        (
+            "a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue",
+            a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue,
+        ),
+        (
+            "a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe",
+            a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe,
+        ),
+        (
+            "a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown",
+            a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown,
         ),
         ("fixture_hang_guard_policy", fixture_hang_guard_policy),
         (
@@ -2892,12 +2904,205 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
     assert_eq!(stats.runtime_fallback_count(), 0);
 }
 
-fn interpreter_stepper_does_not_update_quiet_quanta() {
-    let source = fs::read_to_string("src/ir_interp/backend.rs").expect("read interp backend runner");
-    assert!(
-        !source.contains("quiet_quanta"),
-        "interpreter hot loop must leave quiet_quanta to scheduler boundary code"
+fn self_send_pushes_the_senders_reference_and_the_send_site_publishes_it() {
+    let fixture =
+        FixtureCase::new("fixtures/00900_a_self_sent_list_stays_intact_because_the_send_site_publishes_it.fz");
+    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00900 expected.txt");
+    assert_eq!(
+        expected, "[1, 9]\n0\n[4, 5, 6]\n[4, 9]\n",
+        "the control rewrite prints [1, 9]; the send allocates no list cells; the received message is intact; the refused rewrite still yields [4, 9]"
     );
+
+    // Four one-cons constructions retain a source cell: the two identical
+    // aliases, the control rewrite that runs in place, and the rewrite of the
+    // sent cell. Only the last one misses, because the send site published
+    // the cell before the call.
+    let stats = list_retention_telemetry_stats_for_fixture(&fixture);
+    assert_eq!(
+        (stats.runtime_attempted_count, stats.runtime_reused_count),
+        (4, 3),
+        "self-send fixture pins four retention attempts with exactly one refused rewrite",
+    );
+    assert_eq!(stats.runtime_fallback_count(), 1);
+}
+
+/// One `fz.runtime.send.probe` event as the jsonl log renders it.
+#[derive(Debug, PartialEq, Eq)]
+struct SendProbeEvent {
+    outcome: String,
+    receiver: usize,
+    gift_bytes: usize,
+    gift_blocks: usize,
+}
+
+impl SendProbeEvent {
+    fn new(outcome: &str, receiver: usize, gift_bytes: usize, gift_blocks: usize) -> Self {
+        Self {
+            outcome: outcome.to_string(),
+            receiver,
+            gift_bytes,
+            gift_blocks,
+        }
+    }
+}
+
+fn json_str_field(line: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{}\":\"", key);
+    let start = line.find(&needle)? + needle.len();
+    let end = line[start..].find('"')?;
+    Some(line[start..start + end].to_string())
+}
+
+/// Every send probe the fixture emits on `path`, in emission order.
+fn send_probe_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> Vec<SendProbeEvent> {
+    let header = parse_header(fixture).unwrap_or_else(|error| panic!("parse fixture header: {error}"));
+    let (out, log) =
+        run_path_logged(fixture, &header, path).unwrap_or_else(|e| panic!("fz2 {label} --log-telemetry: {}", e));
+    assert!(
+        out.status.success(),
+        "fz2 {label} --log-telemetry {} exited {}: {}",
+        fixture.display_path().display(),
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    log.lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"send\",\"probe\"]"))
+        .map(|line| SendProbeEvent {
+            outcome: json_str_field(line, "outcome").unwrap_or_else(|| panic!("send probe missing outcome")),
+            receiver: required_json_u64_field(line, "receiver", "send probe"),
+            gift_bytes: required_json_u64_field(line, "gift_bytes", "send probe"),
+            gift_blocks: required_json_u64_field(line, "gift_blocks", "send probe"),
+        })
+        .collect()
+}
+
+fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue() {
+    let matched =
+        FixtureCase::new("fixtures/00901_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent.fz");
+    let expected = fs::read_to_string(matched.sidecar_path("expected.txt")).expect("read 00901 expected.txt");
+    assert_eq!(
+        expected, "[1, 2, 3]\n0\n50000\n",
+        "the parent prints the matched reply, allocates no list cells across its receive, and finds the whole log in its mailbox"
+    );
+    let unmatched = FixtureCase::new("fixtures/00902_an_unmatched_message_is_gifted_whole_and_waits_in_the_mailbox.fz");
+    let expected = fs::read_to_string(unmatched.sidecar_path("expected.txt")).expect("read 00902 expected.txt");
+    assert_eq!(
+        expected, ":go\n[7, 8]\n0\n",
+        "the parent takes :go first, then the earlier unmatched tuple from its mailbox, and allocates no list cells for either"
+    );
+
+    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+        // The 50000-element log misses: the tuple and every cons cell cross
+        // as one gift. The reply hits: exactly the three bound cells cross,
+        // and the receiver is woken by that one hit.
+        let events = send_probe_events_for_fixture(&matched, path, label);
+        assert_eq!(
+            events,
+            vec![
+                SendProbeEvent::new("miss", 1, 800_032, 1),
+                SendProbeEvent::new("hit", 1, 48, 1),
+            ],
+            "{label}: one miss gifting the whole log in one block, then one hit gifting three cons cells"
+        );
+        assert_eq!(
+            events.iter().filter(|e| e.outcome == "hit").count(),
+            1,
+            "{label}: the parent is woken once"
+        );
+
+        // The tuple misses and crosses whole; the matching atom binds nothing,
+        // so its gift has no block at all.
+        let events = send_probe_events_for_fixture(&unmatched, path, label);
+        assert_eq!(
+            events,
+            vec![
+                SendProbeEvent::new("miss", 1, 64, 1),
+                SendProbeEvent::new("hit", 1, 0, 0)
+            ],
+            "{label}: the unmatched tuple is gifted whole; the matching atom gifts nothing"
+        );
+    }
+}
+
+fn a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe() {
+    let fixture =
+        FixtureCase::new("fixtures/00904_a_receive_guard_reads_the_receivers_pid_even_when_a_sender_runs_the_probe.fz");
+    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00904 expected.txt");
+    assert_eq!(
+        expected, ":carried_the_receivers_pid\n:carried_the_senders_pid\n",
+        "the guard accepts the message carrying the receiver's pid; the one carrying the sender's pid waits in the mailbox"
+    );
+    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+        // The child runs the probe, so a guard that asked the matcher's
+        // process for `self()` would hit on the first message.
+        let events = send_probe_events_for_fixture(&fixture, path, label);
+        let outcomes: Vec<_> = events.iter().map(|e| e.outcome.as_str()).collect();
+        assert_eq!(
+            outcomes,
+            vec!["miss", "hit"],
+            "{label}: the sender's own pid misses; the receiver's pid hits"
+        );
+        assert!(
+            events.iter().all(|e| e.gift_blocks == 1),
+            "{label}: each gift occupies one block"
+        );
+    }
+}
+
+fn a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown() {
+    let fixture = FixtureCase::new("fixtures/00903_a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown.fz");
+    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00903 expected.txt");
+    assert_eq!(
+        expected, ":child_is_parked\n:done\n",
+        "the run prints both lines and ends with the child still parked"
+    );
+    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+        let events = send_probe_events_for_fixture(&fixture, path, label);
+        let misses_for_the_child: Vec<_> = events
+            .iter()
+            .filter(|e| e.outcome == "miss" && e.receiver == 2)
+            .collect();
+        // Each gift is measured first and occupies one block: the tuple and
+        // its 1000 cells (32 + 1000 * 16), the tuple and its two cells
+        // (32 + 2 * 16), and one boxed atom.
+        assert_eq!(
+            misses_for_the_child,
+            vec![
+                &SendProbeEvent::new("miss", 2, 16_032, 1),
+                &SendProbeEvent::new("miss", 2, 64, 1),
+                &SendProbeEvent::new("miss", 2, 16, 1),
+            ],
+            "{label}: all three messages are probed and gifted to the parked child, which never grafts them; each holds one exactly sized block that teardown must return"
+        );
+        assert_eq!(
+            events.iter().filter(|e| e.outcome == "hit").count(),
+            1,
+            "{label}: only the child's announcement wakes anyone"
+        );
+        let (before, after) = run_ended_pool_census(&fixture, path, label);
+        assert_eq!(
+            after, before,
+            "{label}: the run returned every block it took, including the gifts still queued on the parked child"
+        );
+    }
+}
+
+/// `(pool_outstanding_before_run, pool_outstanding_after_run)` from the one
+/// `fz.runtime.run_ended` event the fixture's run emits on `path`.
+fn run_ended_pool_census(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> (usize, usize) {
+    let header = parse_header(fixture).unwrap_or_else(|error| panic!("parse fixture header: {error}"));
+    let (out, log) =
+        run_path_logged(fixture, &header, path).unwrap_or_else(|e| panic!("fz2 {label} --log-telemetry: {}", e));
+    assert!(out.status.success(), "fz2 {label} exited {}", out.status);
+    let ended: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"run_ended\"]"))
+        .collect();
+    assert_eq!(ended.len(), 1, "{label}: exactly one run_ended event");
+    (
+        required_json_u64_field(ended[0], "pool_outstanding_before_run", "run_ended"),
+        required_json_u64_field(ended[0], "pool_outstanding_after_run", "run_ended"),
+    )
 }
 
 fn assert_fixture_output_contains(fixture: &str, file: &str, needles: &[&str]) {

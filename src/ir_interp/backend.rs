@@ -14,18 +14,20 @@ use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::transport::{ShapeDescr, ShapeId, TransportLayout, TransportPosition, TransportStore};
 use crate::compiler2::{
     BackendBody, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendExecutable,
-    BackendProgram, BackendStep as ProgramStep, BackendTail, CallEdge, CallTarget, ClosureCallEdge, ControlDestination,
-    ExecutableDispatch, ValueId,
+    BackendProgram, BackendReceive, BackendStep as ProgramStep, BackendTail, CallEdge, CallTarget, ClosureCallEdge,
+    ControlDestination, ExecutableDispatch, ValueId,
 };
 use crate::compiler2::{ExecutableKey, FunctionId, RunFailure};
+use crate::exec::runtime::emit_send_probe;
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::CallableShape;
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use crate::types::ClosureTarget;
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged};
+use fz_runtime::delivery::Delivery;
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule};
 use fz_runtime::heap::Schema;
-use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
+use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_empty,
     fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref,
@@ -34,6 +36,7 @@ use fz_runtime::ir_runtime::{
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
 use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
+use fz_runtime::sched::{ProbeOutcome, SendProbe, drain_in_queue, gift_match, gift_message, self_send};
 use fz_runtime::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
 use fz_runtime::timer::TimerId;
 use std::time::Duration;
@@ -97,6 +100,7 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
         .iter()
         .map(|name| name.as_ref().clone())
         .collect::<Vec<_>>();
+    let pool_outstanding_before_run = fz_runtime::heap::pool_outstanding_blocks();
     let mut runtime = IrInterpRuntime::fresh_with_atoms(atom_names.clone());
     let module = Module {
         atom_names,
@@ -107,38 +111,43 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
             .collect(),
         ..Module::default()
     };
-    runtime.enqueue_backend_entry(
-        MAIN_PID,
-        backend_executable_ref(program, types, program.entry())?,
-        Vec::new(),
-    )?;
-    let completions = drive_backend_until_idle(
-        &mut runtime,
-        types,
-        transport,
-        tel,
-        output,
-        argv,
-        program,
-        &module,
-        BackendRun::Program,
-    )?;
-    if runtime.process_ref(MAIN_PID).is_some_and(|main| main.failed) {
-        return Err(RunFailure::MainFailed);
-    }
-    let halt_val = completions
-        .iter()
-        .rev()
-        .find_map(|(pid, value)| {
-            (*pid == MAIN_PID).then(|| {
-                runtime
-                    .process_ref(*pid)
-                    .map(|task| value_to_halt(task as *const Process as *mut Process, *value))
+    let outcome = (|| -> Result<i64, RunFailure> {
+        runtime.enqueue_backend_entry(
+            MAIN_PID,
+            backend_executable_ref(program, types, program.entry())?,
+            Vec::new(),
+        )?;
+        let completions = drive_backend_until_idle(
+            &mut runtime,
+            types,
+            transport,
+            tel,
+            output,
+            argv,
+            program,
+            &module,
+            BackendRun::Program,
+        )?;
+        if runtime.process_ref(MAIN_PID).is_some_and(|main| main.failed) {
+            return Err(RunFailure::MainFailed);
+        }
+        let halt_val = completions
+            .iter()
+            .rev()
+            .find_map(|(pid, value)| {
+                (*pid == MAIN_PID).then(|| {
+                    runtime
+                        .process_ref(*pid)
+                        .map(|task| value_to_halt(task as *const Process as *mut Process, *value))
+                })
             })
-        })
-        .flatten()
-        .unwrap_or(0);
-    Ok(halt_val)
+            .flatten()
+            .unwrap_or(0);
+        Ok(halt_val)
+    })();
+    drop(runtime);
+    crate::exec::runtime::emit_run_ended(tel, pool_outstanding_before_run);
+    outcome
 }
 
 pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
@@ -223,11 +232,11 @@ impl IrInterpRuntime {
                 continuations,
             },
         );
-        self.core.enqueue(pid);
-        self.set_process_state(pid, ProcessState::Ready);
+        self.make_runnable(pid);
         Ok(())
     }
 
+    /// Record that `pid` resumes at `entry` and queue it to run.
     fn enqueue_backend_local_entry(
         &mut self,
         pid: u32,
@@ -236,23 +245,8 @@ impl IrInterpRuntime {
         env: HashMap<ValueId, BackendBoundValue>,
         continuations: Vec<BackendContinuation>,
     ) -> Result<(), String> {
-        self.stage_backend_local_entry(pid, executable, entry, env, continuations)?;
-        self.core.enqueue(pid);
-        Ok(())
-    }
-
-    /// Make `pid` ready to resume at `entry` without queueing it; the caller
-    /// queues it, or the scheduling core does when a timer woke it.
-    fn stage_backend_local_entry(
-        &mut self,
-        pid: u32,
-        executable: Rc<BackendExecutable>,
-        entry: crate::compiler2::ControlEntryId,
-        env: HashMap<ValueId, BackendBoundValue>,
-        continuations: Vec<BackendContinuation>,
-    ) -> Result<(), String> {
         if !self.tasks.contains_key(&pid) {
-            return Err(format!("stage_backend_local_entry: unknown pid {}", pid));
+            return Err(format!("enqueue_backend_local_entry: unknown pid {}", pid));
         }
         self.backend_resume.insert(
             pid,
@@ -263,7 +257,7 @@ impl IrInterpRuntime {
                 continuations,
             },
         );
-        self.set_process_state(pid, ProcessState::Ready);
+        self.make_runnable(pid);
         Ok(())
     }
 
@@ -291,18 +285,13 @@ impl IrInterpRuntime {
             pid,
             DEFAULT_REDUCTIONS_PER_QUANTUM,
         ));
-        child.state = ProcessState::Ready;
-        let mut forwarding = HashMap::new();
+        let mut forwarding = AddressMap::default();
+        let sender_view = unsafe { &*sender }.heap.view();
         let args = args
             .into_iter()
             .map(|value| match value {
                 AnyValue::Ref(value) => {
-                    let copied = deep_copy_any_value_ref(
-                        value.raw(),
-                        &unsafe { &*sender }.heap,
-                        &mut child.heap,
-                        &mut forwarding,
-                    );
+                    let copied = deep_copy_any_value_ref(value.raw(), &sender_view, &mut child.heap, &mut forwarding);
                     AnyValue::from_any_value_ref(copied)
                 }
                 value => Ok(value),
@@ -314,26 +303,25 @@ impl IrInterpRuntime {
     }
 
     /// The `after` timer `timer` of the receive `pid` is parked on has
-    /// expired: stage the receive's `after` entry. Returns `false` for a stale
-    /// timer whose receiver a message already woke.
+    /// expired: queue the receive's `after` entry. A stale timer, whose
+    /// receiver a message already woke, is dropped.
     fn wake_receive_after(
         &mut self,
         transport: &TransportStore,
         program: &BackendProgram,
         pid: u32,
         timer: TimerId,
-    ) -> Result<bool, String> {
+    ) -> Result<(), String> {
+        let Some(receiver) = self.process_ptr(pid) else {
+            return Ok(());
+        };
+        let delivery = unsafe { &*receiver }.delivery.lock();
         if self.backend_parked.get(&pid).and_then(|park| park.after_timer) != Some(timer) {
-            return Ok(false);
+            return Ok(());
         }
         let park = self.backend_parked.remove(&pid).expect("checked above");
-        let entries = entries_for_executable(&park.executable)?;
-        let entry = entries
-            .get(park.entry.as_u32() as usize)
-            .ok_or_else(|| format!("backend parked entry {} is out of bounds", park.entry.as_u32()))?;
-        let BackendTail::Receive(receive) = &entry.tail else {
-            return Err(format!("backend parked entry {} is not a receive", park.entry.as_u32()));
-        };
+        drop(delivery);
+        let (entries, receive) = parked_receive(&park)?;
         let after = receive
             .after
             .as_ref()
@@ -341,8 +329,7 @@ impl IrInterpRuntime {
         let receiver = self.process_ptr(pid).ok_or_else(|| format!("unknown receiver {pid}"))?;
         self.current_proc = receiver;
         let env = delivered_env(self, transport, program, entries, &park.env, after.entry, None, &[])?;
-        self.stage_backend_local_entry(pid, park.executable.clone(), after.entry, env, park.continuations)?;
-        Ok(true)
+        self.enqueue_backend_local_entry(pid, park.executable.clone(), after.entry, env, park.continuations)
     }
 
     pub(super) fn send_ref<T: Telemetry + ?Sized>(
@@ -362,71 +349,154 @@ impl IrInterpRuntime {
         if receiver.state == ProcessState::Exited {
             return Ok(());
         }
-        let msg = AnyValue::from_any_value_ref(msg_ref)?;
-        let sender_heap = &unsafe { &*self.cur_proc() }.heap as *const Heap;
-        if let Some(park) = self.backend_parked.remove(receiver_pid) {
-            let entries = entries_for_executable(&park.executable)?;
-            let entry = entries
-                .get(park.entry.as_u32() as usize)
-                .ok_or_else(|| format!("backend parked entry {} is out of bounds", park.entry.as_u32()))?;
-            let BackendTail::Receive(receive) = &entry.tail else {
-                return Err(format!("backend parked entry {} is not a receive", park.entry.as_u32()));
-            };
-            if let Some((target, params)) = try_match_backend_receive(
-                self,
-                types,
-                transport,
-                program,
-                module,
-                &receive.outcomes,
-                &receive.dispatch,
-                msg,
-                &receive.bindings,
-                &park.env,
-            )? {
-                let mut forwarding = HashMap::new();
-                let sender = self.cur_proc();
-                let receiver = self
-                    .process_ptr(*receiver_pid)
-                    .ok_or_else(|| format!("unknown receiver {receiver_pid}"))?;
-                let params = params
-                    .into_iter()
-                    .map(|(parameter, value)| {
-                        let value = value.as_any_value_ref(sender)?;
-                        let copied = deep_copy_any_value_ref(
-                            value,
-                            unsafe { &*sender_heap },
-                            &mut unsafe { &mut *receiver }.heap,
-                            &mut forwarding,
-                        );
-                        Ok((parameter, AnyValue::from_any_value_ref(copied)?))
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                self.current_proc = receiver;
-                let env = delivered_env(self, transport, program, entries, &park.env, target, None, &params);
-                self.current_proc = sender;
-                let env = env?;
-                if let Some(timer) = park.after_timer {
-                    timer_cancel(unsafe { &*receiver }, timer);
-                }
-                self.enqueue_backend_local_entry(
-                    *receiver_pid,
-                    park.executable.clone(),
-                    target,
-                    env,
-                    park.continuations,
-                )?;
-                return Ok(());
-            }
-            self.backend_parked.insert(*receiver_pid, park);
+        let sender = unsafe { &mut *self.cur_proc() };
+        if sender.pid == *receiver_pid {
+            self_send(sender, msg_ref);
+            return Ok(());
         }
-        let task = self.tasks.get_mut(receiver_pid).expect("receiver checked above");
-
-        let mut forwarding = HashMap::new();
-        let copied = deep_copy_any_value_ref(msg_ref, unsafe { &*sender_heap }, &mut task.heap, &mut forwarding);
-        task.mailbox.push_back(copied);
+        let receiver = self.process_ptr(*receiver_pid).expect("receiver checked above");
+        let mut delivery = unsafe { &*receiver }.delivery.lock();
+        let probe = match self.backend_parked.remove(receiver_pid) {
+            Some(mut park) => {
+                let outcome = self.probe_parked_receive(
+                    types,
+                    transport,
+                    program,
+                    module,
+                    &mut park,
+                    sender,
+                    (unsafe { &*receiver }, &mut delivery),
+                    msg_ref,
+                )?;
+                self.backend_parked.insert(*receiver_pid, park);
+                outcome
+            }
+            None => gift_message(sender, &mut delivery, *receiver_pid, msg_ref),
+        };
+        drop(delivery);
+        emit_send_probe(tel, &probe);
+        if probe.outcome == ProbeOutcome::Hit {
+            self.make_runnable(*receiver_pid);
+        }
         Ok(())
     }
+
+    /// Match `msg` against the receive `park` records, on the sender, with
+    /// the receiver's delivery lock held by the caller. A hit gifts the bound
+    /// values and cancels the after-timer; a miss, or a receive another sender
+    /// already matched, gifts the message.
+    #[allow(clippy::too_many_arguments)]
+    fn probe_parked_receive(
+        &mut self,
+        types: &mut crate::compiler2::Types,
+        transport: &TransportStore,
+        program: &BackendProgram,
+        module: &Module,
+        park: &mut BackendParkRecord,
+        sender: &mut Process,
+        (receiver, delivery): (&Process, &mut Delivery),
+        msg_ref: AnyValueRef,
+    ) -> Result<SendProbe, String> {
+        if delivery.has_pending_match() {
+            return Ok(gift_message(sender, delivery, receiver.pid, msg_ref));
+        }
+        let (_, receive) = parked_receive(park)?;
+        let msg = AnyValue::from_any_value_ref(msg_ref)?;
+        let reductions_before = sender.reductions_remaining;
+        let matched = try_match_backend_receive(
+            self,
+            types,
+            transport,
+            program,
+            module,
+            &receive.outcomes,
+            &receive.dispatch,
+            msg,
+            &receive.bindings,
+            &park.env,
+        )?;
+        let reductions = i64::from(reductions_before) - i64::from(sender.reductions_remaining);
+        let Some((clause_idx, _, params)) = matched else {
+            return Ok(SendProbe {
+                reductions,
+                ..gift_message(sender, delivery, receiver.pid, msg_ref)
+            });
+        };
+        let bound = params
+            .into_iter()
+            .map(|(_, value)| value.as_any_value_ref(sender))
+            .collect::<Result<Vec<_>, String>>()?;
+        if let Some(timer) = park.after_timer.take() {
+            timer_cancel(receiver, timer);
+        }
+        Ok(gift_match(
+            sender,
+            delivery,
+            receiver.pid,
+            clause_idx,
+            &bound,
+            reductions,
+        ))
+    }
+
+    /// Graft every gift queued on `pid` into its heap and, when a sender
+    /// matched its parked receive, record the winning outcome entry as the
+    /// resume. Runs at the start of a dispatch, before the resume is taken.
+    fn deliver_in_queue(
+        &mut self,
+        transport: &TransportStore,
+        program: &BackendProgram,
+        pid: u32,
+    ) -> Result<(), String> {
+        let receiver = self
+            .process_ptr(pid)
+            .expect("backend pid in run queue with no process entry");
+        let task = unsafe { &mut *receiver };
+        let mut delivery = task.delivery.lock();
+        let Some((clause_idx, bound_vals)) = drain_in_queue(&mut delivery, &mut task.heap, &mut task.mailbox) else {
+            return Ok(());
+        };
+        let park = self
+            .backend_parked
+            .remove(&pid)
+            .expect("a matched receive is still parked");
+        drop(delivery);
+        let (entries, receive) = parked_receive(&park)?;
+        let edge = receive
+            .outcomes
+            .get(clause_idx)
+            .expect("receive winning outcome has one target edge");
+        let params = edge
+            .arguments
+            .iter()
+            .zip(bound_vals)
+            .map(|(argument, value)| Ok((argument.parameter, AnyValue::from_any_value_ref(value)?)))
+            .collect::<Result<Vec<_>, String>>()?;
+        self.current_proc = receiver;
+        let env = delivered_env(self, transport, program, entries, &park.env, edge.target, None, &params)?;
+        self.backend_resume.insert(
+            pid,
+            BackendResumeEntry::Entry {
+                executable: Rc::clone(&park.executable),
+                entry: edge.target,
+                env,
+                continuations: park.continuations,
+            },
+        );
+        Ok(())
+    }
+}
+
+/// The entries a parked receive runs in and the receive tail itself.
+fn parked_receive(park: &BackendParkRecord) -> Result<(&[BackendEntry], &BackendReceive), String> {
+    let entries = entries_for_executable(&park.executable)?;
+    let entry = entries
+        .get(park.entry.as_u32() as usize)
+        .ok_or_else(|| format!("backend parked entry {} is out of bounds", park.entry.as_u32()))?;
+    let BackendTail::Receive(receive) = &entry.tail else {
+        return Err(format!("backend parked entry {} is not a receive", park.entry.as_u32()));
+    };
+    Ok((entries, receive))
 }
 
 /// Interpreter-side implementation of the scheduler services exposed through
@@ -447,13 +517,12 @@ impl<T: Telemetry + ?Sized> Scheduler for BackendSchedulerAdapter<T> {
         &mut unsafe { &mut *self.runtime }.core
     }
 
-    fn wake_expired(&mut self, pid: u32, timer: TimerId) -> bool {
+    fn wake_expired(&mut self, pid: u32, timer: TimerId) {
         let runtime = unsafe { &mut *self.runtime };
         let woke = runtime.wake_receive_after(unsafe { &*self.transport }, unsafe { &*self.program }, pid, timer);
-        woke.unwrap_or_else(|error| {
+        if let Err(error) = woke {
             runtime.record_callback_error(error);
-            false
-        })
+        }
     }
 
     fn about_to_sleep(&mut self, wait: Duration) {
@@ -581,6 +650,9 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
     };
 
     while let Some(pid) = next_backend_runnable(adapter)? {
+        // Gifts queued by senders become this heap's before any code runs; a
+        // matched receive becomes the resume entry here.
+        runtime.deliver_in_queue(transport, program, pid)?;
         let resume = runtime
             .take_backend_resume(pid)
             .expect("backend pid in run queue with no backend resume");
@@ -597,7 +669,9 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
             BackendRunStep::Done(value) => {
                 completions.push((pid, value));
                 if run == BackendRun::Macro && pid == MAIN_PID {
-                    runtime.set_process_state(pid, ProcessState::Ready);
+                    // Kept alive for its next entry: off the run queue until
+                    // that entry queues it.
+                    runtime.set_process_state(pid, ProcessState::Blocked);
                     continue;
                 }
                 let exit = ProcessExit::Completed(value);
@@ -1314,7 +1388,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     let proc = unsafe { &mut *runtime.cur_proc() };
                     AnyValue::from_any_value_ref(proc.mailbox[mb_idx])?
                 };
-                if let Some((target, params)) = try_match_backend_receive(
+                if let Some((_, target, params)) = try_match_backend_receive(
                     runtime, types, transport, program, module, outcomes, dispatch, msg, bindings, &env,
                 )? {
                     hit = Some((mb_idx, target, params));
@@ -1368,7 +1442,9 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
     }
 }
 
-type OutcomeValues = (crate::compiler2::ControlEntryId, Vec<(ValueId, AnyValue)>);
+/// A receive hit: the winning outcome's index among the receive's outcomes,
+/// its target entry, and the values its pattern bound.
+type OutcomeValues = (usize, crate::compiler2::ControlEntryId, Vec<(ValueId, AnyValue)>);
 
 fn try_match_backend_receive(
     runtime: &mut IrInterpRuntime,
@@ -1394,9 +1470,9 @@ fn try_match_backend_receive(
     let Some(mut decided) = run.run()? else {
         return Ok(None);
     };
-    let outcome = decided.outcome();
+    let outcome = decided.outcome().0 as usize;
     let edge = outcomes
-        .get(outcome.0 as usize)
+        .get(outcome)
         .expect("receive winning outcome has one target edge");
     let mut params = Vec::with_capacity(edge.arguments.len());
     for argument in &edge.arguments {
@@ -1405,7 +1481,7 @@ fn try_match_backend_receive(
             .map_err(|_| format!("receive outcome lacks subject {:?}", argument.subject))?;
         params.push((argument.parameter, value));
     }
-    Ok(Some((edge.target, params)))
+    Ok(Some((outcome, edge.target, params)))
 }
 
 fn eval_steps<T: Telemetry + ?Sized>(

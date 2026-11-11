@@ -32,11 +32,14 @@ use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV};
-use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
+use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
 use fz_runtime::pinned_abi::call2;
 use fz_runtime::procbin::mso_drop_all_deferred;
-use fz_runtime::sched::{ProbeOutcome, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender};
+use fz_runtime::sched::{
+    ProbeOutcome, SendProbe, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender,
+    self_send,
+};
 use fz_runtime::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
 use fz_runtime::timer::TimerId;
 #[cfg(test)]
@@ -57,6 +60,7 @@ pub struct Runtime<'a, T: Telemetry + ?Sized> {
     /// and when the runtime is idle.
     core: SchedulingCore,
     next_pid: u32,
+    pool_outstanding_before_run: usize,
 
     /// Observability sink. The run loop emits `fz.runtime.process_exited`
     /// at each task exit (see `ExitRecord`), which is the seam tests observe
@@ -86,6 +90,44 @@ impl ExitRecord {
 /// Emitted each time the scheduling core sleeps for a pending timer; carries
 /// the `Duration` it is about to wait.
 pub const SCHEDULER_SLEPT: [&str; 3] = ["fz", "runtime", "scheduler_slept"];
+
+/// What the block pool holds once a run has torn down every process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunEnded {
+    /// Blocks handed out and not returned when the run began. The compiler's
+    /// own heaps live on the same thread, so this is never zero.
+    pub pool_outstanding_before_run: usize,
+    /// The same count once every process has been torn down. Equal to
+    /// `pool_outstanding_before_run` means the run returned every block it took.
+    pub pool_outstanding_after_run: usize,
+    /// Blocks resting in the pool's free lists.
+    pub pool_cached_blocks: usize,
+}
+
+/// Emitted once per run, after every process has been torn down, on the JIT
+/// and interpreter paths; carries the `RunEnded` pool census.
+pub const RUN_ENDED: [&str; 3] = ["fz", "runtime", "run_ended"];
+
+/// Report the pool census at the end of a run.
+pub fn emit_run_ended<T: Telemetry + ?Sized>(tel: &T, pool_outstanding_before_run: usize) {
+    tel.raw_event1(
+        &RUN_ENDED,
+        &RunEnded {
+            pool_outstanding_before_run,
+            pool_outstanding_after_run: fz_runtime::heap::pool_outstanding_blocks(),
+            pool_cached_blocks: fz_runtime::heap::pool_total_cached_blocks(),
+        },
+    );
+}
+
+/// Emitted once per cross-process send on the JIT and interpreter paths;
+/// carries the `SendProbe` the sender's probe produced.
+pub const SEND_PROBE: [&str; 4] = ["fz", "runtime", "send", "probe"];
+
+/// Report one send's probe on the telemetry bus.
+pub fn emit_send_probe<T: Telemetry + ?Sized>(tel: &T, probe: &SendProbe) {
+    tel.raw_event1(&SEND_PROBE, probe);
+}
 
 /// fz-ul4.23.10 scheduler-hook thunks. These are the extern "C" fns the
 /// runtime crate dispatches through when fz_spawn / fz_send fire from
@@ -131,7 +173,8 @@ pub fn spawn_closure_via<T: Telemetry + ?Sized>(sender: *mut Process, scheduler:
 /// Sender and receiver are distinct Processes — the sender is currently
 /// running (its Box<Process> has been taken OUT of the registry by
 /// run_until_idle), the receiver is sitting in the registry. No borrow
-/// conflict.
+/// conflict. The sender matches and copies on its own heap and queues the
+/// gift on the receiver; the receiver's heap is untouched until it runs.
 pub fn send_via<T: Telemetry + ?Sized>(
     sender: *mut Process,
     scheduler: *mut (),
@@ -146,33 +189,7 @@ pub fn send_via<T: Telemetry + ?Sized>(
     assert!(!sender.is_null(), "send() called with no sender process");
     let sender = unsafe { &mut *sender };
     if sender.pid == receiver_pid {
-        // Self-send: sender is currently OUT of rt.tasks (run_until_idle
-        // has it borrowed). We can't .get_mut from rt.tasks. Write
-        // directly to the sender's mailbox.
-        //
-        // Deep-copy is still semantically required (a process sending
-        // to itself should still observe the message as a fresh copy),
-        // but src_heap == dst_heap == sender.heap. We can't borrow it
-        // both ways at once; split borrows are fine because each
-        // deep_copy_slot alloc is a self-contained &mut access.
-        //
-        // For self-send we use a single &mut borrow path: alloc into
-        // the same heap. Since src and dst are the same heap, the
-        // existing forwarding-pointer technique handles sharing.
-        let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
-        // SAFETY: split the &mut Process into &Heap (for read) and
-        // &mut Heap (for write). The pointers are aliased but Rust's
-        // borrow checker can't see that the same Heap is both src and
-        // dst. The deep_copy_slot impl doesn't mutate src; we use
-        // distinct raw-pointer reads from src vs &mut writes through
-        // dst. Equivalent to running deep_copy on a clone of the heap,
-        // which would be correct.
-        let heap_ptr: *mut Heap = &mut sender.heap as *mut _;
-        let src_heap: &Heap = unsafe { &*heap_ptr };
-        let dst_heap: &mut Heap = unsafe { &mut *heap_ptr };
-        let copied = deep_copy_any_value_ref(msg, src_heap, dst_heap, &mut forwarding);
-        sender.mailbox.push_back(copied);
-        // No state transition needed: sender is Running.
+        self_send(sender, msg);
         return;
     }
     let Some(receiver) = rt.tasks.get_mut(&receiver_pid) else {
@@ -181,10 +198,10 @@ pub fn send_via<T: Telemetry + ?Sized>(
     if receiver.state == ProcessState::Exited {
         return;
     }
-    let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
-    let copied = deep_copy_any_value_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding);
-    if probe_sender(receiver, copied) == ProbeOutcome::Hit {
-        rt.core.enqueue(receiver_pid);
+    let probe = probe_sender(sender, receiver, msg);
+    emit_send_probe(rt.tel, &probe);
+    if probe.outcome == ProbeOutcome::Hit {
+        rt.core.make_runnable(receiver_pid, &mut receiver.state);
     }
 }
 
@@ -202,6 +219,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             tasks: HashMap::new(),
             core: SchedulingCore::new(),
             next_pid: 1,
+            pool_outstanding_before_run: fz_runtime::heap::pool_outstanding_blocks(),
             tel,
             output: &STDOUT_OUTPUT,
             argv: &NO_ARGV,
@@ -240,7 +258,6 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         self.next_pid += 1;
         let mut process = self.compiled.make_process();
         process.pid = pid;
-        process.state = ProcessState::Ready;
         let fp = self
             .compiled
             .fn_ptr(fn_id)
@@ -253,9 +270,15 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         // the task's own code runs; reset so alloc telemetry measures only the
         // task's execution (and matches the raw-fp entry's zero-alloc start).
         process.heap.reset_alloc_stats();
-        self.tasks.insert(pid, Box::new(process));
-        self.core.enqueue(pid);
+        self.queue_task(pid, Box::new(process));
         pid
+    }
+
+    /// Queue `task` to run and keep it in the registry under `pid`; the
+    /// scheduling core performs its transition to Ready.
+    fn queue_task(&mut self, pid: PidId, mut task: Box<Process>) {
+        self.core.make_runnable(pid, &mut task.state);
+        self.tasks.insert(pid, task);
     }
 
     /// fz-ul4.29.5: spawn a task from a closure value owned by the
@@ -267,25 +290,24 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         self.next_pid += 1;
         let mut process = self.compiled.make_process();
         process.pid = pid;
-        process.state = ProcessState::Ready;
 
         // Deep-copy the closure from sender's heap into the new task's heap.
         assert!(!sender.is_null(), "spawn_closure: no sender process");
         let sender = unsafe { &*sender };
-        let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
+        let mut forwarding = AddressMap::default();
         let closure_ref = AnyValueRef::from_raw_word(closure_ref_word).expect("spawn_closure: closure ref");
         closure_ref
             .closure_addr()
             .expect("spawn_closure: closure must be a closure");
-        let copied = deep_copy_any_value_ref(closure_ref, &sender.heap, &mut process.heap, &mut forwarding);
+        let copied = deep_copy_any_value_ref(closure_ref, &sender.heap.view(), &mut process.heap, &mut forwarding);
         let copied_addr = copied
             .closure_addr()
             .expect("spawn_closure: copied closure must be a closure");
 
         // Wrap the copied closure in an entry thunk and queue it as
         // `runnable`; the scheduler resumes it via `fz_resume` on the next
-        // quantum. Insert into the task registry before queueing so a
-        // cross-task send() during the new task's run can find this pid.
+        // quantum. The registry holds the child before it runs so a
+        // cross-task send() during its quantum can find this pid.
         process.next_frame = null_mut();
         let thunk = mint_entry_thunk(&mut process.heap, self.compiled.entry_thunk_addr, copied_addr);
         process.set_runnable_closure(thunk);
@@ -293,8 +315,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         // prepared before the child runs; reset so its alloc telemetry
         // measures only the child's own execution.
         process.heap.reset_alloc_stats();
-        self.tasks.insert(pid, Box::new(process));
-        self.core.enqueue(pid);
+        self.queue_task(pid, Box::new(process));
         pid
     }
 
@@ -324,31 +345,21 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             task.reset_reduction_budget();
             task.ctx = ctx_ptr;
             debug_assert!(!task.ctx.is_null(), "task.ctx installed before dispatch");
+            // Gifts queued by senders become this heap's before any code
+            // runs; a matched receive becomes the runnable closure here.
+            deliver_in_queue(&mut task);
             self.compiled.run_quantum(&mut task);
             // After a quantum the task is in one of three states: still
             // Running with a continuation in `runnable` (a mid-flight
             // yield), Blocked on a receive that found nothing, or halted.
             if task.state == ProcessState::Running && task.runnable.is_some() {
-                // Closure-shaped mid-flight yield: the continuation closure
-                // captures live loop state and is the primary GC root.
-                task.boundary_maintenance::<()>(|p| {
-                    let mut root = p.runnable_ptr();
-                    p.heap.gc_process_roots(&mut root, &mut p.mailbox);
-                    p.set_runnable_closure(root);
-                    Ok(())
-                })
-                .expect("compiled boundary maintenance is infallible");
-                task.state = ProcessState::Ready;
-                self.tasks.insert(pid, task);
-                self.core.enqueue(pid);
+                self.queue_task(pid, task);
                 continue;
             } else if task.state == ProcessState::Blocked {
                 // Parked on a receive: keep in registry, no re-enqueue. A
                 // send or the after-timer wakes it.
-                task.quiet_quanta = task.quiet_quanta.saturating_add(1);
             } else if task.next_frame.is_null() {
                 task.state = ProcessState::Exited;
-                task.quiet_quanta = task.quiet_quanta.saturating_add(1);
                 // fz-4mk.3a — task is exiting; before the Heap drops at
                 // task-cleanup time, flush surviving MSO resources onto
                 // `pending_dtors` and dispatch each dtor closure body as
@@ -376,10 +387,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
                 ExitRecord::emit(self.tel, &pid, &task);
             } else if task.state == ProcessState::Running {
                 // Other cooperative yield (future builtin).
-                task.quiet_quanta = task.quiet_quanta.saturating_add(1);
-                task.state = ProcessState::Ready;
-                self.tasks.insert(pid, task);
-                self.core.enqueue(pid);
+                self.queue_task(pid, task);
                 continue;
             }
             // Keep Exited / Blocked tasks in the registry so callers can
@@ -390,15 +398,26 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
     }
 }
 
+impl<T: Telemetry + ?Sized> Drop for Runtime<'_, T> {
+    /// The registry keeps exited and parked tasks until the runtime goes
+    /// away; drop them all, then report what the pool still holds.
+    fn drop(&mut self) {
+        self.tasks.clear();
+        emit_run_ended(self.tel, self.pool_outstanding_before_run);
+    }
+}
+
 impl<T: Telemetry + ?Sized> Scheduler for Runtime<'_, T> {
     fn core(&mut self) -> &mut SchedulingCore {
         &mut self.core
     }
 
-    fn wake_expired(&mut self, pid: PidId, timer: TimerId) -> bool {
-        self.tasks
-            .get_mut(&pid)
-            .is_some_and(|task| fire_after_timer(task, timer))
+    fn wake_expired(&mut self, pid: PidId, timer: TimerId) {
+        if let Some(task) = self.tasks.get_mut(&pid)
+            && fire_after_timer(task, timer)
+        {
+            self.core.make_runnable(pid, &mut task.state);
+        }
     }
 
     fn about_to_sleep(&mut self, wait: Duration) {

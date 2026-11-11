@@ -1,5 +1,12 @@
 use super::{Node, Process, YIELD_REASON_REDUCTIONS};
+use crate::any_value::{
+    AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST, ValueKind, closure_addr_from_tagged, closure_capture_set,
+    closure_capture_value, list_addr_from_tagged,
+};
+use crate::heap::{Heap, SchemaRegistry};
+use crate::park::ParkRecord;
 use std::cell::RefCell;
+use std::ptr::null_mut;
 use std::rc::Rc;
 
 #[test]
@@ -61,4 +68,134 @@ fn reset_reduction_budget_clears_yield_reasons() {
 
     assert_eq!(process.reductions_remaining, 5);
     assert_eq!(process.yield_reasons, 0);
+}
+
+fn int_list(heap: &mut Heap, head: i64) -> AnyValueRef {
+    let bits = heap.alloc_list_cons_slot(AnyValue::int(head), EMPTY_LIST);
+    AnyValueRef::from_heap_object(ValueKind::LIST, list_addr_from_tagged(bits).expect("list addr")).expect("list ref")
+}
+
+/// A closure capturing `list`, as a clause body or continuation does.
+fn closure_capturing(process: &mut Process, list: AnyValueRef) -> *mut u8 {
+    let bits = process.heap.alloc_closure_slots(ClosureDenotationId::user(0), 0, 1, 0);
+    let closure = closure_addr_from_tagged(bits).expect("closure addr");
+    unsafe { closure_capture_set(closure, 0, AnyValue::HeapRef(list)) };
+    closure
+}
+
+fn list_head(list: AnyValueRef) -> i64 {
+    unsafe { (*(list.list_addr().expect("list addr") as *const crate::any_value::ListCons)).head_value() }.raw() as i64
+}
+
+fn captured_list(closure: *mut u8) -> AnyValueRef {
+    match unsafe { closure_capture_value(closure, 0) } {
+        AnyValue::HeapRef(list) => list,
+        other => panic!("a captured list stays a heap ref: {other:?}"),
+    }
+}
+
+/// Matches a message whose list head equals the pinned list's head.
+extern "C" fn pinned_head_matcher(
+    _process: *mut Process,
+    msg: u64,
+    pinned: *const AnyValueRef,
+    _out: *mut AnyValueRef,
+) -> u32 {
+    let pinned = unsafe { *pinned };
+    let msg = AnyValueRef::from_raw_word(msg).expect("msg ref");
+    u32::from(list_head(msg) == list_head(pinned))
+}
+
+fn park_on(process: &mut Process, pinned: AnyValueRef, bodies: Vec<*mut u8>, after_cont: *mut u8) {
+    process.delivery.lock().install_park(ParkRecord {
+        matcher_fn: pinned_head_matcher,
+        pinned: vec![pinned],
+        clause_bound_counts: vec![0; bodies.len()],
+        clause_bodies: bodies,
+        bound_arity: 0,
+        after_deadline_ms: None,
+        after_cont,
+        after_timer_id: None,
+    });
+}
+
+/// A collection moves everything the process holds into its heap: the
+/// runnable closure, the parked receive's clause bodies, after body and
+/// pinned values, the mailbox and the caller's transient values. Each is
+/// forwarded and still reads as it did, so the parked receive still matches.
+#[test]
+fn collect_forwards_every_root_a_parked_process_holds() {
+    let mut process = Process::new(Rc::new(RefCell::new(SchemaRegistry::new())));
+    let pinned = int_list(&mut process.heap, 1);
+    let body_capture = int_list(&mut process.heap, 2);
+    let after_capture = int_list(&mut process.heap, 3);
+    let runnable_capture = int_list(&mut process.heap, 4);
+    let mailbox_message = int_list(&mut process.heap, 5);
+    let mut transient = [int_list(&mut process.heap, 6)];
+    let body = closure_capturing(&mut process, body_capture);
+    let after = closure_capturing(&mut process, after_capture);
+    let runnable = closure_capturing(&mut process, runnable_capture);
+    park_on(&mut process, pinned, vec![body], after);
+    process.set_runnable_closure(runnable);
+    process.mailbox.push_back(mailbox_message);
+    let before = (
+        pinned.list_addr().unwrap(),
+        body,
+        after,
+        runnable,
+        mailbox_message.list_addr().unwrap(),
+        transient[0].list_addr().unwrap(),
+    );
+
+    let stats = process.collect(&mut transient);
+
+    let delivery = process.delivery.lock();
+    let park = delivery.park().expect("still parked");
+    assert_ne!(park.pinned[0].list_addr().unwrap(), before.0, "pinned value moved");
+    assert_ne!(park.clause_bodies[0], before.1, "clause body moved");
+    assert_ne!(park.after_cont, before.2, "after body moved");
+    assert_ne!(process.runnable_ptr(), before.3, "runnable closure moved");
+    assert_ne!(
+        process.mailbox[0].list_addr().unwrap(),
+        before.4,
+        "mailbox message moved"
+    );
+    assert_ne!(transient[0].list_addr().unwrap(), before.5, "transient value moved");
+    assert_eq!(list_head(park.pinned[0]), 1);
+    assert_eq!(list_head(captured_list(park.clause_bodies[0])), 2);
+    assert_eq!(list_head(captured_list(park.after_cont)), 3);
+    assert_eq!(list_head(captured_list(process.runnable_ptr())), 4);
+    assert_eq!(list_head(process.mailbox[0]), 5);
+    assert_eq!(list_head(transient[0]), 6);
+    let probe = int_list(&mut process.heap, 1);
+    assert!(
+        park.try_match(null_mut(), probe).is_some(),
+        "the moved pinned value still matches"
+    );
+    assert_eq!(stats.root_heap_edges, 6);
+}
+
+/// A receive with no `after` has a null after body and a running process has
+/// no park record: neither contributes a root.
+#[test]
+fn collect_roots_only_what_the_process_holds() {
+    let mut process = Process::new(Rc::new(RefCell::new(SchemaRegistry::new())));
+    let capture = int_list(&mut process.heap, 7);
+    let runnable = closure_capturing(&mut process, capture);
+    process.set_runnable_closure(runnable);
+
+    let running = process.collect(&mut []);
+    assert_eq!(running.root_heap_edges, 1, "the runnable closure is the only root");
+    assert_eq!(list_head(captured_list(process.runnable_ptr())), 7);
+
+    let pinned = int_list(&mut process.heap, 8);
+    let body_capture = int_list(&mut process.heap, 9);
+    let body = closure_capturing(&mut process, body_capture);
+    park_on(&mut process, pinned, vec![body], null_mut());
+    let parked = process.collect(&mut []);
+    assert_eq!(
+        parked.root_heap_edges, 3,
+        "runnable, clause body, pinned value; no after body"
+    );
+    assert!(process.delivery.lock().park().unwrap().after_cont.is_null());
 }

@@ -344,10 +344,17 @@ use that same boundary. Raw `write_field_slot` remains an unpublished storage
 operation used by internal runtime structs too; the language constructor, not
 every internal field write, owns publication. No structural runtime scan is added.
 
-Cross-process send and self-send copy into receiver-owned storage. A singly
-copied list can remain clear; repeated forwarding hits and copied container
-fields protect receiver-side sharing. The sender's cells are not marked merely
-because a copy was sent. The alias bit remains one-way within a heap.
+Cross-process send copies into storage the receiver will own: the sender
+copies into a gift window on its own heap (`sched::gift_copy`), and the receiver
+grafts the segment at its next dispatch. A singly copied list can remain clear;
+repeated forwarding hits and copied container fields protect receiver-side
+sharing. The sender's cells are not marked merely because a copy was sent. Self-send copies nothing and the runtime publishes nothing: the
+sender's own reference is pushed onto its mailbox (`sched::self_send`). The
+mailbox is then a second holder, and the compiler's call-site ownership rule is
+what protects it: `construct_call_ownership` (src/compiler2/jobs/body.rs) marks
+a send argument `Share` when the continuation retains a name that may alias it,
+and Share publishes the spine before the call on every path. The alias bit
+remains one-way within a heap.
 
 ## GC: Roots, Edges, And Lifetime
 
@@ -414,16 +421,20 @@ another.
 
 `send` is an `any` boundary. The caller boxes a known scalar only to send it as
 `any`, then calls `fz_send_ref(pid, msg_ref)`. The runtime
-(`src/exec/runtime.rs send_via`) copies the value into the receiver's world
-rather than sharing heap pointers across processes:
+(`src/exec/runtime.rs send_via`) never shares heap pointers across processes:
+the sender copies what the receiver will keep into a gift window on its own heap
+and queues the segment on the receiver's `in_queue`; the receiver grafts it at
+its next dispatch (see [scheduler](scheduler-zero-arg-closures.md)):
 
 ```text
-self-send:                deep-copy the message into the same heap, push to own mailbox
+self-send:                push the sender's own ref onto its mailbox; nothing is copied
 cross-process, parked:    run the receiver's matcher on the sender's ref;
-                          on a hit, deep-copy the exact outcome arguments into the
-                          receiver heap and wake it; on a miss, deep-copy the
-                          whole message into the receiver mailbox
-cross-process, not waiting: deep-copy the whole message into the receiver mailbox
+                          on a hit, gift the bound values (nothing when the clause
+                          binds none) and wake the receiver; on a miss, gift the
+                          whole message, which joins the receiver's mailbox when
+                          it drains its in-queue
+cross-process, not waiting: gift the whole message; it joins the receiver's
+                          mailbox when it drains its in-queue
 ```
 
 There is no scalar side path inside send.

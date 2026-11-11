@@ -182,8 +182,8 @@ the message to be read; it does <em>not</em> wait for a reply. It returns
 <pre><span class="fn">send</span>(child_pid, <span class="atm">:start</span>)</pre>
 
 <p>The message can be anything — an atom, an integer, a tuple, a list, a
-nested structure of all of the above. Whatever it is, fz makes its own
-copy in the recipient's heap before delivering it.</p>
+nested structure of all of the above. Whatever it is, fz makes a copy of
+it for the recipient before delivering it.</p>
 
 <pre><span class="fn">send</span>(handler, {<span class="atm">:request</span>, id, payload, <span class="fn">self</span>()})</pre>
 
@@ -192,14 +192,22 @@ atom that names the message kind (<code>:request</code>,
 <code>:reply</code>, <code>:stop</code>, …) and the rest are the payload.
 This makes the receiver's pattern matching read cleanly.</p>
 
-<h3>Deep-copy on send</h3>
+<h3>One copy on send</h3>
 
 <p>Like <code>spawn</code>'s captures, <code>send</code>'s message is
-deep-copied into the recipient's heap. After the call returns, the sender
-and receiver hold independent copies. If the sender mutates its local copy
-(by rebinding the name to something else), the receiver sees no change.
-fz values are immutable anyway, so this rarely surprises you — but it's
-the mechanism that lets two processes safely "share" a complex value.</p>
+copied. The <em>sender</em> measures the message, makes the copy once, into one
+separate block of its own memory sized to fit it, and hands that block to the
+recipient, which adopts it the next time it runs. No process ever writes into another process's heap.
+After the call returns, the sender and receiver hold independent copies.
+If the sender mutates its local copy (by rebinding the name to something
+else), the receiver sees no change. fz values are immutable anyway, so this
+rarely surprises you — but it's the mechanism that lets two processes
+safely "share" a complex value.</p>
+
+<p>If the recipient is already waiting in a <code>receive</code>, the
+sender tests the message against the recipient's patterns first, and copies
+only the values the matching pattern bound. A message sent to yourself is
+not copied at all: it goes straight onto your own mailbox.</p>
 
 <!-- ─────────────────────────────── 5. RECV ─────────────────────────────── -->
 <h2 id="recv">5. <code>receive</code> — taking it out</h2>

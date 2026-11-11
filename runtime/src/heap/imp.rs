@@ -1,13 +1,12 @@
 //! impl Heap — the giant impl block + Drop.
 
-use super::block_pool::{SIZE_TABLE, pick_size_class, pool_alloc, pool_free};
-use super::fragment::{CopiedObject, FRAGMENT_THRESHOLD, Fragment, classify_fragment};
+use super::block_pool::{Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pool_alloc, round_up_16};
 use super::gc::{
-    cheney_forward_strict_bits, cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
+    CopiedObject, cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
     cheney_trace_struct, forward_any_value_ref_root,
 };
 use super::ref_io::{
-    any_value_ref_from_storage, list_tail_bits_from_ref, map_entry_refs, reject_scalar_ref_write,
+    any_value_ref_from_storage, list_tail_bits_from_ref, map_entry_refs, ptr_in_ranges, reject_scalar_ref_write,
     write_any_value_to_storage,
 };
 use super::schema::{Schema, SchemaRegistry};
@@ -25,14 +24,12 @@ use crate::any_value::{
 use crate::procbin::{SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use crate::process::Node;
 use crate::term::{NumericMode, TermComparator};
-use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::mem::size_of;
-use std::ptr::{copy_nonoverlapping, null_mut, read, write, write_bytes};
+use std::ptr::{copy_nonoverlapping, read, write, write_bytes};
 use std::rc::Rc;
 use std::slice::from_raw_parts;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 // fz-vdt.16 — pure reads that need no heap state. Reading a list head/tail or a
 // closure capture is a dereference of the self-describing value pointer, so these
@@ -92,103 +89,80 @@ impl Heap {
             capacity > 0 && capacity.is_multiple_of(16),
             "capacity must be 16-aligned"
         );
-        let size_class = pick_size_class(capacity);
-        let block_size = SIZE_TABLE[size_class as usize];
-        let block_start = pool_alloc(size_class);
+        let block_size = pick_block_capacity(capacity);
+        let block_start = pool_alloc(block_size);
         let block_end = unsafe { block_start.add(block_size) };
         Self {
             block_start,
             bump_top: block_start,
             block_end,
             block_size,
-            size_class,
             last_gc_live_bytes: 0,
             last_gc_stats: GcStats::default(),
-            abandoned_blocks: Vec::new(),
+            blocks: Vec::new(),
+            gift: None,
             node,
             schemas,
-            pressure: AtomicBool::new(false),
-            // Default: half the block. Tunable per-Process for tests that
-            // want to force the park-time GC hook to fire.
-            gc_threshold_bytes: block_size / 2,
             gc_run_count: 0,
             alloc_count: 0,
             alloc_stats: HeapAllocStats::default(),
             mso_head: 0,
             pending_dtors: VecDeque::new(),
-            fragments: Vec::new(),
         }
     }
 
+    /// Whether a collection is due: the bytes a collection could copy have
+    /// reached half the tip's capacity. A pure function of the heap's state,
+    /// so a collection that reclaims the bytes answers the question by itself.
     pub fn should_gc(&self) -> bool {
-        self.pressure.load(Ordering::Relaxed)
-    }
-
-    pub fn clear_should_gc_flag(&self) {
-        self.pressure.store(false, Ordering::Relaxed);
-    }
-
-    fn note_alloc_pressure(&self) {
-        if self.bytes_used() >= self.gc_threshold_bytes {
-            self.pressure.store(true, Ordering::Relaxed);
-        }
+        self.bytes_used() >= self.block_size / 2
     }
 
     /// Bump-only allocator. Rounds `size` up to 16 and advances `bump_top`.
-    /// On overflow, abandons the current block and allocates a fresh
-    /// pool-backed block at the next size_class. The next park-time
-    /// Cheney recycles the whole abandoned chain.
-    ///
-    /// fz-q8d.4 — objects larger than `FRAGMENT_THRESHOLD` (the last
-    /// `SIZE_TABLE` entry, ~6 MiB) are allocated as system-allocator
-    /// backed singletons attached to `self.fragments`. They don't move
-    /// during Cheney; the collector marks them in place and frees
-    /// survivors / unmarked fragments at sweep time.
+    /// On overflow, abandons the current block and allocates a fresh block
+    /// one capacity step up, or exactly large enough when `size` needs more
+    /// than that, which may lie above the whole `SIZE_TABLE`. The next
+    /// park-time Cheney copies what is live out of the abandoned chain and
+    /// releases it.
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         self.alloc_kind(HeapAllocKind::Other, size)
     }
 
     pub fn alloc_kind(&mut self, kind: HeapAllocKind, size: usize) -> *mut u8 {
-        let size = (size + 15) & !15;
+        let size = round_up_16(size);
         assert!(size >= 16, "alloc must reserve at least one 16-byte object slot");
         self.alloc_stats.record(kind, size as u64);
-        // Oversize allocations route through the fragment path.
-        if size > FRAGMENT_THRESHOLD {
-            let layout = Layout::from_size_align(size, 16).expect("fragment layout");
-            let ptr = unsafe { alloc_zeroed(layout) };
-            assert!(!ptr.is_null(), "fragment allocation failed");
-            self.fragments.push(Fragment {
-                ptr,
-                size,
-                layout,
-                mark: false,
-            });
-            self.alloc_count += 1;
-            self.note_alloc_pressure();
-            return ptr;
-        }
         let new_top = unsafe { self.bump_top.add(size) };
         if new_top > self.block_end {
-            // Grow: pick the smallest size_class > current that also fits
-            // `size`. Allocate via the pool; abandon the current block
-            // for Cheney/Drop to return.
-            let want_for_alloc = pick_size_class(size);
-            let bumped = self.size_class.saturating_add(1).min((SIZE_TABLE.len() - 1) as u8);
-            let new_class = want_for_alloc.max(bumped);
-            let new_size = SIZE_TABLE[new_class as usize];
-            self.abandoned_blocks.push((self.block_start, self.size_class));
-            let new_block = pool_alloc(new_class);
-            self.block_start = new_block;
-            self.bump_top = new_block;
-            self.block_end = unsafe { new_block.add(new_size) };
-            self.block_size = new_size;
-            self.size_class = new_class;
+            let capacity = pick_block_capacity(size).max(next_block_capacity(self.block_size));
+            self.blocks.push(self.current_block());
+            let start = pool_alloc(capacity);
+            self.install_block(Block {
+                start,
+                top: start,
+                capacity,
+            });
         }
         let p = self.bump_top;
         self.bump_top = unsafe { self.bump_top.add(size) };
         self.alloc_count += 1;
-        self.note_alloc_pressure();
         p
+    }
+
+    /// The block being bumped into, with its fill so far.
+    pub(super) fn current_block(&self) -> Block {
+        Block {
+            start: self.block_start,
+            top: self.bump_top,
+            capacity: self.block_size,
+        }
+    }
+
+    pub(super) fn install_block(&mut self, block: Block) {
+        self.block_start = block.start;
+        self.bump_top = block.top;
+        self.block_end = block.end();
+        self.block_size = block.capacity;
     }
 
     pub fn alloc_stats_snapshot(&self) -> HeapAllocStats {
@@ -200,7 +174,7 @@ impl Heap {
     }
 
     pub fn record_external_alloc(&mut self, kind: HeapAllocKind, bytes: usize) {
-        let bytes = ((bytes + 15) & !15) as u64;
+        let bytes = round_up_16(bytes) as u64;
         self.alloc_stats.record(kind, bytes);
     }
 
@@ -352,12 +326,7 @@ impl Heap {
     }
 
     pub fn contains_heap_addr(&self, p: *mut u8) -> bool {
-        (p >= self.block_start && p < self.block_end)
-            || self
-                .abandoned_blocks
-                .iter()
-                .any(|&(start, sc)| p >= start && p < unsafe { start.add(SIZE_TABLE[sc as usize]) })
-            || classify_fragment(p, &self.fragments).is_some()
+        ptr_in_ranges(p, self.block_ranges())
     }
 
     /// Publish a map, normalizing its strict structural keys exactly once.
@@ -977,190 +946,119 @@ impl Heap {
         self.alloc_count as usize
     }
 
-    /// Always zero under bump-only. Retained for tests asserting freelist
-    /// invariants; .8 / .9 may remove entirely.
-    pub fn freelist_len(&self) -> usize {
-        0
+    /// Bytes written into the heap since the last collection, which is also
+    /// the most a collection can copy: the tip's fill plus every parked
+    /// block's fill. Blocks count by fill, never by capacity: a gift's block
+    /// is mostly empty, and an abandoned block's tail was never written.
+    pub fn bytes_used(&self) -> usize {
+        self.current_block().fill() + self.blocks.iter().map(Block::fill).sum::<usize>()
     }
 
-    /// Bytes consumed across the current block + every abandoned block.
-    /// Tracks total memory footprint, not "logically live" data.
-    pub fn bytes_used(&self) -> usize {
-        let current = unsafe { self.bump_top.offset_from(self.block_start) } as usize;
-        let abandoned: usize = self
-            .abandoned_blocks
-            .iter()
-            .map(|(_, sc)| SIZE_TABLE[*sc as usize])
-            .sum();
-        // fz-q8d.4 — include fragment sizes so allocation pressure
-        // accounting reflects the full per-heap footprint.
-        let fragments: usize = self.fragments.iter().map(|f| f.size).sum();
-        current + abandoned + fragments
+    /// The address range of the tip, of the tip set aside by an open gift
+    /// window, and of every parked block.
+    pub(super) fn block_ranges(&self) -> impl Iterator<Item = (*mut u8, *mut u8)> + '_ {
+        let saved_tip = self.gift.as_ref().map(|window| window.saved_tip);
+        std::iter::once((self.block_start, self.block_end))
+            .chain(saved_tip.map(|block| (block.start, block.end())))
+            .chain(self.blocks.iter().map(|block| (block.start, block.end())))
     }
 
     pub fn bytes_remaining_in_block(&self) -> usize {
         unsafe { self.block_end.offset_from(self.bump_top) as usize }
     }
 
-    /// Park-time Cheney GC (§6.4). The caller passes a primary closure root
-    /// by mutable pointer; on return it is updated to the to-space copy (or
-    /// left null on entry — nothing to trace, just recycle blocks).
+    /// The capacity of the next to-space.
     ///
-    /// Algorithm: standard Cheney two-finger BFS. Allocate a to-space block
-    /// at the chosen size_class (§6.3 / §6.5 picker), copy the root, then
-    /// scan to-space objects breadth-first, forwarding each from-space
-    /// child pointer to its newly-copied address. Off-heap pointers
-    /// (static-closure / halt-cont singletons) are detected by an
-    /// in-from-space range check and left untouched.
-    pub fn gc(&mut self, root_slot: &mut *mut u8) -> GcStats {
-        self.gc_with_extra_root_slots(root_slot, &mut [])
-    }
-
-    /// Cheney GC with an optional slice of extra typed roots. Each element is
-    /// forwarded in-place.
-    pub fn gc_with_extra_root_slots(&mut self, root_slot: &mut *mut u8, extra_roots: &mut [AnyValue]) -> GcStats {
-        self.gc_with_extra_roots(root_slot, extra_roots, &mut [])
-    }
-
-    pub fn gc_with_any_value_ref_roots(&mut self, root_slot: &mut *mut u8, ref_roots: &mut [AnyValueRef]) -> GcStats {
-        self.gc_with_extra_roots(root_slot, &mut [], ref_roots)
-    }
-
-    pub fn gc_with_value_and_any_value_ref_roots(
-        &mut self,
-        root_slot: &mut *mut u8,
-        extra_roots: &mut [AnyValue],
-        ref_roots: &mut [AnyValueRef],
-    ) -> GcStats {
-        self.gc_with_extra_roots(root_slot, extra_roots, ref_roots)
-    }
-
-    fn gc_with_extra_roots(
-        &mut self,
-        root_slot: &mut *mut u8,
-        extra_roots: &mut [AnyValue],
-        ref_roots: &mut [AnyValueRef],
-    ) -> GcStats {
-        // Snapshot from-space block ranges before we allocate to-space.
-        let mut from_ranges: Vec<(*mut u8, *mut u8)> = Vec::with_capacity(1 + self.abandoned_blocks.len());
-        from_ranges.push((self.block_start, self.block_end));
-        for &(p, sc) in &self.abandoned_blocks {
-            from_ranges.push((p, unsafe { p.add(SIZE_TABLE[sc as usize]) }));
-        }
-        let from_space_capacity_bytes: usize = from_ranges
-            .iter()
-            .map(|(start, end)| unsafe { end.offset_from(*start) as usize })
-            .sum();
-
-        // fz-q8d.4 — reset fragment marks at the start of each GC.
-        for f in &mut self.fragments {
-            f.mark = false;
-        }
-
-        // Pick to-space size with BEAM-style grow/shrink bands
-        // (erlang.org/doc/apps/erts/garbagecollection). Fragment bytes are
-        // excluded — fragments are never copied into to-space.
-        //
-        // The steady-state target is ~2x live (a 50% post-GC fill).
-        // `prev_live` is the last GC's survivor bytes (0 before the first GC).
-        let fragment_bytes: usize = self.fragments.iter().map(|f| f.size).sum();
+    /// To-space holds at least the bytes a collection can copy: the sizing
+    /// starts from `bytes_used`, and the bands only choose between that
+    /// floor and something larger. An object larger than any table entry is
+    /// part of those bytes like any other, so the to-space grows past the
+    /// table to hold it.
+    ///
+    /// Three bands, biased toward holding size: a copy GC here costs a
+    /// scheduler yield, so frequent collection is expensive and oscillation is
+    /// worth avoiding. The steady-state target is ~2x live (a 50% post-GC
+    /// fill), where `prev_live` is the last GC's survivor bytes.
+    ///
+    ///   GROW   - the bytes in use fill 75% or more of the tip. A collection
+    ///            becomes due at 50%, so reaching the threshold is not by
+    ///            itself evidence the heap is too small; 75% is, and it is
+    ///            the same hysteresis point BEAM uses to grow after a sweep.
+    ///            Size to hold the bytes in use doubled for headroom, never
+    ///            less than one capacity step up.
+    ///   SHRINK - the last survivors fill 25% or less of the tip; refit to
+    ///            ~2x those survivors.
+    ///   KEEP   - otherwise hold the current size.
+    fn to_space_capacity(&self) -> usize {
+        let used = self.bytes_used();
         let prev_live = self.last_gc_live_bytes;
         let fit_to_live = if prev_live > 0 {
             prev_live.saturating_mul(2)
         } else {
-            self.bytes_used().saturating_sub(fragment_bytes)
+            used
         };
-
-        // Three bands, biased toward holding size — unlike a BEAM minor
-        // collection, a copy GC here costs a scheduler yield, so frequent
-        // collection is expensive and oscillation is worth avoiding:
-        //
-        //   GROW   — this GC fired after the heap crossed its pressure
-        //            threshold, or after allocation abandoned a block and grew
-        //            mid-quantum. The heap can't hold the allocation rate;
-        //            refitting to 2x *live* would just thrash. Size to hold
-        //            this cycle's realized footprint (live + garbage since the
-        //            last GC), doubled for headroom, jumping as many classes
-        //            as needed and never less than one class up.
-        //   SHRINK — live has fallen to <=25% of the heap; refit to ~50%.
-        //   KEEP   — live sits in the 25%–75% dead zone; hold the current size.
-        let occupied_before_gc = self.bytes_used().saturating_sub(fragment_bytes);
-        let was_pressured = !self.abandoned_blocks.is_empty() || occupied_before_gc >= self.gc_threshold_bytes;
-        let target_bytes = if was_pressured {
-            let footprint = self.bytes_used().saturating_sub(fragment_bytes);
-            fit_to_live.max(footprint.saturating_mul(2))
+        let grows = used.saturating_mul(4) >= self.block_size.saturating_mul(3);
+        let band_target = if grows {
+            fit_to_live.max(used.saturating_mul(2))
         } else if prev_live == 0 || prev_live.saturating_mul(4) <= self.block_size {
             fit_to_live
         } else {
             self.block_size
         };
-        let mut size_class = pick_size_class(target_bytes.max(SIZE_TABLE[0]));
-        if was_pressured {
-            let grown = self.size_class.saturating_add(1).min((SIZE_TABLE.len() - 1) as u8);
-            size_class = size_class.max(grown);
+        let floor = pick_block_capacity(used.max(SIZE_TABLE[0]));
+        let capacity = pick_block_capacity(band_target.max(SIZE_TABLE[0])).max(floor);
+        if grows {
+            capacity.max(next_block_capacity(self.block_size))
+        } else {
+            capacity
         }
-        let to_size = SIZE_TABLE[size_class as usize];
-        let to_start = pool_alloc(size_class);
+    }
+
+    /// The one collection entry: a Cheney two-finger copy of everything
+    /// `roots` reaches into a fresh to-space block, after which the old
+    /// blocks are released.
+    ///
+    /// Every slot of `roots` holds its forwarded value on return. A slot
+    /// that is not a pointer into this heap's from-space (a scalar immediate,
+    /// the empty list, a static closure or halt-continuation singleton) is
+    /// left as it was; a scalar box in from-space is copied without tracing
+    /// its payload.
+    ///
+    /// The caller passes every reference it holds into this heap. For a
+    /// `Process` that is `Process::collect`, which assembles the runnable
+    /// closure, the park record, the mailbox and the caller's transient
+    /// values into one slice. Gifts still waiting in a delivery in-queue are
+    /// not roots: their blocks join the from-space only when grafted, and
+    /// every reference inside a gift points into its own segment.
+    ///
+    /// The heap must not have a gift window open.
+    pub fn collect(&mut self, roots: &mut [AnyValueRef]) -> GcStats {
+        assert!(
+            self.gift.is_none(),
+            "a gift window is open; the heap collects only between end_gift and the next begin_gift"
+        );
+        // Snapshot from-space block ranges before we allocate to-space.
+        let from_ranges: Vec<(*mut u8, *mut u8)> = self.block_ranges().collect();
+        let from_space_capacity_bytes: usize = from_ranges
+            .iter()
+            .map(|(start, end)| unsafe { end.offset_from(*start) as usize })
+            .sum();
+
+        let to_size = self.to_space_capacity();
+        let to_start = pool_alloc(to_size);
         let to_end = unsafe { to_start.add(to_size) };
         let mut free = to_start;
-        let mut frag_queue: Vec<CopiedObject> = Vec::new();
         let mut copied_objects: Vec<CopiedObject> = Vec::new();
         let mut stats = GcStats {
             from_space_capacity_bytes: from_space_capacity_bytes as u64,
             to_space_capacity_bytes: to_size as u64,
-            size_class,
             ..GcStats::default()
         };
 
-        if !root_slot.is_null() {
-            stats.root_heap_edges += 1;
-            let root_bits = *root_slot as u64;
-            if let Some(new_root) = cheney_forward_strict_bits(
-                root_bits,
-                &from_ranges,
-                &mut self.fragments,
-                &mut frag_queue,
-                &mut free,
-                to_end,
-                &self.schemas.borrow(),
-                &mut copied_objects,
-                &mut stats,
-            ) {
-                *root_slot = new_root as *mut u8;
-            }
-        }
-
-        // Forward extra roots (mid-flight args, mailbox items).
-        for value in extra_roots.iter_mut() {
-            if !value.kind().is_heap() || value.raw() == 0 {
-                stats.root_scalar_slots += 1;
-                continue;
-            }
-            stats.root_heap_edges += 1;
-            let bits = value
-                .heap_object_word()
-                .expect("heap root should encode as tagged bits");
-            if let Some(new_bits) = cheney_forward_strict_bits(
-                bits,
-                &from_ranges,
-                &mut self.fragments,
-                &mut frag_queue,
-                &mut free,
-                to_end,
-                &self.schemas.borrow(),
-                &mut copied_objects,
-                &mut stats,
-            ) {
-                *value = AnyValue::heap_ptr((new_bits & !TAG_MASK) as *mut u8, value.kind());
-            }
-        }
-
-        for value in ref_roots.iter_mut() {
+        for value in roots.iter_mut() {
             forward_any_value_ref_root(
                 value,
                 &from_ranges,
-                &mut self.fragments,
-                &mut frag_queue,
                 &mut free,
                 to_end,
                 &self.schemas.borrow(),
@@ -1169,240 +1067,90 @@ impl Heap {
             );
         }
 
-        // Mixed-mode BFS: alternately drain to-space scan and frag_queue
-        // until both are empty. Fragments traced in frag_queue may push
-        // new to-space objects (their children); newly-traced to-space
-        // objects may push new fragments. Loop until no work left.
         let schemas = self.schemas.borrow();
         let mut scan_idx = 0usize;
-        loop {
-            // Drain to-space BFS frontier.
-            while scan_idx < copied_objects.len() {
-                let copied = copied_objects[scan_idx];
-                scan_idx += 1;
-                match copied.tag {
-                    TAG_LIST => cheney_trace_list(
-                        copied.ptr as *mut ListCons,
-                        &from_ranges,
-                        &mut self.fragments,
-                        &mut frag_queue,
-                        &mut free,
-                        to_end,
-                        &schemas,
-                        &mut copied_objects,
-                        &mut stats,
-                    ),
-                    TAG_MAP => cheney_trace_map(
-                        copied.ptr,
-                        &from_ranges,
-                        &mut self.fragments,
-                        &mut frag_queue,
-                        &mut free,
-                        to_end,
-                        &schemas,
-                        &mut copied_objects,
-                        &mut stats,
-                    ),
-                    TAG_CLOSURE => cheney_trace_closure(
-                        copied.ptr,
-                        &from_ranges,
-                        &mut self.fragments,
-                        &mut frag_queue,
-                        &mut free,
-                        to_end,
-                        &schemas,
-                        &mut copied_objects,
-                        &mut stats,
-                    ),
-                    TAG_STRUCT => cheney_trace_struct(
-                        copied.ptr,
-                        &from_ranges,
-                        &mut self.fragments,
-                        &mut frag_queue,
-                        &mut free,
-                        to_end,
-                        &schemas,
-                        &mut copied_objects,
-                        &mut stats,
-                    ),
-                    TAG_BITSTRING | TAG_PROCBIN => {}
-                    TAG_RESOURCE => cheney_trace_resource(
-                        copied.ptr,
-                        &from_ranges,
-                        &mut self.fragments,
-                        &mut frag_queue,
-                        &mut free,
-                        to_end,
-                        &schemas,
-                        &mut copied_objects,
-                        &mut stats,
-                    ),
-                    tag => panic!("Cheney scan: invalid copied object tag {tag:#x}"),
-                }
+        while scan_idx < copied_objects.len() {
+            let copied = copied_objects[scan_idx];
+            scan_idx += 1;
+            match copied.tag {
+                TAG_LIST => cheney_trace_list(
+                    copied.ptr as *mut ListCons,
+                    &from_ranges,
+                    &mut free,
+                    to_end,
+                    &schemas,
+                    &mut copied_objects,
+                    &mut stats,
+                ),
+                TAG_MAP => cheney_trace_map(
+                    copied.ptr,
+                    &from_ranges,
+                    &mut free,
+                    to_end,
+                    &schemas,
+                    &mut copied_objects,
+                    &mut stats,
+                ),
+                TAG_CLOSURE => cheney_trace_closure(
+                    copied.ptr,
+                    &from_ranges,
+                    &mut free,
+                    to_end,
+                    &schemas,
+                    &mut copied_objects,
+                    &mut stats,
+                ),
+                TAG_STRUCT => cheney_trace_struct(
+                    copied.ptr,
+                    &from_ranges,
+                    &mut free,
+                    to_end,
+                    &schemas,
+                    &mut copied_objects,
+                    &mut stats,
+                ),
+                TAG_BITSTRING | TAG_PROCBIN => {}
+                TAG_RESOURCE => cheney_trace_resource(
+                    copied.ptr,
+                    &from_ranges,
+                    &mut free,
+                    to_end,
+                    &schemas,
+                    &mut copied_objects,
+                    &mut stats,
+                ),
+                tag => panic!("Cheney scan: invalid copied object tag {tag:#x}"),
             }
-            // Drain fragment queue. Each fragment's children may forward
-            // either into to-space (which extends `free`, picked up by
-            // the loop above on the next iteration) or into another
-            // fragment (re-pushes to frag_queue).
-            if let Some(frag) = frag_queue.pop() {
-                match frag.tag {
-                    TAG_LIST => cheney_trace_list(
-                        frag.ptr as *mut ListCons,
-                        &from_ranges,
-                        &mut self.fragments,
-                        &mut frag_queue,
-                        &mut free,
-                        to_end,
-                        &schemas,
-                        &mut copied_objects,
-                        &mut stats,
-                    ),
-                    TAG_MAP => cheney_trace_map(
-                        frag.ptr,
-                        &from_ranges,
-                        &mut self.fragments,
-                        &mut frag_queue,
-                        &mut free,
-                        to_end,
-                        &schemas,
-                        &mut copied_objects,
-                        &mut stats,
-                    ),
-                    TAG_CLOSURE => cheney_trace_closure(
-                        frag.ptr,
-                        &from_ranges,
-                        &mut self.fragments,
-                        &mut frag_queue,
-                        &mut free,
-                        to_end,
-                        &schemas,
-                        &mut copied_objects,
-                        &mut stats,
-                    ),
-                    TAG_STRUCT => cheney_trace_struct(
-                        frag.ptr,
-                        &from_ranges,
-                        &mut self.fragments,
-                        &mut frag_queue,
-                        &mut free,
-                        to_end,
-                        &schemas,
-                        &mut copied_objects,
-                        &mut stats,
-                    ),
-                    TAG_BITSTRING | TAG_PROCBIN => {}
-                    TAG_RESOURCE => cheney_trace_resource(
-                        frag.ptr,
-                        &from_ranges,
-                        &mut self.fragments,
-                        &mut frag_queue,
-                        &mut free,
-                        to_end,
-                        &schemas,
-                        &mut copied_objects,
-                        &mut stats,
-                    ),
-                    tag => panic!("Cheney scan: invalid fragment object tag {tag:#x}"),
-                }
-                continue;
-            }
-            break;
         }
         drop(schemas);
 
-        // fz-q8d.1 — MSO sweep walks the intrusive chain. Survivors get
+        // MSO sweep walks the intrusive chain. Survivors get
         // rewritten to their to-space copies; dead entries release their
         // SharedBin reference. Must run before `pool_free` below because
         // it dereferences from-space ProcBins (specifically their
         // mso_next link, which Cheney never overwrites).
         mso_sweep(self);
 
-        // fz-q8d.4 — fragment sweep: free unmarked fragments, count
-        // survivors into live_count, and reset marks on those that
-        // remain. `swap_remove` is safe because order doesn't matter.
-        let mut live_count = copied_objects.len() as u64;
-        let mut fragment_live_bytes = 0usize;
-        let mut i = 0;
-        while i < self.fragments.len() {
-            if self.fragments[i].mark {
-                self.fragments[i].mark = false;
-                fragment_live_bytes += self.fragments[i].size;
-                live_count += 1;
-                i += 1;
-            } else {
-                let f = self.fragments.swap_remove(i);
-                unsafe { dealloc(f.ptr, f.layout) };
-            }
-        }
-
-        // Return old from-space (current + abandoned) to the pool (§6.6).
-        pool_free(self.block_start, self.size_class);
-        for (p, sc) in self.abandoned_blocks.drain(..) {
-            pool_free(p, sc);
+        // Release old from-space (current + parked blocks): pooled capacities
+        // return to the pool (§6.6), exact blocks to the system allocator.
+        self.current_block().release();
+        for block in self.blocks.drain(..) {
+            block.release();
         }
 
         // Install to-space as the new current block.
-        self.block_start = to_start;
-        self.bump_top = free;
-        self.block_end = to_end;
-        self.block_size = to_size;
-        self.size_class = size_class;
+        self.install_block(Block {
+            start: to_start,
+            top: free,
+            capacity: to_size,
+        });
+        let live_count = copied_objects.len() as u64;
         self.alloc_count = live_count;
         self.gc_run_count += 1;
-        self.gc_threshold_bytes = to_size / 2;
         self.last_gc_live_bytes = unsafe { free.offset_from(to_start) } as usize;
-        stats.fragment_survivors = live_count.saturating_sub(copied_objects.len() as u64);
-        stats.fragment_live_bytes = fragment_live_bytes as u64;
         stats.live_objects = live_count;
-        stats.live_bytes = self.last_gc_live_bytes as u64 + stats.fragment_live_bytes;
+        stats.live_bytes = self.last_gc_live_bytes as u64;
         self.last_gc_stats = stats;
-        stats
-    }
-
-    /// Cheney with a scheduler-owned primary closure root plus persistent
-    /// process roots. This is the closure-shaped mid-flight path: the
-    /// continuation closure captures the live loop state, while mailbox
-    /// entries remain process-owned roots until consumed.
-    pub fn gc_process_roots(&mut self, primary_root: &mut *mut u8, mailbox: &mut VecDeque<AnyValueRef>) -> GcStats {
-        let mut primary_root_bits = if primary_root.is_null() {
-            null_mut()
-        } else {
-            heap_object_word(*primary_root as *const u8, ValueKind::CLOSURE) as *mut u8
-        };
-        let mut mb_roots: Vec<AnyValueRef> = mailbox.drain(..).collect();
-        let stats = self.gc_with_extra_roots(&mut primary_root_bits, &mut [], &mut mb_roots);
-
-        *primary_root = if primary_root_bits.is_null() {
-            null_mut()
-        } else {
-            closure_addr_from_tagged(primary_root_bits as u64).expect("forwarded process closure root")
-        };
-        for v in mb_roots {
-            mailbox.push_back(v);
-        }
-        stats
-    }
-
-    /// Cheney with interpreter-owned typed roots plus persistent process roots.
-    /// The interpreter has no parked continuation closure while it is
-    /// synchronously executing a tail-recursive loop, so its current argument
-    /// vector is the root set.
-    pub fn gc_any_value_roots_with_process_roots(
-        &mut self,
-        roots: &mut [AnyValue],
-        mailbox: &mut VecDeque<AnyValueRef>,
-    ) -> GcStats {
-        let mut null_root: *mut u8 = null_mut();
-        let mut mb_roots: Vec<AnyValueRef> = mailbox.drain(..).collect();
-        let mut all_extras: Vec<AnyValue> = roots.to_vec();
-
-        let stats = self.gc_with_extra_roots(&mut null_root, &mut all_extras, &mut mb_roots);
-
-        let roots_end = roots.len();
-        roots.copy_from_slice(&all_extras[..roots_end]);
-        for v in mb_roots {
-            mailbox.push_back(v);
-        }
         stats
     }
 }
@@ -1417,20 +1165,20 @@ fn nonempty_list_addr(list: AnyValueRef) -> Result<*mut u8, AnyValueRefError> {
 
 impl Drop for Heap {
     fn drop(&mut self) {
-        // fz-q8d.1 — release every SharedBin held via the intrusive MSO
+        // release every SharedBin held via the intrusive MSO
         // chain. Order matters: must run before pool_free below, since
         // mso_drop_all walks ProcBin payloads in the from-space blocks.
         mso_drop_all(self);
-        // fz-q8d.4 — free every fragment outright. Fragments are
-        // system-allocator backed; no pool involvement.
-        for f in self.fragments.drain(..) {
-            unsafe { dealloc(f.ptr, f.layout) };
+        // Release blocks: pooled capacities go back to the pool (§6.6) so the
+        // next spawn pulls from it with no per-spawn malloc; exact blocks go
+        // to the system allocator. A tip set aside by an unfinished gift
+        // window goes back too.
+        self.current_block().release();
+        if let Some(window) = self.gift.take() {
+            window.saved_tip.release();
         }
-        // Return blocks to the pool (§6.6) instead of free'ing. Next
-        // spawn pulls from the same class — no per-spawn malloc.
-        pool_free(self.block_start, self.size_class);
-        for (p, sc) in self.abandoned_blocks.drain(..) {
-            pool_free(p, sc);
+        for block in self.blocks.drain(..) {
+            block.release();
         }
     }
 }

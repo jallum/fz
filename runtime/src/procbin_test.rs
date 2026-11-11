@@ -253,7 +253,7 @@ fn unrooted_shared_bin_is_freed_once_by_gc_not_again_by_heap_drop() {
     let (handle, drops) = observed_bin();
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     alloc_procbin(&mut heap, handle, 0);
-    heap.gc(&mut std::ptr::null_mut());
+    heap.collect_tagged(&mut std::ptr::null_mut());
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     assert_eq!(heap.mso_head, 0);
     drop(heap);
@@ -268,9 +268,9 @@ fn copied_shared_bin_is_freed_only_when_the_last_heap_releases_it() {
     let pb = alloc_procbin(&mut source, handle, 0);
     crate::heap::deep_copy_slot(
         AnyValue::heap_ptr(pb.as_raw(), ValueKind::PROCBIN),
-        &source,
+        &source.view(),
         &mut destination,
-        &mut std::collections::HashMap::new(),
+        &mut crate::heap::AddressMap::default(),
     );
     drop(source);
     assert_eq!(
@@ -350,9 +350,10 @@ fn gc_preserves_a_suffixs_offset() {
     let handle = SharedBinHandle::from_bytes(&bytes, 200 * 8);
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let tail = alloc_procbin(&mut h, handle, 70);
-    let mut roots = [AnyValue::heap_ptr(tail.as_raw(), ValueKind::PROCBIN)];
-    h.gc_with_extra_root_slots(&mut std::ptr::null_mut(), &mut roots);
-    let moved = unsafe { ProcBin::from_raw(roots[0].heap_addr().expect("survivor")) };
+    let mut roots =
+        [crate::any_value::AnyValueRef::from_heap_object(ValueKind::PROCBIN, tail.as_raw()).expect("procbin ref")];
+    h.collect(&mut roots);
+    let moved = unsafe { ProcBin::from_raw(roots[0].procbin_addr().expect("survivor")) };
     assert_eq!(moved.byte_offset(), 70);
     assert_eq!(moved.bit_len(), (200 - 70) * 8);
     assert_eq!(unsafe { *moved.bytes_ptr() }, 70);

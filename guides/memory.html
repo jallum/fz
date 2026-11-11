@@ -19,7 +19,7 @@
   <li><a href="#gc-parktime">4. Park-time GC — Cheney with one root</a></li>
   <li><a href="#gc-midflight">5. Mid-flight GC — collecting a running loop</a></li>
   <li><a href="#roots">6. GC roots and the MSO sweep</a></li>
-  <li><a href="#scheduler">7. Scheduler dispatch and proactive shrinkage</a></li>
+  <li><a href="#scheduler">7. Scheduler dispatch</a></li>
   <li><a href="#messages">8. Message passing — copy, self-send, share</a></li>
   <li><a href="#shared-zone">9. The shared zone — refcounted off-heap binaries</a></li>
   <li><a href="#return-demand">10. Return-demand destination planning</a></li>
@@ -342,12 +342,47 @@ above <code>SHARED_BIN_THRESHOLD_BYTES</code> (64 bytes) <em>don't</em>
 live on the process heap. Instead the heap carries a 16-byte <strong>ProcBin</strong>
 stub that points into the <a href="#shared-zone">shared zone</a>.</p>
 
-<h3>Block pool and size classes</h3>
+<h3>Block pool and block capacities</h3>
 
 <p>Blocks come from a per-thread pool sized by a Fibonacci-then-geometric size
-table (1 KiB up to ~6 MiB). When a block fills before GC fires, a new (larger)
-block is allocated and the old one joins <code>abandoned_blocks</code>. All
-abandoned blocks are reclaimed at the next GC.</p>
+table (1 KiB up to ~7 MiB). When a block fills before GC fires, a new (larger)
+block is allocated and the old one joins <code>blocks</code>, recorded
+with its fill and capacity. All parked blocks are reclaimed at the next
+GC.</p>
+
+<p>The table has no ceiling on what a block may be. An object larger than the
+last table entry gets a block of exactly its size (rounded up to 16 bytes); that
+block comes from the system allocator, not the pool, and goes back to it when
+the collection that copies the object out releases the block. Such an object is
+copied like any other.</p>
+
+<h3 id="the-gift-window">The gift window</h3>
+
+<p>A heap can lend its allocation path to a copy whose result belongs to another
+heap. Cross-process send is its user: the sender copies a message, or a match's
+bound values, inside one, and the segment waits on the receiver's
+<code>in_queue</code> until the receiver's next dispatch grafts it.</p>
+
+<p>The sender measures first. <code>measure_deep_copy</code> walks the value
+set the way the copy will and returns the bytes it will allocate, counting
+shared structure once. <code>Heap::begin_gift</code> takes that figure, sets the
+current tip aside and installs one block of the smallest capacity that holds it
+(an exact block when it exceeds the table). The copy runs through the ordinary
+bump path and fills the block without overflowing it. <code>Heap::end_gift</code>
+asserts the block's fill is exactly the measured bytes, turns the block into a
+<code>GiftSegment</code> and puts
+the saved tip back with its free space intact. The segment carries that one
+block (with its fill), the prefix of the MSO chain that the window produced,
+and the number of objects allocated. The heap's allocation statistics stay with
+it, its <code>live_count</code> goes back to what it was. A collection cannot
+run while a window is open.</p>
+
+<p>The receiving heap calls <code>Heap::graft</code>: the segment's block joins
+its <code>blocks</code>, its MSO
+prefix is spliced ahead of the receiver's chain. Every parked block counts
+toward <code>bytes_used</code> by fill, never by capacity, so a kilobyte block
+holding one cons cell costs sixteen bytes toward <code>should_gc</code>. A segment that is dropped without being grafted releases its block
+and every stub's off-heap reference.</p>
 
 <h3>The MSO chain</h3>
 
@@ -366,31 +401,33 @@ their off-heap payload. See
 </div>
 
 <!-- ─────────────────────────────── 3. PRESSURE ─────────────────────────────── -->
-<h2 id="pressure">3. Reductions, allocation pressure, and boundary GC</h2>
+<h2 id="pressure">3. Reductions, collection timing, and boundary GC</h2>
 
 <p>Processes run on a reduction budget. Every compiled or interpreted loop
 back-edge spends budget. When the budget reaches zero, the process materializes
-a scheduler-owned continuation closure and yields. Allocation pressure is
-separate: it marks the heap as needing GC, but it does not spend reductions and
+a scheduler-owned continuation closure and yields. Collection timing is
+separate: allocation makes the heap due for GC, but it does not spend reductions and
 does not force a yield.</p>
 
-<h3>gc_threshold_bytes</h3>
+<h3>should_gc</h3>
 
-<p>Every <code>Heap::alloc()</code> call keeps the hot path to a bump plus a
-pressure check. Crossing <code>gc_threshold_bytes</code> sets the heap pressure
-flag. If an allocation no longer fits in the current block, the heap allocates a
-larger block and parks the old one in <code>abandoned_blocks</code> for the
-next Cheney pass.</p>
+<p>Every <code>Heap::alloc()</code> call is a bump and nothing else. Whether a
+collection is due is a question about the heap's state, answered by
+<code>Heap::should_gc</code> when the scheduler asks at a boundary: the tip's
+fill plus the fill of every parked block, against half the
+tip's capacity. A collection that reclaims those bytes answers the question by
+itself; nothing is cleared. If an allocation no longer fits in the current
+block, the heap allocates a larger block and parks the old one in
+<code>blocks</code> for the next Cheney pass.</p>
 
 <pre>
   bump_top += size
-  if bytes_used >= gc_threshold_bytes {
-      heap.should_gc = true
-  }
   if bump_top would cross block_end {
       grow to a larger block
-      abandoned_blocks.push(old_block)
+      blocks.push(old_block)
   }
+
+  should_gc = bytes_used >= block_size / 2
 </pre>
 
 <p>Compiled yield telemetry still samples the margin before and after the
@@ -428,26 +465,27 @@ mutual recursion (<code>f → g → f</code>) is covered automatically.</p>
   return_call loop_fn(args...)                <span class="note">; unchanged hot path</span>
 </pre>
 
-<p>The slow path only fires when the process has spent its quantum. Allocation
-pressure makes that happen by expiring the same budget instead of using a
-separate GC-yield flag.</p>
+<p>The slow path only fires when the process has spent its quantum. Nothing else
+makes a process yield: a heap that is due for collection waits for the
+process to reach a boundary.</p>
 
 <!-- ─────────────────────────────── 4. PARK-TIME GC ─────────────────────────────── -->
 <h2 id="gc-parktime">4. Park-time GC — Cheney with explicit roots</h2>
 
 <p>When a process parks on <code>receive</code>, all live data is reachable
-from scheduler-owned roots: mailbox values, receive outcome closure templates,
-and runnable continuation closures. No stack scan, no register enumeration.</p>
+from the roots the process holds: mailbox values, the park record's outcome
+closure templates, after body and pinned values, and the runnable continuation
+closure. No stack scan, no register enumeration.</p>
 
 <pre>
-  from-space (current block + abandoned blocks)
+  from-space (current block + parked blocks)
   ┌────────────────────────────────┐
   │ [dead]  [dead]  <span class="live">[live]</span>  [dead]  │
   │      scheduler roots point ──►│──►<span class="live">closures + AnyValueRefs</span>
   └────────────────────────────────┘
            │ Cheney BFS copy │
            ▼
-  to-space (new block, sized by last_gc_live_bytes × 2)
+  to-space (new block, sized to hold every byte that can be copied)
   ┌─────────────────┐
   │ <span class="live">[live][live][live]</span>│
   │         bump_top│
@@ -464,18 +502,28 @@ ride.
 
 <h3>Sizing to-space</h3>
 
+<p>To-space holds at least every byte a pass can copy: the tip's fill plus
+every parked block's fill. The capacity that holds those bytes is the floor,
+and three bands choose between the floor and a larger capacity. An object
+larger than the table's last entry is part of those bytes, so to-space grows
+past the table to hold it.</p>
+
 <ul>
-  <li><strong>First GC:</strong> bump-arena bytes used — a safe upper bound
-  for the moving to-space block. Fragment bytes are tracked separately because
-  oversized fragments do not move.</li>
-  <li><strong>Subsequent GCs:</strong> <code>last_gc_live_bytes × 2</code>
-  — the exact bump-arena bytes that survived the previous GC, doubled for
-  slack. Accurate, no pre-pass needed.</li>
+  <li><strong>Grow:</strong> the bytes in use fill 75% or more of the tip.
+  To-space holds twice the bytes in use, and is at least one capacity step up.</li>
+  <li><strong>Shrink:</strong> the last GC's survivors fill 25% or less of the
+  tip. To-space is <code>last_gc_live_bytes × 2</code> (the bytes in use on
+  the first GC), raised to the floor.</li>
+  <li><strong>Keep:</strong> otherwise the current size, raised to the floor.</li>
 </ul>
 
+<p>A gift is one parked block like any other, so its fill is part of the
+bytes in use whatever raised <code>should_gc</code>. After the pass the
+parked blocks go back to the pool with the rest of from-space.</p>
+
 <p>After the BFS scan: <code>last_gc_live_bytes = free - to_start</code>.
-That feeds the next GC. Fragment survivors are counted in telemetry as
-fragment live bytes, not in <code>last_gc_live_bytes</code>.</p>
+That feeds the next GC, and is the <code>live_bytes</code> of the pass's
+<code>GcStats</code>.</p>
 
 <p>Each copied from-space object gets an in-band forwarding marker written into
 its first word: <code>(to_space_address &amp; ~0xF) | TAG_FWD</code>. Any other
@@ -495,7 +543,6 @@ passed to the next iteration, plus the current continuation.</p>
   struct Process {
     ...
     runnable_closure:      *mut u8,       <span class="note">// tagged closure to run next; null = none</span>
-    quiet_quanta:          u8,            <span class="note">// non-yielding quanta since last GC</span>
     reduction_yields:      u64,           <span class="note">// ordinary budget exhaustion</span>
   }
 </pre>
@@ -537,34 +584,36 @@ the callee's native ABI and tail-calls the loop body.</p>
 
 <p>The GC traces only explicit roots. Everything else is dead.</p>
 
-<div class="box blue">
-<strong>Park-time GC roots</strong><br>
-<code>parked_matched</code> — the receive park record. Every parked receive
-carries a compiled matcher; the catch-all form <code>receive do msg -&gt;
-msg end</code> is the accept-any shape. Clause-body closures are forwarded
-in place.<br><br>
-<code>process.mailbox</code> — messages already delivered to this process.
-Self-send can leave a matching message in the mailbox before the scheduler
-gets control again, so mailbox roots are always traced.
-</div>
+<p>One method, <code>Process::collect</code>, builds the root set from the
+process and calls the one collection entry, <code>Heap::collect</code>. Every
+scheduler reaches the same root set, and each slot holds its forwarded value
+when the call returns.</p>
 
 <div class="box blue">
-<strong>Mid-flight GC roots</strong><br>
-<code>runnable_closure</code> — a zero-arg closure capturing the next loop
-state. The closure is forwarded as the primary root, and its captures are
+<strong>The roots of a process</strong><br>
+<code>runnable</code> — a zero-arg closure capturing the next loop state. It is
 traced through the normal closure layout.<br><br>
-<code>process.mailbox</code> — every message is a <code>AnyValueRef</code>.
-Heap-object refs are forwarded in place during process-root GC. Scalar refs
-are scalar boxes: the box is copied, but the payload is not followed as a child
-edge. This matters for self-send: a process can send itself a message and keep
-running; that message lives only in the mailbox and would otherwise be
-collected.
+The park record — the receive's clause-body closures, its after body, and its
+pinned values (heap values the matcher compares against). The matcher reads
+the pinned values whenever a message arrives, so they move with everything
+else. Every parked receive carries a compiled matcher; the catch-all form
+<code>receive do msg -&gt; msg end</code> is the accept-any shape.<br><br>
+<code>process.mailbox</code> — every message is an <code>AnyValueRef</code>.
+Heap-object refs are forwarded in place. Scalar refs are scalar boxes: the box
+is copied, but the payload is not followed as a child edge. This matters for
+self-send: a process can send itself a message and keep running; that message
+lives only in the mailbox and would otherwise be collected.<br><br>
+Transient values — whatever the caller holds across the call.
 </div>
 
-<p>The interpreter uses the same shape without building a scheduler closure:
-its current tail-call arguments are explicit typed roots, so cooperative GC
-forwards that root slice alongside <code>mailbox</code>. Immediate typed values
-pass through unchanged; heap refs are rewritten to their copied addresses.</p>
+<p>Gifts waiting in the delivery in-queue are not roots. Their blocks join the
+heap only when <code>drain_in_queue</code> grafts them, and every reference in
+a gift points into its own segment. <code>Process::collect</code> holds the
+delivery lock for the whole pass, so a sender cannot probe the park record
+while it moves.</p>
+
+<p>The interpreter keeps its resume arguments and parked receives in its own
+structures and does not collect.</p>
 
 <h3>MSO sweep — keeping shared-zone refcounts honest</h3>
 
@@ -592,53 +641,26 @@ bookkeeping:</p>
 </pre>
 
 <p>The sweep is O(number of MSO stubs on this heap), not O(heap size). This
-pass runs in park-time GC and process-root GC. When a heap itself is dropped
+pass runs in every collection. When a heap itself is dropped
 (process exited), <code>Heap::drop</code> releases every ProcBin and Resource
 stub still on the chain.</p>
 
 <!-- ─────────────────────────────── 7. SCHEDULER ─────────────────────────────── -->
-<h2 id="scheduler">7. Scheduler dispatch and proactive shrinkage</h2>
+<h2 id="scheduler">7. Scheduler dispatch</h2>
 
 <h3>run_quantum dispatch order</h3>
 
 <pre>
-  1. if runnable_closure != null:
+  1. resume the runnable closure
+  2. process.boundary_maintenance():
        if heap.should_gc:
-         gc_process_roots(runnable_closure, mailbox)
-         quiet_quanta = 0
-       re-enqueue process
-       return
-  2. if pending_main_entry / pending_closure_entry:
-       dispatch entry
+         process.collect()
+       clear yield reasons
+  3. runnable: re-enqueue.  blocked on a receive: wait for a send or the timer.
 
-  (AOT mirrors the same runnable_closure path.)
+  (The JIT and AOT schedulers both run step 2; the JIT after every quantum, AOT
+  when the process is runnable or parked.)
 </pre>
-
-<h3>quiet_quanta — the bookkeeping for future proactive shrinkage</h3>
-
-<p>Every time <code>run_until_idle</code> finishes a quantum without firing a
-mid-flight GC, it bumps <code>task.quiet_quanta</code>. The counter resets
-to <code>0</code> whenever a mid-flight GC runs:</p>
-
-<pre>
-  if task.runnable_closure != null {
-      if task.needs_boundary_gc() {
-          gc_process_roots(...);
-          task.quiet_quanta = 0;
-      }
-      re-enqueue;
-  } else {
-      task.quiet_quanta = task.quiet_quanta.saturating_add(1);
-      ...
-  }
-</pre>
-
-<p>The intent: a process that allocated a lot, GC'd down to a small live
-set, and is now allocating very little shouldn't keep hogging a large
-block. The counter is the signal a future scheduler pass can use to choose a
-natural boundary for shrinkage; it must not force an early yield just to run
-GC. The counter exists and is maintained; the heuristic that consumes it isn't
-wired yet.</p>
 
 <!-- ─────────────────────────────── 8. MESSAGES ─────────────────────────────── -->
 <h2 id="messages">8. Message passing — copy, self-send, share</h2>
@@ -650,21 +672,44 @@ wired yet.</p>
 that scalar first; if it already has a heap-object ref, it passes the ref as
 is.</p>
 
-<p>When sender and receiver are different processes,
-<code>Runtime::send_via_current_runtime</code> deep-copies the any value ref into
-the receiver's heap. Heap objects are recursively copied by layout. Scalar
-boxes are copied as scalar boxes and are not scanned as child pointers. The
-receiver stores the copied <code>AnyValueRef</code> in its mailbox, and
-process-root GC traces that mailbox directly.</p>
+<p>When sender and receiver are different processes, the sender does all the
+work and never writes into the receiver's heap. <code>sched::probe_sender</code>
+tests the message against the receiver's parked matcher, if it has one, with
+the sender as the allocating process. It then opens a <a href="#the-gift-window">gift
+window</a> on its own heap and deep-copies what the receiver will keep: the
+values the winning clause bound on a hit, the whole message on a miss. A hit
+that binds nothing opens no window and gifts an empty segment. Heap
+objects are copied by layout, a list spine cell by cell; scalar boxes are
+copied as scalar boxes and are not scanned as child pointers. The segment is
+queued on the receiver's <code>in_queue</code> with its payload, and a hit makes
+the receiver runnable.</p>
+
+<p>The receiver grafts every queued segment as the first act of its next
+dispatch, before any of its code or a collection runs. A miss payload joins the
+mailbox, which process-root GC traces directly; the hit payload finishes the
+receive, building the outcome closure on the receiver's own heap over the
+gifted bound values. A receiver whose receive is already matched is not probed
+again, so there is at most one match in its queue. A receiver that exits with
+gifts still queued drops them: each un-grafted segment returns its block to
+the pool and releases its stubs' references.</p>
 
 <h3>Self-send (same process)</h3>
 
-<p>In <code>Runtime::send_via_current_runtime</code>, a process sending to
-itself still deep-copies the <code>AnyValueRef</code> into its own heap
-before enqueueing the mailbox entry. That gives self-send the same
-fresh-message semantics as cross-process send. Since process-root GC roots the
-mailbox, the copied value survives any subsequent back-edge GC even if the
-sending code no longer holds a local reference to it.</p>
+<p>A process sending to itself pushes the <code>AnyValueRef</code> it already
+holds onto its own mailbox (<code>sched::self_send</code>). Nothing is copied
+and the runtime publishes nothing: the sender is running, so it cannot be
+parked, and the push is the whole delivery. Since process-root GC roots the
+mailbox, the value survives any subsequent back-edge GC even if the sending
+code no longer holds a local reference to it.</p>
+
+<p>The mailbox is now a second holder of the same cells, and the in-place list
+rewrite guard must see them as aliased. The compiler owns that: when the
+continuation after a call retains a name that may alias an argument,
+<code>construct_call_ownership</code> (src/compiler2/jobs/body.rs) marks the
+argument <code>Share</code>, and the Share mode publishes the list spine before
+the call on every path. A self-sent list the sender can still reach is
+therefore already published when it enters the mailbox, and a later rewrite of
+one of its cells allocates a fresh cell instead.</p>
 
 <h3>ProcBin — bytes are shared, not copied</h3>
 
@@ -678,9 +723,8 @@ Instead:</p>
   forwarding[src] = dst_proc_bin
 </pre>
 
-<p>The receiver's heap gets a fresh 32-byte ProcBin viewing the same suffix of
-the same
-SharedBin. The SharedBin's refcount is now one higher. The bytes themselves
+<p>The gift gets a fresh 32-byte ProcBin viewing the same suffix of the same
+SharedBin, and the receiver's heap adopts it with the segment. The SharedBin's refcount is now one higher. The bytes themselves
 never move. A 1 MiB binary sent to 100 receivers exists once in memory, with
 101 references to it (sender + 100 receivers).</p>
 
@@ -819,7 +863,8 @@ rather than accepting one.
   allocated ProcBin is the sole reference.</li>
   <li><strong>Send</strong> across processes: <code>deep_copy_any_value_ref</code>
   retains the shared_ptr (refcount ++) and allocates a fresh ProcBin in the
-  receiver's heap. Bytes don't move.</li>
+  sender's gift window; the receiver adopts it when it grafts the segment.
+  Bytes don't move.</li>
   <li><strong>Die</strong>: either a ProcBin fails to survive a GC (refcount
   −− in the <a href="#roots">MSO sweep</a>), or the entire heap is dropped
   (every ProcBin still on <code>mso_head</code> is released by
@@ -843,10 +888,10 @@ is no central registry to contend on.
 
 <p>Because binaries above 64 bytes go off-heap, the process heap deals only
 with small inline objects, cons cells, tuples, maps, closures, resources, and
-ProcBin stubs — all bounded by the largest block class (~6 MiB) but in
-practice well under that. The grow logic in <code>Heap::alloc()</code> picks
-the smallest size class that fits any individual object, and asserts the
-object isn't larger than the largest available class.</p>
+ProcBin stubs — in practice well under the table's last entry (~7 MiB).
+The grow logic in <code>Heap::alloc()</code> picks the smallest capacity that
+fits any individual object; an object larger than the whole table gets a block
+of exactly its size.</p>
 
 <!-- ─────────────────────────────── 10. RETURN DEMAND ─────────────────────────────── -->
 <h2 id="return-demand">10. Return-demand destination planning</h2>
@@ -886,13 +931,16 @@ existing construction loops; there is no extra structural runtime scan.</p>
 <p>Extern calls do not publish their arguments for alias tracking. If an extern
 wants to retain a value after returning, the extern must copy it.</p>
 
-<p>Send is a copy boundary, not an alias boundary. Cross-process send and
-self-send deep-copy the message graph before enqueueing it, so the sender's
-current-process list cells need not be marked aliased just because they were
-sent. A singly copied list can remain unshared; repeated references and copied
-container fields protect sharing in the receiver. Inside a single heap the alias bit is one-way, so a rewrite miss
-falls back to allocation rather than rewiring a value another observer may still
-hold.</p>
+<p>Cross-process send is a copy boundary, not an alias boundary. The sender
+deep-copies the message graph into a gift before queueing it on the receiver,
+so the sender's list cells need not be marked aliased just because they were
+sent. A singly copied list can remain
+unshared; repeated references and copied container fields protect sharing in
+the receiver. Self-send copies nothing: the sender's own reference enters the
+mailbox, and the compiler's call-site Share publication is what marks a list
+the sender still names. Inside a single heap the alias bit is one-way, so a
+rewrite miss falls back to allocation rather than rewiring a value another
+observer may still hold.</p>
 
 <!-- ─────────────────────────────── 11. ALLOC STATS ─────────────────────────────── -->
 <h2 id="alloc-stats">11. Heap allocation stats</h2>

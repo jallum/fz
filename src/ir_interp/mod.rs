@@ -184,6 +184,13 @@ impl IrInterpRuntime {
         }
     }
 
+    /// Queue `pid` to run; the scheduling core performs its transition to Ready.
+    fn make_runnable(&mut self, pid: u32) {
+        if let Some(process) = self.tasks.get_mut(&pid) {
+            self.core.make_runnable(pid, &mut process.state);
+        }
+    }
+
     fn process_ref(&self, pid: u32) -> Option<&Process> {
         self.tasks.get(&pid).map(Box::as_ref)
     }

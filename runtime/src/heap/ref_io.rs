@@ -2,7 +2,6 @@
 
 use std::ptr::{read, write};
 
-use super::fragment::{Fragment, classify_fragment};
 use super::schema::SchemaRegistry;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, ValueKind, map_count, map_key_kind, map_keys_ptr, map_tag_ptr,
@@ -61,14 +60,11 @@ pub(super) fn list_tail_bits_from_ref(value: AnyValueRef) -> Result<u64, AnyValu
     }
 }
 
-pub(super) fn is_active_from_space_object(
-    p: *mut u8,
-    from_ranges: &[(*mut u8, *mut u8)],
-    fragments: &[Fragment],
-) -> bool {
-    !p.is_null() && (ptr_in_from_space(p, from_ranges) || classify_fragment(p, fragments).is_some())
+pub(super) fn is_active_from_space_object(p: *mut u8, from_ranges: &[(*mut u8, *mut u8)]) -> bool {
+    !p.is_null() && ptr_in_ranges(p, from_ranges.iter().copied())
 }
 
-pub(super) fn ptr_in_from_space(p: *mut u8, from_ranges: &[(*mut u8, *mut u8)]) -> bool {
-    from_ranges.iter().any(|&(start, end)| p >= start && p < end)
+/// The one membership predicate: `p` lies in one of the half-open ranges.
+pub(super) fn ptr_in_ranges(p: *mut u8, ranges: impl IntoIterator<Item = (*mut u8, *mut u8)>) -> bool {
+    ranges.into_iter().any(|(start, end)| p >= start && p < end)
 }

@@ -4,12 +4,13 @@ use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::ptr::write_bytes;
 
-/// Preset block sizes (bytes). Fibonacci-shape at the low end (§6.3) then
+/// Preset block capacities (bytes). Fibonacci-shape at the low end (§6.3) then
 /// geometric tail (~×1.2, ceiling-rounded to 16 alignment). Cheney picks the
 /// smallest entry that fits `live_bytes + slack`.
 ///
-/// 32 entries covers ~6 MiB — heaps larger than the tail clamp to the last
-/// class (`pick_size_class` never panics).
+/// The 32 entries reach ~7 MiB and are the capacities the pool recycles. A
+/// block needing more is allocated at exactly the size asked for (rounded to
+/// 16) and returned to the system allocator when it is released.
 pub const SIZE_TABLE: [usize; 32] = build_size_table();
 
 const fn build_size_table() -> [usize; 32] {
@@ -32,18 +33,70 @@ const fn build_size_table() -> [usize; 32] {
     t
 }
 
-/// Smallest size_class whose `SIZE_TABLE[class]` ≥ `bytes`. Clamps to the
-/// last index for inputs that exceed the tail (§6.3) — never panics.
-pub fn pick_size_class(bytes: usize) -> u8 {
-    for (idx, &size) in SIZE_TABLE.iter().enumerate() {
-        if size >= bytes {
-            return idx as u8;
-        }
-    }
-    (SIZE_TABLE.len() - 1) as u8
+/// `bytes` rounded up to the 16-byte slot every allocation occupies.
+pub(super) fn round_up_16(bytes: usize) -> usize {
+    (bytes + 15) & !15
 }
 
-/// Per-thread block pool (§6.6). One free list per size_class. Spawn /
+/// The capacity of the smallest block that holds `bytes`: the smallest table
+/// entry that fits, or `bytes` rounded up to 16 past the end of the table.
+pub fn pick_block_capacity(bytes: usize) -> usize {
+    SIZE_TABLE
+        .iter()
+        .copied()
+        .find(|&size| size >= bytes)
+        .unwrap_or_else(|| round_up_16(bytes))
+}
+
+/// The capacity one step above `capacity`: the next table entry, or 1.2x
+/// rounded up to 16 once past the table.
+pub fn next_block_capacity(capacity: usize) -> usize {
+    SIZE_TABLE
+        .iter()
+        .copied()
+        .find(|&size| size > capacity)
+        .unwrap_or_else(|| round_up_16((capacity * 6).div_ceil(5)))
+}
+
+/// The pool's free-list index for `capacity`, or `None` for an exact block.
+fn pooled_class(capacity: usize) -> Option<usize> {
+    SIZE_TABLE.binary_search(&capacity).ok()
+}
+
+fn block_layout(capacity: usize) -> Layout {
+    Layout::from_size_align(capacity, 16).expect("bad block layout")
+}
+
+/// A block the heap has stopped bumping into: `start` is the block, `top` is
+/// where its last allocation ended, and `capacity` is its size in bytes.
+/// Abandoned blocks (overflowed mid-quantum) and adopted blocks (grafted from
+/// another heap's gift) are both recorded this way, so a block's fill and its
+/// capacity are each one subtraction, and the block carries what it needs to
+/// release itself.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Block {
+    pub(super) start: *mut u8,
+    pub(super) top: *mut u8,
+    pub(super) capacity: usize,
+}
+
+impl Block {
+    pub(super) fn end(&self) -> *mut u8 {
+        unsafe { self.start.add(self.capacity) }
+    }
+
+    pub(super) fn fill(&self) -> usize {
+        unsafe { self.top.offset_from(self.start) as usize }
+    }
+
+    /// Hand the block back: to the pool when its capacity is a table entry,
+    /// to the system allocator otherwise.
+    pub(super) fn release(self) {
+        pool_free(self.start, self.capacity);
+    }
+}
+
+/// Per-thread block pool (§6.6). One free list per table capacity. Spawn /
 /// grow / gc pull from here; Heap::drop and gc()'s old-block release
 /// return blocks here. Avoids per-spawn `malloc`/`free` churn under
 /// heavy spawn pressure. Single-threaded for v1 (worker pool = 1, per
@@ -51,6 +104,8 @@ pub fn pick_size_class(bytes: usize) -> u8 {
 /// per-worker pools or a Mutex-guarded shared pool.
 struct BlockPool {
     free_lists: [Vec<*mut u8>; SIZE_TABLE.len()],
+    /// Blocks handed out by `alloc` and not yet returned through `free`.
+    outstanding: usize,
 }
 
 impl BlockPool {
@@ -59,41 +114,54 @@ impl BlockPool {
         // because Vec is not Copy; use a manual array build.
         Self {
             free_lists: [const { Vec::new() }; SIZE_TABLE.len()],
+            outstanding: 0,
         }
     }
 
-    fn alloc(&mut self, size_class: u8) -> *mut u8 {
-        let idx = size_class as usize;
-        let size = SIZE_TABLE[idx];
+    /// A zeroed block of `capacity` bytes: recycled from the free list when
+    /// the capacity is a table entry, otherwise fresh from the system
+    /// allocator and not counted as outstanding.
+    fn alloc(&mut self, capacity: usize) -> *mut u8 {
+        let Some(idx) = pooled_class(capacity) else {
+            return alloc_exact(capacity);
+        };
+        self.outstanding += 1;
         if let Some(p) = self.free_lists[idx].pop() {
             // Recycled blocks: zero before returning. Cheney + Heap::new
             // expect zero pages.
             unsafe {
-                write_bytes(p, 0, size);
+                write_bytes(p, 0, capacity);
             }
             return p;
         }
-        let layout = Layout::from_size_align(size, 16).expect("bad block layout");
-        let p = unsafe { alloc_zeroed(layout) };
-        assert!(!p.is_null(), "block pool: malloc failed");
-        p
+        alloc_exact(capacity)
     }
 
-    fn free(&mut self, p: *mut u8, size_class: u8) {
+    fn free(&mut self, p: *mut u8, capacity: usize) {
+        let Some(idx) = pooled_class(capacity) else {
+            unsafe { dealloc(p, block_layout(capacity)) };
+            return;
+        };
+        self.outstanding -= 1;
         // Free lists grow unbounded in v1. A real-world deployment would
         // cap each list (e.g., 4 entries) and `dealloc` the overflow.
         // For now we accept the worst-case memory footprint to keep the
         // pool deterministic.
-        self.free_lists[size_class as usize].push(p);
+        self.free_lists[idx].push(p);
     }
+}
+
+fn alloc_exact(capacity: usize) -> *mut u8 {
+    let p = unsafe { alloc_zeroed(block_layout(capacity)) };
+    assert!(!p.is_null(), "block pool: malloc failed");
+    p
 }
 
 impl Drop for BlockPool {
     fn drop(&mut self) {
         // At thread exit (or test teardown), free any cached blocks.
         for (idx, list) in self.free_lists.iter_mut().enumerate() {
-            let size = SIZE_TABLE[idx];
-            let layout = Layout::from_size_align(size, 16).expect("bad block layout");
+            let layout = block_layout(SIZE_TABLE[idx]);
             for p in list.drain(..) {
                 unsafe {
                     dealloc(p, layout);
@@ -107,20 +175,18 @@ thread_local! {
     static BLOCK_POOL: RefCell<BlockPool> = const { RefCell::new(BlockPool::new()) };
 }
 
-pub(super) fn pool_alloc(size_class: u8) -> *mut u8 {
-    BLOCK_POOL.with(|p| p.borrow_mut().alloc(size_class))
+pub(super) fn pool_alloc(capacity: usize) -> *mut u8 {
+    BLOCK_POOL.with(|p| p.borrow_mut().alloc(capacity))
 }
 
 /// Returns a block to the pool. If the TLS pool has already been dropped
 /// (thread teardown ordering), falls back to a direct `dealloc` — the
 /// block leaks nothing, just bypasses the cache.
-pub(super) fn pool_free(p: *mut u8, size_class: u8) {
-    let result = BLOCK_POOL.try_with(|pool| pool.borrow_mut().free(p, size_class));
+pub(super) fn pool_free(p: *mut u8, capacity: usize) {
+    let result = BLOCK_POOL.try_with(|pool| pool.borrow_mut().free(p, capacity));
     if result.is_err() {
-        let size = SIZE_TABLE[size_class as usize];
-        let layout = Layout::from_size_align(size, 16).expect("bad block layout");
         unsafe {
-            dealloc(p, layout);
+            dealloc(p, block_layout(capacity));
         }
     }
 }
@@ -133,8 +199,7 @@ pub fn pool_drain_for_test() {
     BLOCK_POOL.with(|pool| {
         let mut pool = pool.borrow_mut();
         for (idx, list) in pool.free_lists.iter_mut().enumerate() {
-            let size = SIZE_TABLE[idx];
-            let layout = Layout::from_size_align(size, 16).expect("bad block layout");
+            let layout = block_layout(SIZE_TABLE[idx]);
             for p in list.drain(..) {
                 unsafe {
                     dealloc(p, layout);
@@ -144,8 +209,14 @@ pub fn pool_drain_for_test() {
     });
 }
 
-/// Test-only: total cached blocks across all size classes.
-#[cfg(test)]
+/// Pooled blocks this thread's pool has handed out and not had returned. Zero
+/// once every heap and gift segment the thread created has been dropped. Exact
+/// blocks above the table are the system allocator's and are not counted.
+pub fn pool_outstanding_blocks() -> usize {
+    BLOCK_POOL.with(|pool| pool.borrow().outstanding)
+}
+
+/// Total cached blocks across all table capacities.
 pub fn pool_total_cached_blocks() -> usize {
     BLOCK_POOL.with(|pool| pool.borrow().free_lists.iter().map(|l| l.len()).sum())
 }

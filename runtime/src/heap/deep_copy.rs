@@ -1,26 +1,222 @@
-//! Cross-heap deep copies (mailbox send, message dup).
+//! Deep copies between heaps and into a heap's own gift window.
+//!
+//! A copy reads one heap and allocates into another. The source is read
+//! through a `HeapView`, an owned snapshot of the source's address ranges and
+//! schema table, so a sender that copies into a gift window on its own heap
+//! holds one `&mut Heap` and no second reference to the same heap.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::ptr::{copy_nonoverlapping, null_mut, read, write};
+use std::rc::Rc;
 use std::slice::from_raw_parts;
 
-use super::schema::FieldKind;
+use super::block_pool::round_up_16;
+use super::ref_io::{ptr_in_ranges, strict_object_size};
+use super::schema::{FieldKind, SchemaRegistry};
 use super::{Heap, HeapAllocKind};
 use crate::any_value::AnyValueRef;
 use crate::any_value::{
     AnyValue, EMPTY_LIST, ListCons, TAG_MASK, ValueKind, bitstring_bit_len, bitstring_bytes_ptr,
     closure_addr_from_tagged, closure_arity, closure_capture_set, closure_capture_value, closure_captured_count,
     closure_fn_ptr, closure_halt_kind, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry,
-    struct_schema_id,
+    struct_field_kind_slot, struct_field_raw_slot, struct_schema_id,
 };
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
 
+/// What a deep copy needs to know about the heap it reads: which addresses
+/// belong to it, and how its structs are laid out. Taken by value, so reading
+/// a heap and allocating into a gift window on that same heap needs no second
+/// reference to it.
+pub struct HeapView {
+    ranges: Vec<(*mut u8, *mut u8)>,
+    schemas: Rc<RefCell<SchemaRegistry>>,
+}
+
+impl HeapView {
+    fn contains(&self, p: *mut u8) -> bool {
+        ptr_in_ranges(p, self.ranges.iter().copied())
+    }
+
+    fn read_field_slot(&self, obj: *mut u8, field_offset: u32) -> AnyValue {
+        let schema_id = unsafe { struct_schema_id(obj as *const u8) };
+        let schema = self.schemas.borrow();
+        let kind_offset = schema.get(schema_id).value_field_kind_offset(field_offset);
+        unsafe {
+            let raw = read(struct_field_raw_slot(obj as *const u8, field_offset));
+            let kind = read(struct_field_kind_slot(obj as *const u8, kind_offset));
+            AnyValue::decode_parts(raw, kind).expect("struct field kind")
+        }
+    }
+}
+
+impl Heap {
+    /// A snapshot of every address range this heap owns right now: the tip,
+    /// the tip set aside by an open gift window, and parked blocks.
+    pub fn view(&self) -> HeapView {
+        HeapView {
+            ranges: self.block_ranges().collect(),
+            schemas: Rc::clone(&self.schemas),
+        }
+    }
+}
+
+/// The bytes `deep_copy_any_value_ref` allocates when it copies `values`
+/// through one forwarding map, without allocating or writing anything.
+///
+/// It walks what the copy walks: the same kinds, the same ownership test
+/// against the source view, the same sharing (an object reached twice is one
+/// object in the copy, so it is counted once). A copied object has the size of
+/// its source, which `strict_object_size` states for the collector too; each
+/// scalar the copy boxes takes one slot.
+pub fn measure_deep_copy(values: &[AnyValueRef], src_heap: &HeapView) -> usize {
+    let mut measure = CopyMeasure {
+        src_heap,
+        reached: AddressSet::default(),
+        bytes: 0,
+    };
+    for value in values {
+        measure.value_ref(*value);
+    }
+    measure.bytes
+}
+
+/// A map keyed by object address: the forwarding map of a copy.
+pub type AddressMap<V> = HashMap<*mut u8, V, BuildHasherDefault<AddressHasher>>;
+
+/// A set of object addresses: the objects a measuring pass has reached.
+pub type AddressSet = HashSet<*mut u8, BuildHasherDefault<AddressHasher>>;
+
+/// Hashes an object address. Both passes of a copy insert every object they
+/// reach, so the hash is one multiply with the product folded onto itself: the low bits
+/// of a 16-aligned address carry nothing, and the table indexes by them.
+#[derive(Default)]
+pub struct AddressHasher(u64);
+
+impl Hasher for AddressHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, _bytes: &[u8]) {
+        unreachable!("an address is hashed as one usize");
+    }
+
+    fn write_usize(&mut self, address: usize) {
+        let product = (address as u64 >> 4).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = product ^ (product >> 32);
+    }
+}
+
+struct CopyMeasure<'a> {
+    src_heap: &'a HeapView,
+    /// The source objects already counted: the forwarding map's keys.
+    reached: AddressSet,
+    bytes: usize,
+}
+
+impl CopyMeasure<'_> {
+    fn value_ref(&mut self, value: AnyValueRef) {
+        if value.is_empty_list() {
+            return;
+        }
+        match value.tag() {
+            ValueKind::NULL => {}
+            tag if tag.is_scalar() => self.bytes += round_up_16(size_of::<u64>()),
+            tag if tag.is_heap() => {
+                let bits = value.heap_object_word().expect("heap ref bits");
+                self.value(AnyValue::decode_tagged_heap_bits(bits).expect("heap bits"));
+            }
+            _ => unreachable!("AnyValueRef tag set is exhaustive"),
+        }
+    }
+
+    /// Count `child` when it is a heap value; an inline slot costs nothing.
+    fn slot(&mut self, child: AnyValue) {
+        if child.kind().is_heap() {
+            self.value(child);
+        }
+    }
+
+    fn value(&mut self, src: AnyValue) {
+        let Some(sp) = src.heap_addr() else {
+            return;
+        };
+        if sp.is_null() || !self.src_heap.contains(sp) {
+            return;
+        }
+        match src.kind() {
+            ValueKind::LIST => self.list(sp),
+            ValueKind::MAP
+            | ValueKind::CLOSURE
+            | ValueKind::STRUCT
+            | ValueKind::BITSTRING
+            | ValueKind::PROCBIN
+            | ValueKind::RESOURCE => self.object(sp, src),
+            _ => {}
+        }
+    }
+
+    /// Count the object at `sp` and what it holds, unless it was already
+    /// reached.
+    fn object(&mut self, sp: *mut u8, src: AnyValue) {
+        if !self.reached.insert(sp) {
+            return;
+        }
+        let bits = src.heap_object_word().expect("heap object bits");
+        self.bytes += strict_object_size(bits, &self.src_heap.schemas.borrow());
+        self.children(sp, src.kind());
+    }
+
+    fn children(&mut self, sp: *mut u8, kind: ValueKind) {
+        match kind {
+            ValueKind::MAP => {
+                for i in 0..unsafe { map_count(sp as *const u8) } {
+                    let (key, value) = unsafe { map_entry(sp as *const u8, i) };
+                    self.slot(key);
+                    self.slot(value);
+                }
+            }
+            ValueKind::CLOSURE => {
+                for i in 0..unsafe { closure_captured_count(sp as *const u8) } {
+                    self.slot(unsafe { closure_capture_value(sp as *const u8, i) });
+                }
+            }
+            ValueKind::STRUCT => {
+                let schema_id = unsafe { struct_schema_id(sp as *const u8) };
+                let registry = self.src_heap.schemas.borrow();
+                for (field, _) in registry.get(schema_id).any_value_fields_with_kind_offsets() {
+                    self.slot(self.src_heap.read_field_slot(sp, field.offset));
+                }
+            }
+            ValueKind::RESOURCE => self.slot(unsafe { ResourceStub::from_raw(sp) }.closure_value()),
+            _ => {}
+        }
+    }
+
+    /// A list is walked along its spine, like the copy: it stops at the empty
+    /// list, at a cell already reached, or at a tail that is not this heap's.
+    fn list(&mut self, first: *mut u8) {
+        let mut cell = first;
+        while self.reached.insert(cell) {
+            self.bytes += size_of::<ListCons>();
+            let cons = unsafe { &*(cell as *const ListCons) };
+            self.slot(cons.head_value());
+            cell = cons.tail_addr() as *mut u8;
+            if cell.is_null() || !self.src_heap.contains(cell) {
+                return;
+            }
+        }
+    }
+}
+
 pub fn deep_copy_any_value_ref(
     value: AnyValueRef,
-    src_heap: &Heap,
+    src_heap: &HeapView,
     dst_heap: &mut Heap,
-    forwarding: &mut HashMap<*mut u8, *mut u8>,
+    forwarding: &mut AddressMap<*mut u8>,
 ) -> AnyValueRef {
     if value.is_empty_list() {
         return value;
@@ -47,9 +243,9 @@ pub fn deep_copy_any_value_ref(
 
 pub fn deep_copy_tagged_bits(
     bits: u64,
-    src_heap: &Heap,
+    src_heap: &HeapView,
     dst_heap: &mut Heap,
-    forwarding: &mut HashMap<*mut u8, *mut u8>,
+    forwarding: &mut AddressMap<*mut u8>,
 ) -> u64 {
     let copied = deep_copy_any_value(
         AnyValue::decode_tagged_heap_bits(bits).expect("deep_copy_tagged_bits expects heap bits"),
@@ -64,14 +260,14 @@ pub fn deep_copy_tagged_bits(
 
 pub fn deep_copy_any_value(
     src: AnyValue,
-    src_heap: &Heap,
+    src_heap: &HeapView,
     dst_heap: &mut Heap,
-    forwarding: &mut HashMap<*mut u8, *mut u8>,
+    forwarding: &mut AddressMap<*mut u8>,
 ) -> AnyValue {
     let Some(sp) = src.heap_addr() else {
         return src;
     };
-    if sp.is_null() || !src_heap.contains_heap_addr(sp) {
+    if sp.is_null() || !src_heap.contains(sp) {
         return src;
     }
 
@@ -102,50 +298,7 @@ pub fn deep_copy_any_value(
             forwarding.insert(sp, new_p);
             AnyValue::heap_ptr(new_p, ValueKind::MAP)
         }
-        ValueKind::LIST => {
-            if let Some(&dp) = forwarding.get(&sp) {
-                let shared = AnyValueRef::from_heap_object(ValueKind::LIST, dp).expect("copied list ref");
-                dst_heap
-                    .mark_published_ref_aliased(shared)
-                    .expect("receiver-owned list sharing");
-                return AnyValue::heap_ptr(dp, ValueKind::LIST);
-            }
-            let bits = dst_heap.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
-            let dp = list_addr_from_tagged(bits).expect("new list ptr");
-            forwarding.insert(sp, dp);
-            let cons = unsafe { &*(sp as *const ListCons) };
-            let new_head = if cons.head_kind().is_heap() {
-                deep_copy_any_value(cons.head_value(), src_heap, dst_heap, forwarding)
-            } else {
-                cons.head_value()
-            };
-            let new_tail = if cons.tail_addr() == 0 {
-                AnyValue::empty_list()
-            } else {
-                deep_copy_any_value(
-                    AnyValue::heap_ptr(cons.tail_addr() as *mut u8, ValueKind::LIST),
-                    src_heap,
-                    dst_heap,
-                    forwarding,
-                )
-            };
-            dst_heap.publish_contained_parts(new_head.raw(), new_head.kind());
-            unsafe {
-                write(
-                    dp as *mut ListCons,
-                    ListCons::new(
-                        new_head.raw(),
-                        new_head.kind(),
-                        if new_tail.kind() == ValueKind::LIST && new_tail.raw() == 0 {
-                            EMPTY_LIST
-                        } else {
-                            new_tail.heap_object_word().expect("list tail")
-                        },
-                    ),
-                );
-            }
-            AnyValue::heap_ptr(dp, ValueKind::LIST)
-        }
+        ValueKind::LIST => deep_copy_list(sp, src_heap, dst_heap, forwarding),
         ValueKind::CLOSURE => deep_copy_strict_closure(sp, src_heap, dst_heap, forwarding),
         ValueKind::STRUCT => deep_copy_strict_struct(sp, src_heap, dst_heap, forwarding),
         ValueKind::BITSTRING => {
@@ -194,11 +347,93 @@ pub fn deep_copy_any_value(
     }
 }
 
+/// Copy a list cell by cell along its spine, so a long list costs stack for
+/// its deepest head, not for its length. The spine stops at the empty list, at
+/// a cell already copied (which is then shared and published in the
+/// destination), or at a tail that is not this heap's.
+fn deep_copy_list(
+    sp: *mut u8,
+    src_heap: &HeapView,
+    dst_heap: &mut Heap,
+    forwarding: &mut AddressMap<*mut u8>,
+) -> AnyValue {
+    if let Some(&dp) = forwarding.get(&sp) {
+        return share_copied_list(dp, dst_heap);
+    }
+    let first = copy_list_cell(sp, src_heap, dst_heap, forwarding);
+    let mut prev = first;
+    let mut cur = unsafe { &*(sp as *const ListCons) }.tail_addr() as *mut u8;
+    loop {
+        let tail_bits = if cur.is_null() {
+            EMPTY_LIST
+        } else if !src_heap.contains(cur) {
+            AnyValue::heap_ptr(cur, ValueKind::LIST)
+                .heap_object_word()
+                .expect("foreign list tail")
+        } else if let Some(&dp) = forwarding.get(&cur) {
+            share_copied_list(dp, dst_heap)
+                .heap_object_word()
+                .expect("shared list tail")
+        } else {
+            let next = copy_list_cell(cur, src_heap, dst_heap, forwarding);
+            link_list_tail(
+                prev.0,
+                prev.1,
+                AnyValue::heap_ptr(next.0, ValueKind::LIST)
+                    .heap_object_word()
+                    .expect("copied list tail"),
+            );
+            prev = next;
+            cur = unsafe { &*(cur as *const ListCons) }.tail_addr() as *mut u8;
+            continue;
+        };
+        link_list_tail(prev.0, prev.1, tail_bits);
+        return AnyValue::heap_ptr(first.0, ValueKind::LIST);
+    }
+}
+
+/// A list reached twice inside one copy is one list in the destination too;
+/// the second holder makes it published there.
+fn share_copied_list(dp: *mut u8, dst_heap: &mut Heap) -> AnyValue {
+    let shared = AnyValueRef::from_heap_object(ValueKind::LIST, dp).expect("copied list ref");
+    dst_heap
+        .mark_published_ref_aliased(shared)
+        .expect("receiver-owned list sharing");
+    AnyValue::heap_ptr(dp, ValueKind::LIST)
+}
+
+/// Allocate the copy of one cell, copy its head, and record the forwarding.
+/// The tail is written by `link_list_tail` once the caller knows it.
+fn copy_list_cell(
+    sp: *mut u8,
+    src_heap: &HeapView,
+    dst_heap: &mut Heap,
+    forwarding: &mut AddressMap<*mut u8>,
+) -> (*mut u8, AnyValue) {
+    let bits = dst_heap.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
+    let dp = list_addr_from_tagged(bits).expect("new list ptr");
+    forwarding.insert(sp, dp);
+    let cons = unsafe { &*(sp as *const ListCons) };
+    let new_head = if cons.head_kind().is_heap() {
+        deep_copy_any_value(cons.head_value(), src_heap, dst_heap, forwarding)
+    } else {
+        cons.head_value()
+    };
+    dst_heap.publish_contained_parts(new_head.raw(), new_head.kind());
+    (dp, new_head)
+}
+
+fn link_list_tail(dp: *mut u8, head: AnyValue, tail_bits: u64) {
+    unsafe {
+        write(dp as *mut ListCons, ListCons::new(head.raw(), head.kind(), tail_bits));
+    }
+}
+
 fn deep_copy_strict_closure(
     sp: *mut u8,
-    src_heap: &Heap,
+    src_heap: &HeapView,
     dst_heap: &mut Heap,
-    forwarding: &mut HashMap<*mut u8, *mut u8>,
+    forwarding: &mut AddressMap<*mut u8>,
 ) -> AnyValue {
     if let Some(&dp) = forwarding.get(&sp) {
         return AnyValue::heap_ptr(dp, ValueKind::CLOSURE);
@@ -227,9 +462,9 @@ fn deep_copy_strict_closure(
 
 fn deep_copy_strict_struct(
     sp: *mut u8,
-    src_heap: &Heap,
+    src_heap: &HeapView,
     dst_heap: &mut Heap,
-    forwarding: &mut HashMap<*mut u8, *mut u8>,
+    forwarding: &mut AddressMap<*mut u8>,
 ) -> AnyValue {
     if let Some(&dp) = forwarding.get(&sp) {
         return AnyValue::heap_ptr(dp, ValueKind::STRUCT);
@@ -266,9 +501,9 @@ fn deep_copy_strict_struct(
 
 pub fn deep_copy_slot(
     src: AnyValue,
-    src_heap: &Heap,
+    src_heap: &HeapView,
     dst_heap: &mut Heap,
-    forwarding: &mut HashMap<*mut u8, *mut u8>,
+    forwarding: &mut AddressMap<*mut u8>,
 ) -> AnyValue {
     deep_copy_any_value(src, src_heap, dst_heap, forwarding)
 }

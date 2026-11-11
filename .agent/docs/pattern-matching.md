@@ -346,9 +346,11 @@ Receive origins terminate at `MailboxMessage(owner)`, not a fabricated caller
 value. Semantic parameters project their types from mailbox `any` through the
 winning plan's evidence. Native receive preserves subject-to-parameter identity
 in its function ABI; pinned values and prepared keys are indexed by the plan,
-never by source spelling. A sender-side winning probe copies only those exact
-projected arguments, including physical sources, into the receiver heap with
-one forwarding map. Misses and timeouts expose no outcome arguments.
+never by source spelling. A sender-side winning probe runs the matcher on the
+sender and copies only those exact projected arguments, including physical
+sources, with one forwarding map into a gift on the sender's own heap; the
+receiver grafts the gift at its next dispatch. Misses and timeouts expose no
+outcome arguments.
 
 A one-cons `List` construction may carry `ListRetention { source, permission }`.
 The source is an ordinary traced physical operand through entries, captures,
@@ -427,6 +429,28 @@ evaluators. The Kernel functions a guard may call this way are `map_size/1`,
 `is_tuple/1` is a typed-head helper over `tuple`, like the other type tests.
 Unsupported guard expressions (a list or tuple literal, say) are still refused as
 not dispatch-pure.
+
+### Receive Guards Run On The Sender
+
+A send to another process runs the receiver's parked matcher on the sender, so
+the matcher's process argument is the sender and serves allocation only. A
+guard therefore never asks it for identity. `lower_receive` hoists every
+zero-argument call a receive guard makes (`hoist_zero_argument_guard_calls`,
+`jobs/dispatch.rs`): the call becomes an ordinary call the receiver evaluates
+before it parks, its result is bound to a generated variable, and the guard
+reads that variable, which the plan pins like any guard variable the patterns do
+not bind. A zero-argument call has no inputs but process state, so `self()` and
+every other identity builtin reach the matcher as a pinned value in the park
+record, and a constant helper such as `answer()` keeps its value. The
+interpreter evaluates the same plan and reads the pin from the same slot.
+
+Guards run on the sender under the probe, so they must be pure and non-faulting.
+The exception-handling design (fz-sc8.9 and fz-sc8.24, PR #278) keeps guards
+non-faulting, and gift-heap send depends on that.
+
+`compiler2_receive_guard_zero_argument_calls_lower_to_pinned_values` pins the
+lowered shape, and fixture 00904 pins the behaviour: a message carrying the
+sender's pid misses and one carrying the receiver's pid hits.
 
 ## Diagnostics
 

@@ -92,7 +92,7 @@ fn named_schema_blob_preserves_module_segment_boundaries() {
 }
 
 #[test]
-fn aot_send_deep_copies_message_into_receiver_heap() {
+fn aot_send_gifts_the_message_and_the_receiver_grafts_it_at_its_next_dispatch() {
     let mut sched = test_scheduler();
 
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
@@ -116,8 +116,22 @@ fn aot_send_deep_copies_message_into_receiver_heap() {
         .map(|p| p.as_mut() as *mut Process)
         .expect("sender task");
 
+    let receiver_bytes = sched.tasks[&2].heap.bytes_used();
     aot_send_hook(sender_ptr, sched_handle(&mut sched), 2, msg.raw_word());
 
+    let receiver = sched.tasks.get_mut(&2).expect("receiver");
+    assert_eq!(
+        receiver.delivery.lock().queued_gifts().count(),
+        1,
+        "the gift waits for the receiver's dispatch"
+    );
+    assert!(receiver.mailbox.is_empty());
+    assert_eq!(
+        receiver.heap.bytes_used(),
+        receiver_bytes,
+        "the sender never writes the receiver's heap"
+    );
+    deliver_in_queue(receiver);
     let sender = sched.tasks.get(&1).expect("sender");
     let receiver = sched.tasks.get(&2).expect("receiver");
     let copied = receiver.mailbox.front().expect("receiver mailbox");
@@ -189,7 +203,7 @@ fn timer_drain_wakes_after_cont() {
     p.pid = 7;
     let timer_id = timer_schedule_hook::<AotScheduler>()(sched_handle(&mut sched), p.pid, 1);
     let after_cont_addr: usize = 0xCAFE_BABE;
-    p.wait = Some(Box::new(ParkRecord {
+    p.delivery.lock().install_park(ParkRecord {
         matcher_fn: never_match,
         pinned: vec![],
         clause_bodies: vec![],
@@ -198,7 +212,7 @@ fn timer_drain_wakes_after_cont() {
         after_deadline_ms: Some(1),
         after_cont: after_cont_addr as *mut u8,
         after_timer_id: Some(timer_id),
-    }));
+    });
     p.state = ProcessState::Blocked;
     sched.tasks.insert(7, p);
 
@@ -208,7 +222,7 @@ fn timer_drain_wakes_after_cont() {
 
     let task = sched.tasks.get(&7).unwrap();
     assert_eq!(task.state, ProcessState::Ready);
-    assert!(task.wait.is_none());
+    assert!(task.delivery.lock().park().is_none());
     assert_eq!(task.runnable_ptr() as usize, after_cont_addr);
     assert_eq!(next_runnable(&mut sched), None, "nothing else runs or waits");
 }

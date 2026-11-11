@@ -15,7 +15,7 @@ use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
-use crate::ast::{Callee, Expr, Pattern, Spanned};
+use crate::ast::{Callee, Expr, Pattern, Spanned, Var, VarContext};
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
@@ -398,6 +398,58 @@ fn collect_guard_calls_in_fn(def: &FunctionSurface) -> Result<Vec<GuardCall>, Sp
         collect_guard_calls_in_expr(&clause.body, &mut calls)?;
     }
     Ok(calls)
+}
+
+/// A zero-argument call a receive guard makes, hoisted out of the guard so the
+/// receiver evaluates it before it parks. `name` is what the guard reads in
+/// the call's place.
+pub(super) struct HoistedGuardCall {
+    pub(super) name: Var,
+    pub(super) call: Spanned<Expr>,
+}
+
+/// Replaces each zero-argument call in `guard` with a fresh variable and
+/// records the call in `hoisted`.
+///
+/// A receive matcher can run on the process that sends the message, so
+/// whatever a guard reads from process state would name the sender. A call
+/// with no arguments has no inputs but process state, so the receiver
+/// evaluates it once, and the guard sees the result as a pinned value like any
+/// other variable the guard reads from outside the pattern.
+pub(super) fn hoist_zero_argument_guard_calls(
+    guard: &Spanned<Expr>,
+    hoisted: &mut Vec<HoistedGuardCall>,
+) -> Spanned<Expr> {
+    let node = match &guard.node {
+        Expr::Call(_, args) if args.is_empty() => {
+            let name = Var {
+                name: "__fz_guard_call".to_string(),
+                context: VarContext::Generated(hoisted.len() as u32),
+            };
+            hoisted.push(HoistedGuardCall {
+                name: name.clone(),
+                call: guard.clone(),
+            });
+            Expr::Var(name)
+        }
+        Expr::Call(target, args) => Expr::Call(
+            target.clone(),
+            args.iter()
+                .map(|arg| hoist_zero_argument_guard_calls(arg, hoisted))
+                .collect(),
+        ),
+        Expr::Ascribe(inner, ty) => {
+            Expr::Ascribe(Box::new(hoist_zero_argument_guard_calls(inner, hoisted)), ty.clone())
+        }
+        Expr::UnOp(op, inner) => Expr::UnOp(*op, Box::new(hoist_zero_argument_guard_calls(inner, hoisted))),
+        Expr::BinOp(op, lhs, rhs) => Expr::BinOp(
+            *op,
+            Box::new(hoist_zero_argument_guard_calls(lhs, hoisted)),
+            Box::new(hoist_zero_argument_guard_calls(rhs, hoisted)),
+        ),
+        other => other.clone(),
+    };
+    Spanned::new(node, guard.span)
 }
 
 /// Whether dispatch can evaluate `expr` as a guard.

@@ -1,0 +1,26 @@
+#---
+# purpose: "messages gifted to a receiver that stays parked are never grafted, and the run ends cleanly with them still queued on the receiver"
+#---
+#
+# The child tells the parent it is about to park, then parks on `:never`. The
+# parent runs next and sends the child three messages. The child's matcher
+# rejects each, so each crosses as a gift that waits in the child's in-queue;
+# the child is never dispatched again, so none is grafted. The parent exits and
+# the run ends with the child still parked and the gifts still queued, which is
+# when the runtime drops them and returns their storage.
+def main() do
+  parent = self()
+  child = spawn(fn () ->
+    send(parent, :about_to_park)
+    receive do
+      :never -> dbg(:never)
+    end
+  end)
+  receive do
+    :about_to_park -> dbg(:child_is_parked)
+  end
+  send(child, {:log, Enum.to_list(1..1000)})
+  send(child, {:log, [4, 5]})
+  send(child, :ignored)
+  dbg(:done)
+end

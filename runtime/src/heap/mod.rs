@@ -2,46 +2,59 @@
 //!
 //! One block per `Process`. Allocation is pure bump: `bump_top += size`. When
 //! `bump_top` would cross `block_end`, we allocate a fresh (larger) block and
-//! park the old one in `abandoned_blocks`. At the next park-time GC, the
-//! collector copies everything reachable from scheduler-owned roots into a
-//! fresh to-space block; the old current block and all abandoned blocks are
-//! then freed.
+//! park the old one in `blocks`; a grafted gift segment parks its blocks there
+//! too. Block capacities are `SIZE_TABLE` entries, which the pool recycles, or
+//! for an object larger than the whole table exactly that object's size, which
+//! the system allocator provides and takes back. At the next park-time GC, the collector copies everything reachable
+//! from scheduler-owned roots into a fresh to-space block; the old current
+//! block and all parked blocks are then freed.
 //!
-//! GC is *not* synchronous on allocation. `note_alloc_pressure` sets a flag
-//! when occupancy crosses `gc_threshold_bytes`; the scheduler reads the flag at
-//! the next natural boundary and calls GC over process roots. The flag never
-//! expires the reduction budget. All SSA values are gone (Cranelift's Tail CC
-//! popped them), so only scheduler-owned closures, mailbox roots, and
-//! interpreter-owned explicit roots are traced.
+//! GC is *not* synchronous on allocation. `Heap::should_gc` is a pure
+//! function of the heap's state: the bytes a collection could copy (the tip's
+//! fill plus every parked block's fill) against half
+//! the tip's capacity. The scheduler asks at the next natural boundary and
+//! calls GC over process roots; the question never expires the reduction
+//! budget. All SSA values are gone (Cranelift's Tail CC popped them), so only
+//! scheduler-owned closures, mailbox roots, and interpreter-owned explicit
+//! roots are traced.
 //!
 //! Forwarding marker: a copied from-space object gets `(to_addr & !0xF) |
 //! TAG_FWD` written into word 0. Strict pointer tags carry the object kind.
 
 mod block_pool;
 mod deep_copy;
-mod fragment;
 mod gc;
+mod gift;
 mod imp;
 mod ref_io;
 mod schema;
 mod stats;
 
 #[cfg(test)]
+mod deep_copy_test;
+#[cfg(test)]
+mod gift_test;
+#[cfg(test)]
 mod heap_test;
 #[cfg(test)]
 mod schema_test;
 
-use self::fragment::Fragment;
+use self::block_pool::Block;
+use self::gift::GiftWindow;
 use crate::process::Node;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::sync::atomic::AtomicBool;
 
-pub use self::block_pool::{SIZE_TABLE, pick_size_class};
 #[cfg(test)]
-pub use self::block_pool::{pool_drain_for_test, pool_total_cached_blocks};
-pub use self::deep_copy::{deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, deep_copy_tagged_bits};
+pub use self::block_pool::pool_drain_for_test;
+pub use self::block_pool::{SIZE_TABLE, next_block_capacity, pick_block_capacity};
+pub use self::block_pool::{pool_outstanding_blocks, pool_total_cached_blocks};
+pub use self::deep_copy::{
+    AddressMap, AddressSet, HeapView, deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot,
+    deep_copy_tagged_bits, measure_deep_copy,
+};
+pub use self::gift::GiftSegment;
 pub use self::imp::{closure_capture_ref, list_head_ref, list_tail_ref};
 pub(crate) use self::ref_io::map_entry_refs;
 pub use self::schema::{
@@ -60,10 +73,9 @@ pub struct Heap {
     block_start: *mut u8,
     bump_top: *mut u8,
     block_end: *mut u8,
+    /// The tip's capacity in bytes: a `SIZE_TABLE` entry, or an exact size
+    /// above the table for a block made to hold a larger object.
     block_size: usize,
-    /// Index into SIZE_TABLE (§6.3, wired in fz-siu.9). Tracked here so
-    /// proactive shrinkage can read/adjust it without growing the API.
-    pub size_class: u8,
     /// Exact live bytes after the most recent GC. Zero until the first GC.
     /// Used by proactive shrinkage to size the to-space and detect low-live
     /// quiet periods.
@@ -72,23 +84,21 @@ pub struct Heap {
     /// this without coupling the `fz-runtime` crate to the compiler telemetry
     /// bus.
     pub last_gc_stats: GcStats,
-    /// Old blocks abandoned by `grow`. Each carries its size_class so
-    /// `Drop` / gc() can return it to the pool (§6.6). Cheney (.8)
-    /// frees the entire list at every collection.
-    abandoned_blocks: Vec<(*mut u8, u8)>,
+    /// Blocks the heap has stopped bumping into: old tips abandoned by `grow`
+    /// and blocks grafted from other heaps' gift segments. Each records its
+    /// fill and capacity, so `Drop` / gc() can return it to the pool (§6.6)
+    /// and the collector counts it by fill. Cheney frees the entire list at
+    /// every collection.
+    blocks: Vec<Block>,
+    /// The open gift window, if `begin_gift` has set the tip aside and
+    /// `end_gift` has not yet cut the segment.
+    gift: Option<GiftWindow>,
     /// The atom-name authority for map key ordering. A process heap shares its
     /// process's node, so every map construction and lookup uses the same atom
     /// order as `Kernel.compare` without callers having to supply ambient
     /// process state.
     pub(crate) node: Rc<Node>,
     pub(crate) schemas: Rc<RefCell<SchemaRegistry>>,
-    /// Park-time GC flag. Set by `note_alloc_pressure` when occupancy
-    /// crosses `gc_threshold_bytes`; cleared by the scheduler after `gc()`.
-    /// AtomicBool: the libdispatch worker pool may observe this from a
-    /// thread other than the one that set it (one task per worker at a
-    /// time, but the flag is read at scheduler boundaries).
-    pressure: AtomicBool,
-    pub gc_threshold_bytes: usize,
     /// Count of GC invocations. Stub in fz-siu.7; real body lands in .8.
     pub gc_run_count: u64,
     /// Total allocations made since last successful GC. Backs `live_count()`
@@ -113,9 +123,4 @@ pub struct Heap {
     /// `(closure_bits, payload)` here and the scheduler drains the queue
     /// at the next quantum boundary. See ticket fz-4mk.
     pub pending_dtors: VecDeque<(u64, u64)>,
-    /// fz-q8d.4 — fragment list. Oversized allocations (above the
-    /// largest size_class) live here as their own system-allocator
-    /// backed singletons. GC marks them via the `mark` bit; survivors
-    /// stay put across collections, dead fragments are freed.
-    fragments: Vec<Fragment>,
 }

@@ -1195,7 +1195,7 @@ fn execution_ready_separates_the_compile_from_the_program() {
             .collect::<BTreeSet<_>>();
         assert_eq!(
             after,
-            BTreeSet::from(["fz.runtime.process_exited"]),
+            BTreeSet::from(["fz.runtime.process_exited", "fz.runtime.run_ended"]),
             "fz2 {command} should do nothing but run the program after the boundary"
         );
 

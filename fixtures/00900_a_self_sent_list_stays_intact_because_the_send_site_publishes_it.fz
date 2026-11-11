@@ -1,0 +1,51 @@
+#---
+# purpose: "a self-send pushes the sender's own reference and copies nothing; the message stays intact because the compiler publishes a send argument that a retained name may alias"
+#---
+#
+# The program runs the same alias-and-rewrite shape twice. `retail` takes a
+# list, keeps its head and replaces its tail with `[9]`; that one-cons
+# construction holds Rewrite permission over the cell it was given, so when the
+# cell is unaliased the runtime rewrites it in place.
+#
+# The control builds `kept_alias` from the head and tail of `kept`, which makes
+# it the very cell `kept` starts with, and passes it to `retail`. Nothing else
+# names that cell afterwards, so the rewrite happens in place: list retention
+# telemetry counts it as a hit.
+#
+# The sent case builds `ys` the same way from `xs`, sends `xs` to self, then
+# passes `ys` to `retail`. The send is a mailbox push of the sender's own
+# reference: the runtime copies nothing, and the `list_cons_allocs` delta
+# across the send is 0. The mailbox and `ys` now hold the same cell. The
+# message is still `[4, 5, 6]` when received because the compiler's call-site
+# ownership rule (`construct_call_ownership` in src/compiler2/jobs/body.rs)
+# marks the send argument Share, since the continuation retains `ys` and `ys`
+# may alias it, and the Share mode publishes the list spine before the call.
+# The later rewrite finds the cell aliased and allocates a fresh one instead,
+# which telemetry counts as a retention attempt without a hit.
+#
+# Across the run: four retention attempts, three hits. The missing hit is the
+# refused rewrite of the sent cell.
+def main() do
+  kept = [1, 2, 3]
+  [kh | kt] = kept
+  kept_alias = [kh | kt]
+  dbg(retail(kept_alias))
+
+  xs = [4, 5, 6]
+  [h | t] = xs
+  ys = [h | t]
+  before = Process.heap_alloc_stats()
+  send(self(), xs)
+  after_send = Process.heap_alloc_stats()
+  dbg(after_send[:list_cons_allocs] - before[:list_cons_allocs])
+  zs = retail(ys)
+  receive do
+    msg -> dbg(msg)
+  end
+  dbg(zs)
+end
+
+def retail(xs) do
+  [h | _] = xs
+  [h | [9]]
+end

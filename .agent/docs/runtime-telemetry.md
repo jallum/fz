@@ -13,7 +13,7 @@ route through the same typed raw emit site, so `NullTelemetry` remains
 monomorphizable and configured handlers behave identically across interpreter,
 JIT, and AOT.
 
-Three events matter:
+Five events matter:
 
 - `fz.runtime.execution_ready` — the boundary between compiling a program and
   running it, emitted by `run_root_jit` and `run_root_interp`.
@@ -21,6 +21,10 @@ Three events matter:
   live `Process` authority.
 - `fz.runtime.scheduler_slept` — one each time the scheduling core sleeps for a
   pending receive-after timer because nothing is runnable.
+- `fz.runtime.send.probe` — one per cross-process send, carrying what the
+  sender's probe decided and what it cost.
+- `fz.runtime.run_ended` — one per run, after every process has been torn down,
+  carrying the block pool's census.
 
 ## `fz.runtime.execution_ready`
 
@@ -81,6 +85,80 @@ is empty and a timer pends, so a program whose timers are all cancelled by
 arriving messages never emits it. The AOT scheduler carries no telemetry bus and
 keeps the default no-op hook. `exec/runtime_test.rs` observes the event on the
 `run` and `interp` paths.
+
+## `fz.runtime.run_ended`
+
+`emit_run_ended` (`exec/runtime.rs`) is the single emit site. The JIT `Runtime`
+emits it from its `Drop`, after clearing the task registry (exited and parked
+tasks stay in the registry until then, so their heaps and any gifts still
+queued on them are dropped first). The interpreter emits it from
+`run_backend_main` after dropping its `IrInterpRuntime`.
+
+```text
+raw event:    fz.runtime.run_ended
+signature:    (&RunEnded)
+```
+
+`RunEnded` is `{ pool_outstanding_before_run, pool_outstanding_after_run,
+pool_cached_blocks }`, all block counts of the thread's block pool. Outstanding
+is the count `pool_alloc` has handed out minus the count `pool_free` has taken
+back (`heap::pool_outstanding_blocks`), sampled when the run began and again
+once every process has been torn down; `pool_cached_blocks` is the blocks
+resting in the pool's free lists. The compiler's own heaps live on the same
+thread for the whole run, so the absolute outstanding count is never zero. The
+run's guarantee is `pool_outstanding_after_run == pool_outstanding_before_run`:
+it returned every block it took. `JsonlBackend` renders
+all three as numbers. The AOT scheduler carries no telemetry bus and emits
+nothing, as for the other runtime events. `tests/fixture_matrix.rs`
+(`a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`) asserts the
+equality for fixture 00903 on the `run` and `interp` paths.
+
+## `fz.runtime.send.probe`
+
+A send to another process runs `sched::probe_sender` on the sender: the
+receiver's parked matcher, if any, is tested against the message with the
+sender as the allocating process, and whatever the receiver will keep (the
+bound values on a hit, the whole message on a miss) is copied into a gift on the
+sender's heap and queued on the receiver's `in_queue`. `emit_send_probe`
+(`exec/runtime.rs`) is the single emit site; the JIT `send_via` and the
+interpreter's `send_ref` call it with the `SendProbe` the probe returned:
+
+```text
+raw event:    fz.runtime.send.probe
+signature:    (&SendProbe)
+```
+
+`SendProbe` is `{ outcome: Hit | Miss, receiver: PidId, reductions: i64,
+gift_bytes: usize, gift_blocks: usize }`. `reductions` is the change in the
+sender's remaining budget across the matcher call; `gift_bytes` and
+`gift_blocks` are the segment's fill and block count. `gift_bytes` equals the
+bytes `measure_deep_copy` returned before the copy, and `gift_blocks` is `1`
+for every gift that allocates; both are `0` when a hit binds nothing and no
+window opens. `JsonlBackend` renders the
+outcome as `"hit"` or `"miss"` and the rest as numbers. A self-send is a mailbox
+push and emits nothing. The AOT scheduler carries no telemetry bus and emits
+nothing, as for the other runtime events. `tests/fixture_matrix.rs`
+(`a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue`)
+pins the event sequence of fixtures 00901 and 00902 on the `run` and `interp`
+paths, and `a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`
+pins each of fixture 00903's three gifts (`gift_bytes` 16032, 64 and 16, one
+block each).
+
+## Collection stats
+
+`Heap::collect` returns a `GcStats` and keeps the latest in
+`Heap.last_gc_stats` (`runtime/src/heap/stats.rs`). It is not emitted as a
+telemetry event; the caller of `Heap::collect` or `Process::collect` receives
+it as the return value. The fields are:
+
+- sizes: `copied_objects`, `copied_bytes`, `live_objects`, `live_bytes`,
+  `from_space_capacity_bytes`, `to_space_capacity_bytes`;
+- root edges: `root_heap_edges`, `root_scalar_slots`;
+- edges followed while scanning, as heap-edge and scalar-slot counts per
+  container: `list_head_heap_edges`, `list_head_scalar_slots`,
+  `list_tail_edges`, `struct_heap_edges`, `struct_scalar_slots`,
+  `map_heap_edges`, `map_scalar_slots`, `closure_heap_edges`,
+  `closure_scalar_slots`, `resource_heap_edges`, `resource_scalar_slots`.
 
 ## Program Output
 

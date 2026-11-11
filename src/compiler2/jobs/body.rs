@@ -40,7 +40,9 @@ use super::super::quoted_expander::emit_surface_read_error;
 use super::super::scheduler::FatalError;
 use super::super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError};
 use super::super::world::World;
-use super::dispatch::{collect_guard_calls_in_expr, resolve_guard_callee, resolve_guard_callee_checked};
+use super::dispatch::{
+    collect_guard_calls_in_expr, hoist_zero_argument_guard_calls, resolve_guard_callee, resolve_guard_callee_checked,
+};
 
 type Output = FactKey;
 type Changed = FactKey;
@@ -2240,7 +2242,19 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         let timeout = after
             .map(|after| self.lower_expr(&after.timeout, env, steps))
             .transpose()?;
-        let plan = self.compile_match_dispatch("receive", span, match_rows(clauses), None)?;
+        let mut rows = match_rows(clauses);
+        let mut hoisted = Vec::new();
+        for row in &mut rows {
+            row.guard = row
+                .guard
+                .as_ref()
+                .map(|guard| hoist_zero_argument_guard_calls(guard, &mut hoisted));
+        }
+        for call in hoisted {
+            let value = self.lower_expr(&call.call, env, steps)?;
+            env.insert(call.name, value);
+        }
+        let plan = self.compile_match_dispatch("receive", span, rows, None)?;
         let bindings = self.lower_dispatch_bindings(&plan, env, steps)?;
         let captures = self.receive_capture_values(clauses, after, env);
         let outcomes = plan

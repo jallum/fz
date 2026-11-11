@@ -17265,6 +17265,52 @@ fn compiler2_nested_guard_demand_names_only_caller_arguments() {
 }
 
 #[test]
+fn compiler2_receive_guard_zero_argument_calls_lower_to_pinned_values() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("guard_zero_arg.fz".into()),
+        text: "def answer(), do: 7\ndef main() do\n send(self(), {:tag, self()})\n send(self(), {:num, 7})\n receive do\n {:tag, who} when who == self() -> 1\n {:num, n} when n == answer() -> 2\n after\n 1000 -> 0\n end\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(1));
+    settle_native_product(&mut compiler, root);
+    let program = native.last(root).program;
+    let IrTerm::ReceiveMatched { dispatch, pinned, .. } = program
+        .module
+        .fns
+        .iter()
+        .flat_map(|function| function.blocks.iter())
+        .map(|block| &block.terminator)
+        .find(|terminator| matches!(terminator, IrTerm::ReceiveMatched { .. }))
+        .expect("the program receives")
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        pinned.len(),
+        2,
+        "each zero-argument guard call is evaluated by the receiver before it parks"
+    );
+    for guard in &dispatch.guards {
+        let PatternGuardExpr::Binary { lhs, rhs, .. } = guard else {
+            panic!("a comparison guard stays a comparison: {guard:?}")
+        };
+        assert!(
+            matches!(**lhs, PatternGuardExpr::Subject(_)) && matches!(**rhs, PatternGuardExpr::Pinned(_)),
+            "the matcher reads the call's result from its pinned slot and makes no call of its own: {guard:?}"
+        );
+    }
+}
+
+#[test]
 fn compiler2_nested_guard_bindings_preserve_owner_ids_and_reject_missing_operands() {
     use crate::dispatch_matrix::PreparedKeyId;
     let tel = ConfiguredTelemetry::new();

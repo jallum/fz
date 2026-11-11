@@ -449,12 +449,11 @@ If the pattern bound <code>n</code>, the outcome closure captures
 message parts to carry at all.</p>
 
 <div class="box green">
-<p><strong>The pretty part, stated plainly:</strong> the matcher needed
-to copy the matched values from the sender's heap into the receiver's
-heap anyway, because processes don't share heaps. The outcome closure
-<em>is</em> the place those values land. There is no second "and now
-copy the message fields" step &mdash; building the outcome closure
-already did it.</p>
+<p><strong>The pretty part, stated plainly:</strong> the matcher already
+picks out the matched values, and processes don't share heaps, so the
+sender copies exactly those values into a segment the receiver adopts.
+The outcome closure the receiver builds over them is where they land.
+There is no second "and now copy the message fields" step.</p>
 </div>
 
 <p>One small detail: the scratch <code>out</code> buffer is sized to the
@@ -485,19 +484,22 @@ which builds a <code>ParkRecord</code> on the process and yields.</p>
 
 <h3>When a sender sends</h3>
 
-<p><code>send(pid, msg)</code> enters the runtime send hook. On the
-receiver's side, arrival runs the <code>probe_sender</code> helper. If
-the receiver is parked on a selective receive, the runtime probes the
-parked matcher against the incoming message.</p>
+<p><code>send(pid, msg)</code> enters the runtime send hook. Arrival
+runs the <code>probe_sender</code> helper on the <em>sender</em>. If
+the receiver is parked on a selective receive, the sender probes the
+receiver's parked matcher against the message, and a guard in that
+matcher runs on the sender too; so guards are pure, and a call such as
+<code>self()</code> in one names the receiver, because the receiver
+evaluates it before it parks.</p>
 
 <table class="data">
   <thead>
     <tr><th>state</th><th>action</th></tr>
   </thead>
   <tbody>
-    <tr><td><span class="ok">hit</span> on parked matcher</td><td>materialize the outcome closure, cancel the after-timer, clear <code>parked_matched</code>, set <code>pending_resume_matched</code>, flip to <code>Ready</code></td></tr>
-    <tr><td><span class="miss">miss</span> on parked matcher</td><td>deep-copy the whole message into the receiver's mailbox; do <em>not</em> wake</td></tr>
-    <tr><td>not parked</td><td>deep-copy into the receiver's mailbox; do <em>not</em> wake</td></tr>
+    <tr><td><span class="ok">hit</span> on parked matcher</td><td>cancel the after-timer, gift the bound values (nothing, if the clause binds none) to the receiver's in-queue, make the receiver <code>Ready</code>; the receiver grafts the gift and builds the outcome closure when it next runs</td></tr>
+    <tr><td><span class="miss">miss</span> on parked matcher</td><td>gift the whole message to the receiver's in-queue; it joins the mailbox when the receiver drains its queue; do <em>not</em> wake</td></tr>
+    <tr><td>not parked</td><td>gift the whole message the same way; do <em>not</em> wake</td></tr>
   </tbody>
 </table>
 
