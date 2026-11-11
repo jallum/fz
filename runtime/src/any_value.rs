@@ -797,11 +797,6 @@ pub unsafe fn closure_capture_copy(src_addr: *const u8, src_idx: usize, dst_addr
     }
 }
 
-#[inline]
-pub fn is_heap_kind(tag: u64) -> bool {
-    (TAG_LIST..=TAG_RESOURCE).contains(&tag)
-}
-
 /// The kind a heap object word carries, or `None` for any other word.
 ///
 /// A heap object word is an `AnyValueRef` word: the kind rides in the tag
