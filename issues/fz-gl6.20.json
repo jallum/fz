@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T21:19:43Z",
+  "description": "After fz-gl6.17 no collection happens at an exit, but the types still allow one:\n- runtime/src/process.rs: Collection.boundary is GcBoundary { Yield, Park, Exit }, and GcBoundary::as_str's \"exit\" arm (process.rs:47) is unreachable: no Collection carries Exit.\n- GcBoundary (process.rs:33, from Process::quantum_boundary) and sched_core::Disposition { Requeue, Parked, Exited } name the same three outcomes; end_quantum (sched_core.rs ~136) maps one onto the other 1:1.\n\nChange: one enum names how a quantum ended (the one end_quantum returns and drivers match on); quantum_boundary returns it directly and the 1:1 mapping goes. Collection carries a two-variant boundary (yield, park), so an exit collection is unrepresentable and the \"exit\" rendering is deleted. JSONL lines unchanged (\"yield\"/\"park\"). Pick names by reading the drivers (exec/runtime.rs, ir_interp/backend.rs, aot_shim.rs) — no shim, no alias of the old names.\n\nDone when: GcBoundary or Disposition (whichever is folded) and the unreachable arm are gone root and branch (code, tests, docs: runtime-telemetry.md, scheduler-zero-arg-closures.md, reduction-yielding.md, guides/memory.html); run/interp/build JSONL for 00901, 00910, 00911 identical to before with time_ns normalised; no pin moves; full gate green (cargo fmt --all -- --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace --all-targets --no-fail-fast -- --test-threads=1; cargo test --workspace --doc); commit in Why / What changed / Verification form; no co-author trailer, no attribution line.",
+  "id": "fz-gl6.20",
+  "labels": [],
+  "parent": "fz-gl6",
+  "priority": 3,
+  "status": "open",
+  "title": "A collection names only the boundaries that collect, and one enum names how a quantum ended",
+  "type": "task",
+  "updated_at": "2026-11-11T21:19:43Z"
+}
