@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-3sy.4",
     "fz-sc8.25"
   ],
   "blocks": [
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "`defmodule :erlang` and :erlang.float_to_binary/2",
   "type": "bug",
-  "updated_at": "2026-11-10T21:58:17Z"
+  "updated_at": "2026-11-11T15:21:30Z"
 }

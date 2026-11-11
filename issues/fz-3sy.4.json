@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-3sy.5"
+    "fz-3sy.5",
+    "fz-sc8.3"
   ],
   "created": "2026-11-11T15:21:28Z",
   "description": "x.f(a...) whose base is not a module name lowers to a remote call with receiver x (a field read stays a field read). Semantic resolves from the receiver's type: one atom -\u003e direct call (the literal :erlang.abs(-3) case of fz-sc8.3); finite atom set -\u003e one target per atom, selected at run time. Atom -\u003e module through reference_module (world.rs:1097), fz-sc8.25's single authority, never a second lookup. Reuses resolve_protocol_call's (callee, overlap) -\u003e CallSiteSummary -\u003e call_destinations path (semantic.rs:1521, callsite_dispatch.rs:47/101); the one extension is a selector subject: subject 0 matched against each target's atom and not forwarded (surfaces of arity n+1). fz-sc8.99's use table gets an explicit Whole row for the receiver, with a retention test (two atom receivers keep two keys). A receiver typed plain atom/any is a loud compile error until M2 (scaffolding; M2 removes it); a type with no atom is a compile error naming the call. Removes direct_callee's field-read-then-call fallback for a call on a bound base (today host panic fz_struct_get_named_field_ref: ExpectedTag; interp StructField: subject is not a map or Struct). Oracle fixtures on all three paths.",
