@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T19:12:00Z",
+  "description": "Found while costing fz-sc8.14. On fz2 ad21e1635 (AOT build), String.length of a binary built by tail-recursive append ('ab' repeated) takes 0.15 s at 100 KB, 0.49 s at 200 KB and 1.63 s at 400 KB: about 3.3x per doubling, i.e. quadratic. Building the string with acc \u003c\u003e \"ab\" in a tail loop scales the same way (0.12, 0.40, 1.38 s). Elixir does both in milliseconds. Hypothesis, not yet confirmed: a binary match's rest (\u003c\u003c_::binary-size(n), rest::binary\u003e\u003e, as in String.drop_bytes) and a \u003c\u003e append each copy the bytes, where BEAM makes a sub-binary view and appends in place. Every grapheme or codepoint walker in lib/string.fz (length, graphemes, split, trim, slice, pad) pays this per step. First step: profile one walk to confirm which operation copies, then make it a view by construction on all three paths, with a scaling test that observes it (bytes copied per walk via telemetry, if the runtime can report it). Repro programs in the coordinator's scratchpad (l50000.fz etc.).",
+  "id": "fz-sc8.111",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "Walking or building a binary costs time linear in its length",
+  "type": "bug",
+  "updated_at": "2026-11-11T19:12:00Z"
+}
