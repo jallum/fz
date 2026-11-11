@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.124"
+  ],
   "blocks": [],
   "created": "2026-11-11T23:01:23Z",
   "description": "Once a self call keeps its caller's key at a supplied slot, the subtraction in return_flow_mask (src/compiler2/jobs/keying.rs, the .filter(|position| !rebuilt.contains(*position)) line and the doc paragraphs defending it) answers a question the self-call rule already answers. Delete it so the rule lives in one place. recursion_supplied_positions stays; the self-call rule reads it.\n\nProbe (spikeA2/A2_nosub.diff): with the line removed, key counts and output are unchanged on eight programs including 00761 (330 keys either way). The full suite has not been run on it.\n\nGate: no activation-key count rises anywhere (drive_test pins, fixture matrix backend dumps). A rise stops the ticket and is reported with the program and the keys; it is not re-pinned.\n\nProposal page: /Users/j5n/Workspace/optionparser-compile-cost.html (https://claude.ai/artifact/9MdFVrMJRKJcSULMazQfyo). Spike evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The returned axis no longer subtracts recursion-supplied positions",
   "type": "task",
-  "updated_at": "2026-11-11T23:01:23Z"
+  "updated_at": "2026-11-11T23:01:25Z"
 }
