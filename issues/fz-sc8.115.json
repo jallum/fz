@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T19:53:18Z",
+  "description": "Process.sleep/1 is error[resolve/unknown-import] today. Elixir's sleeps the calling process for n ms (or :infinity) and returns :ok. Build it in Elixir's shape (receive after n) once an after-only receive compiles (see the ticket 'A receive with only an after clause compiles'), on interp, run and build against elixir.",
+  "id": "fz-sc8.115",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "Process.sleep/1 exists",
+  "type": "feature",
+  "updated_at": "2026-11-11T19:53:18Z"
+}
