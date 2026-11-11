@@ -37,6 +37,10 @@ use super::event::{Measurements, Metadata};
 use super::handler::{Event, EventKind, Handler};
 use super::value::Value;
 use crate::compiler2::SemanticOrd;
+use fz_runtime::telemetry::{
+    EXECUTION_READY, GC, PROCESS_EXITED, RUN_ENDED, RunEnded, RuntimeEvent, SCHEDULER_SLEPT, SEND_PROBE,
+    write_line as write_runtime_line,
+};
 
 #[cfg(test)]
 thread_local! {
@@ -727,110 +731,29 @@ impl JsonlBackend {
         );
         let exit_backend = Rc::clone(backend);
         telemetry.attach_raw_event2::<crate::ir_codegen::PidId, fz_runtime::process::Process, _>(
-            &["fz", "runtime", "process_exited"],
-            move |name, span_id, parent_span_id, pid, process| {
-                exit_backend.handle_raw_event(
-                    name,
-                    span_id,
-                    parent_span_id,
-                    crate::metadata! {
-                        pid: *pid,
-                        process: crate::telemetry::opaque(process),
-                    },
-                );
-            },
-        );
-        Self::install_raw_value::<crate::ir_codegen::PidId>(
-            telemetry,
-            backend,
-            &["fz", "runtime", "send_to_unknown_pid"],
-            "pid",
+            &PROCESS_EXITED,
+            move |_, _, _, _, process| exit_backend.append_runtime_event(&RuntimeEvent::ProcessExited(process)),
         );
         let slept_backend = Rc::clone(backend);
-        telemetry.attach_raw_event1::<std::time::Duration, _>(
-            &crate::exec::runtime::SCHEDULER_SLEPT,
-            move |name, span_id, parent_span_id, wait| {
-                let wait_ns = wait.as_nanos().min(u64::MAX as u128) as u64;
-                slept_backend.handle_raw_event(
-                    name,
-                    span_id,
-                    parent_span_id,
-                    Metadata::from_pairs([("wait_ns", Value::U64(wait_ns))]),
-                );
-            },
-        );
+        telemetry.attach_raw_event1::<std::time::Duration, _>(&SCHEDULER_SLEPT, move |_, _, _, wait| {
+            slept_backend.append_runtime_event(&RuntimeEvent::SchedulerSlept(*wait));
+        });
         let ended_backend = Rc::clone(backend);
-        telemetry.attach_raw_event1::<crate::exec::runtime::RunEnded, _>(
-            &crate::exec::runtime::RUN_ENDED,
-            move |name, span_id, parent_span_id, ended| {
-                ended_backend.handle_raw_event(
-                    name,
-                    span_id,
-                    parent_span_id,
-                    Metadata::from_pairs([
-                        (
-                            "pool_outstanding_before_run",
-                            Value::U64(ended.pool_outstanding_before_run as u64),
-                        ),
-                        (
-                            "pool_outstanding_after_run",
-                            Value::U64(ended.pool_outstanding_after_run as u64),
-                        ),
-                        ("pool_cached_blocks", Value::U64(ended.pool_cached_blocks as u64)),
-                    ]),
-                );
-            },
-        );
+        telemetry.attach_raw_event1::<RunEnded, _>(&RUN_ENDED, move |_, _, _, ended| {
+            ended_backend.append_runtime_event(&RuntimeEvent::RunEnded(*ended));
+        });
         let gc_backend = Rc::clone(backend);
-        telemetry.attach_raw_event1::<fz_runtime::process::Collection, _>(
-            &crate::exec::runtime::GC,
-            move |name, span_id, parent_span_id, collection| {
-                let stats = &collection.stats;
-                gc_backend.handle_raw_event(
-                    name,
-                    span_id,
-                    parent_span_id,
-                    Metadata::from_pairs([
-                        ("pid", Value::U64(u64::from(collection.pid))),
-                        ("boundary", Value::Str(collection.boundary.as_str().into())),
-                        ("copied_bytes", Value::U64(stats.copied_bytes)),
-                        ("live_bytes", Value::U64(stats.live_bytes)),
-                        ("from_space_capacity_bytes", Value::U64(stats.from_space_capacity_bytes)),
-                        ("blocks_released", Value::U64(stats.blocks_released)),
-                        ("blocks_after", Value::U64(stats.blocks_after)),
-                    ]),
-                );
-            },
-        );
+        telemetry.attach_raw_event1::<fz_runtime::process::Collection, _>(&GC, move |_, _, _, collection| {
+            gc_backend.append_runtime_event(&RuntimeEvent::Gc(collection));
+        });
         let probe_backend = Rc::clone(backend);
-        telemetry.attach_raw_event1::<fz_runtime::sched::SendProbe, _>(
-            &crate::exec::runtime::SEND_PROBE,
-            move |name, span_id, parent_span_id, probe| {
-                let outcome = match probe.outcome {
-                    fz_runtime::sched::ProbeOutcome::Hit => "hit",
-                    fz_runtime::sched::ProbeOutcome::Miss => "miss",
-                };
-                probe_backend.handle_raw_event(
-                    name,
-                    span_id,
-                    parent_span_id,
-                    Metadata::from_pairs([
-                        ("outcome", Value::Str(outcome.into())),
-                        ("receiver", Value::U64(u64::from(probe.receiver))),
-                        ("reductions", Value::I64(probe.reductions)),
-                        ("gift_bytes", Value::U64(probe.gift_bytes as u64)),
-                        ("gift_blocks", Value::U64(probe.gift_blocks as u64)),
-                    ]),
-                );
-            },
-        );
+        telemetry.attach_raw_event1::<fz_runtime::sched::SendProbe, _>(&SEND_PROBE, move |_, _, _, probe| {
+            probe_backend.append_runtime_event(&RuntimeEvent::SendProbe(probe));
+        });
         let ready_backend = Rc::clone(backend);
-        telemetry.attach_raw_event0(
-            &["fz", "runtime", "execution_ready"],
-            move |name, span_id, parent_span_id| {
-                ready_backend.handle_raw_event(name, span_id, parent_span_id, Metadata::new());
-            },
-        );
+        telemetry.attach_raw_event0(&EXECUTION_READY, move |_, _, _| {
+            ready_backend.append_runtime_event(&RuntimeEvent::ExecutionReady);
+        });
         let tokens_backend = Rc::clone(backend);
         telemetry
             .attach_raw_event3::<crate::source::SourceVersion, Option<std::rc::Rc<str>>, Vec<crate::parser::lexer::Token>, _>(
@@ -1178,12 +1101,8 @@ impl JsonlBackend {
             .get("world")
             .and_then(Value::downcast_ref::<crate::compiler2::World>);
         let Some(world) = world else {
-            if canon.must_park(&named) {
-                canon.park(named, line);
-            } else {
-                drop(canon);
-                self.append(line.as_bytes());
-            }
+            drop(canon);
+            self.append_without_world(named, line);
             return;
         };
         if named.is_empty() && canon.parked_lines.is_empty() {
@@ -1198,6 +1117,32 @@ impl JsonlBackend {
         bytes.extend_from_slice(line.as_bytes());
         drop(canon);
         self.append(&bytes);
+    }
+
+    /// Writes a line that carries no world, parking it behind any line still
+    /// waiting on an id definition so the stream keeps its order.
+    fn append_without_world(&self, named: NamedIds, line: &str) {
+        let mut canon = self.canon.borrow_mut();
+        if canon.must_park(&named) {
+            canon.park(named, line);
+        } else {
+            drop(canon);
+            self.append(line.as_bytes());
+        }
+    }
+
+    /// Writes one runtime event as a line through `fz_runtime`'s writer. A
+    /// runtime event names no ids and carries no world.
+    fn append_runtime_event(&self, event: &RuntimeEvent<'_>) {
+        let time_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let mut line = String::with_capacity(128);
+        write_runtime_line(&mut line, time_ns, 0, 0, event);
+        line.push('\n');
+        if self.public_compiler2_trace {
+            self.append_without_world(NamedIds::new(), &line);
+        } else {
+            self.append(line.as_bytes());
+        }
     }
 
     fn append(&self, bytes: &[u8]) {
@@ -1738,27 +1683,6 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
             .map(|code| code.code_buffer().len() as u64)
             .unwrap_or(0);
         push_u64(out, code_bytes);
-    } else if let Some(process) = opaque.downcast_ref::<fz_runtime::process::Process>() {
-        for (name, value) in [
-            ("live_count", process.heap.live_count() as u64),
-            ("bytes_used", process.heap.bytes_used() as u64),
-            ("list_retention_attempts", process.list_retention_attempts),
-            ("list_retention_hits", process.list_retention_hits),
-            ("dtors_dispatched", process.dtors_dispatched),
-        ] {
-            out.push(',');
-            write_str_lit(out, name);
-            out.push(':');
-            push_u64(out, value);
-        }
-        out.push(',');
-        write_str_lit(out, "halt_value");
-        out.push(':');
-        push_i64(out, process.halt_value);
-        out.push(',');
-        write_str_lit(out, "failed");
-        out.push(':');
-        out.push_str(if process.failed { "true" } else { "false" });
     } else if let Some(code) = opaque.downcast_ref::<crate::source::SourceVersion>() {
         out.push(',');
         write_str_lit(out, "source_version");

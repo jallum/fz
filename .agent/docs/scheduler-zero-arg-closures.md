@@ -237,7 +237,8 @@ wheel. The JIT `Runtime`, the AOT `AotScheduler`, and the interpreter's
 `BackendSchedulerAdapter` each hold one and implement `Scheduler`: `core()`
 exposes it, `wake_expired(pid, timer)` says how an expired timer wakes that
 path's process (`fire_after_timer` for JIT and AOT; the interpreter queues the
-parked receive's `after` entry), `about_to_sleep(wait)` observes a sleep, and
+parked receive's `after` entry), `observe(event)` receives every runtime event the core reports (see
+[runtime telemetry](runtime-telemetry.md)), and
 `run_destructor(process, closure, payload)` runs one resource destructor closure
 as fz code (see [`end_quantum`](#the-step-after-a-quantum)).
 
@@ -257,7 +258,7 @@ loop:
   wake every process whose timer expired (each scheduler makes the woken
                                           ones runnable through its core)
   if a process is runnable: return it
-  if a timer is pending:   about_to_sleep(wait); sleep until its deadline
+  if a timer is pending:   observe(SchedulerSlept(wait)); sleep until its deadline
   else:                    return None   # idle
 ```
 
@@ -297,9 +298,11 @@ reduction budget; one that yielded would overwrite the process's own
 continuation and is a fault. The JIT enters `fz_drain_dtor_entry` through
 `pinned_abi::call2`, the AOT scheduler does the same through the address
 `fz_aot_set_drain_dtor_entry` registered, and the interpreter interprets the
-closure. It returns a `QuantumEnd`: the `Disposition` (`Requeue`, `Parked`,
-`Exited`) the driver acts on and the `Collection`, if any, the JIT reports as
-`fz.runtime.gc`. The interpreter calls it too, after a park or an exit; it
+closure. It returns the `Disposition` (`Requeue`, `Parked`, `Exited`) the driver acts on,
+and reports what it did through `Scheduler::observe`: the `Collection` it
+performed, right after collecting and before any destructor runs, and the
+exited process, after its destructors have run so `dtors_dispatched` counts the
+ones the exit dispatched. The interpreter calls it too, after a park or an exit; it
 never yields. A parked receive's environment and continuations live in the
 interpreter, so `Scheduler::collect_heap` (default: `Process::collect` with no
 transient roots) is overridden to pass their heap refs as the transient roots

@@ -4,7 +4,7 @@ use crate::any_value::{
     list_addr_from_tagged,
 };
 use crate::heap::{Heap, SchemaRegistry};
-use crate::process::{GcBoundary, ProcessState};
+use crate::process::{Collection, GcBoundary, ProcessState};
 use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -18,6 +18,10 @@ struct Recording {
     wakes_process: bool,
     woken: Vec<(PidId, TimerId)>,
     slept: Vec<Duration>,
+    collections: Vec<Collection>,
+    /// The pid and `dtors_dispatched` of each process at the moment its exit
+    /// was observed.
+    exits: Vec<(PidId, u64)>,
     destructors: Vec<(u64, u64)>,
 }
 
@@ -29,6 +33,8 @@ impl Recording {
             wakes_process: true,
             woken: Vec::new(),
             slept: Vec::new(),
+            collections: Vec::new(),
+            exits: Vec::new(),
             destructors: Vec::new(),
         }
     }
@@ -57,8 +63,13 @@ impl Scheduler for Recording {
         }
     }
 
-    fn about_to_sleep(&mut self, wait: Duration) {
-        self.slept.push(wait);
+    fn observe(&mut self, event: RuntimeEvent<'_>) {
+        match event {
+            RuntimeEvent::SchedulerSlept(wait) => self.slept.push(wait),
+            RuntimeEvent::Gc(collection) => self.collections.push(*collection),
+            RuntimeEvent::ProcessExited(process) => self.exits.push((process.pid, process.dtors_dispatched)),
+            RuntimeEvent::ExecutionReady | RuntimeEvent::SendProbe(_) | RuntimeEvent::RunEnded(_) => {}
+        }
     }
 
     fn run_destructor(&mut self, _process: &mut Process, closure: u64, payload: u64) {
@@ -341,10 +352,15 @@ fn a_resource_freed_by_a_collection_has_its_destructor_dispatched_at_the_boundar
     make_resource(&mut process, 77, 4242);
     allocate_until_due(&mut process);
 
-    let end = end_quantum(&mut scheduler, &mut process);
+    let disposition = end_quantum(&mut scheduler, &mut process);
 
-    assert_eq!(end.disposition, Disposition::Requeue);
-    let collection = end.collection.expect("a heap past its threshold is collected");
+    assert_eq!(disposition, Disposition::Requeue);
+    let [collection] = scheduler.collections[..] else {
+        panic!(
+            "a heap past its threshold is collected once: {:?}",
+            scheduler.collections
+        );
+    };
     assert_eq!(collection.boundary, GcBoundary::Yield);
     assert_eq!(scheduler.destructors.len(), 1, "one dead resource, one dispatch");
     let (closure, payload) = scheduler.destructors[0];
@@ -371,9 +387,9 @@ fn a_resource_the_process_still_holds_survives_the_collection_undisturbed() {
     process.state = ProcessState::Running;
     allocate_until_due(&mut process);
 
-    let end = end_quantum(&mut scheduler, &mut process);
+    end_quantum(&mut scheduler, &mut process);
 
-    assert!(end.collection.is_some());
+    assert_eq!(scheduler.collections.len(), 1);
     assert!(scheduler.destructors.is_empty());
     assert_ne!(process.heap.mso_head, 0, "the live stub stays on the chain");
     assert_eq!(process.dtors_dispatched, 0);
@@ -391,10 +407,13 @@ fn a_halted_process_dispatches_the_destructor_of_every_resource_it_held() {
     make_resource(&mut process, 20, 2);
     assert!(!process.needs_boundary_gc());
 
-    let end = end_quantum(&mut scheduler, &mut process);
+    let disposition = end_quantum(&mut scheduler, &mut process);
 
-    assert_eq!(end.disposition, Disposition::Exited);
-    assert_eq!(end.collection, None, "exit sweeps the chain without a to-space");
+    assert_eq!(disposition, Disposition::Exited);
+    assert!(
+        scheduler.collections.is_empty(),
+        "exit sweeps the chain without a to-space"
+    );
     assert_eq!(process.state, ProcessState::Exited);
     let dispatched: Vec<(i64, i64)> = scheduler
         .destructors
@@ -409,6 +428,22 @@ fn a_halted_process_dispatches_the_destructor_of_every_resource_it_held() {
     assert_eq!(process.dtors_dispatched, 2);
 }
 
+/// The exit is observed once the process's destructors have run, so the
+/// record the observer reads counts the ones the exit itself dispatched.
+#[test]
+fn an_exit_is_observed_after_its_destructors_have_run() {
+    let mut scheduler = Recording::new();
+    let mut process = new_process();
+    process.state = ProcessState::Running;
+    process.pid = 6;
+    make_resource(&mut process, 10, 1);
+    make_resource(&mut process, 20, 2);
+
+    end_quantum(&mut scheduler, &mut process);
+
+    assert_eq!(scheduler.exits, vec![(6, 2)]);
+}
+
 /// A halted process whose heap is due is collected like any other, and the
 /// resources that collection freed are dispatched exactly once: the exit sweep
 /// that follows finds nothing left.
@@ -420,10 +455,11 @@ fn a_halted_process_that_is_due_dispatches_each_destructor_once() {
     make_resource(&mut process, 9, 3);
     allocate_until_due(&mut process);
 
-    let end = end_quantum(&mut scheduler, &mut process);
+    let disposition = end_quantum(&mut scheduler, &mut process);
 
-    assert_eq!(end.disposition, Disposition::Exited);
-    assert_eq!(end.collection.expect("due").boundary, GcBoundary::Exit);
+    assert_eq!(disposition, Disposition::Exited);
+    assert_eq!(scheduler.collections.len(), 1);
+    assert_eq!(scheduler.collections[0].boundary, GcBoundary::Exit);
     assert_eq!(scheduler.destructors.len(), 1);
     assert_eq!(process.dtors_dispatched, 1);
 }
@@ -438,10 +474,12 @@ fn a_parked_process_runs_destructors_but_is_not_exited() {
     make_resource(&mut process, 3, 8);
     allocate_until_due(&mut process);
 
-    let end = end_quantum(&mut scheduler, &mut process);
+    let disposition = end_quantum(&mut scheduler, &mut process);
 
-    assert_eq!(end.disposition, Disposition::Parked);
-    assert_eq!(end.collection.expect("due").boundary, GcBoundary::Park);
+    assert_eq!(disposition, Disposition::Parked);
+    assert_eq!(scheduler.collections.len(), 1);
+    assert_eq!(scheduler.collections[0].boundary, GcBoundary::Park);
+    assert!(scheduler.exits.is_empty(), "a park is not an exit");
     assert_eq!(scheduler.destructors.len(), 1);
     assert_eq!(process.state, ProcessState::Blocked);
 }
@@ -475,6 +513,9 @@ fn a_destructor_that_yields_is_a_fault() {
         fn wake_expired(&mut self, pid: PidId, timer: TimerId) {
             self.0.wake_expired(pid, timer);
         }
+        fn observe(&mut self, event: RuntimeEvent<'_>) {
+            self.0.observe(event);
+        }
         fn run_destructor(&mut self, process: &mut Process, _closure: u64, _payload: u64) {
             let continuation = closure_ref_capturing(process, AnyValue::int(1));
             process.set_runnable_closure(continuation);
@@ -499,9 +540,9 @@ fn a_claimed_resource_freed_by_a_collection_dispatches_no_destructor() {
     assert!(stub.claim());
     allocate_until_due(&mut process);
 
-    let end = end_quantum(&mut scheduler, &mut process);
+    end_quantum(&mut scheduler, &mut process);
 
-    assert!(end.collection.is_some());
+    assert_eq!(scheduler.collections.len(), 1);
     assert!(scheduler.destructors.is_empty());
     assert_eq!(process.heap.mso_head, 0);
 }

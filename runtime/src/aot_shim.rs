@@ -34,9 +34,9 @@ use crate::sched::{
     ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
 };
 use crate::sched_core::{
-    Disposition, QuantumEnd, Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook,
-    timer_schedule_hook,
+    Disposition, Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
+use crate::telemetry::RuntimeEvent;
 use crate::timer::TimerId;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -450,7 +450,9 @@ extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiv
         return;
     }
     let sender = unsafe { &mut *sender_ptr };
-    if probe_sender(sender, task, msg).outcome == ProbeOutcome::Hit {
+    let probe = probe_sender(sender, task, msg);
+    unsafe { (*sched).observe(RuntimeEvent::SendProbe(&probe)) };
+    if probe.outcome == ProbeOutcome::Hit {
         unsafe { (*sched).core.make_runnable(receiver_pid, &mut task.state) };
     }
 }
@@ -583,9 +585,7 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
     let closure = unsafe { (*proc_ptr).take_runnable_closure() }.expect("a dispatched process has a runnable closure");
     run_scheduler_closure(addrs.resume, proc_ptr, closure);
     let process = unsafe { &mut *proc_ptr };
-    // The collection report has no bus to reach on this path.
-    let QuantumEnd { disposition, .. } = end_quantum(unsafe { &mut *sched }, process);
-    if disposition == Disposition::Requeue {
+    if end_quantum(unsafe { &mut *sched }, process) == Disposition::Requeue {
         unsafe { (*sched).core.make_runnable(pid, &mut process.state) };
     }
 }
@@ -602,6 +602,9 @@ impl Scheduler for AotScheduler {
             self.core.make_runnable(pid, &mut task.state);
         }
     }
+
+    /// A built binary carries no telemetry sink, so every event is dropped.
+    fn observe(&mut self, _event: RuntimeEvent<'_>) {}
 
     fn run_destructor(&mut self, process: &mut Process, closure: u64, payload: u64) {
         assert!(

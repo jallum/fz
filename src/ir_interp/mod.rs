@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::compiler2::transport::BoundValue;
-use crate::exec::runtime::ExitRecord;
 use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::heap::{Schema, SchemaRegistry};
 use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};

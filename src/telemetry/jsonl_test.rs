@@ -989,7 +989,7 @@ fn a_scheduler_sleep_renders_its_wait_in_nanoseconds() {
     let telemetry = ConfiguredTelemetry::new();
     let (buf, writer) = vec_writer();
     JsonlBackend::new_writer(writer).install(&telemetry);
-    telemetry.raw_event1(&crate::exec::runtime::SCHEDULER_SLEPT, &Duration::from_millis(10));
+    telemetry.raw_event1(&fz_runtime::telemetry::SCHEDULER_SLEPT, &Duration::from_millis(10));
     drop(telemetry);
     let log = String::from_utf8(buf.borrow().clone()).unwrap();
     let events = log

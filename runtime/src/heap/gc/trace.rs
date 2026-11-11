@@ -32,7 +32,6 @@ pub fn cheney_trace_list(
 
     let tail_addr = cons.tail_addr();
     if tail_addr != 0 {
-        stats.list_tail_edges += 1;
         let tail = forward_heap_value(
             AnyValue::heap_ptr(tail_addr as *mut u8, ValueKind::LIST),
             from_space,
@@ -89,11 +88,8 @@ pub fn cheney_trace_resource(
     let resource = unsafe { ResourceStub::from_raw(obj) };
     let closure = resource.closure_value();
     if closure.kind().is_heap() {
-        stats.resource_heap_edges += 1;
         let forwarded = forward_heap_value(closure, from_space, heap, schemas, copied_objects, stats);
         resource.closure_value_set(forwarded);
-    } else {
-        stats.resource_scalar_slots += 1;
     }
 }
 

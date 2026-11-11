@@ -13,14 +13,16 @@
 
 use libc::{c_int, close, write};
 
-use crate::telemetry::{Telemetry, TelemetryExt as _};
+use crate::exec::runtime::emit_runtime_event;
+use crate::telemetry::Telemetry;
+use fz_runtime::telemetry::RuntimeEvent;
 
 const FZ_EXEC_READY_FD_ENV: &str = "FZ_EXEC_READY_FD";
 
 /// Announces that compilation and code generation are behind the caller and
 /// the program starts now.
 pub(crate) fn signal_execution_ready<T: Telemetry + ?Sized>(tel: &T) {
-    tel.raw_event0(&["fz", "runtime", "execution_ready"]);
+    emit_runtime_event(tel, RuntimeEvent::ExecutionReady);
     let Ok(raw_fd) = std::env::var(FZ_EXEC_READY_FD_ENV) else {
         return;
     };

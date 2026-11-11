@@ -18,6 +18,7 @@ use crate::any_value::{AnyValueRef, ValueKind};
 use crate::heap::GcStats;
 use crate::process::{Collection, GcBoundary, PidId, Process, ProcessState};
 use crate::scheduler_hooks::{TimerCancelHook, TimerScheduleHook};
+use crate::telemetry::RuntimeEvent;
 use crate::timer::{TimerId, TimerWheel};
 use std::collections::VecDeque;
 use std::thread::sleep;
@@ -82,8 +83,9 @@ pub trait Scheduler {
     /// dropped.
     fn wake_expired(&mut self, pid: PidId, timer: TimerId);
 
-    /// The core is about to sleep for `wait` because only timers remain.
-    fn about_to_sleep(&mut self, _wait: Duration) {}
+    /// The core reports `event`. Every scheduler says what it does with each
+    /// runtime event, even if that is nothing.
+    fn observe(&mut self, event: RuntimeEvent<'_>);
 
     /// Run the destructor closure `closure` of a freed resource on `process`
     /// with the boxed `payload`, both value-ref words. Only a driver can run
@@ -113,27 +115,22 @@ pub enum Disposition {
     Exited,
 }
 
-/// The outcome of [`end_quantum`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct QuantumEnd {
-    pub disposition: Disposition,
-    /// The collection the boundary performed, if the heap was due.
-    pub collection: Option<Collection>,
-}
-
 /// The step after every quantum, for every state. It reads the boundary off
-/// `process`, collects when the heap is due, and clears the quantum's yield
-/// reasons. A halted process is marked Exited and releases every stub on its
-/// MSO chain, since nothing is live. Every destructor the collection or the
-/// exit queued then runs through `scheduler`, and `process.dtors_dispatched`
-/// counts them.
-pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Process) -> QuantumEnd {
+/// `process`, collects when the heap is due and observes the collection, and
+/// clears the quantum's yield reasons. A halted process is marked Exited and
+/// releases every stub on its MSO chain, since nothing is live. Every
+/// destructor the collection or the exit queued then runs through `scheduler`,
+/// `process.dtors_dispatched` counts them, and an exit is observed last.
+pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Process) -> Disposition {
     let boundary = process.quantum_boundary();
-    let collection = process.needs_boundary_gc().then(|| Collection {
-        pid: process.pid,
-        boundary,
-        stats: scheduler.collect_heap(process),
-    });
+    if process.needs_boundary_gc() {
+        let collection = Collection {
+            pid: process.pid,
+            boundary,
+            stats: scheduler.collect_heap(process),
+        };
+        scheduler.observe(RuntimeEvent::Gc(&collection));
+    }
     process.clear_yield_reasons();
     let disposition = match boundary {
         GcBoundary::Yield => Disposition::Requeue,
@@ -145,10 +142,10 @@ pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Proce
         }
     };
     drain_destructors(scheduler, process);
-    QuantumEnd {
-        disposition,
-        collection,
+    if disposition == Disposition::Exited {
+        scheduler.observe(RuntimeEvent::ProcessExited(process));
     }
+    disposition
 }
 
 /// Run every queued destructor on `process`, oldest first. A destructor runs
@@ -189,7 +186,7 @@ pub fn next_runnable<S: Scheduler + ?Sized>(scheduler: &mut S) -> Option<PidId> 
         }
         let deadline = scheduler.core().timers.next_deadline()?;
         let wait = deadline.saturating_duration_since(Instant::now());
-        scheduler.about_to_sleep(wait);
+        scheduler.observe(RuntimeEvent::SchedulerSlept(wait));
         sleep(wait);
     }
 }

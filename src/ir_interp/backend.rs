@@ -18,10 +18,10 @@ use crate::compiler2::{
     ControlDestination, ExecutableDispatch, ValueId,
 };
 use crate::compiler2::{ExecutableKey, FunctionId, RunFailure};
-use crate::exec::runtime::{emit_gc, emit_send_probe};
+use crate::exec::runtime::emit_runtime_event;
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::CallableShape;
-use crate::telemetry::{Telemetry, TelemetryExt as _};
+use crate::telemetry::Telemetry;
 use crate::types::ClosureTarget;
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged};
 use fz_runtime::delivery::Delivery;
@@ -37,11 +37,10 @@ use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
 use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
 use fz_runtime::sched::{ProbeOutcome, SendProbe, drain_in_queue, gift_match, gift_message, self_send};
 use fz_runtime::sched_core::{
-    Disposition, QuantumEnd, Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook,
-    timer_schedule_hook,
+    Disposition, Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
+use fz_runtime::telemetry::{RunEnded, RuntimeEvent};
 use fz_runtime::timer::TimerId;
-use std::time::Duration;
 
 enum BackendRunStep {
     Done(AnyValue),
@@ -137,7 +136,10 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
         Ok(main.map_or(0, |main| main.halt_value))
     })();
     drop(runtime);
-    crate::exec::runtime::emit_run_ended(tel, pool_outstanding_before_run);
+    emit_runtime_event(
+        tel,
+        RuntimeEvent::RunEnded(RunEnded::sample(pool_outstanding_before_run)),
+    );
     outcome
 }
 
@@ -328,7 +330,6 @@ impl IrInterpRuntime {
         msg_ref: AnyValueRef,
     ) -> Result<(), String> {
         let Some(receiver) = self.tasks.get(receiver_pid) else {
-            tel.raw_event1(&["fz", "runtime", "send_to_unknown_pid"], receiver_pid);
             return Ok(());
         };
         if receiver.state == ProcessState::Exited {
@@ -359,7 +360,7 @@ impl IrInterpRuntime {
             None => gift_message(sender, &mut delivery, *receiver_pid, msg_ref),
         };
         drop(delivery);
-        emit_send_probe(tel, &probe);
+        emit_runtime_event(tel, RuntimeEvent::SendProbe(&probe));
         if probe.outcome == ProbeOutcome::Hit {
             self.make_runnable(*receiver_pid);
         }
@@ -510,8 +511,8 @@ impl<T: Telemetry + ?Sized> Scheduler for BackendSchedulerAdapter<T> {
         }
     }
 
-    fn about_to_sleep(&mut self, wait: Duration) {
-        unsafe { &*self.tel }.raw_event1(&crate::exec::runtime::SCHEDULER_SLEPT, &wait);
+    fn observe(&mut self, event: RuntimeEvent<'_>) {
+        emit_runtime_event(unsafe { &*self.tel }, event);
     }
 
     /// Collect `process` with the heap refs of its parked receive as the
@@ -707,19 +708,12 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
             BackendRunStep::Failed => {}
             BackendRunStep::Blocked => runtime.set_process_state(pid, ProcessState::Blocked),
         }
-        let QuantumEnd {
-            disposition,
-            collection,
-        } = unsafe { end_quantum(&mut *adapter, &mut *proc_ptr) };
-        if let Some(collection) = collection {
-            emit_gc(tel, &collection);
-        }
+        let disposition = unsafe { end_quantum(&mut *adapter, &mut *proc_ptr) };
         if let Some(error) = runtime.take_callback_error() {
             return Err(error);
         }
         match disposition {
-            Disposition::Exited => unsafe { ExitRecord::emit(tel, &pid, &*proc_ptr) },
-            Disposition::Parked => {}
+            Disposition::Exited | Disposition::Parked => {}
             Disposition::Requeue => {
                 return Err(format!(
                     "interpreted process {pid} yielded; the interpreter never yields"

@@ -7,11 +7,22 @@ tests observe a run without reaching into a `Process`. It is the runtime side of
 the same idea as compile-time [`telemetry`](telemetry.md): the system writes down
 facts it already holds, and a sink that is listening reads them.
 
-`Runtime::new(compiled, workers, tel)` preserves the concrete telemetry type on
-the compiled scheduler; the interpreter call graph does the same. Both engines
-route through the same typed raw emit site, so `NullTelemetry` remains
-monomorphizable and configured handlers behave identically across interpreter,
-JIT, and AOT.
+Every runtime event is a variant of `RuntimeEvent` (`runtime/src/telemetry.rs`),
+and the scheduling core reports each one through `Scheduler::observe`, a
+required method with no default: a scheduler that ignores events says so in
+code. `end_quantum` observes the collection and the exit, `next_runnable`
+observes a sleep, and the send paths and run teardown observe their own events.
+
+- The JIT `Runtime` and the interpreter's scheduler adapter implement `observe`
+  with `emit_runtime_event` (`exec/runtime.rs`), the one function that raises
+  the typed raw event for each variant on the telemetry bus.
+  `Runtime::new(compiled, workers, tel)` preserves the concrete telemetry type,
+  so `NullTelemetry` remains monomorphizable.
+- `JsonlBackend` handles each raw event by rendering it with
+  `fz_runtime::telemetry::write_line`, the one writer of a runtime event's
+  line: the envelope every telemetry line shares, then the event's metadata.
+- `AotScheduler::observe` is a no-op: a built binary carries no telemetry sink
+  and reports none of these events.
 
 Six events matter:
 
@@ -30,41 +41,41 @@ Six events matter:
 
 ## `fz.runtime.execution_ready`
 
-`signal_execution_ready` (`execution_ready.rs`) is the single emit site, called
+`signal_execution_ready` (`execution_ready.rs`) raises it through `emit_runtime_event`, called
 by `run_root_jit` just before the runtime spawns the entry and by
 `run_root_interp` just before `run_backend_main` enqueues it — so the event
 lands once per `fz2 run`, once per `fz2 interp`, and once per `run-test-root`
 child `fz2 test` starts, with parsing, the fixpoint drive, the backend product
 and Cranelift all behind it. An AOT binary never emits it: `fz2 build` stops at
 the object file, and the executable links `fz_runtime` and its own
-`aot_run_queue_loop`, which carries no telemetry bus and emits no
-`process_exited` or `scheduler_slept` either. The event has no payload; its content is its position
-in the stream. The same call writes one byte to the descriptor named by
+`aot_run_queue_loop`, whose `observe` is a no-op. The event has no payload; its
+content is its position in the stream. The same call writes one byte to the descriptor named by
 `FZ_EXEC_READY_FD` when the environment names one — the fixture matrix's
 execution deadline is a consumer of this boundary, not a second definition of it
 (see [fixtures](fixtures.md)).
 
 ## `fz.runtime.process_exited`
 
-`ExitRecord::emit` (in `exec/runtime.rs`) is the single emit site, shared by both
-engines: the compiled scheduler calls it as a task leaves `run_until_idle`, and
-`IrInterpRuntime` calls it at its own halt sites. The event carries no derived
-process fields:
+`sched_core::end_quantum` observes `RuntimeEvent::ProcessExited` for a halted
+process once its destructors have run, on every scheduler. `emit_runtime_event`
+raises it with the process's pid and the live `Process`; the event carries no
+derived process fields:
 
 ```text
 raw event:    fz.runtime.process_exited
 signature:    (&PidId, &Process)
 ```
 
-`ExitRecord` is a handler-side projection: `{ pid, halt_value: i64, live_count:
+`ExitRecord` is the test-side projection: `{ pid, halt_value: i64, live_count:
 usize, bytes_used: usize, list_retention_attempts: u64,
 list_retention_hits: u64, failed: bool, dtors_dispatched: u64 }`. `failed` is
 `Process.failed`: whether the process ended through `fz_panic` (see
 [process failure](process-failure.md)); a failed process's `halt_value` is not a
 return value. `ProcessExitCapture` builds it during dispatch by reading the
-live process. `JsonlBackend` performs the same projection only when it handles
-the event, writing `failed` as a JSON boolean. The emitter does not traverse the
-process for telemetry.
+live process. `write_line` reads the same fields when it renders the event,
+nested under `"process":{"opaque_type":"fz_runtime::process::Process",...}` with
+`failed` as a JSON boolean. The emitter does not traverse the process for
+telemetry.
 
 List-retention fallbacks are derived, not emitted separately:
 `fallback_count = list_retention_attempts - list_retention_hits`. The runtime
@@ -77,7 +88,7 @@ boundary event instead of a per-attempt side channel.
 scheduling core ran for the process over its whole life, whether a collection
 freed the resource at a yield or park or the exit swept it (see
 [scheduler](scheduler-zero-arg-closures.md#the-step-after-a-quantum)).
-`JsonlBackend` renders it on `process_exited` as a number beside
+`write_line` renders it on `process_exited` as a number beside
 `list_retention_hits`. There is no separate destructor event; a destructor
 dispatched mid-life is visible on the exit record of the process that ran it,
 and the `fz.runtime.gc` event of the collection that freed it precedes it.
@@ -86,27 +97,25 @@ and the `fz.runtime.gc` event of the collection that freed it precedes it.
 pins it on the `run` and `interp` paths: 1 for fixture 00906 and 3 for 00907.
 
 The raw `&Process` is valid only during dispatch. A handler that needs data
-after the callback must project and copy that data itself. `JsonlBackend`
-renders fields synchronously.
+after the callback must project and copy that data itself. `write_line` renders
+fields synchronously.
 
 ## `fz.runtime.scheduler_slept`
 
-`Scheduler::about_to_sleep` is the hook `next_runnable`
-(`runtime/src/sched_core.rs`) calls just before it sleeps. The JIT `Runtime` and
-the interpreter's scheduler adapter implement it by emitting `SCHEDULER_SLEPT`
-(`exec/runtime.rs`) with a `Duration`, the wait until the next timer deadline.
-`JsonlBackend` renders it as `wait_ns`. The event fires only when the run queue
-is empty and a timer pends, so a program whose timers are all cancelled by
-arriving messages never emits it. The AOT scheduler carries no telemetry bus and
-keeps the default no-op hook. `exec/runtime_test.rs` observes the event on the
+`next_runnable` (`runtime/src/sched_core.rs`) observes
+`RuntimeEvent::SchedulerSlept(wait)` just before it sleeps; `wait` is the
+`Duration` until the next timer deadline. `write_line` renders it as `wait_ns`.
+The event fires only when the run queue is empty and a timer pends, so a program
+whose timers are all cancelled by arriving messages never emits it. The AOT
+scheduler's `observe` drops it. `exec/runtime_test.rs` observes the event on the
 `run` and `interp` paths.
 
 ## `fz.runtime.run_ended`
 
-`emit_run_ended` (`exec/runtime.rs`) is the single emit site. The JIT `Runtime`
-emits it from its `Drop`, after clearing the task registry (exited and parked
+`RunEnded::sample` (`runtime/src/telemetry.rs`) reads the census and
+`emit_runtime_event` raises it. The JIT `Runtime` observes it from its `Drop`, after clearing the task registry (exited and parked
 tasks stay in the registry until then, so their heaps and any gifts still
-queued on them are dropped first). The interpreter emits it from
+queued on them are dropped first). The interpreter observes it in
 `run_backend_main` after dropping its `IrInterpRuntime`.
 
 ```text
@@ -123,9 +132,8 @@ resting in the pool's free lists. Exact blocks (a gift below or above the
 table) belong to the system allocator and appear in neither count. The compiler's own heaps live on the same
 thread for the whole run, so the absolute outstanding count is never zero. The
 run's guarantee is `pool_outstanding_after_run == pool_outstanding_before_run`:
-it returned every block it took. `JsonlBackend` renders
-all three as numbers. The AOT scheduler carries no telemetry bus and emits
-nothing, as for the other runtime events. `tests/fixture_matrix.rs`
+it returned every block it took. `write_line` renders
+all three as numbers. The AOT scheduler does not observe it. `tests/fixture_matrix.rs`
 (`a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`) asserts the
 equality for fixture 00903 on the `run` and `interp` paths.
 
@@ -135,9 +143,10 @@ A send to another process runs `sched::probe_sender` on the sender: the
 receiver's parked matcher, if any, is tested against the message with the
 sender as the allocating process, and whatever the receiver will keep (the
 bound values on a hit, the whole message on a miss) is copied into a gift on the
-sender's heap and queued on the receiver's `in_queue`. `emit_send_probe`
-(`exec/runtime.rs`) is the single emit site; the JIT `send_via` and the
-interpreter's `send_ref` call it with the `SendProbe` the probe returned:
+sender's heap and queued on the receiver's `in_queue`. The JIT
+`send_via`, the interpreter's `send_ref` and the AOT send hook each observe
+`RuntimeEvent::SendProbe` with the `SendProbe` the probe returned; the first two
+raise it through `emit_runtime_event` and the AOT scheduler drops it:
 
 ```text
 raw event:    fz.runtime.send.probe
@@ -150,10 +159,9 @@ sender's remaining budget across the matcher call; `gift_bytes` and
 `gift_blocks` are the segment's fill and block count. `gift_bytes` equals the
 bytes `measure_deep_copy` returned before the copy, and `gift_blocks` is `1`
 for every gift that allocates; both are `0` when a hit binds nothing and no
-window opens. `JsonlBackend` renders the
+window opens. `write_line` renders the
 outcome as `"hit"` or `"miss"` and the rest as numbers. A self-send is a mailbox
-push and emits nothing. The AOT scheduler carries no telemetry bus and emits
-nothing, as for the other runtime events. `tests/fixture_matrix.rs`
+push and emits nothing, as does a send to an exited or unknown receiver. `tests/fixture_matrix.rs`
 (`a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue`)
 pins the event sequence of fixtures 00901 and 00902 on the `run` and `interp`
 paths, and `a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`
@@ -170,10 +178,10 @@ fixtures have the same probes on both paths.
 ## `fz.runtime.gc`
 
 `sched_core::end_quantum` (`runtime/src/sched_core.rs`) collects the process's
-heap when `Heap::should_gc` holds and returns the `Collection` it performed, or
-`None`, in `QuantumEnd::collection`. `Runtime::run_until_idle` hands it to
-`emit_gc` (`exec/runtime.rs`), the single emit site. The boundary is read off
-the process after the quantum (`Process::quantum_boundary`):
+heap when `Heap::should_gc` holds and observes the `Collection` it performed as
+`RuntimeEvent::Gc`, right after collecting and before any destructor runs. The
+boundary is read off the process after the quantum
+(`Process::quantum_boundary`):
 
 ```text
 raw event:    fz.runtime.gc
@@ -181,7 +189,7 @@ signature:    (&Collection)
 ```
 
 `Collection` is `{ pid, boundary: Yield | Park | Exit, stats: GcStats }`.
-`JsonlBackend` renders `pid` and the `boundary` as `"yield"`, `"park"` or
+`write_line` renders `pid` and the `boundary` as `"yield"`, `"park"` or
 `"exit"`, then these `GcStats` fields as numbers:
 
 - `copied_bytes`: bytes the pass copied;
@@ -194,9 +202,8 @@ signature:    (&Collection)
 
 `GcStats` carries more (object counts, root and per-container edge
 counts); `Heap::collect` and `Process::collect` return all of it to their
-callers and the heap's unit tests read it there. The interpreter emits it from
-`QuantumEnd::collection` as the JIT does. The AOT scheduler collects but
-carries no telemetry bus and emits nothing, as for the other runtime events.
+callers and the heap's unit tests read it there. Every scheduler's
+`end_quantum` observes it; the AOT scheduler collects and drops the event.
 `tests/fixture_matrix.rs`
 (`a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run`)
 pins fixture 00901: 8 collections on `run` (seven child yields, one parent
@@ -209,8 +216,8 @@ The same file pins fixture 00910 (`interp`: the parent's park at 48 bytes;
 the parent's park at 0 bytes; `run`: six parent yields copying 10848, 32192,
 64192, 128192, 256192 and 320176 bytes while it builds the list). The
 run-ended equality is pinned for both fixtures on `run` and `interp`.
-`sched_core_test.rs` pins the `Collection` that `end_quantum` returns and the
-destructors it dispatches.
+`sched_core_test.rs` pins the `Collection` and the exit that `end_quantum`
+observes and the destructors it dispatches.
 
 ## Program Output
 

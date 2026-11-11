@@ -9248,10 +9248,6 @@ fn compiler2_interp_uses_backend_runtime_self_and_send_intrinsics() {
 
     assert_eq!(halt, 1, "self/0 should report pid 1 for the root backend task");
     assert!(
-        capture.find(&["fz", "runtime", "send_to_unknown_pid"]).is_empty(),
-        "send(self(), ...) should deliver to the live root task instead of falling through the unknown-pid path",
-    );
-    assert!(
         capture.find(&["fz", "codegen"]).is_empty(),
         "the backend interpreter should not invoke native codegen",
     );

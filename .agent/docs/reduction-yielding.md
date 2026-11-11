@@ -179,9 +179,8 @@ roots: their blocks join the heap only when grafted, and every reference in a
 gift points into its own segment.
 
 `sched_core::end_quantum` packages this decision (collect if needed, clear the
-reason bits, run the queued destructors) and returns a `QuantumEnd`: the
-`Disposition` (`Requeue`, `Parked` or `Exited`) and the `Collection` it
-performed, which the JIT reports as `fz.runtime.gc` (see
+reason bits, run the queued destructors) and returns the `Disposition` (`Requeue`, `Parked` or `Exited`); it reports the
+`Collection` it performed through `Scheduler::observe` (see
 [runtime telemetry](runtime-telemetry.md)). The JIT, the AOT shim and the
 interpreter call it after every quantum, whatever state the process is in. A
 halted process whose heap is not due is not collected; its resource stubs are
