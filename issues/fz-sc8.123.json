@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.117"
+  ],
   "blocks": [],
   "created": "2026-11-11T22:02:15Z",
   "description": "lib/map.fz specs Map.put (and the put/delete/update externs and others) as returning any, where Elixir's return map. An any return makes every later protocol dispatch on the result reach every implementation, Stream included (the fz-sc8.117 small case). Tighten each Map function's spec to Elixir's return type and report any pin that moves. Lands after fz-sc8.117, which fixes the termination fault itself.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Map's functions say they return maps",
   "type": "task",
-  "updated_at": "2026-11-11T22:02:15Z"
+  "updated_at": "2026-11-11T22:02:19Z"
 }
