@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T22:02:15Z",
+  "description": "Map.put(1, :a, 2) panics the runtime ('map put: expected a map, found ValueKind(13)' at runtime/src/heap/map_view.rs:70 on 44174db13; ir_runtime.rs:216 on d9c9a842c) where Elixir raises BadMapError with message \"expected a map, got:\\n\\n    1\\n\". Survey every Map function and map primitive for its non-map behavior and raise BadMapError in Elixir's shape on interp, run and build, with an oracle fixture.",
+  "id": "fz-sc8.122",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "Map functions raise BadMapError for a non-map, as Elixir's do",
+  "type": "bug",
+  "updated_at": "2026-11-11T22:02:15Z"
+}
