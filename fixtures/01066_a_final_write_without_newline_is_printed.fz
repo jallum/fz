@@ -1,0 +1,8 @@
+#---
+# purpose: "Output from IO.write with no trailing newline is flushed when the program ends"
+# oracle: 01066_a_final_write_without_newline_is_printed.oracle.exs
+#---
+def main() do
+  IO.puts("first line")
+  IO.write("no newline")
+end

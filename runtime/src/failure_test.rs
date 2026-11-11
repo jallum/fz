@@ -591,3 +591,30 @@ fn a_raise_showing_a_term_delivers_an_exception_carrying_the_term_and_the_banner
         );
     });
 }
+
+extern "C" fn recording_halt(scheduler: *mut (), status: i32) {
+    unsafe { &mut *(scheduler as *mut Vec<i32>) }.push(status);
+}
+
+#[test]
+fn a_halt_reports_its_status_and_ends_the_process_past_every_handler_without_a_line() {
+    with_process(|process| {
+        let mut halts: Vec<i32> = Vec::new();
+        let mut ctx = ExecCtx {
+            scheduler: &mut halts as *mut Vec<i32> as *mut (),
+            halt: Some(recording_halt),
+            ..ExecCtx::empty()
+        };
+        process.ctx = &mut ctx;
+        let handler = handler_template(process);
+        process.push_handler(Handler::Closure(handler));
+
+        fz_system_halt(process, 3);
+
+        assert_eq!(halts, [3], "the scheduler is told the program's status once");
+        assert!(process.failed, "the process ends as an uncaught raise ends it");
+        assert_eq!(process.exit_status, 3);
+        assert_eq!(process.handlers.len(), 1, "no handler is searched, so none is consumed");
+        assert!(process.raised.is_none() && !process.has_delivered_handler());
+    });
+}

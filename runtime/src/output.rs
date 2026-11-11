@@ -5,6 +5,10 @@ use crate::scheduler_hooks::OutputHook;
 
 pub trait OutputSink {
     fn emit(&self, bytes: &[u8]);
+
+    /// Hand everything emitted so far to its destination. Every end of a run
+    /// calls this, so a final partial line is not lost.
+    fn flush(&self) {}
 }
 
 pub struct NullOutput;
@@ -19,6 +23,10 @@ impl OutputSink for StdoutOutput {
     fn emit(&self, bytes: &[u8]) {
         let mut stdout = std::io::stdout().lock();
         let _ = stdout.write_all(bytes);
+    }
+
+    fn flush(&self) {
+        let _ = std::io::stdout().flush();
     }
 }
 

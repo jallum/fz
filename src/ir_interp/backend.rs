@@ -39,7 +39,7 @@ use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
 use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Handler, Process, ProcessState};
 use fz_runtime::sched::{ProbeOutcome, SendProbe, drain_in_queue, gift_match, gift_message, self_send};
 use fz_runtime::sched_core::{
-    Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
+    MAIN_PID, Scheduler, SchedulingCore, end_quantum, halt_hook, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
 use fz_runtime::telemetry::{Raise, RunEnded, RuntimeEvent};
 use fz_runtime::timer::TimerId;
@@ -83,9 +83,6 @@ enum BackendRun {
     /// process stays alive for the next expansion.
     Macro,
 }
-
-/// The pid of the process a run starts with.
-const MAIN_PID: u32 = 1;
 
 /// Runs one closed Compiler2 backend program through the shared interpreter
 /// runtime without reopening planner or type-resolution work. Answers the
@@ -131,12 +128,10 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
             &module,
             BackendRun::Program,
         )?;
-        let main = runtime.process_ref(MAIN_PID);
-        if let Some(main) = main {
-            RunFailure::from_main_status(main.exit_status)?;
-        }
-        Ok(main.map_or(0, |main| main.halt_value))
+        RunFailure::from_main_status(runtime.core.halted().unwrap_or(0))?;
+        Ok(runtime.process_ref(MAIN_PID).map_or(0, |main| main.halt_value))
     })();
+    output.flush();
     drop(runtime);
     emit_runtime_event(
         tel,
@@ -689,6 +684,7 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
             BackendRun::Program => fz_runtime::failure::STDERR_FAULT_HOOK,
             BackendRun::Macro => macro_fault_hook::<T>,
         }),
+        halt: Some(halt_hook::<BackendSchedulerAdapter<T>>()),
         raise: Some(interp_raise_hook::<T>),
         output: Some(OUTPUT_HOOK),
         timer_schedule: Some(timer_schedule_hook::<BackendSchedulerAdapter<T>>()),

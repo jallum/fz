@@ -375,11 +375,35 @@ from the interpreter.
   error. A macro expansion runs with it, so a panic during expansion is a
   compile error carrying the failure line, never a program exit.
 
-Other processes keep running: a failed spawned process prints its line and
-ends, and the scheduler carries on until idle. The sink does not know which
+Other processes keep running while main does: a failed spawned process prints
+its line and ends, and the scheduler carries on until main ends, a process halts
+(see "How a program ends"), or the run goes idle. The sink does not know which
 process is main, so a spawned process that exits with a reason that is not a
 shutdown prints its `** (exit)` line; Elixir prints nothing for that, and prints
 an uncaught spawned throw as `** (ErlangError) Erlang error: {:nocatch, value}`.
+
+## How a program ends
+
+A program ends when it halts, and its status is the halt's. The scheduler owns
+the end: `SchedulingCore` (`sched_core.rs`) records the first `halt(status)`, and
+`next_runnable` hands out nothing after it, so every driver's loop stops at the
+same place. Two things halt:
+
+- `System.halt/0,1` calls the extern `fz_system_halt(process, status)`
+  (`failure.rs`). It reports the status through the `ExecCtx::halt` hook
+  (`halt_hook::<S>()`, one instantiation per scheduler type) and ends the calling
+  process with `failed` set and `exit_status = status`, the state an uncaught
+  raise leaves, with no failure line and no handler search. The raise unwinding
+  then runs as for any failed process, so no `catch` or `after` sees a halt.
+  `halt(-1)` raises `ArgumentError` in `lib/system.fz` before reaching the extern.
+- The main process (`MAIN_PID`) ending, normally or by an uncaught raise, records
+  a halt with its `exit_status` through `SchedulingCore::process_ended`. Processes
+  still running or waiting when main ends are stopped, as an Elixir script halts
+  the VM at its end.
+
+A run that goes idle without a halt, with main blocked forever on a `receive`,
+ends with status 0. Every driver then calls `OutputSink::flush`, so a final
+partial line reaches stdout on a built binary as well.
 
 ## Exit status
 
@@ -401,7 +425,8 @@ A status is what the operating system makes of it, so `n` is taken modulo 256.
 The code after an `exit` never runs, whatever the status.
 
 - `Compiler2::run_root_jit` and `run_root_interp` end the run with
-  `RunFailure::from_main_status(status)`: `Ok` for status 0,
+  `RunFailure::from_main_status(status)`, `status` being the recorded halt (0 for
+  a run that never halted): `Ok` for status 0,
   `Err(RunFailure::MainFailed)` for 1 and `Err(RunFailure::MainExited(n))` for
   any other. `RunFailure::Error(message)` is reserved for runs that could not
   complete (a compile failure, an interpreter contract violation).
@@ -409,7 +434,7 @@ The code after an `exit` never runs, whatever the status.
   nothing more to print: the failure line, if any, is already on stderr. `Error`
   prints `fz2 <command>: <message>` and exits 1, or 75 for an interpreter path
   that is not yet supported.
-- `fz_aot_run_main` returns `process.exit_status` for the main process.
+- `fz_aot_run_main` returns the status its scheduler's core recorded.
 
 The fixture matrix pins what it can: an `expect: abort` fixture must exit exactly
 1, and a success fixture 0, which covers `exit(:normal)` and `exit(:shutdown)`

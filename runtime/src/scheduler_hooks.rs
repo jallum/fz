@@ -41,6 +41,10 @@ pub type SendHook = extern "C" fn(sender: *mut Process, scheduler: *mut (), rece
 /// error for a macro). The bytes are borrowed for the call.
 pub type FaultHook = unsafe extern "C" fn(context: *mut (), line_ptr: *const u8, line_len: usize);
 
+/// The halt hook: `System.halt/1` reports the program's end here, with the
+/// status it ends with. The scheduler records it and runs nothing after.
+pub type HaltHook = extern "C" fn(scheduler: *mut (), status: i32);
+
 pub type OutputHook = unsafe extern "C" fn(context: *const (), line_ptr: *const u8, line_len: usize);
 
 /// The raise observer: `fz_panic` reports every raise here before deciding

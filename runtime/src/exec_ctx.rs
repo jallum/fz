@@ -19,7 +19,7 @@
 
 use crate::process::Process;
 use crate::scheduler_hooks::{
-    FaultHook, OutputHook, RaiseHook, SendHook, SpawnHook, TimerCancelHook, TimerScheduleHook,
+    FaultHook, HaltHook, OutputHook, RaiseHook, SendHook, SpawnHook, TimerCancelHook, TimerScheduleHook,
 };
 use std::ptr::{null, null_mut};
 
@@ -58,6 +58,9 @@ pub struct ExecCtx {
     pub spawn: Option<SpawnHook>,
     pub send: Option<SendHook>,
     pub fault: Option<FaultHook>,
+    /// Where `System.halt/1` ends the program; `None` when the scheduler has
+    /// no program to end.
+    pub halt: Option<HaltHook>,
     /// Where `fz_panic` reports each raise before delivering it; `None` when
     /// the scheduler does not observe raises.
     pub raise: Option<RaiseHook>,
@@ -79,6 +82,7 @@ impl ExecCtx {
             spawn: None,
             send: None,
             fault: None,
+            halt: None,
             raise: None,
             output: None,
             timer_schedule: None,

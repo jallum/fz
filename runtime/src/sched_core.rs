@@ -13,22 +13,31 @@
 //! answers "what happens to a process after its quantum?": it collects when
 //! the heap is due, runs the destructors of the resources that collection or
 //! the exit freed, and says whether the process is requeued, parked or gone.
+//!
+//! The core also owns how a program ends. A program ends when it halts: either
+//! a process calls `System.halt/1`, or the main process ends, which
+//! [`end_quantum`] records. The first halt is the program's end, with its
+//! status, and [`next_runnable`] hands out nothing after it.
 
 use crate::any_value::{AnyValueRef, ValueKind};
 use crate::heap::GcStats;
 use crate::process::{Collection, CollectionBoundary, Disposition, PidId, Process, ProcessState};
-use crate::scheduler_hooks::{TimerCancelHook, TimerScheduleHook};
+use crate::scheduler_hooks::{HaltHook, TimerCancelHook, TimerScheduleHook};
 use crate::telemetry::RuntimeEvent;
 use crate::timer::{TimerId, TimerWheel};
 use std::collections::VecDeque;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-/// The run queue and the timer wheel of one scheduler.
+/// The pid of the process a program starts with. Its end is the program's end.
+pub const MAIN_PID: PidId = 1;
+
+/// The run queue, the timer wheel and the recorded end of one scheduler.
 #[derive(Default)]
 pub struct SchedulingCore {
     run_queue: VecDeque<PidId>,
     timers: TimerWheel,
+    halted: Option<i32>,
 }
 
 impl SchedulingCore {
@@ -50,6 +59,25 @@ impl SchedulingCore {
             }
             ProcessState::Ready | ProcessState::Exited => false,
         }
+    }
+
+    /// End the program with `status`. The first halt stands; a later one,
+    /// such as the main process ending after a child halted, changes nothing.
+    pub fn halt(&mut self, status: i32) {
+        self.halted.get_or_insert(status);
+    }
+
+    /// Note that process `pid` ended with `status`: when it is the main
+    /// process, that is the program's end.
+    pub fn process_ended(&mut self, pid: PidId, status: i32) {
+        if pid == MAIN_PID {
+            self.halt(status);
+        }
+    }
+
+    /// The status the program ended with, or `None` while it has not ended.
+    pub fn halted(&self) -> Option<i32> {
+        self.halted
     }
 
     /// The runnable processes in the order they will run.
@@ -131,6 +159,7 @@ pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Proce
     }
     drain_destructors(scheduler, process);
     if disposition == Disposition::Exited {
+        scheduler.core().process_ended(process.pid, process.exit_status);
         scheduler.observe(RuntimeEvent::ProcessExited(process));
     }
     disposition
@@ -161,10 +190,13 @@ pub fn drain_destructors<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut
     }
 }
 
-/// The next process to run, or `None` when the scheduler is idle: nothing is
-/// runnable and no timer is pending.
+/// The next process to run, or `None` when the scheduler is idle (nothing is
+/// runnable and no timer is pending) or the program has halted.
 pub fn next_runnable<S: Scheduler + ?Sized>(scheduler: &mut S) -> Option<PidId> {
     loop {
+        if scheduler.core().halted.is_some() {
+            return None;
+        }
         let expired = scheduler.core().timers.drain_expired(Instant::now());
         for entry in expired {
             scheduler.wake_expired(entry.pid, entry.id);
@@ -183,6 +215,17 @@ pub fn next_runnable<S: Scheduler + ?Sized>(scheduler: &mut S) -> Option<PidId> 
 /// erased scheduler handle must point at an `S`.
 pub fn timer_schedule_hook<S: Scheduler>() -> TimerScheduleHook {
     schedule_timer_on::<S>
+}
+
+/// The `ExecCtx::halt` hook of scheduler type `S`. The context's erased
+/// scheduler handle must point at an `S`.
+pub fn halt_hook<S: Scheduler>() -> HaltHook {
+    halt_on::<S>
+}
+
+extern "C" fn halt_on<S: Scheduler>(scheduler: *mut (), status: i32) {
+    let scheduler = unsafe { &mut *(scheduler as *mut S) };
+    scheduler.core().halt(status);
 }
 
 /// The `ExecCtx::timer_cancel` hook of scheduler type `S`. The context's

@@ -200,6 +200,28 @@ pub extern "C" fn fz_exit(process: *mut Process, reason_ref: u64) {
     raise(process, RaiseKind::Exit, reason_ref);
 }
 
+/// `System.halt/1`: end the program with `status`. The context's scheduler
+/// records the end, and the calling process ends the way an uncaught raise ends
+/// it, without the failure line and without a handler search: its `try` bodies,
+/// `catch` clauses and `after` blocks never run, and the frames above unwind as
+/// they do for a failed process.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_system_halt(process: *mut Process, status: i64) {
+    assert!(!process.is_null(), "fz_system_halt: no current process");
+    let process = unsafe { &mut *process };
+    assert!(
+        !process.ctx.is_null(),
+        "fz_system_halt: process has no execution context"
+    );
+    let ctx = unsafe { &*process.ctx };
+    let status = status as i32;
+    let halt = ctx.halt.expect("fz_system_halt: halt hook installed");
+    halt(ctx.scheduler, status);
+    process.failed = true;
+    process.exit_status = status;
+}
+
 /// Continue the raise a handler was delivered: raise `value_ref` with the kind
 /// the handler received, as the atom `kind`. The compiler re-raises only what a
 /// handler was delivered, so a kind the runtime never delivers is a fault in

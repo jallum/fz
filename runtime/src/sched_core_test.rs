@@ -274,6 +274,66 @@ fn the_timer_hooks_schedule_and_cancel_through_the_scheduler_handle() {
     timer_cancel_hook::<Recording>()(std::ptr::null_mut(), id);
 }
 
+#[test]
+fn a_halt_stops_the_loop_with_work_still_runnable_and_timers_pending() {
+    let mut s = Recording::new();
+    s.make_runnable(1);
+    s.core.schedule_timer(9, ms(15));
+    s.core.halt(4);
+
+    assert_eq!(next_runnable(&mut s), None);
+    assert!(s.slept.is_empty(), "a halted program does not wait for timers");
+    assert_eq!(s.core.halted(), Some(4));
+}
+
+#[test]
+fn the_first_halt_is_the_programs_end() {
+    let mut core = SchedulingCore::new();
+    assert_eq!(core.halted(), None);
+    core.halt(4);
+    core.halt(0);
+    assert_eq!(core.halted(), Some(4));
+}
+
+#[test]
+fn only_the_main_process_ending_is_the_programs_end() {
+    let mut core = SchedulingCore::new();
+    core.process_ended(MAIN_PID + 1, 7);
+    assert_eq!(core.halted(), None, "a child ending leaves the program running");
+    core.process_ended(MAIN_PID, 3);
+    assert_eq!(core.halted(), Some(3));
+}
+
+#[test]
+fn the_halt_hook_records_the_end_through_the_scheduler_handle() {
+    let mut s = Recording::new();
+    let handle = &mut s as *mut Recording as *mut ();
+
+    halt_hook::<Recording>()(handle, 44);
+
+    assert_eq!(s.core.halted(), Some(44));
+}
+
+/// Main's end is recorded by the one post-quantum step, so every driver that
+/// ends a quantum through it learns the program's status the same way.
+#[test]
+fn the_main_process_exiting_through_end_quantum_is_the_programs_end() {
+    let mut scheduler = Recording::new();
+    let mut main = new_process();
+    main.state = ProcessState::Running;
+    main.pid = MAIN_PID;
+    main.exit_status = 3;
+    let mut child = new_process();
+    child.state = ProcessState::Running;
+    child.pid = MAIN_PID + 1;
+    child.exit_status = 9;
+
+    end_quantum(&mut scheduler, &mut child);
+    assert_eq!(scheduler.core.halted(), None, "a child ending is not the program's end");
+    end_quantum(&mut scheduler, &mut main);
+    assert_eq!(scheduler.core.halted(), Some(3));
+}
+
 // ===== end_quantum ==========================================================
 
 fn new_process() -> Process {

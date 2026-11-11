@@ -10738,11 +10738,15 @@ fn halt_values_of_processes_sharing_one_program(source: &str, count: usize) -> V
     settle_native_product(&mut compiler, root_id);
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
-    let mut runtime = crate::exec::runtime::Runtime::new(&compiled, 1, compiler.telemetry());
-    let pids = (0..count).map(|_| runtime.spawn(program.entry)).collect::<Vec<_>>();
-    runtime.run_until_idle();
-    pids.into_iter()
-        .map(|pid| exits.by_pid(pid).expect("process exit telemetry").halt_value)
+    // A program ends when its main process ends, so each process of the one
+    // compiled program runs as the main of its own run.
+    (0..count)
+        .map(|_| {
+            let mut runtime = crate::exec::runtime::Runtime::new(&compiled, 1, compiler.telemetry());
+            runtime.spawn(program.entry);
+            runtime.run_until_idle();
+            exits.last().expect("process exit telemetry").halt_value
+        })
         .collect()
 }
 

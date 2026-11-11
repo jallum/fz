@@ -17,5 +17,39 @@ defmodule System do
   @spec argv() :: [binary]
   def argv(), do: fz_system_argv()
 
+  @doc """
+  Ends the program at once with status 0, as `halt(0)` does.
+  """
+  @spec halt() :: never
+  def halt(), do: halt(0)
+
+  @doc """
+  Ends the program at once with `status`.
+
+  Any process can halt, and the whole program stops: no other process runs
+  again, and no `catch` or `after` is reached on the way out. Output already
+  printed is flushed first. The operating system keeps the low 8 bits of the
+  status, so `halt(300)` exits with 44. A negative status raises
+  `ArgumentError`, and a status that is not an integer has no matching clause.
+
+  ## Examples
+
+      IO.write("partial")
+      System.halt(3)
+      #=> prints partial, exits with status 3
+
+      try do
+        System.halt(2)
+      after
+        IO.puts("never printed")
+      end
+      #=> exits with status 2
+  """
+  def halt(status) when is_integer(status) and status >= 0, do: fz_system_halt(status)
+
+  def halt(status) when is_integer(status),
+    do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: invalid status\n")
+
   extern "fz" defp fz_system_argv() :: any
+  extern "fz" defp fz_system_halt(integer) :: never
 end
