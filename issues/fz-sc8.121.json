@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T22:02:15Z",
+  "description": "def main(), do: dbg(Map.update!(1, :a, fn x -\u003e x end)) panics the compiler: 'index out of bounds: the len is 0 but the index is 0' at src/compiler2/jobs/runtime_demand.rs:1294 (out.input_demands[index].join_assign), on 44174db13 and d9c9a842c. A compiler panic is a fault whatever the program. Find why input_demands is empty for a clause with params, fix at its source, and pin the program as a fixture (it must raise BadMapError at run time once the BadMapError ticket lands; until then, at least compile).",
+  "id": "fz-sc8.121",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "A Map.update! on a non-map does not panic the compiler",
+  "type": "bug",
+  "updated_at": "2026-11-11T22:02:15Z"
+}
