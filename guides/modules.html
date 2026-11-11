@@ -375,6 +375,21 @@ of Elixir's <code>MapSet</code> (<code>union</code>, <code>intersection</code>,
 <code>equal?</code>, <code>filter</code>, <code>reject</code>, <code>new/2</code>,
 <code>symmetric_difference</code>) is not built.</p>
 
+<p><code>Tuple</code> (<code>lib/tuple.fz</code>) has <code>to_list/1</code>,
+written over <code>elem/2</code> and <code>tuple_size/1</code>; a non-tuple
+raises <code>ArgumentError</code>. The rest of Elixir's <code>Tuple</code>
+(<code>append</code>, <code>delete_at</code>, <code>duplicate</code>,
+<code>insert_at</code>, <code>product</code>, <code>sum</code>) is not built.</p>
+
+<p><code>String.slice/2</code>, <code>String.slice/3</code>,
+<code>String.pad_leading/2,3</code> and <code>String.pad_trailing/2,3</code>
+count graphemes, as in Elixir. A <code>slice/2</code> range with a negative
+step raises <code>ArgumentError</code>, including <code>first..last//-1</code>
+with <code>first &gt; last</code>, which Elixir accepts with a deprecation
+warning. Padding is a binary, whose graphemes are the units, or a non-empty
+list, whose elements are the units; a negative count or empty padding raises
+<code>FunctionClauseError</code>.</p>
+
 <p>Generated qualified calls from source production request runtime
 interfaces the same way imports do, so operator sugar can depend on modules
 such as <code>List</code> without importing those names into every program.</p>

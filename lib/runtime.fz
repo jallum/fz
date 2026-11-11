@@ -23,6 +23,7 @@ alias Stream
 alias String
 alias String.Chars
 alias System
+alias Tuple
 alias Utf8
 
 import Kernel, only: [

@@ -1,0 +1,15 @@
+"éll"
+"éll"
+"éll"
+"hél"
+"llo"
+"hlo"
+"hlo"
+"éo"
+""
+""
+""
+""
+"éx"
+{ArgumentError, "String.slice/2 does not accept ranges with negative steps, got: 0..2//-1"}
+{ArgumentError, "String.slice/2 does not accept ranges with negative steps, got: 4..0//-2"}
