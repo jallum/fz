@@ -3,7 +3,8 @@
   "blocked_by": [
     "fz-3sy.3",
     "fz-3sy.6",
-    "fz-3sy.7"
+    "fz-3sy.7",
+    "fz-sc8.95"
   ],
   "blocks": [],
   "created": "2026-11-11T15:21:29Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Built-in exceptions are declared in lib with Elixir's fields, and raise is Elixir's macro",
   "type": "feature",
-  "updated_at": "2026-11-11T15:21:30Z"
+  "updated_at": "2026-11-11T15:21:31Z"
 }

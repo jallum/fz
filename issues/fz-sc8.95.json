@@ -1,7 +1,9 @@
 {
   "assignee": "fz-da",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-3sy.8"
+  ],
   "created": "2026-11-08T13:06:21Z",
   "description": "Probed at 492b32fe1 for fz-sc8.18: 'defstruct path: nil, modes: [:raw, :read_ahead, :binary]' is error[parse/expected-token]: expected '[', got KwKey(\"path\"). Only the list form 'defstruct [:a, :b]' parses, and every field of a %S{} literal must then be given. Elixir accepts a keyword list of defaults and fills omitted fields from it. fz-sc8.18 fills every File.Stream field explicitly because of this. Parse the keyword form, carry the defaults on the struct's schema, apply them in %S{} construction, with oracle fixtures on all three paths; then File.stream!/1 can drop its explicit defaults.",
   "id": "fz-sc8.95",
@@ -17,5 +19,5 @@
   "status": "open",
   "title": "defstruct takes field defaults",
   "type": "feature",
-  "updated_at": "2026-11-10T21:58:17Z"
+  "updated_at": "2026-11-11T15:21:31Z"
 }
