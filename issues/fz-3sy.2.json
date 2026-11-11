@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-3sy.1"
+  ],
   "blocks": [],
   "created": "2026-11-11T15:21:28Z",
   "description": "Delete MapTag (types/sigs.rs:20) and its 23 tag-reading sites in the type kernel. A struct type is a record whose __struct__ field is the module's atom (%Pt{x: int} = %{__struct__: :\"Elixir.Pt\", x: int}); proven by a scratch kernel test, 14/14 identities, scratchpad proof/scratch_struct_field_encoding.patch. map_top is every map; the six callers meaning every map (resolve.rs:118, dispatch_reachability.rs:323, type_pred.rs:94, semantic.rs:617, :2444, types/mod.rs:521) widen with no change; the protocol target Map (world.rs:3138, module_impl_target_ty) becomes map_top \\ %{__struct__: atom}, so protocols stay struct-first. The runtime predicate's struct axes (runtime_type_predicate.rs, types/mod.rs:3580) read __struct__ in either layout. StructTag's ModuleId dependency moves to struct_module_value_ty. Fixtures: is_map(p), case p do %{x: x}, MapSet unchanged, Enumerable miss on a struct, a Map.put-grown struct dispatching as its struct. Every moved pin reported with mechanism; none edited without authorization. Docs: set-theoretic-types.md, any-value.md, protocols.md, guides. Waits for S1 and for fz-sc8.99 to land (dispatch_matrix files).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A struct is a map type: MapTag goes",
   "type": "task",
-  "updated_at": "2026-11-11T15:21:28Z"
+  "updated_at": "2026-11-11T15:21:29Z"
 }
