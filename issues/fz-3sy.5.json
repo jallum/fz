@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-3sy.4"
+  ],
   "blocks": [],
   "created": "2026-11-11T15:21:28Z",
   "description": "Receiver typed atom (or any): dispatch over modules World has referenced that define f/n; a miss raises UndefinedFunctionError (rescuable), a non-atom raises ArgumentError with Elixir's text. Candidate set is a monotone fact like ProtocolImplProviders, filtered by each module's scope-tier interface for f/n so that no body is defined just to ask. First step, before building: probe whether the filter stays at the interface tier without demanding DefineModule, and count the job trace on a hello-world program. Removes M1's plain-atom compile error.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A call on a plain-atom receiver dispatches over the modules the program can name",
   "type": "feature",
-  "updated_at": "2026-11-11T15:21:28Z"
+  "updated_at": "2026-11-11T15:21:30Z"
 }
