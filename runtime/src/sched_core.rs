@@ -117,13 +117,13 @@ pub enum Disposition {
 
 /// The step after every quantum, for every state. It reads the boundary off
 /// `process`, collects when the heap is due and observes the collection, and
-/// clears the quantum's yield reasons. A halted process is marked Exited and
-/// releases every stub on its MSO chain, since nothing is live. Every
-/// destructor the collection or the exit queued then runs through `scheduler`,
+/// clears the quantum's yield reasons. A halted process is not collected: it
+/// is marked Exited and releases every stub on its MSO chain, since nothing is
+/// live. Every destructor the collection or the exit queued then runs through `scheduler`,
 /// `process.dtors_dispatched` counts them, and an exit is observed last.
 pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Process) -> Disposition {
     let boundary = process.quantum_boundary();
-    if process.needs_boundary_gc() {
+    if boundary != GcBoundary::Exit && process.needs_boundary_gc() {
         let collection = Collection {
             pid: process.pid,
             boundary,

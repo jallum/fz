@@ -281,10 +281,12 @@ reports idle once only that process remains.
 `sched_core::end_quantum(scheduler, process)` is the one step that follows every
 quantum on the JIT and AOT paths, in every state. It reads the boundary off the
 process (`Process::quantum_boundary`: runnable means yield, `Blocked` means park,
-anything else means exit), collects when `Heap::should_gc` holds, clears the
-quantum's yield reasons, and, for a halted process, marks it `Exited` and releases
-every stub on its MSO chain with `Heap::release_resources_at_exit`, since
-nothing is live. The sweep (`procbin::mso_sweep`) decides each stub the same way
+anything else means exit), collects when `Heap::should_gc` holds and the boundary
+is not an exit, clears the quantum's yield reasons, and, for a halted process,
+marks it `Exited` without collecting it and releases every stub on its MSO chain
+with `Heap::release_resources_at_exit`, since nothing is live. Nothing a
+collection would forward is read after the exit, so the heap is released as it
+stands. The sweep (`procbin::mso_sweep`) decides each stub the same way
 after a collection and at exit: a survivor is relinked, a dead ProcBin releases
 its SharedBin, and a dead Resource whose last reference this was queues
 `(closure, payload)` on `heap.pending_dtors`. A collection first forwards the

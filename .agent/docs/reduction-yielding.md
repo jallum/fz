@@ -44,8 +44,9 @@ and every loop still crosses a tail call.
   `src/ir_interp`) own dispatch: install a fresh budget and run the process.
   The scheduling core (`runtime/src/sched_core.rs`) owns the boundary decision:
   the JIT, AOT and interpreter schedulers call `end_quantum` after every
-  quantum, which collects if `Heap::should_gc` holds, runs the destructors of
-  the resources that collection or the exit freed, and returns the process's
+  quantum, which collects a yielding or parked process if `Heap::should_gc`
+  holds (a halting process is not collected), runs the destructors of the
+  resources that collection or the exit sweep freed, and returns the process's
   `Disposition`. A process a caller lends the interpreter, whose heap the caller
   holds refs into, is not collected.
 
@@ -219,7 +220,7 @@ The budget model is identical in the interpreter, JIT, and AOT: the same
 share the boundary collection through `sched_core::end_quantum`. The resume
 carrier differs — a zero-arg continuation closure in compiled code,
 forwarded `resume_fn` + `resume_args` in the interpreter, which charges no
-reductions and so collects only at a park or an exit.
+reductions and so collects only at a park, never at an exit.
 Pure fz code yields automatically by reduction budget. Tests pin both sides:
 allocation-light loops assert `reduction_yields > 0`, and allocation-heavy loops
 with spare budget assert a due collection does not produce a yield before

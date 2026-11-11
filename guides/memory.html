@@ -663,8 +663,8 @@ walks the heap's MSO chain once. Each entry is a ProcBin or Resource stub that
 <em>was</em> in from-space. The forwarding marker Cheney writes into word 0 of
 every copied stub is the entire liveness signal — no separate
 bookkeeping. One function, <code>procbin::mso_sweep</code>, decides every stub,
-after a collection and when a process exits (an exit is the same walk with
-nothing live):</p>
+after a collection and when a process exits (an exit is not collected; it is
+the same walk with nothing live and no to-space):</p>
 
 <pre>
   cur = heap.mso_head

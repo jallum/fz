@@ -395,9 +395,8 @@ fn a_resource_the_process_still_holds_survives_the_collection_undisturbed() {
     assert_eq!(process.dtors_dispatched, 0);
 }
 
-/// Exit is the same decision with nothing live: a halted process whose heap is
-/// not due for a collection still has every resource's destructor dispatched,
-/// and it is marked Exited.
+/// A halting process has every resource's destructor dispatched and is marked
+/// Exited, with no collection.
 #[test]
 fn a_halted_process_dispatches_the_destructor_of_every_resource_it_held() {
     let mut scheduler = Recording::new();
@@ -444,22 +443,25 @@ fn an_exit_is_observed_after_its_destructors_have_run() {
     assert_eq!(scheduler.exits, vec![(6, 2)]);
 }
 
-/// A halted process whose heap is due is collected like any other, and the
-/// resources that collection freed are dispatched exactly once: the exit sweep
-/// that follows finds nothing left.
+/// A halting process is not collected, even when its heap is due: its
+/// resources are still released by the exit sweep and each destructor runs
+/// exactly once.
 #[test]
-fn a_halted_process_that_is_due_dispatches_each_destructor_once() {
+fn a_halting_process_is_not_collected_yet_runs_each_destructor_once() {
     let mut scheduler = Recording::new();
     let mut process = new_process();
     process.state = ProcessState::Running;
     make_resource(&mut process, 9, 3);
     allocate_until_due(&mut process);
+    assert!(process.needs_boundary_gc());
 
     let disposition = end_quantum(&mut scheduler, &mut process);
 
     assert_eq!(disposition, Disposition::Exited);
-    assert_eq!(scheduler.collections.len(), 1);
-    assert_eq!(scheduler.collections[0].boundary, GcBoundary::Exit);
+    assert!(
+        scheduler.collections.is_empty(),
+        "an exit collects nothing, however due the heap is"
+    );
     assert_eq!(scheduler.destructors.len(), 1);
     assert_eq!(process.dtors_dispatched, 1);
 }

@@ -192,9 +192,9 @@ raw event:    fz.runtime.gc
 signature:    (&Collection)
 ```
 
-`Collection` is `{ pid, boundary: Yield | Park | Exit, stats: GcStats }`.
-`write_line` renders `pid` and the `boundary` as `"yield"`, `"park"` or
-`"exit"`, then these `GcStats` fields as numbers:
+`Collection` is `{ pid, boundary: GcBoundary, stats: GcStats }`; a halting
+process is not collected, so the boundary of a collection is `Yield` or `Park`.
+`write_line` renders `pid` and the `boundary` as `"yield"` or `"park"`, then these `GcStats` fields as numbers:
 
 - `copied_bytes`: bytes the pass copied;
 - `live_bytes`: bytes in use once the pass finished (the bytes copied);
@@ -211,17 +211,17 @@ callers and the heap's unit tests read it there. Every scheduler's
 `tests/fixture_matrix.rs`
 (`a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run`)
 pins fixture 00901: 8 collections on `run` (seven child yields, one parent
-park) copying 1804848 bytes in all, and 2 on `interp` (the parent's park, the
-child's exit) copying 592, since the interpreter charges no reductions and
+park) copying 2005344 bytes in all, and 1 on `interp` (the parent's park)
+copying 592, since the interpreter charges no reductions and
 never yields mid-run. Neither parent collects after its graft: the gifts raised
 its baseline to its fill.
 The same file pins fixture 00910 (`interp`: the parent's park at 48 bytes;
-`run`: its park at 288 bytes, then its exit at 0) and fixture 00911 (`interp`:
-the parent's park at 0 bytes; `run`: six parent yields copying 10848, 32192,
-64192, 128192, 256192 and 320176 bytes while it builds the list). The
+`run`: its park at 288 bytes) and fixture 00911 (`interp`:
+the parent's park at 0 bytes; `run`: six parent yields copying 12992, 38592,
+76992, 153792, 307392 and 320128 bytes while it builds the list). The
 run-ended equality is pinned for both fixtures on `run`, `interp` and `build`.
-`sched_core_test.rs` pins the `Collection` and the exit that `end_quantum`
-observes and the destructors it dispatches.
+`sched_core_test.rs` pins the `Collection` that `end_quantum` observes, that a
+halting process is not collected, and the exit it observes and the destructors it dispatches.
 
 ## Built binaries
 

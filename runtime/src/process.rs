@@ -35,7 +35,7 @@ pub enum GcBoundary {
     Yield,
     /// The process parked on a receive that found nothing.
     Park,
-    /// The process halted.
+    /// The process halted. It is released, never collected.
     Exit,
 }
 

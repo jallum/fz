@@ -1,10 +1,10 @@
 #---
-# purpose: "three resources still held when main finishes run their destructors, newest first, after main's own output, on the interpreter, the JIT and the AOT, even when allocation has made the exit collection due"
+# purpose: "three resources still held when main finishes run their destructors, newest first, after main's own output, on the interpreter, the JIT and the AOT, even when allocation has made its heap due for a collection"
 #---
 #
 # `main` makes three resources and keeps them in scope while it concatenates
 # enough strings that its heap is due for collection when it returns. The
-# process exits with the resources dead: the exit sweep queues one destructor
+# process exits uncollected with the resources dead: the exit sweep queues one destructor
 # per resource and the scheduler runs them after the `dbg` line.
 extern "C" defp fz_resource_test_print_dtor(integer) :: nil
 def dwrap(x), do: fz_resource_test_print_dtor(x)

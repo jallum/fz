@@ -3072,8 +3072,8 @@ const RUNTIME_TELEMETRY_PATHS: [(FixtureMatrixPath, &str); 3] = [
 fn a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path() {
     // The resource is dropped inside `drop_one`, then 20000 list cells are
     // built. The JIT collects while they are built and finds the stub dead; the
-    // interpreter, which never yields, collects as the process exits and
-    // finds it dead then. One destructor either way.
+    // interpreter, which never yields, is not collected and its exit sweep
+    // releases the stub. One destructor either way.
     let midlife = FixtureCase::new(
         "fixtures/00906_a_resource_dropped_mid_run_runs_its_destructor_once_when_a_collection_frees_it.fz",
     );
@@ -3093,7 +3093,7 @@ fn a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path() {
     // Three resources are still held when main returns; the exit sweep queues
     // one destructor each.
     let at_exit = FixtureCase::new(
-        "fixtures/00907_resources_alive_at_exit_run_their_destructors_when_the_exit_collection_sweeps_them.fz",
+        "fixtures/00907_resources_alive_at_exit_run_their_destructors_when_the_exit_sweep_releases_them.fz",
     );
     for (path, label) in RUNTIME_TELEMETRY_PATHS {
         assert_eq!(
@@ -3166,7 +3166,7 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     // complete. The parent is collected once as it parks on its receive (640
     // bytes, the closures its park record holds). The gifts it grafts afterwards
     // raise its baseline to its fill, so it is not collected again, and the
-    // child's exit finds nothing due.
+    // child's exit is not a collection.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
     let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
     assert_eq!(
@@ -3182,17 +3182,17 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     );
 
     // The interpreter never yields, so the child builds and sends its whole
-    // log inside one quantum and is collected only as it exits, when nothing
-    // is live (0 bytes). The parent is collected as it parks (592 bytes, the
+    // log inside one quantum and is never collected: it exits without a
+    // collection. The parent is collected as it parks (592 bytes, the
     // values its parked receive holds: the JIT's 640 also counts the closures
     // its park record holds); the gifts it grafts afterwards are baseline, so
-    // its exit collects nothing.
+    // it is not collected again.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
     let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
     assert_eq!(
         (count("yield"), count("park"), count("exit")),
-        (0, 1, 1),
-        "interp: the parent's park, then the child's exit"
+        (0, 1, 0),
+        "interp: only the parent's park"
     );
     assert_eq!(
         events.iter().map(|e| e.copied_bytes).sum::<usize>(),
@@ -3329,9 +3329,9 @@ fn many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_mis
     }
 
     // The interpreter collects the parent once, as it parks (48 bytes live).
-    // The JIT collects it as it parks (288 bytes, which include the closures
-    // its park record holds) and again as it exits after grafting 99 gifts,
-    // when nothing is live. Neither path collects a child.
+    // The JIT collects it once as it parks (288 bytes, which include the
+    // closures its park record holds); the parent's exit after grafting 99
+    // gifts is not a collection. Neither path collects a child.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
     assert_eq!(
         collections_as_tuples(&events),
@@ -3341,8 +3341,8 @@ fn many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_mis
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
     assert_eq!(
         collections_as_tuples(&events),
-        vec![(1, "park", 288), (1, "exit", 0)],
-        "run: the parent's park, then its exit"
+        vec![(1, "park", 288)],
+        "run: the parent's park only; its exit is not collected"
     );
 }
 
@@ -3412,7 +3412,7 @@ fn a_built_binary_reports_the_same_probes_collections_and_destructors_as_run() {
         "fixtures/00910_many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued.fz",
         "fixtures/00911_two_processes_pass_a_large_list_back_and_forth_and_each_message_crosses_in_one_gift.fz",
         "fixtures/00906_a_resource_dropped_mid_run_runs_its_destructor_once_when_a_collection_frees_it.fz",
-        "fixtures/00907_resources_alive_at_exit_run_their_destructors_when_the_exit_collection_sweeps_them.fz",
+        "fixtures/00907_resources_alive_at_exit_run_their_destructors_when_the_exit_sweep_releases_them.fz",
     ] {
         let fixture = FixtureCase::new(fixture);
         let name = fixture.display_path().display().to_string();
