@@ -11,7 +11,7 @@
     "fz-3ul.5"
   ],
   "created": "2026-11-08T00:15:24Z",
-  "description": "Plan: /Users/j5n/Workspace/fz-exceptions.html, decision 4, ticket 4. Blocked by fz-sc8.77 (a struct carries __struct__ at runtime).\n\nBuild: defexception fields -\u003e a struct with __exception__: true, overridable message/1 (when there is a message field) and exception/1 (binary -\u003e message:, list -\u003e struct!). raise Mod -\u003e Mod.exception([]); raise Mod, attrs -\u003e Mod.exception(attrs); raise of a value that is neither binary, atom nor exception struct raises ArgumentError with Elixir's text. Exception.message/1 calls the module's message/1. is_exception/1 guard.\n\nAcceptance (interp, run, build; elixir oracle):\n- defexception with a message field: raise Mod, message: \"x\" rescued by alias, e.message is \"x\"; default message when raised bare.\n- custom message/1 used by the uncaught line (`** (Mod) \u003ccustom\u003e`) and by Exception.message/1.\n- raise Mod, attrs builds the struct through exception/1; a user-defined exception/1 is honoured.\n- raise 42 -\u003e ArgumentError \"raise/1 and reraise/2 expect a module name, string or exception as the first argument, got: 42\".\n- is_exception/1 true for a raised struct, false for a plain map with __struct__ only.\n- exceptions doc gains the struct section; guides updated if they mention exceptions.\n- gate green as in the epic.",
+  "description": "Plan: /Users/j5n/Workspace/fz-structs-and-module-calls.html (approved 2026-11-11) supersedes /Users/j5n/Workspace/fz-3ul.4.html. Prerequisites are epic fz-3sy: structs are maps, calls on a module value, defoverridable, field defaults (fz-sc8.95), built-in exceptions in lib with raise as Elixir's macro (fz-3sy.8).\n\nBuild, as Elixir's kernel.ex: defexception fields -\u003e defstruct([__exception__: true] ++ fields) plus defoverridable exception/1 (binary -\u003e message:, list -\u003e struct!) and message/1 (when there is a message field). Exception.message/1 is e.__struct__.message(e), a module-value call. is_exception/1 guard. The uncaught banner through message/1 is fz-3sy.9, after this.\n\nAcceptance (interp, run, build; elixir oracle):\n- defexception with a message field: raise Mod, message: \"x\" rescued by alias, e.message is \"x\"; default message when raised bare.\n- custom message/1 used by Exception.message/1.\n- raise Mod, attrs builds the struct through exception/1; a user-defined exception/1 is honoured.\n- raise 42 -\u003e ArgumentError \"raise/1 and reraise/2 expect a module name, string or exception as the first argument, got: 42\".\n- is_exception/1 true for a raised struct, false for a plain map with __struct__ only.\n- exceptions doc gains the struct section; guides updated if they mention exceptions.\n- gate green.",
   "id": "fz-3ul.4",
   "labels": [],
   "parent": "fz-3ul",
@@ -19,5 +19,5 @@
   "status": "open",
   "title": "defexception, raise Mod, attrs and Exception.message/1",
   "type": "feature",
-  "updated_at": "2026-11-11T15:21:31Z"
+  "updated_at": "2026-11-11T15:21:45Z"
 }
