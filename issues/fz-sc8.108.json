@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T15:16:50Z",
+  "description": "Found while building fz-sc8.99. Fixture 00567's canon check finds pairs of distinct type ids that are mutually subtypes and render identically. The pairs are one callable, Enum.reduce/3#lambda@0/2 over Enum.reverse/1#lambda@0/2, carried with differently instantiated surfaces, e.g. (a2_p0,a2_p1)-\u003ea2_r and (any, a2_p1_v1|[])-\u003e{:cont|:halt|:suspend,..}. The defect exists at d9c9a842c. fz-sc8.99 adds the type %{1: atom} beside %{1: :a}, and that type inherits the same duplicate pair, which raised the mutually-subtype distinct-id ceiling on 00567 from 14 to 15 (user-approved re-pin). Fix at construction: a closure identity is interned to one id regardless of the surface it is carried with, or the surface variants are collapsed by the calculator. Then lower the 00567 ceiling to its new count. Evidence: the builder's probe in the fz-sc8.99 run (scratchpad p99/).",
+  "id": "fz-sc8.108",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "One closure has one type id whatever surface it is carried with",
+  "type": "bug",
+  "updated_at": "2026-11-11T15:16:50Z"
+}
