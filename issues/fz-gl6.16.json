@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T15:26:17Z",
+  "description": "runtime/src/any_value.rs:801 pub fn is_heap_kind(tag: u64) has no caller in runtime/src or src (grep at d1913f2ec). ValueKind::is_heap answers the same question for the typed kind.\n\nDone when: the function is deleted and nothing else changes; full gate green (cargo fmt --all -- --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace --all-targets --no-fail-fast -- --test-threads=1; cargo test --workspace --doc); commit in Why / What changed / Verification form; no co-author trailer, no attribution line.",
+  "id": "fz-gl6.16",
+  "labels": [],
+  "parent": "fz-gl6",
+  "priority": 4,
+  "status": "open",
+  "title": "is_heap_kind is deleted",
+  "type": "task",
+  "updated_at": "2026-11-11T15:26:17Z"
+}
