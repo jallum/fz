@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T19:12:01Z",
+  "description": "Found while costing fz-sc8.14: String.duplicate(\"ab\", 80000) aborts with 'thread main has overflowed its stack' on fz2 run (ad21e1635). lib/string.fz writes duplicate(s, n) as s \u003c\u003e duplicate(s, n - 1), which is not tail recursive. Elixir's duplicate/2 is :binary.copy/2. Write it so its depth does not grow with n (an accumulator, or doubling), and test it at a count well past the old overflow point on interp, run and build. Its cost then depends on the binary append fix in the ticket 'Walking or building a binary costs time linear in its length'.",
+  "id": "fz-sc8.112",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "String.duplicate/2 does not overflow the stack for large counts",
+  "type": "bug",
+  "updated_at": "2026-11-11T19:12:01Z"
+}
