@@ -11,9 +11,15 @@
   "id": "fz-sc8.35",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "2026-11-10: folded into fz-3sy.4 (calls on a module value), with the user's approval. Its Cmp/via(m, a, b) example becomes one of fz-3sy.4's fixtures. fz-sc8.36 now waits on fz-3sy.4.",
+      "timestamp": "2026-11-11T19:01:40Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "A module name is a value, and a call through it reaches that module",
   "type": "feature",
-  "updated_at": "2026-11-07T21:43:14Z"
+  "updated_at": "2026-11-11T19:01:40Z"
 }
