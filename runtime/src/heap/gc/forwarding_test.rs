@@ -1,9 +1,9 @@
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST_BITS, bitstring_bit_len, bitstring_bytes_ptr,
-    bitstring_header_word, closure_capture_set, closure_capture_value, closure_denotation, closure_header_word,
-    heap_object_word, list_addr_from_tagged, map_count, map_destination_header_word, map_header_word,
-    struct_addr_from_tagged, struct_header_word, struct_schema_id,
+    AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST_BITS, MapDestinationKind, bitstring_bit_len,
+    bitstring_bytes_ptr, bitstring_header_word, closure_capture_set, closure_capture_value, closure_denotation,
+    closure_header_word, heap_object_word, list_addr_from_tagged, map_count, map_destination_header_word,
+    map_header_word, struct_addr_from_tagged, struct_header_word, struct_schema_id,
 };
 use crate::heap::SHARED_BIN_THRESHOLD_BYTES;
 use crate::heap::{Heap, SIZE_TABLE, Schema, SchemaRegistry};
@@ -112,11 +112,19 @@ fn live_headers_of_every_kind_have_a_clear_low_nibble() {
         assert_eq!(map_header_word(count) & LOW_NIBBLE, 0, "map of {count}");
     }
     for (capacity, filled) in [(0usize, 0usize), (1, 1), (8, 8), (15, 3), (4096, 4095)] {
-        assert_eq!(
-            map_destination_header_word(capacity, filled) & LOW_NIBBLE,
-            0,
-            "map destination {filled}/{capacity}"
-        );
+        for kind in [
+            MapDestinationKind::Build,
+            MapDestinationKind::Update {
+                missed: true,
+                struct_base: true,
+            },
+        ] {
+            assert_eq!(
+                map_destination_header_word(capacity, filled, kind) & LOW_NIBBLE,
+                0,
+                "map destination {filled}/{capacity} {kind:?}"
+            );
+        }
     }
     for (denotation, captured, halt, arity) in [
         (0, 0, 0, 0),

@@ -29,7 +29,7 @@
 //! it, and `Kernel.raise/2` calls `fz_raise`.
 
 use crate::any_value::debug::render_value;
-use crate::any_value::{AnyValue, AnyValueRef, ValueKind, map_addr_from_tagged, map_count, map_entry};
+use crate::any_value::{AnyValue, AnyValueRef, ValueKind, map_addr_from_tagged};
 use crate::exec_ctx::ExecCtx;
 use crate::ir_runtime::{bitstring_like_word, fz_tuple_elem, fz_tuple_size};
 use crate::park::materialize_outcome_closure;
@@ -121,8 +121,8 @@ pub fn failure_line(process: *mut Process, kind: RaiseKind, value: AnyValueRef) 
     }
 }
 
-/// The exception's name atom, when `value` is an exception: a map flagged
-/// `__exception__: true` whose `__struct__` is an atom. This is the one
+/// The exception's name atom, when `value` is an exception: a map, in either
+/// layout, flagged `__exception__: true` whose `__struct__` is an atom. This is the one
 /// judgement of what counts as an exception; `rescue` dispatches on its answer.
 pub fn exception_name(process: *mut Process, value: AnyValue) -> Option<AnyValue> {
     let is_exception =
@@ -136,13 +136,17 @@ fn exception_message(process: *mut Process, value: AnyValue) -> Option<String> {
     binary_text(exception_field(process, value, "message")?)
 }
 
-/// One field of a map by atom key; `None` when `value` is not a map or lacks it.
+/// One field of a map, in either layout, by atom key; `None` when `value` is
+/// not a map or lacks it.
 fn exception_field(process: *mut Process, value: AnyValue, name: &str) -> Option<AnyValue> {
-    let map = map_addr_from_tagged(value.heap_object_word()?)?;
-    (0..unsafe { map_count(map) })
-        .map(|index| unsafe { map_entry(map, index) })
-        .find(|(key, _)| atom_named(process, *key, name))
-        .map(|(_, field)| field)
+    let AnyValue::HeapRef(value) = value else {
+        return None;
+    };
+    let process = unsafe { process.as_mut()? };
+    let key = AnyValue::atom(process.node.intern_atom(name));
+    let layout = process.heap.map_layout(value)?;
+    let field = process.heap.map_view_get(layout, key)?;
+    AnyValue::from_ref(field).ok()
 }
 
 fn atom_named(process: *mut Process, value: AnyValue, name: &str) -> bool {

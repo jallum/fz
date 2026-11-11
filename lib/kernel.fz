@@ -887,7 +887,7 @@ defmodule Kernel do
   def map_size(map :: map), do: fz_map_count(map)
   def map_size(map), do: raise(BadMapError, "expected a map, got:\n\n    " <> inspect(map) <> "\n")
 
-  extern "C" defp fz_map_count(any) :: integer
+  extern "fz" defp fz_map_count(any) :: integer
 
   @doc """
   Returns the number of elements in `tuple`.

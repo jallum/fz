@@ -21,8 +21,8 @@ use crate::dispatch_matrix::pattern::{
 };
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
-    BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DirectCallTarget, ExternAbi,
-    ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FnBuilder, FnCategory, FnId,
+    BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DestMapSeed, DirectCallTarget,
+    ExternAbi, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FnBuilder, FnCategory, FnId,
     InitTokenId, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
 };
 use crate::ground_value::GroundValue;
@@ -1188,8 +1188,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let token = ctx.fresh_token();
                     let (map, _) = ctx.emit_let(Prim::DestMapBegin {
                         token,
-                        base: None,
-                        extra: entries.len() + usize::from(quoted_span.is_some()),
+                        seed: DestMapSeed::Capacity(entries.len() + usize::from(quoted_span.is_some())),
                     });
                     let mut token = token;
                     for (key, item) in entries {
@@ -1209,8 +1208,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         let span_token = ctx.fresh_token();
                         let (span_map, _) = ctx.emit_let(Prim::DestMapBegin {
                             token: span_token,
-                            base: None,
-                            extra: 3,
+                            seed: DestMapSeed::Capacity(3),
                         });
                         let mut span_token = span_token;
                         for (key, value) in super::super::source::quoted_span_entries(*span) {
@@ -1251,13 +1249,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let (var, _) = ctx.emit_let(Prim::DestMapFreeze { map, token });
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
-                BackendStep::MapUpdate { value, base, entries } => {
+                BackendStep::MapUpdate {
+                    value,
+                    ok,
+                    base,
+                    entries,
+                } => {
                     let base = self.env_runtime_var(ctx, executable, env, *base);
                     let token = ctx.fresh_token();
                     let (map, _) = ctx.emit_let(Prim::DestMapBegin {
                         token,
-                        base: Some(base),
-                        extra: entries.len(),
+                        seed: DestMapSeed::Update(base),
                     });
                     let mut token = token;
                     for (key, item) in entries {
@@ -1274,6 +1276,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         token = next;
                     }
                     let (var, _) = ctx.emit_let(Prim::DestMapFreeze { map, token });
+                    let (missed, _) = ctx.emit_let(Prim::IsMapMiss(var));
+                    let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
+                    let (ok_var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, missed, false_v));
+                    self.bind_runtime_value(ctx, executable, env, *ok, ok_var);
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Struct {
@@ -3275,7 +3281,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         state.values.insert(*result, NativeBoundValue::Runtime(value));
                     }
                 }
-                let (is_miss, _) = ctx.emit_let(Prim::IsMatcherMapMiss(value));
+                let (is_miss, _) = ctx.emit_let(Prim::IsMapMiss(value));
                 let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
                 let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, is_miss, false_v));
                 var

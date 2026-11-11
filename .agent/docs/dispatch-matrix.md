@@ -1288,7 +1288,7 @@ DispatchMatrix has three layers that must stay separate:
   that value is `nil`; the miss branch records absence. A failed empty-list
   question means "not empty list", not "cons".
 - **Backend emission:** the current IR can still use `TypeTest`, equality,
-  `IsListCons`, `IsEmptyList`, or `MatcherMapGet` plus `IsMatcherMapMiss`.
+  `IsListCons`, `IsEmptyList`, or `MatcherMapGet` plus `IsMapMiss`.
   Those names are lowering choices, not DispatchMatrix source vocabulary.
 
 Future dispatch changes should add producers on top of this model instead of

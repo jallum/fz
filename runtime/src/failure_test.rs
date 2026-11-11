@@ -75,6 +75,29 @@ fn a_value_that_is_not_an_exception_prints_as_an_erlang_error() {
     });
 }
 
+/// A struct is a map too, so a struct flagged `__exception__: true` is judged
+/// an exception by the same reading of its keys.
+#[test]
+fn a_struct_flagged_as_an_exception_is_one() {
+    with_process(|process| {
+        let schema = process.heap.register_schema(Schema::named_struct(
+            crate::module_name::ModuleName::from_segments(vec!["Overdrawn".to_string()]),
+            ["__exception__".to_string(), "message".to_string()],
+        ));
+        let flag = atom(process, "true");
+        let message = binary(process, "balance would be -5");
+        let object = process.heap.alloc_struct(schema);
+        unsafe {
+            process.heap.write_field_slot(object, 0, flag);
+            process.heap.write_field_slot(object, 8, message);
+        }
+        let value = AnyValue::from_ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, object).expect("struct ref"))
+            .expect("struct value");
+        assert_eq!(exception_name(process, value), Some(atom(process, "Elixir.Overdrawn")));
+        assert_eq!(error_line(process, value), "** (Overdrawn) balance would be -5");
+    });
+}
+
 #[test]
 fn a_struct_shaped_map_without_the_exception_flag_is_not_an_exception() {
     with_process(|process| {

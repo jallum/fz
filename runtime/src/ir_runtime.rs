@@ -26,7 +26,7 @@ use crate::any_value::debug::{Limit, render_value, render_with_limit};
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_LAZY_CONT, ValueKind,
     closure_addr_from_tagged, closure_capture_value, closure_captured_count, closure_denotation, closure_fn_ptr,
-    closure_halt_kind, heap_object_word, map_addr_from_tagged, map_count, object_size, procbin_addr_from_tagged,
+    closure_halt_kind, heap_object_word, map_addr_from_tagged, object_size, procbin_addr_from_tagged,
     struct_addr_from_tagged, struct_schema_id,
 };
 use crate::bitstr::{
@@ -36,7 +36,6 @@ use crate::bitstr::{
 use crate::exec_ctx::ExecCtx;
 use crate::heap::{
     AllocStat, BITSTRING_READER_SCHEMA, BITSTRING_RESULT_SCHEMA, closure_capture_ref, list_head_ref, list_tail_ref,
-    map_entry_refs,
 };
 use crate::module_name::STRUCT_MODULE_FIELD;
 use crate::park::{MatcherFn, ParkRecord};
@@ -1592,21 +1591,15 @@ pub extern "C" fn fz_map_empty(process: *mut Process) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_dest_begin(process: *mut Process, extra: u32) -> u64 {
-    map_ref_word_from_bits(
-        (unsafe { &mut *process })
-            .heap
-            .alloc_map_destination(None, extra as usize),
-    )
+    map_ref_word_from_bits((unsafe { &mut *process }).heap.alloc_map_destination(extra as usize))
 }
 
+/// A destination for `%{base | k: v, ...}`: `base`'s entries, in either of its
+/// layouts, which the puts replace.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_dest_begin_update(process: *mut Process, base_ref_word: u64, extra: u32) -> u64 {
+pub extern "C" fn fz_map_dest_begin_update(process: *mut Process, base_ref_word: u64) -> u64 {
     let base = any_value_ref_from_word(base_ref_word, "fz_map_dest_begin_update base");
-    map_ref_word_from_bits(
-        (unsafe { &mut *process })
-            .heap
-            .alloc_map_destination(Some(base), extra as usize),
-    )
+    map_ref_word_from_bits((unsafe { &mut *process }).heap.alloc_map_update(base))
 }
 
 #[unsafe(no_mangle)]
@@ -1637,10 +1630,16 @@ pub extern "C" fn fz_map_dest_put_ref(
     unsafe { (*process).heap.map_destination_put(dest_bits, key, value) };
 }
 
+/// The published map, or the null ref when an update destination was asked
+/// for a key its base lacks; the caller tests for it and raises `KeyError`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_dest_freeze(process: *mut Process, dest_ref_word: u64) -> u64 {
     let dest_bits = map_bits_from_ref_word(dest_ref_word, "fz_map_dest_freeze dest");
-    map_ref_word_from_bits((unsafe { &mut *process }).heap.map_destination_freeze(dest_bits))
+    (unsafe { &mut *process })
+        .heap
+        .map_destination_freeze(dest_bits)
+        .unwrap_or_else(AnyValueRef::null)
+        .raw_word()
 }
 
 #[unsafe(no_mangle)]
@@ -1655,18 +1654,6 @@ fn fz_map_get_value_ref(process: *mut Process, map: AnyValueRef, key: AnyValueRe
         let _ = key;
         return nil_atom_ref().raw_word();
     }
-    if map.tag() == ValueKind::STRUCT && key.tag() == ValueKind::ATOM {
-        let atom_id = key.load_atom().expect("struct field atom key");
-        let field_name = (unsafe { &*process })
-            .node
-            .atom_name(atom_id as u32)
-            .unwrap_or_else(|| panic!("unknown field atom id {}", atom_id));
-        return (unsafe { &mut *process })
-            .heap
-            .read_struct_named_field_ref(map, &field_name)
-            .expect("fz_map_get_ref struct field")
-            .raw_word();
-    }
     (unsafe { &mut *process })
         .heap
         .read_map_value_ref(map, key)
@@ -1679,19 +1666,6 @@ fn fz_map_get_scalar_key_ref(process: *mut Process, map: AnyValueRef, key: AnyVa
     if map.tag() == ValueKind::RESOURCE {
         let _ = key;
         return nil_atom_ref().raw_word();
-    }
-    if map.tag() == ValueKind::STRUCT
-        && let AnyValue::Atom(atom_id) = key
-    {
-        let field_name = (unsafe { &*process })
-            .node
-            .atom_name(atom_id)
-            .unwrap_or_else(|| panic!("unknown field atom id {}", atom_id));
-        return (unsafe { &mut *process })
-            .heap
-            .read_struct_named_field_ref(map, &field_name)
-            .expect("fz_map_get scalar struct field")
-            .raw_word();
     }
     (unsafe { &mut *process })
         .heap
@@ -1745,10 +1719,19 @@ pub extern "C" fn fz_map_delete(process: *mut Process, map_ref: u64, key_ref: u6
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_count(map_ref_word: u64) -> i64 {
+pub extern "C" fn fz_map_count(process: *mut Process, map_ref_word: u64) -> i64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_count map");
-    let addr = map.map_addr().expect("fz_map_count expects map");
-    unsafe { map_count(addr as *const u8) as i64 }
+    let heap = &(unsafe { &*process }).heap;
+    heap.map_view_count(heap.expect_map_layout(map, "fz_map_count")) as i64
+}
+
+/// Whether `map`, in either layout, holds `key`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_has_key(process: *mut Process, map_ref_word: u64, key_ref_word: u64) -> u64 {
+    let map = any_value_ref_from_word(map_ref_word, "fz_map_has_key map");
+    let key = any_value_from_ref_word(key_ref_word, "fz_map_has_key key");
+    let heap = &(unsafe { &*process }).heap;
+    u64::from(heap.map_view_has_key(heap.expect_map_layout(map, "fz_map_has_key"), key))
 }
 
 /// The arity of a tuple, or `None` for any other value. Structs share the
@@ -1802,31 +1785,35 @@ pub extern "C" fn fz_list_length(list_ref_word: u64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_entry_key(map_ref_word: u64, index: i64) -> u64 {
-    let map = any_value_ref_from_word(map_ref_word, "fz_map_entry_key map");
-    let addr = map.map_addr().expect("fz_map_entry_key expects map");
-    let index = usize::try_from(index).expect("fz_map_entry_key index must be non-negative");
-    let count = unsafe { map_count(addr as *const u8) };
-    assert!(index < count, "fz_map_entry_key index out of bounds");
-    let (key, _) = unsafe { map_entry_refs(addr, index) };
-    key.raw_word()
+pub extern "C" fn fz_map_entry_key(process: *mut Process, map_ref_word: u64, index: i64) -> u64 {
+    map_entry_refs_at(process, map_ref_word, index, "fz_map_entry_key")
+        .0
+        .raw_word()
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_entry_value(map_ref_word: u64, index: i64) -> u64 {
-    let map = any_value_ref_from_word(map_ref_word, "fz_map_entry_value map");
-    let addr = map.map_addr().expect("fz_map_entry_value expects map");
-    let index = usize::try_from(index).expect("fz_map_entry_value index must be non-negative");
-    let count = unsafe { map_count(addr as *const u8) };
-    assert!(index < count, "fz_map_entry_value index out of bounds");
-    let (_, value) = unsafe { map_entry_refs(addr, index) };
-    value.raw_word()
+pub extern "C" fn fz_map_entry_value(process: *mut Process, map_ref_word: u64, index: i64) -> u64 {
+    map_entry_refs_at(process, map_ref_word, index, "fz_map_entry_value")
+        .1
+        .raw_word()
+}
+
+fn map_entry_refs_at(
+    process: *mut Process,
+    map_ref_word: u64,
+    index: i64,
+    context: &str,
+) -> (AnyValueRef, AnyValueRef) {
+    let map = any_value_ref_from_word(map_ref_word, context);
+    let heap = &mut (unsafe { &mut *process }).heap;
+    let layout = heap.expect_map_layout(map, context);
+    let index = usize::try_from(index).unwrap_or_else(|_| panic!("{context}: index must be non-negative"));
+    heap.map_view_entry_refs(layout, index)
 }
 
 fn map_put_slot_value(process: *mut Process, map_ref_word: u64, key: AnyValue, value: AnyValue) -> u64 {
-    let map_bits = map_bits_from_ref_word(map_ref_word, "map_put map");
-    let new_map_bits = (unsafe { &mut *process }).heap.map_put_slot_bits(map_bits, key, value);
-    map_ref_word_from_bits(new_map_bits)
+    let map = any_value_ref_from_word(map_ref_word, "map_put map");
+    (unsafe { &mut *process }).heap.map_put_slot(map, key, value).raw_word()
 }
 
 #[unsafe(no_mangle)]
@@ -2131,38 +2118,20 @@ pub extern "C" fn fz_struct_get_field_ref(process: *mut Process, struct_ref_word
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_struct_get_named_field_ref(process: *mut Process, value_ref_word: u64, field_atom_id: u64) -> u64 {
     let value_ref = any_value_ref_from_word(value_ref_word, "fz_struct_get_named_field_ref");
-    if value_ref.tag() == ValueKind::MAP {
-        return fz_map_get_atom_key_ref(process, value_ref_word, field_atom_id);
-    }
-    let field_name = (unsafe { &*process })
-        .node
-        .atom_name(field_atom_id as u32)
-        .unwrap_or_else(|| panic!("unknown field atom id {}", field_atom_id));
-    if value_ref.tag() == ValueKind::RESOURCE && field_name == "value" {
+    if value_ref.tag() == ValueKind::RESOURCE {
+        let field_name = (unsafe { &*process }).node.atom_name(field_atom_id as u32);
+        assert_eq!(field_name.as_deref(), Some("value"), "a resource's one field is value");
         return resource_payload_ref(value_ref).raw_word();
     }
-    (unsafe { &mut *process })
-        .heap
-        .read_struct_named_field_ref(value_ref, &field_name)
-        .expect("fz_struct_get_named_field_ref")
-        .raw_word()
+    fz_map_get_atom_key_ref(process, value_ref_word, field_atom_id)
 }
 
-/// The module a struct value belongs to, as a value ref: the atom of its
-/// schema identity (`Elixir.Pt`). A map answers its `__struct__` entry. The
-/// result crosses the extern boundary as a reference like every other
-/// value-returning entry: a struct's module atom is boxed, a map's entry is
-/// returned in place.
+/// The module a struct value belongs to, as a value ref: its `__struct__`
+/// key, read the same way in either map layout.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_struct_module(process: *mut Process, value_ref_word: u64) -> u64 {
-    let value_ref = any_value_ref_from_word(value_ref_word, "fz_struct_module");
-    if value_ref.tag() == ValueKind::MAP {
-        let key = unsafe { &*process }.node.intern_atom(STRUCT_MODULE_FIELD);
-        return fz_map_get_atom_key_ref(process, value_ref_word, key as u64);
-    }
-    let heap = &mut unsafe { &mut *process }.heap;
-    let module = heap.struct_module_atom(value_ref).expect("fz_struct_module");
-    heap.box_any_value_ref(module).raw_word()
+    let key = unsafe { &*process }.node.intern_atom(STRUCT_MODULE_FIELD);
+    fz_map_get_atom_key_ref(process, value_ref_word, key as u64)
 }
 
 #[unsafe(no_mangle)]

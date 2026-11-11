@@ -1,6 +1,6 @@
 //! Strict struct layout descriptors + per-process registry.
 
-use crate::module_name::ModuleName;
+use crate::module_name::{ModuleName, STRUCT_MODULE_FIELD};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
@@ -156,13 +156,48 @@ impl Schema {
 pub const BITSTRING_RESULT_SCHEMA: u32 = 0;
 pub const BITSTRING_READER_SCHEMA: u32 = 1;
 
+/// One key of a named struct read as a map: the module under `__struct__`,
+/// or the field at an index of the schema's fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructKey {
+    Module,
+    Field(usize),
+}
+
+impl Schema {
+    /// The keys of this schema read as a map, in map key order (atom names
+    /// compare by their text), or `None` when its values are not maps: a tuple
+    /// or an internal layout.
+    fn map_keys(&self) -> Option<Vec<StructKey>> {
+        let SchemaIdentity::Named(_) = self.identity else {
+            return None;
+        };
+        let name = |key: &StructKey| match key {
+            StructKey::Module => STRUCT_MODULE_FIELD,
+            StructKey::Field(index) => self.fields[*index]
+                .name
+                .as_deref()
+                .expect("a named struct's field has a name"),
+        };
+        let mut keys: Vec<StructKey> = std::iter::once(StructKey::Module)
+            .chain((0..self.fields.len()).map(StructKey::Field))
+            .collect();
+        keys.sort_by(|a, b| name(a).cmp(name(b)));
+        Some(keys)
+    }
+}
+
 pub struct SchemaRegistry {
     schemas: Vec<Schema>,
+    map_keys: Vec<Option<Vec<StructKey>>>,
 }
 
 impl SchemaRegistry {
     pub fn new() -> Self {
-        let mut registry = Self { schemas: Vec::new() };
+        let mut registry = Self {
+            schemas: Vec::new(),
+            map_keys: Vec::new(),
+        };
         let result = registry.register(Schema::tuple_of_arity(1));
         let reader = registry.register(Schema::tuple_of_arity(3));
         debug_assert_eq!((result, reader), (BITSTRING_RESULT_SCHEMA, BITSTRING_READER_SCHEMA));
@@ -180,6 +215,7 @@ impl SchemaRegistry {
             return id as u32;
         }
         let id = self.schemas.len() as u32;
+        self.map_keys.push(schema.map_keys());
         self.schemas.push(schema);
         id
     }
@@ -190,6 +226,20 @@ impl SchemaRegistry {
 
     pub fn get(&self, id: u32) -> &Schema {
         &self.schemas[id as usize]
+    }
+
+    /// The named struct whose module is the atom spelled `atom_name`.
+    pub fn named_by_atom_name(&self, atom_name: &str) -> Option<u32> {
+        self.schemas
+            .iter()
+            .position(|schema| matches!(&schema.identity, SchemaIdentity::Named(name) if name.atom_name() == atom_name))
+            .map(|id| id as u32)
+    }
+
+    /// The keys of schema `id`'s values read as maps, in map key order; `None`
+    /// when they are not maps.
+    pub fn map_keys(&self, id: u32) -> Option<&[StructKey]> {
+        self.map_keys[id as usize].as_deref()
     }
 
     pub fn len(&self) -> usize {

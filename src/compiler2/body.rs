@@ -121,7 +121,6 @@ pub(crate) fn step_defined_values(step: &LoweredStep) -> impl Iterator<Item = Va
         | LoweredStep::Tuple { value, .. }
         | LoweredStep::List { value, .. }
         | LoweredStep::Map { value, .. }
-        | LoweredStep::MapUpdate { value, .. }
         | LoweredStep::Struct { value, .. }
         | LoweredStep::Bitstring { value, .. }
         | LoweredStep::FunctionRef { value, .. }
@@ -133,6 +132,7 @@ pub(crate) fn step_defined_values(step: &LoweredStep) -> impl Iterator<Item = Va
         | LoweredStep::RequireMapValue { value, .. }
         | LoweredStep::TupleField { value, .. }
         | LoweredStep::BitstringInit { reader: value, .. } => [Some(*value), None, None],
+        LoweredStep::MapUpdate { value, ok, .. } => [Some(*value), Some(*ok), None],
         LoweredStep::SplitList { head, tail, .. } => [Some(*head), Some(*tail), None],
         LoweredStep::BitstringRead {
             ok, value, next_reader, ..
@@ -936,8 +936,11 @@ pub enum LoweredStep {
         entries: Vec<(LoweredMapKey, ValueId)>,
         quoted_span: Option<Span>,
     },
+    /// `%{base | k: v, ...}`. `value` is the updated map when `ok`, which is
+    /// false when `base` lacks one of the keys.
     MapUpdate {
         value: ValueId,
+        ok: ValueId,
         base: ValueId,
         entries: Vec<(LoweredMapKey, ValueId)>,
     },

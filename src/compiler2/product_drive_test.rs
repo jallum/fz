@@ -3556,3 +3556,46 @@ mod wait_frame_tests {
         }
     }
 }
+
+/// `%{m | k: v}` raises KeyError only when `m` may lack `k`. When the types
+/// prove every updated key is present the update cannot miss, so the program
+/// compiles no KeyError path; when they do not, it compiles one.
+#[test]
+fn an_update_that_cannot_miss_compiles_no_key_error_path() {
+    fn compiles_key_error_path(text: &str) -> bool {
+        let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+        compiler.submit_code(CodeSubmission {
+            name: Some("update_key_check.fz".to_string()),
+            text: text.to_string(),
+        });
+        let main = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        assert_eq!(compiler.run_root_interp(main), Ok(5));
+        compiler
+            .product_executable_inventory(main)
+            .expect("update inventory")
+            .iter()
+            .any(|executable| {
+                compiler
+                    .world()
+                    .function_ref(executable.activation.function)
+                    .is_named("update_key_error")
+            })
+    }
+
+    assert!(
+        !compiles_key_error_path("def main() do\n  m = %{a: 1, b: 2}\n  %{m | a: 3, b: 2}.b + 3\nend\n"),
+        "a literal map surely has a and b"
+    );
+    assert!(
+        compiles_key_error_path(
+            "def pick(0), do: %{a: 1}\ndef pick(_), do: %{a: 1, b: 2}\n\
+             def main() do\n  m = pick(1)\n  %{m | b: 2}.b + 3\nend\n"
+        ),
+        "one of pick's maps lacks b"
+    );
+}

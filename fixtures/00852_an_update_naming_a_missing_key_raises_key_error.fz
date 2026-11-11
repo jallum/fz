@@ -1,0 +1,44 @@
+#---
+# purpose: "%{m | k: v} with no k in m raises KeyError with Elixir's message, for a map and a struct, even when the result is unused"
+# oracle: 00852_an_update_naming_a_missing_key_raises_key_error.oracle.exs
+#---
+#
+# An update may only replace keys the map already has. The update itself
+# reports the miss, and the raise names the key.
+defmodule Pt do
+  defstruct [:x, :y]
+end
+
+def grow(v :: any), do: %{v | z: 0}
+
+def main() do
+  m = %{a: 1}
+  try do
+    %{m | b: 2}
+  rescue
+    e in KeyError -> dbg(e.message)
+  end
+  try do
+    %{m | a: 3, c: 4}
+  rescue
+    e in KeyError -> dbg(e.message)
+  end
+  try do
+    _ = %{m | d: 4}
+    dbg(:unreachable)
+  rescue
+    e in KeyError -> dbg(e.message)
+  end
+  p = %Pt{x: 1, y: 2}
+  try do
+    grow(p)
+  rescue
+    e in KeyError -> dbg(e.message)
+  end
+  try do
+    %{p | __struct__: Pt, x: 3}
+    |> dbg()
+  rescue
+    e in KeyError -> dbg(e.message)
+  end
+end

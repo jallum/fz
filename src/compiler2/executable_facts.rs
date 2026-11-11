@@ -812,7 +812,6 @@ fn collect_entry_callsite_needs(
             | LoweredStep::Tuple { value, .. }
             | LoweredStep::List { value, .. }
             | LoweredStep::Map { value, .. }
-            | LoweredStep::MapUpdate { value, .. }
             | LoweredStep::Struct { value, .. }
             | LoweredStep::Bitstring { value, .. }
             | LoweredStep::FunctionRef { value, .. }
@@ -824,6 +823,10 @@ fn collect_entry_callsite_needs(
             | LoweredStep::RequireMapValue { value, .. }
             | LoweredStep::TupleField { value, .. } => {
                 tuple_demands.remove(value);
+            }
+            LoweredStep::MapUpdate { value, ok, .. } => {
+                tuple_demands.remove(value);
+                tuple_demands.remove(ok);
             }
             LoweredStep::SplitList { head, tail, .. } => {
                 tuple_demands.remove(head);

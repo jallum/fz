@@ -1401,8 +1401,11 @@ pub enum BackendStep {
         entries: Vec<(ValueId, ValueId)>,
         quoted_span: Option<Span>,
     },
+    /// `%{base | k: v, ...}`. `value` is the updated map when `ok`, which is
+    /// false when `base` lacks one of the keys.
     MapUpdate {
         value: ValueId,
+        ok: ValueId,
         base: ValueId,
         entries: Vec<(ValueId, ValueId)>,
     },

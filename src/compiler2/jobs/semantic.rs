@@ -605,10 +605,18 @@ fn apply_step_evidence(
                 values.insert(*value, map);
             }
         }
-        LoweredStep::MapUpdate { value, base, entries } => {
-            let Some(mut map_ty) = value_ty(values, *base) else {
+        LoweredStep::MapUpdate {
+            value,
+            ok,
+            base,
+            entries,
+        } => {
+            let Some(base_ty) = value_ty(values, *base) else {
                 return Ok(());
             };
+            let mut map_ty = base_ty;
+            let mut keys = Vec::with_capacity(entries.len());
+            let mut keys_are_literal = true;
             for (key, item) in entries {
                 let Some(key) = lowered_map_key(world, values, key) else {
                     return Ok(());
@@ -618,11 +626,21 @@ fn apply_step_evidence(
                 };
                 if let Some(key) = key {
                     map_ty = world.types_mut().refine_map_field(&map_ty, &key, &item_ty);
+                    keys.push(key);
                 } else {
                     map_ty = world.types_mut().map_top();
+                    keys_are_literal = false;
                     break;
                 }
             }
+            let types = world.types_mut();
+            let cannot_miss = keys_are_literal && types.map_surely_has_keys(&base_ty, &keys);
+            let ok_ty = if cannot_miss {
+                types.bool_lit(true)
+            } else {
+                types.bool()
+            };
+            values.insert(*ok, ok_ty);
             values.insert(*value, map_ty);
         }
         LoweredStep::Struct { value, module, fields } => {
