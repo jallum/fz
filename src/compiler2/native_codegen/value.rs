@@ -7,7 +7,6 @@ use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
 use fz_runtime::any_value::{AnyValue, AnyValueRef, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind};
-use fz_runtime::ir_runtime::fz_get_static_closure;
 use std::collections::HashMap;
 
 /// Output of `lower_prim`. Generic values leave primitives as high-bit
@@ -253,10 +252,18 @@ pub(crate) fn as_known_numeric_f64(
     }
 }
 
-pub(crate) fn fetch_static_closure<M: Module>(body: &mut CodegenFn<'_, '_, M>, spec_id: u32) -> ir::Value {
-    let process = body.process_arg();
-    let sid_v = body.b.ins().iconst(types::I32, spec_id as i64);
-    runtime_call1!(body, fz_get_static_closure, [process, sid_v])
+/// The tagged ref to the program's one static closure for callable boundary
+/// `spec_id`.
+pub(crate) fn static_closure_ref<M: Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    env: &CodegenEnv<'_>,
+    spec_id: u32,
+) -> Result<ir::Value, CodegenError> {
+    let data_id = *env
+        .static_closure_data_ids
+        .get(&spec_id)
+        .ok_or_else(|| CodegenError::new(format!("no static closure object for callable boundary {spec_id}")))?;
+    Ok(body.static_object_ref(data_id, ValueKind::CLOSURE))
 }
 
 pub(crate) fn tagged_to_raw_f64_unsupported(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {

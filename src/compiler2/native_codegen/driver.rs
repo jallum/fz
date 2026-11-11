@@ -7,7 +7,8 @@ use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types};
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilderContext;
-use cranelift_module::{FuncId, Linkage, Module as ClModule};
+use cranelift_module::{DataId, FuncId, Linkage, Module as ClModule};
+use fz_runtime::any_value::ValueKind;
 use fz_runtime::heap::{FieldKind, Schema, SchemaRegistry};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -115,47 +116,42 @@ fn build_fn_sigs<M: cranelift_module::Module>(
         .collect()
 }
 
-/// Collect zero-capture closure-target specs for static singletons.
-/// code_ptr is the body's func_addr directly (closure-target sig
-/// `(args, self, cont) tail`), not a C-convention stub. The singleton acts
-/// both as `self` for direct callers (zero-cap bodies ignore self) and
-/// as the closure handed to MakeClosure(fid, []) sites. See
-/// docs/cps-in-clif.md §8.2.
+/// Define one read-only static closure per zero-capture callable boundary,
+/// keyed by boundary id. The code pointer is the boundary's own function
+/// (closure-target sig `(args, self, cont) tail`), not a C-convention stub. The
+/// object acts both as `self` for direct callers (zero-cap bodies ignore self)
+/// and as the value a thin function reference evaluates to.
 ///
-/// Pack halt_kind so fz_entry_thunk can pick the matching halt-cont
-/// singleton at task launch, and the boundary's `arity` so a rendered
-/// singleton reports its own parameter count (fz-gk4).
-fn collect_static_closure_targets(
+/// The header carries the boundary's halt kind, so a task launched from the
+/// closure picks the matching halt continuation, and its `arity`, so a rendered
+/// closure reports its own parameter count.
+fn define_zero_capture_closures<M: cranelift_module::Module>(
+    m: &mut M,
     surface: &NativeCodegenSurface<'_>,
     callable_boundary_fn_ids: &HashMap<u32, FuncId>,
-) -> Vec<(
-    u32, /* cl_sid */
-    u32, /* arity */
-    FuncId,
-    u32, /* halt_kind */
-    fz_runtime::any_value::ClosureDenotationId,
-)> {
-    let mut targets = BTreeMap::new();
+) -> Result<HashMap<u32, DataId>, CodegenError> {
+    let mut data_ids = HashMap::new();
     for (&boundary_id, boundary) in surface
         .callable_boundaries
         .iter()
         .filter(|(_, boundary)| boundary.capture_count == 0)
     {
-        let _body_sid = surface
-            .body_id_for_fn(boundary.target_fn)
-            .expect("callable boundary target body must have a registered codegen id");
         let body_fid = *callable_boundary_fn_ids
             .get(&boundary_id)
             .expect("zero-cap closure boundary must have a callable-boundary FuncId");
         let halt_kind = boundary.task_halt_repr.unwrap_or(ArgRepr::ValueRef).halt_kind();
         let arity = boundary.arg_reprs.len() as u32;
-        targets.insert(boundary_id, (arity, body_fid, halt_kind, boundary.denotation));
+        let data_id = define_static_closure(
+            m,
+            &format!("fz_static_closure_{boundary_id}"),
+            boundary.denotation,
+            halt_kind,
+            arity,
+            body_fid,
+        )?;
+        data_ids.insert(boundary_id, data_id);
     }
-
-    targets
-        .into_iter()
-        .map(|(sid, (arity, body_fid, halt_kind, denotation))| (sid, arity, body_fid, halt_kind, denotation))
-        .collect()
+    Ok(data_ids)
 }
 
 fn build_callable_boundary_signature(arg_count: usize) -> Signature {
@@ -247,16 +243,24 @@ pub(crate) struct LocalBodies {
     /// Halt-cont bodies, indexed by halt kind: ValueRef, RawInt, RawF64,
     /// RawAtom.
     pub(crate) halt_cont_body_ids: [FuncId; 4],
+    /// The read-only halt continuation closures, indexed like
+    /// `halt_cont_body_ids` and pointing at the bodies above.
+    pub(crate) halt_cont_data_ids: [DataId; 4],
     pub(crate) entry_thunk_id: FuncId,
     pub(crate) main_trampoline_id: FuncId,
     pub(crate) drain_dtor_entry_id: FuncId,
 }
 
 impl LocalBodies {
-    /// The body a return repr halts through. A halt kind is both the index
-    /// here and the word the runtime stores its singleton under.
+    /// The body a return repr halts through. A halt kind indexes both the
+    /// bodies and the continuation closures that point at them.
     pub(crate) fn halt_cont_body_id(&self, repr: ArgRepr) -> FuncId {
         self.halt_cont_body_ids[repr.halt_kind() as usize]
+    }
+
+    /// The program's one halt continuation closure for a return repr.
+    pub(crate) fn halt_cont_data_id(&self, repr: ArgRepr) -> DataId {
+        self.halt_cont_data_ids[repr.halt_kind() as usize]
     }
 }
 
@@ -296,12 +300,43 @@ fn declare_local_bodies<M: cranelift_module::Module>(m: &mut M) -> Result<LocalB
     // The scheduler calls the drain entry per pending dtor at task exit.
     let drain_dtor_entry_id = declare("fz_drain_dtor_entry", drain_sig)?;
 
+    let halt_cont_body_ids = [strict_id, i64_id, f64_id, atom_id];
+    let halt_cont_data_ids = define_halt_conts(m, halt_cont_body_ids)?;
+
     Ok(LocalBodies {
-        halt_cont_body_ids: [strict_id, i64_id, f64_id, atom_id],
+        halt_cont_body_ids,
+        halt_cont_data_ids,
         entry_thunk_id,
         main_trampoline_id,
         drain_dtor_entry_id,
     })
+}
+
+/// Define the four halt continuation closures, one per halt kind. A
+/// continuation is applied to exactly the one value it receives, so its arity
+/// is 1.
+fn define_halt_conts<M: cranelift_module::Module>(
+    m: &mut M,
+    halt_cont_body_ids: [FuncId; 4],
+) -> Result<[DataId; 4], CodegenError> {
+    const NAMES: [&str; 4] = [
+        "fz_halt_cont_strict",
+        "fz_halt_cont_i64",
+        "fz_halt_cont_f64",
+        "fz_halt_cont_atom",
+    ];
+    let mut data_ids = Vec::with_capacity(4);
+    for (kind, body_id) in halt_cont_body_ids.into_iter().enumerate() {
+        data_ids.push(define_static_closure(
+            m,
+            NAMES[kind],
+            fz_runtime::any_value::ClosureDenotationId::INTERNAL,
+            kind as u32,
+            1,
+            body_id,
+        )?);
+    }
+    Ok(data_ids.try_into().expect("four halt kinds"))
 }
 
 /// Emit fz_main_trampoline. The closure-target body for a main-style
@@ -356,7 +391,7 @@ fn drain_dtor_entry_signature<M: cranelift_module::Module>(m: &mut M) -> Signatu
 
 /// Emit fz_drain_dtor_entry. The scheduler-callable shim that invokes a 1-arg
 /// resource dtor closure with its payload. Picks a
-/// Strict halt-cont via fz_get_halt_cont, reads the body addr through
+/// Strict halt-cont, reads the body addr through
 /// the closure ABI, and Tail-CC indirect-calls
 /// `(payload_ref, closure, halt_cl)`. Result is discarded by the caller.
 fn emit_drain_dtor_entry<M: cranelift_module::Module>(
@@ -376,9 +411,7 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
         let mut cg = CodegenFn::new(b, m, &mut shim_cache);
         // Strict halt-cont (kind=0). Dtor return is discarded;
         // ValueRef avoids RawInt/F64 unboxing.
-        let strict_addr = cg.func_addr(locals.halt_cont_body_id(ArgRepr::ValueRef));
-        let zero = cg.b.ins().iconst(types::I32, 0);
-        let halt_cl = cg.get_halt_cont(strict_addr, zero);
+        let halt_cl = cg.halt_cont_ref(locals, ArgRepr::ValueRef);
         let code = cg.closure_code_ref(closure);
         // Closure-target body sig: `(args..., self, cont) tail -> i64`.
         // Generic args are one-word ValueRefs.
@@ -408,11 +441,9 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
 /// — exactly the launch the retired `fz_spawn_entry` performed, but driven
 /// off the captured inner instead of a scheduler argument.
 ///
-/// Closure metadata layout:
-///   off 0  : kind (u16)         off 4  : size_bytes (u32)
-///   off 2  : flags (u16)        off 8  : schema_id (u32)
-///                               off 12 : _reserved (u32)
-/// flags low 14 bits = captured_count; high 2 bits = halt_kind.
+/// Closure header (word 0, see `closure_header_word`): the low 32 bits hold
+/// four clear bits, then flags, then arity; the high 32 bits hold the
+/// denotation. Flags low 14 bits = captured_count; high 2 bits = halt_kind.
 fn emit_entry_thunk<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
@@ -433,12 +464,10 @@ fn emit_entry_thunk<M: cranelift_module::Module>(
         let zero_idx = cg.b.ins().iconst(types::I64, 0);
         let closure = cg.closure_capture_ref(self_cl, zero_idx);
         let kind = cg.closure_halt_kind_ref(closure);
-        // Select halt_cont_body_addr by kind. Branchless via four
-        // func_addrs + a tiny dispatch — keeps the thunk a leaf.
-        let a_strict = cg.func_addr(locals.halt_cont_body_id(ArgRepr::ValueRef));
-        let a_i64 = cg.func_addr(locals.halt_cont_body_id(ArgRepr::RawInt));
-        let a_f64 = cg.func_addr(locals.halt_cont_body_id(ArgRepr::RawF64));
-        let a_atom = cg.func_addr(locals.halt_cont_body_id(ArgRepr::RawAtom));
+        // Select the halt continuation by kind. Branchless via four
+        // addresses + a tiny dispatch — keeps the thunk a leaf.
+        let [a_strict, a_i64, a_f64, a_atom] = [ArgRepr::ValueRef, ArgRepr::RawInt, ArgRepr::RawF64, ArgRepr::RawAtom]
+            .map(|repr| data_addr(cg.jmod, locals.halt_cont_data_id(repr), cg.b));
         let one = cg.b.ins().iconst(types::I32, 1);
         let two = cg.b.ins().iconst(types::I32, 2);
         let three = cg.b.ins().iconst(types::I32, 3);
@@ -448,7 +477,7 @@ fn emit_entry_thunk<M: cranelift_module::Module>(
         let pick_i64_or_tagged = cg.b.ins().select(is_i64, a_i64, a_strict);
         let pick_f64 = cg.b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
         let hcb_addr = cg.b.ins().select(is_atom, a_atom, pick_f64);
-        let halt_cl = cg.get_halt_cont(hcb_addr, kind);
+        let halt_cl = cg.literal_ref_word_from_addr(hcb_addr, ValueKind::CLOSURE);
         // Read inner closure body addr through the runtime ABI and invoke as
         // closure-target sig `(self, cont) tail` (zero user args).
         let code = cg.closure_code_ref(closure);
@@ -937,6 +966,8 @@ pub(crate) fn compile_with_backend_surface<
     let linkage = backend.fn_linkage();
     let fn_ids = declare_spec_fns(backend.module_mut(), linkage, body_slots, &fn_sigs)?;
     let callable_boundary_fn_ids = declare_callable_boundary_fns(backend.module_mut(), surface)?;
+    let static_closure_data_ids =
+        define_zero_capture_closures(backend.module_mut(), surface, &callable_boundary_fn_ids)?;
     let mid_flight_cont_tail_fn_ids = declare_mid_flight_conts(backend.module_mut(), surface)?;
 
     let bs_const_data: RefCell<HashMap<Vec<u8>, BsConstSyms>> = RefCell::new(HashMap::new());
@@ -966,6 +997,7 @@ pub(crate) fn compile_with_backend_surface<
             active_body_name: display_name,
             fn_ids: &fn_ids,
             callable_boundary_fn_ids: &callable_boundary_fn_ids,
+            static_closure_data_ids: &static_closure_data_ids,
             mid_flight_cont_tail_fn_ids: &mid_flight_cont_tail_fn_ids,
             tuple_schema_ids: &tuple_schema_ids,
             named_schema_ids: &named_schema_ids,
@@ -1030,8 +1062,6 @@ pub(crate) fn compile_with_backend_surface<
         tel,
     )?;
 
-    let static_closure_targets = collect_static_closure_targets(surface, &callable_boundary_fn_ids);
-
     emit_mid_flight_cont_bodies(backend.module_mut(), &mut fbctx, &fn_ids, &mid_flight_cont_tail_fn_ids)?;
     emit_callable_boundary_bodies(
         backend.module_mut(),
@@ -1061,11 +1091,9 @@ pub(crate) fn compile_with_backend_surface<
             .collect(),
         diagnostics: surface.diagnostics.clone(),
         main_fn_id: surface.main_fn_id,
-        static_closure_targets,
         entry_thunk_id: locals.entry_thunk_id,
         main_trampoline_id: locals.main_trampoline_id,
         drain_dtor_entry_id: locals.drain_dtor_entry_id,
-        halt_cont_body_ids: locals.halt_cont_body_ids,
         fn_halt_kinds: surface.fn_halt_kinds.clone(),
         resume_id,
     };

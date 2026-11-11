@@ -1,11 +1,11 @@
-//! fz-q8d.1 — sealed procbin / off-heap binary abstraction.
+//! Sealed procbin / off-heap binary abstraction.
 //!
 //! This module owns the entire off-heap binary story:
 //!
 //!   * `SharedBin` — refcounted byte buffer carrying its own destructor
 //!     pointer. The destructor is a permanent property set at allocation
 //!     time. Heap-allocated bins use `shared_bin_destructor_heap`; future
-//!     compiler-baked static bins (fz-q8d.2) use `shared_bin_destructor_noop`.
+//!     compiler-baked static bins use `shared_bin_destructor_noop`.
 //!   * `SharedBinHandle` — Arc-shaped owning wrapper. `Drop` releases.
 //!   * `ProcBin` — `#[repr(transparent)]` newtype over the per-heap
 //!     `u8*` stub. All offset arithmetic for ProcBin payload lives
@@ -20,12 +20,13 @@
 //!
 //! Refcount ordering uses the canonical `Arc` pattern (Relaxed on retain,
 //! Release on release, Acquire fence on final drop). Loom verification
-//! lands in fz-q8d.3 via the `crate::sync` abstraction module.
+//! runs through the `crate::sync` abstraction module.
 
 use crate::any_value::{
-    AnyValue, TAG_BITSTRING, TAG_FWD, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, ValueKind,
-    bitstring_bit_len as any_bitstring_bit_len, bitstring_bytes_ptr, heap_object_word,
+    AnyValue, ValueKind, bitstring_bit_len as any_bitstring_bit_len, bitstring_bytes_ptr, heap_kind_from_tagged,
+    heap_object_word, heap_word_addr,
 };
+use crate::heap::forwarded_target;
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::mem::{align_of, forget, size_of};
 use std::ptr::{NonNull, read, slice_from_raw_parts_mut, write};
@@ -38,10 +39,9 @@ use std::ptr::{NonNull, read, slice_from_raw_parts_mut, write};
 ///
 /// 16-ALIGNED ON PURPOSE. A ProcBin stub holds this address in word 0, and
 /// that word is also where the Cheney collector writes its forwarding
-/// marker -- a pointer with `TAG_FWD` (0x8) in the low four bits. At 8-byte
-/// alignment half of all SharedBin addresses end in 8, and a live stub read
-/// as forwarded (fz-5xp.60). Sharing the heap's own 16-alignment invariant
-/// is what makes a real pointer and a tag distinguishable by construction.
+/// marker, which is told from a live pointer by a set low nibble. Sharing the
+/// heap's own 16-alignment invariant is what makes a real pointer and a
+/// marker distinguishable by construction.
 #[repr(C, align(16))]
 pub struct SharedBin {
     pub refcount: AtomicUsize,                            // offset 0..8
@@ -77,14 +77,14 @@ unsafe impl Sync for SharedBin {}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn shared_bin_destructor_heap(p: *mut SharedBin) {
     let bin = unsafe { Box::from_raw(p) };
-    // The buffer was overallocated by 1 for the invisible trailing NUL
-    // ([[fz-wu9]]). Free the full allocation.
+    // The buffer was overallocated by 1 for the invisible trailing NUL.
+    // Free the full allocation.
     let bytes = unsafe { Box::from_raw(slice_from_raw_parts_mut(bin.bytes_ptr as *mut u8, bin.bytes_len + 1)) };
     drop(bytes);
     drop(bin);
 }
 
-/// No-op destructor for compiler-baked static SharedBins (fz-q8d.2). The
+/// No-op destructor for compiler-baked static SharedBins. The
 /// bytes and the struct itself live in the program binary's `.data`
 /// section; this destructor is reachable in principle but in practice
 /// never fires because the static refcount is anchored at 1.
@@ -100,7 +100,7 @@ pub unsafe extern "C" fn shared_bin_destructor_noop(_p: *mut SharedBin) {}
 /// destructor installed. Bytes are leaked separately as a `Box<[u8]>` so
 /// the destructor can reconstruct both boxes independently.
 pub fn shared_bin_alloc(bytes: &[u8], bit_len: u64) -> *mut SharedBin {
-    // fz-wu9 — overallocate one byte beyond bytes_len and zero it.
+    // Overallocate one byte beyond bytes_len and zero it.
     // The trailing NUL is invisible to the language (bytes_len/bit_len
     // unchanged) and underwrites the c_string extern marshal contract.
     let bytes_len = bytes.len();
@@ -227,17 +227,17 @@ impl Drop for SharedBinHandle {
 ///
 /// A whole binary is the suffix at offset 0. A tail match allocates another
 /// stub over the SAME SharedBin at a later offset, which is what makes
-/// `<<_c, rest :: binary>>` copy nothing (fz-5xp.55).
+/// `<<_c, rest :: binary>>` copy nothing.
 ///
 /// SUFFIX, not an arbitrary window, is the load-bearing constraint. The
-/// buffer carries one invisible trailing NUL ([[fz-wu9]]), and a suffix
+/// buffer carries one invisible trailing NUL, and a suffix
 /// ends where the buffer ends -- so the parent's NUL is also every
 /// suffix's NUL and `fz_binary_as_cstring` needs no flattening copy. An
 /// arbitrary window would not have that, which is why one cannot be built:
 /// `alloc_procbin` derives the length from the offset rather than taking
 /// it.
 ///
-/// Cheney forwarding overwrites offset 0 with a headerless forwarding marker.
+/// Cheney forwarding overwrites offset 0 with a forwarding marker.
 /// Offset 8 is preserved in from-space, so MSO sweep reads `mso_next` from the
 /// old stub and `shared_ptr` from the to-space copy if the stub survived.
 /// Size of a ProcBin stub in bytes. The single authority: allocation, GC
@@ -329,41 +329,98 @@ pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle, byte_offset: u64)
     pb
 }
 
-/// Point the `mso_next` link of the stub at `bits` to `next`. The stub's kind
-/// comes from the tag, since ProcBin and Resource keep the link at different
-/// offsets.
-pub(crate) fn mso_set_next(bits: u64, next: u64) {
+/// Point the `mso_next` link of the stub at `link` to `next`. The stub's kind
+/// comes from the link word, since ProcBin and Resource keep the link at
+/// different offsets.
+pub(crate) fn mso_set_next(link: u64, next: u64) {
     use crate::resource::ResourceStub;
-    let addr = mso_addr(bits);
-    match bits & TAG_MASK {
-        TAG_PROCBIN => unsafe { ProcBin::from_raw(addr).mso_next_set(next) },
-        TAG_RESOURCE => unsafe { ResourceStub::from_raw(addr).mso_next_set(next) },
-        kind => panic!("mso_set_next: invalid MSO tag {kind:#x}"),
+    let (kind, addr) = mso_stub(link);
+    match kind {
+        ValueKind::PROCBIN => unsafe { ProcBin::from_raw(addr).mso_next_set(next) },
+        ValueKind::RESOURCE => unsafe { ResourceStub::from_raw(addr).mso_next_set(next) },
+        kind => panic!("mso_set_next: invalid MSO kind {kind:?}"),
     }
+}
+
+/// The stub a chain link names. A link is a heap object word: the stub's kind
+/// rides above its address.
+fn mso_stub(link: u64) -> (ValueKind, *mut u8) {
+    let kind = heap_kind_from_tagged(link).unwrap_or_else(|| panic!("MSO chain link {link:#x} is not a heap object"));
+    (kind, heap_word_addr(link))
 }
 
 // ===== MSO sweep + drop =====================================================
 
-/// Walk `heap.mso_head` after Cheney BFS completes. Strict ProcBin/Resource
-/// survivors carry a headerless forwarding marker at offset 0, so their
-/// off-heap pointer must be read from the to-space copy.
-pub fn mso_sweep(heap: &mut Heap) {
-    use crate::resource::{ResourceStub, fz_resource_release};
+/// A resource whose last reference a sweep dropped: the fz closure that
+/// destroys it and the payload that closure receives. `closure` is the
+/// closure's value-ref word and `payload` the C payload word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeadResource {
+    pub closure: u64,
+    pub payload: u64,
+}
+
+/// The destructor closures of the resource stubs a collection's trace has not
+/// reached, keyed by stub address. Those closures are about to be orphaned
+/// with the from-space, so the collector forwards them before the sweep
+/// decides the stubs. Claimed resources are skipped: their owner cleans up
+/// deterministically and no closure will run.
+pub(crate) fn mso_unreached_closures(heap: &Heap) -> Vec<(usize, AnyValue)> {
+    use crate::resource::ResourceStub;
+    let mut unreached = Vec::new();
+    let mut cur_bits = heap.mso_head;
+    while cur_bits != 0 {
+        let (kind, cur) = mso_stub(cur_bits);
+        let survived = forwarded_target(cur, kind).is_some();
+        cur_bits = match kind {
+            ValueKind::PROCBIN => unsafe { ProcBin::from_raw(cur).mso_next() },
+            ValueKind::RESOURCE => {
+                let rs = unsafe { ResourceStub::from_raw(cur) };
+                if !survived && !rs.is_claimed() {
+                    unreached.push((cur as usize, rs.closure_value()));
+                }
+                rs.mso_next()
+            }
+            _ => panic!("mso_unreached_closures: invalid MSO kind {kind:?}"),
+        };
+    }
+    unreached
+}
+
+/// Decide every stub on `heap.mso_head`'s chain. This is the one place a dead
+/// resource is handled, after a collection's trace and when a process exits
+/// (a process exit is the same walk with nothing live).
+///
+/// A stub carrying a forwarding marker survived: it is relinked to its
+/// to-space copy. Any other stub is dead and drops its off-heap reference. A
+/// dead ProcBin releases its SharedBin synchronously. A dead Resource whose
+/// last reference this was returns a `DeadResource`, unless it was claimed;
+/// its destructor is fz code and runs at the scheduler boundary, never inside
+/// the sweep. `closure_of` yields the destructor closure of a dead stub as a
+/// value that is valid once the sweep returns: the forwarded closure after a
+/// collection, the closure as it stands at exit.
+///
+/// A survivor's from-space word 0 holds a forwarding marker, so its off-heap
+/// pointer is read from the to-space copy. Must run before the
+/// from-space is released, since dead stubs live there.
+pub fn mso_sweep(
+    heap: &mut Heap,
+    mut closure_of: impl FnMut(&crate::resource::ResourceStub) -> AnyValue,
+) -> Vec<DeadResource> {
+    use crate::resource::{ResourceStub, fz_resource_release_deferred};
+    let mut dead = Vec::new();
     let mut new_head = 0_u64;
     let mut cur_bits = heap.mso_head;
     while cur_bits != 0 {
-        let kind = cur_bits & TAG_MASK;
-        let cur = mso_addr(cur_bits);
-        let first = unsafe { read(cur as *const u64) };
-        if first & TAG_MASK == TAG_FWD {
-            let to_p = (first & !TAG_MASK) as *mut u8;
+        let (kind, cur) = mso_stub(cur_bits);
+        if let Some(to_p) = forwarded_target(cur, kind) {
             let next = match kind {
-                TAG_PROCBIN => unsafe { ProcBin::from_raw(cur).mso_next() },
-                TAG_RESOURCE => unsafe { ResourceStub::from_raw(cur).mso_next() },
-                _ => panic!("mso_sweep: invalid MSO tag {kind:#x}"),
+                ValueKind::PROCBIN => unsafe { ProcBin::from_raw(cur).mso_next() },
+                ValueKind::RESOURCE => unsafe { ResourceStub::from_raw(cur).mso_next() },
+                _ => panic!("mso_sweep: invalid MSO kind {kind:?}"),
             };
-            let new_bits = (to_p as u64) | kind;
-            if kind == TAG_RESOURCE {
+            let new_bits = heap_object_word(to_p, kind);
+            if kind == ValueKind::RESOURCE {
                 unsafe { ResourceStub::from_raw(to_p).mso_next_set(new_head) };
             } else {
                 unsafe { ProcBin::from_raw(to_p).mso_next_set(new_head) };
@@ -374,68 +431,28 @@ pub fn mso_sweep(heap: &mut Heap) {
         }
 
         match kind {
-            TAG_PROCBIN => {
+            ValueKind::PROCBIN => {
                 let pb = unsafe { ProcBin::from_raw(cur) };
                 let next = pb.mso_next();
                 unsafe { shared_bin_release(pb.shared_raw()) };
                 cur_bits = next;
             }
-            TAG_RESOURCE => {
+            ValueKind::RESOURCE => {
                 let rs = unsafe { ResourceStub::from_raw(cur) };
                 let next = rs.mso_next();
-                unsafe { fz_resource_release(rs.shared_raw()) };
-                cur_bits = next;
-            }
-            _ => panic!("mso_sweep: invalid MSO tag {kind:#x}"),
-        }
-    }
-    heap.mso_head = new_head;
-}
-
-/// fz-4mk — deferred variant of `mso_drop_all`. Walks the MSO chain at
-/// process shutdown and, for each dead resource, instead of invoking the
-/// stored C destructor inline, snapshots the closure value and payload
-/// onto `heap.pending_dtors` so the scheduler can dispatch the dtor as
-/// real fz code while the process is still alive. ProcBin entries
-/// continue to release synchronously (their dtor is owned by the runtime,
-/// not user fz code, and has nothing to print or branch on).
-///
-/// Currently called only by the interpreter leg's shutdown path; the
-/// JIT/AOT scheduler loops still use the inline `mso_drop_all` until
-/// phase 3 wires their drain. After this returns, the MSO chain is
-/// empty and `Heap::drop` -> `mso_drop_all` is a no-op.
-pub fn mso_drop_all_deferred(heap: &mut Heap) {
-    use crate::resource::{ResourceStub, fz_resource_release_deferred};
-    let mut cur_bits = heap.mso_head;
-    while cur_bits != 0 {
-        let kind = cur_bits & TAG_MASK;
-        let cur = mso_addr(cur_bits);
-        match kind {
-            TAG_PROCBIN => {
-                let pb = unsafe { ProcBin::from_raw(cur) };
-                let next = pb.mso_next();
-                unsafe { shared_bin_release(pb.shared_raw()) };
-                cur_bits = next;
-            }
-            TAG_RESOURCE => {
-                let rs = unsafe { ResourceStub::from_raw(cur) };
-                let next = rs.mso_next();
-                let closure = rs.closure_value();
                 if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
-                    let payload_ref = heap.box_any_value_ref(AnyValue::int(payload as i64)).raw_word();
-                    let closure_bits = closure.ref_word().raw_word();
-                    heap.pending_dtors.push_back((closure_bits, payload_ref));
+                    dead.push(DeadResource {
+                        closure: closure_of(&rs).ref_word().raw_word(),
+                        payload,
+                    });
                 }
                 cur_bits = next;
             }
-            _ => panic!("mso_drop_all_deferred: invalid MSO tag {kind:#x}"),
+            _ => panic!("mso_sweep: invalid MSO kind {kind:?}"),
         }
     }
-    heap.mso_head = 0;
-}
-
-fn mso_addr(bits: u64) -> *mut u8 {
-    (bits & !TAG_MASK) as *mut u8
+    heap.mso_head = new_head;
+    dead
 }
 
 /// Drop every ProcBin in `heap.mso_head`'s chain, releasing each
@@ -452,22 +469,21 @@ pub(crate) fn mso_release_chain(head_bits: u64) {
     use crate::resource::{ResourceStub, fz_resource_release};
     let mut cur_bits = head_bits;
     while cur_bits != 0 {
-        let kind = cur_bits & TAG_MASK;
-        let cur = mso_addr(cur_bits);
+        let (kind, cur) = mso_stub(cur_bits);
         match kind {
-            TAG_PROCBIN => {
+            ValueKind::PROCBIN => {
                 let pb = unsafe { ProcBin::from_raw(cur) };
                 let next = pb.mso_next();
                 unsafe { shared_bin_release(pb.shared_raw()) };
                 cur_bits = next;
             }
-            TAG_RESOURCE => {
+            ValueKind::RESOURCE => {
                 let rs = unsafe { ResourceStub::from_raw(cur) };
                 let next = rs.mso_next();
                 unsafe { fz_resource_release(rs.shared_raw()) };
                 cur_bits = next;
             }
-            _ => panic!("mso_release_chain: invalid MSO tag {kind:#x}"),
+            _ => panic!("mso_release_chain: invalid MSO kind {kind:?}"),
         }
     }
 }
@@ -475,50 +491,45 @@ pub(crate) fn mso_release_chain(head_bits: u64) {
 // ===== Bitstring dispatch helpers (moved from any_value.rs) ==================
 //
 // fz bitstrings live in one of two storage modes:
-//   * `TAG_BITSTRING` — inline payload: bit_len at +0, bytes at +8.
-//   * `TAG_PROCBIN` — *mut SharedBin at +0; bytes + bit_len off-heap.
+//   * `ValueKind::BITSTRING` -- inline payload: bit length at +0, bytes at +8.
+//   * `ValueKind::PROCBIN` -- *mut SharedBin at +0; bytes + bit_len off-heap.
+//
+// The helpers below take a heap object word, whose kind says which mode.
 
-/// True if `p` is a heap value whose bytes can be read as a bitstring.
-///
-/// # Safety
-/// `p` must be a live tagged bitstring-like heap pointer.
-pub unsafe fn is_bitstring_like(p: *const u8) -> bool {
-    matches!((p as u64) & TAG_MASK, TAG_BITSTRING | TAG_PROCBIN)
+/// True if `word` is a heap object word whose bytes can be read as a bitstring.
+pub fn is_bitstring_like(word: u64) -> bool {
+    heap_kind_from_tagged(word).is_some_and(ValueKind::is_binary_repr)
 }
 
 /// Bit length of a bitstring-like heap value.
 ///
 /// # Safety
-/// `p` must be a live tagged bitstring-like heap pointer.
-pub unsafe fn bitstring_bit_len(p: *const u8) -> u64 {
-    if (p as u64) & TAG_MASK == TAG_PROCBIN {
-        let p = ((p as u64) & !TAG_MASK) as *mut u8;
-        let pb = unsafe { ProcBin::from_raw(p) };
-        return pb.bit_len();
+/// `word` must be the heap object word of a live Bitstring or ProcBin.
+pub unsafe fn bitstring_bit_len(word: u64) -> u64 {
+    let addr = heap_word_addr(word);
+    if heap_kind_from_tagged(word) == Some(ValueKind::PROCBIN) {
+        return unsafe { ProcBin::from_raw(addr) }.bit_len();
     }
-    let p = ((p as u64) & !TAG_MASK) as *const u8;
-    unsafe { any_bitstring_bit_len(p) }
+    unsafe { any_bitstring_bit_len(addr) }
 }
 
 /// Byte pointer to the underlying bitstring payload.
 ///
 /// # Safety
-/// `p` must be a live tagged bitstring-like heap pointer.
-pub unsafe fn bitstring_byte_ptr(p: *const u8) -> *const u8 {
-    if (p as u64) & TAG_MASK == TAG_PROCBIN {
-        let p = ((p as u64) & !TAG_MASK) as *mut u8;
-        let pb = unsafe { ProcBin::from_raw(p) };
-        return pb.bytes_ptr();
+/// `word` must be the heap object word of a live Bitstring or ProcBin.
+pub unsafe fn bitstring_byte_ptr(word: u64) -> *const u8 {
+    let addr = heap_word_addr(word);
+    if heap_kind_from_tagged(word) == Some(ValueKind::PROCBIN) {
+        return unsafe { ProcBin::from_raw(addr) }.bytes_ptr();
     }
-    let p = ((p as u64) & !TAG_MASK) as *const u8;
-    unsafe { bitstring_bytes_ptr(p) }
+    unsafe { bitstring_bytes_ptr(addr) }
 }
 
 /// Compare two bitstring-like heap values by language value, not address.
 ///
 /// # Safety
-/// Both pointers must identify live Bitstring or ProcBin heap objects.
-pub unsafe fn bitstring_like_eq(ap: *const u8, bp: *const u8) -> bool {
+/// Both words must be the heap object words of live Bitstring or ProcBin objects.
+pub unsafe fn bitstring_like_eq(ap: u64, bp: u64) -> bool {
     let a_bits = unsafe { bitstring_bit_len(ap) };
     let b_bits = unsafe { bitstring_bit_len(bp) };
     if a_bits != b_bits {

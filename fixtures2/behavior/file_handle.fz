@@ -4,7 +4,7 @@
 #
 # # file_handle
 #
-# [[fz-x5m]] / [[fz-4mk]] — End-to-end demonstration of the extern marshal
+# End-to-end demonstration of the extern marshal
 # classes plumbed through `make_resource`.
 #
 # ```
@@ -16,7 +16,7 @@
 #
 # The fixture wraps the fd in a `FileHandle` resource whose dtor calls
 # `libc::close` and then prints `:dtor_closed`. The dtor body runs as
-# real fz code at task-exit drain (fz-4mk) — the closure isn't picked
+# real fz code when the process exits — the closure isn't picked
 # apart for an extracted C symbol; the wrapper's `print` actually fires.
 # The `:dtor_closed` line at the end of expected.txt is what proves the
 # destructor ran.
@@ -25,7 +25,7 @@ extern "C" defp libc::write(c_int, binary, integer) :: integer
 extern "C" defp libc::close(c_int) :: c_int
 extern "C" defp libc::unlink(c_string) :: c_int
 
-# Dtor body runs as real fz code at task-exit (fz-4mk). We can call
+# Dtor body runs as real fz code when the process exits. We can call
 # libc::close directly AND print so the test can observe the dtor fired
 # — the closure body is no longer extracted-then-discarded.
 def close_observable(fd) do

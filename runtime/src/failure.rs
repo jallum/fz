@@ -17,7 +17,7 @@
 
 use crate::any_value::debug::render_value;
 use crate::any_value::{AnyValue, AnyValueRef, ValueKind, map_addr_from_tagged, map_count, map_entry};
-use crate::ir_runtime::bitstring_like_ptr_from_ref;
+use crate::ir_runtime::bitstring_like_word;
 use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
 use crate::process::Process;
 use crate::scheduler_hooks::FaultHook;
@@ -59,7 +59,7 @@ fn binary_text(value: AnyValue) -> Option<String> {
     let AnyValue::HeapRef(value) = value else {
         return None;
     };
-    let p = bitstring_like_ptr_from_ref(value.raw_word())?;
+    let p = bitstring_like_word(value.raw_word())?;
     let bit_len = unsafe { bitstring_bit_len(p) } as usize;
     if !bit_len.is_multiple_of(8) {
         return None;

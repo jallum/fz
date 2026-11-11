@@ -2,8 +2,8 @@
 
 use super::block_pool::{Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pool_alloc, round_up_16};
 use super::gc::{
-    CopiedObject, cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
-    cheney_trace_struct, forward_any_value_ref_root,
+    CopiedObject, FromSpace, cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
+    cheney_trace_struct, forward_any_value_ref_root, forward_heap_value,
 };
 use super::ref_io::{
     any_value_ref_from_storage, list_tail_bits_from_ref, map_entry_refs, ptr_in_ranges, reject_scalar_ref_write,
@@ -13,43 +13,31 @@ use super::schema::{Schema, SchemaRegistry};
 use super::stats::GcStats;
 use super::{Heap, HeapAllocKind, HeapAllocStats, SHARED_BIN_THRESHOLD_BYTES};
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MAP_DESTINATION_FLAG,
-    TAG_BITSTRING, TAG_CLOSURE, TAG_LIST, TAG_MAP, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, TAG_STRUCT, ValueKind,
+    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, ValueKind, bitstring_header_word,
     bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot,
-    closure_capture_set, closure_capture_value, closure_header_word, closure_size_for_count, heap_kind_from_tagged,
-    heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_keys_ptr, map_pack_tag,
-    map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot, struct_field_raw_slot,
+    closure_capture_set, closure_capture_value, closure_header_word, closure_header_write, closure_size_for_count,
+    heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count, map_destination_header_word,
+    map_destination_state, map_entry, map_header_word, map_keys_ptr, map_pack_tag, map_size_for_count,
+    map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot, struct_field_raw_slot, struct_header_word,
     struct_schema_id, struct_size_for_payload,
 };
-use crate::procbin::{SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
+use crate::procbin::{
+    DeadResource, SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep, mso_unreached_closures,
+};
 use crate::process::Node;
 use crate::term::{NumericMode, TermComparator};
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::mem::size_of;
 use std::ptr::{copy_nonoverlapping, read, write, write_bytes};
 use std::rc::Rc;
 use std::slice::from_raw_parts;
 
-// fz-vdt.16 — pure reads that need no heap state. Reading a list head/tail or a
+// Pure reads that need no heap state. Reading a list head/tail or a
 // closure capture is a dereference of the self-describing value pointer, so these
 // are free functions (the `Heap::read_*` methods below delegate). BIFs call them
 // directly, with no `current_process()` and no process argument — which is also
 // why the receive matcher can project list/closure shapes without a process.
-
-fn map_destination_header(capacity: usize, filled: usize) -> u64 {
-    assert!(capacity < (1 << 31) && filled <= capacity, "map destination capacity");
-    MAP_DESTINATION_FLAG | ((filled as u64) << 32) | capacity as u64
-}
-
-fn map_destination_state(addr: *const u8) -> (usize, usize) {
-    let header = unsafe { read(addr.cast::<u64>()) };
-    assert_ne!(header & MAP_DESTINATION_FLAG, 0, "map is already published");
-    (
-        header as u32 as usize,
-        ((header & !MAP_DESTINATION_FLAG) >> 32) as usize,
-    )
-}
 
 pub fn list_head_ref(list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
     let addr = list.list_addr()?;
@@ -89,7 +77,7 @@ impl Heap {
             capacity > 0 && capacity.is_multiple_of(16),
             "capacity must be 16-aligned"
         );
-        let block_size = pick_block_capacity(capacity);
+        let block_size = pick_block_capacity(capacity.max(SIZE_TABLE[0]));
         let block_start = pool_alloc(block_size);
         let block_end = unsafe { block_start.add(block_size) };
         Self {
@@ -97,8 +85,7 @@ impl Heap {
             bump_top: block_start,
             block_end,
             block_size,
-            last_gc_live_bytes: 0,
-            last_gc_stats: GcStats::default(),
+            live_baseline: 0,
             blocks: Vec::new(),
             gift: None,
             node,
@@ -111,19 +98,25 @@ impl Heap {
         }
     }
 
-    /// Whether a collection is due: the bytes a collection could copy have
-    /// reached half the tip's capacity. A pure function of the heap's state,
-    /// so a collection that reclaims the bytes answers the question by itself.
+    /// Whether a collection is due: the bytes allocated since the heap was
+    /// last known to be all live have reached the larger of that live
+    /// baseline and half the smallest tip. A collection sets the baseline to
+    /// its survivors and a graft raises it by the gift's fill, so only the
+    /// heap's own allocation counts, and a heap that holds N live bytes
+    /// collects after allocating N more. A pure function of the heap's
+    /// state, so a collection that reclaims the bytes answers the question by
+    /// itself.
     pub fn should_gc(&self) -> bool {
-        self.bytes_used() >= self.block_size / 2
+        let allocated_since = self.bytes_used().saturating_sub(self.live_baseline);
+        allocated_since >= self.live_baseline.max(SIZE_TABLE[0] / 2)
     }
 
     /// Bump-only allocator. Rounds `size` up to 16 and advances `bump_top`.
-    /// On overflow, abandons the current block and allocates a fresh block
-    /// one capacity step up, or exactly large enough when `size` needs more
-    /// than that, which may lie above the whole `SIZE_TABLE`. The next
-    /// park-time Cheney copies what is live out of the abandoned chain and
-    /// releases it.
+    /// On overflow, an object larger than the capacity one step above the tip
+    /// is placed alone in a block sized for it, parked on `blocks` with the tip
+    /// unchanged; any other object abandons the tip for a fresh tip one capacity
+    /// step up. The next park-time Cheney copies what is live out of the
+    /// parked blocks and releases them.
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         self.alloc_kind(HeapAllocKind::Other, size)
     }
@@ -132,21 +125,69 @@ impl Heap {
         let size = round_up_16(size);
         assert!(size >= 16, "alloc must reserve at least one 16-byte object slot");
         self.alloc_stats.record(kind, size as u64);
+        self.bump(size)
+    }
+
+    /// Place `size` bytes (already a multiple of 16) in the tip, or beyond it
+    /// when the tip is full. Allocation and the collector's copies both
+    /// place through here, so a copy overflows exactly as an allocation does.
+    pub(super) fn bump(&mut self, size: usize) -> *mut u8 {
+        debug_assert!(
+            size >= 16 && size.is_multiple_of(16),
+            "placements are whole 16-byte slots"
+        );
         let new_top = unsafe { self.bump_top.add(size) };
         if new_top > self.block_end {
-            let capacity = pick_block_capacity(size).max(next_block_capacity(self.block_size));
-            self.blocks.push(self.current_block());
-            let start = pool_alloc(capacity);
-            self.install_block(Block {
-                start,
-                top: start,
-                capacity,
-            });
+            if self.parks_alone(size) {
+                return self.alloc_parked(size);
+            }
+            self.climb_tip();
         }
         let p = self.bump_top;
         self.bump_top = unsafe { self.bump_top.add(size) };
         self.alloc_count += 1;
         p
+    }
+
+    /// Whether an object of `size` bytes is huge: larger than the capacity one
+    /// step above the tip. Such an object gets a block of its own beside the
+    /// tip; anything smaller moves the tip up a step and lands in it.
+    fn parks_alone(&self, size: usize) -> bool {
+        size > next_block_capacity(self.block_size)
+    }
+
+    /// Place a huge object at the start of a block sized for it and park the
+    /// block on `blocks`, full. The tip is untouched, so the allocations after
+    /// it keep filling the block they were filling.
+    ///
+    /// A gift window never reaches this: its copy allocates exactly the
+    /// measured bytes into a block of that size, and the object is part of them.
+    fn alloc_parked(&mut self, size: usize) -> *mut u8 {
+        assert!(
+            self.gift.is_none(),
+            "a huge object was allocated inside a gift window: the measure and the copy disagree"
+        );
+        let capacity = pick_block_capacity(size);
+        let start = pool_alloc(capacity);
+        self.blocks.push(Block {
+            start,
+            top: unsafe { start.add(size) },
+            capacity,
+        });
+        self.alloc_count += 1;
+        start
+    }
+
+    /// Park the tip and install a fresh tip one capacity step above it.
+    fn climb_tip(&mut self) {
+        let capacity = next_block_capacity(self.block_size);
+        self.blocks.push(self.current_block());
+        let start = pool_alloc(capacity);
+        self.install_block(Block {
+            start,
+            top: start,
+            capacity,
+        });
     }
 
     /// The block being bumped into, with its fill so far.
@@ -183,8 +224,7 @@ impl Heap {
         let total = struct_size_for_payload(payload_size);
         let p = self.alloc_kind(HeapAllocKind::Struct, total);
         unsafe {
-            write(p as *mut u32, schema_id);
-            write(p.add(4) as *mut u32, 0);
+            write(p as *mut u64, struct_header_word(schema_id));
             // Zero payload.
             write_bytes(p.add(8), 0, total - 8);
         }
@@ -314,17 +354,6 @@ impl Heap {
         AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
     }
 
-    pub fn current_heap_tagged_addr(&self, bits: u64) -> Option<(ValueKind, *mut u8)> {
-        let kind = heap_kind_from_tagged(bits)?;
-        let p = (bits & !TAG_MASK) as *mut u8;
-        (!p.is_null() && self.contains_heap_addr(p)).then_some((kind, p))
-    }
-
-    pub fn current_heap_addr_for_kind(&self, bits: u64, kind: ValueKind) -> Option<*mut u8> {
-        self.current_heap_tagged_addr(bits)
-            .and_then(|(actual, p)| (actual == kind).then_some(p))
-    }
-
     pub fn contains_heap_addr(&self, p: *mut u8) -> bool {
         ptr_in_ranges(p, self.block_ranges())
     }
@@ -384,7 +413,7 @@ impl Heap {
         entries: impl Iterator<Item = (AnyValue, AnyValue)>,
     ) {
         unsafe {
-            write(p as *mut u64, count as u64);
+            write(p as *mut u64, map_header_word(count));
             let tag_p = map_tag_ptr(p);
             write_bytes(tag_p, 0, map_tag_bytes_len(count));
             let keys = map_keys_ptr(p, count);
@@ -413,7 +442,7 @@ impl Heap {
         let total = map_size_for_count(count);
         let p = self.alloc_kind(HeapAllocKind::Map, total);
         unsafe {
-            write(p as *mut u64, map_destination_header(count, base_count));
+            write(p as *mut u64, map_destination_header_word(count, base_count));
             let tag_p = map_tag_ptr(p);
             write_bytes(tag_p, 0, map_tag_bytes_len(count));
             let keys = map_keys_ptr(p, count);
@@ -439,7 +468,7 @@ impl Heap {
     /// or any other unfinished destination. Freezing publishes the stored fields.
     pub unsafe fn map_destination_put(&mut self, dest_bits: u64, key: AnyValue, value: AnyValue) {
         let dest = map_addr_from_tagged(dest_bits).expect("map_destination_put dest");
-        let (count, filled) = map_destination_state(dest);
+        let (count, filled) = unsafe { map_destination_state(dest) };
         assert!(filled < count, "map destination has no free entry slot");
         assert_ne!(key.kind(), ValueKind::NULL, "unpublished map key");
         unsafe {
@@ -449,13 +478,13 @@ impl Heap {
             write(tag_p.add(filled), map_pack_tag(key.kind(), value.kind()));
             write_any_value_to_storage(keys.add(filled), None, key);
             write_any_value_to_storage(values.add(filled), None, value);
-            write(dest as *mut u64, map_destination_header(count, filled + 1));
+            write(dest as *mut u64, map_destination_header_word(count, filled + 1));
         }
     }
 
     pub fn map_destination_freeze(&mut self, dest_bits: u64) -> u64 {
         let dest = map_addr_from_tagged(dest_bits).expect("map destination");
-        let (_, filled) = map_destination_state(dest);
+        let (_, filled) = unsafe { map_destination_state(dest) };
         let mut entries: Vec<_> = (0..filled).map(|i| unsafe { map_entry(dest, i) }).collect();
         self.normalize_map_entries(&mut entries);
         self.write_ordered_map_entries(dest, entries.len(), entries.into_iter());
@@ -587,7 +616,7 @@ impl Heap {
     /// Caller supplies a fully-built byte buffer + bit_len; this performs the
     /// heap copy.
     ///
-    /// fz-cty.5 — payloads larger than `SHARED_BIN_THRESHOLD_BYTES` route
+    /// Payloads larger than `SHARED_BIN_THRESHOLD_BYTES` route
     /// through the shared zone: a SharedBin is allocated off-heap and the
     /// per-process heap gets a tagged ProcBin stub referencing
     /// it. Render and bit-match dispatch via
@@ -596,7 +625,7 @@ impl Heap {
     /// This always COPIES `bytes`. To view an existing shared buffer
     /// without copying it, use `alloc_bitstring_suffix`.
     ///
-    /// fz-5xp.45 — returns the VALUE, kind included. The storage choice is
+    /// Returns the VALUE, kind included. The storage choice is
     /// made here and only here; four callers used to re-derive it from
     /// `bytes.len()` against the same threshold, which meant the threshold was
     /// a constant five places had to agree about and a caller could disagree
@@ -607,14 +636,13 @@ impl Heap {
             self.alloc_stats.record_shared_bin(bytes.len() as u64);
             return AnyValue::heap_ptr(alloc_procbin(self, handle, 0).as_raw(), ValueKind::PROCBIN);
         }
-        // fz-wu9 — reserve at least 1 byte past the payload for the
+        // Reserve at least 1 byte past the payload for the
         // invisible trailing NUL. The pad-zeroing below guarantees it reads
         // as 0; bytes_len / bit_len are unchanged.
         let total = bitstring_size_for_bit_len(bit_len);
         let p = self.alloc_kind(HeapAllocKind::Bitstring, total);
         unsafe {
-            let bit_len_p = p as *mut u64;
-            write(bit_len_p, bit_len);
+            write(p as *mut u64, bitstring_header_word(bit_len));
             let bytes_p = p.add(8);
             copy_nonoverlapping(bytes.as_ptr(), bytes_p, bytes.len());
             // Zero the trailing padding so renders / debug aren't garbage.
@@ -629,7 +657,7 @@ impl Heap {
     /// Allocate the byte-aligned SUFFIX `[byte_offset ..]` of an existing
     /// `SharedBin`, returning it as a value.
     ///
-    /// fz-5xp.55 — above `SHARED_BIN_THRESHOLD_BYTES` the suffix SHARES the
+    /// Above `SHARED_BIN_THRESHOLD_BYTES` the suffix SHARES the
     /// parent's bytes: a new stub retains the same SharedBin at its own
     /// offset, and nothing is copied. That is what stops a byte scanner
     /// being quadratic, because every `<<_c, rest :: binary>>` step is a
@@ -680,10 +708,9 @@ impl Heap {
         let total = closure_size_for_count(captured_count);
         let p = self.alloc_kind(HeapAllocKind::Closure, total);
         unsafe {
-            write(p as *mut u32, denotation.as_u32());
-            write(
-                p.add(4) as *mut u32,
-                closure_header_word(captured_count as u16, halt_kind, arity),
+            closure_header_write(
+                p,
+                closure_header_word(denotation, captured_count as u16, halt_kind, arity),
             );
             write(p.add(8) as *mut u64, 0);
             if total > 16 {
@@ -892,7 +919,16 @@ impl Heap {
         let kind_offset = schema.get(schema_id).value_field_kind_offset(field_offset);
         let raw_slot = unsafe { struct_field_raw_slot(addr as *const u8, field_offset) };
         let kind = unsafe { read(struct_field_kind_slot(addr as *const u8, kind_offset)) };
-        any_value_ref_from_storage(raw_slot as *const u64, ValueKind::new(kind).expect("struct field kind"))
+        let field =
+            any_value_ref_from_storage(raw_slot as *const u64, ValueKind::new(kind).expect("struct field kind"))?;
+        // A scalar field's ref points into the struct's own payload, so it is
+        // read-only data exactly when the struct is. A heap field's ref is its
+        // stored address and already says what it names.
+        Ok(if obj.is_literal() && field.tag().is_scalar() {
+            field.literal()
+        } else {
+            field
+        })
     }
 
     pub fn read_struct_named_field_ref(
@@ -938,10 +974,8 @@ impl Heap {
         self.schemas.clone()
     }
 
-    /// Total allocations made on this heap (since last GC). Under the
-    /// fz-siu.7 stub GC, all allocations remain "live" because nothing is
-    /// reclaimed. .8's Cheney pass resets this to the surviving-object
-    /// count after each copy.
+    /// Total allocations made on this heap (since last GC). Each Cheney
+    /// pass resets this to the surviving-object count after the copy.
     pub fn live_count(&self) -> usize {
         self.alloc_count as usize
     }
@@ -967,60 +1001,19 @@ impl Heap {
         unsafe { self.block_end.offset_from(self.bump_top) as usize }
     }
 
-    /// The capacity of the next to-space.
+    /// The one collection entry: a Cheney copy of everything `roots` reaches
+    /// into a fresh tip, after which the old blocks are released.
     ///
-    /// To-space holds at least the bytes a collection can copy: the sizing
-    /// starts from `bytes_used`, and the bands only choose between that
-    /// floor and something larger. An object larger than any table entry is
-    /// part of those bytes like any other, so the to-space grows past the
-    /// table to hold it.
-    ///
-    /// Three bands, biased toward holding size: a copy GC here costs a
-    /// scheduler yield, so frequent collection is expensive and oscillation is
-    /// worth avoiding. The steady-state target is ~2x live (a 50% post-GC
-    /// fill), where `prev_live` is the last GC's survivor bytes.
-    ///
-    ///   GROW   - the bytes in use fill 75% or more of the tip. A collection
-    ///            becomes due at 50%, so reaching the threshold is not by
-    ///            itself evidence the heap is too small; 75% is, and it is
-    ///            the same hysteresis point BEAM uses to grow after a sweep.
-    ///            Size to hold the bytes in use doubled for headroom, never
-    ///            less than one capacity step up.
-    ///   SHRINK - the last survivors fill 25% or less of the tip; refit to
-    ///            ~2x those survivors.
-    ///   KEEP   - otherwise hold the current size.
-    fn to_space_capacity(&self) -> usize {
-        let used = self.bytes_used();
-        let prev_live = self.last_gc_live_bytes;
-        let fit_to_live = if prev_live > 0 {
-            prev_live.saturating_mul(2)
-        } else {
-            used
-        };
-        let grows = used.saturating_mul(4) >= self.block_size.saturating_mul(3);
-        let band_target = if grows {
-            fit_to_live.max(used.saturating_mul(2))
-        } else if prev_live == 0 || prev_live.saturating_mul(4) <= self.block_size {
-            fit_to_live
-        } else {
-            self.block_size
-        };
-        let floor = pick_block_capacity(used.max(SIZE_TABLE[0]));
-        let capacity = pick_block_capacity(band_target.max(SIZE_TABLE[0])).max(floor);
-        if grows {
-            capacity.max(next_block_capacity(self.block_size))
-        } else {
-            capacity
-        }
-    }
-
-    /// The one collection entry: a Cheney two-finger copy of everything
-    /// `roots` reaches into a fresh to-space block, after which the old
-    /// blocks are released.
+    /// The fresh tip's capacity is a guess, the live baseline (the smallest
+    /// tip on an empty baseline). Every copy is placed by the ordinary bump
+    /// path, so a copy that outgrows the guess parks the tip and climbs the
+    /// table, and a huge object parks alone; a wrong guess costs a block,
+    /// never correctness. The scan reads a worklist of copied objects, not an
+    /// address, so to-space needs no contiguity.
     ///
     /// Every slot of `roots` holds its forwarded value on return. A slot
     /// that is not a pointer into this heap's from-space (a scalar immediate,
-    /// the empty list, a static closure or halt-continuation singleton) is
+    /// the empty list, a static closure or halt continuation) is
     /// left as it was; a scalar box in from-space is copied without tracing
     /// its payload.
     ///
@@ -1037,121 +1030,150 @@ impl Heap {
             self.gift.is_none(),
             "a gift window is open; the heap collects only between end_gift and the next begin_gift"
         );
-        // Snapshot from-space block ranges before we allocate to-space.
-        let from_ranges: Vec<(*mut u8, *mut u8)> = self.block_ranges().collect();
-        let from_space_capacity_bytes: usize = from_ranges
-            .iter()
-            .map(|(start, end)| unsafe { end.offset_from(*start) as usize })
+        // From-space is every block the heap owns before to-space is installed.
+        let from_space = FromSpace::of(self);
+        let from_block_count = self.block_ranges().count();
+        let from_space_capacity_bytes: usize = self
+            .block_ranges()
+            .map(|(start, end)| unsafe { end.offset_from(start) as usize })
             .sum();
 
-        let to_size = self.to_space_capacity();
-        let to_start = pool_alloc(to_size);
-        let to_end = unsafe { to_start.add(to_size) };
-        let mut free = to_start;
+        let from_tip = self.current_block();
+        let from_blocks = std::mem::take(&mut self.blocks);
+        let to_capacity = pick_block_capacity(self.live_baseline.max(SIZE_TABLE[0]));
+        let to_start = pool_alloc(to_capacity);
+        self.install_block(Block {
+            start: to_start,
+            top: to_start,
+            capacity: to_capacity,
+        });
+        self.alloc_count = 0;
         let mut copied_objects: Vec<CopiedObject> = Vec::new();
         let mut stats = GcStats {
             from_space_capacity_bytes: from_space_capacity_bytes as u64,
-            to_space_capacity_bytes: to_size as u64,
+            blocks_released: from_block_count as u64,
             ..GcStats::default()
         };
+        let schemas_handle = self.schemas.clone();
 
         for value in roots.iter_mut() {
             forward_any_value_ref_root(
                 value,
-                &from_ranges,
-                &mut free,
-                to_end,
-                &self.schemas.borrow(),
+                &from_space,
+                self,
+                &schemas_handle.borrow(),
                 &mut copied_objects,
                 &mut stats,
             );
         }
 
-        let schemas = self.schemas.borrow();
+        let schemas = schemas_handle.borrow();
         let mut scan_idx = 0usize;
-        while scan_idx < copied_objects.len() {
-            let copied = copied_objects[scan_idx];
-            scan_idx += 1;
-            match copied.tag {
-                TAG_LIST => cheney_trace_list(
-                    copied.ptr as *mut ListCons,
-                    &from_ranges,
-                    &mut free,
-                    to_end,
-                    &schemas,
-                    &mut copied_objects,
-                    &mut stats,
-                ),
-                TAG_MAP => cheney_trace_map(
-                    copied.ptr,
-                    &from_ranges,
-                    &mut free,
-                    to_end,
-                    &schemas,
-                    &mut copied_objects,
-                    &mut stats,
-                ),
-                TAG_CLOSURE => cheney_trace_closure(
-                    copied.ptr,
-                    &from_ranges,
-                    &mut free,
-                    to_end,
-                    &schemas,
-                    &mut copied_objects,
-                    &mut stats,
-                ),
-                TAG_STRUCT => cheney_trace_struct(
-                    copied.ptr,
-                    &from_ranges,
-                    &mut free,
-                    to_end,
-                    &schemas,
-                    &mut copied_objects,
-                    &mut stats,
-                ),
-                TAG_BITSTRING | TAG_PROCBIN => {}
-                TAG_RESOURCE => cheney_trace_resource(
-                    copied.ptr,
-                    &from_ranges,
-                    &mut free,
-                    to_end,
-                    &schemas,
-                    &mut copied_objects,
-                    &mut stats,
-                ),
-                tag => panic!("Cheney scan: invalid copied object tag {tag:#x}"),
-            }
+        cheney_scan(
+            &mut scan_idx,
+            &from_space,
+            self,
+            &schemas,
+            &mut copied_objects,
+            &mut stats,
+        );
+
+        // A resource stub nothing reached is dead, but its destructor closure
+        // still has to run. Forward each such closure, with everything it
+        // captures, so it outlives the from-space. A stub a closure captures
+        // is reached by this and survives until a later collection.
+        let unreached = mso_unreached_closures(self);
+        let mut dead_closures: HashMap<usize, AnyValue> = HashMap::with_capacity(unreached.len());
+        for (stub, closure) in unreached {
+            let forwarded = forward_heap_value(closure, &from_space, self, &schemas, &mut copied_objects, &mut stats);
+            dead_closures.insert(stub, forwarded);
         }
+        cheney_scan(
+            &mut scan_idx,
+            &from_space,
+            self,
+            &schemas,
+            &mut copied_objects,
+            &mut stats,
+        );
         drop(schemas);
 
-        // MSO sweep walks the intrusive chain. Survivors get
-        // rewritten to their to-space copies; dead entries release their
-        // SharedBin reference. Must run before `pool_free` below because
-        // it dereferences from-space ProcBins (specifically their
-        // mso_next link, which Cheney never overwrites).
-        mso_sweep(self);
+        // The MSO sweep walks the intrusive chain: survivors are rewritten to
+        // their to-space copies and dead entries drop their off-heap
+        // reference. It must run before the from-space is released because
+        // it reads from-space stubs (their `mso_next` link, which Cheney never
+        // overwrites).
+        let dead = mso_sweep(self, |stub| {
+            *dead_closures
+                .get(&(stub.as_raw() as usize))
+                .expect("a dead unclaimed resource stub had its closure forwarded")
+        });
 
         // Release old from-space (current + parked blocks): pooled capacities
         // return to the pool (§6.6), exact blocks to the system allocator.
-        self.current_block().release();
-        for block in self.blocks.drain(..) {
+        from_tip.release();
+        for block in from_blocks {
             block.release();
         }
 
-        // Install to-space as the new current block.
-        self.install_block(Block {
-            start: to_start,
-            top: free,
-            capacity: to_size,
-        });
         let live_count = copied_objects.len() as u64;
         self.alloc_count = live_count;
         self.gc_run_count += 1;
-        self.last_gc_live_bytes = unsafe { free.offset_from(to_start) } as usize;
+        self.live_baseline = stats.copied_bytes as usize;
         stats.live_objects = live_count;
-        stats.live_bytes = self.last_gc_live_bytes as u64;
-        self.last_gc_stats = stats;
+        stats.live_bytes = self.live_baseline as u64;
+        stats.blocks_after = 1 + self.blocks.len() as u64;
+        self.queue_dead_resources(dead);
         stats
+    }
+
+    /// Release every stub on the MSO chain as a process exit does: nothing is
+    /// live, so every resource whose last reference this heap held queues its
+    /// destructor on `pending_dtors`. Allocates no to-space.
+    pub fn release_resources_at_exit(&mut self) {
+        let dead = mso_sweep(self, |stub| stub.closure_value());
+        self.queue_dead_resources(dead);
+    }
+
+    /// Queue each dead resource's closure and a boxed payload for the
+    /// scheduler to dispatch.
+    fn queue_dead_resources(&mut self, dead: Vec<DeadResource>) {
+        for DeadResource { closure, payload } in dead {
+            let payload_ref = self.box_any_value_ref(AnyValue::int(payload as i64)).raw_word();
+            self.pending_dtors.push_back((closure, payload_ref));
+        }
+    }
+}
+
+/// Scan the to-space objects copied since `scan_idx`, forwarding what each
+/// one references, until the scan catches up with the copy frontier.
+fn cheney_scan(
+    scan_idx: &mut usize,
+    from_space: &FromSpace,
+    heap: &mut Heap,
+    schemas: &SchemaRegistry,
+    copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
+) {
+    while *scan_idx < copied_objects.len() {
+        let copied = copied_objects[*scan_idx];
+        *scan_idx += 1;
+        match copied.kind {
+            ValueKind::LIST => cheney_trace_list(
+                copied.ptr as *mut ListCons,
+                from_space,
+                heap,
+                schemas,
+                copied_objects,
+                stats,
+            ),
+            ValueKind::MAP => cheney_trace_map(copied.ptr, from_space, heap, schemas, copied_objects, stats),
+            ValueKind::CLOSURE => cheney_trace_closure(copied.ptr, from_space, heap, schemas, copied_objects, stats),
+            ValueKind::STRUCT => cheney_trace_struct(copied.ptr, from_space, heap, schemas, copied_objects, stats),
+            ValueKind::BITSTRING | ValueKind::PROCBIN => {}
+            ValueKind::RESOURCE => cheney_trace_resource(copied.ptr, from_space, heap, schemas, copied_objects, stats),
+            kind => panic!("Cheney scan: invalid copied object kind {kind:?}"),
+        }
     }
 }
 

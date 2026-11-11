@@ -13,7 +13,7 @@ use fz_runtime::any_value::{
 use fz_runtime::heap::{Schema, SchemaRegistry};
 use fz_runtime::procbin::bitstring_bit_len as tagged_bitstring_bit_len;
 use fz_runtime::procbin::bitstring_byte_ptr as procbin_byte_ptr;
-use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
+use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 
 use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::source::{SourceMap, Span};
@@ -206,13 +206,7 @@ impl QuotedSourceHeap {
             vec![NIL_ATOM.to_string(), TRUE_ATOM.to_string(), FALSE_ATOM.to_string()],
             Vec::new(),
         ));
-        Process::from_consts(
-            node,
-            schemas,
-            &CompiledModuleConsts::empty(),
-            0,
-            DEFAULT_REDUCTIONS_PER_QUANTUM,
-        )
+        Process::with_node(node, schemas, 0, DEFAULT_REDUCTIONS_PER_QUANTUM)
     }
 
     pub(crate) fn lend_process<R, E>(&self, f: impl FnOnce(Process) -> (Process, Result<R, E>)) -> Result<R, E> {
@@ -671,8 +665,8 @@ impl QuotedSourceCursor {
                 )));
             }
         };
-        let byte_ptr = unsafe { procbin_byte_ptr(heap_word as *const u8) };
-        let bit_len = unsafe { tagged_bitstring_bit_len(heap_word as *const u8) } as usize;
+        let byte_ptr = unsafe { procbin_byte_ptr(heap_word) };
+        let bit_len = unsafe { tagged_bitstring_bit_len(heap_word) } as usize;
         if !bit_len.is_multiple_of(8) {
             return Err(QuotedSourceError::new(format!(
                 "expected whole-byte UTF-8 bitstring, got {bit_len} bits"
@@ -1050,9 +1044,8 @@ fn bitstring_eq(a: AnyValueRef, b: AnyValueRef) -> Result<bool, QuotedSourceErro
 
 fn bitstring_payload(value: AnyValueRef) -> Result<(usize, Vec<u8>), QuotedSourceError> {
     let heap_word = value.heap_object_word().map_err(QuotedSourceError::from)?;
-    let tagged_ptr = heap_word as *const u8;
-    let byte_ptr = unsafe { procbin_byte_ptr(tagged_ptr) };
-    let bit_len = unsafe { tagged_bitstring_bit_len(tagged_ptr) } as usize;
+    let byte_ptr = unsafe { procbin_byte_ptr(heap_word) };
+    let bit_len = unsafe { tagged_bitstring_bit_len(heap_word) } as usize;
     let byte_len = bit_len.div_ceil(8);
     let bytes = unsafe { slice::from_raw_parts(byte_ptr, byte_len) }.to_vec();
     Ok((bit_len, bytes))

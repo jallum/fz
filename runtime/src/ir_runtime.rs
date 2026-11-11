@@ -1,17 +1,15 @@
 //! Runtime helpers for the fz JIT — the `extern "C"` fns the generated
-//! Cranelift code calls into. Lifted out of ir_codegen.rs by fz-ul4.23.4
-//! so that ir_codegen can become purely codegen and a future AOT backend
-//! can link against the same FFI surface without dragging the JIT module
-//! along.
+//! Cranelift code calls into. Any execution path (JIT, AOT) can
+//! link against this FFI surface without dragging the JIT module along.
 //!
-//! This file holds the **arith / cmp / eq** cluster (fz-ul4.23.4.1)
-//! and the **alloc** cluster (fz-ul4.23.4.7). Other clusters land in
-//! sibling tickets:
-//!   .8  map     (fz_map_*, fz_key_*)
-//!   .9  bitstring (fz_bs_*, decode_*/encode_* bit helpers)
-//!   .11 closure (fz_closure_*, fz_tail_closure)
-//!   .12 concurrency (fz_spawn, fz_self, fz_send, fz_receive_attempt)
-//!   .13 halt/print (fz_halt, fz_dbg_value)
+//! The file is organised in clusters:
+//!   arith / cmp / eq
+//!   alloc
+//!   map         (fz_map_*, fz_key_*)
+//!   bitstring   (fz_bs_*, decode_*/encode_* bit helpers)
+//!   closure     (fz_closure_*, fz_tail_closure)
+//!   concurrency (fz_spawn, fz_self, fz_send, fz_receive_attempt)
+//!   halt/print  (fz_halt, fz_dbg_value)
 //!
 //! All fns here have unstable `extern "C"` ABI — they're called by
 //! Cranelift-emitted code via the symbol-binding list in
@@ -26,10 +24,10 @@
 
 use crate::any_value::debug::render_value;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_BITSTRING, TAG_FWD, TAG_MASK,
-    TAG_PROCBIN, ValueKind, closure_addr_from_tagged, closure_capture_value, closure_captured_count,
-    closure_denotation, closure_flags_pack, closure_fn_ptr, closure_halt_kind, heap_object_word, map_addr_from_tagged,
-    map_count, object_size, procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id,
+    AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_LAZY_CONT, ValueKind,
+    closure_addr_from_tagged, closure_capture_value, closure_captured_count, closure_denotation, closure_fn_ptr,
+    closure_halt_kind, heap_object_word, map_addr_from_tagged, map_count, object_size, procbin_addr_from_tagged,
+    struct_addr_from_tagged, struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -45,7 +43,7 @@ use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
     ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
 };
-use crate::process::{AlignedClosureStorage, Process};
+use crate::process::Process;
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource, fz_resource_destructor_noop};
 use crate::sched::{ReceiveStep, reach_receive};
 use crate::scheduler_hooks::YIELD_PTR;
@@ -53,7 +51,6 @@ use crate::term::{NumericMode, TermComparator};
 use std::alloc::{Layout, alloc_zeroed, handle_alloc_error};
 use std::cell::Cell;
 use std::mem::{size_of, transmute};
-use std::ptr::null_mut;
 use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -69,24 +66,7 @@ fn any_value_ref_from_word(word: u64, context: &str) -> AnyValueRef {
 }
 
 fn any_value_from_ref_word(word: u64, context: &str) -> AnyValue {
-    let value = any_value_ref_from_word(word, context);
-    if value.is_empty_list() {
-        return AnyValue::empty_list();
-    }
-    match value.tag() {
-        ValueKind::NULL => AnyValue::null(),
-        ValueKind::INT => AnyValue::int(value.load_int().expect(context)),
-        ValueKind::FLOAT => AnyValue::float(value.load_float().expect(context)),
-        ValueKind::ATOM => AnyValue::atom(value.load_atom().expect(context) as u32),
-        ValueKind::LIST => AnyValue::heap_ptr(value.list_addr().expect(context), ValueKind::LIST),
-        ValueKind::MAP => AnyValue::heap_ptr(value.map_addr().expect(context), ValueKind::MAP),
-        ValueKind::STRUCT => AnyValue::heap_ptr(value.struct_addr().expect(context), ValueKind::STRUCT),
-        ValueKind::CLOSURE => AnyValue::heap_ptr(value.closure_addr().expect(context), ValueKind::CLOSURE),
-        ValueKind::BITSTRING => AnyValue::heap_ptr(value.bitstring_addr().expect(context), ValueKind::BITSTRING),
-        ValueKind::PROCBIN => AnyValue::heap_ptr(value.procbin_addr().expect(context), ValueKind::PROCBIN),
-        ValueKind::RESOURCE => AnyValue::heap_ptr(value.resource_addr().expect(context), ValueKind::RESOURCE),
-        _ => unreachable!("AnyValueRef tag set is exhaustive"),
-    }
+    AnyValue::from_ref(any_value_ref_from_word(word, context)).expect(context)
 }
 
 fn heap_object_word_from_ref_word(word: u64, context: &str) -> u64 {
@@ -105,6 +85,12 @@ fn heap_ref_word(tag: ValueKind, addr: *const u8) -> u64 {
 fn closure_ref_word_from_bits(bits: u64) -> u64 {
     let addr = closure_addr_from_tagged(bits).expect("closure heap bits");
     heap_ref_word(ValueKind::CLOSURE, addr)
+}
+
+fn closure_ref_from_word(word: u64, context: &str) -> AnyValueRef {
+    let closure = any_value_ref_from_word(word, context);
+    closure.closure_addr().expect(context);
+    closure
 }
 
 fn closure_addr_from_ref_word(word: u64, context: &str) -> *mut u8 {
@@ -312,7 +298,7 @@ pub extern "C" fn fz_box_atom_for_any(process: *mut Process, raw: u64) -> u64 {
     box_scalar_for_any(process, raw, ValueKind::ATOM)
 }
 
-// ===== Halt + print cluster (fz-ul4.23.4.13) =====
+// ===== Halt + print cluster =====
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_dbg_value_ref(process: *mut Process, ref_word: u64) {
@@ -331,7 +317,7 @@ pub extern "C" fn fz_dynamic_float_arith_unsupported() -> u64 {
     panic!("dynamic float arithmetic needs a typed float result carrier")
 }
 
-/// fz-ul4.27.22.3 — typed halt for narrow-int seams. The cont chain
+/// Typed halt for narrow-int seams. The cont chain
 /// carries a raw i64 all the way to halt-cont's RawInt body; no
 /// unboxing — value is already a machine int.
 #[unsafe(no_mangle)]
@@ -339,7 +325,7 @@ pub extern "C" fn fz_halt_implicit_i64(process: *mut Process, val: i64) {
     (unsafe { &mut *process }).halt_value = val;
 }
 
-/// fz-ul4.27.22.3 — typed halt for narrow-float seams. Mirrors
+/// Typed halt for narrow-float seams. Mirrors
 /// fz_halt's Boxed-float branch: store `to_bits() as i64` so tests
 /// can round-trip via f64::from_bits.
 #[unsafe(no_mangle)]
@@ -369,9 +355,9 @@ fn halt_value_from_slot(value: AnyValue) -> i64 {
     }
 }
 
-// ===== Concurrency cluster (fz-ul4.23.4.12) =====
+// ===== Concurrency cluster =====
 
-/// fz-ul4.19.2: scheduler-bound builtins.
+/// Scheduler-bound builtins.
 ///
 /// Both dispatch through the scheduler callbacks installed on the current
 /// process's execution context. Calling either without that context panics.
@@ -430,7 +416,7 @@ pub extern "C" fn fz_self(process: *mut Process) -> u64 {
     (unsafe { &mut *process }).pid as u64
 }
 
-/// fz-ht5 — process-global monotonic counter feeding `fz_make_ref`.
+/// Process-global monotonic counter feeding `fz_make_ref`.
 /// Starts at 1 so 0 can remain a "no ref" sentinel if a future ticket
 /// needs one. AtomicU64 + Relaxed is sufficient under single-worker
 /// today and remains correct under future multi-worker.
@@ -455,7 +441,7 @@ pub extern "C" fn fz_send(process: *mut Process, receiver_pid_bits: u64, msg_ref
     msg_ref_word
 }
 
-/// fz-yxs/fz-st5 — selective receive entry. Called by JIT/AOT
+/// Selective receive entry. Called by JIT/AOT
 /// codegen at the `Term::ReceiveMatched` seam after the matcher fn,
 /// pinned snapshot, clause-body table, and (optional) after-cont
 /// closure have been laid out by `build_park_record` (B3).
@@ -493,7 +479,7 @@ pub extern "C" fn fz_receive_park_matched(
     after_cont_bits: u64,
 ) -> *mut u8 {
     let matcher_fn: MatcherFn = unsafe { transmute(matcher_fn_bits as usize) };
-    // fz-70q.3 — codegen passes `null` for `pinned_ptr` / `clause_bodies_ptr`
+    // Codegen passes `null` for `pinned_ptr` / `clause_bodies_ptr`
     // when the corresponding count is 0. `slice::from_raw_parts` rejects
     // null even with len 0 (its safety contract requires a valid aligned
     // pointer), so guard the zero-len case explicitly.
@@ -502,13 +488,13 @@ pub extern "C" fn fz_receive_park_matched(
     } else {
         unsafe { from_raw_parts(pinned_ptr, n_pinned as usize).to_vec() }
     };
-    let clause_bodies: Vec<*mut u8> = if n_clauses == 0 {
+    let clause_bodies: Vec<AnyValueRef> = if n_clauses == 0 {
         Vec::new()
     } else {
         unsafe {
             from_raw_parts(clause_bodies_ptr, n_clauses as usize)
                 .iter()
-                .map(|&bits| closure_addr_from_ref_word(bits, "fz_receive_park_matched clause body"))
+                .map(|&bits| closure_ref_from_word(bits, "fz_receive_park_matched clause body"))
                 .collect()
         }
     };
@@ -528,11 +514,8 @@ pub extern "C" fn fz_receive_park_matched(
         Some(after_deadline_or_neg1 as u64)
     };
 
-    let after_cont = if after_cont_bits == 0 {
-        null_mut()
-    } else {
-        closure_addr_from_ref_word(after_cont_bits, "fz_receive_park_matched after cont")
-    };
+    let after_cont =
+        (after_cont_bits != 0).then(|| closure_ref_from_word(after_cont_bits, "fz_receive_park_matched after cont"));
 
     let park = ParkRecord {
         matcher_fn,
@@ -547,7 +530,7 @@ pub extern "C" fn fz_receive_park_matched(
 
     let p = unsafe { &mut *process };
     match reach_receive(p, park) {
-        ReceiveStep::Continue(closure) => heap_ref_word(ValueKind::CLOSURE, closure) as *mut u8,
+        ReceiveStep::Continue(closure) => closure.raw_word() as *mut u8,
         ReceiveStep::Parked => YIELD_PTR as *mut u8,
     }
 }
@@ -570,12 +553,11 @@ pub extern "C" fn fz_yield_mid_flight_report(
     // Allocation-pressure reasons already stand on `p.yield_reasons`;
     // finish_yield_report folds them in when attributing the cause.
     p.finish_yield_report(remaining_reductions, reason as u8);
-    let closure_addr = closure_addr_from_ref_word(cont_closure_bits, "fz_yield_mid_flight_report cont");
-    let closure_bits = heap_object_word(closure_addr, ValueKind::CLOSURE);
-    let continuation_bytes = object_size(closure_bits);
+    let closure = closure_ref_from_word(cont_closure_bits, "fz_yield_mid_flight_report cont");
+    let continuation_bytes = object_size(closure.raw_word());
     let margin_after = p.heap.bytes_remaining_in_block();
     p.note_yield_continuation_allocation(continuation_bytes, margin_after);
-    p.set_runnable_closure(closure_addr);
+    p.set_runnable_closure(closure);
     YIELD_PTR as *mut u8
 }
 
@@ -585,7 +567,7 @@ pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
     p.begin_yield_continuation_allocation(p.heap.bytes_remaining_in_block());
 }
 
-// ===== Closure cluster (fz-ul4.23.4.11) =====
+// ===== Closure cluster =====
 //
 // Closures carry source denotation, a self-describing environment, and code at +8.
 // Invocation is a call_indirect through that code pointer; captures are
@@ -594,9 +576,8 @@ pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
 /// Allocate a closure heap object with `captured_count` capture slots.
 /// The runtime stores the body pointer while the tagged closure ref is still
 /// opaque to generated code; callers populate captures through accessors.
-/// `halt_kind` (fz-ul4.27.22.6) is packed into the closure header's
-/// `flags` so `fz_spawn_entry` can pick the matching halt-cont singleton
-/// at task launch. `arity` (fz-gk4) rides the header's high half; it is the
+/// `halt_kind` is packed into the closure header's `flags` so
+/// `fz_entry_thunk` can pick the matching halt continuation at task launch. `arity` rides the header's high half; it is the
 /// closure's user-visible parameter count, taken from the callable boundary
 /// that decides the call surface.
 #[unsafe(no_mangle)]
@@ -635,88 +616,11 @@ pub extern "C" fn fz_closure_halt_kind_ref(closure_ref_word: u64) -> u32 {
     unsafe { closure_halt_kind(addr) as u32 }
 }
 
-/// fz-cps.1.11 — return the per-Process singleton halt-cont closure.
-/// Lazily initialized on first call using the provided
-/// `halt_cont_body_addr` (taken at each call site via `func_addr`).
-/// JIT path: `make_process` pre-populates the singleton; this is a
-/// hot-path direct return. AOT path: the singleton may be null at
-/// first call, so this allocates with the supplied body addr.
-/// Reusing one singleton instead of allocating per uniform→native
-/// call site preserves test invariants that count heap allocations
-/// exactly (`gc_traces_closure_captured_via_jit`).
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_get_halt_cont(process: *mut Process, halt_cont_body_addr: u64, kind: u32) -> u64 {
-    // fz-ul4.27.22.3 — `kind` selects which of four per-Process halt-cont
-    // singletons to return (0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom). Each holds a
-    // body whose Tail-CC sig matches its repr. Producer's Term::Return
-    // uses sig (return_repr, i64); the code pointer at +8 must agree.
-    let p = unsafe { &mut *process };
-    let slot = kind as usize;
-    if !p.halt_cont_singletons[slot].is_null() {
-        return heap_ref_word(ValueKind::CLOSURE, p.halt_cont_singletons[slot] as *const u8);
-    }
-    let mut buf = AlignedClosureStorage::zeroed();
-    let base = buf.as_ptr();
-    unsafe {
-        std::ptr::write(
-            base as *mut u32,
-            crate::any_value::ClosureDenotationId::INTERNAL.as_u32(),
-        );
-        std::ptr::write(base.add(4) as *mut u32, closure_flags_pack(0, kind as u16) as u32);
-        std::ptr::write(base.add(8) as *mut u64, halt_cont_body_addr);
-    }
-    p.halt_cont_singletons[slot] = base;
-    p.static_closure_bufs.push(buf);
-    heap_ref_word(ValueKind::CLOSURE, p.halt_cont_singletons[slot] as *const u8)
-}
+// ===== Bitstring cluster =====
 
-/// fz-cps.1.7 — return the per-Process static zero-capture singleton for
-/// the given callable-entry spec id. Populated at `make_process` time from
-/// `CompiledModule::static_closure_targets`. Used by thin `Prim::MakeFnRef`
-/// values and by any remaining zero-capture callable singleton sites, instead
-/// of allocating a fresh closure object per use. See docs/cps-in-clif.md §8.2
-/// acceptance: "Module-init region produces double/neg static closures exactly
-/// once."
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_get_static_closure(process: *mut Process, cl_sid: u32) -> u64 {
-    let p = unsafe { &mut *process };
-    let idx = cl_sid as usize;
-    if idx < p.static_closures.len() {
-        let ptr = p.static_closures[idx];
-        if !ptr.is_null() {
-            return heap_ref_word(ValueKind::CLOSURE, ptr as *const u8);
-        }
-    }
-    panic!(
-        "fz_get_static_closure: no singleton for cl_sid {} ({} entries)",
-        cl_sid,
-        p.static_closures.len()
-    );
-}
-
-// ===== Bitstring cluster (fz-ul4.23.4.9) =====
-
-fn bitstring_like_ptr(bits: u64) -> Option<*mut u8> {
-    if matches!(bits & TAG_MASK, TAG_BITSTRING | TAG_PROCBIN) {
-        Some(bits as *mut u8)
-    } else {
-        None
-    }
-}
-
-pub(crate) fn bitstring_like_ptr_from_ref(word: u64) -> Option<*mut u8> {
-    let value = AnyValueRef::from_raw_word(word).ok()?;
-    match value.tag() {
-        ValueKind::BITSTRING => value
-            .bitstring_addr()
-            .ok()
-            .map(|addr| heap_object_word(addr, ValueKind::BITSTRING) as *mut u8),
-        ValueKind::PROCBIN => value
-            .procbin_addr()
-            .ok()
-            .map(|addr| heap_object_word(addr, ValueKind::PROCBIN) as *mut u8),
-        _ => None,
-    }
+/// `word` itself when it is the heap object word of a Bitstring or ProcBin.
+pub(crate) fn bitstring_like_word(word: u64) -> Option<u64> {
+    is_bitstring_like(word).then_some(word)
 }
 
 #[unsafe(no_mangle)]
@@ -799,8 +703,8 @@ fn fz_bs_write_field_value(
                     .heap_object_word()
                     .unwrap_or_else(|| panic!("binary/bits bit field expects heap bitstring"));
                 let p =
-                    bitstring_like_ptr(bits).unwrap_or_else(|| panic!("binary/bits bit field expects heap bitstring"));
-                if !unsafe { is_bitstring_like(p) } {
+                    bitstring_like_word(bits).unwrap_or_else(|| panic!("binary/bits bit field expects heap bitstring"));
+                if !is_bitstring_like(p) {
                     panic!("binary/bits bit field source is not a Bitstring");
                 }
                 let src_bit_len = unsafe { bitstring_bit_len(p) } as usize;
@@ -1026,7 +930,7 @@ pub extern "C" fn fz_binary_downcase(process: *mut Process, ref_word: u64) -> u6
 }
 
 fn map_case(process: *mut Process, ref_word: u64, upper: bool) -> u64 {
-    let Some(p) = bitstring_like_ptr_from_ref(ref_word) else {
+    let Some(p) = bitstring_like_word(ref_word) else {
         panic!("case mapping expects a binary");
     };
     let bit_len = unsafe { bitstring_bit_len(p) };
@@ -1060,7 +964,7 @@ fn map_case(process: *mut Process, ref_word: u64, upper: bool) -> u64 {
 /// already has.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_binary_to_atom(process: *mut Process, ref_word: u64) -> u64 {
-    let Some(p) = bitstring_like_ptr_from_ref(ref_word) else {
+    let Some(p) = bitstring_like_word(ref_word) else {
         panic!("String.to_atom expects a binary");
     };
     let bit_len = unsafe { bitstring_bit_len(p) };
@@ -1076,10 +980,10 @@ pub extern "C" fn fz_binary_to_atom(process: *mut Process, ref_word: u64) -> u64
 }
 
 /// The number of BYTES in a binary. Refuses a partial bitstring, which has no
-/// byte size (fz-5xp.42 is the type-level half of the same question).
+/// byte size.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bitstring_byte_size(ref_word: u64) -> i64 {
-    let Some(p) = bitstring_like_ptr_from_ref(ref_word) else {
+    let Some(p) = bitstring_like_word(ref_word) else {
         panic!("byte_size expects a binary");
     };
     let bit_len = unsafe { bitstring_bit_len(p) };
@@ -1096,10 +1000,10 @@ pub extern "C" fn fz_bitstring_byte_size(ref_word: u64) -> i64 {
 /// it gets a size no subject can hold and the read misses.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_pinned_binary_segment_size(ref_word: u64) -> u32 {
-    let Some(p) = bitstring_like_ptr_from_ref(ref_word).or_else(|| bitstring_like_ptr(ref_word)) else {
+    let Some(p) = bitstring_like_word(ref_word) else {
         return u32::MAX;
     };
-    if !unsafe { is_bitstring_like(p) } {
+    if !is_bitstring_like(p) {
         return u32::MAX;
     }
     let bit_len = unsafe { bitstring_bit_len(p) } as usize;
@@ -1113,25 +1017,23 @@ pub extern "C" fn fz_pinned_binary_segment_size(ref_word: u64) -> u32 {
 /// `bitstring`?
 ///
 /// fz's type system does not draw this line: `<<1::4>>` has type `binary` and a
-/// `s :: binary` clause head accepts it (fz-5xp.42). Elixir's does, and
+/// `s :: binary` clause head accepts it. Elixir's does, and
 /// `String.Chars` turns on it -- identity for a binary, raise for anything
 /// else. So the distinction has to be asked at runtime.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bitstring_is_binary(ref_word: u64) -> i64 {
-    let Some(p) = bitstring_like_ptr_from_ref(ref_word).or_else(|| bitstring_like_ptr(ref_word)) else {
+    let Some(p) = bitstring_like_word(ref_word) else {
         return 0;
     };
-    if !unsafe { is_bitstring_like(p) } {
+    if !is_bitstring_like(p) {
         return 0;
     }
     i64::from((unsafe { bitstring_bit_len(p) } as usize).is_multiple_of(8))
 }
 
 fn byte_aligned_binary_slice(word: u64, context: &str) -> (*const u8, usize) {
-    let p = bitstring_like_ptr_from_ref(word)
-        .or_else(|| bitstring_like_ptr(word))
-        .unwrap_or_else(|| panic!("{context}: expected binary"));
-    assert!(unsafe { is_bitstring_like(p) }, "{context}: expected binary");
+    let p = bitstring_like_word(word).unwrap_or_else(|| panic!("{context}: expected binary"));
+    assert!(is_bitstring_like(p), "{context}: expected binary");
     let bit_len = unsafe { bitstring_bit_len(p) } as usize;
     assert!(bit_len.is_multiple_of(8), "{context}: expected byte-aligned binary");
     let ptr = unsafe { bitstring_byte_ptr(p) };
@@ -1204,7 +1106,7 @@ pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_r
     value.ref_word().raw_word()
 }
 
-/// fz-cty.8 — single-shot bitstring allocation from module-interned bytes.
+/// Single-shot bitstring allocation from module-interned bytes.
 ///
 /// Replaces the begin/write-per-field/finalize sequence for the common
 /// case of an all-constant byte-literal bitstring (e.g. `<<1, 2, ..., 70>>`).
@@ -1221,7 +1123,7 @@ pub extern "C" fn fz_alloc_bitstring_const(process: *mut Process, ptr: u64, byte
     value.ref_word().raw_word()
 }
 
-/// fz-q8d.2 — allocate a ProcBin on the current heap referencing a
+/// Allocate a ProcBin on the current heap referencing a
 /// compiler-baked static SharedBin in `.data`. The static SharedBin's
 /// refcount anchor (initial value 1) is kept; we retain to climb to 2,
 /// then the new ProcBin's lifetime release brings it back to 1 (anchor
@@ -1305,8 +1207,8 @@ pub extern "C" fn fz_bs_reader_init_ref(process: *mut Process, bs_ref: u64) -> u
 }
 
 fn fz_bs_reader_init_bits(process: *mut Process, bs_bits: u64) -> u64 {
-    let p = bitstring_like_ptr(bs_bits).unwrap_or_else(|| panic!("reader_init expects heap value"));
-    if !unsafe { is_bitstring_like(p) } {
+    let p = bitstring_like_word(bs_bits).unwrap_or_else(|| panic!("reader_init expects heap value"));
+    if !is_bitstring_like(p) {
         panic!("reader_init source is not a Bitstring");
     }
     let bit_len = unsafe { bitstring_bit_len(p) } as i64;
@@ -1382,8 +1284,8 @@ fn fz_bs_read_field_bits(
     let pos = (unsafe { &mut *process }).heap.read_field_slot(rp, 16).raw() as usize;
 
     // Bytes pointer from bs.
-    let bsp = bitstring_like_ptr(bs_bits).expect("read_field: reader bs not a ptr");
-    if !unsafe { is_bitstring_like(bsp) } {
+    let bsp = bitstring_like_word(bs_bits).expect("read_field: reader bs not a ptr");
+    if !is_bitstring_like(bsp) {
         panic!("read_field reader bs is not a Bitstring");
     }
     let bytes_ptr = unsafe { bitstring_byte_ptr(bsp) };
@@ -1424,7 +1326,7 @@ fn fz_bs_read_field_bits(
             if pos + needed_bits > bit_len {
                 return fail();
             }
-            // fz-5xp.55 — a byte-aligned TAIL of a shared binary is another
+            // A byte-aligned TAIL of a shared binary is another
             // view of the same bytes, not a copy. This is the step every byte
             // scanner performs, and copying it is what made scanning
             // quadratic. Only a suffix qualifies, which is exactly what
@@ -1519,7 +1421,7 @@ fn fz_bs_read_field_bits(
     heap_ref_word(ValueKind::STRUCT, result_p as *const u8)
 }
 
-// ===== Map cluster (fz-ul4.23.4.8) =====
+// ===== Map cluster =====
 //
 // Maps publish one sorted sequence with unique strict structural keys.
 // Construction freezes once; immutable updates preserve the same order.
@@ -1651,8 +1553,12 @@ fn resource_payload_ref(resource: AnyValueRef) -> AnyValueRef {
     AnyValueRef::from_scalar_slot(ValueKind::INT, stub.payload_slot()).expect("resource integer payload ref")
 }
 
+/// A ref to the one immutable nil payload word, marked as a literal because it
+/// lies outside every heap.
 fn nil_atom_ref() -> AnyValueRef {
-    AnyValueRef::from_scalar_slot(ValueKind::ATOM, &NIL_ATOM_REF_SLOT).expect("static nil atom ref")
+    AnyValueRef::from_scalar_slot(ValueKind::ATOM, &NIL_ATOM_REF_SLOT)
+        .expect("static nil atom ref")
+        .literal()
 }
 
 #[unsafe(no_mangle)]
@@ -1888,7 +1794,7 @@ pub extern "C" fn fz_map_is_map(map_ref_word: u64) -> u8 {
     (any_value_ref_from_word(map_ref_word, "fz_map_is_map").tag() == ValueKind::MAP) as u8
 }
 
-// ===== Alloc cluster (fz-ul4.23.4.7) =====
+// ===== Alloc cluster =====
 
 /// `System.argv/0`: the program's command line, as a list of binaries holding
 /// each argument's exact bytes, read from the driver's execution context.
@@ -1965,9 +1871,7 @@ pub extern "C" fn fz_list_cons_atom(process: *mut Process, atom_id: u64, tail_re
 }
 
 // Reading a list head/tail is a pure dereference of the self-describing list
-// pointer — no allocation, no heap state — so these take no process. (The
-// `current_process().heap` receiver is vestigial: the read methods take `&self`
-// and ignore it; fz-vdt ctx.8 makes them process-free free functions.)
+// pointer — no allocation, no heap state — so these take no process.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_list_head_ref(list_ref_word: u64) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_head_ref");
@@ -2047,7 +1951,7 @@ pub extern "C" fn fz_list_reuse_or_cons_parts(
 
 /// Allocate a heap-typed Struct. `schema_id` must already be registered in
 /// the current Process's heap SchemaRegistry (shared with CompiledModule).
-/// Returns a TAG_STRUCT-tagged heap pointer. Caller is
+/// Returns a Struct ref word. Caller is
 /// responsible for writing field values into payload slots after allocation.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_struct(process: *mut Process, schema_id: u32) -> u64 {
@@ -2266,8 +2170,7 @@ pub extern "C" fn fz_closure_set_capture_atom(process: *mut Process, closure_ref
 }
 
 const LAZY_CONT_CODE_OFF: usize = 0;
-// +8 is reserved. It held the cont's spec id, which materialization passed to
-// the allocator as a target id that the closure header discarded (fz-gk4).
+// +8 is reserved.
 const LAZY_CONT_COUNT_OFF: usize = 16;
 const LAZY_CONT_RAW_OFF: usize = 32;
 
@@ -2281,7 +2184,7 @@ const LAZY_CONT_KIND_ATOM: u8 = 3;
 #[inline]
 fn is_lazy_cont_ref(word: u64) -> bool {
     let tag_shift = AnyValueRefPacking::current().tag_shift();
-    (word >> tag_shift) == TAG_FWD
+    (word >> tag_shift) == TAG_LAZY_CONT
 }
 
 #[inline]
@@ -2430,11 +2333,10 @@ pub extern "C" fn fz_alloc_frame(process: *mut Process, schema_id: u32, total_si
     p
 }
 
-// ===== Arith / cmp / eq cluster (fz-ul4.23.4.1) =====
+// ===== Arith / cmp / eq cluster =====
 
 /// Tag-promotion helper for the JIT's mixed-type arithmetic slow path.
-/// fz-ul4.27.9: replaced the per-op fz_arith_* / fz_cmp_* helpers — JIT now
-/// promotes integer operands here; raw float operands stay in typed lanes.
+/// The JIT promotes integer operands here; raw float operands stay in typed lanes.
 /// f64 remainder (fmod-style: truncated, sign of dividend). Cranelift has no
 /// frem opcode, so the JIT's float-mod slow path calls out here.
 #[unsafe(no_mangle)]
@@ -2600,7 +2502,7 @@ pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_ref: u64, b_ref: u64)
     u64::from(compare_values(process, a, b, NumericMode::Strict).is_eq())
 }
 
-// fz-axu.14 (R1) — utf8 runtime support.
+// UTF-8 runtime support.
 
 /// Length of the first valid UTF-8 codepoint, or the byte offset at which its
 /// prefix becomes invalid. An error at `bytes.len()` means the prefix is
@@ -2655,8 +2557,7 @@ fn utf8_byte_in(bytes: &[u8], index: usize, min: u8, max: u8) -> Result<(), usiz
 /// Bitstrings that aren't byte-aligned cannot be UTF-8 (UTF-8 is a
 /// byte-oriented encoding); this function rejects them up front.
 ///
-/// Called by Utf8.valid?/Utf8.from_bytes/Utf8.from_bytes! (S2,
-/// fz-axu.13).
+/// Called by Utf8.valid?, Utf8.from_bytes and Utf8.from_bytes!.
 ///
 /// # Safety
 /// The caller must pass a tagged heap pointer that points at a
@@ -2665,11 +2566,11 @@ fn utf8_byte_in(bytes: &[u8], index: usize, min: u8, max: u8) -> Result<(), usiz
 /// `bitstring_bit_len`/`bitstring_byte_ptr`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
-    let p = match bitstring_like_ptr_from_ref(bs_bits) {
+    let p = match bitstring_like_word(bs_bits) {
         Some(p) => p,
         None => return 0,
     };
-    if !unsafe { is_bitstring_like(p) } {
+    if !is_bitstring_like(p) {
         return 0;
     }
     let bit_len = unsafe { bitstring_bit_len(p) } as usize;
@@ -2698,10 +2599,10 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
 /// in the runtime.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bitstring_utf8_prefix(bs_bits: u64) -> i64 {
-    let Some(p) = bitstring_like_ptr_from_ref(bs_bits) else {
+    let Some(p) = bitstring_like_word(bs_bits) else {
         return -1;
     };
-    if !unsafe { is_bitstring_like(p) } {
+    if !is_bitstring_like(p) {
         return -1;
     }
     let bit_len = unsafe { bitstring_bit_len(p) } as usize;
@@ -2729,7 +2630,7 @@ pub extern "C" fn fz_matcher_map_get_ref(process: *mut Process, map_ref_word: u6
         .raw_word()
 }
 
-/// fz-puj.45 (X4) — selective-receive matcher comparison against a
+/// Selective-receive matcher comparison against a
 /// constant byte literal. Returns 1 if `val_bits` points at a
 /// bitstring-like heap value (Bitstring or ProcBin) whose bit-length is
 /// `byte_len * 8` and whose bytes equal the slice
@@ -2746,10 +2647,10 @@ pub extern "C" fn fz_matcher_map_get_ref(process: *mut Process, map_ref_word: u6
 /// initialized bytes. `val_bits` is treated as an opaque AnyValue.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_matcher_eq_bytes(val_bits: u64, bytes_ptr: u64, byte_len: u64) -> u32 {
-    let Some(p) = bitstring_like_ptr_from_ref(val_bits) else {
+    let Some(p) = bitstring_like_word(val_bits) else {
         return 0;
     };
-    if !unsafe { is_bitstring_like(p) } {
+    if !is_bitstring_like(p) {
         return 0;
     }
     let want_bits = byte_len * 8;

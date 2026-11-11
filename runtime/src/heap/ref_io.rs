@@ -4,12 +4,14 @@ use std::ptr::{read, write};
 
 use super::schema::SchemaRegistry;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, ValueKind, map_count, map_key_kind, map_keys_ptr, map_tag_ptr,
-    map_value_kind, map_values_ptr, object_size_with_struct_payload,
+    AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, ValueKind, heap_object_word, map_count, map_key_kind,
+    map_keys_ptr, map_tag_ptr, map_value_kind, map_values_ptr, object_size_with_struct_payload,
 };
 
-pub(super) fn strict_object_size(bits: u64, schemas: &SchemaRegistry) -> usize {
-    object_size_with_struct_payload(bits, |schema_id| schemas.get(schema_id).allocation_payload_size())
+pub(super) fn strict_object_size(kind: ValueKind, addr: *const u8, schemas: &SchemaRegistry) -> usize {
+    object_size_with_struct_payload(heap_object_word(addr, kind), |schema_id| {
+        schemas.get(schema_id).allocation_payload_size()
+    })
 }
 
 pub(super) fn any_value_ref_from_storage(
@@ -60,11 +62,9 @@ pub(super) fn list_tail_bits_from_ref(value: AnyValueRef) -> Result<u64, AnyValu
     }
 }
 
-pub(super) fn is_active_from_space_object(p: *mut u8, from_ranges: &[(*mut u8, *mut u8)]) -> bool {
-    !p.is_null() && ptr_in_ranges(p, from_ranges.iter().copied())
-}
-
-/// The one membership predicate: `p` lies in one of the half-open ranges.
+/// `p` lies in one of the half-open ranges. The collector uses it only to
+/// cross-check the literal bit in debug builds; `Heap::contains_heap_addr` asks
+/// it of a heap's own blocks.
 pub(super) fn ptr_in_ranges(p: *mut u8, ranges: impl IntoIterator<Item = (*mut u8, *mut u8)>) -> bool {
     ranges.into_iter().any(|(start, end)| p >= start && p < end)
 }

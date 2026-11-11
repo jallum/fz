@@ -1,4 +1,4 @@
-//! fz-q8d.3 — sync primitives abstraction.
+//! Sync primitives abstraction.
 //!
 //! Under `cfg(loom)`, atomics and thread primitives route through
 //! `loom`'s instrumented implementations so the loom model checker can

@@ -1,24 +1,23 @@
 //! Per-task runtime state.
 //!
-//! Lifted out of ir_codegen.rs by fz-ul4.23.4.2 so that any execution path
+//! Any execution path
 //! (JIT, interp, AOT) can stand up a Process without dragging the codegen
 //! module along. The Process owns the per-task heap and builders; the Runtime
 //! in src/runtime.rs schedules Processes. FFI/BIF fns in src/ir_runtime.rs
 //! receive their `*mut Process` explicitly — compiled code passes the pinned
 //! register, the interpreter threads it as a parameter — so there is no
-//! ambient current-process and two schedulers can be live at once (fz-vdt).
+//! ambient current-process and two schedulers can be live at once.
 
 use crate::any_value::ClosureDenotationId;
 use crate::function_denotation::FunctionDenotation;
-use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
-use std::ptr::{NonNull, null, null_mut, write};
+use std::ptr::null_mut;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::any_value::{AnyValueRef, TAG_MASK, ValueKind, closure_header_word, closure_size_for_count};
+use crate::any_value::AnyValueRef;
 use crate::bitstr::BitWriter;
 use crate::delivery::DeliveryLock;
 use crate::exec_ctx::ExecCtx;
@@ -29,33 +28,44 @@ pub const DEFAULT_REDUCTIONS_PER_QUANTUM: i32 = 4000;
 pub const YIELD_REASON_REDUCTIONS: u8 = 1 << 0;
 pub const YIELD_REASON_EXPLICIT: u8 = 1 << 1;
 
-pub struct AlignedClosureStorage {
-    ptr: NonNull<u8>,
-    layout: Layout,
+/// How a quantum ended, and so what a scheduler does with the process next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Disposition {
+    /// The process yielded and is still runnable: queue it behind the others.
+    Requeue,
+    /// The process parked on a receive that found nothing: a send or its
+    /// after-timer wakes it.
+    Parked,
+    /// The process halted; its heap and its resources are released, never
+    /// collected.
+    Exited,
 }
 
-impl AlignedClosureStorage {
-    pub fn zeroed() -> Self {
-        let layout = Layout::from_size_align(closure_size_for_count(0), 16).expect("zero-capture closure layout");
-        let ptr = unsafe { alloc_zeroed(layout) };
-        let Some(ptr) = NonNull::new(ptr) else {
-            handle_alloc_error(layout);
-        };
-        debug_assert_eq!(ptr.as_ptr() as u64 & TAG_MASK, 0);
-        Self { ptr, layout }
-    }
-
-    pub fn as_ptr(&mut self) -> *mut u8 {
-        self.ptr.as_ptr()
-    }
+/// The scheduler boundary that asked for a collection. A halting process is
+/// released rather than collected, so an exit is not a boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CollectionBoundary {
+    /// The process ran out of budget and is still runnable.
+    Yield,
+    /// The process parked on a receive that found nothing.
+    Park,
 }
 
-impl Drop for AlignedClosureStorage {
-    fn drop(&mut self) {
-        unsafe {
-            dealloc(self.ptr.as_ptr(), self.layout);
+impl CollectionBoundary {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CollectionBoundary::Yield => "yield",
+            CollectionBoundary::Park => "park",
         }
     }
+}
+
+/// One heap collection a scheduler boundary performed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Collection {
+    pub pid: PidId,
+    pub boundary: CollectionBoundary,
+    pub stats: GcStats,
 }
 
 /// Per-task runtime state. One Process per fz-level task; the scheduler hands
@@ -78,8 +88,7 @@ pub struct Process {
     /// `Runtime`, interpreter, or AOT shim) at each quantum entry; the pointee
     /// outlives any FFI call made under this process. Null until a scheduler
     /// installs one. The spawn/send/fault/timer/output BIFs dispatch
-    /// through it — this is what replaced the `CURRENT_PROCESS`-era thread-local
-    /// singletons (removed in `fz-vdt`), so two schedulers can be live at once.
+    /// through it, so two schedulers can be live at once.
     pub ctx: *mut ExecCtx,
     pub halt_value: i64,
     /// Whether the process failed: set only by `fz_panic`, the one route an
@@ -93,7 +102,7 @@ pub struct Process {
     /// shared and append-only across the context's processes — runtime atom
     /// interning is visible to every process, like the BEAM's node-global table.
     pub node: Rc<Node>,
-    // fz-ul4.19.1 scheduler-level fields. Populated when a Process is
+    // Scheduler-level fields. Populated when a Process is
     // owned by a Runtime; the standalone `make_process()` path
     // leaves these at defaults.
     pub pid: PidId,
@@ -110,26 +119,6 @@ pub struct Process {
     /// entry closure; the thunk supplies the halt continuation and enters it
     /// on first resume). `None` means no work is queued.
     pub runnable: Option<ClosureRef>,
-    /// fz-ul4.27.22.3 — per-Process halt-cont singletons indexed by
-    /// repr kind (0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom). Each slot holds a
-    /// 24-byte closure whose +8 slot points at the matching
-    /// `fz_halt_cont_body_<kind>` Cranelift body. Lazily allocated by
-    /// `fz_get_halt_cont(addr, kind)` per kind, or pre-populated by
-    /// `init_halt_cont_singletons` at make_process. Pointers alias
-    /// aligned buffers in `static_closure_bufs`.
-    pub halt_cont_singletons: [*mut u8; 4],
-    /// fz-cps.1.7 — per-Process static zero-capture closure singletons.
-    /// Indexed by lambda spec id (cl_sid). Null entries indicate "no
-    /// singleton registered for this cl_sid." Each non-null entry points
-    /// to a 16-byte-aligned off-heap buffer owned by `static_closure_bufs`
-    /// (closure metadata + code_ptr, zero captures). Off-heap so the per-process
-    /// GC arena does not own them — singletons live for the Process's
-    /// lifetime. See docs/cps-in-clif.md §8.2.
-    pub static_closures: Vec<*mut u8>,
-    /// fz-cps.1.7 — backing storage for `static_closures`. One aligned
-    /// allocation per registered singleton. The raw pointer in
-    /// `static_closures` aliases the start of the corresponding allocation.
-    pub static_closure_bufs: Vec<AlignedClosureStorage>,
 
     /// Cumulative compiled-code mid-flight yields for this process. Each
     /// increment means native code built a scheduler-owned continuation
@@ -152,9 +141,12 @@ pub struct Process {
     pub list_retention_attempts: u64,
     /// Attempts that returned the source cell, unchanged or after guarded rewrite.
     pub list_retention_hits: u64,
+    /// Cumulative resource destructors the scheduler dispatched for this
+    /// process, after collections and at exit.
+    pub dtors_dispatched: u64,
     /// Compact reason bits pending for the next scheduler boundary. A yielding
     /// back edge sets the reduction bit, and the boundary consumes it via
-    /// `finish_yield_report` and `boundary_maintenance`. Collection timing is
+    /// `finish_yield_report` and `end_quantum`. Collection timing is
     /// decided by the heap, not here: collection has no authority to force a
     /// scheduler yield. See `YIELD_REASON_*`.
     pub yield_reasons: u8,
@@ -200,29 +192,25 @@ pub enum ProcessState {
 /// pinned values, clause bodies, and after-timer continuation all live on it.
 pub type WaitState = ParkRecord;
 
-/// A non-null pointer to a `(self)`-callable closure the scheduler can resume
-/// through the `fz_resume` shim. Construction rejects null, so a
-/// `Some(ClosureRef)` always names a real closure to run.
+/// A `(self)`-callable closure the scheduler can resume through the `fz_resume`
+/// shim. It is a closure ref, so a closure the program ships as read-only data
+/// keeps its literal bit. A `ClosureRef` always names a real closure to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ClosureRef(*mut u8);
+pub struct ClosureRef(AnyValueRef);
 
 impl ClosureRef {
-    /// Wrap a closure heap address; `None` if null (no work).
-    pub fn new(ptr: *mut u8) -> Option<Self> {
-        if ptr.is_null() { None } else { Some(Self(ptr)) }
+    pub fn new(closure: AnyValueRef) -> Self {
+        closure.closure_addr().expect("a runnable closure is a closure ref");
+        assert!(
+            !closure.is_empty_list() && !closure.storage_addr().is_null(),
+            "a runnable closure is not null"
+        );
+        Self(closure)
     }
 
-    pub fn as_ptr(self) -> *mut u8 {
+    pub fn as_ref(self) -> AnyValueRef {
         self.0
     }
-}
-
-fn closure_root(closure: *mut u8) -> AnyValueRef {
-    AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure).expect("a closure root is a non-null closure address")
-}
-
-fn closure_addr(root: AnyValueRef) -> *mut u8 {
-    root.closure_addr().expect("a forwarded closure root stays a closure")
 }
 
 /// The node-global atom table: text↔id, append-only. Seeded from a module's
@@ -383,51 +371,20 @@ impl Node {
     }
 }
 
-/// Per-`CompiledModule` construction inputs applied to a Process at spawn —
-/// the bitstring-tuple schemas plus the static-closure and halt-cont singleton
-/// seeds — as distinct from the per-spawn scheduler state (pid, mailbox, run
-/// state) the spawner sets, and from the shared `Node` tables. `from_consts` is
-/// the single construction site that applies them, so a newly-added field flows
-/// through one path instead of diverging across the JIT, interpreter, and AOT
-/// spawners.
-pub struct CompiledModuleConsts {
-    pub static_closure_targets: Vec<(
-        u32,       /* cl_sid */
-        u32,       /* arity */
-        *const u8, /* code_ptr */
-        u32,       /* halt_kind */
-        crate::any_value::ClosureDenotationId,
-    )>,
-    pub halt_cont_body_addrs: [*const u8; 4],
-}
-
-impl CompiledModuleConsts {
-    /// No construction inputs: the shape a bare `Process::new` and the
-    /// minimal-setup interpreter/AOT spawners carry.
-    pub fn empty() -> Self {
-        Self {
-            static_closure_targets: Vec::new(),
-            halt_cont_body_addrs: [null(); 4],
-        }
-    }
-}
-
 impl Process {
     /// The single Process construction site. Builds the heap and field
-    /// defaults, applies the module constants, and seeds the static-closure
-    /// and halt-cont singleton tables. Per-spawn scheduler state (run state,
-    /// mailbox, pending entries) stays at defaults for the spawner to set.
-    pub fn from_consts(
+    /// defaults. Per-spawn scheduler state (run state, mailbox, pending
+    /// entries) stays at defaults for the spawner to set.
+    pub fn with_node(
         node: Rc<Node>,
         schemas: Rc<RefCell<SchemaRegistry>>,
-        consts: &CompiledModuleConsts,
         pid: PidId,
         reductions_per_quantum: i32,
     ) -> Self {
-        let mut p = Self {
+        Self {
             // §6.3: initial size on spawn = SIZE_TABLE[0] (1 KiB). Cheney
             // promotes to a larger block capacity on first GC if the working
-            // set demands it; shrink hysteresis (§6.5 / fz-siu.11) brings
+            // set demands it; shrink hysteresis (§6.5) brings
             // it back down for short-lived spikes.
             delivery: DeliveryLock::default(),
             heap: Heap::with_node(SIZE_TABLE[0], schemas, Rc::clone(&node)),
@@ -441,9 +398,6 @@ impl Process {
             next_frame: null_mut(),
             mailbox: VecDeque::new(),
             runnable: None,
-            halt_cont_singletons: [null_mut(); 4],
-            static_closures: Vec::new(),
-            static_closure_bufs: Vec::new(),
             scheduler_yields: 0,
             interpreter_yields: 0,
             reductions_remaining: reductions_per_quantum,
@@ -452,29 +406,17 @@ impl Process {
             reduction_yields: 0,
             list_retention_attempts: 0,
             list_retention_hits: 0,
+            dtors_dispatched: 0,
             yield_reasons: 0,
             pending_yield_continuation_margin_before_bytes: 0,
             max_yield_continuation_bytes: 0,
             min_yield_continuation_margin_before_bytes: 0,
             min_yield_continuation_margin_after_bytes: 0,
-        };
-        // An empty target set leaves `static_closures` empty (no cl_sid is
-        // ever looked up); only build the table when the module carries one.
-        if !consts.static_closure_targets.is_empty() {
-            p.init_static_closures(&consts.static_closure_targets);
         }
-        p.init_halt_cont_singletons(consts.halt_cont_body_addrs);
-        p
     }
 
     pub fn new(schemas: Rc<RefCell<SchemaRegistry>>) -> Self {
-        Self::from_consts(
-            Rc::new(Node::empty()),
-            schemas,
-            &CompiledModuleConsts::empty(),
-            0,
-            DEFAULT_REDUCTIONS_PER_QUANTUM,
-        )
+        Self::with_node(Rc::new(Node::empty()), schemas, 0, DEFAULT_REDUCTIONS_PER_QUANTUM)
     }
 
     /// Clear scheduler-owned pointers before handing this process back to a
@@ -483,85 +425,20 @@ impl Process {
         self.ctx = null_mut();
     }
 
-    /// fz-cps.1.7 — populate the static closure singleton table. Each
-    /// target `(cl_sid, arity, code_ptr, halt_kind)` allocates one off-heap
-    /// strict zero-capture closure and registers its tagged value at
-    /// `static_closures[cl_sid as usize]`. Idempotent only
-    /// in the sense that re-calling with the same targets re-allocates;
-    /// callers (`CompiledModule::make_process`) call this exactly once
-    /// per Process at construction time.
-    pub fn init_static_closures(
-        &mut self,
-        targets: &[(
-            u32,       /* cl_sid */
-            u32,       /* arity */
-            *const u8, /* code_ptr */
-            u32,       /* halt_kind */
-            crate::any_value::ClosureDenotationId,
-        )],
-    ) {
-        // Size table by max cl_sid encountered.
-        let max = targets.iter().map(|(s, _, _, _, _)| *s).max().unwrap_or(0) as usize;
-        if self.static_closures.len() < max + 1 {
-            self.static_closures.resize(max + 1, null_mut());
-        }
-        for (cl_sid, arity, code_ptr, halt_kind, denotation) in targets {
-            let mut buf = AlignedClosureStorage::zeroed();
-            let base = buf.as_ptr();
-            unsafe {
-                write(base as *mut u32, denotation.as_u32());
-                write(
-                    base.add(4) as *mut u32,
-                    closure_header_word(0, *halt_kind as u16, *arity as u16),
-                );
-                write(base.add(8) as *mut u64, *code_ptr as u64);
-            }
-            self.static_closures[*cl_sid as usize] = base;
-            self.static_closure_bufs.push(buf);
-        }
-    }
-
-    /// fz-ul4.27.22.3 — pre-allocate halt-cont singletons for each kind
-    /// (0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom). Non-null `body_addrs[k]` seeds
-    /// the corresponding slot; null entries leave the slot null
-    /// (lazily filled by `fz_get_halt_cont` on first use). Called once
-    /// per Process by `make_process`.
-    pub fn init_halt_cont_singletons(&mut self, body_addrs: [*const u8; 4]) {
-        for (slot, addr) in body_addrs.iter().enumerate() {
-            if addr.is_null() {
-                continue;
-            }
-            let mut buf = AlignedClosureStorage::zeroed();
-            let base = buf.as_ptr();
-            unsafe {
-                write(
-                    base as *mut u32,
-                    crate::any_value::ClosureDenotationId::INTERNAL.as_u32(),
-                );
-                // A continuation is applied to exactly the one value it
-                // receives, so its arity is 1.
-                write(base.add(4) as *mut u32, closure_header_word(0, slot as u16, 1));
-                write(base.add(8) as *mut u64, *addr as u64);
-            }
-            self.halt_cont_singletons[slot] = base;
-            self.static_closure_bufs.push(buf);
-        }
-    }
-
     /// Queue a `(self)`-callable closure (continuation or entry thunk) as the
-    /// next thing to resume. A null pointer clears the slot.
-    pub fn set_runnable_closure(&mut self, closure: *mut u8) {
-        self.runnable = ClosureRef::new(closure);
+    /// next thing to resume.
+    pub fn set_runnable_closure(&mut self, closure: AnyValueRef) {
+        self.runnable = Some(ClosureRef::new(closure));
     }
 
     /// Take the queued runnable closure, clearing the slot.
-    pub fn take_runnable_closure(&mut self) -> Option<*mut u8> {
-        self.runnable.take().map(ClosureRef::as_ptr)
+    pub fn take_runnable_closure(&mut self) -> Option<AnyValueRef> {
+        self.runnable.take().map(ClosureRef::as_ref)
     }
 
-    /// The queued runnable closure pointer, if any, without clearing it.
-    pub fn runnable_ptr(&self) -> *mut u8 {
-        self.runnable.map(ClosureRef::as_ptr).unwrap_or(null_mut())
+    /// The queued runnable closure, if any, without clearing it.
+    pub fn runnable_closure(&self) -> Option<AnyValueRef> {
+        self.runnable.map(ClosureRef::as_ref)
     }
 
     pub fn reset_reduction_budget(&mut self) {
@@ -587,14 +464,14 @@ impl Process {
         self.yield_reasons = 0;
     }
 
-    /// Scheduler-boundary maintenance shared by every execution path: collect
-    /// when the heap is due, and clear the yield-reason signals so the next
-    /// quantum starts clean.
-    pub fn boundary_maintenance(&mut self) {
-        if self.needs_boundary_gc() {
-            self.collect(&mut []);
+    /// How the quantum a process just ran ended: still runnable, waiting on a
+    /// receive, or halted.
+    pub fn quantum_end(&self) -> Disposition {
+        match self.state {
+            ProcessState::Running if self.runnable.is_some() => Disposition::Requeue,
+            ProcessState::Blocked => Disposition::Parked,
+            _ => Disposition::Exited,
         }
-        self.clear_yield_reasons();
     }
 
     /// Collect this process's heap. The roots are everything the process
@@ -609,10 +486,10 @@ impl Process {
         let mut delivery = self.delivery.lock();
         let park = delivery.park_mut();
         let mut roots: Vec<AnyValueRef> = Vec::new();
-        roots.extend(self.runnable.map(|closure| closure_root(closure.as_ptr())));
+        roots.extend(self.runnable_closure());
         if let Some(park) = park.as_deref() {
-            roots.extend(park.clause_bodies.iter().map(|&body| closure_root(body)));
-            roots.extend((!park.after_cont.is_null()).then(|| closure_root(park.after_cont)));
+            roots.extend(park.clause_bodies.iter().copied());
+            roots.extend(park.after_cont);
             roots.extend(park.pinned.iter().copied());
         }
         roots.extend(self.mailbox.iter().copied());
@@ -623,14 +500,14 @@ impl Process {
         let mut forwarded = roots.into_iter();
         let mut next = || forwarded.next().expect("one forwarded root per gathered root");
         if self.runnable.is_some() {
-            self.runnable = ClosureRef::new(closure_addr(next()));
+            self.runnable = Some(ClosureRef::new(next()));
         }
         if let Some(park) = park {
             for body in park.clause_bodies.iter_mut() {
-                *body = closure_addr(next());
+                *body = next();
             }
-            if !park.after_cont.is_null() {
-                park.after_cont = closure_addr(next());
+            if park.after_cont.is_some() {
+                park.after_cont = Some(next());
             }
             for pinned in park.pinned.iter_mut() {
                 *pinned = next();
@@ -680,9 +557,7 @@ fn min_nonzero(current: u64, candidate: u64) -> u64 {
     }
 }
 
-// fz-vdt ctx.8: the ambient `CURRENT_PROCESS` thread-local, its
-// `CurrentProcessGuard`, and the `current_process()`/`try_current_process()`
-// accessors are gone. Every FFI/BIF now receives its `*mut Process` explicitly
+// There is no ambient current-process. Every FFI/BIF receives its `*mut Process` explicitly
 // (in the pinned register for compiled code, threaded as a parameter for the
 // interpreter). This is what lets two schedulers be live at once on one thread.
 

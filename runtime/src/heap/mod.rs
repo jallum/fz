@@ -6,8 +6,9 @@
 //! too. Block capacities are `SIZE_TABLE` entries, which the pool recycles, or
 //! for an object larger than the whole table exactly that object's size, which
 //! the system allocator provides and takes back. At the next park-time GC, the collector copies everything reachable
-//! from scheduler-owned roots into a fresh to-space block; the old current
-//! block and all parked blocks are then freed.
+//! from scheduler-owned roots into a fresh tip through the same bump path
+//! (a copy that fills the tip parks it and climbs the table, like an
+//! allocation); the old current block and all parked blocks are then freed.
 //!
 //! GC is *not* synchronous on allocation. `Heap::should_gc` is a pure
 //! function of the heap's state: the bytes a collection could copy (the tip's
@@ -18,8 +19,10 @@
 //! scheduler-owned closures, mailbox roots, and interpreter-owned explicit
 //! roots are traced.
 //!
-//! Forwarding marker: a copied from-space object gets `(to_addr & !0xF) |
-//! TAG_FWD` written into word 0. Strict pointer tags carry the object kind.
+//! Forwarding marker: every heap object is 16-byte aligned, so a live
+//! pointer's low nibble is clear. A copied from-space object has the one
+//! marker word of its kind (`gc::forwarding`) overwritten with the to-space
+//! address plus a set low nibble; nothing else uses the low bits.
 
 mod block_pool;
 mod deep_copy;
@@ -51,9 +54,9 @@ pub use self::block_pool::pool_drain_for_test;
 pub use self::block_pool::{SIZE_TABLE, next_block_capacity, pick_block_capacity};
 pub use self::block_pool::{pool_outstanding_blocks, pool_total_cached_blocks};
 pub use self::deep_copy::{
-    AddressMap, AddressSet, HeapView, deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot,
-    deep_copy_tagged_bits, measure_deep_copy,
+    AddressMap, AddressSet, HeapView, deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, measure_deep_copy,
 };
+pub(crate) use self::gc::forwarding::forwarded_target;
 pub use self::gift::GiftSegment;
 pub use self::imp::{closure_capture_ref, list_head_ref, list_tail_ref};
 pub(crate) use self::ref_io::map_entry_refs;
@@ -63,7 +66,7 @@ pub use self::schema::{
 };
 pub use self::stats::{AllocStat, GcStats, HeapAllocKind, HeapAllocStats};
 
-/// fz-cty.5 — bitstrings above this many bytes are routed through the
+/// Bitstrings above this many bytes are routed through the
 /// shared zone (refcounted off-heap `SharedBin` + per-process `ProcBin`
 /// stub) instead of being inlined on the per-process heap. Matches
 /// BEAM's refc-binary threshold.
@@ -76,14 +79,12 @@ pub struct Heap {
     /// The tip's capacity in bytes: a `SIZE_TABLE` entry, or an exact size
     /// above the table for a block made to hold a larger object.
     block_size: usize,
-    /// Exact live bytes after the most recent GC. Zero until the first GC.
-    /// Used by proactive shrinkage to size the to-space and detect low-live
-    /// quiet periods.
-    pub last_gc_live_bytes: usize,
-    /// Telemetry from the most recent GC. Tests and runtime hosts can inspect
-    /// this without coupling the `fz-runtime` crate to the compiler telemetry
-    /// bus.
-    pub last_gc_stats: GcStats,
+    /// The bytes known to be live: set by a collection to the bytes that
+    /// survived, raised by a graft by the gift's fill, left alone by
+    /// allocation. Zero until the first collection or graft. `should_gc`
+    /// counts allocation against it, and a collection's fresh tip is sized
+    /// to it.
+    pub live_baseline: usize,
     /// Blocks the heap has stopped bumping into: old tips abandoned by `grow`
     /// and blocks grafted from other heaps' gift segments. Each records its
     /// fill and capacity, so `Drop` / gc() can return it to the pool (§6.6)
@@ -99,7 +100,7 @@ pub struct Heap {
     /// process state.
     pub(crate) node: Rc<Node>,
     pub(crate) schemas: Rc<RefCell<SchemaRegistry>>,
-    /// Count of GC invocations. Stub in fz-siu.7; real body lands in .8.
+    /// Count of GC invocations.
     pub gc_run_count: u64,
     /// Total allocations made since last successful GC. Backs `live_count()`
     /// — under bump-only with no reclaim, every alloc since-start is "live".
@@ -108,7 +109,7 @@ pub struct Heap {
     /// Total allocation requests made by kind since the last explicit
     /// process/user-code reset. Unlike `alloc_count`, GC never rewrites this.
     alloc_stats: HeapAllocStats,
-    /// fz-q8d.1 — intrusive MSO ("Mixed Set / Off-heap") chain. Tagged head
+    /// Intrusive MSO ("Mixed Set / Off-heap") chain. Tagged head
     /// bits for a singly-linked list of live strict ProcBin and Resource
     /// stubs allocated on this heap; each entry's `mso_next` slot stores the
     /// previous tagged chain entry.
@@ -116,11 +117,10 @@ pub struct Heap {
     /// their to-space copies; `Heap::drop` calls `procbin::mso_drop_all`
     /// before pool reclaim so SharedBin references are balanced.
     pub mso_head: u64,
-    /// fz-4mk — pending dtor invocations. When an MSO sweep finds a
-    /// Resource stub whose off-heap refcount transitioned to
-    /// zero, instead of firing the dtor inline (which would mean running
-    /// fz code from inside the GC pause), we enqueue
-    /// `(closure_bits, payload)` here and the scheduler drains the queue
-    /// at the next quantum boundary. See ticket fz-4mk.
+    /// Pending dtor invocations. When the MSO sweep finds a Resource stub
+    /// whose off-heap refcount transitioned to zero, it enqueues
+    /// `(closure_bits, payload_ref)` here instead of running fz code from
+    /// inside the collection; the scheduler drains the queue before the
+    /// process next runs, after a collection and at exit.
     pub pending_dtors: VecDeque<(u64, u64)>,
 }

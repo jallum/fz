@@ -1,0 +1,18 @@
+#---
+# purpose: "a live binary whose first eight bytes read as 8 and whose ninth is 1 survives collections unchanged: the collector tells a forwarded object from a live one by the object's own marker word, never by payload bytes"
+#---
+#
+# The binary `<<8, 0, 0, 0, 0, 0, 0, 0, 1>>` is 72 bits long, and 72 is 0x48. A
+# collector that read a header's low bits and a following word of 8 as "already
+# moved" would take this live binary for a forwarded one. `main` keeps it live
+# while 20000 list cells are built, so collections run, then prints it.
+def churn(0, acc), do: acc
+def churn(n, acc), do: churn(n - 1, [Integer.to_string(n) | acc])
+def make(x), do: <<x, 0, 0, 0, 0, 0, 0, 0, 1>>
+def main() do
+  b = make(8)
+  20000 = length(churn(20000, []))
+  dbg(byte_size(b))
+  dbg(b)
+  :ok
+end

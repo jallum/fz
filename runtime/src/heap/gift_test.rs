@@ -3,9 +3,8 @@
 
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, EMPTY_LIST, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, ValueKind, heap_kind_from_tagged,
-    heap_object_word, list_addr_from_tagged, procbin_addr_from_tagged, struct_addr_from_tagged,
-    struct_size_for_payload,
+    AnyValue, AnyValueRef, EMPTY_LIST, ValueKind, heap_kind_from_tagged, heap_object_word, heap_word_addr,
+    list_addr_from_tagged, procbin_addr_from_tagged, struct_addr_from_tagged, struct_size_for_payload,
 };
 use crate::procbin::{PROCBIN_BYTES, ProcBin, SharedBinHandle, alloc_procbin};
 use crate::resource::ResourceStub;
@@ -33,7 +32,9 @@ fn list_ref_from_bits(bits: u64) -> AnyValueRef {
 
 fn heap_ref(bits: u64) -> AnyValueRef {
     let kind = heap_kind_from_tagged(bits).expect("tagged heap root");
-    AnyValueRef::from_heap_object(kind, (bits & !TAG_MASK) as *const u8).expect("heap root ref")
+    AnyValueRef::from_raw_word(bits)
+        .inspect(|root| assert_eq!(root.tag(), kind))
+        .expect("heap root ref")
 }
 
 fn procbin_word(pb: &ProcBin) -> u64 {
@@ -45,11 +46,11 @@ fn mso_chain(h: &Heap) -> Vec<u64> {
     let mut out = Vec::new();
     let mut cur_bits = h.mso_head;
     while cur_bits != 0 {
-        let addr = (cur_bits & !TAG_MASK) as *mut u8;
-        let next = match cur_bits & TAG_MASK {
-            TAG_PROCBIN => unsafe { ProcBin::from_raw(addr).mso_next() },
-            TAG_RESOURCE => unsafe { ResourceStub::from_raw(addr).mso_next() },
-            tag => panic!("unexpected MSO tag {tag:#x}"),
+        let addr = heap_word_addr(cur_bits);
+        let next = match heap_kind_from_tagged(cur_bits) {
+            Some(ValueKind::PROCBIN) => unsafe { ProcBin::from_raw(addr).mso_next() },
+            Some(ValueKind::RESOURCE) => unsafe { ResourceStub::from_raw(addr).mso_next() },
+            kind => panic!("unexpected MSO kind {kind:?}"),
         };
         out.push(cur_bits);
         cur_bits = next;
@@ -84,6 +85,25 @@ fn gift_one_cons(sender: &mut Heap, value: i64) -> (GiftSegment, u64) {
     sender.begin_gift(16);
     let bits = alloc_int_list_cons(sender, value, EMPTY_LIST);
     (sender.end_gift(), bits)
+}
+
+#[test]
+fn a_gift_below_the_table_occupies_an_exact_block_of_its_measured_size() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let pooled_before = pool_outstanding_blocks();
+    for (measured, block) in [(16, 16), (64, 64), (1008, 1008)] {
+        sender.begin_gift(measured);
+        assert_eq!(sender.block_size, block, "{measured} measured bytes");
+        let _ = sender.alloc(measured);
+        let segment = sender.end_gift();
+        assert_eq!(segment.fill_bytes(), measured);
+        assert_eq!(
+            pool_outstanding_blocks(),
+            pooled_before,
+            "an exact block is not a pooled block"
+        );
+    }
+    assert_eq!(sender.block_size, SIZE_TABLE[0], "the tip is untouched by the gifts");
 }
 
 #[test]
@@ -163,8 +183,8 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
     assert_eq!(shared_refs(&witness), 2, "the refcount is unchanged by the move");
     assert_eq!(
         pool_total_cached_blocks(),
-        2,
-        "the receiver's old tip and the gift block are back in the pool"
+        1,
+        "the receiver's old tip is back in the pool; the exact gift block went to the system allocator"
     );
     drop(receiver);
     assert_eq!(
@@ -247,8 +267,8 @@ fn a_gift_with_an_object_above_the_table_grafts_and_is_copied_by_the_receivers_c
     assert!(receiver.contains_heap_addr(moved));
     assert!(!receiver.contains_heap_addr(big));
     assert_eq!(stats.copied_objects, 1);
-    assert!(stats.to_space_capacity_bytes as usize >= size);
-    assert_eq!(stats.live_bytes, receiver.last_gc_live_bytes as u64);
+    assert!(receiver.bytes_used() >= size, "the heap's blocks hold the object");
+    assert_eq!(stats.live_bytes, receiver.live_baseline as u64);
     drop(receiver);
     drop(sender);
     assert_eq!(
@@ -259,7 +279,7 @@ fn a_gift_with_an_object_above_the_table_grafts_and_is_copied_by_the_receivers_c
 }
 
 #[test]
-fn thousands_of_small_unread_gifts_leave_the_receivers_capacity_unchanged_after_gc() {
+fn thousands_of_small_unread_gifts_do_not_grow_the_receivers_tip_after_gc() {
     pool_drain_for_test();
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
@@ -273,7 +293,10 @@ fn thousands_of_small_unread_gifts_leave_the_receivers_capacity_unchanged_after_
     }
     let own_live = 2000 * 16;
     assert_eq!(receiver.bytes_used(), own_live);
-    assert!(!receiver.should_gc());
+    assert!(
+        receiver.should_gc(),
+        "a heap never collected is due at half the smallest tip"
+    );
 
     let gifts: u64 = 6000;
     for i in 0..gifts as i64 {
@@ -281,32 +304,43 @@ fn thousands_of_small_unread_gifts_leave_the_receivers_capacity_unchanged_after_
         receiver.graft(segment);
     }
     let adopted_fill = gifts as usize * 16;
-    let adopted_capacity = gifts as usize * SIZE_TABLE[0];
-    assert!(
-        adopted_capacity > receiver.block_size,
-        "by capacity the gifts outweigh the whole heap; by fill they fit beside the live list"
-    );
     assert!(own_live + adopted_fill < receiver.block_size);
     assert_eq!(
         receiver.bytes_used(),
         own_live + adopted_fill,
         "adopted bytes count by fill"
     );
-    assert!(receiver.should_gc(), "adopted fill counts toward should_gc");
+    assert_eq!(
+        receiver.live_baseline, adopted_fill,
+        "adopted fill is baseline, not allocation"
+    );
+    assert!(
+        !receiver.should_gc(),
+        "32000 allocated bytes are under the 96000 the gifts raised the baseline to"
+    );
     let mut roots = [heap_ref(list)];
     let stats = receiver.collect(&mut roots);
 
-    assert_eq!(receiver.block_size, capacity_before, "dead gifts do not grow the heap");
     assert_eq!(
-        stats.to_space_capacity_bytes, SIZE_TABLE[11] as u64,
-        "to-space is sized from the 128000 bytes in use (32000 own, 96000 adopted) and the gifts are dead"
+        receiver.block_size,
+        pick_block_capacity(adopted_fill),
+        "the fresh tip is fitted to the baseline the gifts raised"
+    );
+    assert!(
+        receiver.block_size <= capacity_before,
+        "dead gifts do not grow the heap"
+    );
+    assert_eq!(
+        receiver.bytes_used(),
+        own_live,
+        "only the 32000 own live bytes remain of the 128000 in use; the gifts are dead"
     );
     assert_eq!(stats.live_bytes, own_live as u64, "none of the gifts was reachable");
     assert!(receiver.blocks.is_empty());
     assert_eq!(
         pool_total_cached_blocks(),
-        gifts as usize + 1,
-        "every gift block and the old tip went back to the pool"
+        1,
+        "the old tip went back to the pool; each exact gift block went to the system allocator"
     );
     drop(receiver);
     drop(sender);
@@ -376,7 +410,11 @@ fn dropping_an_ungrafted_segment_returns_its_blocks_and_releases_its_stubs() {
     let _ = sender.alloc(32);
     let segment = sender.end_gift();
     assert_eq!(segment.block_count(), 1);
-    assert_eq!(pool_outstanding_blocks(), pooled_before + 1, "the gift block is pooled");
+    assert_eq!(
+        pool_outstanding_blocks(),
+        pooled_before,
+        "the gift block is exact, below the table, and not pooled"
+    );
     assert_eq!(shared_refs(&witness), 2);
     assert_eq!(pool_total_cached_blocks(), 0);
 
@@ -384,8 +422,8 @@ fn dropping_an_ungrafted_segment_returns_its_blocks_and_releases_its_stubs() {
 
     assert_eq!(
         pool_total_cached_blocks(),
-        1,
-        "the pooled gift block is back in the pool"
+        0,
+        "an exact gift block goes back to the system allocator, not the pool"
     );
     assert_eq!(
         pool_outstanding_blocks(),
@@ -430,8 +468,7 @@ fn a_collection_inside_a_window_is_refused() {
     sender.collect_tagged(&mut root);
 }
 
-/// A receiver in the SHRINK band: its last collection kept 2000 bytes in a
-/// block of 192768, then it allocated 80000 bytes that all stay reachable.
+/// A receiver whose last collection kept 2000 bytes in a block of 192768, then it allocated 80000 bytes that all stay reachable.
 fn receiver_with_live_allocation_since_a_small_collection(reg: &Rc<RefCell<SchemaRegistry>>) -> (Heap, u64) {
     let mut receiver = Heap::new(SIZE_TABLE[9], reg.clone());
     for _ in 0..60 {
@@ -460,41 +497,47 @@ fn gift_of_cons_cells(sender: &mut Heap, cells: i64) -> GiftSegment {
 }
 
 #[test]
-fn gifts_alone_make_should_gc_true_and_to_space_holds_every_live_byte() {
+fn gifts_raise_the_baseline_and_the_heaps_blocks_hold_every_live_byte() {
     let reg = fresh_registry();
     let (mut receiver, live) = receiver_with_live_allocation_since_a_small_collection(&reg);
+    assert_eq!(receiver.live_baseline, 2000);
     assert!(
-        !receiver.should_gc(),
-        "80000 live bytes in a 192768-byte block are under half"
+        receiver.should_gc(),
+        "80000 allocated bytes are past the 2000-byte baseline"
     );
     let mut sender = Heap::new(SIZE_TABLE[0], reg);
     for _ in 0..16 {
         receiver.graft(gift_of_cons_cells(&mut sender, 60));
     }
+    assert_eq!(
+        receiver.live_baseline,
+        2000 + 16 * 960,
+        "the gifts' fill raised the baseline"
+    );
     assert!(
         receiver.should_gc(),
-        "the gifts' fill carried the heap over half its block"
+        "80000 allocated bytes are still past the 17360-byte baseline"
     );
     let mut roots = [heap_ref(live)];
     let stats = receiver.collect(&mut roots);
 
-    assert!(
-        stats.to_space_capacity_bytes >= stats.copied_bytes,
-        "to-space of {} cannot hold the {} bytes copied",
-        stats.to_space_capacity_bytes,
+    assert_eq!(
+        receiver.bytes_used() as u64,
+        stats.copied_bytes,
+        "the heap's blocks hold the {} bytes copied",
         stats.copied_bytes
     );
     assert_eq!(stats.live_bytes, 2000 + 5000 * 16, "every own live byte survived");
 }
 
 #[test]
-fn a_direct_collection_in_the_shrink_band_holds_every_live_byte_without_gifts() {
+fn a_direct_collection_after_a_small_one_holds_every_live_byte_without_gifts() {
     let reg = fresh_registry();
     let (mut receiver, live) = receiver_with_live_allocation_since_a_small_collection(&reg);
     let mut roots = [heap_ref(live)];
     let stats = receiver.collect(&mut roots);
 
-    assert!(stats.to_space_capacity_bytes >= stats.copied_bytes);
+    assert_eq!(receiver.bytes_used() as u64, stats.copied_bytes);
     assert_eq!(stats.live_bytes, 2000 + 5000 * 16, "every own live byte survived");
 }
 
@@ -527,4 +570,35 @@ fn a_gift_of_the_exact_measured_bytes_fills_its_block_without_overflow() {
         assert_eq!(segment.block_count(), 1, "{bytes} bytes");
         assert_eq!(segment.fill_bytes(), bytes);
     }
+}
+
+/// A gift arrives packed and fully live, which is the state of a heap after a
+/// collection: its fill raises the baseline instead of counting as allocation,
+/// and the receiver is due a collection only once its own allocation reaches
+/// that baseline.
+#[test]
+fn a_grafted_gift_raises_the_baseline_and_the_receiver_collects_after_allocating_as_much_again() {
+    let reg = fresh_registry();
+    let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
+    let mut receiver = Heap::new(SIZE_TABLE[0], reg);
+    assert_eq!(receiver.live_baseline, 0);
+
+    receiver.graft(gift_of_cons_cells(&mut sender, 100));
+    assert_eq!(receiver.live_baseline, 1600, "the gift's fill is survivor data");
+    assert_eq!(receiver.bytes_used(), 1600);
+    assert!(
+        !receiver.should_gc(),
+        "1600 grafted bytes are over half the 1024-byte tip, yet nothing has been allocated"
+    );
+
+    for _ in 0..99 {
+        let _ = receiver.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
+    }
+    assert!(
+        !receiver.should_gc(),
+        "1584 allocated bytes are under the 1600 baseline"
+    );
+    let _ = receiver.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
+    assert!(receiver.should_gc(), "1600 allocated bytes reach the baseline");
+    assert_eq!(receiver.live_baseline, 1600, "allocation leaves the baseline alone");
 }

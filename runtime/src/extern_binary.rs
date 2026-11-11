@@ -1,4 +1,4 @@
-//! fz-9ss — runtime helpers for the `binary` and `c_string` extern marshal
+//! Runtime helpers for the `binary` and `c_string` extern marshal
 //! classes.
 //!
 //! Each helper takes tagged heap bits known to the *declaration* to be a
@@ -6,7 +6,7 @@
 //! suitable for passing into a System V C function.
 //!
 //! Today both helpers do the same thing — return `bytes_ptr` — because every
-//! binary's underlying buffer owns its trailing NUL via [[fz-wu9]] and there
+//! binary's underlying buffer owns its trailing NUL and there
 //! are no SubBin slices yet (every slice allocates fresh). The split into two
 //! symbols is deliberate so the *call sites* in interp/JIT/AOT commit to the
 //! contract today. When SubBin lands, only these helper bodies change:
@@ -21,8 +21,8 @@
 //! byte-aligned binary. They predate the process-aware `fz_panic` path and do
 //! not participate in its execution-context fault channel.
 
-use crate::any_value::{AnyValueRef, ValueKind, heap_object_word};
-use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
+use crate::any_value::AnyValueRef;
+use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
 use std::process::abort;
 
 fn panic_arg(msg: &str) -> ! {
@@ -36,27 +36,14 @@ fn panic_arg(msg: &str) -> ! {
 /// # Safety
 /// `v` must be an any value ref for a binary-like value.
 unsafe fn coerce_binary_ptr(v: u64) -> *const u8 {
-    let p = match AnyValueRef::from_raw_word(v).ok().and_then(|value| match value.tag() {
-        ValueKind::BITSTRING => value
-            .bitstring_addr()
-            .ok()
-            .map(|addr| heap_object_word(addr, ValueKind::BITSTRING) as *mut u8),
-        ValueKind::PROCBIN => value
-            .procbin_addr()
-            .ok()
-            .map(|addr| heap_object_word(addr, ValueKind::PROCBIN) as *mut u8),
-        _ => None,
-    }) {
-        Some(p) => p,
-        _ => panic_arg("extern binary/c_string arg: expected a binary value"),
-    };
-    if !unsafe { is_bitstring_like(p) } {
+    let is_binary = AnyValueRef::from_raw_word(v).is_ok_and(|value| value.tag().is_binary_repr());
+    if !is_binary {
         panic_arg("extern binary/c_string arg: expected a binary value");
     }
-    if unsafe { bitstring_bit_len(p) } % 8 != 0 {
+    if unsafe { bitstring_bit_len(v) } % 8 != 0 {
         panic_arg("extern binary/c_string arg: non-byte-aligned bitstring");
     }
-    unsafe { bitstring_byte_ptr(p) }
+    unsafe { bitstring_byte_ptr(v) }
 }
 
 /// `binary` marshal class: pointer to the bytes; no NUL guarantee.
@@ -69,7 +56,7 @@ pub unsafe extern "C" fn fz_binary_as_ptr(v: u64) -> *const u8 {
 }
 
 /// `c_string` marshal class: pointer to the bytes with a guaranteed
-/// trailing NUL. Underwritten by the +1-NUL invariant from [[fz-wu9]].
+/// trailing NUL. Underwritten by the +1-NUL invariant.
 ///
 /// # Safety
 /// `v` must be tagged heap bits for a binary-like value.

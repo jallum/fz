@@ -13,9 +13,9 @@
 #     one big literal, matched         ->  exit 0
 #     TWO big literals, both matched   ->  exit 138
 #
-# `TAG_MASK` is four bits and `TAG_FWD` is `0x8`. A ProcBin stub keeps its
+# A forwarding marker is a set low nibble. A ProcBin stub keeps its
 # SharedBin's address in word 0, and word 0 is where the collector writes its
-# forwarding marker -- so a SharedBin sitting at an address ending in 8 makes a
+# marker -- so a SharedBin sitting at an address with a set low nibble makes a
 # LIVE stub read as forwarded. The sweep then took the SharedBin itself for a
 # to-space stub, wrote into it, and made the chain head point eight bytes below
 # it; the release that followed did an atomic decrement into read-only memory.

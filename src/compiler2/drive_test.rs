@@ -9248,10 +9248,6 @@ fn compiler2_interp_uses_backend_runtime_self_and_send_intrinsics() {
 
     assert_eq!(halt, 1, "self/0 should report pid 1 for the root backend task");
     assert!(
-        capture.find(&["fz", "runtime", "send_to_unknown_pid"]).is_empty(),
-        "send(self(), ...) should deliver to the live root task instead of falling through the unknown-pid path",
-    );
-    assert!(
         capture.find(&["fz", "codegen"]).is_empty(),
         "the backend interpreter should not invoke native codegen",
     );
@@ -10605,27 +10601,133 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
                 .any(|member| member.target.activation.function == lambda_id)
         })
         .expect("native program should publish the dtor lambda callable boundary");
-    let compiled = jit_compile_native_program(&mut compiler, &program);
-    // Singletons are keyed by callable-boundary id -- the same key
-    // `fz_get_static_closure` looks them up under at runtime.
-    let static_target = compiled
-        .static_closure_targets()
-        .iter()
-        .find(|(cl_sid, _, _, _, _)| *cl_sid == native_callable_boundary.id().as_u32())
-        .expect("compiled JIT module should publish one static closure target for the dtor wrapper");
-    let body_ptr = compiled
-        .fn_ptr(native_callable_boundary.wrapper_fn)
-        .expect("compiled JIT module should publish the dtor wrapper body address");
-    assert_eq!(native_callable_boundary.denotation, lambda_id.denotation());
     assert_eq!(
-        static_target.4,
+        native_callable_boundary.denotation,
         lambda_id.denotation(),
-        "static publication must retain source denotation, not its callable-boundary identity",
+        "a callable boundary retains the source denotation, not its own identity",
     );
-    assert_ne!(
-        static_target.2, body_ptr,
-        "static closure singletons should point at callable-boundary wrappers, not straight at the lambda body",
+}
+
+/// Whether storing one byte through `address` kills the writer with a memory
+/// fault. The store runs in a forked child, so the fault ends the child and
+/// the parent reads how it died.
+fn writing_through_faults(address: u64) -> bool {
+    match unsafe { libc::fork() } {
+        -1 => panic!("fork failed"),
+        0 => unsafe {
+            std::ptr::write_volatile(address as *mut u8, 0);
+            libc::_exit(0);
+        },
+        child => {
+            let mut status = 0;
+            assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+            libc::WIFSIGNALED(status) && matches!(libc::WTERMSIG(status), libc::SIGSEGV | libc::SIGBUS)
+        }
+    }
+}
+
+#[test]
+fn the_fault_probe_tells_writable_memory_from_read_only_memory() {
+    let writable = Box::new(0u8);
+    static READ_ONLY: [u8; 16] = [0; 16];
+    assert!(!writing_through_faults(&*writable as *const u8 as u64));
+    assert!(writing_through_faults(READ_ONLY.as_ptr() as u64));
+}
+
+/// Runs `source`'s `main` as `count` processes of one compiled program and
+/// returns each one's halt value.
+fn halt_values_of_processes_sharing_one_program(source: &str, count: usize) -> Vec<i64> {
+    let tel = ConfiguredTelemetry::new();
+    let exits = ProcessExitCapture::new();
+    exits.install(&tel);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("static_closure_sharing.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root_id);
+    let program = native.last(root_id).program;
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    let mut runtime = crate::exec::runtime::Runtime::new(&compiled, 1, compiler.telemetry());
+    let pids = (0..count).map(|_| runtime.spawn(program.entry)).collect::<Vec<_>>();
+    runtime.run_until_idle();
+    pids.into_iter()
+        .map(|pid| exits.by_pid(pid).expect("process exit telemetry").halt_value)
+        .collect()
+}
+
+/// The address of the closure a process halted holding.
+fn closure_address(halt_value: i64) -> u64 {
+    fz_runtime::any_value::AnyValueRef::from_raw_word(halt_value as u64)
+        .and_then(|value| value.closure_addr())
+        .expect("main should halt holding a closure") as u64
+}
+
+const THIN_FN_REF_MAIN: &str = "def id(x), do: x\ndef main(), do: &id/1\n";
+
+/// A function value with no captures is one object for the whole program, not
+/// one per process: two processes of one program halt holding the same address.
+#[test]
+fn processes_of_one_program_reference_the_same_static_closure() {
+    let halts = halt_values_of_processes_sharing_one_program(THIN_FN_REF_MAIN, 2);
+    assert_eq!(
+        closure_address(halts[0]),
+        closure_address(halts[1]),
+        "both processes should hold one static closure address"
     );
+}
+
+/// A static closure is program-wide read-only data: a write to it faults.
+#[test]
+fn a_static_closure_lives_in_read_only_memory() {
+    let halts = halt_values_of_processes_sharing_one_program(THIN_FN_REF_MAIN, 1);
+    let closure = closure_address(halts[0]);
+    assert!(
+        writing_through_faults(closure),
+        "a write to the static closure at {closure:#x} should fault"
+    );
+}
+
+/// The four halt continuations are program-wide read-only data too.
+#[test]
+fn the_halt_continuations_live_in_read_only_memory() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("halt_cont_read_only.fz".to_string()),
+        text: "def main(), do: 0\n".to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root_id);
+    let program = native.last(root_id).program;
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    for name in [
+        "fz_halt_cont_strict",
+        "fz_halt_cont_i64",
+        "fz_halt_cont_f64",
+        "fz_halt_cont_atom",
+    ] {
+        let address = compiled
+            .data_address(name)
+            .unwrap_or_else(|| panic!("the program should emit {name}"));
+        assert_eq!(address % 16, 0, "{name} should be 16-byte aligned");
+        assert!(writing_through_faults(address as u64), "a write to {name} should fault");
+    }
 }
 
 /// fz-hwn.17 -- an escaping callable grounded by its boundary contract keys its

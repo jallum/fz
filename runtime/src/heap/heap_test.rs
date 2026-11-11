@@ -1,13 +1,11 @@
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, EMPTY_LIST_BITS, ListCons, TAG_BITSTRING, TAG_CLOSURE,
-    TAG_FWD, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, ValueKind, bitstring_bytes_ptr, bitstring_size_for_bit_len,
-    closure_addr_from_tagged, closure_capture_set, closure_capture_value, closure_captured_count, closure_fn_ptr,
-    closure_halt_kind, heap_kind_from_tagged, heap_object_word, is_forwarded, list_addr_from_tagged,
-    map_addr_from_tagged, map_count, map_entry, map_size_for_count, object_size, procbin_addr_from_tagged,
-    struct_addr_from_tagged, struct_flags, struct_schema_id, struct_size_for_payload,
+    AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, EMPTY_LIST_BITS, ListCons, ValueKind, bitstring_bytes_ptr,
+    bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_set, closure_capture_value,
+    closure_captured_count, closure_fn_ptr, closure_halt_kind, heap_kind_from_tagged, heap_object_word, heap_word_addr,
+    list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_size_for_count, object_size,
+    procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id, struct_size_for_payload,
 };
-use crate::process::AlignedClosureStorage;
 use crate::resource::ResourceStub;
 use crate::sync::Ordering;
 use std::cell::RefCell;
@@ -263,7 +261,9 @@ fn heap_root(bits: u64) -> AnyValue {
 
 fn heap_ref(bits: u64) -> AnyValueRef {
     let kind = heap_kind_from_tagged(bits).expect("tagged heap root");
-    AnyValueRef::from_heap_object(kind, (bits & !TAG_MASK) as *const u8).expect("heap root ref")
+    AnyValueRef::from_raw_word(bits)
+        .inspect(|root| assert_eq!(root.tag(), kind))
+        .expect("heap root ref")
 }
 
 fn ref_bits(value: AnyValueRef) -> u64 {
@@ -710,7 +710,7 @@ fn schema_registry_register_and_get() {
     assert_eq!(reg.get(id_b).identity.display_name(), "Pair");
 }
 
-/// fz-wu9 / fz-3ld.9 — every strict inline Bitstring allocation reserves
+/// Every strict inline Bitstring allocation reserves
 /// at least one zero byte past its payload at offset
 /// `bytes_ptr + ceil(bit_len/8)`. Mirrors the SharedBin invariant covered
 /// by procbin.rs::shared_bin_alloc_has_trailing_nul.
@@ -778,10 +778,10 @@ fn alloc_grows_to_next_capacity_on_overflow() {
 }
 
 /// `should_gc` is a function of the heap's state: it turns true once the
-/// bytes in use reach half the tip, and a collection that reclaims them turns
+/// bytes allocated reach half the smallest tip while nothing is live, and a collection that reclaims them turns
 /// it false again with nothing cleared in between.
 #[test]
-fn should_gc_follows_bytes_in_use_against_half_the_tip_and_a_collection_answers_it() {
+fn should_gc_follows_bytes_in_use_against_half_the_smallest_tip_and_a_collection_answers_it() {
     let mut h = Heap::new(1024, fresh_registry());
     assert!(!h.should_gc());
     for _ in 0..31 {
@@ -1072,10 +1072,12 @@ fn any_value_ref_root_gc_copies_scalar_box_without_tracing_payload() {
 }
 
 #[test]
-fn any_value_ref_root_gc_preserves_static_scalar_ref() {
+fn any_value_ref_root_gc_preserves_tagged_literal_scalar_ref() {
     static STATIC_INT: u64 = 42;
     let mut h = Heap::new(1024, fresh_registry());
-    let original = AnyValueRef::from_scalar_slot(ValueKind::INT, &STATIC_INT).expect("static scalar ref");
+    let original = AnyValueRef::from_scalar_slot(ValueKind::INT, &STATIC_INT)
+        .expect("static scalar ref")
+        .literal();
     let mut roots = [original];
 
     let stats = h.collect(&mut roots);
@@ -1101,7 +1103,6 @@ fn gc_stats_prove_scalar_list_head_is_copied_but_not_traced() {
     assert_eq!(stats.live_objects, 1);
     assert_eq!(stats.list_head_scalar_slots, 1);
     assert_eq!(stats.list_head_heap_edges, 0);
-    assert_eq!(h.last_gc_stats, stats);
     let moved = list_addr_from_tagged(ref_bits(roots[0])).expect("moved live list");
     let moved_head = unsafe { (*(moved as *const ListCons)).head_value() };
     assert_eq!(moved_head.kind(), ValueKind::INT);
@@ -1438,12 +1439,7 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
         .collect::<Vec<_>>();
     for (i, value) in copied_values.iter().enumerate() {
         assert_eq!(value.kind(), entries[i].1.kind());
-        assert_ne!(
-            value.raw() & !TAG_MASK,
-            entries[i].1.raw() & !TAG_MASK,
-            "heap entry {} moved/copied",
-            i
-        );
+        assert_ne!(value.raw(), entries[i].1.raw(), "heap entry {} moved/copied", i);
     }
 
     let copied_struct = copied_values[1].raw() as *mut u8;
@@ -1459,7 +1455,7 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
     assert_eq!(copied_resource.payload(), 0xfeed);
 }
 
-/// Acceptance (fz-siu.10 / §6.6): spawn under load shows no per-spawn
+/// Acceptance (§6.6): spawn under load shows no per-spawn
 /// malloc after warm-up. After dropping a Heap, its block goes to the
 /// pool; the next Heap::new of the same capacity pulls from the
 /// pool, no malloc required. Repeating spawn+drop with a fixed pool
@@ -1522,12 +1518,28 @@ fn size_table_tail_is_geometric_ish() {
 
 #[test]
 fn pick_block_capacity_is_the_smallest_table_entry_that_fits() {
-    assert_eq!(pick_block_capacity(0), SIZE_TABLE[0]);
     assert_eq!(pick_block_capacity(1024), SIZE_TABLE[0]);
     assert_eq!(pick_block_capacity(1025), SIZE_TABLE[1]);
     assert_eq!(pick_block_capacity(SIZE_TABLE[5]), SIZE_TABLE[5]);
     assert_eq!(pick_block_capacity(SIZE_TABLE[5] + 1), SIZE_TABLE[6]);
     assert_eq!(pick_block_capacity(TABLE_CEILING), TABLE_CEILING);
+}
+
+#[test]
+fn pick_block_capacity_below_the_table_is_the_request_rounded_to_16() {
+    assert_eq!(pick_block_capacity(16), 16);
+    assert_eq!(pick_block_capacity(17), 32);
+    assert_eq!(pick_block_capacity(1000), 1008);
+    assert_eq!(pick_block_capacity(SIZE_TABLE[0] - 1), SIZE_TABLE[0]);
+    assert_eq!(pick_block_capacity(0), 16, "a block is at least one 16-byte slot");
+}
+
+#[test]
+fn a_heap_built_with_a_small_capacity_still_has_a_tip_at_the_first_table_entry() {
+    for capacity in [16, 64, 1008] {
+        let h = Heap::new(capacity, fresh_registry());
+        assert_eq!(h.block_size, SIZE_TABLE[0], "capacity {capacity}");
+    }
 }
 
 #[test]
@@ -1549,68 +1561,103 @@ fn next_block_capacity_climbs_the_table_then_grows_by_a_fifth() {
     assert!(next_block_capacity(past) > past, "it never stops climbing");
 }
 
-/// Acceptance: under increasing load, gc sizes the heap to fit the live
-/// set and never shrinks below it as the working set grows. Build
-/// progressively longer rooted chains; each gc must land on a class that
-/// holds the live bytes, and the class must be monotonic non-decreasing.
-///
-/// Note: the post-GC sizing is pressure-aware (it grows on allocation
-/// *need*, not strictly on `2 * live` — see `Heap::gc`), so the class may
-/// jump ahead of the live set and then plateau for an iteration while the
-/// working set catches up. That is correct: the invariant is "always fits
-/// live, never shrinks below it," not "climbs by exactly one step each
-/// time." The fit-to-live assertion below — with `expected_min` itself
-/// climbing as `live` doubles — is what proves the heap genuinely grows.
+/// Under increasing load, the blocks a collection leaves hold exactly the
+/// live bytes: build progressively longer rooted chains and collect each.
+/// Early rounds outgrow the guessed tip (the last live bytes), so the copy
+/// parks to-space blocks; the heap is the tip plus those blocks either way.
 #[test]
-fn gc_sizes_to_fit_and_never_shrinks_below_live_as_load_grows() {
+fn the_heaps_blocks_hold_the_live_bytes_as_load_grows() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let mut last_capacity = 0usize;
     for power in 6..=12 {
         let len = 1usize << power; // 64, 128, ..., 4096 cells
-        // Build a chain of `len` cons cells, rooted at head.
         let mut tail = EMPTY_LIST;
         for i in 0..len {
             tail = alloc_int_list_cons(&mut h, i as i64, tail);
         }
         let mut roots = [heap_ref(tail)];
-        h.collect(&mut roots);
+        let stats = h.collect(&mut roots);
         let live_bytes = len * 16;
-        let expected_min = pick_block_capacity(live_bytes); // without slack
+        assert_eq!(h.bytes_used(), live_bytes, "the heap's blocks hold every live byte");
+        assert_eq!(h.live_baseline, live_bytes);
+        assert_eq!(stats.live_bytes, live_bytes as u64);
+        assert_eq!(stats.blocks_after, 1 + h.blocks.len() as u64);
+        let capacity = h.block_size + h.blocks.iter().map(|block| block.capacity).sum::<usize>();
         assert!(
-            h.block_size >= expected_min,
-            "capacity {} should fit live_bytes {}",
-            h.block_size,
-            live_bytes
+            capacity >= live_bytes,
+            "capacity {capacity} holds live bytes {live_bytes}"
         );
-        assert!(
-            h.block_size >= last_capacity,
-            "capacity shrank below the growing working set: prev={}, now={}",
-            last_capacity,
-            h.block_size
-        );
-        last_capacity = h.block_size;
     }
 }
 
-/// last_gc_live_bytes is set correctly after GC and used for to-space sizing.
-/// First GC uses bytes_used() as upper bound; subsequent GCs use
-/// last_gc_live_bytes * 2 (50% post-GC target occupancy).
+/// To-space starts as a tip sized by a guess, the last live bytes. When the
+/// live bytes outgrow the guess, the copy fills the tip, parks it, and
+/// continues in the next capacity up, exactly as allocation does.
 #[test]
-fn gc_updates_last_gc_live_bytes() {
+fn a_copy_larger_than_the_guessed_tip_parks_to_space_blocks() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    assert_eq!(h.last_gc_live_bytes, 0, "zero before first gc");
-    // Build [1, 2, 3].
+    assert_eq!(h.live_baseline, 0, "no collection yet: the guess is the smallest tip");
+    let len = SIZE_TABLE[0] / 16 * 4;
+    let mut tail = EMPTY_LIST;
+    for i in 0..len {
+        tail = alloc_int_list_cons(&mut h, i as i64, tail);
+    }
+    let mut roots = [heap_ref(tail)];
+
+    let stats = h.collect(&mut roots);
+
+    assert!(!h.blocks.is_empty(), "the copy overflowed its guessed tip");
+    assert_eq!(stats.blocks_after, 1 + h.blocks.len() as u64);
+    assert_eq!(stats.live_bytes, (len * 16) as u64);
+    assert_eq!(
+        h.bytes_used(),
+        len * 16,
+        "tip and parked to-blocks hold every copied byte"
+    );
+    assert_eq!(h.live_count(), len);
+    let mut cursor = roots[0];
+    let mut seen = 0;
+    while !cursor.is_empty_list() {
+        assert!(
+            h.contains_heap_addr(cursor.storage_addr()),
+            "every cell is in a heap block"
+        );
+        cursor = h.read_list_tail_ref(cursor).expect("tail");
+        seen += 1;
+    }
+    assert_eq!(seen, len);
+}
+
+/// A collection's survivors are the next collection's guess for the tip, so
+/// a steady live set of N bytes collects into a single block.
+#[test]
+fn a_steady_live_set_collects_into_one_block() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut tail = EMPTY_LIST;
+    for i in 0..(SIZE_TABLE[0] / 16 * 4) {
+        tail = alloc_int_list_cons(&mut h, i as i64, tail);
+    }
+    let mut roots = [heap_ref(tail)];
+    h.collect(&mut roots);
+    let stats = h.collect(&mut roots);
+    assert_eq!(stats.blocks_after, 1, "the guess now holds the live bytes");
+    assert!(h.blocks.is_empty());
+}
+
+/// live_baseline is the bytes the collection copied.
+#[test]
+fn a_collection_sets_the_live_baseline_to_the_bytes_it_copied() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    assert_eq!(h.live_baseline, 0, "zero before first gc");
     let n3 = alloc_int_list_cons(&mut h, 3, EMPTY_LIST);
     let n2 = alloc_int_list_cons(&mut h, 2, n3);
     let n1 = alloc_int_list_cons(&mut h, 1, n2);
     let mut roots = [heap_ref(n1)];
-    h.collect(&mut roots);
-    assert_eq!(h.last_gc_live_bytes, 3 * 16, "three cons cells = 48 bytes");
+    let stats = h.collect(&mut roots);
+    assert_eq!(h.live_baseline, 3 * 16, "three cons cells = 48 bytes");
+    assert_eq!(stats.copied_bytes, 3 * 16);
 
-    // Second GC with same live set: to-space sizing = 48 * 2 = 96,
-    // clamped to SIZE_TABLE[0]. live bytes stay the same.
     h.collect(&mut roots);
-    assert_eq!(h.last_gc_live_bytes, 3 * 16, "live bytes unchanged");
+    assert_eq!(h.live_baseline, 3 * 16, "live bytes unchanged");
     assert_eq!(h.block_size, SIZE_TABLE[0], "tiny live set stays at smallest block");
 }
 
@@ -1665,7 +1712,11 @@ fn struct_layout_size_correct() {
     assert_eq!(h.bytes_used() - before, 48);
     unsafe {
         assert_eq!(struct_schema_id(p), id);
-        assert_eq!(struct_flags(p), 0);
+        assert_eq!(
+            read(p as *const u64) & 0xF,
+            0,
+            "a live struct header leaves the low nibble clear"
+        );
     }
 }
 
@@ -1704,7 +1755,7 @@ fn struct_forwarding_marker_through_gc() {
     let new_p = struct_addr_from_tagged(root as u64).expect("forwarded root");
     assert_ne!(new_p as *const u8, old_addr);
     assert_eq!(h.read_field_slot(new_p, 0), AnyValue::int(9));
-    assert_eq!(is_forwarded(old_addr), Some(new_p as *const u8));
+    assert_eq!(forwarded_target(old_addr, ValueKind::STRUCT), Some(new_p));
 }
 
 /// Map with 5 entries exercises both alloc and the Cheney trace path
@@ -1759,7 +1810,7 @@ fn closure_layout_zero_captures() {
         0xfeed_beef,
         &[],
     );
-    assert_eq!(bits & TAG_MASK, TAG_CLOSURE);
+    assert_eq!(heap_kind_from_tagged(bits), Some(ValueKind::CLOSURE));
     assert_eq!(object_size(bits), 16);
     let p = closure_addr_from_tagged(bits).unwrap();
     assert_eq!(unsafe { closure_captured_count(p) }, 0);
@@ -1800,21 +1851,113 @@ fn closure_forwarding_marker() {
     assert_ne!(old, new_p);
     assert_eq!(unsafe { closure_captured_count(new_p) }, 0);
     assert_eq!(unsafe { closure_fn_ptr(new_p as *const u8) }, 0x7777);
-    let marker = unsafe { read(old as *const u64) };
-    assert_eq!(marker & TAG_MASK, TAG_FWD);
-    let confirm = unsafe { read(old.add(8) as *const u64) };
-    assert_eq!(confirm, TAG_FWD);
+    assert_eq!(forwarded_target(old, ValueKind::CLOSURE), Some(new_p));
+}
+
+/// A zero-capture closure on its own read-only page, the way the compiled
+/// program's static closures sit: outside every heap, and a write to it faults.
+struct ReadOnlyClosure {
+    page: *mut u8,
+}
+
+impl ReadOnlyClosure {
+    const PAGE_BYTES: usize = 4096;
+
+    fn new() -> Self {
+        unsafe {
+            let page = libc::mmap(
+                null_mut(),
+                Self::PAGE_BYTES,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_ANON | libc::MAP_PRIVATE,
+                -1,
+                0,
+            ) as *mut u8;
+            assert_ne!(page as *mut libc::c_void, libc::MAP_FAILED);
+            crate::any_value::closure_header_write(
+                page,
+                crate::any_value::closure_header_word(crate::any_value::ClosureDenotationId::user(5), 0, 0, 1),
+            );
+            write(page.add(8) as *mut u64, 0x5757);
+            assert_eq!(libc::mprotect(page.cast(), Self::PAGE_BYTES, libc::PROT_READ), 0);
+            Self { page }
+        }
+    }
+
+    /// The closure as compiled code names it: a literal.
+    fn value(&self) -> AnyValue {
+        AnyValue::HeapRef(
+            AnyValueRef::from_heap_object(ValueKind::CLOSURE, self.page)
+                .expect("static closure ref")
+                .literal(),
+        )
+    }
+}
+
+impl Drop for ReadOnlyClosure {
+    fn drop(&mut self) {
+        unsafe { libc::munmap(self.page.cast(), Self::PAGE_BYTES) };
+    }
 }
 
 #[test]
 fn strict_heap_decoder_accepts_static_closure_pointer() {
-    let mut storage = AlignedClosureStorage::zeroed();
-    let bits = heap_object_word(storage.as_ptr() as *const u8, ValueKind::CLOSURE);
+    let closure = ReadOnlyClosure::new();
+    let bits = heap_object_word(closure.page as *const u8, ValueKind::CLOSURE);
 
     let value = heap_root(bits);
 
     assert_eq!(value.kind(), ValueKind::CLOSURE);
-    assert_eq!(value.raw(), storage.as_ptr() as u64);
+    assert_eq!(value.raw(), closure.page as u64);
+}
+
+#[test]
+fn collection_leaves_a_read_only_static_closure_in_place() {
+    let closure = ReadOnlyClosure::new();
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let holder = heap.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(73), 1, 1, 0);
+    unsafe { closure_capture_set(closure_addr_from_tagged(holder).expect("holder"), 0, closure.value()) };
+    let mut roots = [heap_ref(holder), closure.value().ref_word()];
+
+    heap.collect(&mut roots);
+
+    let moved = roots[0].closure_addr().expect("moved holder");
+    assert_eq!(
+        unsafe { closure_capture_value(moved, 0) },
+        closure.value(),
+        "a reference held by a moved object still names the static closure"
+    );
+    assert_eq!(roots[1].closure_addr(), Ok(closure.page), "a root is left as it was");
+}
+
+#[test]
+fn deep_copy_leaves_a_read_only_static_closure_in_place() {
+    let closure = ReadOnlyClosure::new();
+    let mut source = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut destination = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let holder = source.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(73), 1, 1, 0);
+    unsafe { closure_capture_set(closure_addr_from_tagged(holder).expect("holder"), 0, closure.value()) };
+
+    let copied = deep_copy_slot(
+        heap_root(holder),
+        &source.view(),
+        &mut destination,
+        &mut AddressMap::default(),
+    );
+
+    let copy = copied.ref_word().closure_addr().expect("copied holder");
+    assert_eq!(unsafe { closure_capture_value(copy, 0) }, closure.value());
+    let alone = deep_copy_slot(
+        closure.value(),
+        &source.view(),
+        &mut destination,
+        &mut AddressMap::default(),
+    );
+    assert_eq!(
+        alone,
+        closure.value(),
+        "a static closure sent on its own is passed by pointer"
+    );
 }
 
 #[test]
@@ -1836,7 +1979,7 @@ fn map_packed_tags_round_trip() {
         let bits = h.alloc_map_slots(&entries);
         let p = map_addr_from_tagged(bits).unwrap();
         // The SET of entries round-trips, not their positions. A map is a
-        // sorted array and `alloc_map_slots` sorts (fz-5xp.49), so where an
+        // sorted array and `alloc_map_slots` sorts, so where an
         // entry lands is the map's business; what this test is about is that
         // the packed key/value KIND tags survive the write and read back as the
         // same values.
@@ -1915,7 +2058,7 @@ fn gc_map_count_twelve_does_not_collide_with_forwarding_tag() {
 /// keep the arena bounded. Block size may grow once to fit per-cycle
 /// garbage but does not increase without bound; no abandoned blocks
 /// remain post-GC; live_count stays at the rooted chain length.
-/// (§6.4 / fz-siu.8 acceptance.)
+/// (§6.4 acceptance.)
 #[test]
 fn gc_keeps_arena_bounded_across_many_cycles() {
     let mut h = Heap::new(1024, fresh_registry());
@@ -1977,7 +2120,7 @@ fn gc_handles_cycle_via_forwarding() {
     assert_eq!(h.live_count(), 2);
 }
 
-// ===== fz-q8d.1 — ProcBin + intrusive MSO + post-Cheney sweep =========
+// ===== ProcBin + intrusive MSO + post-Cheney sweep =================
 
 use crate::procbin::{PROCBIN_BYTES, ProcBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr};
 
@@ -1991,11 +2134,11 @@ fn mso_chain(h: &Heap) -> Vec<u64> {
     let mut out = Vec::new();
     let mut cur_bits = h.mso_head;
     while cur_bits != 0 {
-        let addr = (cur_bits & !TAG_MASK) as *mut u8;
-        let next = match cur_bits & TAG_MASK {
-            TAG_PROCBIN => unsafe { ProcBin::from_raw(addr).mso_next() },
-            TAG_RESOURCE => unsafe { ResourceStub::from_raw(addr).mso_next() },
-            tag => panic!("unexpected MSO tag {tag:#x}"),
+        let addr = heap_word_addr(cur_bits);
+        let next = match heap_kind_from_tagged(cur_bits) {
+            Some(ValueKind::PROCBIN) => unsafe { ProcBin::from_raw(addr).mso_next() },
+            Some(ValueKind::RESOURCE) => unsafe { ResourceStub::from_raw(addr).mso_next() },
+            kind => panic!("unexpected MSO kind {kind:?}"),
         };
         out.push(cur_bits);
         cur_bits = next;
@@ -2011,7 +2154,7 @@ fn alloc_procbin_pushes_into_mso_chain_with_strict_layout() {
         let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
         let pb = alloc_procbin(&mut h, witness.clone(), 0);
         let tagged = heap_object_word(pb.as_raw() as *const u8, ValueKind::PROCBIN);
-        assert_eq!(tagged & TAG_MASK, TAG_PROCBIN);
+        assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::PROCBIN));
         assert_eq!(object_size(tagged), PROCBIN_BYTES);
         assert_eq!(mso_chain(&h), vec![tagged]);
         assert_eq!(shared_refs(&witness), 2);
@@ -2197,9 +2340,9 @@ fn alloc_bitstring_small_stays_inline() {
     let p = h.alloc_bitstring(&bytes, 256).heap_addr().expect("bitstring");
     let tagged = heap_object_word(p, ValueKind::BITSTRING);
     unsafe {
-        assert_eq!(tagged & TAG_MASK, TAG_BITSTRING);
-        assert_eq!(bitstring_bit_len(tagged as *const u8), 256);
-        let pay = bitstring_byte_ptr(tagged as *const u8);
+        assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::BITSTRING));
+        assert_eq!(bitstring_bit_len(tagged), 256);
+        let pay = bitstring_byte_ptr(tagged);
         for (i, expected) in bytes.iter().enumerate().take(32) {
             assert_eq!(*pay.add(i), *expected);
         }
@@ -2215,10 +2358,10 @@ fn alloc_bitstring_large_routes_to_shared_zone() {
     let witness = unsafe { SharedBinHandle::retain_from_raw(ProcBin::from_raw(p).shared_raw()) };
     let tagged = heap_object_word(p, ValueKind::PROCBIN);
     unsafe {
-        assert_eq!(tagged & TAG_MASK, TAG_PROCBIN);
+        assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::PROCBIN));
         assert_eq!(object_size(tagged), PROCBIN_BYTES);
-        assert_eq!(bitstring_bit_len(tagged as *const u8), 1024);
-        let pay = bitstring_byte_ptr(tagged as *const u8);
+        assert_eq!(bitstring_bit_len(tagged), 1024);
+        let pay = bitstring_byte_ptr(tagged);
         for (i, expected) in bytes.iter().enumerate().take(128) {
             assert_eq!(*pay.add(i), *expected);
         }
@@ -2265,8 +2408,8 @@ fn shared_heap_acceptance_spawn_and_share() {
 
     for root_ptr in &receiver_roots {
         unsafe {
-            assert_eq!(bitstring_bit_len(*root_ptr as *const u8), 1024);
-            let bp = bitstring_byte_ptr(*root_ptr as *const u8);
+            assert_eq!(bitstring_bit_len(*root_ptr), 1024);
+            let bp = bitstring_byte_ptr(*root_ptr);
             for (i, expected) in payload.iter().enumerate() {
                 assert_eq!(*bp.add(i), *expected);
             }
@@ -2309,8 +2452,8 @@ fn struct_root(p: *mut u8) -> *mut u8 {
 }
 
 /// An object larger than the table's last entry takes a block of exactly its
-/// size, and that block is outside the pool: the pool's outstanding count is
-/// the same before and after.
+/// size, parked beside the tip, and that block is outside the pool: the pool's
+/// outstanding count is the same before and after.
 #[test]
 fn an_object_above_the_table_allocates_into_an_exact_unpooled_block() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
@@ -2320,14 +2463,21 @@ fn an_object_above_the_table_allocates_into_an_exact_unpooled_block() {
     let p = h.alloc(want);
 
     assert!(!p.is_null());
-    assert_eq!(h.block_size, TABLE_CEILING + 16, "capacity is the size rounded to 16");
+    assert_eq!(h.block_size, SIZE_TABLE[0], "the tip did not move");
+    assert_eq!(h.bytes_remaining_in_block(), SIZE_TABLE[0]);
+    let parked = h.blocks.last().expect("the huge object's block is parked");
+    assert_eq!(parked.start, p);
     assert_eq!(
-        h.bytes_remaining_in_block(),
-        0,
+        parked.capacity,
+        TABLE_CEILING + 16,
+        "capacity is the size rounded to 16"
+    );
+    assert_eq!(
+        parked.fill(),
+        TABLE_CEILING + 16,
         "the block holds the object and nothing else"
     );
-    assert_eq!(h.block_start, p);
-    assert_eq!(h.blocks.len(), 1, "the tiny first block was abandoned");
+    assert_eq!(h.blocks.len(), 1);
     assert_eq!(
         pool_outstanding_blocks(),
         pooled_before,
@@ -2336,8 +2486,81 @@ fn an_object_above_the_table_allocates_into_an_exact_unpooled_block() {
     assert!(h.bytes_used() >= TABLE_CEILING + 16);
 }
 
-/// A rooted object above the table is copied like any other: it moves, the
-/// to-space is at least as large as it, and the root follows it.
+/// A huge object is parked alone and the tip keeps serving small allocations:
+/// the tip's capacity does not move and the small object lands in it.
+#[test]
+fn a_huge_object_parks_and_the_next_small_allocation_lands_in_the_unmoved_tip() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let (tip_start, tip_capacity) = (h.block_start, h.block_size);
+    let huge = next_block_capacity(tip_capacity) + 16;
+
+    let big = h.alloc(huge);
+    let small = h.alloc(16);
+
+    assert_eq!(h.block_size, tip_capacity, "the tip's capacity did not move");
+    assert_eq!(h.block_start, tip_start);
+    assert_eq!(small, tip_start, "the small object is the tip's first");
+    assert_eq!(h.bump_top, unsafe { tip_start.add(16) });
+    assert_eq!(h.blocks.len(), 1);
+    assert_eq!(h.blocks[0].start, big);
+    assert_eq!(h.blocks[0].capacity, pick_block_capacity(huge));
+    assert_eq!(h.live_count(), 2);
+}
+
+/// An allocation that exactly fills the capacity one step up is not huge: the
+/// tip is parked and climbs a step as before.
+#[test]
+fn an_allocation_within_one_step_of_the_tip_still_climbs_the_tip() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let (tip_start, tip_capacity) = (h.block_start, h.block_size);
+    let step = next_block_capacity(tip_capacity);
+    h.alloc(tip_capacity);
+
+    let p = h.alloc(step);
+
+    assert_eq!(h.block_size, step, "the tip climbed one step");
+    assert_eq!(h.block_start, p);
+    assert_eq!(h.blocks.len(), 1);
+    assert_eq!(h.blocks[0].start, tip_start, "the old tip is what was parked");
+    assert_eq!(h.blocks[0].capacity, tip_capacity);
+}
+
+/// A live huge object parked beside the tip is copied by a collection and its
+/// exact block goes back to the system allocator.
+#[test]
+fn a_collection_copies_a_parked_huge_object_and_releases_its_block() {
+    let reg = fresh_registry();
+    let id = above_table_schema(&reg);
+    let mut h = Heap::new(SIZE_TABLE[0], reg);
+    let big = h.alloc_struct(id);
+    assert_eq!(h.blocks.len(), 1, "the huge object is parked");
+    let mut root = struct_root(big);
+
+    let stats = h.collect_tagged(&mut root);
+
+    let moved = struct_addr_from_tagged(root as u64).expect("root is still a struct");
+    assert_ne!(moved, big);
+    assert!(h.contains_heap_addr(moved));
+    assert!(!h.contains_heap_addr(big), "the parked exact block was released");
+    assert_eq!(h.blocks.len(), 1, "the copy is parked alone in a block of its own");
+    assert_eq!(stats.copied_objects, 1);
+    assert_eq!(stats.blocks_after, 2, "the fresh tip and the copy's block");
+    assert_eq!(stats.blocks_released, 2, "the tip and the parked block");
+}
+
+/// A gift window sizes its one block to the measured bytes, so a huge
+/// allocation inside it is a disagreement between measure and copy.
+#[test]
+#[should_panic(expected = "huge object was allocated inside a gift window")]
+fn a_huge_allocation_inside_a_gift_window_is_refused() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    h.begin_gift(SIZE_TABLE[0]);
+    h.alloc(SIZE_TABLE[0]);
+    h.alloc(next_block_capacity(SIZE_TABLE[0]) + 16);
+}
+
+/// A rooted object above the table is copied like any other: it moves, it
+/// lands alone in its own block, and the root follows it.
 #[test]
 fn a_rooted_object_above_the_table_survives_a_collection_by_being_copied() {
     let reg = fresh_registry();
@@ -2353,12 +2576,11 @@ fn a_rooted_object_above_the_table_survives_a_collection_by_being_copied() {
     assert_ne!(moved, big, "the object was copied, not marked in place");
     assert!(h.contains_heap_addr(moved));
     assert!(!h.contains_heap_addr(big), "its old block went back");
-    assert!(stats.to_space_capacity_bytes as usize >= size);
     assert_eq!(stats.copied_objects, 1);
     assert_eq!(stats.live_objects, 1);
     assert_eq!(
-        stats.live_bytes, h.last_gc_live_bytes as u64,
-        "live bytes are the to-space fill"
+        stats.live_bytes, h.live_baseline as u64,
+        "live bytes are the bytes in the heap's blocks"
     );
     assert!(stats.live_bytes as usize >= size);
 }
@@ -2380,8 +2602,8 @@ fn an_unrooted_object_above_the_table_is_freed_by_a_collection() {
     assert_eq!(stats.live_objects, 0);
     assert_eq!(
         pool_outstanding_blocks(),
-        pooled_before - 1,
-        "only the tiny first block was pooled, and it went back"
+        pooled_before,
+        "the old tip went back to the pool and the fresh tip took its place"
     );
 
     h.collect_tagged(&mut root);
@@ -2464,9 +2686,149 @@ fn procbin_round_trips_through_bitstring_dispatchers() {
     let bytes: Vec<u8> = (0..100u8).collect();
     let p = h.alloc_bitstring(&bytes, 800).heap_addr().expect("procbin");
     let tagged = heap_object_word(p, ValueKind::PROCBIN);
-    let bl = unsafe { bitstring_bit_len(tagged as *const u8) };
-    let bp = unsafe { bitstring_byte_ptr(tagged as *const u8) };
+    let bl = unsafe { bitstring_bit_len(tagged) };
+    let bp = unsafe { bitstring_byte_ptr(tagged) };
     assert_eq!(bl, 800);
     let recovered: Vec<u8> = (0..100).map(|i| unsafe { *bp.add(i) }).collect();
     assert_eq!(recovered, bytes);
+}
+
+/// A receiver that has grafted many small gifts holds a block per gift. A
+/// collection forwards every gifted object and leaves every tagged literal
+/// where it is, reading one bit per pointer rather than searching the chain.
+#[test]
+fn many_grafted_gifts_collect_with_every_survivor_forwarded_and_every_literal_left_in_place() {
+    const GIFTS: usize = 64;
+    let closure = ReadOnlyClosure::new();
+    let registry = fresh_registry();
+    let mut sender = Heap::new(SIZE_TABLE[0], registry.clone());
+    let mut receiver = Heap::new(SIZE_TABLE[0], registry);
+    let mut roots = Vec::new();
+    for _ in 0..GIFTS {
+        let holder = sender.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(73), 1, 1, 0);
+        unsafe { closure_capture_set(closure_addr_from_tagged(holder).expect("holder"), 0, closure.value()) };
+        let (segment, copied) = crate::sched::gift_copy(&mut sender, &[heap_ref(holder)]);
+        receiver.graft(segment);
+        roots.push(copied[0]);
+    }
+    let gifted: Vec<*mut u8> = roots
+        .iter()
+        .map(|root| root.closure_addr().expect("gifted closure"))
+        .collect();
+    roots.push(closure.value().ref_word());
+
+    receiver.collect(&mut roots);
+
+    for (root, before) in roots[..GIFTS].iter().zip(&gifted) {
+        let moved = root.closure_addr().expect("forwarded closure");
+        assert_ne!(moved, *before, "a gifted survivor is forwarded");
+        assert!(receiver.contains_heap_addr(moved));
+        assert_eq!(
+            unsafe { closure_capture_value(moved, 0) },
+            closure.value(),
+            "the literal it captures is still the tagged static closure"
+        );
+    }
+    assert!(roots[GIFTS].is_literal());
+    assert_eq!(
+        roots[GIFTS].closure_addr(),
+        Ok(closure.page),
+        "a literal root is left in place"
+    );
+}
+
+/// A scalar field's ref points into the struct's own payload, so it is
+/// read-only data exactly when the struct is.
+#[test]
+fn a_scalar_field_read_from_a_tagged_literal_is_tagged() {
+    let registry = fresh_registry();
+    let pair = registry.borrow_mut().register(Schema::tuple_of_arity(2));
+    let mut h = Heap::new(SIZE_TABLE[0], registry);
+    let obj = h.alloc_struct(pair);
+    unsafe { h.write_field_slot(obj, 0, AnyValue::int(7)) };
+    let plain = AnyValueRef::from_heap_object(ValueKind::STRUCT, obj).expect("struct ref");
+
+    let from_heap = h.read_struct_field_ref(plain, 0).expect("heap field");
+    let from_literal = h.read_struct_field_ref(plain.literal(), 0).expect("literal field");
+
+    assert!(!from_heap.is_literal(), "a field of a heap struct is heap data");
+    assert!(from_literal.is_literal(), "a field of a literal struct is literal data");
+    assert_eq!(from_literal.load_int().unwrap(), 7);
+}
+
+/// A heap child stored in a literal parent keeps the bit its payload word
+/// carries; the parent being literal does not tag it.
+#[test]
+fn a_literal_child_read_from_a_struct_keeps_its_stored_tag() {
+    let closure = ReadOnlyClosure::new();
+    let registry = fresh_registry();
+    let pair = registry.borrow_mut().register(Schema::tuple_of_arity(2));
+    let mut h = Heap::new(SIZE_TABLE[0], registry);
+    let obj = h.alloc_struct(pair);
+    unsafe { h.write_field_slot(obj, 0, closure.value()) };
+    let parent = AnyValueRef::from_heap_object(ValueKind::STRUCT, obj).expect("struct ref");
+
+    let child = h.read_struct_field_ref(parent, 0).expect("child");
+
+    assert!(child.is_literal());
+    assert_eq!(child.closure_addr(), Ok(closure.page));
+}
+
+/// The debug cross-check makes a literal that lost its tag loud: its address
+/// lies outside from-space while an untagged pointer must lie inside.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "an untagged heap pointer")]
+fn a_literal_that_lost_its_tag_faults_the_collection() {
+    let closure = ReadOnlyClosure::new();
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut roots = [AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure.page).expect("untagged ref")];
+
+    h.collect(&mut roots);
+}
+
+/// A map holding a static closure and a static struct survives a collection
+/// with both left in place. The struct stands in for a compiled literal: it
+/// lives outside the collected heap and its references carry the bit.
+#[test]
+fn a_map_holding_a_literal_closure_and_a_literal_struct_survives_a_collection_with_both_in_place() {
+    let closure = ReadOnlyClosure::new();
+    let registry = fresh_registry();
+    let pair = registry.borrow_mut().register(Schema::tuple_of_arity(2));
+    let mut elsewhere = Heap::new(SIZE_TABLE[0], registry.clone());
+    let static_struct = elsewhere.alloc_struct(pair);
+    let literal_struct = AnyValue::HeapRef(
+        AnyValueRef::from_heap_object(ValueKind::STRUCT, static_struct)
+            .expect("struct ref")
+            .literal(),
+    );
+    let mut h = Heap::new(SIZE_TABLE[0], registry);
+    let (k1, k2) = (h.node.intern_atom("closure"), h.node.intern_atom("struct"));
+    let map = h.alloc_map_slots(&[
+        (AnyValue::atom(k1), closure.value()),
+        (AnyValue::atom(k2), literal_struct),
+    ]);
+    let mut roots = [heap_ref(map)];
+
+    h.collect(&mut roots);
+
+    let moved = roots[0].map_addr().expect("moved map");
+    assert!(h.contains_heap_addr(moved), "the map itself was forwarded");
+    let held = |key: u32| {
+        h.read_map_value_for_any_key(roots[0], AnyValue::atom(key))
+            .expect("map")
+            .expect("entry")
+    };
+    assert!(held(k1).is_literal());
+    assert_eq!(
+        held(k1).closure_addr(),
+        Ok(closure.page),
+        "the static closure stays in place"
+    );
+    assert!(held(k2).is_literal());
+    assert_eq!(
+        held(k2).struct_addr(),
+        Ok(static_struct),
+        "the static struct stays in place"
+    );
 }

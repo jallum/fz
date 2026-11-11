@@ -236,12 +236,40 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue,
         ),
         (
+            "a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run",
+            a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run,
+        ),
+        (
+            "a_receiver_parked_on_a_pinned_list_is_collected_on_every_path_and_still_matches",
+            a_receiver_parked_on_a_pinned_list_is_collected_on_every_path_and_still_matches,
+        ),
+        (
+            "a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path",
+            a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path,
+        ),
+        (
             "a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe",
             a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe,
         ),
         (
             "a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown",
             a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown,
+        ),
+        (
+            "many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued",
+            many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued,
+        ),
+        (
+            "a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_path",
+            a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_path,
+        ),
+        (
+            "a_built_binary_reports_the_same_probes_collections_and_destructors_as_run",
+            a_built_binary_reports_the_same_probes_collections_and_destructors_as_run,
+        ),
+        (
+            "a_built_binary_sleeps_the_scheduler_once_for_a_receive_that_times_out",
+            a_built_binary_sleeps_the_scheduler_once_for_a_receive_that_times_out,
         ),
         ("fixture_hang_guard_policy", fixture_hang_guard_policy),
         (
@@ -2221,6 +2249,43 @@ fn with_fixture_telemetry(run: impl FnOnce(&Path) -> Result<Output, String>) -> 
     Ok((output, log))
 }
 
+/// `fz2 --log-telemetry <log> build`, then, for a program that compiled, the
+/// built binary with `FZ_LOG_TELEMETRY` naming the same log, so the log holds
+/// the compile events and then the run's. Returns the binary's output, or the
+/// build's when it failed or the fixture has no program to run.
+fn build_then_run_logged_to(fixture: &FixtureCase, header: &Header, telemetry_path: &Path) -> Result<Output, String> {
+    let stem = fixture.name();
+    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let out_path = temp_dir().join(format!("fz2_matrix_diag_{}_{}_{}", stem, id(), nonce));
+    let result = fixture_command_output(
+        Command::new(FZ2_BIN)
+            .args(["--log-telemetry"])
+            .arg(telemetry_path)
+            .args(["build"])
+            .arg(fixture.source_path())
+            .args(["-o"])
+            .arg(&out_path),
+        "fz2 build --log-telemetry",
+        ExecutionBoundary::Spawn,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+    )
+    .and_then(|build| {
+        if !build.status.success() || header.kind != Kind::Run {
+            return Ok(build);
+        }
+        fixture_command_output(
+            Command::new(&out_path)
+                .args(&header.args)
+                .env("FZ_LOG_TELEMETRY", telemetry_path),
+            "fz2-built binary",
+            ExecutionBoundary::Spawn,
+            header.timeout_for_path(FixtureMatrixPath::Build),
+        )
+    });
+    remove_fz2_build_outputs(&out_path);
+    result
+}
+
 fn run_path_logged_to(
     fixture: &FixtureCase,
     header: &Header,
@@ -2228,23 +2293,7 @@ fn run_path_logged_to(
     telemetry_path: &Path,
 ) -> Result<Output, String> {
     if path == FixtureMatrixPath::Build {
-        let stem = fixture.name();
-        let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let out_path = temp_dir().join(format!("fz2_matrix_diag_{}_{}_{}", stem, id(), nonce));
-        let out = fixture_command_output(
-            Command::new(FZ2_BIN)
-                .args(["--log-telemetry"])
-                .arg(telemetry_path)
-                .args(["build"])
-                .arg(fixture.source_path())
-                .args(["-o"])
-                .arg(&out_path),
-            "fz2 build --log-telemetry",
-            ExecutionBoundary::Spawn,
-            DEFAULT_FIXTURE_HANG_TIMEOUT,
-        );
-        remove_fz2_build_outputs(&out_path);
-        return out;
+        return build_then_run_logged_to(fixture, header, telemetry_path);
     }
     let input = fixture.source_path();
     let mut cmd = Command::new(FZ2_BIN);
@@ -2927,7 +2976,7 @@ fn self_send_pushes_the_senders_reference_and_the_send_site_publishes_it() {
 }
 
 /// One `fz.runtime.send.probe` event as the jsonl log renders it.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SendProbeEvent {
     outcome: String,
     receiver: usize,
@@ -2953,8 +3002,8 @@ fn json_str_field(line: &str, key: &str) -> Option<String> {
     Some(line[start..start + end].to_string())
 }
 
-/// Every send probe the fixture emits on `path`, in emission order.
-fn send_probe_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> Vec<SendProbeEvent> {
+/// The telemetry log of one `--log-telemetry` run of the fixture on `path`.
+fn telemetry_log_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> String {
     let header = parse_header(fixture).unwrap_or_else(|error| panic!("parse fixture header: {error}"));
     let (out, log) =
         run_path_logged(fixture, &header, path).unwrap_or_else(|e| panic!("fz2 {label} --log-telemetry: {}", e));
@@ -2965,7 +3014,13 @@ fn send_probe_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath,
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
-    log.lines()
+    log
+}
+
+/// Every send probe the fixture emits on `path`, in emission order.
+fn send_probe_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> Vec<SendProbeEvent> {
+    telemetry_log_for_fixture(fixture, path, label)
+        .lines()
         .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"send\",\"probe\"]"))
         .map(|line| SendProbeEvent {
             outcome: json_str_field(line, "outcome").unwrap_or_else(|| panic!("send probe missing outcome")),
@@ -2974,6 +3029,79 @@ fn send_probe_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath,
             gift_blocks: required_json_u64_field(line, "gift_blocks", "send probe"),
         })
         .collect()
+}
+
+/// One `fz.runtime.gc` event as the jsonl log renders it.
+struct GcEvent {
+    pid: usize,
+    boundary: String,
+    copied_bytes: usize,
+}
+
+/// Every collection the fixture reports on `path`, in emission order.
+fn gc_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> Vec<GcEvent> {
+    telemetry_log_for_fixture(fixture, path, label)
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"gc\"]"))
+        .map(|line| GcEvent {
+            pid: required_json_u64_field(line, "pid", "gc event"),
+            boundary: json_str_field(line, "boundary").unwrap_or_else(|| panic!("gc event missing boundary")),
+            copied_bytes: required_json_u64_field(line, "copied_bytes", "gc event"),
+        })
+        .collect()
+}
+
+/// The destructors the fixture's exiting processes report having dispatched.
+fn dtors_dispatched_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> usize {
+    telemetry_log_for_fixture(fixture, path, label)
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"process_exited\"]"))
+        .map(|line| required_json_u64_field(line, "dtors_dispatched", "process_exited event"))
+        .sum()
+}
+
+/// The paths whose runtime telemetry the pins compare.
+const RUNTIME_TELEMETRY_PATHS: [(FixtureMatrixPath, &str); 3] = [
+    (FixtureMatrixPath::Run, "run"),
+    (FixtureMatrixPath::Interp, "interp"),
+    (FixtureMatrixPath::Build, "build"),
+];
+
+/// A resource the heap frees is destroyed by its own fz closure at the next
+/// scheduler boundary, whichever path ran the program.
+fn a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path() {
+    // The resource is dropped inside `drop_one`, then 20000 list cells are
+    // built. The JIT collects while they are built and finds the stub dead; the
+    // interpreter, which never yields, is not collected and its exit sweep
+    // releases the stub. One destructor either way.
+    let midlife = FixtureCase::new(
+        "fixtures/00906_a_resource_dropped_mid_run_runs_its_destructor_once_when_a_collection_frees_it.fz",
+    );
+    let collections = gc_events_for_fixture(&midlife, FixtureMatrixPath::Run, "run");
+    assert!(
+        collections.iter().any(|event| event.boundary == "yield"),
+        "run: the allocation makes the heap due at a yield, before the process exits"
+    );
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
+        assert_eq!(
+            dtors_dispatched_for_fixture(&midlife, path, label),
+            1,
+            "{label}: the dropped resource's destructor is dispatched once"
+        );
+    }
+
+    // Three resources are still held when main returns; the exit sweep queues
+    // one destructor each.
+    let at_exit = FixtureCase::new(
+        "fixtures/00907_resources_alive_at_exit_run_their_destructors_when_the_exit_sweep_releases_them.fz",
+    );
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
+        assert_eq!(
+            dtors_dispatched_for_fixture(&at_exit, path, label),
+            3,
+            "{label}: one destructor per resource held at exit"
+        );
+    }
 }
 
 fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue() {
@@ -2991,7 +3119,7 @@ fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_que
         "the parent takes :go first, then the earlier unmatched tuple from its mailbox, and allocates no list cells for either"
     );
 
-    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
         // The 50000-element log misses: the tuple and every cons cell cross
         // as one gift. The reply hits: exactly the three bound cells cross,
         // and the receiver is woken by that one hit.
@@ -3024,6 +3152,75 @@ fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_que
     }
 }
 
+/// Every path collects at its scheduler boundaries. The interpreter charges no
+/// reductions, so it never yields mid-run and its counts differ from `run`'s.
+fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run() {
+    let fixture =
+        FixtureCase::new("fixtures/00901_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent.fz");
+
+    // The child yields on its reduction budget while it builds and sends the
+    // 50000-element log. A yield collects once the child has allocated as many
+    // bytes as it held live after its last collection, and a quantum allocates
+    // about 12.8 KB, so the child is collected at live sizes of 13024, 38624,
+    // 77024, 153824, 307424 and 614624 bytes, then at 800160 once the log is
+    // complete. The parent is collected once as it parks on its receive (640
+    // bytes, the closures its park record holds). The gifts it grafts afterwards
+    // raise its baseline to its fill, so it is not collected again, and the
+    // child's exit is not a collection.
+    let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
+    let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
+    assert_eq!(
+        (count("yield"), count("park"), count("exit")),
+        (7, 1, 0),
+        "run: the child's reduction yields, the parent's park, no exit"
+    );
+    assert_eq!(events.len(), 8, "run: one gc event per collection");
+    assert_eq!(
+        events.iter().map(|e| e.copied_bytes).sum::<usize>(),
+        2_005_344,
+        "run: the bytes every collection copied"
+    );
+
+    // The interpreter never yields, so the child builds and sends its whole
+    // log inside one quantum and is never collected: it exits without a
+    // collection. The parent is collected as it parks (592 bytes, the
+    // values its parked receive holds: the JIT's 640 also counts the closures
+    // its park record holds); the gifts it grafts afterwards are baseline, so
+    // it is not collected again.
+    let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
+    let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
+    assert_eq!(
+        (count("yield"), count("park"), count("exit")),
+        (0, 1, 0),
+        "interp: only the parent's park"
+    );
+    assert_eq!(
+        events.iter().map(|e| e.copied_bytes).sum::<usize>(),
+        592,
+        "interp: only the parent's park copies anything"
+    );
+}
+
+/// The parked receiver's pinned list is a root of the collection that follows
+/// its park on every path, so the matcher still finds it.
+fn a_receiver_parked_on_a_pinned_list_is_collected_on_every_path_and_still_matches() {
+    let fixture =
+        FixtureCase::new("fixtures/00905_a_receiver_parked_on_a_pinned_list_is_collected_and_still_matches.fz");
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
+        let events = gc_events_for_fixture(&fixture, path, label);
+        assert!(
+            !events.iter().any(|event| event.pid == 1 && event.boundary == "yield"),
+            "{label}: nothing is collected before the parent parks, so its heap is due at the park"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.boundary == "park" && event.copied_bytes >= 1_600),
+            "{label}: the parked parent is collected with its 100-cell pinned list live"
+        );
+    }
+}
+
 fn a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe() {
     let fixture =
         FixtureCase::new("fixtures/00904_a_receive_guard_reads_the_receivers_pid_even_when_a_sender_runs_the_probe.fz");
@@ -3032,7 +3229,7 @@ fn a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_prob
         expected, ":carried_the_receivers_pid\n:carried_the_senders_pid\n",
         "the guard accepts the message carrying the receiver's pid; the one carrying the sender's pid waits in the mailbox"
     );
-    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
         // The child runs the probe, so a guard that asked the matcher's
         // process for `self()` would hit on the first message.
         let events = send_probe_events_for_fixture(&fixture, path, label);
@@ -3056,7 +3253,7 @@ fn a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown() {
         expected, ":child_is_parked\n:done\n",
         "the run prints both lines and ends with the child still parked"
     );
-    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
         let events = send_probe_events_for_fixture(&fixture, path, label);
         let misses_for_the_child: Vec<_> = events
             .iter()
@@ -3085,6 +3282,184 @@ fn a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown() {
             "{label}: the run returned every block it took, including the gifts still queued on the parked child"
         );
     }
+}
+
+/// `(pid, boundary, copied_bytes)` of every collection, in emission order.
+fn collections_as_tuples(events: &[GcEvent]) -> Vec<(usize, &str, usize)> {
+    events
+        .iter()
+        .map(|event| (event.pid, event.boundary.as_str(), event.copied_bytes))
+        .collect()
+}
+
+fn many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued() {
+    let fixture = FixtureCase::new(
+        "fixtures/00910_many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued.fz",
+    );
+    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00910 expected.txt");
+    assert_eq!(
+        expected, "11375\n3875\n",
+        "the parent sums jobs 51..=100 then jobs 1..=50, each as the job number plus its two-element payload sum"
+    );
+
+    // The guard accepts jobs above 50, so jobs 1..=50 miss, job 51 hits, and
+    // the receive is then decided: jobs 52..=100 miss without a second probe.
+    // A miss gifts the whole message (a three-slot tuple, 48 bytes, and two
+    // cells, 32); the hit gifts the bound number as a boxed scalar (16) and the
+    // two payload cells (32).
+    let mut probes = vec![SendProbeEvent::new("miss", 1, 80, 1); 50];
+    probes.push(SendProbeEvent::new("hit", 1, 48, 1));
+    probes.extend(vec![SendProbeEvent::new("miss", 1, 80, 1); 49]);
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
+        let events = send_probe_events_for_fixture(&fixture, path, label);
+        assert_eq!(
+            events, probes,
+            "{label}: fifty misses, the one hit, then forty-nine misses"
+        );
+        assert_eq!(
+            events.iter().map(|e| e.gift_bytes).sum::<usize>(),
+            7_968,
+            "{label}: 99 misses of 80 bytes and one hit of 48"
+        );
+        let (before, after) = run_ended_pool_census(&fixture, path, label);
+        assert_eq!(
+            after, before,
+            "{label}: the run returned every block it took, queued gifts included"
+        );
+    }
+
+    // The interpreter collects the parent once, as it parks (48 bytes live).
+    // The JIT collects it once as it parks (288 bytes, which include the
+    // closures its park record holds); the parent's exit after grafting 99
+    // gifts is not a collection. Neither path collects a child.
+    let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
+    assert_eq!(
+        collections_as_tuples(&events),
+        vec![(1, "park", 48)],
+        "interp: the parent's park only"
+    );
+    let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
+    assert_eq!(
+        collections_as_tuples(&events),
+        vec![(1, "park", 288)],
+        "run: the parent's park only; its exit is not collected"
+    );
+}
+
+fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_path() {
+    let fixture = FixtureCase::new(
+        "fixtures/00911_two_processes_pass_a_large_list_back_and_forth_and_each_message_crosses_in_one_gift.fz",
+    );
+    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00911 expected.txt");
+    assert_eq!(
+        expected, ":child_is_parked\n4\n20000\n200010000\n",
+        "four rounds, and the list the parent ends with is the 20000 elements it began with"
+    );
+
+    // Every send finds its receiver parked on a matching receive, so every
+    // message is a hit. The child's announcement binds nothing and gifts
+    // nothing. Each ball gifts its 20000 cells (320000 bytes) and the bound
+    // number as a boxed scalar (16), alternating child, parent.
+    let ball = |receiver| SendProbeEvent::new("hit", receiver, 320_016, 1);
+    let mut probes = vec![SendProbeEvent::new("hit", 1, 0, 0)];
+    for _ in 0..4 {
+        probes.push(ball(2));
+        probes.push(ball(1));
+    }
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
+        let events = send_probe_events_for_fixture(&fixture, path, label);
+        assert_eq!(events, probes, "{label}: the announcement, then eight balls, all hits");
+        assert_eq!(
+            events.iter().map(|e| e.gift_bytes).sum::<usize>(),
+            2_560_128,
+            "{label}: eight balls of 320016 bytes"
+        );
+        let (before, after) = run_ended_pool_census(&fixture, path, label);
+        assert_eq!(after, before, "{label}: the run returned every block it took");
+    }
+
+    // The interpreter never yields, so it collects the parent once, at its
+    // park for the announcement, with nothing live. The JIT yields while the
+    // parent builds the list and collects at live sizes that double until the
+    // list is complete (320128 bytes); neither path collects the child.
+    let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
+    assert_eq!(
+        collections_as_tuples(&events),
+        vec![(1, "park", 0)],
+        "interp: the parent's park only"
+    );
+    let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
+    assert_eq!(
+        collections_as_tuples(&events),
+        vec![
+            (1, "yield", 12_992),
+            (1, "yield", 38_592),
+            (1, "yield", 76_992),
+            (1, "yield", 153_792),
+            (1, "yield", 307_392),
+            (1, "yield", 320_128),
+        ],
+        "run: six yields while the parent builds the list"
+    );
+}
+
+/// The built binary reports what the scheduler does exactly as `fz2 run` does:
+/// the same probes with the same gifts, the same collections, and the same
+/// destructors dispatched at each exit.
+fn a_built_binary_reports_the_same_probes_collections_and_destructors_as_run() {
+    for fixture in [
+        "fixtures/00901_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent.fz",
+        "fixtures/00910_many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued.fz",
+        "fixtures/00911_two_processes_pass_a_large_list_back_and_forth_and_each_message_crosses_in_one_gift.fz",
+        "fixtures/00906_a_resource_dropped_mid_run_runs_its_destructor_once_when_a_collection_frees_it.fz",
+        "fixtures/00907_resources_alive_at_exit_run_their_destructors_when_the_exit_sweep_releases_them.fz",
+    ] {
+        let fixture = FixtureCase::new(fixture);
+        let name = fixture.display_path().display().to_string();
+        let (run, build) = (FixtureMatrixPath::Run, FixtureMatrixPath::Build);
+        assert_eq!(
+            send_probe_events_for_fixture(&fixture, build, "build"),
+            send_probe_events_for_fixture(&fixture, run, "run"),
+            "{name}: build probes the same sends with the same gifts as run"
+        );
+        let built = gc_events_for_fixture(&fixture, build, "build");
+        let ran = gc_events_for_fixture(&fixture, run, "run");
+        assert_eq!(
+            collections_as_tuples(&built),
+            collections_as_tuples(&ran),
+            "{name}: build collects the same pids at the same boundaries copying the same bytes as run"
+        );
+        assert_eq!(
+            dtors_dispatched_by_pid(&fixture, build, "build"),
+            dtors_dispatched_by_pid(&fixture, run, "run"),
+            "{name}: build dispatches the same destructors per process as run"
+        );
+    }
+}
+
+/// A receive that times out with nothing else runnable sleeps the scheduler
+/// once on a built binary. The wait itself is a clock reading and is not pinned.
+fn a_built_binary_sleeps_the_scheduler_once_for_a_receive_that_times_out() {
+    let fixture = FixtureCase::new("fixtures/00687_a_receive_after_times_out_with_an_empty_mailbox.fz");
+    let slept = telemetry_log_for_fixture(&fixture, FixtureMatrixPath::Build, "build")
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"scheduler_slept\"]"))
+        .count();
+    assert_eq!(slept, 1, "build: the 10ms timeout puts the scheduler to sleep once");
+}
+
+/// `(pid, dtors_dispatched)` of every exit, in emission order.
+fn dtors_dispatched_by_pid(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> Vec<(usize, usize)> {
+    telemetry_log_for_fixture(fixture, path, label)
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"process_exited\"]"))
+        .map(|line| {
+            (
+                required_json_u64_field(line, "pid", "process_exited event"),
+                required_json_u64_field(line, "dtors_dispatched", "process_exited event"),
+            )
+        })
+        .collect()
 }
 
 /// `(pool_outstanding_before_run, pool_outstanding_after_run)` from the one

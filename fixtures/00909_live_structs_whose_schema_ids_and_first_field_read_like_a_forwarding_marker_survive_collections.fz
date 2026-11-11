@@ -1,0 +1,181 @@
+#---
+# purpose: "forty live structs, every schema id residue mod 16 among them, each holding 8 in its first field, survive collections unchanged: a struct is forwarded only by its own marker word, never because its header and first field look like one"
+#---
+#
+# A struct's schema id is assigned in registration order, so forty distinct
+# struct types cover every low nibble a schema id can have, including 8. Each
+# instance stores 8 as its first field. A collector that read "header low
+# nibble 8 and second word 8" as an already-moved object would take the struct
+# whose id ends in 8 for a forwarded one. `make` keeps all forty live while
+# `main` builds 20000 list cells, so collections run, then prints them.
+defmodule R0 do
+  defstruct [:a, :b]
+  @type t :: %R0{a: integer, b: integer}
+end
+defmodule R1 do
+  defstruct [:a, :b]
+  @type t :: %R1{a: integer, b: integer}
+end
+defmodule R2 do
+  defstruct [:a, :b]
+  @type t :: %R2{a: integer, b: integer}
+end
+defmodule R3 do
+  defstruct [:a, :b]
+  @type t :: %R3{a: integer, b: integer}
+end
+defmodule R4 do
+  defstruct [:a, :b]
+  @type t :: %R4{a: integer, b: integer}
+end
+defmodule R5 do
+  defstruct [:a, :b]
+  @type t :: %R5{a: integer, b: integer}
+end
+defmodule R6 do
+  defstruct [:a, :b]
+  @type t :: %R6{a: integer, b: integer}
+end
+defmodule R7 do
+  defstruct [:a, :b]
+  @type t :: %R7{a: integer, b: integer}
+end
+defmodule R8 do
+  defstruct [:a, :b]
+  @type t :: %R8{a: integer, b: integer}
+end
+defmodule R9 do
+  defstruct [:a, :b]
+  @type t :: %R9{a: integer, b: integer}
+end
+defmodule R10 do
+  defstruct [:a, :b]
+  @type t :: %R10{a: integer, b: integer}
+end
+defmodule R11 do
+  defstruct [:a, :b]
+  @type t :: %R11{a: integer, b: integer}
+end
+defmodule R12 do
+  defstruct [:a, :b]
+  @type t :: %R12{a: integer, b: integer}
+end
+defmodule R13 do
+  defstruct [:a, :b]
+  @type t :: %R13{a: integer, b: integer}
+end
+defmodule R14 do
+  defstruct [:a, :b]
+  @type t :: %R14{a: integer, b: integer}
+end
+defmodule R15 do
+  defstruct [:a, :b]
+  @type t :: %R15{a: integer, b: integer}
+end
+defmodule R16 do
+  defstruct [:a, :b]
+  @type t :: %R16{a: integer, b: integer}
+end
+defmodule R17 do
+  defstruct [:a, :b]
+  @type t :: %R17{a: integer, b: integer}
+end
+defmodule R18 do
+  defstruct [:a, :b]
+  @type t :: %R18{a: integer, b: integer}
+end
+defmodule R19 do
+  defstruct [:a, :b]
+  @type t :: %R19{a: integer, b: integer}
+end
+defmodule R20 do
+  defstruct [:a, :b]
+  @type t :: %R20{a: integer, b: integer}
+end
+defmodule R21 do
+  defstruct [:a, :b]
+  @type t :: %R21{a: integer, b: integer}
+end
+defmodule R22 do
+  defstruct [:a, :b]
+  @type t :: %R22{a: integer, b: integer}
+end
+defmodule R23 do
+  defstruct [:a, :b]
+  @type t :: %R23{a: integer, b: integer}
+end
+defmodule R24 do
+  defstruct [:a, :b]
+  @type t :: %R24{a: integer, b: integer}
+end
+defmodule R25 do
+  defstruct [:a, :b]
+  @type t :: %R25{a: integer, b: integer}
+end
+defmodule R26 do
+  defstruct [:a, :b]
+  @type t :: %R26{a: integer, b: integer}
+end
+defmodule R27 do
+  defstruct [:a, :b]
+  @type t :: %R27{a: integer, b: integer}
+end
+defmodule R28 do
+  defstruct [:a, :b]
+  @type t :: %R28{a: integer, b: integer}
+end
+defmodule R29 do
+  defstruct [:a, :b]
+  @type t :: %R29{a: integer, b: integer}
+end
+defmodule R30 do
+  defstruct [:a, :b]
+  @type t :: %R30{a: integer, b: integer}
+end
+defmodule R31 do
+  defstruct [:a, :b]
+  @type t :: %R31{a: integer, b: integer}
+end
+defmodule R32 do
+  defstruct [:a, :b]
+  @type t :: %R32{a: integer, b: integer}
+end
+defmodule R33 do
+  defstruct [:a, :b]
+  @type t :: %R33{a: integer, b: integer}
+end
+defmodule R34 do
+  defstruct [:a, :b]
+  @type t :: %R34{a: integer, b: integer}
+end
+defmodule R35 do
+  defstruct [:a, :b]
+  @type t :: %R35{a: integer, b: integer}
+end
+defmodule R36 do
+  defstruct [:a, :b]
+  @type t :: %R36{a: integer, b: integer}
+end
+defmodule R37 do
+  defstruct [:a, :b]
+  @type t :: %R37{a: integer, b: integer}
+end
+defmodule R38 do
+  defstruct [:a, :b]
+  @type t :: %R38{a: integer, b: integer}
+end
+defmodule R39 do
+  defstruct [:a, :b]
+  @type t :: %R39{a: integer, b: integer}
+end
+def churn(0, acc), do: acc
+def churn(n, acc), do: churn(n - 1, [Integer.to_string(n) | acc])
+def make(x) do
+  {%R0{a: x, b: 0}, %R1{a: x, b: 1}, %R2{a: x, b: 2}, %R3{a: x, b: 3}, %R4{a: x, b: 4}, %R5{a: x, b: 5}, %R6{a: x, b: 6}, %R7{a: x, b: 7}, %R8{a: x, b: 8}, %R9{a: x, b: 9}, %R10{a: x, b: 10}, %R11{a: x, b: 11}, %R12{a: x, b: 12}, %R13{a: x, b: 13}, %R14{a: x, b: 14}, %R15{a: x, b: 15}, %R16{a: x, b: 16}, %R17{a: x, b: 17}, %R18{a: x, b: 18}, %R19{a: x, b: 19}, %R20{a: x, b: 20}, %R21{a: x, b: 21}, %R22{a: x, b: 22}, %R23{a: x, b: 23}, %R24{a: x, b: 24}, %R25{a: x, b: 25}, %R26{a: x, b: 26}, %R27{a: x, b: 27}, %R28{a: x, b: 28}, %R29{a: x, b: 29}, %R30{a: x, b: 30}, %R31{a: x, b: 31}, %R32{a: x, b: 32}, %R33{a: x, b: 33}, %R34{a: x, b: 34}, %R35{a: x, b: 35}, %R36{a: x, b: 36}, %R37{a: x, b: 37}, %R38{a: x, b: 38}, %R39{a: x, b: 39}}
+end
+def main() do
+  all = make(8)
+  20000 = length(churn(20000, []))
+  dbg(all)
+  :ok
+end

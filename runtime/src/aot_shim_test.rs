@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Duration;
 
 /// A bare scheduler for unit tests. The caller pushes tasks into
 /// `tasks` and passes `sched_handle(&mut sched)` as the erased scheduler
@@ -6,10 +7,11 @@ use super::*;
 /// carries in production.
 fn test_scheduler() -> AotScheduler {
     AotScheduler {
+        pool_outstanding_before_run: 0,
+        log: None,
         next_pid: 2,
         tasks: HashMap::new(),
         entry_thunk: null(),
-        halt_cont_bodies: [null(); 4],
         core: SchedulingCore::new(),
         drain_dtor_entry: null(),
         resume_addr: null(),
@@ -175,7 +177,7 @@ fn aot_send_to_exited_or_unknown_pid_does_not_copy_or_schedule() {
     assert_eq!(sched.core.queued(), &before_queue);
 }
 
-/// fz-xx8.3 — schedule→expire→wake flow on the AOT scheduler. We can't
+/// Schedule→expire→wake flow on the AOT scheduler. We can't
 /// drive aot_run_queue_loop directly (it would call into codegen'd shim
 /// pointers we don't have), but `next_runnable` is the loop's whole
 /// pre-dispatch step: schedule → expiry → the task's wait becomes a
@@ -210,7 +212,10 @@ fn timer_drain_wakes_after_cont() {
         clause_bound_counts: vec![],
         bound_arity: 0,
         after_deadline_ms: Some(1),
-        after_cont: after_cont_addr as *mut u8,
+        after_cont: Some(
+            AnyValueRef::from_heap_object(crate::any_value::ValueKind::CLOSURE, after_cont_addr as *const u8)
+                .expect("after body ref"),
+        ),
         after_timer_id: Some(timer_id),
     });
     p.state = ProcessState::Blocked;
@@ -223,11 +228,14 @@ fn timer_drain_wakes_after_cont() {
     let task = sched.tasks.get(&7).unwrap();
     assert_eq!(task.state, ProcessState::Ready);
     assert!(task.delivery.lock().park().is_none());
-    assert_eq!(task.runnable_ptr() as usize, after_cont_addr);
+    assert_eq!(
+        task.runnable_closure().map(|closure| closure.storage_addr() as usize),
+        Some(after_cont_addr)
+    );
     assert_eq!(next_runnable(&mut sched), None, "nothing else runs or waits");
 }
 
-/// fz-xx8.3 — the AOT timer cancel hook retires a previously scheduled
+/// The AOT timer cancel hook retires a previously scheduled
 /// timer so a sender-probe hit can prevent the after
 /// from firing.
 #[test]
@@ -240,7 +248,7 @@ fn timer_cancel_removes_pending_entry() {
     assert!(sched.core.next_deadline().is_none());
 }
 
-/// fz-xx8.1 — `fz_aot_set_resume_addr` records the shim address on the
+/// `fz_aot_set_resume_addr` records the shim address on the
 /// scheduler reached through `proc.ctx.scheduler`. We can't drive a full
 /// setup→run→teardown cycle from a unit test (it needs a real codegen'd
 /// shim), so we wire one process at the scheduler and assert the setter
@@ -268,17 +276,7 @@ fn aot_setup_gives_the_program_every_argument_after_the_program_name() {
     use std::ffi::CString;
     let words = ["./prog", "--", "", "-x"].map(|w| CString::new(w).unwrap());
     let pointers: Vec<*const std::ffi::c_char> = words.iter().map(|w| w.as_ptr()).collect();
-    let process = fz_aot_setup(
-        null(),
-        0,
-        null(),
-        null(),
-        null(),
-        null(),
-        null(),
-        pointers.len() as i32,
-        pointers.as_ptr(),
-    );
+    let process = fz_aot_setup(null(), 0, null(), pointers.len() as i32, pointers.as_ptr());
     let ctx = unsafe { &*(*process).ctx };
     assert_eq!(ctx.argv(), [b"--".to_vec(), Vec::new(), b"-x".to_vec()]);
 }
@@ -288,7 +286,47 @@ fn aot_setup_with_only_the_program_name_gives_the_empty_command_line() {
     use std::ffi::CString;
     let name = CString::new("./prog").unwrap();
     let pointers = [name.as_ptr()];
-    let process = fz_aot_setup(null(), 0, null(), null(), null(), null(), null(), 1, pointers.as_ptr());
+    let process = fz_aot_setup(null(), 0, null(), 1, pointers.as_ptr());
     let ctx = unsafe { &*(*process).ctx };
     assert!(ctx.argv().is_empty());
+}
+
+fn log_into(path: &std::path::Path) -> TelemetryLog {
+    let file = OpenOptions::new().create(true).append(true).open(path).unwrap();
+    TelemetryLog {
+        file,
+        epoch: Instant::now(),
+        line: String::new(),
+    }
+}
+
+/// A scheduler with a log appends one whole line per event after what the file
+/// already holds, which is how a log the compiler wrote keeps its events first.
+#[test]
+fn an_observed_event_is_appended_as_one_whole_line() {
+    let path = std::env::temp_dir().join(format!("fz_aot_observe_{}.jsonl", std::process::id()));
+    std::fs::write(&path, "compile line\n").unwrap();
+    let mut sched = test_scheduler();
+    sched.log = Some(log_into(&path));
+
+    sched.observe(RuntimeEvent::SchedulerSlept(Duration::from_nanos(7)));
+    sched.observe(RuntimeEvent::ExecutionReady);
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3, "{text}");
+    assert_eq!(lines[0], "compile line");
+    assert!(lines[1].starts_with("{\"name\":[\"fz\",\"runtime\",\"scheduler_slept\"],\"time_ns\":"));
+    assert!(lines[1].ends_with("\"span_id\":0,\"parent_span_id\":0,\"measurements\":{},\"metadata\":{\"wait_ns\":7}}"));
+    assert!(lines[2].contains("\"execution_ready\""));
+    assert!(text.ends_with('\n'));
+}
+
+/// Without a log an observed event has nowhere to go and costs nothing.
+#[test]
+fn an_observed_event_without_a_log_is_dropped() {
+    let mut sched = test_scheduler();
+    sched.observe(RuntimeEvent::SchedulerSlept(Duration::from_nanos(7)));
+    assert!(sched.log.is_none());
 }

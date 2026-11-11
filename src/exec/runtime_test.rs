@@ -1,9 +1,9 @@
 //! The scheduling core's sleep telemetry, observed through the real `run` (JIT)
 //! and `interp` doors.
 
-use super::SCHEDULER_SLEPT;
 use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
+use fz_runtime::telemetry::SCHEDULER_SLEPT;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;

@@ -1,12 +1,13 @@
 //! Cheney tracing: scan each copied object and forward its child edges.
 
+use super::super::Heap;
 use super::super::schema::SchemaRegistry;
 use super::super::stats::GcStats;
-use super::CopiedObject;
 use super::forward::forward_heap_value;
+use super::{CopiedObject, FromSpace};
 use crate::any_value::{
-    AnyValue, ListCons, TAG_MASK, ValueKind, closure_capture_set, closure_capture_value, closure_captured_count,
-    map_count, map_key_kind, map_keys_ptr, map_tag_ptr, map_value_kind, map_values_ptr, struct_field_kind_slot,
+    AnyValue, ListCons, ValueKind, closure_capture_set, closure_capture_value, closure_captured_count, map_count,
+    map_key_kind, map_keys_ptr, map_tag_ptr, map_value_kind, map_values_ptr, struct_field_kind_slot,
     struct_field_raw_slot, struct_schema_id,
 };
 use crate::resource::ResourceStub;
@@ -14,9 +15,8 @@ use std::ptr::{read, write};
 
 pub fn cheney_trace_list(
     obj: *mut ListCons,
-    from_ranges: &[(*mut u8, *mut u8)],
-    free: &mut *mut u8,
-    to_end: *mut u8,
+    from_space: &FromSpace,
+    heap: &mut Heap,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
     stats: &mut GcStats,
@@ -24,15 +24,7 @@ pub fn cheney_trace_list(
     let cons = unsafe { &mut *obj };
     if cons.head_kind().is_heap() {
         stats.list_head_heap_edges += 1;
-        let head = forward_heap_value(
-            cons.head_value(),
-            from_ranges,
-            free,
-            to_end,
-            schemas,
-            copied_objects,
-            stats,
-        );
+        let head = forward_heap_value(cons.head_value(), from_space, heap, schemas, copied_objects, stats);
         cons.head = head.raw();
     } else {
         stats.list_head_scalar_slots += 1;
@@ -40,12 +32,10 @@ pub fn cheney_trace_list(
 
     let tail_addr = cons.tail_addr();
     if tail_addr != 0 {
-        stats.list_tail_edges += 1;
         let tail = forward_heap_value(
             AnyValue::heap_ptr(tail_addr as *mut u8, ValueKind::LIST),
-            from_ranges,
-            free,
-            to_end,
+            from_space,
+            heap,
             schemas,
             copied_objects,
             stats,
@@ -56,9 +46,8 @@ pub fn cheney_trace_list(
 
 pub fn cheney_trace_struct(
     obj: *mut u8,
-    from_ranges: &[(*mut u8, *mut u8)],
-    free: &mut *mut u8,
-    to_end: *mut u8,
+    from_space: &FromSpace,
+    heap: &mut Heap,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
     stats: &mut GcStats,
@@ -73,8 +62,8 @@ pub fn cheney_trace_struct(
         };
         if value.kind().is_heap() {
             stats.struct_heap_edges += 1;
-            let forwarded = forward_heap_value(value, from_ranges, free, to_end, schemas, copied_objects, stats);
-            let raw = forwarded.raw() & !TAG_MASK;
+            let forwarded = forward_heap_value(value, from_space, heap, schemas, copied_objects, stats);
+            let raw = forwarded.raw();
             unsafe {
                 write(struct_field_raw_slot(obj as *const u8, field.offset), raw);
                 write(
@@ -90,9 +79,8 @@ pub fn cheney_trace_struct(
 
 pub fn cheney_trace_resource(
     obj: *mut u8,
-    from_ranges: &[(*mut u8, *mut u8)],
-    free: &mut *mut u8,
-    to_end: *mut u8,
+    from_space: &FromSpace,
+    heap: &mut Heap,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
     stats: &mut GcStats,
@@ -100,19 +88,15 @@ pub fn cheney_trace_resource(
     let resource = unsafe { ResourceStub::from_raw(obj) };
     let closure = resource.closure_value();
     if closure.kind().is_heap() {
-        stats.resource_heap_edges += 1;
-        let forwarded = forward_heap_value(closure, from_ranges, free, to_end, schemas, copied_objects, stats);
+        let forwarded = forward_heap_value(closure, from_space, heap, schemas, copied_objects, stats);
         resource.closure_value_set(forwarded);
-    } else {
-        stats.resource_scalar_slots += 1;
     }
 }
 
 pub fn cheney_trace_map(
     obj: *mut u8,
-    from_ranges: &[(*mut u8, *mut u8)],
-    free: &mut *mut u8,
-    to_end: *mut u8,
+    from_space: &FromSpace,
+    heap: &mut Heap,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
     stats: &mut GcStats,
@@ -127,7 +111,7 @@ pub fn cheney_trace_map(
         if key_kind.is_heap() {
             stats.map_heap_edges += 1;
             let key = AnyValue::heap_ptr(unsafe { read(keys.add(i)) } as *mut u8, key_kind);
-            let forwarded = forward_heap_value(key, from_ranges, free, to_end, schemas, copied_objects, stats);
+            let forwarded = forward_heap_value(key, from_space, heap, schemas, copied_objects, stats);
             unsafe { write(keys.add(i), forwarded.raw()) };
         } else {
             stats.map_scalar_slots += 1;
@@ -136,7 +120,7 @@ pub fn cheney_trace_map(
         if value_kind.is_heap() {
             stats.map_heap_edges += 1;
             let value = AnyValue::heap_ptr(unsafe { read(values.add(i)) } as *mut u8, value_kind);
-            let forwarded = forward_heap_value(value, from_ranges, free, to_end, schemas, copied_objects, stats);
+            let forwarded = forward_heap_value(value, from_space, heap, schemas, copied_objects, stats);
             unsafe { write(values.add(i), forwarded.raw()) };
         } else {
             stats.map_scalar_slots += 1;
@@ -146,9 +130,8 @@ pub fn cheney_trace_map(
 
 pub fn cheney_trace_closure(
     obj: *mut u8,
-    from_ranges: &[(*mut u8, *mut u8)],
-    free: &mut *mut u8,
-    to_end: *mut u8,
+    from_space: &FromSpace,
+    heap: &mut Heap,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
     stats: &mut GcStats,
@@ -158,7 +141,7 @@ pub fn cheney_trace_closure(
         let value = unsafe { closure_capture_value(obj as *const u8, idx) };
         if value.kind().is_heap() {
             stats.closure_heap_edges += 1;
-            let forwarded = forward_heap_value(value, from_ranges, free, to_end, schemas, copied_objects, stats);
+            let forwarded = forward_heap_value(value, from_space, heap, schemas, copied_objects, stats);
             unsafe { closure_capture_set(obj as *const u8, idx, forwarded) };
         } else {
             stats.closure_scalar_slots += 1;

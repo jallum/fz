@@ -77,10 +77,9 @@ builds copies those values into fresh containers before publishing them.
 `fz_binary_concat` validates byte-aligned binary inputs and copies their bytes
 into the caller process heap through `Heap::alloc_bitstring`, which returns the
 VALUE — `ProcBin` past `SHARED_BIN_THRESHOLD_BYTES` (64), `Bitstring` below it.
-The storage choice is made there and only there. Four callers used to re-derive
-it from `bytes.len()` against the same threshold (fz-5xp.45), which made the
-threshold a constant five places had to agree about and let a caller disagree
-with what was actually allocated.
+The storage choice for every value the runtime builds is made there; the one
+other place that splits on the threshold is `Prim::ConstBitstring` lowering,
+which emits a static `SharedBin` above it.
 
 Two questions still read the threshold, and they are different questions:
 `alloc_bitstring_suffix` asks whether a VIEW is worth a stub, and native
@@ -100,8 +99,8 @@ That is what makes matching a tail free. `<<_c, rest :: binary>>` asks for a
 suffix, so `fz_bs_read_field_bits` hands back another view of the same bytes
 instead of copying them; `Heap::alloc_bitstring_suffix` decides whether the view
 is worth a stub, copying suffixes at or below `SHARED_BIN_THRESHOLD_BYTES` so a
-short tail cannot pin a long buffer. Before this, scanning n bytes copied
-n + (n-1) + … bytes, and decoding a 919-byte JSON document copied 1.4 MB.
+short tail cannot pin a long buffer. Scanning n bytes copies at most that short
+tail per step, where a copy per step would cost n + (n-1) + … bytes.
 
 Suffix — rather than an arbitrary window — is load-bearing. The buffer carries
 one invisible trailing NUL, so a suffix ends where the NUL is and
@@ -160,9 +159,10 @@ child_ref = fz_map_get_ref(parent_map_ref, atom_child_ref)
 ## Generated-Code Value Lanes
 
 Generated code keeps a value in the narrowest representation the typer can
-prove. The codegen-side enum is `CodegenValue` (`src/ir_codegen/value.rs`); the
-ABI-side enum threaded through call signatures is `ArgRepr`
-(`src/ir_codegen/repr.rs`). The lanes:
+prove. The codegen-side enum is `CodegenValue`
+(`src/compiler2/native_codegen/value.rs`); the ABI-side enum threaded through
+call signatures is `ArgRepr` (`src/compiler2/native_codegen/repr.rs`). The
+lanes:
 
 ```text
 ValueRef  // one AnyValueRef word; the only `any`-shaped lane
@@ -172,7 +172,8 @@ RawAtom   // proven atom id
 Condition // raw i1 from a comparison/type-test whose result is only branched on
 ```
 
-`ArgRepr::from_ty` picks the lane: float -> `RawF64`, integer -> `RawInt`,
+compiler2 picks each lane (`AbiValueRepr`) and codegen copies it with
+`arg_repr_from_compiler2`: float -> `RawF64`, integer -> `RawInt`,
 atom-subtype -> `RawAtom`, else `ValueRef`. `CodegenValue` adds `AnyRef` (an
 `any` ref value) and `Known { payload, kind }` (a compile-time-constant scalar);
 both report `ArgRepr::ValueRef`. Every lane has `abi_arity() == 1`: a value is
@@ -207,8 +208,9 @@ continuation arguments, and typed frame slots.
 3  Struct
 ```
 
-`8` (`TAG_FWD`) is the Cheney forwarding marker, not a value; `9`–`12` are
-unused; `ValueKind::new` rejects all of them. The empty list is `List` with a
+`8`–`12` are unused; `ValueKind::new` rejects them. (`TAG_LAZY_CONT`, also
+`8`, is a ref-word field code for a stack-resident lazy continuation, never a
+`ValueKind`.) The empty list is `List` with a
 null address (`AnyValueRef::empty_list`). Object storage also uses an
 `EMPTY_LIST` tail sentinel (`0x8`, an address inside the OS-reserved unmapped
 page 0, distinct from `nil`), but that sentinel is internal list-tail
@@ -225,12 +227,44 @@ x86_64 (canonical):   tagged = address | (tag << 57)
 difference.
 
 Compiler-emitted pointer refs follow the same split, in
-`src/ir_codegen/closure.rs` and `src/ir_codegen/fn_ctx.rs`. On arm64/TBI a fresh
+`src/compiler2/native_codegen/closure.rs` and
+`src/compiler2/native_codegen/fn_ctx.rs`. On arm64/TBI a fresh
 stack/heap pointer is tagged by OR-ing the top-byte tag word directly, with no
 address-mask clear. On x86_64 canonical refs the high bits are cleared with
 `ishl_imm` then `ushr_imm` before OR-ing the tag word. Keeping codegen on
 `AnyValueRefPacking` rather than a hardcoded mask is what keeps
 compiler2 CLIF dumps aligned with the runtime packing model.
+
+## The literal bit
+
+A *literal* is an object the program carries in read-only data rather than on a
+heap: a static struct (`.fz_static_struct_*`), a static closure, a halt
+continuation, and the nil slot. Every reference to a literal has one bit set
+above the kind field of its address word: `1 << (tag_shift + 5)`, bit 61 on
+arm64 and bit 62 on x86_64, owned by `AnyValueRefPacking`
+(`literal_bit`, `is_literal`, `raw_address`, `payload_mask`). The bit sits in the
+*address* word, so the same position holds in the ref word, a struct field or
+closure capture payload, a map key or value payload, a list head payload and a
+list link's tail. `ValueKind`, kind bytes and the map key/value kind byte are
+unchanged, and `AnyValueRef::tag()` ignores the bit.
+
+The bit is set only where a literal is named: `static_object_ref`, the entry
+thunk, the child-literal payload words of a static struct (a relocation whose
+addend is the bit), `nil_atom_ref`, and a scalar field read from a literal
+struct (`read_struct_field_ref`; a heap child keeps the bit its stored payload
+word carries). Fresh heap allocations never set it. Anything that dereferences,
+compares identity, hashes or keys on an address reads it through
+`AnyValueRefPacking::raw_address` (`AnyValue::heap_addr`, `storage_addr`,
+`AnyValueRef::*_addr`), so a literal and its raw address agree; code that
+re-packs an address must carry the bit (`AnyValueRef::literal`) or it names a
+heap object that is not there.
+
+The collector, deep copy and the debug formatter test this one bit: a tagged
+reference is left in place (collector) or shared (deep copy), an untagged one is
+a heap pointer in from-space. Debug builds keep the from-space range walk as a
+cross-check (`FromSpace::assert_classified`, `HeapView::assert_classified`): an
+untagged pointer must lie in from-space, a tagged one must not, and none may lie
+in to-space. Release builds never walk the from-space ranges.
 
 ## Container Storage
 
@@ -241,13 +275,31 @@ read:
 
 ```text
 List cons (16 bytes): head payload word
-                      link word = tail address + head-kind nibble + alias bit
+                      link word = tail address + head kind and alias bit in the
+                                  high bits; the low nibble is clear
 Map:                  count, one packed key/value kind byte per entry,
                       then key payload words, then value payload words
                       -- ENTRIES ARE SORTED BY KEY, see below
 Closure:              ClosureDenotationId + header word, code pointer,
                       capture payload words, capture kind bytes
 ```
+
+Every header word keeps its low nibble clear, because the low nibble belongs to
+the Cheney forwarding marker (see "GC: Roots, Edges, And Lifetime" below). Little-endian:
+
+```text
+Struct:    schema_id << 32
+Closure:   (denotation << 32) | (flags << 4) | (arity << 20)   arity < 4096
+Bitstring: bit_len << 4
+Map:       count << 4                                  (published)
+           FLAG(bit 63) | filled << 33 | capacity << 4  (destination, 29-bit fields)
+```
+
+Accessors (`struct_schema_id`, `closure_denotation`, `closure_arity`,
+`bitstring_bit_len`, `map_count`) and constructors (`struct_header_word`,
+`closure_header_word`, `bitstring_header_word`, `map_header_word`,
+`map_destination_header_word`) in `runtime/src/any_value.rs` are the only code
+that knows these layouts.
 
 The closure header separates user arity from captured count and scheduler halt
 kind. A user closure has exactly one slot per lexical capture, in the immutable
@@ -383,11 +435,16 @@ Off-heap binaries and resources have their own atomic reference counts. A
 32-byte `ProcBin` stub owns one edge to a `SharedBin`; a resource stub owns one
 edge to a `Resource`. Both off-heap objects are 16-ALIGNED, the same invariant
 the process heap keeps, and for the same reason: a stub holds the address in
-word 0, and word 0 is where Cheney writes a forwarding marker — a pointer with
-`TAG_FWD` (`0x8`) in the low four bits. At 8-byte alignment half of those
-addresses end in 8 and a live stub reads as forwarded, which made the sweep
-write into the object it was supposed to be releasing (fz-5xp.60). Alignment is
-what keeps a real pointer and a tag distinguishable by construction. Copying a stub into another heap retains
+word 0, and word 0 is where Cheney writes a forwarding marker — a pointer with a
+set low nibble. At 8-byte alignment half of those addresses have a set nibble
+and a live stub would read as forwarded, so the sweep would write into the
+object it is releasing. Alignment is what keeps a live pointer and a marker
+distinguishable by construction.
+
+The marker is the only use of the low nibble. Each kind names one marker word —
+word 1 of a list cons, word 0 of every other kind — whose live value has a clear
+low nibble, so "low nibble set" is the whole forwarding test: one read, no
+confirming word (`runtime/src/heap/gc/forwarding.rs`). Copying a stub into another heap retains
 one edge. Moving it during GC preserves that edge; sweeping an unreachable stub
 or dropping its heap releases it. An immediate last release invokes the
 allocation's destructor and reclaims its storage. Deferred resource release

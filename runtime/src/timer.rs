@@ -1,4 +1,4 @@
-//! fz-sum — minimal scheduler timer.
+//! Minimal scheduler timer.
 //!
 //! A sorted-vector wheel sufficient for v1 single-worker scheduling. Each
 //! entry pairs a deadline with the PID that should be woken when the

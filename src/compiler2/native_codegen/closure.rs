@@ -4,20 +4,7 @@ use cranelift_codegen::ir::{
 };
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
-use fz_runtime::any_value::{AnyValueRefPacking, TAG_FWD, TaggedRefArch};
-
-/// Allocate and return a halt-cont singleton for `repr` via `fz_get_halt_cont`.
-/// Used when the caller has no cont_param and needs a halt-cont to pass to the
-/// callee — the callee's Term::Return chains through it to record halt_value.
-pub(crate) fn synthesize_halt_cont<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, M>,
-    locals: &LocalBodies,
-    repr: ArgRepr,
-) -> ir::Value {
-    let hcb_addr = fn_addr(body.jmod, locals.halt_cont_body_id(repr), body.b);
-    let kind_v = body.b.ins().iconst(types::I32, repr.halt_kind() as i64);
-    body.get_halt_cont(hcb_addr, kind_v)
-}
+use fz_runtime::any_value::{AnyValueRefPacking, TAG_LAZY_CONT, TaggedRefArch};
 
 /// Resolve the outer-cont ref to forward into a new cont closure.
 /// For cont fns: loaded from closure env field 0. For non-cont native:
@@ -241,7 +228,7 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
         }
     });
     let ptr = body.b.ins().stack_addr(types::I64, slot, 0);
-    emit_tagged_pointer_ref_word(body.b, ptr, TAG_FWD)
+    emit_tagged_pointer_ref_word(body.b, ptr, TAG_LAZY_CONT)
 }
 
 fn emit_tagged_pointer_ref_word(b: &mut FunctionBuilder<'_>, ptr: ir::Value, tag: u64) -> ir::Value {

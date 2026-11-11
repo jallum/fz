@@ -7,11 +7,9 @@ use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
 
 /// How a fz arg/return rides the Cranelift ABI for a native fn.
-/// `ValueRef` is the generic strict-parts ABI: raw payload plus side-band
-/// kind. Heap pointers preserve their strict low-4 object tag when they
-/// must cross a one-word runtime helper seam. `RawInt` is an unshifted
-/// int payload as i64; `RawF64` is a raw f64; `RawAtom` is an atom-id
-/// payload as i64.
+/// `ValueRef` is one `AnyValueRef` word: the kind in its high bits, the
+/// address or payload below. `RawInt` is an unshifted int payload as i64;
+/// `RawF64` is a raw f64; `RawAtom` is an atom-id payload as i64.
 ///
 /// Per-spec param/return/block reprs are copied from compiler2's native
 /// handoff. Codegen chooses Cranelift ABI types from those facts; it does not
@@ -45,7 +43,7 @@ impl ArgRepr {
         }
     }
 
-    /// Halt-cont singleton kind. 0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom.
+    /// Halt continuation kind. 0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom.
     pub(crate) fn halt_kind(&self) -> u32 {
         match self {
             ArgRepr::ValueRef => 0,

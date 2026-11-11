@@ -1,4 +1,4 @@
-//! fz-ul4.23.10 — runtime staticlib for fz code (JIT, interp, AOT).
+//! Runtime staticlib for fz code (JIT, interp, AOT).
 //!
 //! Owns the per-task substrate that every execution path shares:
 //! AnyValueRef rep (`any_value`), per-task heap (`heap`),
@@ -30,6 +30,7 @@ pub mod sched_core;
 pub mod scheduler_hooks;
 pub mod symbol_lookup;
 pub mod sync;
+pub mod telemetry;
 pub mod term;
 pub mod timer;
 

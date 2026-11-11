@@ -15,8 +15,8 @@
 <ul>
   <li><a href="#anyvalue">1. Values — any value refs and container storage</a></li>
   <li><a href="#heap">2. The process heap — bump allocation</a></li>
-  <li><a href="#pressure">3. Watermark and back-edge yield</a></li>
-  <li><a href="#gc-parktime">4. Park-time GC — Cheney with one root</a></li>
+  <li><a href="#pressure">3. Reductions, collection timing, and boundary GC</a></li>
+  <li><a href="#gc-parktime">4. Park-time GC — Cheney with explicit roots</a></li>
   <li><a href="#gc-midflight">5. Mid-flight GC — collecting a running loop</a></li>
   <li><a href="#roots">6. GC roots and the MSO sweep</a></li>
   <li><a href="#scheduler">7. Scheduler dispatch</a></li>
@@ -53,9 +53,10 @@ and generic runtime calls.</p>
 </ul>
 
 <p>Heap objects are 16-byte aligned, so the low 4 bits of any real heap address
-are free for the heap-object kind tag. <code>AnyValueRef</code> words use
-architecture-owned high bits for their logical tag and must only be inspected
-through the <code>AnyValueRef</code> API.</p>
+are clear. The only use of those bits is the GC's forwarding marker.
+<code>AnyValueRef</code> words, and every heap-object word that names another
+object, carry the logical kind in architecture-owned high bits and must only be
+inspected through the <code>AnyValueRef</code> API.</p>
 
 <p><code>AnyValueRef</code> uses the runtime <code>ValueKind</code> tag values:
 <code>0</code> Null, <code>1</code> List, <code>2</code> Map,
@@ -84,12 +85,11 @@ because the container layout already says where the stamp lives.
     <tr><td class="tag">0x0</td><td>NULL</td><td>sentinel</td><td>zero-init memory; local empty value</td></tr>
     <tr><td class="tag">0x1</td><td>List</td><td>heap</td><td>cons cell, 16 bytes, no header</td></tr>
     <tr><td class="tag">0x2</td><td>Map</td><td>heap</td><td>flat sorted array with packed tag bytes</td></tr>
-    <tr><td class="tag">0x3</td><td>Struct</td><td>heap</td><td>tuple/struct; 8-byte prefix (schema_id + flags)</td></tr>
-    <tr><td class="tag">0x4</td><td>Closure</td><td>heap</td><td>8-byte prefix (schema_id + flags); captures typed by schema</td></tr>
-    <tr><td class="tag">0x5</td><td>Bitstring</td><td>heap</td><td>small inline; 8-byte prefix (bit_len)</td></tr>
+    <tr><td class="tag">0x3</td><td>Struct</td><td>heap</td><td>tuple/struct; 8-byte prefix (schema_id in the high 32 bits)</td></tr>
+    <tr><td class="tag">0x4</td><td>Closure</td><td>heap</td><td>8-byte prefix (denotation in the high 32 bits; flags and arity above four clear bits in the low 32); captures carry their own kind bytes</td></tr>
+    <tr><td class="tag">0x5</td><td>Bitstring</td><td>heap</td><td>small inline; 8-byte prefix (bit_len above four clear bits)</td></tr>
     <tr><td class="tag">0x6</td><td>ProcBin</td><td>heap</td><td>32 bytes total (shared_ptr + mso_next + byte_offset)</td></tr>
     <tr><td class="tag">0x7</td><td>Resource</td><td>heap</td><td>off-heap handles with destructors</td></tr>
-    <tr><td class="tag">0x8</td><td>Forwarded</td><td>gc-marker</td><td>written into first word during Cheney copy; high 60 bits = to-space address</td></tr>
     <tr><td class="tag">0xD</td><td>Int</td><td>immediate</td><td>container-local scalar tag; payload is raw <code>i64</code></td></tr>
     <tr><td class="tag">0xE</td><td>Float</td><td>immediate</td><td>container-local scalar tag; payload is raw <code>f64::to_bits()</code></td></tr>
     <tr><td class="tag">0xF</td><td>Atom</td><td>immediate</td><td>container-local scalar tag; payload is raw atom id (32-bit, zero-extended)</td></tr>
@@ -99,11 +99,10 @@ because the container layout already says where the stamp lives.
 <p>A few consequences of this layout:</p>
 
 <ul>
-  <li><strong>Pointer reads need one <code>and !0xF</code>.</strong> Heap
-  objects are 16-byte aligned, so the bottom 4 bits of any real address are
-  zero. Heap tags <code>0x1</code> through <code>0x7</code> identify the
-  object kind; masking off the low nibble recovers the address.
-  Mixed paths just <code>and</code> off the tag bits and go.</li>
+  <li><strong>The low nibble of a live pointer is zero.</strong> Heap
+  objects are 16-byte aligned. Heap tags <code>0x1</code> through
+  <code>0x7</code> identify the object kind in the high bits; masking them off
+  recovers the address, and the low nibble is never part of either.</li>
   <li><strong>Integers and floats are raw in typed storage.</strong> A local
   tag <code>0xD</code> means the payload is a full signed <code>i64</code>.
   A local tag <code>0xE</code> means the payload is raw
@@ -116,9 +115,23 @@ because the container layout already says where the stamp lives.
 
 <p>The GC follows heap-kind tags <code>0x1</code> through <code>0x7</code>.
 Immediate side-band tags pass through unchanged. When Cheney relocates an
-object, it writes <code>(to_space_address &amp; ~0xF) | 0x8</code> into the
-first word of the from-space copy; later scans recognize tag <code>0x8</code>
-as a forwarding marker.</p>
+object, it overwrites one marker word of the from-space copy with
+<code>to_space_address | 1</code>; later scans read that word and treat any set
+low nibble as "already forwarded". The marker word is word 1 (the link) of a
+list cons and word 0 of every other kind, and each kind lays that word out so a
+live value has a clear low nibble: a struct, closure, bitstring or map header
+keeps four clear bits below its fields, and a ProcBin or Resource keeps a
+16-aligned pointer there. One read decides; no second word is consulted.</p>
+
+<p>Objects the program carries in read-only data (static structs, static
+closures, halt continuations and the nil slot) are never on a heap. Every
+reference to one has a single literal bit set in its address word, above the
+kind field and at the same position in a ref word, a field or capture payload, a
+map entry, a list head and a list link. The collector and deep copy read that
+bit: a tagged reference is left in place or shared, an untagged one is a heap
+pointer and is copied. Nothing walks the heap's block list to decide. Debug
+builds cross-check the bit against the block ranges and assert that an untagged
+pointer lies in from-space and a tagged one does not.</p>
 
 <div class="aside">
 Old per-float heap objects are retired. Floats in typed code travel as native
@@ -154,7 +167,7 @@ requested tail.</p>
 <p><strong>Map:</strong></p>
 
 <pre>
-  offset 0:                      count: u64
+  offset 0:                      header: count &lt;&lt; 4
   offset 8:                      tag_bytes: [u8; N], padded to 8-byte alignment
   offset 8 + pad(N, 8):          keys:   [u64; N]
   offset 8 + pad(N, 8) + 8N:     values: [u64; N]
@@ -162,7 +175,10 @@ requested tail.</p>
 
 <p>Each map entry has one tag byte: high nibble = key kind, low nibble = value
 kind. Total size is <code>8 + ceil(N/8) * 8 + 16N</code>, then rounded to the
-next 16-byte boundary.</p>
+next 16-byte boundary. A map still under construction (an unpublished
+destination) has a different header: bit 63 set, the number of entries filled
+so far at bit 33 and the capacity at bit 4, each 29 bits wide. Freezing it
+writes the published header.</p>
 
 <p><strong>Dynamic roots:</strong></p>
 
@@ -273,14 +289,17 @@ of that tail. In <code>fixtures/quicksort</code>, the native paths pin
 <p><strong>Other heap layouts:</strong></p>
 
 <ul>
-  <li><strong>Struct:</strong> offset 0 <code>schema_id: u32, flags:
-  u32</code>; offset 8 typed fields declared by the schema; total size is
+  <li><strong>Struct:</strong> offset 0 header <code>schema_id &lt;&lt;
+  32</code>; offset 8 typed fields declared by the schema; total size is
   <code>align16(8 + schema payload)</code>.</li>
-  <li><strong>Closure:</strong> offset 0 <code>schema_id: u32, flags:
-  u32</code>; offset 8 <code>fn_ptr: u64</code>; offset 16 raw capture words;
-  capture kind bytes follow the raw words and are padded to 8-byte alignment.</li>
-  <li><strong>Bitstring:</strong> offset 0 <code>bit_len: u64</code>; offset 8
-  bytes, padded to 16-byte alignment.</li>
+  <li><strong>Closure:</strong> offset 0 header <code>(denotation &lt;&lt; 32)
+  | (arity &lt;&lt; 20) | (flags &lt;&lt; 4)</code>, where flags hold the
+  captured count and halt kind and arity is below 4096; offset 8
+  <code>fn_ptr: u64</code>; offset 16 raw capture words; capture kind bytes
+  follow the raw words and are padded to 8-byte alignment.</li>
+  <li><strong>Bitstring:</strong> offset 0 header <code>bit_len &lt;&lt;
+  4</code>; offset 8 the bytes and one trailing zero byte, padded to 16-byte
+  alignment.</li>
   <li><strong>ProcBin:</strong> offset 0 <code>shared_ptr</code>; offset 8
   <code>mso_next</code>; offset 16 <code>byte_offset</code>; 32 bytes total.</li>
   <li><strong>Resource:</strong> offset 0 <code>resource_ptr</code>; offset 8
@@ -314,9 +333,9 @@ on top and move a finger (the bump pointer) down by however many lines you
 used. Nothing else needs to happen on the fast path.
 </div>
 
-<p>Heap objects are 16-byte aligned, but they no longer share a universal
-16-byte header. The low 4 bits of the pointer identify the heap kind, and each
-kind has its own prefix and size function.</p>
+<p>Heap objects are 16-byte aligned and share no universal header. The kind
+rides in the high bits of the reference that names the object, and each kind
+has its own prefix and size function.</p>
 
 <p>Per-kind layouts:</p>
 
@@ -327,34 +346,38 @@ kind has its own prefix and size function.</p>
   <tbody>
     <tr><td>cons cell</td><td class="size">16 bytes</td><td>8 head + 8 next/head-kind link</td></tr>
     <tr><td>map, N entries</td><td class="size">align16(8 + ceil(N/8)×8 + 16N)</td><td>count + tag bytes + keys + values</td></tr>
-    <tr><td>tuple / struct</td><td class="size">align16(8 + schema payload)</td><td>schema_id+flags prefix + typed fields</td></tr>
-    <tr><td>closure, 0 captures</td><td class="size">16 bytes</td><td>schema_id+flags prefix + fn_ptr</td></tr>
+    <tr><td>tuple / struct</td><td class="size">align16(8 + schema payload)</td><td>schema_id header + typed fields</td></tr>
+    <tr><td>closure, 0 captures</td><td class="size">16 bytes</td><td>denotation/arity/flags header + fn_ptr</td></tr>
     <tr><td>closure, n captures</td><td class="size">align16(16 + n×8 + align8(n))</td><td>raw captures + one kind byte per capture</td></tr>
-    <tr><td>bitstring (small, inline)</td><td class="size">align16(8 + ⌈bits/8⌉)</td><td>bit_len + bytes</td></tr>
+    <tr><td>bitstring (small, inline)</td><td class="size">align16(8 + ⌈bits/8⌉ + 1)</td><td>bit_len header + bytes + trailing zero</td></tr>
     <tr><td>ProcBin (large bin stub)</td><td class="size">32 bytes</td><td>8 shared_ptr + 8 mso_next + 8 byte_offset</td></tr>
-    <tr><td>Resource</td><td class="size">48 bytes</td><td>shared ptr + discriminator + destructor closure + mso_next</td></tr>
+    <tr><td>Resource</td><td class="size">48 bytes</td><td>resource ptr + discriminator + destructor closure + mso_next</td></tr>
   </tbody>
 </table>
 
 <p>Ordinary large objects — tuples with many fields and maps with many entries
 — live on the process heap and grow into bigger blocks as needed. Bitstrings
 above <code>SHARED_BIN_THRESHOLD_BYTES</code> (64 bytes) <em>don't</em>
-live on the process heap. Instead the heap carries a 16-byte <strong>ProcBin</strong>
+live on the process heap. Instead the heap carries a 32-byte <strong>ProcBin</strong>
 stub that points into the <a href="#shared-zone">shared zone</a>.</p>
 
 <h3>Block pool and block capacities</h3>
 
 <p>Blocks come from a per-thread pool sized by a Fibonacci-then-geometric size
-table (1 KiB up to ~7 MiB). When a block fills before GC fires, a new (larger)
-block is allocated and the old one joins <code>blocks</code>, recorded
-with its fill and capacity. All parked blocks are reclaimed at the next
+table (1 KiB up to ~7 MiB); a heap's tip starts at the first entry and climbs
+the table. When a block fills before GC fires, a new block one step
+up becomes the tip and the old one joins <code>blocks</code>, recorded
+with its fill and capacity. An object larger than that step is not made the
+tip: it gets a block sized for it, parked on <code>blocks</code> straight away,
+and the tip keeps filling. All parked blocks are reclaimed at the next
 GC.</p>
 
-<p>The table has no ceiling on what a block may be. An object larger than the
-last table entry gets a block of exactly its size (rounded up to 16 bytes); that
-block comes from the system allocator, not the pool, and goes back to it when
-the collection that copies the object out releases the block. Such an object is
-copied like any other.</p>
+<p>The table has neither a floor nor a ceiling on what a block may be. A
+request below the first entry or above the last gets a block of exactly its size
+(rounded up to 16 bytes); that block comes from the system allocator, not the
+pool, and goes back to it when it is released. An object larger than the last
+entry is copied like any other when the collection that reaches it releases the
+block.</p>
 
 <h3 id="the-gift-window">The gift window</h3>
 
@@ -367,7 +390,8 @@ bound values, inside one, and the segment waits on the receiver's
 set the way the copy will and returns the bytes it will allocate, counting
 shared structure once. <code>Heap::begin_gift</code> takes that figure, sets the
 current tip aside and installs one block of the smallest capacity that holds it
-(an exact block when it exceeds the table). The copy runs through the ordinary
+(an exact block when it is below or above the table, so a 16-byte message
+occupies a 16-byte block). The copy runs through the ordinary
 bump path and fills the block without overflowing it. <code>Heap::end_gift</code>
 asserts the block's fill is exactly the measured bytes, turns the block into a
 <code>GiftSegment</code> and puts
@@ -381,7 +405,9 @@ run while a window is open.</p>
 its <code>blocks</code>, its MSO
 prefix is spliced ahead of the receiver's chain. Every parked block counts
 toward <code>bytes_used</code> by fill, never by capacity, so a kilobyte block
-holding one cons cell costs sixteen bytes toward <code>should_gc</code>. A segment that is dropped without being grafted releases its block
+holding one cons cell is sixteen bytes of <code>bytes_used</code>. The same fill
+raises <code>live_baseline</code>: a gift is packed and fully live, so it is
+survivor data and never allocation pressure. A segment that is dropped without being grafted releases its block
 and every stub's off-heap reference.</p>
 
 <h3>The MSO chain</h3>
@@ -414,20 +440,28 @@ does not force a yield.</p>
 <p>Every <code>Heap::alloc()</code> call is a bump and nothing else. Whether a
 collection is due is a question about the heap's state, answered by
 <code>Heap::should_gc</code> when the scheduler asks at a boundary: the tip's
-fill plus the fill of every parked block, against half the
-tip's capacity. A collection that reclaims those bytes answers the question by
-itself; nothing is cleared. If an allocation no longer fits in the current
-block, the heap allocates a larger block and parks the old one in
-<code>blocks</code> for the next Cheney pass.</p>
+fill plus the fill of every parked block, less the heap's
+<code>live_baseline</code>, against the larger of that baseline and half the
+smallest tip. The baseline is the bytes known to be live: a collection sets it
+to the bytes that survived, <code>graft</code> raises it by the gift's fill, and
+allocation leaves it alone. A heap holding N live bytes is therefore due a
+collection once it has allocated N more. A collection that reclaims those bytes
+answers the question by itself; nothing is cleared. If an allocation no longer fits in the current
+block, the heap parks it in <code>blocks</code> for the next Cheney pass and
+installs a tip one step up, unless the object is larger than that step: then
+the object gets a parked block of its own and the tip stays.</p>
 
 <pre>
   bump_top += size
   if bump_top would cross block_end {
-      grow to a larger block
-      blocks.push(old_block)
+      if size &gt; next_block_capacity(block_size) {
+          blocks.push(block sized for the object)   // tip unchanged
+      } else {
+          blocks.push(tip); tip = block one step up
+      }
   }
 
-  should_gc = bytes_used >= block_size / 2
+  should_gc = bytes_used - live_baseline >= max(live_baseline, SIZE_TABLE[0] / 2)
 </pre>
 
 <p>Compiled yield telemetry still samples the margin before and after the
@@ -485,7 +519,7 @@ closure. No stack scan, no register enumeration.</p>
   └────────────────────────────────┘
            │ Cheney BFS copy │
            ▼
-  to-space (new block, sized to hold every byte that can be copied)
+  to-space (a fresh tip; copies park blocks as it fills)
   ┌─────────────────┐
   │ <span class="live">[live][live][live]</span>│
   │         bump_top│
@@ -495,40 +529,46 @@ closure. No stack scan, no register enumeration.</p>
 
 <div class="aside">
 Cheney is the world's tidiest move-out. You bring a fresh empty room
-(to-space). Starting from one pointer, you copy every live object across.
+(a fresh tip). Starting from one pointer, you copy every live object across.
 Once you're done, you walk out and burn the old room. Nothing dead gets a
 ride.
 </div>
 
-<h3>Sizing to-space</h3>
+<p>The accepted consequence: a receiver that consumed a lot of mail keeps the
+dead blocks, once the mail is dropped, until its own allocation reaches the
+baseline the gifts raised. A process that receives a large gift, drops it and
+then goes quiet holds that memory; shrinking an idle heap is a separate policy,
+for which the census would have to show a need.</p>
 
-<p>To-space holds at least every byte a pass can copy: the tip's fill plus
-every parked block's fill. The capacity that holds those bytes is the floor,
-and three bands choose between the floor and a larger capacity. An object
-larger than the table's last entry is part of those bytes, so to-space grows
-past the table to hold it.</p>
+<h3>To-space is a chain</h3>
 
-<ul>
-  <li><strong>Grow:</strong> the bytes in use fill 75% or more of the tip.
-  To-space holds twice the bytes in use, and is at least one capacity step up.</li>
-  <li><strong>Shrink:</strong> the last GC's survivors fill 25% or less of the
-  tip. To-space is <code>last_gc_live_bytes × 2</code> (the bytes in use on
-  the first GC), raised to the floor.</li>
-  <li><strong>Keep:</strong> otherwise the current size, raised to the floor.</li>
-</ul>
+<p>A copy is placed by the same bump path as an allocation. The collector
+installs a fresh tip and every copied object goes through
+<code>Heap::bump</code>: when the tip is full it is parked on <code>blocks</code>
+and a tip one capacity step up is installed, and an object larger than that step
+is parked alone in a block of its own with the tip untouched. The scan pops a
+worklist of copied objects rather than walking an address, so to-space needs no
+contiguity: it is the new tip plus the parked blocks.</p>
 
-<p>A gift is one parked block like any other, so its fill is part of the
-bytes in use whatever raised <code>should_gc</code>. After the pass the
-parked blocks go back to the pool with the rest of from-space.</p>
+<p>The tip's capacity has one job, how far the bump pointer runs before a block
+is parked, and one rule, climb the table on overflow. The fresh tip's capacity
+is only a starting point: <code>pick_block_capacity(live_baseline)</code>, the
+last survivors plus any grafted gifts (the smallest tip when the baseline is
+empty). A heap whose live set is steady collects into one block; a guess that
+is too small costs the extra blocks the copy parks, and the next collection's
+guess is the bytes this one copied. A gift is one parked block like any other,
+so its fill is part of the bytes in use. After the pass the old tip and every
+parked block go back to the pool, or to the system allocator when exact, with
+the rest of from-space.</p>
 
-<p>After the BFS scan: <code>last_gc_live_bytes = free - to_start</code>.
-That feeds the next GC, and is the <code>live_bytes</code> of the pass's
-<code>GcStats</code>.</p>
+<p>After the BFS scan, <code>live_baseline</code> is the sum of the sizes of the
+objects copied. That feeds the next GC's trigger and tip guess, and is the
+<code>live_bytes</code> of the pass's <code>GcStats</code>.</p>
 
 <p>Each copied from-space object gets an in-band forwarding marker written into
-its first word: <code>(to_space_address &amp; ~0xF) | TAG_FWD</code>. Any other
+its marker word: <code>to_space_address | 1</code>. Any other
 pointer to the same object reads that marker, strips the low nibble, and is
-rewritten to the same-kind tagged to-space pointer. This is how shared
+rewritten to the same-kind to-space pointer. This is how shared
 structure stays shared after collection without side tables.</p>
 
 <!-- ─────────────────────────────── 5. MID-FLIGHT GC ─────────────────────────────── -->
@@ -612,54 +652,73 @@ a gift points into its own segment. <code>Process::collect</code> holds the
 delivery lock for the whole pass, so a sender cannot probe the park record
 while it moves.</p>
 
-<p>The interpreter keeps its resume arguments and parked receives in its own
-structures and does not collect.</p>
+<p>The interpreter keeps a parked receive's environment and continuations in its
+own structures. It passes their heap refs to <code>Process::collect</code> as
+transient roots and writes the forwarded refs back.</p>
 
 <h3>MSO sweep — keeping shared-zone refcounts honest</h3>
 
 <p>After Cheney's BFS scan completes and before from-space is freed, the GC
 walks the heap's MSO chain once. Each entry is a ProcBin or Resource stub that
-<em>was</em> in from-space. The forwarding marker Cheney writes into the first
-word of every copied object is the entire liveness signal — no separate
-bookkeeping:</p>
+<em>was</em> in from-space. The forwarding marker Cheney writes into word 0 of
+every copied stub is the entire liveness signal — no separate
+bookkeeping. One function, <code>procbin::mso_sweep</code>, decides every stub,
+after a collection and when a process exits (an exit is not collected; it is
+the same walk with nothing live and no to-space):</p>
 
 <pre>
   cur = heap.mso_head
   new_head = null
   while cur != null:
-      tag = low4(cur)                 <span class="note">// ProcBin or Resource from the pointer bits</span>
-      marker = read u64 at strip_low4(cur)+0
-      if low4(marker) == TAG_FWD:
-          next = read_mso_next(tag, cur)        <span class="note">// from-space link survives</span>
+      kind = kind_of(cur)             <span class="note">// ProcBin or Resource from the link's high bits</span>
+      marker = read u64 at addr_of(cur)+0
+      if low4(marker) != 0:
+          next = read_mso_next(kind, cur)       <span class="note">// from-space link survives</span>
           new_addr = strip_low4(marker)         <span class="note">// to-space copy</span>
-          link (new_addr | tag) into new_head   <span class="note">// survived; rejoin the chain</span>
+          link (new_addr, kind) into new_head   <span class="note">// survived; rejoin the chain</span>
       else:
-          next = read_mso_next(tag, cur)
-          release_payload(tag, cur)             <span class="note">// dead MSO stub; drop its ref</span>
+          next = read_mso_next(kind, cur)
+          release_payload(kind, cur)             <span class="note">// dead MSO stub; drop its ref;</span>
+                                                <span class="note">// a Resource's last ref queues (closure, payload)</span>
       cur = next
   heap.mso_head = new_head
 </pre>
 
 <p>The sweep is O(number of MSO stubs on this heap), not O(heap size). This
-pass runs in every collection. When a heap itself is dropped
-(process exited), <code>Heap::drop</code> releases every ProcBin and Resource
-stub still on the chain.</p>
+pass runs in every collection.</p>
+
+<p>A dead Resource's destructor is fz code, so it never runs inside the sweep.
+Its closure lives in the from-space that is about to be released, so before the
+sweep the collector forwards the closure of every unreached, unclaimed Resource
+stub, along with whatever the closure captures. The sweep then queues
+<code>(closure, payload)</code> on <code>heap.pending_dtors</code> for the
+resource whose last reference it dropped. A stub that a forwarded closure
+captures is reached by that, so it survives until a later collection. A process
+that halts takes the same sweep without a collection:
+<code>Heap::release_resources_at_exit</code> decides every stub on the chain
+with nothing live and copies nothing. <code>Heap::drop</code> releases
+only what a process still holds when the program tears it down without having
+exited, such as one parked on a receive; no destructor closure runs for those.</p>
 
 <!-- ─────────────────────────────── 7. SCHEDULER ─────────────────────────────── -->
 <h2 id="scheduler">7. Scheduler dispatch</h2>
 
-<h3>run_quantum dispatch order</h3>
+<h3>Dispatch order</h3>
 
 <pre>
   1. resume the runnable closure
-  2. process.boundary_maintenance():
-       if heap.should_gc:
-         process.collect()
+  2. sched_core::end_quantum(scheduler, process):
+       disposition = requeue (runnable), parked (blocked on a receive) or exited
+       if heap.should_gc and the process did not exit:
+         process.collect()          (the JIT emits fz.runtime.gc)
        clear yield reasons
-  3. runnable: re-enqueue.  blocked on a receive: wait for a send or the timer.
+       exit: mark Exited; release the MSO chain with nothing live
+       run each queued resource destructor as fz code, oldest first
+  3. Requeue: re-enqueue.  Parked: wait for a send or the timer.  Exited: done.
 
-  (The JIT and AOT schedulers both run step 2; the JIT after every quantum, AOT
-  when the process is runnable or parked.)
+  (The JIT, AOT and interpreter schedulers all run step 2 after every quantum,
+  in every state. The interpreter never yields, so it reaches it at a park or
+  an exit.)
 </pre>
 
 <!-- ─────────────────────────────── 8. MESSAGES ─────────────────────────────── -->
@@ -757,11 +816,11 @@ destructor runs and the memory goes back to the system allocator.</p>
 <p>The struct is <strong>16-byte aligned</strong>, the same as everything on
 the process heap, and that is load-bearing rather than cosmetic. A ProcBin keeps
 this address in its first word, and the first word is also where the collector
-writes a forwarding marker — a pointer carrying the tag <code>0x8</code> in its
-low four bits. At 8-byte alignment about half of all SharedBin addresses end in
-8, so a perfectly live ProcBin would read as <em>already forwarded</em>: the
-sweep would take the SharedBin itself for a relocated stub and write into it.
-Aligning to 16 means no real address can ever be mistaken for a tag.</p>
+writes a forwarding marker — a pointer with a set low nibble. At 8-byte
+alignment about half of all SharedBin addresses have a set low nibble, so a
+perfectly live ProcBin would read as <em>already forwarded</em>: the sweep
+would take the SharedBin itself for a relocated stub and write into it.
+Aligning to 16 means no real address can ever be mistaken for a marker.</p>
 
 <p>The bytes live in a separate <code>Box&lt;[u8]&gt;</code> rather than
 inline, so the destructor can free the bytes and the SharedBin struct
@@ -782,12 +841,12 @@ wouldn't know what to do with it. Instead, each reference goes through a
 small heap object:</p>
 
 <pre>
-  ProcBin (16 bytes, lives on the process heap):
+  ProcBin (32 bytes, lives on the process heap):
 
-  ┌───────────────────┬───────────────────┐
-  │  shared_ptr (8)   │  mso_next (8)     │
-  │  → SharedBin      │  → next ProcBin   │
-  └───────────────────┴───────────────────┘
+  ┌───────────────────┬───────────────────┬───────────────────┬─────────┐
+  │  shared_ptr (8)   │  mso_next (8)     │  byte_offset (8)  │ pad (8) │
+  │  → SharedBin      │  → next MSO stub  │  suffix start     │         │
+  └───────────────────┴───────────────────┴───────────────────┴─────────┘
 </pre>
 
 <p>ProcBin refs use the heap-object <code>TAG_PROCBIN</code> kind. The
@@ -795,8 +854,8 @@ small heap object:</p>
 treats the ProcBin as a raw payload object with no fz value children.</p>
 
 <p>The <code>mso_next</code> link at +8 makes ProcBins their own intrusive
-linked list. When a ProcBin survives, Cheney writes only a low-4-bit
-<code>TAG_FWD</code> forwarding marker at +0; +8 is left intact so the MSO
+linked list. When a ProcBin survives, Cheney writes only a forwarding marker
+(to-space address with a set low nibble) at +0; +8 is left intact so the MSO
 sweep can continue through the from-space chain. The surviving
 <code>shared_ptr</code> is read from the to-space copy, while a dead ProcBin's
 <code>shared_ptr</code> is still read from +0 in from-space.</p>
@@ -817,7 +876,7 @@ the storage based on size:</p>
 <p>Render, bit-matching, and equality all go through small dispatch helpers
 (<code>bitstring_bit_len</code>, <code>bitstring_byte_ptr</code>,
 <code>is_bitstring_like</code>) that read from the right place based on the
-pointer's low 4-bit kind tag. Callers don't know or care which storage they're
+ref's high-bit kind tag. Callers don't know or care which storage they're
 looking at — the behaviour is identical.</p>
 
 <h3>Matching a tail copies nothing</h3>
@@ -889,9 +948,9 @@ is no central registry to contend on.
 <p>Because binaries above 64 bytes go off-heap, the process heap deals only
 with small inline objects, cons cells, tuples, maps, closures, resources, and
 ProcBin stubs — in practice well under the table's last entry (~7 MiB).
-The grow logic in <code>Heap::alloc()</code> picks the smallest capacity that
-fits any individual object; an object larger than the whole table gets a block
-of exactly its size.</p>
+When an allocation no longer fits, the heap installs a tip one table step up;
+an object larger than that step gets a parked block of its own, exact when it
+is larger than the whole table (see <a href="#pressure">§3</a>).</p>
 
 <!-- ─────────────────────────────── 10. RETURN DEMAND ─────────────────────────────── -->
 <h2 id="return-demand">10. Return-demand destination planning</h2>
@@ -947,8 +1006,10 @@ observer may still hold.</p>
 
 <p>Each process heap records allocation requests by kind. The counters are
 runtime process facts, separate from compiler2 telemetry, which reports
-compiler decisions. They are reset after process setup, so static
-closure singletons and bootstrap wiring do not pollute fixture baselines.</p>
+compiler decisions. They are reset after process setup, so bootstrap wiring
+does not pollute fixture baselines. Static closures and halt continuations
+are read-only data in the compiled program, not heap allocations, so they never
+appear in the counters.</p>
 
 <p><code>Process.heap_alloc_stats()</code> exposes the current process snapshot
 as a map. The runtime reads the counters first and then allocates the map, so
@@ -1003,13 +1064,14 @@ never modified. Old objects can never gain new-object references after
 promotion. <strong>No write barriers needed.</strong>
 </div>
 
-<p>The watermark already exists. After any GC, objects below the watermark
-are "old"; objects above are "new." A minor-collection pass would:</p>
+<p>The heap has no generation boundary; a minor collection would add
+one. After a collection, everything the pass copied would be "old" and objects
+allocated since would be "new". A minor-collection pass would:</p>
 <ul>
   <li>Trace from <code>runnable_closure</code> and <code>mailbox</code> as roots.</li>
-  <li>Copy only objects above the watermark (young generation).</li>
-  <li>Leave objects below the watermark untouched.</li>
-  <li>Reset the watermark to <code>bump_top</code> after collection.</li>
+  <li>Copy only objects allocated since the last collection (young generation).</li>
+  <li>Leave older objects untouched.</li>
+  <li>Mark every survivor old after collection.</li>
 </ul>
 
 <p>The MSO sweep changes in form but not in kind: minor collections release

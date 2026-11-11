@@ -1,0 +1,29 @@
+#---
+# purpose: "one hundred senders deliver to a receiver parked on a guarded receive: the messages the guard rejects are gifted whole and wait in the mailbox, the first one it accepts wakes the receiver, and every message after that finds the receive already decided"
+#---
+#
+# The parent parks on a receive whose guard accepts only job numbers above 50.
+# The one hundred children run in spawn order, each sending
+# `{:job, i, [i, i + 1]}`. Jobs 1 through 50 fail the guard and are gifted
+# whole. Job 51 passes: the matcher binds the number and the payload, and the
+# child gifts just those. The receive is then decided, so jobs 52 through 100
+# are gifted whole as well. The parent takes the late jobs first, then the
+# early ones, so ninety-nine messages are scanned out of its mailbox.
+def main() do
+  parent = self()
+  Enum.each(1..100, fn i ->
+    spawn(fn () -> send(parent, {:job, i, [i, i + 1]}) end)
+  end)
+  late = Enum.reduce(1..50, 0, fn _, total ->
+    receive do
+      {:job, i, payload} when i > 50 -> total + i + Enum.sum(payload)
+    end
+  end)
+  dbg(late)
+  early = Enum.reduce(1..50, 0, fn _, total ->
+    receive do
+      {:job, i, payload} when i <= 50 -> total + i + Enum.sum(payload)
+    end
+  end)
+  dbg(early)
+end

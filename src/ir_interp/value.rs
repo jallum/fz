@@ -3,8 +3,8 @@ use crate::fz_ir::{FnId, Module};
 use crate::runtime_type_predicate::RuntimeTypePredicate;
 use fz_runtime::any_value::debug::render_value;
 use fz_runtime::any_value::{
-    AnyValue as RuntimeAnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_BITSTRING, TAG_MASK, TAG_PROCBIN,
-    TRUE_ATOM_ID, ValueKind, closure_addr_from_tagged,
+    AnyValue as RuntimeAnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
+    closure_addr_from_tagged,
 };
 use fz_runtime::heap::Schema;
 use fz_runtime::ir_runtime::{fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_struct_get_field_ref};
@@ -56,6 +56,10 @@ impl HeapRef {
     pub(crate) fn raw(self) -> AnyValueRef {
         self.0
     }
+
+    fn raw_mut(&mut self) -> &mut AnyValueRef {
+        &mut self.0
+    }
 }
 
 impl AnyValue {
@@ -70,6 +74,15 @@ impl AnyValue {
         let p = closure_addr_from_tagged(bits).expect("new fn ref closure ptr");
         unsafe { std::ptr::write(p.add(8) as *mut u64, fn_id.0 as u64) };
         Ok(RuntimeAnyValue::heap_ptr(p, ValueKind::CLOSURE))
+    }
+
+    /// The heap ref this value holds, if it holds one. A collection forwards
+    /// it in place.
+    pub(super) fn heap_ref_mut(&mut self) -> Option<&mut AnyValueRef> {
+        match self {
+            AnyValue::Ref(value) => Some(value.raw_mut()),
+            _ => None,
+        }
     }
 
     pub(super) fn value(self, proc: *mut Process) -> Result<RuntimeAnyValue, String> {
@@ -182,14 +195,6 @@ impl AnyValue {
                 RuntimeAnyValue::from_ref(value.raw()).unwrap_or(RuntimeAnyValue::null()),
             ),
         }
-    }
-}
-
-pub(super) fn bitstring_like_ptr(bits: u64) -> Option<*mut u8> {
-    if matches!(bits & TAG_MASK, TAG_BITSTRING | TAG_PROCBIN) {
-        Some(bits as *mut u8)
-    } else {
-        None
     }
 }
 

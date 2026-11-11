@@ -26,21 +26,29 @@ and every loop still crosses a tail call.
 
 - **`Process`** (`runtime/src/process.rs`) owns the budget cell, cumulative
   reduction counters, and transient per-quantum yield reason bits. Its budget
-  accounting methods are `reset_reduction_budget`, `finish_yield_report`, and
-  `boundary_maintenance`. `Process::collect` is the one place a process's roots
-  are assembled (see "Accounting at the boundary").
+  accounting methods are `reset_reduction_budget` and `finish_yield_report`.
+  `Process::collect` is the one place a process's roots are assembled (see
+  "Accounting at the boundary").
 - **`Heap`** (`runtime/src/heap`) owns allocation, block growth, and
-  `should_gc`, a pure function of the heap's state: the tip's fill plus the fill
-  of every parked block (`bytes_used`) against half the
-  tip's capacity. Exhausting the current block allocates a larger block and
-  parks the old block in `blocks` for the next Cheney pass. Blocks grafted from
+  `should_gc`, a pure function of the heap's state: the bytes allocated since
+  the heap was last all live (`bytes_used - live_baseline`) against the larger
+  of `live_baseline` and half the smallest tip. A collection sets
+  `live_baseline` to its survivors and `graft` raises it by the gift's fill;
+  allocation leaves it alone. Exhausting the current block parks it in `blocks` for the next
+  Cheney pass and installs a tip one capacity step up; an object larger than
+  that step is parked in a block of its own and the tip is left as it was. Blocks grafted from
   another heap's gift segment (`Heap::graft`) join `blocks`, are from-space for
   the next pass, and count by fill like any other parked block.
 - **The schedulers** (JIT `src/exec/runtime.rs` with `CompiledModule::run_quantum`
   in `src/ir_codegen/compiled.rs`, AOT `runtime/src/aot_shim.rs`, interpreter
-  `src/ir_interp`) own dispatch and the boundary decision: install a fresh
-  budget, run the process, then call `Process::boundary_maintenance`, which
-  collects if `Heap::should_gc` holds. The interpreter does not collect.
+  `src/ir_interp`) own dispatch: install a fresh budget and run the process.
+  The scheduling core (`runtime/src/sched_core.rs`) owns the boundary decision:
+  the JIT, AOT and interpreter schedulers call `end_quantum` after every
+  quantum, which collects a yielding or parked process if `Heap::should_gc`
+  holds (a halting process is not collected), runs the destructors of the
+  resources that collection or the exit sweep freed, and returns the process's
+  `Disposition`. A process a caller lends the interpreter, whose heap the caller
+  holds refs into, is not collected.
 
 ## Process budget state
 
@@ -81,7 +89,7 @@ allocation        bump_top += size
                     allocate a larger block
                     move old current block to blocks
 
-boundary          if heap.should_gc():   (bytes_used >= block_size / 2)
+boundary          if heap.should_gc():   (bytes_used - live_baseline >= max(live_baseline, SIZE_TABLE[0] / 2))
                     Process::collect
                   clear yield_reasons
 ```
@@ -96,17 +104,23 @@ interpreter runs synchronously: it forwards the next iteration's `resume_fn` and
 ## Allocation and block growth
 
 Allocation is pure bump on the fast path. When the current block cannot fit an
-object, `Heap::alloc_kind` allocates a fresh block one capacity step up, or
-exactly large enough for the object when that is more, records the old block in
-`blocks`, and continues. This is why allocation does not need to force a
+object, `Heap::alloc_kind` takes one of two paths. An object no larger than
+`next_block_capacity(block_size)` parks the tip in `blocks` and installs a fresh
+tip one capacity step up. A larger (huge) object is placed at the start of a
+block of `pick_block_capacity(size)` that is parked in `blocks` at once, with its
+fill ending at the object; the tip, its bump pointer and its capacity do not
+move, so the next small allocation lands in the tip it was already filling. This is why allocation does not need to force a
 scheduler yield to remain total.
 
 `SIZE_TABLE` lists the capacities the block pool recycles, from 1 KiB to about
-7 MiB (32 entries). A block above the table is allocated at the object's size rounded up to
-16 bytes and is returned to the system allocator, not the pool, when it is
-released; `pool_outstanding_blocks` counts pooled blocks only. Such an object is
-part of `bytes_used` and is copied by Cheney like any other, so to-space
-grows past the table to hold it.
+7 MiB (32 entries). A tip starts at the first entry and climbs the table. A
+block outside the table's range is exact: `pick_block_capacity` returns the
+request rounded up to 16 bytes, whether the request is below the first entry
+or above the last. An exact block is allocated at that size and is returned to
+the system allocator, not the pool, when it is released;
+`pool_outstanding_blocks` counts pooled blocks only. An object above the table
+is parked in an exact block, is part of `bytes_used` and is copied by Cheney like any other, into an
+exact block of its own.
 
 ## The gift window
 
@@ -115,8 +129,9 @@ copy will allocate: it walks the same kinds under the same ownership test and
 the same sharing as `deep_copy_any_value_ref`, so an object reached twice is
 counted once, and each object is the size `strict_object_size` states for its
 source. `Heap::begin_gift(measured_bytes)` sets the current tip aside and
-installs one fresh block of `pick_block_capacity(measured_bytes)`: a table
-entry, or an exact block above the table. The copy allocates through
+installs one fresh block of `pick_block_capacity(measured_bytes)`: an exact
+block of the measured bytes below the table, a table entry within it, and an
+exact block above it. The copy allocates through
 `alloc_kind` into that block and cannot overflow it. `Heap::end_gift` asserts
 the block's fill is exactly the measured bytes, turns the block and the MSO
 stubs produced since the window opened
@@ -129,12 +144,15 @@ message, or a match's bound values, and copies it inside one, and the segment tr
 receiver on its `in_queue` (see [scheduler](scheduler-zero-arg-closures.md)).
 
 Grafted blocks are parked blocks like any other, so a gift's fill is part of
-`bytes_used`. A collection sizes to-space from `bytes_used` first: the
-capacity holding every byte in use is the floor, and the grow, keep and
-shrink bands choose between that floor and a larger capacity. Grow applies when
-`bytes_used` fills 75% or more of the tip; shrink when the last survivors
-fill 25% or less of it; keep otherwise. To-space capacity is therefore at
-least the bytes a pass can copy, whatever raised `should_gc`.
+`bytes_used`; it is also part of `live_baseline`, because a gift arrives packed
+and fully live, the state of a heap after a collection. A gift therefore never
+makes a collection due: only the receiver's own allocation does, once it
+reaches the baseline. A collection installs a fresh tip whose capacity is a guess, the live
+baseline (the smallest tip when the baseline is empty), and copies through the
+ordinary bump path: a copy that fills the tip parks it and the next capacity up
+is installed, and an object above the next step parks alone. A wrong guess
+costs a block. The heap after a collection is the new tip plus the parked
+to-space blocks, and the live baseline is the bytes copied.
 
 Compiled yield telemetry still samples the slow path that materializes a
 continuation closure:
@@ -161,11 +179,17 @@ boundaries, never per back edge. Gifts waiting in the delivery in-queue are not
 roots: their blocks join the heap only when grafted, and every reference in a
 gift points into its own segment.
 
-`Process::boundary_maintenance` packages this decision (collect if needed,
-then clear the reason bits). The JIT calls it after every quantum, whatever
-state the process is in. The AOT shim calls it after a quantum that leaves the
-process runnable or parked on a receive. The interpreter keeps its resume args
-and parked receives in its own structures and never collects.
+`sched_core::end_quantum` packages this decision (collect if needed, clear the
+reason bits, run the queued destructors) and returns the `Disposition` (`Requeue`, `Parked` or `Exited`); it reports the
+`Collection` it performed through `Scheduler::observe` (see
+[runtime telemetry](runtime-telemetry.md)). The JIT, the AOT shim and the
+interpreter call it after every quantum, whatever state the process is in. A
+halted process whose heap is not due is not collected; its resource stubs are
+swept without a to-space. The interpreter keeps a parked receive's environment
+and continuations in its own structures; its `Scheduler::collect_heap` passes
+their heap refs to `Process::collect` as transient roots and writes the
+forwarded refs back. It never yields, so no resume entry of a process outlives
+its quantum.
 
 ## A tiny walkthrough
 
@@ -192,10 +216,11 @@ reduction budget. The next yield still happens when reductions run out.
 ## Parity
 
 The budget model is identical in the interpreter, JIT, and AOT: the same
-`Process` budget fields and the same `Heap::should_gc`. The compiled paths (JIT
-and AOT) share the boundary collection through `Process::boundary_maintenance`.
-The resume carrier differs — a zero-arg continuation closure in compiled code,
-forwarded `resume_fn` + `resume_args` in the interpreter, which does not collect.
+`Process` budget fields and the same `Heap::should_gc`. All three paths
+share the boundary collection through `sched_core::end_quantum`. The resume
+carrier differs — a zero-arg continuation closure in compiled code,
+forwarded `resume_fn` + `resume_args` in the interpreter, which charges no
+reductions and so collects only at a park, never at an exit.
 Pure fz code yields automatically by reduction budget. Tests pin both sides:
 allocation-light loops assert `reduction_yields > 0`, and allocation-heavy loops
 with spare budget assert a due collection does not produce a yield before

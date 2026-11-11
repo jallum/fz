@@ -4,19 +4,20 @@
 //! Containers may store payload words plus object-local kind bytes, but this
 //! module does not expose a reusable `{value, kind}` carrier.
 
-use std::alloc::{Layout, alloc};
 use std::mem;
 use std::ptr;
 
+/// Width of a kind field: the high bits of a ref word, a list link, and each
+/// half of a map entry's kind byte.
 pub const TAG_BITS: u64 = 4;
-pub const TAG_MASK: u64 = 0b1111;
+const KIND_FIELD_MASK: u64 = (1 << TAG_BITS) - 1;
 /// Zero-init memory and typed-List end-of-list sentinel.
 pub const TAG_NULL: u64 = 0x0;
-/// Heap cons cell; side-band list layout is pinned in vrx.0.2.
+/// Heap cons cell.
 pub const TAG_LIST: u64 = 0x1;
-/// Heap flat map; one tag byte per key/value entry, pinned in vrx.0.2.
+/// Heap flat map; one tag byte per key/value entry.
 pub const TAG_MAP: u64 = 0x2;
-/// Heap tuple/struct; schema-driven typed fields, pinned in vrx.0.2.
+/// Heap tuple/struct; schema-driven typed fields.
 pub const TAG_STRUCT: u64 = 0x3;
 /// Heap closure; denotation header and self-describing typed capture slots.
 pub const TAG_CLOSURE: u64 = 0x4;
@@ -26,21 +27,22 @@ pub const TAG_BITSTRING: u64 = 0x5;
 pub const TAG_PROCBIN: u64 = 0x6;
 /// Heap resource stub; resource pointer plus MSO next link.
 pub const TAG_RESOURCE: u64 = 0x7;
-/// Cheney forwarding marker stored in the first word of a copied from-space object.
-pub const TAG_FWD: u64 = 0x8;
+/// Ref-word tag of a stack-resident lazy continuation. It is a code in the
+/// ref word's tag field only; no heap object and no `ValueKind` carries it.
+pub const TAG_LAZY_CONT: u64 = 0x8;
 /// Side-band immediate tag for raw i64 slots.
 pub const TAG_KIND_INT: u64 = 0xD;
 /// Side-band immediate tag for raw f64::to_bits slots.
 pub const TAG_KIND_FLOAT: u64 = 0xE;
 /// Side-band immediate tag for raw atom-id slots.
 pub const TAG_KIND_ATOM: u64 = 0xF;
-// fz-yan.1 — TAG_SPECIAL (0b011) is not a user value. The former occupants
-// (nil/true/false) are now regular atoms with reserved compile-time IDs; see
+// TAG_SPECIAL (0b011) is not a user value. nil/true/false are regular atoms
+// with reserved compile-time IDs; see
 // NIL_ATOM_ID etc. below. Matchers use one reserved bit pattern internally as
 // a non-value sentinel.
 pub const MATCHER_MAP_MISS_BITS: u64 = 0b011;
 
-/// fz-yan.1 — reserved atom IDs. `AtomTable::new()` pre-interns
+/// Reserved atom IDs. `AtomTable::new()` pre-interns
 /// "nil"/"true"/"false" in this order at module construction time,
 /// so every module has these well-known IDs available. The `*_BITS`
 /// constants below are raw atom payloads; side-band `ValueKind::ATOM`
@@ -54,7 +56,7 @@ pub const NIL_BITS: u64 = NIL_ATOM_ID as u64;
 pub const TRUE_BITS: u64 = TRUE_ATOM_ID as u64;
 pub const FALSE_BITS: u64 = FALSE_ATOM_ID as u64;
 
-/// fz-s9y.2 — object-storage empty-list sentinel. This is not the public
+/// Object-storage empty-list sentinel. This is not the public
 /// `AnyValueRef` representation of `[]`; public refs use a null-address
 /// List tag. Address 0x8 sits inside page 0, which the OS reserves as
 /// unmapped, so the sentinel can't collide with a real heap pointer.
@@ -103,20 +105,11 @@ impl ValueKind {
     /// two representations -- inline below `SHARED_BIN_THRESHOLD_BYTES`,
     /// a shared-buffer view above it -- and every question of the form
     /// "is this a binary" is a question about both. Asking about
-    /// `BITSTRING` alone made every binary over 64 bytes answer NO
-    /// (fz-5xp.57).
+    /// `BITSTRING` alone made every binary over 64 bytes answer NO.
     pub const BINARY_REPRS: [Self; 2] = [Self::BITSTRING, Self::PROCBIN];
 
     pub const fn is_binary_repr(self) -> bool {
         matches!(self, Self::BITSTRING | Self::PROCBIN)
-    }
-
-    pub const fn from_heap_tag(tag: u64) -> Option<Self> {
-        if tag >= TAG_LIST && tag <= TAG_RESOURCE {
-            Some(Self(tag as u8))
-        } else {
-            None
-        }
     }
 }
 
@@ -148,6 +141,18 @@ impl TaggedRefArch {
     }
 }
 
+/// A ref word is `address | kind << tag_shift | literal bit`. The kind field is
+/// `TAG_BITS` wide; the literal bit sits `LITERAL_BIT_OFFSET` above its base,
+/// clear of the list link's alias bit one position below it.
+///
+/// The literal bit lives in the ADDRESS: a payload word that stores an object's
+/// address (a struct field, closure capture, map key or value, list head) has
+/// the same bit at the same position, so moving an address between a ref word
+/// and a payload keeps it. An object a program ships as read-only data (a
+/// static struct, a static closure, a halt continuation, the nil slot) is
+/// referenced only through addresses that carry the bit; nothing else sets it.
+const LITERAL_BIT_OFFSET: u8 = TAG_BITS as u8 + 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnyValueRefPacking {
     tag_shift: u8,
@@ -177,23 +182,45 @@ impl AnyValueRefPacking {
         self.tag_shift
     }
 
+    /// The bits that name an object: its raw address only.
     pub const fn address_mask(self) -> u64 {
         self.address_mask
     }
 
+    /// The one bit that says the address names read-only program data.
+    pub const fn literal_bit(self) -> u64 {
+        1 << (self.tag_shift + LITERAL_BIT_OFFSET)
+    }
+
+    /// The bits an address word keeps: the raw address and the literal bit.
+    pub const fn payload_mask(self) -> u64 {
+        self.address_mask | self.literal_bit()
+    }
+
+    /// `word` as the raw address it names, with the literal bit and kind dropped.
+    /// Dereferencing, identity comparison and forwarding-map keys use this.
+    pub const fn raw_address(self, word: u64) -> usize {
+        (word & self.address_mask) as usize
+    }
+
+    /// Whether `word` names read-only program data.
+    pub const fn is_literal(self, word: u64) -> bool {
+        word & self.literal_bit() != 0
+    }
+
     fn pack(self, tag: ValueKind, address: usize) -> AnyValueRef {
         AnyValueRef {
-            word: ((tag.tag() as u64) << self.tag_shift) | ((address as u64) & self.address_mask),
+            word: ((tag.tag() as u64) << self.tag_shift) | ((address as u64) & self.payload_mask()),
         }
     }
 
     pub fn tag(self, value: AnyValueRef) -> Result<ValueKind, AnyValueRefError> {
-        let raw = (value.word >> self.tag_shift) as u8;
-        ValueKind::new(raw).ok_or(AnyValueRefError::UnknownTag(raw))
+        let field = ((value.word & !self.literal_bit()) >> self.tag_shift) as u8;
+        ValueKind::new(field).ok_or(AnyValueRefError::UnknownTag(field))
     }
 
     fn address(self, value: AnyValueRef) -> usize {
-        (value.word & self.address_mask) as usize
+        self.raw_address(value.word)
     }
 }
 
@@ -252,6 +279,19 @@ impl AnyValueRef {
         AnyValueRefPacking::current().address(self) as *mut u8
     }
 
+    /// Whether this ref names read-only program data. A literal is never
+    /// copied by the collector or deep copy.
+    pub fn is_literal(self) -> bool {
+        AnyValueRefPacking::current().is_literal(self.word)
+    }
+
+    /// This ref, marked as naming read-only program data.
+    pub fn literal(self) -> Self {
+        Self {
+            word: self.word | AnyValueRefPacking::current().literal_bit(),
+        }
+    }
+
     pub fn storage_addr(self) -> *mut u8 {
         self.cleared_addr()
     }
@@ -265,7 +305,7 @@ impl AnyValueRef {
             ValueKind::INT => self.load_int()? as u64,
             ValueKind::FLOAT => self.load_float()?.to_bits(),
             ValueKind::ATOM => self.load_atom()?,
-            tag if tag.is_heap() => self.cleared_addr() as u64,
+            tag if tag.is_heap() => self.word & AnyValueRefPacking::current().payload_mask(),
             _ => unreachable!("AnyValueRef tag set is exhaustive"),
         })
     }
@@ -275,7 +315,7 @@ impl AnyValueRef {
         if !tag.is_heap() {
             return Err(AnyValueRefError::ExpectedHeapObjectTag(tag));
         }
-        Ok(heap_object_word(self.cleared_addr(), tag))
+        Ok(self.word)
     }
 
     pub fn is_heap_root(self) -> bool {
@@ -413,7 +453,7 @@ impl AnyValue {
     }
 
     pub fn decode_parts(raw: u64, kind_tag: u8) -> Option<Self> {
-        let kind = ValueKind::new(kind_tag & TAG_MASK as u8)?;
+        let kind = ValueKind::new(kind_tag)?;
         Some(match kind {
             ValueKind::NULL => Self::Null,
             ValueKind::INT => Self::Int(raw as i64),
@@ -427,12 +467,15 @@ impl AnyValue {
 
     pub fn decode_tagged_heap_bits(bits: u64) -> Option<Self> {
         let kind = heap_kind_from_tagged(bits)?;
-        if kind == ValueKind::LIST && (bits & !TAG_MASK) == 0 {
+        let addr = (bits & AnyValueRefPacking::current().payload_mask()) as *mut u8;
+        if kind == ValueKind::LIST && addr.is_null() {
             return Some(Self::EmptyList);
         }
-        Some(Self::heap_ptr((bits & !TAG_MASK) as *mut u8, kind))
+        Some(Self::heap_ptr(addr, kind))
     }
 
+    /// The payload word of a value: a scalar's bits, or a heap object's
+    /// address with its literal bit. Containers store this word.
     pub fn raw(self) -> u64 {
         match self {
             Self::Null | Self::EmptyList => 0,
@@ -456,15 +499,17 @@ impl AnyValue {
 
     pub fn heap_addr(self) -> Option<*mut u8> {
         match self {
-            Self::HeapRef(_) => Some(self.raw() as *mut u8),
+            Self::HeapRef(value) => Some(value.storage_addr()),
             _ => None,
         }
     }
 
     pub fn heap_object_word(self) -> Option<u64> {
-        self.kind()
-            .is_heap()
-            .then(|| heap_object_word(self.raw() as *const u8, self.kind()))
+        match self {
+            Self::EmptyList => Some(AnyValueRef::empty_list().raw_word()),
+            Self::HeapRef(value) => value.heap_object_word().ok(),
+            _ => None,
+        }
     }
 
     pub fn ref_word(self) -> AnyValueRef {
@@ -479,14 +524,13 @@ impl AnyValue {
     }
 }
 
-// Bitstring storage dispatchers moved to `crate::procbin` in fz-q8d.1.
+// Bitstring storage dispatchers live in `crate::procbin`.
 // `any_value.rs` does not own bitstring layout; render uses the procbin
 // helpers like every other read site.
 
-// fz-ul4.27.22.6 — closure `flags` packing. Low 14 bits hold captured_count;
-// high 2 bits hold halt_kind (0=ValueRef, 1=RawInt, 2=RawF64). The split keeps
-// the field in object-local metadata that forwarding does not clobber.
-// 14 bits = 16K captures, far above any realistic program.
+// Closure `flags` packing. Low 14 bits hold captured_count; high 2 bits hold
+// halt_kind (0=ValueRef, 1=RawInt, 2=RawF64). 14 bits = 16K captures, far
+// above any realistic program.
 pub const CLOSURE_FLAGS_CAPTURED_MASK: u16 = 0x3FFF;
 pub const CLOSURE_FLAGS_HALT_KIND_SHIFT: u16 = 14;
 
@@ -511,15 +555,38 @@ pub fn closure_flags_halt_kind(flags: u16) -> u16 {
     flags >> CLOSURE_FLAGS_HALT_KIND_SHIFT
 }
 
-/// fz-gk4 — the closure header's second word. Its low half is `flags`
-/// (captured_count + halt_kind: how the collector sizes and traces the
-/// environment); its high half is `arity`, the closure's user-visible
-/// parameter count. Arity is what `Inspect` reports for a fun and is fixed
-/// by the source, so it stays stable under every capture-elision and
-/// inlining decision the environment half records.
+/// Bit position of `flags` in the closure header's layout half.
+const CLOSURE_LAYOUT_FLAGS_SHIFT: u32 = 4;
+/// Bit position of `arity` in the closure header's layout half.
+const CLOSURE_LAYOUT_ARITY_SHIFT: u32 = 20;
+/// `arity` is the closure's user-visible parameter count.
+pub const CLOSURE_ARITY_LIMIT: u32 = 1 << 12;
+
+/// A closure's first word. The word's low 32 bits are the layout half: four
+/// clear bits, then `flags` (captured_count + halt_kind: how the collector
+/// sizes and traces the environment), then `arity`, the user-visible
+/// parameter count that `Inspect` reports for a fun. Arity is fixed by the
+/// source, so it stays stable under every capture-elision and inlining
+/// decision the environment half records. The high 32 bits are the source
+/// denotation. A live closure's low nibble is clear; only a forwarding
+/// marker sets it.
 #[inline]
-pub fn closure_header_word(captured_count: u16, halt_kind: u16, arity: u16) -> u32 {
-    closure_flags_pack(captured_count, halt_kind) as u32 | ((arity as u32) << 16)
+pub fn closure_header_word(denotation: ClosureDenotationId, captured_count: u16, halt_kind: u16, arity: u16) -> u64 {
+    assert!(
+        (arity as u32) < CLOSURE_ARITY_LIMIT,
+        "closure arity {arity} exceeds the {CLOSURE_ARITY_LIMIT} the header holds"
+    );
+    let layout = ((closure_flags_pack(captured_count, halt_kind) as u32) << CLOSURE_LAYOUT_FLAGS_SHIFT)
+        | ((arity as u32) << CLOSURE_LAYOUT_ARITY_SHIFT);
+    ((denotation.as_u32() as u64) << 32) | layout as u64
+}
+
+/// # Safety
+///
+/// `addr` must point to writable storage for a closure's first word.
+#[inline]
+pub unsafe fn closure_header_write(addr: *mut u8, header: u64) {
+    unsafe { ptr::write(addr as *mut u64, header) };
 }
 
 #[inline]
@@ -531,11 +598,7 @@ pub fn closure_size_for_count(captured_count: usize) -> usize {
 
 #[inline]
 pub fn closure_addr_from_tagged(bits: u64) -> Option<*mut u8> {
-    if bits & TAG_MASK == TAG_CLOSURE {
-        Some((bits & !TAG_MASK) as *mut u8)
-    } else {
-        None
-    }
+    addr_of_kind(bits, ValueKind::CLOSURE)
 }
 
 /// # Safety
@@ -543,7 +606,7 @@ pub fn closure_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 /// `addr` must point to the start of an initialized strict Closure object.
 #[inline]
 pub unsafe fn closure_denotation(addr: *const u8) -> ClosureDenotationId {
-    ClosureDenotationId(unsafe { ptr::read(addr as *const u32) })
+    ClosureDenotationId(unsafe { ptr::read(addr.add(4) as *const u32) })
 }
 
 /// A World-global source function identity. The execution code word is independent.
@@ -578,7 +641,8 @@ impl ClosureDenotationId {
 /// `addr` must point to the start of an initialized strict Closure object.
 #[inline]
 pub unsafe fn closure_flags(addr: *const u8) -> u16 {
-    unsafe { ptr::read(addr.add(4) as *const u32) as u16 }
+    let layout = unsafe { ptr::read(addr as *const u32) };
+    (layout >> CLOSURE_LAYOUT_FLAGS_SHIFT) as u16
 }
 
 /// The closure's user-visible parameter count. See `closure_header_word`.
@@ -588,7 +652,8 @@ pub unsafe fn closure_flags(addr: *const u8) -> u16 {
 /// `addr` must point to the start of an initialized strict Closure object.
 #[inline]
 pub unsafe fn closure_arity(addr: *const u8) -> u16 {
-    (unsafe { ptr::read(addr.add(4) as *const u32) } >> 16) as u16
+    let layout = unsafe { ptr::read(addr as *const u32) };
+    (layout >> CLOSURE_LAYOUT_ARITY_SHIFT) as u16
 }
 
 /// # Safety
@@ -654,7 +719,6 @@ pub unsafe fn closure_capture_raw_kind(addr: *const u8, idx: usize) -> (u64, Val
 /// describe a published immutable finite acyclic term with no path to `addr`.
 #[inline]
 pub unsafe fn closure_capture_set_raw_kind(addr: *const u8, idx: usize, raw: u64, kind: ValueKind) {
-    let raw = if kind.is_heap() { raw & !TAG_MASK } else { raw };
     unsafe {
         ptr::write(closure_capture_raw_slot(addr, idx), raw);
         ptr::write(closure_capture_kind_slot(addr, idx), kind.tag());
@@ -733,64 +797,56 @@ pub unsafe fn closure_capture_copy(src_addr: *const u8, src_idx: usize, dst_addr
     }
 }
 
-#[inline]
-pub fn is_heap_kind(tag: u64) -> bool {
-    (TAG_LIST..=TAG_RESOURCE).contains(&tag)
-}
-
+/// The kind a heap object word carries, or `None` for any other word.
+///
+/// A heap object word is an `AnyValueRef` word: the kind rides in the tag
+/// field above the address, so every low bit of the address stays clear.
 #[inline]
 pub fn heap_kind_from_tagged(bits: u64) -> Option<ValueKind> {
-    ValueKind::from_heap_tag(bits & TAG_MASK)
+    let kind = AnyValueRefPacking::current().tag(AnyValueRef { word: bits }).ok()?;
+    kind.is_heap().then_some(kind)
+}
+
+/// The address a heap object word carries.
+#[inline]
+pub fn heap_word_addr(bits: u64) -> *mut u8 {
+    (bits & AnyValueRefPacking::current().address_mask()) as *mut u8
 }
 
 #[inline]
 pub fn heap_addr_from_tagged(bits: u64) -> Option<*mut u8> {
-    heap_kind_from_tagged(bits).map(|_| (bits & !TAG_MASK) as *mut u8)
+    heap_kind_from_tagged(bits).map(|_| heap_word_addr(bits))
 }
 
 #[inline]
 pub(crate) fn heap_object_word(addr: *const u8, kind: ValueKind) -> u64 {
     assert!(kind.is_heap(), "object-local heap words require a heap kind");
-    let raw = addr as u64;
-    debug_assert_eq!(raw & TAG_MASK, 0);
-    raw | kind.tag() as u64
+    debug_assert!((addr as usize).is_multiple_of(16), "heap objects are 16-byte aligned");
+    AnyValueRefPacking::current().pack(kind, addr as usize).raw_word()
 }
 
-/// Returns the to-space address encoded in a vrx forwarding marker.
-///
-/// `addr` must point at the first byte of a valid from-space object. The
-/// active Cheney collector writes a `TAG_FWD` marker into object-local
-/// metadata while moving reachable from-space objects.
 #[inline]
-pub fn is_forwarded(addr: *const u8) -> Option<*const u8> {
-    let marker = unsafe { ptr::read(addr as *const u64) };
-    if marker & TAG_MASK == TAG_FWD {
-        Some((marker & !TAG_MASK) as *const u8)
-    } else {
-        None
-    }
+fn addr_of_kind(bits: u64, kind: ValueKind) -> Option<*mut u8> {
+    (heap_kind_from_tagged(bits) == Some(kind)).then(|| heap_word_addr(bits))
 }
 
-pub fn object_size(ptr_with_tag: u64) -> usize {
-    object_size_with_struct_payload(ptr_with_tag, |_| {
-        panic!("Struct size requires the owning SchemaRegistry")
-    })
+pub fn object_size(heap_word: u64) -> usize {
+    object_size_with_struct_payload(heap_word, |_| panic!("Struct size requires the owning SchemaRegistry"))
 }
 
-pub fn object_size_with_struct_payload(ptr_with_tag: u64, mut struct_payload_size: impl FnMut(u32) -> usize) -> usize {
-    let kind = ptr_with_tag & TAG_MASK;
-    let addr = (ptr_with_tag & !TAG_MASK) as *const u8;
+pub fn object_size_with_struct_payload(heap_word: u64, mut struct_payload_size: impl FnMut(u32) -> usize) -> usize {
+    let kind = heap_kind_from_tagged(heap_word).expect("object_size requires a heap object word");
+    let addr = heap_word_addr(heap_word) as *const u8;
     unsafe {
         match kind {
-            TAG_LIST => size_of_list(addr),
-            TAG_MAP => size_of_map(addr),
-            TAG_STRUCT => size_of_struct(addr, &mut struct_payload_size),
-            TAG_CLOSURE => size_of_closure(addr),
-            TAG_BITSTRING => size_of_bitstring(addr),
-            TAG_PROCBIN => size_of_procbin(addr),
-            TAG_RESOURCE => size_of_resource(addr),
-            TAG_FWD => unreachable!("forwarded; caller must check first"),
-            _ => unreachable!("non-pointer tag passed to object_size"),
+            ValueKind::LIST => size_of_list(addr),
+            ValueKind::MAP => size_of_map(addr),
+            ValueKind::STRUCT => size_of_struct(addr, &mut struct_payload_size),
+            ValueKind::CLOSURE => size_of_closure(addr),
+            ValueKind::BITSTRING => size_of_bitstring(addr),
+            ValueKind::PROCBIN => size_of_procbin(addr),
+            ValueKind::RESOURCE => size_of_resource(addr),
+            _ => unreachable!("heap_kind_from_tagged yields heap kinds"),
         }
     }
 }
@@ -800,8 +856,7 @@ unsafe fn size_of_list(_addr: *const u8) -> usize {
 }
 
 unsafe fn size_of_map(addr: *const u8) -> usize {
-    let count = unsafe { ptr::read(addr as *const u64) as usize };
-    map_size_for_count(count)
+    map_size_for_count(unsafe { map_count(addr) })
 }
 
 unsafe fn size_of_struct(addr: *const u8, struct_payload_size: &mut impl FnMut(u32) -> usize) -> usize {
@@ -825,30 +880,7 @@ unsafe fn size_of_resource(_addr: *const u8) -> usize {
     crate::resource::RESOURCE_STUB_SIZE
 }
 
-/// Allocator stubs for v1. These leak — real GC-managed allocator lands in .11.2.
-///
-/// All allocations are 16-byte aligned so low-bit pointer tags are available.
-unsafe fn raw_alloc(total_size: usize) -> *mut u8 {
-    let layout = Layout::from_size_align(total_size, 16).expect("bad layout");
-    let p = unsafe { alloc(layout) };
-    assert!(!p.is_null(), "allocation failed");
-    p
-}
-
-pub fn alloc_struct(schema_id: u32, payload_size: u32) -> *mut u8 {
-    let total = struct_size_for_payload(payload_size as usize);
-    unsafe {
-        let p = raw_alloc(total);
-        ptr::write(p as *mut u32, schema_id);
-        ptr::write(p.add(4) as *mut u32, 0);
-        // Zero payload.
-        let payload = p.add(8);
-        ptr::write_bytes(payload, 0, total - 8);
-        p
-    }
-}
-
-/// vrx.A.1 — List cons cell: head (8) + link/head-kind (8) = 16 bytes.
+/// List cons cell: head (8) + link/head-kind (8) = 16 bytes.
 ///
 /// `head` is raw payload. `link` stores an architecture-local tail address plus
 /// a high metadata field: 4 bits of head kind followed by one alias flag bit.
@@ -868,9 +900,13 @@ const _: () = {
 
 const LIST_LINK_KIND_SHIFT: u8 = AnyValueRefPacking::current().tag_shift();
 const LIST_LINK_ALIAS_SHIFT: u8 = LIST_LINK_KIND_SHIFT + TAG_BITS as u8;
-const LIST_LINK_KIND_MASK: u64 = TAG_MASK << LIST_LINK_KIND_SHIFT;
+const LIST_LINK_KIND_MASK: u64 = KIND_FIELD_MASK << LIST_LINK_KIND_SHIFT;
 pub const LIST_LINK_ALIAS_MASK: u64 = 1u64 << LIST_LINK_ALIAS_SHIFT;
-const LIST_LINK_ADDR_MASK: u64 = AnyValueRefPacking::current().address_mask() & !TAG_MASK;
+const LIST_LINK_ADDR_MASK: u64 = AnyValueRefPacking::current().address_mask();
+const _: () = assert!(
+    AnyValueRefPacking::current().literal_bit() != LIST_LINK_ALIAS_MASK,
+    "the literal bit and the alias bit are distinct"
+);
 const LIST_LINK_METADATA_MASK: u64 = LIST_LINK_KIND_MASK | LIST_LINK_ALIAS_MASK;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -900,7 +936,11 @@ impl ListLink {
 
     pub fn tail_bits(self) -> u64 {
         let addr = self.tail_addr();
-        if addr == 0 { EMPTY_LIST } else { addr | TAG_LIST }
+        if addr == 0 {
+            EMPTY_LIST
+        } else {
+            heap_object_word(addr as *const u8, ValueKind::LIST)
+        }
     }
 
     pub fn aliased(self) -> bool {
@@ -1004,19 +1044,15 @@ impl ListCons {
 
 #[inline]
 pub fn list_addr_from_tagged(bits: u64) -> Option<*mut u8> {
-    if bits & TAG_MASK == TAG_LIST {
-        Some((bits & !TAG_MASK) as *mut u8)
-    } else {
-        None
-    }
+    addr_of_kind(bits, ValueKind::LIST)
 }
 
 #[inline]
 pub fn list_tail_addr_from_bits(bits: u64) -> u64 {
     if bits == EMPTY_LIST || bits == NIL_BITS || bits == 0 {
         0
-    } else if bits & TAG_MASK == TAG_LIST {
-        bits & !TAG_MASK
+    } else if let Some(addr) = addr_of_kind(bits, ValueKind::LIST) {
+        addr as u64
     } else {
         panic!("list tail must be [] or a list pointer, got {bits:#x}")
     }
@@ -1044,11 +1080,7 @@ pub fn map_values_offset(count: usize) -> usize {
 
 #[inline]
 pub fn map_addr_from_tagged(bits: u64) -> Option<*mut u8> {
-    if bits & TAG_MASK == TAG_MAP {
-        Some((bits & !TAG_MASK) as *mut u8)
-    } else {
-        None
-    }
+    addr_of_kind(bits, ValueKind::MAP)
 }
 
 #[inline]
@@ -1058,11 +1090,14 @@ pub fn struct_size_for_payload(payload_size: usize) -> usize {
 
 #[inline]
 pub fn struct_addr_from_tagged(bits: u64) -> Option<*mut u8> {
-    if bits & TAG_MASK == TAG_STRUCT {
-        Some((bits & !TAG_MASK) as *mut u8)
-    } else {
-        None
-    }
+    addr_of_kind(bits, ValueKind::STRUCT)
+}
+
+/// A struct's first word: the schema id in the high 32 bits, the low 32 bits
+/// clear. A live struct's low nibble is clear; only a forwarding marker sets it.
+#[inline]
+pub const fn struct_header_word(schema_id: u32) -> u64 {
+    (schema_id as u64) << 32
 }
 
 /// # Safety
@@ -1070,14 +1105,6 @@ pub fn struct_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 /// `addr` must point to the start of an initialized strict Struct object.
 #[inline]
 pub unsafe fn struct_schema_id(addr: *const u8) -> u32 {
-    unsafe { ptr::read(addr as *const u32) }
-}
-
-/// # Safety
-///
-/// `addr` must point to the start of an initialized strict Struct object.
-#[inline]
-pub unsafe fn struct_flags(addr: *const u8) -> u32 {
     unsafe { ptr::read(addr.add(4) as *const u32) }
 }
 
@@ -1106,11 +1133,20 @@ pub fn bitstring_size_for_bit_len(bit_len: u64) -> usize {
 
 #[inline]
 pub fn bitstring_addr_from_tagged(bits: u64) -> Option<*mut u8> {
-    if bits & TAG_MASK == TAG_BITSTRING {
-        Some((bits & !TAG_MASK) as *mut u8)
-    } else {
-        None
-    }
+    addr_of_kind(bits, ValueKind::BITSTRING)
+}
+
+const BITSTRING_BIT_LEN_SHIFT: u32 = 4;
+
+/// An inline bitstring's first word: the bit length above four clear bits. A
+/// live bitstring's low nibble is clear; only a forwarding marker sets it.
+#[inline]
+pub fn bitstring_header_word(bit_len: u64) -> u64 {
+    assert!(
+        bit_len < 1 << (64 - BITSTRING_BIT_LEN_SHIFT),
+        "bitstring bit length overflow"
+    );
+    bit_len << BITSTRING_BIT_LEN_SHIFT
 }
 
 /// # Safety
@@ -1118,7 +1154,8 @@ pub fn bitstring_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 /// `addr` must point to the start of an initialized strict inline Bitstring.
 #[inline]
 pub unsafe fn bitstring_bit_len(addr: *const u8) -> u64 {
-    unsafe { ptr::read(addr as *const u64) }
+    let header = unsafe { ptr::read(addr as *const u64) };
+    header >> BITSTRING_BIT_LEN_SHIFT
 }
 
 /// # Safety
@@ -1131,20 +1168,65 @@ pub unsafe fn bitstring_bytes_ptr(addr: *const u8) -> *const u8 {
 
 #[inline]
 pub fn procbin_addr_from_tagged(bits: u64) -> Option<*mut u8> {
-    if bits & TAG_MASK == TAG_PROCBIN {
-        Some((bits & !TAG_MASK) as *mut u8)
-    } else {
-        None
-    }
+    addr_of_kind(bits, ValueKind::PROCBIN)
 }
 
 #[inline]
 pub fn resource_addr_from_tagged(bits: u64) -> Option<*mut u8> {
-    if bits & TAG_MASK == TAG_RESOURCE {
-        Some((bits & !TAG_MASK) as *mut u8)
-    } else {
-        None
-    }
+    addr_of_kind(bits, ValueKind::RESOURCE)
+}
+
+const MAP_HEADER_FIELD_SHIFT: u32 = 4;
+const MAP_DESTINATION_FIELD_BITS: u32 = 29;
+const MAP_DESTINATION_FILLED_SHIFT: u32 = MAP_HEADER_FIELD_SHIFT + MAP_DESTINATION_FIELD_BITS;
+const MAP_DESTINATION_FIELD_MASK: u64 = (1 << MAP_DESTINATION_FIELD_BITS) - 1;
+
+pub(crate) const MAP_DESTINATION_FLAG: u64 = 1 << 63;
+
+/// A published map's first word: the entry count above four clear bits. A
+/// live map's low nibble is clear; only a forwarding marker sets it.
+#[inline]
+pub fn map_header_word(count: usize) -> u64 {
+    assert!(
+        (count as u64) < 1 << (63 - MAP_HEADER_FIELD_SHIFT),
+        "map entry count overflow"
+    );
+    (count as u64) << MAP_HEADER_FIELD_SHIFT
+}
+
+/// An unpublished map destination's first word: the destination flag, the
+/// capacity above four clear bits, and the number of entries filled so far.
+#[inline]
+pub fn map_destination_header_word(capacity: usize, filled: usize) -> u64 {
+    assert!(
+        (capacity as u64) <= MAP_DESTINATION_FIELD_MASK && filled <= capacity,
+        "map destination capacity"
+    );
+    MAP_DESTINATION_FLAG
+        | ((filled as u64) << MAP_DESTINATION_FILLED_SHIFT)
+        | ((capacity as u64) << MAP_HEADER_FIELD_SHIFT)
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Map object.
+pub unsafe fn map_header_is_destination(addr: *const u8) -> bool {
+    let header = unsafe { ptr::read(addr as *const u64) };
+    header & MAP_DESTINATION_FLAG != 0
+}
+
+/// `(capacity, filled)` of an unpublished map destination.
+///
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Map object.
+pub unsafe fn map_destination_state(addr: *const u8) -> (usize, usize) {
+    let header = unsafe { ptr::read(addr as *const u64) };
+    assert_ne!(header & MAP_DESTINATION_FLAG, 0, "map is already published");
+    (
+        ((header >> MAP_HEADER_FIELD_SHIFT) & MAP_DESTINATION_FIELD_MASK) as usize,
+        ((header >> MAP_DESTINATION_FILLED_SHIFT) & MAP_DESTINATION_FIELD_MASK) as usize,
+    )
 }
 
 /// # Safety
@@ -1153,13 +1235,11 @@ pub fn resource_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 pub unsafe fn map_count(addr: *const u8) -> usize {
     let header = unsafe { ptr::read(addr as *const u64) };
     if header & MAP_DESTINATION_FLAG == 0 {
-        header as usize
+        (header >> MAP_HEADER_FIELD_SHIFT) as usize
     } else {
-        header as u32 as usize
+        unsafe { map_destination_state(addr) }.0
     }
 }
-
-pub(crate) const MAP_DESTINATION_FLAG: u64 = 1 << 63;
 
 #[inline]
 /// # Safety
@@ -1199,7 +1279,7 @@ pub fn map_key_kind(tag_byte: u8) -> ValueKind {
 
 #[inline]
 pub fn map_value_kind(tag_byte: u8) -> ValueKind {
-    ValueKind::new(tag_byte & TAG_MASK as u8).expect("map value kind tag")
+    ValueKind::new(tag_byte & KIND_FIELD_MASK as u8).expect("map value kind tag")
 }
 
 #[inline]
@@ -1234,21 +1314,11 @@ pub unsafe fn map_entry(addr: *const u8, index: usize) -> (AnyValue, AnyValue) {
 }
 
 #[cfg(test)]
-fn alloc_list_cons_raw_kind(head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> u64 {
-    unsafe {
-        let p = raw_alloc(16) as *mut ListCons;
-        ptr::write(p, ListCons::new(head_raw, head_kind, tail_bits));
-        heap_object_word(p as *const u8, ValueKind::LIST)
-    }
-}
-
-#[cfg(test)]
 #[path = "any_value_test.rs"]
 mod any_value_test;
 
-/// Debug rendering of AnyValues. Lifted out of ir_codegen.rs by
-/// fz-ul4.23.4.3 so that any execution path (JIT, future interp/AOT) can
-/// use the same rendering — values are uniformly tagged, regardless of
+/// Debug rendering of AnyValues. Any execution path (JIT, future
+/// interp/AOT) can use the same rendering — values are uniformly tagged, regardless of
 /// what produced them. The single runtime dependency is the heap's schema
 /// registry + atom-name table on a `Process`, threaded in explicitly (a
 /// nullable `*mut Process`) so two schedulers can render concurrently
@@ -1256,9 +1326,9 @@ mod any_value_test;
 pub mod debug {
     use super::{
         AnyValue, AnyValueRef, EMPTY_LIST, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
-        bitstring_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_denotation, list_addr_from_tagged,
-        map_addr_from_tagged, map_count, map_entry_raw_kinds, procbin_addr_from_tagged, struct_addr_from_tagged,
-        struct_schema_id,
+        bitstring_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_denotation, heap_object_word,
+        list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry_raw_kinds, procbin_addr_from_tagged,
+        struct_addr_from_tagged, struct_schema_id,
     };
     use crate::heap::FieldKind;
     use crate::module_name::{alias_spelling, is_alias_namespace_atom};
@@ -1298,31 +1368,21 @@ pub mod debug {
         unsafe { &*proc }.node.atom_name(id).filter(|name| !name.is_empty())
     }
 
-    fn is_proc_heap_list(proc: *mut Process, bits: u64) -> bool {
-        let Some(p) = list_addr_from_tagged(bits) else {
+    /// A list or map the formatter walks: a non-null address that is not a
+    /// literal. No program ships a list or a map as read-only data, so the
+    /// literal bit is clear on every one.
+    fn is_proc_heap_container(proc: *mut Process, bits: u64, addr_of: fn(u64) -> Option<*mut u8>) -> bool {
+        let Some(p) = addr_of(bits) else {
             return false;
         };
-        if p.is_null() {
-            return false;
-        }
-        !proc.is_null() && unsafe { (*proc).heap.contains_heap_addr(p) }
-    }
-
-    fn is_proc_heap_map(proc: *mut Process, bits: u64) -> bool {
-        let Some(p) = map_addr_from_tagged(bits) else {
-            return false;
-        };
-        if p.is_null() {
-            return false;
-        }
-        !proc.is_null() && unsafe { (*proc).heap.contains_heap_addr(p) }
+        !p.is_null() && !proc.is_null() && !super::AnyValueRefPacking::current().is_literal(bits)
     }
 
     pub fn render(proc: *mut Process, bits: u64) -> String {
-        if is_proc_heap_list(proc, bits) {
+        if is_proc_heap_container(proc, bits, list_addr_from_tagged) {
             return render_list(proc, bits);
         }
-        if is_proc_heap_map(proc, bits) {
+        if is_proc_heap_container(proc, bits, map_addr_from_tagged) {
             return render_map(proc, bits);
         }
         if closure_addr_from_tagged(bits).is_some() {
@@ -1339,7 +1399,7 @@ pub mod debug {
         }
         // An empty list reaches here two ways: as the `EMPTY_LIST` sentinel,
         // and as a LIST-tagged word whose address is null, which is what a
-        // nested `[]` is stored as. Both are the empty list (fz-5xp.63).
+        // nested `[]` is stored as. Both are the empty list.
         if bits == EMPTY_LIST || list_addr_from_tagged(bits).is_some_and(|p| p.is_null()) {
             "[]".into()
         } else {
@@ -1583,19 +1643,18 @@ pub mod debug {
     }
 
     fn render_bitstring(bits: u64) -> String {
-        let p = if procbin_addr_from_tagged(bits).is_some() {
-            bits as *mut u8
-        } else {
-            bitstring_addr_from_tagged(bits).unwrap()
-        };
-        let bit_len = unsafe { bitstring_bit_len(p) } as usize;
+        assert!(
+            procbin_addr_from_tagged(bits).is_some() || bitstring_addr_from_tagged(bits).is_some(),
+            "render_bitstring expects a bitstring-like heap word"
+        );
+        let bit_len = unsafe { bitstring_bit_len(bits) } as usize;
         let total_bytes = bit_len.div_ceil(8);
-        let byte_ptr = unsafe { bitstring_byte_ptr(p) };
+        let byte_ptr = unsafe { bitstring_byte_ptr(bits) };
         let bytes = unsafe { slice::from_raw_parts(byte_ptr, total_bytes) };
         let full_bytes = bit_len / 8;
         let trailing_bits = bit_len % 8;
 
-        // fz-axu.15 (R2) — UTF-8-aware rendering: byte-aligned + valid
+        // UTF-8-aware rendering: byte-aligned + valid
         // UTF-8 + Elixir-style String.printable?/1 heuristic renders as
         // a quoted string. Anything else falls back to the `<<...>>`
         // byte-list form. Print intentionally doesn't read the type
@@ -1644,8 +1703,7 @@ pub mod debug {
                 '\\' => out.push_str("\\\\"),
                 '"' => out.push_str("\\\""),
                 // `#{` is escaped so the rendering round-trips as source:
-                // an unescaped one would read back as interpolation
-                // (fz-5xp.5). Elixir's inspect does the same, and only for
+                // an unescaped one would read back as interpolation. Elixir's inspect does the same, and only for
                 // `#` immediately before `{`.
                 '#' if chars.peek() == Some(&'{') => out.push_str("\\#"),
                 other => out.push(other),
@@ -1693,7 +1751,7 @@ pub mod debug {
             Some(t) => format!("[{} | {}]", parts.join(", "), t),
             // A KEYWORD LIST prints as `[a: 1]`, not `[{:a, 1}]`. Elixir
             // inspects a PROPER list whose every element is a two-tuple with an
-            // atom key that way, and only then (fz-5xp.13). The decision is
+            // atom key that way, and only then. The decision is
             // made from the values; the rendered strings are output, never
             // input.
             None => match keyword_entries {
@@ -1707,14 +1765,12 @@ pub mod debug {
         match cons.head_kind() {
             ValueKind::INT => (cons.head as i64).to_string(),
             // `render_float`, not Rust's `to_string`: a whole float has to keep
-            // its `.0` wherever it appears. This arm answered `[1, 2]` for
-            // `[1.0, 2.0]` because it had its own idea of how to print a float
-            // (fz-5xp.36), which `JSON.encode` cannot survive -- `[1.0]` must
-            // not encode as `[1]`.
+            // its `.0` wherever it appears -- `[1.0]` must not encode as `[1]`,
+            // which `JSON.encode` cannot survive.
             ValueKind::FLOAT => render_float(f64::from_bits(cons.head)),
             ValueKind::ATOM => render_atom(proc, cons.head as u32),
             kind if kind.is_heap() => {
-                let bits = cons.head | kind.tag() as u64;
+                let bits = heap_object_word(cons.head as *const u8, kind);
                 render(proc, bits)
             }
             _ => format!("#slot<{:#x}:{}>", cons.head, cons.head_kind().tag()),

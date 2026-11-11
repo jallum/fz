@@ -1,10 +1,10 @@
 #---
-# purpose: "fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity)."
+# purpose: "File module wraps an fd in a resource; the dtor closes the fd when the process exits (interp/JIT/AOT parity)."
 #---
 #
 # # file_resource_lifecycle
 #
-# fz-swt.13 / fz-4mk — a focused resource-lifecycle fixture with a local
+# A focused resource-lifecycle fixture with a local
 # `FileResourceLifecycle` module that wraps a Unix file descriptor in an
 # `opaque resource(integer)` and registers `&FileResourceLifecycle.dtor/1` as its
 # destructor. The dtor calls `libc::close` directly and prints
@@ -28,7 +28,7 @@
 #
 #   1. `FileResourceLifecycle.wrap_fd/1` allocates a `Resource` whose dtor closure is
 #      `&FileResourceLifecycle.dtor/1` — an in-module function reference. The closure body runs as
-#      real fz code at task-exit drain (fz-4mk), proving that resource
+#      real fz code when the process exits, proving that resource
 #      dtors are no longer restricted to thin wrappers around a single C
 #      extern; the wrapper can do real work and have side effects.
 #   2. The fd is observably alive between `wrap_fd` and `main` returning.
@@ -67,7 +67,7 @@ extern "C" defp libc::unlink(c_string) :: c_int
 defmodule FileResourceLifecycle do
   @type t :: opaque resource(integer)
 
-  # Dtor body runs as fz code at task-exit (fz-4mk); we can call
+  # Dtor body runs as fz code when the process exits; we can call
   # libc::close directly and emit an observable side-effect so the test
   # can see the dtor fired.
   def dtor(fd) do

@@ -10,19 +10,18 @@ use super::*;
 use crate::fz_ir::Var;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlags, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
-use cranelift_module::{FuncId, Module};
+use cranelift_module::{DataId, FuncId, Module};
 use fz_runtime::any_value::{AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TaggedRefArch, ValueKind};
 use fz_runtime::heap::{FieldKind, Schema};
 use fz_runtime::ir_runtime::{
     fz_alloc_closure, fz_alloc_frame, fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any,
     fz_closure_code_ref, fz_closure_get_capture_atom, fz_closure_get_capture_f64, fz_closure_get_capture_i64,
     fz_closure_get_capture_ref, fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64,
-    fz_closure_set_capture_i64, fz_closure_set_capture_ref, fz_get_halt_cont, fz_halt_implicit_atom,
-    fz_halt_implicit_f64, fz_halt_implicit_i64, fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref,
-    fz_list_head_ref, fz_list_reuse_or_cons_parts, fz_list_reuse_or_cons_ref, fz_list_tail_ref,
-    fz_mark_published_ref_aliased, fz_materialize_cont, fz_struct_set_field_atom, fz_struct_set_field_float,
-    fz_struct_set_field_int, fz_struct_set_field_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float,
-    fz_unbox_int,
+    fz_closure_set_capture_i64, fz_closure_set_capture_ref, fz_halt_implicit_atom, fz_halt_implicit_f64,
+    fz_halt_implicit_i64, fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref, fz_list_head_ref,
+    fz_list_reuse_or_cons_parts, fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_mark_published_ref_aliased,
+    fz_materialize_cont, fz_struct_set_field_atom, fz_struct_set_field_float, fz_struct_set_field_int,
+    fz_struct_set_field_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
 use std::collections::HashMap;
 
@@ -144,9 +143,24 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         runtime_call1!(self, fz_alloc_frame, [process, schema_id, size])
     }
 
-    pub(crate) fn get_halt_cont(&mut self, body_addr: ir::Value, halt_kind: ir::Value) -> ir::Value {
-        let process = self.process_arg();
-        runtime_call1!(self, fz_get_halt_cont, [process, body_addr, halt_kind])
+    /// The tagged ref to a read-only object the program emitted, marked as a
+    /// literal so the collector and deep copy leave it where it is.
+    pub(crate) fn static_object_ref(&mut self, data_id: DataId, kind: ValueKind) -> ir::Value {
+        let addr = data_addr(self.jmod, data_id, self.b);
+        self.literal_ref_word_from_addr(addr, kind)
+    }
+
+    /// The tagged ref to the read-only object at `addr`, marked as a literal.
+    pub(crate) fn literal_ref_word_from_addr(&mut self, addr: ir::Value, kind: ValueKind) -> ir::Value {
+        let ref_word = self.heap_ref_word_from_addr(addr, kind);
+        self.b
+            .ins()
+            .bor_imm(ref_word, AnyValueRefPacking::current().literal_bit() as i64)
+    }
+
+    /// The program's halt continuation for a return in `repr`'s lane.
+    pub(crate) fn halt_cont_ref(&mut self, locals: &LocalBodies, repr: ArgRepr) -> ir::Value {
+        self.static_object_ref(locals.halt_cont_data_id(repr), ValueKind::CLOSURE)
     }
 
     pub(crate) fn alloc_closure(

@@ -5,12 +5,13 @@ use std::cell::RefCell;
 use std::ptr::write_bytes;
 
 /// Preset block capacities (bytes). Fibonacci-shape at the low end (§6.3) then
-/// geometric tail (~×1.2, ceiling-rounded to 16 alignment). Cheney picks the
-/// smallest entry that fits `live_bytes + slack`.
+/// geometric tail (~×1.2, ceiling-rounded to 16 alignment). A tip starts at the
+/// first entry and climbs the table.
 ///
 /// The 32 entries reach ~7 MiB and are the capacities the pool recycles. A
-/// block needing more is allocated at exactly the size asked for (rounded to
-/// 16) and returned to the system allocator when it is released.
+/// block needing less than the first entry or more than the last is allocated
+/// at exactly the size asked for (rounded to 16) and returned to the system
+/// allocator when it is released.
 pub const SIZE_TABLE: [usize; 32] = build_size_table();
 
 const fn build_size_table() -> [usize; 32] {
@@ -39,8 +40,13 @@ pub(super) fn round_up_16(bytes: usize) -> usize {
 }
 
 /// The capacity of the smallest block that holds `bytes`: the smallest table
-/// entry that fits, or `bytes` rounded up to 16 past the end of the table.
+/// entry that fits when the request is within the table's range, and `bytes`
+/// rounded up to 16 otherwise, below the first entry as well as past the last.
+/// A block is at least one 16-byte slot.
 pub fn pick_block_capacity(bytes: usize) -> usize {
+    if bytes < SIZE_TABLE[0] {
+        return round_up_16(bytes.max(1));
+    }
     SIZE_TABLE
         .iter()
         .copied()
@@ -99,8 +105,7 @@ impl Block {
 /// Per-thread block pool (§6.6). One free list per table capacity. Spawn /
 /// grow / gc pull from here; Heap::drop and gc()'s old-block release
 /// return blocks here. Avoids per-spawn `malloc`/`free` churn under
-/// heavy spawn pressure. Single-threaded for v1 (worker pool = 1, per
-/// fz-ul4.19.1); the multi-worker follow-up will switch to either
+/// heavy spawn pressure. Single-threaded for v1 (worker pool = 1); the multi-worker follow-up will switch to either
 /// per-worker pools or a Mutex-guarded shared pool.
 struct BlockPool {
     free_lists: [Vec<*mut u8>; SIZE_TABLE.len()],
@@ -211,7 +216,8 @@ pub fn pool_drain_for_test() {
 
 /// Pooled blocks this thread's pool has handed out and not had returned. Zero
 /// once every heap and gift segment the thread created has been dropped. Exact
-/// blocks above the table are the system allocator's and are not counted.
+/// blocks, below the table or above it, are the system allocator's and are not
+/// counted.
 pub fn pool_outstanding_blocks() -> usize {
     BLOCK_POOL.with(|pool| pool.borrow().outstanding)
 }

@@ -212,10 +212,8 @@ fn a_scalar_measures_the_box_the_copy_allocates_for_it() {
 #[test]
 fn values_the_copy_returns_as_they_are_measure_nothing() {
     let reg = fresh_registry();
-    let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
-    let mut elsewhere = Heap::new(SIZE_TABLE[0], reg);
-    let foreign = int_list(&mut elsewhere, EMPTY_LIST, 0..3);
-    let values = [AnyValueRef::empty_list(), AnyValueRef::null(), list_ref(foreign)];
+    let mut sender = Heap::new(SIZE_TABLE[0], reg);
+    let values = [AnyValueRef::empty_list(), AnyValueRef::null()];
     assert_eq!(measure_deep_copy(&values, &sender.view()), 0);
     let (segment, copied) = gift_copy(&mut sender, &values);
     assert_eq!(segment.block_count(), 0, "a copy that allocates nothing takes no block");

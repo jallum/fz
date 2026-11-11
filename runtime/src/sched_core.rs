@@ -9,10 +9,16 @@
 //! [`next_runnable`] is the single place that answers "what runs next?": it
 //! wakes expired timers, hands out the next runnable process, sleeps until the
 //! next deadline when only timers remain, and reports idle only when nothing is
-//! runnable and no timer is pending.
+//! runnable and no timer is pending. [`end_quantum`] is the single place that
+//! answers "what happens to a process after its quantum?": it collects when
+//! the heap is due, runs the destructors of the resources that collection or
+//! the exit freed, and says whether the process is requeued, parked or gone.
 
-use crate::process::{PidId, ProcessState};
+use crate::any_value::{AnyValueRef, ValueKind};
+use crate::heap::GcStats;
+use crate::process::{Collection, CollectionBoundary, Disposition, PidId, Process, ProcessState};
 use crate::scheduler_hooks::{TimerCancelHook, TimerScheduleHook};
+use crate::telemetry::RuntimeEvent;
 use crate::timer::{TimerId, TimerWheel};
 use std::collections::VecDeque;
 use std::thread::sleep;
@@ -77,8 +83,82 @@ pub trait Scheduler {
     /// dropped.
     fn wake_expired(&mut self, pid: PidId, timer: TimerId);
 
-    /// The core is about to sleep for `wait` because only timers remain.
-    fn about_to_sleep(&mut self, _wait: Duration) {}
+    /// The core reports `event`. Every scheduler says what it does with each
+    /// runtime event, even if that is nothing.
+    fn observe(&mut self, event: RuntimeEvent<'_>);
+
+    /// Run the destructor closure `closure` of a freed resource on `process`
+    /// with the boxed `payload`, both value-ref words. Only a driver can run
+    /// fz code: compiled drivers enter the drain shim through the pinned
+    /// register, the interpreter interprets the closure. The call returns when
+    /// the destructor has finished.
+    fn run_destructor(&mut self, process: &mut Process, closure: u64, payload: u64);
+
+    /// Collect `process`'s heap. A driver that holds heap values of `process`
+    /// outside it, across the boundary, gathers them as the `transient` roots
+    /// of [`Process::collect`] and writes the forwarded values back. The
+    /// default holds none.
+    fn collect_heap(&mut self, process: &mut Process) -> GcStats {
+        process.collect(&mut [])
+    }
+}
+
+/// The step after every quantum, for every state. It reads the boundary off
+/// `process`, collects when the heap is due and observes the collection, and
+/// clears the quantum's yield reasons. A halted process is not collected: it
+/// is marked Exited and releases every stub on its MSO chain, since nothing is
+/// live. Every destructor the collection or the exit queued then runs through `scheduler`,
+/// `process.dtors_dispatched` counts them, and an exit is observed last.
+pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Process) -> Disposition {
+    let disposition = process.quantum_end();
+    let boundary = match disposition {
+        Disposition::Requeue => Some(CollectionBoundary::Yield),
+        Disposition::Parked => Some(CollectionBoundary::Park),
+        Disposition::Exited => None,
+    };
+    if let Some(boundary) = boundary.filter(|_| process.needs_boundary_gc()) {
+        let collection = Collection {
+            pid: process.pid,
+            boundary,
+            stats: scheduler.collect_heap(process),
+        };
+        scheduler.observe(RuntimeEvent::Gc(&collection));
+    }
+    process.clear_yield_reasons();
+    if disposition == Disposition::Exited {
+        process.state = ProcessState::Exited;
+        process.heap.release_resources_at_exit();
+    }
+    drain_destructors(scheduler, process);
+    if disposition == Disposition::Exited {
+        scheduler.observe(RuntimeEvent::ProcessExited(process));
+    }
+    disposition
+}
+
+/// Run every queued destructor on `process`, oldest first. A destructor runs
+/// to completion with a full reduction budget; one that yielded would
+/// overwrite the process's own continuation, so that is a fault.
+pub fn drain_destructors<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Process) {
+    while let Some((closure, payload)) = process.heap.pending_dtors.pop_front() {
+        let payload_tag = AnyValueRef::from_raw_word(payload)
+            .expect("a queued destructor payload is a valid value ref")
+            .tag();
+        assert_eq!(
+            payload_tag,
+            ValueKind::INT,
+            "a queued destructor payload stays boxed as an integer"
+        );
+        let continuation = process.runnable_closure();
+        process.reset_reduction_budget();
+        scheduler.run_destructor(process, closure, payload);
+        process.dtors_dispatched += 1;
+        assert_eq!(
+            process.runnable_closure(),
+            continuation,
+            "a destructor must finish within one quantum; it yielded"
+        );
+    }
 }
 
 /// The next process to run, or `None` when the scheduler is idle: nothing is
@@ -94,7 +174,7 @@ pub fn next_runnable<S: Scheduler + ?Sized>(scheduler: &mut S) -> Option<PidId> 
         }
         let deadline = scheduler.core().timers.next_deadline()?;
         let wait = deadline.saturating_duration_since(Instant::now());
-        scheduler.about_to_sleep(wait);
+        scheduler.observe(RuntimeEvent::SchedulerSlept(wait));
         sleep(wait);
     }
 }

@@ -35,12 +35,16 @@ use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV};
 use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
 use fz_runtime::pinned_abi::call2;
-use fz_runtime::procbin::mso_drop_all_deferred;
+use fz_runtime::process::Disposition;
 use fz_runtime::sched::{
-    ProbeOutcome, SendProbe, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender,
-    self_send,
+    ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
 };
-use fz_runtime::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
+use fz_runtime::sched_core::{
+    Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
+};
+use fz_runtime::telemetry::{
+    EXECUTION_READY, GC, PROCESS_EXITED, RUN_ENDED, RunEnded, RuntimeEvent, SCHEDULER_SLEPT, SEND_PROBE,
+};
 use fz_runtime::timer::TimerId;
 #[cfg(test)]
 use std::cell::RefCell;
@@ -48,7 +52,6 @@ use std::collections::HashMap;
 use std::ptr::null_mut;
 #[cfg(test)]
 use std::rc::Rc;
-use std::time::Duration;
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
 /// single-threaded — `run_until_idle` drives all spawned tasks to
@@ -63,13 +66,14 @@ pub struct Runtime<'a, T: Telemetry + ?Sized> {
     pool_outstanding_before_run: usize,
 
     /// Observability sink. The run loop emits `fz.runtime.process_exited`
-    /// at each task exit (see `ExitRecord`), which is the seam tests observe
+    /// at each task exit, which is the seam tests observe
     /// instead of poking task internals.
     tel: &'a T,
     output: &'a dyn OutputSink,
     argv: &'a Argv,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExitRecord {
     pub pid: PidId,
@@ -79,54 +83,19 @@ pub struct ExitRecord {
     pub list_retention_attempts: u64,
     pub list_retention_hits: u64,
     pub failed: bool,
+    pub dtors_dispatched: u64,
 }
 
-impl ExitRecord {
-    pub fn emit<T: Telemetry + ?Sized>(tel: &T, pid: &PidId, process: &Process) {
-        tel.raw_event2(&["fz", "runtime", "process_exited"], pid, process);
+/// Raise `event` on the telemetry bus as the typed raw event hosts attach to.
+pub fn emit_runtime_event<T: Telemetry + ?Sized>(tel: &T, event: RuntimeEvent<'_>) {
+    match event {
+        RuntimeEvent::ExecutionReady => tel.raw_event0(&EXECUTION_READY),
+        RuntimeEvent::ProcessExited(process) => tel.raw_event2(&PROCESS_EXITED, &process.pid, process),
+        RuntimeEvent::SchedulerSlept(wait) => tel.raw_event1(&SCHEDULER_SLEPT, &wait),
+        RuntimeEvent::SendProbe(probe) => tel.raw_event1(&SEND_PROBE, probe),
+        RuntimeEvent::Gc(collection) => tel.raw_event1(&GC, collection),
+        RuntimeEvent::RunEnded(ended) => tel.raw_event1(&RUN_ENDED, &ended),
     }
-}
-
-/// Emitted each time the scheduling core sleeps for a pending timer; carries
-/// the `Duration` it is about to wait.
-pub const SCHEDULER_SLEPT: [&str; 3] = ["fz", "runtime", "scheduler_slept"];
-
-/// What the block pool holds once a run has torn down every process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RunEnded {
-    /// Blocks handed out and not returned when the run began. The compiler's
-    /// own heaps live on the same thread, so this is never zero.
-    pub pool_outstanding_before_run: usize,
-    /// The same count once every process has been torn down. Equal to
-    /// `pool_outstanding_before_run` means the run returned every block it took.
-    pub pool_outstanding_after_run: usize,
-    /// Blocks resting in the pool's free lists.
-    pub pool_cached_blocks: usize,
-}
-
-/// Emitted once per run, after every process has been torn down, on the JIT
-/// and interpreter paths; carries the `RunEnded` pool census.
-pub const RUN_ENDED: [&str; 3] = ["fz", "runtime", "run_ended"];
-
-/// Report the pool census at the end of a run.
-pub fn emit_run_ended<T: Telemetry + ?Sized>(tel: &T, pool_outstanding_before_run: usize) {
-    tel.raw_event1(
-        &RUN_ENDED,
-        &RunEnded {
-            pool_outstanding_before_run,
-            pool_outstanding_after_run: fz_runtime::heap::pool_outstanding_blocks(),
-            pool_cached_blocks: fz_runtime::heap::pool_total_cached_blocks(),
-        },
-    );
-}
-
-/// Emitted once per cross-process send on the JIT and interpreter paths;
-/// carries the `SendProbe` the sender's probe produced.
-pub const SEND_PROBE: [&str; 4] = ["fz", "runtime", "send", "probe"];
-
-/// Report one send's probe on the telemetry bus.
-pub fn emit_send_probe<T: Telemetry + ?Sized>(tel: &T, probe: &SendProbe) {
-    tel.raw_event1(&SEND_PROBE, probe);
 }
 
 /// fz-ul4.23.10 scheduler-hook thunks. These are the extern "C" fns the
@@ -199,7 +168,7 @@ pub fn send_via<T: Telemetry + ?Sized>(
         return;
     }
     let probe = probe_sender(sender, receiver, msg);
-    emit_send_probe(rt.tel, &probe);
+    emit_runtime_event(rt.tel, RuntimeEvent::SendProbe(&probe));
     if probe.outcome == ProbeOutcome::Hit {
         rt.core.make_runnable(receiver_pid, &mut receiver.state);
     }
@@ -300,7 +269,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             .closure_addr()
             .expect("spawn_closure: closure must be a closure");
         let copied = deep_copy_any_value_ref(closure_ref, &sender.heap.view(), &mut process.heap, &mut forwarding);
-        let copied_addr = copied
+        copied
             .closure_addr()
             .expect("spawn_closure: copied closure must be a closure");
 
@@ -309,7 +278,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         // quantum. The registry holds the child before it runs so a
         // cross-task send() during its quantum can find this pid.
         process.next_frame = null_mut();
-        let thunk = mint_entry_thunk(&mut process.heap, self.compiled.entry_thunk_addr, copied_addr);
+        let thunk = mint_entry_thunk(&mut process.heap, self.compiled.entry_thunk_addr, copied);
         process.set_runnable_closure(thunk);
         // Scheduler scaffolding (entry thunk + copied entry closure) is
         // prepared before the child runs; reset so its alloc telemetry
@@ -349,46 +318,14 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             // runs; a matched receive becomes the runnable closure here.
             deliver_in_queue(&mut task);
             self.compiled.run_quantum(&mut task);
-            // After a quantum the task is in one of three states: still
-            // Running with a continuation in `runnable` (a mid-flight
-            // yield), Blocked on a receive that found nothing, or halted.
-            if task.state == ProcessState::Running && task.runnable.is_some() {
-                self.queue_task(pid, task);
-                continue;
-            } else if task.state == ProcessState::Blocked {
-                // Parked on a receive: keep in registry, no re-enqueue. A
-                // send or the after-timer wakes it.
-            } else if task.next_frame.is_null() {
-                task.state = ProcessState::Exited;
-                // fz-4mk.3a — task is exiting; before the Heap drops at
-                // task-cleanup time, flush surviving MSO resources onto
-                // `pending_dtors` and dispatch each dtor closure body as
-                // real fz code through the `fz_drain_dtor_entry` shim. The dtor
-                // body reaches this process through the pinned register set by
-                // the `pinned_abi::call2` entry below.
-                let ptr: *mut Process = &mut *task;
-                mso_drop_all_deferred(&mut task.heap);
-                // Enter the dtor body through pinned_abi so the pinned register
-                // holds this process: the dtor is real fz code and its closure
-                // BIFs (alloc_closure, get_halt_cont, …) read the process from
-                // the pinned register, like every other scheduler-facing entry.
-                let drain_addr = self.compiled.drain_dtor_entry_addr;
-                while let Some((closure, payload_ref)) = task.heap.pending_dtors.pop_front() {
-                    let payload_tag = AnyValueRef::from_raw_word(payload_ref)
-                        .expect("pending dtor payload should be a valid value ref")
-                        .tag();
-                    assert_eq!(
-                        payload_tag,
-                        fz_runtime::any_value::ValueKind::INT,
-                        "pending dtor payload should stay boxed as an integer ref",
-                    );
-                    let _ = unsafe { call2(drain_addr, ptr, closure, payload_ref) };
+            match end_quantum(self, &mut task) {
+                Disposition::Requeue => {
+                    self.queue_task(pid, task);
+                    continue;
                 }
-                ExitRecord::emit(self.tel, &pid, &task);
-            } else if task.state == ProcessState::Running {
-                // Other cooperative yield (future builtin).
-                self.queue_task(pid, task);
-                continue;
+                // Parked on a receive: keep in registry, no re-enqueue. A send
+                // or the after-timer wakes it.
+                Disposition::Parked | Disposition::Exited => {}
             }
             // Keep Exited / Blocked tasks in the registry so callers can
             // inspect halt_value / mailbox after the runtime drains, and
@@ -403,7 +340,10 @@ impl<T: Telemetry + ?Sized> Drop for Runtime<'_, T> {
     /// away; drop them all, then report what the pool still holds.
     fn drop(&mut self) {
         self.tasks.clear();
-        emit_run_ended(self.tel, self.pool_outstanding_before_run);
+        emit_runtime_event(
+            self.tel,
+            RuntimeEvent::RunEnded(RunEnded::sample(self.pool_outstanding_before_run)),
+        );
     }
 }
 
@@ -420,8 +360,17 @@ impl<T: Telemetry + ?Sized> Scheduler for Runtime<'_, T> {
         }
     }
 
-    fn about_to_sleep(&mut self, wait: Duration) {
-        self.tel.raw_event1(&SCHEDULER_SLEPT, &wait);
+    fn observe(&mut self, event: RuntimeEvent<'_>) {
+        emit_runtime_event(self.tel, event);
+    }
+
+    /// Enter the destructor through `pinned_abi` so the pinned register holds
+    /// this process: the destructor is real fz code and its closure BIFs
+    /// (alloc_closure, ...) read the process from the pinned
+    /// register, like every other scheduler-facing entry.
+    fn run_destructor(&mut self, process: &mut Process, closure: u64, payload: u64) {
+        let process: *mut Process = process;
+        let _ = unsafe { call2(self.compiled.drain_dtor_entry_addr, process, closure, payload) };
     }
 }
 
@@ -451,6 +400,7 @@ impl ProcessExitCapture {
                     list_retention_attempts: process.list_retention_attempts,
                     list_retention_hits: process.list_retention_hits,
                     failed: process.failed,
+                    dtors_dispatched: process.dtors_dispatched,
                 });
             },
         );

@@ -1,0 +1,23 @@
+#---
+# purpose: "a resource a function made and dropped runs its destructor exactly once, whether a collection frees it mid-run or the exit sweep releases it: the interpreter, JIT and AOT print the same single line"
+#---
+#
+# `drop_one` makes a resource and returns without keeping it. `main` then builds
+# 20000 list cells and checks their count without printing, so the only output
+# is the destructor's line. On the JIT and AOT paths a collection during the
+# allocation finds the resource dead and runs its destructor at that boundary;
+# the interpreter, which never yields, never collects: the process's exit sweep
+# releases it and runs the destructor there. Either way the line appears once.
+extern "C" defp fz_resource_test_print_dtor(integer) :: nil
+def dwrap(x), do: fz_resource_test_print_dtor(x)
+def drop_one() do
+  _r = make_resource(77, &dwrap/1)
+  :dropped
+end
+def churn(0, acc), do: acc
+def churn(n, acc), do: churn(n - 1, [Integer.to_string(n) | acc])
+def main() do
+  drop_one()
+  20000 = length(churn(20000, []))
+  :done
+end

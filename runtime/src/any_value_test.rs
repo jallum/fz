@@ -1,6 +1,16 @@
 use super::*;
 use std::mem;
 
+const LOW_NIBBLE: u64 = 0xF;
+
+fn test_heap() -> Heap {
+    Heap::new(4096, Rc::new(RefCell::new(SchemaRegistry::new())))
+}
+
+fn list_cell(heap: &mut Heap, head: i64, tail: u64) -> u64 {
+    heap.alloc_list_cons_slot(AnyValue::int(head), tail)
+}
+
 #[test]
 fn list_cons_size_is_16() {
     assert_eq!(mem::size_of::<ListCons>(), 16);
@@ -8,14 +18,15 @@ fn list_cons_size_is_16() {
 
 #[test]
 fn list_cons_layout() {
-    let bits = alloc_list_cons_raw_kind(7, ValueKind::INT, EMPTY_LIST);
+    let mut heap = test_heap();
+    let bits = list_cell(&mut heap, 7, EMPTY_LIST);
     let p = list_addr_from_tagged(bits).expect("tagged list ptr");
     unsafe {
         let cons = &*(p as *mut ListCons);
         assert_eq!(cons.head_kind(), ValueKind::INT);
         assert_eq!(cons.head as i64, 7);
         assert_eq!(cons.tail_bits(), EMPTY_LIST);
-        assert_eq!(cons.link & TAG_MASK, 0);
+        assert_eq!(cons.link & LOW_NIBBLE, 0);
         assert_eq!((cons.link & LIST_LINK_KIND_MASK) >> LIST_LINK_KIND_SHIFT, TAG_KIND_INT);
         assert!(!cons.aliased());
     }
@@ -24,9 +35,10 @@ fn list_cons_layout() {
 #[test]
 fn list_cons_chain() {
     // [1, 2, 3]
-    let l3 = alloc_list_cons_raw_kind(3, ValueKind::INT, EMPTY_LIST);
-    let l2 = alloc_list_cons_raw_kind(2, ValueKind::INT, l3);
-    let l1 = alloc_list_cons_raw_kind(1, ValueKind::INT, l2);
+    let mut heap = test_heap();
+    let l3 = list_cell(&mut heap, 3, EMPTY_LIST);
+    let l2 = list_cell(&mut heap, 2, l3);
+    let l1 = list_cell(&mut heap, 1, l2);
     unsafe {
         let c1 = &*(list_addr_from_tagged(l1).unwrap() as *mut ListCons);
         assert_eq!(c1.head_value(), AnyValue::int(1));
@@ -40,10 +52,12 @@ fn list_cons_chain() {
 
 #[test]
 fn alloc_struct_zeros_payload_and_sets_prefix() {
-    let p = alloc_struct(7, 24);
+    let mut heap = test_heap();
+    let schema_id = heap.register_schema(Schema::tuple_of_arity(3));
+    let p = heap.alloc_struct(schema_id);
     unsafe {
-        assert_eq!(struct_schema_id(p), 7);
-        assert_eq!(struct_flags(p), 0);
+        assert_eq!(struct_schema_id(p), schema_id);
+        assert_eq!(ptr::read(p as *const u64) & LOW_NIBBLE, 0);
         assert_eq!(struct_size_for_payload(24), 32);
         let payload = p.add(8);
         for i in 0..24 {
@@ -53,9 +67,11 @@ fn alloc_struct_zeros_payload_and_sets_prefix() {
 }
 
 #[test]
-fn pointer_alignment_satisfies_tag_zero_low_bits() {
-    let p = alloc_struct(0, 0);
-    assert_eq!((p as u64) & TAG_MASK, 0);
+fn allocations_are_sixteen_byte_aligned() {
+    let mut heap = test_heap();
+    let schema_id = heap.register_schema(Schema::tuple_of_arity(0));
+    let p = heap.alloc_struct(schema_id);
+    assert_eq!((p as u64) & LOW_NIBBLE, 0);
 }
 
 #[test]
@@ -69,7 +85,6 @@ fn tag_constants_all_distinct() {
         TAG_BITSTRING,
         TAG_PROCBIN,
         TAG_RESOURCE,
-        TAG_FWD,
         TAG_KIND_INT,
         TAG_KIND_FLOAT,
         TAG_KIND_ATOM,
@@ -92,48 +107,30 @@ fn tag_constants_fit_in_4_bits() {
         TAG_BITSTRING,
         TAG_PROCBIN,
         TAG_RESOURCE,
-        TAG_FWD,
         TAG_KIND_INT,
         TAG_KIND_FLOAT,
         TAG_KIND_ATOM,
     ] {
-        assert!(tag <= TAG_MASK);
+        assert!(tag <= KIND_FIELD_MASK);
     }
 }
 
 #[test]
-fn kind_round_trip() {
-    let addr = 0x1000_u64;
-    for tag in [
-        TAG_LIST,
-        TAG_MAP,
-        TAG_STRUCT,
-        TAG_CLOSURE,
-        TAG_BITSTRING,
-        TAG_PROCBIN,
-        TAG_RESOURCE,
-    ] {
-        let tagged = addr | tag;
-        assert_eq!(tagged & TAG_MASK, tag);
-        assert_eq!(tagged & !TAG_MASK, addr);
-    }
-}
-
-#[test]
-fn strict_heap_kind_comes_from_pointer_low_bits() {
+fn heap_object_word_carries_kind_above_the_address() {
     let addr = 0x1000 as *const u8;
-    for (kind, tag) in [
-        (ValueKind::LIST, TAG_LIST),
-        (ValueKind::MAP, TAG_MAP),
-        (ValueKind::STRUCT, TAG_STRUCT),
-        (ValueKind::CLOSURE, TAG_CLOSURE),
-        (ValueKind::BITSTRING, TAG_BITSTRING),
-        (ValueKind::PROCBIN, TAG_PROCBIN),
-        (ValueKind::RESOURCE, TAG_RESOURCE),
+    for kind in [
+        ValueKind::LIST,
+        ValueKind::MAP,
+        ValueKind::STRUCT,
+        ValueKind::CLOSURE,
+        ValueKind::BITSTRING,
+        ValueKind::PROCBIN,
+        ValueKind::RESOURCE,
     ] {
         let bits = heap_object_word(addr, kind);
 
-        assert_eq!(bits, 0x1000 | tag);
+        assert_eq!(bits, AnyValueRef::from_heap_object(kind, addr).unwrap().raw_word());
+        assert_eq!(bits & LOW_NIBBLE, 0, "the low nibble belongs to the forwarding marker");
         assert_eq!(heap_kind_from_tagged(bits), Some(kind));
         assert_eq!(heap_addr_from_tagged(bits), Some(0x1000 as *mut u8));
     }
@@ -141,7 +138,7 @@ fn strict_heap_kind_comes_from_pointer_low_bits() {
 
 #[test]
 fn value_kind_rejects_non_value_tags() {
-    assert_eq!(ValueKind::new(TAG_FWD as u8), None);
+    assert_eq!(ValueKind::new(TAG_LAZY_CONT as u8), None);
     assert_eq!(ValueKind::new(9), None);
     assert_eq!(ValueKind::new(10), None);
     assert_eq!(ValueKind::new(11), None);
@@ -169,7 +166,10 @@ fn any_value_constructors_use_canonical_value_kind_tags() {
     let heap = AnyValue::heap_ptr(0x1000 as *mut u8, ValueKind::MAP);
     assert_eq!(heap.raw(), 0x1000);
     assert_eq!(heap.kind(), ValueKind::MAP);
-    assert_eq!(heap.heap_object_word(), Some(0x1000 | TAG_MAP));
+    assert_eq!(
+        heap.heap_object_word(),
+        Some(heap_object_word(0x1000 as *const u8, ValueKind::MAP))
+    );
 }
 
 #[test]
@@ -197,9 +197,9 @@ fn any_value_round_trip_without_packed_scalar_tags() {
 }
 
 #[test]
-fn any_value_decode_parts_uses_low_kind_nibble() {
-    let decoded = AnyValue::decode_parts(0, TAG_MASK as u8 + 1).expect("masked kind byte");
-    assert_eq!(decoded, AnyValue::null());
+fn any_value_decode_parts_rejects_unknown_kind_bytes() {
+    assert_eq!(AnyValue::decode_parts(0, TAG_LAZY_CONT as u8), None);
+    assert_eq!(AnyValue::decode_parts(0, 0x10), None);
 }
 
 #[test]
@@ -213,8 +213,9 @@ fn any_value_decodes_side_band_parts_without_packed_tags() {
 }
 
 #[test]
-fn any_value_decodes_tagged_heap_bits_from_low_four_bits() {
-    let decoded = AnyValue::decode_tagged_heap_bits(0x2000 | TAG_RESOURCE).expect("heap bits");
+fn any_value_decodes_heap_object_words() {
+    let decoded = AnyValue::decode_tagged_heap_bits(heap_object_word(0x2000 as *const u8, ValueKind::RESOURCE))
+        .expect("heap bits");
 
     assert_eq!(decoded.raw(), 0x2000);
     assert_eq!(decoded.kind(), ValueKind::RESOURCE);
@@ -229,7 +230,7 @@ fn list_cons_stores_canonical_head_kind_in_link_high_bits() {
     assert_eq!(cons.head_kind(), ValueKind::FLOAT);
     assert_eq!(cons.head_value(), AnyValue::float(2.5));
     assert_eq!(cons.tail_bits(), EMPTY_LIST);
-    assert_eq!(cons.link & TAG_MASK, 0);
+    assert_eq!(cons.link & LOW_NIBBLE, 0);
     assert_eq!(
         (cons.link & LIST_LINK_KIND_MASK) >> LIST_LINK_KIND_SHIFT,
         TAG_KIND_FLOAT
@@ -238,7 +239,8 @@ fn list_cons_stores_canonical_head_kind_in_link_high_bits() {
 
 #[test]
 fn list_link_keeps_alias_bit_in_high_metadata() {
-    let tail = alloc_list_cons_raw_kind(3, ValueKind::INT, EMPTY_LIST);
+    let mut heap = test_heap();
+    let tail = list_cell(&mut heap, 3, EMPTY_LIST);
     let mut cons = ListCons::new(7, ValueKind::INT, tail);
 
     assert_eq!(cons.tail_bits(), tail);
@@ -250,13 +252,14 @@ fn list_link_keeps_alias_bit_in_high_metadata() {
     assert_eq!(cons.head_kind(), ValueKind::INT);
     assert_eq!(cons.tail_bits(), tail);
     assert_ne!(cons.link & LIST_LINK_ALIAS_MASK, 0);
-    assert_eq!(cons.link & TAG_MASK, 0);
+    assert_eq!(cons.link & LOW_NIBBLE, 0);
 }
 
 #[test]
 fn list_link_rewrite_preserves_high_metadata() {
-    let old_tail = alloc_list_cons_raw_kind(1, ValueKind::INT, EMPTY_LIST);
-    let new_tail = alloc_list_cons_raw_kind(2, ValueKind::INT, EMPTY_LIST);
+    let mut heap = test_heap();
+    let old_tail = list_cell(&mut heap, 1, EMPTY_LIST);
+    let new_tail = list_cell(&mut heap, 2, EMPTY_LIST);
     let mut cons = ListCons::new(7, ValueKind::ATOM, old_tail);
     cons.mark_aliased();
 
@@ -269,52 +272,8 @@ fn list_link_rewrite_preserves_high_metadata() {
 }
 
 #[test]
-fn forwarding_marker_distinguishable() {
-    for heap_tag in [
-        TAG_LIST,
-        TAG_MAP,
-        TAG_STRUCT,
-        TAG_CLOSURE,
-        TAG_BITSTRING,
-        TAG_PROCBIN,
-        TAG_RESOURCE,
-    ] {
-        assert_ne!(TAG_FWD, heap_tag);
-    }
-}
-
-#[test]
-fn forward_marker_distinguishable_from_pointers() {
-    let addr = 0x1000_u64;
-    let marker = addr | TAG_FWD;
-    for heap_tag in [
-        TAG_LIST,
-        TAG_MAP,
-        TAG_STRUCT,
-        TAG_CLOSURE,
-        TAG_BITSTRING,
-        TAG_PROCBIN,
-        TAG_RESOURCE,
-    ] {
-        assert_ne!(marker, addr | heap_tag);
-    }
-}
-
-#[test]
-fn is_forwarded_detects_marker() {
-    let mut words = [0_u64; 2];
-    let to_space = 0x2000_u64;
-    words[0] = (to_space & !TAG_MASK) | TAG_FWD;
-
-    let found = is_forwarded(words.as_ptr() as *const u8);
-
-    assert_eq!(found, Some(to_space as *const u8));
-}
-
-#[test]
 fn object_size_returns_list_size() {
-    let ptr_with_tag = 0x1000_u64 | TAG_LIST;
-    assert_eq!(object_size(ptr_with_tag), 16);
+    assert_eq!(object_size(heap_object_word(0x1000 as *const u8, ValueKind::LIST)), 16);
 }
 
 #[test]
@@ -328,13 +287,13 @@ fn object_size_dispatches_from_pointer_tag_and_object_local_metadata() {
         ptr::write(addr as *mut u64, value);
     };
 
-    write_word0(3);
+    write_word0(map_header_word(3));
     assert_eq!(
         object_size(heap_object_word(addr, ValueKind::MAP)),
         map_size_for_count(3)
     );
 
-    write_word0(7);
+    write_word0(struct_header_word(7));
     assert_eq!(
         object_size_with_struct_payload(heap_object_word(addr, ValueKind::STRUCT), |schema| {
             assert_eq!(schema, 7);
@@ -343,13 +302,13 @@ fn object_size_dispatches_from_pointer_tag_and_object_local_metadata() {
         struct_size_for_payload(24)
     );
 
-    write_word0((closure_flags_pack(2, 0) as u64) << 32);
+    write_word0(closure_header_word(ClosureDenotationId::INTERNAL, 2, 0, 0));
     assert_eq!(
         object_size(heap_object_word(addr, ValueKind::CLOSURE)),
         closure_size_for_count(2)
     );
 
-    write_word0(17);
+    write_word0(bitstring_header_word(17));
     assert_eq!(
         object_size(heap_object_word(addr, ValueKind::BITSTRING)),
         bitstring_size_for_bit_len(17)
@@ -362,12 +321,11 @@ fn object_size_dispatches_from_pointer_tag_and_object_local_metadata() {
 }
 
 #[test]
-fn immediate_tags_not_used_for_pointers() {
-    let p = alloc_struct(0, 0) as u64;
-    assert_eq!(p & TAG_MASK, TAG_NULL);
-    assert_ne!(p & TAG_MASK, TAG_KIND_INT);
-    assert_ne!(p & TAG_MASK, TAG_KIND_FLOAT);
-    assert_ne!(p & TAG_MASK, TAG_KIND_ATOM);
+fn pointers_leave_the_low_nibble_clear() {
+    let mut heap = test_heap();
+    let schema_id = heap.register_schema(Schema::tuple_of_arity(0));
+    let p = heap.alloc_struct(schema_id) as u64;
+    assert_eq!(p & LOW_NIBBLE, 0);
 }
 
 #[test]
@@ -377,7 +335,7 @@ fn any_value_recognizes_explicit_list_typed_pointer() {
 
     assert_eq!(tv.kind(), ValueKind::LIST);
     assert_eq!(tv.heap_addr(), Some(addr));
-    assert_eq!(tv.heap_object_word(), Some(0x1000 | TAG_LIST));
+    assert_eq!(tv.heap_object_word(), Some(heap_object_word(addr, ValueKind::LIST)));
 }
 
 /// Float rendering parity with Elixir, pinned against real Elixir output.
@@ -1562,4 +1520,41 @@ fn bad_heap_projection_reports_expected_and_found_tags() {
         AnyValueRef::from_heap_object(ValueKind::INT, bytes.as_mut_ptr()),
         Err(AnyValueRefError::ExpectedHeapObjectTag(ValueKind::INT))
     );
+}
+
+/// The literal bit sits above the kind field in every address word, and the
+/// raw address, the kind and the heap/literal distinction are read from it
+/// independently of one another.
+#[test]
+fn the_literal_bit_rides_the_address_word_without_disturbing_kind_or_address() {
+    let packing = AnyValueRefPacking::current();
+    let addr = 0x1234_5670usize as *mut u8;
+    let plain = AnyValueRef::from_heap_object(ValueKind::STRUCT, addr).expect("plain ref");
+    let literal = plain.literal();
+
+    assert!(!plain.is_literal());
+    assert!(literal.is_literal());
+    assert_eq!(literal.tag(), ValueKind::STRUCT, "the kind is read around the bit");
+    assert_eq!(
+        literal.struct_addr(),
+        Ok(addr),
+        "the raw address is read around the bit"
+    );
+    assert_ne!(literal, plain, "the bit is part of the word");
+    assert_eq!(packing.raw_address(literal.raw_word()), addr as usize);
+    assert!(packing.is_literal(literal.raw_word()));
+    assert!(!packing.is_literal(plain.raw_word()));
+    assert_eq!(literal.literal(), literal, "tagging twice is tagging once");
+}
+
+#[test]
+fn a_literal_value_stored_in_a_payload_word_keeps_its_bit_and_reports_the_raw_address() {
+    let addr = 0x4000usize as *mut u8;
+    let literal = AnyValueRef::from_heap_object(ValueKind::CLOSURE, addr)
+        .expect("ref")
+        .literal();
+    let value = AnyValue::HeapRef(literal);
+
+    assert!(AnyValueRefPacking::current().is_literal(value.raw()));
+    assert_eq!(value.heap_addr(), Some(addr));
 }

@@ -142,26 +142,9 @@ impl Backend for JitBackend {
         for (fz_fn_id, func_id) in &meta.fn_ids {
             fn_ptrs.insert(*fz_fn_id, jmod.get_finalized_function(*func_id));
         }
-        // Resolve each zero-cap closure-target stub_func_id to its
-        // finalized code address. `make_process` writes these into the
-        // off-heap singleton's `code_ptr` slot at +8.
-        let static_closure_targets: Vec<(u32, u32, *const u8, u32, fz_runtime::any_value::ClosureDenotationId)> = meta
-            .static_closure_targets
-            .iter()
-            .map(|(cl_sid, fn_id, stub_fid, halt_kind, denotation)| {
-                let ptr = jmod.get_finalized_function(*stub_fid);
-                (*cl_sid, *fn_id, ptr, *halt_kind, *denotation)
-            })
-            .collect();
         let entry_thunk_addr = jmod.get_finalized_function(meta.entry_thunk_id);
         let main_trampoline_addr = jmod.get_finalized_function(meta.main_trampoline_id);
         let drain_dtor_entry_addr = jmod.get_finalized_function(meta.drain_dtor_entry_id);
-        let halt_cont_body_addrs = [
-            jmod.get_finalized_function(meta.halt_cont_body_ids[0]),
-            jmod.get_finalized_function(meta.halt_cont_body_ids[1]),
-            jmod.get_finalized_function(meta.halt_cont_body_ids[2]),
-            jmod.get_finalized_function(meta.halt_cont_body_ids[3]),
-        ];
         let resume_addr = jmod.get_finalized_function(meta.resume_id);
         // Build the module's shared node once; every Process clones the Rc.
         let node = Rc::new(Node::new(meta.atom_names.clone(), meta.frame_sizes.clone()));
@@ -174,11 +157,9 @@ impl Backend for JitBackend {
             user_schemas: meta.user_schemas,
             node,
             diagnostics: meta.diagnostics,
-            static_closure_targets,
             entry_thunk_addr,
             main_trampoline_addr,
             drain_dtor_entry_addr,
-            halt_cont_body_addrs,
             fn_halt_kinds: meta.fn_halt_kinds,
             resume_addr,
         })
@@ -336,9 +317,7 @@ impl Backend for AotBackend {
             meta.fn_ids[&main_fn_id.0],
             meta.fn_halt_kinds.get(&main_fn_id.0).copied().unwrap_or(0),
             meta.main_trampoline_id,
-            meta.halt_cont_body_ids,
             meta.entry_thunk_id,
-            &meta.static_closure_targets,
             atom_blob_data,
             atom_blob_len,
             closure_denotations_data,

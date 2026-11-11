@@ -1,4 +1,4 @@
-//! fz-yxs/fz-st5 — selective-receive park record.
+//! Selective-receive park record.
 //!
 //! Holds the snapshot the receiver needs when it parks on a selective
 //! `receive do … end`. Lives on `Process::wait` while the
@@ -8,15 +8,15 @@
 //! See `docs/receive-matched.md §2.5` / §2.6 for the design rationale.
 
 use crate::any_value::{
-    AnyValueRef, closure_addr_from_tagged, closure_arity, closure_capture_copy, closure_capture_set_ref_word,
-    closure_flags, closure_flags_captured, closure_flags_halt_kind,
+    AnyValueRef, ValueKind, closure_addr_from_tagged, closure_arity, closure_capture_copy,
+    closure_capture_set_ref_word, closure_flags, closure_flags_captured, closure_flags_halt_kind,
 };
 use crate::heap::Heap;
 use crate::process::Process;
 use crate::timer::TimerId;
 use std::ptr::{read, write};
 
-/// fz-yxs/fz-st5 — matcher ABI.
+/// Matcher ABI.
 ///
 /// Called from both fz-compiled code (sender's `fz_send`, receiver's
 /// mailbox scan) and runtime code. It is a leaf in the scheduling sense: it
@@ -47,9 +47,9 @@ pub struct ParkRecord {
     pub matcher_fn: MatcherFn,
     /// Pinned-value snapshot in matcher order.
     pub pinned: Vec<AnyValueRef>,
-    /// One closure pointer per clause body, in source order. `k-1`
+    /// One closure ref per clause body, in source order. `k-1`
     /// from the matcher's return indexes here.
-    pub clause_bodies: Vec<*mut u8>,
+    pub clause_bodies: Vec<AnyValueRef>,
     /// One bound-variable count per clause body, in source order.
     pub clause_bound_counts: Vec<u16>,
     /// Maximum bound-var count across clauses — sizes the `out`
@@ -59,8 +59,8 @@ pub struct ParkRecord {
     /// `Runtime`'s `TimerWheel` understands). `None` means no timer
     /// (`after :infinity` or no `after` clause at all).
     pub after_deadline_ms: Option<u64>,
-    /// After-body closure pointer; null when there is no `after`.
-    pub after_cont: *mut u8,
+    /// After-body closure ref; `None` when there is no `after`.
+    pub after_cont: Option<AnyValueRef>,
     /// Timer wheel id, if a timer was scheduled. The scheduler clears
     /// this when the timer fires or when a matcher-hit cancels.
     pub after_timer_id: Option<TimerId>,
@@ -96,16 +96,21 @@ impl ParkRecord {
     /// template env: [outer_cont, cap0, cap1, ...]
     /// outcome  env: [outer_cont, bound0, ..., cap0, cap1, ...]
     /// ```
-    pub fn outcome_closure(&self, heap: &mut Heap, clause_idx: usize, bound_vals: &[AnyValueRef]) -> *mut u8 {
-        let template = self.clause_bodies[clause_idx];
-        materialize_outcome_closure(heap, template, bound_vals)
+    pub fn outcome_closure(&self, heap: &mut Heap, clause_idx: usize, bound_vals: &[AnyValueRef]) -> AnyValueRef {
+        let template = self.clause_bodies[clause_idx]
+            .closure_addr()
+            .expect("a clause body is a closure ref");
+        // SAFETY: a park record's clause bodies are live closures it owns and the collector keeps current.
+        let outcome = unsafe { materialize_outcome_closure(heap, template, bound_vals) };
+        AnyValueRef::from_heap_object(ValueKind::CLOSURE, outcome).expect("outcome closure ref")
     }
 }
 
-pub fn materialize_outcome_closure(heap: &mut Heap, template: *mut u8, bound_vals: &[AnyValueRef]) -> *mut u8 {
-    let template_bits = template as u64;
-    let template_addr = closure_addr_from_tagged(template_bits).unwrap_or(template);
-    let flags = unsafe { closure_flags(template_addr as *const u8) };
+/// # Safety
+///
+/// `template` must point at a live closure whose first capture is the outer continuation.
+pub unsafe fn materialize_outcome_closure(heap: &mut Heap, template: *mut u8, bound_vals: &[AnyValueRef]) -> *mut u8 {
+    let flags = unsafe { closure_flags(template as *const u8) };
     let template_slots = closure_flags_captured(flags) as usize;
     assert!(
         template_slots >= 1,
@@ -113,15 +118,15 @@ pub fn materialize_outcome_closure(heap: &mut Heap, template: *mut u8, bound_val
     );
     let outcome_slots = template_slots + bound_vals.len();
     let outcome_bits = heap.alloc_closure_slots(
-        unsafe { crate::any_value::closure_denotation(template_addr) },
-        unsafe { closure_arity(template_addr as *const u8) },
+        unsafe { crate::any_value::closure_denotation(template) },
+        unsafe { closure_arity(template as *const u8) },
         outcome_slots,
         closure_flags_halt_kind(flags),
     );
     let outcome = closure_addr_from_tagged(outcome_bits).expect("materialized closure ptr");
 
     unsafe {
-        let template_u8 = template_addr as *const u8;
+        let template_u8 = template as *const u8;
         let outcome_u8 = outcome;
         let code_ptr = read(template_u8.add(8) as *const u64);
         write(outcome_u8.add(8) as *mut u64, code_ptr);

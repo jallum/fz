@@ -22,7 +22,7 @@ through it, and the host wrappers that install it at the engine boundary.
 ## The register
 
 `enable_pinned_reg` is set on the shared host-ISA builder (`host_isa_with` in
-`src/ir_codegen/clif.rs`), which both engines use: the JIT builds it with
+`src/compiler2/native_codegen/clif.rs`), which both engines use: the JIT builds it with
 `is_pic = false`, AOT with `is_pic = true`. With the flag on, CLIF may use
 `get_pinned_reg` / `set_pinned_reg`, and Cranelift drops the register from its
 allocatable set. Which register it is, is architecture-selected by Cranelift, not
@@ -53,13 +53,13 @@ Generated code only ever *reads* the pinned register; it never installs one.
 `set_pinned_reg` appears only in codegen tests — no production CLIF emits it.
 
 Inside a function body, codegen reads the register through `CodegenFn::process_arg`
-(`src/ir_codegen/fn_ctx.rs`), which emits one `get_pinned_reg(I64)` per block and
+(`src/compiler2/native_codegen/fn_ctx.rs`), which emits one `get_pinned_reg(I64)` per block and
 memoizes it. The register value is constant for the whole invocation, so keying
 the memo by block keeps each use dominated by its definition without a cross-block
 dominance argument. Runtime helper functions (BIFs) called from generated code
 take the process as their leading argument; `call1_p` / `call_p` prepend
-`process_arg()` to the BIF's args. (Halt-cont bodies and the static-closure
-fetch read `get_pinned_reg` directly for the same purpose.)
+`process_arg()` to the BIF's args. (Halt-cont bodies read `get_pinned_reg`
+directly for the same purpose.)
 
 Installing the register is the host's job. The Rust-side wrappers in
 `runtime/src/pinned_abi.rs` — `call1` and `call2` — save the host's pinned
@@ -108,7 +108,7 @@ AOT path (`runtime/src/aot_shim.rs`); the four call sites are the only users of
 
 With the base pinned, a loop back edge spends one reduction by touching
 `reductions_remaining` directly through the register plus the ABI offset
-(`emit_back_edge_yield_check` in `src/ir_codegen/terminator.rs`):
+(`emit_back_edge_yield_check` in `src/compiler2/native_codegen/terminator.rs`):
 
 ```text
 p         = get_pinned_reg.i64

@@ -204,7 +204,7 @@ receiver's lock for the pending-match decision and the in-queue.
 
 `delivery` is declared before `heap` in `Process`, so a process dropped with
 gifts still queued drops them first: each `GiftSegment` returns its block to
-the pool (or the allocator, for an exact block) and releases its stubs. A receiver left parked
+the pool (a table-sized block) or the allocator (an exact block) and releases its stubs. A receiver left parked
 when the run ends is torn down this way, and `fz.runtime.run_ended` reports that
 the pool got every block back ([runtime telemetry](runtime-telemetry.md)). With
 one worker the lock is never contended.
@@ -237,7 +237,10 @@ wheel. The JIT `Runtime`, the AOT `AotScheduler`, and the interpreter's
 `BackendSchedulerAdapter` each hold one and implement `Scheduler`: `core()`
 exposes it, `wake_expired(pid, timer)` says how an expired timer wakes that
 path's process (`fire_after_timer` for JIT and AOT; the interpreter queues the
-parked receive's `after` entry), and `about_to_sleep(wait)` observes a sleep.
+parked receive's `after` entry), `observe(event)` receives every runtime event the core reports (see
+[runtime telemetry](runtime-telemetry.md)), and
+`run_destructor(process, closure, payload)` runs one resource destructor closure
+as fz code (see [`end_quantum`](#the-step-after-a-quantum)).
 
 `SchedulingCore::make_runnable(pid, &mut state)` is the one way a process
 becomes Ready. It takes the process's state word, moves New, Running or Blocked
@@ -255,7 +258,7 @@ loop:
   wake every process whose timer expired (each scheduler makes the woken
                                           ones runnable through its core)
   if a process is runnable: return it
-  if a timer is pending:   about_to_sleep(wait); sleep until its deadline
+  if a timer is pending:   observe(SchedulerSlept(wait)); sleep until its deadline
   else:                    return None   # idle
 ```
 
@@ -271,6 +274,43 @@ send cancels it, and an expired one queues the receive's `after` entry. The
 interpreter's macro path (`keepalive_pid`) leaves its finished process Blocked
 (off the queue, holding no timer) until the next entry queues it, so the core
 reports idle once only that process remains.
+
+
+### The step after a quantum
+
+`sched_core::end_quantum(scheduler, process)` is the one step that follows every
+quantum on the JIT and AOT paths, in every state. It reads how the quantum ended off the
+process (`Process::quantum_end`, a `Disposition`: runnable means `Requeue`, `Blocked`
+means `Parked`, anything else means `Exited`), collects when `Heap::should_gc` holds and the
+process did not exit, clears the quantum's yield reasons, and, for a halted process,
+marks it `Exited` without collecting it and releases every stub on its MSO chain
+with `Heap::release_resources_at_exit`, since nothing is live. Nothing a
+collection would forward is read after the exit, so the heap is released as it
+stands. The sweep (`procbin::mso_sweep`) decides each stub the same way
+after a collection and at exit: a survivor is relinked, a dead ProcBin releases
+its SharedBin, and a dead Resource whose last reference this was queues
+`(closure, payload)` on `heap.pending_dtors`. A collection first forwards the
+destructor closure of every unreached, unclaimed stub, with what it captures, so
+the closure outlives the from-space.
+
+`end_quantum` then drains `pending_dtors` oldest first, calling
+`Scheduler::run_destructor` for each and counting it in
+`Process::dtors_dispatched`. A destructor runs to completion under a fresh
+reduction budget; one that yielded would overwrite the process's own
+continuation and is a fault. The JIT enters `fz_drain_dtor_entry` through
+`pinned_abi::call2`, the AOT scheduler does the same through the address
+`fz_aot_set_drain_dtor_entry` registered, and the interpreter interprets the
+closure. It returns the `Disposition` (`Requeue`, `Parked`, `Exited`) the driver acts on,
+and reports what it did through `Scheduler::observe`: the `Collection` it
+performed, right after collecting and before any destructor runs, and the
+exited process, after its destructors have run so `dtors_dispatched` counts the
+ones the exit dispatched. The interpreter calls it too, after a park or an exit; it
+never yields. A parked receive's environment and continuations live in the
+interpreter, so `Scheduler::collect_heap` (default: `Process::collect` with no
+transient roots) is overridden to pass their heap refs as the transient roots
+and write the forwarded refs back. A process a caller lends the interpreter
+(`run_backend_entry_on_process`) ends without `end_quantum`: its caller holds
+refs into its heap, so it is neither collected nor swept.
 
 ## Mid-flight Reduction Yield
 
@@ -327,18 +367,26 @@ alloc telemetry then measures only the task's own execution.
 ## Halt continuations
 
 When a resumed body finishes, it calls a halt continuation that records the final
-value into the process. These are per-process singletons in
-`halt_cont_singletons: [*mut u8; 4]`, indexed by return repr kind: `0=ValueRef`,
-`1=RawInt`, `2=RawF64`, `3=RawAtom`. Each slot is a closure whose code pointer is
-the matching `fz_halt_cont_body_*` Cranelift body. The JIT pre-populates them at
-process construction; under AOT a slot may be null at first use, so
-`fz_get_halt_cont(process, body_addr, kind)` lazily allocates it. The closure
-header packs `halt_kind` into its flags (low 14 bits = capture count, high 2 bits =
-halt kind), which is how `fz_entry_thunk` selects the right halt continuation for
-the inner body.
+value into the process. There are four per program, one per return repr kind:
+`0=ValueRef`, `1=RawInt`, `2=RawF64`, `3=RawAtom`. Each is a zero-capture closure
+whose code pointer is the matching `fz_halt_cont_body_*` Cranelift body. Codegen
+emits them once, as read-only data objects (`fz_halt_cont_strict`,
+`fz_halt_cont_i64`, `fz_halt_cont_f64`, `fz_halt_cont_atom`), and code takes their
+address directly. The closure header packs `halt_kind` into its flags (low 14 bits
+= capture count, high 2 bits = halt kind), which is how `fz_entry_thunk` selects
+the right halt continuation for the inner body.
 
-The singleton buffers are off-heap (`static_closure_bufs`), so the per-process GC
-arena does not own them and they live for the process's lifetime.
+A thin function reference (a `MakeFnRef`, a function value with no captures) is
+the same kind of object: one read-only data object per zero-capture callable
+boundary (`fz_static_closure_<boundary id>`), emitted once, whose code pointer is
+the boundary's function. Every process of the program, on the JIT and under AOT,
+holds the same address. The interpreter has no such objects.
+
+These objects are not in any process heap. The collector and deep copy
+recognize them by the literal bit every reference to one carries (see
+`any-value.md`, "The literal bit"): a literal passes through by pointer and is
+never written. A write to one faults. They are not heap allocations, so they never appear in
+heap alloc stats.
 
 ## What the scheduler owns vs. what closures carry
 
@@ -376,6 +424,15 @@ arena being collected, not a root.
   whole message in one block (800032 bytes for the 50000-element log), a hit gifts exactly the bound cells (48 bytes for `[1, 2, 3]`),
   the receiver is woken once, and its own heap allocates no list cells for the
   delivery.
+- `runtime/src/sched_core_test.rs` (`end_quantum` tests) — a resource freed by a
+  collection has its destructor closure, captures included, dispatched at the
+  same boundary; a held resource is left alone; a halted process dispatches every
+  destructor without collecting; a claimed resource dispatches none; a
+  destructor that yields is a fault.
+- `cargo test --test fixture_matrix a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path`
+  — fixtures 00906 and 00907: `process_exited` reports one dispatched destructor
+  for the resource dropped mid-run and three for the resources held at exit, on
+  `run` and `interp`; both fixtures run on all three paths for output parity.
 - `runtime/src/sched_test.rs` — the probe, drain and delivery primitives: a hit
   leaves the receiver's heap untouched until it runs, two bindings of one cell
   copy it once, a second sender does not re-probe a matched receive, a dropped
@@ -389,6 +446,15 @@ arena being collected, not a root.
   `run` and `interp`, each one block of exactly its measured bytes; the run ends with them still queued and `run_ended` shows
   the pool's outstanding count back at its starting value. The fixture runs on
   all three paths for output parity.
+- `cargo test --test fixture_matrix many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued`
+  — fixture 00910, on `run` and `interp`: a hundred senders into a guarded
+  receive; fifty misses, the one hit, forty-nine misses, each miss one 80-byte
+  block and the hit 48 bytes, with the same gift bytes on both paths and the
+  pool census back at its starting value.
+- `cargo test --test fixture_matrix a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_path`
+  — fixture 00911, on `run` and `interp`: a 20000-element list passed for four
+  rounds; every message is a hit gifting 320016 bytes in one block. Both
+  fixtures run on all three paths for output parity.
 - `cargo test --test fixture_matrix spawn_with_captures` — a spawned task is
   resumed as an entry thunk through `fz_resume`, the same verb a continuation
   uses.

@@ -20,6 +20,14 @@ fz2 --log-telemetry <path> interp prog.fz     # JSONL event stream
 fz2 --emit=stats            interp prog.fz    # event counts by name, on exit
 ```
 
+A built binary logs its own run through an environment variable, so one binary
+runs with or without telemetry and its arguments stay untouched. The compile
+events and the run's land in one file:
+
+```
+fz2 --log-telemetry t.jsonl build prog.fz -o prog && FZ_LOG_TELEMETRY=t.jsonl ./prog
+```
+
 `tools/distill-telemetry.exs` sums a stream's spans into where the time went:
 by span name, by job kind, by job subject with functions named, by re-run
 count, and by the fact that woke each re-run. The loop that uses it is

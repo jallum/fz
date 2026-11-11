@@ -18,28 +18,29 @@ use crate::compiler2::{
     ControlDestination, ExecutableDispatch, ValueId,
 };
 use crate::compiler2::{ExecutableKey, FunctionId, RunFailure};
-use crate::exec::runtime::emit_send_probe;
+use crate::exec::runtime::emit_runtime_event;
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::CallableShape;
-use crate::telemetry::{Telemetry, TelemetryExt as _};
+use crate::telemetry::Telemetry;
 use crate::types::ClosureTarget;
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged};
 use fz_runtime::delivery::Delivery;
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule};
-use fz_runtime::heap::Schema;
 use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
+use fz_runtime::heap::{GcStats, Schema};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_empty,
     fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref,
     fz_struct_get_named_field_ref,
 };
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
-use fz_runtime::procbin::mso_drop_all_deferred;
-use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
+use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Process, ProcessState};
 use fz_runtime::sched::{ProbeOutcome, SendProbe, drain_in_queue, gift_match, gift_message, self_send};
-use fz_runtime::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
+use fz_runtime::sched_core::{
+    Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
+};
+use fz_runtime::telemetry::{RunEnded, RuntimeEvent};
 use fz_runtime::timer::TimerId;
-use std::time::Duration;
 
 enum BackendRunStep {
     Done(AnyValue),
@@ -117,7 +118,7 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
             backend_executable_ref(program, types, program.entry())?,
             Vec::new(),
         )?;
-        let completions = drive_backend_until_idle(
+        drive_backend_until_idle(
             &mut runtime,
             types,
             transport,
@@ -128,25 +129,17 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
             &module,
             BackendRun::Program,
         )?;
-        if runtime.process_ref(MAIN_PID).is_some_and(|main| main.failed) {
+        let main = runtime.process_ref(MAIN_PID);
+        if main.is_some_and(|main| main.failed) {
             return Err(RunFailure::MainFailed);
         }
-        let halt_val = completions
-            .iter()
-            .rev()
-            .find_map(|(pid, value)| {
-                (*pid == MAIN_PID).then(|| {
-                    runtime
-                        .process_ref(*pid)
-                        .map(|task| value_to_halt(task as *const Process as *mut Process, *value))
-                })
-            })
-            .flatten()
-            .unwrap_or(0);
-        Ok(halt_val)
+        Ok(main.map_or(0, |main| main.halt_value))
     })();
     drop(runtime);
-    crate::exec::runtime::emit_run_ended(tel, pool_outstanding_before_run);
+    emit_runtime_event(
+        tel,
+        RuntimeEvent::RunEnded(RunEnded::sample(pool_outstanding_before_run)),
+    );
     outcome
 }
 
@@ -181,7 +174,7 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
     };
     let result = (|| {
         runtime.enqueue_backend_entry(MAIN_PID, backend_executable_ref(program, types, program.entry())?, args)?;
-        let completions = drive_backend_until_idle(
+        drive_backend_until_idle(
             &mut runtime,
             types,
             transport,
@@ -191,12 +184,8 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
             program,
             &module,
             BackendRun::Macro,
-        )?;
-        completions
-            .into_iter()
-            .rev()
-            .find_map(|(pid, value)| (pid == MAIN_PID).then_some(value))
-            .ok_or_else(|| "backend macro entry produced no completion".to_string())
+        )?
+        .ok_or_else(|| "backend macro entry produced no completion".to_string())
     })();
     let process = runtime
         .take_process(MAIN_PID)
@@ -277,11 +266,9 @@ impl IrInterpRuntime {
         let pid = self.next_pid();
         let user_schemas = self.schemas();
         let node = Rc::clone(&self.node);
-        let consts = CompiledModuleConsts::empty();
-        let mut child = Box::new(Process::from_consts(
+        let mut child = Box::new(Process::with_node(
             node,
             user_schemas,
-            &consts,
             pid,
             DEFAULT_REDUCTIONS_PER_QUANTUM,
         ));
@@ -343,7 +330,6 @@ impl IrInterpRuntime {
         msg_ref: AnyValueRef,
     ) -> Result<(), String> {
         let Some(receiver) = self.tasks.get(receiver_pid) else {
-            tel.raw_event1(&["fz", "runtime", "send_to_unknown_pid"], receiver_pid);
             return Ok(());
         };
         if receiver.state == ProcessState::Exited {
@@ -374,7 +360,7 @@ impl IrInterpRuntime {
             None => gift_message(sender, &mut delivery, *receiver_pid, msg_ref),
         };
         drop(delivery);
-        emit_send_probe(tel, &probe);
+        emit_runtime_event(tel, RuntimeEvent::SendProbe(&probe));
         if probe.outcome == ProbeOutcome::Hit {
             self.make_runnable(*receiver_pid);
         }
@@ -525,8 +511,50 @@ impl<T: Telemetry + ?Sized> Scheduler for BackendSchedulerAdapter<T> {
         }
     }
 
-    fn about_to_sleep(&mut self, wait: Duration) {
-        unsafe { &*self.tel }.raw_event1(&crate::exec::runtime::SCHEDULER_SLEPT, &wait);
+    fn observe(&mut self, event: RuntimeEvent<'_>) {
+        emit_runtime_event(unsafe { &*self.tel }, event);
+    }
+
+    /// Collect `process` with the heap refs of its parked receive as the
+    /// transient roots, and write the forwarded refs back. Every other
+    /// interpreter-held value of a process is consumed before its quantum
+    /// ends, so a process that is not parked holds nothing across the
+    /// boundary.
+    fn collect_heap(&mut self, process: &mut Process) -> GcStats {
+        let runtime = unsafe { &mut *self.runtime };
+        assert!(
+            !runtime.backend_resume.contains_key(&process.pid),
+            "an interpreted quantum ends with its resume consumed"
+        );
+        let Some(park) = runtime.backend_parked.get_mut(&process.pid) else {
+            return process.collect(&mut []);
+        };
+        let mut held = park.heap_refs_mut();
+        let mut roots: Vec<AnyValueRef> = held.iter().map(|held| **held).collect();
+        let stats = process.collect(&mut roots);
+        for (held, forwarded) in held.iter_mut().zip(roots) {
+            **held = forwarded;
+        }
+        stats
+    }
+
+    /// Interpret the destructor closure on `process`. A failure is recorded
+    /// for `take_backend_callback_error`, which the run loop surfaces.
+    fn run_destructor(&mut self, _process: &mut Process, closure: u64, payload: u64) {
+        let runtime = unsafe { &mut *self.runtime };
+        let ran = run_pending_dtor(
+            runtime,
+            unsafe { &mut *self.types },
+            unsafe { &*self.transport },
+            unsafe { &*self.tel },
+            unsafe { &*self.program },
+            unsafe { &*self.module },
+            closure,
+            payload,
+        );
+        if let Err(error) = ran {
+            runtime.record_callback_error(error);
+        }
     }
 }
 
@@ -622,8 +650,8 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
     program: &BackendProgram,
     module: &Module,
     run: BackendRun,
-) -> Result<Vec<(u32, AnyValue)>, String> {
-    let mut completions = Vec::new();
+) -> Result<Option<AnyValue>, String> {
+    let mut kept_completion = None;
     let output = OutputContext::new(output);
     let mut scheduler_adapter = BackendSchedulerAdapter {
         runtime,
@@ -667,61 +695,34 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
         runtime.current_proc = proc_ptr;
         match run_backend_resume(runtime, types, transport, tel, program, module, resume)? {
             BackendRunStep::Done(value) => {
-                completions.push((pid, value));
                 if run == BackendRun::Macro && pid == MAIN_PID {
-                    // Kept alive for its next entry: off the run queue until
-                    // that entry queues it.
+                    // Lent by a caller that holds refs into its heap, so no
+                    // collection may move it. Kept alive for its next entry:
+                    // off the run queue until that entry queues it.
+                    kept_completion = Some(value);
                     runtime.set_process_state(pid, ProcessState::Blocked);
                     continue;
                 }
-                let exit = ProcessExit::Completed(value);
-                exit_backend_process(runtime, types, transport, tel, program, module, pid, proc_ptr, exit)?;
+                unsafe { (*proc_ptr).halt_value = value_to_halt(proc_ptr, value) };
             }
-            BackendRunStep::Failed => {
-                let exit = ProcessExit::Failed;
-                exit_backend_process(runtime, types, transport, tel, program, module, pid, proc_ptr, exit)?;
-            }
-            BackendRunStep::Blocked => {
-                runtime.set_process_state(pid, ProcessState::Blocked);
+            BackendRunStep::Failed => {}
+            BackendRunStep::Blocked => runtime.set_process_state(pid, ProcessState::Blocked),
+        }
+        let disposition = unsafe { end_quantum(&mut *adapter, &mut *proc_ptr) };
+        if let Some(error) = runtime.take_callback_error() {
+            return Err(error);
+        }
+        match disposition {
+            Disposition::Exited | Disposition::Parked => {}
+            Disposition::Requeue => {
+                return Err(format!(
+                    "interpreted process {pid} yielded; the interpreter never yields"
+                ));
             }
         }
     }
 
-    Ok(completions)
-}
-
-/// How an interpreted process ended.
-enum ProcessExit {
-    Completed(AnyValue),
-    Failed,
-}
-
-/// End process `pid`: run its pending destructors, record a completed
-/// process's halt value, report its exit, and mark it exited.
-#[allow(clippy::too_many_arguments)]
-fn exit_backend_process<T: Telemetry + ?Sized>(
-    runtime: &mut IrInterpRuntime,
-    types: &mut crate::compiler2::Types,
-    transport: &TransportStore,
-    tel: &T,
-    program: &BackendProgram,
-    module: &Module,
-    pid: u32,
-    proc_ptr: *mut Process,
-    exit: ProcessExit,
-) -> Result<(), String> {
-    unsafe {
-        mso_drop_all_deferred(&mut (*proc_ptr).heap);
-    }
-    drain_pending_dtors_backend(runtime, types, transport, tel, program, module)?;
-    unsafe {
-        if let ProcessExit::Completed(value) = exit {
-            (*proc_ptr).halt_value = value_to_halt(proc_ptr, value);
-        }
-        ExitRecord::emit(tel, &pid, &*proc_ptr);
-    }
-    runtime.set_process_state(pid, ProcessState::Exited);
-    Ok(())
+    Ok(kept_completion)
 }
 
 fn run_backend_resume<T: Telemetry + ?Sized>(
@@ -3304,48 +3305,41 @@ fn make_closure(
     make_closure_on_proc(runtime.cur_proc(), code, denotation, arity, captures)
 }
 
-fn drain_pending_dtors_backend<T: Telemetry + ?Sized>(
+fn run_pending_dtor<T: Telemetry + ?Sized>(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
     tel: &T,
     program: &BackendProgram,
     module: &Module,
+    closure_bits: u64,
+    payload_ref: u64,
 ) -> Result<(), String> {
-    loop {
-        let entry = {
-            let process = unsafe { &mut *runtime.cur_proc() };
-            process.heap.pending_dtors.pop_front()
-        };
-        let Some((closure_bits, payload_ref)) = entry else {
-            break;
-        };
-        let closure_ref = AnyValueRef::from_raw_word(closure_bits)
-            .map_err(|err| format!("backend dtor drain: invalid closure ref {closure_bits:#x}: {err:?}"))?;
-        let closure = RuntimeAnyValue::heap_ptr(
-            closure_ref
-                .closure_addr()
-                .map_err(|err| format!("backend dtor drain: ref is not a closure: {err:?}"))?,
-            ValueKind::CLOSURE,
-        );
-        let (fn_id, captures) = unpack_pending_dtor_closure(closure)?;
-        let payload = interp_value_from_ref_word(payload_ref, "backend dtor drain payload")?;
-        let (target, args) =
-            construction_wrapper_invocation(runtime, types, transport, program, module, fn_id, &captures, &[payload])?;
-        let _ = run_backend_resume(
-            runtime,
-            types,
-            transport,
-            tel,
-            program,
-            module,
-            BackendResumeEntry::Executable {
-                executable: target,
-                args,
-                continuations: Vec::new(),
-            },
-        )?;
-    }
+    let closure_ref = AnyValueRef::from_raw_word(closure_bits)
+        .map_err(|err| format!("backend dtor drain: invalid closure ref {closure_bits:#x}: {err:?}"))?;
+    let closure = RuntimeAnyValue::heap_ptr(
+        closure_ref
+            .closure_addr()
+            .map_err(|err| format!("backend dtor drain: ref is not a closure: {err:?}"))?,
+        ValueKind::CLOSURE,
+    );
+    let (fn_id, captures) = unpack_pending_dtor_closure(closure)?;
+    let payload = interp_value_from_ref_word(payload_ref, "backend dtor drain payload")?;
+    let (target, args) =
+        construction_wrapper_invocation(runtime, types, transport, program, module, fn_id, &captures, &[payload])?;
+    run_backend_resume(
+        runtime,
+        types,
+        transport,
+        tel,
+        program,
+        module,
+        BackendResumeEntry::Executable {
+            executable: target,
+            args,
+            continuations: Vec::new(),
+        },
+    )?;
     Ok(())
 }
 
