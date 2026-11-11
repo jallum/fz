@@ -1,0 +1,16 @@
+#---
+# purpose: "Map.update/4 applies the function to a present key's value, puts the default for an absent key without calling the function, and tallies with Enum.reduce"
+# oracle: 01067_map_update_puts_a_default_or_applies_the_function.oracle.exs
+#---
+def sorted(map), do: Enum.sort(Map.to_list(map))
+
+def main() do
+  dbg(sorted(Map.update(%{a: 1, b: 2}, :a, 0, fn v -> v + 10 end)))
+  dbg(sorted(Map.update(%{a: 1}, :b, 0, fn v -> v + 10 end)))
+  dbg(Map.update(%{}, :a, 7, fn v -> v + 10 end))
+  dbg(sorted(Map.update(%{a: 1}, :b, :default, fn _ -> raise "the function must not be called" end)))
+  dbg(Map.update(%{"x" => 1}, "x", 0, fn v -> v * 5 end))
+  dbg(Map.update(%{"x" => 1}, "y", 0, fn v -> v * 5 end))
+  pairs = [{"a", 1}, {"b", 2}, {"a", 3}, {"c", 4}, {"b", 5}]
+  dbg(Enum.reduce(pairs, %{}, fn {k, n}, acc -> Map.update(acc, k, n, &(&1 + n)) end))
+end
