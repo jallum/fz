@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-3sy.2",
     "fz-sc8.19"
   ],
   "created": "2026-11-08T16:53:26Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "An activation key names only the literals a use can tell apart",
   "type": "task",
-  "updated_at": "2026-11-08T16:53:26Z"
+  "updated_at": "2026-11-11T15:21:29Z"
 }
