@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-11T21:19:30Z",
   "created": "2026-11-11T15:26:17Z",
   "description": "runtime/src/sched_core.rs end_quantum collects whenever process.needs_boundary_gc(), including at GcBoundary::Exit, and then marks the process Exited and calls release_resources_at_exit. An exit collection pool-allocates a fresh to-space tip (Heap::collect, pick_block_capacity(live_baseline.max(SIZE_TABLE[0]))) and copies everything live, for a heap that is about to be released. Fixture 00910 shows one on run (the receiver's exit collection).\n\nBefore building, confirm what an exit collection is for today: release_resources_at_exit sweeps the MSO chain with no to-space and queues every resource closure, which drain_destructors runs while the heap is still alive; the halt value is read before end_quantum. If nothing needs it, the exit boundary skips the collection. Predict which gc events disappear (fixture_matrix collection pins) before building.\n\nDone when: no collection happens at the exit boundary on any path; destructor fixtures 00906/00907 still print their lines on interp, run and build; every pin that moves goes down and the commit names each with its mechanism; full gate green (cargo fmt --all -- --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace --all-targets --no-fail-fast -- --test-threads=1; cargo test --workspace --doc); docs that describe exit collections (reduction-yielding.md, runtime-telemetry.md, guides/memory.html) updated; commit in Why / What changed / Verification form; no co-author trailer, no attribution line.",
   "id": "fz-gl6.17",
   "labels": [],
   "parent": "fz-gl6",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "A process that is exiting is not collected",
   "type": "task",
-  "updated_at": "2026-11-11T15:26:17Z"
+  "updated_at": "2026-11-11T21:19:30Z"
 }
