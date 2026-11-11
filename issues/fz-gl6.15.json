@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T15:26:17Z",
+  "description": "runtime/src/heap/gc/forward.rs: a root holding a boxed scalar (an AnyValueRef whose tag is_scalar, not a literal) is copied by copy_scalar_box_to_space, which calls copy_object_to_space and writes no forwarding marker; cheney_forward_object, the heap-object path beside it, checks forwarded_target first and calls write_forwarding_marker after copying. So two roots naming one scalar box get two 16-byte copies instead of sharing one, and copied_bytes counts both.\n\nDone when: scalar boxes are forwarded like every other object (check forwarded_target, write the marker), ideally by routing them through the same forwarding function rather than a second copier; a heap test with two roots on one scalar box asserts both roots read the same to-space address and copied_bytes counts 16 once. Full gate green (cargo fmt --all -- --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace --all-targets --no-fail-fast -- --test-threads=1; cargo test --workspace --doc); any pin that moves only goes down and the commit names each with its mechanism; commit in Why / What changed / Verification form; no co-author trailer, no attribution line.",
+  "id": "fz-gl6.15",
+  "labels": [],
+  "parent": "fz-gl6",
+  "priority": 3,
+  "status": "open",
+  "title": "Copying a root's scalar box leaves a forwarding marker",
+  "type": "task",
+  "updated_at": "2026-11-11T15:26:17Z"
+}
