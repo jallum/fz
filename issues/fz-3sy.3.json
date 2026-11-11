@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-3sy.2"
+  ],
   "blocks": [],
   "created": "2026-11-11T15:21:28Z",
   "description": "%Pt{x: 1, y: 2} == %{__struct__: Pt, x: 1, y: 2} is true; compare_values (ir_runtime.rs:2700) and the map hash read through the layout-blind view. A value prints as %Name{...} exactly when its __struct__ names a struct whose schema the runtime holds and its keys are exactly that schema's fields; otherwise it prints as a map (Elixir oracle confirmed). Oracle fixtures on all three paths.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Equality, ordering and printing of a struct are layout-blind",
   "type": "task",
-  "updated_at": "2026-11-11T15:21:28Z"
+  "updated_at": "2026-11-11T15:21:30Z"
 }
