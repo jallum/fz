@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.115"
+  ],
   "created": "2026-11-11T19:53:18Z",
   "description": "receive do after 10 -\u003e IO.puts(\"t\") end (no message clauses) fails on interp, run and build with error[internal/post-resolution-leftover]: quoted function decode failed: invalid any value ref: ExpectedTag { expected: ValueKind(1), found: ValueKind(3) }, at \u003cgenerated\u003e. Reproduces on ad21e1635 and ed7568bd9. A receive with at least one clause plus after works (fixture 00243). Elixir accepts the after-only form; it is the idiomatic sleep. Find which quoted-function decode expects a list where the after-only form supplies something else, fix it at its source, and add an oracle fixture on all three paths.",
   "id": "fz-sc8.114",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A receive with only an after clause compiles",
   "type": "bug",
-  "updated_at": "2026-11-11T19:53:18Z"
+  "updated_at": "2026-11-11T19:53:49Z"
 }
