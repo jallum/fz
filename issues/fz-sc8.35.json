@@ -6,6 +6,7 @@
   "blocks": [
     "fz-sc8.36"
   ],
+  "closed_at": "2026-11-11T19:01:40Z",
   "created": "2026-10-22T21:46:10Z",
   "description": "In Elixir a module name is an atom and can be called through (`m.compare(a, b)`):\n\n    defmodule Cmp do\n      def compare(a, b), do: Kernel.compare(a, b)\n    end\n    def via(m, a, b), do: m.compare(a, b)\n    def main(), do: dbg(via(Cmp, 1, 2))\n\nElixir prints :lt. The first half, a module name in value position is the atom Elixir.\u003cName\u003e, is its own ticket (fz-sc8.72), split off 2026-11-07 because fz-sc8.61 needs it. This ticket keeps the second half: a remote call whose module is only known at runtime (resolved through the analysis where the value is known; a genuinely unknown module needs a runtime lookup or a loud refusal). Investigate before designing: what the concordant ticket fz-sc8.25 (one module resolution for qualified calls) changes, and how this interacts with protocols.\n\nNeeded by the Enum extremes ticket for the module-sorter form (`Enum.max(dates, Date)`). Not needed by the distiller.",
   "id": "fz-sc8.35",
@@ -18,7 +19,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "A module name is a value, and a call through it reaches that module",
   "type": "feature",
   "updated_at": "2026-11-11T19:01:40Z"
