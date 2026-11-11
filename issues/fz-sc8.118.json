@@ -4,14 +4,15 @@
   "blocks": [
     "fz-sc8.19"
   ],
+  "closed_at": "2026-11-11T23:01:28Z",
   "created": "2026-11-11T21:55:58Z",
   "description": "tools/distill-telemetry.exs:221 calls Map.update(acc, reason, n, \u0026(\u00261 + n)); fz has Map.update!/3 but not update/4, so the distiller fails with error[resolve/unknown-import]: module Map does not export update/4. Elixir: update(map, key, default, fun) puts default when key is absent, else fun.(existing). Build it in Elixir's shape in lib/map.fz with docs and an oracle fixture on interp, run and build.",
   "id": "fz-sc8.118",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Map.update/4 exists",
   "type": "feature",
-  "updated_at": "2026-11-11T21:56:02Z"
+  "updated_at": "2026-11-11T23:01:28Z"
 }
