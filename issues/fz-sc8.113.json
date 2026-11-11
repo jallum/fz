@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T19:53:17Z",
+  "description": "Elixir's System.halt(\"slogan\") writes an erl_crash.dump with the slogan and exits 1; System.halt(:abort) aborts the VM with a core dump. fz-sc8.7 builds integer statuses only; these two raise FunctionClauseError until built. Decide fz's analogue of a crash dump (or document its absence) and build both on interp, run and build against elixir.",
+  "id": "fz-sc8.113",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "System.halt/1 with a binary slogan or :abort",
+  "type": "feature",
+  "updated_at": "2026-11-11T19:53:17Z"
+}
