@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T21:55:58Z",
+  "description": "This two-line program never finishes compiling on interp (killed at 15-30 s; the full distiller ran 36 min at 100% CPU, 1.7 GB), on every snapshot that has Stream.map/2, including d9c9a842c from before fz-sc8.99:\n\n  Enum.to_list(Stream.map([1], \u0026(\u00261)))\n  Enum.to_list(Map.put(%{}, 1, 1))\n\nElixir runs it. Each line alone compiles in 0.1 s, and so does the pair with a literal map (%{1 =\u003e 2}). It takes an Enum call over a Stream.map plus an Enum call over a map built at run time (Map.put, Map.new) that goes through Enumerable.Map.reduce; Enum.sum(Map.values(m)) and map_size(m) do not trigger it. Enum.count, Enum.sum and Enum.to_list all do.\n\nTelemetry (activation_analysis.defined per function, 44174db13) at 10 s / 30 s: Stream.compose/2#lambda@0/2 365/500, Enumerable.Stream.reduce/3 143/197, List.reduce_cont/3 116/159, Enumerable.List.reduce/3 98/138, Map.reduce_cont/5 86/128, Range.reduce_cont/6 78/122 (Range is never used), Map.reduce/3 89/121; 1739/2389 activations total. Throughput falls: 14.5k records in 10 s, 18.9k in 30 s. Activations keep being minted: a key dimension is not bounded.\n\nThe repro is the fixture; acceptance includes a minimal predicted job trace. Blocks fz-sc8.19: the distiller hits it as soon as it resolves (after Map.update/4).",
+  "id": "fz-sc8.117",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "An Enum call over a Stream next to one over a built map finishes compiling",
+  "type": "bug",
+  "updated_at": "2026-11-11T21:55:58Z"
+}
