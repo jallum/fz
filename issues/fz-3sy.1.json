@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T15:21:28Z",
+  "description": "Every runtime map operation accepts the schema-backed (struct) layout through one layout-blind read: the 23 layout-dependent sites (ir_runtime.rs 7, heap/imp.rs 8, any_value.rs 5, failure.rs 3), with __struct__ as one more key. Reads: Map.get/fetch/keys/values, map_size, iteration. Writes: update syntax %{p | x: 9} keeps the layout (today it silently yields %{x: 9}: alloc_map_destination copies a base only when it is a MAP, heap/imp.rs:437) and raises KeyError on a key the value lacks (%{p | z: 0}, as Elixir). Map.put/Map.merge with a new key moves the value to map layout with __struct__ a real key (today Map.put on a struct is a host panic, map_put map: ExpectedTag); Map.delete; Map.from_struct/1. Folds fz_struct_module's second branch, the struct special cases in the atom-key reads (ir_runtime.rs:1731, 1756) and failure.rs's map-only exception_field into the one read. Behaviour-neutral for working programs: the types still keep structs off map paths until S2. Must land before S2 because ty_is_map selects map-only runtime fast paths. Oracle fixtures on interp, run and build; A/B the existing map fixtures for cost.",
+  "id": "fz-3sy.1",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 2,
+  "status": "open",
+  "title": "The runtime reads and writes a struct as a map",
+  "type": "task",
+  "updated_at": "2026-11-11T15:21:28Z"
+}
