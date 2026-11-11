@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-3sy.4",
     "fz-sc8.34",
     "fz-sc8.35"
   ],
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "Enum's extremes take Elixir's whole surface",
   "type": "feature",
-  "updated_at": "2026-10-22T21:46:11Z"
+  "updated_at": "2026-11-11T19:01:40Z"
 }
