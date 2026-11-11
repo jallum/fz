@@ -7,7 +7,7 @@
     "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:42Z",
-  "description": "No exit primitive exists in runtime/src. Drivers return to the CLI which calls exit (cli.rs:48-63); AOT fz_aot_run_main returns 0/1 (runtime/src/aot_shim.rs:617-623). System.halt(n) must stop the scheduler, flush stdout (Rust LineWriter is not flushed by process::exit), and exit with n. Used by the distiller's check! on a census mismatch.\n\n## Design review (2026-10-17)\nFold: a fault and a halt are both 'the root process ended with a status'. One ExitStatus (normal / halt(n) / fault(reason)) replaces Process.exit_fault (12 uses in src and runtime) and is read once by each driver; cli.rs maps it to the process exit code. main's discarded return value stays discarded (Elixir scripts exit 0).",
+  "description": "System.halt/0,1 ends the program with a status on interp, run and build, as Elixir's does: any process can halt, a halt can't be caught (no catch, no after), stdout is flushed, halt(n) exits n (the OS keeps the low 8 bits), a negative status raises Elixir's ArgumentError ('errors were found at the given arguments:\\n\\n  * 1st argument: invalid status\\n'), a non-integer raises FunctionClauseError.\n\nDesign (page ../fz-sc8.7.html, approved 2026-11-11): a program ends when it halts, and its status is the halt's. ExecCtx gains a halt hook beside spawn/send; each scheduler records Some(status) and its run loop (run_until_idle src/exec/runtime.rs, drive_backend_until_idle src/ir_interp/backend.rs, aot_run_queue_loop runtime/src/aot_shim.rs) stops once a halt is recorded. fz_system_halt flushes the output sink, calls the hook, and marks the caller ended with exit_status = status (the uncaught-raise state without the stderr line), so the existing unwinding runs and no handler search happens. Main ending, normally or by an uncaught raise, records a halt with main's status, so children no longer outlive main (Elixir halts at script end). Each driver reads the recorded status instead of reading main after the loop; RunFailure/CliError map it as now. A run that goes idle without halting keeps today's behavior. OutputSink gains flush(), called at every end: this also fixes a built binary losing a final partial line (IO.write without newline prints nothing today).\n\nThe builder first lists every fixture whose output changes when main's end halts; each is brought in line with Elixir or reported before any re-bless.",
   "id": "fz-sc8.7",
   "labels": [],
   "parent": "fz-sc8",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "System.halt/1 sets the exit status on all three paths",
   "type": "feature",
-  "updated_at": "2026-10-17T19:19:58Z"
+  "updated_at": "2026-11-11T19:53:17Z"
 }
