@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-11T15:26:17Z",
-  "description": "runtime/src/heap/gc/forward.rs: a root holding a boxed scalar (an AnyValueRef whose tag is_scalar, not a literal) is copied by copy_scalar_box_to_space, which calls copy_object_to_space and writes no forwarding marker; cheney_forward_object, the heap-object path beside it, checks forwarded_target first and calls write_forwarding_marker after copying. So two roots naming one scalar box get two 16-byte copies instead of sharing one, and copied_bytes counts both.\n\nDone when: scalar boxes are forwarded like every other object (check forwarded_target, write the marker), ideally by routing them through the same forwarding function rather than a second copier; a heap test with two roots on one scalar box asserts both roots read the same to-space address and copied_bytes counts 16 once. Full gate green (cargo fmt --all -- --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace --all-targets --no-fail-fast -- --test-threads=1; cargo test --workspace --doc); any pin that moves only goes down and the commit names each with its mechanism; commit in Why / What changed / Verification form; no co-author trailer, no attribution line.",
+  "description": "Settled 2026-11-11 with no code change (user approved closing).\n\nruntime/src/heap/gc/forward.rs copies a scalar-box root with copy_scalar_box_to_space and writes no forwarding marker, so two roots naming one box would get two 16-byte copies. That is correct: scalars (int, float, atom) have no identity in fz, so equal copies are indistinguishable.\n\nA marker cannot go in the box as laid out. A box (Heap::box_any_value_ref, heap/imp.rs ~294) holds the raw payload in word 0 and never writes word 1. forwarded_target reads word 0 and treats any non-zero low nibble as a marker, so payloads such as Int 1, 3, -1, many floats and atom id 1 would read as forwarded, and writing a marker would destroy the payload. Making it safe needs a dedicated, zeroed marker word on every box, paid at every box allocation to save 16 bytes in a case that has not been observed.\n\nMeasured with reverted probes at a5f9e6702: across all 552 fixtures on run and interp (208 collections), no scalar-box root was copied and no root pointed into the middle of another object. A crafted program (scalar messages queued in a collecting child's mailbox) reaches the path; every root named its own box, with no duplicates.",
   "id": "fz-gl6.15",
   "labels": [],
   "parent": "fz-gl6",
   "priority": 3,
   "status": "open",
-  "title": "Copying a root's scalar box leaves a forwarding marker",
+  "title": "A root's scalar box is copied per root, and needs no forwarding marker",
   "type": "task",
-  "updated_at": "2026-11-11T15:26:17Z"
+  "updated_at": "2026-11-11T21:21:21Z"
 }
