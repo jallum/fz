@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T21:55:58Z",
+  "description": "A @spec naming a type fz doesn't know (e.g. @spec f(non_neg_integer) :: integer) prints error[resolve/type-alias]: compiler2 could not resolve function contract for f: unknown type name non_neg_integer, located at \u003cgenerated\u003e, and then the program runs anyway and exits 0 (verified on interp and run, c652387c8). An error must stop the program with a non-zero status and point at the spec's source line. Whether non_neg_integer, pos_integer and no_return should exist as type names is a separate question; record it here or in its own ticket. Found by the fz-sc8.7 builder.",
+  "id": "fz-sc8.120",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A spec naming an unknown type stops the program and points at the spec",
+  "type": "bug",
+  "updated_at": "2026-11-11T21:55:58Z"
+}
