@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-11T22:08:34Z",
   "created": "2026-11-08T22:51:53Z",
   "description": "Proposal page (2026-11-08): https://claude.ai/artifact/MC2AfzpXDxAQs7BRNswLCT\n\nAfter fz-a9y a process heap is a tip plus a chain of parked blocks counted by fill. This epic builds on three findings from testing the claim \"a gift block only needs to be on the chain\": (1) block_size does three jobs (next tip capacity, collection trigger, to-space size) so a grafted gift sizes the receiver's tip twice (fixture 00901: 1 KiB, 1.7 MB, small again, while the parent allocated almost nothing); (2) to-space has no contiguity requirement because Heap::collect scans a worklist, so the GROW/SHRINK/KEEP bands and the floor can be deleted outright; (3) being on the chain is not free: ptr_in_ranges walks every from-space range per pointer and the smallest block is 1 KiB, so a 16-byte gift costs 64x its size.\n\nFound while filing: a resource freed by any collection has its fz destructor closure skipped on the JIT and the AOT build (mso_sweep releases dead stubs through fz_resource_destructor_noop; only the exit drain dispatches closures). That is the root cause of fz-sc8.98 and is fixed here as the one-post-quantum-step ticket.\n\nBase: fz-a9y/gift-heap-send @ b7b792b01 (PR #279). Work happens on one branch in worktree ../fz-gift and lands as one PR stacked on #279; each child ticket is one commit pushed as it closes. New fixtures take numbers in the fz-a9y block 00900-00999 (next free 00906).\n\nOrder, chained for one builder: .1 collection event; .2 destructors and one post-quantum step; .3 the interpreter collects; .4 static-area predicate; .5 exact small blocks; .6 huge objects park; .7 gift as survivor; .8 chained to-space; .9 fan-in and large-message fixtures.\n\nRemoval ledger: to_space_capacity and its bands and floor (.8); GcStats.to_space_capacity_bytes and Heap.last_gc_stats (.1, .8); last_gc_live_bytes as a sizing input (.7); the exact block installed as the tip (.6); boundary_maintenance called from two drivers and mso_drop_all_deferred as a separate exit path (.2); the 1 KiB minimum for a gift (.5). What stays: bytes_used as the one measure; SIZE_TABLE and the pool for tips; the measured one-block gift; Heap::collect and Process::collect as the one entry and the one root set.\n\nNot in scope: idle shrinking after a receiver consumes a lot of mail (BEAM hibernation); pool classes below 1 KiB; multi-worker scheduling.",
   "id": "fz-gl6",
@@ -13,8 +14,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The chain is the heap: a gift is a survivor, to-space is a chain, one post-quantum step",
   "type": "epic",
-  "updated_at": "2026-11-09T22:52:46Z"
+  "updated_at": "2026-11-11T22:08:34Z"
 }
