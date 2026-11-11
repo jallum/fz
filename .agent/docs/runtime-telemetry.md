@@ -21,8 +21,9 @@ observes a sleep, and the send paths and run teardown observe their own events.
 - `JsonlBackend` handles each raw event by rendering it with
   `fz_runtime::telemetry::write_line`, the one writer of a runtime event's
   line: the envelope every telemetry line shares, then the event's metadata.
-- `AotScheduler::observe` is a no-op: a built binary carries no telemetry sink
-  and reports none of these events.
+- `AotScheduler::observe` appends each event, rendered with the same
+  `write_line`, to the file `FZ_LOG_TELEMETRY` names; see
+  [Built binaries](#built-binaries).
 
 Six events matter:
 
@@ -46,13 +47,13 @@ by `run_root_jit` just before the runtime spawns the entry and by
 `run_root_interp` just before `run_backend_main` enqueues it — so the event
 lands once per `fz2 run`, once per `fz2 interp`, and once per `run-test-root`
 child `fz2 test` starts, with parsing, the fixpoint drive, the backend product
-and Cranelift all behind it. An AOT binary never emits it: `fz2 build` stops at
-the object file, and the executable links `fz_runtime` and its own
-`aot_run_queue_loop`, whose `observe` is a no-op. The event has no payload; its
-content is its position in the stream. The same call writes one byte to the descriptor named by
+and Cranelift all behind it. A built binary observes it from `fz_aot_run_main` before its run-queue loop.
+The event has no payload; its content is its position in the stream. The same
+call writes one byte to the descriptor named by
 `FZ_EXEC_READY_FD` when the environment names one — the fixture matrix's
 execution deadline is a consumer of this boundary, not a second definition of it
-(see [fixtures](fixtures.md)).
+(see [fixtures](fixtures.md)). A built binary does not write that byte; the
+build leg's deadline starts when the binary is spawned.
 
 ## `fz.runtime.process_exited`
 
@@ -94,7 +95,7 @@ dispatched mid-life is visible on the exit record of the process that ran it,
 and the `fz.runtime.gc` event of the collection that freed it precedes it.
 `tests/fixture_matrix.rs`
 (`a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path`)
-pins it on the `run` and `interp` paths: 1 for fixture 00906 and 3 for 00907.
+pins it on the `run`, `interp` and `build` paths: 1 for fixture 00906 and 3 for 00907.
 
 The raw `&Process` is valid only during dispatch. A handler that needs data
 after the callback must project and copy that data itself. `write_line` renders
@@ -106,9 +107,10 @@ fields synchronously.
 `RuntimeEvent::SchedulerSlept(wait)` just before it sleeps; `wait` is the
 `Duration` until the next timer deadline. `write_line` renders it as `wait_ns`.
 The event fires only when the run queue is empty and a timer pends, so a program
-whose timers are all cancelled by arriving messages never emits it. The AOT
-scheduler's `observe` drops it. `exec/runtime_test.rs` observes the event on the
-`run` and `interp` paths.
+whose timers are all cancelled by arriving messages never emits it.
+`exec/runtime_test.rs` observes the event on the `run` and `interp` paths, and
+`a_built_binary_sleeps_the_scheduler_once_for_a_receive_that_times_out` pins
+exactly one on `build` for fixture 00687 (the count, never the wait).
 
 ## `fz.runtime.run_ended`
 
@@ -133,9 +135,11 @@ table) belong to the system allocator and appear in neither count. The compiler'
 thread for the whole run, so the absolute outstanding count is never zero. The
 run's guarantee is `pool_outstanding_after_run == pool_outstanding_before_run`:
 it returned every block it took. `write_line` renders
-all three as numbers. The AOT scheduler does not observe it. `tests/fixture_matrix.rs`
+all three as numbers. A built binary samples the outstanding count in `fz_aot_setup` before it
+creates main's process and observes the event from `fz_aot_run_main` after the
+scheduler has dropped. `tests/fixture_matrix.rs`
 (`a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`) asserts the
-equality for fixture 00903 on the `run` and `interp` paths.
+equality for fixture 00903 on the `run`, `interp` and `build` paths.
 
 ## `fz.runtime.send.probe`
 
@@ -146,7 +150,7 @@ bound values on a hit, the whole message on a miss) is copied into a gift on the
 sender's heap and queued on the receiver's `in_queue`. The JIT
 `send_via`, the interpreter's `send_ref` and the AOT send hook each observe
 `RuntimeEvent::SendProbe` with the `SendProbe` the probe returned; the first two
-raise it through `emit_runtime_event` and the AOT scheduler drops it:
+raise it through `emit_runtime_event` and the AOT scheduler writes it to its log:
 
 ```text
 raw event:    fz.runtime.send.probe
@@ -163,17 +167,17 @@ window opens. `write_line` renders the
 outcome as `"hit"` or `"miss"` and the rest as numbers. A self-send is a mailbox
 push and emits nothing, as does a send to an exited or unknown receiver. `tests/fixture_matrix.rs`
 (`a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue`)
-pins the event sequence of fixtures 00901 and 00902 on the `run` and `interp`
-paths, and `a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`
+pins the event sequence of fixtures 00901 and 00902 on the `run`, `interp` and
+`build` paths, and `a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`
 pins each of fixture 00903's three gifts (`gift_bytes` 16032, 64 and 16, one
 block each).
 `many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued`
-pins fixture 00910's hundred probes on `run` and `interp` (fifty misses of 80
+pins fixture 00910's hundred probes on `run`, `interp` and `build` (fifty misses of 80
 bytes, the one hit of 48, then forty-nine misses; 7968 bytes in all), and
 `a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_path`
 pins fixture 00911's nine hits (the empty announcement, then eight balls of
 320016 bytes: 20000 cells plus the bound number as a boxed scalar). Both
-fixtures have the same probes on both paths.
+fixtures have the same probes on all three paths.
 
 ## `fz.runtime.gc`
 
@@ -203,7 +207,7 @@ signature:    (&Collection)
 `GcStats` carries more (object counts, root and per-container edge
 counts); `Heap::collect` and `Process::collect` return all of it to their
 callers and the heap's unit tests read it there. Every scheduler's
-`end_quantum` observes it; the AOT scheduler collects and drops the event.
+`end_quantum` observes it, so a built binary logs it too.
 `tests/fixture_matrix.rs`
 (`a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run`)
 pins fixture 00901: 8 collections on `run` (seven child yields, one parent
@@ -215,9 +219,31 @@ The same file pins fixture 00910 (`interp`: the parent's park at 48 bytes;
 `run`: its park at 288 bytes, then its exit at 0) and fixture 00911 (`interp`:
 the parent's park at 0 bytes; `run`: six parent yields copying 10848, 32192,
 64192, 128192, 256192 and 320176 bytes while it builds the list). The
-run-ended equality is pinned for both fixtures on `run` and `interp`.
+run-ended equality is pinned for both fixtures on `run`, `interp` and `build`.
 `sched_core_test.rs` pins the `Collection` and the exit that `end_quantum`
 observes and the destructors it dispatches.
+
+## Built binaries
+
+A built binary links `fz_runtime` and no host crate, so it has no telemetry bus.
+When the environment variable `FZ_LOG_TELEMETRY` names a path, `fz_aot_setup`
+opens it with create and append, so a log that `fz2 --log-telemetry <path>
+build` wrote keeps its compile events first and the run's events follow. Each
+event is rendered by `write_line` with span ids 0 and `time_ns` counted from
+`fz_aot_setup`, and written with one `write` of one whole line on the unbuffered
+file. With the variable unset no file is opened and `observe` returns on one
+branch. A path that cannot be opened is a loud failure: a message naming the
+path and the error on stderr and a non-zero exit before the program runs.
+
+The binary reports `execution_ready`, `send.probe`, `gc`, `scheduler_slept`,
+`process_exited` and `run_ended`. The absolute pool counts in `run_ended` are
+smaller than on `run`, since no compiler heaps share the thread; the guarantee
+is the same equality. In the fixture matrix the build leg of
+`run_path_logged_to` runs `fz2 --log-telemetry <log> build`, then the binary
+with the fixture's arguments and `FZ_LOG_TELEMETRY=<log>`.
+`a_built_binary_reports_the_same_probes_collections_and_destructors_as_run`
+asserts that for fixtures 00901, 00906, 00907, 00910 and 00911 the build's probe
+sequence, collections and per-process `dtors_dispatched` equal `run`'s.
 
 ## Program Output
 

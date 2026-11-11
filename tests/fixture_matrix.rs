@@ -263,6 +263,14 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_path",
             a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_path,
         ),
+        (
+            "a_built_binary_reports_the_same_probes_collections_and_destructors_as_run",
+            a_built_binary_reports_the_same_probes_collections_and_destructors_as_run,
+        ),
+        (
+            "a_built_binary_sleeps_the_scheduler_once_for_a_receive_that_times_out",
+            a_built_binary_sleeps_the_scheduler_once_for_a_receive_that_times_out,
+        ),
         ("fixture_hang_guard_policy", fixture_hang_guard_policy),
         (
             "execution_ready_writer_uses_multi_digit_descriptor",
@@ -2241,6 +2249,43 @@ fn with_fixture_telemetry(run: impl FnOnce(&Path) -> Result<Output, String>) -> 
     Ok((output, log))
 }
 
+/// `fz2 --log-telemetry <log> build`, then, for a program that compiled, the
+/// built binary with `FZ_LOG_TELEMETRY` naming the same log, so the log holds
+/// the compile events and then the run's. Returns the binary's output, or the
+/// build's when it failed or the fixture has no program to run.
+fn build_then_run_logged_to(fixture: &FixtureCase, header: &Header, telemetry_path: &Path) -> Result<Output, String> {
+    let stem = fixture.name();
+    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let out_path = temp_dir().join(format!("fz2_matrix_diag_{}_{}_{}", stem, id(), nonce));
+    let result = fixture_command_output(
+        Command::new(FZ2_BIN)
+            .args(["--log-telemetry"])
+            .arg(telemetry_path)
+            .args(["build"])
+            .arg(fixture.source_path())
+            .args(["-o"])
+            .arg(&out_path),
+        "fz2 build --log-telemetry",
+        ExecutionBoundary::Spawn,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+    )
+    .and_then(|build| {
+        if !build.status.success() || header.kind != Kind::Run {
+            return Ok(build);
+        }
+        fixture_command_output(
+            Command::new(&out_path)
+                .args(&header.args)
+                .env("FZ_LOG_TELEMETRY", telemetry_path),
+            "fz2-built binary",
+            ExecutionBoundary::Spawn,
+            header.timeout_for_path(FixtureMatrixPath::Build),
+        )
+    });
+    remove_fz2_build_outputs(&out_path);
+    result
+}
+
 fn run_path_logged_to(
     fixture: &FixtureCase,
     header: &Header,
@@ -2248,23 +2293,7 @@ fn run_path_logged_to(
     telemetry_path: &Path,
 ) -> Result<Output, String> {
     if path == FixtureMatrixPath::Build {
-        let stem = fixture.name();
-        let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let out_path = temp_dir().join(format!("fz2_matrix_diag_{}_{}_{}", stem, id(), nonce));
-        let out = fixture_command_output(
-            Command::new(FZ2_BIN)
-                .args(["--log-telemetry"])
-                .arg(telemetry_path)
-                .args(["build"])
-                .arg(fixture.source_path())
-                .args(["-o"])
-                .arg(&out_path),
-            "fz2 build --log-telemetry",
-            ExecutionBoundary::Spawn,
-            DEFAULT_FIXTURE_HANG_TIMEOUT,
-        );
-        remove_fz2_build_outputs(&out_path);
-        return out;
+        return build_then_run_logged_to(fixture, header, telemetry_path);
     }
     let input = fixture.source_path();
     let mut cmd = Command::new(FZ2_BIN);
@@ -3031,6 +3060,13 @@ fn dtors_dispatched_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, 
         .sum()
 }
 
+/// The paths whose runtime telemetry the pins compare.
+const RUNTIME_TELEMETRY_PATHS: [(FixtureMatrixPath, &str); 3] = [
+    (FixtureMatrixPath::Run, "run"),
+    (FixtureMatrixPath::Interp, "interp"),
+    (FixtureMatrixPath::Build, "build"),
+];
+
 /// A resource the heap frees is destroyed by its own fz closure at the next
 /// scheduler boundary, whichever path ran the program.
 fn a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path() {
@@ -3046,7 +3082,7 @@ fn a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path() {
         collections.iter().any(|event| event.boundary == "yield"),
         "run: the allocation makes the heap due at a yield, before the process exits"
     );
-    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
         assert_eq!(
             dtors_dispatched_for_fixture(&midlife, path, label),
             1,
@@ -3059,7 +3095,7 @@ fn a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path() {
     let at_exit = FixtureCase::new(
         "fixtures/00907_resources_alive_at_exit_run_their_destructors_when_the_exit_collection_sweeps_them.fz",
     );
-    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
         assert_eq!(
             dtors_dispatched_for_fixture(&at_exit, path, label),
             3,
@@ -3083,7 +3119,7 @@ fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_que
         "the parent takes :go first, then the earlier unmatched tuple from its mailbox, and allocates no list cells for either"
     );
 
-    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
         // The 50000-element log misses: the tuple and every cons cell cross
         // as one gift. The reply hits: exactly the three bound cells cross,
         // and the receiver is woken by that one hit.
@@ -3166,11 +3202,11 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
 }
 
 /// The parked receiver's pinned list is a root of the collection that follows
-/// its park, on the interpreter as on the JIT, so the matcher still finds it.
+/// its park on every path, so the matcher still finds it.
 fn a_receiver_parked_on_a_pinned_list_is_collected_on_every_path_and_still_matches() {
     let fixture =
         FixtureCase::new("fixtures/00905_a_receiver_parked_on_a_pinned_list_is_collected_and_still_matches.fz");
-    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
         let events = gc_events_for_fixture(&fixture, path, label);
         assert!(
             !events.iter().any(|event| event.pid == 1 && event.boundary == "yield"),
@@ -3193,7 +3229,7 @@ fn a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_prob
         expected, ":carried_the_receivers_pid\n:carried_the_senders_pid\n",
         "the guard accepts the message carrying the receiver's pid; the one carrying the sender's pid waits in the mailbox"
     );
-    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
         // The child runs the probe, so a guard that asked the matcher's
         // process for `self()` would hit on the first message.
         let events = send_probe_events_for_fixture(&fixture, path, label);
@@ -3217,7 +3253,7 @@ fn a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown() {
         expected, ":child_is_parked\n:done\n",
         "the run prints both lines and ends with the child still parked"
     );
-    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
         let events = send_probe_events_for_fixture(&fixture, path, label);
         let misses_for_the_child: Vec<_> = events
             .iter()
@@ -3274,7 +3310,7 @@ fn many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_mis
     let mut probes = vec![SendProbeEvent::new("miss", 1, 80, 1); 50];
     probes.push(SendProbeEvent::new("hit", 1, 48, 1));
     probes.extend(vec![SendProbeEvent::new("miss", 1, 80, 1); 49]);
-    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
         let events = send_probe_events_for_fixture(&fixture, path, label);
         assert_eq!(
             events, probes,
@@ -3330,7 +3366,7 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
         probes.push(ball(2));
         probes.push(ball(1));
     }
-    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
         let events = send_probe_events_for_fixture(&fixture, path, label);
         assert_eq!(events, probes, "{label}: the announcement, then eight balls, all hits");
         assert_eq!(
@@ -3365,6 +3401,65 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
         ],
         "run: six yields while the parent builds the list"
     );
+}
+
+/// The built binary reports what the scheduler does exactly as `fz2 run` does:
+/// the same probes with the same gifts, the same collections, and the same
+/// destructors dispatched at each exit.
+fn a_built_binary_reports_the_same_probes_collections_and_destructors_as_run() {
+    for fixture in [
+        "fixtures/00901_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent.fz",
+        "fixtures/00910_many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued.fz",
+        "fixtures/00911_two_processes_pass_a_large_list_back_and_forth_and_each_message_crosses_in_one_gift.fz",
+        "fixtures/00906_a_resource_dropped_mid_run_runs_its_destructor_once_when_a_collection_frees_it.fz",
+        "fixtures/00907_resources_alive_at_exit_run_their_destructors_when_the_exit_collection_sweeps_them.fz",
+    ] {
+        let fixture = FixtureCase::new(fixture);
+        let name = fixture.display_path().display().to_string();
+        let (run, build) = (FixtureMatrixPath::Run, FixtureMatrixPath::Build);
+        assert_eq!(
+            send_probe_events_for_fixture(&fixture, build, "build"),
+            send_probe_events_for_fixture(&fixture, run, "run"),
+            "{name}: build probes the same sends with the same gifts as run"
+        );
+        let built = gc_events_for_fixture(&fixture, build, "build");
+        let ran = gc_events_for_fixture(&fixture, run, "run");
+        assert_eq!(
+            collections_as_tuples(&built),
+            collections_as_tuples(&ran),
+            "{name}: build collects the same pids at the same boundaries copying the same bytes as run"
+        );
+        assert_eq!(
+            dtors_dispatched_by_pid(&fixture, build, "build"),
+            dtors_dispatched_by_pid(&fixture, run, "run"),
+            "{name}: build dispatches the same destructors per process as run"
+        );
+    }
+}
+
+/// A receive that times out with nothing else runnable sleeps the scheduler
+/// once on a built binary. The wait itself is a clock reading and is not pinned.
+fn a_built_binary_sleeps_the_scheduler_once_for_a_receive_that_times_out() {
+    let fixture = FixtureCase::new("fixtures/00687_a_receive_after_times_out_with_an_empty_mailbox.fz");
+    let slept = telemetry_log_for_fixture(&fixture, FixtureMatrixPath::Build, "build")
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"scheduler_slept\"]"))
+        .count();
+    assert_eq!(slept, 1, "build: the 10ms timeout puts the scheduler to sleep once");
+}
+
+/// `(pid, dtors_dispatched)` of every exit, in emission order.
+fn dtors_dispatched_by_pid(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> Vec<(usize, usize)> {
+    telemetry_log_for_fixture(fixture, path, label)
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"process_exited\"]"))
+        .map(|line| {
+            (
+                required_json_u64_field(line, "pid", "process_exited event"),
+                required_json_u64_field(line, "dtors_dispatched", "process_exited event"),
+            )
+        })
+        .collect()
 }
 
 /// `(pool_outstanding_before_run, pool_outstanding_after_run)` from the one

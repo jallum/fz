@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Duration;
 
 /// A bare scheduler for unit tests. The caller pushes tasks into
 /// `tasks` and passes `sched_handle(&mut sched)` as the erased scheduler
@@ -6,6 +7,8 @@ use super::*;
 /// carries in production.
 fn test_scheduler() -> AotScheduler {
     AotScheduler {
+        pool_outstanding_before_run: 0,
+        log: None,
         next_pid: 2,
         tasks: HashMap::new(),
         entry_thunk: null(),
@@ -286,4 +289,44 @@ fn aot_setup_with_only_the_program_name_gives_the_empty_command_line() {
     let process = fz_aot_setup(null(), 0, null(), 1, pointers.as_ptr());
     let ctx = unsafe { &*(*process).ctx };
     assert!(ctx.argv().is_empty());
+}
+
+fn log_into(path: &std::path::Path) -> TelemetryLog {
+    let file = OpenOptions::new().create(true).append(true).open(path).unwrap();
+    TelemetryLog {
+        file,
+        epoch: Instant::now(),
+        line: String::new(),
+    }
+}
+
+/// A scheduler with a log appends one whole line per event after what the file
+/// already holds, which is how a log the compiler wrote keeps its events first.
+#[test]
+fn an_observed_event_is_appended_as_one_whole_line() {
+    let path = std::env::temp_dir().join(format!("fz_aot_observe_{}.jsonl", std::process::id()));
+    std::fs::write(&path, "compile line\n").unwrap();
+    let mut sched = test_scheduler();
+    sched.log = Some(log_into(&path));
+
+    sched.observe(RuntimeEvent::SchedulerSlept(Duration::from_nanos(7)));
+    sched.observe(RuntimeEvent::ExecutionReady);
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3, "{text}");
+    assert_eq!(lines[0], "compile line");
+    assert!(lines[1].starts_with("{\"name\":[\"fz\",\"runtime\",\"scheduler_slept\"],\"time_ns\":"));
+    assert!(lines[1].ends_with("\"span_id\":0,\"parent_span_id\":0,\"measurements\":{},\"metadata\":{\"wait_ns\":7}}"));
+    assert!(lines[2].contains("\"execution_ready\""));
+    assert!(text.ends_with('\n'));
+}
+
+/// Without a log an observed event has nowhere to go and costs nothing.
+#[test]
+fn an_observed_event_without_a_log_is_dropped() {
+    let mut sched = test_scheduler();
+    sched.observe(RuntimeEvent::SchedulerSlept(Duration::from_nanos(7)));
+    assert!(sched.log.is_none());
 }

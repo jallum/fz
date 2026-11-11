@@ -27,7 +27,7 @@
 use crate::any_value::AnyValueRef;
 use crate::exec_ctx::{Argv, ExecCtx};
 use crate::function_denotation::decode_closure_denotations;
-use crate::heap::{AddressMap, Schema, SchemaRegistry, deep_copy_any_value_ref};
+use crate::heap::{AddressMap, Schema, SchemaRegistry, deep_copy_any_value_ref, pool_outstanding_blocks};
 use crate::pinned_abi::{call1, call2};
 use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
 use crate::sched::{
@@ -36,16 +36,19 @@ use crate::sched::{
 use crate::sched_core::{
     Disposition, Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
-use crate::telemetry::RuntimeEvent;
+use crate::telemetry::{RunEnded, RuntimeEvent, write_line};
 use crate::timer::TimerId;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char};
+use std::fs::{File, OpenOptions};
+use std::io::Write as _;
 use std::process::abort;
 use std::ptr::{null, read_unaligned};
 use std::rc::Rc;
 use std::slice::from_raw_parts;
 use std::str::from_utf8;
+use std::time::Instant;
 
 // ----- AOT scheduler state -----
 
@@ -67,6 +70,10 @@ use std::str::from_utf8;
 /// `fz_aot_run_main` reclaims and drops the box at teardown — one drop frees
 /// the tasks and the scheduling core.
 struct AotScheduler {
+    /// The block pool's outstanding count before main's process existed.
+    pool_outstanding_before_run: usize,
+    /// Where runtime events are written, when `FZ_LOG_TELEMETRY` names a file.
+    log: Option<TelemetryLog>,
     /// Next pid to hand out. pid 1 is main; children start at 2.
     next_pid: u32,
     /// All live processes, keyed by pid. `Box` keeps each `Process` at a
@@ -100,6 +107,50 @@ struct AotScheduler {
     /// task points its `Process.ctx` here; the spawn/send/timer
     /// BIFs dispatch through it.
     ctx: ExecCtx,
+}
+
+/// The environment variable naming the file a built binary appends its
+/// runtime telemetry lines to.
+const LOG_TELEMETRY_ENV: &str = "FZ_LOG_TELEMETRY";
+
+/// An open telemetry file. Each event is one `write` of one whole line on the
+/// unbuffered file, so a crash leaves only whole lines. `time_ns` counts from
+/// `epoch`.
+struct TelemetryLog {
+    file: File,
+    epoch: Instant,
+    line: String,
+}
+
+impl TelemetryLog {
+    /// Open the file `FZ_LOG_TELEMETRY` names, creating it if needed and
+    /// appending to what is there. `None` when the variable is unset.
+    fn from_env(epoch: Instant) -> Result<Option<Self>, String> {
+        let Some(path) = std::env::var_os(LOG_TELEMETRY_ENV) else {
+            return Ok(None);
+        };
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|error| format!("{LOG_TELEMETRY_ENV}={}: {error}", path.to_string_lossy()))?;
+        Ok(Some(Self {
+            file,
+            epoch,
+            line: String::new(),
+        }))
+    }
+
+    fn write(&mut self, event: &RuntimeEvent<'_>) {
+        self.line.clear();
+        let time_ns = self.epoch.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        write_line(&mut self.line, time_ns, 0, 0, event);
+        self.line.push('\n');
+        if let Err(error) = self.file.write_all(self.line.as_bytes()) {
+            eprintln!("{LOG_TELEMETRY_ENV}: write failed: {error}");
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Re-narrow a task's erased scheduler handle (`Process.ctx.scheduler`) to
@@ -256,6 +307,15 @@ pub extern "C" fn fz_aot_setup(
     argc: i32,
     argv: *const *const c_char,
 ) -> *mut Process {
+    let epoch = Instant::now();
+    let pool_outstanding_before_run = pool_outstanding_blocks();
+    let log = match TelemetryLog::from_env(epoch) {
+        Ok(log) => log,
+        Err(message) => {
+            eprintln!("cannot open telemetry log: {message}");
+            std::process::exit(1);
+        }
+    };
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
 
     // The AOT run's node-global atom table, seeded from the program's atom
@@ -271,6 +331,8 @@ pub extern "C" fn fz_aot_setup(
     let mut tasks = HashMap::new();
     tasks.insert(1u32, proc_box);
     let sched = Box::into_raw(Box::new(AotScheduler {
+        pool_outstanding_before_run,
+        log,
         next_pid: 2,
         tasks,
         entry_thunk: entry_thunk_addr,
@@ -500,6 +562,7 @@ pub extern "C" fn fz_aot_run_main(
         (*sched).core.make_runnable(1, &mut process.state);
     }
 
+    unsafe { (*sched).observe(RuntimeEvent::ExecutionReady) };
     aot_run_queue_loop(sched);
 
     // A failed main process is the program's failure; its line is already on
@@ -509,7 +572,14 @@ pub extern "C" fn fz_aot_run_main(
     // Teardown: reclaim the leaked scheduler box. Its drop frees the task
     // table (and every process heap), the timer wheel, and the run-queue in
     // one shot — replacing the per-thread-local clears the old code ran here.
-    drop(unsafe { Box::from_raw(sched) });
+    // The log outlives the scheduler so the pool census can follow the drop.
+    let mut scheduler = unsafe { Box::from_raw(sched) };
+    let log = scheduler.log.take();
+    let before = scheduler.pool_outstanding_before_run;
+    drop(scheduler);
+    if let Some(mut log) = log {
+        log.write(&RuntimeEvent::RunEnded(RunEnded::sample(before)));
+    }
     i32::from(failed)
 }
 
@@ -603,8 +673,11 @@ impl Scheduler for AotScheduler {
         }
     }
 
-    /// A built binary carries no telemetry sink, so every event is dropped.
-    fn observe(&mut self, _event: RuntimeEvent<'_>) {}
+    fn observe(&mut self, event: RuntimeEvent<'_>) {
+        if let Some(log) = &mut self.log {
+            log.write(&event);
+        }
+    }
 
     fn run_destructor(&mut self, process: &mut Process, closure: u64, payload: u64) {
         assert!(
