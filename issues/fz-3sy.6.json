@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-3sy.5"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-3sy.8"
+  ],
   "created": "2026-11-11T15:21:29Z",
   "description": "apply(m, :f, [a, b]) with a literal list lowers to the module-value call m.f(a, b) (M1/M2). Today: compile error 'unresolved direct runtime callee apply/3'. Oracle fixtures on all three paths.",
   "id": "fz-3sy.6",
