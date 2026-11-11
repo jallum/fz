@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T15:21:29Z",
+  "description": "Every exception the runtime and library raise is declared in lib/ with defexception and Elixir's fields; the runtime builds those structs; Kernel.raise is Elixir's macro (raise Mod, attrs -\u003e Mod.exception(attrs)). Own proposal page before building.",
+  "id": "fz-3sy.8",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 2,
+  "status": "open",
+  "title": "Built-in exceptions are declared in lib with Elixir's fields, and raise is Elixir's macro",
+  "type": "feature",
+  "updated_at": "2026-11-11T15:21:29Z"
+}
