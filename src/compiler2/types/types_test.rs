@@ -409,30 +409,53 @@ fn unchanged_instantiation_returns_before_it_probes_or_normalizes() {
     );
 }
 
+/// The brand half of the key function alone: every slot's literals kept
+/// (the forwarded mask is `Whole`), the brands erased by `local`.
+fn erase_closures(t: &mut Types, arrow: Ty, local: &[DispatchDemand]) -> Ty {
+    let whole = vec![DispatchDemand::Whole; local.len()];
+    t.activation_key_arrow(
+        arrow,
+        false,
+        &KeyDemand {
+            local,
+            forwarded: &whole,
+            returned: &[],
+            consumes_callable_identity: false,
+        },
+    )
+}
+
+/// The structural half of the key function alone: a recursive activation's key.
+fn collapse_structure(t: &mut Types, arrow: Ty, mask: &[DispatchDemand], returned: &[DispatchDemand]) -> Ty {
+    t.activation_key_arrow(
+        arrow,
+        true,
+        &KeyDemand {
+            local: mask,
+            forwarded: mask,
+            returned,
+            consumes_callable_identity: false,
+        },
+    )
+}
+
 #[test]
-fn closure_erasure_with_no_ignored_parameter_returns_before_it_rebuilds_the_arrow() {
+fn a_key_that_changes_no_slot_returns_before_it_rebuilds_the_arrow() {
     let mut t = Types::new();
     let int = t.int();
     let arrow = t.arrow(&[int], int);
     let before = t.interning_work_stats();
 
-    assert_eq!(
-        t.erase_transported_closure_identities(arrow, &[DispatchDemand::Whole]),
-        arrow
-    );
-    let expected = InterningWorkStats {
-        identity_shortcuts: before.identity_shortcuts + 1,
-        ..before
-    };
+    assert_eq!(erase_closures(&mut t, arrow, &[DispatchDemand::Whole]), arrow);
     assert_eq!(
         t.interning_work_stats(),
-        expected,
-        "a closure-erasure mask without an ignored parameter cannot change the arrow"
+        before,
+        "a key whose every slot is already its own key interns nothing"
     );
 
     let literal = t.closure_lit(ClosureTarget(7), vec![], 0);
     let closure_arrow = t.arrow(&[literal], int);
-    let erased = t.erase_transported_closure_identities(closure_arrow, &[DispatchDemand::Ignore]);
+    let erased = erase_closures(&mut t, closure_arrow, &[DispatchDemand::Ignore]);
     assert_ne!(
         erased, closure_arrow,
         "an ignored closure parameter must still erase its construction identity"
@@ -1077,7 +1100,7 @@ fn the_envelope_and_the_predicate_agree_on_a_callable_clause() {
 /// fz-kdt.127 -- WHY the erased forwarder key and the construction axis
 /// compose, stated from the side that actually decides it: the KEYING rule.
 ///
-/// `erase_transported_closure_identities` anonymises only the slots the
+/// `activation_key_arrow` anonymises only the slots the
 /// dispatch mask marks `Ignore` -- the ones no runtime test reads. A slot the
 /// body dispatches on keeps its brand, so it stays shapeable and a test can
 /// still name the construction, while the anonymous literal the erasure mints
@@ -1093,7 +1116,7 @@ fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
     let branded = t.intersect(branded, surface);
     let arrow = t.arrow(&[branded, branded], int);
 
-    let erased = t.erase_transported_closure_identities(arrow, &[DispatchDemand::Ignore, DispatchDemand::Whole]);
+    let erased = erase_closures(&mut t, arrow, &[DispatchDemand::Ignore, DispatchDemand::Whole]);
     let params = t.arrow_params(&erased);
     assert_eq!(params.len(), 2);
     assert_ne!(
@@ -1885,7 +1908,7 @@ macro_rules! semantic_helper_conformance_tests {
                 let int = t.int();
                 let list_int = t.list(int.clone());
                 let arrow = t.arrow(&[list_int.clone(), list_int.clone()], int.clone());
-                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::Whole, DispatchDemand::Ignore], &[]);
+                let collapsed = collapse_structure(&mut t, arrow, &[DispatchDemand::Whole, DispatchDemand::Ignore], &[]);
 
                 let params = t.arrow_params(&collapsed);
                 let ret = t.arrow_join_return(&collapsed);
@@ -1903,7 +1926,7 @@ macro_rules! semantic_helper_conformance_tests {
                 let joined_list_family = t.union(list_int, non_empty);
                 let sentinel = t.none();
                 let arrow = t.arrow(&[joined_list_family], sentinel.clone());
-                let collapsed = t.convergence_collapse(
+                let collapsed = collapse_structure(&mut t,
                     arrow,
                     &[DispatchDemand::ListShape(Box::new(DispatchDemand::Whole))],
                     &[],
@@ -1927,7 +1950,7 @@ macro_rules! semantic_helper_conformance_tests {
                 let arrow = t.arrow(&[state], sentinel);
                 let mut fields = BTreeMap::new();
                 fields.insert(0, DispatchDemand::Whole);
-                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::TupleFields(fields)], &[]);
+                let collapsed = collapse_structure(&mut t, arrow, &[DispatchDemand::TupleFields(fields)], &[]);
 
                 // The dispatch tag (field 0) is preserved exactly; the ignored
                 // payload (field 1) collapses to its ADDRESSED class — the list
@@ -1968,7 +1991,7 @@ macro_rules! semantic_helper_conformance_tests {
                 let arrow = t.arrow(&[union], sentinel);
                 let mut fields = BTreeMap::new();
                 fields.insert(0, DispatchDemand::Whole); // tag dispatches, payload ignored
-                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::TupleFields(fields)], &[]);
+                let collapsed = collapse_structure(&mut t, arrow, &[DispatchDemand::TupleFields(fields)], &[]);
 
                 let params = t.arrow_params(&collapsed);
                 let readdressed = t.address_inputs(&params);
@@ -4791,5 +4814,191 @@ fn a_struct_type_answers_its_module_atom_for_the_struct_key() {
         t.field_lookup(&plain, &module_key),
         Some(any_or_nil),
         "a plain map's absent key stays unconstrained"
+    );
+}
+
+/// Widening a literal never changes what kind of value a type describes, only
+/// which one: every atom-bearing shape goes to its kind, every shape that names
+/// no atom is already itself, and widening twice is widening once.
+#[test]
+fn widening_literals_names_the_kind_and_is_idempotent() {
+    let mut t = Types::new();
+    let atom = t.atom();
+    let int = t.int();
+    let float = t.float();
+    let a = t.atom_lit("a");
+    let b = t.atom_lit("b");
+    let nil = t.nil();
+    let truth = t.bool_lit(true);
+    let boolean = t.bool();
+    let a_or_b = t.union(a, b);
+    let pair = t.tuple(&[a, int]);
+    let atom_pair = t.tuple(&[atom, int]);
+    let list_of_atoms = t.list(a_or_b);
+    let atom_list = t.list(atom);
+    let binary = t.str_t();
+
+    let widened = [
+        (a, atom, "an atom"),
+        (a_or_b, atom, "a union of atoms"),
+        (nil, atom, "nil"),
+        (truth, atom, "true"),
+        (boolean, atom, "a boolean"),
+        (pair, atom_pair, "a tuple of atoms"),
+        (list_of_atoms, atom_list, "a list of atoms"),
+    ];
+    for (ty, expected, what) in widened {
+        let once = t.widen_literals(&ty);
+        assert_eq!(once, expected, "{what} widens to its kind");
+        assert_eq!(t.widen_literals(&once), once, "{what}: widening is idempotent");
+        assert!(!t.is_literal_blind(&ty), "{what} names a literal");
+        assert!(t.is_literal_blind(&once), "{what}: the widened type names none");
+    }
+    for (ty, what) in [
+        (int, "an integer"),
+        (float, "a float"),
+        (binary, "a binary"),
+        (atom, "atom"),
+    ] {
+        assert_eq!(t.widen_literals(&ty), ty, "{what} has no literal to widen");
+        assert!(t.is_literal_blind(&ty), "{what} is literal-blind");
+    }
+}
+
+/// `is_literal_blind` is the pure form of `widen_literals(a) == a`; the plan
+/// builder asks the first, the key function applies the second, and they must
+/// never disagree.
+#[test]
+fn literal_blindness_is_exactly_the_fixed_point_of_widening() {
+    let mut t = Types::new();
+    let int = t.int();
+    let atom = t.atom();
+    let a = t.atom_lit("a");
+    let nil = t.nil();
+    let any = t.any();
+    let samples = [
+        int,
+        atom,
+        a,
+        nil,
+        any,
+        t.tuple(&[a, int]),
+        t.tuple(&[atom, int]),
+        t.list(a),
+        t.list(atom),
+        t.non_empty_list(a),
+        t.union(int, a),
+    ];
+    for ty in samples {
+        let widened = t.widen_literals(&ty);
+        assert_eq!(
+            t.is_literal_blind(&ty),
+            widened == ty,
+            "blindness and the widening fixed point agree on {}",
+            t.display_for_diag(&ty)
+        );
+    }
+}
+
+/// A key already at its widest is its own key, so re-keying it changes nothing:
+/// the probe that lets an activation skip the key function reads the same fact.
+#[test]
+fn a_widened_key_keys_as_itself() {
+    let mut t = Types::new();
+    let a = t.atom_lit("a");
+    let atom = t.atom();
+    let pair = t.tuple(&[a, atom]);
+    assert!(
+        !t.probe_keys_as_itself(&pair, 0),
+        "a row that holds a literal is not its own key"
+    );
+    let widened = t.widen_literals(&pair);
+    assert!(t.probe_keys_as_itself(&widened, 0), "its widening is");
+}
+
+/// A key is a fixed point of the key function: re-keying a key returns it, for
+/// every demand and on both paths, because an activation key is re-read as the
+/// inputs of the next minting.
+#[test]
+fn re_keying_a_key_returns_the_key() {
+    let mut t = Types::new();
+    let atom = t.atom();
+    let a = t.atom_lit("a");
+    let b = t.atom_lit("b");
+    let int = t.int();
+    let a_or_b = t.union(a, b);
+    let pair = t.tuple(&[a_or_b, int]);
+    let atoms = t.list(a_or_b);
+    let demands = [
+        DispatchDemand::Ignore,
+        DispatchDemand::Class,
+        DispatchDemand::Whole,
+        DispatchDemand::ListShape(Box::new(DispatchDemand::Ignore)),
+        DispatchDemand::TupleFields(BTreeMap::from([(0, DispatchDemand::Class)])),
+    ];
+    for ty in [a, a_or_b, atom, pair, atoms] {
+        for demand in &demands {
+            for recursive in [false, true] {
+                let arrow = t.arrow(&[ty], int);
+                let mask = slice::from_ref(demand);
+                let key = KeyDemand {
+                    local: mask,
+                    forwarded: mask,
+                    returned: &[],
+                    consumes_callable_identity: false,
+                };
+                let once = t.activation_key_arrow(arrow, recursive, &key);
+                let twice = t.activation_key_arrow(once, recursive, &key);
+                assert_eq!(
+                    once,
+                    twice,
+                    "{} keyed under {demand:?} (recursive: {recursive}) is not its own key",
+                    t.display_for_diag(&ty)
+                );
+            }
+        }
+    }
+}
+
+/// A key is a pure function of its arrow and demand, and the same question is
+/// asked of every activation that reaches it: the second ask is answered from
+/// the memo and mints nothing.
+#[test]
+fn a_key_asked_twice_is_answered_from_the_memo() {
+    let mut t = Types::new();
+    let int = t.int();
+    let a = t.atom_lit("a");
+    let pair = t.tuple(&[a, int]);
+    let arrow = t.arrow(&[pair], int);
+    let mask = [DispatchDemand::Class];
+    for recursive in [false, true] {
+        let key = KeyDemand {
+            local: &mask,
+            forwarded: &mask,
+            returned: &[],
+            consumes_callable_identity: false,
+        };
+        let first = t.activation_key_arrow(arrow, recursive, &key);
+        let interned = t.interned_tys().len();
+        assert_eq!(t.activation_key_arrow(arrow, recursive, &key), first);
+        assert_eq!(t.interned_tys().len(), interned, "the memoized ask interns nothing");
+    }
+    let other = [DispatchDemand::Whole];
+    let whole = KeyDemand {
+        local: &other,
+        forwarded: &other,
+        returned: &[],
+        consumes_callable_identity: false,
+    };
+    let literal_blind = KeyDemand {
+        local: &mask,
+        forwarded: &mask,
+        returned: &[],
+        consumes_callable_identity: false,
+    };
+    assert_ne!(
+        t.activation_key_arrow(arrow, false, &whole),
+        t.activation_key_arrow(arrow, false, &literal_blind),
+        "a different demand is a different question"
     );
 }

@@ -53,6 +53,7 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
         let completion = self.apply_completion(job, effects);
         self.emit_job_completion(&completion);
         self.emit_activation_input_budget_collapses();
+        self.emit_literal_widenings();
         completion
     }
 
@@ -161,6 +162,27 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
             &crate::measurements! { collapses: collapses },
             &crate::telemetry::Metadata::new(),
         );
+    }
+
+    /// Report each slot whose activation key named a kind where its evidence
+    /// named a literal: the key erased an identity no use of the slot can tell
+    /// apart, so the callers that differ only in that literal share one
+    /// activation. `before` and `after` are display forms for a reader; the
+    /// function and slot say where.
+    fn emit_literal_widenings(&mut self) {
+        for widening in self.world.take_literal_widenings() {
+            let before = self.world.display_type(&widening.before);
+            let after = self.world.display_type(&widening.after);
+            self.telemetry.dispatch(
+                &["fz", "compiler2", "activation_key", "literal_widened"],
+                &crate::measurements! { slot: widening.slot as u64 },
+                &crate::metadata! {
+                    function_id: u64::from(widening.function.as_u32()),
+                    before: before,
+                    after: after,
+                },
+            );
+        }
     }
 
     fn emit_job_completion(&self, completion: &super::world::JobCompletion) {

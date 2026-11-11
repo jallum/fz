@@ -174,7 +174,11 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
 fn duplicate_ceiling(number: u32) -> usize {
     match number {
         420 => 122,
-        567 => 14,
+        // A closure carried with differently instantiated surfaces gets two
+        // ids that render alike; the widened key type `%{1: atom}` beside
+        // `%{1: :a}` inherits one such pair (14 -> 15). This raise was
+        // reviewed; collapsing those ids lowers the ceiling.
+        567 => 15,
         other => panic!("no pinned ceiling for fixture {other:05}"),
     }
 }
@@ -518,7 +522,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // `fz_io_write`; the cone it pulls in (`IO.puts`, `to_chardata`,
             // `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`)
             // is emitted code.
-            50,
+            // An activation key names only the literals a use can tell
+            // apart, so fewer activations are emitted: 50 -> 46.
+            46,
         ),
         (
             567, // fz_f98_range_map_converges
@@ -526,7 +532,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // `Enumerable`'s map `count` reads Kernel's `map_size`, a typed wrapper
             // over `fz_map_count`, where it used to call the extern directly.
             // fz-sc8.8: 65 -> 83. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-            83,
+            // An activation key names only the literals a use can tell
+            // apart, so fewer activations are emitted: 83 -> 81.
+            81,
         ),
         (
             569, // enum_map_family
@@ -538,10 +546,13 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // three `reduce_first` catch-alls are gone, so their executables
             // are not emitted.
             // fz-sc8.8: 116 -> 138. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-            138,
+            // An activation key names only the literals a use can tell
+            // apart, so fewer activations are emitted: 138 -> 136.
+            136,
         ),
         // fz-sc8.8: 36 -> 54. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        (562, 54), // mailbox_closure_each
+        // An activation key names only the literals a use can tell apart: 54 -> 52.
+        (562, 52), // mailbox_closure_each
         (
             563, // mailbox_closure_reduce
             // fz-xxd.11: 46 -> 47. `Kernel.fz_send/2` held two blended
@@ -551,7 +562,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // sends is known before the call is keyed, so there are three
             // exact executables, one per lambda.
             // fz-sc8.8: 47 -> 65. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-            65,
+            // An activation key names only the literals a use can tell
+            // apart, so fewer activations are emitted: 65 -> 63.
+            63,
         ),
         (
             570, // actor_ring
@@ -564,7 +577,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             571, // enum_predicate_search
             // Exact caller rows retain four specializations hidden by blended evidence.
             // fz-sc8.8: 174 -> 200. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-            200,
+            // An activation key names only the literals a use can tell
+            // apart, so fewer activations are emitted: 200 -> 190.
+            190,
         ),
         (
             420, // enum_take_drop_split, over both a list and a range
@@ -582,7 +597,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // proper-list check: `proper_length` aborts with `:badarg` on an improper
             // list, so the check and its abort path become executables of their own.
             // fz-sc8.8: 233 -> 249. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-            249,
+            // An activation key names only the literals a use can tell
+            // apart, so fewer activations are emitted: 249 -> 245.
+            245,
         ),
     ] {
         let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);

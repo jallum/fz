@@ -2298,7 +2298,11 @@ fn runtime_demand_of_dispatch(demand: &DispatchDemand, proven_arity: Option<usiz
             }
             RuntimeDemand::tuple_fields(lanes)
         }
-        DispatchDemand::TupleFields(_) | DispatchDemand::Whole | DispatchDemand::ListShape(_) => RuntimeDemand::whole(),
+        DispatchDemand::TupleFields(_)
+        | DispatchDemand::Class
+        | DispatchDemand::Whole
+        | DispatchDemand::ListShape(_)
+        | DispatchDemand::MapValues(_) => RuntimeDemand::whole(),
     }
 }
 

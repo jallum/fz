@@ -144,8 +144,14 @@ an already-addressed arrow.
 ## The dispatch key is a derived collapse, not the evidence
 
 `canonical_activation_key` mints the precise evidence arrow with `from_inputs`,
-then — for recursive functions only — derives the dispatch key with
-`convergence_collapse(arrow, demand, returned)`, where `demand` is
+then derives the dispatch key with `Types::activation_key_arrow`: ONE per-slot
+function on both paths. A recursive body takes the whole structural collapse; a
+non-recursive body has no ascent to settle, so its structure is left exactly as
+the evidence stated it and only identity is erased -- a literal atom where no
+use can tell it from another (`Types::widen_literals`), and a closure brand
+where no clause of this body tests the slot (the LOCAL mask). A slot that is
+already its own key skips the function (`probe_keys_as_itself`, which includes
+`widen_literals(a) == a`). The collapse reads `demand`, which is
 `InputDemand::forwarded_dispatch` — this body's own entry dispatch joined with
 what every callee it forwards a slot to asks of that slot (fz-kdt.183) — and
 `returned` is `InputDemand::returned`, the positions this activation's
@@ -164,7 +170,10 @@ erased is a position on which two callers' answers blend. `{:done, acc}` is the
 shape: the tag is the question, the payload is the answer, and each axis keeps
 its own half. A `Whole` slot has no collapse at all, and forwarding can hand a
 `Whole` up; that slot sits outside fz-y6w's termination argument. The returned
-axis does not widen that: it never keeps a slot verbatim.
+axis does not widen that: it never keeps a slot verbatim. A `Class` slot --
+read, but by nothing that tells one literal from another -- keeps its structure
+and widens its literals, and a position the returned axis keeps keeps its
+literals too: the literal is the answer.
 `ListShape(elem_demand)` is
 still a recursive convergence key: it preserves the demanded element information
 from the whole list-family descriptor, then converges empty/non-empty shape to

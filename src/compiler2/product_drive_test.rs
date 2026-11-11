@@ -921,27 +921,28 @@ fn nested_retained_activations_partition_work_without_replaying_it_on_a_cache_hi
     compiler.run_root_interp(root).expect("nested macro request");
     let cold_sessions = finished.borrow().len();
     assert!(cold_sessions > 1, "the fixture must exercise nested retained roots");
+    // The program session holds products no root owns; it is no macro root.
     let macro_roots = finished
         .borrow()
         .iter()
-        .filter_map(|(candidate, _, _)| (*candidate != Some(root)).then_some(*candidate))
+        .filter_map(|(candidate, _, _)| candidate.filter(|candidate| *candidate != root))
         .collect::<std::collections::HashSet<_>>();
     assert!(
         !macro_roots.is_empty(),
         "the fixture must open a retained macro-root session"
     );
     assert!(
-        macro_roots
+        macro_roots.iter().all(|macro_root| evaluated
+            .borrow()
             .iter()
-            .all(|macro_root| evaluated.borrow().iter().any(|key| {
-                key == &ProductKey::RootBackendProduct(macro_root.expect("macro root sessions are root-scoped"))
-            })),
+            .any(|key| { key == &ProductKey::RootBackendProduct(*macro_root) })),
         "each nested macro root must evaluate its backend product",
     );
     assert!(
-        evaluated.borrow().iter().all(
-            |key| !matches!(key, ProductKey::NativeProgram(native_root) if macro_roots.contains(&Some(*native_root)))
-        ),
+        evaluated
+            .borrow()
+            .iter()
+            .all(|key| !matches!(key, ProductKey::NativeProgram(native_root) if macro_roots.contains(native_root))),
         "typed product telemetry must show that macro roots never evaluate NativeProgram",
     );
     let mut cold_work = super::super::WorkStartTally::default();

@@ -72,7 +72,7 @@ use super::transport::{
     TransportStore,
 };
 use super::typedef::{TypeDef, TypeDefMap};
-use super::types::{ClosureTarget, MapKey, Ty, Types};
+use super::types::{ClosureTarget, KeyDemand, MapKey, Ty, Types};
 use crate::ir_interp::AnyValue as RuntimeValue;
 use fz_runtime::any_value::AnyValueRef;
 
@@ -124,6 +124,16 @@ impl WarningDiagnosticKey {
 enum CallableMatchScore {
     VariadicPrefix(usize),
     Exact,
+}
+
+/// One slot of one function whose activation key named a kind where its
+/// evidence named a literal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct LiteralWidening {
+    pub(crate) function: FunctionId,
+    pub(crate) slot: usize,
+    pub(crate) before: Ty,
+    pub(crate) after: Ty,
 }
 
 pub struct World {
@@ -178,6 +188,12 @@ pub struct World {
     reported_unresolved: HashSet<UnresolvedIssueKey>,
     reported_warnings: HashSet<WarningDiagnosticKey>,
     warning_diagnostics: Vec<Diagnostic>,
+    /// Every slot an activation key widened a literal in, reported once, and
+    /// the ones not yet drained. A key is minted from a `World` method that
+    /// holds no telemetry handle, so the mint records and the execution context
+    /// reports -- the same split `warning_diagnostics` uses.
+    widened_literal_slots: HashSet<LiteralWidening>,
+    unreported_literal_slots: Vec<LiteralWidening>,
     /// Readiness steps the drain arbiter produced since the last flush
     /// (`drive::settle_quiescent`). `World` owns the mutation; the execution
     /// context observes it — the same split `warning_diagnostics` uses, and
@@ -338,6 +354,8 @@ impl World {
             reported_unresolved: HashSet::new(),
             reported_warnings: HashSet::new(),
             warning_diagnostics: Vec::new(),
+            widened_literal_slots: HashSet::new(),
+            unreported_literal_slots: Vec::new(),
             quiescence_steps: Vec::new(),
             work_graph: WorkGraph::new(),
             #[cfg(test)]
@@ -2348,40 +2366,49 @@ impl World {
         // pass (fz-hwn.27.6), so two distinct inference vars `[Ty27,Ty28]` address
         // to distinct `[a0,a1]` and never collapse to the phantom `[a0,a0]`.
         let key = super::identity::ActivationKey::from_inputs(root, function, inputs, &mut self.types);
-        if !keying.recursive {
-            // A non-recursive body that never consumes callable identity only
-            // TRANSPORTS the closures that reach it, so WHICH lambda arrived
-            // is freight: erase the brands from non-dispatch slots and every
-            // same-shape lambda shares one activation (fz-6gb). What it closed
-            // over is NOT freight -- the capture types survive the erasure, so
-            // a forwarder handed one lambda at two capture types keys one body
-            // per type and its callees stay grounded (fz-kdt.127). A consuming
-            // body keeps the precise key -- its specializations buy direct
-            // dispatch. Evidence is precise either way.
-            //
-            // Brand erasure asks the LOCAL question: "does a clause of THIS
-            // body test this slot" (fz-6gb). What a callee downstream demands
-            // of the slot is a different question, and keying the erasure off
-            // it would un-share a forwarder that only transports its callable
-            // (fz-kdt.183: `fwd(f, x)` splits into one activation per lambda
-            // once `apply2/2`'s `:none` test raises the slot).
-            if keying.consumes_callable_identity {
-                return key;
-            }
-            let arrow = self
-                .types
-                .erase_transported_closure_identities(key.arrow, &demand.local_dispatch);
-            return super::identity::ActivationKey { arrow, ..key };
-        }
-        // Bounded specialization (fz-y6w): the dispatch KEY is a whole-arrow
-        // convergence collapse of that evidence — recursive slots nothing
-        // demands widen to their convergence class so the ascent settles. Key
-        // != evidence is intentional; the precise arrow stays in
-        // `ActivationInputs`.
-        let arrow = self
-            .types
-            .convergence_collapse(key.arrow, &demand.forwarded_dispatch, &demand.returned);
+        // Key != evidence is intentional: the dispatch key erases what no use can
+        // tell apart (see `Types::activation_key_arrow`), and the precise arrow
+        // stays in `ActivationInputs`.
+        let arrow = self.types.activation_key_arrow(
+            key.arrow,
+            keying.recursive,
+            &KeyDemand {
+                local: &demand.local_dispatch,
+                forwarded: &demand.forwarded_dispatch,
+                returned: &demand.returned,
+                consumes_callable_identity: keying.consumes_callable_identity,
+            },
+        );
+        self.note_widened_literals(function, key.arrow, arrow);
         super::identity::ActivationKey { arrow, ..key }
+    }
+
+    /// Records each slot whose key dropped a literal its evidence held.
+    fn note_widened_literals(&mut self, function: FunctionId, evidence: Ty, key: Ty) {
+        let (Some(before), Some(after)) = (
+            self.types.descr_pure_arrow_args(&evidence),
+            self.types.descr_pure_arrow_args(&key),
+        ) else {
+            return;
+        };
+        for (slot, (before, after)) in before.into_iter().zip(after).enumerate() {
+            if self.types.widen_literals(&before) == before || self.types.widen_literals(&after) != after {
+                continue;
+            }
+            let widening = LiteralWidening {
+                function,
+                slot,
+                before,
+                after,
+            };
+            if self.widened_literal_slots.insert(widening) {
+                self.unreported_literal_slots.push(widening);
+            }
+        }
+    }
+
+    pub(crate) fn take_literal_widenings(&mut self) -> Vec<LiteralWidening> {
+        std::mem::take(&mut self.unreported_literal_slots)
     }
 
     pub(crate) fn closure_ty(&mut self, function: FunctionId, captures: Vec<Ty>) -> Ty {
@@ -3218,6 +3245,10 @@ impl World {
     /// monotone join be reported from a `World` that holds no telemetry handle.
     /// The count itself is kept on `Types` because that is the only handle the
     /// join has; see `Types::activation_input_collapses`.
+    pub(crate) fn display_type(&self, ty: &Ty) -> String {
+        self.types.display_for_diag(ty)
+    }
+
     pub(crate) fn take_activation_input_collapses(&mut self) -> u64 {
         self.types.take_activation_input_collapses()
     }

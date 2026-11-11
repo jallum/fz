@@ -1,0 +1,31 @@
+#---
+# purpose: "an atom handed into a try body that dispatches on it keeps its own activation key, and one only compared there shares a key"
+# oracle: 01060_an_atom_read_inside_a_try_keeps_its_identity.oracle.exs
+#---
+defp kind(:int), do: 1
+defp kind(:text), do: "one"
+defp kind(_other), do: raise(ArgumentError, "unknown kind")
+
+defp guarded(tag) do
+  try do
+    kind(tag)
+  rescue
+    e in ArgumentError -> {:rescued, e.message}
+  end
+end
+
+defp same(a, b) do
+  try do
+    a === b
+  rescue
+    _ -> :never
+  end
+end
+
+def main() do
+  dbg(guarded(:int))
+  dbg(guarded(:text))
+  dbg(guarded(:other))
+  dbg(same(:a, :a))
+  dbg(same(:a, :b))
+end

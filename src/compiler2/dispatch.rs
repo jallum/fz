@@ -157,4 +157,8 @@ where
     fn guard_call(&mut self, callee: &Callee, arity: usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {
         (self.guard)(self.world, callee, arity)
     }
+
+    fn is_literal_blind(&self, ty: &Ty) -> bool {
+        self.world.types().is_literal_blind(ty)
+    }
 }

@@ -180,7 +180,9 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // 232 -> 229: a function's recursion is read from its shared reach product
 // instead of a walk of the static graph, so DeriveRecursive reruns less.
 // fz-sc8.37: 229 -> 239. Kernel defines `&&`, `||` and `!` as macros.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 239;
+// 239 -> 259: literal-argument calls are no longer self-keyed, so Kernel's
+// arithmetic and compare cone derives its input demand once per program.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 259;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {

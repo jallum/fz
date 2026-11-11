@@ -113,7 +113,11 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
     /// keeps, or `None` when no test a decision can reach is narrowed. Subject
     /// ids, outcome ids, guards and pins are the plan's own, so everything that
     /// names them reads the trimmed plan unchanged.
-    pub(crate) fn trimmed(&self, live: &impl Fn(GraphNodeId) -> LiveEdges) -> Option<Self>
+    pub(crate) fn trimmed(
+        &self,
+        live: &impl Fn(GraphNodeId) -> LiveEdges,
+        literal_blind: &dyn Fn(&TypeHandle) -> bool,
+    ) -> Option<Self>
     where
         TypeHandle: Clone + Eq,
     {
@@ -124,6 +128,7 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
                 count: self.input_count,
                 pinned: &pinned,
                 guard_leaves: &guard_leaves,
+                literal_blind,
             },
             live,
         )?;
@@ -244,6 +249,10 @@ pub(crate) trait PatternResolver<TypeHandle> {
         callee: &crate::ast::Callee,
         arity: usize,
     ) -> Result<Option<GuardCallee<TypeHandle>>, SourcePatternError>;
+
+    /// Whether a type test over this type can tell one literal from another.
+    /// It cannot when the type names no specific atom anywhere inside it.
+    fn is_literal_blind(&self, ty: &TypeHandle) -> bool;
 }
 
 /// What a call in a guard reaches: a helper whose clauses are reified into
@@ -355,6 +364,12 @@ where
         arity: usize,
     ) -> Result<Option<GuardCallee<TypeHandle>>, SourcePatternError> {
         self(callee, arity)
+    }
+
+    /// A bare closure resolver has no type calculator to ask, so it claims
+    /// nothing: every type test is read as telling literals apart.
+    fn is_literal_blind(&self, _ty: &TypeHandle) -> bool {
+        false
     }
 }
 
@@ -760,7 +775,7 @@ where
     producer
         .add_rows(patterns.rows, resolver)
         .map_err(PatternDispatchError::SourcePattern)?;
-    producer.finish()
+    producer.finish(&*resolver)
 }
 
 struct PatternDispatchProducer<TypeHandle> {
@@ -905,7 +920,10 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         Ok(())
     }
 
-    fn finish(self) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
+    fn finish(
+        self,
+        resolver: &impl PatternResolver<TypeHandle>,
+    ) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
         let undefined = self.prematch.undefined_pins(&self.pinned);
         if !undefined.is_empty() {
             return Err(PatternDispatchError::SourcePattern(SourcePatternError::UndefinedPins(
@@ -936,6 +954,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             count: self.input_count,
             pinned: &pinned_inputs,
             guard_leaves: &guard_leaves,
+            literal_blind: &|ty| resolver.is_literal_blind(ty),
         };
         #[cfg(test)]
         let source_matrix = matrix.clone();
