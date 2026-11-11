@@ -1,0 +1,11 @@
+#---
+# purpose: "Two callers seeding an accumulator with different element types each get back a list of their own element type"
+# oracle: 01076_two_seeds_of_different_element_types_keep_their_returns_apart.oracle.exs
+#---
+def keep(x), do: x
+def go([], acc), do: keep(acc)
+def go([x | rest], acc), do: go(rest, [x | acc])
+def main() do
+  dbg(go([1, 2], [:a]))
+  dbg(go([1, 2], ["b"]))
+end

@@ -706,11 +706,28 @@ fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> 
     mask
 }
 
+/// The input slots `function`'s recursion supplies WHOLE: each is rebuilt by a
+/// self call rather than carried, so what a self call hands it is a state of
+/// the ascent and not a caller's choice.
+///
+/// Only a call made from inside `function`'s own body asks, and a body that is
+/// being analysed is lowered, so the body is always there to read.
+pub(super) fn supplied_whole_slots(world: &World, function: FunctionId, input_count: usize) -> Vec<usize> {
+    let body = world.lowered_body(function);
+    let LoweredBody::Clauses { entries, .. } = &*body;
+    let origins = input_positions(&body, input_count);
+    recursion_supplied_positions(function, entries, &origins, input_count)
+        .into_iter()
+        .filter(|(_, path)| path.is_empty())
+        .map(|(slot, _)| slot)
+        .collect()
+}
+
 /// The positions the RECURSION itself supplies, as a LEAST FIXPOINT: a
 /// position is supplied when a self-call hands it a value the caller held
 /// nowhere, or held only at positions that are themselves supplied.
 ///
-/// The fixpoint is what makes the subtraction sound. An eager rule -- "the
+/// The fixpoint is what makes the rule sound. An eager rule -- "the
 /// caller did not hold this value at this same position, so the position is
 /// rebuilt" -- misreads a PERMUTATION. `go(n - 1, b, a)` hands each slot a
 /// value the caller held at the OTHER slot, which supplies neither, and the
@@ -721,26 +738,23 @@ fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> 
 /// permutation's obligations never discharge, the set settles empty, and
 /// `go/3` keys its two users apart.
 ///
-/// Keying a genuinely supplied position is a cost with no separation to buy,
-/// and both halves are measured. The cost: an accumulator visits `[]` and then
-/// `list(tau)` within ONE caller; those different denotations correctly intern
-/// apart, so keying it mints one activation per state and k accumulators mint
-/// their product --
-/// `split3/5` 1 -> 8 and `split4/6` 1 -> 16, every body identical. The absent
-/// payoff: the SEED activation is the one every caller passes through and its
-/// inputs are the same `[]` for all of them, so it stays shared and its
-/// published return stays the join no matter how finely the ascended states
-/// key. Measured on `tag(f, list, [])` at two reducers: keying the accumulator
-/// mints three activations and the seed still publishes
-/// `list(binary) | list(int)`.
+/// A supplied position is keyed by the CALLER, never by the recursion. An
+/// accumulator visits `[]` and then `list(tau)` within ONE caller, and those
+/// different denotations intern apart, so letting each self call key the slot
+/// from the type it hands over mints one activation per state and k
+/// accumulators mint their product. Instead a self call keeps its own
+/// activation's column at a supplied whole slot (`supplied_whole_slots`): the
+/// outside caller's seed is what tells callers apart, the self call stays in
+/// the activation it was made from, and the type it hands over still joins that
+/// activation's input evidence. `walk/2` keys one activation per outside seed.
 ///
 /// A position the recursion does NOT supply is constant along the ascent, so
 /// two keys there ARE two callers -- `loop(n, junk)`'s junk, the two slots
 /// `go/3` permutes, and the payload of `walk({:go, acc}, n - 1)`, which the
 /// reconstructed tuple hands on unchanged.
 ///
-/// Only SELF calls are read, so the subtraction is INCOMPLETE by construction
-/// and the ticket's rule holds with a named exception: a position the
+/// Only SELF calls are read, so the rule is INCOMPLETE by construction and
+/// holds with a named exception: a position the
 /// recursion supplies ACROSS a cycle, or through a generated lambda, is not
 /// seen here and is keyed anyway. That is a cost, never an unsoundness -- the
 /// key names more than the return depends on. Measured corpus-wide (604

@@ -1,0 +1,11 @@
+#---
+# purpose: "A recursion with three accumulators, each reversed in its base clause, splits a list by threshold and returns the three buckets in order"
+# oracle: 01075_three_accumulators_split_a_list_by_threshold.oracle.exs
+#---
+def go([], a1, a2, a3), do: {Enum.reverse(a1), Enum.reverse(a2), Enum.reverse(a3)}
+def go([x | rest], a1, a2, a3) when x > 4, do: go(rest, [x | a1], a2, a3)
+def go([x | rest], a1, a2, a3) when x > 2, do: go(rest, a1, [x | a2], a3)
+def go([x | rest], a1, a2, a3), do: go(rest, a1, a2, [x | a3])
+def main() do
+  dbg(go([1, 2, 3, 4, 5, 6], [], [], []))
+end
