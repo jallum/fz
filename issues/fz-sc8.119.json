@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.117"
+  ],
   "blocks": [],
   "created": "2026-11-11T21:55:58Z",
   "description": "Found while minimizing the distiller's compile runaway (44174db13, argument tests/distill_telemetry/main_returns_one.jsonl). Both build m = Map.new(File.stream!(path) |\u003e Enum.to_list(), fn l -\u003e {l, 1} end):\n1. Enum.reduce(m, 0, fn {_k, v}, acc -\u003e acc + v end) fails to compile: error[artifact/incomplete-semantic-plan]: ... boxed closure call in FunctionId(449) expects delivered lane(s) [RawInt] but construction wrapper ... publishes [ValueRef].\n2. Enum.count over the same map dies at run time: backend dispatch callsite ... missed an exhaustive dispatch.\nRepro programs were q1.exs and s3.exs in the coordinator's scratch. Minimize each to the smallest program, check it against elixir, and file one ticket per distinct cause; then close this one. Re-check after the runaway ticket lands, since both may share its cause.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Minimize and ticket two failures over a map built from file lines",
   "type": "bug",
-  "updated_at": "2026-11-11T21:55:58Z"
+  "updated_at": "2026-11-11T21:56:02Z"
 }
