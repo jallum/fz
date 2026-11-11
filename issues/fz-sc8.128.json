@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T23:01:24Z",
+  "description": "take_next_fact_change (src/compiler2/scheduler.rs:266) finds the next change with a linear min_by over semantic_cmp and removes it with Vec::remove. Sampled share of wall: about 10% on fixture 00761, 5% on one OptionParser.parse call (debug build). Needs a short page: what order the queue promises and the structure that keeps it. Proposal page: /Users/j5n/Workspace/optionparser-compile-cost.html (https://claude.ai/artifact/9MdFVrMJRKJcSULMazQfyo). Spike evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad.",
+  "id": "fz-sc8.128",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "The scheduler takes its next fact change without scanning the queue",
+  "type": "task",
+  "updated_at": "2026-11-11T23:01:24Z"
+}
