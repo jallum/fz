@@ -1,6 +1,6 @@
 use super::*;
 use crate::heap::{GcStats, SchemaRegistry};
-use crate::process::GcBoundary;
+use crate::process::CollectionBoundary;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -45,7 +45,7 @@ fn a_probe_writes_its_outcome_and_what_the_gift_cost() {
 fn a_collection_writes_its_boundary_and_the_stats_that_describe_it() {
     let collection = Collection {
         pid: 5,
-        boundary: GcBoundary::Park,
+        boundary: CollectionBoundary::Park,
         stats: GcStats {
             copied_bytes: 288,
             live_bytes: 288,

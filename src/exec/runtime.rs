@@ -35,11 +35,12 @@ use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV};
 use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
 use fz_runtime::pinned_abi::call2;
+use fz_runtime::process::Disposition;
 use fz_runtime::sched::{
     ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
 };
 use fz_runtime::sched_core::{
-    Disposition, Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
+    Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
 use fz_runtime::telemetry::{
     EXECUTION_READY, GC, PROCESS_EXITED, RUN_ENDED, RunEnded, RuntimeEvent, SCHEDULER_SLEPT, SEND_PROBE,

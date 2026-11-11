@@ -279,10 +279,10 @@ reports idle once only that process remains.
 ### The step after a quantum
 
 `sched_core::end_quantum(scheduler, process)` is the one step that follows every
-quantum on the JIT and AOT paths, in every state. It reads the boundary off the
-process (`Process::quantum_boundary`: runnable means yield, `Blocked` means park,
-anything else means exit), collects when `Heap::should_gc` holds and the boundary
-is not an exit, clears the quantum's yield reasons, and, for a halted process,
+quantum on the JIT and AOT paths, in every state. It reads how the quantum ended off the
+process (`Process::quantum_end`, a `Disposition`: runnable means `Requeue`, `Blocked`
+means `Parked`, anything else means `Exited`), collects when `Heap::should_gc` holds and the
+process did not exit, clears the quantum's yield reasons, and, for a halted process,
 marks it `Exited` without collecting it and releases every stub on its MSO chain
 with `Heap::release_resources_at_exit`, since nothing is live. Nothing a
 collection would forward is read after the exit, so the heap is released as it

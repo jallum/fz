@@ -16,7 +16,7 @@
 
 use crate::any_value::{AnyValueRef, ValueKind};
 use crate::heap::GcStats;
-use crate::process::{Collection, GcBoundary, PidId, Process, ProcessState};
+use crate::process::{Collection, CollectionBoundary, Disposition, PidId, Process, ProcessState};
 use crate::scheduler_hooks::{TimerCancelHook, TimerScheduleHook};
 use crate::telemetry::RuntimeEvent;
 use crate::timer::{TimerId, TimerWheel};
@@ -103,18 +103,6 @@ pub trait Scheduler {
     }
 }
 
-/// What a scheduler does with a process whose quantum has ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Disposition {
-    /// The process yielded and is still runnable: queue it behind the others.
-    Requeue,
-    /// The process parked on a receive that found nothing: a send or its
-    /// after-timer wakes it.
-    Parked,
-    /// The process halted; its heap and its resources are released.
-    Exited,
-}
-
 /// The step after every quantum, for every state. It reads the boundary off
 /// `process`, collects when the heap is due and observes the collection, and
 /// clears the quantum's yield reasons. A halted process is not collected: it
@@ -122,8 +110,13 @@ pub enum Disposition {
 /// live. Every destructor the collection or the exit queued then runs through `scheduler`,
 /// `process.dtors_dispatched` counts them, and an exit is observed last.
 pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Process) -> Disposition {
-    let boundary = process.quantum_boundary();
-    if boundary != GcBoundary::Exit && process.needs_boundary_gc() {
+    let disposition = process.quantum_end();
+    let boundary = match disposition {
+        Disposition::Requeue => Some(CollectionBoundary::Yield),
+        Disposition::Parked => Some(CollectionBoundary::Park),
+        Disposition::Exited => None,
+    };
+    if let Some(boundary) = boundary.filter(|_| process.needs_boundary_gc()) {
         let collection = Collection {
             pid: process.pid,
             boundary,
@@ -132,15 +125,10 @@ pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Proce
         scheduler.observe(RuntimeEvent::Gc(&collection));
     }
     process.clear_yield_reasons();
-    let disposition = match boundary {
-        GcBoundary::Yield => Disposition::Requeue,
-        GcBoundary::Park => Disposition::Parked,
-        GcBoundary::Exit => {
-            process.state = ProcessState::Exited;
-            process.heap.release_resources_at_exit();
-            Disposition::Exited
-        }
-    };
+    if disposition == Disposition::Exited {
+        process.state = ProcessState::Exited;
+        process.heap.release_resources_at_exit();
+    }
     drain_destructors(scheduler, process);
     if disposition == Disposition::Exited {
         scheduler.observe(RuntimeEvent::ProcessExited(process));

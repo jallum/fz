@@ -708,8 +708,8 @@ exited, such as one parked on a receive; no destructor closure runs for those.</
 <pre>
   1. resume the runnable closure
   2. sched_core::end_quantum(scheduler, process):
-       boundary = yield (runnable), park (blocked on a receive) or exit
-       if heap.should_gc:
+       disposition = requeue (runnable), parked (blocked on a receive) or exited
+       if heap.should_gc and the process did not exit:
          process.collect()          (the JIT emits fz.runtime.gc)
        clear yield reasons
        exit: mark Exited; release the MSO chain with nothing live

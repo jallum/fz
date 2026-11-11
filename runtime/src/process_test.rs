@@ -1,4 +1,4 @@
-use super::{GcBoundary, Node, Process, ProcessState, YIELD_REASON_REDUCTIONS};
+use super::{Disposition, Node, Process, ProcessState, YIELD_REASON_REDUCTIONS};
 use crate::any_value::{
     AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST, ValueKind, closure_addr_from_tagged, closure_capture_set,
     closure_capture_value, list_addr_from_tagged,
@@ -198,19 +198,19 @@ fn collect_roots_only_what_the_process_holds() {
     assert!(process.delivery.lock().park().unwrap().after_cont.is_none());
 }
 
-/// The boundary after a quantum is read off the process: runnable means it
+/// How a quantum ended is read off the process: runnable means it
 /// yielded, blocked means it parked, anything else means it halted.
 #[test]
-fn quantum_boundary_is_read_off_the_process_state() {
+fn quantum_end_is_read_off_the_process_state() {
     let mut process = Process::new(Rc::new(RefCell::new(SchemaRegistry::new())));
     let capture = int_list(&mut process.heap, 7);
     let runnable = closure_capturing(&mut process, capture);
     process.set_runnable_closure(runnable);
     process.state = ProcessState::Running;
-    assert_eq!(process.quantum_boundary(), GcBoundary::Yield);
+    assert_eq!(process.quantum_end(), Disposition::Requeue);
     process.state = ProcessState::Blocked;
-    assert_eq!(process.quantum_boundary(), GcBoundary::Park);
+    assert_eq!(process.quantum_end(), Disposition::Parked);
     process.state = ProcessState::Running;
     process.take_runnable_closure();
-    assert_eq!(process.quantum_boundary(), GcBoundary::Exit);
+    assert_eq!(process.quantum_end(), Disposition::Exited);
 }

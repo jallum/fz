@@ -28,23 +28,34 @@ pub const DEFAULT_REDUCTIONS_PER_QUANTUM: i32 = 4000;
 pub const YIELD_REASON_REDUCTIONS: u8 = 1 << 0;
 pub const YIELD_REASON_EXPLICIT: u8 = 1 << 1;
 
-/// The scheduler boundary that asked for a collection.
+/// How a quantum ended, and so what a scheduler does with the process next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GcBoundary {
+pub enum Disposition {
+    /// The process yielded and is still runnable: queue it behind the others.
+    Requeue,
+    /// The process parked on a receive that found nothing: a send or its
+    /// after-timer wakes it.
+    Parked,
+    /// The process halted; its heap and its resources are released, never
+    /// collected.
+    Exited,
+}
+
+/// The scheduler boundary that asked for a collection. A halting process is
+/// released rather than collected, so an exit is not a boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CollectionBoundary {
     /// The process ran out of budget and is still runnable.
     Yield,
     /// The process parked on a receive that found nothing.
     Park,
-    /// The process halted. It is released, never collected.
-    Exit,
 }
 
-impl GcBoundary {
+impl CollectionBoundary {
     pub fn as_str(self) -> &'static str {
         match self {
-            GcBoundary::Yield => "yield",
-            GcBoundary::Park => "park",
-            GcBoundary::Exit => "exit",
+            CollectionBoundary::Yield => "yield",
+            CollectionBoundary::Park => "park",
         }
     }
 }
@@ -53,7 +64,7 @@ impl GcBoundary {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Collection {
     pub pid: PidId,
-    pub boundary: GcBoundary,
+    pub boundary: CollectionBoundary,
     pub stats: GcStats,
 }
 
@@ -453,13 +464,13 @@ impl Process {
         self.yield_reasons = 0;
     }
 
-    /// The boundary a process is at after running a quantum: still runnable
-    /// (yield), waiting on a receive (park), or halted (exit).
-    pub fn quantum_boundary(&self) -> GcBoundary {
+    /// How the quantum a process just ran ended: still runnable, waiting on a
+    /// receive, or halted.
+    pub fn quantum_end(&self) -> Disposition {
         match self.state {
-            ProcessState::Running if self.runnable.is_some() => GcBoundary::Yield,
-            ProcessState::Blocked => GcBoundary::Park,
-            _ => GcBoundary::Exit,
+            ProcessState::Running if self.runnable.is_some() => Disposition::Requeue,
+            ProcessState::Blocked => Disposition::Parked,
+            _ => Disposition::Exited,
         }
     }
 

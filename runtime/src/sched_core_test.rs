@@ -4,7 +4,7 @@ use crate::any_value::{
     list_addr_from_tagged,
 };
 use crate::heap::{Heap, SchemaRegistry};
-use crate::process::{Collection, GcBoundary, ProcessState};
+use crate::process::{Collection, CollectionBoundary, Disposition, ProcessState};
 use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -361,7 +361,7 @@ fn a_resource_freed_by_a_collection_has_its_destructor_dispatched_at_the_boundar
             scheduler.collections
         );
     };
-    assert_eq!(collection.boundary, GcBoundary::Yield);
+    assert_eq!(collection.boundary, CollectionBoundary::Yield);
     assert_eq!(scheduler.destructors.len(), 1, "one dead resource, one dispatch");
     let (closure, payload) = scheduler.destructors[0];
     assert_eq!(
@@ -480,7 +480,7 @@ fn a_parked_process_runs_destructors_but_is_not_exited() {
 
     assert_eq!(disposition, Disposition::Parked);
     assert_eq!(scheduler.collections.len(), 1);
-    assert_eq!(scheduler.collections[0].boundary, GcBoundary::Park);
+    assert_eq!(scheduler.collections[0].boundary, CollectionBoundary::Park);
     assert!(scheduler.exits.is_empty(), "a park is not an exit");
     assert_eq!(scheduler.destructors.len(), 1);
     assert_eq!(process.state, ProcessState::Blocked);

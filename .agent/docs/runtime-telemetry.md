@@ -183,16 +183,15 @@ fixtures have the same probes on all three paths.
 
 `sched_core::end_quantum` (`runtime/src/sched_core.rs`) collects the process's
 heap when `Heap::should_gc` holds and observes the `Collection` it performed as
-`RuntimeEvent::Gc`, right after collecting and before any destructor runs. The
-boundary is read off the process after the quantum
-(`Process::quantum_boundary`):
+`RuntimeEvent::Gc`, right after collecting and before any destructor runs. How the quantum ended is read off the process
+(`Process::quantum_end`, a `Disposition`):
 
 ```text
 raw event:    fz.runtime.gc
 signature:    (&Collection)
 ```
 
-`Collection` is `{ pid, boundary: GcBoundary, stats: GcStats }`; a halting
+`Collection` is `{ pid, boundary: CollectionBoundary, stats: GcStats }`; a halting
 process is not collected, so the boundary of a collection is `Yield` or `Park`.
 `write_line` renders `pid` and the `boundary` as `"yield"` or `"park"`, then these `GcStats` fields as numbers:
 

@@ -34,10 +34,10 @@ use fz_runtime::ir_runtime::{
     fz_struct_get_named_field_ref,
 };
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
-use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
+use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Process, ProcessState};
 use fz_runtime::sched::{ProbeOutcome, SendProbe, drain_in_queue, gift_match, gift_message, self_send};
 use fz_runtime::sched_core::{
-    Disposition, Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
+    Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
 use fz_runtime::telemetry::{RunEnded, RuntimeEvent};
 use fz_runtime::timer::TimerId;

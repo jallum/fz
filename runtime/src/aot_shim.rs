@@ -29,12 +29,12 @@ use crate::exec_ctx::{Argv, ExecCtx};
 use crate::function_denotation::decode_closure_denotations;
 use crate::heap::{AddressMap, Schema, SchemaRegistry, deep_copy_any_value_ref, pool_outstanding_blocks};
 use crate::pinned_abi::{call1, call2};
-use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
+use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Node, Process, ProcessState};
 use crate::sched::{
     ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
 };
 use crate::sched_core::{
-    Disposition, Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
+    Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
 use crate::telemetry::{RunEnded, RuntimeEvent, write_line};
 use crate::timer::TimerId;
