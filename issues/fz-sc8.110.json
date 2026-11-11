@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T19:05:42Z",
+  "description": "Found while proposing fz-sc8.14: max(3, 4) is error[lower/unbound] 'unresolved direct runtime callee max/2'. Only Enum.max/Enum.min exist (lib/enum.fz). Elixir's Kernel.max/2 and min/2 use term ordering across types (number \u003c atom \u003c reference \u003c function \u003c port \u003c pid \u003c tuple \u003c map \u003c list \u003c bitstring) and are allowed in guards since 1.19? (verify before building). Write them over the existing term comparison (fz_value_cmp_ref / compare) in lib/kernel.fz, add them to the prelude, with oracle fixtures on interp, run and build.",
+  "id": "fz-sc8.110",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "Kernel.max/2 and Kernel.min/2 compare any two terms, as in Elixir",
+  "type": "feature",
+  "updated_at": "2026-11-11T19:05:42Z"
+}
