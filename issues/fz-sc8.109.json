@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-11T19:05:42Z",
+  "description": "Found while proposing fz-sc8.14, which creates lib/tuple.fz with to_list/1 only. Elixir's Tuple also has append/2, delete_at/2, duplicate/2, insert_at/3, product/1 and sum/1 (Tuple.__info__(:functions) on 1.19.4). Four of them build a tuple whose size is known only at runtime, which needs a tuple-from-list primitive fz does not have (List.to_tuple/1 is missing too). Build that primitive once, write the four over it, and product/sum over elem/2. Oracle fixtures on interp, run and build.",
+  "id": "fz-sc8.109",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "Tuple's remaining surface: append, delete_at, duplicate, insert_at, product, sum",
+  "type": "feature",
+  "updated_at": "2026-11-11T19:05:42Z"
+}
