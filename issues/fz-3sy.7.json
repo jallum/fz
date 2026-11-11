@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-3sy.8"
+  ],
   "created": "2026-11-11T15:21:29Z",
   "description": "Elixir's defoverridable: after defoverridable f: n, a later def f/n replaces the earlier clauses instead of adding to them (today a duplicate def gives a redundant-clause warning and the first clause wins). Needed by defexception's default exception/1 and message/1. Own proposal page before building.",
   "id": "fz-3sy.7",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "defoverridable: a later def of the same name and arity replaces an overridable one",
   "type": "feature",
-  "updated_at": "2026-11-11T15:21:29Z"
+  "updated_at": "2026-11-11T15:21:30Z"
 }
