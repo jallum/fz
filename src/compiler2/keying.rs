@@ -55,8 +55,7 @@ pub(crate) struct InputDemand {
     /// Where this activation's published RETURN is BUILT FROM: the input
     /// positions the returned value is, contains, or is a projection of --
     /// this body's own returns joined with the returns of every callee it
-    /// forwards an input to, transitively (fz-kdt.199), MINUS the positions
-    /// the recursion itself supplies (`recursion_supplied_positions`).
+    /// forwards an input to, transitively (fz-kdt.199).
     ///
     /// It is the DUAL of `forwarded_dispatch` and it lives on its own axis
     /// because the two ask for different collapses. A dispatched position is
