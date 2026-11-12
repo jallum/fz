@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-12T20:14:55Z",
   "created": "2026-11-12T01:43:00Z",
   "description": "Found while building fz-4t3.1. native_codegen/function.rs (about line 155) passes a hardcoded None as block_env into lower_prim, and the parameter is threaded through about 15 functions in prim.rs, type_pred.rs, value.rs and support.rs. No caller passes Some, so every read of it is dead.\n\nRemoved:\n- The block_env parameter from lower_prim and every function it is threaded through, with the dead Some arms that read it.\n- The two #[allow(clippy::too_many_arguments)] attributes in prim.rs (emit_variadic_extern_call, lower_prim): clippy.toml sets the threshold to 16, so they suppress nothing.\n\nDone when: grep -rn block_env src/compiler2/native_codegen is empty, and grep -rn too_many_arguments src/compiler2/native_codegen is empty.\n\nAcceptance: full gate green; no pin, golden or expected-output file changes; generated code identical over the 42-fixture sample (probe.sh from fz-4t3.1).",
   "id": "fz-4t3.3",
   "labels": [],
   "parent": "fz-4t3",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The always-None block_env parameter leaves lower_prim",
   "type": "task",
-  "updated_at": "2026-11-12T01:43:00Z"
+  "updated_at": "2026-11-12T20:14:55Z"
 }
