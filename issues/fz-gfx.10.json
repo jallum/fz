@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-12T22:35:51Z",
@@ -8,7 +8,7 @@
   "labels": [],
   "parent": "fz-gfx",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "The rules name borrow-checker appeasement and the strategy that removes it",
   "type": "task",
   "updated_at": "2026-11-12T22:35:51Z"
