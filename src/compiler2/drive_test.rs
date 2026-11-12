@@ -12361,8 +12361,10 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// both matches in `Enum.map_reduce_list/3` in `00569`, at each of its two
 /// activations, and one in `main/0` of `map_enumerable` and of
 /// `range_enumerable`.
+/// A self call keeps its caller's key at a slot the recursion supplies, so one
+/// fewer `entry` plan exists: 155 -> 154 plans, 142 -> 141 unreadable.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 17, 17), ("entry", 155, 142), ("receive", 2, 0)];
+    &[("case", 17, 17), ("entry", 154, 141), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -21437,8 +21439,10 @@ fn split_top_level(text: &str) -> Vec<&str> {
 /// RETURNS and the recursion does NOT supply must key its users apart, or one
 /// activation answers for both with the join of their returns (fz-kdt.199).
 /// `loop/2` states it at a whole slot and `walk/2` one tuple field down, where
-/// the key names the tag and the return IS the payload. `walk/2`'s four are two
-/// tags times two payload element types.
+/// the key names the tag and the return IS the payload. `walk/2`'s two are the
+/// two outside seeds, `{:go, [1, 2]}` and `{:go, ["a"]}`: each seed picks its
+/// own activation, and the self calls, `{:stop, acc}` included, stay in the
+/// activation they were made from.
 ///
 /// `loop/2` is a CORRECTION of a landed law. fz-kdt.183 blessed exactly this
 /// program at ONE activation as its freight law. Measured on the tree that law
@@ -21539,56 +21543,170 @@ const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
          def walk({:go, acc}, 0), do: walk({:stop, acc}, 0)\n\
          def walk({:go, acc}, n), do: walk({:go, acc}, n - 1)\n\
          def main() do\n  dbg(walk({:go, [1, 2]}, 2))\n  dbg(walk({:go, [\"a\"]}, 2))\nend\n",
-        4,
+        2,
     ),
 ];
 
+fn keyed_activations(label: &str, source: &str) -> usize {
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some(format!("{label} keying law")),
+        text: source.to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root_id);
+    assert_resolved(
+        compiler.drive(),
+        &format!("{label}: the program must settle to a backend product"),
+    );
+    let program = backend.last(root_id).program;
+    let world = compiler.world();
+    program
+        .executables()
+        .iter()
+        .filter(|executable| {
+            crate::compiler2::canon::function_label(world, executable.key.activation.function) == label
+        })
+        .count()
+}
+
+fn moved_keying_laws(laws: &[(&str, &str, &str, usize)]) -> Vec<String> {
+    laws.iter()
+        .filter_map(|(law, label, source, expected)| {
+            let keyed = keyed_activations(label, source);
+            (keyed != *expected).then(|| format!("{law}: {label} keys {keyed} activations, the law says {expected}"))
+        })
+        .collect()
+}
+
 #[test]
 fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
-    let mut moved = Vec::new();
-    for (law, label, source, expected) in ONE_ACTIVATION_KEYING_LAWS {
-        let tel = ConfiguredTelemetry::new();
-        let backend = BackendProgramCapture::new();
-        backend.install(&tel);
-        let mut compiler = Compiler2::new(tel);
-        compiler.submit_code(CodeSubmission {
-            name: Some(format!("{label} keying law")),
-            text: (*source).to_string(),
-        });
-        let root_id = compiler.submit_root(RootSubmission {
-            module_name: None,
-            name: "main".to_string(),
-            arity: 0,
-            need: ExecutableNeed::Value,
-        });
-        demand_backend_product(&mut compiler, root_id);
-        assert_resolved(
-            compiler.drive(),
-            &format!("{law}: the program must settle to a backend product"),
-        );
-
-        let program = backend.last(root_id).program;
-        let world = compiler.world();
-        let keyed = program
-            .executables()
-            .iter()
-            .filter(|executable| {
-                crate::compiler2::canon::function_label(world, executable.key.activation.function) == *label
-            })
-            .count();
-        if keyed != *expected {
-            moved.push(format!(
-                "{law}: {label} keys {keyed} activations, the law says {expected}"
-            ));
-        }
-    }
+    let moved = moved_keying_laws(ONE_ACTIVATION_KEYING_LAWS);
     assert!(
         moved.is_empty(),
         "a slot is keyed on DEMAND, not on structure, and demand has TWO axes: a dispatch question \
          reaching it (fz-kdt.183) or the published return being built from it and the recursion not \
          supplying it (fz-kdt.199). A slot NEITHER axis reaches stays collapsed, and brand erasure \
-         keeps asking the local question: {moved:#?}",
+         keeps asking the local question. A slot the recursion supplies is keyed by the outside caller \
+         that seeded it, never by the states the recursion passes through: {moved:#?}",
     );
+}
+
+/// Accumulators the recursion supplies are keyed once per caller, not once per
+/// state the recursion passes through. `go/4` hands each of three accumulators
+/// to a call in its base clause, so every one is demanded; the outside caller
+/// seeds them with the literal `[]` and each self call hands back a `list(int)`.
+/// The self call keeps its caller's key at those slots, so the program settles
+/// one activation of `go/4` -- the seed's, which the ascent stays inside -- and
+/// adding accumulators does not multiply it.
+const SUPPLIED_ACCUMULATOR_PROGRAMS: &[(&str, &str, &str, usize)] = &[
+    (
+        "three accumulators, each handed to a call in the base clause",
+        "go/4",
+        include_str!("../../fixtures/01075_three_accumulators_split_a_list_by_threshold.fz"),
+        1,
+    ),
+    (
+        "six accumulators, each handed to a call in the base clause",
+        "go/7",
+        "def go([], a1, a2, a3, a4, a5, a6), do: {Enum.reverse(a1), Enum.reverse(a2), Enum.reverse(a3), \
+         Enum.reverse(a4), Enum.reverse(a5), Enum.reverse(a6)}\n\
+         def go([x | rest], a1, a2, a3, a4, a5, a6) when x > 5, do: go(rest, [x | a1], a2, a3, a4, a5, a6)\n\
+         def go([x | rest], a1, a2, a3, a4, a5, a6) when x > 4, do: go(rest, a1, [x | a2], a3, a4, a5, a6)\n\
+         def go([x | rest], a1, a2, a3, a4, a5, a6) when x > 3, do: go(rest, a1, a2, [x | a3], a4, a5, a6)\n\
+         def go([x | rest], a1, a2, a3, a4, a5, a6) when x > 2, do: go(rest, a1, a2, a3, [x | a4], a5, a6)\n\
+         def go([x | rest], a1, a2, a3, a4, a5, a6) when x > 1, do: go(rest, a1, a2, a3, a4, [x | a5], a6)\n\
+         def go([x | rest], a1, a2, a3, a4, a5, a6), do: go(rest, a1, a2, a3, a4, a5, [x | a6])\n\
+         def main(), do: dbg(go([1, 2, 3], [], [], [], [], [], []))\n",
+        1,
+    ),
+];
+
+#[test]
+fn compiler2_a_self_call_keeps_its_callers_key_at_a_slot_the_recursion_supplies() {
+    let moved = moved_keying_laws(SUPPLIED_ACCUMULATOR_PROGRAMS);
+    assert!(
+        moved.is_empty(),
+        "a self call hands a supplied slot a type the recursion built, and the outside caller's seed is what \
+         tells callers apart there: the key stays the caller's own while the built type joins the \
+         activation's input evidence, so k accumulators cost one activation and not 2^k: {moved:#?}",
+    );
+}
+
+/// Keeping the caller's key at a supplied slot must not blend two callers.
+/// Each outside caller seeds `acc` with a list of its own element type, so
+/// each reaches its own activation and its own return: the self calls inside
+/// one activation stay inside it.
+#[test]
+fn compiler2_two_seeds_of_different_element_types_keep_their_returns_apart() {
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("two seeds".to_string()),
+        text: include_str!("../../fixtures/01076_two_seeds_of_different_element_types_keep_their_returns_apart.fz")
+            .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root_id);
+    assert_resolved(
+        compiler.drive(),
+        "the two-seed program must settle to a backend product",
+    );
+    let program = backend.last(root_id).program;
+    let (int, atom_a, binary) = {
+        let types = compiler.world_mut().types_mut();
+        (types.int(), types.atom_lit("a"), types.str_t())
+    };
+    let (int_or_atom, int_or_binary) = {
+        let types = compiler.world_mut().types_mut();
+        let with_atom = types.union(int, atom_a);
+        let with_binary = types.union(int, binary);
+        (types.list(with_atom), types.list(with_binary))
+    };
+    let world = compiler.world();
+    let returns: Vec<Ty> = program
+        .executables()
+        .iter()
+        .filter(|executable| {
+            crate::compiler2::canon::function_label(world, executable.key.activation.function) == "go/2"
+        })
+        .map(|executable| {
+            world
+                .activation_return(&executable.key.activation)
+                .expect("every go/2 activation settles a return")
+        })
+        .collect();
+    let types = world.types();
+    assert_eq!(
+        returns.len(),
+        2,
+        "one activation per outside seed: {} returns",
+        returns.len()
+    );
+    for expected in [&int_or_atom, &int_or_binary] {
+        assert_eq!(
+            returns.iter().filter(|ret| types.is_equivalent(ret, expected)).count(),
+            1,
+            "exactly one go/2 activation returns {}: got {:?}",
+            types.display(expected),
+            returns.iter().map(|ret| types.display(ret)).collect::<Vec<_>>(),
+        );
+    }
 }
 
 /// A producer that refuses a program says why, once. `Enum.count(:atom)` has

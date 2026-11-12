@@ -231,6 +231,14 @@ function runs. A provider boundary names no compiler2 activation, so it asks
 for the contract alone; the boundary test is contract-independent and runs
 before the ask.
 
+A call's key is its arguments' types run through the callee's demand
+([`type-specialization`](type-specialization.md)), with one exception: a
+self call keys each slot the callee's recursion supplies WHOLE from the caller
+activation's own key column (`call_key_types`), so the states a recursion passes
+through do not mint activations. The arguments' real types are untouched -- they
+are what the `ActivationContribution` carries, and so what the callee's input
+evidence joins.
+
 Every callsite the walk REACHES publishes its edge, resolved or not
 (`CallSiteResolution`, semantic.rs). Three answers, three representations:
 

@@ -198,14 +198,24 @@ reading of the code rather than a measured divergence. Folding the two axes
 would have to raise a returned position to `Whole`, which has no collapse at
 all.
 
-Positions the RECURSION supplies are subtracted, as a LEAST FIXPOINT: a
-position is supplied when a self-call hands it a value the caller held nowhere,
-or held only at positions that are themselves supplied. A supplied position
-ascends within ONE caller, so keying it mints one activation per ascent state
-(measured: `split3/5` 1 -> 8, `split4/6` 1 -> 16, every body identical) while
-the SEED activation -- the one every caller passes through with the same `[]`
--- stays shared and keeps publishing the join. Cost with nothing bought, so it
-is dropped.
+Positions the RECURSION supplies are found as a LEAST FIXPOINT: a position is
+supplied when a self-call hands it a value the caller held nowhere, or held only
+at positions that are themselves supplied. A supplied position ascends within
+ONE caller (`[]`, then `list(int)`), and those denotations intern apart, so
+keying each self call from the type it hands over would mint one activation per
+ascent state and k accumulators their product (three accumulators each handed to a
+call would key `go/4` 8 times, six accumulators 64). The seed activation
+-- the one every outside caller reaches with its own literal -- is what tells
+callers apart there, so a self call keeps its caller's own key column at every
+WHOLE slot the recursion supplies (`call_key_types`, `jobs/semantic.rs`, reading
+`supplied_whole_slots`, `jobs/keying.rs`). The type it hands over is not
+dropped: it still enters the callee's input evidence as the ascent state. Every
+other slot keys from its argument. `go/4` settles one activation, the outside
+caller's, which the self calls stay inside, and so does the six-accumulator
+form; two outside callers that seed an accumulator with
+different element types keep two activations whose returns stay apart. The
+returned axis also leaves a supplied position out of its mask, for the same
+reason.
 
 The fixpoint is what makes that subtraction sound, and the eager form is not.
 "The caller did not hold this value at this same position" misreads a
@@ -265,7 +275,7 @@ slot, only an addressed class. The CALLABLE slot is still blind. And the
 recursion-supplied subtraction reads SELF calls only: a mutually recursive pair
 rebuilds across the cycle rather than inside one body, and a recursion routed
 through a generated lambda (`00032_lambda_recursion`) is not local either, so
-both still key their ascent -- one rung per function, never a product.
+both still key their ascent.
 
 So the rule "an activation's published return may depend only on what its key
 names" holds for every shape the keying laws state, and is NOT proven in
@@ -389,8 +399,8 @@ below for the population).
 
 A rung can only appear on a slot one of the two axes names. A FREIGHT slot --
 one neither names — collapses every list family reaching it to one addressed
-class, so `[]` and `list(τ)` cannot key apart there, which is what bounds the
-cost to one accumulator per function rather than a product over accumulators.
+class, so `[]` and `list(τ)` cannot key apart there and a freight
+accumulator adds no activations of its own.
 `compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key` holds that
 over five fixtures, on the same comparand the corpus sweep reads (the canonical
 type body) but a BROADER relation: it asks the rung question of each slot

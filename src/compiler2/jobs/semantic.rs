@@ -2180,7 +2180,11 @@ fn prepare_function_call(
     function: FunctionId,
     arg_types: &[Ty],
 ) -> (ActivationKey, CallReturn) {
-    let activation = world.activation_key(caller.root, function, arg_types);
+    let activation = world.activation_key(
+        caller.root,
+        function,
+        &call_key_types(world, caller, function, arg_types),
+    );
     let fact = FactKey::ReturnType(activation.clone());
     let call_return = match uses.answer(world, fact) {
         AnswerUse::Partner(_) | AnswerUse::Concluded(_) => {
@@ -2189,6 +2193,25 @@ fn prepare_function_call(
         AnswerUse::Wait(_) => CallReturn::awaited(uses),
     };
     (activation, call_return)
+}
+
+/// The types a call is KEYED from, which are its arguments except at a slot
+/// the callee's own recursion supplies: a self call keeps its caller's column
+/// there, so the states the recursion passes through share the activation that
+/// reached them. The arguments themselves still flow into the callee's input
+/// evidence unchanged.
+fn call_key_types(world: &World, caller: &ActivationKey, function: FunctionId, arg_types: &[Ty]) -> Vec<Ty> {
+    let mut key_types = arg_types.to_vec();
+    if caller.function != function {
+        return key_types;
+    }
+    let own = caller.inputs(world.types());
+    for slot in keying::supplied_whole_slots(world, function, own.len()) {
+        if let (Some(key_type), Some(own_type)) = (key_types.get_mut(slot), own.get(slot)) {
+            *key_type = *own_type;
+        }
+    }
+    key_types
 }
 
 /// VERDICT (fz-rh2.17.5.9): body readiness. A runtime module's defimpls
