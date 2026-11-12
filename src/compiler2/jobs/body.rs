@@ -50,7 +50,7 @@ use storage_roots::{LaterUses, StorageRootIndex, entries_reached_from};
 type Output = FactKey;
 type Changed = FactKey;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ExprClause {
     span: Span,
     params: Vec<ValueId>,
@@ -58,14 +58,42 @@ struct ExprClause {
     body: ExprBlock,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ExprBlock {
     span: Span,
     steps: Vec<ExprStep>,
     result: ValueId,
 }
 
-#[derive(Debug, Clone)]
+impl ExprBlock {
+    fn view(&self) -> BlockView<'_> {
+        BlockView {
+            span: self.span,
+            steps: &self.steps,
+            result: self.result,
+        }
+    }
+}
+
+/// The steps of a block still to be planned. Resuming after a step is the
+/// suffix of the same steps.
+#[derive(Debug, Clone, Copy)]
+struct BlockView<'a> {
+    span: Span,
+    steps: &'a [ExprStep],
+    result: ValueId,
+}
+
+impl<'a> BlockView<'a> {
+    fn after(self, index: usize) -> Self {
+        Self {
+            steps: &self.steps[index + 1..],
+            ..self
+        }
+    }
+}
+
+#[derive(Debug)]
 struct ExprDispatch {
     plan: Rc<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>>,
     arm_blocks: Vec<ExprOutcome>,
@@ -74,20 +102,20 @@ struct ExprDispatch {
     miss_block: Option<ExprBlock>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ExprOutcome {
     arguments: Box<[super::super::body::OutcomeArgument]>,
     block: ExprBlock,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ExprReceiveAfter {
     span: Span,
     timeout: ValueId,
     body: ExprBlock,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ExprReceive {
     value: ValueId,
     bindings: DispatchBindings,
@@ -101,7 +129,7 @@ struct ExprReceive {
 /// kind, value and exception name as `params`; the body block pops the handler
 /// it ran under before anything that must not be protected, such as `else`
 /// clauses.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ExprTry {
     value: ValueId,
     body: ExprBlock,
@@ -153,7 +181,7 @@ struct TrySections<'a> {
 const ERROR_KIND: &str = "error";
 const ERLANG_ERROR: &str = "Elixir.ErlangError";
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum ExprStep {
     Const {
         value: ValueId,
@@ -3145,7 +3173,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         for clause in clauses {
             let projections = clause.projections.iter().map(lower_projection_step).collect::<Vec<_>>();
             let entry = self.plan_block(
-                clause.body,
+                clause.body.view(),
                 ControlEntryOrigin::Clause,
                 ControlDestination::Return,
                 Vec::new(),
@@ -3290,14 +3318,14 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
 
     fn plan_block(
         &mut self,
-        block: ExprBlock,
+        block: BlockView<'_>,
         origin: ControlEntryOrigin,
         dest: ControlDestination,
         params: Vec<ValueId>,
         captures: Vec<ValueId>,
         entries: &mut Vec<LoweredEntry>,
     ) -> ControlEntryId {
-        let (steps, tail) = self.plan_steps(&block, dest, entries);
+        let (steps, tail) = self.plan_steps(block, dest, entries);
         let entry_id = ControlEntryId::from_u32(entries.len() as u32);
         entries.push(LoweredEntry {
             span: block.span,
@@ -3314,7 +3342,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
 
     fn plan_steps(
         &mut self,
-        block: &ExprBlock,
+        block: BlockView<'_>,
         dest: ControlDestination,
         entries: &mut Vec<LoweredEntry>,
     ) -> (Vec<LoweredStep>, LoweredTail) {
@@ -3331,11 +3359,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         dest
                     } else {
                         let resume = self.plan_block(
-                            ExprBlock {
-                                span: block.span,
-                                steps: block.steps[index + 1..].to_vec(),
-                                result: block.result,
-                            },
+                            block.after(index),
                             ControlEntryOrigin::DeliveredResume { value: *value },
                             dest,
                             Vec::new(),
@@ -3365,11 +3389,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         dest
                     } else {
                         let resume = self.plan_block(
-                            ExprBlock {
-                                span: block.span,
-                                steps: block.steps[index + 1..].to_vec(),
-                                result: block.result,
-                            },
+                            block.after(index),
                             ControlEntryOrigin::DeliveredResume { value: *value },
                             dest,
                             Vec::new(),
@@ -3399,11 +3419,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         dest
                     } else {
                         let resume = self.plan_block(
-                            ExprBlock {
-                                span: block.span,
-                                steps: block.steps[index + 1..].to_vec(),
-                                result: block.result,
-                            },
+                            block.after(index),
                             ControlEntryOrigin::DeliveredResume { value: *value },
                             dest,
                             Vec::new(),
@@ -3413,7 +3429,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         ControlDestination::Deliver(resume)
                     };
                     let then_entry = self.plan_block(
-                        then_block.clone(),
+                        then_block.view(),
                         ControlEntryOrigin::Branch,
                         branch_dest.clone(),
                         Vec::new(),
@@ -3421,7 +3437,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         entries,
                     );
                     let else_entry = self.plan_block(
-                        else_block.clone(),
+                        else_block.view(),
                         ControlEntryOrigin::Branch,
                         branch_dest,
                         Vec::new(),
@@ -3447,11 +3463,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         dest
                     } else {
                         let resume = self.plan_block(
-                            ExprBlock {
-                                span: block.span,
-                                steps: block.steps[index + 1..].to_vec(),
-                                result: block.result,
-                            },
+                            block.after(index),
                             ControlEntryOrigin::DeliveredResume { value: *value },
                             dest,
                             Vec::new(),
@@ -3463,11 +3475,10 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     let outcomes = dispatch
                         .arm_blocks
                         .iter()
-                        .cloned()
                         .map(|arm| {
                             let params = arm.arguments.iter().map(|argument| argument.parameter).collect();
                             let target = self.plan_block(
-                                arm.block,
+                                arm.block.view(),
                                 ControlEntryOrigin::Branch,
                                 branch_dest.clone(),
                                 params,
@@ -3476,13 +3487,13 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                             );
                             super::super::body::OutcomeEdge {
                                 target,
-                                arguments: arm.arguments,
+                                arguments: arm.arguments.clone(),
                             }
                         })
                         .collect::<Vec<_>>();
-                    let miss_entry = dispatch.miss_block.clone().map(|miss_block| {
+                    let miss_entry = dispatch.miss_block.as_ref().map(|miss_block| {
                         self.plan_block(
-                            miss_block,
+                            miss_block.view(),
                             ControlEntryOrigin::Branch,
                             branch_dest,
                             Vec::new(),
@@ -3510,11 +3521,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         dest
                     } else {
                         let resume = self.plan_block(
-                            ExprBlock {
-                                span: block.span,
-                                steps: block.steps[index + 1..].to_vec(),
-                                result: block.result,
-                            },
+                            block.after(index),
                             ControlEntryOrigin::DeliveredResume { value },
                             dest,
                             Vec::new(),
@@ -3528,7 +3535,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         .iter()
                         .map(|outcome| {
                             let target = self.plan_block(
-                                outcome.block.clone(),
+                                outcome.block.view(),
                                 ControlEntryOrigin::ReceiveOutcome,
                                 branch_dest.clone(),
                                 outcome.arguments.iter().map(|argument| argument.parameter).collect(),
@@ -3543,7 +3550,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         .collect::<Vec<_>>();
                     let after = after.as_ref().map(|after| {
                         let entry = self.plan_block(
-                            after.body.clone(),
+                            after.body.view(),
                             ControlEntryOrigin::ReceiveOutcome,
                             branch_dest,
                             Vec::new(),
@@ -3573,11 +3580,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         dest
                     } else {
                         let resume = self.plan_block(
-                            ExprBlock {
-                                span: block.span,
-                                steps: block.steps[index + 1..].to_vec(),
-                                result: block.result,
-                            },
+                            block.after(index),
                             ControlEntryOrigin::DeliveredResume { value },
                             dest,
                             Vec::new(),
@@ -3587,7 +3590,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         ControlDestination::Deliver(resume)
                     };
                     let body = self.plan_block(
-                        try_step.body.clone(),
+                        try_step.body.view(),
                         ControlEntryOrigin::Branch,
                         branch_dest.clone(),
                         Vec::new(),
@@ -3595,7 +3598,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         entries,
                     );
                     let handler = self.plan_block(
-                        try_step.handler.clone(),
+                        try_step.handler.view(),
                         ControlEntryOrigin::Handler,
                         branch_dest,
                         try_step.params.clone(),
