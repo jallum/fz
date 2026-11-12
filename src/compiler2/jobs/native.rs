@@ -1413,6 +1413,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let (var, _) = ctx.emit_let(prim);
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
+                BackendStep::StructSlot { value, base, slot } => {
+                    let base = self.env_runtime_var(ctx, executable, env, *base);
+                    let (var, _) = ctx.emit_let(Prim::TupleField(base, *slot));
+                    self.bind_runtime_value(ctx, executable, env, *value, var);
+                }
                 BackendStep::RequireMapValue { value, source, key } => {
                     let source = self.env_runtime_var(ctx, executable, env, *source);
                     let key = lower_backend_literal(ctx, &self.atom_ids, self.world.types_mut(), key)?;

@@ -1083,9 +1083,13 @@ pub fn map_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     addr_of_kind(bits, ValueKind::MAP)
 }
 
+/// Where a struct's payload starts: its field slots, then their kind bytes,
+/// follow the one header word.
+pub const STRUCT_PAYLOAD_OFFSET: usize = 8;
+
 #[inline]
 pub fn struct_size_for_payload(payload_size: usize) -> usize {
-    (8 + payload_size + 15) & !15
+    (STRUCT_PAYLOAD_OFFSET + payload_size + 15) & !15
 }
 
 #[inline]
@@ -1113,7 +1117,7 @@ pub unsafe fn struct_schema_id(addr: *const u8) -> u32 {
 /// `addr` must point to the start of an initialized strict Struct object.
 #[inline]
 pub unsafe fn struct_field_raw_slot(addr: *const u8, field_offset: u32) -> *mut u64 {
-    unsafe { addr.add(8 + field_offset as usize) as *mut u64 }
+    unsafe { addr.add(STRUCT_PAYLOAD_OFFSET + field_offset as usize) as *mut u64 }
 }
 
 /// # Safety
@@ -1122,7 +1126,7 @@ pub unsafe fn struct_field_raw_slot(addr: *const u8, field_offset: u32) -> *mut 
 /// `kind_offset` must be the schema-derived offset of that field's kind byte.
 #[inline]
 pub unsafe fn struct_field_kind_slot(addr: *const u8, kind_offset: u32) -> *mut u8 {
-    unsafe { addr.add(8 + kind_offset as usize) as *mut u8 }
+    unsafe { addr.add(STRUCT_PAYLOAD_OFFSET + kind_offset as usize) as *mut u8 }
 }
 
 #[inline]

@@ -11,7 +11,9 @@ use crate::fz_ir::Var;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlags, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataId, FuncId, Module};
-use fz_runtime::any_value::{AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TaggedRefArch, ValueKind};
+use fz_runtime::any_value::{
+    AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_PAYLOAD_OFFSET, TaggedRefArch, ValueKind,
+};
 use fz_runtime::ir_runtime::{
     fz_alloc_closure, fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_closure_code_ref,
     fz_closure_get_capture_atom, fz_closure_get_capture_f64, fz_closure_get_capture_i64, fz_closure_get_capture_ref,
@@ -92,6 +94,17 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
 
     pub(crate) fn truthy_ref(&mut self, value_ref: ir::Value) -> ir::Value {
         runtime_call1!(self, fz_truthy_ref, [value_ref])
+    }
+
+    /// The raw word in `slot` of the struct or tuple `object_ref` names,
+    /// loaded in place. The caller's types say what kind of value the slot
+    /// holds, so its kind byte is not read. The load may trap: a bad
+    /// reference here is a compiler fault that must not pass silently.
+    pub(crate) fn load_slot(&mut self, object_ref: ir::Value, slot: u32, ty: ir::Type) -> ir::Value {
+        let address_mask = AnyValueRefPacking::current().address_mask() as i64;
+        let object = self.b.ins().band_imm(object_ref, address_mask);
+        let offset = STRUCT_PAYLOAD_OFFSET as i32 + slot as i32 * SLOT_BYTES;
+        self.b.ins().load(ty, MemFlags::new(), object, offset)
     }
 
     pub(crate) fn mark_published_ref_aliased(&mut self, value_ref: ir::Value) -> ir::Value {

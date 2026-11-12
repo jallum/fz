@@ -338,10 +338,12 @@ A struct's schema identity is `SchemaIdentity::Named(ModuleName)`, and that is
 the only place its module lives: the heap object stores no module word and the
 registry keeps no second copy. Three reads of that identity exist:
 
-- `p.__struct__` lowers to `Prim::StructModule`, which calls `fz_struct_module`:
-  the `__struct__` key read through the map view, so a struct and a map
-  carrying that key answer alike. The answer is the atom `Elixir.<Name>`, the same atom an alias spells
-  in value position, so `p.__struct__ == Pt` holds. It is a read of the
+- `p.__struct__` answers the atom `Elixir.<Name>`, the same atom an alias
+  spells in value position, so `p.__struct__ == Pt` holds. Where the types
+  name the one struct `p` is, the backend step is that constant and nothing
+  is read. Otherwise it lowers to `Prim::StructModule`, which calls
+  `fz_struct_module`: the `__struct__` key read through the map view, so a
+  struct and a map carrying that key answer alike. It is a read of the
   identity, not a stored field; `ProjectionKind::StructField` in patterns never
   names it.
 - `Types::field_lookup` answers `__struct__` on a struct-tagged map signature
@@ -352,6 +354,34 @@ registry keeps no second copy. Three reads of that identity exist:
   A struct's fields are keyword entries: each name is spelled by the same
   keyword-key rule as a map's or a list's (`"foo bar": 1`), and each field
   spends one from the `limit:` budget (`%Pt{x: 1, ...}`).
+
+### A field of a known struct is a slot
+
+`Types::sole_struct` answers the struct every value of a type is, when there
+is exactly one: the type admits only maps, and each of its clauses names the
+same struct. Two field typings of one struct, or a struct with some values
+subtracted, still name it.
+
+An update that replaces `__struct__` types its result as a plain map holding
+that key (`Descr::refine_map_field`), so the result names no struct and its
+fields are found by name.
+
+`BackendLowerer::field_read` asks that of the receiver of every `base.field`.
+A known struct's declared field becomes `BackendStep::StructSlot { base, slot }`,
+with `slot` the field's position in its `defstruct`. Any other receiver (a
+map, a resource, a union of two structs, `any`) keeps
+`BackendStep::FieldAccess`, which finds the field by name at run time. The
+step is part of the backend program, so the interpreter, the JIT and the
+native build all read by slot.
+
+The interpreter reads the slot with `fz_struct_get_field_ref`. Native code
+lowers the step to `Prim::TupleField`, the slot read tuples already use. When
+the field's type is an integer, a float or an atom, `CodegenFn::load_slot`
+emits the read in place: the reference word masked to its address, then one
+load at `STRUCT_PAYLOAD_OFFSET + slot * 8`. The type says what the slot
+holds, so the kind byte is not consulted. A field of any other type keeps the
+runtime call, which reads the kind byte to build the field's reference. For
+example, `p.y` on a `%Point{x: integer, y: integer}` is a mask and a load.
 
 ### A map is a flat sorted array
 

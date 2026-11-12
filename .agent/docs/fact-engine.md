@@ -1044,7 +1044,7 @@ callable wrapper. `BackendLowerer` reads this proof from
 That table includes clause parameters' semantic input layouts; lowering does
 not derive a second table from transport positions. Every fresh construction step
 (`Tuple`/`List`/`Map`/`Struct`/`Bitstring`/`FunctionRef`/`Lambda`)
-and every projection (`FieldAccess`/`TupleField`) goes through
+and every projection (`FieldAccess`/`StructSlot`/`TupleField`) goes through
 `step_or_omitted_when_absent` and becomes `BackendStep::Omitted` when its own
 value is proven absent. `MapUpdate` is the exception: it also answers `ok`,
 which a decision reads to raise `KeyError`, so it always runs — a closure the plan proves is never invoked

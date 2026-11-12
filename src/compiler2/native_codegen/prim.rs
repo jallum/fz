@@ -901,6 +901,19 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             runtime_call!(body, fz_try_pop, [process]);
             Ok(LowerOut::DeadUnit)
         }
+        Prim::TupleField(object, slot) if ty_is_float(t, value_types, dest_var) => {
+            let object_ref = body.tagged_var(var_env, object.0);
+            Ok(LowerOut::RawF64(body.load_slot(object_ref, *slot, types::F64)))
+        }
+        Prim::TupleField(object, slot) if ty_is_int(t, value_types, dest_var) => {
+            let object_ref = body.tagged_var(var_env, object.0);
+            Ok(LowerOut::RawI64(body.load_slot(object_ref, *slot, types::I64)))
+        }
+        Prim::TupleField(object, slot) if ty_is_atom(t, value_types, dest_var) => {
+            let object_ref = body.tagged_var(var_env, object.0);
+            let atom = body.load_slot(object_ref, *slot, types::I64);
+            Ok(LowerOut::Strict(CodegenValue::RawAtom(atom)))
+        }
         Prim::MapGet(m, k) if ty_is_float(t, value_types, dest_var) => {
             let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k);
             Ok(LowerOut::RawF64(runtime_call1!(body, fz_ref_load_float, [value_ref])))

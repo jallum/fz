@@ -10,6 +10,7 @@ use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, St
 use super::{BuiltinOpaque, MapKey, Ty, TyCtx, TypeVarId};
 use crate::finite_set::FiniteSet;
 use crate::modules::identity::ModuleName;
+use fz_runtime::module_name::STRUCT_MODULE_FIELD;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -232,6 +233,19 @@ impl Descr {
         d
     }
 
+    /// Whether every value this describes is a map: no other kind has a
+    /// clause.
+    pub(super) fn admits_only_maps(&self) -> bool {
+        self.basic.is_empty()
+            && self.atoms == AtomSet::none()
+            && self.opaques == FiniteSet::none()
+            && self.vars == VarSet::none()
+            && self.tuples.is_empty()
+            && self.lists.is_empty()
+            && self.resources.is_empty()
+            && self.funcs.is_empty()
+    }
+
     pub(super) fn map_top() -> Self {
         Self::record(MapTag::Plain, [])
     }
@@ -322,6 +336,10 @@ impl Descr {
             .unwrap_or(0)
     }
 
+    /// A struct's module is what makes it that struct, so a map given a new
+    /// `__struct__` is a plain map holding that key: nothing promises it is
+    /// still laid out as the struct it was.
+    ///
     /// Replacing a map field with the very same interned type changes no
     /// descriptor. Returning `None` keeps that proof at the structural owner,
     /// so callers can retain their existing `Ty` without rebuilding and
@@ -335,9 +353,13 @@ impl Descr {
         if !changed {
             return None;
         }
+        let replaces_module = matches!(key, MapKey::Atom(name) if name == STRUCT_MODULE_FIELD);
         let mut out = self.clone();
         for clause in &mut out.maps {
             for sig in &mut clause.pos {
+                if replaces_module {
+                    sig.tag = MapTag::Plain;
+                }
                 sig.fields.insert(key.clone(), vt);
             }
         }

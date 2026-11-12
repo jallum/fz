@@ -1,0 +1,34 @@
+#---
+# purpose: "After %{s | __struct__: m} a field read answers the field's value and __struct__ answers the new module, with the base a known struct or behind any"
+# oracle: 00856_a_field_is_found_by_name_once_an_update_replaces_the_module.oracle.exs
+#---
+#
+# A struct's module is what places its fields. Once an update replaces the
+# module, the fields are found by name again, wherever the new module would
+# have put them.
+defmodule Near do
+  defstruct [:x, :y]
+end
+
+defmodule Far do
+  defstruct [:y, :x]
+end
+
+def rename(v :: any, m :: any), do: %{v | __struct__: m}
+
+def main() do
+  p = %Near{x: 1, y: 2}
+  q = %{p | __struct__: Far}
+  dbg(q.x)
+  dbg(q.y)
+  dbg(q.__struct__)
+  r = rename(p, Far)
+  dbg(r.x)
+  dbg(r.__struct__)
+  s = %{p | __struct__: Near, y: 5}
+  dbg(s.x)
+  dbg(s.y)
+  dbg(s.__struct__)
+  dbg(p.x)
+  dbg(p.__struct__)
+end
