@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-11-08T03:20:31Z",
-  "description": "In emit_terminator's scalar Return lowering (terminator.rs, the branches after the multi-lane panic: cont_ptr_known_null -\u003e emit_halt_and_return_null, else emit_return with a dynamic continuation-pointer check), the two tails belong to the uniform calling tier. Found while reviewing fz-sc8.61: the planned ABI is the only tier native lowering emits for compiler2 functions, and these branches looked unreachable. Establish it with a census (count the terminators that take each branch over 00420 and the behaviour fixtures, or a debug assertion that fails the gate if either is reached), then delete the branches and the helpers emit_halt_and_return_null and emit_return together with any tests that only exist to exercise them. If a planned function does reach them, write down why in the native lowering doc instead. After fz-sc8.63, which rewrites the same file's failure terminators.\n\nNote 2026-11-08 (fz-sc8.97): NativeBody.return_tuple_arity was introduced to make a tuple-returning ROOT look boxed to the halt plumbing. fz-sc8.97 makes the root return a one-word boundary at the transport layer and deletes that use. If the field survives .97 it is only because one of the uniform-tier return paths here (terminator.rs ~353, 847, 899, 1034, 1104, 1121) still reads it; it dies with those paths.",
+  "description": "Done by fz-4t3.1 (ee78886b4 on develop, PR #314): the uniform calling tier is deleted from native_codegen, including the scalar Return tails in terminator.rs (the cont_ptr_known_null branch, emit_halt_and_return_null and the dynamic continuation-pointer check). The census this ticket asked for was a trap in every uniform arm run through the full gate: 4959 passed, 0 failed, no compiler trip. Generated code is identical over a 42-fixture sample.\n\nWhat remains for fz-sc8.97: NativeBody.return_tuple_arity survives fz-4t3.1. In native_codegen its only reader is native_return_halt_repr (delivery.rs), the arm fz-sc8.97 replaces. If nothing else reads the field after .97, it leaves in that commit.",
   "id": "fz-sc8.85",
   "labels": [],
   "parent": "fz-sc8",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Delete the uniform-tier return paths in native_codegen/terminator.rs if no planned function reaches them",
   "type": "task",
-  "updated_at": "2026-11-08T16:30:25Z"
+  "updated_at": "2026-11-12T20:55:32Z"
 }
