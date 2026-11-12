@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T23:07:22Z",
+  "description": "World::function_definition (src/compiler2/world.rs:1804) returns (FunctionSource, FunctionSurface) built with `(*source.clone(), *surface.clone())`: a deep copy of both on every call. World::function_surface (world.rs:1813) calls it and discards the source it just copied.\n\nEvidence (develop @ cca160808): 29 production call sites. Many read one Copy field and drop the rest:\n- `.0.owner` only: dump.rs:240, :244; fixture_facts.rs:42, :45; jobs/semantic.rs:1494, :1670, :1686\n- `.1.is_macro` only: compiler.rs:551\n- `function_surface(..)` for .extern_abi, .clauses.len(), .span or a label: world.rs:1489; drive_harness.rs:1152; jobs/dispatch.rs:583, :585, :591, :603, :687, :701\n- destructuring callers that then hold \u0026mut World: jobs/body.rs:305 (lower_function), jobs/contract.rs:40, jobs/dispatch.rs:113, :244, :299, jobs/semantic.rs:2084, :2102, jobs/root.rs:53, world.rs:1050, :3574\n\nChange: both accessors return borrows (`(\u0026FunctionSource, \u0026FunctionSurface)` and `\u0026FunctionSurface`). Same method as fz-gfx.1: signature first, cargo check enumerates, sort callers into pure appeasement and real interleaving.\n\nExpected knot: the job bodies (lower_function and its peers) read the definition and then run with \u0026mut World, so they are real interleaving and will keep a visible clone at the call site under moves (a)/(b). A definition is immutable once defined (FunctionState::Defined), which is the case move (c) exists for; World::lowered_body already hands out Rc\u003cLoweredBody\u003e on the same grounds. Before building: count how many callers remain interleaving after (a)/(b). If it is most of the job bodies, stop and report -- storing the definition behind Rc is a data-model decision for the owner.\n\nFound while building fz-gfx.2.\n\nSignal: gate green, no golden/census/pin movement.",
+  "id": "fz-gfx.11",
+  "labels": [],
+  "parent": "fz-gfx",
+  "priority": 3,
+  "status": "open",
+  "title": "World hands out function definitions by reference",
+  "type": "task",
+  "updated_at": "2026-11-12T23:07:22Z"
+}
