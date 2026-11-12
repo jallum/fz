@@ -1,7 +1,6 @@
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::fmt;
-use std::mem;
 use std::ptr;
 use std::rc::Rc;
 use std::slice;
@@ -157,6 +156,8 @@ pub struct QuotedSourceMetadata {
     pub hygiene_ordinal: Option<u32>,
 }
 
+const PROCESS_LENT: &str = "the quoted-source process is on loan to a running macro";
+
 /// Owns the source-process heap that backs one quoted-source graph.
 ///
 /// The root handle itself is only an `AnyValueRef`. Keeping the heap alive is
@@ -169,7 +170,7 @@ pub struct QuotedSourceMetadata {
 /// `{heap_id, root}` label is therefore not enough to carry quoted source; the
 /// owning `QuotedSourceRoot` is the actual transport/persistence unit.
 pub struct QuotedSourceHeap {
-    process: RefCell<Process>,
+    process: RefCell<Option<Process>>,
     tuple_schemas: RefCell<HashMap<usize, u32>>,
     interned_lists: RefCell<HashMap<Vec<u64>, AnyValueRef>>,
     source_sugar_rewrites: RefCell<HashMap<u64, AnyValueRef>>,
@@ -193,7 +194,7 @@ impl Default for QuotedSourceHeap {
 impl QuotedSourceHeap {
     pub fn new() -> Self {
         Self {
-            process: RefCell::new(Self::fresh_process()),
+            process: RefCell::new(Some(Self::fresh_process())),
             tuple_schemas: RefCell::new(HashMap::new()),
             interned_lists: RefCell::new(HashMap::new()),
             source_sugar_rewrites: RefCell::new(HashMap::new()),
@@ -210,11 +211,24 @@ impl QuotedSourceHeap {
         Process::with_node(node, schemas, 0, DEFAULT_REDUCTIONS_PER_QUANTUM)
     }
 
+    /// Hands the process to `f` by value and takes it back when `f` returns.
+    /// While it is lent the heap holds no process, so any read, write or
+    /// nested lend panics instead of observing a stand-in.
     pub(crate) fn lend_process<R, E>(&self, f: impl FnOnce(Process) -> (Process, Result<R, E>)) -> Result<R, E> {
-        let process = mem::replace(&mut *self.process.borrow_mut(), Self::fresh_process());
+        let process = self.process.borrow_mut().take().expect(PROCESS_LENT);
         let (process, result) = f(process);
-        let _placeholder = mem::replace(&mut *self.process.borrow_mut(), process);
+        *self.process.borrow_mut() = Some(process);
         result
+    }
+
+    fn process(&self) -> Ref<'_, Process> {
+        Ref::map(self.process.borrow(), |process| process.as_ref().expect(PROCESS_LENT))
+    }
+
+    fn process_mut(&self) -> RefMut<'_, Process> {
+        RefMut::map(self.process.borrow_mut(), |process| {
+            process.as_mut().expect(PROCESS_LENT)
+        })
     }
 
     pub fn builder(self: &Rc<Self>) -> QuotedSourceBuilder {
@@ -252,28 +266,28 @@ pub struct QuotedSourceBuilder {
 
 impl QuotedSourceBuilder {
     pub fn int(&self, value: i64) -> AnyValueRef {
-        let mut proc = self.heap.process.borrow_mut();
+        let mut proc = self.heap.process_mut();
         proc.heap.box_any_value_ref(AnyValue::int(value))
     }
 
     pub fn float(&self, value: f64) -> AnyValueRef {
-        let mut proc = self.heap.process.borrow_mut();
+        let mut proc = self.heap.process_mut();
         proc.heap.box_any_value_ref(AnyValue::float(value))
     }
 
     pub fn atom(&self, name: &str) -> AnyValueRef {
-        let mut proc = self.heap.process.borrow_mut();
+        let mut proc = self.heap.process_mut();
         let atom_id = proc.node.intern_atom(name);
         proc.heap.box_any_value_ref(AnyValue::atom(atom_id))
     }
 
     pub fn bool(&self, value: bool) -> AnyValueRef {
-        let mut proc = self.heap.process.borrow_mut();
+        let mut proc = self.heap.process_mut();
         proc.heap.box_any_value_ref(AnyValue::bool_atom(value))
     }
 
     pub fn nil(&self) -> AnyValueRef {
-        let mut proc = self.heap.process.borrow_mut();
+        let mut proc = self.heap.process_mut();
         proc.heap.box_any_value_ref(AnyValue::nil_atom())
     }
 
@@ -282,7 +296,7 @@ impl QuotedSourceBuilder {
     }
 
     pub fn bitstring(&self, bytes: &[u8], bit_len: u64) -> Result<AnyValueRef, QuotedSourceError> {
-        let mut proc = self.heap.process.borrow_mut();
+        let mut proc = self.heap.process_mut();
         Ok(proc.heap.alloc_bitstring(bytes, bit_len).ref_word())
     }
 
@@ -291,7 +305,7 @@ impl QuotedSourceBuilder {
     }
 
     pub fn list(&self, items: &[AnyValueRef]) -> Result<AnyValueRef, QuotedSourceError> {
-        let mut proc = self.heap.process.borrow_mut();
+        let mut proc = self.heap.process_mut();
         let mut tail = AnyValueRef::empty_list();
         for item in items.iter().rev().copied() {
             tail = proc
@@ -313,7 +327,7 @@ impl QuotedSourceBuilder {
     }
 
     pub fn tuple(&self, items: &[AnyValueRef]) -> Result<AnyValueRef, QuotedSourceError> {
-        let mut proc = self.heap.process.borrow_mut();
+        let mut proc = self.heap.process_mut();
         let schema_id = self.heap.tuple_schema_id(&mut proc, items.len());
         let ptr = proc.heap.alloc_struct(schema_id);
         for (index, item) in items.iter().copied().enumerate() {
@@ -328,7 +342,7 @@ impl QuotedSourceBuilder {
     /// The heap publishes strict structural key order once. Quoted source
     /// consumes that order directly.
     pub fn map(&self, entries: &[(AnyValueRef, AnyValueRef)]) -> Result<AnyValueRef, QuotedSourceError> {
-        let mut proc = self.heap.process.borrow_mut();
+        let mut proc = self.heap.process_mut();
         proc.heap.alloc_map_refs(entries).map_err(QuotedSourceError::from)
     }
 
@@ -507,8 +521,8 @@ impl QuotedSourceRoot {
         if self.key == other.key {
             return true;
         }
-        let left = self.heap.process.borrow();
-        let right = other.heap.process.borrow();
+        let left = self.heap.process();
+        let right = other.heap.process();
         values_eq(&left, self.root, &right, other.root, horizon).unwrap_or(false)
     }
 
@@ -640,7 +654,7 @@ impl QuotedSourceCursor {
 
     pub fn atom_name(&self) -> Result<String, QuotedSourceError> {
         let atom_id = self.root.load_atom().map_err(QuotedSourceError::from)? as u32;
-        let proc = self.heap.process.borrow();
+        let proc = self.heap.process();
         render_atom_name(&proc, atom_id)
     }
 
@@ -679,7 +693,7 @@ impl QuotedSourceCursor {
     }
 
     pub fn list_items(&self) -> Result<Vec<Self>, QuotedSourceError> {
-        let proc = self.heap.process.borrow();
+        let proc = self.heap.process();
         let mut cursor = self.root;
         let mut items = Vec::new();
         loop {
@@ -707,7 +721,7 @@ impl QuotedSourceCursor {
     pub fn tuple_items(&self) -> Result<Vec<Self>, QuotedSourceError> {
         let addr = self.root.struct_addr().map_err(QuotedSourceError::from)?;
         let schema_id = unsafe { struct_schema_id(addr as *const u8) };
-        let proc = self.heap.process.borrow();
+        let proc = self.heap.process();
         let schema_handle = proc.heap.schemas_registry();
         let schema = schema_handle.borrow();
         let fields = schema.get(schema_id).fields.clone();
