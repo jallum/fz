@@ -1090,6 +1090,8 @@ pub struct BackendExecutable {
     pub key: ExecutableKey,
     pub abi: Rc<AbiReadyExecutable>,
     pub body: BackendBody,
+    /// The frame size an interpreter needs: one past the largest value id the lowering allocated.
+    pub value_count: usize,
     pub construction_wrappers: Box<[Rc<BackendConstructionWrapper>]>,
     pub(crate) atom_names: Box<[Rc<String>]>,
     pub(crate) boxed_apply_requirements: Box<[super::backend_program::boxed_contract::BoxedApplyRequirement]>,
@@ -1097,6 +1099,9 @@ pub struct BackendExecutable {
 
 #[cfg(test)]
 impl BackendExecutable {
+    /// Hand-built test executables have no lowering to count their values, so they get room for every id a test names.
+    pub(crate) const TEST_VALUE_COUNT: usize = 16;
+
     pub(crate) fn for_test(key: ExecutableKey, return_ty: Ty, nothing: ShapeId) -> Self {
         let symbol = ExecutableSymbol {
             activation: super::transport::ActivationSymbol {
@@ -1153,6 +1158,7 @@ impl BackendExecutable {
         Self {
             key,
             abi,
+            value_count: Self::TEST_VALUE_COUNT,
             body: BackendBody::Clauses {
                 clauses: Vec::new(),
                 entries: Vec::new(),

@@ -405,6 +405,8 @@ pub enum LoweredBody {
         entries: Vec<LoweredEntry>,
         generated: Vec<FunctionId>,
         tables: BodyTables,
+        /// One past the largest value id the function's lowering allocated.
+        value_count: usize,
     },
 }
 
@@ -430,7 +432,19 @@ impl LoweredBody {
             entries,
             generated,
             tables,
+            value_count: 0,
         }
+    }
+
+    pub(crate) fn with_value_count(mut self, count: usize) -> Self {
+        let Self::Clauses { value_count, .. } = &mut self;
+        *value_count = count;
+        self
+    }
+
+    pub(crate) fn value_count(&self) -> usize {
+        let Self::Clauses { value_count, .. } = self;
+        *value_count
     }
 
     /// The step that defines `value`, or `None` when the value arrives as a

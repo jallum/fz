@@ -30,11 +30,10 @@ use prim::*;
 pub(crate) use value::AnyValue;
 use value::*;
 
-#[derive(Clone)]
 struct BackendContinuation {
     executable: Rc<crate::compiler2::BackendExecutable>,
     entry: crate::compiler2::ControlEntryId,
-    env: HashMap<crate::compiler2::ValueId, BackendBoundValue>,
+    env: Frame,
     /// A `try` handler frame: reached by a raise, never by a value. The
     /// body pops it when it completes.
     handler: bool,
@@ -42,16 +41,61 @@ struct BackendContinuation {
 
 type BackendBoundValue = BoundValue<AnyValue>;
 
+/// The lane words of one transported value or call, held inline up to four.
+pub(crate) type Lanes = smallvec::SmallVec<[AnyValue; 4]>;
+
+/// The values a running executable holds, one slot per value id. The slot
+/// count is the lowering's value count for the executable, so every id its
+/// body names is in range; an insert outside the frame panics.
+#[derive(Clone)]
+pub(crate) struct Frame {
+    slots: Vec<Option<BackendBoundValue>>,
+}
+
+impl Frame {
+    pub(crate) fn sized(count: usize) -> Self {
+        let mut slots = Vec::with_capacity(count);
+        slots.resize_with(count, || None);
+        Self { slots }
+    }
+
+    pub(crate) fn get(&self, id: crate::compiler2::ValueId) -> Option<&BackendBoundValue> {
+        self.slots.get(id.as_u32() as usize).and_then(Option::as_ref)
+    }
+
+    pub(crate) fn insert(&mut self, id: crate::compiler2::ValueId, value: BackendBoundValue) {
+        let slots = self.slots.len();
+        let slot = self
+            .slots
+            .get_mut(id.as_u32() as usize)
+            .unwrap_or_else(|| panic!("value {id:?} is outside a frame of {slots} slots"));
+        *slot = Some(value);
+    }
+
+    /// Removes the value held for `id`, leaving the slot empty.
+    pub(crate) fn take(&mut self, id: crate::compiler2::ValueId) -> Option<BackendBoundValue> {
+        self.slots.get_mut(id.as_u32() as usize).and_then(Option::take)
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.slots.iter_mut().for_each(|slot| *slot = None);
+    }
+
+    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut BackendBoundValue> {
+        self.slots.iter_mut().flatten()
+    }
+}
+
 enum BackendResumeEntry {
     Executable {
         executable: Rc<crate::compiler2::BackendExecutable>,
-        args: Vec<AnyValue>,
+        args: Lanes,
         continuations: Vec<BackendContinuation>,
     },
     Entry {
         executable: Rc<crate::compiler2::BackendExecutable>,
         entry: crate::compiler2::ControlEntryId,
-        env: HashMap<crate::compiler2::ValueId, BackendBoundValue>,
+        env: Frame,
         continuations: Vec<BackendContinuation>,
     },
 }
@@ -59,7 +103,7 @@ enum BackendResumeEntry {
 struct BackendParkRecord {
     executable: Rc<crate::compiler2::BackendExecutable>,
     entry: crate::compiler2::ControlEntryId,
-    env: HashMap<crate::compiler2::ValueId, BackendBoundValue>,
+    env: Frame,
     continuations: Vec<BackendContinuation>,
     /// The timer that wakes this receive's `after` entry; `None` when the
     /// receive has no positive timeout.

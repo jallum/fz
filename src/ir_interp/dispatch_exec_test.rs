@@ -1,5 +1,6 @@
 use super::*;
 use crate::ast::{Pattern, Spanned, Var};
+use crate::compiler2::ValueId;
 use crate::compiler2::World;
 use crate::compiler2::transport::{LaneDescr, ShapeDescr, ShapeId, TransportClass, TransportLayout};
 use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
@@ -273,7 +274,8 @@ fn a_pin_comes_from_an_input_ordinal_or_from_an_environment_value() {
     .expect("the delivering input supplies the pin");
 
     let value = ValueId::from_u32(3);
-    let env = HashMap::from([(value, BackendBoundValue::Runtime(want))]);
+    let mut env = Frame::sized(crate::compiler2::BackendExecutable::TEST_VALUE_COUNT);
+    env.insert(value, BackendBoundValue::Runtime(want));
     let bindings = DispatchBindings {
         pinned: vec![value],
         prepared: Vec::new(),

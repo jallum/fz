@@ -302,7 +302,7 @@ fn scheduler_adapter_copies_spawn_inputs_and_dead_send_is_observation_free() {
     let input_ref = input.as_any_value_ref(sender).unwrap();
 
     let receiver_pid = runtime
-        .spawn_backend(sender, Rc::clone(&executable), vec![input])
+        .spawn_backend(sender, Rc::clone(&executable), smallvec::smallvec![input])
         .unwrap();
     let BackendResumeEntry::Executable { args, .. } =
         runtime.backend_resume.get(&receiver_pid).expect("spawned child entry")
@@ -403,14 +403,14 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
     let sender = runtime.process_ptr(1).unwrap();
     runtime.current_proc = sender;
     let receiver_pid = runtime
-        .spawn_backend(sender, Rc::clone(&executable), Vec::new())
+        .spawn_backend(sender, Rc::clone(&executable), Lanes::new())
         .unwrap();
     runtime.backend_parked.insert(
         receiver_pid,
         BackendParkRecord {
             executable,
             entry: crate::compiler2::ControlEntryId::from_u32(owner as u32),
-            env: HashMap::new(),
+            env: Frame::sized(crate::compiler2::BackendExecutable::TEST_VALUE_COUNT),
             continuations: Vec::new(),
             after_timer: None,
         },
@@ -623,7 +623,7 @@ fn zero_lane_inputs_preserve_tuple_structure_without_inventing_absence() {
             &Rc::new(executable.clone()),
             &entries,
             crate::compiler2::ControlEntryId::from_u32(0),
-            HashMap::new(),
+            Frame::sized(crate::compiler2::BackendExecutable::TEST_VALUE_COUNT),
             Vec::new(),
         );
         assert!(
@@ -714,7 +714,7 @@ fn entry_dispatch_does_not_materialize_unneeded_structural_inputs() {
         &empty_backend_program(),
         &Module::default(),
         Rc::new(executable),
-        Vec::new(),
+        Lanes::new(),
         Vec::new(),
     );
     let result = result.unwrap_or_else(|error| panic!("entry dispatch must reach its body: {error}"));
@@ -841,7 +841,7 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
         &empty_backend_program(),
         &Module::default(),
         Rc::new(executable),
-        vec![AnyValue::Int(7)],
+        smallvec::smallvec![AnyValue::Int(7)],
         Vec::new(),
     );
     let result = result.unwrap_or_else(|error| panic!("entry dispatch must reach its body: {error}"));
@@ -898,7 +898,7 @@ fn continuations_and_local_resumes_execute_the_retained_body_without_inventory_l
     let continuation = BackendContinuation {
         executable: retained,
         entry: first,
-        env: HashMap::new(),
+        env: Frame::sized(crate::compiler2::BackendExecutable::TEST_VALUE_COUNT),
         handler: false,
     };
     program.remove_executable(&key, world.types());
@@ -964,7 +964,7 @@ fn encode_with_layout(
     value: &BackendBoundValue,
     layout: TransportLayout,
 ) -> Result<Vec<AnyValue>, String> {
-    let mut encoded = Vec::new();
+    let mut encoded = Lanes::new();
     encode_transport_layout(
         transport,
         &empty_backend_program(),
@@ -973,7 +973,7 @@ fn encode_with_layout(
         layout,
         &mut encoded,
     )?;
-    Ok(encoded)
+    Ok(encoded.into_vec())
 }
 
 fn tuple_shape(transport: &mut TransportStore, fields: &[ShapeId]) -> ShapeId {
@@ -1167,12 +1167,12 @@ fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
         process,
         &value,
         scalar,
-        &mut Vec::new(),
+        &mut Lanes::new(),
     )
     .expect_err("non-tuple destinations retain outer materialization behavior");
     assert_eq!(non_tuple, "backend value was absent and cannot be materialized");
 
-    let mut identical = Vec::new();
+    let mut identical = Lanes::new();
     encode_runtime_value(
         &transport,
         &empty_backend_program(),
@@ -1186,6 +1186,12 @@ fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
         identical.iter().map(|value| value.as_i64()).collect::<Vec<_>>(),
         [Some(1), Some(2), Some(3)]
     );
+}
+
+fn frame_with(id: ValueId, value: BackendBoundValue) -> Frame {
+    let mut frame = Frame::sized(crate::compiler2::BackendExecutable::TEST_VALUE_COUNT);
+    frame.insert(id, value);
+    frame
 }
 
 #[test]
@@ -1223,12 +1229,12 @@ fn a_direct_closure_edge_calls_its_named_target_from_what_the_caller_holds() {
     let key = edge.key.clone();
 
     assert!(matches!(
-        edge.step(HashMap::new()),
+        edge.step(Frame::sized(crate::compiler2::BackendExecutable::TEST_VALUE_COUNT)),
         Ok(BackendEvalTransition::Next(BackendEvalState::Executable { executable: target, .. })) if target.key == key
     ));
     assert!(
         matches!(
-            edge.step(HashMap::from([(edge.callee, BackendBoundValue::Absent)])),
+            edge.step(frame_with(edge.callee, BackendBoundValue::Absent)),
             Ok(BackendEvalTransition::Next(BackendEvalState::Executable { executable: target, .. })) if target.key == key
         ),
         "a capture-free target asks for nothing, which is what an absent binding holds"
@@ -1243,7 +1249,7 @@ fn a_direct_closure_edge_calls_its_named_target_from_what_the_caller_holds() {
 fn a_direct_closure_edge_refuses_a_callee_that_carries_none_of_the_target_captures() {
     let mut edge = DirectClosureEdge::new(&[Capture::Int]);
 
-    let refused = edge.step(HashMap::from([(edge.callee, BackendBoundValue::Absent)]));
+    let refused = edge.step(frame_with(edge.callee, BackendBoundValue::Absent));
 
     assert!(
         matches!(&refused, Err(error) if error.contains("carries no capture 0")),
@@ -1350,7 +1356,7 @@ impl DirectClosureEdge {
         }
     }
 
-    fn step(&mut self, env: HashMap<ValueId, BackendBoundValue>) -> Result<BackendEvalTransition, String> {
+    fn step(&mut self, env: Frame) -> Result<BackendEvalTransition, String> {
         step_eval_entry(
             &mut self.runtime,
             self.world.types_mut(),
@@ -1421,11 +1427,113 @@ fn a_value_cannot_be_delivered_to_a_handler_frame() {
         vec![BackendContinuation {
             executable,
             entry: handler,
-            env: HashMap::new(),
+            env: Frame::sized(crate::compiler2::BackendExecutable::TEST_VALUE_COUNT),
             handler: true,
         }],
     ) else {
         panic!("a handler frame takes a raise, never a value");
     };
     assert!(error.contains("handler frame"), "{error}");
+}
+
+/// A continuation resumes at one entry and reads only that entry's captures,
+/// so a frame parked behind a call holds those and nothing else.
+struct CaptureEntry {
+    transport: TransportStore,
+    entry: BackendEntry,
+}
+
+impl CaptureEntry {
+    fn new(captures: &[ValueId], physical_captures: &[ValueId]) -> Self {
+        let mut transport = TransportStore::new();
+        let int = crate::compiler2::Types::new().int();
+        let lane = transport.interners_mut().intern_lane(LaneDescr {
+            ty: int,
+            class: TransportClass::Value,
+        });
+        let scalar = transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
+        let entry = BackendEntry {
+            span: Span::DUMMY,
+            origin: BackendEntryOrigin::Branch,
+            params: Vec::new(),
+            captures: captures
+                .iter()
+                .map(|value| crate::compiler2::BackendEntryCapture {
+                    value: *value,
+                    layout: BackendValueLayout {
+                        structural: scalar,
+                        carrier: TransportCarrier::ValueRef(lane),
+                        tys: Box::new([int]),
+                        reprs: Box::new([AbiValueRepr::RawInt]),
+                    },
+                })
+                .collect(),
+            physical_captures: physical_captures.to_vec(),
+            physical_params: Vec::new(),
+            steps: Vec::new(),
+            tail: BackendTail::Value {
+                value: ValueId::from_u32(0),
+                dest: ControlDestination::Return,
+            },
+        };
+        Self { transport, entry }
+    }
+
+    fn retain(&self, frame: Frame) -> Result<Frame, String> {
+        retain_continuation_captures(
+            &self.transport,
+            std::slice::from_ref(&self.entry),
+            ControlEntryId::from_u32(0),
+            frame,
+        )
+    }
+}
+
+fn frame_holding(ids: &[u32]) -> Frame {
+    let mut frame = Frame::sized(BackendExecutable::TEST_VALUE_COUNT);
+    for id in ids {
+        frame.insert(
+            ValueId::from_u32(*id),
+            BackendBoundValue::Runtime(AnyValue::Int(i64::from(*id))),
+        );
+    }
+    frame
+}
+
+#[test]
+fn a_parked_frame_holds_only_the_target_entrys_captures() {
+    let logical = ValueId::from_u32(2);
+    let physical = ValueId::from_u32(5);
+    let captures = CaptureEntry::new(&[logical], &[physical, logical]);
+
+    let retained = captures
+        .retain(frame_holding(&[1, 2, 5, 7]))
+        .expect("every capture is bound");
+
+    for id in [1, 7] {
+        assert!(
+            retained.get(ValueId::from_u32(id)).is_none(),
+            "value {id} is dead at the target, so the parked frame must not root it"
+        );
+    }
+    assert!(matches!(
+        retained.get(logical),
+        Some(BackendBoundValue::Runtime(AnyValue::Int(2)))
+    ));
+    assert!(matches!(
+        retained.get(physical),
+        Some(BackendBoundValue::Runtime(AnyValue::Int(5)))
+    ));
+}
+
+#[test]
+fn a_continuation_whose_capture_is_unbound_is_refused() {
+    let captures = CaptureEntry::new(&[ValueId::from_u32(2)], &[]);
+
+    let error = captures
+        .retain(frame_holding(&[1]))
+        .err()
+        .expect("a capture the frame lacks cannot be parked");
+
+    assert_eq!(error, "backend continuation capture value 2 is unavailable");
 }

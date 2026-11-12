@@ -3190,7 +3190,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         }
         let mut body = LoweredBody::clauses(lowered, entries, self.generated_ids.clone());
         self.construct_entry_captures(&mut body);
-        body
+        body.with_value_count(self.next_value as usize)
     }
 
     fn construct_entry_captures(&mut self, body: &mut LoweredBody) {
