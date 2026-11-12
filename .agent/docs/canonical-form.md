@@ -164,8 +164,8 @@ Built on `canon(Ty)`, by four rules:
   — its content still renders, so only an unreferenced identity is lost.
   `ControlEntryId` is already a dense DFS index and renders as `e{n}`.
 
-Every unordered container is rendered as sorted rows: `HashMap`s keyed by a
-body-local id follow the body's naming order, and `BTreeSet`s ordered by raw
+Every unordered container is rendered as sorted rows: `HashMap`s and
+`ValueMap`s keyed by a body-local id follow the body's naming order, and `BTreeSet`s ordered by raw
 `Ty` (callable surfaces and targets) are re-sorted on their rendered form.
 `{:?}` appears only on field-free enums, where it is the variant name and
 nothing else — never on a container, whose Debug order is per-instance

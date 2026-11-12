@@ -39,7 +39,7 @@ fn named_function_construction_uses_the_materialized_value_layout() {
         RootId::for_test(0),
         &abi.value_layouts,
         HashMap::new(),
-        HashMap::new(),
+        ValueMap::new(),
     );
     let lowered = lowerer
         .lower_step(&LoweredStep::FunctionRef { value, function })

@@ -45,7 +45,7 @@ head never narrows the whole list element type. Thus observing one head cannot
 silently constrain a later element.
 
 There is no separate inference IR and no per-cell solver lattice. `AnalyzeActivation`
-walks the clause bodies once, threading a `values: HashMap<ValueId, Ty>` map, and
+walks the clause bodies once, threading a `ValueMap<Ty>` of the values seen so far, and
 the cross-activation fixpoint lives entirely in the fact graph: a call reads its
 callee's `ReturnType` fact through `World::answer_use` (`prepare_function_call`).
 A partner — the caller itself, or a callee already waiting on the caller —
@@ -54,6 +54,13 @@ other callee is read once it concludes; until then the call is `CallReturn::Awai
 the caller's own return withholds instead of publishing from an incomplete walk,
 and the caller re-runs once, when the wait resolves, not once per intermediate
 revision.
+
+A table over the values of one body is a `ValueMap<V>` (a set is a
+`ValueSet`): a vector indexed by `ValueId`, in `compiler2/value_map.rs`.
+`Lowerer::fresh_value` numbers a body's values from zero, so the ids of one body
+are a small range and a slot per id replaces a hash. Iteration follows the id,
+not a per-process hash seed. A table that spans several bodies, or whose key
+is a composite such as `ProductKey` or `TransportPosition`, stays a hash table.
 
 ## Typing a body
 

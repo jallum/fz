@@ -1,5 +1,6 @@
 //! Jobs that derive the stable facts used for activation keying.
 
+use crate::compiler2::{ValueMap, ValueSet};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_path, demand_within_path};
@@ -738,9 +739,9 @@ fn body_flows(world: &World, function: FunctionId, input_count: usize) -> BodyFl
         let mut calls = Vec::new();
         collect_demands(
             &uses_of,
-            *value,
+            value,
             &mut Vec::new(),
-            &mut HashSet::new(),
+            &mut ValueMap::new(),
             &mut asks,
             &mut calls,
             &mut Vec::new(),
@@ -776,15 +777,15 @@ fn body_flows(world: &World, function: FunctionId, input_count: usize) -> BodyFl
 /// each trip around deepens the path, so what is asked of it is asked of the
 /// whole value. Every other revisit repeats a path already followed.
 fn collect_demands(
-    uses_of: &HashMap<ValueId, Vec<ValueUse>>,
+    uses_of: &ValueMap<Vec<ValueUse>>,
     value: ValueId,
     inside: &mut Vec<DemandPathStep>,
-    seen: &mut HashSet<(ValueId, Vec<DemandPathStep>)>,
+    seen: &mut ValueMap<HashSet<Vec<DemandPathStep>>>,
     asks: &mut Vec<DispatchDemand>,
     calls: &mut Vec<(FunctionId, usize, Vec<DemandPathStep>)>,
     active: &mut Vec<ValueId>,
 ) {
-    if !seen.insert((value, inside.clone())) {
+    if !seen.or_default(value).insert(inside.clone()) {
         return;
     }
     if active.contains(&value) {
@@ -807,10 +808,10 @@ fn collect_demands(
     active.pop();
 }
 
-fn value_uses(world: &World, body: &LoweredBody) -> HashMap<ValueId, Vec<ValueUse>> {
+fn value_uses(world: &World, body: &LoweredBody) -> ValueMap<Vec<ValueUse>> {
     let LoweredBody::Clauses { clauses, entries, .. } = body;
     let joins = delivered_value_joins(body);
-    let mut uses = HashMap::<ValueId, Vec<ValueUse>>::new();
+    let mut uses = ValueMap::<Vec<ValueUse>>::new();
     let mut add = |value: ValueId, usage: ValueUse| uses.entry(value).or_default().push(usage);
     for step in clauses
         .iter()
@@ -1031,8 +1032,8 @@ fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> 
     let LoweredBody::Clauses { clauses, entries, .. } = &*body;
     let origins = input_positions(&body, input_count);
     for (slot, path) in returned_values(&body, clauses, entries)
-        .iter()
-        .filter_map(|value| origins.get(value))
+        .keys()
+        .filter_map(|value| origins.get(&value))
         .flatten()
     {
         if let Some(demand) = mask.get_mut(*slot) {
@@ -1108,12 +1109,12 @@ pub(super) fn supplied_whole_slots(
 fn recursion_supplied_positions(
     function: FunctionId,
     entries: &[super::super::body::LoweredEntry],
-    origins: &HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
+    origins: &ValueMap<Vec<(usize, Vec<DemandPathStep>)>>,
     input_count: usize,
 ) -> HashSet<(usize, Vec<DemandPathStep>)> {
     let mut rebuilt = HashSet::new();
     let mut obligations: Vec<RebuildObligation> = Vec::new();
-    let mut constructions: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    let mut constructions: ValueMap<Vec<ValueId>> = ValueMap::new();
     for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
         if let LoweredStep::Tuple { value, items } = step {
             constructions.insert(*value, items.iter().map(|item| item.value).collect());
@@ -1172,8 +1173,8 @@ fn collect_rebuild_obligations(
     value: ValueId,
     slot: usize,
     path: &mut Vec<DemandPathStep>,
-    origins: &HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
-    constructions: &HashMap<ValueId, Vec<ValueId>>,
+    origins: &ValueMap<Vec<(usize, Vec<DemandPathStep>)>>,
+    constructions: &ValueMap<Vec<ValueId>>,
     obligations: &mut Vec<RebuildObligation>,
 ) {
     let held = origins.get(&value).map(Vec::as_slice).unwrap_or_default();
@@ -1201,11 +1202,11 @@ fn collect_rebuild_obligations(
 /// names its source's position one step deeper. One value can name more than
 /// one position -- `f(x, x)` binds one `ValueId` to two slots -- exactly as
 /// `forwarded_inputs` records.
-fn input_positions(body: &LoweredBody, input_count: usize) -> HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>> {
+fn input_positions(body: &LoweredBody, input_count: usize) -> ValueMap<Vec<(usize, Vec<DemandPathStep>)>> {
     use super::super::executable_facts::{collect_callsite_return_origins, collect_value_origins};
     let LoweredBody::Clauses { clauses, .. } = body;
     let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
-    let mut positions = HashMap::<ValueId, Vec<(usize, Vec<DemandPathStep>)>>::new();
+    let mut positions = ValueMap::<Vec<(usize, Vec<DemandPathStep>)>>::new();
     for clause in clauses {
         for (slot, value) in clause.params.iter().copied().enumerate().take(input_count) {
             let known = positions.entry(value).or_default();
@@ -1216,7 +1217,7 @@ fn input_positions(body: &LoweredBody, input_count: usize) -> HashMap<ValueId, V
         }
     }
     for value in origins.keys() {
-        resolve_input_positions(body, *value, &origins, &mut positions, &mut HashSet::new());
+        resolve_input_positions(body, value, &origins, &mut positions, &mut ValueSet::new());
     }
     positions
 }
@@ -1224,21 +1225,21 @@ fn input_positions(body: &LoweredBody, input_count: usize) -> HashMap<ValueId, V
 fn resolve_input_positions(
     body: &LoweredBody,
     value: ValueId,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
-    positions: &mut HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
-    visiting: &mut HashSet<ValueId>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
+    positions: &mut ValueMap<Vec<(usize, Vec<DemandPathStep>)>>,
+    visiting: &mut ValueSet,
 ) -> Vec<(usize, Vec<DemandPathStep>)> {
     if let Some(known) = positions.get(&value) {
         return known.clone();
     }
-    if !visiting.insert(value) {
+    if !visiting.mark(value) {
         return Vec::new();
     }
     let found = origins
         .get(&value)
         .map(|origin| input_origin_positions(body, origin, origins, positions, visiting))
         .unwrap_or_default();
-    visiting.remove(&value);
+    visiting.unmark(&value);
     positions.insert(value, found.clone());
     found
 }
@@ -1246,9 +1247,9 @@ fn resolve_input_positions(
 fn input_origin_positions(
     body: &LoweredBody,
     origin: &super::super::executable_facts::TransportOrigin,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
-    positions: &mut HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
-    visiting: &mut HashSet<ValueId>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
+    positions: &mut ValueMap<Vec<(usize, Vec<DemandPathStep>)>>,
+    visiting: &mut ValueSet,
 ) -> Vec<(usize, Vec<DemandPathStep>)> {
     use super::super::executable_facts::TransportOrigin;
     let (source, path) = match origin {
@@ -1291,20 +1292,20 @@ fn returned_values(
     body: &LoweredBody,
     clauses: &[super::super::body::LoweredClause],
     entries: &[super::super::body::LoweredEntry],
-) -> HashSet<ValueId> {
-    let mut returned = HashSet::new();
+) -> ValueSet {
+    let mut returned = ValueSet::new();
     let mut frontier = Vec::new();
     for entry in entries {
         if let LoweredTail::Value {
             value,
             dest: super::super::body::ControlDestination::Return,
         } = &entry.tail
-            && returned.insert(*value)
+            && returned.mark(*value)
         {
             frontier.push(*value);
         }
     }
-    let mut built: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    let mut built: ValueMap<Vec<ValueId>> = ValueMap::new();
     for step in clauses
         .iter()
         .flat_map(|clause| clause.projections.iter())
@@ -1349,7 +1350,7 @@ fn returned_values(
     }
     while let Some(value) = frontier.pop() {
         for source in built.get(&value).into_iter().flatten().copied() {
-            if returned.insert(source) {
+            if returned.mark(source) {
                 frontier.push(source);
             }
         }

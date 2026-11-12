@@ -4,6 +4,7 @@
 //! independent of any product session. The scheduler job that publishes the
 //! fact gathers its settled inputs; product producers only read this value.
 
+use crate::compiler2::ValueMap;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -41,8 +42,8 @@ pub(crate) struct ExecutableFacts {
     pub(super) callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
     pub(super) delivered_value_joins: HashMap<ControlEntryId, DeliveredValueJoin>,
     pub(super) callsite_return_origins: HashMap<CallSiteId, TransportOrigin>,
-    pub(super) value_origins: HashMap<ValueId, TransportOrigin>,
-    pub(super) callable_origins: HashMap<ValueId, LocalCallableProducer>,
+    pub(super) value_origins: ValueMap<TransportOrigin>,
+    pub(super) callable_origins: ValueMap<LocalCallableProducer>,
     pub(super) return_origins: Box<[TransportOrigin]>,
     pub(crate) demand_types: RuntimeDemandTypeInputs,
     pub(crate) callable_activation_inputs: Vec<CallableActivationInput>,
@@ -53,7 +54,7 @@ pub(crate) struct RuntimeDemandFacts<'a> {
     pub(crate) body: &'a LoweredBody,
     pub(crate) extern_wire: Option<&'a LoweredExtern>,
     pub(crate) reachable_clauses: &'a [u32],
-    pub(crate) value_types: &'a HashMap<ValueId, Ty>,
+    pub(crate) value_types: &'a ValueMap<Ty>,
     /// What this executable's own entry dispatch reads of each input.
     pub(crate) entry_dispatch_demand: &'a [DispatchDemand],
     /// What each multi-destination callsite's own choice between its
@@ -62,7 +63,7 @@ pub(crate) struct RuntimeDemandFacts<'a> {
     pub(crate) callsites: &'a HashMap<CallSiteId, CallSiteSummary>,
     pub(crate) callsite_needs: &'a HashMap<CallSiteId, ExecutableNeed>,
     pub(crate) delivered_value_joins: &'a HashMap<ControlEntryId, DeliveredValueJoin>,
-    pub(crate) callable_origins: &'a HashMap<ValueId, LocalCallableProducer>,
+    pub(crate) callable_origins: &'a ValueMap<LocalCallableProducer>,
     pub(crate) demand_types: &'a RuntimeDemandTypeInputs,
     type_projections: &'a HashMap<Ty, Rc<RuntimeDemandTypeProjection>>,
     pub(crate) callable_activation_inputs: &'a [CallableActivationInput],
@@ -175,7 +176,7 @@ impl RuntimeDemandFacts<'_> {
         self.callable_origins.get(&value)
     }
 
-    pub(crate) fn callable_origins(&self) -> impl Iterator<Item = (&ValueId, &LocalCallableProducer)> {
+    pub(crate) fn callable_origins(&self) -> impl Iterator<Item = (ValueId, &LocalCallableProducer)> {
         self.callable_origins.iter()
     }
 
@@ -301,8 +302,8 @@ pub(crate) fn project_executable_facts(
         (
             HashMap::new(),
             HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
+            ValueMap::new(),
+            ValueMap::new(),
             Box::default(),
             HashMap::new(),
         )
@@ -310,9 +311,9 @@ pub(crate) fn project_executable_facts(
         let delivered_value_joins = delivered_value_joins(&body);
         let callsite_return_origins = collect_callsite_return_origins(&body);
         let value_origins = collect_value_origins(&body, &callsite_return_origins);
-        let callable_origins: HashMap<ValueId, LocalCallableProducer> = value_origins
+        let callable_origins: ValueMap<LocalCallableProducer> = value_origins
             .keys()
-            .filter_map(|&value| {
+            .filter_map(|value| {
                 local_callable_origin(&body, &value_origins, value, &[]).map(|producer| (value, producer.clone()))
             })
             .collect();
@@ -438,7 +439,7 @@ pub(crate) fn callsite_dispatch_demands(
         .collect()
 }
 
-fn argument_type(value_types: &HashMap<ValueId, Ty>, any: Ty, value: ValueId) -> Ty {
+fn argument_type(value_types: &ValueMap<Ty>, any: Ty, value: ValueId) -> Ty {
     value_types.get(&value).copied().unwrap_or(any)
 }
 
@@ -751,7 +752,7 @@ fn collect_entry_callsite_needs(
         return answer;
     }
     let entry = &entries[entry_id.as_u32() as usize];
-    let mut tuple_demands = HashMap::new();
+    let mut tuple_demands = ValueMap::new();
     match &entry.tail {
         LoweredTail::Value { value, dest } => {
             if let Some(arity) = destination_need(entries, dest, outgoing_need, out, walks) {
@@ -912,7 +913,7 @@ pub(crate) fn collect_callsite_return_origins(body: &LoweredBody) -> HashMap<Cal
 
 fn local_callable_origin<'a>(
     body: &LoweredBody,
-    origins: &'a HashMap<ValueId, TransportOrigin>,
+    origins: &'a ValueMap<TransportOrigin>,
     value: ValueId,
     path: &[&crate::dispatch_matrix::ProjectionKind],
 ) -> Option<&'a LocalCallableProducer> {
@@ -921,7 +922,7 @@ fn local_callable_origin<'a>(
 
 fn local_callable_origin_from<'a>(
     body: &LoweredBody,
-    origins: &'a HashMap<ValueId, TransportOrigin>,
+    origins: &'a ValueMap<TransportOrigin>,
     origin: &'a TransportOrigin,
     path: &[&crate::dispatch_matrix::ProjectionKind],
 ) -> Option<&'a LocalCallableProducer> {
@@ -961,8 +962,8 @@ fn local_callable_origin_from<'a>(
 pub(crate) fn collect_value_origins(
     body: &LoweredBody,
     callsite_return_origins: &HashMap<CallSiteId, TransportOrigin>,
-) -> HashMap<ValueId, TransportOrigin> {
-    let mut origins = HashMap::new();
+) -> ValueMap<TransportOrigin> {
+    let mut origins = ValueMap::new();
     let LoweredBody::Clauses { clauses, entries, .. } = body;
     for clause in clauses {
         for step in &clause.projections {

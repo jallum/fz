@@ -4,6 +4,7 @@
 //! dispatch, derives direct-call summaries, and settles per-activation return
 //! types without calling the legacy whole-program pipeline.
 
+use crate::compiler2::ValueMap;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry};
 
 use crate::ast::{BinOp, UnOp};
@@ -110,7 +111,7 @@ impl EntryWalkTable {
     }
 }
 
-type ValueTypes = HashMap<ValueId, Ty>;
+type ValueTypes = ValueMap<Ty>;
 /// A callee's refined argument surface plus its contract verdict. `None`
 /// means the callee declares no contract at all, so there is nothing to
 /// verify. `Some` carries the verdict `FunctionContract::apply` reached —
@@ -275,7 +276,7 @@ pub(super) fn analyze_activation(
 
     let mut analysis_calls = Vec::new();
     let mut walks = EntryWalkTable::new();
-    let mut value_types = HashMap::new();
+    let mut value_types = ValueMap::new();
     // The activation's return evidence. `None` is the ascent's bottom — "no
     // path has produced a value yet" — never the type `none`, which remains
     // a provable fact (a body all of whose paths halt). At the fixpoint the

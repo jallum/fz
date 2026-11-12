@@ -1,3 +1,4 @@
+use crate::compiler2::{ValueMap, ValueSet};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -104,10 +105,10 @@ struct DerivedExecutableDemand {
 /// [`derive_executable_runtime_demand`] call and is never published.
 #[derive(Default)]
 struct EntryDemandWalkTable {
-    answers: HashMap<(ControlEntryId, RuntimeDemand), HashMap<ValueId, RuntimeDemand>>,
+    answers: HashMap<(ControlEntryId, RuntimeDemand), ValueMap<RuntimeDemand>>,
     /// What each walked entry reads of its parameters. A decision that hands
     /// an arm its parameters reads the subjects behind them this much.
-    parameters: HashMap<ValueId, RuntimeDemand>,
+    parameters: ValueMap<RuntimeDemand>,
     /// How many entries this walk actually visited, as opposed to answered
     /// from the memo. [`emit_runtime_demand_walk`] reports it.
     entries_walked: u64,
@@ -118,11 +119,11 @@ impl EntryDemandWalkTable {
         Self::default()
     }
 
-    fn get(&self, key: &(ControlEntryId, RuntimeDemand)) -> Option<&HashMap<ValueId, RuntimeDemand>> {
+    fn get(&self, key: &(ControlEntryId, RuntimeDemand)) -> Option<&ValueMap<RuntimeDemand>> {
         self.answers.get(key)
     }
 
-    fn record(&mut self, key: (ControlEntryId, RuntimeDemand), answer: HashMap<ValueId, RuntimeDemand>) {
+    fn record(&mut self, key: (ControlEntryId, RuntimeDemand), answer: ValueMap<RuntimeDemand>) {
         self.answers.insert(key, answer);
         self.entries_walked += 1;
     }
@@ -670,9 +671,9 @@ fn trivial_value_clause_ids(body: &LoweredBody, reachable: &[u32]) -> Vec<u32> {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct CallableFlowBuilder {
-    direct_surfaces: HashMap<ValueId, BTreeSet<CallableSurface>>,
-    direct_targets: HashMap<ValueId, BTreeSet<CallableTarget>>,
-    first_class_surfaces: HashMap<ValueId, BTreeSet<CallableSurface>>,
+    direct_surfaces: ValueMap<BTreeSet<CallableSurface>>,
+    direct_targets: ValueMap<BTreeSet<CallableTarget>>,
+    first_class_surfaces: ValueMap<BTreeSet<CallableSurface>>,
 }
 
 static NO_SURFACES: BTreeSet<CallableSurface> = BTreeSet::new();
@@ -699,7 +700,7 @@ impl CallableFlowBuilder {
         self.record_direct_surfaces(facts, value, &demand.callable.resolved);
         let targets = &demand.callable.targets;
         if !targets.is_empty() {
-            let mut seen = HashSet::new();
+            let mut seen = ValueSet::new();
             self.record_direct_targets_for_value(facts, value, targets, &mut seen);
         }
     }
@@ -713,7 +714,7 @@ impl CallableFlowBuilder {
         if surfaces.is_empty() {
             return;
         }
-        let mut seen = HashSet::new();
+        let mut seen = ValueSet::new();
         self.record_direct_surfaces_for_value(facts, value, surfaces, &mut seen);
     }
 
@@ -732,7 +733,7 @@ impl CallableFlowBuilder {
         if surfaces.is_empty() {
             return;
         }
-        let mut seen = HashSet::new();
+        let mut seen = ValueSet::new();
         self.record_first_class_surfaces_for_value(facts, value, surfaces, &mut seen);
     }
 
@@ -741,9 +742,9 @@ impl CallableFlowBuilder {
         facts: &RuntimeDemandFacts<'_>,
         value: ValueId,
         surfaces: &BTreeSet<CallableSurface>,
-        seen: &mut HashSet<ValueId>,
+        seen: &mut ValueSet,
     ) {
-        if !seen.insert(value) {
+        if !seen.mark(value) {
             return;
         }
         if facts.callable_origin(value).is_some() {
@@ -767,9 +768,9 @@ impl CallableFlowBuilder {
         facts: &RuntimeDemandFacts<'_>,
         value: ValueId,
         surfaces: &BTreeSet<CallableSurface>,
-        seen: &mut HashSet<ValueId>,
+        seen: &mut ValueSet,
     ) {
-        if !seen.insert(value) {
+        if !seen.mark(value) {
             return;
         }
         if facts.callable_origin(value).is_some() {
@@ -793,9 +794,9 @@ impl CallableFlowBuilder {
         facts: &RuntimeDemandFacts<'_>,
         value: ValueId,
         targets: &BTreeSet<CallableTarget>,
-        seen: &mut HashSet<ValueId>,
+        seen: &mut ValueSet,
     ) {
-        if !seen.insert(value) {
+        if !seen.mark(value) {
             return;
         }
         if facts.callable_origin(value).is_some() {
@@ -940,7 +941,7 @@ fn collect_callable_capture_input_sources(
     demand: &ExecutableRuntimeDemand,
     contribution: &mut HashMap<InputSlot, HashSet<IncomingInputSource>>,
 ) {
-    for (&flow_value, flow) in &demand.callable_flows {
+    for (flow_value, flow) in &demand.callable_flows {
         for edge in flow.direct_edges.iter().chain(&flow.first_class_edges) {
             for (capture_index, (&semantic_index, value)) in edge
                 .capture_semantic_inputs
@@ -1054,7 +1055,7 @@ fn plan_callable_flows(
     let mut plans = Vec::new();
     let mut requested = HashSet::new();
     let mut unresolved = HashSet::new();
-    for (&value, producer) in facts.callable_origins() {
+    for (value, producer) in facts.callable_origins() {
         let Some(value_demand) = demand.value_demands.get(&value) else {
             continue;
         };
@@ -1387,7 +1388,7 @@ fn collect_entry_external_demands(
     call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
     callable_flows: &mut CallableFlowBuilder,
     walks: &mut EntryDemandWalkTable,
-) -> HashMap<ValueId, RuntimeDemand> {
+) -> ValueMap<RuntimeDemand> {
     // What this join answers depends only on the entry and the demand flowing
     // out of it. A join reached again with the same outgoing demand answers
     // with the external demands it already recorded -- walking it again would
@@ -1411,7 +1412,7 @@ fn collect_entry_external_demands(
         callable_flows,
         walks,
     );
-    let mut external = HashMap::new();
+    let mut external = ValueMap::new();
     if let Some(value) = entry.origin.input_value()
         && let Some(demand) = live.remove(&value)
     {
@@ -1456,9 +1457,9 @@ fn collect_entry_live_demands(
     call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
     callable_flows: &mut CallableFlowBuilder,
     walks: &mut EntryDemandWalkTable,
-) -> HashMap<ValueId, RuntimeDemand> {
+) -> ValueMap<RuntimeDemand> {
     let entry = &entries[entry_id.as_u32() as usize];
-    let mut live = HashMap::new();
+    let mut live = ValueMap::new();
     let mut tail_call_return = None;
     match &entry.tail {
         LoweredTail::Value { value, dest } => {
@@ -1750,9 +1751,9 @@ fn destination_demands(
     call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
     callable_flows: &mut CallableFlowBuilder,
     walks: &mut EntryDemandWalkTable,
-) -> (RuntimeDemand, HashMap<ValueId, RuntimeDemand>) {
+) -> (RuntimeDemand, ValueMap<RuntimeDemand>) {
     match dest {
-        ControlDestination::Return => (outgoing_demand, HashMap::new()),
+        ControlDestination::Return => (outgoing_demand, ValueMap::new()),
         ControlDestination::Deliver(entry_id) => {
             let delivered = entries[entry_id.as_u32() as usize]
                 .origin
@@ -1831,11 +1832,11 @@ fn value_depends_on_callsite_return(facts: &RuntimeDemandFacts<'_>, value: Value
 /// Every callsite whose returned value flows into `value`, through delivered
 /// joins and the steps that build one value from others.
 fn callsite_returns_feeding(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> HashSet<CallSiteId> {
-    let mut seen = HashSet::new();
+    let mut seen = ValueSet::new();
     let mut feeding = HashSet::new();
     let mut pending = vec![value];
     while let Some(value) = pending.pop() {
-        if !seen.insert(value) {
+        if !seen.mark(value) {
             continue;
         }
         for join in facts.delivered_value_joins.values().filter(|join| join.value == value) {
@@ -2014,7 +2015,7 @@ fn delivered_join_has_distinct_callable_producers(
 pub(super) fn propagate_steps_reverse(
     types: &Types,
     steps: &[LoweredStep],
-    live: &mut HashMap<ValueId, RuntimeDemand>,
+    live: &mut ValueMap<RuntimeDemand>,
     facts: &RuntimeDemandFacts<'_>,
     demands: &RuntimeDemandFormulaSnapshot,
     out: &mut ExecutableRuntimeDemand,
@@ -2320,7 +2321,7 @@ fn runtime_demand_of_dispatch(demand: &DispatchDemand, proven_arity: Option<usiz
 fn note_clause_matcher_demands(
     facts: &RuntimeDemandFacts<'_>,
     steps: &[LoweredStep],
-    live: &mut HashMap<ValueId, RuntimeDemand>,
+    live: &mut ValueMap<RuntimeDemand>,
     out: &mut ExecutableRuntimeDemand,
 ) {
     for step in steps {
@@ -2375,7 +2376,7 @@ fn propagate_lambda_capture_demands(
     demand: RuntimeDemand,
     facts: &RuntimeDemandFacts<'_>,
     all_demands: &RuntimeDemandFormulaSnapshot,
-    live: &mut HashMap<ValueId, RuntimeDemand>,
+    live: &mut ValueMap<RuntimeDemand>,
     out: &mut ExecutableRuntimeDemand,
     callable_flows: &mut CallableFlowBuilder,
 ) {
@@ -2885,7 +2886,7 @@ fn extend_unique<T: PartialEq>(target: &mut Vec<T>, values: Vec<T>) {
 
 fn note_live_demand(
     out: &mut ExecutableRuntimeDemand,
-    live: &mut HashMap<ValueId, RuntimeDemand>,
+    live: &mut ValueMap<RuntimeDemand>,
     value: ValueId,
     demand: RuntimeDemand,
 ) {
@@ -2896,13 +2897,13 @@ fn note_live_demand(
     join_map_demand(&mut out.value_demands, value, demand);
 }
 
-fn merge_live_demands(target: &mut HashMap<ValueId, RuntimeDemand>, observed: HashMap<ValueId, RuntimeDemand>) {
+fn merge_live_demands(target: &mut ValueMap<RuntimeDemand>, observed: ValueMap<RuntimeDemand>) {
     for (value, demand) in observed {
         join_map_demand(target, value, demand);
     }
 }
 
-fn join_map_demand(target: &mut HashMap<ValueId, RuntimeDemand>, value: ValueId, demand: RuntimeDemand) {
+fn join_map_demand(target: &mut ValueMap<RuntimeDemand>, value: ValueId, demand: RuntimeDemand) {
     target
         .entry(value)
         .and_modify(|existing| existing.join_assign(&demand))
@@ -2953,7 +2954,7 @@ fn record_call_return_demand(
         .or_insert(observed);
 }
 
-fn take_live_demand(live: &mut HashMap<ValueId, RuntimeDemand>, value: ValueId) -> RuntimeDemand {
+fn take_live_demand(live: &mut ValueMap<RuntimeDemand>, value: ValueId) -> RuntimeDemand {
     live.remove(&value).unwrap_or(RuntimeDemand::ignore())
 }
 

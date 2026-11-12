@@ -3,6 +3,7 @@
 //! This module stores the keyed values the work graph owns: observed input
 //! shapes, reachable callsites, settled return types, and runtime demand.
 
+use crate::compiler2::ValueMap;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
@@ -675,10 +676,10 @@ pub struct ExecutableRuntimeDemand {
     pub callable_activation_inputs: Vec<CallableActivationInput>,
     pub return_demand: RuntimeDemand,
     pub input_demands: Vec<RuntimeDemand>,
-    pub value_demands: HashMap<ValueId, RuntimeDemand>,
+    pub value_demands: ValueMap<RuntimeDemand>,
     pub entry_capture_demands: HashMap<ControlEntryId, Vec<RuntimeDemand>>,
     pub call_arg_demands: HashMap<CallSiteId, Vec<RuntimeDemand>>,
-    pub callable_flows: HashMap<ValueId, CallableFlowFact>,
+    pub callable_flows: ValueMap<CallableFlowFact>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -773,7 +774,7 @@ pub struct ActivationAnalysis {
     pub(crate) trimmed: TrimmedPlans,
     pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
-    pub value_types: HashMap<ValueId, Ty>,
+    pub value_types: ValueMap<Ty>,
 }
 
 /// The dispatch plans an activation's inputs leave, which are the plans it

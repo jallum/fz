@@ -4,6 +4,7 @@
 //! pattern/destructure steps, and compiler-generated lambda definitions, but
 //! it stops above old-world CPS IR and planner concerns.
 
+use crate::compiler2::ValueMap;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
@@ -16,8 +17,36 @@ use crate::source::Span;
 use super::identity::{FunctionId, ModuleId};
 use super::types::Ty;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ValueId(u32);
+
+/// Hashing a value id is the cost the dense per-body tables avoid, so tests
+/// count it.
+impl std::hash::Hash for ValueId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        #[cfg(test)]
+        value_id_hashes::record();
+        self.0.hash(state);
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod value_id_hashes {
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNT: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn record() {
+        COUNT.with(|count| count.set(count.get() + 1));
+    }
+
+    /// How many value ids this thread has hashed so far.
+    pub(crate) fn so_far() -> u64 {
+        COUNT.with(Cell::get)
+    }
+}
 
 impl ValueId {
     pub fn from_u32(value: u32) -> Self {
@@ -315,7 +344,7 @@ fn positions_from(positions: &[(u32, ValueId)], first_step: u32) -> impl Iterato
 /// re-ask a question the steps have already answered.
 #[derive(Debug, Clone)]
 pub struct BodyTables {
-    definitions: HashMap<ValueId, StepSite>,
+    definitions: ValueMap<StepSite>,
     projections: Vec<StepUses>,
     entries: Vec<StepUses>,
 }
@@ -336,7 +365,7 @@ impl BodyTables {
             .iter()
             .map(|entry| StepUses::of(&entry.steps, Some(&entry.tail)))
             .collect::<Vec<_>>();
-        let mut definitions = HashMap::new();
+        let mut definitions = ValueMap::new();
         for (clause, table) in projections.iter().enumerate() {
             for (index, value) in &table.defined {
                 definitions.entry(*value).or_insert(StepSite::Projection {

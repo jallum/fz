@@ -3141,7 +3141,7 @@ end
         .filter_map(|(executable, demand)| {
             function_is(&world, executable.activation.function, "pair_down", 1).then_some(demand.value_demands.clone())
         })
-        .flat_map(|demands| demands.into_values())
+        .flat_map(|demands| demands.into_iter().map(|(_, demand)| demand))
         .collect::<Vec<_>>();
     assert!(
         resume_demands.iter().any(|demand| {
@@ -4433,7 +4433,7 @@ fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
             &world,
         );
         for (value, layout) in &executable.abi.value_layouts {
-            let Some(value_ty) = executable.abi.materialized.value_types.get(value).copied() else {
+            let Some(value_ty) = executable.abi.materialized.value_types.get(&value).copied() else {
                 continue;
             };
             whole_value_lanes += check(
@@ -5354,7 +5354,7 @@ end
     assert!(
         owner_demand
             .value_demands
-            .get(value)
+            .get(&value)
             .expect("escaped outer demand")
             .callable
             .targets
@@ -5363,7 +5363,7 @@ end
     );
     let target_key = CallableConstructionTargetKey {
         owner: owner.clone(),
-        value: *value,
+        value,
         surface: flow.first_class_edges[0].surface.clone(),
     };
     assert!(
