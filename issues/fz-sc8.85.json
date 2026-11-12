@@ -4,13 +4,14 @@
     "fz-sc8.63"
   ],
   "blocks": [],
+  "closed_at": "2026-11-12T20:55:32Z",
   "created": "2026-11-08T03:20:31Z",
   "description": "Done by fz-4t3.1 (ee78886b4 on develop, PR #314): the uniform calling tier is deleted from native_codegen, including the scalar Return tails in terminator.rs (the cont_ptr_known_null branch, emit_halt_and_return_null and the dynamic continuation-pointer check). The census this ticket asked for was a trap in every uniform arm run through the full gate: 4959 passed, 0 failed, no compiler trip. Generated code is identical over a 42-fixture sample.\n\nWhat remains for fz-sc8.97: NativeBody.return_tuple_arity survives fz-4t3.1. In native_codegen its only reader is native_return_halt_repr (delivery.rs), the arm fz-sc8.97 replaces. If nothing else reads the field after .97, it leaves in that commit.",
   "id": "fz-sc8.85",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Delete the uniform-tier return paths in native_codegen/terminator.rs if no planned function reaches them",
   "type": "task",
   "updated_at": "2026-11-12T20:55:32Z"
