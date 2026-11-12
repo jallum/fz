@@ -1684,9 +1684,10 @@ impl Types {
                 })
                 .collect::<Vec<_>>();
             self.intern(Descr::record(record.tag.clone(), fields))
-        } else if keep_elements && self.has_vars(a) {
-            // A kept leaf that still carries a free variable is replaced by the
-            // canonical address var for its position, never kept verbatim: the
+        } else if keep_elements && self.has_open_vars(a) {
+            // A kept leaf that still carries an open variable (not a closure's own
+            // arrow variables) is replaced by the canonical address var for its
+            // position, never kept verbatim: the
             // collapsed arrow must be canonically ADDRESSED so re-addressing it
             // through `address_inputs` is the identity (fz-hwn.27,
             // fz-go4.18.3.2.1). Ground leaves are the key's meaning and survive.

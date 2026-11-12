@@ -1,0 +1,14 @@
+#---
+# purpose: "Enum.map over a list of closures and Enum.map over a list mixing tagged closures with tagged values each keep every element"
+# kind: run
+# oracle: 01083_enum_map_over_a_list_of_closures_next_to_one_of_tagged_closures_and_values.oracle.exs
+#---
+def main() do
+  fs = [fn x -> x + 1 end]
+  dbg(Enum.map(fs, fn f -> f.(5) end))
+  mixed = [{:f, fn x -> x + 1 end}, {:v, 7}]
+  dbg(Enum.map(mixed, fn {k, m} -> if k == :f do m.(1) else m end end))
+  dbg(Enum.map(mixed, fn _ -> 0 end))
+  floats = [{:f, fn x -> x + 1 end}, {:v, 7.5}]
+  dbg(Enum.map(floats, fn _ -> 0 end))
+end
