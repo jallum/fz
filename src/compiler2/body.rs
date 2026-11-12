@@ -367,6 +367,11 @@ impl BodyTables {
         self.entries[entry.as_u32() as usize].used_from(first_step)
     }
 
+    /// Every `(step, value)` operand position of this entry, tail included.
+    pub(crate) fn entry_use_sites(&self, entry: ControlEntryId) -> &[(u32, ValueId)] {
+        &self.entries[entry.as_u32() as usize].used
+    }
+
     /// The sources whose ownership this entry's list steps at or after
     /// `first_step` retain.
     pub(crate) fn entry_retentions_from(

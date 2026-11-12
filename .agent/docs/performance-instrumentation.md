@@ -162,15 +162,24 @@ Unchanged reads emit no event and allocate no checked-node table or wait frame.
 These are operation counts, not total allocator calls or elapsed time; they
 expose shared-path revisits and cycle cleanup that formula counts alone miss.
 
-**Ownership scans** — `fz.compiler2.lowered_body.ownership`, one per lowered
-function, carrying its `function_id` and `steps_scanned`: how many steps
-ownership construction read in sequence while lowering it. The decisions
-themselves -- where a value is defined, whether a use that can still happen
-wants it -- come from the body's tables, so the only sequential reads are the
-two scans that find the list constructions and the tuples, and the count stays
-at twice the body's step count however many constructions the body holds. A
-count that grows with the constructions is a pass that went back to searching
-the body.
+**Ownership work** — `fz.compiler2.lowered_body.ownership`, one per lowered
+function, carrying its `function_id`, `steps_scanned` and `pairs_compared`.
+`steps_scanned` is how many steps ownership construction read in sequence while
+lowering it. The decisions themselves -- where a value is defined, whether a
+use that can still happen wants it -- come from the body's tables, so the only
+sequential reads are the two scans that find the list constructions and the
+tuples, and the count stays at twice the body's step count however many
+constructions the body holds. A count that grows with the constructions is a
+pass that went back to searching the body.
+
+`pairs_compared` is how many (tuple item, later use) pairs the tuple pass set
+against each other with the exact overlap question. A storage-root index
+(`StorageRootIndex`, built once per body) offers each item only the later uses
+that share a storage root with it, plus the uses whose storage cannot be
+bounded; an item whose own storage cannot be bounded is set against every later
+use. Doubling the literals of a body at most doubles the count; a count that
+grows with their square is a pass that asked every later use about every item
+again.
 
 **Entry walks** — `fz.compiler2.semantic.walk`, `fz.compiler2.runtime_demand.walk`
 and `fz.compiler2.executable_facts.walk`, one per activation/executable per
