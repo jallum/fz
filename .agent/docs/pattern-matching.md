@@ -448,6 +448,13 @@ two integers as machine words and ask `fz_value_cmp_ref`, the one dynamic
 ordering a body and the interpreter use, for every other pair: a float, a mixed
 integer and float, an atom against a number, or a value of unknown type.
 
+Its `==` and `!=` are the loose comparison (`emit_typed_eq_cmp` with
+`Equality::Loose`): two integers or two atoms compare as words, two floats by
+value, and every other pair asks `fz_value_eq_widening_ref`, the comparator the
+interpreter and body lowering use for the `==` operator, so `1 == 1.0` and
+`0.0 == -0.0` hold. A pinned match and a literal pattern use `Equality::Strict`
+(`fz_value_eq_ref`), which tells `1` from `1.0`.
+
 ### Receive Guards Run On The Sender
 
 A send to another process runs the receiver's parked matcher on the sender, so

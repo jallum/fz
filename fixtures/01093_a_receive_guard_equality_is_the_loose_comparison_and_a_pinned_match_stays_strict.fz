@@ -1,0 +1,76 @@
+#---
+# purpose: "a receive guard's == and != equate an integer with the float of the same value, as a body does, while a pinned match and === keep telling them apart"
+# oracle: oracle.exs
+#---
+#
+# `==` is the loose comparison: `1 == 1.0` is true and `0.0 == -0.0` is true.
+# A pinned match and `===` are identity: `1` is not `1.0`. Each helper parks a
+# message and matches it against one guard; `:a` means the clause matched. The
+# first four guards compare the message with a float or integer literal, the
+# fifth compares a computed value (`n * 2` is an operand of unknown type), and
+# the pinned receives and the `===` in a body show the strict side.
+def int_eq_float(m) do
+  send(self(), m)
+  receive do
+    n when n == 1.0 -> :a
+    _ -> :b
+  end
+end
+
+def float_eq_int(m) do
+  send(self(), m)
+  receive do
+    n when n == 1 -> :a
+    _ -> :b
+  end
+end
+
+def float_neq_int(m) do
+  send(self(), m)
+  receive do
+    n when n != 1 -> :a
+    _ -> :b
+  end
+end
+
+def zero_eq_negative_zero(m) do
+  send(self(), m)
+  receive do
+    n when n == 0.0 -> :a
+    _ -> :b
+  end
+end
+
+def pair_eq(m) do
+  send(self(), m)
+  receive do
+    {a, b} when a == b -> :a
+    _ -> :b
+  end
+end
+
+def pinned(pin, m) do
+  send(self(), m)
+  receive do
+    ^pin -> :a
+    _ -> :b
+  end
+end
+
+def main() do
+  dbg([
+    int_eq_float(1),
+    int_eq_float(2),
+    float_eq_int(1.0),
+    float_neq_int(1.0),
+    float_neq_int(2.0),
+    zero_eq_negative_zero(-0.0),
+    pair_eq({1, 1.0}),
+    pair_eq({1, 2.0}),
+    pinned(1, 1.0),
+    pinned(1.0, 1),
+    pinned(1, 1),
+    1 === 1.0,
+    1 == 1.0
+  ])
+end
