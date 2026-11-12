@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-11-11T23:01:23Z",
-  "description": "Once a self call keeps its caller's key at a supplied slot, the subtraction in return_flow_mask (src/compiler2/jobs/keying.rs, the .filter(|position| !rebuilt.contains(*position)) line and the doc paragraphs defending it) answers a question the self-call rule already answers. Delete it so the rule lives in one place. recursion_supplied_positions stays; the self-call rule reads it.\n\nProbe (spikeA2/A2_nosub.diff): with the line removed, key counts and output are unchanged on eight programs including 00761 (330 keys either way). The full suite has not been run on it.\n\nGate: no activation-key count rises anywhere (drive_test pins, fixture matrix backend dumps). A rise stops the ticket and is reported with the program and the keys; it is not re-pinned.\n\nProposal page: /Users/j5n/Workspace/optionparser-compile-cost.html (https://claude.ai/artifact/9MdFVrMJRKJcSULMazQfyo). Spike evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad.",
+  "description": "Question: once a self call keeps its caller's key at a supplied slot (fz-sc8.124), is the subtraction in return_flow_mask (src/compiler2/jobs/keying.rs, the .filter(|position| !rebuilt.contains(*position)) line) redundant, so the rule can live in one place?\n\nMeasured on 943c9dedf (fz-sc8.124) with the line removed: activation-key COUNTS are identical across 627 fixture backend dumps (19806 keys both ways, no per-fixture change, no exit-code change). Key CONTENT changes in 43 fixtures: at a supplied slot the column reads empty_list() (the outside caller's seed) where it read the collapsed class list(a_e). Examples: 00386 partition/4[.., list(int), list(a2_e), list(a3_e)] -\u003e [.., empty_list(), empty_list()]; 00183 Enum.reverse_list/2[list(int), list(a1_e)] -\u003e [list(int), empty_list()]. One lib pin fails on it: compiler2_quicksort_root_closes_with_a_finite_recursive_frontier (drive_test.rs:14135) expects [a2_e] and gets [].\n\nSo the subtraction is not redundant as the tree stands: it is what makes a supplied slot's key column say 'any list' instead of the seed. Deleting it needs a decision on what a key should show at a supplied slot (the seed, or the freight class), and then either the quicksort pin's wording changes or the subtraction stays. The builder reverted; nothing is committed. Evidence: spike scratchpad build124/ (corpus dumps for both binaries). Proposal: /Users/j5n/Workspace/optionparser-compile-cost.html",
   "id": "fz-sc8.125",
   "labels": [],
   "parent": "fz-sc8",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "The returned axis no longer subtracts recursion-supplied positions",
   "type": "task",
-  "updated_at": "2026-11-11T23:01:25Z"
+  "updated_at": "2026-11-12T00:05:39Z"
 }
