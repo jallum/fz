@@ -4,14 +4,15 @@
     "fz-sc8.124"
   ],
   "blocks": [],
+  "closed_at": "2026-11-12T01:30:55Z",
   "created": "2026-11-11T23:01:23Z",
   "description": "After fz-sc8.124 a self call cannot split an activation, so the subtraction in return_flow_mask (src/compiler2/jobs/keying.rs, the .filter(|position| !rebuilt.contains(*position)) line) no longer saves anything and now costs precision: it makes a directly returned accumulator's key column the collapsed class list(a_e), so every outside caller shares one activation whatever it seeds.\n\nProbe (spike scratchpad q/direct.fz): go([], a), do: a / go([x | rest], a), do: go(rest, [x | a]) called with seeds [:a] and [\"x\"], heads passed to use/1. With the subtraction: go/2 has 1 key [list(int), list(a1_e)] and use/1 is compiled once for int | binary | :a. Without: go/2 has 2 keys ([list(int), list(:a)], [list(int), list(binary)]) and use/1 has 2 (int | :a, int | binary). Output identical. An accumulator returned through a call (fixture 01076) already keeps seeds apart, so today the two shapes disagree.\n\nChange: delete the filter, its binding and the doc paragraphs defending the subtraction. recursion_supplied_positions stays (the self-call rule reads it). type-specialization.md's 'SELF-only subtraction' passages and the ONE_ACTIVATION_KEYING_LAWS doc's 'exclusion' wording are rewritten to the one rule.\n\nMeasured on 943c9dedf with the line removed: key COUNTS identical across 627 fixture dumps (19806 both ways). Key CONTENT changes in 43 fixtures: a supplied slot reads the caller's seed empty_list() where it read list(a_e) (e.g. 00386 partition/4, 00183 Enum.reverse_list/2).\n\nAuthorized pin change: compiler2_quicksort_root_closes_with_a_finite_recursive_frontier expects [a2_e] and gets []; reword it to say the column is the caller's seed. Count pins must not rise; any other movement is reported, not edited.\n\nFixture 01078: the probe above, three paths, oracle agreeing with Elixir; a unit pin that the two seeds key go/2 twice and use/1 twice. Approved by the user 2026-11-11. Proposal: /Users/j5n/Workspace/optionparser-compile-cost.html",
   "id": "fz-sc8.125",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The returned axis no longer subtracts recursion-supplied positions",
   "type": "task",
-  "updated_at": "2026-11-12T00:46:01Z"
+  "updated_at": "2026-11-12T01:30:55Z"
 }
