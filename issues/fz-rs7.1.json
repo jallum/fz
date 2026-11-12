@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:16:26Z",
+  "description": "The keyword tail on an extern head (parse_extern_raises), ExternRaises on FunctionSurface, contract validation, ExternReturn::Checked(lane, LastResort), the wrapper's failure edge (Term::Raise with the declared atom and message, atom interned via collect_executable_atoms), the interpreter's CheckedFailure -\u003e raise_last_resort. Kernel's arithmetic externs converted; arithmetic_result, checked_result_lane and LastResort::arithmetic_error deleted. drive_test pins re-measured (drops only). An interpolated message: gives a clear diagnostic.\n\nValidation is loud, one fixture per diagnostic: non-C ABI ('needs the C ABI'); a return that is not integer, float or boolean; a non-alias exception name; an interpolated message.\n\nFails before, passes after, on interp, run and build: a body maxint + 1 and rem(7, 0) raise ArithmeticError with Elixir's first line and exit 1; a user extern with raises: MyApp.DivisionByZero raises that exception; the step/r program has 15 native functions (25 before).\n\nUntested in the spike, test here: a float payload on AOT; a boolean payload (needs a runtime symbol returning {bool, bool}, or the boolean case is removed from validation if nothing uses it).\n\nDocs: .agent/docs/externs.md and the user guide for externs.\n\nAcceptance: full gate green; every pin edit is a drop or is in the page's must-change list.",
+  "id": "fz-rs7.1",
+  "labels": [],
+  "parent": "fz-rs7",
+  "priority": 2,
+  "status": "open",
+  "title": "Externs declare a failure with raises:, used in bodies",
+  "type": "task",
+  "updated_at": "2026-11-12T20:16:26Z"
+}
