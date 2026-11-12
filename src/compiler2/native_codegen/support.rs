@@ -100,7 +100,7 @@ pub(crate) const FALSE_BITS: i64 = FALSE_BITS_RAW as i64;
 // is safe.
 //
 // Reader prims model the reader as a 3-tuple `[bs_ptr, bit_len_int, pos_int]`
-// (heap-allocated via fz_alloc_struct). Each BitReadField allocates a fresh
+// (allocated by the runtime). Each BitReadField allocates a fresh
 // 3-tuple result `[ok, extracted, new_reader]` on success or 1-tuple
 // `[false]` on failure. Tuple schema_ids for arities 1 and 3 are registered
 // at compile() time when any bitstring prim is present.

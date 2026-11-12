@@ -625,14 +625,7 @@ fn list_reuse_or_cons_parts_updates_process_counters() {
 fn tuple_ref(process: &mut Process, schema_id: u32, fields: &[AnyValue]) -> AnyValueRef {
     let tuple = process.heap.alloc_struct(schema_id);
     for (index, field) in fields.iter().enumerate() {
-        let field = process.heap.box_any_value_ref(*field);
-        let object = AnyValueRef::from_heap_object(ValueKind::STRUCT, tuple as *const u8).expect("tuple object");
-        unsafe {
-            process
-                .heap
-                .write_struct_field_ref(object, (index * 8) as u32, field)
-                .expect("tuple field");
-        }
+        unsafe { process.heap.write_field_slot(tuple, (index * 8) as u32, *field) };
     }
     AnyValueRef::from_heap_object(ValueKind::STRUCT, tuple as *const u8).expect("tuple object")
 }

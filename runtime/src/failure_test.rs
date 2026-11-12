@@ -332,17 +332,10 @@ fn a_panic_reports_nothing_when_the_context_does_not_observe_raises() {
 fn pair(process: &mut Process, first: AnyValue, second: AnyValue) -> AnyValue {
     let schema = process.heap.register_schema(Schema::tuple_of_arity(2));
     let tuple = process.heap.alloc_struct(schema);
-    let object = AnyValueRef::from_heap_object(ValueKind::STRUCT, tuple as *const u8).expect("tuple object");
     for (index, field) in [first, second].into_iter().enumerate() {
-        let field = process.heap.box_any_value_ref(field);
-        unsafe {
-            process
-                .heap
-                .write_struct_field_ref(object, (index * 8) as u32, field)
-                .expect("tuple field");
-        }
+        unsafe { process.heap.write_field_slot(tuple, (index * 8) as u32, field) };
     }
-    AnyValue::from_ref(object).expect("tuple value")
+    AnyValue::heap_ptr(tuple, ValueKind::STRUCT)
 }
 
 /// Raise `value` through `raise` with a closure handler installed and return

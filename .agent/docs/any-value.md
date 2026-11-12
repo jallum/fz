@@ -383,6 +383,37 @@ holds, so the kind byte is not consulted. A field of any other type keeps the
 runtime call, which reads the kind byte to build the field's reference. For
 example, `p.y` on a `%Point{x: integer, y: integer}` is a mask and a load.
 
+### A struct or tuple is one allocation, stored in place
+
+`SlotLayout::of(fields)` is the layout of every struct and tuple: the header
+word, one 8-byte slot per field, then one kind byte per field, padded to a
+whole word. The runtime, the collector, static literals and compiled code all
+place a field by it.
+
+Compiled code builds one in `build_struct`. When every field is a constant
+the object is read-only program data. Otherwise `CodegenFn::alloc_struct`
+calls `fz_alloc_struct` with the schema and the layout's size, both constants,
+and gets back an object with only its header written. `CodegenFn::store_field`
+then stores each field:
+
+- A value whose kind the compiler holds (a raw integer, float or atom, a
+  comparison's answer, the empty list) is two stores in place: the raw word
+  at its slot and the kind at its kind byte.
+- A reference whose type is a tuple, a map or a binary
+  (`ty_is_addressed_object`) names its object by address, so it is also two
+  stores in place: the reference without its kind, and the kind the reference
+  carries.
+- Any other reference may be a list or a boxed scalar. It goes through
+  `fz_struct_store_ref`, one call that reads the reference, shares the spine
+  if it is a list, and writes the slot and kind byte at the offsets it is
+  handed.
+
+The payload is not zeroed first. Every slot and kind byte is written before
+the construction's next instruction, and the collector runs only between
+quanta (`end_quantum`), so nothing reads the object half built. The
+interpreter and the runtime's own tuples use `Heap::alloc_struct`, which does
+zero the payload, since their stores are not adjacent to the allocation.
+
 ### A map is a flat sorted array
 
 Every map has one entry per strict structural key, stored in comparator order.

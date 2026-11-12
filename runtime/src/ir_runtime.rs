@@ -2088,14 +2088,39 @@ pub extern "C" fn fz_list_reuse_or_cons_parts(
     result.raw_word()
 }
 
-/// Allocate a heap-typed Struct. `schema_id` must already be registered in
-/// the current Process's heap SchemaRegistry (shared with CompiledModule).
-/// Returns a Struct ref word. Caller is
-/// responsible for writing field values into payload slots after allocation.
+/// Allocate a struct or tuple of `size` bytes for `schema_id` and answer its
+/// reference. Only the header is written: compiled code stores every slot and
+/// kind byte next, in place, before anything can read the object.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_struct(process: *mut Process, schema_id: u32) -> u64 {
-    let p = (unsafe { &mut *process }).heap.alloc_struct(schema_id);
+pub extern "C" fn fz_alloc_struct(process: *mut Process, schema_id: u32, size: u32) -> u64 {
+    let p = (unsafe { &mut *process })
+        .heap
+        .alloc_struct_unwritten(schema_id, size as usize);
     heap_ref_word(ValueKind::STRUCT, p)
+}
+
+/// Store a value held as a reference into a struct under construction, at
+/// its field's raw and kind offsets. Compiled code stores a value whose kind
+/// it knows in place; this is the store for one it does not, or for a list,
+/// which the store shares.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_struct_store_ref(
+    process: *mut Process,
+    struct_ref_word: u64,
+    slot_offset: u32,
+    kind_offset: u32,
+    value_ref_word: u64,
+) {
+    let object = any_value_ref_from_word(struct_ref_word, "fz_struct_store_ref object")
+        .struct_addr()
+        .expect("fz_struct_store_ref object");
+    let value = any_value_ref_from_word(value_ref_word, "fz_struct_store_ref value");
+    unsafe {
+        (&mut *process)
+            .heap
+            .store_struct_field_ref(object, slot_offset as usize, kind_offset as usize, value)
+    }
+    .expect("fz_struct_store_ref");
 }
 
 #[unsafe(no_mangle)]
@@ -2125,62 +2150,6 @@ pub extern "C" fn fz_struct_get_named_field_ref(process: *mut Process, value_ref
 pub extern "C" fn fz_struct_module(process: *mut Process, value_ref_word: u64) -> u64 {
     let key = unsafe { &*process }.node.intern_atom(STRUCT_MODULE_FIELD);
     fz_map_get_atom_key_ref(process, value_ref_word, key as u64)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_struct_set_field_ref(
-    process: *mut Process,
-    struct_ref_word: u64,
-    field_offset: u32,
-    value_ref_word: u64,
-) {
-    let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_ref object");
-    let value = any_value_ref_from_word(value_ref_word, "fz_struct_set_field_ref value");
-    unsafe { (&mut *process).heap.write_struct_field_ref(object, field_offset, value) }
-        .expect("fz_struct_set_field_ref");
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_struct_set_field_int(process: *mut Process, struct_ref_word: u64, field_offset: u32, value: i64) {
-    let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_int object");
-    let obj = object.struct_addr().expect("fz_struct_set_field_int object");
-    unsafe {
-        (&mut *process)
-            .heap
-            .write_field_slot(obj, field_offset, AnyValue::int(value))
-    };
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_struct_set_field_float(
-    process: *mut Process,
-    struct_ref_word: u64,
-    field_offset: u32,
-    value: f64,
-) {
-    let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_float object");
-    let obj = object.struct_addr().expect("fz_struct_set_field_float object");
-    unsafe {
-        (&mut *process)
-            .heap
-            .write_field_slot(obj, field_offset, AnyValue::float(value))
-    };
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_struct_set_field_atom(
-    process: *mut Process,
-    struct_ref_word: u64,
-    field_offset: u32,
-    atom_id: u64,
-) {
-    let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_atom object");
-    let obj = object.struct_addr().expect("fz_struct_set_field_atom object");
-    unsafe {
-        (&mut *process)
-            .heap
-            .write_field_slot(obj, field_offset, AnyValue::atom(atom_id as u32))
-    };
 }
 
 #[unsafe(no_mangle)]

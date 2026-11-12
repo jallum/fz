@@ -15,14 +15,12 @@ use cranelift_codegen::ir::{
 };
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
-use fz_runtime::any_value::{
-    AnyValue, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind, struct_header_word, struct_size_for_payload,
-};
+use fz_runtime::any_value::{AnyValue, FALSE_ATOM_ID, SlotLayout, TRUE_ATOM_ID, ValueKind, struct_header_word};
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::{
-    fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_alloc_struct, fz_bs_begin, fz_bs_field_spec,
-    fz_bs_finalize, fz_bs_read_field_ref, fz_bs_reader_done_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref, fz_fmod,
+    fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_bs_begin, fz_bs_field_spec, fz_bs_finalize,
+    fz_bs_read_field_ref, fz_bs_reader_done_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref, fz_fmod,
     fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
     fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_put_parts, fz_map_dest_put_ref, fz_map_get_atom_key_ref,
     fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_matcher_map_get_ref,
@@ -194,19 +192,14 @@ fn define_static_struct_literal<M: cranelift_module::Module>(
     schema_id: u32,
     fields: &[StaticLiteralField],
 ) -> Result<DataId, CodegenError> {
-    let raw_bytes = fields.len() * SLOT_BYTES as usize;
-    let kind_bytes = (fields.len() + 7) & !7;
-    let payload_size = raw_bytes + kind_bytes;
-    let total_size = struct_size_for_payload(payload_size);
-    let mut buf = vec![0u8; total_size];
+    let layout = SlotLayout::of(fields.len());
+    let mut buf = vec![0u8; layout.size()];
     buf[0..8].copy_from_slice(&struct_header_word(schema_id).to_le_bytes());
 
     let mut child_relocs = Vec::new();
-    let raw_base = 8;
-    let kind_base = raw_base + raw_bytes;
     for (idx, field) in fields.iter().enumerate() {
-        let raw_offset = raw_base + idx * SLOT_BYTES as usize;
-        let kind_offset = kind_base + idx;
+        let raw_offset = SlotLayout::slot_offset(idx);
+        let kind_offset = layout.kind_offset(idx);
         match *field {
             StaticLiteralField::Scalar(value) => {
                 buf[raw_offset..raw_offset + SLOT_BYTES as usize].copy_from_slice(&value.raw().to_le_bytes());
@@ -244,10 +237,26 @@ fn static_struct_ref_word<M: cranelift_module::Module>(
     ref_word
 }
 
-fn alloc_struct_for_schema<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, schema_id: u32) -> ir::Value {
-    let sid = body.b.ins().iconst(types::I32, schema_id as i64);
-    let process = body.process_arg();
-    runtime_call1!(body, fz_alloc_struct, [process, sid])
+/// A struct or tuple of `fields`: read-only program data when every field is
+/// a constant, otherwise one allocation with each field stored in place.
+fn build_struct<M: cranelift_module::Module, T: Types<Ty = Ty>>(
+    body: &mut CodegenFn<'_, '_, M>,
+    t: &mut T,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    dest_var: Var,
+    schema_id: u32,
+    fields: &[Var],
+) -> Result<LowerOut, CodegenError> {
+    if let Some(static_ref) = try_static_struct_literal(body, env, var_env, dest_var, schema_id, fields)? {
+        return Ok(LowerOut::ValueRefWord(static_ref));
+    }
+    let object = body.alloc_struct(schema_id, fields.len());
+    for (index, field) in fields.iter().enumerate() {
+        let addressed_object = ty_is_addressed_object(t, env.active_value_types(), *field);
+        body.store_field(&object, index, binding_for_var(var_env, field.0), addressed_object);
+    }
+    Ok(LowerOut::ValueRef(object.reference))
 }
 
 /// Lower collection-typed Prim variants (List, Tuple, AllocStruct, Bitstring,
@@ -310,15 +319,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                     arity
                 ))
             })?;
-            if let Some(static_ref) = try_static_struct_literal(body, env, var_env, dest_var, schema_id, elems)? {
-                return Ok(LowerOut::ValueRefWord(static_ref));
-            }
-            let p = alloc_struct_for_schema(body, schema_id);
-            for (i, e) in elems.iter().enumerate() {
-                let value = binding_for_var(var_env, e.0);
-                body.struct_set_field(p, i, value);
-            }
-            LowerOut::ValueRef(p)
+            build_struct(body, t, env, var_env, dest_var, schema_id, elems)?
         }
         Prim::MakeStruct { module, fields } => {
             let schema_id = *env.named_schema_ids.get(module).ok_or_else(|| {
@@ -328,15 +329,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 ))
             })?;
             let field_vars = fields.iter().map(|(_, field_var)| *field_var).collect::<Vec<_>>();
-            if let Some(static_ref) = try_static_struct_literal(body, env, var_env, dest_var, schema_id, &field_vars)? {
-                return Ok(LowerOut::ValueRefWord(static_ref));
-            }
-            let p = alloc_struct_for_schema(body, schema_id);
-            for (i, (_, field_var)) in fields.iter().enumerate() {
-                let value = binding_for_var(var_env, field_var.0);
-                body.struct_set_field(p, i, value);
-            }
-            LowerOut::ValueRef(p)
+            build_struct(body, t, env, var_env, dest_var, schema_id, &field_vars)?
         }
         Prim::TupleField(c, idx) => {
             // Every TupleField is gated by a preceding runtime type-test predicate
