@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T23:55:11Z",
+  "description": "phi_tuple(t: \u0026[Descr], n: \u0026[Vec\u003cDescr\u003e]) only reads its negations, but its callers must build owned rows: src/compiler2/types/emptiness.rs:38 clones every negated tuple coordinate, :28 clones the positive row, src/compiler2/types/axis.rs:865 clones every sibling rect per (index, coord). cx.descr() returns a borrow from a read-only TyCtx, so nothing conflicts.\nAlso in emptiness.rs: :70 t.to_vec() per branch though only coordinates 0..=i change; :316 filtered_negs cloned to iterate; :324 cx.descr(\u0026negj.ret).clone() used only as a diff operand; :229 arrow_input rebuilt inside the 1\u003c\u003cn_pos mask loop of func_clause_empty.\nShape: negations as borrowed rows; the positive row borrows until a coordinate is actually intersected or diffed. The t / t_split copies are functional updates, so judge those on simplicity; the negation and cover copies are pure signature appeasement.\nHeat: the innermost recursion of is_empty_memo, per tuple clause.\n\nMethod: .agent/strategies/ownership-shape.md. Change the signature and let cargo check enumerate dependents; resolve interleavings by compute-then-commit or a split borrow; stop and report if an Rc is the only move.\nSignal: pure refactor. Full gate green; no golden, census or pin moves. Report the clone/to_vec count of each touched file before and after.\nSites were read at develop 8bf8775ae and not compiled; confirm each with cargo check before relying on it.",
+  "id": "fz-gfx.16",
+  "labels": [],
+  "parent": "fz-gfx",
+  "priority": 2,
+  "status": "open",
+  "title": "Tuple emptiness reads descriptors where they live",
+  "type": "task",
+  "updated_at": "2026-11-12T23:55:11Z"
+}
