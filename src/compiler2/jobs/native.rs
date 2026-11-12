@@ -166,7 +166,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 match members.as_ref() {
                     [] => None,
                     [member] if member.target_return.diverges => None,
-                    [member] => member.target_return.layout.reprs.first().copied(),
+                    // The host binds the wrapper, so the halt kind is the lane the
+                    // wrapper hands back, not the lane its member returns behind it.
+                    [_] => wrapper
+                        .return_form
+                        .return_reprs()
+                        .and_then(|reprs| reprs.first().copied()),
                     _ => {
                         return Err(incomplete_native_program(
                             telemetry,
@@ -370,7 +375,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             // A wrapper over members that all diverge never reaches a
             // return, so it declares no return lanes.
             boundary.return_form.return_reprs().unwrap_or_default().into_vec(),
-            None,
             EffectSummary::default(),
         );
         let mut param_tys = boundary.captures.iter().map(|capture| capture.ty).collect::<Vec<_>>();
@@ -648,7 +652,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     .expect("a wrapper reached through a returning member returns")
                     .into_vec()
             },
-            None,
             EffectSummary::default(),
         );
         let params = ctx.entry_params(&param_tys);
@@ -705,7 +708,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 .display_name(),
             index
         );
-        let (return_reprs, return_tuple_arity) = native_return_contract(self.world, &executable.abi.return_layout);
+        let return_reprs = executable.abi.return_layout.layout.reprs.to_vec();
         let mut ctx = NativeFnCtx::new(
             fn_id,
             &name,
@@ -715,7 +718,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             executable.abi.param_reprs.clone(),
             executable.abi.materialized.return_ty,
             return_reprs,
-            return_tuple_arity,
             executable.abi.effects,
         );
         let activation_inputs = executable.key.activation.inputs(self.world.types());
@@ -823,7 +825,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 .display_name(),
             index
         );
-        let (return_reprs, return_tuple_arity) = native_return_contract(self.world, &executable.abi.return_layout);
+        let return_reprs = executable.abi.return_layout.layout.reprs.to_vec();
         let mut ctx = NativeFnCtx::new(
             fn_id,
             &name,
@@ -833,7 +835,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             executable.abi.param_reprs.clone(),
             executable.abi.materialized.return_ty,
             return_reprs,
-            return_tuple_arity,
             executable.abi.effects,
         );
         let entry_tys = executable_input_tys(executable);
@@ -906,7 +907,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entry_fns: &mut EntryFns,
         clause: &BackendClause,
     ) -> Result<(), FatalError> {
-        let (return_reprs, return_tuple_arity) = native_return_contract(self.world, &executable.abi.return_layout);
+        let return_reprs = executable.abi.return_layout.layout.reprs.to_vec();
         let mut ctx = NativeFnCtx::new(
             fn_id,
             name,
@@ -916,7 +917,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             executable.abi.param_reprs.clone(),
             executable.abi.materialized.return_ty,
             return_reprs,
-            return_tuple_arity,
             executable.abi.effects,
         );
         let mut env = ValueEnv::default();
@@ -1004,7 +1004,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         };
         let (entry_tys, param_reprs, entry_abi) =
             self.entry_signature(executable, entry, entry.physical_captures.as_slice());
-        let (return_reprs, return_tuple_arity) = native_return_contract(self.world, &executable.abi.return_layout);
+        let return_reprs = executable.abi.return_layout.layout.reprs.to_vec();
         let mut ctx = NativeFnCtx::new(
             fn_id,
             &entry_name,
@@ -1016,7 +1016,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             param_reprs,
             executable.abi.materialized.return_ty,
             return_reprs,
-            return_tuple_arity,
             executable.abi.effects,
         );
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
@@ -2544,7 +2543,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             source_reprs,
             executable.abi.materialized.return_ty,
             ctx.return_reprs.clone(),
-            ctx.return_tuple_arity,
             executable.abi.effects,
         );
         let params = cont_ctx.entry_params(param_tys.as_slice());
@@ -2666,7 +2664,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             param_reprs,
             executable.abi.materialized.return_ty,
             ctx.return_reprs.clone(),
-            ctx.return_tuple_arity,
             executable.abi.effects,
         );
         let entry_vars = cont_ctx.entry_params(param_tys.as_slice());
@@ -4739,16 +4736,6 @@ impl ValueEnv {
     }
 }
 
-fn native_return_contract(
-    world: &World,
-    layout: &super::super::artifact::BackendReturnLayout,
-) -> (Vec<AbiValueRepr>, Option<usize>) {
-    (
-        layout.layout.reprs.to_vec(),
-        world.tuple_arity(layout.layout.structural),
-    )
-}
-
 fn native_block_param_reprs(
     world: &mut World,
     fn_ir: &crate::fz_ir::FnIr,
@@ -4843,7 +4830,6 @@ struct NativeFnCtx {
     param_reprs: Vec<AbiValueRepr>,
     return_ty: Ty,
     return_reprs: Vec<AbiValueRepr>,
-    return_tuple_arity: Option<usize>,
     effects: EffectSummary,
     next_token: u32,
     entry_blocks: HashMap<ControlEntryId, (BlockId, Vec<Var>)>,
@@ -4860,7 +4846,6 @@ impl NativeFnCtx {
         param_reprs: Vec<AbiValueRepr>,
         return_ty: Ty,
         return_reprs: Vec<AbiValueRepr>,
-        return_tuple_arity: Option<usize>,
         effects: EffectSummary,
     ) -> Self {
         let builder = FnBuilder::new(fn_id, name.to_string()).with_category(category);
@@ -4876,7 +4861,6 @@ impl NativeFnCtx {
             param_reprs,
             return_ty,
             return_reprs,
-            return_tuple_arity,
             effects,
             next_token: 0,
             entry_blocks: HashMap::new(),
@@ -4948,7 +4932,6 @@ impl NativeFnCtx {
             param_reprs: self.param_reprs,
             return_ty: self.return_ty,
             return_reprs: self.return_reprs,
-            return_tuple_arity: self.return_tuple_arity,
             block_param_reprs: HashMap::new(),
             value_types: self.value_types,
             extern_marshals: self.extern_marshals,

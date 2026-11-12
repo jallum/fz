@@ -1976,7 +1976,7 @@ fn produce_named_transport_position(
         RecipeLayout::Exact(layout) => layout,
         RecipeLayout::Cut(evidence) => cut_transport_layout(world, ty, &demand, &evidence),
     };
-    if extern_position_requires_value_ref(world, facts.extern_wire(), position, layout) {
+    if position_requires_value_ref(world, executable, facts.extern_wire(), position, layout) {
         layout = with_value_ref_carrier(world, ty, layout);
     }
     Some(PullOutcome::Produced(ProductValue::TransportShape(
@@ -1984,27 +1984,39 @@ fn produce_named_transport_position(
     )))
 }
 
-fn extern_position_requires_value_ref(
-    world: &World,
+/// Whether a position is a one-word boundary: the host (or foreign code) on
+/// the far side reads exactly one machine word there, so a composite value
+/// crossing it travels as a single boxed reference instead of unboxed lanes.
+///
+/// Two boundaries are one word wide:
+/// - an `any`-typed extern slot holding a tuple or callable;
+/// - the return of the root's entry executable when the host asks for its
+///   value, because the driver hands that one word to the halt continuation.
+///
+/// Scalars are already one word and stay unboxed at both.
+fn position_requires_value_ref(
+    world: &mut World,
+    executable: &ExecutableKey,
     extern_wire: Option<&super::super::body::LoweredExtern>,
     position: &TransportPosition,
     layout: TransportLayout,
 ) -> bool {
-    let Some(signature) = extern_wire else {
-        return false;
-    };
-    let composite = matches!(
-        world.shape(layout.structural),
-        ShapeDescr::Tuple(_) | ShapeDescr::Callable(_)
-    );
+    let is_tuple = matches!(world.shape(layout.structural), ShapeDescr::Tuple(_));
+    let composite = is_tuple || matches!(world.shape(layout.structural), ShapeDescr::Callable(_));
     match position {
-        TransportPosition::ExecutableInput { semantic_index, .. } => signature
-            .params
-            .get(*semantic_index)
+        TransportPosition::ExecutableInput { semantic_index, .. } => extern_wire
+            .and_then(|signature| signature.params.get(*semantic_index))
             .is_some_and(|param| *param == crate::fz_ir::ExternTy::Any && composite),
-        TransportPosition::ExecutableReturn { .. } => signature.ret == crate::fz_ir::ExternTy::Any && composite,
+        TransportPosition::ExecutableReturn { .. } => {
+            extern_wire.is_some_and(|signature| signature.ret == crate::fz_ir::ExternTy::Any && composite)
+                || (is_tuple && is_root_value_entry(world, executable))
+        }
         _ => false,
     }
+}
+
+fn is_root_value_entry(world: &mut World, executable: &ExecutableKey) -> bool {
+    executable.need == ExecutableNeed::Value && *executable == world.root_entry_executable(executable.activation.root)
 }
 
 fn with_value_ref_carrier(world: &mut World, ty: Ty, mut layout: TransportLayout) -> TransportLayout {

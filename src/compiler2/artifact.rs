@@ -747,7 +747,6 @@ fn native_body_facts_equal(left: &NativeBody, right: &NativeBody, left_ir: &IrFn
         && left.param_reprs == right.param_reprs
         && left.return_ty == right.return_ty
         && left.return_reprs == right.return_reprs
-        && left.return_tuple_arity == right.return_tuple_arity
         && left.block_param_reprs == right.block_param_reprs
         && native_value_types_equal(left, right, left_ir, right_ir)
         && left.extern_marshals == right.extern_marshals
@@ -973,7 +972,6 @@ pub(crate) struct NativeBody {
     pub param_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
     pub return_reprs: Vec<AbiValueRepr>,
-    pub return_tuple_arity: Option<usize>,
     pub block_param_reprs: HashMap<Var, AbiValueRepr>,
     /// Final per-value types after Compiler2 lowering into CPS/native form.
     pub value_types: HashMap<Var, Ty>,

@@ -124,7 +124,6 @@ fn nested_callable_adapter_preserves_the_source_lane_type_and_repr() {
         vec![AbiValueRepr::RawInt],
         int,
         vec![AbiValueRepr::RawInt],
-        None,
         EffectSummary::default(),
     );
     let params = ctx.entry_params(&[int]);
@@ -353,7 +352,6 @@ fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
         Vec::new(),
         int,
         vec![AbiValueRepr::ValueRef],
-        None,
         EffectSummary::default(),
     );
     let params = ctx.entry_params(&[int, int, int]);

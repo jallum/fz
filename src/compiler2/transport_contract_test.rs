@@ -321,6 +321,107 @@ def main(), do: inc(1.0)
     );
 }
 
+/// The host reads exactly one word from the root, so a Value root returning a
+/// tuple publishes one boxed lane while keeping the tuple's structural shape.
+#[test]
+fn compiler2_transport_value_root_returning_a_wide_tuple_returns_one_boxed_lane() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("transport_root_wide_tuple.fz".to_string()),
+        "def main(), do: {1, 2, 3, 4, 5, 6}\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let main = executable_for(&world, &driver.session(), "main", 0);
+    let layout = &retained_executable(&program, &main).abi.return_layout.layout;
+    assert_eq!(layout.reprs.as_ref(), &[AbiValueRepr::ValueRef]);
+    assert_eq!(world.tuple_arity(layout.structural), Some(6));
+}
+
+/// A tail call to a tuple-returning function is still the root's return, so it
+/// delivers one word as well.
+#[test]
+fn compiler2_transport_value_root_tail_calling_a_wide_tuple_returns_one_boxed_lane() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("transport_root_wide_tuple_tail.fz".to_string()),
+        "def f(), do: {1, 2, 3, 4, 5, 6}\ndef main(), do: f()\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let session = driver.session();
+    let main = executable_for(&world, &session, "main", 0);
+    assert_eq!(
+        retained_executable(&program, &main)
+            .abi
+            .return_layout
+            .layout
+            .reprs
+            .as_ref(),
+        &[AbiValueRepr::ValueRef]
+    );
+    let f = executable_for(&world, &session, "f", 0);
+    assert_eq!(
+        retained_executable(&program, &f)
+            .abi
+            .return_layout
+            .layout
+            .reprs
+            .as_ref(),
+        &[AbiValueRepr::RawInt; 6],
+        "only the root is a one-word boundary; f keeps its unboxed lanes"
+    );
+}
+
+/// A scalar is already one word, so a Value root returning one stays unboxed.
+#[test]
+fn compiler2_transport_value_root_returning_a_scalar_stays_unboxed() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("transport_root_scalar.fz".to_string()),
+        "def main(), do: 42\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let main = executable_for(&world, &driver.session(), "main", 0);
+    assert_eq!(
+        retained_executable(&program, &main)
+            .abi
+            .return_layout
+            .layout
+            .reprs
+            .as_ref(),
+        &[AbiValueRepr::RawInt]
+    );
+}
+
+/// A root that asks for its tuple's fields is read structurally by the test
+/// that submits it; it is not the host's one-word boundary.
+#[test]
+fn compiler2_transport_tuple_fields_root_keeps_its_unboxed_lanes() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("transport_root_tuple_fields.fz".to_string()),
+        "def main(), do: {1, 2}\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let main = executable_for(&world, &driver.session(), "main", 0);
+    assert_eq!(
+        retained_executable(&program, &main)
+            .abi
+            .return_layout
+            .layout
+            .reprs
+            .as_ref(),
+        &[AbiValueRepr::RawInt, AbiValueRepr::RawInt]
+    );
+}
+
 #[test]
 fn compiler2_transport_shapes_retain_named_child_product_dependencies() {
     let tel = ConfiguredTelemetry::new();

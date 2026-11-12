@@ -841,11 +841,16 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
             crate::compiler2::NativeEntryAbi::Direct => None,
         })
         .collect::<HashSet<_>>();
-    let fn_halt_kinds = program
+    let entry_body = program
         .bodies
         .iter()
-        .map(|body| (body.fn_id.0, native_return_halt_repr(body).halt_kind()))
-        .collect();
+        .find(|body| body.fn_id == program.entry)
+        .expect("the program entry must have a native body");
+    let entry_name = &program.module.fn_by_id(entry_body.fn_id).name;
+    let fn_halt_kinds = HashMap::from([(
+        entry_body.fn_id.0,
+        native_return_halt_repr(entry_body, entry_name, return_diverges[entry_body.fn_id.0 as usize])?.halt_kind(),
+    )]);
 
     Ok(NativeCodegenSurface {
         module: &program.module,

@@ -388,6 +388,11 @@ recognize them by the literal bit every reference to one carries (see
 never written. A write to one faults. They are not heap allocations, so they never appear in
 heap alloc stats.
 
+A halt continuation is declared `(value, self)`: it takes one word. The kind
+comes from the one lane the bound body returns, which is why the root's return is
+a one-word boundary (see [`externs`](externs.md), "One-word boundaries") and why
+binding a root that returns any other number of lanes is a codegen error.
+
 ## What the scheduler owns vs. what closures carry
 
 The scheduler's entire vocabulary:

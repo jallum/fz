@@ -113,7 +113,6 @@ fn inventory_fixture(count: u32) -> NativeProgram {
             param_reprs: Vec::new(),
             return_ty: ty,
             return_reprs: Vec::new(),
-            return_tuple_arity: None,
             block_param_reprs: HashMap::new(),
             value_types: HashMap::new(),
             extern_marshals: HashMap::new(),
