@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:15:49Z",
+  "description": "The kept-leaf test in convergence_class_at (src/compiler2/types/mod.rs, about line 1610) reads has_open_vars.\n\nFails before, passes after: a_kept_key_leaf_holding_a_closure_stays_the_ground_type (types_test); fixture 01083, Enum.map over a closure list next to one over a tagged mixed list (with tickets 1 and 2 only, the compiler stops with 'missing semantic result type') on three paths.\n\nAcceptance: full gate green (the spike measured 4977 passed, 0 failed); no pin changes. After this the page's prediction table matches Elixir byte for byte on interp, run and build.",
+  "id": "fz-348.3",
+  "labels": [],
+  "parent": "fz-348",
+  "priority": 2,
+  "status": "open",
+  "title": "A kept key leaf that holds a closure stays the ground type",
+  "type": "task",
+  "updated_at": "2026-11-12T20:15:49Z"
+}
