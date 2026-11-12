@@ -1904,7 +1904,7 @@ fn lower_extern_pair_call<M: cranelift_module::Module>(
     eid: &ExternId,
     args: &[ExternArg],
 ) -> Result<Vec<CodegenValue>, CodegenError> {
-    let crate::fz_ir::ExternReturn::Pair(fields) = decl.ret else {
+    let Some(fields) = decl.ret.pair_fields() else {
         return Err(CodegenError::new(format!(
             "extern `{}` reached pair lowering with scalar result {:?}",
             decl.symbol, decl.ret

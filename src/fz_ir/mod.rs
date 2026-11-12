@@ -276,10 +276,15 @@ pub enum ExternTy {
 /// Arguments stay scalar in the v1 contract. A C return may additionally be
 /// one exact two-field scalar struct; keeping that structure here prevents a
 /// semantic tuple from being mistaken for one opaque `Any` word.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExternReturn {
     Scalar(ExternTy),
     Pair([ExternTy; 2]),
+    /// A value, or the failure of the operation that computes it, declared
+    /// with `raises:`. The physical return is the pair `{value, failed}`; the
+    /// semantic result is the value. A body raises `LastResort`; a guard fails
+    /// its clause.
+    Checked(ExternTy, crate::dispatch_matrix::pattern::LastResort),
 }
 
 impl ExternReturn {
@@ -287,10 +292,19 @@ impl ExternReturn {
         Self::Scalar(ty)
     }
 
-    pub fn scalar_ty(self) -> Option<ExternTy> {
+    pub fn scalar_ty(&self) -> Option<ExternTy> {
         match self {
-            Self::Scalar(ty) => Some(ty),
-            Self::Pair(_) => None,
+            Self::Scalar(ty) => Some(*ty),
+            Self::Pair(_) | Self::Checked(..) => None,
+        }
+    }
+
+    /// The two physical return registers, when the return is a pair.
+    pub fn pair_fields(&self) -> Option<[ExternTy; 2]> {
+        match self {
+            Self::Pair(fields) => Some(*fields),
+            Self::Checked(ty, _) => Some([*ty, ExternTy::Bool]),
+            Self::Scalar(_) => None,
         }
     }
 }

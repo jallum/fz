@@ -1,0 +1,11 @@
+#---
+# purpose: "Kernel's + and rem each compile to one native function that branches to the raise, with no result decoder or continuation after the extern call"
+# oracle: 01088_a_sum_and_a_remainder_each_compile_to_one_native_function.oracle.exs
+#---
+def step(x, y), do: x + y
+def r(x, y), do: rem(x, y)
+
+def main() do
+  dbg(step(1, 2))
+  dbg(r(7, 2))
+end

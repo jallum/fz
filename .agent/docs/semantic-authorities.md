@@ -122,9 +122,12 @@ ordinary FFI path, and both arithmetic and comparison exports remain ordinary
 calls in native code too.
 
 Fallible arithmetic returns an unboxed `{result, boolean}` C scalar pair.
-The runtime returns initialized values and a canonical status word; Kernel's
-sole `arithmetic_error/0` helper raises `ArithmeticError`
-(`bad argument in arithmetic expression`). Numeric comparisons — ordering, equality and identity alike — are raw
+The runtime returns initialized values and a canonical status word; each
+Kernel declaration names the number it yields and declares `raises:
+ArithmeticError, message: "bad argument in arithmetic expression"`, so the
+extern wrapper raises that exception itself (see [externs](externs.md)).
+Kernel's `arithmetic_error/0` raises the same exception for an operand that is
+not a number. Numeric comparisons — ordering, equality and identity alike — are raw
 `extern "C"` calls on unboxed integer and float lanes. Binary and
 general-value comparisons use the ref-carrying `fz` ABI instead, so they
 retain process/schema context rather than pretending a C byte pointer has a

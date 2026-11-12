@@ -1,0 +1,1 @@
+`raises:` names an exception module such as `ArithmeticError`, got the atom `:badarith`

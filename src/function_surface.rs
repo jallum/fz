@@ -42,8 +42,18 @@ pub struct FunctionSurface {
     pub extern_ret_tokens: TypeExprBody,
     pub extern_constraints: Vec<(String, TypeExprBody)>,
     pub variadic: bool,
+    /// What the extern's `raises:` tail declares, when its result can fail.
+    pub extern_raises: Option<ExternRaises>,
     pub attrs: Vec<Attribute>,
     pub span: Span,
+}
+
+/// The failure an extern declares: the exception a body raises, as written
+/// (an alias, resolved in the extern's own module), and the message it carries.
+#[derive(Debug, Clone)]
+pub struct ExternRaises {
+    pub exception: crate::modules::identity::ModuleName,
+    pub message: String,
 }
 
 impl FunctionSurface {

@@ -267,7 +267,8 @@ fn enum_take_derives_input_demand_proportionally() {
         // An activation key names only the literals a use can tell apart, so
         // Kernel's arithmetic and compare cone derives its input demand once
         // per program: (45, 146, 6) -> (76, 247, 8).
-        (76, 247, 8)
+        // (76, 247, 8) -> (75, 244, 8): no result-decoding function derives input demand.
+        (75, 244, 8)
     );
 }
 

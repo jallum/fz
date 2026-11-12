@@ -10,18 +10,19 @@ use crate::ast::Attribute;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
+use crate::dispatch_matrix::pattern::LastResort;
 use crate::extern_contract::{
     ExternContractError, explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty,
     variadic_tail_domain,
 };
 use crate::function_surface::FunctionSurface;
-use crate::fz_ir::ExternAbi;
+use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 
 use super::super::body::LoweredExtern;
 use super::super::code::SourceOwner;
 use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, JobEffects, current_uses};
-use super::super::identity::FunctionId;
+use super::super::identity::{FunctionId, FunctionSource};
 use super::super::scheduler::FatalError;
 use super::super::world::World;
 
@@ -117,7 +118,7 @@ pub(super) fn derive_function_contract(
         FunctionContract::from_resolved(world.types_mut(), contract)
     };
     let contract = if surface.extern_abi.is_some() {
-        let wire = resolve_extern_wire(world, tel, source.owner, &surface, &contract)?;
+        let wire = resolve_extern_wire(world, tel, &source, &surface, &contract)?;
         contract.with_extern_wire(wire)
     } else {
         contract
@@ -209,13 +210,13 @@ fn extern_abi_error(tel: &impl crate::telemetry::Telemetry, surface: &FunctionSu
 fn resolve_extern_wire(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
-    owner: SourceOwner,
+    source: &FunctionSource,
     surface: &FunctionSurface,
     contract: &FunctionContract,
 ) -> Result<LoweredExtern, FatalError> {
     // Checked first: it is the cheapest question, and a wrong answer makes
     // every later one moot.
-    let abi = resolve_extern_abi(tel, world, owner, surface)?;
+    let abi = resolve_extern_abi(tel, world, source.owner, surface)?;
     // A refused contract (a wire spelling with no register of its own inside
     // a tuple, say) already reported its own diagnostic in the specs loop
     // above, and leaves this contract with no arrow. There is nothing here
@@ -245,6 +246,11 @@ fn resolve_extern_wire(
         abi,
     )
     .map_err(|message| extern_abi_error(tel, surface, format!("`{}`: {message}", surface.name)))?;
+    let ret = match extern_failure(world, tel, source, surface)? {
+        Some(failure) => checked_return(ret, abi, failure)
+            .map_err(|message| extern_abi_error(tel, surface, format!("`{}`: {message}", surface.name)))?,
+        None => ret,
+    };
     let symbol = extern_symbol_from_name(&surface.name);
     Ok(LoweredExtern {
         abi,
@@ -253,6 +259,49 @@ fn resolve_extern_wire(
         variadic: surface.variadic,
         ret,
     })
+}
+
+/// What the extern's `raises:` declares, with the exception resolved the way
+/// a body resolves the same alias.
+fn extern_failure(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    source: &FunctionSource,
+    surface: &FunctionSurface,
+) -> Result<Option<LastResort>, FatalError> {
+    let Some(raises) = &surface.extern_raises else {
+        return Ok(None);
+    };
+    let Some(exception) = world.module_alias_atom(source.owner_module, source.namespace, &raises.exception) else {
+        return Err(extern_abi_error(
+            tel,
+            surface,
+            format!(
+                "`{}` raises `{}`, which names no module in scope",
+                surface.name, raises.exception
+            ),
+        ));
+    };
+    Ok(Some(LastResort::declared(exception, raises.message.clone())))
+}
+
+/// The return of an extern that declares `raises:`. A failure travels as the
+/// `{value, failed}` pair only a C function returns, and the value is an
+/// integer or a float.
+pub(super) fn checked_return(wire: ExternReturn, abi: ExternAbi, failure: LastResort) -> Result<ExternReturn, String> {
+    if abi != ExternAbi::C {
+        return Err(
+            "`raises:` needs the `C` ABI: only a C function returns the value-and-flag pair a failure travels in"
+                .to_string(),
+        );
+    }
+    match wire {
+        ExternReturn::Scalar(lane @ (ExternTy::I64 | ExternTy::F64)) => Ok(ExternReturn::Checked(lane, failure)),
+        _ => Err(
+            "`raises:` needs the result declared `integer` or `float`, the payloads of the value-and-flag pair a failure travels in"
+                .to_string(),
+        ),
+    }
 }
 
 fn extern_wire_ty(
@@ -370,3 +419,7 @@ fn publish_contract(
 fn emit_job_diagnostic(tel: &impl crate::telemetry::Telemetry, diagnostic: Diagnostic) {
     emit_through(tel, &[diagnostic]);
 }
+
+#[cfg(test)]
+#[path = "contract_test.rs"]
+mod contract_test;

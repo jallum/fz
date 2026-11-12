@@ -1,0 +1,1 @@
+`message:` takes a literal string, and this one interpolates: an exception message is fixed text in the declaration

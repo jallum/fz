@@ -182,7 +182,9 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // fz-sc8.37: 229 -> 239. Kernel defines `&&`, `||` and `!` as macros.
 // 239 -> 259: literal-argument calls are no longer self-keyed, so Kernel's
 // arithmetic and compare cone derives its input demand once per program.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 259;
+// 259 -> 204: Kernel's operators call their declared-failure extern wrappers
+// directly, so no result-decoding function is defined, analyzed or lowered.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 204;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {
@@ -3572,7 +3574,7 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
     let no_dump_job_fires = no_dump_jobs.total_stops();
     assert_eq!(
         no_dump_job_fires, EXPECTED_00181_NO_DUMP_JOB_STARTS,
-        "product no-dump interp must retain only the intentional ordinary arithmetic-helper work; got {no_dump_job_fires}"
+        "product no-dump interp must retain only the ordinary arithmetic-wrapper work; got {no_dump_job_fires}"
     );
 
     let mut world = World::new();

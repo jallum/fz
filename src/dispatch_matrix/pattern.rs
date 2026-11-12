@@ -316,7 +316,7 @@ impl GuardExtern {
         }
         let ExternReturn::Scalar(ret) = ret else {
             return Err(refuse(
-                "a pair return is neither an integer nor a reference word".to_string(),
+                "a pair return or a declared failure is neither an integer nor a reference word".to_string(),
             ));
         };
         if !matches!(ret, ExternTy::I64 | ExternTy::Any | ExternTy::Never) {

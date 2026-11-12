@@ -329,6 +329,51 @@ default call convention is authoritative. Larger/nested aggregates and
 aggregate arguments are rejected at the shared extern boundary, as is a field
 that is not one of those three wire types.
 
+### A declared failure
+
+An `extern "C"` whose C function can fail carries the failure beside its
+result type, in a keyword tail on the declaration:
+
+```fz
+extern "C" defp fz_op_rem_ii(integer, integer) :: integer,
+  raises: ArithmeticError,
+  message: "bad argument in arithmetic expression"
+```
+
+The declared result is the plain `integer` or `float`. The C function returns
+the `{value, failed}` scalar pair, `failed` being a canonical 0 or 1 word, and
+the pair is physical only: no fz tuple is built.
+
+- `parse_extern_raises` (`src/compiler2/frontdoor.rs`) reads the tail. `message:`
+  is required, because an exception carries no default message, and it is a
+  literal string: an interpolated one is refused. The exception is a module
+  alias, and `raises:` is the only option the tail takes. The parts ride the
+  quoted extern map as `raises` and `message`, and `decode_extern_fn` carries
+  them on `FunctionSurface::extern_raises` as `ExternRaises`.
+- `derive_function_contract` resolves the alias with `World::module_alias_atom`,
+  the call a body makes for `raise(KeyError, ...)`, so alias and import scope
+  apply alike, and builds `LastResort::declared`. `checked_return` then makes
+  the contract's return `ExternReturn::Checked(lane, LastResort)`. It refuses
+  a non-`C` ABI and any result other than `integer` or `float`. Like the other
+  ABI checks it runs for an extern that is called, and for an `extern "fz"` in
+  user code the ABI reservation above is reported first.
+- The native wrapper (`lower_extern_executable`) branches on the `failed` lane:
+  the failing edge is `Term::Raise` with the declared atom and message, the
+  edge every decision's last resort already ends in, and the other edge returns
+  the value. The atom is interned by `collect_executable_atoms`. A caller
+  therefore tail-calls the wrapper; no continuation or decoder stands between it
+  and the C symbol.
+- The interpreter reads the same pair and answers `ExternCallValue::CheckedFailure`,
+  which `continue_after_extern` hands to `raise_last_resort`, the function a
+  decision's failure calls.
+- A guard cannot call such an extern: `GuardExtern::new` refuses the return.
+
+Kernel's arithmetic externs (`+ - * / % div rem`, `negate`, over integer and
+float operands) are declared this way, so a failed operation, an overflow or a
+zero divisor, raises `ArithmeticError` with Elixir's message. A user declaration
+names any exception: `raises: MyApp.DivisionByZero` raises that module's atom,
+`Elixir.MyApp.DivisionByZero`, from a declaration of the same symbol.
+
 Compiler2 maps each declared `extern_params` name to its `ExternTy` (an unknown
 name defaults to `Any`) and lowers the declared return to `ret` plus the
 fz-visible return type.

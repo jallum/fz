@@ -139,6 +139,38 @@ word.</p>
 caller ignores one field. Larger or nested aggregate results and aggregate
 arguments are not yet supported.</p>
 
+<h3>A result that can fail</h3>
+
+<p>Some C functions can have no result: a division by zero, an overflow. Such
+a function returns the pair <code>{value, failed}</code>, and the declaration
+says what a failure means by adding <code>raises:</code> and
+<code>message:</code> after the result type:</p>
+
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">fz_op_div_ii</span>(<span class="ty">integer</span>, <span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span>,
+  raises: <span class="ty">MyApp.DivisionByZero</span>,
+  message: <span class="str">"cannot divide by zero"</span>
+
+<span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
+  <span class="fn">dbg</span>(<span class="fn">fz_op_div_ii</span>(<span class="num">7</span>, <span class="num">2</span>))   <span class="com"># 3</span>
+  <span class="fn">dbg</span>(<span class="fn">fz_op_div_ii</span>(<span class="num">7</span>, <span class="num">0</span>))   <span class="com"># ** (MyApp.DivisionByZero) cannot divide by zero</span>
+<span class="kw">end</span></pre>
+
+<p>The result you declare is the plain <code>integer</code> or
+<code>float</code>; the <code>failed</code> flag never reaches your code. When the
+C function reports a failure, the call raises the named exception with the
+message. Kernel's arithmetic is declared this way, with
+<code>raises: ArithmeticError</code>.</p>
+
+<ul>
+  <li><code>message:</code> is required and is a literal string; an
+      interpolated one is refused.</li>
+  <li>The exception is a module name such as <code>ArithmeticError</code>.</li>
+  <li>The extern must use the <code>"C"</code> ABI, and the result must be
+      <code>integer</code> or <code>float</code>.</li>
+  <li>The C function returns a struct of the value and a 64-bit
+      <code>failed</code> word that is 0 or 1.</li>
+</ul>
+
 <p><code>c_int</code>, <code>c_string</code> and <code>unit</code> name a machine
 lane rather than an fz type, and a lane is a whole register, so they stand only
 as a whole parameter or result. A field of a pair has no register of its own,
@@ -525,7 +557,8 @@ prototype in the C header.
 <li><strong>Guards can call externs, with two classes only.</strong> A guard
       may call an extern whose parameters are integers or reference words and
       whose return is an integer, a reference word or <code>never</code>. Any
-      other class is a compile error. Guard functions such as
+      other class, including a result that declares <code>raises:</code>, is a
+      compile error. Guard functions such as
       <code>map_size/1</code> and <code>elem/2</code> are Kernel functions that
       check their domain before calling such an extern.</li>
   <li><strong>Resource dtors should not raise.</strong> If a dtor closure

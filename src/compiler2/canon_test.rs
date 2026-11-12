@@ -501,13 +501,15 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// pins hold. Stdout is byte-identical on all three doors — the accompanying
 /// matrix goldens moved only in diagnostic line numbers.
 ///
-/// Re-pinned upward by fz-5xp.30: `Kernel.arithmetic_result/1` and
-/// `arithmetic_error/0` remain ordinary generic fz calls, so their concrete
-/// result/status helper bodies are retained instead of disappearing into an
-/// arithmetic lowering. The target fixtures gain four or five executables;
-/// inlining is deliberately deferred to a future optimizer.
+/// Kernel's arithmetic externs declare their failure with `raises:`, so an
+/// operator's wrapper executable raises for itself and no result-decoding
+/// executable stands beside it. `arithmetic_error/0` remains an ordinary
+/// generic fz call.
 #[test]
 fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
+    // Every pin below is two to four executables lower than it was before
+    // Kernel's arithmetic externs declared their failure: no executable decodes
+    // an extern's result.
     for (number, executables) in [
         (
             568, // enum_count_member_reduce
@@ -524,7 +526,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // is emitted code.
             // An activation key names only the literals a use can tell
             // apart, so fewer activations are emitted: 50 -> 46.
-            46,
+            44,
         ),
         (
             567, // fz_f98_range_map_converges
@@ -534,7 +536,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-sc8.8: 65 -> 83. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
             // An activation key names only the literals a use can tell
             // apart, so fewer activations are emitted: 83 -> 81.
-            81,
+            79,
         ),
         (
             569, // enum_map_family
@@ -548,11 +550,11 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-sc8.8: 116 -> 138. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
             // An activation key names only the literals a use can tell
             // apart, so fewer activations are emitted: 138 -> 136.
-            136,
+            134,
         ),
         // fz-sc8.8: 36 -> 54. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart: 54 -> 52.
-        (562, 52), // mailbox_closure_each
+        (562, 50), // mailbox_closure_each
         (
             563, // mailbox_closure_reduce
             // fz-xxd.11: 46 -> 47. `Kernel.fz_send/2` held two blended
@@ -564,14 +566,15 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-sc8.8: 47 -> 65. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
             // An activation key names only the literals a use can tell
             // apart, so fewer activations are emitted: 65 -> 63.
-            63,
+            61,
         ),
         (
             570, // actor_ring
             // The ring's `got == 5` compares a mailbox value, so all three
             // reachable `==` clauses emit: `fz_op_eq_ii`, `fz_op_eq_fi` and
             // the `any`/`any` `fz_op_eq`.
-            31,
+            // 31 -> 29: no executable decodes an arithmetic extern's result.
+            29,
         ),
         (
             571, // enum_predicate_search
@@ -579,7 +582,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-sc8.8: 174 -> 200. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
             // An activation key names only the literals a use can tell
             // apart, so fewer activations are emitted: 200 -> 190.
-            190,
+            188,
         ),
         (
             420, // enum_take_drop_split, over both a list and a range
@@ -599,7 +602,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-sc8.8: 233 -> 249. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
             // An activation key names only the literals a use can tell
             // apart, so fewer activations are emitted: 249 -> 245.
-            245,
+            243,
         ),
     ] {
         let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);

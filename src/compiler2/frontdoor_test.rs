@@ -611,6 +611,48 @@ fn compiler2_frontdoor_requires_private_extern_declarations() {
 }
 
 #[test]
+fn compiler2_frontdoor_extern_raises_needs_a_message_and_is_the_only_option() {
+    let tel = ConfiguredTelemetry::new();
+    let refusals = [
+        (
+            "extern \"C\" defp f(integer) :: integer, raises: ArithmeticError\n",
+            "`raises:` needs a `message:` after it: fz exceptions carry no default message",
+        ),
+        (
+            "extern \"C\" defp f(integer) :: integer, throws: ArithmeticError\n",
+            "expected `raises:` after the extern return type, got `throws:`; `raises:` is the only extern option",
+        ),
+    ];
+    for (source, message) in refusals {
+        let error = parse_quoted_program("extern_option.fz", source, &tel)
+            .expect_err("a malformed extern option is a parse error");
+        assert!(error.msg.contains(message), "{source}: {error:?}");
+    }
+}
+
+#[test]
+fn compiler2_frontdoor_extern_raises_keeps_the_exception_and_message_with_the_declaration() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "extern_raises.fz",
+        "extern \"C\" defp f(integer) :: integer,\n  raises: MyApp.Oops,\n  message: \"it broke\"\n",
+        &tel,
+    )
+    .expect("an extern that declares its failure parses");
+    let form = root.cursor().list_items().unwrap()[0]
+        .ast_node(&root.sources)
+        .unwrap()
+        .unwrap();
+    let details = form.tail.list_items().unwrap()[1].map_entries().unwrap();
+    assert_eq!(map_value(&details, "message").utf8_binary_text().unwrap(), "it broke");
+    let exception = map_value(&details, "raises")
+        .ast_node(&root.sources)
+        .unwrap()
+        .expect("the exception is an alias node");
+    assert_eq!(exception.tail.list_atom_names().unwrap(), ["MyApp", "Oops"]);
+}
+
+#[test]
 fn compiler2_frontdoor_trailing_do_belongs_to_the_outermost_unparenthesized_call() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(

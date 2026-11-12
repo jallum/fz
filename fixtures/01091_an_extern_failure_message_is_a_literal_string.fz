@@ -1,0 +1,9 @@
+#---
+# purpose: "The message an extern failure carries is fixed text in the declaration, so an interpolated message is refused"
+# expect: diagnostic
+#---
+extern "C" defp fz_op_rem_ii(integer, integer) :: integer,
+  raises: ArithmeticError,
+  message: "bad argument in #{:arithmetic} expression"
+
+def main(), do: dbg(fz_op_rem_ii(1, 0))

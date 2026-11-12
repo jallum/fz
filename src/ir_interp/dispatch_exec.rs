@@ -752,9 +752,9 @@ impl<'a> Dispatch<'a> {
                     .map_err(DispatchStop::Broken)?
                 {
                     ExternCallValue::Scalar(value) => value,
-                    ExternCallValue::Pair(_) => {
+                    ExternCallValue::Pair(_) | ExternCallValue::CheckedFailure(_) => {
                         return Err(DispatchStop::broken(format!(
-                            "guard extern `{}` returned a pair, which no guard evaluator carries",
+                            "guard extern `{}` returned a pair or a failure, which no guard evaluator carries",
                             extern_fn.symbol
                         )));
                     }
