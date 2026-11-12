@@ -665,8 +665,7 @@ impl ProductReadContext<'_> {
         let mut walk = ProductValidationWalk::default();
         walk.work
             .include(self.session.memo.register_rooted(reader.clone(), seed, types));
-        let external = self.session.external.clone();
-        let external = external.as_ref().map(|handle| handle.borrow());
+        let external = self.session.external.as_ref().map(|handle| handle.borrow());
         let external_memo = external.as_deref().map(PullSession::memo);
         let work = self.session.memo.rooted[&reader].visit_dirty(|member| {
             let current = if member.is_program_scoped() {

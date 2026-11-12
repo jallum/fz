@@ -1099,18 +1099,16 @@ impl JsonlBackend {
     /// ids it names, so the stream never references an id it has not defined.
     /// See `CanonStream`.
     fn append_self_describing(&self, ev: &Event<'_, '_, '_>, named: NamedIds, line: &str, time_ns: u64) {
-        let mut canon = self.canon.borrow_mut();
         let world = ev
             .metadata
             .get("world")
             .and_then(Value::downcast_ref::<crate::compiler2::World>);
         let Some(world) = world else {
-            drop(canon);
             self.append_without_world(named, line);
             return;
         };
+        let mut canon = self.canon.borrow_mut();
         if named.is_empty() && canon.parked_lines.is_empty() {
-            drop(canon);
             self.append(line.as_bytes());
             return;
         }
@@ -1119,7 +1117,6 @@ impl JsonlBackend {
         let mut bytes = out.into_bytes();
         bytes.append(&mut canon.parked_lines);
         bytes.extend_from_slice(line.as_bytes());
-        drop(canon);
         self.append(&bytes);
     }
 
@@ -1130,7 +1127,6 @@ impl JsonlBackend {
         if canon.must_park(&named) {
             canon.park(named, line);
         } else {
-            drop(canon);
             self.append(line.as_bytes());
         }
     }

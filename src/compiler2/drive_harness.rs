@@ -793,8 +793,8 @@ impl ModuleCapture {
     }
 
     pub(crate) fn defined_names(&self) -> Vec<String> {
-        let ids = self.defs.borrow().keys().copied().collect::<Vec<_>>();
-        ids.into_iter().map(|id| self.qualified_name(id)).collect()
+        let defs = self.defs.borrow();
+        defs.keys().map(|&id| self.qualified_name(id)).collect()
     }
 }
 

@@ -2283,8 +2283,7 @@ impl<'s> ProductReadContext<'s> {
         key: ProductKey,
         types: &super::types::Types,
     ) -> Option<&ProductValue> {
-        let external = self.session.external.clone();
-        let external = external.as_ref().map(|handle| handle.borrow());
+        let external = self.session.external.as_ref().map(|handle| handle.borrow());
         let external_memo = external.as_deref().map(PullSession::memo);
         if let Some(stale) = self.session.memo.stale_dependency(tel, &key, types, external_memo) {
             self.product_reads_delivered = false;
