@@ -2948,7 +2948,7 @@ fn runtime_demand_contribution_derivations(
 /// two compiles of the same input published different raw `Ty` numbering
 /// (fz-f98.19).
 fn dedupe_job_facts(facts: Vec<FactKey>) -> Vec<FactKey> {
-    facts.into_iter().collect::<OrderedSet<_>>().iter().cloned().collect()
+    facts.into_iter().collect::<OrderedSet<_>>().into_iter().collect()
 }
 
 fn callable_match_score(fixed_arity: usize, variadic: bool, actual_arity: usize) -> Option<CallableMatchScore> {

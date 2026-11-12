@@ -4698,7 +4698,7 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
             on_stack.insert(function);
 
             if let Some(neighbors) = graph.get(&function) {
-                for neighbor in neighbors.iter().copied().collect::<Vec<_>>() {
+                for neighbor in neighbors.iter().copied() {
                     if !index.contains_key(&neighbor) {
                         strongconnect(
                             neighbor,

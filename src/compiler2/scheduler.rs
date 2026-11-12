@@ -1179,7 +1179,7 @@ where
             self.dirty_claims(&publisher, pending_changes, ctx);
             woken.insert(publisher.run().clone());
         }
-        for job in woken.iter().cloned().collect::<Vec<_>>() {
+        for job in woken {
             self.enqueue_step(job, &fact_use, shift, wakes);
         }
 

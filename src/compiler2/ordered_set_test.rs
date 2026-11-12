@@ -30,3 +30,21 @@ fn removing_a_member_leaves_the_rest_in_order() {
         "removal closes the gap without disturbing the surviving order",
     );
 }
+
+/// Consuming a set hands back the same sequence borrowed iteration gives, so
+/// a caller that is done with the set can take its elements by value without
+/// changing wake or emission order.
+#[test]
+fn consuming_a_set_yields_insertion_order_like_iter() {
+    let set: OrderedSet<String> = ["c", "a", "b", "a", "c"].into_iter().map(String::from).collect();
+    let borrowed: Vec<String> = set.iter().cloned().collect();
+
+    let owned: Vec<String> = set.into_iter().collect();
+
+    assert_eq!(
+        owned,
+        vec!["c", "a", "b"],
+        "owned iteration is first-registration order"
+    );
+    assert_eq!(owned, borrowed, "owned and borrowed iteration agree");
+}
