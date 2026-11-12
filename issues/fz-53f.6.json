@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-53f.7"
+  ],
   "created": "2026-11-12T22:34:14Z",
   "description": "ActivationSymbol hashes and compares function, arrow and a boxed input [Ty], though input is derived from arrow. Hash and equality use (function, arrow). Prove the derivation holds by construction (ideally input stops being stored, or is constructed only from the arrow) rather than asserting it. Measure alone; the spike built it with the interner change. Proposal page: /Users/j5n/Workspace/compile-cost-round-two.html (https://claude.ai/artifact/4T5Lime7pQxKbCiKJqaJ8x). Spike (base c768670cd; port by reading, not by applying): /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/tables/stepD.diff. Acceptance: stdout (interp and run), canonical dump, activation key counts and job counts identical to the base binary on /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/p/distinct1.fz, f761.fz (--top 1 --top 2), f765.fz (--max-top 3), /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/m/r6.fz, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/l/lit16.fz; release instructions retired re-measured on base and change binaries built the same way; full gate.",
   "id": "fz-53f.6",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "An activation symbol's identity is its function and arrow",
   "type": "task",
-  "updated_at": "2026-11-12T22:34:14Z"
+  "updated_at": "2026-11-12T22:34:38Z"
 }
