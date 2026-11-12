@@ -1,0 +1,7 @@
+#---
+# purpose: "A for over a map generates one {key, value} pair per entry"
+# oracle: 01001_a_for_over_a_map_generates_key_value_pairs.oracle.exs
+#---
+def main() do
+  dbg(Enum.sort(for {k, v} <- %{1 => 10, 2 => 20, 3 => 30}, do: k + v))
+end

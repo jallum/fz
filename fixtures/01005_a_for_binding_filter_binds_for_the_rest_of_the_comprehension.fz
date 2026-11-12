@@ -1,0 +1,11 @@
+#---
+# purpose: "A filter that is a match binds its name for later filters and the body, and a nil match drops the element"
+# oracle: 01005_a_for_binding_filter_binds_for_the_rest_of_the_comprehension.oracle.exs
+#---
+def half(x) do
+  if rem(x, 2) == 0, do: div(x, 2), else: nil
+end
+
+def main() do
+  dbg(for x <- [1, 2, 3, 4], y = half(x), y > 1, do: {x, y})
+end

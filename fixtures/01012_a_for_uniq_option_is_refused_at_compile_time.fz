@@ -1,0 +1,5 @@
+#---
+# purpose: "for uniq: is not built and is refused at compile time rather than ignored"
+# expect: diagnostic
+#---
+def main(), do: dbg(for x <- [1, 2, 1], uniq: true, do: x)

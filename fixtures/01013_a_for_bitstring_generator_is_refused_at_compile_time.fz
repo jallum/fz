@@ -1,0 +1,5 @@
+#---
+# purpose: "A bitstring generator is not built and is refused at compile time"
+# expect: diagnostic
+#---
+def main(), do: dbg(for <<c <- "ab">>, do: c)

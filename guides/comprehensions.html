@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fz comprehensions guide</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>fz comprehensions guide</h1>
+<p class="subtitle">How <code>for</code> turns generators, filters, <code>into:</code> and <code>reduce:</code> into ordinary <code>Enum.reduce</code> calls.</p>
+
+<div class="toc">
+<ul>
+  <li><a href="#forms">1. Supported forms</a></li>
+  <li><a href="#rewrite">2. What <code>for</code> becomes</a></li>
+  <li><a href="#scope">3. Scope</a></li>
+  <li><a href="#limits">4. Not built</a></li>
+  <li><a href="#contract">5. The contract</a></li>
+</ul>
+</div>
+
+<h2 id="forms">1. Supported forms</h2>
+
+<pre><span class="kw">for</span> x &lt;- [1, 2, 3], <span class="kw">do:</span> x * 2                          <span class="com"># [2, 4, 6]</span>
+<span class="kw">for</span> {<span class="atm">:ok</span>, v} &lt;- results, <span class="kw">do:</span> v                    <span class="com"># elements that do not match are skipped</span>
+<span class="kw">for</span> x &lt;- xs, x &gt; 1, <span class="kw">do:</span> x                         <span class="com"># a filter keeps what it accepts</span>
+<span class="kw">for</span> x &lt;- xs, y = f(x), y &gt; 1, <span class="kw">do:</span> {x, y}      <span class="com"># a match filter binds y for what follows</span>
+<span class="kw">for</span> x &lt;- xs, y &lt;- ys, <span class="kw">do:</span> {x, y}                  <span class="com"># the inner generator runs for each outer element</span>
+<span class="kw">for</span> x &lt;- xs, <span class="kw">into:</span> %{}, <span class="kw">do:</span> {x, x}               <span class="com"># collect through Collectable</span>
+<span class="kw">for</span> x &lt;- xs, <span class="kw">reduce:</span> 0 <span class="kw">do</span>
+  acc -&gt; acc + x
+<span class="kw">end</span></pre>
+
+<p>Any enumerable can be a generator source: a list, a map (yielding
+<code>{key, value}</code> pairs) or a range. A generator pattern is any
+pattern; a filter is any expression, truthy unless it is <code>nil</code> or
+<code>false</code>.</p>
+
+<h2 id="rewrite">2. What <code>for</code> becomes</h2>
+
+<p>The compiler rewrites <code>for</code> to calls it already handles, before
+decoding. Each generator opens an <code>Enum.reduce</code> whose accumulator
+threads inward.</p>
+
+<table>
+<tr><th>Piece</th><th>Rewrite</th></tr>
+<tr><td>Generator <code>p &lt;- e</code>, refutable <code>p</code></td><td><code>Enum.reduce(e, acc, fn elem, acc' -&gt; case elem do p -&gt; STEP; _ -&gt; acc' end end)</code></td></tr>
+<tr><td>Generator, irrefutable <code>p</code> (a variable, <code>_</code>, <code>_name</code>)</td><td><code>Enum.reduce(e, acc, fn p, acc' -&gt; STEP end)</code></td></tr>
+<tr><td>Filter <code>f</code></td><td><code>if f, do: STEP, else: acc</code></td></tr>
+<tr><td>Innermost, plain</td><td><code>[body | acc]</code>; the outer result is <code>Enum.reverse(result)</code>, starting from <code>[]</code></td></tr>
+<tr><td>Innermost, <code>into: c</code></td><td><code>fun.(acc, {:cont, body})</code>; with <code>{init, fun} = Collectable.into(c)</code> before and <code>fun.(result, :done)</code> after</td></tr>
+<tr><td>Innermost, <code>reduce: a</code></td><td><code>case acc do clauses end</code>; the start is <code>a</code> and the result is returned as is</td></tr>
+</table>
+
+<h2 id="scope">3. Scope</h2>
+
+<p>Pattern variables are visible in later generators, filters and the body.
+Nothing a <code>for</code> binds is visible after it. The variables the rewrite
+introduces are generated, so they never collide with names you wrote.</p>
+
+<h2 id="limits">4. Not built</h2>
+
+<ul>
+  <li><code>uniq: true</code> is refused at compile time: <em>comprehension <code>uniq:</code> is not built</em>.</li>
+  <li>Bitstring generators (<code>&lt;&lt;c &lt;- binary&gt;&gt;</code>) are refused at compile time: <em>comprehension bitstring generators are not built</em>.</li>
+</ul>
+
+<p>Also compile errors: <code>into:</code> together with <code>reduce:</code>, a
+<code>reduce:</code> whose <code>do</code> is not a list of <code>-&gt;</code>
+clauses, a <code>for</code> that does not start with a generator, and any
+other option. Every one of these reports <code>parse/comprehension</code> at
+the <code>for</code>.</p>
+
+<h2 id="contract">5. The contract</h2>
+
+<div class="box green">
+<ul>
+  <li><code>for</code> is source sugar: it adds no node to the compiler beyond the rewrite in <code>source_sugar.rs</code>.</li>
+  <li>A generator whose pattern does not match an element skips it.</li>
+  <li>An irrefutable generator pattern gets no skip arm.</li>
+  <li>The plain form returns a list in generator order; <code>into:</code> returns the collectable; <code>reduce:</code> returns the accumulator.</li>
+  <li><code>uniq:</code> and bitstring generators fail loudly.</li>
+</ul>
+</div>
+
+</body>
+</html>

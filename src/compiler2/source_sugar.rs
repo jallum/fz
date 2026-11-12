@@ -34,6 +34,7 @@ pub(crate) fn rewrite_source_sugar(
         "&" if args.len() == 1 => rewrite_capture(owner, node, &args[0], sources),
         "-" if args.len() == 1 => rewrite_unary_minus(owner, node, &args[0]),
         "fn" => rewrite_lambda(owner, node, &args, sources),
+        "for" => rewrite_comprehension(owner, node, &args, sources),
         "++" | "--" | "<>" | ".." | "//" | "in" | "not in" if args.len() == 2 => {
             rewrite_operator(owner, node, head.as_str(), &args, sources)
         }
@@ -276,6 +277,302 @@ fn rewrite_lambda(
     let params = builder.list(&lambda_params)?;
     let clause = named_call(&builder, "->", meta, &[params, case])?;
     Ok(Some(named_call(&builder, "fn", meta, &[clause])?))
+}
+
+/// `for` becomes nested `Enum.reduce` calls, one per generator, threading an
+/// accumulator inward:
+///
+/// - `p <- e` wraps the step in `Enum.reduce(e, acc, fn p, acc' -> STEP end)`.
+///   A refutable `p` is matched inside a `case` whose `_` arm returns `acc'`,
+///   so a non-matching element is skipped. An irrefutable `p` (a variable)
+///   gets no skip arm: it would be a redundant clause.
+/// - a filter `f` wraps the step in `if f, do: STEP, else: acc`.
+/// - the innermost step is `[body | acc]`, `fun.(acc, {:cont, body})` for
+///   `into:`, or `case acc do <clauses> end` for `reduce:`.
+///
+/// The outermost reduce starts from `[]` and is reversed; from the collector's
+/// `init` and is finished with `fun.(result, :done)`; or from the `reduce:`
+/// value and is returned as is.
+fn rewrite_comprehension(
+    owner: &QuotedSourceRoot,
+    node: &QuotedAstNode,
+    args: &[QuotedSourceCursor],
+    sources: &SourceMap,
+) -> Result<Option<AnyValueRef>, QuotedSourceError> {
+    let span = node.span;
+    let qualifier_count = args.len() - args.iter().rev().take_while(|arg| is_keyword_list(arg)).count();
+    let (qualifiers, option_lists) = args.split_at(qualifier_count);
+    if option_lists.is_empty() {
+        return Err(comprehension_error(span, "comprehension needs a `do` body"));
+    }
+    let options = ComprehensionOptions::read(option_lists, span, sources)?;
+    let qualifiers = qualifiers
+        .iter()
+        .map(|qualifier| Qualifier::read(qualifier, span, sources))
+        .collect::<Result<Vec<_>, _>>()?;
+    if !matches!(qualifiers.first(), Some(Qualifier::Generator { .. })) {
+        return Err(comprehension_error(span, "comprehension must start with a generator"));
+    }
+    let builder = owner.builder();
+    let build = ComprehensionBuild {
+        builder: &builder,
+        meta: node.meta.root(),
+        span: node.span,
+        options: &options,
+        qualifiers: &qualifiers,
+    };
+    Ok(Some(build.finish()?))
+}
+
+/// A comprehension the rewrite refuses is a user error at the `for`, not an
+/// internal leftover.
+fn comprehension_error(span: Option<Span>, message: impl Into<String>) -> QuotedSourceError {
+    QuotedSourceError::user(crate::diag::codes::PARSE_COMPREHENSION, span, message)
+}
+
+struct ComprehensionOptions {
+    body: AnyValueRef,
+    collector: Option<AnyValueRef>,
+    reduce: Option<AnyValueRef>,
+}
+
+impl ComprehensionOptions {
+    /// The trailing keyword lists, which the parser delivers separately when
+    /// a `do` block follows (`reduce: 0 do ... end`), read as one.
+    fn read(
+        option_lists: &[QuotedSourceCursor],
+        span: Option<Span>,
+        sources: &SourceMap,
+    ) -> Result<Self, QuotedSourceError> {
+        let mut body = None;
+        let mut collector = None;
+        let mut reduce = None;
+        for entry in option_lists
+            .iter()
+            .map(QuotedSourceCursor::list_items)
+            .collect::<Result<Vec<_>, _>>()?
+            .concat()
+        {
+            let items = entry.tuple_items()?;
+            let [key, value] = items.as_slice() else {
+                return Err(comprehension_error(
+                    span,
+                    "comprehension option expects a key and a value",
+                ));
+            };
+            match key.atom_name()?.as_str() {
+                "do" => body = Some(value.clone()),
+                "into" => collector = Some(value.root()),
+                "reduce" => reduce = Some(value.root()),
+                other => {
+                    return Err(comprehension_error(
+                        span,
+                        format!("comprehension `{other}:` is not built"),
+                    ));
+                }
+            }
+        }
+        let Some(body) = body else {
+            return Err(comprehension_error(span, "comprehension needs a `do` body"));
+        };
+        if collector.is_some() && reduce.is_some() {
+            return Err(comprehension_error(
+                span,
+                "comprehension takes `into:` or `reduce:`, not both",
+            ));
+        }
+        if reduce.is_some() && !lambda_source_sugar_shape(&body.list_items().unwrap_or_default(), sources)? {
+            return Err(comprehension_error(
+                span,
+                "comprehension `reduce:` takes a `do` block of `->` clauses",
+            ));
+        }
+        Ok(Self {
+            body: body.root(),
+            collector,
+            reduce,
+        })
+    }
+}
+
+fn is_keyword_list(cursor: &QuotedSourceCursor) -> bool {
+    cursor.root().tag() == ValueKind::LIST
+        && cursor.list_items().is_ok_and(|entries| {
+            entries.iter().all(|entry| {
+                entry
+                    .tuple_items()
+                    .is_ok_and(|items| items.len() == 2 && items[0].root().tag() == ValueKind::ATOM)
+            })
+        })
+}
+
+enum Qualifier {
+    Generator {
+        pattern: AnyValueRef,
+        source: AnyValueRef,
+        refutable: bool,
+    },
+    Filter(AnyValueRef),
+}
+
+impl Qualifier {
+    fn read(cursor: &QuotedSourceCursor, span: Option<Span>, sources: &SourceMap) -> Result<Self, QuotedSourceError> {
+        let Some(node) = cursor.ast_node(sources)? else {
+            return Ok(Self::Filter(cursor.root()));
+        };
+        if node.head.root().tag() != ValueKind::ATOM || !is_list_like(&node.tail) {
+            return Ok(Self::Filter(cursor.root()));
+        }
+        let head = node.head.atom_name()?;
+        if head == "<<>>" && Self::holds_generator(&node, sources)? {
+            return Err(comprehension_error(
+                span,
+                "comprehension bitstring generators are not built",
+            ));
+        }
+        if head != "<-" {
+            return Ok(Self::Filter(cursor.root()));
+        }
+        let parts = node.tail.list_items()?;
+        let [pattern, source] = parts.as_slice() else {
+            return Err(comprehension_error(
+                span,
+                "comprehension generator takes a pattern and an enumerable",
+            ));
+        };
+        let refutable = match pattern.ast_node(sources)? {
+            None => true,
+            Some(pattern_node) => is_list_like(&pattern_node.tail),
+        };
+        Ok(Self::Generator {
+            pattern: pattern.root(),
+            source: source.root(),
+            refutable,
+        })
+    }
+}
+
+impl Qualifier {
+    /// Whether a `<<...>>` qualifier is the `<<x <- bin>>` generator form.
+    fn holds_generator(bitstring: &QuotedAstNode, sources: &SourceMap) -> Result<bool, QuotedSourceError> {
+        for part in bitstring.tail.list_items()? {
+            if let Some(node) = part.ast_node(sources)?
+                && node.head.root().tag() == ValueKind::ATOM
+                && node.head.atom_name()? == "<-"
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+struct ComprehensionBuild<'a> {
+    builder: &'a QuotedSourceBuilder,
+    meta: AnyValueRef,
+    span: Option<Span>,
+    options: &'a ComprehensionOptions,
+    qualifiers: &'a [Qualifier],
+}
+
+impl ComprehensionBuild<'_> {
+    fn finish(&self) -> Result<AnyValueRef, QuotedSourceError> {
+        let builder = self.builder;
+        if let Some(initial) = self.options.reduce {
+            return self.nest(0, 0, initial);
+        }
+        if let Some(collector) = self.options.collector {
+            let init = self.generated("__fz_for_init", 0)?;
+            let fun = self.generated("__fz_for_fun", 0)?;
+            let collectable = remote_call(builder, "Collectable.into", self.meta, &[collector])?;
+            let bind = named_call(builder, "=", self.meta, &[builder.tuple(&[init, fun])?, collectable])?;
+            let reduced = self.nest(0, 0, init)?;
+            let done = self.closure_call(fun, &[reduced, builder.atom("done")])?;
+            return named_call(builder, "__block__", self.meta, &[bind, done]);
+        }
+        let reduced = self.nest(0, 0, builder.empty_list())?;
+        remote_call(builder, "Enum.reverse", self.meta, &[reduced])
+    }
+
+    /// The qualifiers from `index` inward, given the expression holding the
+    /// accumulator at that point and the number of generators outside it.
+    fn nest(&self, index: usize, depth: usize, acc: AnyValueRef) -> Result<AnyValueRef, QuotedSourceError> {
+        let builder = self.builder;
+        let Some(qualifier) = self.qualifiers.get(index) else {
+            return self.step(acc);
+        };
+        match qualifier {
+            Qualifier::Filter(condition) => {
+                let step = self.nest(index + 1, depth, acc)?;
+                let branches = builder.list(&[builder.keyword("do", step)?, builder.keyword("else", acc)?])?;
+                named_call(builder, "if", self.meta, &[*condition, branches])
+            }
+            Qualifier::Generator {
+                pattern,
+                source,
+                refutable,
+            } => {
+                let inner_acc = self.generated("__fz_for_acc", depth)?;
+                let step = self.nest(index + 1, depth + 1, inner_acc)?;
+                let (param, body) = if *refutable {
+                    let elem = self.generated("__fz_for_elem", depth)?;
+                    (elem, self.skipping_case(elem, *pattern, step, inner_acc)?)
+                } else {
+                    (*pattern, step)
+                };
+                let params = builder.list(&[param, inner_acc])?;
+                let clause = named_call(builder, "->", self.meta, &[params, body])?;
+                let reducer = named_call(builder, "fn", self.meta, &[clause])?;
+                remote_call(builder, "Enum.reduce", self.meta, &[*source, acc, reducer])
+            }
+        }
+    }
+
+    fn step(&self, acc: AnyValueRef) -> Result<AnyValueRef, QuotedSourceError> {
+        let builder = self.builder;
+        let options = self.options;
+        if options.reduce.is_some() {
+            let kw = builder.list(&[builder.keyword("do", options.body)?])?;
+            return named_call(builder, "case", self.meta, &[acc, kw]);
+        }
+        if options.collector.is_some() {
+            let fun = self.generated("__fz_for_fun", 0)?;
+            let cont = builder.tuple(&[builder.atom("cont"), options.body])?;
+            return self.closure_call(fun, &[acc, cont]);
+        }
+        builder.list(&[named_call(builder, "|", self.meta, &[options.body, acc])?])
+    }
+
+    fn skipping_case(
+        &self,
+        elem: AnyValueRef,
+        pattern: AnyValueRef,
+        step: AnyValueRef,
+        acc: AnyValueRef,
+    ) -> Result<AnyValueRef, QuotedSourceError> {
+        let builder = self.builder;
+        let matched = named_call(builder, "->", self.meta, &[builder.list(&[pattern])?, step])?;
+        let wildcard = builder.variable(
+            &Var {
+                name: "_".to_string(),
+                context: VarContext::User,
+            },
+            &QuotedSourceMetadata::default(),
+        )?;
+        let skip = named_call(builder, "->", self.meta, &[builder.list(&[wildcard])?, acc])?;
+        let kw = builder.list(&[builder.keyword("do", builder.list(&[matched, skip])?)?])?;
+        named_call(builder, "case", self.meta, &[elem, kw])
+    }
+
+    /// `fun.(args)`: a call whose head is the dot applied to the callee alone.
+    fn closure_call(&self, fun: AnyValueRef, args: &[AnyValueRef]) -> Result<AnyValueRef, QuotedSourceError> {
+        let callee = named_call(self.builder, ".", self.meta, &[fun])?;
+        ast_call(self.builder, callee, self.meta, args)
+    }
+
+    fn generated(&self, name: &str, ordinal: usize) -> Result<AnyValueRef, QuotedSourceError> {
+        generated_variable(self.builder, name, ordinal, self.span)
+    }
 }
 
 fn lambda_source_sugar_shape(clauses: &[QuotedSourceCursor], sources: &SourceMap) -> Result<bool, QuotedSourceError> {

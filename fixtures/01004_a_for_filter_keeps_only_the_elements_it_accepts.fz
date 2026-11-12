@@ -1,0 +1,7 @@
+#---
+# purpose: "A filter keeps the elements for which it is truthy and drops the rest"
+# oracle: 01004_a_for_filter_keeps_only_the_elements_it_accepts.oracle.exs
+#---
+def main() do
+  dbg(for x <- [1, 2, 3, 4, 5, 6], rem(x, 2) == 0, do: x)
+end

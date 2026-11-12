@@ -1,0 +1,5 @@
+#---
+# purpose: "into: together with reduce: is refused at compile time"
+# expect: diagnostic
+#---
+def main(), do: dbg(for x <- [1, 2], into: [], reduce: 0, do: x)

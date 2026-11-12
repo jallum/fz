@@ -1,0 +1,7 @@
+#---
+# purpose: "A for in the body of another for collects a list per outer element"
+# oracle: 01010_a_for_nested_in_the_body_of_another_for.oracle.exs
+#---
+def main() do
+  dbg(for x <- [1, 2, 3], do: (for y <- [x, x * 10], do: y + 1))
+end

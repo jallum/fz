@@ -1,0 +1,9 @@
+#---
+# purpose: "A tuple pattern holding a map pattern bound with = keeps the whole matching map and skips the other entries"
+# oracle: 01011_a_for_over_a_map_keeps_the_entries_whose_value_matches_a_nested_pattern.oracle.exs
+#---
+def main() do
+  spans = %{1 => %{name: "x", v: 1}, 2 => %{name: "y", v: 2}, 3 => %{name: "x", v: 3}}
+  jobs = for {_id, %{name: "x"} = s} <- spans, do: s
+  dbg(Enum.sort(Enum.map(jobs, fn s -> Map.get(s, :v) end)))
+end

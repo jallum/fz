@@ -1,0 +1,7 @@
+#---
+# purpose: "Two generators iterate the inner one fully for each element of the outer one"
+# oracle: 01006_a_for_with_two_generators_runs_the_inner_for_each_outer_element.oracle.exs
+#---
+def main() do
+  dbg(for x <- [1, 2], y <- [10, 20, 30], do: x + y)
+end

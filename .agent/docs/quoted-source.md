@@ -135,6 +135,29 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   multi/guarded lambdas become one lambda whose body is a `case`, and operators
   become ordinary helper calls such as `List.concat`, `Enum.member?`,
   `Kernel.<>`, and `Range.new`.
+- `for` is rewritten by `rewrite_comprehension` into nested `Enum.reduce`
+  calls, one per generator, each lambda threading a generated accumulator
+  (`__fz_for_acc`, ordinal = generator depth) inward. The trailing keyword
+  lists (`do`, and `into:` or `reduce:`, delivered as separate lists when a
+  `do` block follows) are read as one; every earlier argument is a generator
+  (`<-` node) or a filter, and the first must be a generator. A `for` the
+  rewrite refuses (`uniq:`, a bitstring generator, `into:` with `reduce:`, a
+  leading filter, a missing `do`) is a `parse/comprehension` diagnostic at the
+  `for`'s span, raised with `QuotedSourceError::user` and routed through
+  `emit_surface_read_error`.
+
+  | Piece | Rewrite |
+  | --- | --- |
+  | `p <- e`, refutable `p` | `Enum.reduce(e, acc, fn elem, acc' -> case elem do p -> STEP; _ -> acc' end end)` |
+  | `p <- e`, irrefutable `p` (variable, `_`, `_name`) | `Enum.reduce(e, acc, fn p, acc' -> STEP end)`; no skip arm, which would be a `type/redundant-clause` warning |
+  | filter `f` | `if f, do: STEP, else: acc` |
+  | innermost, plain | `[body \| acc]`; result `Enum.reverse(...)`, initial `[]` |
+  | innermost, `into: c` | `fun.(acc, {:cont, body})`; result `{init, fun} = Collectable.into(c)` then `fun.(..., :done)` over initial `init` |
+  | innermost, `reduce: a` | `case acc do <the do clauses> end`; initial `a`, result as is |
+
+  `uniq:` (and any unknown option), bitstring generators `<<x <- bin>>`,
+  `into:` with `reduce:`, a `reduce:` whose `do` is not a `->` clause list, and
+  a `for` with no generator return a `QuotedSourceError` naming the form.
 - Remote helper calls are emitted in canonical quoted remote-call shape with
   `{:., meta, [{:__aliases__, meta, [...]}, :fun]}` heads. Dotted atom names are
   not a compiler2 source interchange format.
