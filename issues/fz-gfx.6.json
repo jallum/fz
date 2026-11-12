@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-gfx.2"
+  ],
   "blocks": [],
   "created": "2026-11-12T22:09:23Z",
   "description": "plan_block (src/compiler2/jobs/body.rs:3292) takes an owned ExprBlock\n{ span, steps: Vec\u003cExprStep\u003e, result }. At each step that splits the block\nit builds the resume block with `steps: block.steps[index + 1..].to_vec()`\n-- six sites: body.rs:3337, :3371, :3405, :3453, :3516, :3579. Each split\ncopies the rest of the block, and the resume block splits again, so a block\nwith n splitting steps copies O(n^2) steps.\n\nChange: planning reads a slice. plan_block takes the remaining steps as\n\u0026[ExprStep] with span and result (both Copy) alongside; a resume is the\nsuffix slice, not a copy.\n\nBefore building: confirm nothing downstream of plan_block needs the owned\nExprBlock (stores it, mutates steps). If something does, record what and\nwhy here before choosing the shape.\n\nDepends on .2: both reshape what Lowerer owns versus borrows.\n\nRemoval ledger: the six to_vec copies; ExprBlock's Clone derive if nothing\nelse clones it.\n\nSignal: gate green, no golden/census/pin movement. Measurement: lowering a\nfixture with one long straight-line body of calls allocates proportionally\nto its length -- report the before/after step-copy count.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "plan_block resumes on a slice of the block's steps",
   "type": "task",
-  "updated_at": "2026-11-12T22:09:23Z"
+  "updated_at": "2026-11-12T22:09:31Z"
 }
