@@ -852,7 +852,7 @@ fn derive_function_contract_carries_protocol_domain_obligation_through_transitiv
 }
 
 #[test]
-fn ground_union_input_covered_by_the_arrow_set_satisfies_the_contract() {
+fn ground_union_input_overlapping_each_clause_satisfies_the_contract() {
     // `+/2` shape: no single arrow accepts (int | float, int), but the SET
     // {(int, int) -> int, (float, int) -> float} covers every ground member.
     // Coverage by the set is satisfaction; the result is the union of the
@@ -878,20 +878,22 @@ fn ground_union_input_covered_by_the_arrow_set_satisfies_the_contract() {
     let applied = contract.apply(&mut types, &[number, int]);
     assert!(
         applied.enforceable_satisfied,
-        "a ground union covered member-by-member by the arrow set must satisfy the contract"
+        "a ground union whose members overlap different clauses must satisfy the contract"
     );
     let expected = types.union(int, float);
-    let result = applied.result.expect("set coverage should still produce a result");
+    let result = applied.result.expect("the per-clause overlaps should produce a result");
     assert!(
         types.is_equivalent(&result, &expected),
-        "the covered union's result should join the per-member results: {}",
+        "the union's result should join the per-member results: {}",
         types.display(&result),
     );
 }
 
 #[test]
-fn ground_union_input_with_an_uncovered_member_still_violates() {
-    // (:bad | int, int) has a member (:bad) no arrow accepts: still a violation.
+fn a_union_with_a_member_no_clause_accepts_is_answered_on_the_overlap() {
+    // (:bad | int, int): the :bad member fits no clause, so at run time it meets
+    // Kernel arithmetic's default clause (fixture 00753); the int member
+    // overlaps the (int, int) clause and is answered there.
     let mut types = Types::new();
     let int = types.int();
     let float = types.float();
@@ -913,16 +915,19 @@ fn ground_union_input_with_an_uncovered_member_still_violates() {
     let bad_or_int = types.union(bad, int);
     let applied = contract.apply(&mut types, &[bad_or_int, int]);
     assert!(
-        !applied.enforceable_satisfied,
-        "a union member no arrow covers is a violation, set coverage must not mask it"
+        applied.enforceable_satisfied,
+        "the int member overlaps the (int, int) clause, so the call is not proven to fail"
     );
+    let result = applied.result.expect("the overlap answers the clause's result");
+    assert!(types.is_equivalent(&result, &int), "got {}", types.display(&result));
 }
 
 // ---------------------------------------------------------------------------
-// PINNED VERDICTS at the CONTRACT level (fz-kdt.192). `ArrowMatch::Invalid`
-// is a per-CLAUSE verdict; whether the CALL is legal is decided by
-// `FunctionContract::apply` over the clause SET. These record what apply()
-// does with the rows a witness that is the argument sends to the fallback.
+// PINNED VERDICTS at the CONTRACT level. Whether a clause fits a call is
+// decided by `ContractArrow::narrowed_row` and
+// `FunctionContract::admits_instantiated_clause`; whether the CALL is legal is
+// decided by `FunctionContract::apply` over the clause SET. These record what
+// apply() does with a witness that is the argument.
 // ---------------------------------------------------------------------------
 
 fn clause(
@@ -937,25 +942,15 @@ fn clause(
 }
 
 /// C1. A two-clause POLYMORPHIC contract whose clause domains carry a
-/// variable, applied to an argument covered member-by-member across the two
-/// clauses. `f({int, a}) :: a` and `f({binary, a}) :: a` at
-/// `{int | binary, int}`: every runtime value of that argument type is
-/// accepted by exactly one clause, so the call is legal and must be
-/// SATISFIED. Neither clause accepts the whole argument, so both answer
-/// `Invalid` once a witness is the argument and only arrow-SET coverage can
-/// rescue the row — which it does by reading each var-carrying clause domain
-/// at `any` (fz-kdt.192). The refinement rows are empty: the fallback narrows
-/// each argument into a clause domain and a var-carrying position narrows to
-/// nothing, so the call learns that it is legal and learns no input type from
-/// it. `.kdt192/fx/c1c.fz`, promoted to `fixtures2/behavior/`, is this shape
-/// end to end.
-///
-/// The same source at the pattern-derived witness answered satisfied through
-/// a different door: each clause restated the argument into its own domain
-/// and matched vacuously, reporting `rows=[{int, int} | {binary, int}]
-/// result=int` — refinement bought with an unsound per-clause accept.
+/// variable, applied to `{int | binary, int}`. `f({int, a}) :: a` and
+/// `f({binary, a}) :: a` each overlap the argument: the first narrows it to
+/// `{int, int}` with `a := int`, the second to `{binary, int}` with
+/// `a := int`. The call is satisfied and answers `int`. The matched rows are
+/// the narrowed rows; `instantiate_open_inputs` instantiates only a column that
+/// still carries type variables, so a ground argument like this one is never
+/// rewritten and the rows cannot reach a callee's key.
 #[test]
-fn kdt192_c1_polymorphic_clause_set_coverage() {
+fn kdt192_c1_polymorphic_clause_set_overlap() {
     let mut types = Types::new();
     let a = types.type_var(TypeVarId(0));
     let int = types.int();
@@ -983,16 +978,41 @@ fn kdt192_c1_polymorphic_clause_set_coverage() {
             rows.join(" | "),
             applied.result.map(|r| types.display(&r)).unwrap_or("-".to_string())
         ),
-        "enforceable=true satisfied=true enforceable_satisfied=true rows=[] result=-",
-        "C1 polymorphic clause-set coverage"
+        "enforceable=true satisfied=true enforceable_satisfied=true rows=[{int, int} | {binary, int}] result=int",
+        "C1 polymorphic clause-set overlap"
     );
 }
 
-/// C2. C1's control: the SAME shape with GROUND clause domains, where the
-/// fallback always could rescue the call. A ground row narrows positionally,
-/// so unlike C1 this one also learns both refinement rows.
+/// C1's binary-field twin: `{int | binary, binary}` at `f({int, a}) :: a` and
+/// `f({binary, a}) :: a`. Each clause narrows the first field to its own
+/// member and binds `a := binary`, so the call is satisfied and answers
+/// `binary`.
 #[test]
-fn kdt192_c2_ground_clause_set_coverage() {
+fn a_polymorphic_clause_set_binds_the_second_field_on_each_clauses_overlap() {
+    let mut types = Types::new();
+    let a = types.type_var(TypeVarId(0));
+    let int = types.int();
+    let str_t = types.str_t();
+    let int_row = types.tuple(&[int, a]);
+    let str_row = types.tuple(&[str_t, a]);
+    let c1 = clause(vec![int_row], a);
+    let c2 = clause(vec![str_row], a);
+    let contract = FunctionContract::from_resolved(&mut types, vec![c1, c2]);
+
+    let mixed = types.union(int, str_t);
+    let arg = types.tuple(&[mixed, str_t]);
+    let applied = contract.apply(&mut types, &[arg]);
+
+    assert!(applied.enforceable_satisfied);
+    assert_eq!(applied.matched_arrows.len(), 2);
+    let result = applied.result.expect("both clauses answer");
+    assert!(types.is_equivalent(&result, &str_t), "got {}", types.display(&result));
+}
+
+/// C2. C1's control: the SAME shape with GROUND clause domains. Each clause
+/// narrows the row to its own overlap and answers there.
+#[test]
+fn kdt192_c2_ground_clause_set_overlap() {
     let mut types = Types::new();
     let int = types.int();
     let str_t = types.str_t();
@@ -1013,17 +1033,14 @@ fn kdt192_c2_ground_clause_set_coverage() {
             applied.matched_arrows.len()
         ),
         "satisfied=true enforceable_satisfied=true rows=2",
-        "C2 ground clause-set coverage"
+        "C2 ground clause-set overlap"
     );
 }
 
 /// C3. An UNINHABITED argument at a polymorphic contract. `none` is a row no
-/// runtime call can supply -- dead code -- and every clause answers `Invalid`.
-/// The empty product is a subset of every domain, so arrow-SET coverage
-/// accepts it and no violation is diagnosed for code that cannot run. Before
-/// arrow_set_covers read var-carrying domains at `any` this answered
-/// UNSATISFIED while its ground twin C4 answered satisfied: whether dead code
-/// was diagnosed depended on whether the spec was polymorphic (fz-kdt.192).
+/// runtime call can supply -- dead code -- so `apply` never refuses it and no
+/// violation is diagnosed for code that cannot run. Its ground twin C4
+/// answers the same.
 #[test]
 fn kdt192_c3_none_argument_polymorphic_contract() {
     let mut types = Types::new();
@@ -1215,11 +1232,16 @@ fn variadic_printf_contract_accepts_a_binary_tail_argument() {
 }
 
 // ---------------------------------------------------------------------------
-// fz-xxd.5: a row that overlaps a clause gets that clause's answer. `any`
-// means the argument's type is unknown, not that it is every value, so it is
-// narrowed to the clause's own domain before matching. Every other column
-// still needs the ordinary subset test, so a genuinely wrong value is still
-// rejected.
+// A call is refused only when its argument row fits no clause of the
+// contract. A row that overlaps a clause is answered on the overlap: each
+// ground column is narrowed to the clause's domain, and the clause's result
+// stands for the part that can return. `any` is just the widest overlap: the
+// call site does not know the argument's type, the way Elixir reads a
+// `dynamic()` argument.
+//
+// Two places have no run-time clause test that could catch a miss, so an
+// overlap that is not a fit is still refused there: an extern's raw machine
+// call, and a brand, which the running program cannot see.
 // ---------------------------------------------------------------------------
 
 /// Drives a program that reaches `Kernel`'s private `fz_resource_claim`
@@ -1294,16 +1316,49 @@ fn fz_resource_claim_contract_rejects_an_atom_argument() {
     assert!(applied.result.is_none());
 }
 
-#[test]
-fn a_precise_but_wrong_union_member_still_violates_an_integer_domain() {
-    let mut types = Types::new();
+fn integer_contract(types: &mut Types) -> FunctionContract {
     let int = types.int();
     let resolved = ResolvedSpecDecl {
         params: vec![int],
         result: int,
         constraints: HashMap::new(),
     };
-    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+    FunctionContract::from_resolved(types, vec![resolved])
+}
+
+fn one_integer_wire() -> crate::compiler2::body::LoweredExtern {
+    crate::compiler2::body::LoweredExtern {
+        abi: crate::fz_ir::ExternAbi::C,
+        symbol: "takes_an_integer".to_string(),
+        params: vec![crate::fz_ir::ExternTy::I64],
+        variadic: false,
+        ret: crate::fz_ir::ExternReturn::scalar(crate::fz_ir::ExternTy::I64),
+    }
+}
+
+#[test]
+fn a_union_overlapping_an_integer_function_domain_is_answered_on_the_overlap() {
+    let mut types = Types::new();
+    let int = types.int();
+    let contract = integer_contract(&mut types);
+
+    let weird = types.atom_lit("weird");
+    let int_or_weird = types.union(int, weird);
+    let applied = contract.apply(&mut types, &[int_or_weird]);
+
+    assert!(
+        applied.enforceable_satisfied,
+        "integer | :weird overlaps the integer domain: a function tests its clauses at run time, so only the integer reaches the body"
+    );
+    let result = applied.result.expect("the overlap answers the clause's result");
+    assert!(types.is_equivalent(&result, &int), "got {}", types.display(&result));
+}
+
+#[test]
+fn an_extern_refuses_a_union_that_spills_outside_its_domain() {
+    let mut types = Types::new();
+    let int = types.int();
+    let contract = integer_contract(&mut types).with_extern_wire(one_integer_wire());
 
     let weird = types.atom_lit("weird");
     let int_or_weird = types.union(int, weird);
@@ -1311,13 +1366,107 @@ fn a_precise_but_wrong_union_member_still_violates_an_integer_domain() {
 
     assert!(
         !applied.satisfied,
-        "integer | :weird is precisely known and partly outside the domain, so it is rejected, not narrowed"
+        "an extern is a raw machine call with no clause tests, so a value outside its domain would reach the wire"
     );
     assert!(applied.result.is_none());
 }
 
+fn make_resource_contract(types: &mut Types) -> FunctionContract {
+    let t = TypeVarId(0);
+    let var = types.type_var(t);
+    let nil = types.nil();
+    let destructor = types.arrow(&[var], nil);
+    let int = types.int();
+    let pointer = types.c_pointer();
+    let bound = types.union(int, pointer);
+    let result = types.resource(var);
+    let resolved = ResolvedSpecDecl {
+        params: vec![var, destructor],
+        result,
+        constraints: HashMap::from([(t, bound)]),
+    };
+    let wire = crate::compiler2::body::LoweredExtern {
+        abi: crate::fz_ir::ExternAbi::C,
+        symbol: "make_resource".to_string(),
+        params: vec![crate::fz_ir::ExternTy::I64, crate::fz_ir::ExternTy::Any],
+        variadic: false,
+        ret: crate::fz_ir::ExternReturn::scalar(crate::fz_ir::ExternTy::Any),
+    };
+    FunctionContract::from_resolved(types, vec![resolved]).with_extern_wire(wire)
+}
+
 #[test]
-fn the_any_rule_narrows_one_column_and_a_wrong_sibling_column_still_rejects() {
+fn an_extern_accepts_a_callable_whose_parameter_is_the_instantiated_variable() {
+    let mut types = Types::new();
+    let int = types.int();
+    let nil = types.nil();
+    let contract = make_resource_contract(&mut types);
+
+    let destructor = types.arrow(&[int], nil);
+    let applied = contract.apply(&mut types, &[int, destructor]);
+
+    assert!(
+        applied.satisfied,
+        "(int) -> nil is the destructor the domain admits at t := int"
+    );
+    let result = applied.result.expect("a satisfied extern answers its result");
+    let expected = types.resource(int);
+    assert!(
+        types.is_equivalent(&result, &expected),
+        "got {}",
+        types.display(&result)
+    );
+}
+
+#[test]
+fn an_extern_refuses_a_payload_outside_its_variable_bound() {
+    let mut types = Types::new();
+    let int = types.int();
+    let nil = types.nil();
+    let bin = types.str_t();
+    let contract = make_resource_contract(&mut types);
+
+    let destructor = types.arrow(&[int], nil);
+    let applied = contract.apply(&mut types, &[bin, destructor]);
+
+    assert!(!applied.satisfied, "a binary payload is outside t: integer | c_pointer");
+}
+
+#[test]
+fn an_extern_refuses_a_callable_whose_return_is_outside_the_instantiated_destructor() {
+    let mut types = Types::new();
+    let int = types.int();
+    let bin = types.str_t();
+    let contract = make_resource_contract(&mut types);
+
+    let wrong_destructor = types.arrow(&[int], bin);
+    let applied = contract.apply(&mut types, &[int, wrong_destructor]);
+
+    assert!(
+        !applied.satisfied,
+        "at t := int the destructor is (int) -> nil; (int) -> binary is not that"
+    );
+}
+
+#[test]
+fn an_extern_narrows_an_any_argument_to_its_domain() {
+    let mut types = Types::new();
+    let int = types.int();
+    let any = types.any();
+    let contract = integer_contract(&mut types).with_extern_wire(one_integer_wire());
+
+    let applied = contract.apply(&mut types, &[any]);
+
+    assert!(
+        applied.satisfied,
+        "any is an unknown type, not a claim to be every value"
+    );
+    let result = applied.result.expect("an any argument answers the clause's result");
+    assert!(types.is_equivalent(&result, &int));
+}
+
+#[test]
+fn an_any_column_narrows_and_a_disjoint_sibling_column_still_rejects() {
     let mut types = Types::new();
     let int = types.int();
     let resolved = ResolvedSpecDecl {
@@ -1333,9 +1482,107 @@ fn the_any_rule_narrows_one_column_and_a_wrong_sibling_column_still_rejects() {
 
     assert!(
         !applied.satisfied,
-        "the any column alone would narrow to integer, but :weird in the sibling column still violates it"
+        "the any column alone would narrow to integer, but :weird in the sibling column fits no clause"
     );
     assert!(applied.result.is_none());
+}
+
+#[test]
+fn a_bare_inner_is_refused_at_a_brand_domain_even_when_a_sibling_member_fits() {
+    let mut types = Types::new();
+    let bin = types.str_t();
+    let int = types.int();
+    let utf8 = types.mint_brand(bin, "utf8");
+    let resolved = ResolvedSpecDecl {
+        params: vec![utf8],
+        result: int,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    let bin_or_int = types.union(bin, int);
+    let applied = contract.apply(&mut types, &[bin_or_int]);
+
+    assert!(
+        !applied.satisfied,
+        "the runtime cannot tell a binary from a utf8, so the binary member would pass the clause test unchecked"
+    );
+}
+
+#[test]
+fn a_bare_inner_is_refused_at_a_brand_inside_a_tuple_domain() {
+    let mut types = Types::new();
+    let bin = types.str_t();
+    let int = types.int();
+    let utf8 = types.mint_brand(bin, "utf8");
+    let branded_pair = types.tuple(&[utf8, int]);
+    let resolved = ResolvedSpecDecl {
+        params: vec![branded_pair],
+        result: int,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    let bare_pair = types.tuple(&[bin, int]);
+    let applied = contract.apply(&mut types, &[bare_pair]);
+
+    assert!(
+        !applied.satisfied,
+        "a brand in a tuple field is as invisible to the clause test as one at the top"
+    );
+}
+
+#[test]
+fn a_brand_is_accepted_at_its_own_brand_domain() {
+    let mut types = Types::new();
+    let bin = types.str_t();
+    let int = types.int();
+    let utf8 = types.mint_brand(bin, "utf8");
+    let resolved = ResolvedSpecDecl {
+        params: vec![utf8],
+        result: int,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    let applied = contract.apply(&mut types, &[utf8]);
+
+    assert!(
+        applied.enforceable_satisfied,
+        "a utf8 fits a utf8 domain: the part of it the runtime lets in lies inside the domain"
+    );
+}
+
+#[test]
+fn a_union_spanning_two_clauses_is_answered_by_each_clause_on_its_overlap() {
+    let mut types = Types::new();
+    let int = types.int();
+    let float = types.float();
+    let arrows = vec![
+        ResolvedSpecDecl {
+            params: vec![int, int],
+            result: int,
+            constraints: HashMap::new(),
+        },
+        ResolvedSpecDecl {
+            params: vec![float, int],
+            result: float,
+            constraints: HashMap::new(),
+        },
+    ];
+    let contract = FunctionContract::from_resolved(&mut types, arrows);
+
+    let int_or_float = types.union(int, float);
+    let applied = contract.apply(&mut types, &[int_or_float, int]);
+
+    assert!(applied.enforceable_satisfied);
+    assert_eq!(applied.matched_arrows.len(), 2, "each clause matched its own slice");
+    let result = applied.result.expect("both clauses answer");
+    assert!(
+        types.is_equivalent(&result, &int_or_float),
+        "int from the integer clause joined with float from the float clause, got {}",
+        types.display(&result)
+    );
 }
 
 // fz-xxd.6: an extern's declaration is its whole contract. `libc::abs` takes

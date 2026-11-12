@@ -385,7 +385,9 @@ what reconciles them, by rewriting both to the same union of rectangles.
 Union-time hygiene is not enough, because clauses are also made
 equal AFTER a union — `erase_closure_identity` strips closure brands in place,
 turning a legitimate two-brand union into `A ∨ A`, and `funcs = [A, A]` would
-otherwise intern as a different `Ty` than `funcs = [A]`. That difference is
+otherwise intern as a different `Ty` than `funcs = [A]`. Likewise a positive arrow with an
+uninhabited parameter constrains no call and is every function, so
+`normalize_func_clauses` drops it from its clause: `(none) -> X` interns as `fun`. That difference is
 what the activation key is built from, so idempotence at the boundary is what
 makes the key a join homomorphism (fz-kdt.80). A debug-build assert in
 `TypeInterner::intern` (`debug_assert_dnf_axes_hygienic`) checks the
@@ -627,8 +629,8 @@ The choice of predicate follows the question, not the call site:
 ```text
 == / != fold, pattern-literal match, guard, runtime type test
     ->  is_value_disjoint / runtime_type_predicate   (value; the slot is never read)
-@spec argument coverage (arrow_set_covers), extern contracts, dispatch planning
-    ->  is_subtype                                   (typing; the slot is compared)
+@spec narrowing to a clause domain, extern contracts, dispatch planning
+    ->  intersect / is_subtype                       (typing; the slot is compared)
 ```
 
 There is one runtime-equality relation, `is_value_disjoint`, and every value site
@@ -637,7 +639,9 @@ brand-blind question. The brand slot is a TYPING fact only: a runtime test is
 built by `Types::runtime_type_predicate`, which never reads the slot, so no
 runtime test can separate a `utf8` from the binary it wraps. A brand is checked
 where types are checked — spec positions, dispatch, boundaries — and nowhere
-else.
+else. `Types::runtime_reading` is the type with every brand erased, at any
+depth: the values a runtime test lets through. A spec position admits a value
+the test cannot tell from a brand only when it lies inside the declared domain.
 
 ## Struct field types
 

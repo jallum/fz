@@ -56,27 +56,10 @@ Compiler2 owns the active contract path:
   in `compiler2/jobs/semantic_test.rs`; fixtures `00740` and `00749`). A value
   typed only at runtime (a decoded JSON list) reaches
   `Enum.count(Enumerable.t(a))` as `any` and dispatches on the protocol at
-  runtime. A ground column partly outside a clause's domain (`int | nil` into an
-  `integer` parameter) matches no arrow (`match_arrow`'s subset gate), so it
-  contributes nothing to any instantiation either.
-- Contract satisfaction is arrow-SET coverage, not just single-arrow
-  subsumption: when no single arrow accepts a ground argument row,
-  `FunctionContract::apply` checks whether the tuple of arguments is a subtype
-  of the union of the enforceable clause-domain tuples (the Types calculator
-  decomposes unions across positions). Covered rows satisfy the contract and
-  their result is the union of per-clause results on positionally narrowed
-  arguments — `(int | float, int)` satisfies `+/2`'s `(int, int)` and
-  `(float, int)` arrows jointly and yields `int | float`.
-- Coverage reads a VAR-CARRYING clause domain at `any`. A clause variable
-  still free after its bounds are closed accepts anything, so that is the
-  clause's domain: `pick({integer, a})` covers `{integer, any}`. Together with
-  `pick({binary, a})` it covers every member of `{binary, int} | {int, int}`,
-  which no single clause accepts — a witness is the argument, so neither clause
-  accepts a union spanning both. A polymorphic clause set that could rescue no
-  row at all would diagnose that legal program as a spec violation
-  (`fixtures2/behavior/spec_polymorphic_clause_set_coverage.fz`). Narrowing a
-  covered row into a clause domain leaves a var-carrying position untouched, so
-  such a call learns that it is legal and learns no input refinement from it.
+  runtime. A ground column partly outside a clause's domain (`int | nil` into
+  an `integer` parameter) is answered on the part inside the domain (below),
+  and the matched arrow's parameters instantiate only a column still carrying
+  type variables, so the ground column is not refined.
 - Arrow matching (`Types::match_arrow`) handles union parameters structurally:
   a union of tuples with DIFFERENT arities matches a witness against the
   alternative of the witness's own width, and a kind collector (tuple, list,
@@ -84,24 +67,53 @@ Compiler2 owns the active contract path:
   pattern with that kind's component cleared (`witness_escapes_kind`) — a
   cross-kind union like `:first | {:acc, a}` accepts `:first` through its
   atom member but still rejects `:third`, which no member accepts.
-- An argument column witnessed exactly `any` is IMPRECISE, not a claim that
-  the argument really can be every value: it means the call site does not
-  know that argument's type, the way Elixir reads a `dynamic()` argument.
-  `Types::match_arrow` narrows such a column, before the rest of the walk
-  ever sees it, to the clause's own declared domain — the parameter pattern
-  closed from the clause's bounds alone, the same domain
-  `ContractArrow::input_domain_row` reads for coverage — and matches on that
-  narrowed part. The verdict and the result answer for that part; the call's
-  callee is still keyed on the `any` the caller holds (see above). A column
-  witnessed something merely PARTLY imprecise, such
-  as a union with one member outside the domain, is not `any`, so it still
-  needs the ordinary subset test to pass whole: `resource(t)` applied to a
-  handle typed `any` answers on the resource domain, but applied to
-  `integer | :weird` against an integer-only domain still violates. This is
-  a different question from arrow-SET coverage above: coverage joins several
-  CLAUSES' answers over disjoint slices of one row, which a single call to
-  `match_arrow` cannot express, so `arrow_set_covers` and
-  `ContractArrow::narrow_args` still carry that case.
+- A call is refused only when its argument row is proven to fail: it fits no
+  clause of the contract. `FunctionContract::apply` asks each clause in two
+  steps: `ContractArrow::narrowed_row` is the one place a witness is narrowed
+  to a clause's domain (before the walk), then `Types::match_arrow` runs on the
+  narrowed row, then `FunctionContract::admits_instantiated_clause` is the one
+  place admission is decided, on the clause as the walk instantiated it.
+  - Narrowing: every ground column is narrowed to the clause's domain
+    (`Types::clause_domain_at_every_instantiation`,
+    `Types::narrow_to_clause_domain`), so the clause answers for the part of the
+    call that overlaps it. A clause variable is read as the union over every
+    instantiation of it (`Types::clause_domain_envelope`): its closed bound (or
+    `any` when it has none) where it occurs covariantly, `none` under an
+    arrow's parameter, so `(t) -> nil` reads as `(none) -> nil`, the
+    arrow every instantiation's callable fits. `{binary, int} | {int, int}` into
+    `pick({integer, a})` narrows
+    to `{int, int}` and binds `a := int`. A column disjoint from the domain
+    refuses the clause. A witness that still carries type variables is evidence
+    in flight and passes unchanged.
+  - `any` is the widest overlap: it means the call site does not know the
+    argument's type, the way Elixir reads a `dynamic()` argument. It narrows to
+    the domain like any other witness, so `resource(t)` applied to a handle typed
+    `any` answers on the resource domain, and the callee is still keyed on the
+    `any` the caller holds (above).
+  - Admission, function: a function tests its clauses at run time, so a value
+    outside the domain meets the callee's arm of last resort
+    (`FunctionClauseError`, or the default clause of Kernel arithmetic raising
+    `ArithmeticError`); `integer | :weird` into an `integer` parameter is
+    accepted. The tests cannot see a brand (typing is brand-aware, the runtime
+    is not), so the part of the witness the runtime would let in must lie inside
+    the instantiated parameter: `witness ∩ runtime_reading(param) ⊆ param`, where
+    `Types::runtime_reading` erases brands at any depth. `binary` into `utf8` is
+    refused; `utf8` into `utf8` fits.
+  - Admission, extern: an extern is a raw machine call with no clause tests
+    (`FunctionContract::extern_wire` is set), so a column other than `any` must
+    fit its instantiated parameter whole: `witness ⊆ param`. The judgement is on
+    the instantiated clause because the domain envelope reads a variable under
+    an arrow's parameter as `none`, which erases what the parameter constrained:
+    with `t := int`, `(int) -> binary` against `(t) -> nil` is refused. A column
+    whose parameter still carries variables passes. `any` is narrowed for an
+    extern too.
+  - A call with an uninhabited column cannot be made; it is never refused and
+    answers nothing.
+  - Result: the union, over the clauses that matched, of each clause's result
+    on its narrowed row. `(int | float, int)` against `+/2` takes `int` from the
+    `(int, int)` clause and `float` from the `(float, int)` clause and answers
+    `int | float`; no separate coverage pass exists
+    (`fixtures2/behavior/spec_polymorphic_clause_set_coverage.fz`).
 - A variadic extern's contract carries a tail domain alongside its fixed
   parameters: the type every argument past the declared prefix must belong
   to (`extern_contract::variadic_tail_domain`). `FunctionContract::apply`

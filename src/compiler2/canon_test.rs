@@ -173,8 +173,8 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
 /// intermediate types are not.
 fn duplicate_ceiling(number: u32) -> usize {
     match number {
-        420 => 123,
-        567 => 15,
+        420 => 122,
+        567 => 14,
         other => panic!("no pinned ceiling for fixture {other:05}"),
     }
 }

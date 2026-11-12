@@ -1,0 +1,9 @@
+#---
+# purpose: "A union operand that overlaps +'s integer clause is accepted at compile time; the binary member meets Kernel arithmetic's default clause and aborts with ArithmeticError"
+# expect: abort
+# oracle: 00753_a_binary_arriving_through_a_union_raises_arithmetic_error.oracle.exs
+#---
+def main() do
+  [v | _] = ["s", 1]
+  1 + v
+end

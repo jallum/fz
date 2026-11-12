@@ -89,6 +89,8 @@ pub struct Types {
     /// Memoized `structural_surface`: each type read with its protocol-domain
     /// markers as `any`.
     structural_surfaces: HashMap<Ty, Ty>,
+    /// Memoized `runtime_reading`: each type with its brands erased.
+    runtime_readings: HashMap<Ty, Ty>,
     /// Interned structural addresses (`a0`, `a1_0`, `r0`, ...). Keyed by the
     /// address path so the same address always yields the same `TypeVarId`,
     /// making the addressed arrow canonical by construction. See `addressed`.
@@ -528,6 +530,7 @@ impl Types {
             binary_type_operations: BinaryTypeOperationResults::default(),
             value_lane_reprs: HashMap::new(),
             structural_surfaces: HashMap::new(),
+            runtime_readings: HashMap::new(),
             address_vars: HashMap::new(),
             address_paths: Vec::new(),
             callable_origins: order::CallableOrigins::new(),
@@ -670,6 +673,7 @@ impl Types {
         self.interner.normalized();
         self.normalize_tuple_axis(&mut d);
         self.normalize_list_clauses(&mut d);
+        self.normalize_func_clauses(&mut d);
         self.order_clauses(&mut d);
         self.drop_empty_clauses(&mut d);
         self.absorb_covered_clauses(&mut d);
@@ -687,6 +691,20 @@ impl Types {
     fn unchanged(&mut self, ty: Ty) -> Ty {
         self.interner.identity_shortcut();
         ty
+    }
+
+    /// The callable axis with every vacuous arrow removed from its clauses.
+    ///
+    /// An arrow with an uninhabited parameter constrains no call, so as a
+    /// positive member it is every function. It is dropped from the clause's
+    /// positives; a clause left with none is `fun`'s own clause. Closure
+    /// literals are specific functions and stay.
+    fn normalize_func_clauses(&self, d: &mut Descr) {
+        for clause in &mut d.funcs {
+            clause
+                .pos
+                .retain(|sig| sig.lit.is_some() || !sig.args.iter().any(|a| self.is_empty(a)));
+        }
     }
 
     /// The list axis rewritten to the one normal form in [`axis`], clause by
@@ -2670,6 +2688,31 @@ impl Types {
             ty,
             RuntimeEnvelopePolarity::Positive,
             RuntimeEnvelopePurpose::Projection,
+            &Sigma::new(),
+        );
+        self.intern(descr)
+    }
+
+    /// A clause's domain over every instantiation of its free type variables:
+    /// the union of the type at each instantiation. A free variable is `any`
+    /// where it occurs covariantly and `none` under an arrow's parameter, since
+    /// the union over every instantiation of `(t) -> nil` is `(none) -> nil`,
+    /// the arrow every instantiation's callable fits. Polarity flips under
+    /// negations, at every depth through tuples, lists, resources, maps and
+    /// arrows.
+    ///
+    /// A variable with a closed bound in `closed` reads as that bound where it
+    /// occurs covariantly.
+    pub fn clause_domain_envelope(&mut self, ty: Ty, closed: &Sigma<Ty>) -> Ty {
+        if !self.has_vars(&ty) {
+            return ty;
+        }
+        let descr = runtime_envelope(
+            self,
+            ty,
+            RuntimeEnvelopePolarity::Positive,
+            RuntimeEnvelopePurpose::ClauseDomain,
+            closed,
         );
         self.intern(descr)
     }
@@ -2706,6 +2749,7 @@ impl Types {
             ty,
             RuntimeEnvelopePolarity::Positive,
             RuntimeEnvelopePurpose::Predicate,
+            &Sigma::new(),
         );
         self.intern(descr)
     }
@@ -2912,6 +2956,20 @@ impl Types {
     pub fn erase_closure_identity(&mut self, a: &Ty) -> Ty {
         let d = erase_closure_identity(self, *a);
         self.intern(d)
+    }
+
+    /// The type as the runtime reads it: every brand erased, at any depth. A
+    /// brand is a typing fact the running program cannot see, so `utf8` reads
+    /// as `binary` and `{utf8, int}` as `{binary, int}`; the values that
+    /// reach a test are those of this reading. Memoized.
+    pub fn runtime_reading(&mut self, a: &Ty) -> Ty {
+        if let Some(&cached) = self.runtime_readings.get(a) {
+            return cached;
+        }
+        let descr = runtime_reading(self, *a);
+        let reading = self.intern(descr);
+        self.runtime_readings.insert(*a, reading);
+        reading
     }
 }
 
@@ -3854,6 +3912,10 @@ enum RuntimeEnvelopePurpose {
     /// Observe callable construction and struct identity, erasing arrows and
     /// positive struct fields that a type predicate cannot inspect.
     Predicate,
+    /// The union over every instantiation of a clause's free variables:
+    /// behaves like `Projection` and also descends the callable axis, reading
+    /// an arrow's parameters at the flipped polarity.
+    ClauseDomain,
 }
 
 fn runtime_envelope(
@@ -3861,11 +3923,19 @@ fn runtime_envelope(
     ty: Ty,
     polarity: RuntimeEnvelopePolarity,
     purpose: RuntimeEnvelopePurpose,
+    bounds: &Sigma<Ty>,
 ) -> Descr {
     let mut descr = types.descr(&ty).clone();
     if !descr.vars.values.is_empty() {
         match (polarity, descr.vars.cofinite) {
-            (RuntimeEnvelopePolarity::Positive, _) => return Descr::any(),
+            (RuntimeEnvelopePolarity::Positive, _) => match bound_variables_reading(types, &descr, purpose, bounds) {
+                Some(bound) => {
+                    descr.vars = FiniteSet::none();
+                    let cx = types.ctx();
+                    descr = descr.union(cx, &bound);
+                }
+                None => return Descr::any(),
+            },
             (RuntimeEnvelopePolarity::Negative, true) => return Descr::none(),
             (RuntimeEnvelopePolarity::Negative, false) => descr.vars = FiniteSet::none(),
         }
@@ -3880,25 +3950,32 @@ fn runtime_envelope(
     {
         descr.funcs = callable_identity_clauses(types, &descr.funcs);
     }
+    if purpose == RuntimeEnvelopePurpose::ClauseDomain {
+        descr.funcs = descr
+            .funcs
+            .into_iter()
+            .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, bounds, runtime_arrow_sig))
+            .collect();
+    }
     descr.tuples = descr
         .tuples
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_tuple_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, bounds, runtime_tuple_sig))
         .collect();
     descr.lists = descr
         .lists
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_list_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, bounds, runtime_list_sig))
         .collect();
     descr.resources = descr
         .resources
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_resource_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, bounds, runtime_resource_sig))
         .collect();
     descr.maps = descr
         .maps
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_map_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, bounds, runtime_map_sig))
         .collect();
     descr
 }
@@ -3919,6 +3996,28 @@ fn runtime_envelope(
 /// same interned one-literal clause it would have seen unenveloped. The
 /// persistence boundary rejects the impossible several-literal intersection,
 /// so this path never invents a coarse fallback or a capture layout.
+/// A clause domain reads a variable that has a closed bound as that bound
+/// where it occurs covariantly. `None` when any variable of `descr` is
+/// unbounded or the purpose is not a clause domain: the position then admits
+/// anything.
+fn bound_variables_reading(
+    types: &mut Types,
+    descr: &Descr,
+    purpose: RuntimeEnvelopePurpose,
+    bounds: &Sigma<Ty>,
+) -> Option<Descr> {
+    if purpose != RuntimeEnvelopePurpose::ClauseDomain || descr.vars.cofinite {
+        return None;
+    }
+    let mut reading = Descr::none();
+    for var in &descr.vars.values {
+        let bound = *bounds.get(var)?;
+        let cx = types.ctx();
+        reading = reading.union(cx, types.descr(&bound));
+    }
+    Some(reading)
+}
+
 fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec<Conj<ArrowSig>> {
     if callable_identity_targets(funcs).is_none() {
         return Descr::fun_top().funcs;
@@ -3937,6 +4036,7 @@ fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec
                         *capture,
                         RuntimeEnvelopePolarity::Positive,
                         RuntimeEnvelopePurpose::Predicate,
+                        &Sigma::new(),
                     )
                 })
                 .collect();
@@ -3960,8 +4060,12 @@ fn runtime_envelope_ty(
     ty: Ty,
     polarity: RuntimeEnvelopePolarity,
     purpose: RuntimeEnvelopePurpose,
+    bounds: &Sigma<Ty>,
 ) -> Ty {
-    let descr = runtime_envelope(types, ty, polarity, purpose);
+    if purpose == RuntimeEnvelopePurpose::ClauseDomain && !types.has_vars(&ty) {
+        return ty;
+    }
+    let descr = runtime_envelope(types, ty, polarity, purpose, bounds);
     types.intern(descr)
 }
 
@@ -3970,16 +4074,17 @@ fn runtime_structural_conj<T>(
     conj: Conj<T>,
     polarity: RuntimeEnvelopePolarity,
     purpose: RuntimeEnvelopePurpose,
-    transform: fn(&mut Types, T, RuntimeEnvelopePolarity, RuntimeEnvelopePurpose) -> Option<T>,
+    bounds: &Sigma<Ty>,
+    transform: fn(&mut Types, T, RuntimeEnvelopePolarity, RuntimeEnvelopePurpose, &Sigma<Ty>) -> Option<T>,
 ) -> Option<Conj<T>> {
     let mut pos = Vec::with_capacity(conj.pos.len());
     for sig in conj.pos {
-        pos.push(transform(types, sig, polarity, purpose)?);
+        pos.push(transform(types, sig, polarity, purpose, bounds)?);
     }
     let neg = conj
         .neg
         .into_iter()
-        .filter_map(|sig| transform(types, sig, polarity.flipped(), purpose))
+        .filter_map(|sig| transform(types, sig, polarity.flipped(), purpose, bounds))
         .collect();
     Some(Conj { pos, neg })
 }
@@ -3989,13 +4094,34 @@ fn runtime_tuple_sig(
     sig: TupleSig,
     polarity: RuntimeEnvelopePolarity,
     purpose: RuntimeEnvelopePurpose,
+    bounds: &Sigma<Ty>,
 ) -> Option<TupleSig> {
     let elems = sig
         .elems
         .into_iter()
-        .map(|ty| runtime_envelope_ty(types, ty, polarity, purpose))
+        .map(|ty| runtime_envelope_ty(types, ty, polarity, purpose, bounds))
         .collect::<Vec<_>>();
     (!elems.iter().any(|ty| types.is_empty(ty))).then_some(TupleSig { elems })
+}
+
+fn runtime_arrow_sig(
+    types: &mut Types,
+    sig: ArrowSig,
+    polarity: RuntimeEnvelopePolarity,
+    purpose: RuntimeEnvelopePurpose,
+    bounds: &Sigma<Ty>,
+) -> Option<ArrowSig> {
+    let args = sig
+        .args
+        .iter()
+        .map(|ty| runtime_envelope_ty(types, *ty, polarity.flipped(), purpose, bounds))
+        .collect();
+    let ret = runtime_envelope_ty(types, sig.ret, polarity, purpose, bounds);
+    Some(ArrowSig {
+        args,
+        ret,
+        lit: sig.lit,
+    })
 }
 
 fn runtime_list_sig(
@@ -4003,8 +4129,11 @@ fn runtime_list_sig(
     sig: ListSig,
     polarity: RuntimeEnvelopePolarity,
     purpose: RuntimeEnvelopePurpose,
+    bounds: &Sigma<Ty>,
 ) -> Option<ListSig> {
-    let elem = sig.elem.map(|ty| runtime_envelope_ty(types, ty, polarity, purpose));
+    let elem = sig
+        .elem
+        .map(|ty| runtime_envelope_ty(types, ty, polarity, purpose, bounds));
     match elem {
         Some(elem) if types.is_empty(&elem) && !sig.empty => None,
         Some(elem) if types.is_empty(&elem) => Some(ListSig::empty()),
@@ -4017,8 +4146,9 @@ fn runtime_resource_sig(
     sig: ResourceSig,
     polarity: RuntimeEnvelopePolarity,
     purpose: RuntimeEnvelopePurpose,
+    bounds: &Sigma<Ty>,
 ) -> Option<ResourceSig> {
-    let payload = runtime_envelope_ty(types, sig.payload, polarity, purpose);
+    let payload = runtime_envelope_ty(types, sig.payload, polarity, purpose, bounds);
     (!types.is_empty(&payload)).then_some(ResourceSig { payload })
 }
 
@@ -4027,6 +4157,7 @@ fn runtime_map_sig(
     sig: sigs::MapSig,
     polarity: RuntimeEnvelopePolarity,
     purpose: RuntimeEnvelopePurpose,
+    bounds: &Sigma<Ty>,
 ) -> Option<sigs::MapSig> {
     match (purpose, &sig.tag, polarity) {
         // A struct question observes the schema tag; its field layout is owned
@@ -4052,7 +4183,7 @@ fn runtime_map_sig(
             let fields = sig
                 .fields
                 .into_iter()
-                .map(|(key, ty)| (key, runtime_envelope_ty(types, ty, polarity, purpose)))
+                .map(|(key, ty)| (key, runtime_envelope_ty(types, ty, polarity, purpose, bounds)))
                 .collect::<BTreeMap<_, _>>();
             (!fields.values().any(|ty| types.is_empty(ty))).then_some(sigs::MapSig { tag: sig.tag, fields })
         }
@@ -4134,6 +4265,18 @@ fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
             });
         }
     }
+    erased
+}
+
+/// Brands erased at every depth. A brand refines the structure held in the
+/// same descriptor, so releasing its slot is the whole erasure.
+fn runtime_reading(t: &mut Types, a: Ty) -> Descr {
+    let base = t.descr(&a).clone();
+    if base.looks_empty() {
+        return Descr::none();
+    }
+    let mut erased = map_recursive_inputs(t, base, runtime_reading);
+    erased.brands = FiniteSet::any();
     erased
 }
 

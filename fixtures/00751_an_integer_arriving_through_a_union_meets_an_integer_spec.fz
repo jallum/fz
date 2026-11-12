@@ -1,0 +1,14 @@
+#---
+# purpose: "A union argument that overlaps a function's @spec domain is accepted, and the call answers when the member inside the domain arrives"
+# kind: run
+# oracle: 00751_an_integer_arriving_through_a_union_meets_an_integer_spec.oracle.exs
+#---
+defmodule M do
+  @spec f(integer) :: integer
+  def f(x :: integer), do: x + 1
+end
+
+def main() do
+  [v | _] = [1, "x"]
+  dbg(M.f(v))
+end

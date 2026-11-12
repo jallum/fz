@@ -1,0 +1,6 @@
+#---
+# purpose: "Keyword.update over a list with an integer and a binary value runs: the callback's int | binary parameter overlaps +'s integer clause, and only the integer reaches it"
+# kind: run
+# oracle: 00750_keyword_update_over_a_mixed_value_list_runs.oracle.exs
+#---
+def main(), do: dbg(Keyword.update([a: 1, s: "x"], :a, 1, fn v -> v + 1 end))
