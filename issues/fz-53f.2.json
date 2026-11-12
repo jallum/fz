@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-53f.7"
+  ],
   "created": "2026-11-12T22:34:13Z",
   "description": "OrderedSet\u003cT\u003e stores every member twice (order Vec + members HashSet) and clones each value. 88% of the 65k sets per parse call hold four entries or fewer; the largest held 508; lookups are rare. Keep the order vector alone with scanned membership. Removes the members field and the Hash bound. Before committing to a plain vector, measure the largest set and the contains/remove counts on the telemetry distiller (bin/distill or the d5.fz program) and report; a set that grows into the thousands is a finding to bring back, not something to paper over with a hybrid. Cumulative saving after this step: -2.8% to -3.4% on the large programs. Proposal page: /Users/j5n/Workspace/compile-cost-round-two.html (https://claude.ai/artifact/4T5Lime7pQxKbCiKJqaJ8x). Spike (base c768670cd; port by reading, not by applying): /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/tables/stepA.diff. Acceptance: stdout (interp and run), canonical dump, activation key counts and job counts identical to the base binary on /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/p/distinct1.fz, f761.fz (--top 1 --top 2), f765.fz (--max-top 3), /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/m/r6.fz, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/l/lit16.fz; release instructions retired re-measured on base and change binaries built the same way; full gate.",
   "id": "fz-53f.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "OrderedSet is its order vector",
   "type": "task",
-  "updated_at": "2026-11-12T22:34:13Z"
+  "updated_at": "2026-11-12T22:34:37Z"
 }

@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-53f.1"
+    "fz-53f.1",
+    "fz-53f.2"
   ],
   "blocks": [],
   "created": "2026-11-12T22:34:14Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "The compiler's remaining tables hash with a fast, randomly seeded hasher",
   "type": "task",
-  "updated_at": "2026-11-12T22:34:36Z"
+  "updated_at": "2026-11-12T22:34:37Z"
 }
