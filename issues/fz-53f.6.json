@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-53f.5"
+  ],
   "blocks": [
     "fz-53f.7"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "An activation symbol's identity is its function and arrow",
   "type": "task",
-  "updated_at": "2026-11-12T22:34:38Z"
+  "updated_at": "2026-11-12T22:34:39Z"
 }
