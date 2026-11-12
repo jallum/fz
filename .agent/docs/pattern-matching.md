@@ -443,6 +443,11 @@ evaluators. The Kernel functions a guard may call this way are `map_size/1`,
 Unsupported guard expressions (a list or tuple literal, say) are still refused as
 not dispatch-pure.
 
+The receive matcher's `<`, `<=`, `>` and `>=` (`emit_ordering_cmp_value`) compare
+two integers as machine words and ask `fz_value_cmp_ref`, the one dynamic
+ordering a body and the interpreter use, for every other pair: a float, a mixed
+integer and float, an atom against a number, or a value of unknown type.
+
 ### Receive Guards Run On The Sender
 
 A send to another process runs the receiver's parked matcher on the sender, so

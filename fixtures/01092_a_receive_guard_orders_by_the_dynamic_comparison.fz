@@ -1,0 +1,75 @@
+#---
+# purpose: "a receive guard that orders a float, a mixed number pair or an atom answers as Elixir does, on every path"
+# oracle: oracle.exs
+#---
+#
+# The receive matcher orders two integers as machine words and asks the
+# language's one dynamic ordering for every other pair. Each helper parks a
+# message in the mailbox and matches it against a guard of one ordering
+# operator; `:a` means the guard held and `:b` means it did not. The list
+# pairs each helper with a message of a different type: a float against a float
+# literal, an integer against a float literal, a float against an integer
+# literal, an integer against an atom literal, an atom against an integer
+# literal, and two integers as the control.
+def float_over_float(m) do
+  send(self(), m)
+  receive do
+    n when n > 1.5 -> :a
+    _ -> :b
+  end
+end
+
+def int_at_least_float(m) do
+  send(self(), m)
+  receive do
+    n when n >= 1.0 -> :a
+    _ -> :b
+  end
+end
+
+def float_at_most_int(m) do
+  send(self(), m)
+  receive do
+    n when n <= 2 -> :a
+    _ -> :b
+  end
+end
+
+def int_below_atom(m) do
+  send(self(), m)
+  receive do
+    n when n < :b -> :a
+    _ -> :b
+  end
+end
+
+def atom_over_int(m) do
+  send(self(), m)
+  receive do
+    n when n > 3 -> :a
+    _ -> :b
+  end
+end
+
+def int_over_int(m) do
+  send(self(), m)
+  receive do
+    n when n > 1 -> :a
+    _ -> :b
+  end
+end
+
+def main() do
+  dbg([
+    float_over_float(2.0),
+    float_over_float(1.0),
+    int_at_least_float(1),
+    int_at_least_float(0),
+    float_at_most_int(2.5),
+    float_at_most_int(1.5),
+    int_below_atom(1),
+    atom_over_int(:x),
+    int_over_int(2),
+    int_over_int(1)
+  ])
+end
