@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:06:34Z",
+  "description": "Verified (probe test, /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/handoff/probeB.patch): for n in 0..3, t.arrow(\u0026[any; n], any) is_equivalent to intern(Descr::fun_top()) and subtype both ways, but is a different Ty. Its funcs axis is [Conj{pos:[ArrowSig{args:[any;n], ret:any, lit:None}]}]; fun_top's is [Conj{pos:[], neg:[]}]. normalize_func_clauses (types/mod.rs:749-756) only drops arrows with an uninhabited parameter. Also: join(fun, closure_lit) interns as the two-clause axis [top, {lit}] (absorb_covered_clauses does not absorb a literal clause under the top clause), and join(arrow_n, lit) is yet another id; all are equivalent to fun.\n\nWhy it matters: Ty identity is what keys activations and memo tables. fz-sc8.117 first folded to an all-any arrow and minted duplicate keys for that reason, so it folds to fun instead. Production mints all-any arrows from spelled specs: resolve.rs:275, from (any) -\u003e any in lib/map.fz:322,340,343, lib/keyword.fz:368,390,393, lib/stream.fz:34,38. fun_top is minted by convergence collapse (types/mod.rs:1098, 1601) and at 4267. Inferred, no concrete split observed yet: a key or memo that sees both forms treats one set as two.\n\nFix shape: normalization yields one canonical form for the callable top, so every equivalent spelling interns to the same id; covered clauses under the top are absorbed. Acceptance: a types_test that the four arities, the joins with a literal and with int -\u003e int, and fun are one Ty; census and pins may only fall.",
+  "id": "fz-sc8.130",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "An all-any arrow and fun intern to one id",
+  "type": "bug",
+  "updated_at": "2026-11-12T20:06:34Z"
+}
