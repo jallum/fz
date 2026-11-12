@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-gfx.2"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-gfx",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "plan_block resumes on a slice of the block's steps",
   "type": "task",
-  "updated_at": "2026-11-12T22:09:31Z"
+  "updated_at": "2026-11-12T23:07:23Z"
 }
