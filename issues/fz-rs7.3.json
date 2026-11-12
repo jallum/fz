@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rs7.4"
+  ],
   "created": "2026-11-12T20:16:27Z",
   "description": "emit_runtime_type_test (runtime_test.rs) already answers a test on an unboxed lane with a constant. It returns a three-way answer (always, never, a flag), and the two walkers (lower_dispatch_test in native.rs; emit_guard_dispatch_node in receive.rs) emit only the live successor. Then as_raw_i64, as_raw_f64, receive_value_int and receive_value_float refuse a wrong lane instead of coercing to zero.\n\nFails before, passes after: with those four returning an error, 184 of the 296 mixed-lane guard programs (gh-303-spikes/matrix.py) fail to compile; after, none do and all 296 match Elixir on three paths. The 296 run as one generated matrix test, not 296 numbered fixtures.\n\nRemoved: the zero-value wrong-lane coercion.\n\nAcceptance: full gate green; no pin rises.",
   "id": "fz-rs7.3",
