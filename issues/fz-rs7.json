@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:16:26Z",
+  "description": "Proposal page (approved 2026-11-12): https://claude.ai/artifact/MmBw3tg8SAZAtXWwy4UzME (local /Users/j5n/Workspace/gh-303.html, version 3). Closes GitHub #303.\n\nToday Kernel arithmetic externs return a {value, failed} pair that fz code decodes (arithmetic_result, lib/kernel.fz), costing about 145 instructions per operator and a continuation frame; GuardExtern::new refuses pair returns, so guards use a second, unchecked arithmetic implementation that answers wrongly on overflow and division by zero.\n\nRemedy: an extern declares its failure beside its true return type:\n\n  extern \"C\" defp fz_op_rem_ii(integer, integer) :: integer,\n    raises: ArithmeticError,\n    message: \"bad argument in arithmetic expression\"\n\nmessage: is required (fz has no exception modules with default messages; approved with the page). The contract becomes ExternReturn::Checked(lane, LastResort); in a body the failure edge raises the declared exception through the existing LastResort carrier; in a guard the failure makes the clause not match. Guards then resolve operators as calls and the raw guard arithmetic is deleted. Measured: native functions 25 -\u003e 15 on the step program, instructions per iteration 405 -\u003e 249 and 772 -\u003e 481; an inline checked primitive saves only 4 to 8 more and is not built.\n\nSpike: /Users/j5n/Workspace/gh-303-spikes/spike-4-raises.patch (applies to d2ecc9d48; not gate-green: 15 unit pins and fixture 00622 must change, listed in the page's red ledger: 8 pin drops, 6 must-change, none rises). Probes: gh-303-spikes/census-final.json (85 guard probes), gh-303-spikes/matrix.py (296 mixed-lane guard programs).\n\nFixture block: 01084-01099.\n\nNeighbours: fz-sc8.116 (repeated pattern variable) is independent. Stack #274's try/rescue facts are on the page. lib/kernel.fz is also edited by fz-sc8.124-.128 (OptionParser session).",
+  "id": "fz-rs7",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Externs declare the exception they raise, and guards run the same arithmetic as bodies",
+  "type": "epic",
+  "updated_at": "2026-11-12T20:16:26Z"
+}
