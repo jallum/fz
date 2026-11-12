@@ -54,8 +54,7 @@ pub(crate) use value::*;
 pub(crate) use variadic::*;
 
 pub(crate) use crate::ir_codegen::{
-    AotBackend, Backend, BsConstSyms, CodegenError, CompiledMetadata, JitBackend, build_frame_schema,
-    define_static_sharedbin,
+    AotBackend, Backend, BsConstSyms, CodegenError, CompiledMetadata, JitBackend, define_static_sharedbin,
 };
 
 pub(crate) fn compile_with_backend_native_program<

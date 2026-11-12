@@ -1021,9 +1021,8 @@ keys use the pattern <code>:K_allocs</code> and <code>:K_bytes</code>, where
 <code>K</code> is one of <code>list_cons</code>, <code>struct</code>,
 <code>closure</code>, <code>map</code>, <code>bitstring</code>,
 <code>procbin</code>, <code>shared_bin</code>, <code>scalar_box</code>,
-<code>frame</code>, <code>resource</code>, or <code>other</code>. Heap object
-bytes are 16-byte aligned request sizes. Frame bytes are the aligned frame
-allocation size even though frames are allocated outside the bump heap.</p>
+<code>resource</code>, or <code>other</code>. Heap object
+bytes are 16-byte aligned request sizes.</p>
 
 <p><code>:shared_bin_allocs</code> and <code>:shared_bin_bytes</code> count the
 off-heap byte buffers behind large binaries, and are deliberately NOT part of

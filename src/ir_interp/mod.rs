@@ -119,7 +119,7 @@ impl IrInterpRuntime {
 
     pub(crate) fn fresh_with_atoms(atom_names: Vec<String>) -> Self {
         let mut runtime = Self::fresh();
-        runtime.node = Rc::new(Node::new(atom_names, Vec::new()));
+        runtime.node = Rc::new(Node::new(atom_names));
         let user_schemas = runtime.schemas();
         let process = Box::new(Process::with_node(
             Rc::clone(&runtime.node),

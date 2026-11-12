@@ -2,20 +2,16 @@
 //!
 //! Compiler2 owns lowering and function code generation in
 //! `compiler2::native_codegen`. This module only carries backend ownership,
-//! frame schemas, emitted-module metadata, and CLIF dump controls that are
+//! emitted-module metadata, and CLIF dump controls that are
 //! shared by JIT and AOT.
 
 pub(crate) mod aot_main;
 pub(crate) mod backend;
 pub(crate) mod compiled;
 pub(crate) mod error;
-pub(crate) mod schema;
-mod support;
 
 pub(crate) use aot_main::*;
 pub(crate) use backend::*;
-pub(crate) use schema::*;
-pub(crate) use support::*;
 
 pub use backend::AotArtifact;
 pub use compiled::{CompiledMetadata, CompiledModule};

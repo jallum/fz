@@ -23,7 +23,6 @@ pub struct HeapAllocStats {
     pub bitstring: AllocStat,
     pub procbin: AllocStat,
     pub scalar_box: AllocStat,
-    pub frame: AllocStat,
     pub resource: AllocStat,
     pub other: AllocStat,
     /// Off-heap binary buffers allocated by this process.
@@ -45,7 +44,6 @@ pub enum HeapAllocKind {
     Bitstring,
     ProcBin,
     ScalarBox,
-    Frame,
     Resource,
     Other,
 }
@@ -67,7 +65,6 @@ impl HeapAllocStats {
             HeapAllocKind::Bitstring => self.bitstring.record(bytes),
             HeapAllocKind::ProcBin => self.procbin.record(bytes),
             HeapAllocKind::ScalarBox => self.scalar_box.record(bytes),
-            HeapAllocKind::Frame => self.frame.record(bytes),
             HeapAllocKind::Resource => self.resource.record(bytes),
             HeapAllocKind::Other => self.other.record(bytes),
         }
