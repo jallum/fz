@@ -1,0 +1,6 @@
+%Pt{x: 1, y: 2}
+%Pt{x: nil, y: 3}
+%Seg{a: %Pt{x: 1, y: 2}, b: %Pt{x: nil, y: 3}}
+[%Pt{x: 1, y: 2}, %Pt{x: 3, y: 4}]
+{%Pt{x: 1, y: 2}, :tag}
+%Geo.Pt{lat: 1, lon: 2}

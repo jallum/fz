@@ -1,0 +1,28 @@
+#---
+# purpose: "p.__struct__ answers the struct's module atom, with the base type known or through an any-typed parameter, and equals the alias"
+# oracle: oracle.exs
+#---
+#
+# A struct's module is a value: the same atom the alias spells in value
+# position, so comparing the two is true.
+defmodule Pt do
+  defstruct [:x, :y]
+end
+
+defmodule Geo.Pt do
+  defstruct [:lat]
+end
+
+def module_of(v :: any), do: v.__struct__
+
+def main() do
+  p = %Pt{x: 1, y: 2}
+  dbg(p.__struct__)
+  dbg(module_of(p))
+  dbg(p.__struct__ == Pt)
+  dbg(module_of(p) == Pt)
+  dbg(module_of(p) == Geo.Pt)
+  g = %Geo.Pt{lat: 1}
+  dbg(g.__struct__)
+  dbg(module_of(g))
+end

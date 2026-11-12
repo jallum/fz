@@ -4766,3 +4766,30 @@ fn is_tuple_type_asks_whether_every_value_is_a_tuple() {
     assert!(!t.is_tuple_type(&list));
     assert!(!t.is_tuple_type(&none), "the empty type has no values to be tuples");
 }
+
+#[test]
+fn a_struct_type_answers_its_module_atom_for_the_struct_key() {
+    let mut t = Types::new();
+    let int = t.int();
+    let key = MapKey::Atom("x".to_string());
+    let module_key = MapKey::Atom("__struct__".to_string());
+    let point = t.struct_map(ModuleId::for_test(1), module_name("Geo.Pt"), &[(key.clone(), int)]);
+    let plain = t.map(&[(key, int)]);
+
+    let module_atom = t.atom_lit("Elixir.Geo.Pt");
+    assert_eq!(
+        t.field_lookup(&point, &module_key),
+        Some(module_atom),
+        "the struct's module is the singleton atom an alias in value position has"
+    );
+    let any_or_nil = {
+        let any = t.any();
+        let nil = t.nil();
+        t.union(any, nil)
+    };
+    assert_eq!(
+        t.field_lookup(&plain, &module_key),
+        Some(any_or_nil),
+        "a plain map's absent key stays unconstrained"
+    );
+}

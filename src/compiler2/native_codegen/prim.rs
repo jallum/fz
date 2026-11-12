@@ -27,7 +27,7 @@ use fz_runtime::ir_runtime::{
     fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze,
     fz_map_dest_put_parts, fz_map_dest_put_ref, fz_map_get_atom_key_ref, fz_map_get_float_key_ref,
     fz_map_get_int_key_ref, fz_map_get_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
-    fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref,
+    fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module,
     fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref,
     fz_value_eq_widening_ref,
 };
@@ -369,6 +369,11 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 fz_struct_get_named_field_ref,
                 [process, struct_ref, atom]
             ))
+        }
+        Prim::StructModule(c) => {
+            let struct_ref = body.tagged_var(var_env, c.0);
+            let process = body.process_arg();
+            LowerOut::ValueRefWord(runtime_call1!(body, fz_struct_module, [process, struct_ref]))
         }
         Prim::MakeBitstring(fields) => {
             let process = body.process_arg();
@@ -925,6 +930,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::MakeStruct { .. }
         | Prim::TupleField(..)
         | Prim::StructField(..)
+        | Prim::StructModule(..)
         | Prim::MakeBitstring(..)
         | Prim::ConstBitstring(..)
         | Prim::BitReaderInit(..)

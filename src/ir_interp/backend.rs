@@ -31,8 +31,9 @@ use fz_runtime::heap::{GcStats, Schema};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_empty,
     fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref,
-    fz_struct_get_named_field_ref,
+    fz_struct_get_named_field_ref, fz_struct_module,
 };
+use fz_runtime::module_name::STRUCT_MODULE_FIELD;
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
 use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Process, ProcessState};
 use fz_runtime::sched::{ProbeOutcome, SendProbe, drain_in_queue, gift_match, gift_message, self_send};
@@ -1766,7 +1767,11 @@ fn eval_steps<T: Telemetry + ?Sized>(
             }
             ProgramStep::FieldAccess { value, base, field } => {
                 let base = env_get(transport, runtime.cur_proc(), env, *base)?;
-                let result = interp_struct_field(runtime, module, base, field)?;
+                let result = if field == STRUCT_MODULE_FIELD {
+                    interp_struct_module(runtime, base)?
+                } else {
+                    interp_struct_field(runtime, module, base, field)?
+                };
                 env.insert(*value, BackendBoundValue::Runtime(result));
             }
             ProgramStep::RequireMapValue { value, source, key } => {
@@ -3395,6 +3400,13 @@ fn backend_bit_size_value(
             (1, fz_runtime::ir_runtime::fz_pinned_binary_segment_size(pinned))
         }
     })
+}
+
+fn interp_struct_module(runtime: &mut IrInterpRuntime, value: AnyValue) -> Result<AnyValue, String> {
+    with_value_ref(runtime.cur_proc(), value, "backend struct module", |subject| {
+        fz_struct_module(runtime.cur_proc(), subject)
+    })
+    .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend struct module"))
 }
 
 fn interp_struct_field(

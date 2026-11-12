@@ -104,7 +104,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `00800-00899` | fz-3ul                            | reserved               |
 | `00900-00999` | fz-a9y                            | reserved               |
 | `01000-01039` | fz-sc8 (stack #274)               | in use through `01030` |
-| `01040-01059` | fz-sc8 (session fz-38: .77, .105) | in use through `01040` |
+| `01040-01059` | fz-sc8 (session fz-38: .77, .105) | in use through `01042` |
 | `01060-01099` | unallocated                       | free                   |
 
 Behavioural routing lives in the filename when a fixture is path-specific.

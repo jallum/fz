@@ -826,3 +826,35 @@ fn read_line_folds_crlf_to_lf_and_keeps_blank_and_unterminated_lines() {
         assert_eq!(lines_of(contents), expected, "{contents:?}");
     }
 }
+
+#[test]
+fn a_struct_answers_its_module_and_a_map_answers_its_struct_entry() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let named = schemas.borrow_mut().register(Schema::named_struct(
+        crate::module_name::ModuleName::from_segments(vec!["Point".to_string()]),
+        ["x".to_string()],
+    ));
+    let mut process = Box::new(Process::new(schemas));
+    let process_ptr: *mut Process = &mut *process;
+    let record = tuple_ref(&mut process, named, &[AnyValue::int(1)]);
+    let key = process.node.intern_atom("__struct__");
+    let module = process.node.intern_atom("Elixir.Oops");
+    let map_bits = process
+        .heap
+        .alloc_map_slots(&[(AnyValue::atom(key), AnyValue::atom(module))]);
+    let map = AnyValueRef::from_heap_object(
+        ValueKind::MAP,
+        crate::any_value::map_addr_from_tagged(map_bits).unwrap(),
+    )
+    .expect("map ref");
+
+    let of_struct =
+        AnyValueRef::from_raw_word(fz_struct_module(process_ptr, record.raw_word())).expect("struct answer");
+    let of_map = AnyValueRef::from_raw_word(fz_struct_module(process_ptr, map.raw_word())).expect("map answer");
+
+    assert_eq!(
+        of_struct.load_atom(),
+        Ok(process.node.intern_atom("Elixir.Point") as u64)
+    );
+    assert_eq!(of_map.load_atom(), Ok(module as u64));
+}

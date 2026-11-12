@@ -49,6 +49,7 @@ use conj::Conj;
 use descr::Descr;
 use descr::OpaqueTag;
 use dnf::dnf_intersect_with;
+use fz_runtime::module_name::STRUCT_MODULE_FIELD;
 use sigs::{
     ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig, specialize_surface,
 };
@@ -3473,7 +3474,7 @@ fn tuple_field_type(cx: TyCtx<'_>, d: &Descr, index: usize) -> Descr {
 }
 
 /// Look up `key` across every axis a field can come from: a map's declared
-/// fields, and — for the atom `value` only — a resource's payload. A resource
+/// fields, a struct's module under `__struct__`, and — for the atom `value` only — a resource's payload. A resource
 /// carries no field but `value`, so any other key skips the resource axis
 /// exactly as it would a type with no resource axis at all.
 fn field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
@@ -3487,9 +3488,12 @@ fn field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
         }
         let mut clause_v: Option<Descr> = None;
         for sig in &conj.pos {
-            let sig_v = match sig.fields.get(key) {
-                Some(t) => cx.descr(t).clone(),
-                None => Descr::any().union(cx, &Descr::nil()),
+            let sig_v = match (sig.fields.get(key), &sig.tag) {
+                (Some(t), _) => cx.descr(t).clone(),
+                (None, MapTag::Struct(tag)) if matches!(key, MapKey::Atom(name) if name == STRUCT_MODULE_FIELD) => {
+                    Descr::atom_lit(tag.name.atom_name())
+                }
+                (None, _) => Descr::any().union(cx, &Descr::nil()),
             };
             clause_v = Some(match clause_v {
                 None => sig_v,

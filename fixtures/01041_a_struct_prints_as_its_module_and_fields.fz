@@ -1,0 +1,27 @@
+#---
+# purpose: "a struct prints as %Name{field: value} in defstruct order, whether flat, nil-valued, nested, in a list, in a tuple or in a nested module"
+# oracle: oracle.exs
+#---
+#
+# dbg renders a struct the way Elixir's inspect does: the module alias, then
+# every field in defstruct order. A nested module spells as a dotted alias.
+defmodule Pt do
+  defstruct [:x, :y]
+end
+
+defmodule Seg do
+  defstruct [:a, :b]
+end
+
+defmodule Geo.Pt do
+  defstruct [:lat, :lon]
+end
+
+def main() do
+  dbg(%Pt{x: 1, y: 2})
+  dbg(%Pt{y: 3})
+  dbg(%Seg{a: %Pt{x: 1, y: 2}, b: %Pt{y: 3}})
+  dbg([%Pt{x: 1, y: 2}, %Pt{x: 3, y: 4}])
+  dbg({%Pt{x: 1, y: 2}, :tag})
+  dbg(%Geo.Pt{lat: 1, lon: 2})
+end

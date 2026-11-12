@@ -38,6 +38,7 @@ use crate::heap::{
     AllocStat, BITSTRING_READER_SCHEMA, BITSTRING_RESULT_SCHEMA, closure_capture_ref, list_head_ref, list_tail_ref,
     map_entry_refs,
 };
+use crate::module_name::STRUCT_MODULE_FIELD;
 use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
     ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
@@ -2097,6 +2098,23 @@ pub extern "C" fn fz_struct_get_named_field_ref(process: *mut Process, value_ref
         .read_struct_named_field_ref(value_ref, &field_name)
         .expect("fz_struct_get_named_field_ref")
         .raw_word()
+}
+
+/// The module a struct value belongs to, as a value ref: the atom of its
+/// schema identity (`Elixir.Pt`). A map answers its `__struct__` entry. The
+/// result crosses the extern boundary as a reference like every other
+/// value-returning entry: a struct's module atom is boxed, a map's entry is
+/// returned in place.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_struct_module(process: *mut Process, value_ref_word: u64) -> u64 {
+    let value_ref = any_value_ref_from_word(value_ref_word, "fz_struct_module");
+    if value_ref.tag() == ValueKind::MAP {
+        let key = unsafe { &*process }.node.intern_atom(STRUCT_MODULE_FIELD);
+        return fz_map_get_atom_key_ref(process, value_ref_word, key as u64);
+    }
+    let heap = &mut unsafe { &mut *process }.heap;
+    let module = heap.struct_module_atom(value_ref).expect("fz_struct_module");
+    heap.box_any_value_ref(module).raw_word()
 }
 
 #[unsafe(no_mangle)]
