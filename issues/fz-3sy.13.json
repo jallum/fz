@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:13:52Z",
+  "description": "Proposal (approved 2026-11-12): /Users/j5n/Workspace/fz-3sy-typed-path.html. When every key of a map literal is a literal atom the compiler orders the entries by the runtime's atom key order and drops overridden duplicates, still evaluating every value in source order. The destination is opened as ordered and its freeze writes the header only; a debug assertion checks the order. Signal: measured with a probe 1562 -\u003e 649 (2 keys), 4639 -\u003e 1951 (8) instructions per literal. Tests first: an ordered destination freezes to the same bytes as a sorted one; a fixture with keys out of order and a repeated key whose discarded value has a visible effect.",
+  "id": "fz-3sy.13",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 2,
+  "status": "open",
+  "title": "A map literal with literal atom keys is written in order",
+  "type": "task",
+  "updated_at": "2026-11-12T20:13:52Z"
+}
