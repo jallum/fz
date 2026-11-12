@@ -152,6 +152,12 @@ declared later in the same scope:
    Separately, `require` records the selected remote macro `FunctionId`s that
    this scope may expand. A visible module without a matching required macro
    entry still trips `macro/not-required`.
+   A module or protocol declaration binds a name in its declaring scope as
+   Elixir's `defmodule` does: a single-segment name binds itself; a dotted name
+   nested in a module binds only its first segment, to the parent's child of
+   that segment (`defmodule H.T` inside `M` defines `M.H.T` and makes `H.T`
+   reach it); a dotted name declared at the root binds nothing, so `Geo.Pt` is
+   reached only by its full path and `Pt` stays free for another module.
    Later jobs wait only when they need more than that placeholder:
    macro expansion waits for the provider interface when it must decide whether
    a reserved callable is a macro, and module-interface publication validates

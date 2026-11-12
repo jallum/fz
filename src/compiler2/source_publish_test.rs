@@ -813,4 +813,37 @@ mod identity_tests {
             }
         );
     }
+
+    #[test]
+    fn a_declaration_binds_only_what_elixirs_defmodule_binds() {
+        let mut world = World::new();
+        let root = ModuleId::GLOBAL;
+        let m = world.reference_module(ModuleName::from_segments(vec!["M".into()]));
+        let single = ModuleName::from_segments(vec!["Pt".into()]);
+        let dotted = ModuleName::from_segments(vec!["Geo".into(), "Pt".into()]);
+
+        let declared = reference_declared_module(&mut world, root, &single);
+        assert_eq!(
+            declared_module_binding(&mut world, root, &single, declared),
+            Some(("Pt".to_string(), declared)),
+            "a single-segment name binds itself"
+        );
+
+        let declared = reference_declared_module(&mut world, root, &dotted);
+        assert_eq!(
+            declared_module_binding(&mut world, root, &dotted, declared),
+            None,
+            "a dotted name declared at the root binds nothing"
+        );
+
+        let nested = ModuleName::from_segments(vec!["H".into(), "T".into()]);
+        let declared = reference_declared_module(&mut world, m, &nested);
+        let first = world.reference_child_module(m, "H");
+        assert_ne!(first, declared);
+        assert_eq!(
+            declared_module_binding(&mut world, m, &nested, declared),
+            Some(("H".to_string(), first)),
+            "a dotted name nested in a module binds its first segment to the parent's child"
+        );
+    }
 }

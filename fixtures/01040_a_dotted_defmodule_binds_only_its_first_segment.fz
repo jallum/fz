@@ -1,0 +1,30 @@
+#---
+# purpose: A root `defmodule Geo.Pt` binds no short name, so `Pt` still means the root `Pt`; a nested `defmodule H.T` binds only `H`, so `H.T.me()` reaches it inside its parent.
+# oracle: 01040_a_dotted_defmodule_binds_only_its_first_segment.oracle.exs
+#---
+defmodule Pt do
+  defstruct [:x, :y]
+  def name(), do: :top
+end
+
+defmodule Geo.Pt do
+  def name(), do: :dotted
+end
+
+defmodule M do
+  defmodule H.T do
+    def me(), do: :nested
+  end
+
+  def via_first_segment(), do: H.T.me()
+end
+
+def main() do
+  pt = %Pt{x: 1, y: 2}
+  dbg(Pt.name())
+  dbg(pt.x)
+  dbg(Pt)
+  dbg(Geo.Pt)
+  dbg(M.via_first_segment())
+  dbg(M.H.T.me())
+end
