@@ -1,0 +1,21 @@
+#---
+# purpose: "MapSet new/0, new/1, put/2, delete/2, member?/2, size/1: duplicates collapse, deleting an absent member changes nothing"
+# oracle: 01031_mapset_holds_each_member_once.oracle.exs
+#---
+def sorted(set), do: Enum.sort(MapSet.to_list(set))
+
+def main() do
+  empty = MapSet.new()
+  dbg(MapSet.size(empty))
+  dbg(sorted(empty))
+  set = MapSet.new([3, 1, 3, 2, 1])
+  dbg(MapSet.size(set))
+  dbg(sorted(set))
+  dbg(MapSet.size(MapSet.put(set, 2)))
+  dbg(sorted(MapSet.put(set, 9)))
+  dbg(MapSet.member?(set, 1))
+  dbg(MapSet.member?(set, 7))
+  dbg(sorted(MapSet.delete(set, 1)))
+  dbg(sorted(MapSet.delete(set, 7)))
+  dbg(MapSet.size(MapSet.delete(empty, 1)))
+end

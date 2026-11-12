@@ -63,10 +63,14 @@ is the convenience module users call. Low-level control tuples
 (`{:cont|:halt|:suspend, acc}`) stay on `Enumerable.reduce/3`; `Enum.reduce/2,3`
 returns plain accumulator values.
 
+`MapSet` (`lib/map_set.fz`) is a struct whose `Enumerable` and `Collectable`
+impls sit beside it; its `reduce` walks `MapSet.to_list/1`.
+
 `Collectable` is the mirror protocol, in `lib/collectable.fz`, with impls for
-`List` and `Map`. Its one callback `into/1` returns `{initial, collector}`;
-`Enum.into/2,3` calls `collector.(acc, {:cont, x})` per element and then
-`collector.(acc, :done)`. The collector sends no `:halt` on a raised
+`List` and `Map`; `MapSet`'s impl sits in `lib/map_set.fz`. Its one callback
+`into/1` returns `{initial, collector}`; `Enum.into/2,3` calls
+`collector.(acc, {:cont, x})` per element and then `collector.(acc, :done)`.
+The collector sends no `:halt` on a raised
 exception, because there is no `try`.
 
 ## The owned facts

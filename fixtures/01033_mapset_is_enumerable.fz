@@ -1,0 +1,12 @@
+#---
+# purpose: "Enum.count, Enum.map and Enum.reduce walk the members of a MapSet"
+# oracle: 01033_mapset_is_enumerable.oracle.exs
+#---
+def main() do
+  set = MapSet.new([4, 2, 4, 6])
+  dbg(Enum.count(set))
+  dbg(Enum.sort(Enum.map(set, fn x -> x * 10 end)))
+  dbg(Enum.reduce(set, 0, fn x, acc -> x + acc end))
+  dbg(Enum.count(MapSet.new()))
+  dbg(Enum.member?(set, 6))
+end

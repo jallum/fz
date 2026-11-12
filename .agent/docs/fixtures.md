@@ -103,7 +103,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `00600-00799` | fz-sc8                            | full                   |
 | `00800-00899` | fz-3ul                            | reserved               |
 | `00900-00999` | fz-a9y                            | reserved               |
-| `01000-01039` | fz-sc8 (stack #274)               | in use through `01030` |
+| `01000-01039` | fz-sc8 (stack #274)               | in use through `01034` |
 | `01040-01059` | fz-sc8 (session fz-38: .77, .105) | in use through `01042` |
 | `01060-01099` | unallocated                       | free                   |
 
