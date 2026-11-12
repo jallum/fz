@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T22:34:14Z",
+  "description": "After the steps above, std SipHash is still the largest single lever: -7.6% to -13.6% more release instructions (cumulative -20% to -24%); alone on the old base it was -15-19% release and -22-38% debug. New src/fast_hash.rs with HashMap / HashSet / IndexMap aliases over foldhash::fast::RandomState (0.2.0, already in Cargo.lock); every table under src imports from it; clippy disallowed_types keeps std tables out of the compiler crate. Per-instance random seeding must be kept: confirm at least one iteration-order test still fails when an order dependence is injected. Test files change in constructor forms and imports only. Runtime crate stays on std. Lands last: it touches about 131 files. Hasher-only spike: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/hash/spike_hash.diff Proposal page: /Users/j5n/Workspace/compile-cost-round-two.html (https://claude.ai/artifact/4T5Lime7pQxKbCiKJqaJ8x). Spike (base c768670cd; port by reading, not by applying): /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/tables/stepF_src.diff. Acceptance: stdout (interp and run), canonical dump, activation key counts and job counts identical to the base binary on /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/p/distinct1.fz, f761.fz (--top 1 --top 2), f765.fz (--max-top 3), /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/m/r6.fz, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/l/lit16.fz; release instructions retired re-measured on base and change binaries built the same way; full gate.",
+  "id": "fz-53f.7",
+  "labels": [],
+  "parent": "fz-53f",
+  "priority": 2,
+  "status": "open",
+  "title": "The compiler's remaining tables hash with a fast, randomly seeded hasher",
+  "type": "task",
+  "updated_at": "2026-11-12T22:34:14Z"
+}
