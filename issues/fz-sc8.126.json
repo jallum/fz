@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-12T00:48:25Z",
   "created": "2026-11-11T23:01:23Z",
   "description": "Lowering a body is quadratic in its tuple and list literals. N lines of dbg({[\"-abc\", \"f\"], [strict: [...], aliases: [...]]}) in main: LowerFunction main/0 (release) 30.6 / 129 / 536 / 2140 ms at 4 / 8 / 16 / 32 lines; 16 lines take 9.3s in a debug build. construct_tuple_ownership (src/compiler2/jobs/body.rs) asks values_overlap_inner for every (item, later use) pair and each question re-walks the origin chain (about 165 origin_source_path calls per pair).\n\nChange: per value, a memoised footprint (the set of storage roots it can reach, or open); an index from root to the values using it; per-value use sites (BodyTables::entry_use_sites). An item's candidates are the open values plus those sharing a root; the existing exact check runs on those. An open item falls back to today's walk. Physical retentions are still checked exactly.\n\nAcceptance (spike C measured these):\n- fixture: the sixteen-line literal body (spike l/lit16.fz).\n- a scaling pin beside compiler2_tuple_ownership_reads_the_body_a_fixed_number_of_times: doubling the items at most doubles the steps.\n- backend dumps byte-identical to the base commit across the fixture corpus (spike: 50 of 50 programs, 2697 Share/Transfer tokens). Any difference is reported, not accepted.\n- footprint size on deep origin chains is measured and stated.\n\nIndependent of GH #165 (ownership as its own job). Proposal page: /Users/j5n/Workspace/optionparser-compile-cost.html (https://claude.ai/artifact/9MdFVrMJRKJcSULMazQfyo). Spike evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad (spikeC/spikeC.diff).",
   "id": "fz-sc8.126",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Tuple ownership is answered from a storage-root index",
   "type": "bug",
-  "updated_at": "2026-11-11T23:01:23Z"
+  "updated_at": "2026-11-12T00:48:25Z"
 }
