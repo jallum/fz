@@ -5,14 +5,15 @@
     "fz-gfx.4",
     "fz-gfx.5"
   ],
+  "closed_at": "2026-11-12T22:45:06Z",
   "created": "2026-11-12T22:09:21Z",
   "description": "World::function_source (src/compiler2/world.rs:1424-1430) returns\nOption\u003cFunctionSource\u003e built with `Some(*source.clone())`: a deep copy of\nthe function's source form on every call.\n\nEvidence (develop @ cca160808):\n- jobs/source.rs:285 and :356 call it only for .is_none() / .is_some().\n- Other callers: source_publish.rs:440, :631; jobs/keying.rs:306;\n  jobs/source.rs:303, :369; drive_harness.rs:1145.\n- World::expanded_function_source (world.rs:1432-1434) has the same owned\n  shape via `.get(function).cloned()`; callers jobs/source.rs:282, :300.\n\nChange: both return Option\u003c\u0026FunctionSource\u003e. Presence checks read the\nborrow; a caller that needs ownership clones at its own call site, where\nthe cost is visible.\n\nMethod: change the signature, run cargo check, sort the failing callers\nper the epic strategy. Record in this ticket how many callers were pure\nappeasement and how many interleave a World read with a World write -- that\nratio sizes .4 and .5.\n\nNeighbour: fz-afu.7 deletes expanded_function_source outright. If it lands\nfirst, this ticket covers function_source only.\n\nRemoval ledger: the `*source.clone()` in function_source; the `.cloned()`\nin expanded_function_source; every caller-side clone made redundant.\n\nSignal: gate green, no golden/census/pin movement.",
   "id": "fz-gfx.1",
   "labels": [],
   "parent": "fz-gfx",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "World hands out function source by reference",
   "type": "task",
-  "updated_at": "2026-11-12T22:12:10Z"
+  "updated_at": "2026-11-12T22:45:06Z"
 }
