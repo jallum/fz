@@ -1092,6 +1092,11 @@ impl ProgramCanon<'_> {
                 let base = self.names.value(*base);
                 format!("{name} = field {base}.{field}")
             }
+            BackendStep::StructSlot { value, base, slot } => {
+                let name = self.names.value(*value);
+                let base = self.names.value(*base);
+                format!("{name} = slot {base}.{slot}")
+            }
             BackendStep::RequireMapValue { value, source, key } => {
                 let name = self.names.value(*value);
                 let source = self.names.value(*source);

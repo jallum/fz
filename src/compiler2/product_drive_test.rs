@@ -3572,3 +3572,73 @@ fn an_update_that_cannot_miss_compiles_no_key_error_path() {
         "one of pick's maps lacks b"
     );
 }
+
+/// Where the type says which struct is in hand, the compiler knows the
+/// field's slot and writes it into the backend program, so no path searches
+/// for the field by name at run time. A value that may be something else
+/// keeps the read by name.
+#[test]
+fn a_field_of_a_known_struct_is_read_by_slot_and_any_other_field_by_name() {
+    use crate::compiler2::{BackendBody, BackendStep};
+
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("field_read.fz".to_string()),
+        text: concat!(
+            "defmodule Point do\n  defstruct [:x, :y]\nend\n",
+            "def pick(0), do: %{x: 1, y: 2}\n",
+            "def pick(n), do: %Point{x: n, y: 2}\n",
+            "def y_of(p), do: p.y\n",
+            "def module_of(p), do: p.__struct__\n",
+            "def zero(module), do: if(module == Point, do: 0, else: 100)\n",
+            "def main() do\n",
+            "  p = %Point{x: 1, y: 40}\n",
+            "  y_of(p) + pick(1).x + pick(0).y + zero(module_of(p))\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let main = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(main), Ok(43));
+
+    let program = compiler.retained_backend_program(main);
+    let steps: Vec<&BackendStep> = program
+        .executables()
+        .into_iter()
+        .filter_map(|executable| match &executable.body {
+            BackendBody::Clauses { clauses, entries, .. } => Some(
+                clauses
+                    .iter()
+                    .flat_map(|clause| &clause.projections)
+                    .chain(entries.iter().flat_map(|entry| &entry.steps)),
+            ),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let slots: Vec<u32> = steps
+        .iter()
+        .filter_map(|step| match step {
+            BackendStep::StructSlot { slot, .. } => Some(*slot),
+            _ => None,
+        })
+        .collect();
+    let named: Vec<&str> = steps
+        .iter()
+        .filter_map(|step| match step {
+            BackendStep::FieldAccess { field, .. } => Some(field.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(slots, [1], "y is the second field of the Point y_of is given");
+    assert_eq!(
+        named,
+        ["x", "y"],
+        "pick answers a map or a Point, so its fields are found by name; a known Point's module is not read at all"
+    );
+}

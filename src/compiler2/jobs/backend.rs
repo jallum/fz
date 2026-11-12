@@ -14,6 +14,7 @@ use crate::dispatch_matrix::pattern::{LastResort, PatternDispatchPlan, PatternGu
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, ProjectionKind, Region, SubjectSource};
 use crate::ground_value::GroundValue;
 use crate::source::Span;
+use fz_runtime::module_name::{ModuleName, STRUCT_MODULE_FIELD};
 
 use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
@@ -27,8 +28,7 @@ use super::super::body::{
 };
 use super::super::drive::{FactKey, Job};
 use super::super::facts::FactUse;
-use super::super::identity::RootId;
-use super::super::identity::{ActivationKey, ExecutableKey};
+use super::super::identity::{ActivationKey, ExecutableKey, ModuleId, RootId};
 use super::super::pull::{ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait};
 use super::super::scheduler::FatalError;
 use super::super::semantic::SemanticOrd;
@@ -283,7 +283,15 @@ pub(crate) fn produce_backend_executable_product(
             Some((*value, wrapper.identity.clone()))
         })
         .collect();
-    let mut lowerer = BackendLowerer::new(world, tel, root, &abi.value_layouts, return_endpoints, constructions);
+    let mut lowerer = BackendLowerer::new(
+        world,
+        tel,
+        root,
+        &abi.value_layouts,
+        &abi.materialized.value_types,
+        return_endpoints,
+        constructions,
+    );
     let lowered = lower_backend_body(&mut lowerer, &abi)
         .expect("symbolic backend lowering should be complete after ABI product exists");
     let boxed_apply_requirements =
@@ -793,6 +801,7 @@ struct BackendLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
     telemetry: &'tel T,
     root_id: RootId,
     value_layouts: &'a ValueMap<super::super::artifact::BackendValueLayout>,
+    value_types: &'a ValueMap<Ty>,
     return_endpoints: HashMap<TransportPosition, BackendReturnLayout>,
     constructions: ValueMap<TransportPosition>,
 }
@@ -803,6 +812,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
         telemetry: &'tel T,
         root_id: RootId,
         value_layouts: &'a ValueMap<super::super::artifact::BackendValueLayout>,
+        value_types: &'a ValueMap<Ty>,
         return_endpoints: HashMap<TransportPosition, BackendReturnLayout>,
         constructions: ValueMap<TransportPosition>,
     ) -> Self {
@@ -811,6 +821,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
             telemetry,
             root_id,
             value_layouts,
+            value_types,
             return_endpoints,
             constructions,
         }
@@ -906,11 +917,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 *value,
                 BackendStep::Struct {
                     value: *value,
-                    module_name: self
-                        .world
-                        .module_name(*module)
-                        .unwrap_or_else(|| panic!("struct module {} should have a name", module.as_u32()))
-                        .clone(),
+                    module_name: self.module_name(*module).clone(),
                     fields: fields.clone(),
                 },
             ),
@@ -958,14 +965,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 base: *base,
                 key: key.value,
             },
-            LoweredStep::FieldAccess { value, base, field } => self.step_or_omitted_when_absent(
-                *value,
-                BackendStep::FieldAccess {
-                    value: *value,
-                    base: *base,
-                    field: field.clone(),
-                },
-            ),
+            LoweredStep::FieldAccess { value, base, field } => {
+                self.step_or_omitted_when_absent(*value, self.field_read(*value, *base, field))
+            }
             LoweredStep::RequireMapValue { value, source, key } => BackendStep::RequireMapValue {
                 value: *value,
                 source: *source,
@@ -1014,8 +1016,47 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
         })
     }
 
+    /// `base.field` answered from what the types know of `base`. One known
+    /// struct's module is a constant and its declared field is a slot; any
+    /// other read finds the field by name at run time.
+    fn field_read(&self, value: ValueId, base: ValueId, field: &str) -> BackendStep {
+        let by_name = || BackendStep::FieldAccess {
+            value,
+            base,
+            field: field.to_string(),
+        };
+        let Some(module) = self.known_struct(base) else {
+            return by_name();
+        };
+        if field == STRUCT_MODULE_FIELD {
+            return BackendStep::Const {
+                value,
+                literal: GroundValue::Atom(self.module_name(module).atom_name()),
+            };
+        }
+        match self
+            .world
+            .struct_def_fields(module)
+            .and_then(|fields| slot_of(fields, field))
+        {
+            Some(slot) => BackendStep::StructSlot { value, base, slot },
+            None => by_name(),
+        }
+    }
+
+    /// The struct `value` is, when its type admits exactly one.
+    fn known_struct(&self, value: ValueId) -> Option<ModuleId> {
+        self.world.types().sole_struct(self.value_types.get(&value)?)
+    }
+
+    fn module_name(&self, module: ModuleId) -> &ModuleName {
+        self.world
+            .module_name(module)
+            .unwrap_or_else(|| panic!("struct module {} should have a name", module.as_u32()))
+    }
+
     /// Every fresh-construction step (Tuple/List/Map/MapUpdate/Struct/
-    /// Bitstring/FunctionRef/Lambda) and every projection (FieldAccess/
+    /// Bitstring/FunctionRef/Lambda) and every projection (FieldAccess/StructSlot/
     /// TupleField) must respect the absence proof: when transport proves the
     /// value runtime-absent, its operands were never demanded and may be
     /// unbound at runtime, so the step lowers as `Omitted` instead of
@@ -1129,6 +1170,10 @@ fn collect_executable_atoms(
     }
 }
 
+fn slot_of(fields: &[String], field: &str) -> Option<u32> {
+    fields.iter().position(|name| name == field).map(|slot| slot as u32)
+}
+
 fn collect_entry_atoms(world: &mut World, entry: &BackendEntry, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     collect_step_atoms(world, &entry.steps, seen, atoms);
     collect_tail_atoms(world, &entry.tail, seen, atoms);
@@ -1149,6 +1194,7 @@ fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut Hash
                 collect_literal_atoms(key, seen, atoms);
             }
             BackendStep::Omitted { .. }
+            | BackendStep::StructSlot { .. }
             | BackendStep::Tuple { .. }
             | BackendStep::List { .. }
             | BackendStep::Map { .. }

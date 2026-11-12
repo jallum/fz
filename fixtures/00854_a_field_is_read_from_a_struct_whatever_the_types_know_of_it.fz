@@ -1,0 +1,53 @@
+#---
+# purpose: "A struct's field reads the same value whether the types name the one struct in hand, one of two structs, or nothing at all; scalar, heap and nested fields, from a built struct and from a literal one"
+# oracle: oracle.exs
+#---
+#
+# Where the receiver is one known struct the field is read by its position;
+# where it may be one of several, or anything, it is found by name. The two
+# routes answer alike.
+defmodule Reading do
+  defstruct [:count, :ratio, :unit, :label, :tags, :inner]
+end
+
+defmodule Inner do
+  defstruct [:depth]
+end
+
+defmodule Other do
+  defstruct [:label, :count]
+end
+
+def count_of(r), do: r.count
+def label_of(v :: any), do: v.label
+def pick(0), do: %Other{label: "other", count: 7}
+def pick(n), do: %Reading{count: n, ratio: 0.5, unit: :cm, label: "picked", tags: [], inner: nil}
+
+def build(n) do
+  %Reading{count: n, ratio: n / 4, unit: :mm, label: "built", tags: [n, n + 1], inner: %Inner{depth: n * 2}}
+end
+
+def main() do
+  literal = %Reading{count: 3, ratio: 1.5, unit: :m, label: "literal", tags: [:a], inner: %Inner{depth: 9}}
+  dbg(literal.count)
+  dbg(literal.ratio)
+  dbg(literal.unit)
+  dbg(literal.label)
+  dbg(literal.tags)
+  dbg(literal.inner)
+  dbg(literal.inner.depth)
+
+  built = build(4)
+  dbg(built.count + 1)
+  dbg(built.ratio * 2)
+  dbg(built.unit == :mm)
+  dbg(built.label <> "!")
+  dbg(built.tags)
+  dbg(built.inner.depth)
+  dbg(count_of(built) + count_of(literal))
+
+  dbg(label_of(pick(0)))
+  dbg(label_of(pick(1)))
+  dbg(pick(0).count + pick(5).count)
+  dbg(Enum.map([build(1), build(2), literal], fn r -> r.count end))
+end

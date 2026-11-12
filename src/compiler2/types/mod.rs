@@ -1564,6 +1564,18 @@ impl Types {
             })
     }
 
+    /// The struct every value of `a` is, when there is exactly one. Its
+    /// layout is then known wherever `a` is: a field is a slot.
+    pub fn sole_struct(&self, a: &Ty) -> Option<super::identity::ModuleId> {
+        let descr = self.descr(a);
+        if !descr.admits_only_maps() {
+            return None;
+        }
+        let mut structs = descr.maps.iter().map(conj_struct);
+        let first = structs.next()??;
+        structs.all(|module| module == Some(first)).then_some(first)
+    }
+
     pub fn map_known_keys(&self, a: &Ty) -> Vec<MapKey> {
         map_known_keys(self.descr(a))
     }
@@ -3764,6 +3776,14 @@ fn field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
         found = true;
     }
     if found { Some(acc) } else { None }
+}
+
+/// The struct a map conjunction's positive signatures name, if any does.
+fn conj_struct(conj: &Conj<MapSig>) -> Option<super::identity::ModuleId> {
+    conj.pos.iter().find_map(|sig| match &sig.tag {
+        MapTag::Struct(tag) => Some(tag.module),
+        MapTag::Plain => None,
+    })
 }
 
 fn map_sig_has_key(sig: &MapSig, key: &MapKey) -> bool {

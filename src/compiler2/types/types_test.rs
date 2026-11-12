@@ -855,6 +855,84 @@ fn typed_struct_identity_survives_the_type_algebra_even_when_display_names_match
     );
 }
 
+/// A field read needs no search when the type says which struct is in hand:
+/// the struct's layout is then known where the read is compiled.
+#[test]
+fn a_type_names_its_one_struct_only_when_every_value_is_that_struct() {
+    use crate::compiler2::identity::ModuleId;
+
+    let mut t = Types::new();
+    let key = |name: &str| MapKey::Atom(name.to_string());
+    let point = ModuleId::for_test(1);
+    let size = ModuleId::for_test(2);
+    let point_name = ModuleName::from_segments(vec!["Point".into()]);
+    let size_name = ModuleName::from_segments(vec!["Size".into()]);
+    let int = t.int();
+    let float = t.float();
+    let int_point = t.struct_map(point, point_name.clone(), &[(key("x"), int)]);
+    let float_point = t.struct_map(point, point_name, &[(key("x"), float)]);
+    let a_size = t.struct_map(size, size_name, &[(key("w"), int)]);
+
+    assert_eq!(t.sole_struct(&int_point), Some(point));
+    let either_point = t.union(int_point, float_point);
+    assert_eq!(
+        t.sole_struct(&either_point),
+        Some(point),
+        "two field typings of one struct share its layout"
+    );
+    let narrowed = t.difference(either_point, float_point);
+    assert_eq!(
+        t.sole_struct(&narrowed),
+        Some(point),
+        "a narrowed Point is still a Point"
+    );
+
+    let two_structs = t.union(int_point, a_size);
+    assert_eq!(t.sole_struct(&two_structs), None, "either struct may be in hand");
+    let or_int = t.union(int_point, int);
+    assert_eq!(t.sole_struct(&or_int), None, "an integer is not a struct");
+    let plain = t.map(&[(key("x"), int)]);
+    assert_eq!(t.sole_struct(&plain), None, "a plain map has no struct");
+    let or_plain = t.union(int_point, plain);
+    assert_eq!(t.sole_struct(&or_plain), None, "a plain map may be in hand");
+    let any = t.any();
+    assert_eq!(t.sole_struct(&any), None);
+    let none = t.none();
+    assert_eq!(t.sole_struct(&none), None, "no value is in hand at all");
+}
+
+#[test]
+fn replacing_the_module_of_a_struct_leaves_a_plain_map() {
+    use crate::compiler2::identity::ModuleId;
+
+    let mut t = Types::new();
+    let key = |name: &str| MapKey::Atom(name.to_string());
+    let point = ModuleId::for_test(1);
+    let int = t.int();
+    let a_point = t.struct_map(
+        point,
+        ModuleName::from_segments(vec!["Point".into()]),
+        &[(key("x"), int)],
+    );
+
+    let moved = t.refine_map_field(&a_point, &key("x"), &int);
+    assert_eq!(t.sole_struct(&moved), Some(point), "replacing a field keeps the struct");
+
+    let other = t.atom_lit("Elixir.Size");
+    let renamed = t.refine_map_field(&a_point, &key("__struct__"), &other);
+    assert_eq!(
+        t.sole_struct(&renamed),
+        None,
+        "a map whose module was replaced is no longer known to be a Point"
+    );
+    assert_eq!(
+        t.field_lookup(&renamed, &key("__struct__")),
+        Some(other),
+        "it answers the module it was given"
+    );
+    assert_eq!(t.field_lookup(&renamed, &key("x")), Some(int), "and keeps its fields");
+}
+
 #[test]
 fn nominal_protocol_targets_keep_typed_identity_through_the_opaque_algebra() {
     let mut t = Types::new();

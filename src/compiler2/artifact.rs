@@ -1452,10 +1452,19 @@ pub enum BackendStep {
         base: ValueId,
         key: ValueId,
     },
+    /// `base.field` found by the field's name at run time: `base` may be a
+    /// map, a resource, or one of several structs.
     FieldAccess {
         value: ValueId,
         base: ValueId,
         field: String,
+    },
+    /// `base.field` where `base` is one known struct: the field is the
+    /// struct's `slot`th.
+    StructSlot {
+        value: ValueId,
+        base: ValueId,
+        slot: u32,
     },
     RequireMapValue {
         value: ValueId,

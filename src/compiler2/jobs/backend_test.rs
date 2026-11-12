@@ -38,6 +38,7 @@ fn named_function_construction_uses_the_materialized_value_layout() {
         &tel,
         RootId::for_test(0),
         &abi.value_layouts,
+        &abi.materialized.value_types,
         HashMap::new(),
         ValueMap::new(),
     );

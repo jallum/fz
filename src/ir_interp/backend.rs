@@ -1890,6 +1890,10 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 };
                 env.insert(*value, BackendBoundValue::Runtime(result));
             }
+            ProgramStep::StructSlot { value, base, slot } => {
+                let base = env_get(transport, runtime.cur_proc(), env, *base)?;
+                env.insert(*value, BackendBoundValue::Runtime(interp_slot(runtime, base, *slot)?));
+            }
             ProgramStep::RequireMapValue { value, source, key } => {
                 let key = literal_value(runtime, key)?;
                 let result = matcher_map_get(runtime, env_get(transport, runtime.cur_proc(), env, *source)?, key)?;
@@ -1913,12 +1917,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     }
                     other => {
                         let source = materialize_backend_value(transport, runtime.cur_proc(), other)?;
-                        BackendBoundValue::Runtime(
-                            with_value_ref(runtime.cur_proc(), source, "backend tuple field", |struct_ref| {
-                                fz_struct_get_field_ref(runtime.cur_proc(), struct_ref, (*index as u32) * 8)
-                            })
-                            .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend tuple field"))?,
-                        )
+                        BackendBoundValue::Runtime(interp_slot(runtime, source, *index as u32)?)
                     }
                 };
                 env.insert(*value, field);
@@ -3559,6 +3558,14 @@ fn interp_struct_module(runtime: &mut IrInterpRuntime, value: AnyValue) -> Resul
         fz_struct_module(runtime.cur_proc(), subject)
     })
     .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend struct module"))
+}
+
+/// The `slot`th field of the struct or tuple `object`.
+fn interp_slot(runtime: &mut IrInterpRuntime, object: AnyValue, slot: u32) -> Result<AnyValue, String> {
+    with_value_ref(runtime.cur_proc(), object, "backend slot", |object_ref| {
+        fz_struct_get_field_ref(runtime.cur_proc(), object_ref, slot * 8)
+    })
+    .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend slot"))
 }
 
 fn interp_struct_field(
