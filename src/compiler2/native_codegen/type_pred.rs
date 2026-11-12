@@ -44,50 +44,19 @@ pub(crate) fn ty_is_list<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var
     var_ty_satisfies(t, value_types, v, want)
 }
 
-pub(crate) fn var_ty_satisfies_in_context<T: Types<Ty = Ty>>(
-    t: &mut T,
-    value_types: &HashMap<Var, Ty>,
-    v: Var,
-    want: Ty,
-    block_env: Option<&HashMap<Var, Ty>>,
-) -> bool {
-    var_ty_satisfies(t, value_types, v, want)
-        || block_env.is_some_and(|env| {
-            let Some(got) = env.get(&v).cloned() else {
-                return false;
-            };
-            t.is_subtype(&got, &want)
-        })
-}
-
-pub(crate) fn ty_is_empty_list_in_context<T: Types<Ty = Ty>>(
-    t: &mut T,
-    value_types: &HashMap<Var, Ty>,
-    v: Var,
-    block_env: Option<&HashMap<Var, Ty>>,
-) -> bool {
+pub(crate) fn ty_is_empty_list<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {
     let want = t.empty_list();
-    var_ty_satisfies_in_context(t, value_types, v, want, block_env)
+    var_ty_satisfies(t, value_types, v, want)
 }
 
-pub(crate) fn ty_is_non_empty_list_in_context<T: Types<Ty = Ty>>(
-    t: &mut T,
-    value_types: &HashMap<Var, Ty>,
-    v: Var,
-    block_env: Option<&HashMap<Var, Ty>>,
-) -> bool {
+pub(crate) fn ty_is_non_empty_list<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {
     let elem = t.any();
     let want = t.non_empty_list(elem);
-    var_ty_satisfies_in_context(t, value_types, v, want, block_env)
+    var_ty_satisfies(t, value_types, v, want)
 }
 
-pub(crate) fn list_projection_is_safe<T: Types<Ty = Ty>>(
-    t: &mut T,
-    value_types: &HashMap<Var, Ty>,
-    v: Var,
-    block_env: Option<&HashMap<Var, Ty>>,
-) -> bool {
-    ty_is_non_empty_list_in_context(t, value_types, v, block_env)
+pub(crate) fn list_projection_is_safe<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {
+    ty_is_non_empty_list(t, value_types, v)
 }
 
 pub(crate) fn ty_is_map<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {

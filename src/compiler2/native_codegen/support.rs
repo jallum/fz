@@ -21,11 +21,10 @@ pub(crate) enum ListTailBits {
 pub(crate) fn list_tail_bits_for_var<T: Types<Ty = Ty>>(
     t: &mut T,
     value_types: &HashMap<Var, Ty>,
-    block_env: Option<&HashMap<Var, Ty>>,
     tail_var: Var,
     tail_bits: ir::Value,
 ) -> ListTailBits {
-    if ty_is_non_empty_list_in_context(t, value_types, tail_var, block_env) {
+    if ty_is_non_empty_list(t, value_types, tail_var) {
         ListTailBits::NonEmptyValueRef(tail_bits)
     } else {
         ListTailBits::ValueRef(tail_bits)
