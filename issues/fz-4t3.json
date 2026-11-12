@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T01:02:45Z",
+  "description": "Proposal page (approved 2026-11-11): https://claude.ai/artifact/Vw2ncrLfuDMKnj4r9VZZNh (local /Users/j5n/Workspace/gh-305.html). Closes GitHub #305.\n\nGitHub #305 reports that resolve_outer_cont (src/compiler2/native_codegen/closure.rs) builds a halt continuation on the heap when frame slot 0 is null. That branch sits in the arm where cont_param is None, which only a uniform-tier function gets (native_codegen/entry.rs:87). Every module function is in native_abi_fns (driver.rs:883) since the compiler2 front-door cutover d5438ba08 (2026-08-24), so the uniform tier has no member and the branch cannot run.\n\nEvidence: a trap in every uniform arm through the full gate gave 4959 passed, 0 failed with zero compiler trips (the only two trips were driver_test.rs:17, which builds a uniform signature on purpose). A deletion spike (14 files, +248 -1333; patch at scratchpad gh305b/spike-2-delete.patch, applies to d2ecc9d48) passes the full gate with no pin edited and emits identical JIT and AOT CLIF, AOT disassembly, telemetry counts and output over 42 fixtures.\n\nTwo steps, one commit each. Step 1 deletes the tier; step 2 deletes the frame machinery step 1 leaves without an emitter.\n\nNeighbour: branch fz-sc8.7/halt (stack #274) adds Term::Try lowering (emit_try) that passes frame_ptr, an Option cont_param and env.halt_reprs into ContinuationPlan::emit_value. Order: step 1 lands on develop first; the stack rebases over it and writes emit_try against the one-tier signature.",
+  "id": "fz-4t3",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "One calling tier: the planned ABI is the only one, and frames leave the runtime",
+  "type": "epic",
+  "updated_at": "2026-11-12T01:02:45Z"
+}
