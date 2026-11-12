@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-sc8.138"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.140"
+  ],
   "created": "2026-11-12T22:39:34Z",
   "description": "Distill gate first divergence at develop cca160808: 'compiler2 root 0 product path exceeded fact-wait budget' (51,226 jobs; 30,508 of 33,162 DeriveExecutableFacts runs re-run with every declared read at an unchanged revision). Cause: scheduler.rs dispatch_changes enqueues and dirties completed Settled subscribers on a readiness-only flip. Cure (spiked, /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/spike_settle/cure.patch): a readiness-only flip calls wake_satisfied_waiters for the Settled use; content movements enqueue as before. Measured: u2 (Enum.count(Stream.map([1], fn x -\u003e x + 1 end))) DeriveExecutableFacts 59 -\u003e 33 runs over 33 keys, completions 502 -\u003e 470; d5 44,956 -\u003e 17,989; distiller 51,226 -\u003e 29,819 and past the budget. fixture_matrix 2968+3 green; 3 lib tests move (one pins the removed wake; two work pins fall). Needs: unmasked pin census, dispatch_changes doc comment, .agent/docs/fact-engine.md readiness paragraph. Concordant with epic fz-afu.",
   "id": "fz-sc8.137",
