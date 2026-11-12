@@ -513,14 +513,20 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-sc8.9: 31 -> 34. `Enumerable`'s list `count` reads Kernel's `length`, which keeps Elixir's
             // proper-list check: `proper_length` aborts with `:badarg` on an improper
             // list, so the check and its abort path become executables of their own.
-            34,
+            // fz-sc8.8: 34 -> 50. The fixture's `dbg` is `IO.inspect`, which
+            // renders its value into a binary and writes it through
+            // `fz_io_write`; the cone it pulls in (`IO.puts`, `to_chardata`,
+            // `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`)
+            // is emitted code.
+            50,
         ),
         (
             567, // fz_f98_range_map_converges
             // fz-sc8.9: 64 -> 65.
             // `Enumerable`'s map `count` reads Kernel's `map_size`, a typed wrapper
             // over `fz_map_count`, where it used to call the extern directly.
-            65,
+            // fz-sc8.8: 65 -> 83. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+            83,
         ),
         (
             569, // enum_map_family
@@ -531,9 +537,11 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // `drop_every/2` no longer carry a negative-step clause, and the
             // three `reduce_first` catch-alls are gone, so their executables
             // are not emitted.
-            116,
+            // fz-sc8.8: 116 -> 138. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+            138,
         ),
-        (562, 36), // mailbox_closure_each
+        // fz-sc8.8: 36 -> 54. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        (562, 54), // mailbox_closure_each
         (
             563, // mailbox_closure_reduce
             // fz-xxd.11: 46 -> 47. `Kernel.fz_send/2` held two blended
@@ -542,7 +550,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // `closure[?](int)`. Now each of the three lambdas this fixture
             // sends is known before the call is keyed, so there are three
             // exact executables, one per lambda.
-            47,
+            // fz-sc8.8: 47 -> 65. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+            65,
         ),
         (
             570, // actor_ring
@@ -554,7 +563,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             571, // enum_predicate_search
             // Exact caller rows retain four specializations hidden by blended evidence.
-            174,
+            // fz-sc8.8: 174 -> 200. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+            200,
         ),
         (
             420, // enum_take_drop_split, over both a list and a range
@@ -571,7 +581,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // `Enumerable`'s list `count` reads Kernel's `length`, which keeps Elixir's
             // proper-list check: `proper_length` aborts with `:badarg` on an improper
             // list, so the check and its abort path become executables of their own.
-            233,
+            // fz-sc8.8: 233 -> 249. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+            249,
         ),
     ] {
         let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);

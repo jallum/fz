@@ -1,0 +1,10 @@
+#---
+# purpose: "IO.puts writes an interpolated binary and then one newline, so a text that already ends in a newline leaves a blank line: the shape of the distiller's report line"
+# oracle: 00778_puts_prints_an_interpolated_line_whose_text_ends_in_a_newline.oracle.exs
+#---
+def fmt_ms(ms), do: Integer.to_string(div(ms, 1000))
+
+def main() do
+  IO.puts("#{3} records, #{2} spans, #{fmt_ms(18_100_000)} ms from first record to last\n")
+  IO.puts("after")
+end

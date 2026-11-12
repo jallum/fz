@@ -1,0 +1,15 @@
+#---
+# purpose: "IO.puts and IO.write convert any String.Chars value as Elixir does: an atom prints its name, an integer its digits, a float its shortest round-trip text, nil prints nothing"
+# oracle: 00781_puts_converts_atoms_integers_and_floats_through_string_chars.oracle.exs
+#---
+def main() do
+  IO.puts(:atom)
+  IO.puts(1)
+  IO.puts(1.5)
+  IO.puts(-0.25)
+  IO.puts(nil)
+  IO.puts(true)
+  IO.write(:w)
+  IO.write(42)
+  IO.write("\n")
+end

@@ -166,7 +166,8 @@ defmodule Kernel do
   def to_string(term), do: String.Chars.to_string(term)
 
   @doc """
-  Prints `x` to standard output and returns it unchanged.
+  Prints `x` to standard output and returns it unchanged. It is
+  `IO.inspect/1`.
 
   ## Examples
 
@@ -175,9 +176,7 @@ defmodule Kernel do
 
   """
   @spec dbg(t) :: t when t: any
-  def dbg(x), do: fz_dbg_value(x)
-
-  extern "fz" defp fz_dbg_value(t) :: t when t: any
+  def dbg(x), do: IO.inspect(x)
 
   @doc """
   Aborts the current process if `x` is `nil` or `false`.

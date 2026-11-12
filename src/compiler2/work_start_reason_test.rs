@@ -340,7 +340,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // `arithmetic_error/0` +1, the panic/raise pair +1, `main`'s lambdas
         // 12, 13 and 14 +1 each, `split_counted_finish` -1;
         // DeriveRuntimeDemand: lambdas 13 and 14 +1 each).
-        (2346, 9, 21, 236),
+        // fz-sc8.8: 2346 -> 2516 steps, 9 -> 11 modules, 21 -> 28 runs-with-wake,
+        // 236 -> 252 executable facts. The fixture's `dbg` is `IO.inspect`,
+        // whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`,
+        // `Binary.to_string`, `raise`, `==`) is defined, lowered and planned.
+        (2516, 11, 28, 252),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -429,7 +433,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.64: 874 -> 885, measured with the fifteen-step rise
         // decomposed above; the two DeriveRuntimeDemand reruns are charged
         // in the demand census below.
-        885,
+        // fz-sc8.8: 885 -> 960. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        960,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -490,7 +495,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.37: 417 -> 418. Kernel defines `&&`, `||` and `!` as macros.
         // fz-sc8.64: 418 -> 416, measured alongside the fifteen-step rise
         // decomposed above.
-        416,
+        // fz-sc8.8: 416 -> 440. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        440,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -547,7 +553,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // `main`'s lambdas 13 and 14 each run `DeriveRuntimeDemand` once more
         // because `raise/2`'s demand concludes after their first runs; both
         // reruns are charged to the fourth cause.
-        (573, 575, [24, 236, 82, 233, 0]),
+        // fz-sc8.8: (573, 575, [24, 236, 82, 233, 0]) -> (605, 607, [24, 252, 82, 249, 0]). `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        (605, 607, [24, 252, 82, 249, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
@@ -559,7 +566,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // proper-list check: `proper_length` aborts with `:badarg` on an improper
         // list, so the check and its abort path become executables of their own.
         // fz-sc8.37: 307 -> 308. Kernel defines `&&`, `||` and `!` as macros.
-        308,
+        // fz-sc8.8: 308 -> 324. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        324,
         "the demand frontier retains every ordinary generic helper key",
     );
     assert_eq!(
@@ -682,7 +690,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // once more each, while `split_counted_finish` is analyzed once
         // fewer: `raise/2`'s contract concludes after its callers' first
         // runs.
-        624,
+        // fz-sc8.8: 624 -> 669. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        669,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();
@@ -700,7 +709,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // `fz_panic` replace `List.count/1` and `List.count/2`: the list
         // `count` keeps Elixir's proper-list check and its abort path.
         // fz-sc8.37: 235 -> 236. Kernel defines `&&`, `||` and `!` as macros.
-        236,
+        // fz-sc8.8: 236 -> 252. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        252,
         "the demand frontier's distinct activations, deduplicated across repeats",
     );
 

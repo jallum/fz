@@ -1,0 +1,6 @@
+#---
+# purpose: "a script whose only top-level statement is IO.puts resolves IO without a main, and prints through the same sink"
+# kind: run
+# oracle: 00783_a_script_whose_only_statement_is_a_puts.oracle.exs
+#---
+IO.puts("a")

@@ -13,8 +13,9 @@ lexes to `Tok::Binary`.
 
 The value renderer is `any_value::debug` in the runtime crate. `render_value`
 and `render` dispatch on a value's `ValueKind`/heap tag and produce the printed
-form. Every print path shares it: the `fz_dbg_value_ref` extern that backs
-`dbg`, the IR interpreter, and the REPL all call the same `render_value`. The
+form. Every print path shares it: `IO.inspect/1` and `dbg/1` (which is
+`IO.inspect/1`) through `Kernel.inspect/1`, the IR interpreter, and the REPL all
+call the same `render_value`. The
 decision is purely payload-driven, reading only the tagged bits and heap layout,
 never the type system's brand slot, so the interpreter, JIT, and AOT paths agree
 on output without sharing type information at runtime.

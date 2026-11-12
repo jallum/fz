@@ -9,7 +9,7 @@
 //!   bitstring   (fz_bs_*, decode_*/encode_* bit helpers)
 //!   closure     (fz_closure_*, fz_tail_closure)
 //!   concurrency (fz_spawn, fz_self, fz_send, fz_receive_attempt)
-//!   halt/print  (fz_halt, fz_dbg_value)
+//!   halt/print  (fz_halt, fz_io_write)
 //!
 //! All fns here have unstable `extern "C"` ABI — they're called by
 //! Cranelift-emitted code via the symbol-binding list in
@@ -33,7 +33,6 @@ use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
     encode_utf32, sign_extend,
 };
-use crate::emit_print_line;
 use crate::exec_ctx::ExecCtx;
 use crate::heap::{
     AllocStat, BITSTRING_READER_SCHEMA, BITSTRING_RESULT_SCHEMA, closure_capture_ref, list_head_ref, list_tail_ref,
@@ -48,6 +47,7 @@ use crate::resource::{ResourceHandle, ResourceStub, alloc_resource, fz_resource_
 use crate::sched::{ReceiveStep, reach_receive};
 use crate::scheduler_hooks::YIELD_PTR;
 use crate::term::{NumericMode, TermComparator};
+use crate::write_output;
 use std::mem::{size_of, transmute};
 use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -297,16 +297,14 @@ pub extern "C" fn fz_box_atom_for_any(process: *mut Process, raw: u64) -> u64 {
 
 // ===== Halt + print cluster =====
 
+/// `IO.write/1`'s only output: the bytes of a byte-aligned binary, exactly as
+/// given, to the process's output hook. Declared `unit`: the `IO` wrappers
+/// answer `:ok` themselves, so a print allocates nothing.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_dbg_value_ref(process: *mut Process, ref_word: u64) {
-    let value = any_value_from_ref_word(ref_word, "fz_dbg_value_ref");
-    emit_print_line(process, render_value(process, value));
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_dbg_value(process: *mut Process, ref_word: u64) -> u64 {
-    fz_dbg_value_ref(process, ref_word);
-    ref_word
+pub extern "C" fn fz_io_write(process: *mut Process, binary_ref: u64) -> u64 {
+    let (ptr, len) = byte_aligned_binary_slice(binary_ref, "fz_io_write");
+    write_output(process, unsafe { from_raw_parts(ptr, len) });
+    0
 }
 
 #[unsafe(no_mangle)]

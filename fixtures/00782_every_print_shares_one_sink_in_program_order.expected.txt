@@ -1,0 +1,7 @@
+one
+two :three
+"four"
+five
+{:six, 6}
+seven
+[8, 9.5]

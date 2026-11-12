@@ -4658,8 +4658,8 @@ fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
     let kernel_id = module_id(&modules, "Kernel");
     let process_id = module_id(&modules, "Process");
     let main_id = function_id(&functions, "main", 0);
-    let dbg_id = function_id_in_module(&functions, &modules, "Kernel", "dbg", 1);
-    let dbg_prim_id = function_id_in_module(&functions, &modules, "Kernel", "fz_dbg_value", 1);
+    let send_id = function_id_in_module(&functions, &modules, "Kernel", "send", 2);
+    let send_prim_id = function_id_in_module(&functions, &modules, "Kernel", "fz_send", 2);
     let heap_stats_id = function_id_in_module(&functions, &modules, "Process", "heap_alloc_stats", 0);
     let heap_stats_prim_id = function_id_in_module(&functions, &modules, "Process", "fz_process_heap_alloc_stats", 0);
     let spawn_id = function_id_in_module(&functions, &modules, "Kernel", "spawn", 1);
@@ -4683,7 +4683,7 @@ fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
     );
 
     assert!(matches!(lowered_body(&bodies, main_id), LoweredBody::Clauses { .. }));
-    assert!(matches!(lowered_body(&bodies, dbg_id), LoweredBody::Clauses { .. }));
+    assert!(matches!(lowered_body(&bodies, send_id), LoweredBody::Clauses { .. }));
     assert!(matches!(
         lowered_body(&bodies, heap_stats_id),
         LoweredBody::Clauses { .. }
@@ -4691,11 +4691,11 @@ fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
     // An extern's wire ABI lives on its contract, resolved once by
     // `DeriveFunctionContract`: it never gets a `LowerFunction` job, so it
     // never appears in the lowered-body capture.
-    assert!(compiler.world().extern_wire(dbg_prim_id).is_some());
+    assert!(compiler.world().extern_wire(send_prim_id).is_some());
     assert!(compiler.world().extern_wire(heap_stats_prim_id).is_some());
     assert!(
         outputs
-            .stops_matching(|job| matches!(job, Job::LowerFunction(function) if *function == dbg_prim_id))
+            .stops_matching(|job| matches!(job, Job::LowerFunction(function) if *function == send_prim_id))
             .is_empty(),
         "an extern should never get a LowerFunction job"
     );
@@ -14251,8 +14251,11 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     // fz-5xp.30: 17 -> 22. The three additions that total the observable heap
     // statistics now traverse ordinary Kernel arithmetic and its generic
     // result/status helper; all five extra activations are rooted and reached.
+    // fz-sc8.8: 22 -> 42. `dbg` is `IO.inspect`: the activations of its
+    // cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`,
+    // `Binary.to_string`, `raise`, `==`) are rooted and reached.
     assert!(
-        activations.len() <= 22,
+        activations.len() <= 42,
         "quicksort should settle within its bounded rooted activation frontier (main + the collapsed \
          qsort/partition/append keys + reached runtime helpers): {activations:?}"
     );
@@ -15754,8 +15757,11 @@ end
     assert_eq!((run.attempts, run.reused), (1, 1));
     assert_eq!(
         (run.live_count, run.bytes_used),
-        (6, 160),
-        "preserving the source list type avoids the seventh object: a redundant 16-byte cons"
+        // fz-sc8.8: (6, 160) -> (9, 240). `dbg` renders the tuple into a
+        // binary on the process heap before writing it: three more objects,
+        // eighty more bytes, none of them list conses.
+        (9, 240),
+        "preserving the source list type avoids a redundant 16-byte cons"
     );
     assert!(run.source_and_rebuild_share_return);
     assert_eq!(run.output, ["{{[1, 2]}, [1, 2]}"]);
@@ -19748,49 +19754,6 @@ const TUPLE_LADDER_MAIN_ANALYSES: u64 = 5;
 const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 1;
 
 #[test]
-fn compiler2_extern_dbg_return_is_its_contract_applied_to_the_row() {
-    // dbg(1) calls fz_dbg_value(1), an extern declared `(t) :: t when t:
-    // any`. The extern has no body to walk, so its activation's return can
-    // only come from applying its own contract to the row it was keyed on:
-    // t's lower bound is int, so fz_dbg_value/1[int] returns int, and every
-    // caller up to main/0 returns that same int -- never the extern's own
-    // declared, un-instantiated `t`.
-    let tel = ConfiguredTelemetry::new();
-    let functions = FunctionCapture::new();
-    functions.install(&tel);
-    let modules = ModuleCapture::new();
-    modules.install(&tel);
-    let (mut compiler, root) = submit_main_root(tel, "extern_dbg_return.fz", "def main(), do: dbg(1)\n");
-    compiler
-        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
-        .expect("dbg(1) reaches a backend program");
-
-    let int = compiler.world_mut().types_mut().int();
-    let dbg_value_id = function_id_in_module(&functions, &modules, "Kernel", "fz_dbg_value", 1);
-    let dbg_id = function_id_in_module(&functions, &modules, "Kernel", "dbg", 1);
-    let main_id = function_id(&functions, "main", 0);
-    let dbg_value_key = ActivationKey::from_inputs(root, dbg_value_id, &[int], compiler.world_mut().types_mut());
-    let dbg_key = ActivationKey::from_inputs(root, dbg_id, &[int], compiler.world_mut().types_mut());
-    let main_key = ActivationKey::from_inputs(root, main_id, &[], compiler.world_mut().types_mut());
-
-    for (label, key) in [
-        ("Kernel.fz_dbg_value/1", &dbg_value_key),
-        ("Kernel.dbg/1", &dbg_key),
-        ("main/0", &main_key),
-    ] {
-        let observed = compiler
-            .world()
-            .activation_return(key)
-            .unwrap_or_else(|| panic!("{label} should have settled return evidence"));
-        assert!(
-            compiler.world().types().is_equivalent(&observed, &int),
-            "{label} should return int, not its extern's declared free variable; got {}",
-            compiler.world().types().display(&observed),
-        );
-    }
-}
-
-#[test]
 fn compiler2_extern_send_return_is_its_contract_applied_to_the_row() {
     // send(self(), 1) calls fz_send(pid, 1), an extern declared `(pid |
     // integer, t) :: t`. Here the leaked variable sits at the SECOND
@@ -19868,10 +19831,10 @@ fn compiler2_extern_resource_return_is_its_contract_applied_to_the_row() {
 
 #[test]
 fn compiler2_extern_return_binds_to_each_activations_own_row() {
-    // ascending/0 and descending/0 both end with a dbg/1 call, but each
-    // activation of dbg/1 (and its fz_dbg_value/1 body) keys on the argument
-    // dbg/1 actually saw at that call site -- ascending/0 ends dbg(10.5),
-    // descending/0 ends dbg(11). Each activation's return is its own
+    // ascending/0 and descending/0 both end with a send/2 call, but each
+    // activation of send/2 (and its fz_send/2 body) keys on the argument
+    // send/2 actually saw at that call site -- ascending/0 ends with 10.5,
+    // descending/0 ends with 11. Each activation's return is its own
     // contract application, not whichever type happened to intern first.
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
@@ -19898,7 +19861,7 @@ fn compiler2_extern_return_binds_to_each_activations_own_row() {
         .expect("ascending/0 should have settled return evidence");
     assert!(
         compiler.world().types().is_equivalent(&ascending_return, &float),
-        "ascending/0 (dbg(11); dbg(10.5)) should return float, got {}",
+        "ascending/0 (send 11, then 10.5) should return float, got {}",
         compiler.world().types().display(&ascending_return),
     );
 
@@ -19908,7 +19871,7 @@ fn compiler2_extern_return_binds_to_each_activations_own_row() {
         .expect("descending/0 should have settled return evidence");
     assert!(
         compiler.world().types().is_equivalent(&descending_return, &int),
-        "descending/0 (dbg(10.5); dbg(11)) should return int, got {}",
+        "descending/0 (send 10.5, then 11) should return int, got {}",
         compiler.world().types().display(&descending_return),
     );
 }
@@ -20208,7 +20171,7 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
         );
         assert!(!names.contains("foo"));
         assert!(
-            frontier.len() <= 22,
+            frontier.len() <= 42,
             "quicksort frontier exceeded the proven bound: {frontier:?}"
         );
         shapes.push((*jobs_ran.borrow(), normalized));

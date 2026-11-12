@@ -1273,7 +1273,11 @@ const SCENARIOS: [&str; 5] = [
 // The take/drop/split row rises 232 -> 235: its list `count` reads Kernel's
 // `length`, whose proper-list check and abort path are executables of their
 // own.
-const POPULATION_BASELINES: [(u64, u64); 3] = [(67, 0), (176, 32), (235, 38)];
+// fz-sc8.8: the range/map row rises 67 -> 85 and the predicate row 176 -> 202
+// and the take/drop/split row 235 -> 251
+// reachable executables: the fixtures' `dbg` is `IO.inspect`, whose cone joins
+// the emitted program.
+const POPULATION_BASELINES: [(u64, u64); 3] = [(85, 0), (202, 32), (251, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -1509,7 +1513,11 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // walks are `main`'s lambdas 13 and 14, which now run once
                 // more because `raise/2`'s demand concludes after their first
                 // runs.
-                [[151, 0, 0, 9, 4], [476, 0, 0, 64, 4], [629, 0, 0, 69, 4]][fixture_index][scenario],
+                // fz-sc8.8: 00567 cold 151 -> 186, 00571 cold 476 -> 531,
+                // 00420 cold 629 -> 661. `dbg` is `IO.inspect`, whose
+                // cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`,
+                // `Binary.to_string`, `raise`, `==`) is walked.
+                [[186, 0, 0, 9, 4], [531, 0, 0, 64, 4], [661, 0, 0, 69, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1668,7 +1676,10 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // `fz_raise/2` replace `panic/1` and `fz_panic/1` one for one, and
     // `Kernel.inspect/1`, `fz_inspect/1`, `<>/2` and `fz_binary_concat/2`
     // enter the cone through `Map.key_error`'s message.
-    ("fixtures/00567_fz_f98_range_map_converges.fz", 27, 7, 63, 0),
+    // fz-sc8.8: 27 -> 29 DeriveRecursive and 63 -> 68 DeriveStaticCallees
+    // evaluations. The fixture's `dbg` is `IO.inspect`, whose cone joins the
+    // call graph.
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 29, 7, 68, 0),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
@@ -1728,7 +1739,9 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // proper-list check: `proper_length` aborts with `:badarg` on an improper
     // list, so the check and its abort path are analyzed as functions of
     // their own.
-    ("fixtures/00420_enum_take_drop_split.fz", 78, 15, 106, 0),
+    // fz-sc8.8: 78 -> 80 DeriveRecursive evaluations. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+    // 106 -> 115 DeriveStaticCallees evaluations, same cause.
+    ("fixtures/00420_enum_take_drop_split.fz", 80, 15, 115, 0),
     // 00607-00610 pin the shared-reach shape directly. Four callers (p1-p4)
     // share one call chain of depth eight. The chain's reach is one program
     // product that every caller waits on, so a run that changes nothing is one
@@ -2116,7 +2129,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-sc8.9: 66 -> 67. `Enumerable`'s map `count` reads Kernel's `map_size`, a typed wrapper over
         // `fz_map_count`, where it used to call the extern directly.
         // fz-sc8.37: 67 -> 68. Kernel defines `&&`, `||` and `!` as macros.
-        activations: lifecycle(68, 68, 0),
+        // fz-sc8.8: 68 -> 86. `dbg` is `IO.inspect`; its cone (`IO.puts`,
+        // `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`,
+        // `==`) mints activations, none retracted.
+        activations: lifecycle(86, 86, 0),
         // fz-kdt.183: 73 -> 74 distinct, 75 -> 76 first appearances,
         // retractions flat -- the recovered activation brings its call edge.
         //
@@ -2130,7 +2146,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The same eight fewer activations (`ANALYSIS_CLAIM_RATCHET`
         // above) each publish one fewer callsite lifecycle of their own.
         // fz-sc8.9: 77 -> 78, the call edge into Kernel's `map_size`.
-        callsites: lifecycle(78, 78, 0),
+        // fz-sc8.8: 78 -> 99. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        callsites: lifecycle(99, 99, 0),
         // fz-kdt.183: 17 -> 30 shift wakes and 19 -> 127 rebased completions.
         // The RISING row of this landing, and the cause is that `InputDemand`
         // is now a fact that MOVES: the forwarded demand of a function whose
@@ -2176,7 +2193,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // reading its current one, so a shift it would otherwise see
         // directly is one more run it instead rebases through before
         // concluding.
-        shifts: shifts(6, 15),
+        // fz-sc8.8: (6, 15) -> (7, 18). `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        shifts: shifts(7, 18),
         // fz-kdt.183: 226 -> 230 evaluations, 13 -> 14 reproducing an answer
         // they already had -- four more runs for the rebasing above, and
         // `uncaused` stays empty, so every one of them names a moved input.
@@ -2222,8 +2240,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // (initial 66 -> 67), and the runs that read its answer add two
         // content-caused runs; zero-change stays 3.
         // fz-sc8.37: 171 -> 172. Kernel defines `&&`, `||` and `!` as macros.
-        analyze_evaluations: 172,
-        analyze_zero_change: 3,
+        // fz-sc8.8: 172 -> 221 evaluations, 3 -> 4 zero-change. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        analyze_evaluations: 221,
+        analyze_zero_change: 4,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
         // the semantic total; every retained evaluation remains caused.
@@ -2302,7 +2321,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // enter it through `Map.key_error`'s message. Measured job deltas:
         // DefineFunction +2, DeriveInputDemand +3, DeriveStaticCallees +4,
         // ExpandFunctionSource +2, LowerFunction +2, PlanEntryDispatch +1.
-        total_evaluations: 612,
+        // fz-sc8.8: 612 -> 732. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        total_evaluations: 732,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2323,7 +2343,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // concludes; the same cause, and the same count, as
         // `range_map_converges` above.
         // fz-sc8.37: 176 -> 177. Kernel defines `&&`, `||` and `!` as macros.
-        activations: lifecycle(177, 177, 0),
+        // fz-sc8.8: 177 -> 203. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        activations: lifecycle(203, 203, 0),
         // fz-kdt.106: 215 -> 212 distinct (248 -> 245 first appearances,
         // retractions unchanged): the one vanished activation was named from
         // three callsites.
@@ -2337,7 +2358,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // callsite summary minted against a guessed, soon-to-be-revised
         // answer, so none is ever withdrawn: first appearances meet
         // distinct, and retractions reach zero.
-        callsites: lifecycle(221, 221, 0),
+        // fz-sc8.8: 221 -> 256. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        callsites: lifecycle(256, 256, 0),
         // fz-kdt.183: 1 -> 5 shift wakes, 2 -> 22 rebased completions.
         // `InputDemand` is a fact that MOVES -- a function whose forwarding
         // cone is still filling in publishes a demand that climbs the lattice,
@@ -2360,7 +2382,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // calls, so all 13 `Enum.reduce_while/3` activations exist before
         // that module lands, and each is shifted; each then runs three
         // times, twice blocked on the new impl's facts, then concluding.
-        shifts: shifts(13, 39),
+        // fz-sc8.8: (13, 39) -> (14, 42). `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        shifts: shifts(14, 42),
         // fz-kdt.105: 553 -> 552. Canonical clause order at the interner
         // makes one more re-derived union reproduce its previous id instead
         // of minting a permuted twin, so one AnalyzeActivation run that used
@@ -2400,7 +2423,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // and `fz_panic/1` (7 analyses become 8 across the two pairs), and
         // `arithmetic_error/0` and `+/2` are analyzed once more each:
         // `raise/2`'s contract concludes after their first runs.
-        analyze_evaluations: 502,
+        // fz-sc8.8: 502 -> 587 evaluations. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        analyze_evaluations: 587,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -2420,7 +2444,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `List.reduce_while_step/3` runs waiting for
         // `List.reduce_while_cont/3`'s concluded return once cont concludes
         // and stops being its partner.
-        analyze_zero_change: 16,
+        analyze_zero_change: 17,
         // 1364 -> 1363: the same single evaluation, seen from the whole-run
         // denominator. fz-kdt.106: 1363 -> 1350, the same thirteen.
         // fz-kdt.127: 1350 -> 1349, the same single evaluation.
@@ -2492,7 +2516,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // deltas: DefineFunction +2, ExpandFunctionSource +2,
         // DeriveFunctionContract +2, PlanEntryDispatch +2, LowerFunction +1,
         // AnalyzeActivation +3 (pinned above).
-        total_evaluations: 915,
+        // fz-sc8.8: 915 -> 1062. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        total_evaluations: 1062,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -2575,7 +2600,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `fz_panic` replace `List.count/1` and `List.count/2`: the list
         // `count` keeps Elixir's proper-list check and its abort path.
         // fz-sc8.37: 235 -> 236. Kernel defines `&&`, `||` and `!` as macros.
-        activations: lifecycle(236, 236, 0),
+        // fz-sc8.8: 236 -> 252. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        activations: lifecycle(252, 252, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -2630,7 +2656,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // publish two fewer callsite summaries (8 -> 6) now that their
         // negative-step clauses are gone. The `panic/1` callsites that
         // become `raise/2` callsites (3 -> 1 and 0 -> 2) cancel.
-        callsites: lifecycle(417, 417, 0),
+        // fz-sc8.8: 417 -> 437. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        callsites: lifecycle(437, 437, 0),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -2671,7 +2698,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // climbing, so one more shift reaches a reader directly and the
         // activations keyed off that reader rebase through three more of
         // the climb's steps before it settles.
-        shifts: shifts(15, 32),
+        // fz-sc8.8: (15, 32) -> (16, 35). `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        shifts: shifts(16, 35),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
         // the same change bought: the accumulator that used to widen to
@@ -2792,8 +2820,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // pair are analyzed once more each, `main`'s lambdas 12, 13 and 14
         // once more each, and `Enum.split_counted_finish/1` once fewer:
         // `raise/2`'s contract concludes after their first runs.
-        analyze_evaluations: 624,
-        analyze_zero_change: 8,
+        // fz-sc8.8: 624 -> 669 evaluations, 8 -> 9 zero-change. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        analyze_evaluations: 669,
+        analyze_zero_change: 9,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
         // this fixture's deep call graph is where the removed starts pile
@@ -2867,7 +2896,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // ExpandFunctionSource +2, DeriveFunctionContract +2,
         // PlanEntryDispatch +2, LowerFunction +1, AnalyzeActivation +4
         // (pinned above) for `raise/2` and `fz_raise/2`.
-        total_evaluations: 1468,
+        // fz-sc8.8: 1468 -> 1590. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        total_evaluations: 1590,
     },
 ];
 

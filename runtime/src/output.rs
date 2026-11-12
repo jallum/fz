@@ -19,7 +19,6 @@ impl OutputSink for StdoutOutput {
     fn emit(&self, bytes: &[u8]) {
         let mut stdout = std::io::stdout().lock();
         let _ = stdout.write_all(bytes);
-        let _ = stdout.write_all(b"\n");
     }
 }
 

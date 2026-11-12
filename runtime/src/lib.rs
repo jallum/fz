@@ -40,13 +40,15 @@ use crate::process::Process;
 // C-ABI builtins called from compiled fz code
 // ---------------------------------------------------------------------------
 
-pub(crate) fn emit_print_line(process: *mut Process, s: String) {
+/// The one function behind every print: hands exactly `bytes` to the process's
+/// output hook. The sink adds nothing, so a caller owns its newline.
+pub(crate) fn write_output(process: *mut Process, bytes: &[u8]) {
     if !process.is_null() {
         let ctx = unsafe { &*process }.ctx;
         if !ctx.is_null() {
             let ctx = unsafe { &*ctx };
             if let Some(output) = ctx.output {
-                unsafe { output(ctx.output_context, s.as_ptr(), s.len()) };
+                unsafe { output(ctx.output_context, bytes.as_ptr(), bytes.len()) };
             }
         }
     }

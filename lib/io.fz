@@ -1,0 +1,75 @@
+defmodule IO do
+  @moduledoc """
+  Writes to standard output.
+
+  Every print is one write of bytes: `write/1` and `puts/1` convert their
+  argument to a binary through `String.Chars`, so an atom, integer, float or
+  binary prints as in Elixir, and a value with no `String.Chars`
+  implementation, a map or a tuple, is refused at compile time. A list raises
+  `ArgumentError`: chardata lists are not built.
+
+  Absent: a device argument, `inspect/2` options and `label:`, and the rest of
+  Elixir's `IO`.
+  """
+
+  @doc """
+  Writes `item`, converted to a binary, to standard output, with no newline.
+
+  Returns `:ok`.
+
+  ## Examples
+
+      IO.write("a")
+      IO.write("b\n")
+      # prints: ab
+
+  """
+  @spec write(any) :: :ok
+  def write(item) do
+    fz_io_write(to_chardata(item))
+    :ok
+  end
+
+  @doc """
+  Writes `item`, converted to a binary, to standard output followed by a
+  newline.
+
+  Returns `:ok`.
+
+  ## Examples
+
+      IO.puts("hello")
+      # prints: hello
+
+      IO.puts(:atom)
+      # prints: atom
+
+  """
+  @spec puts(any) :: :ok
+  def puts(item) do
+    fz_io_write(to_chardata(item) <> "\n")
+    :ok
+  end
+
+  @doc """
+  Prints `Kernel.inspect(item)` and a newline, and returns `item` unchanged.
+
+  ## Examples
+
+      IO.inspect([1, "s"])
+      # prints: [1, "s"]
+      #=> [1, "s"]
+
+  """
+  @spec inspect(t) :: t when t: any
+  def inspect(item) do
+    puts(Kernel.inspect(item))
+    item
+  end
+
+  @spec to_chardata(any) :: binary
+  defp to_chardata(list) when is_list(list), do: raise(ArgumentError, "IO over chardata lists is not built")
+  defp to_chardata(other), do: Kernel.to_string(other)
+
+  extern "fz" defp fz_io_write(binary) :: unit
+end

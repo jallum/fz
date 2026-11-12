@@ -415,50 +415,53 @@ impl ProcessExitCapture {
     }
 }
 
+/// Collects the bytes a program prints. The sink is a byte sink, so `lines()`
+/// is a view: the received bytes split on `\n`, a trailing partial line being
+/// an entry of its own.
 #[cfg(test)]
 pub struct DbgCapture {
-    lines: Rc<RefCell<Vec<String>>>,
+    bytes: Rc<RefCell<Vec<u8>>>,
 }
 
 #[cfg(test)]
 impl DbgCapture {
     pub fn new() -> Self {
         Self {
-            lines: Rc::new(RefCell::new(Vec::new())),
+            bytes: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
     pub fn sink(&self) -> Box<dyn OutputSink> {
         Box::new(DbgSink {
-            lines: self.lines.clone(),
+            bytes: self.bytes.clone(),
         })
     }
 
     pub fn lines(&self) -> Vec<String> {
-        self.lines.borrow().clone()
+        let bytes = self.bytes.borrow();
+        String::from_utf8_lossy(&bytes)
+            .split_terminator('\n')
+            .map(str::to_string)
+            .collect()
     }
 }
 
 #[cfg(test)]
 impl OutputSink for DbgCapture {
     fn emit(&self, bytes: &[u8]) {
-        self.lines
-            .borrow_mut()
-            .push(std::str::from_utf8(bytes).unwrap_or("<non-utf8 dbg line>").to_string());
+        self.bytes.borrow_mut().extend_from_slice(bytes);
     }
 }
 
 #[cfg(test)]
 struct DbgSink {
-    lines: Rc<RefCell<Vec<String>>>,
+    bytes: Rc<RefCell<Vec<u8>>>,
 }
 
 #[cfg(test)]
 impl OutputSink for DbgSink {
     fn emit(&self, bytes: &[u8]) {
-        self.lines
-            .borrow_mut()
-            .push(std::str::from_utf8(bytes).unwrap_or("<non-utf8 dbg line>").to_string());
+        self.bytes.borrow_mut().extend_from_slice(bytes);
     }
 }
 
