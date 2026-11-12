@@ -2276,11 +2276,11 @@ impl Types {
             .all(|(query, key)| self.key_subsumes_with(query, key, &mut sigma))
     }
 
-    /// True when any argument in `key` carries a (possibly nested) type variable.
-    /// A ground argument list names a real runtime dispatch shape; a list with
-    /// variables is an inference template, not a runtime fact.
-    pub fn key_has_vars(&self, key: &[Ty]) -> bool {
-        key.iter().any(|ty| self.has_vars(ty))
+    /// True when any argument in `key` is open ([`Types::has_open_vars`]). A
+    /// key with no open argument names a real runtime dispatch shape; one with
+    /// an open argument is an inference template, not a runtime fact.
+    pub fn key_has_open_vars(&self, key: &[Ty]) -> bool {
+        key.iter().any(|ty| self.has_open_vars(ty))
     }
 
     /// True when this type is a *value template* — a position whose runtime value
@@ -2715,8 +2715,28 @@ impl Types {
         self.descr(a).is_subtype(cx, &Descr::atom_top())
     }
 
+    /// True when `a` mentions a type variable anywhere, including the arrow
+    /// variables of a closure literal. This is the syntactic question substitution
+    /// and addressing ask: is there a variable here to rewrite?
     pub fn has_vars(&self, a: &Ty) -> bool {
-        has_vars(self.ctx(), self.descr(a))
+        has_vars(self.ctx(), self.descr(a), false)
+    }
+
+    /// True when `a` mentions a type variable that evidence still has to solve.
+    /// The arrow of a closure literal is its own binder: its argument and
+    /// result variables stand for whatever the closure is called with, which a
+    /// closure carried as a value (a list element, a tuple field, a capture)
+    /// never has to settle to be a runtime shape. Variables a closure
+    /// captures, and every variable outside a closure literal's arrow, are open.
+    pub fn has_open_vars(&self, a: &Ty) -> bool {
+        has_vars(self.ctx(), self.descr(a), true)
+    }
+
+    /// True when every value of `a` is a callable and nothing else. A callable
+    /// column is the one place a closure's own arrow is the thing a contract
+    /// refines, so its binder variables are open there.
+    pub fn is_pure_callable(&self, a: &Ty) -> bool {
+        self.descr(a).is_pure_callable()
     }
 
     /// Every free type-var id reachable from `a`, structural children
@@ -4096,40 +4116,39 @@ fn collect_lit_arrow_shapes(cx: TyCtx<'_>, t: &Ty, seen: &mut HashSet<Ty>, shape
     }
 }
 
-fn has_vars(cx: TyCtx<'_>, d: &Descr) -> bool {
+/// Whether `d` mentions a type variable. With `closure_arrows_are_binders`, the
+/// argument and result slots of a closure-literal arrow are not walked: their
+/// variables belong to the closure. Captures are values and are always walked.
+fn has_vars(cx: TyCtx<'_>, d: &Descr, closure_arrows_are_binders: bool) -> bool {
+    let walk = |t: &Ty| has_vars(cx, cx.descr(t), closure_arrows_are_binders);
     if !d.vars.values.is_empty() {
         return true;
     }
-    d.tuples.iter().any(|c| {
-        c.pos
-            .iter()
-            .chain(c.neg.iter())
-            .any(|sig| sig.elems.iter().any(|t| has_vars(cx, cx.descr(t))))
-    }) || d.lists.iter().any(|c| {
-        c.pos
-            .iter()
-            .chain(c.neg.iter())
-            .any(|sig| sig.elem.is_some_and(|t| has_vars(cx, cx.descr(&t))))
-    }) || d.resources.iter().any(|c| {
-        c.pos
-            .iter()
-            .chain(c.neg.iter())
-            .any(|sig| has_vars(cx, cx.descr(&sig.payload)))
-    }) || d.funcs.iter().any(|c| {
-        c.pos.iter().chain(c.neg.iter()).any(|sig| {
-            sig.args.iter().any(|t| has_vars(cx, cx.descr(t)))
-                || has_vars(cx, cx.descr(&sig.ret))
-                || sig
-                    .lit
-                    .as_ref()
-                    .is_some_and(|lit| lit.captures.iter().any(|t| has_vars(cx, cx.descr(t))))
+    d.tuples
+        .iter()
+        .any(|c| c.pos.iter().chain(c.neg.iter()).any(|sig| sig.elems.iter().any(&walk)))
+        || d.lists.iter().any(|c| {
+            c.pos
+                .iter()
+                .chain(c.neg.iter())
+                .any(|sig| sig.elem.is_some_and(|t| walk(&t)))
         })
-    }) || d.maps.iter().any(|c| {
-        c.pos
+        || d.resources
             .iter()
-            .chain(c.neg.iter())
-            .any(|sig| sig.fields.values().any(|t| has_vars(cx, cx.descr(t))))
-    })
+            .any(|c| c.pos.iter().chain(c.neg.iter()).any(|sig| walk(&sig.payload)))
+        || d.funcs.iter().any(|c| {
+            c.pos.iter().chain(c.neg.iter()).any(|sig| {
+                let own_binder = closure_arrows_are_binders && sig.lit.is_some();
+                (!own_binder && (sig.args.iter().any(&walk) || walk(&sig.ret)))
+                    || sig.lit.as_ref().is_some_and(|lit| lit.captures.iter().any(&walk))
+            })
+        })
+        || d.maps.iter().any(|c| {
+            c.pos
+                .iter()
+                .chain(c.neg.iter())
+                .any(|sig| sig.fields.values().any(&walk))
+        })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -4775,7 +4794,7 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
 
 fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
     let d = t.descr(&a).clone();
-    if !has_vars(t.ctx(), &d) {
+    if !has_vars(t.ctx(), &d, false) {
         return d;
     }
     let mut substituted = Descr::none();

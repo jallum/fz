@@ -640,12 +640,12 @@ pub(crate) fn ground_dispatch_surfaces(
     let ground_candidates = surfaces
         .iter()
         .chain(ground_source.iter())
-        .filter(|surface| !types.key_has_vars(&surface.inputs))
+        .filter(|surface| !types.key_has_open_vars(&surface.inputs))
         .cloned()
         .collect::<BTreeSet<_>>();
     let mut grounded = BTreeSet::new();
     for surface in surfaces {
-        if !types.key_has_vars(&surface.inputs) {
+        if !types.key_has_open_vars(&surface.inputs) {
             grounded.insert(surface.clone());
             continue;
         }

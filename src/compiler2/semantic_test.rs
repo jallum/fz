@@ -935,6 +935,30 @@ mod tests {
     }
 
     #[test]
+    fn ground_dispatch_surfaces_publishes_a_closure_argument_as_a_ground_shape() {
+        // A callable invoked with another callable as its argument: the
+        // dispatch shape is `(closure)`. The closure's own arrow variables are
+        // its binder, so the shape is ground and the template beside it is the
+        // phantom that is dropped.
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let closure = world.types_mut().closure_lit(ClosureTarget(7), vec![], 1);
+        let a0 = world.types_mut().type_var(TypeVarId(0));
+
+        let resolved = BTreeSet::from([
+            surface(&[closure], world.types_mut()),
+            surface(&[a0], world.types_mut()),
+        ]);
+        let expected = BTreeSet::from([surface(&[closure], world.types_mut())]);
+
+        assert_eq!(
+            ground_dispatch_surfaces(world.types(), &resolved, &resolved),
+            expected,
+            "a closure argument is a runtime shape, so it grounds the dispatch and the template is dropped",
+        );
+    }
+
+    #[test]
     fn ground_dispatch_surfaces_keeps_a_genuinely_polymorphic_escape() {
         // No ground sibling anywhere: a callable passed through but never invoked
         // at a concrete shape keeps its template — it is the only surface it is

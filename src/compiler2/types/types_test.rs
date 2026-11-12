@@ -1302,16 +1302,6 @@ macro_rules! key_helper_conformance_tests {
             }
 
             #[test]
-            fn key_has_vars_distinguishes_ground_lists_from_templates() {
-                let mut t = $ctor;
-                let int = t.int();
-                let atom = t.atom();
-                let alpha = t.type_var(TypeVarId(0));
-                assert!(!t.key_has_vars(&[int, atom]));
-                assert!(t.key_has_vars(&[int, alpha]));
-            }
-
-            #[test]
             fn key_subsumes_with_leaves_sigma_empty_for_non_pure_var_keys() {
                 let mut t = $ctor;
                 let mut sigma = HashMap::new();
@@ -5080,4 +5070,58 @@ fn folding_self_nested_closures_cuts_a_lambda_out_of_itself_and_is_idempotent() 
         let folded = t.fold_self_nested_closures(&ty);
         assert_eq!(t.fold_self_nested_closures(&folded), folded, "folding is idempotent");
     }
+}
+
+#[test]
+fn a_closure_literals_own_arrow_variables_are_not_open() {
+    let mut t = Types::new();
+    let int = t.int();
+    let closure = t.closure_lit(ClosureTarget(7), vec![int], 2);
+    let tuple = t.tuple(&[int, closure]);
+    let list = t.list(closure);
+    let nested = t.list(tuple);
+
+    assert!(
+        t.has_vars(&closure),
+        "the arrow of a closure literal mentions its binder variables"
+    );
+    assert!(!t.has_open_vars(&closure), "a closure literal's binder owns them");
+    assert!(!t.has_open_vars(&list), "a closure that is a list element is a value");
+    assert!(!t.has_open_vars(&nested), "and so is one inside a tuple inside a list");
+    assert!(!t.key_has_open_vars(&[int, closure, list]));
+}
+
+#[test]
+fn a_variable_a_closure_captures_is_open() {
+    let mut t = Types::new();
+    let var = t.type_var(TypeVarId(0));
+    let captures_var = t.closure_lit(ClosureTarget(7), vec![var], 1);
+    let captures_a_list_of_var = {
+        let list = t.list(var);
+        t.closure_lit(ClosureTarget(7), vec![list], 1)
+    };
+
+    assert!(t.has_open_vars(&captures_var));
+    assert!(t.has_open_vars(&captures_a_list_of_var));
+    assert!(t.has_open_vars(&var));
+    let list_of_var = t.list(var);
+    assert!(
+        t.has_open_vars(&list_of_var),
+        "an ordinary list over a variable is still a template"
+    );
+    assert!(t.key_has_open_vars(&[var]));
+}
+
+#[test]
+fn a_callable_column_is_distinguished_from_a_container_of_callables() {
+    let mut t = Types::new();
+    let closure = t.closure_lit(ClosureTarget(7), vec![], 1);
+    let list = t.list(closure);
+    let int = t.int();
+    let tuple = t.tuple(&[closure]);
+
+    assert!(t.is_pure_callable(&closure));
+    assert!(!t.is_pure_callable(&list));
+    assert!(!t.is_pure_callable(&tuple));
+    assert!(!t.is_pure_callable(&int));
 }
