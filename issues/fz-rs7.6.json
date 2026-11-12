@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:16:27Z",
+  "description": "In a JIT or AOT receive, 'n == 1.0' with message 1, and 'n * 2 == 3' with 1.5, answer :b; the interpreter, entry guards and Elixir answer :a. emit_typed_eq_cmp falls to fz_value_eq_ref, which is strict. Present on develop before this epic.\n\nFails before, passes after: both programs on run and build.",
+  "id": "fz-rs7.6",
+  "labels": [],
+  "parent": "fz-rs7",
+  "priority": 2,
+  "status": "open",
+  "title": "A receive guard's == between a float and an integer is the loose equality",
+  "type": "bug",
+  "updated_at": "2026-11-12T20:16:27Z"
+}
