@@ -486,12 +486,12 @@ fn dedupe_exact_clauses<T: PartialEq>(clauses: &mut Vec<Conj<T>>) {
 fn debug_assert_no_empty_clauses<T>(
     cx: TyCtx<'_>,
     clauses: &[Conj<T>],
-    clause_empty: fn(TyCtx<'_>, &Conj<T>, &mut emptiness::Memo) -> bool,
+    clause_empty: fn(TyCtx<'_>, &Conj<T>, emptiness::InFlight<'_>) -> bool,
     axis: &str,
 ) {
     for c in clauses {
         debug_assert!(
-            !clause_empty(cx, c, &mut emptiness::Memo::default()),
+            !clause_empty(cx, c, emptiness::InFlight::default()),
             "interned descr carries a provably-empty clause on the {axis} axis"
         );
     }
@@ -791,7 +791,7 @@ impl Types {
         }
         let denotation = {
             let cx = self.ctx();
-            emptiness::list_denotation(cx, &c, &mut emptiness::Memo::default())
+            emptiness::list_denotation(cx, &c, emptiness::InFlight::default())
         };
         match denotation {
             None => c,

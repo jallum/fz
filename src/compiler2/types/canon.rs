@@ -37,7 +37,7 @@ use super::axis;
 use super::bits::{BASIC_NAMES, BasicBits};
 use super::conj::Conj;
 use super::descr::Descr;
-use super::emptiness::{self, Memo, NonEmptyLists};
+use super::emptiness::{self, InFlight, NonEmptyLists};
 use super::format::brand_refinement;
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, TupleSig};
 use super::{CallableValueKind, MapKey, Ty, TyCtx, TypeVarId, Types};
@@ -159,7 +159,7 @@ impl<'a> TyCanon<'a> {
     /// built itself — a list clause's intersected element fragment — never
     /// reached the interner, so it gets them here, from the same functions.
     fn descr_body(&mut self, cx: TyCtx<'_>, d: &Descr, provenance: Provenance) -> String {
-        if d.is_empty_memo(cx, &mut Memo::default()) {
+        if d.is_empty_in(cx, InFlight::default()) {
             return "none".to_string();
         }
         if d.is_full(cx) {
@@ -238,7 +238,7 @@ impl<'a> TyCanon<'a> {
         if c.pos.is_empty() && c.neg.is_empty() {
             return "list".to_string();
         }
-        let Some(denotation) = emptiness::list_denotation(cx, c, &mut Memo::default()) else {
+        let Some(denotation) = emptiness::list_denotation(cx, c, InFlight::default()) else {
             return "none".to_string();
         };
         let Some(NonEmptyLists { elem, minus }) = denotation.non_empty else {
@@ -445,7 +445,7 @@ struct Axes {
 /// always leaves a survivor (the last clause standing has nothing left to be
 /// covered by).
 fn descr_fingerprint(cx: TyCtx<'_>, d: &Descr, mut render_var: impl FnMut(TypeVarId) -> String) -> String {
-    if d.is_empty_memo(cx, &mut Memo::default()) {
+    if d.is_empty_in(cx, InFlight::default()) {
         return "fp[none]".to_string();
     }
     if d.is_full(cx) {
@@ -475,8 +475,8 @@ fn descr_fingerprint(cx: TyCtx<'_>, d: &Descr, mut render_var: impl FnMut(TypeVa
     format!("fp[{}]", parts.join(";"))
 }
 
-fn inhabited<T>(cx: TyCtx<'_>, clauses: &[Conj<T>], is_empty: fn(TyCtx<'_>, &Conj<T>, &mut Memo) -> bool) -> bool {
-    clauses.iter().any(|c| !is_empty(cx, c, &mut Memo::default()))
+fn inhabited<T>(cx: TyCtx<'_>, clauses: &[Conj<T>], is_empty: fn(TyCtx<'_>, &Conj<T>, InFlight<'_>) -> bool) -> bool {
+    clauses.iter().any(|c| !is_empty(cx, c, InFlight::default()))
 }
 
 fn sorted(texts: impl Iterator<Item = String>) -> Vec<String> {

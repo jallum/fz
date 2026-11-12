@@ -1,39 +1,5 @@
 use super::*;
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
-
-thread_local! {
-    static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
-}
-
-/// Counts the allocation calls made by the thread that asks, so a test can
-/// say that a stretch of work allocated nothing.
-struct CountingAllocator;
-
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.with(|count| count.set(count.get() + 1));
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCATIONS.with(|count| count.set(count.get() + 1));
-        unsafe { System.realloc(ptr, layout, new_size) }
-    }
-}
-
-#[global_allocator]
-static ALLOCATOR: CountingAllocator = CountingAllocator;
-
-fn allocations_during(work: impl FnOnce()) -> u64 {
-    let before = ALLOCATIONS.with(Cell::get);
-    work();
-    ALLOCATIONS.with(Cell::get) - before
-}
+use crate::compiler2::allocation_probe::allocations_during;
 
 fn id(n: u32) -> ValueId {
     ValueId::from_u32(n)
@@ -60,7 +26,7 @@ fn a_set_is_a_small_handle_over_one_run_of_words() {
 /// visiting set without asking the allocator for anything.
 #[test]
 fn a_set_over_an_ordinary_body_allocates_nothing() {
-    let allocations = allocations_during(|| {
+    let ((), allocations) = allocations_during(|| {
         let mut visiting = ValueSet::for_values(128);
         for number in 0..128 {
             assert!(visiting.mark(id(number)));
@@ -77,7 +43,7 @@ fn a_set_over_an_ordinary_body_allocates_nothing() {
 #[test]
 fn a_set_over_a_large_body_allocates_once() {
     let mut set = ValueSet::for_values(480);
-    let allocations = allocations_during(|| {
+    let ((), allocations) = allocations_during(|| {
         for number in 0..480 {
             set.mark(id(number));
         }
