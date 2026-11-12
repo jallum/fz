@@ -4,14 +4,15 @@
   "blocks": [
     "fz-rs7.4"
   ],
+  "closed_at": "2026-11-12T21:54:09Z",
   "created": "2026-11-12T20:16:27Z",
   "description": "Folded into fz-rs7.4. On develop the wrong-lane zero coercion this ticket was to remove does not exist: receive_value_int and receive_value_float return an error, as_raw_i64 and as_raw_f64 panic. The coercion was spike scaffolding. The dead-edge failure (184 of 296 mixed-lane guard programs failing to compile) appears only once guard operators resolve as Kernel calls, which is fz-rs7.4; without that change there is no failing test, and with it the live-edge-only emission is required for the commit to compile. Two steps that cannot land apart are one step. The live-edge work and its acceptance are in fz-rs7.4.",
   "id": "fz-rs7.3",
   "labels": [],
   "parent": "fz-rs7",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A test the lane decides emits only its live edge",
   "type": "task",
-  "updated_at": "2026-11-12T21:54:08Z"
+  "updated_at": "2026-11-12T21:54:09Z"
 }
