@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T22:09:23Z",
+  "description": "NativeLowerer (src/compiler2/jobs/native.rs:74-) keeps\n`callable_boundaries: Vec\u003cNativeCallableBoundary\u003e` beside its mutable\nstate and walks it with `for boundary in self.callable_boundaries.clone()`\n(native.rs:298) to call lower_callable_construction_wrapper(\u0026mut self, ..).\nThe field is moved out whole at native.rs:350.\n\nAlso native.rs:741 `self.extern_marshals.get(\u0026index).cloned()\n.unwrap_or_default()` -- a Vec\u003cExternTy\u003e copied per extern call lowered.\n\nChange: same idea as .2 -- the list being walked is not part of the state\nthe walk mutates. Before building: establish whether\nlower_callable_construction_wrapper can append to callable_boundaries\nduring the walk (if it can, the walk is a worklist and should be written\nas one; if it cannot, the borrow splits).\n\nRemoval ledger: the Vec clone at :298, the marshal-plan clone at :741 if\nthe borrow splits the same way.\n\nSignal: gate green, no golden/census/pin movement.",
+  "id": "fz-gfx.7",
+  "labels": [],
+  "parent": "fz-gfx",
+  "priority": 3,
+  "status": "open",
+  "title": "NativeLowerer walks its callable boundaries without copying them",
+  "type": "task",
+  "updated_at": "2026-11-12T22:09:23Z"
+}
