@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:13:52Z",
+  "description": "Proposal (approved 2026-11-12): /Users/j5n/Workspace/fz-3sy-typed-path.html. %{p | x: 1} with p exactly one struct and every key a field resolves to BackendStep::StructUpdate: copy the object, store the changed slots; no destination, no ok flag, no branch. On the erased path an update whose base is a struct at run time uses a struct copy as its destination and stores by the schema's slot; a key the schema lacks is the miss. Goes: MAP_STRUCT_BASE_FLAG, MapDestinationKind::Update's struct_base, struct_of_entries, struct_named, the by_module cache. Signal: 4892 (2 fields) and 10441 (8) instructions per update today, predicted near a construction; fz-3sy.1's update fixtures stay byte-identical.",
+  "id": "fz-3sy.12",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 2,
+  "status": "open",
+  "title": "A struct update on a known struct is a copy and stores",
+  "type": "task",
+  "updated_at": "2026-11-12T20:13:52Z"
+}
