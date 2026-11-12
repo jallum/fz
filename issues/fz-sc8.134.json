@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:40:40Z",
+  "description": "After fz-sc8.129, drive_product_fact_waits_with_sessions (src/compiler2/product_drive.rs) still carries 'if sessions.is_none() { driver.apply_fact_movements(\u0026delivered_facts(..)) }' on job completion. sessions is None only from cfg(test) wrappers (drive_product_fact_wait, drive_product_fact_waits, drive_root_product_with_producers); every production path passes Some(sessions). That arm is test-only scaffolding in production code, and since .129 the drain no longer feeds quiescence movements to the driver in that mode, so the tests exercise a half-path production never runs. Move those tests onto the production path (real ProductSessions), delete the Option and the arm, and delete the wrappers if nothing else uses them.",
+  "id": "fz-sc8.134",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "The product fact-wait pump has no test-only no-sessions arm",
+  "type": "task",
+  "updated_at": "2026-11-12T20:40:40Z"
+}
