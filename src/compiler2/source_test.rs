@@ -575,3 +575,21 @@ fn semantically_eq_is_stable_across_reparse_of_multi_clause_source() {
     assert!(a.semantically_eq(&b, Horizon::Full));
     assert!(a.semantically_eq(&b, Horizon::Surface));
 }
+
+#[test]
+#[should_panic(expected = "on loan to a running macro")]
+fn lending_the_process_twice_at_once_fails_loudly() {
+    let heap = QuotedSourceHeap::new();
+    let _ = heap.lend_process(|process| {
+        let nested: Result<(), ()> = heap.lend_process(|inner| (inner, Ok(())));
+        (process, nested)
+    });
+}
+
+#[test]
+fn a_lent_process_is_returned_to_the_heap() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let result: Result<(), ()> = heap.lend_process(|process| (process, Ok(())));
+    assert!(result.is_ok());
+    assert_eq!(heap.builder().int(7).tag(), ValueKind::INT);
+}
