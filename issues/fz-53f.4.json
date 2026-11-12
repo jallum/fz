@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-53f.7"
+  ],
   "created": "2026-11-12T22:34:13Z",
   "description": "Memo.in_flight (types/emptiness.rs) is a HashSet\u003cDescr\u003e that only ever holds the current recursion path (depth at most 5 on the probes, never hit a cycle there). Each Descr::is_empty_memo does contains + insert(self.clone()) + remove: three structural hashes and a deep clone. Make it a stack compared in place with nothing constructed. The coinductive meaning (re-entering a descriptor in flight assumes it empty) must be unchanged; add a test that exercises a real cycle since the probes never hit one. Largest single step: about -7% on 00761 and 00765. Proposal page: /Users/j5n/Workspace/compile-cost-round-two.html (https://claude.ai/artifact/4T5Lime7pQxKbCiKJqaJ8x). Spike (base c768670cd; port by reading, not by applying): /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/tables/stepC.diff. Acceptance: stdout (interp and run), canonical dump, activation key counts and job counts identical to the base binary on /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/p/distinct1.fz, f761.fz (--top 1 --top 2), f765.fz (--max-top 3), /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/m/r6.fz, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/l/lit16.fz; release instructions retired re-measured on base and change binaries built the same way; full gate.",
   "id": "fz-53f.4",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The emptiness memo is a stack of the descriptors on the current path",
   "type": "task",
-  "updated_at": "2026-11-12T22:34:13Z"
+  "updated_at": "2026-11-12T22:34:37Z"
 }
