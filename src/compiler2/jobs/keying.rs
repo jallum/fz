@@ -1030,12 +1030,10 @@ fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> 
     let body = world.lowered_body(function);
     let LoweredBody::Clauses { clauses, entries, .. } = &*body;
     let origins = input_positions(&body, input_count);
-    let rebuilt = recursion_supplied_positions(function, entries, &origins, input_count);
     for (slot, path) in returned_values(&body, clauses, entries)
         .iter()
         .filter_map(|value| origins.get(value))
         .flatten()
-        .filter(|position| !rebuilt.contains(*position))
     {
         if let Some(demand) = mask.get_mut(*slot) {
             demand.join_assign(demand_at_path(path, DispatchDemand::Whole));
@@ -1050,7 +1048,11 @@ fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> 
 ///
 /// Only a call made from inside `function`'s own body asks, and a body that is
 /// being analysed is lowered, so the body is always there to read.
-pub(super) fn supplied_whole_slots(world: &World, function: FunctionId, input_count: usize) -> Vec<usize> {
+pub(super) fn supplied_whole_slots(
+    world: &World,
+    function: FunctionId,
+    input_count: usize,
+) -> impl Iterator<Item = usize> {
     let body = world.lowered_body(function);
     let LoweredBody::Clauses { entries, .. } = &*body;
     let origins = input_positions(&body, input_count);
@@ -1058,7 +1060,6 @@ pub(super) fn supplied_whole_slots(world: &World, function: FunctionId, input_co
         .into_iter()
         .filter(|(_, path)| path.is_empty())
         .map(|(slot, _)| slot)
-        .collect()
 }
 
 /// The positions the RECURSION itself supplies, as a LEAST FIXPOINT: a
@@ -1069,12 +1070,11 @@ pub(super) fn supplied_whole_slots(world: &World, function: FunctionId, input_co
 /// caller did not hold this value at this same position, so the position is
 /// rebuilt" -- misreads a PERMUTATION. `go(n - 1, b, a)` hands each slot a
 /// value the caller held at the OTHER slot, which supplies neither, and the
-/// eager rule marks both (and poisons both, since each is held elsewhere).
-/// Measured: `go(0, a, _b), do: a` at `["x"]` and at `[9]` then blends into
-/// one key publishing `non_empty_list(binary) | non_empty_list(int)`, the
-/// exact defect this axis exists to remove. Under the fixpoint the
-/// permutation's obligations never discharge, the set settles empty, and
-/// `go/3` keys its two users apart.
+/// eager rule marks both (and poisons both, since each is held elsewhere). A
+/// self call would then keep its caller's column at both slots although each
+/// holds what the caller had at the other. Under the fixpoint the permutation's
+/// obligations never discharge, the set settles empty, and the self call keys
+/// each slot from its argument.
 ///
 /// A supplied position is keyed by the CALLER, never by the recursion. An
 /// accumulator visits `[]` and then `list(tau)` within ONE caller, and those

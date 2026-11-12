@@ -246,31 +246,32 @@ supplied when a self-call hands it a value the caller held nowhere, or held only
 at positions that are themselves supplied. A supplied position ascends within
 ONE caller (`[]`, then `list(int)`), and those denotations intern apart, so
 keying each self call from the type it hands over would mint one activation per
-ascent state and k accumulators their product (three accumulators each handed to a
-call would key `go/4` 8 times, six accumulators 64). The seed activation
--- the one every outside caller reaches with its own literal -- is what tells
-callers apart there, so a self call keeps its caller's own key column at every
-WHOLE slot the recursion supplies (`call_key_types`, `jobs/semantic.rs`, reading
-`supplied_whole_slots`, `jobs/keying.rs`). The type it hands over is not
-dropped: it still enters the callee's input evidence as the ascent state. Every
-other slot keys from its argument. `go/4` settles two activations, the outside
-caller's and the ascent's, and so does the six-accumulator form. They differ at
-the list the recursion walks, not at an accumulator: `go/4`'s clauses tell the
-seed's `non_empty_list(int)` from the recursion's `list(int)`. Two outside callers that seed an accumulator with
-different element types keep two activations whose returns stay apart. The
-returned axis also leaves a supplied position out of its mask, for the same
-reason.
+ascent state and k accumulators their product (three accumulators each handed to
+a call would key `go/4` 8 times, six accumulators 64). One rule prevents that,
+and it is the whole of the rule: a slot the recursion supplies is keyed by the
+outside caller's seed, and a self call keeps its caller's own key column there
+(`call_key_types`, `jobs/semantic.rs`, reading `supplied_whole_slots`,
+`jobs/keying.rs`). The type the self call hands over is not dropped: the
+argument joins the activation's input evidence as the ascent state. Every other
+slot keys from its argument. The returned axis treats a supplied position like
+any other, so a directly returned accumulator's column is the caller's seed too.
+`go/4` settles two activations, the outside caller's `non_empty_list(int)`
+literal and the self call's `list(int)`, and so does the six-accumulator form:
+they differ at the list the recursion walks, not at an accumulator;
+two outside callers that seed an accumulator with different element types reach
+two activations whose returns stay apart, whether the accumulator is returned
+through a call (`01076`) or directly (`01078`).
 
-The fixpoint is what makes that subtraction sound, and the eager form is not.
+The fixpoint is what makes that rule sound, and the eager form is not.
 "The caller did not hold this value at this same position" misreads a
 PERMUTATION: `go(n - 1, b, a)` hands each slot the value held at the other, and
-the eager test marks both supplied, re-blending `go(0, a, _b), do: a`'s two
-users into one key publishing `non_empty_list(binary) | non_empty_list(int)`.
-Under the fixpoint the permutation's obligations never discharge and the set
-settles empty. A position the recursion only carries is constant along the
-ascent, and two keys there are two callers: `loop(n, junk)`'s junk, the slots
-`go/3` permutes, and the payload of `walk({:go, acc}, n - 1)`, which the
-rebuilt tuple hands on unchanged (fz-kdt.199).
+the eager test marks both supplied, so a self call would keep its caller's
+column at slots that hold what the caller had at the other. Under the fixpoint
+the permutation's obligations never discharge and the set settles empty. A
+position the recursion only carries is constant along the ascent, and two keys
+there are two callers: `loop(n, junk)`'s junk, the slots `go/3` permutes, and
+the payload of `walk({:go, acc}, n - 1)`, which the rebuilt tuple hands on
+unchanged (fz-kdt.199).
 
 A forward is an edge from an input POSITION -- a slot and a path into it -- to
 a callee input, through zero or more construction steps. A parameter passed on
@@ -322,7 +323,7 @@ literal -- or from a closure call, a branch or a capture that reads the value
 whole -- so fz-y6w's termination argument does not cover such a slot.
 The returned axis does not widen that exposure: it never produces a verbatim
 slot, only an addressed class. The CALLABLE slot is still blind. And the
-recursion-supplied subtraction reads SELF calls only: a mutually recursive pair
+recursion-supplied rule reads SELF calls only: a mutually recursive pair
 rebuilds across the cycle rather than inside one body, and a recursion routed
 through a generated lambda (`00032_lambda_recursion`) is not local either, so
 both still key their ascent.
@@ -457,7 +458,7 @@ independently, so it reads 23 rung/slot findings where the sweep's whole-key
 relation reads none on those five — up from the 8 fz-kdt.183 recorded, and the
 fifteen added are on positions the returned axis now names: the reduce
 families' accumulators key their seed apart from their ascent, a supplied
-position the SELF-only subtraction cannot see across the cont↔step cycle
+position the self-call rule cannot see across the cont↔step cycle
 (fz-kdt.213). Zero of the 23 sit on freight, which is what the gate asserts.
 The two populations differ by construction --
 162 slot findings over 16 fixtures against 58 whole-key rungs over the same 16 --

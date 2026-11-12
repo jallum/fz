@@ -14292,14 +14292,12 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         "partition/4 should stay keyed on its four inputs"
     );
     let partition_inputs = partition_activations[0].inputs(types);
-    // fz-f98.14.10.2: the two recursive accumulator slots collapse to their
-    // ADDRESSED convergence class — `[a2_e]` and `[a3_e]` — list-family slots
-    // whose element is a resolvable structural-address var, not the path-blind
-    // `list(any)`. They are distinct BY ADDRESS (param 2 vs param 3), which is
-    // correct: distinct parameter positions must not conflate. The win is that
-    // each slot folds to ONE key (no `[int] | []` over-spec survives).
-    assert_eq!(types.display(&partition_inputs[2]), "[a2_e]");
-    assert_eq!(types.display(&partition_inputs[3]), "[a3_e]");
+    // Both recursive accumulator slots are supplied by the recursion and
+    // returned, so each column is the outside caller's seed, the literal `[]`:
+    // the self calls' `list(int)` states join the activation's evidence and
+    // mint no key of their own. The frontier stays finite, one partition/4 key.
+    assert_eq!(types.display(&partition_inputs[2]), "[]");
+    assert_eq!(types.display(&partition_inputs[3]), "[]");
     let append_activations = activations
         .iter()
         .filter(|activation| activation.function == append_id)
@@ -15141,7 +15139,7 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
 
     // `build/2` RETURNS its accumulator (the `n == 0` branch is `acc`), and the
     // recursion that rebuilds it runs inside a generated lambda rather than in
-    // `build/2`'s own entries -- which fz-kdt.199's self-call exclusion cannot
+    // `build/2`'s own entries -- which the self-call rule cannot
     // see. So the accumulator is keyed and its seed `[]` stands apart from the
     // ascended `list(int)`: TWO keys, one ascent rung, both bodies identical.
     // That is a cost this ticket does not buy anything with (the seed
@@ -21538,13 +21536,10 @@ fn split_top_level(text: &str) -> Vec<&str> {
 /// element splits `partition/4` 1 -> 4 and `split4/6` 1 -> 16, all bodies
 /// identical).
 ///
-/// `tag/3`'s accumulator states fz-kdt.199's exclusion, and it is a COST law
-/// rather than a precision one. `tag/3` returns its accumulator, so the return
-/// does depend on a slot the key erases -- but the recursion SUPPLIES that
-/// slot, so the seed activation is the one every caller passes through and its
-/// `[]` is the same `[]` for all of them. Keying it mints one activation per
-/// ascent state (measured: three) and the seed still publishes the join, so the
-/// split is cost with nothing bought.
+/// `tag/3` states the cost law for a slot the recursion supplies. `tag/3`
+/// returns its accumulator, so the key names it, and the recursion SUPPLIES it:
+/// a self call keeps its caller's column there, so the outside caller's `[]`
+/// picks the activation and the ascent states mint none of their own.
 ///
 /// `fwd/2` is fz-6gb's law, and it is why `InputDemand`'s dispatch demand
 /// carries two halves. `fwd/2` only TRANSPORTS its callable: no clause of
@@ -21556,8 +21551,8 @@ fn split_top_level(text: &str) -> Vec<&str> {
 /// key collapse still reads the forwarded demand.
 ///
 /// The last three are the rules' UPPER bound: a position the activation
-/// RETURNS and the recursion does NOT supply must key its users apart, or one
-/// activation answers for both with the join of their returns (fz-kdt.199).
+/// RETURNS must key its users apart, or one activation answers for both with
+/// the join of their returns (fz-kdt.199).
 /// `loop/2` states it at a whole slot and `walk/2` one tuple field down, where
 /// the key names the tag and the return IS the payload. `walk/2`'s two are the
 /// two outside seeds, `{:go, [1, 2]}` and `{:go, ["a"]}`: each seed picks its
@@ -21575,17 +21570,17 @@ fn split_top_level(text: &str) -> Vec<&str> {
 /// that does NOT return the slot -- is the true freight statement and stays
 /// at 1.
 ///
-/// `go/3` states the exclusion's boundary. It is a pure PERMUTATION: each
+/// `go/3` states the boundary of a supplied slot. It is a pure PERMUTATION: each
 /// self-call hands a slot the value the caller held at the OTHER slot, so the
-/// recursion supplies neither and both stay carried. That is why the exclusion
-/// is a LEAST FIXPOINT over "held nowhere, or held only at supplied positions"
+/// recursion supplies neither and both stay carried. That is why "supplied" is a
+/// LEAST FIXPOINT over "held nowhere, or held only at supplied positions"
 /// rather than the eager "not held at this same position" -- the eager test
-/// marks both slots supplied here and re-blends the two users into the base's
-/// wrong diagnostic.
+/// marks both slots supplied here, and a self call would keep its caller's
+/// column at slots that hold what the caller had at the other.
 ///
 /// What these rows prove, stated exactly: for every shape here the published
 /// return depends only on what the key names. They do NOT prove the invariant
-/// in general. The exclusion reads SELF calls only, so a position supplied
+/// in general. The supplied-slot rule reads SELF calls only, so a position supplied
 /// across a mutual cycle or through a generated lambda is keyed anyway (cost,
 /// never unsoundness -- fz-kdt.213), and the axis rides fz-kdt.183's dispatch
 /// edge set, which does not see a reconstructed or projected forwarding
@@ -21829,6 +21824,82 @@ fn compiler2_two_seeds_of_different_element_types_keep_their_returns_apart() {
             "exactly one go/2 activation returns {}: got {:?}",
             types.display(expected),
             returns.iter().map(|ret| types.display(ret)).collect::<Vec<_>>(),
+        );
+    }
+}
+
+/// A directly returned accumulator is keyed like one returned through a call:
+/// the column at a slot the recursion supplies is the outside caller's own
+/// seed. Two callers that seed `a` with different element types reach two
+/// `go/2` activations, and each `tell/1` that receives a head sees only the
+/// elements of the caller it came from.
+#[test]
+fn compiler2_two_seeds_of_a_directly_returned_accumulator_key_their_users_apart() {
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("direct seeds".to_string()),
+        text: include_str!("../../fixtures/01078_two_seeds_keep_a_directly_returned_accumulator_apart.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root_id);
+    assert_resolved(
+        compiler.drive(),
+        "the direct-return program must settle to a backend product",
+    );
+    let program = backend.last(root_id).program;
+    let (int_or_atom, int_or_binary) = {
+        let types = compiler.world_mut().types_mut();
+        let (int, atom_a, binary) = (types.int(), types.atom_lit("a"), types.str_t());
+        (types.union(int, atom_a), types.union(int, binary))
+    };
+    let world = compiler.world();
+    let types = world.types();
+    let activations_of = |label: &str| -> Vec<ActivationKey> {
+        program
+            .executables()
+            .iter()
+            .filter(|executable| {
+                crate::compiler2::canon::function_label(world, executable.key.activation.function) == label
+            })
+            .map(|executable| executable.key.activation.clone())
+            .collect()
+    };
+    assert_eq!(
+        activations_of("go/2").len(),
+        2,
+        "one go/2 activation per outside seed, whichever way the accumulator is returned"
+    );
+    let tellers = activations_of("tell/1");
+    assert_eq!(
+        tellers.len(),
+        2,
+        "each caller's heads reach their own tell/1 activation: {:?}",
+        tellers
+            .iter()
+            .map(|key| types.display(&key.inputs(types)[0]))
+            .collect::<Vec<_>>(),
+    );
+    for expected in [&int_or_atom, &int_or_binary] {
+        assert_eq!(
+            tellers
+                .iter()
+                .filter(|key| types.is_equivalent(&key.inputs(types)[0], expected))
+                .count(),
+            1,
+            "exactly one tell/1 activation sees {}: got {:?}",
+            types.display(expected),
+            tellers
+                .iter()
+                .map(|key| types.display(&key.inputs(types)[0]))
+                .collect::<Vec<_>>(),
         );
     }
 }
