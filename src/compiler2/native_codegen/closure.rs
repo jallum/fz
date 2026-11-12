@@ -1,89 +1,22 @@
 use super::*;
-use cranelift_codegen::ir::{
-    self, BlockArg, InstBuilder, MemFlags, StackSlotData, StackSlotKind, condcodes::IntCC, types,
-};
+use cranelift_codegen::ir::{self, InstBuilder, MemFlags, StackSlotData, StackSlotKind, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
 use fz_runtime::any_value::{AnyValueRefPacking, TAG_LAZY_CONT, TaggedRefArch};
 
-/// Resolve the outer-cont ref to forward into a new cont closure.
-/// For cont fns: loaded from closure env field 0. For non-cont native:
-/// `cont_param` already is the outer cont.
-/// For uniform fns without cont_param: load frame_ptr+16, brif on null to
-/// allocate a halt-cont fallback closure.
-///
-/// Uniform cont fns (cont fns whose enclosing chain forced a uniform frame
-/// ABI) have no `self` closure ptr; their outer_cont lives in frame slot 0
-/// — fall through to the uniform branch when cont_param is None.
+/// The outer-cont ref to forward into a new cont closure. A cont fn's
+/// `cont_param` is its own closure, so the outer cont is loaded from the
+/// closure env; any other fn's `cont_param` already is the outer cont.
 pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
-    locals: &LocalBodies,
-    return_reprs: &[ArgRepr],
     is_cont_fn: bool,
-    cont_param: Option<ir::Value>,
-    frame_ptr: Option<ir::Value>,
-    cont_sid: u32,
+    cont_param: ir::Value,
 ) -> ir::Value {
-    if is_cont_fn && let Some(self_val) = cont_param {
-        return body.outer_cont_ref(self_val);
+    if is_cont_fn {
+        body.outer_cont_ref(cont_param)
+    } else {
+        cont_param
     }
-    // No `self` closure ptr: caller dispatched through the uniform
-    // path; outer_cont lives in frame slot 0. Fall through.
-    {
-        let _ = is_cont_fn;
-        match cont_param {
-            Some(c) => c,
-            None => {
-                let from_slot = body.b.ins().load(
-                    types::I64,
-                    MemFlags::trusted(),
-                    frame_ptr.expect("uniform caller building cont closure must have frame_ptr"),
-                    HEADER_SIZE,
-                );
-                let zero = body.b.ins().iconst(types::I64, 0);
-                let is_null = body.b.ins().icmp(IntCC::Equal, from_slot, zero);
-                let alloc_blk = body.b.create_block();
-                let join_blk = body.b.create_block();
-                body.b.append_block_param(join_blk, types::I64);
-                body.b
-                    .ins()
-                    .brif(is_null, alloc_blk, &[][..], join_blk, &[BlockArg::Value(from_slot)]);
-                body.b.switch_to_block(alloc_blk);
-                body.b.seal_block(alloc_blk);
-                let cont_arity = body.b.ins().iconst(types::I32, CONT_ARITY);
-                let n_caps0 = body.b.ins().iconst(types::I32, 0);
-                let hc_repr = return_reprs[cont_sid as usize];
-                let hcb_addr = fn_addr(body.jmod, locals.halt_cont_body_id(hc_repr), body.b);
-                let zero_hk = body.b.ins().iconst(types::I32, 0);
-                let halt_cl = body.alloc_closure(
-                    fz_runtime::any_value::ClosureDenotationId::INTERNAL,
-                    cont_arity,
-                    n_caps0,
-                    zero_hk,
-                    hcb_addr,
-                );
-                body.b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
-                body.b.switch_to_block(join_blk);
-                body.b.seal_block(join_blk);
-                body.b.block_params(join_blk)[0]
-            }
-        }
-    }
-}
-
-fn explicit_or_resolved_outer_cont<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, M>,
-    locals: &LocalBodies,
-    return_reprs: &[ArgRepr],
-    is_cont_fn: bool,
-    cont_param: Option<ir::Value>,
-    frame_ptr: Option<ir::Value>,
-    cont_sid: u32,
-    outer_cont_override: Option<ir::Value>,
-) -> ir::Value {
-    outer_cont_override
-        .map(|outer_cont| body.materialize_cont(outer_cont))
-        .unwrap_or_else(|| resolve_outer_cont(body, locals, return_reprs, is_cont_fn, cont_param, frame_ptr, cont_sid))
 }
 
 /// Allocate a cont closure, populate its code-addr, outer-cont, and user
@@ -91,30 +24,15 @@ fn explicit_or_resolved_outer_cont<M: cranelift_module::Module>(
 ///
 /// `cap_bindings` is a slice of user captures. Typed captures stay in raw
 /// payload slots; `ValueRef` captures are already one-word any value refs.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
-    locals: &LocalBodies,
-    return_reprs: &[ArgRepr],
     is_cont_fn: bool,
-    cont_param: Option<ir::Value>,
-    frame_ptr: Option<ir::Value>,
-    cont_sid: u32,
+    cont_param: ir::Value,
     cont_fid: FuncId,
     cap_bindings: &[ClosureCapture],
     extra_ref_captures: &[ir::Value],
-    outer_cont_override: Option<ir::Value>,
 ) -> ir::Value {
-    let my_outer_cont = explicit_or_resolved_outer_cont(
-        body,
-        locals,
-        return_reprs,
-        is_cont_fn,
-        cont_param,
-        frame_ptr,
-        cont_sid,
-        outer_cont_override,
-    );
+    let my_outer_cont = resolve_outer_cont(body, is_cont_fn, cont_param);
     let cont_arity = body.b.ins().iconst(types::I32, CONT_ARITY);
     // +1 reserves env field 0 for the synthetic outer_cont; user captures follow.
     let n_caps_v = body
@@ -177,27 +95,13 @@ const LAZY_CONT_KIND_ATOM: i64 = 3;
 
 pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
-    locals: &LocalBodies,
-    return_reprs: &[ArgRepr],
     is_cont_fn: bool,
-    cont_param: Option<ir::Value>,
-    frame_ptr: Option<ir::Value>,
-    cont_sid: u32,
+    cont_param: ir::Value,
     cont_fid: FuncId,
     cap_bindings: &[ClosureCapture],
     extra_ref_captures: &[ir::Value],
-    outer_cont_override: Option<ir::Value>,
 ) -> ir::Value {
-    let my_outer_cont = explicit_or_resolved_outer_cont(
-        body,
-        locals,
-        return_reprs,
-        is_cont_fn,
-        cont_param,
-        frame_ptr,
-        cont_sid,
-        outer_cont_override,
-    );
+    let my_outer_cont = resolve_outer_cont(body, is_cont_fn, cont_param);
     let captured_count = cap_bindings.len() + extra_ref_captures.len() + 1;
     let raw_base = LAZY_CONT_HEADER_BYTES;
     let kind_base = raw_base + captured_count * SLOT_BYTES as usize;

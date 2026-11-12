@@ -9,7 +9,6 @@ use cranelift_module::Module;
 use fz_runtime::any_value::{FALSE_BITS as FALSE_BITS_RAW, TRUE_BITS as TRUE_BITS_RAW, ValueKind};
 use std::collections::HashMap;
 
-pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
 
 #[derive(Clone, Copy)]

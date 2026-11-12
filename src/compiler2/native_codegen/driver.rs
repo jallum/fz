@@ -81,30 +81,19 @@ fn build_per_spec_schemas(body_slots: &[Option<NativeCodegenBody<'_>>]) -> Vec<S
     schemas
 }
 
-/// Per-spec Cranelift Signature. A native fn gets its typed args plus the
-/// continuation, in `Tail`; a uniform fn gets the trampoline's
-/// `(frame_ptr, host_ctx) -> i64` in the target's C convention. A sentinel slot
-/// is never declared, so its signature is only a placeholder.
-fn build_fn_sigs<M: cranelift_module::Module>(
-    m: &mut M,
-    module: &Module,
-    surface: &NativeCodegenSurface<'_>,
-) -> Vec<Signature> {
+/// Per-spec Cranelift Signature: the typed args plus the continuation, in
+/// `Tail`. A sentinel slot is never declared, so its signature is only a
+/// placeholder.
+fn build_fn_sigs(surface: &NativeCodegenSurface<'_>) -> Vec<Signature> {
     surface
         .body_slots
         .iter()
         .map(|body_slot| match body_slot {
-            Some(body_slot) => {
-                let f = &module.fns[body_slot.fn_idx];
-                let is_native = surface.native_abi_fns.contains(&f.id);
-                build_fn_signature(
-                    m,
-                    &surface.param_reprs[body_slot.codegen_id as usize],
-                    is_native,
-                    surface.cont_fns.contains(&f.id),
-                    Some(continuation_entry_extra_count(body_slot.native_body)),
-                )
-            }
+            Some(body_slot) => build_fn_signature(
+                &surface.param_reprs[body_slot.codegen_id as usize],
+                surface.cont_fns.contains(&body_slot.fn_id),
+                Some(continuation_entry_extra_count(body_slot.native_body)),
+            ),
             None => {
                 let mut sig = Signature::new(CallConv::Tail);
                 sig.params.push(AbiParam::new(types::I64));
@@ -343,7 +332,7 @@ fn define_halt_conts<M: cranelift_module::Module>(
 /// entry's synthetic inner closure. The inner closure carries the raw
 /// `(cont)` main fn pointer in capture[0] (a raw int, so GC never treats it
 /// as a heap reference). Closure-target sig `(self, cont) tail`: read main_fp
-/// from capture[0] and `call_indirect Tail main_fp(cont)`, entering the uniform
+/// from capture[0] and `call_indirect Tail main_fp(cont)`, entering the
 /// entry-thunk + `fz_resume` dispatch path without forcing a closure-target
 /// body onto the entry fn itself.
 fn emit_main_trampoline<M: cranelift_module::Module>(
@@ -430,7 +419,7 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
     .map_err(|e| CodegenError::new(format!("define fz_drain_dtor_entry: {}", e)))
 }
 
-/// Emit fz_entry_thunk. The uniform first-entry wrapper for a freshly
+/// Emit fz_entry_thunk. The first-entry wrapper for a freshly
 /// spawned task. A task's `runnable` is an entry thunk whose single capture
 /// is the task's inner closure (a user lambda for `spawn_closure`, or the
 /// synthetic `fz_main_trampoline` closure for a main-style entry). The
@@ -852,40 +841,25 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         .unwrap_or(0);
     let mut body_slots = (0..=max_fn_id).map(|_| None).collect::<Vec<_>>();
     let mut param_reprs = Vec::with_capacity(max_fn_id + 1);
-    let mut halt_reprs = Vec::with_capacity(max_fn_id + 1);
     let mut return_diverges = Vec::with_capacity(max_fn_id + 1);
     param_reprs.resize(max_fn_id + 1, Vec::new());
-    halt_reprs.resize(max_fn_id + 1, ArgRepr::ValueRef);
     return_diverges.resize(max_fn_id + 1, false);
 
     for body in &program.bodies {
         let codegen_id = body.fn_id.0 as usize;
         let function = program.module.fn_by_id(body.fn_id);
-        let fn_idx = *program
-            .module
-            .fn_idx
-            .get(&body.fn_id)
-            .expect("Compiler2 native body must exist in the native module");
         body_slots[codegen_id] = Some(NativeCodegenBody {
             codegen_id: body.fn_id.0,
-            fn_idx,
             fn_id: body.fn_id,
             native_body: body,
             body: function,
             display_name: function.name.clone(),
         });
         param_reprs[codegen_id] = body.param_reprs.iter().copied().map(arg_repr_from_compiler2).collect();
-        halt_reprs[codegen_id] = native_return_halt_repr(body);
         return_diverges[codegen_id] = t.is_empty(&body.return_ty);
     }
 
     let callable_boundaries = build_codegen_callable_boundaries(t, program);
-    let native_abi_fns = program
-        .module
-        .fns
-        .iter()
-        .map(|function| function.id)
-        .collect::<HashSet<_>>();
     let cont_fns = program
         .bodies
         .iter()
@@ -894,7 +868,6 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
             crate::compiler2::NativeEntryAbi::Direct => None,
         })
         .collect::<HashSet<_>>();
-    let cont_target_fns = native_abi_fns.clone();
     let fn_halt_kinds = program
         .bodies
         .iter()
@@ -909,10 +882,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         callable_boundaries,
         mid_flight_cont_keys: collect_codegen_mid_flight_cont_keys(program, &param_reprs),
         param_reprs,
-        halt_reprs,
         return_diverges,
-        native_abi_fns,
-        cont_target_fns,
         cont_fns,
         fn_halt_kinds,
     })
@@ -961,7 +931,7 @@ pub(crate) fn compile_with_backend_surface<
     let schemas = build_per_spec_schemas(body_slots);
     let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.allocation_payload_size() as u32).collect();
 
-    let fn_sigs = build_fn_sigs(backend.module_mut(), module, surface);
+    let fn_sigs = build_fn_sigs(surface);
 
     let linkage = backend.fn_linkage();
     let fn_ids = declare_spec_fns(backend.module_mut(), linkage, body_slots, &fn_sigs)?;
@@ -989,7 +959,6 @@ pub(crate) fn compile_with_backend_surface<
 
         let display_name = &body_slot.display_name;
         let cg_env = CodegenEnv {
-            locals: &locals,
             surface,
             module,
             active_spec_id: sid,
@@ -1003,10 +972,7 @@ pub(crate) fn compile_with_backend_surface<
             named_schema_ids: &named_schema_ids,
             bs_const_data: &bs_const_data,
             param_reprs: &surface.param_reprs,
-            halt_reprs: &surface.halt_reprs,
             return_diverges: &surface.return_diverges,
-            native_abi_fns: &surface.native_abi_fns,
-            cont_target_fns: &surface.cont_target_fns,
             cont_fns: &surface.cont_fns,
             receive_dispatch_fn_ids: &receive_dispatch_fn_ids,
         };
@@ -1018,7 +984,6 @@ pub(crate) fn compile_with_backend_surface<
                 &mut ctx,
                 &mut fbctx,
                 &cg_env,
-                &schemas,
                 f,
                 sid,
                 &module.source,

@@ -12,10 +12,6 @@ fn assert_host_called_signatures<M: cranelift_module::Module>(m: &mut M) {
         ("a receive dispatch fn", receive_dispatch_signature(m)),
         ("fz_drain_dtor_entry", drain_dtor_entry_signature(m)),
         ("fz_resume", resume_signature(m)),
-        (
-            "a uniform trampoline body",
-            build_fn_signature(m, &[], false, false, None),
-        ),
     ];
     for (name, sig) in sigs {
         assert_eq!(

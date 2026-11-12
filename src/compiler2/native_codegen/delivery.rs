@@ -17,20 +17,6 @@ pub(crate) fn arg_reprs_from_compiler2(reprs: &[AbiValueRepr]) -> Vec<ArgRepr> {
     reprs.iter().copied().map(arg_repr_from_compiler2).collect()
 }
 
-pub(crate) fn single_scalar_return_repr(
-    diverges: bool,
-    reprs: &[ArgRepr],
-    tuple_arity: Option<usize>,
-) -> Option<ArgRepr> {
-    if diverges || tuple_arity.is_some() {
-        return None;
-    }
-    match reprs {
-        [repr] => Some(*repr),
-        _ => None,
-    }
-}
-
 pub(crate) fn native_return_halt_repr(body: &NativeBody) -> ArgRepr {
     match body.return_reprs.as_slice() {
         [repr] if body.return_tuple_arity.is_none() => arg_repr_from_compiler2(*repr),

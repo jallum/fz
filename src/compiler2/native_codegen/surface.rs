@@ -41,17 +41,13 @@ pub(crate) struct NativeCodegenSurface<'a> {
     pub callable_boundaries: BTreeMap<u32, NativeCallableBoundarySurface>,
     pub mid_flight_cont_keys: Vec<(u32, Vec<MidFlightArgShape>)>,
     pub param_reprs: Vec<Vec<ArgRepr>>,
-    pub halt_reprs: Vec<ArgRepr>,
     pub return_diverges: Vec<bool>,
-    pub native_abi_fns: HashSet<FnId>,
-    pub cont_target_fns: HashSet<FnId>,
     pub cont_fns: HashSet<FnId>,
     pub fn_halt_kinds: HashMap<u32, u32>,
 }
 
 pub(crate) struct NativeCodegenBody<'a> {
     pub codegen_id: u32,
-    pub fn_idx: usize,
     pub fn_id: FnId,
     pub native_body: &'a NativeBody,
     pub body: &'a FnIr,
@@ -64,10 +60,6 @@ impl<'a> NativeCodegenSurface<'a> {
             .get(codegen_id as usize)
             .and_then(Option::as_ref)
             .unwrap_or_else(|| panic!("missing codegen body for id {codegen_id}"))
-    }
-
-    pub(crate) fn body_fn_id(&self, codegen_id: u32) -> FnId {
-        self.body(codegen_id).fn_id
     }
 
     pub(crate) fn body_id_for_fn(&self, fn_id: FnId) -> Option<u32> {
