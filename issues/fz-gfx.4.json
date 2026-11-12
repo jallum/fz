@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-gfx.1"
+  ],
   "blocks": [],
   "created": "2026-11-12T22:09:22Z",
   "description": "Read-only set accessors clone the whole set on every lookup.\n\nEvidence (develop @ cca160808):\n- src/compiler2/deps.rs:125 output_keys -\u003e OrderedSet\u003cF\u003e, :173 waits_for -\u003e\n  HashSet\u003cFactUse\u003cF\u003e\u003e, :227 derivations_of -\u003e OrderedSet\u003cP\u003e; each is\n  `.get(..).cloned().unwrap_or_default()`.\n  Callers that then copy the copy: scheduler.rs:497, :680, :683\n  (`output_keys(..).iter().cloned()`). ~25 call sites in scheduler.rs,\n  drive.rs and world.rs.\n- src/compiler2/jobs/runtime_demand.rs:683-693 direct_surfaces,\n  first_class_surfaces, direct_targets -\u003e owned BTreeSet per lookup; the\n  callers at :1063, :1064, :1079 only read.\n- src/compiler2/pull/rooted.rs:397, :418, :433, :589\n  `self.rooted_readers.get(member).cloned().unwrap_or_default()` before\n  mutating `self.rooted`. Different fields of one struct; edition 2024\n  closures capture disjoint fields. :418 is field access only.\n- src/compiler2/pull.rs:1343 `self.fact_readers.get(fact_key).cloned()`.\n\nChange: the accessors return a borrow (an iterator or Option\u003c\u0026Set\u003e); a\ncaller that mutates the owner while holding the set clones at its own call\nsite (scheduler.rs:637 `previously_owned` is a likely one).\n\nMethod: per the epic strategy -- signature first, cargo check enumerates.\nInformed by .1's appeasement / interleaving ratio.\n\nRemoval ledger: the `.cloned().unwrap_or_default()` in each accessor and\nevery double clone at the callers.\n\nSignal: gate green, no golden/census/pin movement. Wake and emission order\nmust not move: OrderedSet iteration order is what dependents wake in.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Set accessors on deps, callable flows and rooted readers return borrows",
   "type": "task",
-  "updated_at": "2026-11-12T22:09:22Z"
+  "updated_at": "2026-11-12T22:09:30Z"
 }
