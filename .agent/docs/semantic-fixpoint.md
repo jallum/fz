@@ -518,7 +518,7 @@ A NON-recursive body is keyed by precise evidence, with one erasure. A body
 that never consumes callable identity -- never calls through a callable, never
 constructs a lambda, and is not itself a capture-holding lambda
 (`BodyKeying::consumes_callable_identity`) -- only TRANSPORTS the closures that
-reach it, so `Types::erase_transported_closure_identities` erases their BRANDS
+reach it, so `Types::activation_key_arrow` erases their BRANDS
 from every non-dispatch slot: every same-shape lambda that travels through a
 forwarder shares one activation of it, instead of dragging a private copy of
 the whole library chain behind it (fz-6gb). What the value CLOSED OVER survives
