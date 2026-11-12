@@ -1,6 +1,7 @@
 use super::*;
 use crate::compiler2::drive::ExecutionContext;
 use crate::compiler2::dump::DumpStage;
+use crate::compiler2::types::TypeVarId;
 use crate::compiler2::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, RootSubmission};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::telemetry::ConfiguredTelemetry;
@@ -776,4 +777,48 @@ fn a_caller_that_knows_its_argument_still_trims_the_callees_arm_of_last_resort()
     );
     let plan = entry_plan_of(&mut world, &starts, "f", 1);
     assert!(!plan.can_fail(), "an integer argument cannot miss a clause");
+}
+
+/// A list whose elements are closures is a runtime shape. The closure arrow
+/// variables belong to each closure, so a contract whose parameter is
+/// `list(a)` has nothing to refine the column with, and the observed list
+/// keeps its elements. Meeting the closure with the spec variable `a` is the
+/// empty type, which is what once collapsed the column to the empty list.
+#[test]
+fn instantiate_open_inputs_keeps_a_list_of_closures() {
+    let mut world = World::new();
+    let closure = world.types_mut().closure_lit(ClosureTarget(7), vec![], 1);
+    let observed = world.types_mut().list(closure);
+    let spec_var = world.types_mut().type_var(TypeVarId(0));
+    let surface = world.types_mut().list(spec_var);
+
+    let refined = instantiate_open_inputs(&mut world, vec![observed], [[surface].as_slice()].into_iter());
+
+    assert_eq!(refined, vec![observed]);
+}
+
+/// A callable column is the one open column a contract refines: the lambda
+/// passed to `make_resource(42, fn x -> ... end)` takes its parameter type from
+/// the contract's arrow.
+#[test]
+fn instantiate_open_inputs_refines_a_callable_column_by_the_contract_arrow() {
+    let mut world = World::new();
+    let int = world.types_mut().int();
+    let nil = world.types_mut().nil();
+    let closure = world.types_mut().closure_lit(ClosureTarget(7), vec![], 1);
+    let surface = world.types_mut().arrow(&[int], nil);
+
+    let refined = instantiate_open_inputs(&mut world, vec![closure], [[surface].as_slice()].into_iter());
+
+    assert_ne!(
+        refined,
+        vec![closure],
+        "the callable column takes the contract's parameter types"
+    );
+    let clause = world
+        .types_mut()
+        .callable_clauses(&refined[0])
+        .expect("a refined callable column is still callable")
+        .remove(0);
+    assert!(world.types().is_integer(&clause.args[0]));
 }

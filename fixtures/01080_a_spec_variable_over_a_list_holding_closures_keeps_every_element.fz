@@ -1,0 +1,21 @@
+#---
+# purpose: "A @spec with a type variable over a list of closures answers for every element, not only the first"
+# kind: run
+# oracle: 01080_a_spec_variable_over_a_list_holding_closures_keeps_every_element.oracle.exs
+#---
+defmodule M do
+  @spec count([a]) :: integer
+  def count([]), do: 0
+  def count([_ | t]), do: 1 + count(t)
+
+  @spec count_bounded([a]) :: integer when a: any
+  def count_bounded([]), do: 0
+  def count_bounded([_ | t]), do: 1 + count_bounded(t)
+end
+
+def main() do
+  dbg(M.count([fn -> 1 end, 5]))
+  dbg(M.count([fn -> 1 end, fn x -> x end, &M.count/1]))
+  dbg(M.count([1, 2]))
+  dbg(M.count_bounded([fn -> 1 end, 5]))
+end
