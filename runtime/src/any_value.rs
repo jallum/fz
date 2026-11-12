@@ -1177,11 +1177,48 @@ pub fn resource_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 }
 
 const MAP_HEADER_FIELD_SHIFT: u32 = 4;
-const MAP_DESTINATION_FIELD_BITS: u32 = 29;
+const MAP_DESTINATION_FIELD_BITS: u32 = 28;
 const MAP_DESTINATION_FILLED_SHIFT: u32 = MAP_HEADER_FIELD_SHIFT + MAP_DESTINATION_FIELD_BITS;
 const MAP_DESTINATION_FIELD_MASK: u64 = (1 << MAP_DESTINATION_FIELD_BITS) - 1;
 
 pub(crate) const MAP_DESTINATION_FLAG: u64 = 1 << 63;
+/// Marks a destination that updates existing keys only (`%{map | k: v}`), as
+/// opposed to one that builds a map from the keys it is given.
+const MAP_UPDATE_FLAG: u64 = 1 << 62;
+/// Marks an update destination that was asked to store a key its base lacks.
+const MAP_MISSED_FLAG: u64 = 1 << 61;
+/// Marks an update destination whose base was a struct.
+const MAP_STRUCT_BASE_FLAG: u64 = 1 << 60;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapDestinationKind {
+    Build,
+    Update { missed: bool, struct_base: bool },
+}
+
+impl MapDestinationKind {
+    fn flags(self) -> u64 {
+        match self {
+            Self::Build => 0,
+            Self::Update { missed, struct_base } => {
+                MAP_UPDATE_FLAG
+                    | if missed { MAP_MISSED_FLAG } else { 0 }
+                    | if struct_base { MAP_STRUCT_BASE_FLAG } else { 0 }
+            }
+        }
+    }
+
+    fn of_header(header: u64) -> Self {
+        if header & MAP_UPDATE_FLAG == 0 {
+            Self::Build
+        } else {
+            Self::Update {
+                missed: header & MAP_MISSED_FLAG != 0,
+                struct_base: header & MAP_STRUCT_BASE_FLAG != 0,
+            }
+        }
+    }
+}
 
 /// A published map's first word: the entry count above four clear bits. A
 /// live map's low nibble is clear; only a forwarding marker sets it.
@@ -1194,15 +1231,17 @@ pub fn map_header_word(count: usize) -> u64 {
     (count as u64) << MAP_HEADER_FIELD_SHIFT
 }
 
-/// An unpublished map destination's first word: the destination flag, the
-/// capacity above four clear bits, and the number of entries filled so far.
+/// An unpublished map destination's first word: the destination flag, its
+/// kind, the capacity above four clear bits, and the number of entries filled
+/// so far.
 #[inline]
-pub fn map_destination_header_word(capacity: usize, filled: usize) -> u64 {
+pub fn map_destination_header_word(capacity: usize, filled: usize, kind: MapDestinationKind) -> u64 {
     assert!(
         (capacity as u64) <= MAP_DESTINATION_FIELD_MASK && filled <= capacity,
         "map destination capacity"
     );
     MAP_DESTINATION_FLAG
+        | kind.flags()
         | ((filled as u64) << MAP_DESTINATION_FILLED_SHIFT)
         | ((capacity as u64) << MAP_HEADER_FIELD_SHIFT)
 }
@@ -1215,17 +1254,18 @@ pub unsafe fn map_header_is_destination(addr: *const u8) -> bool {
     header & MAP_DESTINATION_FLAG != 0
 }
 
-/// `(capacity, filled)` of an unpublished map destination.
+/// `(capacity, filled, kind)` of an unpublished map destination.
 ///
 /// # Safety
 ///
 /// `addr` must point to the start of an initialized strict Map object.
-pub unsafe fn map_destination_state(addr: *const u8) -> (usize, usize) {
+pub unsafe fn map_destination_state(addr: *const u8) -> (usize, usize, MapDestinationKind) {
     let header = unsafe { ptr::read(addr as *const u64) };
     assert_ne!(header & MAP_DESTINATION_FLAG, 0, "map is already published");
     (
         ((header >> MAP_HEADER_FIELD_SHIFT) & MAP_DESTINATION_FIELD_MASK) as usize,
         ((header >> MAP_DESTINATION_FILLED_SHIFT) & MAP_DESTINATION_FIELD_MASK) as usize,
+        MapDestinationKind::of_header(header),
     )
 }
 

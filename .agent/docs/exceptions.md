@@ -312,6 +312,7 @@ match is left to the decision's own `FunctionClauseError`.
 | `elem/2` with a non-integer index | `** (ArithmeticError) bad argument in arithmetic expression`, as Elixir adds one to the index |
 | `div/2`, `rem/2`, `/` and the other arithmetic that fails | `** (ArithmeticError) bad argument in arithmetic expression` |
 | `Map.fetch!/2`, `Map.update!/3`, `Keyword.fetch!/2` | `** (KeyError) key <key> not found in:` then the collection |
+| `%{map \| k: v}` naming a key `map` lacks | `** (KeyError) key <key> not found`, the first such key in the order written |
 | `Enum.max/1` and the other empty reductions | `** (Enum.EmptyError) empty error` |
 | `Enum.fetch!/2` | `** (Enum.OutOfBoundsError) out of bounds error at position <n> when traversing enumerable <enumerable>` |
 | `Enum.map_every/3`, `take_every/2`, `drop_every/2` with a negative step | `** (FunctionClauseError) no function clause matching in Enum.map_every/3` |
@@ -322,6 +323,20 @@ match is left to the decision's own `FunctionClauseError`.
 | `JSON.encode!/1` of a bitstring that is not a binary | `** (FunctionClauseError) no function clause matching in :elixir_json.encode_binary/1` |
 | `to_string/1` of a bitstring that is not a binary | `** (Protocol.UndefinedError) protocol String.Chars not implemented for BitString, cannot convert a bitstring to a string` |
 | `File` bang functions | `** (File.Error)`, `File.CopyError`, `File.RenameError` or `File.LinkError`, with reason `I/O error` |
+
+An update is Elixir's `put_map_exact`: it may only replace keys the map has.
+The update destination itself notes a key its base lacks, and its freeze then
+answers the miss sentinel instead of a map; the lowering tests that answer
+(`ok`, as a `cond`-shaped decision on `true`) and its miss arm calls
+`Map.update_key_error/2`, which finds the missing key and raises. When the
+base's type proves every updated key is present (`Types::map_surely_has_keys`),
+`ok` is typed `true`, the decision's miss arm is trimmed, and the program
+compiles no KeyError path. Otherwise a program whose keys are all present pays
+one test. The raise runs even when the updated map is unused
+(`_ = %{m | z: 1}`). Elixir names whichever missing key
+the BEAM meets first in its own internal order; fz names the first missing key
+in the order the update writes them, so the two agree whenever one key is
+missing.
 
 `assert/1,2` and `refute/1,2` are not Elixir's `Kernel`; they panic with their
 message as the raw reason.

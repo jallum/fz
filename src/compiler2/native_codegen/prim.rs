@@ -4,8 +4,8 @@ use super::repr::ExternLane;
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use super::*;
 use crate::fz_ir::{
-    BinOp, BitSizeIr, BlockId, Const, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnId, Prim, UnOp,
-    Var,
+    BinOp, BitSizeIr, BlockId, Const, DestMapSeed, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnId,
+    Prim, UnOp, Var,
 };
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
@@ -537,19 +537,17 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 [process, reader_ref, field_spec, size_value]
             ))
         }
-        Prim::DestMapBegin { base, extra, .. } => {
-            let extra = body.b.ins().iconst(types::I32, *extra as i64);
-            if let Some(base) = base {
-                let base_bits = body.any_ref_for_var(var_env, base.0);
-                let process = body.process_arg();
-                LowerOut::ValueRef(runtime_call1!(
-                    body,
-                    fz_map_dest_begin_update,
-                    [process, base_bits, extra]
-                ))
-            } else {
-                let process = body.process_arg();
-                LowerOut::ValueRef(runtime_call1!(body, fz_map_dest_begin, [process, extra]))
+        Prim::DestMapBegin { seed, .. } => {
+            let process = body.process_arg();
+            match seed {
+                DestMapSeed::Capacity(capacity) => {
+                    let capacity = body.b.ins().iconst(types::I32, *capacity as i64);
+                    LowerOut::ValueRef(runtime_call1!(body, fz_map_dest_begin, [process, capacity]))
+                }
+                DestMapSeed::Update(base) => {
+                    let base_bits = body.any_ref_for_var(var_env, base.0);
+                    LowerOut::ValueRef(runtime_call1!(body, fz_map_dest_begin_update, [process, base_bits]))
+                }
             }
         }
         Prim::DestMapPut { map, key, value, .. } => {
@@ -578,7 +576,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 [process, map_ref, key_ref]
             ))
         }
-        Prim::IsMatcherMapMiss(v) => {
+        Prim::IsMapMiss(v) => {
             let value_ref = body.tagged_var(var_env, v.0);
             let tag = body.ref_tag(value_ref);
             let is_miss = body.b.ins().icmp_imm(IntCC::Equal, tag, ValueKind::NULL.tag() as i64);
@@ -945,7 +943,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::DestMapFreeze { .. }
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)
-        | Prim::IsMatcherMapMiss(..) => lower_collection_prim(body, t, env, var_env, prim, dest_var, block_id),
+        | Prim::IsMapMiss(..) => lower_collection_prim(body, t, env, var_env, prim, dest_var, block_id),
         Prim::MakeFnRef(_, fn_id) => lower_make_fn_ref(body, env, *fn_id),
         Prim::MakeClosure(_, fn_id, captured) => lower_make_closure(body, env, var_env, *fn_id, captured),
         Prim::RuntimeTypeTest(v, descr) => lower_runtime_type_predicate(body, env, var_env, *v, descr, dest_var),

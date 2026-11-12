@@ -287,6 +287,27 @@ defmodule Map do
     do: raise(KeyError, "key " <> Kernel.inspect(key) <> " not found in:\n\n    " <> Kernel.inspect(container) <> "\n")
 
   @doc """
+  Aborts with the `KeyError` for `%{map | ...}` naming a key `map` lacks:
+  the first of `keys` absent from `map`. The update has already found one
+  missing, so it raises without making a map.
+
+  ## Examples
+
+      Map.update_key_error(%{a: 1}, [:a, :b])
+      # ** (KeyError) key :b not found
+  """
+  @spec update_key_error(any, [any]) :: never
+  def update_key_error(map, keys),
+    do: raise(KeyError, "key " <> Kernel.inspect(first_missing_key(map, keys)) <> " not found")
+
+  @spec first_missing_key(any, [any]) :: any
+  defp first_missing_key(map, [key | keys]), do: first_missing_key(map, key, keys, fz_map_has_key(map, key))
+
+  @spec first_missing_key(any, any, [any], boolean) :: any
+  defp first_missing_key(map, _key, keys, true), do: first_missing_key(map, keys)
+  defp first_missing_key(_map, key, _keys, false), do: key
+
+  @doc """
   Returns the map with `fun` applied to the value at `key`, and aborts with
   `KeyError` when the key is absent.
 
@@ -393,22 +414,12 @@ defmodule Map do
 
   """
   @spec has_key?(any, any) :: boolean
-  def has_key?(map, key), do: has_key?(map, map_size(map), 0, key)
+  def has_key?(map :: map, key), do: fz_map_has_key(map, key)
+  def has_key?(map, _key), do: raise(BadMapError, "expected a map, got:\n\n    " <> Kernel.inspect(map) <> "\n")
 
-  @spec has_key?(any, integer, integer, any) :: boolean
-  defp has_key?(map, count, index, key) do
-    if index >= count do
-      false
-    else
-      if fz_map_entry_key(map, index) === key do
-        true
-      else
-        has_key?(map, count, index + 1, key)
-      end
-    end
-  end
+  extern "fz" defp fz_map_has_key(any, any) :: boolean
 
-  extern "C" defp fz_map_entry_key(any, integer) :: any
+  extern "fz" defp fz_map_entry_key(any, integer) :: any
 
   @spec keys(any, integer, integer, [any]) :: [any]
   defp keys(map, count, index, acc) do
@@ -428,7 +439,7 @@ defmodule Map do
     end
   end
 
-  extern "C" defp fz_map_entry_value(any, integer) :: any
+  extern "fz" defp fz_map_entry_value(any, integer) :: any
 
   @doc """
   The `Enumerable.reduce/3` callback body for maps.

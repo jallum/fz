@@ -1,0 +1,24 @@
+#---
+# purpose: "%{s | k: v} and Map.put of an existing field answer the same struct with that field replaced, with the base type known or through an any-typed parameter"
+# oracle: 00851_a_struct_update_keeps_the_struct.oracle.exs
+#---
+#
+# A struct is a map whose keys are its fields and `__struct__`. Replacing a
+# field keeps every key, so the answer is still the struct.
+defmodule Pt do
+  defstruct [:x, :y]
+end
+
+def bump(v :: any), do: %{v | x: 10}
+
+def main() do
+  p = %Pt{x: 1, y: 2}
+  dbg(%{p | x: 9})
+  dbg(%{p | x: 9, y: 8})
+  dbg(bump(p))
+  dbg(Map.put(p, :y, 7))
+  dbg(%{p | x: 9}.__struct__)
+  dbg(p)
+  m = %{b: 2}
+  dbg(%{m | b: 3})
+end

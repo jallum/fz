@@ -861,7 +861,9 @@ fn step_value_uses(step: &LoweredStep, add: &mut impl FnMut(ValueId, ValueUse)) 
                 add(*item, within(*value, DemandPathStep::MapValue));
             }
         }
-        LoweredStep::MapUpdate { value, base, entries } => {
+        LoweredStep::MapUpdate {
+            value, base, entries, ..
+        } => {
             add(*base, whole());
             for (key, item) in entries {
                 add(key.value, whole());
@@ -1318,7 +1320,9 @@ fn returned_values(
             LoweredStep::Map { value, entries, .. } => {
                 built.insert(*value, entries.iter().map(|(_key, item)| *item).collect());
             }
-            LoweredStep::MapUpdate { value, base, entries } => {
+            LoweredStep::MapUpdate {
+                value, base, entries, ..
+            } => {
                 built.insert(
                     *value,
                     std::iter::once(*base)

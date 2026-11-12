@@ -201,7 +201,7 @@ fn unfinished_map_has_no_language_order() {
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     let node = Rc::new(Node::empty());
     let mut heap = Heap::with_node(1024, Rc::clone(&schemas), Rc::clone(&node));
-    let unfinished = heap.alloc_map_destination(None, 0);
+    let unfinished = heap.alloc_map_destination(0);
     TermComparator::new(&node, &schemas.borrow()).compare(
         heap_value(unfinished),
         heap_value(unfinished),

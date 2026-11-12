@@ -727,7 +727,6 @@ pub(crate) fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::
         | LoweredStep::Tuple { value, .. }
         | LoweredStep::List { value, .. }
         | LoweredStep::Map { value, .. }
-        | LoweredStep::MapUpdate { value, .. }
         | LoweredStep::Struct { value, .. }
         | LoweredStep::Bitstring { value, .. }
         | LoweredStep::FunctionRef { value, .. }
@@ -738,6 +737,7 @@ pub(crate) fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::
         | LoweredStep::FieldAccess { value, .. }
         | LoweredStep::RequireMapValue { value, .. }
         | LoweredStep::TupleField { value, .. } => vec![*value],
+        LoweredStep::MapUpdate { value, ok, .. } => vec![*value, *ok],
         LoweredStep::SplitList { head, tail, .. } => vec![*head, *tail],
         LoweredStep::BitstringInit { reader, .. } => vec![*reader],
         LoweredStep::BitstringRead {

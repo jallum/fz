@@ -30,9 +30,9 @@ use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule}
 use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
 use fz_runtime::heap::{GcStats, Schema};
 use fz_runtime::ir_runtime::{
-    fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_empty,
-    fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref,
-    fz_struct_get_named_field_ref, fz_struct_module,
+    fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_dest_begin_update,
+    fz_map_dest_freeze, fz_map_dest_put_ref, fz_map_empty, fz_map_get_atom_key_ref, fz_mark_published_ref_aliased,
+    fz_matcher_map_get_ref, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module,
 };
 use fz_runtime::module_name::STRUCT_MODULE_FIELD;
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
@@ -1657,22 +1657,36 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     BackendBoundValue::Runtime(interp_value_from_ref_word(map_bits, "backend map")?),
                 );
             }
-            ProgramStep::MapUpdate { value, base, entries } => {
-                let base = env_get(transport, runtime.cur_proc(), env, *base)?;
-                let mut map_bits = base.value(runtime.cur_proc())?.ref_word().raw_word();
+            ProgramStep::MapUpdate {
+                value,
+                ok,
+                base,
+                entries,
+            } => {
+                let proc = runtime.cur_proc();
+                let base = env_get(transport, proc, env, *base)?;
+                let dest = with_value_ref(proc, base, "backend map update base", |base_ref| {
+                    fz_map_dest_begin_update(proc, base_ref)
+                })?;
                 for (key, item) in entries {
-                    map_bits = interp_map_put(
-                        runtime.cur_proc(),
-                        map_bits,
-                        env_get(transport, runtime.cur_proc(), env, *key)?,
-                        env_get(transport, runtime.cur_proc(), env, *item)?,
-                        "backend map update",
-                    )?;
+                    let key = env_get(transport, proc, env, *key)?;
+                    let item = publish_runtime_value(proc, env_get(transport, proc, env, *item)?)?;
+                    with_value_ref(proc, key, "backend map update key", |key_ref| {
+                        with_value_ref(proc, item, "backend map update value", |item_ref| {
+                            fz_map_dest_put_ref(proc, dest, key_ref, item_ref)
+                        })
+                    })??;
                 }
+                let updated = interp_value_from_ref_word(fz_map_dest_freeze(proc, dest), "backend map update")?;
                 env.insert(
-                    *value,
-                    BackendBoundValue::Runtime(interp_value_from_ref_word(map_bits, "backend map update")?),
+                    *ok,
+                    BackendBoundValue::Runtime(AnyValue::Atom(if matches!(updated, AnyValue::Null) {
+                        fz_runtime::any_value::FALSE_ATOM_ID
+                    } else {
+                        fz_runtime::any_value::TRUE_ATOM_ID
+                    })),
                 );
+                env.insert(*value, BackendBoundValue::Runtime(updated));
             }
             ProgramStep::Struct {
                 value,

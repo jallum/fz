@@ -268,6 +268,20 @@ representations use <code>fz_map_dest_put_parts</code>; unknown refs use
 <code>fz_map_dest_put_ref</code>. Dynamic map reads still return
 <code>AnyValueRef</code>s when the caller needs an <code>any</code>.</p>
 
+<p>An update, <code>%{m | k: v}</code>, starts from a copy of <code>m</code>
+instead of empty storage, and its puts may only replace keys <code>m</code>
+already has:</p>
+
+<pre>
+  dest = fz_map_dest_begin_update(m)       <span class="note">// m's entries, unpublished</span>
+  _    = fz_map_dest_put_ref(dest, k, v)   <span class="note">// replaces, or notes a missing key</span>
+  out  = fz_map_dest_freeze(dest)          <span class="note">// the map, or the miss sentinel</span>
+</pre>
+
+<p>When a key was missing, freeze answers the miss sentinel instead of a map,
+and the program raises <code>KeyError</code> as Elixir does. A struct updated
+this way stays the same struct.</p>
+
 <p><strong>Return-demand destinations:</strong></p>
 
 <p>Some destinations are selected at call boundaries instead of local literal

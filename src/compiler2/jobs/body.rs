@@ -170,8 +170,11 @@ enum ExprStep {
         entries: Vec<(LoweredMapKey, ValueId)>,
         quoted_span: Option<Span>,
     },
+    /// `%{base | k: v, ...}`. `value` is the updated map when `ok`, which is
+    /// false when `base` lacks one of the keys.
     MapUpdate {
         value: ValueId,
+        ok: ValueId,
         base: ValueId,
         entries: Vec<(LoweredMapKey, ValueId)>,
     },
@@ -1482,13 +1485,16 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                     };
                     lowered.push((lowered_key, self.lower_expr(value, env, steps)?));
                 }
-                let value = self.fresh_value();
+                let keys = lowered.iter().map(|(key, _)| key.value).collect();
+                let updated = self.fresh_value();
+                let ok = self.fresh_value();
                 steps.push(ExprStep::MapUpdate {
-                    value,
+                    value: updated,
+                    ok,
                     base,
                     entries: lowered,
                 });
-                Ok(value)
+                self.lower_update_key_check(expr.span, updated, ok, base, keys, steps)
             }
             Expr::Struct { module, fields } => self.lower_struct_expr(expr.span, module, fields, env, steps),
             Expr::Bitstring(fields) => self.lower_bitstring_expr(fields, env, steps),
@@ -2269,6 +2275,70 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             steps,
             result: value,
         })
+    }
+
+    /// `%{base | k: v}` answers the updated map when `base` has every key,
+    /// and raises `KeyError` naming a missing one otherwise, as Elixir's
+    /// `put_map_exact` does. The update itself reports the miss, so the check
+    /// is one test of `ok`; only a miss pays for finding which key it was.
+    fn lower_update_key_check(
+        &mut self,
+        span: Span,
+        updated: ValueId,
+        ok: ValueId,
+        base: ValueId,
+        keys: Vec<ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let key_list = self.fresh_value();
+        let raised = self.fresh_value();
+        let callee = self.resolve_callee(&update_key_error_callee(), 2, span, "map update key check")?;
+        let miss_block = ExprBlock {
+            span,
+            steps: vec![
+                ExprStep::List {
+                    value: key_list,
+                    items: keys,
+                    tail: None,
+                },
+                ExprStep::DirectCall {
+                    value: raised,
+                    callsite: self.fresh_callsite(span),
+                    callee,
+                    args: [base, key_list]
+                        .into_iter()
+                        .map(|value| CallArg {
+                            value,
+                            ascription: None,
+                            ownership: crate::fz_ir::OwnershipMode::Share,
+                        })
+                        .collect(),
+                },
+            ],
+            result: raised,
+        };
+        let value = self.fresh_value();
+        steps.push(ExprStep::Dispatch {
+            value,
+            inputs: vec![ok],
+            bindings: DispatchBindings {
+                pinned: Vec::new(),
+                prepared: Vec::new(),
+            },
+            dispatch: Box::new(ExprDispatch {
+                plan: Rc::new(self.compile_bool_true_dispatch(span, None)?),
+                arm_blocks: vec![ExprOutcome {
+                    arguments: Box::default(),
+                    block: ExprBlock {
+                        span,
+                        steps: Vec::new(),
+                        result: updated,
+                    },
+                }],
+                miss_block: Some(miss_block),
+            }),
+        });
+        Ok(value)
     }
 
     fn lower_with_block(
@@ -3787,8 +3857,14 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
             entries: entries.clone(),
             quoted_span: *quoted_span,
         },
-        ExprStep::MapUpdate { value, base, entries } => LoweredStep::MapUpdate {
+        ExprStep::MapUpdate {
+            value,
+            ok,
+            base,
+            entries,
+        } => LoweredStep::MapUpdate {
             value: *value,
+            ok: *ok,
             base: *base,
             entries: entries.clone(),
         },
@@ -5062,6 +5138,17 @@ fn expr_name(expr: &Expr) -> &'static str {
 ///
 /// Which shapes name a callable is [`Callee`]'s question; the only thing added
 /// here is that a bound local wins over a same-spelled definition.
+/// `Map.update_key_error/2`, named exactly so no alias in scope can
+/// redirect it.
+fn update_key_error_callee() -> Callee {
+    Callee::Name(CallableName {
+        module: Some(crate::ast::ModuleTarget::Exact(ModuleDenotation::Named(
+            ModuleName::from_segments(vec!["Map".to_string()]),
+        ))),
+        name: "update_key_error".to_string(),
+    })
+}
+
 fn direct_callee(expr: &Spanned<Expr>, arity: usize, env: &HashMap<Var, ValueId>) -> Option<Callee> {
     let mut current = &expr.node;
     loop {

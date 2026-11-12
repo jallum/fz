@@ -1498,6 +1498,24 @@ macro_rules! seam_helper_conformance_tests {
             }
 
             #[test]
+            fn an_update_cannot_miss_a_key_every_map_surely_has() {
+                let mut t = $ctor;
+                let key = |name: &str| MapKey::Atom(name.to_string());
+                let int = t.int();
+                let ab = t.map(&[(key("a"), int.clone()), (key("b"), int.clone())]);
+                let a = t.map(&[(key("a"), int.clone())]);
+                let either = t.union(ab, a);
+                let any_map = t.map_top();
+
+                assert!(t.map_surely_has_keys(&ab, &[key("a"), key("b")]));
+                assert!(!t.map_surely_has_keys(&ab, &[key("a"), key("c")]), "c may be missing");
+                assert!(t.map_surely_has_keys(&either, &[key("a")]), "both shapes have a");
+                assert!(!t.map_surely_has_keys(&either, &[key("b")]), "one shape lacks b");
+                assert!(!t.map_surely_has_keys(&any_map, &[key("a")]), "an arbitrary map proves nothing");
+                assert!(!t.map_surely_has_keys(&int, &[key("a")]), "a non-map has no keys");
+            }
+
+            #[test]
             fn refine_map_field_overlays_field_type() {
                 let mut t = $ctor;
                 let map = t.map_top();

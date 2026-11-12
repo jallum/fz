@@ -4,7 +4,7 @@
 def main() do
   xs = [1, 2]
   m = %{b: 2, a: 1, pi: 1.5, xs: xs}
-  n = %{m | b: 20, c: 3}
+  n = Map.put(%{m | b: 20}, :c, 3)
 
   assert(m[:a] == 1, "map lookup by atom key")
   assert(m[:pi] == 1.5, "float value lookup")

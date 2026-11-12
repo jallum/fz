@@ -58,7 +58,8 @@ Generated code handles values only through these entry points. A few examples:
 fz_ref_tag(ref)                      -> tag byte
 fz_ref_load_int / _float / _atom(ref)
 fz_map_get_ref(process, map, key)    -> ref
-fz_map_count(map) / fz_map_entry_key(map, i) / fz_map_entry_value(map, i)
+fz_map_count(process, map) / fz_map_entry_key(process, map, i) / fz_map_entry_value(process, map, i)
+fz_map_has_key(process, map, key)    -> 0 or 1
 fz_list_head_ref(list) / fz_list_tail_ref(list)
 fz_struct_get_field_ref(process, struct, field_offset)
 fz_binary_concat(process, left, right)
@@ -69,7 +70,8 @@ fz_binary_concat(process, left, right)
 `fz_struct_get_field_ref` build a ref over the slot already living in the
 container. For a scalar slot the returned ref points straight at that payload
 word (`any_value_ref_from_storage`); for a heap slot it carries the slot's
-heap pointer. `Enumerable.Map` (`lib/map.fz`) is plain
+heap pointer. A struct read as a map is the one exception: its keys and its
+`__struct__` module live in no slot, so those come back boxed. `Enumerable.Map` (`lib/map.fz`) is plain
 fz source that declares `fz_map_count`, `fz_map_entry_key`, `fz_map_entry_value`
 as externs and folds over the map's canonical sorted entries; the tuple/list it
 builds copies those values into fresh containers before publishing them.
@@ -336,9 +338,9 @@ A struct's schema identity is `SchemaIdentity::Named(ModuleName)`, and that is
 the only place its module lives: the heap object stores no module word and the
 registry keeps no second copy. Three reads of that identity exist:
 
-- `p.__struct__` lowers to `Prim::StructModule`, which calls `fz_struct_module`
-  (`Heap::struct_module_atom` for a struct, the map's `__struct__` entry for a
-  map). The answer is the atom `Elixir.<Name>`, the same atom an alias spells
+- `p.__struct__` lowers to `Prim::StructModule`, which calls `fz_struct_module`:
+  the `__struct__` key read through the map view, so a struct and a map
+  carrying that key answer alike. The answer is the atom `Elixir.<Name>`, the same atom an alias spells
   in value position, so `p.__struct__ == Pt` holds. It is a read of the
   identity, not a stored field; `ProjectionKind::StructField` in patterns never
   names it.
@@ -381,6 +383,34 @@ A single update copies the flat array, so repeated updates remain quadratic.
 Use bulk operations when touching several keys. Iteration follows strict fz
 term order, including atom names and binary content; Elixir's atom-key
 iteration may differ because it uses VM identity.
+
+### A struct is a map in its own layout
+
+A named struct is a map whose keys are its fields and `__struct__`. It has a
+second physical layout, the schema-backed object, but no operation asks which
+layout it holds: every map read and write goes through
+`Heap::map_layout` (`runtime/src/heap/map_view.rs`), which answers
+`MapLayout::Entries` for the sorted array and `MapLayout::Struct` for a named
+struct, and `None` for every other value, a tuple included. A struct's keys
+come in map key order, `__struct__` among them; `SchemaRegistry::map_keys`
+holds that order once per schema.
+
+Writes keep the struct layout while the key set stays the schema's.
+`Map.put` of a field copies the object with that field replaced. A key outside
+the schema, or a deletion, changes the key set, so the answer is published in
+the entries layout with `__struct__` an ordinary key, exactly the map Elixir
+makes (`Map.delete(p, :x)` is `%{__struct__: Pt, y: 2}`).
+
+`%{m | k: v}` uses an update destination (`Heap::alloc_map_update`): `m`'s
+entries copied in order, whose puts may only replace them. A put naming a key
+`m` lacks stores nothing and marks the destination; its freeze then publishes
+the copy and answers `None`, which `fz_map_dest_freeze` returns as the null
+ref, the same miss sentinel a map pattern's lookup answers. Since puts only
+replace, the copy stays in key order and freeze publishes it in place, with no
+sort. An entries-layout base is copied slot for slot; a struct base is read
+through the view and marked, and an update of a struct that did not miss
+freezes back into that struct's layout (`Heap::struct_of_entries`), so
+updating a struct keeps it one.
 
 Published language values are finite immutable DAGs. Low-level struct and closure
 writes are unsafe construction operations whose caller must own the unpublished

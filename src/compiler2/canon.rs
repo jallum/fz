@@ -1015,10 +1015,16 @@ impl ProgramCanon<'_> {
             BackendStep::Map { value, entries, .. } => {
                 format!("{} = map {}", self.names.value(*value), self.value_pairs(entries))
             }
-            BackendStep::MapUpdate { value, base, entries } => {
+            BackendStep::MapUpdate {
+                value,
+                ok,
+                base,
+                entries,
+            } => {
                 let name = self.names.value(*value);
+                let ok = self.names.value(*ok);
                 let base = self.names.value(*base);
-                format!("{name} = map_update {base} {}", self.value_pairs(entries))
+                format!("{name}, {ok} = map_update {base} {}", self.value_pairs(entries))
             }
             BackendStep::Struct {
                 value,

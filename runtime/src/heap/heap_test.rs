@@ -34,7 +34,7 @@ fn schema_identity_preserves_module_segments_across_display_collisions() {
 fn published_map_cannot_reenter_mutable_construction() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let map = heap.alloc_map_slots(&[(AnyValue::int(1), AnyValue::int(2))]);
-    heap.map_destination_freeze(map);
+    let _ = heap.map_destination_freeze(map);
 }
 
 #[test]
@@ -48,14 +48,14 @@ fn map_publication_shares_list_keys_and_values() {
                 heap.alloc_map_slots(&[(heap_root(key), heap_root(value))]);
             }
             1 => {
-                heap.map_put_slot_bits(0, heap_root(key), heap_root(value));
+                heap.map_put_slot(AnyValueRef::null(), heap_root(key), heap_root(value));
             }
             _ => {
-                let destination = heap.alloc_map_destination(None, 1);
+                let destination = heap.alloc_map_destination(1);
                 unsafe {
                     heap.map_destination_put(destination, heap_root(key), heap_root(value));
                 }
-                heap.map_destination_freeze(destination);
+                heap.map_destination_freeze(destination).expect("a build publishes");
             }
         }
         for source in [key, value] {
@@ -74,15 +74,17 @@ fn map_freeze_keeps_one_allocation_and_gc_preserves_structural_lookup() {
     let a = heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST);
     let b = heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST);
     heap.reset_alloc_stats();
-    let dest = heap.alloc_map_destination(None, 3);
+    let dest = heap.alloc_map_destination(3);
     unsafe {
         heap.map_destination_put(dest, heap_root(a), AnyValue::int(1));
         heap.map_destination_put(dest, AnyValue::int(0), AnyValue::int(2));
         heap.map_destination_put(dest, heap_root(b), AnyValue::int(3));
     }
     assert_eq!(
-        heap.map_destination_freeze(dest),
-        dest,
+        heap.map_destination_freeze(dest).expect("a build publishes").raw_word(),
+        AnyValueRef::from_heap_object(ValueKind::MAP, map_addr_from_tagged(dest).unwrap())
+            .unwrap()
+            .raw_word(),
         "freezing compacts the unpublished allocation in place"
     );
     let allocation = heap.alloc_stats_snapshot();
@@ -2814,7 +2816,7 @@ fn a_map_holding_a_literal_closure_and_a_literal_struct_survives_a_collection_wi
 
     let moved = roots[0].map_addr().expect("moved map");
     assert!(h.contains_heap_addr(moved), "the map itself was forwarded");
-    let held = |key: u32| {
+    let mut held = |key: u32| {
         h.read_map_value_for_any_key(roots[0], AnyValue::atom(key))
             .expect("map")
             .expect("entry")
@@ -2831,27 +2833,4 @@ fn a_map_holding_a_literal_closure_and_a_literal_struct_survives_a_collection_wi
         Ok(static_struct),
         "the static struct stays in place"
     );
-}
-
-#[test]
-fn a_named_struct_answers_its_module_atom() {
-    use crate::module_name::ModuleName;
-    let node = Rc::new(crate::process::Node::empty());
-    let mut heap = Heap::with_node(4096, fresh_registry(), node.clone());
-    let nested = ModuleName::from_segments(vec!["Geo".into(), "Pt".into()]);
-    let schema_id = heap.register_schema(Schema::named_struct(nested, ["x".to_string()]));
-    let object = AnyValueRef::from_heap_object(ValueKind::STRUCT, heap.alloc_struct(schema_id)).expect("struct");
-
-    let module = heap.struct_module_atom(object).expect("module atom");
-
-    assert_eq!(module, AnyValue::atom(node.intern_atom("Elixir.Geo.Pt")));
-}
-
-#[test]
-#[should_panic(expected = "has no module")]
-fn a_tuple_has_no_module_to_answer() {
-    let mut heap = Heap::new(4096, fresh_registry());
-    let schema_id = heap.register_schema(Schema::tuple_of_arity(1));
-    let object = AnyValueRef::from_heap_object(ValueKind::STRUCT, heap.alloc_struct(schema_id)).expect("struct");
-    let _ = heap.struct_module_atom(object);
 }

@@ -51,7 +51,8 @@ use descr::OpaqueTag;
 use dnf::dnf_intersect_with;
 use fz_runtime::module_name::STRUCT_MODULE_FIELD;
 use sigs::{
-    ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig, specialize_surface,
+    ArrowSig, ClosureLit, ListSig, MapSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig,
+    specialize_surface,
 };
 
 /// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
@@ -1542,6 +1543,17 @@ impl Types {
             field_lookup(cx, cx.descr(a), key)?
         };
         Some(self.intern(d))
+    }
+
+    /// Whether every map `a` describes has each of `keys`, so an update
+    /// naming only these keys cannot miss. A type with no map in it has none.
+    pub fn map_surely_has_keys(&self, a: &Ty, keys: &[MapKey]) -> bool {
+        let d = self.descr(a);
+        !d.maps.is_empty()
+            && d.maps.iter().all(|conj| {
+                keys.iter()
+                    .all(|key| conj.pos.iter().any(|sig| map_sig_has_key(sig, key)))
+            })
     }
 
     pub fn map_known_keys(&self, a: &Ty) -> Vec<MapKey> {
@@ -3681,6 +3693,11 @@ fn field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
         found = true;
     }
     if found { Some(acc) } else { None }
+}
+
+fn map_sig_has_key(sig: &MapSig, key: &MapKey) -> bool {
+    sig.fields.contains_key(key)
+        || matches!((&sig.tag, key), (MapTag::Struct(_), MapKey::Atom(name)) if name == STRUCT_MODULE_FIELD)
 }
 
 fn map_known_keys(d: &Descr) -> Vec<MapKey> {

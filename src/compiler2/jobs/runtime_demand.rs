@@ -1895,9 +1895,10 @@ fn step_sources_of(step: &LoweredStep, value: ValueId) -> Vec<ValueId> {
         } if *defined == value => entries.iter().flat_map(|(key, field)| [key.value, *field]).collect(),
         LoweredStep::MapUpdate {
             value: defined,
+            ok,
             base,
             entries,
-        } if *defined == value => std::iter::once(*base)
+        } if *defined == value || *ok == value => std::iter::once(*base)
             .chain(entries.iter().flat_map(|(key, field)| [key.value, *field]))
             .collect(),
         LoweredStep::Struct {
@@ -2063,8 +2064,15 @@ pub(super) fn propagate_steps_reverse(
                     }
                 }
             }
-            LoweredStep::MapUpdate { value, base, entries } => {
-                if !take_live_demand(live, *value).is_ignore() {
+            LoweredStep::MapUpdate {
+                value,
+                ok,
+                base,
+                entries,
+            } => {
+                let value_demand = take_live_demand(live, *value);
+                let ok_demand = take_live_demand(live, *ok);
+                if !value_demand.is_ignore() || !ok_demand.is_ignore() {
                     let base_demand = boundary_value_flow_demand(facts, callable_flows, *base, RuntimeDemand::whole());
                     note_live_demand(out, live, *base, base_demand);
                     for (key, field) in entries {

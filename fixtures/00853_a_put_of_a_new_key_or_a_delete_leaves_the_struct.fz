@@ -1,0 +1,25 @@
+#---
+# purpose: "Map.put of a new key and Map.delete answer plain maps that keep __struct__ as an ordinary key; deleting __struct__ leaves the fields"
+# oracle: 00853_a_put_of_a_new_key_or_a_delete_leaves_the_struct.oracle.exs
+#---
+#
+# Adding or removing a key changes the key set, so the answer is no longer
+# the struct. `__struct__` stays an ordinary key of it until it is deleted.
+defmodule Pt do
+  defstruct [:x, :y]
+end
+
+def main() do
+  p = %Pt{x: 1, y: 2}
+  grown = Map.put(p, :z, 0)
+  dbg(Enum.sort(Map.keys(grown)))
+  dbg(grown.__struct__)
+  dbg(grown.z)
+  shrunk = Map.delete(p, :x)
+  dbg(Enum.sort(Map.keys(shrunk)))
+  dbg(shrunk.__struct__)
+  dbg(shrunk.y)
+  dbg(Map.delete(p, :__struct__))
+  dbg(Map.delete(p, :w))
+  dbg(Map.get(p, :x))
+end

@@ -888,14 +888,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                     quoted_span: *quoted_span,
                 },
             ),
-            LoweredStep::MapUpdate { value, base, entries } => self.step_or_omitted_when_absent(
-                *value,
-                BackendStep::MapUpdate {
-                    value: *value,
-                    base: *base,
-                    entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
-                },
-            ),
+            LoweredStep::MapUpdate {
+                value,
+                ok,
+                base,
+                entries,
+            } => BackendStep::MapUpdate {
+                value: *value,
+                ok: *ok,
+                base: *base,
+                entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
+            },
             LoweredStep::Struct { value, module, fields } => self.step_or_omitted_when_absent(
                 *value,
                 BackendStep::Struct {

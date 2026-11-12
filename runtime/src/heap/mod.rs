@@ -29,6 +29,7 @@ mod deep_copy;
 mod gc;
 mod gift;
 mod imp;
+mod map_view;
 mod ref_io;
 mod schema;
 mod stats;
@@ -59,10 +60,11 @@ pub use self::deep_copy::{
 pub(crate) use self::gc::forwarding::forwarded_target;
 pub use self::gift::GiftSegment;
 pub use self::imp::{closure_capture_ref, list_head_ref, list_tail_ref};
+pub use self::map_view::MapLayout;
 pub(crate) use self::ref_io::map_entry_refs;
 pub use self::schema::{
     BITSTRING_READER_SCHEMA, BITSTRING_RESULT_SCHEMA, FieldDescriptor, FieldKind, Schema, SchemaIdentity,
-    SchemaRegistry,
+    SchemaRegistry, StructKey,
 };
 pub use self::stats::{AllocStat, GcStats, HeapAllocKind, HeapAllocStats};
 
@@ -100,6 +102,9 @@ pub struct Heap {
     /// process state.
     pub(crate) node: Rc<Node>,
     pub(crate) schemas: Rc<RefCell<SchemaRegistry>>,
+    /// Each named struct's keys as atoms, so reading a struct as a map
+    /// compares atom ids, never names.
+    pub(crate) struct_maps: map_view::StructMaps,
     /// Count of GC invocations.
     pub gc_run_count: u64,
     /// Total allocations made since last successful GC. Backs `live_count()`

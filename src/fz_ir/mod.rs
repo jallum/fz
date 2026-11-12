@@ -446,6 +446,16 @@ pub enum UnOp {
     Not,
 }
 
+/// Where an unpublished map destination starts.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DestMapSeed {
+    /// Empty, with room for this many entries: a map literal.
+    Capacity(usize),
+    /// A copy of this map, whose puts may only replace its keys:
+    /// `%{base | k: v}`.
+    Update(Var),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Prim {
     Const(Const),
@@ -479,12 +489,10 @@ pub enum Prim {
     /// Allocate a closure: callable code identity plus the captured
     /// environment locals.
     MakeClosure(CallsiteIdent, FnId, Vec<Var>),
-    /// Allocate an unpublished map destination. `base` seeds the destination
-    /// with an existing immutable map before `extra` additional entries are set.
+    /// Allocate an unpublished map destination, from `seed`.
     DestMapBegin {
         token: InitTokenId,
-        base: Option<Var>,
-        extra: usize,
+        seed: DestMapSeed,
     },
     /// Set one key/value pair in an unpublished map destination.
     DestMapPut {
@@ -504,8 +512,10 @@ pub enum Prim {
     /// Matcher-only map lookup. Returns a private miss sentinel if absent so
     /// present `nil` remains distinguishable from absence.
     MatcherMapGet(Var, Var),
-    /// True when a `MatcherMapGet` result is the private miss sentinel.
-    IsMatcherMapMiss(Var),
+    /// True when a `MatcherMapGet` or `DestMapFreeze` result is the private
+    /// miss sentinel: the key is absent, or an update named a key its base
+    /// lacks.
+    IsMapMiss(Var),
     /// Build a bitstring from a sequence of fields.
     MakeBitstring(Vec<BitFieldIr>),
     /// fz-cty.8 — byte-payload bitstring with materialised bytes and bit
@@ -605,8 +615,8 @@ impl Prim {
                     used.insert(*v);
                 }
             }
-            Prim::DestMapBegin { base, .. } => {
-                if let Some(base) = base {
+            Prim::DestMapBegin { seed, .. } => {
+                if let DestMapSeed::Update(base) = seed {
                     used.insert(*base);
                 }
             }
@@ -622,7 +632,7 @@ impl Prim {
                 used.insert(*a);
                 used.insert(*b);
             }
-            Prim::IsMatcherMapMiss(v) => {
+            Prim::IsMapMiss(v) => {
                 used.insert(*v);
             }
             Prim::MakeBitstring(fields) => {
@@ -1354,9 +1364,9 @@ impl fmt::Display for Prim {
             Prim::MakeClosure(_ident, fid, captured) => {
                 write!(f, "closure({}, captured=[{}])", fid, fmt_var_list(captured))
             }
-            Prim::DestMapBegin { token, base, extra } => match base {
-                Some(base) => write!(f, "dest_map_begin(token={}, base={}, extra={})", token, base, extra),
-                None => write!(f, "dest_map_begin(token={}, extra={})", token, extra),
+            Prim::DestMapBegin { token, seed } => match seed {
+                DestMapSeed::Capacity(capacity) => write!(f, "dest_map_begin(token={}, capacity={})", token, capacity),
+                DestMapSeed::Update(base) => write!(f, "dest_map_begin(token={}, update={})", token, base),
             },
             Prim::DestMapPut {
                 map,
@@ -1372,7 +1382,7 @@ impl fmt::Display for Prim {
             Prim::DestMapFreeze { map, token } => write!(f, "dest_map_freeze({}, {})", map, token),
             Prim::MapGet(m, k) => write!(f, "map_get({}, {})", m, k),
             Prim::MatcherMapGet(m, k) => write!(f, "matcher_map_get({}, {})", m, k),
-            Prim::IsMatcherMapMiss(v) => write!(f, "is_matcher_map_miss({})", v),
+            Prim::IsMapMiss(v) => write!(f, "is_map_miss({})", v),
             Prim::MakeBitstring(fields) => {
                 write!(f, "bitstring([{}])", fields.len())
             }

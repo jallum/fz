@@ -178,7 +178,7 @@ fn present_nil_map_value_is_value_equality_after_presence() {
 #[test]
 fn map_miss_is_not_source_level_vocabulary() {
     let dispatch_matrix_source = include_str!("mod.rs");
-    assert!(!dispatch_matrix_source.contains("IsMatcherMapMiss"));
+    assert!(!dispatch_matrix_source.contains("IsMapMiss"));
 }
 
 #[test]
