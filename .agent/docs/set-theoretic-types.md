@@ -87,8 +87,10 @@ trait surface.
 A value belongs to a type if it belongs to the axis for its kind AND its brand is
 one the slot admits. `any()` is every axis at top, `none()` every axis at bottom,
 and a descriptor is empty when its brand slot is empty (`Meters and Feet`) or every
-kind axis is (structural clauses checked recursively, with a coinductive memo for
-recursive shapes). `Descr::none()` alone carries the empty slot; every value
+kind axis is (structural clauses checked recursively, with a coinductive assumption for
+recursive shapes: the path is a chain of call-stack frames borrowing the callers' own
+descriptors, compared structurally in place, so a query copies, hashes and allocates
+nothing to track it). `Descr::none()` alone carries the empty slot; every value
 constructor starts from `Descr::unbranded()`, whose slot is top. Because a bottom
 therefore has more than one shape, `union` asks `looks_empty()` before it joins
 anything, so a bottom is the identity however it was reached — a pointwise hull

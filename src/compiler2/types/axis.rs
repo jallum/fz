@@ -562,16 +562,16 @@ pub(super) fn drop_empty_clauses(cx: TyCtx<'_>, d: &mut Descr, is_empty_ty: &dyn
 fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>, is_empty_ty: &dyn Fn(&Ty) -> bool) -> bool {
     match plain_sig(c) {
         Some(product) => product.elems.iter().any(is_empty_ty),
-        None => emptiness::tuple_clause_empty(cx, c, &mut emptiness::Memo::default()),
+        None => emptiness::tuple_clause_empty(cx, c, emptiness::InFlight::default()),
     }
 }
 
 fn retain_inhabited<T>(
     cx: TyCtx<'_>,
     clauses: &mut Vec<Conj<T>>,
-    clause_empty: fn(TyCtx<'_>, &Conj<T>, &mut emptiness::Memo) -> bool,
+    clause_empty: fn(TyCtx<'_>, &Conj<T>, emptiness::InFlight<'_>) -> bool,
 ) {
-    clauses.retain(|clause| !clause_empty(cx, clause, &mut emptiness::Memo::default()));
+    clauses.retain(|clause| !clause_empty(cx, clause, emptiness::InFlight::default()));
 }
 
 /// Collapse the axis to its top when its clauses cover it, and otherwise drop
@@ -863,7 +863,7 @@ fn next_widening(cx: TyCtx<'_>, rects: &[Rect]) -> Option<(usize, usize, Descr)>
             let mut trial = rect.clone();
             trial[coord] = candidate.clone();
             let cover: Vec<Vec<&Descr>> = siblings.iter().map(|sibling| sibling.iter().collect()).collect();
-            if emptiness::phi_tuple(cx, &trial, &cover, &mut emptiness::Memo::default()) {
+            if emptiness::phi_tuple(cx, &trial, &cover, emptiness::InFlight::default()) {
                 return Some((index, coord, candidate));
             }
         }

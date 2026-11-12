@@ -4,7 +4,7 @@ use super::bits::BasicBits;
 use super::conj::Conj;
 use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top};
 use super::emptiness::{
-    Memo, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
+    Frame, InFlight, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, StructTag, TupleSig};
 use super::{BuiltinOpaque, MapKey, Ty, TyCtx, TypeVarId};
@@ -726,7 +726,7 @@ impl Descr {
     /// structure, so a brand and its inner are literally equal here. It stays
     /// syntactic on purpose — asking whether the two structures are
     /// EQUIVALENT would call `is_equiv` -> `is_subtype` -> `diff` -> here, a
-    /// recursion the emptiness `Memo` does not guard. Interned children
+    /// recursion the emptiness path does not guard. Interned children
     /// compare by id, so two ids denoting one type answer `false` and cost
     /// precision, never soundness.
     fn same_structure_by_construction(&self, other: &Descr) -> bool {
@@ -742,27 +742,25 @@ impl Descr {
     }
 
     pub(super) fn is_empty(&self, cx: TyCtx<'_>) -> bool {
-        let mut memo = Memo::default();
-        self.is_empty_memo(cx, &mut memo)
+        self.is_empty_in(cx, InFlight::default())
     }
 
-    pub(super) fn is_empty_memo(&self, cx: TyCtx<'_>, memo: &mut Memo) -> bool {
-        if memo.in_flight.contains(self) {
+    pub(super) fn is_empty_in(&self, cx: TyCtx<'_>, open: InFlight<'_>) -> bool {
+        if open.contains(self) {
             return true;
         }
-        memo.in_flight.insert(self.clone());
-        let result = self.brands.is_none()
+        let frame = Frame::open(self, open);
+        let open = InFlight::within(&frame);
+        self.brands.is_none()
             || self.basic.is_empty()
                 && self.atoms.is_none()
                 && self.opaques.is_none()
                 && self.vars.is_none()
-                && self.tuples.iter().all(|c| tuple_clause_empty(cx, c, memo))
-                && self.lists.iter().all(|c| list_clause_empty(cx, c, memo))
-                && self.resources.iter().all(|c| resource_clause_empty(cx, c, memo))
-                && self.funcs.iter().all(|c| func_clause_empty(cx, c, memo))
-                && self.maps.iter().all(|c| map_clause_empty(cx, c, memo));
-        memo.in_flight.remove(self);
-        result
+                && self.tuples.iter().all(|c| tuple_clause_empty(cx, c, open))
+                && self.lists.iter().all(|c| list_clause_empty(cx, c, open))
+                && self.resources.iter().all(|c| resource_clause_empty(cx, c, open))
+                && self.funcs.iter().all(|c| func_clause_empty(cx, c, open))
+                && self.maps.iter().all(|c| map_clause_empty(cx, c, open))
     }
 
     pub(super) fn is_subtype(&self, cx: TyCtx<'_>, other: &Descr) -> bool {

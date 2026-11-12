@@ -129,6 +129,8 @@ pub(crate) use world::JobCompletion;
 pub use world::World;
 
 #[cfg(test)]
+mod allocation_probe;
+#[cfg(test)]
 mod artifact_test;
 #[cfg(test)]
 mod closure_denotation_test;

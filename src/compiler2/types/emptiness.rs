@@ -1,23 +1,48 @@
 //! Per-axis emptiness algorithms for the interned descriptor kernel.
 
 use crate::fz_ir::FnId;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use super::conj::Conj;
 use super::descr::Descr;
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::{MapKey, Ty, TyCtx};
 
-/// Coinductive assumption set for one top-level emptiness query. Emptiness
-/// over recursive descriptors is a greatest fixpoint: a query that re-enters a
-/// descriptor already `in_flight` assumes it empty, and the assumption is
-/// discharged if the whole cycle checks out.
-#[derive(Default)]
-pub(crate) struct Memo {
-    pub(super) in_flight: HashSet<Descr>,
+/// The descriptors whose emptiness is being decided on the current path,
+/// innermost first. Emptiness over recursive shapes is a greatest fixpoint: a
+/// query that re-enters a descriptor already open assumes it empty, and the
+/// assumption is discharged if the whole cycle checks out.
+///
+/// Each decision opens a [`Frame`] on the call stack that borrows its caller's
+/// path, so the path is exactly the calls in flight, holds the callers' own
+/// descriptors rather than copies, and cannot outlive or be left open by a
+/// call. Asking "is this one already open" is a short scan of structural
+/// equality up the frames.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct InFlight<'a>(Option<&'a Frame<'a>>);
+
+pub(super) struct Frame<'a> {
+    descr: &'a Descr,
+    parent: InFlight<'a>,
 }
 
-pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>, memo: &mut Memo) -> bool {
+impl<'a> Frame<'a> {
+    pub(super) fn open(descr: &'a Descr, parent: InFlight<'a>) -> Self {
+        Self { descr, parent }
+    }
+}
+
+impl<'a> InFlight<'a> {
+    pub(super) fn within(frame: &'a Frame<'a>) -> Self {
+        Self(Some(frame))
+    }
+
+    pub(super) fn contains(self, descr: &Descr) -> bool {
+        std::iter::successors(self.0, |frame| frame.parent.0).any(|frame| frame.descr == descr)
+    }
+}
+
+pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>, open: InFlight<'_>) -> bool {
     if c.pos.is_empty() {
         return false;
     }
@@ -37,7 +62,7 @@ pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>, memo: &mut M
         .filter(|n| n.elems.len() == arity)
         .map(|n| n.elems.iter().map(|ty| cx.descr(ty)).collect())
         .collect();
-    phi_tuple(cx, &t, &negs, memo)
+    phi_tuple(cx, &t, &negs, open)
 }
 
 /// Is the product `∏t` minus the union of the products `∏n` empty?
@@ -46,12 +71,12 @@ pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>, memo: &mut M
 /// caller can decide `∏t ⊆ ⋃∏n` for rectangles it built but never interned.
 /// Every entry of `n` must have the same arity as `t`; a mismatched arity
 /// subtracts nothing and belongs to the caller's filter.
-pub(super) fn phi_tuple(cx: TyCtx<'_>, t: &[Descr], n: &[Vec<&Descr>], memo: &mut Memo) -> bool {
+pub(super) fn phi_tuple(cx: TyCtx<'_>, t: &[Descr], n: &[Vec<&Descr>], open: InFlight<'_>) -> bool {
     // One empty coordinate empties the whole product — no negation needed.
     // Checking at entry prunes every recursive branch whose diff/intersect
     // zeroed a coordinate; without this the recursion only discovers the
     // emptiness at the leaves, after fanning out arity^|negs| branches.
-    if t.iter().any(|d| d.is_empty_memo(cx, memo)) {
+    if t.iter().any(|d| d.is_empty_in(cx, open)) {
         return true;
     }
     let Some((head, rest)) = n.split_first() else {
@@ -59,12 +84,8 @@ pub(super) fn phi_tuple(cx: TyCtx<'_>, t: &[Descr], n: &[Vec<&Descr>], memo: &mu
     };
     // A negation disjoint from the product on any coordinate subtracts
     // nothing: drop it instead of splitting on it.
-    if head
-        .iter()
-        .zip(t)
-        .any(|(h, ti)| ti.intersect(h).is_empty_memo(cx, memo))
-    {
-        return phi_tuple(cx, t, rest, memo);
+    if head.iter().zip(t).any(|(h, ti)| ti.intersect(h).is_empty_in(cx, open)) {
+        return phi_tuple(cx, t, rest, open);
     }
     for i in 0..t.len() {
         let mut t_split = t.to_vec();
@@ -72,7 +93,7 @@ pub(super) fn phi_tuple(cx: TyCtx<'_>, t: &[Descr], n: &[Vec<&Descr>], memo: &mu
             t_split[j] = t_split[j].intersect(head[j]);
         }
         t_split[i] = t_split[i].diff(head[i]);
-        if !phi_tuple(cx, &t_split, rest, memo) {
+        if !phi_tuple(cx, &t_split, rest, open) {
             return false;
         }
     }
@@ -95,7 +116,7 @@ impl ElemEvidence {
     /// absorbing; every other transition is a plain set intersection, so
     /// inhabited evidence degrades to `Empty` only on genuine set facts (an
     /// exact-empty sig, or an intersection that empties).
-    fn meet(self, cx: TyCtx<'_>, sig_elem: Option<Ty>, memo: &mut Memo) -> Self {
+    fn meet(self, cx: TyCtx<'_>, sig_elem: Option<Ty>, open: InFlight<'_>) -> Self {
         let Some(elem) = sig_elem else {
             return Self::Empty;
         };
@@ -104,7 +125,7 @@ impl ElemEvidence {
             Self::Unconstrained => cx.descr(&elem).clone(),
             Self::Inhabited(prev) => prev.intersect(cx.descr(&elem)),
         };
-        if next.is_empty_memo(cx, memo) {
+        if next.is_empty_in(cx, open) {
             Self::Empty
         } else {
             Self::Inhabited(Box::new(next))
@@ -163,7 +184,7 @@ pub(super) fn clause_holds_empty(c: &Conj<ListSig>) -> bool {
 /// soon as no single `minus` covers `elem`, pick one element outside each and
 /// put them in one list -- it is over `elem` and outside every `minus`. That
 /// single-negative rule is the one the axis rewrites above must not outrun.
-pub(crate) fn list_denotation(cx: TyCtx<'_>, c: &Conj<ListSig>, memo: &mut Memo) -> Option<ListDenotation> {
+pub(crate) fn list_denotation(cx: TyCtx<'_>, c: &Conj<ListSig>, open: InFlight<'_>) -> Option<ListDenotation> {
     let holds_empty = clause_holds_empty(c);
     let just_empty = || {
         holds_empty.then_some(ListDenotation {
@@ -173,7 +194,7 @@ pub(crate) fn list_denotation(cx: TyCtx<'_>, c: &Conj<ListSig>, memo: &mut Memo)
     };
     let mut evidence = ElemEvidence::Unconstrained;
     for p in &c.pos {
-        evidence = evidence.meet(cx, p.elem, memo);
+        evidence = evidence.meet(cx, p.elem, open);
     }
     let Some(elem) = evidence.fragment() else {
         return just_empty();
@@ -184,10 +205,10 @@ pub(crate) fn list_denotation(cx: TyCtx<'_>, c: &Conj<ListSig>, memo: &mut Memo)
         // been read into `holds_empty` and takes nothing off the fragment.
         let Some(cut) = n.elem else { continue };
         let cut = elem.intersect(cx.descr(&cut));
-        if cut.is_empty_memo(cx, memo) {
+        if cut.is_empty_in(cx, open) {
             continue;
         }
-        if elem.diff(&cut).is_empty_memo(cx, memo) {
+        if elem.diff(&cut).is_empty_in(cx, open) {
             return just_empty();
         }
         if !minus.contains(&cut) {
@@ -200,11 +221,11 @@ pub(crate) fn list_denotation(cx: TyCtx<'_>, c: &Conj<ListSig>, memo: &mut Memo)
     })
 }
 
-pub(crate) fn list_clause_empty(cx: TyCtx<'_>, c: &Conj<ListSig>, memo: &mut Memo) -> bool {
-    list_denotation(cx, c, memo).is_none()
+pub(crate) fn list_clause_empty(cx: TyCtx<'_>, c: &Conj<ListSig>, open: InFlight<'_>) -> bool {
+    list_denotation(cx, c, open).is_none()
 }
 
-pub(crate) fn resource_clause_empty(cx: TyCtx<'_>, c: &Conj<ResourceSig>, memo: &mut Memo) -> bool {
+pub(crate) fn resource_clause_empty(cx: TyCtx<'_>, c: &Conj<ResourceSig>, open: InFlight<'_>) -> bool {
     let payload = if c.pos.is_empty() {
         Descr::any()
     } else {
@@ -212,7 +233,7 @@ pub(crate) fn resource_clause_empty(cx: TyCtx<'_>, c: &Conj<ResourceSig>, memo: 
         for p in &c.pos[1..] {
             payload = payload.intersect(cx.descr(&p.payload));
         }
-        if payload.is_empty_memo(cx, memo) {
+        if payload.is_empty_in(cx, open) {
             return true;
         }
         payload
@@ -222,7 +243,7 @@ pub(crate) fn resource_clause_empty(cx: TyCtx<'_>, c: &Conj<ResourceSig>, memo: 
     }
     c.neg
         .iter()
-        .any(|n| payload.diff(cx.descr(&n.payload)).is_empty_memo(cx, memo))
+        .any(|n| payload.diff(cx.descr(&n.payload)).is_empty_in(cx, open))
 }
 
 fn arrow_input(sig: &ArrowSig) -> Descr {
@@ -249,7 +270,7 @@ fn closure_brand_inside(pos: Option<FnId>, neg: Option<FnId>) -> bool {
     }
 }
 
-pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
+pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, open: InFlight<'_>) -> bool {
     let p = &c.pos;
     let n = &c.neg;
 
@@ -264,7 +285,7 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, memo: &mut Me
     // survived the merge.
     if pos_lits
         .iter()
-        .any(|lit| lit.captures.iter().any(|c| cx.descr(c).is_empty_memo(cx, memo)))
+        .any(|lit| lit.captures.iter().any(|c| cx.descr(c).is_empty_in(cx, open)))
     {
         return true;
     }
@@ -276,7 +297,7 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, memo: &mut Me
                 return true;
             }
             for (a, b) in pos_lits[i].captures.iter().zip(&pos_lits[j].captures) {
-                if cx.descr(a).intersect(cx.descr(b)).is_empty_memo(cx, memo) {
+                if cx.descr(a).intersect(cx.descr(b)).is_empty_in(cx, open) {
                     return true;
                 }
             }
@@ -303,7 +324,7 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, memo: &mut Me
                 .captures
                 .iter()
                 .zip(&neg_lit.captures)
-                .all(|(pc, nc)| cx.descr(pc).diff(cx.descr(nc)).is_empty_memo(cx, memo));
+                .all(|(pc, nc)| cx.descr(pc).diff(cx.descr(nc)).is_empty_in(cx, open));
             if pos_subset_of_neg {
                 return true;
             }
@@ -332,10 +353,10 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, memo: &mut Me
                     inter_out = inter_out.intersect(cx.descr(&pi.ret));
                 }
             }
-            if s.diff(&union_in).is_empty_memo(cx, memo) {
+            if s.diff(&union_in).is_empty_in(cx, open) {
                 continue;
             }
-            if inter_out.diff(v).is_empty_memo(cx, memo) {
+            if inter_out.diff(v).is_empty_in(cx, open) {
                 continue;
             }
             continue 'next_neg;
@@ -345,7 +366,7 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, memo: &mut Me
     false
 }
 
-pub(crate) fn map_clause_empty(cx: TyCtx<'_>, c: &Conj<MapSig>, memo: &mut Memo) -> bool {
+pub(crate) fn map_clause_empty(cx: TyCtx<'_>, c: &Conj<MapSig>, open: InFlight<'_>) -> bool {
     if c.pos.is_empty() {
         return false;
     }
@@ -365,7 +386,7 @@ pub(crate) fn map_clause_empty(cx: TyCtx<'_>, c: &Conj<MapSig>, memo: &mut Memo)
                 .or_insert_with(|| cx.descr(v).clone());
         }
     }
-    if merged.values().any(|v| v.is_empty_memo(cx, memo)) {
+    if merged.values().any(|v| v.is_empty_in(cx, open)) {
         return true;
     }
     for n in &c.neg {
@@ -379,7 +400,7 @@ pub(crate) fn map_clause_empty(cx: TyCtx<'_>, c: &Conj<MapSig>, memo: &mut Memo)
         let value_refines = n.fields.iter().all(|(k, nv)| {
             merged
                 .get(k)
-                .map(|pv| pv.diff(cx.descr(nv)).is_empty_memo(cx, memo))
+                .map(|pv| pv.diff(cx.descr(nv)).is_empty_in(cx, open))
                 .unwrap_or(false)
         });
         if value_refines {
@@ -388,3 +409,7 @@ pub(crate) fn map_clause_empty(cx: TyCtx<'_>, c: &Conj<MapSig>, memo: &mut Memo)
     }
     false
 }
+
+#[cfg(test)]
+#[path = "emptiness_test.rs"]
+mod emptiness_test;
