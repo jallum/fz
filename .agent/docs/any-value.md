@@ -195,7 +195,7 @@ So `send(pid, 42)`, where `send` takes `any`, boxes 42 because it crosses into
 `any`, then passes one `ValueRef(Int)` word. Copying the bits of a
 `ValueRef(Int)` straight into a `RawInt` slot is never valid: that word is a ref,
 not the integer payload. The same coercion rule covers call arguments,
-continuation arguments, and typed frame slots.
+continuation arguments, and typed closure capture slots.
 
 ## Tags And Platform Packing
 

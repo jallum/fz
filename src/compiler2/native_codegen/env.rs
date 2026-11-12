@@ -10,9 +10,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 pub(crate) struct CodegenEnv<'a> {
-    /// The bodies codegen emits itself, for the sites that take their
-    /// address or call them.
-    pub(super) locals: &'a LocalBodies,
     pub(super) surface: &'a NativeCodegenSurface<'a>,
     pub(super) module: &'a Module,
     pub(super) active_spec_id: u32,
@@ -30,10 +27,7 @@ pub(crate) struct CodegenEnv<'a> {
     /// `SharedBin` symbol in `.data`.
     pub(super) bs_const_data: &'a RefCell<HashMap<Vec<u8>, BsConstSyms>>,
     pub(super) param_reprs: &'a [Vec<ArgRepr>],
-    pub(super) halt_reprs: &'a [ArgRepr],
     pub(super) return_diverges: &'a [bool],
-    pub(super) native_abi_fns: &'a HashSet<FnId>,
-    pub(super) cont_target_fns: &'a HashSet<FnId>,
     pub(super) cont_fns: &'a HashSet<FnId>,
     /// Receive-dispatch FuncId per ReceiveMatched site, keyed by `(parent_fn_id.0,
     /// block_id.0)`. Populated by the planned codegen declaration pass
@@ -43,10 +37,6 @@ pub(crate) struct CodegenEnv<'a> {
 }
 
 impl CodegenEnv<'_> {
-    pub(super) fn body_fn_id(&self, codegen_id: u32) -> FnId {
-        self.surface.body_fn_id(codegen_id)
-    }
-
     pub(super) fn body_id_for_fn(&self, fn_id: FnId) -> Option<u32> {
         self.surface.body_id_for_fn(fn_id)
     }

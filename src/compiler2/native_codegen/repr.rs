@@ -176,21 +176,10 @@ pub(crate) fn take_param_binding(
     }
 }
 
-/// Per-fn Cranelift Signature.
-///
-/// `is_native = false` -> uniform `(frame_ptr: i64, host_ctx: i64) -> i64`,
-/// matching the body shape produced by `compile_fn` for trampoline-driven
-/// fns: frame slots for entry params, emit_return writes into the cont
-/// frame and returns the cont frame ptr to the trampoline.
-///
-/// `is_native = true` -> typed-arity signature reflecting the fn's entry
-/// params + return. Each entry param's AbiParam type derives from its
-/// `ArgRepr` (RawF64 -> `f64`, RawInt/ValueRef -> `i64`); the return
-/// derives from `return_descr` the same way.
-pub(crate) fn build_fn_signature<M: cranelift_module::Module>(
-    module: &mut M,
+/// Per-fn Cranelift Signature: the typed args plus the trailing continuation
+/// (or, for a continuation fn, its `self`), in `Tail`.
+pub(crate) fn build_fn_signature(
     param_reprs: &[ArgRepr],
-    is_native: bool,
     is_cont_fn: bool,
     // When the cont fn is a ReceiveMatched clause body / guard, override
     // the default 1-input shape with bound_arity. After-bodies set this
@@ -198,29 +187,10 @@ pub(crate) fn build_fn_signature<M: cranelift_module::Module>(
     // continuations.
     cont_extras_override: Option<usize>,
 ) -> Signature {
-    if !is_native {
-        return build_uniform_sig(module);
-    }
     if is_cont_fn {
         return build_cont_sig(param_reprs, cont_extras_override);
     }
     build_plain_native_sig(param_reprs)
-}
-
-/// Uniform (trampoline) signature: `(frame_ptr: i64, host_ctx: i64) -> i64`.
-///
-/// Uniform fns always include host_ctx — the trampoline ABI is fixed at
-/// `(frame_ptr, host_ctx) -> i64`. The body produced by `compile_fn`
-/// allocates frame slots for entry params, emit_return writes into the
-/// cont frame and returns the cont frame ptr to the trampoline. The host
-/// enters a uniform fn through that pointer, so the target names the
-/// convention.
-fn build_uniform_sig<M: cranelift_module::Module>(module: &mut M) -> Signature {
-    let mut sig = module.make_signature();
-    sig.params.push(AbiParam::new(types::I64)); // frame_ptr
-    sig.params.push(AbiParam::new(types::I64)); // host_ctx
-    sig.returns.push(AbiParam::new(types::I64)); // next frame_ptr
-    sig
 }
 
 /// Cont fn signature: `(result, self:i64) tail`, return canonicalized to i64.

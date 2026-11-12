@@ -11,24 +11,24 @@
 # fz-cps.1.12: load.i64 in square is now Term::Return's indirect-call
 # (load cont+8) per docs/cps-in-clif.md §2.1.
 #
-# fz-ul4.27.6.2 — `square` qualifies for the typed-arity native ABI:
+# `square` is a leaf-bodied helper:
 #   * non-parking (no Receive / closures),
-#   * never used as a continuation,
-#   * not main,
-#   * body-leaf (only Term::Return — no Call / TailCall / CallClosure),
+#   * body-leaf (only Term::Return, no Call / TailCall / CallClosure),
 #   * directly called via Term::Call from main.
-# So it's declared with the `Tail` calling convention as
-# `(i64, i64) -> i64`, runs synchronously inside main's call site, and
-# returns its result via register. No `fz_alloc_frame` for the callee
-# frame, no entry-frame slot loads inside the body.
+# Like every function it is declared with the `Tail` calling convention as
+# `(i64, i64) -> i64`: its arguments, then the continuation it returns
+# through. It runs synchronously inside main's call site and returns its
+# result by tail-calling that continuation.
 #
-# main still goes through the uniform ABI (excluded from native — main
-# is the trampoline's entry point). main's call site for `square` does
-# allocate the continuation frame (cont still rides uniform ABI in
-# .6.2.x; native cont invocation is .6.3) and then writes the tagged
-# native return into cont slot 1 before handing the cont frame ptr to
-# the trampoline. The matrix runs run / interp / build to prove the
-# behavior matches across the three paths.
+# main is entered through the same convention. main's call site for
+# `square` builds a continuation for the rest of main and tail-calls
+# `square` with it. The continuation receives the tagged native return
+# value.
+#
+# The matrix runs run / interp / build to prove the behavior matches
+# across the three paths: the interpreter, the JIT and the AOT
+# executable all print the value of
+# `dbg(square(7))`.
 def square(x) do
   x * x
 end

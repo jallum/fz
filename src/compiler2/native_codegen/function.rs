@@ -10,7 +10,6 @@ use cranelift_codegen::{
     ir::{self, InstBuilder, types},
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use fz_runtime::heap::Schema;
 use std::collections::HashMap;
 
 pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
@@ -19,27 +18,14 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     ctx: &mut Context,
     fbctx: &mut FunctionBuilderContext,
     env: &CodegenEnv<'_>,
-    schemas: &[Schema],
     f: &FnIr,
     this_spec_id: u32,
     source: &SourceInfo,
 ) -> Result<(), CodegenError> {
     let param_reprs = env.param_reprs;
-    let native_abi_fns = env.native_abi_fns;
-    let cont_target_fns = env.cont_target_fns;
     let cont_fns = env.cont_fns;
     let native_body = env.body_native(this_spec_id);
-    let value_types = &native_body.value_types;
-    let is_native = native_abi_fns.contains(&f.id);
     let is_cont_fn = cont_fns.contains(&f.id);
-    // When this fn is never invoked from any fz IR site (not a direct
-    // callee, not a continuation), it can only
-    // enter via the trampoline entry, which writes null into the frame's
-    // slot 0. cont_ptr is therefore statically null at runtime;
-    // emit_return can elide the load/icmp/brif dispatch and emit a
-    // halt-only path. `cont_target_fns` is the set of FnIds ever
-    // referenced from fz IR.
-    let cont_ptr_known_null = !cont_target_fns.contains(&f.id);
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
 
     let mut block_map: HashMap<u32, ir::Block> = HashMap::new();
@@ -48,36 +34,29 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         block_map.insert(blk.id.0, cl_blk);
     }
     let entry_cl = *block_map.get(&f.entry.0).unwrap();
-    if is_native {
-        // Native fn entry: one block_param per fz arg whose type matches
-        // param_reprs[i] (F64 for raw float, I64 for raw int or tagged).
-        // No frame_ptr; native fns run synchronously inside their caller
-        // and never visit the trampoline.
-        let my_param_reprs = &param_reprs[this_spec_id as usize];
-        if is_cont_fn {
-            // Cont fn entry: result's Cranelift type matches
-            // my_param_reprs[0].cl_type(). Body sees the value in its
-            // native shape — no coerce at entry.
-            //
-            // Scheduler-resumed receive continuations override the default
-            // one-result input shape via their settled continuation ABI: their bound
-            // values and captures are loaded from the closure env, leaving
-            // only `self` in the Tail-CC signature.
-            let extras_count = continuation_entry_extra_count(native_body);
-            for (i, r) in my_param_reprs[..extras_count].iter().enumerate() {
-                let _ = i;
-                append_block_param_for_repr(&mut b, entry_cl, *r);
-            }
-            b.append_block_param(entry_cl, types::I64); // self
-        } else {
-            for r in my_param_reprs {
-                append_block_param_for_repr(&mut b, entry_cl, *r);
-            }
-            b.append_block_param(entry_cl, types::I64); // cont
+    // One block_param per fz arg whose type matches param_reprs[i] (F64 for
+    // raw float, I64 for raw int or tagged), then the trailing cont (or, for a
+    // continuation fn, `self`).
+    let my_param_reprs = &param_reprs[this_spec_id as usize];
+    if is_cont_fn {
+        // Cont fn entry: result's Cranelift type matches
+        // my_param_reprs[0].cl_type(). Body sees the value in its
+        // native shape — no coerce at entry.
+        //
+        // Scheduler-resumed receive continuations override the default
+        // one-result input shape via their settled continuation ABI: their bound
+        // values and captures are loaded from the closure env, leaving
+        // only `self` in the Tail-CC signature.
+        let extras_count = continuation_entry_extra_count(native_body);
+        for r in &my_param_reprs[..extras_count] {
+            append_block_param_for_repr(&mut b, entry_cl, *r);
         }
+        b.append_block_param(entry_cl, types::I64); // self
     } else {
-        b.append_block_param(entry_cl, types::I64); // frame_ptr
-        b.append_block_param(entry_cl, types::I64); // host_ctx
+        for r in my_param_reprs {
+            append_block_param_for_repr(&mut b, entry_cl, *r);
+        }
+        b.append_block_param(entry_cl, types::I64); // cont
     }
 
     for blk in &f.blocks {
@@ -101,19 +80,8 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     let mut body = CodegenFn::new(&mut b, jmod, &mut cache);
     let EntryHarnessOut {
         mut var_env,
-        frame_ptr,
-        host_ctx,
         cont_param,
-    } = build_entry_harness(
-        &mut body,
-        env,
-        schemas,
-        f,
-        this_spec_id,
-        is_native,
-        is_cont_fn,
-        entry_cl,
-    );
+    } = build_entry_harness(&mut body, env, f, this_spec_id, is_cont_fn, entry_cl);
 
     {
         let (if_only, all_used) = classify_var_uses(f);
@@ -152,13 +120,12 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         // SourceInfo.stmt_spans; encode each as a Cranelift SourceLoc so
         // Compiler2 CLIF dumps can render `; @file:line:col` comments.
         let stmt_spans = source.stmt_spans.get(&(f.id, blk.id));
-        let block_env = None;
         for (idx, stmt) in blk.stmts.iter().enumerate() {
             let span = stmt_spans.and_then(|v| v.get(idx)).copied().unwrap_or(Span::DUMMY);
             body.b.set_srcloc(span_to_srcloc(span));
             match stmt {
                 Stmt::Let(v, prim) => {
-                    let out = lower_prim(&mut body, t, env, &var_env, prim, *v, blk.id, idx, block_env)?;
+                    let out = lower_prim(&mut body, t, env, &var_env, prim, *v, blk.id, idx, None)?;
                     if !matches!(out, LowerOut::DeadUnit) {
                         let binding = match out {
                             LowerOut::StrictConst(value) => {
@@ -240,20 +207,13 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             &mut body,
             t,
             env,
-            schemas,
             &var_env,
             blk,
             &block_map,
-            is_native,
             is_cont_fn,
             this_spec_id,
             f.id,
-            cont_ptr_known_null,
-            frame_ptr,
-            host_ctx,
             cont_param,
-            value_types,
-            block_env,
         )?;
     }
 

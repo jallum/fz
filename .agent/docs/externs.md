@@ -185,7 +185,7 @@ ends the process. See [process failure](process-failure.md).
 ## Helpers the code generator calls itself
 
 Some calls in compiled code come from lowering rather than from source: a cons
-cell, a frame allocation, a boxed integer. Each helper is an ordinary
+cell, a closure allocation, a boxed integer. Each helper is an ordinary
 `extern "C"` function in the runtime library, and codegen names it by that Rust
 function item:
 

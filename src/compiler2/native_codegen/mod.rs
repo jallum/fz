@@ -1,26 +1,16 @@
 //! Cranelift codegen for fz-IR (CPS form).
 //!
-//! Uniform-tier per-fn ABI:
-//!   `extern "C" fn(frame_ptr: *mut u8, host_ctx: *mut u8) -> *mut u8`
-//!   * `frame_ptr` points to a heap-allocated frame with 16 bytes of
-//!     object-local metadata followed by slots. Slot 0 = continuation
-//!     pointer. Slots 1..N+1 = entry params for this fn.
-//!   * `host_ctx` is an opaque pointer the host (trampoline) supplies.
-//!     Halt writes the final value through it.
-//!   * Return value: the next frame pointer to invoke (the trampoline
-//!     calls it next), or null to halt.
-//!
-//! Frame schema is the source of truth for codegen + the GC tracer:
-//! [cont_ptr, ...entry_params], all StoredValue slots.
-//!
-//! Native-tier fns bypass the trampoline; their ABI is built per-spec
-//! from ArgRepr (see `repr.rs`).
+//! Every fn has a native signature built per-spec from `ArgRepr` (see
+//! `repr.rs`), in the `Tail` calling convention: `(args..., cont) -> i64`, or
+//! `(extras..., self) -> i64` for a continuation fn, whose outer continuation
+//! lives in its closure env. A return is a tail call through the continuation
+//! closure's code pointer; the last continuation in a chain is a halt
+//! continuation, which hands the value to the scheduler.
 
 pub(crate) use crate::compiler2::Ty;
 use crate::telemetry::RawSpanTelemetry;
 pub(crate) use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types};
 
-mod call;
 mod clif;
 pub(crate) mod closure;
 mod delivery;
@@ -44,7 +34,6 @@ pub(crate) mod variadic;
 
 // Glob re-exports keep cross-module references resolvable through
 // `use super::*;` in each submodule.
-pub(crate) use call::*;
 pub(crate) use clif::*;
 pub(crate) use closure::*;
 pub(crate) use delivery::*;

@@ -2,96 +2,45 @@
 
 use super::*;
 use crate::fz_ir::FnIr;
-use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
+use cranelift_codegen::ir;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module as ClModule;
-use fz_runtime::heap::{FieldKind, Schema};
 use std::collections::HashMap;
 
 pub(crate) struct EntryHarnessOut {
     pub(super) var_env: HashMap<u32, CodegenValue>,
-    /// Some for uniform fns; None for native.
-    pub(super) frame_ptr: Option<ir::Value>,
-    /// Some for uniform fns; None for native.
-    pub(super) host_ctx: Option<ir::Value>,
-    /// Some for native fns (trailing cont SSA); None for uniform.
-    pub(super) cont_param: Option<ir::Value>,
+    /// The trailing i64 of the signature: the caller's continuation, or for a
+    /// continuation fn its own closure (`self`).
+    pub(super) cont_param: ir::Value,
 }
 
 pub(crate) fn build_entry_harness<M: ClModule>(
     body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
-    schemas: &[Schema],
     f: &FnIr,
     this_spec_id: u32,
-    is_native: bool,
     is_cont_fn: bool,
     entry_cl: ir::Block,
 ) -> EntryHarnessOut {
     let param_reprs = env.param_reprs;
     let entry_blk = f.blocks.iter().find(|blk| blk.id == f.entry).unwrap();
     let mut var_env: HashMap<u32, CodegenValue> = HashMap::new();
-    let my_schema = &schemas[this_spec_id as usize];
-
-    // (frame_ptr, host_ctx) are Some only for uniform fns (both from
-    // entry block_params). Native fns have no frame; they reach halt via
-    // fz_halt_implicit (TLS). Downstream consumers gate on `is_native`
-    // (or on a terminator type the planned ABI facts exclude), so unwrapping
-    // the Option panics loudly at codegen if any future path violates
-    // the invariant. `cont_param` is the trailing i64 in the native-tier
-    // signature.
-    let continuation_extra_count = continuation_entry_extra_count(env.body_native(this_spec_id));
-    let (frame_ptr, host_ctx, cont_param): (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) = if is_native {
-        let params: Vec<ir::Value> = body.b.block_params(entry_cl).to_vec();
-        let my_param_reprs = &param_reprs[this_spec_id as usize];
-        if is_cont_fn {
-            harness_cont_fn(
-                body,
-                entry_blk,
-                &params,
-                my_param_reprs,
-                continuation_extra_count,
-                &mut var_env,
-            )
-        } else {
-            harness_plain_native(body.b, entry_blk, &params, my_param_reprs, &mut var_env)
-        }
+    let params: Vec<ir::Value> = body.b.block_params(entry_cl).to_vec();
+    let my_param_reprs = &param_reprs[this_spec_id as usize];
+    let cont_param = if is_cont_fn {
+        let continuation_extra_count = continuation_entry_extra_count(env.body_native(this_spec_id));
+        harness_cont_fn(
+            body,
+            entry_blk,
+            &params,
+            my_param_reprs,
+            continuation_extra_count,
+            &mut var_env,
+        )
     } else {
-        let frame_ptr = body.b.block_params(entry_cl)[0];
-        let host_ctx = body.b.block_params(entry_cl)[1];
-
-        // Load entry params from frame slots [1..N+1] (offsets 24, 32, ...).
-        // RawF64 slots load as raw f64; RawI64 slots load as raw i64
-        // (unshifted payload); everything else loads as one-word ValueRef.
-        for (i, p) in entry_blk.params.iter().enumerate() {
-            let off = HEADER_SIZE + ((i as i32 + 1) * SLOT_BYTES);
-            let slot_kind = &my_schema.fields[i + 1].kind;
-            let binding = match slot_kind {
-                FieldKind::RawF64 => {
-                    let f = body.b.ins().load(types::F64, MemFlags::trusted(), frame_ptr, off);
-                    CodegenValue::from_abi_value(f, ArgRepr::RawF64)
-                }
-                FieldKind::RawI64 => {
-                    let n = body.b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, off);
-                    CodegenValue::from_abi_value(n, ArgRepr::RawInt)
-                }
-                _ => {
-                    let value_ref = body.b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, off);
-                    CodegenValue::any_ref(value_ref)
-                }
-            };
-            var_env.insert(p.0, binding);
-        }
-        // Uniform fns do not have a cont SSA value; the cont lives in
-        // slot 0 of `frame_ptr`.
-        (Some(frame_ptr), Some(host_ctx), None)
+        harness_plain_native(body.b, entry_blk, &params, my_param_reprs, &mut var_env)
     };
-    EntryHarnessOut {
-        var_env,
-        frame_ptr,
-        host_ctx,
-        cont_param,
-    }
+    EntryHarnessOut { var_env, cont_param }
 }
 
 /// Cont fn entry harness:
@@ -114,7 +63,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
 /// not one synthetic tuple param. If the semantic program wants a tuple value,
 /// native lowering reconstructs it explicitly in the body with `Prim::MakeTuple`.
 ///
-/// Returns (frame_ptr, host_ctx, cont_param).
+/// Returns the closure's own pointer (`self`), which is the fn's `cont_param`.
 fn harness_cont_fn<M: ClModule>(
     body: &mut CodegenFn<'_, '_, M>,
     entry_blk: &crate::fz_ir::Block,
@@ -122,7 +71,7 @@ fn harness_cont_fn<M: ClModule>(
     my_param_reprs: &[ArgRepr],
     extras_count: usize,
     var_env: &mut HashMap<u32, CodegenValue>,
-) -> (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) {
+) -> ir::Value {
     let mut param_cursor = 0;
     for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {
         let repr = my_param_reprs[i];
@@ -135,7 +84,7 @@ fn harness_cont_fn<M: ClModule>(
         let binding = body.closure_capture_as_binding(self_val, capture_idx, my_param_reprs[repr_idx]);
         var_env.insert(p.0, binding);
     }
-    (None, None, Some(self_val))
+    self_val
 }
 
 /// Plain native fn entry harness.
@@ -143,19 +92,19 @@ fn harness_cont_fn<M: ClModule>(
 /// All entry block params map 1:1 to leading Cranelift params via
 /// each ArgRepr's abi_arity; the trailing slot carries the cont SSA.
 ///
-/// Returns (frame_ptr, host_ctx, cont_param).
+/// Returns the trailing cont SSA value.
 fn harness_plain_native(
     b: &mut FunctionBuilder<'_>,
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
     my_param_reprs: &[ArgRepr],
     var_env: &mut HashMap<u32, CodegenValue>,
-) -> (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) {
+) -> ir::Value {
     let mut param_cursor = 0;
     for (i, p) in entry_blk.params.iter().enumerate() {
         let repr = my_param_reprs[i];
         var_env.insert(p.0, take_param_binding(b, params, &mut param_cursor, repr));
     }
     let cont_idx = param_cursor;
-    (None, None, Some(params[cont_idx]))
+    params[cont_idx]
 }

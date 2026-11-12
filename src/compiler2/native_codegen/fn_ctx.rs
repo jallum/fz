@@ -12,16 +12,15 @@ use cranelift_codegen::ir::{self, InstBuilder, MemFlags, condcodes::IntCC, types
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataId, FuncId, Module};
 use fz_runtime::any_value::{AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TaggedRefArch, ValueKind};
-use fz_runtime::heap::{FieldKind, Schema};
 use fz_runtime::ir_runtime::{
-    fz_alloc_closure, fz_alloc_frame, fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any,
-    fz_closure_code_ref, fz_closure_get_capture_atom, fz_closure_get_capture_f64, fz_closure_get_capture_i64,
-    fz_closure_get_capture_ref, fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64,
-    fz_closure_set_capture_i64, fz_closure_set_capture_ref, fz_halt_implicit_atom, fz_halt_implicit_f64,
-    fz_halt_implicit_i64, fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref, fz_list_head_ref,
-    fz_list_reuse_or_cons_parts, fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_mark_published_ref_aliased,
-    fz_materialize_cont, fz_struct_set_field_atom, fz_struct_set_field_float, fz_struct_set_field_int,
-    fz_struct_set_field_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
+    fz_alloc_closure, fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_closure_code_ref,
+    fz_closure_get_capture_atom, fz_closure_get_capture_f64, fz_closure_get_capture_i64, fz_closure_get_capture_ref,
+    fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64, fz_closure_set_capture_i64,
+    fz_closure_set_capture_ref, fz_halt_implicit_atom, fz_halt_implicit_f64, fz_halt_implicit_i64,
+    fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref, fz_list_head_ref, fz_list_reuse_or_cons_parts,
+    fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_mark_published_ref_aliased, fz_materialize_cont,
+    fz_struct_set_field_atom, fz_struct_set_field_float, fz_struct_set_field_int, fz_struct_set_field_ref,
+    fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
 use std::collections::HashMap;
 
@@ -136,11 +135,6 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             ArgRepr::ValueRef => runtime_call!(self, fz_halt_implicit_ref, [process, value]),
             ArgRepr::Condition => unreachable!("condition halt values must be materialized"),
         };
-    }
-
-    pub(crate) fn alloc_frame(&mut self, schema_id: ir::Value, size: ir::Value) -> ir::Value {
-        let process = self.process_arg();
-        runtime_call1!(self, fz_alloc_frame, [process, schema_id, size])
     }
 
     /// The tagged ref to a read-only object the program emitted, marked as a
@@ -699,92 +693,6 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         match tail {
             ListTailBits::Empty => self.empty_list_ref(),
             ListTailBits::ValueRef(value) | ListTailBits::NonEmptyValueRef(value) => value,
-        }
-    }
-
-    pub(crate) fn store_frame_value_dynamic(&mut self, frame: ir::Value, field_offset: u32, value: CodegenValue) {
-        let value_ref = self.value_as_any_ref(value);
-        self.b
-            .ins()
-            .store(MemFlags::trusted(), value_ref, frame, field_offset as i32);
-    }
-
-    pub(crate) fn store_frame_word(&mut self, frame: ir::Value, field_offset: u32, value: ir::Value) {
-        self.b
-            .ins()
-            .store(MemFlags::trusted(), value, frame, field_offset as i32);
-    }
-
-    pub(crate) fn store_bindings_into_callee_frame(
-        &mut self,
-        callee_schema: &Schema,
-        callee_frame: ir::Value,
-        args: &[CodegenValue],
-        slot_base: usize,
-    ) {
-        for (i, binding) in args.iter().copied().enumerate() {
-            let slot_idx = slot_base + i;
-            let off = HEADER_SIZE + SLOT_BYTES * (slot_idx as i32);
-            match callee_schema.fields[slot_idx].kind {
-                FieldKind::RawF64 => {
-                    let f = self.coerce_binding_to(binding, ArgRepr::RawF64);
-                    self.b.ins().store(MemFlags::trusted(), f, callee_frame, off);
-                }
-                FieldKind::RawI64 => {
-                    let n = self.coerce_binding_to(binding, ArgRepr::RawInt);
-                    self.b.ins().store(MemFlags::trusted(), n, callee_frame, off);
-                }
-                FieldKind::AnyValue => {
-                    let value_ref = self.value_as_any_ref(binding);
-                    self.b.ins().store(MemFlags::trusted(), value_ref, callee_frame, off);
-                }
-                FieldKind::RawBytes(_) => {
-                    self.b
-                        .ins()
-                        .store(MemFlags::trusted(), binding.value(), callee_frame, off);
-                }
-            }
-        }
-    }
-
-    pub(crate) fn store_typed_args_into_callee_frame(
-        &mut self,
-        callee_schema: &Schema,
-        callee_frame: ir::Value,
-        args: &[(ir::Value, ArgRepr)],
-        slot_base: usize,
-    ) {
-        for (i, &(value, from)) in args.iter().enumerate() {
-            let slot_idx = slot_base + i;
-            let off = HEADER_SIZE + SLOT_BYTES * (slot_idx as i32);
-            match callee_schema.fields[slot_idx].kind {
-                FieldKind::RawF64 => {
-                    let binding = CodegenValue::from_abi_value(value, from);
-                    let f = self.coerce_binding_to(binding, ArgRepr::RawF64);
-                    self.b.ins().store(MemFlags::trusted(), f, callee_frame, off);
-                }
-                FieldKind::RawI64 => {
-                    let binding = CodegenValue::from_abi_value(value, from);
-                    let n = self.coerce_binding_to(binding, ArgRepr::RawInt);
-                    self.b.ins().store(MemFlags::trusted(), n, callee_frame, off);
-                }
-                FieldKind::AnyValue => {
-                    let value_ref = match from {
-                        ArgRepr::ValueRef => value,
-                        ArgRepr::RawInt => self.box_int_for_any(value),
-                        ArgRepr::RawF64 => self.box_float_for_any(value),
-                        ArgRepr::RawAtom => self.box_atom_for_any(value),
-                        ArgRepr::Condition => {
-                            let atom = bool_to_fz(self.b, self.cache, value);
-                            self.box_atom_for_any(atom)
-                        }
-                    };
-                    self.b.ins().store(MemFlags::trusted(), value_ref, callee_frame, off);
-                }
-                FieldKind::RawBytes(_) => {
-                    self.b.ins().store(MemFlags::trusted(), value, callee_frame, off);
-                }
-            }
         }
     }
 
