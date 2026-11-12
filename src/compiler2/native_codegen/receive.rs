@@ -37,7 +37,11 @@ use crate::fz_ir::{ExternTy, Module, ReceiveClause, Var};
 
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
-use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
+use cranelift_codegen::ir::{
+    self, AbiParam, InstBuilder, MemFlags, Signature,
+    condcodes::{FloatCC, IntCC},
+    types,
+};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
@@ -46,7 +50,7 @@ use fz_runtime::ir_runtime::{
     fz_bs_reader_init_ref, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_matcher_eq_bytes,
     fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref, fz_struct_get_named_field_ref,
     fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_value_cmp_ref,
-    fz_value_eq_ref,
+    fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use std::collections::HashMap;
 
@@ -1207,11 +1211,11 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
                     int_value(body.b, rem)
                 }
                 PatternGuardBinOp::Eq => {
-                    let cmp = emit_typed_eq_cmp(body, ctx, l, r)?;
+                    let cmp = emit_typed_eq_cmp(body, ctx, Equality::Loose, l, r)?;
                     emit_bool_value(body.b, cmp)
                 }
                 PatternGuardBinOp::Neq => {
-                    let eq = emit_typed_eq_cmp(body, ctx, l, r)?;
+                    let eq = emit_typed_eq_cmp(body, ctx, Equality::Loose, l, r)?;
                     let neq = body.b.ins().bxor_imm(eq, 1);
                     emit_bool_value(body.b, neq)
                 }
@@ -1522,8 +1526,8 @@ fn emit_guard_boolean<M: cranelift_module::Module>(
 ) -> Result<ir::Value, CodegenError> {
     let true_value = bool_const_value(body.b, true);
     let false_value = bool_const_value(body.b, false);
-    let is_true = emit_typed_eq_cmp(body, ctx, v, true_value)?;
-    let is_false = emit_typed_eq_cmp(body, ctx, v, false_value)?;
+    let is_true = emit_typed_eq_cmp(body, ctx, Equality::Strict, v, true_value)?;
+    let is_false = emit_typed_eq_cmp(body, ctx, Equality::Strict, v, false_value)?;
     let is_boolean = body.b.ins().bor(is_true, is_false);
     let boolean_b = body.b.create_block();
     body.b.ins().brif(is_boolean, boolean_b, &[], fail, &[]);
@@ -1552,36 +1556,45 @@ fn emit_truthy_cmp<M: cranelift_module::Module>(
     }
 }
 
+/// Which equality a comparison asks. A guard's `==` and `!=` are `Loose`: an
+/// integer equals the float of the same value, and `0.0` equals `-0.0`. A
+/// pinned match and a literal pattern are `Strict` identity, which tells `1`
+/// from `1.0` and `0.0` from `-0.0`.
+#[derive(Clone, Copy)]
+enum Equality {
+    Loose,
+    Strict,
+}
+
 fn emit_typed_eq_cmp<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
+    equality: Equality,
     lhs: ReceiveValue,
     rhs: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
-    match lhs {
-        ReceiveValue::Int(a) => match rhs {
-            ReceiveValue::Int(bv) => return Ok(body.b.ins().icmp(IntCC::Equal, a, bv)),
-            ReceiveValue::AnyRef(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => {}
-        },
-        ReceiveValue::Float(a) => match rhs {
-            ReceiveValue::Float(bv) => {
-                let a = body.b.ins().bitcast(types::I64, MemFlags::new(), a);
-                let bv = body.b.ins().bitcast(types::I64, MemFlags::new(), bv);
-                return Ok(body.b.ins().icmp(IntCC::Equal, a, bv));
-            }
-            ReceiveValue::AnyRef(_) | ReceiveValue::Int(_) | ReceiveValue::Atom(_) => {}
-        },
-        ReceiveValue::Atom(a) => match rhs {
-            ReceiveValue::Atom(bv) => return Ok(body.b.ins().icmp(IntCC::Equal, a, bv)),
-            ReceiveValue::AnyRef(_) | ReceiveValue::Int(_) | ReceiveValue::Float(_) => {}
-        },
-        ReceiveValue::AnyRef(_) => match rhs {
-            ReceiveValue::AnyRef(_) | ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => {}
-        },
+    match (lhs, rhs) {
+        (ReceiveValue::Int(a), ReceiveValue::Int(bv)) | (ReceiveValue::Atom(a), ReceiveValue::Atom(bv)) => {
+            return Ok(body.b.ins().icmp(IntCC::Equal, a, bv));
+        }
+        (ReceiveValue::Float(a), ReceiveValue::Float(bv)) => {
+            return Ok(match equality {
+                Equality::Loose => body.b.ins().fcmp(FloatCC::Equal, a, bv),
+                Equality::Strict => {
+                    let a = body.b.ins().bitcast(types::I64, MemFlags::new(), a);
+                    let bv = body.b.ins().bitcast(types::I64, MemFlags::new(), bv);
+                    body.b.ins().icmp(IntCC::Equal, a, bv)
+                }
+            });
+        }
+        _ => {}
     }
     let lhs_ref = emit_receive_value_ref(body, ctx, lhs)?;
     let rhs_ref = emit_receive_value_ref(body, ctx, rhs)?;
-    let eq = runtime_call1!(body, fz_value_eq_ref, [ctx.process, lhs_ref, rhs_ref]);
+    let eq = match equality {
+        Equality::Loose => runtime_call1!(body, fz_value_eq_widening_ref, [ctx.process, lhs_ref, rhs_ref]),
+        Equality::Strict => runtime_call1!(body, fz_value_eq_ref, [ctx.process, lhs_ref, rhs_ref]),
+    };
     Ok(body.b.ins().icmp_imm(IntCC::NotEqual, eq, 0))
 }
 
@@ -1593,7 +1606,7 @@ fn emit_typed_eq_branch<M: cranelift_module::Module>(
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
-    let cmp = emit_typed_eq_cmp(body, ctx, lhs, rhs)?;
+    let cmp = emit_typed_eq_cmp(body, ctx, Equality::Strict, lhs, rhs)?;
     body.b.ins().brif(cmp, match_b, &[], next_b, &[]);
     Ok(())
 }
