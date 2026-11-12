@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T22:35:51Z",
+  "description": "The agent rules do not say what borrow-checker appeasement is, so a builder has no name for the pattern and no loop for removing it.\n\nChange:\n- .agent/strategies/ownership-shape.md: what appeasement is, five minimal before/after examples (clone to iterate, owned return from a reader, collect to release a borrow, placeholder swap, hand-placed drop), what is not appeasement, the loop (signature first, sort the errors, three moves in order of preference, stop rule) and its gates.\n- .agent/strategies.md: index entry with its trigger.\n- .agent/rules.md (CLAUDE.md / AGENTS.md): one Best Practices line defining the term and pointing at the strategy.\n\nDocumentation only; no code changes.",
+  "id": "fz-gfx.10",
+  "labels": [],
+  "parent": "fz-gfx",
+  "priority": 3,
+  "status": "open",
+  "title": "The rules name borrow-checker appeasement and the strategy that removes it",
+  "type": "task",
+  "updated_at": "2026-11-12T22:35:51Z"
+}
