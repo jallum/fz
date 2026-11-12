@@ -1,0 +1,87 @@
+3
+0.125
+:odd
+false
+nil
+[1, 2, 3]
+[]
+"n1"
+%Inner{depth: 101}
+{1, :pair}
+1001
+%{1 => "value"}
+{:always, "same", [1, 2]}
+7
+12
+0.5
+:even
+true
+nil
+[4, 5, 6]
+[]
+"n4"
+%Inner{depth: 104}
+{4, :pair}
+1004
+%{4 => "value"}
+{:always, "same", [1, 2]}
+28
+{3, 0.125, false, nil, [1, 2], [], "t1", %Inner{depth: 1}, {1}, [1]}
+{18, 0.75, true, nil, [6, 7], [], "t6", %Inner{depth: 6}, {6}, [6]}
+4
+15000
+625.0
+:even
+true
+nil
+[5000, 5001, 5002]
+[]
+"n5000"
+%Inner{depth: 5100}
+{5000, :pair}
+6000
+%{5000 => "value"}
+{:always, "same", [1, 2]}
+35000
+30000
+1250.0
+:even
+true
+nil
+[10000, 10001, 10002]
+[]
+"n10000"
+%Inner{depth: 10100}
+{10000, :pair}
+11000
+%{10000 => "value"}
+{:always, "same", [1, 2]}
+70000
+45000
+1875.0
+:even
+true
+nil
+[15000, 15001, 15002]
+[]
+"n15000"
+%Inner{depth: 15100}
+{15000, :pair}
+16000
+%{15000 => "value"}
+{:always, "same", [1, 2]}
+105000
+60000
+2500.0
+:even
+true
+nil
+[20000, 20001, 20002]
+[]
+"n20000"
+%Inner{depth: 20100}
+{20000, :pair}
+21000
+%{20000 => "value"}
+{:always, "same", [1, 2]}
+140000

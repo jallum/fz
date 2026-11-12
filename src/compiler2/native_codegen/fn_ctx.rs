@@ -12,19 +12,25 @@ use cranelift_codegen::ir::{self, InstBuilder, MemFlags, condcodes::IntCC, types
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataId, FuncId, Module};
 use fz_runtime::any_value::{
-    AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_PAYLOAD_OFFSET, TaggedRefArch, ValueKind,
+    AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, TaggedRefArch, ValueKind,
 };
 use fz_runtime::ir_runtime::{
-    fz_alloc_closure, fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_closure_code_ref,
-    fz_closure_get_capture_atom, fz_closure_get_capture_f64, fz_closure_get_capture_i64, fz_closure_get_capture_ref,
-    fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64, fz_closure_set_capture_i64,
-    fz_closure_set_capture_ref, fz_halt_implicit_atom, fz_halt_implicit_f64, fz_halt_implicit_i64,
-    fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref, fz_list_head_ref, fz_list_reuse_or_cons_parts,
-    fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_mark_published_ref_aliased, fz_materialize_cont,
-    fz_struct_set_field_atom, fz_struct_set_field_float, fz_struct_set_field_int, fz_struct_set_field_ref,
-    fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
+    fz_alloc_closure, fz_alloc_struct, fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any,
+    fz_closure_code_ref, fz_closure_get_capture_atom, fz_closure_get_capture_f64, fz_closure_get_capture_i64,
+    fz_closure_get_capture_ref, fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64,
+    fz_closure_set_capture_i64, fz_closure_set_capture_ref, fz_halt_implicit_atom, fz_halt_implicit_f64,
+    fz_halt_implicit_i64, fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref, fz_list_head_ref,
+    fz_list_reuse_or_cons_parts, fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_mark_published_ref_aliased,
+    fz_materialize_cont, fz_struct_store_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
 use std::collections::HashMap;
+
+/// A struct or tuple that is allocated and whose fields are being stored.
+pub(crate) struct NewStruct {
+    pub(crate) reference: ir::Value,
+    address: ir::Value,
+    layout: SlotLayout,
+}
 
 /// Per-function semantic codegen machine: the function-local import table
 /// plus the `FunctionBuilder`, module, and cache bound for the body
@@ -96,15 +102,100 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         runtime_call1!(self, fz_truthy_ref, [value_ref])
     }
 
+    /// The address of the object `object_ref` names: the reference without
+    /// its kind and literal bit.
+    fn object_address(&mut self, object_ref: ir::Value) -> ir::Value {
+        let address_mask = AnyValueRefPacking::current().address_mask() as i64;
+        self.b.ins().band_imm(object_ref, address_mask)
+    }
+
     /// The raw word in `slot` of the struct or tuple `object_ref` names,
     /// loaded in place. The caller's types say what kind of value the slot
     /// holds, so its kind byte is not read. The load may trap: a bad
     /// reference here is a compiler fault that must not pass silently.
     pub(crate) fn load_slot(&mut self, object_ref: ir::Value, slot: u32, ty: ir::Type) -> ir::Value {
-        let address_mask = AnyValueRefPacking::current().address_mask() as i64;
-        let object = self.b.ins().band_imm(object_ref, address_mask);
-        let offset = STRUCT_PAYLOAD_OFFSET as i32 + slot as i32 * SLOT_BYTES;
+        let object = self.object_address(object_ref);
+        let offset = SlotLayout::slot_offset(slot as usize) as i32;
         self.b.ins().load(ty, MemFlags::new(), object, offset)
+    }
+
+    /// Allocate a struct or tuple of `fields` values. Only its header is
+    /// written; `store_field` must follow for every field before any other
+    /// code runs, since nothing may read the object until then.
+    pub(crate) fn alloc_struct(&mut self, schema_id: u32, fields: usize) -> NewStruct {
+        let layout = SlotLayout::of(fields);
+        let schema = self.b.ins().iconst(types::I32, schema_id as i64);
+        let size = self.b.ins().iconst(types::I32, layout.size() as i64);
+        let process = self.process_arg();
+        let reference = runtime_call1!(self, fz_alloc_struct, [process, schema, size]);
+        NewStruct {
+            reference,
+            address: self.object_address(reference),
+            layout,
+        }
+    }
+
+    /// Store `value` as field `index` of `object`. A value whose stored form
+    /// the compiler can name is two stores in place: its raw word and its
+    /// kind byte. Any other reference may be a list, which a struct shares,
+    /// or a boxed scalar, so the runtime reads it and stores it.
+    /// `addressed_object` says the value's type makes it a tuple, a map or a
+    /// binary.
+    pub(crate) fn store_field(
+        &mut self,
+        object: &NewStruct,
+        index: usize,
+        value: CodegenValue,
+        addressed_object: bool,
+    ) {
+        let slot_offset = SlotLayout::slot_offset(index) as i32;
+        let kind_offset = object.layout.kind_offset(index) as i32;
+        match self.stored_form(value, addressed_object) {
+            Some((raw, kind)) => {
+                self.b
+                    .ins()
+                    .store(MemFlags::trusted(), raw, object.address, slot_offset);
+                self.b
+                    .ins()
+                    .store(MemFlags::trusted(), kind, object.address, kind_offset);
+            }
+            None => {
+                let slot_offset = self.b.ins().iconst(types::I32, slot_offset as i64);
+                let kind_offset = self.b.ins().iconst(types::I32, kind_offset as i64);
+                let process = self.process_arg();
+                runtime_call!(
+                    self,
+                    fz_struct_store_ref,
+                    [process, object.reference, slot_offset, kind_offset, value.value()]
+                );
+            }
+        }
+    }
+
+    /// The raw word and the kind byte `value` is stored as, when both follow
+    /// from what the compiler holds without reading the value.
+    fn stored_form(&mut self, value: CodegenValue, addressed_object: bool) -> Option<(ir::Value, ir::Value)> {
+        let (raw, kind) = match value {
+            CodegenValue::RawInt(raw) => (raw, ValueKind::INT),
+            CodegenValue::RawF64(raw) => (raw, ValueKind::FLOAT),
+            CodegenValue::RawAtom(raw) => (raw, ValueKind::ATOM),
+            CodegenValue::Condition(flag) => (bool_to_fz(self.b, self.cache, flag), ValueKind::ATOM),
+            CodegenValue::Known { payload, kind } if kind.is_scalar() => (payload, kind),
+            CodegenValue::Known { kind, .. } => (self.b.ins().iconst(types::I64, 0), kind),
+            CodegenValue::AnyRef(reference) if addressed_object => return Some(self.addressed_form(reference)),
+            CodegenValue::AnyRef(_) => return None,
+        };
+        Some((raw, self.b.ins().iconst(types::I8, kind.tag() as i64)))
+    }
+
+    /// The stored form of a reference that names an object by its address:
+    /// the reference without its kind, and the kind the reference carries.
+    fn addressed_form(&mut self, reference: ir::Value) -> (ir::Value, ir::Value) {
+        let packing = AnyValueRefPacking::current();
+        let raw = self.b.ins().band_imm(reference, packing.payload_mask() as i64);
+        let tagged = self.b.ins().band_imm(reference, !packing.literal_bit() as i64);
+        let kind = self.b.ins().ushr_imm(tagged, packing.tag_shift() as i64);
+        (raw, self.b.ins().ireduce(types::I8, kind))
     }
 
     pub(crate) fn mark_published_ref_aliased(&mut self, value_ref: ir::Value) -> ir::Value {
@@ -277,26 +368,6 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     pub(crate) fn materialize_cont(&mut self, value: ir::Value) -> ir::Value {
         let process = self.process_arg();
         runtime_call1!(self, fz_materialize_cont, [process, value])
-    }
-
-    pub(crate) fn struct_set_field_int(&mut self, struct_bits: ir::Value, offset: ir::Value, value: ir::Value) {
-        let process = self.process_arg();
-        runtime_call!(self, fz_struct_set_field_int, [process, struct_bits, offset, value]);
-    }
-
-    pub(crate) fn struct_set_field_float(&mut self, struct_bits: ir::Value, offset: ir::Value, value: ir::Value) {
-        let process = self.process_arg();
-        runtime_call!(self, fz_struct_set_field_float, [process, struct_bits, offset, value]);
-    }
-
-    pub(crate) fn struct_set_field_atom(&mut self, struct_bits: ir::Value, offset: ir::Value, value: ir::Value) {
-        let process = self.process_arg();
-        runtime_call!(self, fz_struct_set_field_atom, [process, struct_bits, offset, value]);
-    }
-
-    pub(crate) fn struct_set_field_ref(&mut self, struct_bits: ir::Value, offset: ir::Value, value: ir::Value) {
-        let process = self.process_arg();
-        runtime_call!(self, fz_struct_set_field_ref, [process, struct_bits, offset, value]);
     }
 
     // -- value classification reads (cache-free) --
@@ -739,46 +810,6 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             out.push(value_ref);
         } else {
             out.push(self.coerce_binding_to(binding, to));
-        }
-    }
-
-    /// Write `value` into field `field_idx` of the struct/tuple at
-    /// `struct_bits`, picking the typed setter for the value's
-    /// representation. Heap refs are published before the store.
-    pub(crate) fn struct_set_field(&mut self, struct_bits: ir::Value, field_idx: usize, value: CodegenValue) {
-        let offset = self.b.ins().iconst(types::I32, (field_idx as i64) * SLOT_BYTES as i64);
-        match value {
-            CodegenValue::RawInt(raw)
-            | CodegenValue::Known {
-                payload: raw,
-                kind: ValueKind::INT,
-            } => {
-                self.struct_set_field_int(struct_bits, offset, raw);
-            }
-            CodegenValue::RawF64(raw) => {
-                self.struct_set_field_float(struct_bits, offset, raw);
-            }
-            CodegenValue::RawAtom(raw) => {
-                self.struct_set_field_atom(struct_bits, offset, raw);
-            }
-            CodegenValue::Known {
-                payload,
-                kind: ValueKind::FLOAT,
-            } => {
-                let raw = self.b.ins().bitcast(types::F64, MemFlags::new(), payload);
-                self.struct_set_field_float(struct_bits, offset, raw);
-            }
-            CodegenValue::Known {
-                payload,
-                kind: ValueKind::ATOM,
-            } => {
-                self.struct_set_field_atom(struct_bits, offset, payload);
-            }
-            other => {
-                let value_ref = self.value_as_any_ref(other);
-                let value_ref = self.mark_published_ref_aliased(value_ref);
-                self.struct_set_field_ref(struct_bits, offset, value_ref);
-            }
         }
     }
 }

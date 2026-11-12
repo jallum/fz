@@ -304,8 +304,11 @@ of that tail. In <code>fixtures/quicksort</code>, the native paths pin
 
 <ul>
   <li><strong>Struct:</strong> offset 0 header <code>schema_id &lt;&lt;
-  32</code>; offset 8 typed fields declared by the schema; total size is
-  <code>align16(8 + schema payload)</code>.</li>
+  32</code>; offset 8 one 8-byte slot per field, then one kind byte per
+  field, padded to a whole word; total size is
+  <code>align16(8 + schema payload)</code>. Compiled code allocates the
+  object with one runtime call and stores each field whose kind it knows in
+  place.</li>
   <li><strong>Closure:</strong> offset 0 header <code>(denotation &lt;&lt; 32)
   | (arity &lt;&lt; 20) | (flags &lt;&lt; 4)</code>, where flags hold the
   captured count and halt kind and arity is below 4096; offset 8

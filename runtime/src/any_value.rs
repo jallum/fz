@@ -1088,8 +1088,44 @@ pub fn map_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 pub const STRUCT_PAYLOAD_OFFSET: usize = 8;
 
 #[inline]
-pub fn struct_size_for_payload(payload_size: usize) -> usize {
+pub const fn struct_size_for_payload(payload_size: usize) -> usize {
     (STRUCT_PAYLOAD_OFFSET + payload_size + 15) & !15
+}
+
+/// Where a struct or tuple of `fields` values keeps them: after the header
+/// word, one 8-byte slot per field, then one kind byte per field, padded to a
+/// whole word. The runtime, the collector and compiled code all place a field
+/// by this one answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotLayout {
+    fields: usize,
+}
+
+impl SlotLayout {
+    pub const fn of(fields: usize) -> Self {
+        Self { fields }
+    }
+
+    /// The bytes after the header: the slots and their kind bytes.
+    pub const fn payload_size(self) -> usize {
+        self.fields * 8 + ((self.fields + 7) & !7)
+    }
+
+    /// The whole object, as the heap places it.
+    pub const fn size(self) -> usize {
+        struct_size_for_payload(self.payload_size())
+    }
+
+    /// Where field `index` keeps its raw word, from the start of the object,
+    /// however many fields there are.
+    pub const fn slot_offset(index: usize) -> usize {
+        STRUCT_PAYLOAD_OFFSET + index * 8
+    }
+
+    /// Where field `index` keeps its kind byte, from the start of the object.
+    pub const fn kind_offset(self, index: usize) -> usize {
+        STRUCT_PAYLOAD_OFFSET + self.fields * 8 + index
+    }
 }
 
 #[inline]

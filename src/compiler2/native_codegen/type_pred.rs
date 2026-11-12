@@ -69,6 +69,19 @@ pub(crate) fn ty_is_tuple<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Va
     t.is_tuple_type(&got)
 }
 
+/// True when every value of `v`'s type is a tuple, a map or a binary: an
+/// object a reference names by its address. Such a reference is never a list,
+/// whose spine a holder must share, and never a boxed scalar, whose value
+/// sits behind the reference.
+pub(crate) fn ty_is_addressed_object<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {
+    let tuples = t.tuple_top();
+    let maps = t.map_top();
+    let binaries = t.str_t();
+    let objects = t.union(tuples, maps);
+    let objects = t.union(objects, binaries);
+    value_types.get(&v).is_some_and(|got| t.is_subtype(got, &objects))
+}
+
 /// True when `v` is statically nil-or-bool. Both occupy disjoint, fixed raw
 /// atom payloads, so equality on them is bit-eq when the kind is known.
 pub(crate) fn descr_is_nil_or_bool<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {

@@ -1,11 +1,13 @@
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, EMPTY_LIST_BITS, ListCons, ValueKind, bitstring_bytes_ptr,
-    bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_set, closure_capture_value,
-    closure_captured_count, closure_fn_ptr, closure_halt_kind, heap_kind_from_tagged, heap_object_word, heap_word_addr,
-    list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_size_for_count, object_size,
-    procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id, struct_size_for_payload,
+    AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, EMPTY_LIST_BITS, ListCons, STRUCT_PAYLOAD_OFFSET, SlotLayout,
+    ValueKind, bitstring_bytes_ptr, bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_set,
+    closure_capture_value, closure_captured_count, closure_fn_ptr, closure_halt_kind, heap_kind_from_tagged,
+    heap_object_word, heap_word_addr, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry,
+    map_size_for_count, object_size, procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id,
+    struct_size_for_payload,
 };
+use crate::module_name::ModuleName;
 use crate::resource::ResourceStub;
 use crate::sync::Ordering;
 use std::cell::RefCell;
@@ -603,8 +605,11 @@ fn any_value_ref_struct_and_closure_writes_store_scalar_and_heap_values() {
 
     let struct_addr = h.alloc_struct(struct_schema);
     let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr).expect("struct ref");
-    unsafe { h.write_struct_field_ref(struct_ref, 0, scalar_ref) }.expect("write scalar field");
-    unsafe { h.write_struct_field_ref(struct_ref, 8, child_ref) }.expect("write heap field");
+    let pair = SlotLayout::of(2);
+    unsafe { h.store_struct_field_ref(struct_addr, SlotLayout::slot_offset(0), pair.kind_offset(0), scalar_ref) }
+        .expect("write scalar field");
+    unsafe { h.store_struct_field_ref(struct_addr, SlotLayout::slot_offset(1), pair.kind_offset(1), child_ref) }
+        .expect("write heap field");
     assert_eq!(h.read_struct_field_ref(struct_ref, 0).unwrap().load_atom(), Ok(99));
     assert_eq!(
         h.read_struct_field_ref(struct_ref, 8).unwrap().map_addr(),
@@ -645,7 +650,16 @@ fn any_value_ref_heap_writes_are_traced_by_gc() {
 
     let struct_addr = h.alloc_struct(struct_schema);
     let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr).expect("struct ref");
-    unsafe { h.write_struct_field_ref(struct_ref, 0, child_list_ref) }.expect("write struct field");
+    let single = SlotLayout::of(1);
+    unsafe {
+        h.store_struct_field_ref(
+            struct_addr,
+            SlotLayout::slot_offset(0),
+            single.kind_offset(0),
+            child_list_ref,
+        )
+    }
+    .expect("write struct field");
 
     let closure_bits = h.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 1, 0);
     let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
@@ -2832,5 +2846,67 @@ fn a_map_holding_a_literal_closure_and_a_literal_struct_survives_a_collection_wi
         held(k2).struct_addr(),
         Ok(static_struct),
         "the static struct stays in place"
+    );
+}
+
+/// A struct's fields sit where `SlotLayout` says for every schema the
+/// language can build: compiled code places a field by the layout alone,
+/// the runtime by the schema, and the two must agree.
+#[test]
+fn a_slot_layout_places_fields_where_the_schema_does() {
+    let named = |fields: usize| {
+        Schema::named_struct(
+            ModuleName::from_segments(vec!["Rec".to_string()]),
+            (0..fields).map(|index| format!("f{index}")),
+        )
+    };
+    for fields in 0..20 {
+        for schema in [Schema::tuple_of_arity(fields), named(fields)] {
+            let layout = SlotLayout::of(fields);
+            assert_eq!(layout.payload_size(), schema.allocation_payload_size());
+            for (index, (field, kind_offset)) in schema.any_value_fields_with_kind_offsets().enumerate() {
+                assert_eq!(
+                    SlotLayout::slot_offset(index),
+                    STRUCT_PAYLOAD_OFFSET + field.offset as usize
+                );
+                assert_eq!(layout.kind_offset(index), STRUCT_PAYLOAD_OFFSET + kind_offset as usize);
+            }
+        }
+    }
+}
+
+/// An unwritten struct is complete once each field is stored: nothing reads
+/// the bytes the allocation left alone. The payload is dirtied first so a
+/// store that skipped a byte would show.
+#[test]
+fn an_unwritten_struct_reads_back_exactly_what_was_stored() {
+    let reg = fresh_registry();
+    let schema = reg.borrow_mut().register(Schema::tuple_of_arity(3));
+    let mut h = Heap::new(SIZE_TABLE[0], reg);
+    let layout = SlotLayout::of(3);
+    let list = alloc_int_list_cons(&mut h, 7, EMPTY_LIST_BITS);
+    let int_slot = 41u64;
+    let values = [
+        AnyValueRef::from_scalar_slot(ValueKind::INT, &int_slot).unwrap(),
+        list_ref_from_bits(list),
+        AnyValueRef::empty_list(),
+    ];
+    let object = h.alloc_struct_unwritten(schema, layout.size());
+    unsafe { std::ptr::write_bytes(object.add(STRUCT_PAYLOAD_OFFSET), 0xFF, layout.payload_size()) };
+    for (index, value) in values.into_iter().enumerate() {
+        unsafe { h.store_struct_field_ref(object, SlotLayout::slot_offset(index), layout.kind_offset(index), value) }
+            .expect("store");
+    }
+
+    assert_eq!(h.read_field_slot(object, 0), AnyValue::int(41));
+    assert_eq!(
+        h.read_field_slot(object, 8),
+        AnyValue::from_ref(list_ref_from_bits(list)).unwrap()
+    );
+    assert_eq!(h.read_field_slot(object, 16), AnyValue::EmptyList);
+    assert_eq!(
+        h.share_list_spine(list_ref_from_bits(list)).unwrap(),
+        0,
+        "the store shared the list the struct now holds"
     );
 }

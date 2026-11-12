@@ -13,13 +13,13 @@ use super::schema::{Schema, SchemaRegistry};
 use super::stats::GcStats;
 use super::{Heap, HeapAllocKind, HeapAllocStats, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MapDestinationKind, ValueKind,
-    bitstring_header_word, bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_kind_slot,
-    closure_capture_raw_slot, closure_capture_set, closure_capture_value, closure_header_word, closure_header_write,
-    closure_size_for_count, heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count,
-    map_destination_header_word, map_destination_state, map_entry, map_header_word, map_keys_ptr, map_pack_tag,
-    map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot, struct_field_raw_slot,
-    struct_header_word, struct_schema_id, struct_size_for_payload,
+    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MapDestinationKind,
+    STRUCT_PAYLOAD_OFFSET, ValueKind, bitstring_header_word, bitstring_size_for_bit_len, closure_addr_from_tagged,
+    closure_capture_kind_slot, closure_capture_raw_slot, closure_capture_set, closure_capture_value,
+    closure_header_word, closure_header_write, closure_size_for_count, heap_object_word, list_addr_from_tagged,
+    map_addr_from_tagged, map_count, map_destination_header_word, map_destination_state, map_entry, map_header_word,
+    map_keys_ptr, map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_values_ptr,
+    struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id, struct_size_for_payload,
 };
 use crate::procbin::{
     DeadResource, SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep, mso_unreached_closures,
@@ -236,13 +236,24 @@ impl Heap {
 
     pub fn alloc_struct(&mut self, schema_id: u32) -> *mut u8 {
         let payload_size = self.schemas.borrow().get(schema_id).allocation_payload_size();
-        let total = struct_size_for_payload(payload_size);
-        let p = self.alloc_kind(HeapAllocKind::Struct, total);
-        unsafe {
-            write(p as *mut u64, struct_header_word(schema_id));
-            // Zero payload.
-            write_bytes(p.add(8), 0, total - 8);
-        }
+        let size = struct_size_for_payload(payload_size);
+        let p = self.alloc_struct_unwritten(schema_id, size);
+        unsafe { write_bytes(p.add(STRUCT_PAYLOAD_OFFSET), 0, size - STRUCT_PAYLOAD_OFFSET) };
+        p
+    }
+
+    /// A struct of `size` bytes whose header names `schema_id` and whose
+    /// payload is not yet written. The caller stores every slot and kind byte
+    /// before the object can be read. A collection only runs between quanta,
+    /// so one cannot see the object in between.
+    pub fn alloc_struct_unwritten(&mut self, schema_id: u32, size: usize) -> *mut u8 {
+        debug_assert_eq!(
+            size,
+            struct_size_for_payload(self.schemas.borrow().get(schema_id).allocation_payload_size()),
+            "the size is the schema's"
+        );
+        let p = self.alloc_kind(HeapAllocKind::Struct, size);
+        unsafe { write(p as *mut u64, struct_header_word(schema_id)) };
         p
     }
 
@@ -839,16 +850,27 @@ impl Heap {
         self.write_struct_field_value(obj, field_offset, value);
     }
 
+    /// Store `value` as the field of `object` whose raw word is at
+    /// `slot_offset` and whose kind byte is at `kind_offset`, both from the
+    /// start of the object. A list becomes shared, since the struct now holds
+    /// it too.
+    ///
     /// # Safety
-    /// The same unpublished finite-term contract as `write_field_slot` applies.
-    pub unsafe fn write_struct_field_ref(
+    /// `object` is a struct under construction and the offsets are one
+    /// field's, by its `SlotLayout`.
+    pub unsafe fn store_struct_field_ref(
         &mut self,
-        obj: AnyValueRef,
-        field_offset: u32,
+        object: *mut u8,
+        slot_offset: usize,
+        kind_offset: usize,
         value: AnyValueRef,
     ) -> Result<(), AnyValueRefError> {
-        let obj = obj.struct_addr()?;
-        self.write_struct_field_value(obj, field_offset, AnyValue::from_ref(value)?);
+        let raw = value.storage_raw()?;
+        self.share_list_spine(value)?;
+        unsafe {
+            write(object.add(slot_offset).cast::<u64>(), raw);
+            write(object.add(kind_offset), value.tag().tag());
+        }
         Ok(())
     }
 
