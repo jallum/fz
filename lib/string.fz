@@ -10,35 +10,27 @@ defmodule String do
 
   ## Codepoints, graphemes, and bytes
 
-  `length/1` counts codepoints, not bytes -- a codepoint can take one to
-  four bytes, so a string's length and its byte size can differ:
+  `length/1` counts graphemes, not bytes. A grapheme is an extended grapheme
+  cluster (Unicode Standard Annex #29), as in Elixir: what a reader sees as one
+  character, however many codepoints and bytes it takes. "e" followed by a
+  combining accent is one grapheme, and so is a family emoji joined by
+  zero-width joiners:
 
-      String.length("héllo")
-      #=> 5
+      String.length(<<101, 204, 129>>)
+      #=> 1
+
+      String.graphemes(<<101, 204, 129, 120>>)
+      #=> [<<101, 204, 129>>, "x"]
+
+  A codepoint is one Unicode scalar value, which UTF-8 encodes in one to four
+  bytes, so `codepoints/1` and `byte_size/1` count differently from
+  `length/1`:
+
+      String.codepoints(<<101, 204, 129>>)
+      #=> ["e", <<204, 129>>]
 
       byte_size("héllo")
       #=> 6
-
-  Elixir's `String` distinguishes a codepoint (one Unicode scalar value)
-  from a grapheme (what a reader perceives as one character, per Unicode
-  Standard Annex #29) -- an accented letter like "é" can be written as one
-  codepoint or as two ("e" plus a combining accent), and Elixir's
-  `graphemes/1` merges the two-codepoint form back into a single grapheme.
-  fz does not implement UAX #29: here a grapheme IS a codepoint, so
-  `graphemes/1` and `codepoints/1` return the same list, and a base letter
-  followed by a combining mark stays two elements instead of merging into
-  one:
-
-      String.codepoints(<<101, 204, 129>>)
-      #=> ["e", "́"]
-
-      String.graphemes(<<101, 204, 129>>)
-      #=> ["e", "́"]
-
-  This is correct for the vast majority of text; it differs from Elixir
-  only for combining marks, regional indicators, and other multi-codepoint
-  emoji sequences, where Elixir reports one grapheme and fz reports
-  several.
 
   ## Case mapping
 
@@ -53,9 +45,7 @@ defmodule String do
   Where Elixir's `split/3`, `replace/4`, `contains?/2` and friends accept
   a string, a list of strings, a regex, or a compiled pattern, the fz
   versions here take a single binary. An empty pattern matches at every
-  grapheme boundary, including before and after the string. Since a grapheme
-  is currently one codepoint in fz, the combining-mark and emoji limitation
-  described above applies to this boundary too.
+  grapheme boundary, including before and after the string.
 
   ## Byte-level operations
 
@@ -87,9 +77,9 @@ defmodule String do
   # below for what "full" means and why the table lives in the runtime.
 
   @doc """
-  Returns the number of codepoints in `s`.
+  Returns the number of graphemes in `s`.
 
-  This is not `byte_size/1`: a codepoint can take one to four bytes, so a
+  This is not `byte_size/1`: a grapheme can take several bytes, so a
   string's length and its byte size can differ.
 
   ## Examples
@@ -100,20 +90,22 @@ defmodule String do
       String.length("héllo")
       #=> 5
 
+      String.length(<<101, 204, 129>>)
+      #=> 1
+
       byte_size("héllo")
       #=> 6
 
   """
   @spec length(binary) :: integer
-  def length(s), do: codepoint_count(s, 0)
+  def length(s), do: grapheme_count(s, 0)
 
-  @spec codepoint_count(binary, integer) :: integer
-  defp codepoint_count(<<>>, acc), do: acc
-  defp codepoint_count(s, acc), do: codepoint_count_step(next_codepoint(s), acc)
+  @spec grapheme_count(binary, integer) :: integer
+  defp grapheme_count(s, acc), do: grapheme_count_step(next_grapheme(s), acc)
 
-  @spec codepoint_count_step({binary, binary} | nil, integer) :: integer
-  defp codepoint_count_step(nil, acc), do: acc
-  defp codepoint_count_step({_cp, rest}, acc), do: codepoint_count(rest, acc + 1)
+  @spec grapheme_count_step({binary, binary} | nil, integer) :: integer
+  defp grapheme_count_step(nil, acc), do: acc
+  defp grapheme_count_step({_g, rest}, acc), do: grapheme_count(rest, acc + 1)
 
   @doc """
   Returns whether `s` starts with `prefix`.
@@ -661,31 +653,34 @@ defmodule String do
   defp codepoint_size(c) when c < 240, do: 3
   defp codepoint_size(_c), do: 4
 
-  # UAX #29 grapheme breaking is what Elixir delegates to OTP's :unicode_util
-  # -- about 1 MB compiled, growing roughly 15% per OTP major release. fz does
-  # not have it, and this is the single function that would have to learn it:
-  # every grapheme operation goes through here, so the table lands in one
-  # place or not at all.
-  #
-  # Until then a grapheme is a codepoint, which is correct for everything
-  # outside combining marks, regional indicators and emoji sequences.
   @doc """
-  Returns the byte length of the first grapheme of `s`.
+  Returns the byte length of the first grapheme of `s` and the rest, or `nil`
+  when `s` is empty.
 
-  Since a grapheme is a codepoint in fz, this is the byte length of the
-  first codepoint, which UTF-8 encodes as one to four bytes.
+  A grapheme is an extended grapheme cluster, so its size can span several
+  codepoints. An invalid byte is a grapheme of its own.
 
   ## Examples
 
-      String.next_grapheme_size("héllo")
-      #=> 1
-
       String.next_grapheme_size("éllo")
-      #=> 2
+      #=> {2, "llo"}
+
+      String.next_grapheme_size(<<101, 204, 129, "llo">>)
+      #=> {3, "llo"}
+
+      String.next_grapheme_size("")
+      #=> nil
 
   """
-  @spec next_grapheme_size(binary) :: integer
-  def next_grapheme_size(s), do: codepoint_size(first_byte(s))
+  @spec next_grapheme_size(binary) :: {integer, binary} | nil
+  def next_grapheme_size(""), do: nil
+
+  def next_grapheme_size(s) do
+    size = fz_grapheme_size(s)
+    {size, drop_bytes(s, size)}
+  end
+
+  extern "fz" defp fz_grapheme_size(any) :: integer
 
   @doc """
   Returns the first grapheme of `s` and the rest, or `nil` when `s` is empty.
@@ -701,19 +696,21 @@ defmodule String do
   """
   @spec next_grapheme(binary) :: {binary, binary} | nil
   def next_grapheme(""), do: nil
-  def next_grapheme(s), do: split_codepoint(s, next_grapheme_size(s))
+  def next_grapheme(s), do: split_codepoint(s, fz_grapheme_size(s))
 
   @doc """
   Returns every grapheme of `s` as its own binary.
 
-  A grapheme is a codepoint here, so this returns the same list as
-  `codepoints/1` -- see the module documentation for where that differs
-  from Elixir.
+  A grapheme is an extended grapheme cluster, so a base letter and its
+  combining marks stay together, unlike in `codepoints/1`.
 
   ## Examples
 
       String.graphemes("héllo")
       #=> ["h", "é", "l", "l", "o"]
+
+      String.graphemes(<<101, 204, 129, 120>>)
+      #=> [<<101, 204, 129>>, "x"]
 
   """
   @spec graphemes(binary) :: [binary]

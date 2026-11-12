@@ -1,0 +1,8 @@
+#---
+# purpose: "String.graphemes keeps a combining accent, a joined family, a flag, a Hangul syllable and a conjunct whole"
+# oracle: 01035_graphemes_are_extended_grapheme_clusters.oracle.exs
+#---
+def main() do
+  strings = ["abc", "é", "\r\n", "éx", "👨‍👩‍👧x", "🇫🇷🇫", "각x", "क्षx", "x́̂y"]
+  Enum.each(strings, fn s -> dbg(String.graphemes(s)) end)
+end

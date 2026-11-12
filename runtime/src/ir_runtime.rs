@@ -52,6 +52,7 @@ use crate::write_output;
 use std::mem::{size_of, transmute};
 use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicU64, Ordering};
+use unicode_segmentation::GraphemeCursor;
 
 static NIL_ATOM_REF_SLOT: u64 = NIL_ATOM_ID as u64;
 
@@ -929,7 +930,8 @@ float_arithmetic_export!(fz_op_rem_ff, (left: f64, right: f64) => left % right);
 /// The ticket's design goal survives the move: it asked for ONE coherent
 /// Unicode version, which Elixir cannot have because its case mapping and
 /// OTP's grapheme breaking track different releases. Rust's `char` tables are
-/// one version, and when fz owns grapheme breaking too it will be the same one.
+/// one version, and `fz_grapheme_size` draws grapheme breaking from the
+/// `unicode-segmentation` tables at that same version.
 ///
 /// FULL casing, which is Elixir's default mode: the 103 special casings expand
 /// one codepoint to several, so `"straße"` upcases to `"STRASSE"`.
@@ -968,6 +970,33 @@ fn map_case(process: *mut Process, ref_word: u64, upper: bool) -> u64 {
         }
     }
     alloc_text(process, &out)
+}
+
+/// The byte length of the first extended grapheme cluster of a binary.
+///
+/// Only the valid UTF-8 prefix is segmented, so a cluster never runs across an
+/// invalid byte; a binary that starts with an invalid byte has that one byte as
+/// its first grapheme, which is what Elixir does.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_grapheme_size(_process: *mut Process, ref_word: u64) -> i64 {
+    let Some(bits) = bitstring_like_word(ref_word) else {
+        panic!("grapheme breaking expects a binary");
+    };
+    let bit_len = unsafe { bitstring_bit_len(bits) };
+    if !bit_len.is_multiple_of(8) {
+        panic!("grapheme breaking expects a byte-aligned binary");
+    }
+    let bytes = unsafe { from_raw_parts(bitstring_byte_ptr(bits), (bit_len / 8) as usize) };
+    let valid = match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) => std::str::from_utf8(&bytes[..e.valid_up_to()]).expect("prefix is valid by construction"),
+    };
+    if valid.is_empty() {
+        return 1;
+    }
+    let mut cursor = GraphemeCursor::new(0, valid.len(), true);
+    let boundary = cursor.next_boundary(valid, 0).expect("the whole text is in the chunk");
+    boundary.expect("non-empty text has a boundary") as i64
 }
 
 /// Intern a binary as an atom, the way `String.to_atom/1` does.
