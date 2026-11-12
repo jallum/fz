@@ -130,6 +130,9 @@ pub struct Types {
     /// Memoized `runtime_reading`: each type with its brands erased.
     runtime_readings: HashMap<Ty, Ty>,
     literal_widenings: HashMap<Ty, Ty>,
+    /// Memoized `fold_self_nested_closures`: each type read under the lambdas
+    /// whose captures it sits inside.
+    self_nested_closure_folds: HashMap<(Ty, Vec<FnId>), Ty>,
     /// Memoized `activation_key_arrow`: the dispatch key each query derives.
     activation_key_arrows: HashMap<KeyQuery, Ty>,
     /// Interned structural addresses (`a0`, `a1_0`, `r0`, ...). Keyed by the
@@ -573,6 +576,7 @@ impl Types {
             structural_surfaces: HashMap::new(),
             runtime_readings: HashMap::new(),
             literal_widenings: HashMap::new(),
+            self_nested_closure_folds: HashMap::new(),
             activation_key_arrows: HashMap::new(),
             address_vars: HashMap::new(),
             address_paths: Vec::new(),
@@ -1794,6 +1798,10 @@ impl Types {
     }
 
     fn derive_activation_key_arrow(&mut self, arrow: Ty, recursive: bool, demand: &KeyDemand<'_>) -> Ty {
+        // The fold reads each closure's lambda, so it runs before anything
+        // below erases brands, and on every slot: a callable that is only
+        // called is read whole, and still must not nest without bound.
+        let arrow = self.fold_arrow_params(arrow);
         if recursive {
             return self.collapse_arrow(arrow, demand.forwarded, demand.returned, KeyCollapse::Structure);
         }
@@ -1820,6 +1828,22 @@ impl Types {
             return literals;
         }
         self.arrow(&erased, ret)
+    }
+
+    fn fold_arrow_params(&mut self, arrow: Ty) -> Ty {
+        let Some(sig) = self.descr(&arrow).pure_arrow() else {
+            return arrow;
+        };
+        let params = sig.args.clone();
+        let ret = sig.ret;
+        let folded = params
+            .iter()
+            .map(|param| self.fold_self_nested_closures(param))
+            .collect::<Vec<_>>();
+        if folded == params {
+            return arrow;
+        }
+        self.arrow(&folded, ret)
     }
 
     pub(crate) fn convergence_collapse_evidence_inputs(&mut self, inputs: &[Ty], mask: &[DispatchDemand]) -> Vec<Ty> {
@@ -3092,6 +3116,36 @@ impl Types {
         }
     }
 
+    /// The type with no closure of a lambda inside the captures of a closure
+    /// of that same lambda, at any depth a value can sit in. Where one would
+    /// be, the callable clause becomes `fun`, the callable top, which holds
+    /// every closure of every nesting, so the fold only widens. `fun` is also
+    /// ground, so a call through it is a dynamic edge rather than a call that
+    /// waits for variables to resolve.
+    ///
+    /// A program has finitely many lambdas and each may appear once on any path
+    /// from the root of a type this returns, so closure nesting is bounded by
+    /// the number of lambdas whatever the nesting at run time. Two different
+    /// lambdas nest freely. Idempotent. Memoized.
+    pub fn fold_self_nested_closures(&mut self, a: &Ty) -> Ty {
+        self.fold_self_nested_closures_under(a, &[])
+    }
+
+    fn fold_self_nested_closures_under(&mut self, a: &Ty, enclosing: &[FnId]) -> Ty {
+        let key = (*a, enclosing.to_vec());
+        if let Some(&cached) = self.self_nested_closure_folds.get(&key) {
+            return cached;
+        }
+        let descr = fold_self_nested_closures(self, *a, enclosing);
+        let folded = if descr == *self.descr(a) {
+            *a
+        } else {
+            self.intern(descr)
+        };
+        self.self_nested_closure_folds.insert(key, folded);
+        folded
+    }
+
     pub fn erase_closure_identity(&mut self, a: &Ty) -> Ty {
         let d = erase_closure_identity(self, *a);
         self.intern(d)
@@ -3871,7 +3925,7 @@ fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {
 /// unrestricted answer -- and this is the ONE place that decides it, for the
 /// predicate projection and for the envelope alike. It never actually arrives.
 /// An anonymous literal is minted in exactly one place,
-/// [`Types::erase_transported_closure_identities`], which puts it in the
+/// [`Types::activation_key_arrow`], which puts it in the
 /// `arrow` of the ACTIVATION KEY of a non-recursive body that consumes no
 /// callable identity, and only in the slots the dispatch mask marks
 /// `DispatchDemand::Ignore`; a runtime test is asked of a VALUE's type -- a
@@ -4456,6 +4510,76 @@ fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
         }
     }
     erased
+}
+
+/// `enclosing` holds every lambda whose captures the type sits inside, sorted.
+/// A clause with a closure of one of them is cut to `fun`; any other closure
+/// keeps its captures, read under its own lambda added to `enclosing`.
+fn fold_self_nested_closures(t: &mut Types, a: Ty, enclosing: &[FnId]) -> Descr {
+    let mut folded = t.descr(&a).clone();
+    if folded.looks_empty() {
+        return folded;
+    }
+    for conj in &mut folded.tuples {
+        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+            sig.elems = sig
+                .elems
+                .iter()
+                .map(|ty| t.fold_self_nested_closures_under(ty, enclosing))
+                .collect();
+        }
+    }
+    for conj in &mut folded.lists {
+        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+            sig.elem = sig.elem.map(|ty| t.fold_self_nested_closures_under(&ty, enclosing));
+        }
+    }
+    for conj in &mut folded.resources {
+        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+            sig.payload = t.fold_self_nested_closures_under(&sig.payload, enclosing);
+        }
+    }
+    for conj in &mut folded.maps {
+        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+            sig.fields = sig
+                .fields
+                .iter()
+                .map(|(k, v)| (k.clone(), t.fold_self_nested_closures_under(v, enclosing)))
+                .collect();
+        }
+    }
+    for conj in &mut folded.funcs {
+        let self_nested =
+            conj.pos.iter().filter_map(|sig| sig.lit.as_ref()).any(|lit| {
+                lit.kind == CallableValueKind::Closure && lit.fn_id.is_some_and(|id| enclosing.contains(&id))
+            });
+        if self_nested {
+            *conj = Conj::top();
+            continue;
+        }
+        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+            let Some(lit) = sig.lit.take() else {
+                continue;
+            };
+            let named = lit.fn_id.filter(|_| lit.kind == CallableValueKind::Closure);
+            let mut inside = enclosing.to_vec();
+            if let Some(fn_id) = named {
+                inside.push(fn_id);
+                inside.sort();
+            }
+            let captures = lit
+                .captures
+                .iter()
+                .map(|capture| t.fold_self_nested_closures_under(capture, &inside))
+                .collect();
+            sig.lit = Some(ClosureLit {
+                kind: lit.kind,
+                fn_id: lit.fn_id,
+                captures,
+            });
+        }
+    }
+    folded
 }
 
 fn literal_blind(t: &Types, d: &Descr) -> bool {

@@ -5020,3 +5020,64 @@ fn a_key_asked_twice_is_answered_from_the_memo() {
         "a different demand is a different question"
     );
 }
+
+/// A closure of a lambda inside the captures of a closure of the same lambda
+/// folds to the callable top, however deep the nesting; different lambdas
+/// nest freely; and folding twice is folding once.
+#[test]
+fn folding_self_nested_closures_cuts_a_lambda_out_of_itself_and_is_idempotent() {
+    let mut t = Types::new();
+    let int = t.int();
+    let callable = t.intern(Descr::fun_top());
+    let lambda = ClosureTarget(3);
+    let other = ClosureTarget(4);
+
+    let once = t.closure_lit(lambda, vec![int], 2);
+    let twice = t.closure_lit(lambda, vec![once], 2);
+    let thrice = t.closure_lit(lambda, vec![twice], 2);
+
+    let folded_once = t.fold_self_nested_closures(&once);
+    assert!(t.is_equivalent(&folded_once, &once), "one closure has nothing to fold");
+    assert_eq!(folded_once, once);
+
+    let folded_thrice = t.fold_self_nested_closures(&thrice);
+    let expected = t.closure_lit(lambda, vec![callable], 2);
+    assert_eq!(folded_thrice, expected, "L(L(L(R))) is L(callable)");
+    let folded_twice = t.fold_self_nested_closures(&twice);
+    assert_eq!(folded_twice, expected, "L(L(R)) is L(callable)");
+    assert!(
+        t.is_subtype(&thrice, &folded_thrice),
+        "the fold only widens, so every nesting is inside its fold"
+    );
+
+    let inner = t.closure_lit(other, vec![int], 2);
+    let mixed = t.closure_lit(lambda, vec![inner], 2);
+    assert_eq!(
+        t.fold_self_nested_closures(&mixed),
+        mixed,
+        "L(M(R)) names two lambdas, so neither is inside itself"
+    );
+    let ladder = t.closure_lit(other, vec![mixed], 2);
+    let cut_ladder = {
+        let cut = t.closure_lit(lambda, vec![callable], 2);
+        t.closure_lit(other, vec![cut], 2)
+    };
+    assert_eq!(
+        t.fold_self_nested_closures(&ladder),
+        cut_ladder,
+        "M(L(M(R))) holds M inside M with L between, so the inner M is the one cut"
+    );
+
+    let tupled = t.tuple(&[int, thrice]);
+    let folded_tuple = t.fold_self_nested_closures(&tupled);
+    let expected_tuple = t.tuple(&[int, expected]);
+    assert_eq!(
+        folded_tuple, expected_tuple,
+        "the fold reaches closures held in a captured structure"
+    );
+
+    for ty in [thrice, mixed, tupled, ladder] {
+        let folded = t.fold_self_nested_closures(&ty);
+        assert_eq!(t.fold_self_nested_closures(&folded), folded, "folding is idempotent");
+    }
+}

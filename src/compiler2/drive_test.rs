@@ -23211,3 +23211,68 @@ fn compiler2_literal_widening_reports_exactly_the_slots_the_key_widened() {
         "a returned atom is the answer, so its key keeps it"
     );
 }
+
+/// A stream over an `any` enumerable re-enters the Enumerable dispatch with its
+/// own composed reducer, lap after lap. The activation keys must stay finite:
+/// no key holds a closure of a lambda inside the captures of a closure of the
+/// same lambda, and each reducer-carrying function has the activation counts
+/// below. A count that moves is a measurement to re-read, not a number to bump
+/// until green.
+#[test]
+fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/stream_over_any_enumerable.fz".into()),
+        text: include_str!("../../fixtures/01068_a_stream_over_any_enumerable_compiles_in_finite_work.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let inventory = compiler
+        .product_executable_inventory(root)
+        .expect("the stream program settles");
+
+    let mut activations: BTreeMap<String, BTreeSet<ActivationKey>> = BTreeMap::new();
+    for executable in &inventory {
+        let label = super::canon::function_label(compiler.world(), executable.activation.function);
+        activations
+            .entry(label)
+            .or_default()
+            .insert(executable.activation.clone());
+    }
+
+    let types = compiler.world_mut().types_mut();
+    for key in activations.values().flatten() {
+        for input in key.inputs(types) {
+            assert_eq!(
+                types.fold_self_nested_closures(&input),
+                input,
+                "an activation key never holds a lambda's closure inside its own captures"
+            );
+        }
+    }
+
+    let counted = |label: &str| activations.get(label).map_or(0, BTreeSet::len);
+    let measured = [
+        ("Stream.compose/2#lambda@0/2", 42),
+        ("Stream.compose/2", 5),
+        ("Enumerable.Stream.reduce/3", 5),
+        ("Enumerable.List.reduce/3", 6),
+        ("Enumerable.Map.reduce/3", 4),
+        ("Enumerable.Range.reduce/3", 4),
+        ("List.reduce_cont/3", 4),
+        ("Map.reduce_cont/5", 2),
+        ("Range.reduce_cont/6", 2),
+    ];
+    for (label, expected) in measured {
+        assert_eq!(counted(label), expected, "activations of {label}");
+    }
+    assert_eq!(
+        activations.values().map(BTreeSet::len).sum::<usize>(),
+        209,
+        "activations of the whole program"
+    );
+}

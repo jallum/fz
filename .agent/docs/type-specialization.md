@@ -322,7 +322,7 @@ collapse, and forwarding can hand a `Whole` up from a callee that tests a
 literal -- or from a closure call, a branch or a capture that reads the value
 whole -- so fz-y6w's termination argument does not cover such a slot.
 The returned axis does not widen that exposure: it never produces a verbatim
-slot, only an addressed class. The CALLABLE slot is still blind. And the
+slot, only an addressed class. And the
 recursion-supplied rule reads SELF calls only: a mutually recursive pair
 rebuilds across the cycle rather than inside one body, and a recursion routed
 through a generated lambda (`00032_lambda_recursion`) is not local either, so
@@ -341,14 +341,26 @@ dominated by `List.reduce_cont/3` (21), `List.reduce_while_cont/3` (18),
 subtraction cannot see (fz-kdt.213). And a call whose result is delivered and discarded
 still forwards its arguments (fz-kdt.214).
 
-Termination is a theorem, not a property of lucky inputs. Three facts carry it:
+Termination is a theorem, not a property of lucky inputs. Four facts carry it:
 numeric literal chains cannot exist (the lattice has no numeric singletons —
 see [`set-theoretic-types`](set-theoretic-types.md)); atom chains are bounded
 by the program's finite atom set; and structural deepening is cut by the
 return join's widening operator (`ActivationMap::define_return`,
 `RETURN_WIDENING_BUDGET`): past N strict ascents of one activation's return
 within an epoch the growing spine collapses via `convergence_class`, past 2N
-it tops out at `any`. Every widening that coarsens the stored value emits
+it tops out at `any`. The fourth fact covers the callable slot, which the others
+do not reach: no activation key holds a closure of a lambda inside the captures
+of a closure of the same lambda (`Types::fold_self_nested_closures`, applied
+first in `derive_activation_key_arrow` to every slot, `Whole` included). Where
+one would, the inner closure is `fun`, the callable top, which holds every
+closure of every nesting, so the widening only adds values. A program has
+finitely many lambdas and each appears at most once on any path from a key's
+root, so closure nesting in a key is bounded by the lambda count however deeply
+the running program nests. A stream over a stream over an `any` enumerable
+re-wraps its reducer once per lap; the key sees `L(R)`, then `L(fun)`, and
+stays there. Values keep their exact types; only keys fold. The fact is about
+closures: a tuple names no builder, so a tuple ladder is not cut by it. Every
+widening that coarsens the stored value emits
 `fz.compiler2.return_type.widened`, so widening on a real program is a
 visible regression, never silent precision loss. The key ops
 live in [`type-world`](type-world.md).
