@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-11-12T20:16:28Z",
-  "description": "Remove the per-call Vec, CString and dlsym in call_lowered_extern and the transport lane clones. Re-profile first on the frame build; the page measured the remaining gain as thin (S6: 8%). If the re-profile shows nothing worth a commit, record the profile here and close.\n\nAcceptance: full gate green; same-binary A/B recorded.",
+  "description": "Not built: the re-profile shows nothing worth a commit.\n\nProfile: release binary at fz-e7w.2 (34ec1a9d9), the issue's program at n = 1,280,000, macOS sample, 2060 samples (inclusive shares overlap):\n- step_eval_entry 58.4%, eval_backend_direct_call_edge 20.1%, eval_steps 15.1%, encode_call_args 13.7%, bind_executable_inputs 9.9%\n- malloc and free about 20% (_xzm_free 11.4%, xzone_malloc 8.3%)\n- select_clause 6.7%, dispatch_raw_event0 5.9%, enter_entry 5.2%, decode_backend_value_from_lanes 4.8%, retain_continuation_captures 4.1%, tuple_step_value 2.7%\n- call_lowered_extern 1.5% (30 samples)\n\nThe ticket's targets:\n- call_lowered_extern's per-call Vec, CString and dlsym: the program runs 12 executables and 12 frames per element and no extern on the hot path, so those 30 samples are not per-element work.\n- Transport lane clones: decode_backend_value_from_lanes plus tuple_step_value are at most about 7.5% inclusive, overlapping the allocator share. This matches the proposal's 8%.\n\nNo single lever of 8% or more remains in the interpreter's per-call allocation. The allocator's 20% is spread across call argument encoding, input binding and frames.",
   "id": "fz-e7w.3",
   "labels": [],
   "parent": "fz-e7w",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A call on the interpreted path allocates nothing per call",
   "type": "task",
-  "updated_at": "2026-11-12T20:16:29Z"
+  "updated_at": "2026-11-12T21:52:51Z"
 }
