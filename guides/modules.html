@@ -353,6 +353,17 @@ helpers, protocol facts, and the public enumeration wrapper API, including
 primitive externs. Implementation details such as sort helpers stay private
 with <code>defp</code>.</p>
 
+<p><code>inspect/1</code> and <code>inspect/2</code> are imported everywhere and
+return Elixir's text for a value as a binary: <code>%{a: 1}</code>,
+<code>~c"hi"</code> for <code>[104, 105]</code>, <code>:"foo bar"</code>. The
+one option is <code>limit:</code>, a non-negative integer or
+<code>:infinity</code>, counting the elements of lists, tuples, maps and
+bitstrings shown before <code>...</code>; it defaults to 100, as in Elixir, and
+<code>dbg/1</code> uses the default. Any other <code>Inspect.Opts</code> key
+(<code>pretty</code>, <code>width</code>, <code>printable_limit</code>, and the
+rest) is not built and raises <code>ArgumentError</code>, as does a bad
+limit.</p>
+
 <p>Generated qualified calls from source production request runtime
 interfaces the same way imports do, so operator sugar can depend on modules
 such as <code>List</code> without importing those names into every program.</p>

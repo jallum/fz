@@ -22,7 +22,7 @@
 //! `not_unsafe_ptr_arg_deref` lint is allowed module-wide instead of per-fn.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use crate::any_value::debug::render_value;
+use crate::any_value::debug::{Limit, render_value, render_with_limit};
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_LAZY_CONT, ValueKind,
     closure_addr_from_tagged, closure_capture_value, closure_captured_count, closure_denotation, closure_fn_ptr,
@@ -1183,11 +1183,21 @@ fn float_prefix(bytes: &[u8]) -> Option<(f64, usize)> {
     float.is_finite().then_some((float, end))
 }
 
-/// The text `dbg` prints for the value, as a binary.
+/// The text `inspect/1` gives the value, as a binary: Elixir's default options.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_inspect(process: *mut Process, ref_word: u64) -> u64 {
     let value = any_value_from_ref_word(ref_word, "fz_inspect");
     alloc_text(process, &render_value(process, value))
+}
+
+/// The text `inspect/2` gives the value, as a binary. `options_ref` is the
+/// keyword list `Kernel.inspect/2` has already checked: `limit:` is its only
+/// option.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_inspect_with(process: *mut Process, ref_word: u64, options_ref: u64) -> u64 {
+    let value = any_value_from_ref_word(ref_word, "fz_inspect_with");
+    let limit = Limit::from_options(process, any_value_from_ref_word(options_ref, "fz_inspect_with options"));
+    alloc_text(process, &render_with_limit(process, value, limit))
 }
 
 #[unsafe(no_mangle)]

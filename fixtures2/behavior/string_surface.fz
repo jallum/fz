@@ -25,11 +25,9 @@
 # dispatch matrix and make compile work proportional to the TABLE rather than to
 # the program, which is the opposite of what fz is for (fz-5xp.68).
 #
-# `to_byte_list/1` is NOT Elixir's `to_charlist/1`. Elixir's returns a charlist,
-# which `inspect` renders as `~c"abc"`; charlists are deferred project-wide, so
-# fz has no such type. The value is the same list of integers, and the name says
-# so rather than claiming a parity it cannot show -- the oracle asks Elixir for
-# `charlists: :as_lists` to compare the values at all.
+# `to_byte_list/1` is NOT Elixir's `to_charlist/1`: it answers the bytes, which
+# for ASCII text is the same list of integers. `inspect` renders a list of
+# printable ASCII integers as `~c"abc"` on both sides.
 def main() do
   dbg(String.length("héllo"))
   dbg(String.starts_with?("hello", "he"))

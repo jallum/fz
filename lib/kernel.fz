@@ -44,15 +44,52 @@ defmodule Kernel do
   extern "fz" defp fz_panic(any) :: never
 
   @doc """
-  Returns the text `dbg/1` prints for `value`, as a binary.
+  Returns `value` as the text Elixir's `inspect/1` gives it: `dbg/1`,
+  `IO.inspect/1` and exception messages print the same text.
 
-  Exception messages that show a value use it. It is not yet Elixir's
-  `inspect/1`: a map prints as `%{:a => 1}` rather than `%{a: 1}`.
+  A container shows at most 100 elements and then `...`.
   """
   @spec inspect(any) :: binary
+  # Calls the one-argument extern rather than `inspect/2`: guard helpers such
+  # as `map_size/1` show a value in their failure message and must stay
+  # dispatch-pure, which the option walk of `inspect/2` is not.
   def inspect(value), do: fz_inspect(value)
 
   extern "fz" defp fz_inspect(any) :: binary
+
+  @doc """
+  Returns `value` as the text Elixir's `inspect/2` gives it.
+
+  `limit:` is the only option: a non-negative integer, or `:infinity`, for
+  how many elements of a list, tuple, map or bitstring show before `...`.
+  Each element costs one and whatever it prints inside spends from the same
+  budget. It defaults to 100, as in Elixir.
+
+      inspect([1, 2, 3], limit: 2)
+      #=> "[1, 2, ...]"
+
+  Any other key, and a limit that is neither, raises `ArgumentError`, where
+  Elixir ignores the key and fails only later on a bad limit.
+  """
+  @spec inspect(any, keyword) :: binary
+  def inspect(value, opts), do: fz_inspect_with(value, checked_inspect_options(opts, opts))
+
+  @spec checked_inspect_options(any, any) :: any
+  defp checked_inspect_options([], opts), do: opts
+  defp checked_inspect_options([{:limit, :infinity} | rest], opts), do: checked_inspect_options(rest, opts)
+
+  defp checked_inspect_options([{:limit, limit} | rest], opts) when is_integer(limit) and limit >= 0,
+    do: checked_inspect_options(rest, opts)
+
+  defp checked_inspect_options([{:limit, _} | _], _),
+    do: raise(ArgumentError, "inspect/2 limit: must be a non-negative integer or :infinity")
+
+  defp checked_inspect_options([{key, _} | _], _),
+    do: raise(ArgumentError, "inspect/2 does not support option " <> inspect(key))
+
+  defp checked_inspect_options(_, _), do: raise(ArgumentError, "inspect/2 options must be a keyword list")
+
+  extern "fz" defp fz_inspect_with(any, any) :: binary
 
   @doc """
   Raises a `RuntimeError` with `message`.

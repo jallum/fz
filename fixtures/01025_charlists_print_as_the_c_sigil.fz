@@ -1,0 +1,26 @@
+#---
+# purpose: "A non-empty list of integers that are printable ASCII or bell through return or escape prints as ~c"..."; any other integer list stays a list"
+# oracle: 01025_charlists_print_as_the_c_sigil.oracle.exs
+#---
+def main() do
+  dbg([104, 105])
+  dbg([7, 104])
+  dbg([27])
+  dbg([10, 9])
+  dbg([34, 92])
+  dbg([35, 123])
+  dbg([32, 126])
+  dbg([])
+  dbg([0])
+  dbg([6])
+  dbg([14])
+  dbg([31])
+  dbg([127])
+  dbg([128])
+  dbg([233])
+  dbg([126, 127])
+  dbg([104, 105, 0])
+  dbg([[104, 105], 1])
+  dbg([104.0])
+  dbg([{104, 105}])
+end

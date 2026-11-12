@@ -182,6 +182,18 @@ extern that returns has failed its process: native code returns to the
 scheduler (and traps if the process was not marked failed), and the interpreter
 ends the process. See [process failure](process-failure.md).
 
+`Kernel.inspect/1` wraps a private `extern "fz" defp fz_inspect(any) :: binary`,
+which renders with Elixir's default options. `Kernel.inspect/2` wraps
+`fz_inspect_with(any, any) :: binary`, whose second argument is the option
+keyword list; the physical export reads it for `limit:` (`Limit::from_options`)
+before it renders. The two are separate because `inspect/1` must stay a
+dispatch-pure helper (guard helpers such as `map_size/1` call it to word their
+failure) and must not box an argument: a literal list is not a guard
+expression, and a scalar `any` argument allocates a heap box on every call.
+The list is checked in fz source (`checked_inspect_options/2` in
+`lib/kernel.fz`) and refused there, because only a `never` extern may fail its
+process.
+
 ## Helpers the code generator calls itself
 
 Some calls in compiled code come from lowering rather than from source: a cons

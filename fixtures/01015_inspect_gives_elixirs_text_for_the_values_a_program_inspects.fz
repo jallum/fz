@@ -1,0 +1,22 @@
+#---
+# purpose: "inspect/1 prints integers, floats, strings, nil, booleans, lists, string-keyed maps, tuples and nesting exactly as Elixir does"
+# oracle: 01015_inspect_gives_elixirs_text_for_the_values_a_program_inspects.oracle.exs
+#---
+def main() do
+  dbg(inspect(1))
+  dbg(inspect(-42))
+  dbg(inspect(1.5))
+  dbg(inspect("text"))
+  dbg(inspect("quote\"d \\ line\n tab\t"))
+  dbg(inspect(nil))
+  dbg(inspect(true))
+  dbg(inspect(false))
+  dbg(inspect([]))
+  dbg(inspect(%{}))
+  dbg(inspect([1, 2, 3]))
+  dbg(inspect(["a", "b"]))
+  dbg(inspect(%{"k" => "v", "n" => 1}))
+  dbg(inspect(%{"outer" => %{"inner" => [1, nil, true]}}))
+  dbg(inspect({1, "two", :three}))
+  dbg(inspect(inspect("nested")))
+end

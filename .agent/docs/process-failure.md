@@ -28,7 +28,10 @@ every namespace by `lib/runtime.fz`, beside `panic/1`. Outside `assert` and
 Erlang error (`JSON.encode!/1` of an invalid UTF-8 binary).
 
 `Kernel.inspect/1` renders a value as `dbg` does, as a binary, for the messages
-that show one; a map prints as `%{:a => 1}`, not `%{a: 1}`.
+that show one; a map prints as `%{a: 1}`, as in Elixir. `Kernel.inspect/2`
+checks its options in fz source, where `raise/2` can fail the process: an
+extern that returns a value cannot, because the caller would carry on past the
+failure.
 
 ## The line
 

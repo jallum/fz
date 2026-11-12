@@ -1,0 +1,18 @@
+#---
+# purpose: "inspect/2 limit: 0 prints ... for any non-empty container and nothing else changes, and limit: :infinity prints every element"
+# oracle: 01022_inspect_limit_zero_and_infinity.oracle.exs
+#---
+def main() do
+  dbg(inspect([1], limit: 0))
+  dbg(inspect([], limit: 0))
+  dbg(inspect(%{"a" => 1}, limit: 0))
+  dbg(inspect(%{}, limit: 0))
+  dbg(inspect({1}, limit: 0))
+  dbg(inspect(<<1>>, limit: 0))
+  dbg(inspect("str", limit: 0))
+  dbg(inspect(1, limit: 0))
+  dbg(inspect(:ok, limit: 0))
+  dbg(inspect(Enum.to_list(1..150), limit: :infinity))
+  dbg(inspect(Enum.to_list(1..150), limit: 120))
+  dbg(inspect(Enum.to_list(1..150)))
+end
