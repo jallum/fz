@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-4t3.2"
+  ],
   "created": "2026-11-12T01:02:45Z",
   "description": "Closes GitHub #305 and fz-sc8.85.\n\nDelete the uniform calling tier from native codegen. cont_param becomes ir::Value (not Option), so the null-slot heap halt closure in resolve_outer_cont cannot be written.\n\nRemoved (the step 1 rows of the page's removal ledger):\n- native_codegen/call.rs (182 lines).\n- 25 functions: emit_halt_from_codegen_value, emit_return, emit_halt_and_return_null, emit_call, emit_tail_call, single_scalar_return_repr, build_fn_sigs, body_fn_id, alloc_frame, store_frame_value_dynamic, store_frame_word, store_bindings_into_callee_frame, store_typed_args_into_callee_frame, build_uniform_sig, callee_is_native, spec_fn_id, spec_is_native, uses_heap_closure, native_call_result_value, scalar_body_return_repr, scalar_or_never_body_return_halt_repr, emit_return_term, emit_native_call_with_cont, emit_native_tail_call, the uniform variant of emit_resume_closure.\n- Constant HEADER_SIZE and the module doc describing uniform frames (rewritten to the planned convention).\n- 8 fields: native_abi_fns, cont_target_fns, halt_reprs (each in surface and env), frame_ptr, host_ctx (harness output).\n- 47 parameters (frame_ptr 18, is_native 14, host_ctx 5, schemas 8, cont_ptr_known_null 2) and the Option on cont_param at 16 sites.\n- The null-slot heap halt closure and the always-None outer_cont_override and block_env.\n- Test row 'a uniform trampoline body' (driver_test.rs:17).\n- Doc sentences describing the frame ABI: .agent/docs/any-value.md:198 ('typed frame slots'), .agent/docs/externs.md:188 ('a frame allocation').\n\nKept: halt_cont_ref, the four static halt objects, emit_halt_cont_bodies, the entry-thunk kind select, return_tuple_arity (native_return_halt_repr, delivery.rs:36, still reads it; fz-sc8.85's note that it dies is wrong).\n\nStarting point: scratchpad gh305b/spike-2-delete.patch applies cleanly to d2ecc9d48.\n\nDone when: the rows above are gone; resolve_outer_cont has no allocation; a grep of .agent, guides, README.md and fixtures for resolve_outer_cont, native_abi_fns, build_uniform_sig and 'uniform tier' is clean.\n\nAcceptance: fmt, clippy -D warnings, cargo test --workspace --all-targets --no-fail-fast -- --test-threads=1 and --doc pass with the same counts and NO pin edit; emitted CLIF for JIT and AOT and normalised AOT disassembly identical to the parent commit over the 42-fixture set. the_halt_continuations_live_in_read_only_memory (drive_test.rs:10701) keeps the static objects pinned. No 'does not allocate' test: the path no longer exists; the evidence is the type plus identical output.",
   "id": "fz-4t3.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The planned ABI is the only calling tier",
   "type": "task",
-  "updated_at": "2026-11-12T01:02:45Z"
+  "updated_at": "2026-11-12T01:02:46Z"
 }
