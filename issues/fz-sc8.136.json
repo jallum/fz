@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T22:34:14Z",
+  "description": ".agent/docs/fact-engine.md says any fair schedule reaches the same least fixpoint. Popping the scheduler's pending fact changes newest-first (ignoring semantic_cmp) on fixtures/00761 with args --top 1 --top 2 changes canon(BackendProgram): two sibling callable surfaces kept separate today merge into one with a wider union (float+regex); 10 diff lines, first at canon line 4944; stdout identical. It also drops 5 jobs and makes fixture 00571 walk 513 bodies where 515 are pinned. Plain FIFO gives the same result as today but a different job sequence. Today's order hides this. Reproduce with the spike binary: FZ_S128=lifo /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/bin/fz2-s128-release interp --dump backend= (switch in /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/s128/spike128.diff; dumps under /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/s128/q2/). Find which merge is order-sensitive (a keep-first merge is the suspect named in ordered_set.rs's module doc). Proposal page: /Users/j5n/Workspace/compile-cost-round-two.html (https://claude.ai/artifact/4T5Lime7pQxKbCiKJqaJ8x).",
+  "id": "fz-sc8.136",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "The compiled result differs when the fact queue is popped newest-first",
+  "type": "bug",
+  "updated_at": "2026-11-12T22:34:14Z"
+}
