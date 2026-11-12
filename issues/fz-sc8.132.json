@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:18:05Z",
+  "description": "Elixir's List.foldl/3 and List.foldr/3 are not exported by lib/list.fz: 'error[resolve/unknown-import]: module List does not export foldl/3' (verified on c768670cd; repro /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/handoff/foldl.fz; elixir prints 6). Found by fz-8c. The distiller does not use them. Build in Elixir's shape (lib/elixir/lib/list.ex), with docs and a fixture against elixir on interp, run and build.",
+  "id": "fz-sc8.132",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "List.foldl/3 and List.foldr/3",
+  "type": "feature",
+  "updated_at": "2026-11-12T20:18:05Z"
+}
