@@ -7,7 +7,7 @@
     "fz-sc8.19"
   ],
   "created": "2026-11-12T22:39:36Z",
-  "description": "With the settled-flip cure the distiller reaches a panic at src/compiler2/jobs/runtime_demand.rs:1294 (index out of bounds: the len is 0 but the index is 0; out.input_demands[index].join_assign). input_demands is sized by executable.activation.input_len(types) (~1228) while the clause has params. Also panics without the cure on /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/runaway/d5.fz. Culprit activation and minimal program: being identified (/private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/census/panic_min.fz).",
+  "description": "Panic at src/compiler2/jobs/runtime_demand.rs:1294 (index out of bounds: the len is 0 but the index is 0; out.input_demands[index].join_assign). Reached by the distiller once fz-sc8.137 is in; also panics without it. Cause (verified by instrumentation): ActivationKey::from_inputs (identity.rs:127, via jobs/callable_target.rs derive :66 / world.activation_key) receives an input of type none from the callable surface's inputs (a callback invoked on a map value typed none). types.arrow([none], r) is the top function type and displays as fun, so pure_arrow() is None (types/mod.rs:1371), arrow_arity/input_len is 0, and input_demands is empty while the clause has params. Not the self-nested-closure fold. Minimal program (5 lines): /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/census/panic_min.fz; elixir prints %{1 =\u003e \"\"}. Note: with fz-sc8.139's change this program stops panicking and instead reports spec/violation on Enum.join/2 for ({any, any}, binary), which elixir accepts; the none-input key stays reachable. Fix question: a key with a none input is an activation that cannot be called; arity must come from the function, not from the arrow's printed shape.",
   "id": "fz-sc8.140",
   "labels": [],
   "parent": "fz-sc8",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Runtime demand indexes an activation that has no inputs",
   "type": "bug",
-  "updated_at": "2026-11-12T22:39:48Z"
+  "updated_at": "2026-11-12T23:45:39Z"
 }
