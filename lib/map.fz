@@ -302,6 +302,28 @@ defmodule Map do
   def update!(map, key, fun), do: put(map, key, fun.(fetch!(map, key)))
 
   @doc """
+  Returns the map with `fun` applied to the value at `key`, or with `key`
+  put to `default` when it is absent. `fun` is not called for an absent key.
+
+  Copies the whole array, like `put/3`.
+
+  ## Examples
+
+      Map.update(%{a: 1}, :a, 0, fn (v) -> v + 1 end)
+      #=> %{:a => 2}
+
+      Map.update(%{a: 1}, :b, 0, fn (v) -> v + 1 end)
+      #=> %{:a => 1, :b => 0}
+
+  """
+  @spec update(map, any, any, (any) -> any) :: map
+  def update(map, key, default, fun), do: updated(map, key, default, fun, fetch(map, key))
+
+  @spec updated(any, any, any, (any) -> any, {:ok, any} | :error) :: any
+  defp updated(map, key, _default, fun, {:ok, value}), do: put(map, key, fun.(value))
+  defp updated(map, key, default, _fun, :error), do: put(map, key, default)
+
+  @doc """
   Returns the map without `key`, or `map` unchanged if `key` is absent.
 
   Copies the whole array; prefer `drop/2` for removing several keys.
