@@ -896,6 +896,7 @@ fn continuations_and_local_resumes_execute_the_retained_body_without_inventory_l
         executable: retained,
         entry: first,
         env: HashMap::new(),
+        handler: false,
     };
     program.remove_executable(&key, world.types());
     assert!(
@@ -1361,4 +1362,67 @@ impl DirectClosureEdge {
             Vec::new(),
         )
     }
+}
+
+/// A handler frame is not a value frame: a body that completes pops its
+/// handler and delivers to the frame beneath. A value arriving at a handler
+/// frame means a body ran past its try without popping, and the interpreter
+/// refuses it rather than running the handler with a value in place of a
+/// raise.
+#[test]
+fn a_value_cannot_be_delivered_to_a_handler_frame() {
+    let mut world = crate::compiler2::World::new();
+    let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "handler_frame", 0);
+    let key = ExecutableKey {
+        activation: crate::compiler2::ActivationKey::from_inputs(
+            crate::compiler2::RootId::for_test(0),
+            function,
+            &[],
+            world.types_mut(),
+        ),
+        need: crate::compiler2::ExecutableNeed::Value,
+    };
+    let nothing = world.intern_shape(ShapeDescr::Nothing);
+    let return_ty = world.types_mut().int();
+    let mut executable = BackendExecutable::for_test(key.clone(), return_ty, nothing);
+    let value = ValueId::from_u32(0);
+    let handler = crate::compiler2::ControlEntryId::from_u32(0);
+    executable.body = BackendBody::Clauses {
+        clauses: Vec::new(),
+        entries: vec![BackendEntry {
+            span: crate::source::Span::DUMMY,
+            origin: crate::compiler2::BackendEntryOrigin::Handler,
+            params: vec![value],
+            captures: Vec::new(),
+            physical_captures: Vec::new(),
+            physical_params: Vec::new(),
+            steps: Vec::new(),
+            tail: BackendTail::Value {
+                value,
+                dest: ControlDestination::Return,
+            },
+        }],
+        generated: Vec::new(),
+    };
+    let executable = Rc::new(executable);
+    let mut program = BackendProgram::empty(key);
+    program.add_executable(Rc::clone(&executable), world.types());
+    let transport = TransportStore::new();
+    let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
+    runtime.current_proc = runtime.process_ptr(1).expect("test process");
+    let Err(error) = continue_backend_value(
+        &mut runtime,
+        &transport,
+        &program,
+        BackendBoundValue::Runtime(AnyValue::Int(0)),
+        vec![BackendContinuation {
+            executable,
+            entry: handler,
+            env: HashMap::new(),
+            handler: true,
+        }],
+    ) else {
+        panic!("a handler frame takes a raise, never a value");
+    };
+    assert!(error.contains("handler frame"), "{error}");
 }

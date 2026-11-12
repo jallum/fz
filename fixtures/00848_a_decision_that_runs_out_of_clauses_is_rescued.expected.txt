@@ -1,0 +1,10 @@
+CaseClauseError
+:after_case
+MatchError
+:after_match
+FunctionClauseError
+:after_function
+CondClauseError
+:after_cond
+WithClauseError
+:after_with

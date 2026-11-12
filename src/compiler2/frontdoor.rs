@@ -785,7 +785,7 @@ impl FrontDoorParser {
                     parser.with_comma_unbound(|parser| {
                         let inner = parser.parse_expr(module_path, scope)?;
                         if parser.peek_is(&Tok::Arrow) {
-                            parser.finish_clause_list(inner, &[Tok::RParen], module_path, scope)
+                            parser.finish_clause_list(ClauseKind::Pattern, inner, &[Tok::RParen], module_path, scope)
                         } else {
                             Ok(inner.root)
                         }
@@ -1454,31 +1454,47 @@ impl FrontDoorParser {
         Ok(())
     }
 
-    /// The body of a trailing `do ... end`, as `[do: ..., else: ..., after:
-    /// ...]`. The `do` token itself has already been consumed.
+    /// The body of a trailing `do ... end`, as `[do: ..., rescue: ...,
+    /// catch: ..., else: ..., after: ...]`. The `do` token itself has already
+    /// been consumed. Like Elixir's parser, this accepts the sections in any
+    /// order and keeps a repeated section as a repeated entry: the form that
+    /// receives the block decides which sections it takes and reports a
+    /// duplicate, so the message can name the form.
     fn parse_do_block(&mut self, module_path: &[String], scope: &[String]) -> Result<AnyValueRef, FrontDoorError> {
-        let do_body = self.parse_do_section(&[Tok::Else, Tok::After, Tok::End], module_path, scope)?;
+        const SECTIONS: [(Tok, &str, ClauseKind); 4] = [
+            (Tok::Rescue, "rescue", ClauseKind::Pattern),
+            (Tok::Catch, "catch", ClauseKind::Params),
+            (Tok::Else, "else", ClauseKind::Pattern),
+            (Tok::After, "after", ClauseKind::Pattern),
+        ];
+        const TERMINATORS: [Tok; 5] = [Tok::Rescue, Tok::Catch, Tok::Else, Tok::After, Tok::End];
+        let do_body = self.parse_do_section(ClauseKind::Pattern, &TERMINATORS, module_path, scope)?;
         let mut kw_entries = vec![self.builder.keyword("do", do_body)?];
-        if self.eat(&Tok::Else) {
-            let else_body = self.parse_do_section(&[Tok::After, Tok::End], module_path, scope)?;
-            kw_entries.push(self.builder.keyword("else", else_body)?);
-        }
-        if self.eat(&Tok::After) {
-            let after_body = self.parse_do_section(&[Tok::End], module_path, scope)?;
-            kw_entries.push(self.builder.keyword("after", after_body)?);
+        'sections: loop {
+            for (token, name, kind) in &SECTIONS {
+                if self.eat(token) {
+                    let body = self.parse_do_section(*kind, &TERMINATORS, module_path, scope)?;
+                    kw_entries.push(self.builder.keyword(name, body)?);
+                    continue 'sections;
+                }
+            }
+            break;
         }
         self.expect(&Tok::End, "`end`")?;
         self.builder.list(&kw_entries).map_err(FrontDoorError::from)
     }
 
-    /// One `do`/`else`/`after` section, decided the way Elixir decides it:
+    /// One `do`/`rescue`/`catch`/`else`/`after` section, decided the way Elixir decides it:
     /// a `->` right after the first statement makes the whole section a
     /// list of `pattern -> body` clauses; anything else makes it an
     /// ordinary block (one expression, or several joined with
     /// `__block__`). An empty section is an empty block, matching a bare
-    /// `do end`.
+    /// `do end`. A section whose clauses take a parameter-style head
+    /// (`catch kind, value when guard ->`) is read with `ClauseKind::Params`,
+    /// where a `,` after the first expression also starts a clause.
     fn parse_do_section(
         &mut self,
+        kind: ClauseKind,
         terminators: &[Tok],
         module_path: &[String],
         scope: &[String],
@@ -1488,9 +1504,19 @@ impl FrontDoorParser {
             let meta = self.meta(self.cur_span())?;
             return self.builder.call("__block__", &meta, &[]).map_err(FrontDoorError::from);
         }
+        if matches!(kind, ClauseKind::Params) && self.peek_is(&Tok::Arrow) {
+            let head = self.parse_param_head(None, module_path, scope)?;
+            let clauses = self.parse_clause_list(kind, head, terminators, module_path, scope)?;
+            return self.builder.list(&clauses).map_err(FrontDoorError::from);
+        }
         let first = self.parse_expr(module_path, scope)?;
         if self.peek_is(&Tok::Arrow) {
-            return self.finish_clause_list(first, terminators, module_path, scope);
+            return self.finish_clause_list(kind, first, terminators, module_path, scope);
+        }
+        if matches!(kind, ClauseKind::Params) && self.peek_is(&Tok::Comma) {
+            let head = self.parse_param_head(Some(first), module_path, scope)?;
+            let clauses = self.parse_clause_list(kind, head, terminators, module_path, scope)?;
+            return self.builder.list(&clauses).map_err(FrontDoorError::from);
         }
         let end = self.parse_block_lines(
             Some(first),
@@ -1511,13 +1537,14 @@ impl FrontDoorParser {
     /// (1 -> 1)` spelling of a `case`.
     fn finish_clause_list(
         &mut self,
+        kind: ClauseKind,
         first_pattern: ParsedExpr,
         terminators: &[Tok],
         module_path: &[String],
         scope: &[String],
     ) -> Result<AnyValueRef, FrontDoorError> {
         let head = self.pattern_head(first_pattern)?;
-        let clauses = self.parse_clause_list(ClauseKind::Pattern, head, terminators, module_path, scope)?;
+        let clauses = self.parse_clause_list(kind, head, terminators, module_path, scope)?;
         self.builder.list(&clauses).map_err(FrontDoorError::from)
     }
 

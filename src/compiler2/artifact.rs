@@ -730,12 +730,14 @@ pub(super) fn ir_control_fn_ids(function: &IrFn) -> Vec<FnId> {
                     fn_ids.push(after.body);
                 }
             }
+            IrTerm::Try { handler, .. } => fn_ids.push(*handler),
             IrTerm::Goto(..)
             | IrTerm::If { .. }
             | IrTerm::TailCallClosure { .. }
             | IrTerm::Return(_)
             | IrTerm::ReturnLanes(_)
             | IrTerm::Raise { .. }
+            | IrTerm::Reraise { .. }
             | IrTerm::Unreachable => {}
         }
     }
@@ -817,6 +819,10 @@ pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
                 other_uses.insert(*message);
                 other_uses.extend(*subject);
             }
+            IrTerm::Reraise { kind, value } => {
+                other_uses.insert(*kind);
+                other_uses.insert(*value);
+            }
             IrTerm::Unreachable => {}
             IrTerm::ReturnLanes(vars) => other_uses.extend(vars.iter().copied()),
             IrTerm::ReceiveMatched {
@@ -831,6 +837,7 @@ pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
                     other_uses.insert(after.timeout);
                 }
             }
+            IrTerm::Try { captures, .. } => other_uses.extend(captures.iter().copied()),
         }
     }
     candidates.retain(|var| !other_uses.contains(var));
@@ -867,12 +874,14 @@ fn visit_ir_control_fn_ids(function: &mut IrFn, mut visit: impl FnMut(&mut FnId)
                     visit(&mut after.body);
                 }
             }
+            IrTerm::Try { handler, .. } => visit(handler),
             IrTerm::Goto(..)
             | IrTerm::If { .. }
             | IrTerm::TailCallClosure { .. }
             | IrTerm::Return(_)
             | IrTerm::ReturnLanes(_)
             | IrTerm::Raise { .. }
+            | IrTerm::Reraise { .. }
             | IrTerm::Unreachable => {}
         }
     }
@@ -1254,6 +1263,7 @@ pub enum BackendEntryOrigin {
     Clause,
     Branch,
     ReceiveOutcome,
+    Handler,
     DeliveredResume {
         value: ValueId,
         layout: BackendReturnLayout,
@@ -1263,7 +1273,7 @@ pub enum BackendEntryOrigin {
 impl BackendEntryOrigin {
     pub fn input_value(&self) -> Option<ValueId> {
         match self {
-            Self::Clause | Self::Branch | Self::ReceiveOutcome => None,
+            Self::Clause | Self::Branch | Self::ReceiveOutcome | Self::Handler => None,
             Self::DeliveredResume { value, .. } => Some(*value),
         }
     }
@@ -1311,6 +1321,10 @@ pub enum BackendTail {
     /// Control that analysis proved no execution reaches. Reaching it anyway
     /// is a compiler fault, never a program's failure.
     Unreachable,
+    Try {
+        body: ControlEntryId,
+        handler: ControlEntryId,
+    },
 }
 
 /// How control reaches an entry from the tail that names it.
@@ -1322,7 +1336,8 @@ pub(crate) enum EntryTransfer {
     /// A call's return resumes the entry.
     CallReturn,
     /// The runtime enters it: a received message's clause, the receive's
-    /// timeout, or the entry the receive's value continues in.
+    /// timeout, or the entry the receive's value continues in; a try's body
+    /// and the handler a raise unwinds to.
     Runtime,
 }
 
@@ -1356,6 +1371,7 @@ impl BackendTail {
                 .map(|entry| (entry, EntryTransfer::Runtime))
                 .chain(delivered(&receive.dest, EntryTransfer::Runtime))
                 .collect(),
+            Self::Try { body, handler } => vec![(*body, EntryTransfer::Runtime), (*handler, EntryTransfer::Runtime)],
             Self::Unreachable => Vec::new(),
         }
     }
@@ -1458,6 +1474,7 @@ pub enum BackendStep {
         spec: LoweredBitFieldSpec,
         is_last: bool,
     },
+    PopHandler,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1696,8 +1713,21 @@ fn native_terms_equal(left: &IrTerm, right: &IrTerm) -> bool {
         }
         (IrTerm::Return(left_var), IrTerm::Return(right_var)) => left_var == right_var,
         (left @ IrTerm::Raise { .. }, right @ IrTerm::Raise { .. }) => left == right,
+        (left @ IrTerm::Reraise { .. }, right @ IrTerm::Reraise { .. }) => left == right,
         (IrTerm::Unreachable, IrTerm::Unreachable) => true,
         (IrTerm::ReturnLanes(left_lanes), IrTerm::ReturnLanes(right_lanes)) => left_lanes == right_lanes,
+        (
+            IrTerm::Try {
+                handler: left_handler,
+                captures: left_captures,
+                body: left_body,
+            },
+            IrTerm::Try {
+                handler: right_handler,
+                captures: right_captures,
+                body: right_body,
+            },
+        ) => left_handler == right_handler && left_captures == right_captures && left_body == right_body,
         (
             IrTerm::ReceiveMatched {
                 ident: left_ident,

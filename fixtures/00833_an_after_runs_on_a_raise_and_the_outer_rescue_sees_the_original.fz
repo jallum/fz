@@ -1,0 +1,16 @@
+#---
+# purpose: "an after block runs when the body raises, then the raise continues unchanged to the enclosing rescue"
+# oracle: 00833_an_after_runs_on_a_raise_and_the_outer_rescue_sees_the_original.oracle.exs
+#---
+def main() do
+  result = try do
+    try do
+      raise ArgumentError, "original"
+    after
+      dbg(:after)
+    end
+  rescue
+    e in ArgumentError -> e.message
+  end
+  dbg(result)
+end

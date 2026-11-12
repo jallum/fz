@@ -38,7 +38,7 @@ use super::handler::{Event, EventKind, Handler};
 use super::value::Value;
 use crate::compiler2::SemanticOrd;
 use fz_runtime::telemetry::{
-    EXECUTION_READY, GC, PROCESS_EXITED, RUN_ENDED, RunEnded, RuntimeEvent, SCHEDULER_SLEPT, SEND_PROBE,
+    EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, Raise, RunEnded, RuntimeEvent, SCHEDULER_SLEPT, SEND_PROBE,
     write_line as write_runtime_line,
 };
 
@@ -734,6 +734,10 @@ impl JsonlBackend {
             &PROCESS_EXITED,
             move |_, _, _, _, process| exit_backend.append_runtime_event(&RuntimeEvent::ProcessExited(process)),
         );
+        let raise_backend = Rc::clone(backend);
+        telemetry.attach_raw_event1::<Raise, _>(&RAISE, move |_, _, _, raise| {
+            raise_backend.append_runtime_event(&RuntimeEvent::Raise(raise));
+        });
         let slept_backend = Rc::clone(backend);
         telemetry.attach_raw_event1::<std::time::Duration, _>(&SCHEDULER_SLEPT, move |_, _, _, wait| {
             slept_backend.append_runtime_event(&RuntimeEvent::SchedulerSlept(*wait));

@@ -1,0 +1,18 @@
+#---
+# purpose: "a value no else clause matches raises TryClauseError carrying the value; the try's own rescue does not take it, the enclosing one does"
+# oracle: 00837_an_else_miss_raises_a_try_clause_error_the_same_rescue_does_not_catch.oracle.exs
+#---
+def main() do
+  result = try do
+    try do
+      :unexpected
+    rescue
+      _ -> :inner_rescue
+    else
+      :expected -> :ok
+    end
+  rescue
+    e in TryClauseError -> {:outer, e.term}
+  end
+  dbg(result)
+end

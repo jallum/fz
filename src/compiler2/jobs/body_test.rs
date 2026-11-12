@@ -1,6 +1,7 @@
 use super::super::drive::Job;
 use super::super::drive_harness::{Drive, Settled, module_name};
 use super::super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission, RunFailure};
+use crate::dispatch_matrix::pattern::LastResort;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 
 fn run(source_name: &str, source: &str) -> (Result<i64, RunFailure>, Capture) {
@@ -111,4 +112,112 @@ fn a_name_no_module_defines_is_its_atom_and_starts_no_module_work() {
         module_work.is_empty(),
         "no module job runs for Nope.Never: {module_work:?}"
     );
+}
+
+/// What a function's lowered body says about its `try`s: the nesting is
+/// readable from the entries alone.
+struct TryShape {
+    tries: usize,
+    handlers: usize,
+    pops: usize,
+    reraising_dispatches: usize,
+    atom_consts: std::collections::HashMap<String, usize>,
+}
+
+fn try_shape(fixture: u32, name: &str, arity: u64) -> TryShape {
+    use super::super::body::{ControlEntryOrigin, LoweredBody, LoweredStep, LoweredTail};
+    let settled = Drive::fixture(fixture).settle();
+    let function = settled.function(name, arity);
+    let body = settled.world().lowered_body(function);
+    let LoweredBody::Clauses { entries, .. } = &*body;
+    let mut shape = TryShape {
+        tries: 0,
+        handlers: 0,
+        pops: 0,
+        reraising_dispatches: 0,
+        atom_consts: Default::default(),
+    };
+    for entry in entries {
+        shape.tries += usize::from(matches!(entry.tail, LoweredTail::Try { .. }));
+        if entry.origin == ControlEntryOrigin::Handler {
+            shape.handlers += 1;
+        }
+        if let LoweredTail::Dispatch { dispatch, .. } = &entry.tail {
+            shape.reraising_dispatches +=
+                usize::from(dispatch.plan.last_resort == Some(LastResort::reraise()) && dispatch.miss_entry.is_none());
+        }
+        for step in &entry.steps {
+            match step {
+                LoweredStep::PopHandler => shape.pops += 1,
+                LoweredStep::Const {
+                    literal: crate::ground_value::GroundValue::Atom(atom),
+                    ..
+                } => *shape.atom_consts.entry(atom.clone()).or_default() += 1,
+                _ => {}
+            }
+        }
+    }
+    shape
+}
+
+/// `after` alone is one handler whose only job is to run the after body and
+/// re-raise: the after body is lowered once on the success path, right after
+/// the pop, and once in the handler.
+#[test]
+fn an_after_is_one_handler_that_runs_the_after_body_and_re_raises() {
+    let shape = try_shape(832, "main", 0);
+    assert_eq!((shape.tries, shape.handlers, shape.pops), (1, 1, 1));
+    assert_eq!(
+        shape.reraising_dispatches, 1,
+        "the handler ends in a dispatch whose last resort is the re-raise, with no miss entry"
+    );
+    assert_eq!(
+        shape.atom_consts["after_value"], 2,
+        "the after body appears on both ways out"
+    );
+    assert_eq!(shape.atom_consts["body_value"], 1, "the body is lowered once");
+}
+
+/// `rescue` and `after` together are two nested tries, `after` outermost: two
+/// handlers, two pops, and still one after body on each way out.
+#[test]
+fn rescue_with_after_is_two_nested_tries() {
+    let shape = try_shape(803, "attempt", 1);
+    assert_eq!((shape.tries, shape.handlers, shape.pops), (2, 2, 2));
+    assert_eq!(shape.atom_consts["after"], 2);
+    assert_eq!(
+        shape.reraising_dispatches, 2,
+        "each handler's miss is the re-raise: the rescue's clauses and the after's none"
+    );
+}
+
+/// `else` adds no handler of its own: it is a case on the body's value inside
+/// the rescue's try, after its pop.
+#[test]
+fn else_with_rescue_adds_a_case_after_the_pop_and_no_handler() {
+    use super::super::body::{LoweredBody, LoweredStep, LoweredTail};
+    let shape = try_shape(802, "main", 0);
+    assert_eq!((shape.tries, shape.handlers, shape.pops), (1, 1, 1));
+
+    let settled = Drive::fixture(802).settle();
+    let body = settled.world().lowered_body(settled.function("main", 0));
+    let LoweredBody::Clauses { entries, .. } = &*body;
+    let protected = entries
+        .iter()
+        .find(|entry| {
+            entry.steps.iter().any(|step| matches!(step, LoweredStep::PopHandler))
+                && matches!(entry.tail, LoweredTail::Dispatch { .. })
+        })
+        .expect("the pop is followed by the else case in the try body");
+    assert!(
+        matches!(protected.steps.last(), Some(LoweredStep::PopHandler)),
+        "nothing of the else case runs before the handler is popped"
+    );
+}
+
+/// A `try` with only `else` protects nothing: it is a case with no handler.
+#[test]
+fn else_alone_is_a_case_with_no_handler() {
+    let shape = try_shape(838, "main", 0);
+    assert_eq!((shape.tries, shape.handlers, shape.pops), (0, 0, 0));
 }

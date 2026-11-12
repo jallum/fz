@@ -43,7 +43,7 @@ use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
     ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
 };
-use crate::process::Process;
+use crate::process::{ClosureRef, Handler, Process};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource, fz_resource_destructor_noop};
 use crate::sched::{ReceiveStep, reach_receive};
 use crate::scheduler_hooks::YIELD_PTR;
@@ -435,6 +435,25 @@ pub extern "C" fn fz_send(process: *mut Process, receiver_pid_bits: u64, msg_ref
     let ctx = unsafe { process_ctx(process) };
     (ctx.send.expect("send callback installed"))(process, ctx.scheduler, receiver_pid, msg_ref_word);
     msg_ref_word
+}
+
+/// Enter a `try`: `template_ref_word` is the handler's continuation template,
+/// a closure whose environment is `[outer_cont, captures...]`, as a closure
+/// reference word, the form codegen holds a heap closure in. The handler stack
+/// keeps the reference, literal bit included. The next raise in this process
+/// reaches it first.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_try_push(process: *mut Process, template_ref_word: u64) {
+    let handler = ClosureRef::new(closure_ref_from_word(template_ref_word, "fz_try_push handler template"));
+    unsafe { &mut *process }.push_handler(Handler::Closure(handler));
+}
+
+/// Leave a `try` whose body completed: its handler is popped unreached.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_try_pop(process: *mut Process) {
+    unsafe { &mut *process }.pop_handler();
 }
 
 /// Selective receive entry. Called by JIT/AOT

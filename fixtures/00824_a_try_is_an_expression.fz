@@ -1,0 +1,16 @@
+#---
+# purpose: "try is an expression: its value is passed straight to a call"
+# oracle: 00824_a_try_is_an_expression.oracle.exs
+#---
+def main() do
+  dbg(try do
+    raise ArgumentError, "x"
+  rescue
+    ArgumentError -> :rescued
+  end)
+  dbg(try do
+    :completed
+  rescue
+    ArgumentError -> :rescued
+  end)
+end

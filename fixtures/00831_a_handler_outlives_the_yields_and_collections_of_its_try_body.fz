@@ -1,0 +1,20 @@
+#---
+# purpose: "a handler pushed before a long allocating body is still the one its raise reaches after the body has yielded and the heap has been collected"
+# oracle: 00831_a_handler_outlives_the_yields_and_collections_of_its_try_body.oracle.exs
+#---
+def fill(0, _acc), do: raise ArgumentError, "full"
+def fill(n, acc), do: fill(n - 1, [n | acc])
+
+def round(0, acc), do: acc
+def round(n, acc) do
+  got = try do
+    fill(2_000, [])
+  rescue
+    e in ArgumentError -> e.message
+  end
+  round(n - 1, acc + byte_size(got))
+end
+
+def main() do
+  dbg(round(100, 0))
+end

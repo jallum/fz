@@ -1,0 +1,2 @@
+:before
+** (throw) {:ball, 1}

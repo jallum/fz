@@ -1,0 +1,12 @@
+#---
+# purpose: "a rescue clause whose head is neither an alias, a variable nor `var in aliases` is refused with Elixir's words"
+# expect: diagnostic
+# diagnostic.code: parse/invalid-try
+#---
+def main() do
+  try do
+    1
+  rescue
+    %{} -> 2
+  end
+end

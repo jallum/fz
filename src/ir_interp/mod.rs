@@ -35,6 +35,9 @@ struct BackendContinuation {
     executable: Rc<crate::compiler2::BackendExecutable>,
     entry: crate::compiler2::ControlEntryId,
     env: HashMap<crate::compiler2::ValueId, BackendBoundValue>,
+    /// A `try` handler frame: reached by a raise, never by a value. The
+    /// body pops it when it completes.
+    handler: bool,
 }
 
 type BackendBoundValue = BoundValue<AnyValue>;

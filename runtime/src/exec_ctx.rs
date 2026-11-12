@@ -18,7 +18,9 @@
 //! be live at once on one worker without clobbering each other.
 
 use crate::process::Process;
-use crate::scheduler_hooks::{FaultHook, OutputHook, SendHook, SpawnHook, TimerCancelHook, TimerScheduleHook};
+use crate::scheduler_hooks::{
+    FaultHook, OutputHook, RaiseHook, SendHook, SpawnHook, TimerCancelHook, TimerScheduleHook,
+};
 use std::ptr::{null, null_mut};
 
 /// The program's command line: the tokens after the program's own name or
@@ -56,6 +58,9 @@ pub struct ExecCtx {
     pub spawn: Option<SpawnHook>,
     pub send: Option<SendHook>,
     pub fault: Option<FaultHook>,
+    /// Where `fz_panic` reports each raise before delivering it; `None` when
+    /// the scheduler does not observe raises.
+    pub raise: Option<RaiseHook>,
     pub output: Option<OutputHook>,
     pub timer_schedule: Option<TimerScheduleHook>,
     pub timer_cancel: Option<TimerCancelHook>,
@@ -74,6 +79,7 @@ impl ExecCtx {
             spawn: None,
             send: None,
             fault: None,
+            raise: None,
             output: None,
             timer_schedule: None,
             timer_cancel: None,

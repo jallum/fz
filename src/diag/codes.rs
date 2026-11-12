@@ -18,6 +18,8 @@ pub const PARSE_BITSTRING_BAD_MODIFIER: DiagCode = DiagCode("parse/bitstring-bad
 pub const PARSE_BITSTRING_BAD_SIZE: DiagCode = DiagCode("parse/bitstring-bad-size");
 pub const PARSE_CONCAT_PATTERN_OPERAND: DiagCode = DiagCode("parse/concat-pattern-operand");
 pub const PARSE_COMPREHENSION: DiagCode = DiagCode("parse/comprehension");
+/// A `try` whose sections or rescue heads Elixir would reject, with Elixir's text.
+pub const PARSE_INVALID_TRY: DiagCode = DiagCode("parse/invalid-try");
 
 // ----- resolver -----
 
@@ -47,6 +49,7 @@ pub const MACRO_OWN_MODULE_ITEM_CALL: DiagCode = DiagCode("macro/own-module-item
 
 pub const LOWER_UNSUPPORTED: DiagCode = DiagCode("lower/unsupported");
 pub const LOWER_UNBOUND: DiagCode = DiagCode("lower/unbound");
+pub const LOWER_TRY_ELSE_ONLY: DiagCode = DiagCode("lower/try-else-only");
 
 // ----- planner (post-.11.24) -----
 

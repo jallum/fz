@@ -1,0 +1,18 @@
+#---
+# purpose: "reraise/2 inside a rescue raises the exception again, and the enclosing rescue receives the same exception"
+# oracle: 00807_reraise_in_a_rescue_reaches_the_outer_rescue_with_the_same_exception.oracle.exs
+#---
+def main() do
+  result = try do
+    try do
+      raise ArgumentError, "original"
+    rescue
+      e in ArgumentError ->
+        dbg(:inner_saw)
+        reraise e, []
+    end
+  rescue
+    e in ArgumentError -> {:outer_saw, e.message}
+  end
+  dbg(result)
+end

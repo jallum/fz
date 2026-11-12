@@ -146,7 +146,12 @@ fn rewrite_operator(
             };
             remote_call(&builder, "Range.new", meta, &[first, last, right])?
         }
-        "in" => remote_call(&builder, "Enum.member?", meta, &[right, left])?,
+        "in" => remote_call(
+            &builder,
+            "Enum.member?",
+            operator_meta(&builder, node, op)?,
+            &[right, left],
+        )?,
         "not in" => {
             let member = remote_call(&builder, "Enum.member?", meta, &[right, left])?;
             named_call(&builder, "not", meta, &[member])?

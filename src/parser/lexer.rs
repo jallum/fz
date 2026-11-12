@@ -43,6 +43,8 @@ pub enum Tok {
     And, // boolean conjunction: `a and b`
     Or,  // boolean disjunction: `a or b`
     After,
+    Rescue,
+    Catch,
 
     // punctuation
     LParen,
@@ -718,6 +720,8 @@ impl<'a> Lexer<'a> {
             "else" => Tok::Else,
             "when" => Tok::When,
             "after" => Tok::After,
+            "rescue" => Tok::Rescue,
+            "catch" => Tok::Catch,
             "type" => Tok::Type,
             "in" => Tok::In,
             "not" => Tok::Not,

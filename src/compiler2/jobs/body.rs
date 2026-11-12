@@ -9,8 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::{
-    AfterClause, BinOp, BitField, BitSize, CallableName, Callee, Expr, FnClause, LambdaClause, MatchClause, Pattern,
-    Spanned, UnOp, Var, VarContext, WithBinding,
+    AfterClause, BinOp, BitField, BitSize, CallableName, Callee, CatchClause, Expr, FnClause, LambdaClause,
+    MatchClause, Pattern, RescueClause, Spanned, UnOp, Var, VarContext, WithBinding,
 };
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -93,6 +93,62 @@ struct ExprReceive {
     after: Option<ExprReceiveAfter>,
     captures: Vec<ValueId>,
 }
+
+/// A `try` body run under a handler. The handler block receives the raise's
+/// kind, value and exception name as `params`; the body block pops the handler
+/// it ran under before anything that must not be protected, such as `else`
+/// clauses.
+#[derive(Debug, Clone)]
+struct ExprTry {
+    value: ValueId,
+    body: ExprBlock,
+    handler: ExprBlock,
+    params: Vec<ValueId>,
+    captures: Vec<ValueId>,
+}
+
+/// The clause of a `try` whose body a handler row runs: a rescue clause, which
+/// may wrap the raised value in an `ErlangError` first, or a catch clause.
+#[derive(Debug, Clone, Copy)]
+enum HandlerClause {
+    Rescue { clause: usize, wraps: bool },
+    Catch { clause: usize },
+}
+
+/// One dispatch row of a handler, and the clause whose body it runs.
+#[derive(Debug, Clone)]
+struct HandlerArm {
+    row: PatternRow<super::super::types::Ty>,
+    clause: HandlerClause,
+}
+
+impl HandlerArm {
+    fn rescue(row: PatternRow<super::super::types::Ty>, clause: usize, wraps: bool) -> Self {
+        Self {
+            row,
+            clause: HandlerClause::Rescue { clause, wraps },
+        }
+    }
+
+    fn catch(row: PatternRow<super::super::types::Ty>, clause: usize) -> Self {
+        Self {
+            row,
+            clause: HandlerClause::Catch { clause },
+        }
+    }
+}
+
+/// The clauses of one `try`, as the source wrote them.
+struct TrySections<'a> {
+    body: &'a Spanned<Expr>,
+    rescue: &'a [RescueClause],
+    catch: &'a [CatchClause],
+    else_clauses: &'a [MatchClause],
+    after: Option<&'a Spanned<Expr>>,
+}
+
+const ERROR_KIND: &str = "error";
+const ERLANG_ERROR: &str = "Elixir.ErlangError";
 
 #[derive(Debug, Clone)]
 enum ExprStep {
@@ -183,6 +239,8 @@ enum ExprStep {
         dispatch: Box<ExprDispatch>,
     },
     Receive(Box<ExprReceive>),
+    Try(Box<ExprTry>),
+    PopHandler,
     RequireMapValue {
         value: ValueId,
         source: ValueId,
@@ -446,6 +504,82 @@ fn collect_local_dispatch_requirements(
             for (cond, body) in arms {
                 collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, cond, reads, waits)?;
                 collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, body, reads, waits)?;
+            }
+        }
+        Expr::Try {
+            body,
+            rescue,
+            catch,
+            else_clauses,
+            after,
+        } => {
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, body, reads, waits)?;
+            for clause in catch {
+                for pattern in [&clause.kind, &clause.value] {
+                    collect_local_pattern_requirements(
+                        world,
+                        tel,
+                        namespace,
+                        owner_module,
+                        owner,
+                        pattern,
+                        reads,
+                        waits,
+                    )?;
+                }
+                if let Some(guard) = &clause.guard {
+                    collect_local_guard_requirements(world, tel, namespace, guard, reads, waits)?;
+                }
+                collect_local_dispatch_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    owner,
+                    &clause.body,
+                    reads,
+                    waits,
+                )?;
+            }
+            for clause in rescue {
+                collect_local_dispatch_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    owner,
+                    &clause.body,
+                    reads,
+                    waits,
+                )?;
+            }
+            for clause in else_clauses {
+                collect_local_pattern_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    owner,
+                    &clause.pattern,
+                    reads,
+                    waits,
+                )?;
+                if let Some(guard) = &clause.guard {
+                    collect_local_guard_requirements(world, tel, namespace, guard, reads, waits)?;
+                }
+                collect_local_dispatch_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    owner,
+                    &clause.body,
+                    reads,
+                    waits,
+                )?;
+            }
+            if let Some(after) = after {
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, after, reads, waits)?;
             }
         }
         Expr::Receive { clauses, after } => {
@@ -1515,6 +1649,24 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 self.lower_with(expr.span, bindings, body, else_clauses, env, steps)
             }
             Expr::Receive { clauses, after } => self.lower_receive(expr.span, clauses, after.as_deref(), env, steps),
+            Expr::Try {
+                body,
+                rescue,
+                catch,
+                else_clauses,
+                after,
+            } => self.lower_try(
+                expr.span,
+                TrySections {
+                    body,
+                    rescue,
+                    catch,
+                    else_clauses,
+                    after: after.as_deref(),
+                },
+                env,
+                steps,
+            ),
             Expr::Lambda { occurrence, clauses } => self.lower_lambda(*occurrence, expr.span, clauses, env, steps),
             Expr::Quote(cursor, splices) => {
                 let source_map = self.world.source_map();
@@ -2023,7 +2175,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let subject_value = self.lower_expr(subject, env, steps)?;
-        let plan = self.compile_match_dispatch("case", span, match_rows(clauses), Some(last_resort))?;
+        let plan = self.compile_match_dispatch("case", span, 1, match_rows(clauses), Some(last_resort))?;
         let bindings = self.lower_dispatch_bindings(&plan, env, steps)?;
         let arm_blocks = clauses
             .iter()
@@ -2188,35 +2340,42 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 result: failed,
             });
         }
-        let plan = self.compile_match_dispatch(
-            "with else",
-            span,
-            match_rows(else_clauses),
-            Some(LastResort::with_clause()),
-        )?;
+        self.lower_clause_dispatch_block("with else", span, failed, else_clauses, LastResort::with_clause(), env)
+    }
+
+    /// A case over `subject` whose arms are `clauses`; `last_resort` is what
+    /// is raised when none matches.
+    fn lower_clause_dispatch_block(
+        &mut self,
+        label: &str,
+        span: Span,
+        subject: ValueId,
+        clauses: &[MatchClause],
+        last_resort: LastResort,
+        env: HashMap<Var, ValueId>,
+    ) -> Result<ExprBlock, FatalError> {
+        let plan = self.compile_match_dispatch(label, span, 1, match_rows(clauses), Some(last_resort))?;
         let mut steps = Vec::new();
         let bindings = self.lower_dispatch_bindings(&plan, &env, &mut steps)?;
-        let arm_blocks = else_clauses
+        let arm_blocks = clauses
             .iter()
             .enumerate()
             .map(|(index, clause)| self.lower_match_clause_block(&plan.outcomes[index], clause, env.clone()))
             .collect::<Result<Vec<_>, _>>()?;
         let value = self.fresh_value();
+        steps.push(ExprStep::Dispatch {
+            value,
+            inputs: vec![subject],
+            bindings,
+            dispatch: Box::new(ExprDispatch {
+                plan: Rc::new(plan),
+                arm_blocks,
+                miss_block: None,
+            }),
+        });
         Ok(ExprBlock {
             span,
-            steps: {
-                steps.push(ExprStep::Dispatch {
-                    value,
-                    inputs: vec![failed],
-                    bindings,
-                    dispatch: Box::new(ExprDispatch {
-                        plan: Rc::new(plan),
-                        arm_blocks,
-                        miss_block: None,
-                    }),
-                });
-                steps
-            },
+            steps,
             result: value,
         })
     }
@@ -2255,7 +2414,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             let value = self.lower_expr(&call.call, env, steps)?;
             env.insert(call.name, value);
         }
-        let plan = self.compile_match_dispatch("receive", span, rows, None)?;
+        let plan = self.compile_match_dispatch("receive", span, 1, rows, None)?;
         let bindings = self.lower_dispatch_bindings(&plan, env, steps)?;
         let captures = self.receive_capture_values(clauses, after, env);
         let outcomes = plan
@@ -2276,6 +2435,343 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             captures,
         })));
         Ok(value)
+    }
+
+    /// `try` in its general form, as the nesting Erlang's `try` compiles to:
+    /// `after` is the outermost layer and `rescue` the next; `else` is a case
+    /// over the body's value that runs once the rescue handler is popped.
+    ///
+    /// The `after` layer runs its expression twice over, once per way out: on
+    /// the success path right after its handler is popped, and in the handler
+    /// itself, which then re-raises what it was handed.
+    fn lower_try(
+        &mut self,
+        span: Span,
+        sections: TrySections<'_>,
+        env: &mut HashMap<Var, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let TrySections {
+            body,
+            rescue,
+            catch,
+            else_clauses,
+            after,
+        } = sections;
+        let Some(after) = after else {
+            if rescue.is_empty() && catch.is_empty() {
+                self.warn_try_else_only(span);
+            }
+            return self.lower_handled(span, body, (rescue, catch), else_clauses, env, steps);
+        };
+        let mut protected_steps = Vec::new();
+        let result = self.lower_handled(span, body, (rescue, catch), else_clauses, env, &mut protected_steps)?;
+        protected_steps.push(ExprStep::PopHandler);
+        let protected = ExprBlock {
+            span,
+            steps: protected_steps,
+            result,
+        };
+
+        let params = vec![self.fresh_value(), self.fresh_value(), self.fresh_value()];
+        let mut handler_steps = Vec::new();
+        self.lower_expr(after, &mut env.clone(), &mut handler_steps)?;
+        let reraise = self.compile_match_dispatch("after", span, 2, Vec::new(), Some(LastResort::reraise()))?;
+        let bindings = self.lower_dispatch_bindings(&reraise, env, &mut handler_steps)?;
+        let reraised = self.fresh_value();
+        handler_steps.push(ExprStep::Dispatch {
+            value: reraised,
+            inputs: vec![params[0], params[1]],
+            bindings,
+            dispatch: Box::new(ExprDispatch {
+                plan: Rc::new(reraise),
+                arm_blocks: Vec::new(),
+                miss_block: None,
+            }),
+        });
+        let handler = ExprBlock {
+            span,
+            steps: handler_steps,
+            result: reraised,
+        };
+
+        let mut free = HashSet::new();
+        collect_expr_free_names(&after.node, &mut HashSet::new(), &mut free);
+        let captures = self.capture_values(free, env);
+        let value = self.fresh_value();
+        steps.push(ExprStep::Try(Box::new(ExprTry {
+            value,
+            body: protected,
+            handler,
+            params,
+            captures,
+        })));
+        self.lower_expr(after, &mut env.clone(), steps)?;
+        Ok(value)
+    }
+
+    /// Elixir's own warning for a `try` that has an `else` and nothing else
+    /// to protect or run: a `case` says the same thing.
+    fn warn_try_else_only(&mut self, span: Span) {
+        let diagnostic = super::super::source_diagnostics::try_else_only_diagnostic(span);
+        super::super::drive::ExecutionContext::new(self.world, self.telemetry).emit_warning_once(diagnostic);
+    }
+
+    /// `try do body rescue clauses catch clauses else clauses end`: the body
+    /// runs under a handler whose block dispatches over the delivered (kind,
+    /// value, exception name) whose last resort is the re-raise: a raise no
+    /// clause matches continues, with its kind, to the next handler out. The
+    /// `else` clauses match the body's
+    /// value after the handler is popped, so neither the handler's clauses nor
+    /// a miss reach them.
+    fn lower_handled(
+        &mut self,
+        span: Span,
+        body: &Spanned<Expr>,
+        (rescue, catch): (&[RescueClause], &[CatchClause]),
+        else_clauses: &[MatchClause],
+        env: &mut HashMap<Var, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let mut body = self.lower_expr_as_block(body, env.clone())?;
+        if rescue.is_empty() && catch.is_empty() {
+            steps.extend(body.steps);
+            return self.push_try_else(span, body.result, else_clauses, env, steps);
+        }
+        let params = vec![self.fresh_value(), self.fresh_value(), self.fresh_value()];
+        let raised = params[1];
+        body.steps.push(ExprStep::PopHandler);
+        body.result = self.push_try_else(span, body.result, else_clauses, env, &mut body.steps)?;
+
+        let arms = self.handler_arms(rescue, catch);
+        let rows = arms.iter().map(|arm| arm.row.clone()).collect();
+        let plan = self.compile_match_dispatch(
+            if catch.is_empty() { "rescue" } else { "catch" },
+            span,
+            params.len(),
+            rows,
+            Some(LastResort::reraise()),
+        )?;
+        let mut handler_steps = Vec::new();
+        let bindings = self.lower_dispatch_bindings(&plan, env, &mut handler_steps)?;
+        let mut free = HashSet::new();
+        collect_rescue_clause_free_names(rescue, &mut HashSet::new(), &mut free);
+        collect_catch_clause_free_names(catch, &mut HashSet::new(), &mut free);
+        let captures = self.capture_values(free, env);
+        let arm_blocks = plan
+            .outcomes
+            .iter()
+            .map(|outcome| {
+                let arm = &arms[outcome.body_id as usize];
+                self.lower_handler_arm(outcome, arm.clause, (rescue, catch), raised, env.clone())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let dispatch_value = self.fresh_value();
+        handler_steps.push(ExprStep::Dispatch {
+            value: dispatch_value,
+            inputs: params.clone(),
+            bindings,
+            dispatch: Box::new(ExprDispatch {
+                plan: Rc::new(plan),
+                arm_blocks,
+                miss_block: None,
+            }),
+        });
+        let handler = ExprBlock {
+            span,
+            steps: handler_steps,
+            result: dispatch_value,
+        };
+
+        let value = self.fresh_value();
+        steps.push(ExprStep::Try(Box::new(ExprTry {
+            value,
+            body,
+            handler,
+            params,
+            captures,
+        })));
+        Ok(value)
+    }
+
+    /// The `else` clauses of a `try` as a case over the body's value. A value
+    /// no clause matches raises `TryClauseError`. With no `else` clauses the
+    /// value is the try's own.
+    fn push_try_else(
+        &mut self,
+        span: Span,
+        value: ValueId,
+        else_clauses: &[MatchClause],
+        env: &HashMap<Var, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        if else_clauses.is_empty() {
+            return Ok(value);
+        }
+        let block = self.lower_clause_dispatch_block(
+            "try else",
+            span,
+            value,
+            else_clauses,
+            LastResort::try_clause(),
+            env.clone(),
+        )?;
+        steps.extend(block.steps);
+        Ok(block.result)
+    }
+
+    /// The handler's dispatch rows over the subjects (kind, value, exception
+    /// name): the rescue rows, then one row per catch clause, as Elixir orders
+    /// them.
+    fn handler_arms(&mut self, rescue: &[RescueClause], catch: &[CatchClause]) -> Vec<HandlerArm> {
+        let mut arms = self.rescue_arms(rescue);
+        arms.extend(catch.iter().enumerate().map(|(clause, catch)| {
+            HandlerArm::catch(
+                PatternRow {
+                    patterns: vec![
+                        catch.kind.clone(),
+                        catch.value.clone(),
+                        Spanned::new(Pattern::Wildcard, catch.span),
+                    ],
+                    preconditions: Vec::new(),
+                    guard: catch.guard.clone(),
+                    body_id: 0,
+                },
+                clause,
+            )
+        }));
+        for (index, arm) in arms.iter_mut().enumerate() {
+            arm.row.body_id = index as PatternBodyId;
+        }
+        arms
+    }
+
+    /// One dispatch row per exception a rescue clause names. Rescue rows match
+    /// kind `error` only, so a throw or an exit never reaches a rescue clause.
+    /// A clause that admits a non-exception value (`ErlangError`, or a bare
+    /// variable) gets a wrap row matching a nil exception name; its arm wraps
+    /// the value in an `%ErlangError{}` before the clause body runs.
+    fn rescue_arms(&mut self, rescue: &[RescueClause]) -> Vec<HandlerArm> {
+        let mut arms = Vec::new();
+        for (clause, rescue) in rescue.iter().enumerate() {
+            let span = rescue.span;
+            let pattern = |pattern: Pattern| Spanned::new(pattern, span);
+            let error = pattern(Pattern::Atom(ERROR_KIND.to_string()));
+            let bound = rescue.binding.clone().map(Pattern::Var).unwrap_or(Pattern::Wildcard);
+            let wrap_row = PatternRow {
+                patterns: vec![error.clone(), pattern(Pattern::Wildcard), pattern(Pattern::Nil)],
+                preconditions: Vec::new(),
+                guard: None,
+                body_id: 0,
+            };
+            if rescue.exceptions.is_empty() {
+                if rescue.binding.is_some() {
+                    arms.push(HandlerArm::rescue(wrap_row, clause, true));
+                }
+                arms.push(HandlerArm::rescue(
+                    PatternRow {
+                        patterns: vec![error, pattern(bound), pattern(Pattern::Wildcard)],
+                        preconditions: Vec::new(),
+                        guard: None,
+                        body_id: 0,
+                    },
+                    clause,
+                    false,
+                ));
+                continue;
+            }
+            for exception in &rescue.exceptions {
+                let atom = self
+                    .world
+                    .module_alias_atom(self.source.owner_module, self.namespace, exception)
+                    .unwrap_or_else(|| exception.atom_name());
+                let wraps = atom == ERLANG_ERROR;
+                arms.push(HandlerArm::rescue(
+                    PatternRow {
+                        patterns: vec![error.clone(), pattern(bound.clone()), pattern(Pattern::Atom(atom))],
+                        preconditions: Vec::new(),
+                        guard: None,
+                        body_id: 0,
+                    },
+                    clause,
+                    false,
+                ));
+                if wraps {
+                    arms.push(HandlerArm::rescue(wrap_row.clone(), clause, true));
+                }
+            }
+        }
+        arms
+    }
+
+    fn lower_handler_arm(
+        &mut self,
+        outcome: &crate::dispatch_matrix::pattern::PatternDispatchOutcome,
+        arm: HandlerClause,
+        (rescue, catch): (&[RescueClause], &[CatchClause]),
+        raised: ValueId,
+        mut env: HashMap<Var, ValueId>,
+    ) -> Result<ExprOutcome, FatalError> {
+        let arguments = self.bind_outcome_arguments(outcome, &mut env);
+        let mut steps = Vec::new();
+        let body = match arm {
+            HandlerClause::Rescue { clause, wraps } => {
+                let clause = &rescue[clause];
+                if let (true, Some(binding)) = (wraps, &clause.binding) {
+                    let wrapped = self.push_erlang_error(raised, &mut steps);
+                    env.insert(binding.clone(), wrapped);
+                }
+                &clause.body
+            }
+            HandlerClause::Catch { clause } => &catch[clause].body,
+        };
+        let result = self.lower_expr(body, &mut env, &mut steps)?;
+        Ok(ExprOutcome {
+            arguments,
+            block: ExprBlock {
+                span: body.span,
+                steps,
+                result,
+            },
+        })
+    }
+
+    /// `%ErlangError{original: raised}`: how a raised non-exception value
+    /// presents itself to a rescue clause.
+    fn push_erlang_error(&mut self, raised: ValueId, steps: &mut Vec<ExprStep>) -> ValueId {
+        let module = self.push_const(steps, GroundValue::Atom(ERLANG_ERROR.to_string()));
+        let flag = self.push_const(steps, GroundValue::Bool(true));
+        let entries = [("__struct__", module), ("__exception__", flag), ("original", raised)]
+            .into_iter()
+            .map(|(key, value)| {
+                let literal = GroundValue::Atom(key.to_string());
+                let key = self.push_const(steps, literal.clone());
+                (
+                    LoweredMapKey {
+                        value: key,
+                        literal: Some(literal),
+                    },
+                    value,
+                )
+            })
+            .collect();
+        let value = self.fresh_value();
+        steps.push(ExprStep::Map {
+            value,
+            entries,
+            quoted_span: None,
+        });
+        value
+    }
+
+    fn capture_values(&mut self, free: HashSet<Var>, env: &HashMap<Var, ValueId>) -> Vec<ValueId> {
+        let mut captures = free
+            .into_iter()
+            .filter_map(|name| env.get(&name).copied())
+            .collect::<Vec<_>>();
+        captures.sort_by_key(|value| value.as_u32());
+        captures.dedup();
+        captures
     }
 
     fn lower_match_clause_block(
@@ -2313,10 +2809,11 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         &mut self,
         label: &str,
         span: Span,
+        input_count: usize,
         rows: Vec<PatternRow<super::super::types::Ty>>,
         last_resort: Option<LastResort>,
     ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
-        let source = SourcePatternRows::lexical(1, rows);
+        let source = SourcePatternRows::lexical(input_count, rows);
         let source = match last_resort {
             Some(last_resort) => source.raising(last_resort),
             None => source,
@@ -2363,6 +2860,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         self.compile_match_dispatch(
             label,
             span,
+            1,
             vec![PatternRow {
                 patterns: vec![pattern.clone()],
                 preconditions: Vec::new(),
@@ -2981,6 +3479,43 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                         })),
                     );
                 }
+                ExprStep::Try(try_step) => {
+                    let value = try_step.value;
+                    let branch_dest = if index + 1 == block.steps.len() && value == block.result {
+                        dest
+                    } else {
+                        let resume = self.plan_block(
+                            ExprBlock {
+                                span: block.span,
+                                steps: block.steps[index + 1..].to_vec(),
+                                result: block.result,
+                            },
+                            ControlEntryOrigin::DeliveredResume { value },
+                            dest,
+                            Vec::new(),
+                            Vec::new(),
+                            entries,
+                        );
+                        ControlDestination::Deliver(resume)
+                    };
+                    let body = self.plan_block(
+                        try_step.body.clone(),
+                        ControlEntryOrigin::Branch,
+                        branch_dest.clone(),
+                        Vec::new(),
+                        Vec::new(),
+                        entries,
+                    );
+                    let handler = self.plan_block(
+                        try_step.handler.clone(),
+                        ControlEntryOrigin::Handler,
+                        branch_dest,
+                        try_step.params.clone(),
+                        try_step.captures.clone(),
+                        entries,
+                    );
+                    return (lowered, LoweredTail::Try { body, handler });
+                }
                 _ => lowered.push(lower_projection_step(step)),
             }
         }
@@ -3334,11 +3869,13 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
             spec: spec.clone(),
             is_last: *is_last,
         },
+        ExprStep::PopHandler => LoweredStep::PopHandler,
         ExprStep::DirectCall { .. }
         | ExprStep::ClosureCall { .. }
         | ExprStep::If { .. }
         | ExprStep::Dispatch { .. }
-        | ExprStep::Receive(_) => {
+        | ExprStep::Receive(_)
+        | ExprStep::Try(_) => {
             panic!("control steps should be lowered into tails before projection conversion")
         }
     }
@@ -4059,6 +4596,7 @@ fn child_entries(tail: &LoweredTail) -> Vec<ControlEntryId> {
             }
             children
         }
+        LoweredTail::Try { body, handler } => vec![*body, *handler],
         LoweredTail::Unreachable => Vec::new(),
     }
 }
@@ -4253,6 +4791,21 @@ fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<Var>, free: &mut Has
             *bound = saved;
             collect_match_clause_free_names(else_clauses, bound, free);
         }
+        Expr::Try {
+            body,
+            rescue,
+            catch,
+            else_clauses,
+            after,
+        } => {
+            collect_expr_free_names(&body.node, &mut bound.clone(), free);
+            collect_rescue_clause_free_names(rescue, bound, free);
+            collect_catch_clause_free_names(catch, bound, free);
+            collect_match_clause_free_names(else_clauses, bound, free);
+            if let Some(after) = after {
+                collect_expr_free_names(&after.node, &mut bound.clone(), free);
+            }
+        }
         Expr::Receive { clauses, after } => {
             collect_match_clause_free_names(clauses, bound, free);
             if let Some(after) = after {
@@ -4341,6 +4894,28 @@ fn collect_match_clause_free_names(clauses: &[MatchClause], bound: &mut HashSet<
         let mut clause_bound = bound.clone();
         collect_pattern_free_names(&clause.pattern.node, &mut clause_bound, free);
         bind_pattern_names(&clause.pattern.node, &mut clause_bound);
+        if let Some(guard) = &clause.guard {
+            collect_expr_free_names(&guard.node, &mut clause_bound, free);
+        }
+        collect_expr_free_names(&clause.body.node, &mut clause_bound, free);
+    }
+}
+
+fn collect_rescue_clause_free_names(clauses: &[RescueClause], bound: &mut HashSet<Var>, free: &mut HashSet<Var>) {
+    for clause in clauses {
+        let mut clause_bound = bound.clone();
+        clause_bound.extend(clause.binding.iter().cloned());
+        collect_expr_free_names(&clause.body.node, &mut clause_bound, free);
+    }
+}
+
+fn collect_catch_clause_free_names(clauses: &[CatchClause], bound: &mut HashSet<Var>, free: &mut HashSet<Var>) {
+    for clause in clauses {
+        let mut clause_bound = bound.clone();
+        for pattern in [&clause.kind, &clause.value] {
+            collect_pattern_free_names(&pattern.node, &mut clause_bound, free);
+            bind_pattern_names(&pattern.node, &mut clause_bound);
+        }
         if let Some(guard) = &clause.guard {
             collect_expr_free_names(&guard.node, &mut clause_bound, free);
         }
@@ -4474,6 +5049,7 @@ fn expr_name(expr: &Expr) -> &'static str {
         Expr::Cond(_) => "Cond",
         Expr::With(_, _, _) => "With",
         Expr::Receive { .. } => "Receive",
+        Expr::Try { .. } => "Try",
         Expr::Match(_, _) => "Match",
         Expr::Block(_) => "Block",
         Expr::Lambda { .. } => "Lambda",

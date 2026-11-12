@@ -1,7 +1,7 @@
 # Dispatch Matrix
 
 `src/dispatch_matrix` is the shared model for source-pattern and type-directed
-dispatch. Function heads, `case`, `with else`, selective receive, guard helper
+dispatch. Function heads, `case`, `with else`, `try else`, selective receive, guard helper
 dispatch, and protocol finite-union dispatch all build a `DispatchMatrix`,
 compile it to a `DispatchGraph`, and let producer policy decide what a winning
 outcome means. `SourcePatternRows` normalizes AST patterns into rows, but the
@@ -1182,16 +1182,23 @@ reports them as internal errors. There is no residual protocol-stub outcome in
 the matrix.
 
 A decision that can end with no outcome names what it raises:
-`PatternDispatchPlan::last_resort` is a `LastResort` (exception module, message,
-and whether the message shows input 0), set when the rows are built through
+`PatternDispatchPlan::last_resort` is a `LastResort`, set when the rows are built through
 `SourcePatternRows::raising` and kept through narrowing and type mapping. A
-plan with no last resort belongs to a construct that handles the miss itself:
-a `with` binding (its `else` takes the value, or without one the `with` yields
-it), a guard, `receive`. Native lowering of a reached
-fail emits `Term::Raise`, which calls `fz_raise` or `fz_raise_showing`; the
-interpreter calls `failure::raise`. The process prints Elixir's line for that
-exception and ends; drivers read `Process.failed`, never `halt_value`. See
-[process failure](process-failure.md).
+`LastResort` has two forms: `Exception` (exception module, message, and whether
+the message shows input 0) and `Reraise`, which continues the raise a handler
+was delivered, with inputs 0 and 1 as its kind and value; a `try` handler's
+dispatch, and an `after`'s dispatch with no rows, end in it. A plan with no last
+resort belongs to a construct that handles the miss itself: a `with` binding
+(its `else` takes the value, or without one the `with` yields it), a guard,
+`receive`. Native
+lowering of a reached fail emits `Term::Raise`, which calls `fz_raise` or
+`fz_raise_showing`, or `Term::Reraise`, which calls `fz_reraise`; the
+interpreter's `raise_last_resort` calls `failure::raise_exception` (or
+`failure::raise_exception_showing` with the subject), or `failure::reraise`,
+and then `after_panic`. The raise goes to the nearest handler, so a `rescue` around the
+decision catches it like any raise; with no handler the process prints Elixir's
+line for that exception and ends, and drivers read `Process.failed`, never
+`halt_value`. See [exceptions](exceptions.md).
 
 A plan also records the tuple arity every outcome proves each input to have
 (`PatternDispatchPlan::proven_tuple_arity`), read from the graph as built so a
@@ -1216,7 +1223,7 @@ it was carved from, so a callable taken out of a call's result by `case` or
 AST-facing `SourcePatternRows`, extracts positive proof paths into `Order::Source`
 arms, and keeps pattern-specific payloads as opaque outcome metadata: body id,
 leaf bindings, pinned inputs, prepared keys, and guard expressions.
-Inline lowering for function heads, `case`, `=`, and `with else`, plus interpreter
+Inline lowering for function heads, `case`, `=`, `with else`, and `try else`, plus interpreter
 receive probes and native receive codegen, walk the resulting
 `PatternDispatchPlan` directly. Receive accept/reject policy is not encoded in
 `DispatchMatrix`; selective receive remains a producer/outcome policy layered

@@ -4,7 +4,6 @@ use crate::exec::runtime::{ProcessExitCapture, Runtime};
 use crate::fz_ir::FnId;
 use cranelift_jit::JITModule;
 use cranelift_module::FuncId;
-use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::heap::SchemaRegistry;
 use fz_runtime::pinned_abi::call1;
 use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
@@ -67,15 +66,12 @@ impl CompiledModule {
 
     /// Run one quantum for a Process.
     pub(crate) fn run_quantum(&self, process: &mut Process) {
-        fn run_scheduler_closure(resume_addr: *const u8, process: &mut Process, closure: AnyValueRef) {
-            let process_ptr = process as *mut Process;
-            let _ = unsafe { call1(resume_addr, process_ptr, closure.raw_word()) };
-        }
-
         let closure = process
             .take_runnable_closure()
             .expect("a dispatched process has a runnable closure");
-        run_scheduler_closure(self.resume_addr, process, closure);
+        process.run_quantum(closure, |process, closure| {
+            let _ = unsafe { call1(self.resume_addr, process as *mut Process, closure.raw_word()) };
+        });
         process.next_frame = null_mut();
     }
 }

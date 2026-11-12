@@ -86,7 +86,7 @@ fn an_exit_nests_the_process_as_an_opaque_value() {
     assert_eq!(
         line(RuntimeEvent::ProcessExited(&process)),
         format!(
-            r#"{{"name":["fz","runtime","process_exited"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{{}},"metadata":{{"pid":1,"process":{{"opaque_type":"fz_runtime::process::Process","live_count":{live},"bytes_used":{used},"list_retention_attempts":0,"list_retention_hits":0,"dtors_dispatched":3,"halt_value":-4,"failed":true}}}}}}"#
+            r#"{{"name":["fz","runtime","process_exited"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{{}},"metadata":{{"pid":1,"process":{{"opaque_type":"fz_runtime::process::Process","live_count":{live},"bytes_used":{used},"list_retention_attempts":0,"list_retention_hits":0,"raises_delivered":0,"reduction_yields":0,"dtors_dispatched":3,"halt_value":-4,"failed":true}}}}}}"#
         )
     );
 }

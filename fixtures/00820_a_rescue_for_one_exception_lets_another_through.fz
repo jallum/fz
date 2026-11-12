@@ -1,0 +1,20 @@
+#---
+# purpose: "a rescue naming ArgumentError catches raise ArgumentError and does not catch a RuntimeError, which the outer try takes"
+# oracle: 00820_a_rescue_for_one_exception_lets_another_through.oracle.exs
+#---
+def attempt(f) do
+  try do
+    try do
+      f.()
+    rescue
+      ArgumentError -> :argument
+    end
+  rescue
+    RuntimeError -> :runtime_from_outer
+  end
+end
+
+def main() do
+  dbg(attempt(fn () -> raise ArgumentError, "x" end))
+  dbg(attempt(fn () -> raise "x" end))
+end

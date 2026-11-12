@@ -1,0 +1,12 @@
+#---
+# purpose: "a rescue head that is a bare variable catches every exception and binds it"
+# oracle: 00818_a_bare_rescue_variable_binds_any_exception.oracle.exs
+#---
+def main() do
+  result = try do
+    raise ArgumentError, "bare"
+  rescue
+    e -> e.message
+  end
+  dbg(result)
+end

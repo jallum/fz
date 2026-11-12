@@ -1,0 +1,21 @@
+#---
+# purpose: "a panic whose value is not an exception rescues as an ErlangError carrying the value as original, by alias and by bare variable"
+# oracle: 00819_a_panic_with_a_plain_value_rescues_as_an_erlang_error.oracle.exs
+#---
+# Elixir normalizes a few reason atoms into named exceptions (`:badarg`
+# becomes ArgumentError); fz does not, so the value here is one Elixir leaves
+# alone. The oracle spells the panic as `:erlang.error/1`.
+def main() do
+  by_alias = try do
+    panic(:boom)
+  rescue
+    e in ErlangError -> e.original
+  end
+  dbg(by_alias)
+  bare = try do
+    panic({:stop, 3})
+  rescue
+    e -> {e.__struct__, e.original}
+  end
+  dbg(bare)
+end

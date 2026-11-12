@@ -1695,6 +1695,26 @@ fn collect_entry_live_demands(
                 record_entry_capture_demands(out, target, &shared);
             }
         }
+        LoweredTail::Try { body, handler } => {
+            for target in [*body, *handler] {
+                merge_live_demands(
+                    &mut live,
+                    collect_entry_external_demands(
+                        types,
+                        executable,
+                        entries,
+                        target,
+                        outgoing_demand.clone(),
+                        facts,
+                        demands,
+                        out,
+                        call_return_demands,
+                        callable_flows,
+                        walks,
+                    ),
+                );
+            }
+        }
         LoweredTail::Unreachable => {}
     }
 
@@ -1925,6 +1945,7 @@ fn step_sources_of(step: &LoweredStep, value: ValueId) -> Vec<ValueId> {
         LoweredStep::Const { .. }
         | LoweredStep::FunctionRef { .. }
         | LoweredStep::Lambda { .. }
+        | LoweredStep::PopHandler
         | LoweredStep::Tuple { .. }
         | LoweredStep::List { .. }
         | LoweredStep::Map { .. }
@@ -2174,6 +2195,7 @@ pub(super) fn propagate_steps_reverse(
                     }
                 }
             }
+            LoweredStep::PopHandler => {}
         }
     }
 }
@@ -2190,14 +2212,12 @@ fn inline_dispatch_input_demands(
 ) -> Vec<RuntimeDemand> {
     let plan = &dispatch.plan;
     let mut asked = plan.input_demand().to_vec();
-    let raises_showing = plan.can_fail()
-        && dispatch.miss_entry.is_none()
-        && plan
-            .last_resort
-            .as_ref()
-            .is_some_and(|last_resort| last_resort.shows_subject);
-    if raises_showing && let Some(subject) = asked.first_mut() {
-        *subject = DispatchDemand::Whole;
+    let consumed = match &plan.last_resort {
+        Some(last_resort) if plan.can_fail() && dispatch.miss_entry.is_none() => last_resort.consumed_inputs(),
+        _ => 0,
+    };
+    for input in asked.iter_mut().take(consumed) {
+        *input = DispatchDemand::Whole;
     }
     let mut input_demands = asked
         .iter()
@@ -2313,6 +2333,7 @@ fn note_clause_matcher_demands(
                     note_live_demand(out, live, size, RuntimeDemand::whole());
                 }
             }
+            LoweredStep::PopHandler => {}
             LoweredStep::Const { .. }
             | LoweredStep::Tuple { .. }
             | LoweredStep::List { .. }

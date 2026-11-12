@@ -46,6 +46,7 @@ import Kernel, only: [
   assert: 2,
   dbg: 1,
   div: 2,
+  exit: 1,
   make_ref: 0,
   byte_size: 1,
   elem: 2,
@@ -67,6 +68,7 @@ import Kernel, only: [
   panic: 1,
   raise: 1,
   raise: 2,
+  reraise: 2,
   range: 3,
   refute: 1,
   rem: 2,
@@ -74,6 +76,7 @@ import Kernel, only: [
   self: 0,
   send: 2,
   spawn: 1,
+  throw: 1,
   to_string: 1
 ]
 

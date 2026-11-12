@@ -1,0 +1,16 @@
+#---
+# purpose: "an after block that raises after a body that completed raises out of the try"
+# oracle: 00835_a_raise_inside_after_on_success_propagates.oracle.exs
+#---
+def main() do
+  result = try do
+    try do
+      :fine
+    after
+      raise RuntimeError, "from after"
+    end
+  rescue
+    e in RuntimeError -> e.message
+  end
+  dbg(result)
+end

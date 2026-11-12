@@ -43,7 +43,7 @@ use fz_runtime::sched_core::{
     Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
 use fz_runtime::telemetry::{
-    EXECUTION_READY, GC, PROCESS_EXITED, RUN_ENDED, RunEnded, RuntimeEvent, SCHEDULER_SLEPT, SEND_PROBE,
+    EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, Raise, RunEnded, RuntimeEvent, SCHEDULER_SLEPT, SEND_PROBE,
 };
 use fz_runtime::timer::TimerId;
 #[cfg(test)]
@@ -82,6 +82,8 @@ pub struct ExitRecord {
     pub bytes_used: usize,
     pub list_retention_attempts: u64,
     pub list_retention_hits: u64,
+    pub raises_delivered: u64,
+    pub reduction_yields: u64,
     pub failed: bool,
     pub dtors_dispatched: u64,
 }
@@ -93,9 +95,26 @@ pub fn emit_runtime_event<T: Telemetry + ?Sized>(tel: &T, event: RuntimeEvent<'_
         RuntimeEvent::ProcessExited(process) => tel.raw_event2(&PROCESS_EXITED, &process.pid, process),
         RuntimeEvent::SchedulerSlept(wait) => tel.raw_event1(&SCHEDULER_SLEPT, &wait),
         RuntimeEvent::SendProbe(probe) => tel.raw_event1(&SEND_PROBE, probe),
+        RuntimeEvent::Raise(raise) => tel.raw_event1(&RAISE, raise),
         RuntimeEvent::Gc(collection) => tel.raw_event1(&GC, collection),
         RuntimeEvent::RunEnded(ended) => tel.raw_event1(&RUN_ENDED, &ended),
     }
+}
+
+/// The raise hook of a compiled run: every raise becomes a `fz.runtime.raise`
+/// event on the runtime's telemetry.
+unsafe extern "C" fn raise_hook_thunk<T: Telemetry + ?Sized>(
+    scheduler: *mut (),
+    kind: *const u8,
+    kind_len: usize,
+    name: *const u8,
+    name_len: usize,
+    depth: usize,
+    stack_bytes: usize,
+) {
+    let rt = unsafe { &*(scheduler as *mut Runtime<'_, T>) };
+    let record = unsafe { Raise::from_hook_args(kind, kind_len, name, name_len, depth, stack_bytes) };
+    emit_runtime_event(rt.tel, RuntimeEvent::Raise(&record));
 }
 
 /// fz-ul4.23.10 scheduler-hook thunks. These are the extern "C" fns the
@@ -206,11 +225,12 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         self
     }
 
-    /// Whether the task `pid` failed. Exited tasks stay in the registry, so a
-    /// driver reads this after `run_until_idle` to give a failed main process
-    /// its exit status.
-    pub fn failed(&self, pid: PidId) -> bool {
-        self.tasks.get(&pid).is_some_and(|task| task.failed)
+    /// The exit status of the task `pid`: what an uncaught raise left it with,
+    /// 0 for a task that did not end that way. Exited tasks stay in the
+    /// registry, so a driver reads this after `run_until_idle` to give the main
+    /// process its exit status.
+    pub fn exit_status(&self, pid: PidId) -> i32 {
+        self.tasks.get(&pid).map_or(0, |task| task.exit_status)
     }
 
     /// Spawn a new task that begins execution at `fn_id` (which must take
@@ -302,6 +322,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             spawn: Some(spawn_hook_thunk::<T>),
             send: Some(send_hook_thunk::<T>),
             fault: Some(fz_runtime::failure::STDERR_FAULT_HOOK),
+            raise: Some(raise_hook_thunk::<T>),
             output: Some(OUTPUT_HOOK),
             timer_schedule: Some(timer_schedule_hook::<Self>()),
             timer_cancel: Some(timer_cancel_hook::<Self>()),
@@ -399,7 +420,9 @@ impl ProcessExitCapture {
                     bytes_used: process.heap.bytes_used(),
                     list_retention_attempts: process.list_retention_attempts,
                     list_retention_hits: process.list_retention_hits,
-                    failed: process.failed,
+                    raises_delivered: process.raises_delivered,
+                    reduction_yields: process.reduction_yields,
+                    failed: process.ended_in_failure(),
                     dtors_dispatched: process.dtors_dispatched,
                 });
             },

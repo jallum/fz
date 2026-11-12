@@ -521,7 +521,8 @@ extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiv
 
 /// Run main and all spawned processes via the cooperative run-queue, then
 /// tear down AOT scheduler state. Returns the program's exit status: 0 when
-/// main completed, 1 when it failed.
+/// main completed, otherwise the status an uncaught raise left it with: 1, or
+/// the shutdown status of an exit.
 /// # Safety
 /// `proc`, `main_fp`, `main_trampoline_addr` must be valid pointers produced
 /// by AOT codegen and `fz_aot_setup`; `main_halt_kind` must match the entry
@@ -565,9 +566,10 @@ pub extern "C" fn fz_aot_run_main(
     unsafe { (*sched).observe(RuntimeEvent::ExecutionReady) };
     aot_run_queue_loop(sched);
 
-    // A failed main process is the program's failure; its line is already on
-    // stderr. Read the flag before teardown frees the process.
-    let failed = process.failed;
+    // A main process that ended by an uncaught raise decides the program's
+    // status; its line, if it has one, is already on stderr. Read the status
+    // before teardown frees the process.
+    let status = process.exit_status;
 
     // Teardown: reclaim the leaked scheduler box. Its drop frees the task
     // table (and every process heap), the timer wheel, and the run-queue in
@@ -580,7 +582,7 @@ pub extern "C" fn fz_aot_run_main(
     if let Some(mut log) = log {
         log.write(&RuntimeEvent::RunEnded(RunEnded::sample(before)));
     }
-    i32::from(failed)
+    status
 }
 
 /// Register the `fz_drain_dtor_entry` shim address. Called from
@@ -645,15 +647,13 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
     // matched receive becomes the runnable closure here.
     deliver_in_queue(unsafe { &mut *proc_ptr });
 
-    fn run_scheduler_closure(resume_addr: *const u8, process: *mut Process, closure: AnyValueRef) {
-        let _ = unsafe { call1(resume_addr, process, closure.raw_word()) };
-    }
-
     // One re-entry verb: resume the task's `runnable` closure (a fresh entry
     // thunk for a spawned task / main, or a continuation for a receive or
     // mid-flight wakeup). Bound args travel in the closure env.
     let closure = unsafe { (*proc_ptr).take_runnable_closure() }.expect("a dispatched process has a runnable closure");
-    run_scheduler_closure(addrs.resume, proc_ptr, closure);
+    unsafe { &mut *proc_ptr }.run_quantum(closure, |process, closure| {
+        let _ = unsafe { call1(addrs.resume, process, closure.raw_word()) };
+    });
     let process = unsafe { &mut *proc_ptr };
     if end_quantum(unsafe { &mut *sched }, process) == Disposition::Requeue {
         unsafe { (*sched).core.make_runnable(pid, &mut process.state) };

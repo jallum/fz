@@ -1,0 +1,17 @@
+#---
+# purpose: "a tail loop that raises and rescues on every one of 10_000 iterations completes with the count"
+# oracle: 00826_a_loop_that_raises_and_rescues_every_iteration_runs_to_the_end.oracle.exs
+#---
+def loop(0, acc), do: acc
+def loop(n, acc) do
+  one = try do
+    raise ArgumentError, "x"
+  rescue
+    ArgumentError -> 1
+  end
+  loop(n - 1, acc + one)
+end
+
+def main() do
+  dbg(loop(10_000, 0))
+end

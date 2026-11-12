@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::dispatch_matrix::pattern::{
-    PatternDispatchOutcome, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr, PatternPinnedInput,
+    LastResort, PatternDispatchOutcome, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr, PatternPinnedInput,
 };
 use crate::dispatch_matrix::{
     BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchEdge, DispatchGraph,
@@ -965,6 +965,7 @@ impl ProgramCanon<'_> {
             BackendEntryOrigin::Clause => "clause".to_string(),
             BackendEntryOrigin::Branch => "branch".to_string(),
             BackendEntryOrigin::ReceiveOutcome => "receive_outcome".to_string(),
+            BackendEntryOrigin::Handler => "handler".to_string(),
             BackendEntryOrigin::DeliveredResume { value, layout } => {
                 let name = self.names.value(*value);
                 format!("delivered_resume {name} {}", self.return_layout(layout))
@@ -1120,6 +1121,7 @@ impl ProgramCanon<'_> {
                 let spec = self.bit_spec(spec);
                 format!("{ok}, {value}, {next_reader} = bitstring_read {reader} {spec} last={is_last}")
             }
+            BackendStep::PopHandler => "pop_handler".to_string(),
         }
     }
 
@@ -1256,6 +1258,13 @@ impl ProgramCanon<'_> {
                 out.exit();
             }
             BackendTail::Unreachable => out.put("tail unreachable"),
+            BackendTail::Try { body, handler } => {
+                out.put(&format!(
+                    "tail try body=e{} handler=e{}",
+                    body.as_u32(),
+                    handler.as_u32()
+                ));
+            }
         }
     }
 
@@ -1498,16 +1507,17 @@ impl ProgramCanon<'_> {
             "prepared_keys",
             plan.prepared_keys.iter().map(ground).collect::<Vec<_>>(),
         );
-        if let Some(last_resort) = &plan.last_resort {
-            let showing = if last_resort.shows_subject {
-                " showing input 0"
-            } else {
-                ""
-            };
-            out.put(&format!(
-                "raises {} {:?}{showing}",
-                last_resort.exception, last_resort.message
-            ));
+        match &plan.last_resort {
+            Some(LastResort::Exception {
+                exception,
+                message,
+                shows_subject,
+            }) => {
+                let showing = if *shows_subject { " showing input 0" } else { "" };
+                out.put(&format!("raises {exception} {message:?}{showing}"));
+            }
+            Some(LastResort::Reraise) => out.put("reraises input 0 as kind, input 1 as value"),
+            None => {}
         }
         lines(out)
     }

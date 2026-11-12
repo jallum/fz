@@ -1,0 +1,3 @@
+{:big_throw, 500}
+{:throw, 5}
+{:other, :exit, :gone}

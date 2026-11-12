@@ -574,10 +574,21 @@ fn required_resume_transport_positions(
             | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
+            | LoweredTail::Try { .. }
             | LoweredTail::Unreachable => None,
         }) else {
             continue;
         };
+        // A call that cannot return delivers nothing, so it is not one of
+        // the entry's deliverers: the resume's layout comes from the values
+        // that do arrive there.
+        let diverges = materialized
+            .call_edges
+            .get(&callsite)
+            .is_some_and(|edge| world.types().is_empty(&edge.return_ty()));
+        if diverges {
+            continue;
+        }
         let entry_id = materialized
             .original_entry_ids
             .get(entry_id.as_u32() as usize)
@@ -589,6 +600,11 @@ fn required_resume_transport_positions(
         let ControlEntryOrigin::DeliveredResume { .. } = entry.origin else {
             continue;
         };
+        // A resume nothing can reach has no payload to lay out; the backend
+        // lowers it as a plain unreachable branch.
+        if matches!(&entry.tail, LoweredTail::Unreachable) {
+            continue;
+        }
         let entry_id = materialized
             .original_entry_ids
             .get(entry_index)
@@ -653,6 +669,7 @@ fn required_local_backend_transport_positions(
             | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
+            | LoweredTail::Try { .. }
             | LoweredTail::Unreachable => continue,
         };
         let value_position = TransportPosition::Value {
@@ -726,6 +743,7 @@ pub(crate) fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::
         LoweredStep::BitstringRead {
             ok, value, next_reader, ..
         } => vec![*ok, *value, *next_reader],
+        LoweredStep::PopHandler => Vec::new(),
     }
 }
 
@@ -797,6 +815,7 @@ fn required_call_edge_transport_positions(
             | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
+            | LoweredTail::Try { .. }
             | LoweredTail::Unreachable => {}
         }
     }
@@ -933,6 +952,7 @@ fn materialize_call_edges(
             | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
+            | LoweredTail::Try { .. }
             | LoweredTail::Unreachable => {}
         }
     }
@@ -1450,6 +1470,10 @@ fn collect_reachable_entries(
                 collect_reachable_entries(entries, after.entry, reachable_entries, order, out);
             }
         }
+        LoweredTail::Try { body, handler } => {
+            collect_reachable_entries(entries, *body, reachable_entries, order, out);
+            collect_reachable_entries(entries, *handler, reachable_entries, order, out);
+        }
         LoweredTail::Unreachable => {}
     }
 }
@@ -1501,6 +1525,10 @@ fn reindex_entries(
                 if let Some(after) = &mut receive.after {
                     after.entry = ids[&after.entry];
                 }
+            }
+            LoweredTail::Try { body, handler } => {
+                *body = ids[body];
+                *handler = ids[handler];
             }
             LoweredTail::Unreachable => {}
         }
@@ -1694,6 +1722,7 @@ fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, Materialize
         | LoweredTail::If { .. }
         | LoweredTail::Dispatch { .. }
         | LoweredTail::Receive(_)
+        | LoweredTail::Try { .. }
         | LoweredTail::Unreachable => {}
     }
     effects

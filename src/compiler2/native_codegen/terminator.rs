@@ -11,8 +11,10 @@ use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Sig
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
-use fz_runtime::failure::{fz_raise, fz_raise_showing};
-use fz_runtime::ir_runtime::{fz_receive_park_matched, fz_yield_mid_flight_report, fz_yield_slow_path_begin};
+use fz_runtime::failure::{fz_raise, fz_raise_showing, fz_reraise};
+use fz_runtime::ir_runtime::{
+    fz_receive_park_matched, fz_try_push, fz_yield_mid_flight_report, fz_yield_slow_path_begin,
+};
 use fz_runtime::process::YIELD_REASON_REDUCTIONS;
 use fz_runtime::process_abi::PROCESS_REDUCTIONS_REMAINING_OFFSET;
 use fz_runtime::scheduler_hooks::YIELD_PTR;
@@ -300,6 +302,13 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
 ) -> Result<(), CodegenError> {
     match &blk.terminator {
         Term::Goto(target, args) => emit_goto(body.b, var_env, block_map, target, args),
+        Term::Try {
+            handler,
+            captures,
+            body: body_block,
+        } => emit_try(
+            body, env, var_env, block_map, is_cont_fn, cont_param, *handler, captures, body_block,
+        ),
         Term::If {
             cond, then_b, else_b, ..
         } => emit_if(body, var_env, block_map, caller_fn_id, blk.id, cond, then_b, else_b),
@@ -308,6 +317,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
             message,
             subject,
         } => emit_raise(body, var_env, *exception, *message, *subject),
+        Term::Reraise { kind, value } => emit_reraise(body, var_env, *kind, *value),
         Term::Unreachable => {
             body.b.ins().trap(TrapCode::user(1).unwrap());
             Ok(())
@@ -382,6 +392,36 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
     }
 }
 
+/// Enter a `try`: build the handler's continuation template over the live
+/// captures, push it as the process's innermost handler, and fall into the
+/// body block. The template is the same shape as a receive outcome template,
+/// so `fz_panic` materialises it the same way with the raise's three values.
+#[allow(clippy::too_many_arguments)]
+fn emit_try<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    block_map: &HashMap<u32, ir::Block>,
+    is_cont_fn: bool,
+    cont_param: ir::Value,
+    handler: FnId,
+    captures: &[Var],
+    body_block: &BlockId,
+) -> Result<(), CodegenError> {
+    let cont_sid = env
+        .body_id_for_fn(handler)
+        .unwrap_or_else(|| panic!("native try handler fn {} has no registered codegen body id", handler.0));
+    let cap_bindings: Vec<ClosureCapture> = captures
+        .iter()
+        .map(|cv| closure_capture_for_var(body, var_env, cv.0))
+        .collect();
+    let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings, vec![], vec![]);
+    let template = ContinuationPlan::heap_closure(payload).emit_value(body, is_cont_fn, cont_param);
+    let process = body.process_arg();
+    runtime_call!(body, fz_try_push, [process, template]);
+    emit_goto(body.b, var_env, block_map, body_block, &[])
+}
+
 fn emit_goto(
     b: &mut FunctionBuilder<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -438,7 +478,8 @@ fn emit_if<M: cranelift_module::Module>(
 }
 
 /// `Term::Raise` is a decision's last resort: the process raises its
-/// exception through the one panic route and returns to the scheduler.
+/// exception through the one raise route, and what follows is what follows
+/// any raise.
 fn emit_raise<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -458,8 +499,23 @@ fn emit_raise<M: cranelift_module::Module>(
             runtime_call!(body, fz_raise, [process, exception, message]);
         }
     }
-    let done = body.b.ins().iconst(types::I64, 0);
-    body.b.ins().return_(&[done]);
+    continue_after_raise(body);
+    Ok(())
+}
+
+/// `Term::Reraise` is a handler's last resort: the process continues the raise
+/// the handler was delivered, and what follows is what follows any raise.
+fn emit_reraise<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    kind: Var,
+    value: Var,
+) -> Result<(), CodegenError> {
+    let kind = body.any_ref_for_var(var_env, kind.0);
+    let value = body.any_ref_for_var(var_env, value.0);
+    let process = body.process_arg();
+    runtime_call!(body, fz_reraise, [process, kind, value]);
+    continue_after_raise(body);
     Ok(())
 }
 
@@ -920,7 +976,7 @@ fn emit_receive_matched<M: cranelift_module::Module>(
 
 // Run a zero-arg outcome closure the way `fz_resume` does: Tail-CC call
 // through its code pointer with the closure as `self`.
-fn emit_resume_closure<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, closure: ir::Value) {
+pub(super) fn emit_resume_closure<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, closure: ir::Value) {
     let code = body.closure_code_ref(closure);
     let mut sig = Signature::new(CallConv::Tail);
     sig.params.push(AbiParam::new(types::I64)); // self

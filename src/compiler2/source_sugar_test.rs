@@ -96,16 +96,18 @@ fn stamp_after_rewriting(text: &str) -> Option<String> {
         .map(|stamp| stamp.atom_name().expect("the stamp is an atom"))
 }
 
+/// The operators a later decoder has to recognize again carry their stamp:
+/// the concatenations read as patterns, and `in`, read as a rescue head.
 #[test]
-fn a_rewritten_concatenation_operator_carries_the_operator_it_came_from() {
+fn a_rewritten_operator_a_decoder_recognizes_carries_the_operator_it_came_from() {
     assert_eq!(stamp_after_rewriting("a <> b\n").as_deref(), Some("<>"));
     assert_eq!(stamp_after_rewriting("a ++ b\n").as_deref(), Some("++"));
+    assert_eq!(stamp_after_rewriting("a in b\n").as_deref(), Some("in"));
 }
 
 #[test]
 fn the_other_rewritten_operators_carry_no_stamp() {
     assert_eq!(stamp_after_rewriting("a -- b\n"), None);
-    assert_eq!(stamp_after_rewriting("a in b\n"), None);
 }
 
 /// The quoted form as one line: calls as `head(args)`, remote calls as

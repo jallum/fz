@@ -1,0 +1,17 @@
+#---
+# purpose: "an exception raised by an after block replaces the one that was in flight"
+# oracle: 00834_a_raise_inside_after_masks_the_original.oracle.exs
+#---
+def main() do
+  result = try do
+    try do
+      raise ArgumentError, "original"
+    after
+      raise RuntimeError, "from after"
+    end
+  rescue
+    e in ArgumentError -> {:argument, e.message}
+    e in RuntimeError -> {:runtime, e.message}
+  end
+  dbg(result)
+end

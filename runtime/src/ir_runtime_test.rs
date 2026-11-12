@@ -858,3 +858,29 @@ fn a_struct_answers_its_module_and_a_map_answers_its_struct_entry() {
     );
     assert_eq!(of_map.load_atom(), Ok(module as u64));
 }
+
+#[test]
+fn try_push_stores_the_closure_reference_word_codegen_emits_and_try_pop_removes_it() {
+    with_process(|process| {
+        let template = process
+            .heap
+            .alloc_closure_slots(crate::any_value::ClosureDenotationId::INTERNAL, 0, 1, 0);
+        let template_addr = crate::any_value::closure_addr_from_tagged(template).expect("a closure");
+        let template_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, template_addr).expect("a closure ref");
+        let handler = Handler::Closure(ClosureRef::new(template_ref));
+
+        fz_try_push(process, template_ref.raw_word());
+        fz_try_pop(process);
+        fz_try_push(process, template_ref.raw_word());
+
+        assert_eq!(
+            process.handlers,
+            [handler],
+            "the handler holds the closure reference as codegen emitted it"
+        );
+
+        fz_try_pop(process);
+
+        assert!(process.handlers.is_empty());
+    });
+}

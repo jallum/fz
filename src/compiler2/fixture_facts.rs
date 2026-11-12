@@ -176,6 +176,7 @@ fn callsite_kinds(body: &LoweredBody) -> HashMap<CallSiteId, CallsiteDispatchKin
             | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
+            | LoweredTail::Try { .. }
             | LoweredTail::Unreachable => {}
         }
     }

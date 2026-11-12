@@ -9,7 +9,7 @@ use std::rc::Rc;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
+use crate::dispatch_matrix::pattern::{LastResort, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, ProjectionKind, Region, SubjectSource};
 use crate::ground_value::GroundValue;
 use crate::source::Span;
@@ -770,6 +770,10 @@ fn lower_backend_tail(
             dest: receive.dest.clone(),
         })),
         LoweredTail::Unreachable => BackendTail::Unreachable,
+        LoweredTail::Try { body, handler } => BackendTail::Try {
+            body: *body,
+            handler: *handler,
+        },
     })
 }
 
@@ -993,6 +997,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 spec: spec.clone(),
                 is_last: *is_last,
             },
+            LoweredStep::PopHandler => BackendStep::PopHandler,
         })
     }
 
@@ -1075,6 +1080,7 @@ fn lower_entry_origin(executable: &AbiReadyExecutable, entry_index: usize, entry
         ControlEntryOrigin::Clause => BackendEntryOrigin::Clause,
         ControlEntryOrigin::Branch => BackendEntryOrigin::Branch,
         ControlEntryOrigin::ReceiveOutcome => BackendEntryOrigin::ReceiveOutcome,
+        ControlEntryOrigin::Handler => BackendEntryOrigin::Handler,
         ControlEntryOrigin::DeliveredResume { .. } => unreachable!("delivered resumes return before branch fallback"),
     }
 }
@@ -1144,7 +1150,8 @@ fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut Hash
             | BackendStep::TupleField { .. }
             | BackendStep::SplitList { .. }
             | BackendStep::BitstringInit { .. }
-            | BackendStep::BitstringRead { .. } => {}
+            | BackendStep::BitstringRead { .. }
+            | BackendStep::PopHandler => {}
         }
     }
 }
@@ -1163,7 +1170,8 @@ fn collect_tail_atoms(world: &mut World, tail: &BackendTail, seen: &mut HashSet<
         | BackendTail::Unreachable
         | BackendTail::DirectCall { .. }
         | BackendTail::ClosureCall { .. }
-        | BackendTail::If { .. } => {}
+        | BackendTail::If { .. }
+        | BackendTail::Try { .. } => {}
     }
 }
 
@@ -1182,8 +1190,13 @@ fn collect_dispatch_atoms(
     for prepared in &plan.prepared_keys {
         collect_dispatch_const_atoms(prepared, seen, atoms);
     }
-    if let Some(last_resort) = plan.last_resort.as_ref().filter(|_| plan.can_fail()) {
-        push_atom(seen, atoms, last_resort.exception);
+    if let Some(exception) = plan
+        .last_resort
+        .as_ref()
+        .filter(|_| plan.can_fail())
+        .and_then(LastResort::exception)
+    {
+        push_atom(seen, atoms, exception);
     }
     for subject in &plan.graph.subjects {
         match &subject.source {

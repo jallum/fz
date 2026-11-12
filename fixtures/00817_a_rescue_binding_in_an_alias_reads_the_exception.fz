@@ -1,0 +1,12 @@
+#---
+# purpose: "a rescue head of the form `e in Alias` binds the exception so the arm can read its message"
+# oracle: 00817_a_rescue_binding_in_an_alias_reads_the_exception.oracle.exs
+#---
+def main() do
+  result = try do
+    raise ArgumentError, "the message"
+  rescue
+    e in ArgumentError -> e.message
+  end
+  dbg(result)
+end

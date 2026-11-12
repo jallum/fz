@@ -1,0 +1,10 @@
+#---
+# purpose: "a try with neither rescue, catch nor after is refused with Elixir's words"
+# expect: diagnostic
+# diagnostic.code: parse/invalid-try
+#---
+def main() do
+  try do
+    1
+  end
+end

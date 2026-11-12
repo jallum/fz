@@ -1,6 +1,7 @@
 use crate::ast::{
-    AfterClause, Attribute, BinOp, BitField, BitFieldSpec, BitSize, BitType, CallableName, Endian, Expr, FnClause,
-    LambdaClause, MatchClause, Pattern, Spanned, SpecDecl, TypeExprBody, UnOp, Var, VarContext, WithBinding,
+    AfterClause, Attribute, BinOp, BitField, BitFieldSpec, BitSize, BitType, CallableName, CatchClause, Endian, Expr,
+    FnClause, LambdaClause, MatchClause, Pattern, RescueClause, Spanned, SpecDecl, TypeExprBody, UnOp, Var, VarContext,
+    WithBinding,
 };
 use crate::function_surface::FunctionSurface;
 use crate::modules::identity::ModuleName;
@@ -10,7 +11,7 @@ use crate::source::{SourceMap, Span};
 use super::identity::FunctionId;
 use super::quoted_concat_pattern::{concat_operands, decode_concat_pattern, refuse_concat_call};
 use super::quoted_surface::function_head_args;
-use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
+use super::source::{META_FROM_OPERATOR_KEY, QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::token_payload;
 
 type DecodedFnHead = (
@@ -496,6 +497,7 @@ fn decode_named_expr(
         ("receive", 1) if quoted_do_entry(&args[0]).is_some_and(|body| quoted_clause_list_shaped(&body, sources)) => {
             decode_receive(occurrences, args, span, sources)
         }
+        ("try", 1) if quoted_do_entry(&args[0]).is_some() => decode_try(occurrences, args, span, sources),
         ("fn", _) => decode_lambda(occurrences, args, span, sources),
         ("quote", 1) if quoted_do_entry(&args[0]).is_some() => decode_quote(occurrences, args, span, sources),
         ("unquote", 1) => {
@@ -830,6 +832,339 @@ fn decode_receive(
         }
     }
     Ok(Spanned::new(Expr::Receive { clauses, after }, span))
+}
+
+/// `try do … rescue … else … after … end`, judged the way Elixir judges it and
+/// refused with Elixir's words: a `try` needs `do` and at least one of
+/// `rescue`, `catch`, `else` and `after`; a section appears at most once;
+/// `rescue` holds `->` clauses whose heads are one of the five rescue shapes;
+/// `catch` holds `->` clauses of one head (a throw) or two (kind and value).
+fn decode_try(
+    occurrences: &mut LambdaOccurrences,
+    args: &[QuotedSourceCursor],
+    span: Span,
+    sources: &SourceMap,
+) -> Result<Spanned<Expr>, QuotedSourceError> {
+    let entries = decode_keyword_entries(&args[0])?;
+    if entries.len() == 1 {
+        return Err(invalid_try(span, "missing :catch/:rescue/:after option in \"try\""));
+    }
+    let mut body = None;
+    let mut rescue = None;
+    let mut catch = None;
+    let mut else_clauses = None;
+    let mut after = None;
+    for (key, value) in &entries {
+        let taken = match key.as_str() {
+            "do" => body
+                .replace(decode_expr(occurrences, value, Some(span), sources)?)
+                .is_some(),
+            "rescue" => rescue
+                .replace(decode_rescue_clauses(occurrences, value, span, sources)?)
+                .is_some(),
+            "else" => else_clauses
+                .replace(decode_try_else_clauses(occurrences, value, span, sources)?)
+                .is_some(),
+            "after" => after
+                .replace(Box::new(decode_expr(occurrences, value, Some(span), sources)?))
+                .is_some(),
+            "catch" => catch
+                .replace(decode_catch_clauses(occurrences, value, span, sources)?)
+                .is_some(),
+            other => {
+                return Err(QuotedSourceError::new(format!(
+                    "unsupported quoted `try` keyword `{other}`"
+                )));
+            }
+        };
+        if taken {
+            return Err(invalid_try(
+                span,
+                format!("duplicate \"{key}\" clauses given for \"try\""),
+            ));
+        }
+    }
+    let body = body.ok_or_else(|| invalid_try(span, "missing :do option in \"try\""))?;
+    Ok(Spanned::new(
+        Expr::Try {
+            body: Box::new(body),
+            rescue: rescue.unwrap_or_default(),
+            catch: catch.unwrap_or_default(),
+            else_clauses: else_clauses.unwrap_or_default(),
+            after,
+        },
+        span,
+    ))
+}
+
+fn invalid_try(span: Span, message: impl Into<String>) -> QuotedSourceError {
+    QuotedSourceError::user(crate::diag::codes::PARSE_INVALID_TRY, Some(span), message)
+}
+
+fn decode_try_else_clauses(
+    occurrences: &mut LambdaOccurrences,
+    cursor: &QuotedSourceCursor,
+    try_span: Span,
+    sources: &SourceMap,
+) -> Result<Vec<MatchClause>, QuotedSourceError> {
+    let invalid_block = || invalid_try(try_span, "expected -> clauses for :else in \"try\"");
+    if !cursor.is_list_like() {
+        return Err(invalid_block());
+    }
+    cursor
+        .list_items()?
+        .iter()
+        .map(|clause| {
+            let is_arrow = match clause.ast_node(sources)? {
+                Some(node) => node_head_is_atom_named(&node, "->")?,
+                None => false,
+            };
+            if !is_arrow {
+                return Err(invalid_block());
+            }
+            decode_match_clause(occurrences, clause, sources)
+        })
+        .collect()
+}
+
+fn decode_rescue_clauses(
+    occurrences: &mut LambdaOccurrences,
+    cursor: &QuotedSourceCursor,
+    try_span: Span,
+    sources: &SourceMap,
+) -> Result<Vec<RescueClause>, QuotedSourceError> {
+    let invalid_block = || {
+        invalid_try(
+            try_span,
+            "invalid \"rescue\" block in \"try\", it expects \"pattern -> expr\" clauses",
+        )
+    };
+    if !cursor.is_list_like() {
+        return Err(invalid_block());
+    }
+    cursor
+        .list_items()?
+        .iter()
+        .map(|clause| {
+            let Some(node) = clause.ast_node(sources)? else {
+                return Err(invalid_block());
+            };
+            if !node_head_is_atom_named(&node, "->")? {
+                return Err(invalid_block());
+            }
+            let span = node.span.unwrap_or(try_span);
+            let parts = node.tail.list_items()?;
+            if parts.len() != 2 {
+                return Err(QuotedSourceError::new("quoted clause expects pattern list and body"));
+            }
+            let heads = parts[0].list_items()?;
+            let [head] = heads.as_slice() else {
+                return Err(invalid_try(
+                    span,
+                    "expected one argument for \"rescue\" clauses (->) in \"try\"",
+                ));
+            };
+            let (binding, exceptions) = decode_rescue_head(head, span, sources)?;
+            Ok(RescueClause {
+                binding,
+                exceptions,
+                body: decode_expr(occurrences, &parts[1], Some(span), sources)?,
+                span,
+            })
+        })
+        .collect()
+}
+
+fn decode_catch_clauses(
+    occurrences: &mut LambdaOccurrences,
+    cursor: &QuotedSourceCursor,
+    try_span: Span,
+    sources: &SourceMap,
+) -> Result<Vec<CatchClause>, QuotedSourceError> {
+    let invalid_block = || invalid_try(try_span, "expected -> clauses for :catch in \"try\"");
+    if !cursor.is_list_like() {
+        return Err(invalid_block());
+    }
+    cursor
+        .list_items()?
+        .iter()
+        .map(|clause| {
+            let Some(node) = clause.ast_node(sources)? else {
+                return Err(invalid_block());
+            };
+            if !node_head_is_atom_named(&node, "->")? {
+                return Err(invalid_block());
+            }
+            let span = node.span.unwrap_or(try_span);
+            let parts = node.tail.list_items()?;
+            if parts.len() != 2 {
+                return Err(QuotedSourceError::new("quoted clause expects pattern list and body"));
+            }
+            let (heads, guard) = split_guarded_heads(&parts[0], sources)?;
+            let (kind, value) = match heads.as_slice() {
+                [value] => (
+                    Spanned::new(Pattern::Atom("throw".to_string()), span),
+                    decode_pattern(value, Some(span), sources)?,
+                ),
+                [kind, value] => (
+                    decode_pattern(kind, Some(span), sources)?,
+                    decode_pattern(value, Some(span), sources)?,
+                ),
+                _ => {
+                    return Err(invalid_try(
+                        span,
+                        "expected one or two args for :catch clauses (->) in \"try\"",
+                    ));
+                }
+            };
+            Ok(CatchClause {
+                kind,
+                value,
+                guard: guard
+                    .map(|guard| decode_expr(occurrences, &guard, Some(span), sources))
+                    .transpose()?,
+                body: decode_expr(occurrences, &parts[1], Some(span), sources)?,
+                span,
+            })
+        })
+        .collect()
+}
+
+/// The heads of a clause and its guard: `a, b when g` is one `when` call whose
+/// last argument is the guard and whose others are the heads.
+fn split_guarded_heads(
+    heads: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<(Vec<QuotedSourceCursor>, Option<QuotedSourceCursor>), QuotedSourceError> {
+    let heads = heads.list_items()?;
+    let [only] = heads.as_slice() else {
+        return Ok((heads, None));
+    };
+    let Some(node) = only.ast_node(sources)? else {
+        return Ok((heads, None));
+    };
+    if !node_head_is_atom_named(&node, "when")? {
+        return Ok((heads, None));
+    }
+    let mut args = node.tail.list_items()?;
+    let guard = args
+        .pop()
+        .ok_or_else(|| QuotedSourceError::new("quoted guarded clause expects a guard"))?;
+    Ok((args, Some(guard)))
+}
+
+/// The head of a rescue clause: `e`, `_`, `Alias`, `[A, B]`, `e in Alias` or
+/// `e in [A, B]`. Anything else is refused with Elixir's words and the head
+/// as the user wrote it.
+fn decode_rescue_head(
+    cursor: &QuotedSourceCursor,
+    clause_span: Span,
+    sources: &SourceMap,
+) -> Result<(Option<Var>, Vec<ModuleName>), QuotedSourceError> {
+    let invalid = |span: Span| {
+        invalid_try(
+            span,
+            format!(
+                "invalid \"rescue\" clause. The clause should match on an alias, a variable or be in the \"var in [alias]\" format. Got: {}",
+                source_text(sources, span)
+            ),
+        )
+    };
+    if cursor.is_list_like() {
+        return Ok((
+            None,
+            rescue_aliases(cursor, sources)?.ok_or_else(|| invalid(clause_span))?,
+        ));
+    }
+    let Some(node) = cursor.ast_node(sources)? else {
+        return Err(invalid(clause_span));
+    };
+    let span = node.span.unwrap_or(clause_span);
+    if !node.tail.is_list_like() {
+        return Ok((
+            rescue_binding(cursor, span, sources)?.ok_or_else(|| invalid(span))?,
+            Vec::new(),
+        ));
+    }
+    if is_alias(cursor, sources)? {
+        return Ok((None, vec![alias_from_args(&node.tail.list_items()?)?]));
+    }
+    let Some((left, right)) = rescue_in_operands(&node)? else {
+        return Err(invalid(span));
+    };
+    let binding = rescue_binding(&left, span, sources)?.ok_or_else(|| invalid(span))?;
+    let exceptions = if right.is_list_like() {
+        rescue_aliases(&right, sources)?
+    } else if is_alias(&right, sources)? {
+        Some(vec![alias_from_args(
+            &expect_ast_node(&right, "rescue alias", sources)?.tail.list_items()?,
+        )?])
+    } else {
+        None
+    };
+    Ok((binding, exceptions.ok_or_else(|| invalid(span))?))
+}
+
+/// The operands of `left in right` in a rescue head, whether the operator is
+/// still spelled `in` or source sugar already turned it into the
+/// `Enum.member?(right, left)` call it stamps with the operator.
+fn rescue_in_operands(
+    node: &QuotedAstNode,
+) -> Result<Option<(QuotedSourceCursor, QuotedSourceCursor)>, QuotedSourceError> {
+    let args = node.tail.list_items()?;
+    let [first, second] = args.as_slice() else {
+        return Ok(None);
+    };
+    if node.head.root().tag() == fz_runtime::any_value::ValueKind::ATOM {
+        return Ok((node.head.atom_name()? == "in").then(|| (first.clone(), second.clone())));
+    }
+    let stamped_in = match node.meta.map_value(META_FROM_OPERATOR_KEY)? {
+        Some(stamp) => stamp.atom_name()? == "in",
+        None => false,
+    };
+    Ok(stamped_in.then(|| (second.clone(), first.clone())))
+}
+
+fn rescue_binding(
+    cursor: &QuotedSourceCursor,
+    span: Span,
+    sources: &SourceMap,
+) -> Result<Option<Option<Var>>, QuotedSourceError> {
+    let Some(node) = cursor.ast_node(sources)? else {
+        return Ok(None);
+    };
+    if node.tail.is_list_like() {
+        return Ok(None);
+    }
+    Ok(match decode_pattern(cursor, Some(span), sources)?.node {
+        Pattern::Wildcard => Some(None),
+        Pattern::Var(var) => Some(Some(var)),
+        _ => None,
+    })
+}
+
+/// The aliases of a `[A, B]` rescue list; `None` when an item is not an alias.
+fn rescue_aliases(
+    cursor: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<Option<Vec<ModuleName>>, QuotedSourceError> {
+    let mut aliases = Vec::new();
+    for item in cursor.list_items()? {
+        if !is_alias(&item, sources)? {
+            return Ok(None);
+        }
+        aliases.push(alias_from_args(
+            &expect_ast_node(&item, "rescue alias", sources)?.tail.list_items()?,
+        )?);
+    }
+    Ok((!aliases.is_empty()).then_some(aliases))
+}
+
+fn source_text(sources: &SourceMap, span: Span) -> String {
+    if span == Span::DUMMY {
+        return String::new();
+    }
+    sources.code(span.source_version).bytes[span.start as usize..span.end as usize].to_string()
 }
 
 fn decode_lambda(
@@ -2093,7 +2428,7 @@ fn is_alias(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<bool, Qu
     let Some(node) = cursor.ast_node(sources)? else {
         return Ok(false);
     };
-    Ok(atom_name(&node.head)? == "__aliases__")
+    node_head_is_atom_named(&node, "__aliases__")
 }
 
 /// True for the callee the front door synthesises for `lhs[key]`, and for

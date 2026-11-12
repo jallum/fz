@@ -6,17 +6,24 @@
 //! the moment it is built, so each backend lowers a `Fail` the same way for
 //! every construct: build the exception and raise it.
 
-/// The exception a plan raises at a `Fail`, worded the way Elixir words it.
+/// What a plan does at a `Fail`: raise an exception worded the way Elixir
+/// words it, or continue a raise that arrived.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct LastResort {
-    /// The exception module's atom, such as `Elixir.MatchError`.
-    pub(crate) exception: &'static str,
-    /// The whole message, or the lead of a message that goes on to show the
-    /// subject.
-    pub(crate) message: String,
-    /// Whether the message shows the plan's subject, its first input, on a
-    /// line of its own after the lead.
-    pub(crate) shows_subject: bool,
+pub(crate) enum LastResort {
+    /// Raise a new exception.
+    Exception {
+        /// The exception module's atom, such as `Elixir.MatchError`.
+        exception: &'static str,
+        /// The whole message, or the lead of a message that goes on to show
+        /// the subject.
+        message: String,
+        /// Whether the message shows the plan's subject, its first input, on a
+        /// line of its own after the lead.
+        shows_subject: bool,
+    },
+    /// Continue the raise a handler was delivered, with the plan's first two
+    /// inputs as its kind and value.
+    Reraise,
 }
 
 impl LastResort {
@@ -52,6 +59,11 @@ impl LastResort {
         Self::showing("Elixir.WithClauseError", "no with clause matching:")
     }
 
+    /// No `else` clause of a `try` matches the value its body produced.
+    pub(crate) fn try_clause() -> Self {
+        Self::showing("Elixir.TryClauseError", "no try clause matching:")
+    }
+
     /// The left side of `and` or `or` is not a boolean.
     pub(crate) fn bad_boolean(operator: &str) -> Self {
         Self::showing(
@@ -65,8 +77,45 @@ impl LastResort {
         Self::fixed("Elixir.ArgumentError", "argument error".to_string())
     }
 
+    /// Nothing in a handler's clauses takes the raise it was delivered, so it
+    /// continues to the next handler out with the kind it arrived with.
+    pub(crate) fn reraise() -> Self {
+        Self::Reraise
+    }
+
+    /// The exception module's atom, for a last resort that raises one.
+    pub(crate) fn exception(&self) -> Option<&'static str> {
+        match self {
+            Self::Exception { exception, .. } => Some(exception),
+            Self::Reraise => None,
+        }
+    }
+
+    /// The message, or its lead when the subject follows, for a last resort
+    /// that raises an exception.
+    #[cfg(test)]
+    pub(crate) fn message(&self) -> Option<&str> {
+        match self {
+            Self::Exception { message, .. } => Some(message),
+            Self::Reraise => None,
+        }
+    }
+
+    /// How many of the plan's leading inputs the last resort reads: the
+    /// subject a message shows, or the kind and value a re-raise continues
+    /// with.
+    pub(crate) fn consumed_inputs(&self) -> usize {
+        match self {
+            Self::Exception {
+                shows_subject: true, ..
+            } => 1,
+            Self::Exception { .. } => 0,
+            Self::Reraise => 2,
+        }
+    }
+
     fn fixed(exception: &'static str, message: String) -> Self {
-        Self {
+        Self::Exception {
             exception,
             message,
             shows_subject: false,
@@ -74,7 +123,7 @@ impl LastResort {
     }
 
     fn showing(exception: &'static str, lead: &str) -> Self {
-        Self {
+        Self::Exception {
             exception,
             message: lead.to_string(),
             shows_subject: true,

@@ -12,8 +12,9 @@ defmodule Kernel do
       `!==` and the total term order `compare/2`
     * process primitives: `self/0`, `send/2`, `spawn/1`,
       `make_ref/0` and `make_resource/2`
-    * `panic/1`, `raise/1`, `raise/2`, `inspect/1`, `assert/1`, `assert/2`, `refute/1`
-      and `refute/2`, for failing the current process
+    * `panic/1`, `raise/1`, `raise/2`, `reraise/2`, `throw/1`, `exit/1`,
+      `inspect/1`, `assert/1`, `assert/2`, `refute/1` and `refute/2`, for
+      failing the current process
     * `dbg/1`, `to_string/1`, `div/2`, `rem/2` and `range/3`
     * the sizes and accessors `byte_size/1`, `map_size/1`, `tuple_size/1`,
       `length/1` and `elem/2`, and the type tests `is_integer/1`,
@@ -92,6 +93,59 @@ defmodule Kernel do
   extern "fz" defp fz_inspect_with(any, any) :: binary
 
   @doc """
+  Raises `value` as a throw: the nearest `catch` clause that takes a throw
+  receives it.
+
+      try do
+        throw(:found)
+      catch
+        value -> value
+      end
+      # :found
+
+  A throw no `catch` takes fails the process like any other raise: the line
+  is `** (throw) :found`, and a failed main process exits with status 1.
+  """
+  @spec throw(any) :: never
+  def throw(value), do: fz_throw(value)
+
+  extern "fz" defp fz_throw(any) :: never
+
+  @doc """
+  Ends the current process with `reason`: the nearest `catch :exit, reason`
+  clause receives it.
+
+      try do
+        exit(:stopped)
+      catch
+        :exit, reason -> reason
+      end
+      # :stopped
+
+  With no `catch` to take it the process ends. The reasons `:normal`,
+  `:shutdown` and `{:shutdown, status}` end it silently, and a main process
+  that ends this way exits the program with status 0, 0, and `status`. Any
+  other reason prints `** (exit) reason` and exits the program with status 1.
+  """
+  @spec exit(any) :: never
+  def exit(reason), do: fz_exit(reason)
+
+  extern "fz" defp fz_exit(any) :: never
+
+  @doc """
+  Raises the exception `exception` again. The stacktrace is accepted for
+  Elixir's sake and ignored: fz carries no stacktraces.
+
+      try do
+        raise ArgumentError, "bad"
+      rescue
+        e -> reraise e, []
+      end
+  """
+  @spec reraise(any, any) :: never
+  def reraise(exception, _stacktrace), do: panic(exception)
+
+  @doc """
   Raises a `RuntimeError` with `message`.
 
       raise "boom"
@@ -101,8 +155,10 @@ defmodule Kernel do
   def raise(message), do: raise(RuntimeError, message)
 
   @doc """
-  Raises the exception `name` with `message`: the current process fails with
-  `%{__struct__: name, __exception__: true, message: message}`.
+  Raises the exception `name` with `message`: the raise is
+  `%{__struct__: name, __exception__: true, message: message}`, and the
+  nearest `rescue` that takes it receives it. With none the current process
+  fails.
 
       raise ArgumentError, "bad"
       # ** (ArgumentError) bad

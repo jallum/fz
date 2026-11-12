@@ -408,6 +408,7 @@ fn complete_settled_call_result_types(
             | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
+            | LoweredTail::Try { .. }
             | LoweredTail::Unreachable => continue,
         };
         if callsites
@@ -799,6 +800,10 @@ fn collect_entry_callsite_needs(
                 let _ = collect_entry_callsite_needs(entries, after.entry, outgoing_need, out, walks);
             }
         }
+        LoweredTail::Try { body, handler } => {
+            let _ = collect_entry_callsite_needs(entries, *body, outgoing_need, out, walks);
+            let _ = collect_entry_callsite_needs(entries, *handler, outgoing_need, out, walks);
+        }
         LoweredTail::Unreachable => {}
     }
     for step in entry.steps.iter().rev() {
@@ -834,6 +839,7 @@ fn collect_entry_callsite_needs(
                 tuple_demands.remove(value);
                 tuple_demands.remove(next_reader);
             }
+            LoweredStep::PopHandler => {}
         }
     }
     let answer = entry
@@ -1128,6 +1134,7 @@ fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
                     pending.push(target);
                 }
             }
+            LoweredTail::Try { body, handler } => pending.extend([*body, *handler]),
             LoweredTail::Unreachable => {}
         }
     }

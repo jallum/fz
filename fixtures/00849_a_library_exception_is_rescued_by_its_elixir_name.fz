@@ -1,0 +1,34 @@
+#---
+# purpose: "an exception the library raises is rescued by the name Elixir gives it, and its message is Elixir's"
+# oracle: 00849_a_library_exception_is_rescued_by_its_elixir_name.oracle.exs
+#---
+defp zero(), do: 0
+defp empty(), do: []
+
+def main() do
+  try do
+    Map.fetch!(%{}, :k)
+  rescue
+    e in KeyError -> dbg(e.__struct__)
+  end
+  try do
+    div(1, zero())
+  rescue
+    e in ArithmeticError ->
+      dbg(e.__struct__)
+      dbg(e.message)
+  end
+  try do
+    tuple_size(:x)
+  rescue
+    e in ArgumentError -> dbg(e.__struct__)
+  end
+  try do
+    Enum.max(empty())
+  rescue
+    e in Enum.EmptyError ->
+      dbg(e.__struct__)
+      dbg(e.message)
+  end
+  dbg(:done)
+end

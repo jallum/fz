@@ -1,0 +1,4 @@
+{:after, :one}
+:fine
+{:after, :two}
+:rescued

@@ -1,0 +1,15 @@
+#---
+# purpose: "what a try body or its after binds does not escape the try"
+# expect: diagnostic
+# diagnostic.code: lower/unbound
+#---
+def main() do
+  try do
+    x = 1
+    dbg(x)
+  after
+    y = 2
+    dbg(y)
+  end
+  dbg(x)
+end

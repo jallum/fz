@@ -99,10 +99,15 @@ impl CliError {
     }
 
     /// A program run that did not complete. A failed main process has
-    /// already printed its failure line, so the command only exits 1.
+    /// already printed its failure line, so the command only exits 1; a main
+    /// process that exited with a shutdown status exits with it.
     fn run(command: &str, failure: RunFailure) -> Self {
         match failure {
             RunFailure::MainFailed => Self { code: 1, message: None },
+            RunFailure::MainExited(status) => Self {
+                code: status,
+                message: None,
+            },
             RunFailure::Error(message) => Self::failure(format!("{command}: {message}")),
         }
     }

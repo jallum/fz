@@ -1,0 +1,19 @@
+#---
+# purpose: "a spawned process rescues its own raise and reports the value; main receives it and carries on"
+# oracle: 00825_a_try_in_a_spawned_process_rescues_there.oracle.exs
+#---
+def main() do
+  parent = self()
+  spawn(fn () ->
+    result = try do
+      raise ArgumentError, "in child"
+    rescue
+      e in ArgumentError -> e.message
+    end
+    send(parent, {:done, result})
+  end)
+  receive do
+    {:done, result} -> dbg(result)
+  end
+  dbg(:main_carried_on)
+end
