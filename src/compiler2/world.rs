@@ -1421,16 +1421,16 @@ impl World {
 
     /// The raw source form a scope walk built for `function`, present from the
     /// moment that walk noted it.
-    pub(crate) fn function_source(&self, function: FunctionId) -> Option<FunctionSource> {
+    pub(crate) fn function_source(&self, function: FunctionId) -> Option<&FunctionSource> {
         match self.functions.get(function) {
             super::identity::FunctionState::Noted { source }
-            | super::identity::FunctionState::Defined { source, .. } => Some(*source.clone()),
+            | super::identity::FunctionState::Defined { source, .. } => Some(source),
             super::identity::FunctionState::Placeholder => None,
         }
     }
 
-    pub(crate) fn expanded_function_source(&self, function: FunctionId) -> Option<FunctionSource> {
-        self.expanded_function_sources.get(function).cloned()
+    pub(crate) fn expanded_function_source(&self, function: FunctionId) -> Option<&FunctionSource> {
+        self.expanded_function_sources.get(function)
     }
 
     pub(crate) fn function_contract(&self, function: FunctionId) -> Option<&FunctionContract> {

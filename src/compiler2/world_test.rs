@@ -552,7 +552,8 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
     // what the later define drive derives.
     let raw = world
         .function_source(main)
-        .expect("scoping should publish raw function source");
+        .expect("scoping should publish raw function source")
+        .clone();
     assert!(
         world.fact_revision(&FactKey::ExpandedFunctionSource(main)).is_none(),
         "scoping alone should not yet stage expanded function source",
@@ -1818,10 +1819,12 @@ fn compiler2_demand_leaves_a_blocked_producer_alone_even_when_it_is_rebased() {
     // that the shift alone was what made it ready.
     let raw_source = world
         .function_source(function)
-        .expect("paused/1 should have a published raw source after its first definition");
+        .expect("paused/1 should have a published raw source after its first definition")
+        .clone();
     let expanded_source = world
         .expanded_function_source(function)
-        .expect("paused/1 should have a staged expanded source after its first definition");
+        .expect("paused/1 should have a staged expanded source after its first definition")
+        .clone();
     let second_body = quoted_source("paused_v2.fz", "def paused(x), do: x + 1\n");
     let mut ectx = super::drive::ExecutionContext::new(&mut world, &tel);
     ectx.note_function_source(
