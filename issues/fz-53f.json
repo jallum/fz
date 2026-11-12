@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T22:34:12Z",
+  "description": "One OptionParser.parse call builds 538,281 hash tables for 2,570 jobs and makes 2.2M hash calls; 73% of the tables are empty when dropped, 95% hold four entries or fewer. Removing tables and hashing that should not exist saves 8-12% of release instructions; a faster seeded hasher on what remains brings it to 20-24% (measured cumulatively, outputs identical). Proposal page: /Users/j5n/Workspace/compile-cost-round-two.html (https://claude.ai/artifact/4T5Lime7pQxKbCiKJqaJ8x). Spike (base c768670cd; port by reading, not by applying): /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/tables/ results.md, step0_sites.md, predictions.md. Not yet measured: where the remaining ~2.9M allocations per parse call come from; per-kind id-indexed fact/product/dependency tables (needs its own page).",
+  "id": "fz-53f",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "The compiler builds a table only where a table is the right structure",
+  "type": "epic",
+  "updated_at": "2026-11-12T22:34:12Z"
+}
