@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-3sy.10",
     "fz-3sy.2"
   ],
   "closed_at": "2026-11-11T21:04:17Z",
@@ -14,5 +15,5 @@
   "status": "closed",
   "title": "The runtime reads and writes a struct as a map",
   "type": "task",
-  "updated_at": "2026-11-11T21:04:17Z"
+  "updated_at": "2026-11-12T20:13:57Z"
 }
