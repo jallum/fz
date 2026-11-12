@@ -127,7 +127,6 @@ pub(crate) fn binding_for_var(var_env: &HashMap<u32, CodegenValue>, v: u32) -> C
 pub(crate) fn expected_runtime_value_kind<T: Types<Ty = Ty>>(
     t: &mut T,
     value_types: &HashMap<Var, Ty>,
-    block_env: Option<&HashMap<Var, Ty>>,
     v: Var,
 ) -> Option<ValueKind> {
     if ty_is_int(t, value_types, v) {
@@ -137,8 +136,8 @@ pub(crate) fn expected_runtime_value_kind<T: Types<Ty = Ty>>(
     } else if ty_is_atom(t, value_types, v) {
         Some(ValueKind::ATOM)
     } else if ty_is_list(t, value_types, v)
-        || ty_is_empty_list_in_context(t, value_types, v, block_env)
-        || ty_is_non_empty_list_in_context(t, value_types, v, block_env)
+        || ty_is_empty_list(t, value_types, v)
+        || ty_is_non_empty_list(t, value_types, v)
     {
         Some(ValueKind::LIST)
     } else if ty_is_map(t, value_types, v) {

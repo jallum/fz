@@ -42,12 +42,11 @@ pub(crate) fn emit_map_get_value_ref_for_key<M: cranelift_module::Module, T: Typ
     var_env: &HashMap<u32, CodegenValue>,
     map: Var,
     key: Var,
-    block_env: Option<&HashMap<Var, Ty>>,
 ) -> ir::Value {
     let value_types = env.active_value_types();
     let map_ref = body.tagged_var(var_env, map.0);
     let process = body.process_arg();
-    let key_kind = expected_runtime_value_kind(t, value_types, block_env, key);
+    let key_kind = expected_runtime_value_kind(t, value_types, key);
     match key_kind {
         Some(ValueKind::ATOM) => {
             let key_atom = body.value_raw_atom(binding_for_var(var_env, key.0));
@@ -262,7 +261,6 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
     prim: &Prim,
     dest_var: Var,
     block_id: BlockId,
-    block_env: Option<&HashMap<Var, Ty>>,
 ) -> Result<LowerOut, CodegenError> {
     let value_types = env.active_value_types();
     let tuple_schema_ids = env.tuple_schema_ids;
@@ -281,7 +279,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 && let Some(retention) = retention
             {
                 let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
-                let tail = list_tail_bits_for_var(t, value_types, block_env, *tail_var, tail_bits);
+                let tail = list_tail_bits_for_var(t, value_types, *tail_var, tail_bits);
                 let reused = emit_list_retention_or_alloc(body, var_env, elems[0], tail, *retention);
                 if let Some(reused) = reused {
                     return Ok(LowerOut::ValueRef(reused));
@@ -292,18 +290,12 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             let mut acc = match tail {
                 Some(tail_var) => {
                     let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
-                    list_tail_bits_for_var(t, value_types, block_env, *tail_var, tail_bits)
+                    list_tail_bits_for_var(t, value_types, *tail_var, tail_bits)
                 }
                 None => ListTailBits::Empty,
             };
             for e in elems.iter().rev() {
-                let cons = emit_list_cons_bif(
-                    body,
-                    var_env,
-                    *e,
-                    expected_runtime_value_kind(t, value_types, block_env, *e),
-                    acc,
-                );
+                let cons = emit_list_cons_bif(body, var_env, *e, expected_runtime_value_kind(t, value_types, *e), acc);
                 acc = ListTailBits::NonEmptyValueRef(cons);
             }
             match acc {
@@ -568,7 +560,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             LowerOut::ValueRef(runtime_call1!(body, fz_map_dest_freeze, [process, map_bits]))
         }
         Prim::MapGet(m, k) => {
-            let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
+            let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k);
             LowerOut::ValueRefWord(value_ref)
         }
         Prim::MatcherMapGet(m, k) => {
@@ -641,7 +633,6 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn emit_variadic_extern_call<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
@@ -750,7 +741,6 @@ fn foreign_symbol_addr<M: cranelift_module::Module>(
     Ok(body.b.ins().func_addr(types::I64, fref))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
@@ -762,7 +752,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     // variadic extern call's resolved marshal classes.
     block_id: BlockId,
     stmt_idx: usize,
-    block_env: Option<&HashMap<Var, Ty>>,
 ) -> Result<LowerOut, CodegenError> {
     let value_types = env.active_value_types();
     // Helper: every consumer site below that wants one-word ValueRef uses
@@ -906,30 +895,26 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
         }
         Prim::MapGet(m, k) if ty_is_float(t, value_types, dest_var) => {
-            let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
+            let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k);
             Ok(LowerOut::RawF64(runtime_call1!(body, fz_ref_load_float, [value_ref])))
         }
         Prim::MapGet(m, k) if ty_is_int(t, value_types, dest_var) => {
-            let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
+            let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k);
             Ok(LowerOut::RawI64(runtime_call1!(body, fz_ref_load_int, [value_ref])))
         }
         Prim::MapGet(m, k) if ty_is_atom(t, value_types, dest_var) => {
-            let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
+            let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k);
             Ok(LowerOut::RawI64(runtime_call1!(body, fz_ref_load_atom, [value_ref])))
         }
-        Prim::ListHead(c)
-            if list_projection_is_safe(t, value_types, *c, block_env) && ty_is_int(t, value_types, dest_var) =>
-        {
+        Prim::ListHead(c) if list_projection_is_safe(t, value_types, *c) && ty_is_int(t, value_types, dest_var) => {
             let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             Ok(LowerOut::RawI64(body.list_head_int(list_ref)))
         }
-        Prim::ListHead(c)
-            if list_projection_is_safe(t, value_types, *c, block_env) && ty_is_float(t, value_types, dest_var) =>
-        {
+        Prim::ListHead(c) if list_projection_is_safe(t, value_types, *c) && ty_is_float(t, value_types, dest_var) => {
             let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             Ok(LowerOut::RawF64(body.list_head_float(list_ref)))
         }
-        Prim::ListTail(c) if list_projection_is_safe(t, value_types, *c, block_env) => {
+        Prim::ListTail(c) if list_projection_is_safe(t, value_types, *c) => {
             let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             Ok(LowerOut::ValueRefWord(body.list_tail(list_ref)))
         }
@@ -949,9 +934,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::DestMapFreeze { .. }
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)
-        | Prim::IsMatcherMapMiss(..) => {
-            lower_collection_prim(body, t, env, var_env, prim, dest_var, block_id, block_env)
-        }
+        | Prim::IsMatcherMapMiss(..) => lower_collection_prim(body, t, env, var_env, prim, dest_var, block_id),
         Prim::MakeFnRef(_, fn_id) => lower_make_fn_ref(body, env, *fn_id),
         Prim::MakeClosure(_, fn_id, captured) => lower_make_closure(body, env, var_env, *fn_id, captured),
         Prim::RuntimeTypeTest(v, descr) => lower_runtime_type_predicate(body, env, var_env, *v, descr, dest_var),
