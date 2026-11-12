@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T22:39:35Z",
+  "description": "def main(), do: dbg(Enum.to_list(Stream.map(Map.put(%{}, 1, 1), \u0026(\u00261)))) compiles, then hangs at run time on interp and run (elixir: [{1, 1}]). resolve_protocol_call (jobs/semantic.rs ~1544) builds matches from already-defined dispatch arms and demands overlapping impl providers only when matches is empty (~1596-1636). An any receiver that already matches the Stream arm never demands Enumerable.Map/List/Range; the backend has no Map.reduce and Stream.reduce tail-calls itself. Same cause, other symptom: 'backend dispatch callsite missed an exhaustive dispatch' (variants x44/x45; likely fz-sc8.119 item 2, d2.fz). Cure to probe: demand every overlapping provider unconditionally. Repros and variant table: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/s1/. Found by OptionParser.",
+  "id": "fz-sc8.139",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "A wide protocol receiver compiles every implementation it could reach",
+  "type": "bug",
+  "updated_at": "2026-11-12T22:39:35Z"
+}
