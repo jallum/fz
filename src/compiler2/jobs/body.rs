@@ -354,7 +354,7 @@ pub(super) fn lower_function(
         });
     }
 
-    let mut lowerer = Lowerer::new(world, tel, function, source, surface);
+    let mut lowerer = Lowerer::new(world, tel, function, &source, &surface);
     let (body, mut outputs, mut changed) = lowerer.lower()?;
     emit_ownership_work(
         tel,
@@ -933,13 +933,13 @@ fn collect_local_guard_requirements(
     Ok(())
 }
 
-struct Lowerer<'w, 'tel, T: crate::telemetry::Telemetry> {
+struct Lowerer<'w, 'tel, 'f, T: crate::telemetry::Telemetry> {
     world: &'w mut World,
     telemetry: &'tel T,
     owner: FunctionId,
     namespace: Namespace,
-    source: FunctionSource,
-    surface: FunctionSurface,
+    source: &'f FunctionSource,
+    surface: &'f FunctionSurface,
     next_value: u32,
     next_callsite: u32,
     generated: Vec<Output>,
@@ -949,8 +949,8 @@ struct Lowerer<'w, 'tel, T: crate::telemetry::Telemetry> {
     ownership_pairs_compared: u64,
 }
 
-struct QuoteLowerer<'a, 'w, 'tel, 'env, 'steps, 'q, T: crate::telemetry::Telemetry> {
-    lowerer: &'a mut Lowerer<'w, 'tel, T>,
+struct QuoteLowerer<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry> {
+    lowerer: &'a mut Lowerer<'w, 'tel, 'f, T>,
     env: &'env mut HashMap<Var, ValueId>,
     steps: &'steps mut Vec<ExprStep>,
     /// Every `unquote(e)` inside this quote, already decoded in the same
@@ -960,9 +960,11 @@ struct QuoteLowerer<'a, 'w, 'tel, 'env, 'steps, 'q, T: crate::telemetry::Telemet
     next_splice: usize,
 }
 
-impl<'a, 'w, 'tel, 'env, 'steps, 'q, T: crate::telemetry::Telemetry> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps, 'q, T> {
+impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
+    QuoteLowerer<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T>
+{
     fn new(
-        lowerer: &'a mut Lowerer<'w, 'tel, T>,
+        lowerer: &'a mut Lowerer<'w, 'tel, 'f, T>,
         env: &'env mut HashMap<Var, ValueId>,
         steps: &'steps mut Vec<ExprStep>,
         splices: &'q [Spanned<Expr>],
@@ -1217,13 +1219,13 @@ impl<'a, 'w, 'tel, 'env, 'steps, 'q, T: crate::telemetry::Telemetry> QuoteLowere
     }
 }
 
-impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
+impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     fn new(
         world: &'w mut World,
         telemetry: &'tel T,
         owner: FunctionId,
-        source: FunctionSource,
-        surface: FunctionSurface,
+        source: &'f FunctionSource,
+        surface: &'f FunctionSurface,
     ) -> Self {
         let namespace = source.namespace;
         Self {
@@ -1245,8 +1247,8 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
 
     fn lower(&mut self) -> Result<(LoweredBody, Vec<Output>, Vec<Changed>), FatalError> {
         let mut clause_defs = Vec::new();
-        for clause in self.surface.clauses.clone() {
-            clause_defs.push(self.lower_clause(&clause)?);
+        for clause in &self.surface.clauses {
+            clause_defs.push(self.lower_clause(clause)?);
         }
         let body = self.plan_clauses(clause_defs);
 
@@ -1266,10 +1268,10 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             params.push(value);
             env.insert(Var::user("__CALLER__"), value);
         }
-        for capture in self.source.capture_params.clone() {
+        for capture in &self.source.capture_params {
             let value = self.fresh_value();
             params.push(value);
-            env.insert(capture, value);
+            env.insert(capture.clone(), value);
         }
         for param in &clause.params {
             let value = self.fresh_value();
