@@ -493,7 +493,7 @@ where
     /// Every fact this job claims, across every answer it owns.
     pub fn output_keys(&self, job: &P::Run) -> OrderedSet<F> {
         let mut keys = OrderedSet::default();
-        for publisher in self.deps.derivations_of(job).iter() {
+        for publisher in self.deps.derivations_of(job) {
             keys.extend(self.deps.output_keys(publisher).iter().cloned());
         }
         keys
@@ -524,7 +524,7 @@ where
             .filter_map(|publisher| self.deps.reads(publisher))
             .flatten()
             .cloned()
-            .chain(self.deps.waits_for(job))
+            .chain(self.deps.waits_for(job).iter().cloned())
             .collect()
     }
 
@@ -554,7 +554,7 @@ where
     }
 
     /// The waits `job`'s most recent completion left standing.
-    pub(crate) fn waits_for(&self, job: &P::Run) -> HashSet<FactUse<F>> {
+    pub(crate) fn waits_for(&self, job: &P::Run) -> &HashSet<FactUse<F>> {
         self.deps.waits_for(job)
     }
 
@@ -634,7 +634,7 @@ where
         blocked.sort_by(|left, right| left.semantic_cmp(right, ctx));
         self.deps.replace_waits(job.clone(), effects.waits);
 
-        let previously_owned = self.deps.derivations_of(job);
+        let previously_owned = self.deps.derivations_of(job).clone();
         let mut pending_changes = Vec::new();
         let mut conclusions = Vec::new();
         let mut listed = OrderedSet::default();
@@ -691,7 +691,7 @@ where
             if concluding {
                 let concluded = self.facts.replace_outputs_after_run(
                     &publisher,
-                    &previous_keys,
+                    previous_keys,
                     derivation.outputs,
                     derivation.changed,
                     unfinal,
@@ -708,7 +708,7 @@ where
                     unfinal,
                     rebased,
                 );
-                let mut claims = previous_keys;
+                let mut claims = previous_keys.clone();
                 claims.extend(extended.output_keys.iter().cloned());
                 let dirtied = self.facts.mark_dirty(&publisher, &claims);
                 self.deps.replace_outputs(publisher.clone(), claims);
@@ -720,12 +720,12 @@ where
         for publisher in &unreached {
             let previous_keys = self.deps.output_keys(publisher);
             if waiting {
-                pending_changes.extend(self.facts.mark_dirty(publisher, &previous_keys));
+                pending_changes.extend(self.facts.mark_dirty(publisher, previous_keys));
                 continue;
             }
             let retracted =
                 self.facts
-                    .replace_outputs_after_run(publisher, &previous_keys, Vec::new(), Vec::new(), false, true);
+                    .replace_outputs_after_run(publisher, previous_keys, Vec::new(), Vec::new(), false, true);
             changed.extend(retracted.changed);
             self.deps.forget(publisher);
             self.rebased.remove(publisher);
@@ -937,7 +937,7 @@ where
             .collect::<Vec<_>>();
         publishers.sort_by(|left, right| left.semantic_cmp(right, ctx));
         for publisher in publishers {
-            let keys = self.deps.output_keys(&publisher);
+            let keys = self.deps.output_keys(&publisher).clone();
             let quiet_before = self.quiet_snapshot(&keys);
             if let Some(state) = self.read_finality.get_mut(&publisher) {
                 *state = ReadFinality::Quiescent(state.count());
@@ -1043,7 +1043,7 @@ where
         if (count > 0) == was_unfinal {
             return;
         }
-        let keys = self.deps.output_keys(publisher);
+        let keys = self.deps.output_keys(publisher).clone();
         let quiet_before = self.quiet_snapshot(&keys);
         for key in &keys {
             if let Some(change) = self.facts.set_publisher_unfinal(key, publisher, count > 0) {
@@ -1113,8 +1113,7 @@ where
                 if is_unfinal == was_unfinal {
                     continue;
                 }
-                let keys = self.deps.output_keys(&reader);
-                for key in &keys {
+                for key in self.deps.output_keys(&reader) {
                     let was_quiet = self.facts.is_quiet(key);
                     if let Some(change) = self.facts.set_publisher_unfinal(key, &reader, is_unfinal) {
                         changes.push(change);
@@ -1228,7 +1227,7 @@ where
         P: SemanticOrd<Ctx>,
         P::Run: SemanticOrd<Ctx>,
     {
-        let keys = self.deps.output_keys(publisher);
+        let keys = self.deps.output_keys(publisher).clone();
         let quiet_before = self.quiet_snapshot(&keys);
         let dirtied = self.facts.mark_dirty(publisher, &keys);
         pending_changes.extend(dirtied);

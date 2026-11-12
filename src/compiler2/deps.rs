@@ -25,6 +25,11 @@ pub struct DependencyIndex<P: Publisher, F> {
     /// conclusion replaces this set, so the publishers a re-run no longer
     /// reaches are the ones it retracts.
     derivations: HashMap<P::Run, OrderedSet<P>>,
+    /// Answers for an absent key: a publisher or job with no entry owns, waits
+    /// on and publishes nothing.
+    no_outputs: OrderedSet<F>,
+    no_waits: HashSet<FactUse<F>>,
+    no_derivations: OrderedSet<P>,
 }
 
 impl<P: Publisher, F> Default for DependencyIndex<P, F> {
@@ -36,6 +41,9 @@ impl<P: Publisher, F> Default for DependencyIndex<P, F> {
             waiters: HashMap::new(),
             outputs: HashMap::new(),
             derivations: HashMap::new(),
+            no_outputs: OrderedSet::default(),
+            no_waits: HashSet::new(),
+            no_derivations: OrderedSet::default(),
         }
     }
 }
@@ -122,8 +130,8 @@ where
         }
     }
 
-    pub fn output_keys(&self, publisher: &P) -> OrderedSet<F> {
-        self.outputs.get(publisher).cloned().unwrap_or_default()
+    pub fn output_keys(&self, publisher: &P) -> &OrderedSet<F> {
+        self.outputs.get(publisher).unwrap_or(&self.no_outputs)
     }
 
     pub fn subscribers<Ctx>(&self, fact_use: &FactUse<F>, ctx: &Ctx) -> Vec<P>
@@ -170,8 +178,8 @@ where
         readers
     }
 
-    pub fn waits_for(&self, job: &P::Run) -> HashSet<FactUse<F>> {
-        self.waits.get(job).cloned().unwrap_or_default()
+    pub fn waits_for(&self, job: &P::Run) -> &HashSet<FactUse<F>> {
+        self.waits.get(job).unwrap_or(&self.no_waits)
     }
 
     /// Whether `job`'s most recent completion left waits standing.
@@ -224,8 +232,8 @@ where
     }
 
     /// Every publisher `job` currently owns, in emission order.
-    pub fn derivations_of(&self, job: &P::Run) -> OrderedSet<P> {
-        self.derivations.get(job).cloned().unwrap_or_default()
+    pub fn derivations_of(&self, job: &P::Run) -> &OrderedSet<P> {
+        self.derivations.get(job).unwrap_or(&self.no_derivations)
     }
 
     /// Records the publishers `job` owns after a run. Emission order is the
