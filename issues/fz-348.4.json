@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:15:49Z",
+  "description": "Found through #302's Gate B spike. When an extern's contract application is Underconstrained the extern returns none and its native body lowers to 'trap user1'; the program dies with an illegal instruction (lldb: udf #0xc11f) in compiler2_jit_preserves_range_reduce3_halt_and_suspend_from_native_artifacts under that spike. No current program reaches it on develop, but the failure mode is a signal instead of a diagnostic.\n\nWanted: a compile-time error naming the extern and the unresolved contract. First step is a reproducer on develop without the spike (the spike that reached it: scratch gh302b/spike-1-env-toggled-sites.patch, Gate B only; dbg(t) :: t with t bound to a tuple holding a closure).",
+  "id": "fz-348.4",
+  "labels": [],
+  "parent": "fz-348",
+  "priority": 3,
+  "status": "open",
+  "title": "An extern whose contract publishes no result is a loud error, not a trap body",
+  "type": "bug",
+  "updated_at": "2026-11-12T20:15:49Z"
+}
