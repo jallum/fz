@@ -2142,10 +2142,22 @@ fn emit_spec_violation(
     FatalError
 }
 
+/// A column is open when its observed type still carries a type variable that
+/// evidence has to solve. A callable column's own arrow variables count, since
+/// they are what the contract instantiates; a closure carried inside a list, a
+/// tuple or a map is a value, and its arrow variables belong to it.
+fn column_is_open(types: &Types, column: &Ty) -> bool {
+    if types.is_pure_callable(column) {
+        types.has_vars(column)
+    } else {
+        types.has_open_vars(column)
+    }
+}
+
 /// Instantiates the open columns of a call's inputs from the matched clauses.
-/// A column whose observed type still carries type variables is evidence in
-/// flight, and intersecting it with what the clauses instantiated for it is
-/// how a contract tells a callable argument what it will be called with:
+/// A column whose observed type is open is evidence in flight, and
+/// intersecting it with what the clauses instantiated for it is how a contract
+/// tells a callable argument what it will be called with:
 /// `make_resource(42, fn x -> ... end)` turns the lambda's `fp[va0] a0` into
 /// the integer its `(t) -> nil` parameter instantiates to.
 ///
@@ -2178,7 +2190,7 @@ fn instantiate_open_inputs<'a>(
             let Some(surface) = joined.get(index).and_then(|ty| *ty) else {
                 return input;
             };
-            if !world.types().has_vars(&input) {
+            if !column_is_open(world.types(), &input) {
                 return input;
             }
             let refined = world.types_mut().intersect(input, surface);
