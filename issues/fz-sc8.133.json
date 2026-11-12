@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:40:40Z",
+  "description": "Verified 2026-11-12 on a54d5027b (release, interp): /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/handoff/min2.fz (about 45 lines, reduced from tools/distill-telemetry.exs; argument tests/distill_telemetry/main_returns_one.jsonl) stops at compile with:\n\n  error[artifact/incomplete-semantic-plan]: compiler2 materialization for root 0: public closure callsite 2 settled return {:cont | :halt | :suspend, any} disagrees with its semantic result type any\n\nBefore fz-sc8.129 the stranded-request stall hid it. Also seen on the earlier reductions n1.fz/min3.fz in /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/unresolved/ (OptionParser replaced by [path] = args). The settled return is the Enumerable reducer protocol's {:cont|:halt|:suspend, acc}; the callsite's semantic result was widened to any, so the two halves read the same call differently. Minimize (the repro is size-sensitive), check against elixir, find which side is wrong, fixture with an oracle on all three paths. May share a cause with fz-sc8.131 (another two-halves-disagree diagnostic over closure calls); check that first.",
+  "id": "fz-sc8.133",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A public closure callsite's settled return agrees with its semantic result",
+  "type": "bug",
+  "updated_at": "2026-11-12T20:40:40Z"
+}
