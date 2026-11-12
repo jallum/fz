@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-53f.4"
+  ],
   "blocks": [
     "fz-53f.7"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "The type interner stores each descriptor once",
   "type": "task",
-  "updated_at": "2026-11-12T22:34:38Z"
+  "updated_at": "2026-11-12T22:34:39Z"
 }

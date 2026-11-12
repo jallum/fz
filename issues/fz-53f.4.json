@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-53f.5",
     "fz-53f.7"
   ],
   "created": "2026-11-12T22:34:13Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "The emptiness memo is a stack of the descriptors on the current path",
   "type": "task",
-  "updated_at": "2026-11-12T22:34:37Z"
+  "updated_at": "2026-11-12T22:34:39Z"
 }
