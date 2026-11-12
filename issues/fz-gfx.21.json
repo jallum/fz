@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T23:55:12Z",
+  "description": "About ten sites clone a whole Descr (five clause vectors plus finite sets) to read a few Ty ids, because a \u0026Descr from the arena blocks the interning the walk does next.\nNot forced at all: src/compiler2/types/arrow_match.rs:455 self.descr(pattern).clone().vars.values... (out is a separate \u0026mut HashSet).\nForced by arena growth, src/compiler2/types/mod.rs: :1586 convergence_class, :1636 convergence_class_at, :4839-4840 collect_subst_into, :4687-4688 refine_widen_uncached (plus .pure_tuple().cloned(), .pure_arrow().cloned() and captures cloned twice at :4737-4739), :4777-4782 instantiate (d cloned, then d.clone() again for base); arrow_match.rs:616 tuple_positive_alternatives.\nShape: compute-then-commit. Read the small thing (tuple elems, list elem, record fields, vars) and then recurse.\nOut of scope: intersect (:2158-2159), and any change to the arena itself. If id-only reads do not suffice for a site, leave it and report.\nHeat: per type node, per template instantiation / per activation key derivation / per widened position.\n\nMethod: .agent/strategies/ownership-shape.md. Change the signature and let cargo check enumerate dependents; resolve interleavings by compute-then-commit or a split borrow; stop and report if an Rc is the only move.\nSignal: pure refactor. Full gate green; no golden, census or pin moves. Report the clone/to_vec count of each touched file before and after.\nSites were read at develop 8bf8775ae and not compiled; confirm each with cargo check before relying on it.",
+  "id": "fz-gfx.21",
+  "labels": [],
+  "parent": "fz-gfx",
+  "priority": 2,
+  "status": "open",
+  "title": "Type walks read ids out of a descriptor without cloning it",
+  "type": "task",
+  "updated_at": "2026-11-12T23:55:12Z"
+}
