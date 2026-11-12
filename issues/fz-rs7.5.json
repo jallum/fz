@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rs7.4"
+  ],
   "blocks": [],
   "created": "2026-11-12T20:16:27Z",
   "description": "Rewrite fixture 00556 against raises:, delete the extern pair-return kind and the dynamic float arithmetic slow path that only it reached.\n\nDone when: no extern in lib declares a {value, failed} return and grep finds no reader of the pair kind.\n\nAcceptance: full gate green; no pin rises.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The semantic pair kind retires",
   "type": "task",
-  "updated_at": "2026-11-12T20:16:27Z"
+  "updated_at": "2026-11-12T20:16:28Z"
 }
