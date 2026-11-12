@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use super::{Agenda, AppliedStep, DependencyIndex, FactUse, Scheduler, Wake, WakeDisposition};
 use crate::compiler2::facts::ClaimShape;
-use crate::compiler2::scheduler::take_next_fact_change;
+use crate::compiler2::scheduler::FactChangeQueue;
 use crate::compiler2::scheduler::{CompletionEffects, DerivationEffects};
 use crate::compiler2::semantic::SemanticOrd;
 
@@ -320,9 +320,10 @@ fn compiler2_scheduler_fact_frontier_preserves_newest_first_equal_key_chronology
     let change = |key: &'static str, revision: u64| {
         crate::compiler2::FactChange::replacing(key, revision.checked_sub(1), Some(revision), false, false)
     };
-    let mut pending = vec![change("a", 1), change("c", 2), change("b", 3), change("c", 4)];
+    let mut pending = FactChangeQueue::new(&TestOrder);
+    pending.extend([change("a", 1), change("c", 2), change("b", 3), change("c", 4)]);
     let mut revisions = Vec::new();
-    while let Some(change) = take_next_fact_change(&mut pending, &TestOrder) {
+    while let Some(change) = pending.pop() {
         revisions.push(change.new_revision.expect("fixture movements have revisions"));
     }
     assert_eq!(
@@ -330,6 +331,44 @@ fn compiler2_scheduler_fact_frontier_preserves_newest_first_equal_key_chronology
         vec![1, 3, 4, 2],
         "typed minimum keys drain first, while interleaved equal keys retain newest-first chronology",
     );
+}
+
+/// Counts every key comparison the queue asks the calculator for.
+struct CountingOrder(std::cell::Cell<u64>);
+
+impl SemanticOrd<CountingOrder> for u32 {
+    fn semantic_cmp(&self, other: &Self, ctx: &CountingOrder) -> std::cmp::Ordering {
+        ctx.0.set(ctx.0.get() + 1);
+        self.cmp(other)
+    }
+}
+
+#[test]
+fn compiler2_scheduler_fact_frontier_comparisons_per_pop_grow_with_the_log_of_the_queue() {
+    for size in [256u32, 1024, 4096] {
+        let order = CountingOrder(std::cell::Cell::new(0));
+        let mut pending = FactChangeQueue::new(&order);
+        // 7919 is prime, so the keys arrive scrambled and each key is distinct.
+        pending.extend(
+            (0..size).map(|i| crate::compiler2::FactChange::replacing((i * 7919) % size, None, Some(1), false, false)),
+        );
+        let mut popped = Vec::new();
+        while let Some(change) = pending.pop() {
+            popped.push(change.key);
+        }
+        assert_eq!(
+            popped,
+            (0..size).collect::<Vec<_>>(),
+            "every key drains in ascending order"
+        );
+        let per_pop = order.0.get() / u64::from(size);
+        let log_size = u64::from(size.ilog2());
+        assert!(
+            per_pop <= 3 * log_size,
+            "{size} queued keys took {per_pop} comparisons per pop, more than 3 * log2({size}) = {}",
+            3 * log_size,
+        );
+    }
 }
 
 #[test]

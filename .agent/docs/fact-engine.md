@@ -551,9 +551,14 @@ mutation boundary:
       -> FactReplace::output_keys          keeps order
       -> DependencyIndex::outputs          keeps order
       -> mark_dirty                        iterates in that order
-      -> pending_changes                   drained in that order
+      -> pending_changes                   queued by typed key; drained smallest key first
       -> DependencyIndex                   typed job order
       -> job order                         -> intern order -> Ty ids
+
+`FactChangeQueue` (scheduler.rs) is the pending queue of one dispatch wave: a
+binary heap that pops the smallest typed key, and among equal keys the newest
+arrival. Dependents append movements while the wave drains, and each pop costs
+comparisons in the log of the queue length.
 
 `OrderedSet` still preserves source emission and membership, but insertion
 order is not semantic identity. `DependencyIndex` orders subscriber, waiter,
