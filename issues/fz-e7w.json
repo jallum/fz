@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:16:28Z",
+  "description": "Proposal page (approved 2026-11-12): https://claude.ai/artifact/TboWBs17qJ25eNNhgjEmd6 (local /Users/j5n/Workspace/gh-304.html, version 2). Closes GitHub #304.\n\nThe interpreter's environment is HashMap\u003cValueId, BackendBoundValue\u003e (src/ir_interp/backend.rs), rebuilt per entry. Remedy: a flat frame indexed by value id, sized from the Lowerer's value count (ids are not dense: 1,010 of 19,121 executables have gaps, worst ratio 16.5), inline lanes, and a retention trim so a parked frame holds only the target entry's captures (without it three GC pins rise).\n\nMeasured on the spike: 6.2 -\u003e 3.63 us/element release, 69 -\u003e 38.5 debug.\n\nSpike: /Users/j5n/Workspace/gh-304-spikes/spike-S2-final4.patch (10 files, +229 -131, applies to d2ecc9d48).\n\nThe page's ticket 4 (dev opt-level 1) is PR #313.\n\nNeighbour: PR #310 (fz-sc8.7) changes how the ir_interp driver ends (sched_core::end_quantum, process_ended, halted().unwrap_or(0)); expect a conflict on the driver's exit path.",
+  "id": "fz-e7w",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "The interpreter holds a frame, not a hash map",
+  "type": "epic",
+  "updated_at": "2026-11-12T20:16:28Z"
+}
