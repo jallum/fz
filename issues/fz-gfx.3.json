@@ -4,14 +4,15 @@
   "blocks": [
     "fz-gfx.9"
   ],
+  "closed_at": "2026-11-12T23:10:02Z",
   "created": "2026-11-12T22:09:22Z",
   "description": "lend_process (src/compiler2/source.rs:213-218) takes the Process out of its\nRefCell by swapping in `Self::fresh_process()`, runs the callback, then\nswaps the real one back and discards the placeholder. fresh_process\n(source.rs:~200-211) builds a Node with three atom strings and a Process\naround it, so every lend constructs and drops a whole Process that nothing\never uses.\n\nChange: lending does not construct a value. Either the callback receives\n`\u0026mut Process` under one borrow_mut, or the cell holds Option\u003cProcess\u003e and\nlend takes / puts it, with a loud panic on a nested lend.\n\nBefore building: list the lend_process callers and establish why the\ncallback signature is FnOnce(Process) -\u003e (Process, Result\u003c..\u003e) -- whether\nany caller needs the Process by value (moves it into something) or whether\n`\u0026mut Process` serves all of them. Check for re-entrant lends: a nested\nlend today silently sees the placeholder; after this change it must fail\nloudly.\n\nRemoval ledger: the placeholder construction per lend, both mem::replace\ncalls, and fresh_process itself if no other caller remains.\n\nSignal: gate green, no golden/census/pin movement.",
   "id": "fz-gfx.3",
   "labels": [],
   "parent": "fz-gfx",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Lending the quoted-source process constructs nothing",
   "type": "task",
-  "updated_at": "2026-11-12T22:12:11Z"
+  "updated_at": "2026-11-12T23:10:02Z"
 }
