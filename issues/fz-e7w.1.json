@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-e7w.2"
+    "fz-e7w.2",
+    "fz-e7w.3"
   ],
   "created": "2026-11-12T20:16:28Z",
   "description": "Land the final spike: Frame, value_count from the Lowerer, enter_entry, retain_continuation_captures, Lanes, test frames sized from TEST_VALUE_COUNT. The env type is shared by backend.rs, dispatch_exec.rs and continuations, so this is one commit.\n\nTests: keep the 5 fixed tests; add one that a parked frame holds only the target entry's captures (the 00911 pin covers it end to end).\n\nDocs: the interpreter frame model in .agent/docs, present tense.\n\nRemoved: the HashMap environment, delivered_env's map rebuild.\n\nAcceptance: full gate green; no GC pin rises; same-binary A/B on the issue's program shows 3.4 to 3.7 us/element release and 36 to 40 debug.",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "A frame is a table indexed by value id",
   "type": "task",
-  "updated_at": "2026-11-12T20:16:28Z"
+  "updated_at": "2026-11-12T20:16:29Z"
 }
