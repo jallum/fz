@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T21:14:51Z",
+  "description": "Found by fz-8c reviewing the fz-sc8.97 port (665499238); present in the original .97 too. After .97, CompiledMetadata.fn_halt_kinds holds exactly one entry (driver.rs:850, the program entry). Both readers default silently: src/exec/runtime.rs:253 Runtime::spawn does fn_halt_kinds.get(\u0026fn_id.0).copied().unwrap_or(0), and src/ir_codegen/backend.rs:318 does the same for main. Spawning any function other than the entry stamps halt kind 0 whatever it returns: the GH #305 class of bug (a float- or atom-returning root read as an integer). Production spawn callers today: compiler2/compiler.rs:511 (program.entry) and ir_codegen/compiled.rs:103; check both and the tests before choosing.\n\nShape: a one-entry map is a scalar. Carry entry_halt_kind: u32 beside the entry and have spawn refuse a non-entry function loudly (as the line above it panics on a missing fn ptr); or keep the map total over spawnable roots if a caller really spawns others. Either way unwrap_or(0) goes. Test: spawning a non-entry fn is a loud error; a float-returning entry halts as a float on all three paths.",
+  "id": "fz-sc8.135",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "The entry's halt kind is one value, and spawning any other function is refused loudly",
+  "type": "bug",
+  "updated_at": "2026-11-12T21:14:51Z"
+}
