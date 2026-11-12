@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T22:09:24Z",
+  "description": "Collections are copied to iterate where nothing conflicts.\n\nEvidence (develop @ cca160808):\n- src/compiler2/ordered_set.rs:90 implements IntoIterator for \u0026OrderedSet\n  only. Two callers hold a set they are about to drop and still clone every\n  element: scheduler.rs:1182 `woken.iter().cloned().collect::\u003cVec\u003c_\u003e\u003e()`,\n  world.rs:2951 dedupe_job_facts\n  `facts.into_iter().collect::\u003cOrderedSet\u003c_\u003e\u003e().iter().cloned().collect()`.\n- src/compiler2/jobs/native.rs:4701\n  `neighbors.iter().copied().collect::\u003cVec\u003c_\u003e\u003e()` in strongconnect; `graph`\n  is `\u0026HashMap\u003cFnId, HashSet\u003cFnId\u003e\u003e` and is never mutated in the recursion.\n- src/compiler2/native_codegen/driver.rs:642\n  `for (..) in mid_flight_cont_tail_fn_ids.clone()` -- clones the whole\n  \u0026HashMap argument (keys hold Vec\u003cMidFlightArgShape\u003e) for a `move` closure\n  that only calls arg_shapes.iter().\n\nChange: OrderedSet gets an owned IntoIterator; the two callers consume the\nset. strongconnect iterates `neighbors` directly. The driver loop iterates\nthe map by reference. Before building: check emit_fn_body's closure bound\n(a 'static bound would make the driver clone necessary; record it if so).\n\nRemoval ledger: the four copies above.\n\nSignal: gate green, no golden/census/pin movement. Iteration order of the\nconsumed OrderedSet must equal its borrowed iteration order.",
+  "id": "fz-gfx.8",
+  "labels": [],
+  "parent": "fz-gfx",
+  "priority": 3,
+  "status": "open",
+  "title": "OrderedSet is consumed by value; iteration copies nothing it does not need",
+  "type": "task",
+  "updated_at": "2026-11-12T22:09:24Z"
+}
