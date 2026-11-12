@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T01:02:45Z",
+  "description": "Step 1 removes the last emitter of fz_alloc_frame. Delete what it leaves without a user.\n\nRemoved (the step 2 rows of the page's removal ledger):\n- Frame schema builder and per-spec schema table, frame_sizes metadata, sentinel schema: driver.rs:62-79, 961-962, 1084; ir_codegen/schema.rs; compiled.rs:122; ir_codegen/backend.rs.\n- Runtime: fz_alloc_frame, fz_alloc_frame_dyn, Process::frame_sizes and frame_size, HeapAllocKind::Frame, the frame stat entries, and their unit test (ir_runtime_test.rs:274).\n- Golden lines 'frame_allocs =\u003e 0' and 'frame_bytes =\u003e 0': 22 lines in 11 files under fixtures2/behavior. These pin the absence of frames; removing the stat removes the keys. Approved with the page (2026-11-11). No other pin may change.\n\nDone when: the rows above are gone and a grep of src and runtime for alloc_frame, frame_sizes and HeapAllocKind::Frame is empty; grep -rn 'frame_allocs\\|frame_bytes' over fixtures2 and tests is empty.\n\nAcceptance: full gate green; the only pin edits are the 22 removed zero-valued lines. Any other moved pin stops the work.",
+  "id": "fz-4t3.2",
+  "labels": [],
+  "parent": "fz-4t3",
+  "priority": 2,
+  "status": "open",
+  "title": "Frames leave the runtime and the schema table",
+  "type": "task",
+  "updated_at": "2026-11-12T01:02:45Z"
+}
