@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-3sy.12"
+  ],
   "created": "2026-11-12T20:13:51Z",
   "description": "Proposal (approved 2026-11-12): /Users/j5n/Workspace/fz-3sy-typed-path.html. When the receiver's type is exactly one struct, the backend step records the slot (BackendStep::StructSlot); interp, run and build read by slot. Where the field's type fixes its representation (integer, float, atom) native code loads the raw value in place, masking the address by the target's packing. p.__struct__ on a known struct is the module atom as a constant. The named route stays for the erased path. Signal: slot alone measured 630 -\u003e 271 instructions per read (2 fields, release JIT, d43c80dbb); the ticket re-measures base and change in one profile on all three paths and reports the in-place load. Tests first: the Types query (one struct; union; negation; map; any), a drive test for StructSlot vs FieldAccess, a fixture reading every field including from a literal struct against Elixir.",
   "id": "fz-3sy.10",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A field read on a known struct is a slot read",
   "type": "task",
-  "updated_at": "2026-11-12T20:13:51Z"
+  "updated_at": "2026-11-12T20:13:57Z"
 }
