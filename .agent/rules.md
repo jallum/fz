@@ -43,6 +43,7 @@
 - Modules should have a coherent focus.
 - Deeply nested code is a smell. Long functions are a smell.
 - Data should be immutable where possible (esp. after construction).
+- A copy that exists only so the code compiles (a `.clone()`, a `.to_vec()`, a `collect`, a placeholder value, a hand-placed `drop`) is borrow-checker appeasement: it hides an ownership question instead of answering it. Fix who owns what and the copy goes away. See `.agent/strategies/ownership-shape.md`.
 - Code should live in the right modules, modules should live in the right places.
 - Tests should observe telemetry wherever possible. Not available? Consider judiciously adding (or extending) events.
 - Tests should clearly state the _intent_ that they're capturing, and not just mechanically assert it.
