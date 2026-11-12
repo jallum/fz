@@ -821,7 +821,17 @@ guards on the arity and then reads the fields.
 
 A callable surface that publishes a transport boundary names a runtime dispatch
 site, so it must be **ground**: type variables are an inference-phase concept and
-never reach a boundary. A first-class callable that escapes through a generic
+never reach a boundary. Two predicates on `Types` say what "carries a variable"
+means. `has_vars` is syntactic: the type mentions a variable anywhere, including
+the argument and result variables of a closure literal's arrow (`closure_lit`
+mints them fresh, and they belong to that closure). `has_open_vars` is the
+evidence question: a type is open when a variable remains that analysis still has
+to solve. It skips the argument and result slots of a closure-literal arrow and
+always walks the closure's captures. A closure carried as a value (a list
+element, a tuple field, a map value) is therefore not open, and `key_has_open_vars`
+lifts the predicate over an input vector; `ground_dispatch_surfaces` reads it.
+`is_pure_callable` says every value of a type is a callable, the one position
+where a closure's own arrow is what a contract refines. A first-class callable that escapes through a generic
 parameter slot (e.g. `Enum.reduce`'s reducer, or the `Enum.with_index` mapper
 threading through the recursive `with_index_list/3`) is analyzed against the
 polymorphic template that slot is typed at *and* the concrete arrow a real call
