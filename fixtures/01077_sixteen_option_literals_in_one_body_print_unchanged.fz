@@ -1,0 +1,22 @@
+#---
+# purpose: "Sixteen lines each building a tuple of a string list and a keyword list of keyword lists in one body print every literal unchanged"
+# oracle: 01077_sixteen_option_literals_in_one_body_print_unchanged.oracle.exs
+#---
+def main() do
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+  dbg({["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})
+end

@@ -1,0 +1,16 @@
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}
+{["-abc", "f"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]}

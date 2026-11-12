@@ -44,6 +44,9 @@ use super::dispatch::{
     collect_guard_calls_in_expr, hoist_zero_argument_guard_calls, resolve_guard_callee, resolve_guard_callee_checked,
 };
 
+mod storage_roots;
+use storage_roots::{LaterUses, StorageRootIndex, entries_reached_from};
+
 type Output = FactKey;
 type Changed = FactKey;
 
@@ -353,7 +356,12 @@ pub(super) fn lower_function(
 
     let mut lowerer = Lowerer::new(world, tel, function, source, surface);
     let (body, mut outputs, mut changed) = lowerer.lower()?;
-    emit_ownership_scan(tel, function, lowerer.ownership_steps_scanned);
+    emit_ownership_work(
+        tel,
+        function,
+        lowerer.ownership_steps_scanned,
+        lowerer.ownership_pairs_compared,
+    );
     let body_changed =
         super::super::drive::ExecutionContext::new(lowerer.world, tel).define_lowered_body(function, body);
     outputs.push(FactKey::LoweredBody(function));
@@ -368,14 +376,21 @@ pub(super) fn lower_function(
     })
 }
 
-/// How many steps ownership construction read in sequence while lowering this
-/// function. Everything else it asks -- where a value is defined, what a later
-/// step uses -- is a table lookup, so the count stays proportional to the body
-/// instead of to the constructions the body contains.
-fn emit_ownership_scan(tel: &impl crate::telemetry::Telemetry, function: FunctionId, steps_scanned: u64) {
+/// What ownership construction did while lowering this function.
+/// `steps_scanned` counts the steps it read in sequence; everything else it
+/// asks -- where a value is defined, what a later step uses -- is a table
+/// lookup, so the count stays proportional to the body instead of to the
+/// constructions the body contains. `pairs_compared` counts the tuple items
+/// it set against a later use to decide whether the two can overlap.
+fn emit_ownership_work(
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+    steps_scanned: u64,
+    pairs_compared: u64,
+) {
     tel.dispatch(
         &["fz", "compiler2", "lowered_body", "ownership"],
-        &crate::measurements! { steps_scanned: steps_scanned },
+        &crate::measurements! { steps_scanned: steps_scanned, pairs_compared: pairs_compared },
         &crate::metadata! { function_id: u64::from(function.as_u32()) },
     );
 }
@@ -931,6 +946,7 @@ struct Lowerer<'w, 'tel, T: crate::telemetry::Telemetry> {
     generated_changed: Vec<Changed>,
     generated_ids: Vec<FunctionId>,
     ownership_steps_scanned: u64,
+    ownership_pairs_compared: u64,
 }
 
 struct QuoteLowerer<'a, 'w, 'tel, 'env, 'steps, 'q, T: crate::telemetry::Telemetry> {
@@ -1223,6 +1239,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             generated_changed: Vec::new(),
             generated_ids: Vec::new(),
             ownership_steps_scanned: 0,
+            ownership_pairs_compared: 0,
         }
     }
 
@@ -3152,6 +3169,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
         use crate::fz_ir::ListRewritePermission;
         let scanned = Cell::new(0);
+        let compared = Cell::new(0);
         let clause_bounds = clause_bounds(body);
         let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
         let LoweredBody::Clauses { entries, .. } = body;
@@ -3258,7 +3276,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         }
         let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
         construct_call_ownership(body, &origins);
-        construct_tuple_ownership(body, &origins, &scanned);
+        construct_tuple_ownership(body, &origins, &scanned, &compared);
         for (entry, step, _, _) in sources {
             let permission = if list_can_rewrite(body, &origins, entry, step) {
                 ListRewritePermission::Rewrite
@@ -3268,6 +3286,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             body.set_list_rewrite_permission(ControlEntryId::from_u32(entry as u32), step, permission);
         }
         self.ownership_steps_scanned += scanned.get();
+        self.ownership_pairs_compared += compared.get();
     }
 
     fn plan_block(
@@ -4526,9 +4545,8 @@ fn construct_tuple_ownership(
     body: &mut LoweredBody,
     origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
     scanned: &Cell<u64>,
+    compared: &Cell<u64>,
 ) {
-    use super::super::body::ValueRole;
-    use super::super::executable_facts::TransportOrigin;
     use crate::fz_ir::OwnershipMode;
     let LoweredBody::Clauses { entries, .. } = body;
     let tuples = scan_steps(entries, scanned)
@@ -4542,25 +4560,24 @@ fn construct_tuple_ownership(
             _ => None,
         })
         .collect::<Vec<_>>();
+    let index = StorageRootIndex::new(body, origins);
+    let mut reached = (usize::MAX, HashSet::new());
     for (entry, step, result, items) in tuples {
+        if reached.0 != entry {
+            reached = (entry, entries_reached_from(body, entry));
+        }
+        let later = LaterUses::after(entry, step, &reached.1);
         let modes = items
             .iter()
             .enumerate()
-            .map(|(index, item)| {
+            .map(|(position, item)| {
                 let peers_overlap = items
                     .iter()
                     .enumerate()
-                    .any(|(peer_index, peer)| index != peer_index && values_overlap(body, origins, *item, *peer));
-                let old_owner = any_later_ownership_use(body, entry, step, |value, role| match role {
-                    ValueRole::Semantic => {
-                        values_overlap_inner(body, origins, value, *item, Some(result), &mut HashSet::new())
-                    }
-                    ValueRole::Physical => origin_source_path(body, origins, &TransportOrigin::LocalValue(value))
-                        .is_none_or(|source| {
-                            value_may_retain_source(body, origins, *item, &source, Some(result), &mut HashSet::new())
-                        }),
-                });
-                if peers_overlap || old_owner {
+                    .any(|(peer, other)| position != peer && values_overlap(body, origins, *item, *other));
+                let shares =
+                    peers_overlap || tuple_item_has_old_owner(body, origins, &index, &later, result, *item, compared);
+                if shares {
                     OwnershipMode::Share
                 } else {
                     OwnershipMode::Transfer
@@ -4575,6 +4592,41 @@ fn construct_tuple_ownership(
             item.mode = mode;
         }
     }
+}
+
+/// Whether a use after the step `later` follows can still reach the storage
+/// the tuple `result` would hand over with `item`. An item with a bounded
+/// footprint is set only against the later uses that share one of its roots; an
+/// open item is set against every later use.
+fn tuple_item_has_old_owner(
+    body: &LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    index: &StorageRootIndex,
+    later: &LaterUses<'_>,
+    result: ValueId,
+    item: ValueId,
+    compared: &Cell<u64>,
+) -> bool {
+    use super::super::body::ValueRole;
+    let overlaps = |value: ValueId| {
+        compared.set(compared.get() + 1);
+        values_overlap_inner(body, origins, value, item, Some(result), &mut HashSet::new())
+    };
+    let retains = |value: ValueId| {
+        origin_source_path(
+            body,
+            origins,
+            &super::super::executable_facts::TransportOrigin::LocalValue(value),
+        )
+        .is_none_or(|source| value_may_retain_source(body, origins, item, &source, Some(result), &mut HashSet::new()))
+    };
+    let Some(competitors) = index.competitors_after(item, later) else {
+        return any_later_ownership_use(body, later.entry(), later.step(), |value, role| match role {
+            ValueRole::Semantic => overlaps(value),
+            ValueRole::Physical => retains(value),
+        });
+    };
+    later.retained_sources(body).any(retains) || competitors.into_iter().any(overlaps)
 }
 
 fn entry_captures(

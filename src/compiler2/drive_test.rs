@@ -546,6 +546,66 @@ fn compiler2_tuple_ownership_reads_the_body_a_fixed_number_of_times() {
     );
 }
 
+/// The ownership pairs a body of `lines` option-parser literals compares.
+///
+/// Each line builds a tuple around a list of strings and a keyword list of
+/// keyword lists, so every line adds tuples, cells and the later uses they
+/// must be set against.
+fn pairs_compared_by_literal_lines(lines: usize) -> u64 {
+    let line = "  dbg({[\"-abc\", \"f\"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})\n";
+    let text = format!("def main() do\n{}end\n", line.repeat(lines));
+
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &["fz", "compiler2", "lowered_body"]);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    let source = compiler.submit_code(CodeSubmission {
+        name: Some("literal_lines.fz".into()),
+        text,
+    });
+    assert_resolved(compiler.drive(), "source indexing");
+    compiler.demand(Job::ScopeCode(source));
+    assert_resolved(compiler.drive(), "function identities");
+    let main = function_id(&functions, "main", 0);
+    compiler.demand(Job::LowerFunction(main));
+    assert_resolved(compiler.drive(), "literal lines lower");
+
+    let compared = capture
+        .events()
+        .iter()
+        .filter(|event| event.name == ["fz", "compiler2", "lowered_body", "ownership"])
+        .filter(|event| {
+            matches!(event.metadata.get("function_id"), Some(Value::U64(id)) if *id == u64::from(main.as_u32()))
+        })
+        .filter_map(|event| match event.measurements.get("pairs_compared") {
+            Some(Value::U64(compared)) => Some(*compared),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(compared.len(), 1, "main lowers once");
+    compared[0]
+}
+
+/// Ownership work grows in step with the literals a body holds.
+///
+/// Every tuple item is set against the later uses that could share its
+/// storage, and those are the uses that share a storage root with it, never
+/// every later use. Doubling the number of literal lines therefore at most
+/// doubles the pairs compared; asking each item about every later use makes
+/// the count grow with the square of the lines.
+#[test]
+fn compiler2_tuple_ownership_work_at_most_doubles_when_the_literals_double() {
+    let four = pairs_compared_by_literal_lines(4);
+    let eight = pairs_compared_by_literal_lines(8);
+    assert!(four > 0, "the lines hold tuples whose items are compared");
+    assert!(
+        eight <= 2 * four,
+        "doubling the literal lines took the pairs compared from {four} to {eight}"
+    );
+}
+
 /// Source for the join-walk probe: `if`, `case`, `cond` and `with` chained in
 /// one body, each result asserted right after it. Every construct lowers to
 /// one shared resume entry that both arms flow into, so this body
