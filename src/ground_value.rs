@@ -38,6 +38,12 @@ pub enum GroundValue {
 }
 
 impl GroundValue {
+    /// Whether this value is an atom -- `true`, `false` and `nil` included --
+    /// the one kind of literal that is its own type.
+    pub fn is_atom(&self) -> bool {
+        matches!(self, GroundValue::Atom(_) | GroundValue::Bool(_) | GroundValue::Nil)
+    }
+
     pub fn from_f64(value: f64) -> Self {
         GroundValue::Float(value.to_bits())
     }

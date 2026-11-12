@@ -594,7 +594,7 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
     /// only what the surviving questions ask.
     pub(crate) fn trimmed(
         &self,
-        inputs: PlanInputs<'_>,
+        inputs: PlanInputs<'_, TypeHandle>,
         live: &impl Fn(GraphNodeId) -> LiveEdges,
     ) -> Option<DispatchGraph<TypeHandle>>
     where
@@ -800,14 +800,24 @@ struct ArmCompileState<'a, TypeHandle> {
 /// `count` is the DECLARED input count, not the number of input subjects the
 /// matrix holds: a producer may mint a subject to carry a guard on a plan that
 /// declares no inputs at all.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PlanInputs<'a> {
+pub(crate) struct PlanInputs<'a, TypeHandle> {
     pub(crate) count: usize,
     /// The input each pinned value arrives on, when the rows' prematch bound it.
     pub(crate) pinned: &'a [Option<u32>],
     /// What each guard reads, in the plan's own subject and pin space.
     pub(crate) guard_leaves: &'a [Vec<GuardLeaf>],
+    /// Whether a type test can tell one literal from another: false when the
+    /// tested type names a specific atom, anywhere inside it.
+    pub(crate) literal_blind: &'a dyn Fn(&TypeHandle) -> bool,
 }
+
+impl<TypeHandle> Clone for PlanInputs<'_, TypeHandle> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<TypeHandle> Copy for PlanInputs<'_, TypeHandle> {}
 
 /// One value a guard reads. A guard question rides a carrier subject, so what
 /// a guard asks of the declared inputs is exactly its leaves.
@@ -819,7 +829,7 @@ pub(crate) enum GuardLeaf {
 
 pub(crate) fn compile_dispatch_matrix<TypeHandle: Clone + Eq>(
     matrix: DispatchMatrix<TypeHandle>,
-    inputs: PlanInputs<'_>,
+    inputs: PlanInputs<'_, TypeHandle>,
 ) -> Result<CompiledDispatchGraph<TypeHandle>, DispatchCompileError> {
     let DispatchMatrix {
         subjects,
@@ -832,7 +842,7 @@ pub(crate) fn compile_dispatch_matrix<TypeHandle: Clone + Eq>(
 fn compile_ordered_arms<TypeHandle: Clone + Eq>(
     ordered_arms: Vec<DispatchArm<TypeHandle>>,
     subjects: Vec<Subject>,
-    inputs: PlanInputs<'_>,
+    inputs: PlanInputs<'_, TypeHandle>,
 ) -> Result<CompiledDispatchGraph<TypeHandle>, DispatchCompileError> {
     let mut stats = DispatchCompileStats {
         arms: ordered_arms.len(),
@@ -1068,7 +1078,7 @@ pub(crate) enum DispatchGraphError {
 pub(crate) struct DispatchGraphBuilder<'a, TypeHandle> {
     subjects: Vec<Subject>,
     nodes: Vec<DispatchNode<TypeHandle>>,
-    inputs: PlanInputs<'a>,
+    inputs: PlanInputs<'a, TypeHandle>,
     input_demand: Vec<DispatchDemand>,
 }
 
@@ -1076,7 +1086,7 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
     /// A builder for a plan over `inputs`. A pin the rows' prematch bound is
     /// read from the input that delivers it whether or not a question survives
     /// to ask it, so every such input is charged up front.
-    pub(crate) fn typed(subjects: Vec<Subject>, inputs: PlanInputs<'a>) -> Self {
+    pub(crate) fn typed(subjects: Vec<Subject>, inputs: PlanInputs<'a, TypeHandle>) -> Self {
         let mut builder = Self {
             subjects,
             nodes: Vec::new(),
@@ -1134,7 +1144,10 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
             self.charge_guard(*guard);
             return;
         }
-        self.charge_subject(predicate.subject, demand_for_region(&predicate.region));
+        self.charge_subject(
+            predicate.subject,
+            demand_for_region(&predicate.region, self.inputs.literal_blind),
+        );
         match &predicate.region {
             Region::Equal(ComparisonValue::Pinned(pinned)) => self.charge_pin(*pinned),
             Region::Bitstring(shape) => self.charge_bitstring_sizes(shape),
@@ -1214,12 +1227,23 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
 }
 
 /// What one question asks of the value it tests.
-fn demand_for_region<TypeHandle>(region: &Region<TypeHandle>) -> DispatchDemand {
+///
+/// This is the one place a question's demand is decided. A question that
+/// descends into structure says where; a question that no literal can answer
+/// differently -- a type test whose type names no atom, an equality against a
+/// constant that is no atom -- reads the value without telling one literal from
+/// another, which is `Class`; every other question needs the value itself.
+fn demand_for_region<TypeHandle>(
+    region: &Region<TypeHandle>,
+    literal_blind: &dyn Fn(&TypeHandle) -> bool,
+) -> DispatchDemand {
     match region {
         Region::List(ListRegion::Empty | ListRegion::Cons) => {
             DispatchDemand::ListShape(Box::new(DispatchDemand::Ignore))
         }
         Region::TupleArity(_) => DispatchDemand::TupleFields(BTreeMap::new()),
+        Region::Type(ty) if literal_blind(ty) => DispatchDemand::Class,
+        Region::Equal(ComparisonValue::Const(constant)) if !constant.is_atom() => DispatchDemand::Class,
         Region::Equal(_)
         | Region::Type(_)
         | Region::MapKind

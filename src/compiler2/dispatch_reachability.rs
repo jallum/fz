@@ -124,9 +124,9 @@ impl ReachedEdges {
     /// The plan this activation's types leave: a test only one of whose edges
     /// is ever taken is its live child, and an arm or a fail nothing reaches is
     /// gone. A plan nothing narrows is the very `Rc` it started as.
-    pub(crate) fn trimmed(&self) -> Rc<PatternDispatchPlan<Ty>> {
+    pub(crate) fn trimmed(&self, types: &Types) -> Rc<PatternDispatchPlan<Ty>> {
         let live = |node| self.tests.get(&node).copied().unwrap_or_default().live();
-        match self.plan.trimmed(&live) {
+        match self.plan.trimmed(&live, &|ty| types.is_literal_blind(ty)) {
             Some(trimmed) => Rc::new(trimmed),
             None => self.plan.clone(),
         }

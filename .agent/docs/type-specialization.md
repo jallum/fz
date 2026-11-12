@@ -130,8 +130,24 @@ from a subset of its call sites while the rest are still waited for.
 ## Specialization stays finite
 
 The danger is a recursive function forking a fresh activation for every precise
-input shape — an accumulator's `[] ⊔ [x] ⊔ [x,y] ⊔ …` cartesian product. Two
-mechanisms bound it, both via the activation **key** (`canonical_activation_key`):
+input shape — an accumulator's `[] ⊔ [x] ⊔ [x,y] ⊔ …` cartesian product — and
+any function forking one per literal it is called with. Three mechanisms bound
+it, all via the activation **key** (`canonical_activation_key`):
+
+- **Literal erasure.** A position of the key keeps an identity-bearing literal
+  (an atom, `true`, `false` and `nil` included, at any depth) iff some use can
+  tell it from another literal of its kind; everywhere else the literal widens
+  to `atom` and the structure stays exactly as it was. `Types::widen_literals`
+  is the one widening, memoised, idempotent and monotone. It applies on BOTH
+  key paths: a recursive body's structural collapse and a non-recursive body's
+  key, which leaves structure alone and erases only identity. Two callers that
+  differ only in a literal no use reads share one activation and one analysis.
+  `Types::activation_key_arrow` is memoised on its whole question (arrow,
+  recursion, the three demand masks, callable identity): the same key is asked
+  of many evidence rows and callers, and the answer is a pure function of the
+  question.
+  The evidence rows keep the exact literals, so each row is still analysed on
+  its own and the key is only the identity they share.
 
 - **The convergence collapse.** For a recursive function, each UNDEMANDED input
   slot is keyed by its `convergence_class` — the whole list family, including
@@ -163,8 +179,35 @@ fz-kdt.122).
 So the fact is a least fixpoint over the `DispatchDemand` lattice:
 
 ```text
-demand(f, i) = local(f, i) ⊔ ⨆ { demand(g, j) : f forwards i to g@j }
+demand(f, i) = local(f, i) ⊔ uses(f, i) ⊔ ⨆ { lift(demand(g, j)) : f forwards i to g@j }
 ```
+
+`uses` classifies EVERY use an input-derived value has, not only the entry
+dispatch. A value read by a comparison or arithmetic operand, or as a literal
+map key, is `Class`; read by an `if` condition, a closure call's argument, a pinned or prepared dispatch binding, a bitstring
+field or a map base, it is `Whole`; the closure a call calls is asked nothing, because which closure it is has its own question (brand erasure, below); read by a body-local `case` it is what that
+plan asks; returned, it contributes nothing here, because the returned axis below
+asks. A lambda's captures are its leading inputs, so a captured value is asked what the lambda asks of it. A value held inside a construction (`{tag, x}`, `[x | acc]`, a struct) is
+asked what the holder is asked, taken inside the position that holds it. A
+direct call's argument is asked what the callee asks of that input, and `lift`
+carries it back along the path from the slot to the argument (and, for a
+construction passed as the argument, down the position the value sits at). An
+`Ignore` callee demand stays `Ignore` however deep the path, so structure that
+nothing reads still collapses. Lifting deepens a demand, and an edge on a
+forwarding cycle that deepens its callee's demand would deepen its own input
+again on every pass, so the solve asks `Whole` of that slot instead; every lift
+left on a cycle keeps a demand's depth, a depth bounded by the deepest seed, so
+the iteration ends. A construction that feeds itself (`acc = [x | acc]`)
+is cut the same way while a body's uses are collected: a value reached again by
+a different path is asked whole. No literal depth bounds either. The returned
+axis rides only the edges that pass a slot on as it is (empty path, empty
+descent): a projection or construction hands on a value the caller's return is
+not built from.
+
+A body with no lowered fz body asks nothing of its inputs: an extern's result is
+typed by its declaration, never by which literal it was handed, so its
+forwarded answer is `Ignore` per slot while its entry-plan answer stays empty,
+which keeps every brand it is handed.
 
 A second axis rides the same walk. A dispatched position answers "which callee
 activation does this reach"; a RETURNED position answers "what does this
@@ -210,9 +253,10 @@ callers apart there, so a self call keeps its caller's own key column at every
 WHOLE slot the recursion supplies (`call_key_types`, `jobs/semantic.rs`, reading
 `supplied_whole_slots`, `jobs/keying.rs`). The type it hands over is not
 dropped: it still enters the callee's input evidence as the ascent state. Every
-other slot keys from its argument. `go/4` settles one activation, the outside
-caller's, which the self calls stay inside, and so does the six-accumulator
-form; two outside callers that seed an accumulator with
+other slot keys from its argument. `go/4` settles two activations, the outside
+caller's and the ascent's, and so does the six-accumulator form. They differ at
+the list the recursion walks, not at an accumulator: `go/4`'s clauses tell the
+seed's `non_empty_list(int)` from the recursion's `list(int)`. Two outside callers that seed an accumulator with
 different element types keep two activations whose returns stay apart. The
 returned axis also leaves a supplied position out of its mask, for the same
 reason.
@@ -228,23 +272,28 @@ ascent, and two keys there are two callers: `loop(n, junk)`'s junk, the slots
 `go/3` permutes, and the payload of `walk({:go, acc}, n - 1)`, which the
 rebuilt tuple hands on unchanged (fz-kdt.199).
 
-"Forwards" is narrow on purpose: a direct-call tail argument that IS a clause
-parameter. A projection (`[head | tail]`), a construction (`[head | acc]`), a
-closure call and a lambda capture are all opaque, because the value that arrives
-at the callee is not the value the slot names. That is why `partition/4`'s two
-consed accumulators stay ONE activation while `List.reduce_step/3` splits.
-The returned axis inherits this narrowness: a reconstructed or projected
-forwarding argument is not an edge for it either, and neither is a
-`LoweredTail::DirectCall`'s `dest` (fz-kdt.214 owns the edge set).
+A forward is an edge from an input POSITION -- a slot and a path into it -- to
+a callee input, through zero or more construction steps. A parameter passed on
+as it is, a projection (`f(elem)`) and a construction (`[head | acc]`) are all
+edges; a closure call's argument reads the value whole; a lambda capture is an edge to the lambda's own inputs.
+The returned axis rides the same edges. A `LoweredTail::DirectCall`'s `dest`
+is not an edge.
+
 A protocol callback has no body: it is a name dispatch resolves to an
 implementation. Its own question is which implementation to reach, answered
-from the receiver's type, so its published demand is `Whole` on the receiver
-and `Ignore` elsewhere, with no forwards. What an implementation asks of its
-inputs is asked where it is called: `resolve_protocol_call` picks the
-implementation from the receiver's type and keys its activation through
+from the receiver's type, so its published demand is on the receiver and
+`Ignore` elsewhere, with no forwards. Its returned axis is `Whole` on every
+slot but the receiver: the implementation may hand an accumulator back, and
+the callback does not consult implementations to say otherwise, so a landing
+implementation never revises the answer. The receiver is `Class` when no
+implementation's target can tell one literal from another -- the receiver's
+literals then pick no implementation -- and `Whole` otherwise; the job reads
+`ProtocolImplProviders` and each target's `StructDefined`, so an implementation
+that lands later revises the answer. What an implementation asks of its inputs
+is asked where it is called: `resolve_protocol_call` picks the implementation
+from the receiver's type and keys its activation through
 `prepare_function_call` with the implementation's own demand, not the
-callback's. The callback's answer depends on no other fact, so it is
-published once and never revised.
+callback's.
 
 One job (`Job::DeriveInputDemand`) builds the demand from its callees'
 answers (`ForwardingWalk` in `jobs/keying.rs`). A callee's concluded
@@ -261,15 +310,16 @@ shape, at every depth; a list demand never reached is freight and collapses to
 one addressed class per position exactly as before.
 
 `InputDemand` carries all three. The forwarded demand and the returned axis
-shape the key collapse; the LOCAL mask is what closure-brand erasure reads
+shape the key collapse; the LOCAL mask -- the entry plan's own question, none
+of `uses` -- is what closure-brand erasure reads
 (fz-6gb), because "does a clause of THIS body test this slot" is a different
 question from "does anything downstream read it", and a forwarder that only
 transports a callable must still key one activation for two same-shape lambdas.
 
 Three limits are known and stated rather than argued away. A `Whole` slot has NO
 collapse, and forwarding can hand a `Whole` up from a callee that tests a
-literal, so fz-y6w's termination argument does not cover such a slot
-(measured: 344 rows over 174 functions gain a forwarding-introduced `Whole`).
+literal -- or from a closure call, a branch or a capture that reads the value
+whole -- so fz-y6w's termination argument does not cover such a slot.
 The returned axis does not widen that exposure: it never produces a verbatim
 slot, only an addressed class. The CALLABLE slot is still blind. And the
 recursion-supplied subtraction reads SELF calls only: a mutually recursive pair
@@ -287,9 +337,8 @@ a function that gains a distinct published return and 91 do not — the 91
 dominated by `List.reduce_cont/3` (21), `List.reduce_while_cont/3` (18),
 `Range.reduce_while_cont/6` (9) and `List.reduce_while_step/3` (6) minting
 `empty_list()`/`list(τ)` ascent rungs across a mutual cycle the self-only
-subtraction cannot see (fz-kdt.213). And the axis rides fz-kdt.183's dispatch
-edge set, so a reconstructed or projected forwarding argument still re-joins
-two keys onto one published return (fz-kdt.214).
+subtraction cannot see (fz-kdt.213). And a call whose result is delivered and discarded
+still forwards its arguments (fz-kdt.214).
 
 Termination is a theorem, not a property of lucky inputs. Three facts carry it:
 numeric literal chains cannot exist (the lattice has no numeric singletons —

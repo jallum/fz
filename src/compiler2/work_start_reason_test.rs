@@ -344,7 +344,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 236 -> 252 executable facts. The fixture's `dbg` is `IO.inspect`,
         // whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`,
         // `Binary.to_string`, `raise`, `==`) is defined, lowered and planned.
-        (2516, 11, 28, 252),
+        // Literal-argument calls are no longer self-keyed: 2516 -> 2528 steps
+        // (Kernel's arithmetic and compare cone derives its input demand once
+        // per program), 252 -> 248 executable facts (fewer activations).
+        (2528, 11, 28, 248),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -434,7 +437,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // decomposed above; the two DeriveRuntimeDemand reruns are charged
         // in the demand census below.
         // fz-sc8.8: 885 -> 960. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        960,
+        // Literal-argument calls are no longer self-keyed: each function
+        // reached with an atom argument derives its demand: 960 -> 987.
+        987,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -496,7 +501,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.64: 418 -> 416, measured alongside the fifteen-step rise
         // decomposed above.
         // fz-sc8.8: 416 -> 440. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        440,
+        // An activation key names only the literals a use can tell apart:
+        // 440 -> 424.
+        424,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -554,7 +561,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // because `raise/2`'s demand concludes after their first runs; both
         // reruns are charged to the fourth cause.
         // fz-sc8.8: (573, 575, [24, 236, 82, 233, 0]) -> (605, 607, [24, 252, 82, 249, 0]). `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        (605, 607, [24, 252, 82, 249, 0]),
+        // Literal-argument calls are no longer self-keyed: (605, 607,
+        // [24, 252, 82, 249, 0]) -> (596, 598, [24, 248, 82, 244, 0]).
+        (596, 598, [24, 248, 82, 244, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
@@ -567,7 +576,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // list, so the check and its abort path become executables of their own.
         // fz-sc8.37: 307 -> 308. Kernel defines `&&`, `||` and `!` as macros.
         // fz-sc8.8: 308 -> 324. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        324,
+        // An activation key names only the literals a use can tell apart:
+        // 324 -> 320.
+        320,
         "the demand frontier retains every ordinary generic helper key",
     );
     assert_eq!(
@@ -710,7 +721,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // `count` keeps Elixir's proper-list check and its abort path.
         // fz-sc8.37: 235 -> 236. Kernel defines `&&`, `||` and `!` as macros.
         // fz-sc8.8: 236 -> 252. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        252,
+        // An activation key names only the literals a use can tell apart:
+        // 252 -> 248.
+        248,
         "the demand frontier's distinct activations, deduplicated across repeats",
     );
 

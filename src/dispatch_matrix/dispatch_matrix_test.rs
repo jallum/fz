@@ -771,6 +771,7 @@ fn a_pinned_input_is_read_whether_or_not_a_question_survives_to_ask_it() {
         count: 2,
         pinned: &pinned,
         guard_leaves: &[],
+        literal_blind: &|_| false,
     };
     let mut builder = DispatchGraphBuilder::<Ty>::typed(vec![input_subject()], inputs);
     let outcome = builder.add_node(DispatchNode::Outcome {
@@ -785,11 +786,12 @@ fn a_pinned_input_is_read_whether_or_not_a_question_survives_to_ask_it() {
 
 /// The non-subject inputs of a plan whose questions read one declared input
 /// and neither pins nor guards.
-fn one_input() -> PlanInputs<'static> {
+fn one_input() -> PlanInputs<'static, Ty> {
     PlanInputs {
         count: 1,
         pinned: &[],
         guard_leaves: &[],
+        literal_blind: &|_| false,
     }
 }
 
@@ -1387,8 +1389,8 @@ fn a_literal_head_demands_the_input_it_compares_and_nothing_else() {
 
     assert_eq!(
         input_demand(&plan),
-        vec![DispatchDemand::Whole, DispatchDemand::Ignore],
-        "the counter is compared; the accumulator is only bound"
+        vec![DispatchDemand::Class, DispatchDemand::Ignore],
+        "the counter is compared, and an integer comparison cannot tell its literal apart; the accumulator is only bound"
     );
 }
 
@@ -1527,4 +1529,63 @@ fn a_tuple_head_demands_the_shape_it_takes_apart() {
         vec![DispatchDemand::TupleFields(BTreeMap::new())],
         "the arity is the question; the fields are projected, not asked about"
     );
+}
+
+/// A question that cannot tell one literal from another reads its value at
+/// `Class`; a question that can, or that reads more than a literal, needs the
+/// value itself.
+#[test]
+fn a_question_that_cannot_tell_literals_apart_reads_its_value_at_class() {
+    let mut types = Types::new();
+    let int = types.int();
+    let atom = types.atom_lit("a");
+    let blind = |ty: &Ty| *ty == int;
+    let demand = |region: Region<Ty>| demand_for_region(&region, &blind);
+
+    let cases = [
+        (
+            "a type test on a type with no literal",
+            Region::Type(int),
+            DispatchDemand::Class,
+        ),
+        ("a type test on an atom", Region::Type(atom), DispatchDemand::Whole),
+        (
+            "equality against an atom",
+            Region::Equal(ComparisonValue::Const(GroundValue::Atom("a".into()))),
+            DispatchDemand::Whole,
+        ),
+        (
+            "equality against nil",
+            Region::Equal(ComparisonValue::Const(GroundValue::Nil)),
+            DispatchDemand::Whole,
+        ),
+        (
+            "equality against a boolean",
+            Region::Equal(ComparisonValue::Const(GroundValue::Bool(true))),
+            DispatchDemand::Whole,
+        ),
+        (
+            "equality against an integer",
+            Region::Equal(ComparisonValue::Const(GroundValue::Int(0))),
+            DispatchDemand::Class,
+        ),
+        (
+            "equality against a binary",
+            Region::Equal(ComparisonValue::Const(GroundValue::Binary(vec![1]))),
+            DispatchDemand::Class,
+        ),
+        (
+            "a list shape question",
+            Region::List(ListRegion::Cons),
+            DispatchDemand::ListShape(Box::new(DispatchDemand::Ignore)),
+        ),
+        (
+            "a tuple arity question",
+            Region::TupleArity(2),
+            DispatchDemand::TupleFields(BTreeMap::new()),
+        ),
+    ];
+    for (what, region, expected) in cases {
+        assert_eq!(demand(region), expected, "{what}");
+    }
 }

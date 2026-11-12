@@ -171,7 +171,8 @@ fn static_reach_work_on_enum_take_drop_split_is_proportional_to_edges() {
     // fz-sc8.8: (106, 147, 207) -> (115, 157, 229). `dbg` is `IO.inspect`,
     // whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`,
     // `Binary.to_string`, `raise`, `==`) joins the static call graph.
-    assert_eq!((functions, edges, evaluations), (115, 157, 229));
+    // Evaluations 229 -> 202: literal-argument calls are no longer self-keyed.
+    assert_eq!((functions, edges, evaluations), (115, 157, 202));
     assert!(
         evaluations <= functions + edges,
         "each function evaluates once to discover its callees and once more for each callee it waits on"

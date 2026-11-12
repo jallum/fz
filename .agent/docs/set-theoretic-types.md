@@ -108,6 +108,19 @@ coordinate or resource payload, a non-empty list sig with no element left).
 The persistence boundary (`Types::intern`) canonicalizes every descriptor
 entering the interner.
 
+`Types::widen_literals` maps a type to the same type with every finite atom set
+(a literal atom, a union of them, `true`, `false`, `nil`, `boolean`) replaced by
+`atom`, through tuple elements, list elements, resource payloads, map field
+values and closure-literal captures. The arguments and result of an arrow are
+left alone: they are a function's contract, not a value's literals. It is
+memoised, idempotent (the widened type maps to itself) and monotone, and
+numeric and binary types pass through because the lattice has no numeric or
+binary singletons. `Types::is_literal_blind` is the same traversal as a pure
+predicate -- true exactly when widening changes nothing -- so the plan builder,
+which holds no mutable calculator, can ask it. The activation key applies the
+widening where no use can tell one literal from another
+([`type-specialization`](type-specialization.md)).
+
 First the TUPLE NORMALIZER (`types/axis.rs`), the tuple axis's own normal form
 and the one rule that reaches a different CARVING of one type. Per clause
 first: a ground difference whose cover differs in exactly one coordinate is

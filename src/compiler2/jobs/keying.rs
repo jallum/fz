@@ -1,12 +1,14 @@
 //! Jobs that derive the stable facts used for activation keying.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_path};
+use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_path, demand_within_path};
 
-use super::super::body::{CallInputMode, LoweredBody, LoweredStep, LoweredTail, ValueId};
+use super::super::body::{
+    CallInputMode, ControlDestination, LoweredBody, LoweredStep, LoweredTail, ValueId, delivered_value_joins,
+};
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, ProductAddress, UseCollector, current_uses};
-use super::super::identity::FunctionId;
+use super::super::identity::{FunctionId, ModuleId};
 use super::super::keying::{BodyKeying, InputDemand};
 use super::super::pull::{ProductKey, ProductSessions, ProductValue};
 use super::super::reach::ReachKey;
@@ -326,21 +328,51 @@ fn body_consumes_callable_identity(world: &World, function: FunctionId) -> bool 
 #[derive(Debug, Clone, Default)]
 struct DemandNode {
     local: Vec<DispatchDemand>,
+    /// What the rest of this body does with its inputs, apart from its entry
+    /// dispatch and the calls it forwards them to: a comparison reads one
+    /// literal-blind, a closure call or a branch reads one whole. Joined with
+    /// `local` on the forwarded axis only; `local` stays the plan's own
+    /// question, which is what brand erasure asks.
+    uses: Vec<DispatchDemand>,
     /// The positions this body's OWN returns are built from (fz-kdt.199),
     /// before any forwarding join.
     local_result: Vec<DispatchDemand>,
     forwards: Vec<ForwardEdge>,
 }
 
-/// `slot` of this body is passed, UNCHANGED, as `callee`'s `callee_slot`th
-/// input. Nothing else counts: a projection (`[head | tail]`), a construction
-/// (`[head | acc]`) and a closure call are all opaque, so the value that
-/// arrives at the callee is not the value this slot names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// The position `path` inside this body's `slot`th input reaches `callee`'s
+/// `callee_slot`th input after `descent` more steps: `path` is empty for a
+/// parameter passed on as it is, names the projection for `f(elem)`, and
+/// `descent` names where a construction (`[head | acc]`) holds the position.
+/// What the callee asks of the position comes back to the slot by the
+/// descent, then the path ([`lifted_demand`]).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ForwardEdge {
     slot: usize,
+    path: Vec<DemandPathStep>,
+    descent: Vec<DemandPathStep>,
     callee: FunctionId,
     callee_slot: usize,
+}
+
+fn lifted_demand(edge: &ForwardEdge, callee: &DispatchDemand) -> DispatchDemand {
+    let inside = demand_within_path(callee, &edge.descent);
+    if !inside.asks_anything() {
+        return DispatchDemand::Ignore;
+    }
+    demand_at_path(&edge.path, inside)
+}
+
+/// What a callee's returned demand asks of the caller's slot: only a slot
+/// passed on as it is carries the callee's return back to the caller's own.
+/// A position handed on (`f(elem)`) or held in a construction names a value
+/// the caller's return is not built from, so it asks nothing of the slot.
+fn returned_through_edge(edge: &ForwardEdge, callee: &DispatchDemand) -> DispatchDemand {
+    if edge.path.is_empty() && edge.descent.is_empty() {
+        callee.clone()
+    } else {
+        DispatchDemand::Ignore
+    }
 }
 
 /// Derives which function inputs are DEMANDED -- by this body's own entry
@@ -424,8 +456,13 @@ pub(super) fn derive_input_demand(
 
     let demand = InputDemand {
         local_dispatch: graph.get(&function).map(|node| node.local.clone()).unwrap_or_default(),
-        forwarded_dispatch: solve_forwarded_demand(&graph, function, |node| &node.local),
-        returned: solve_forwarded_demand(&graph, function, |node| &node.local_result),
+        forwarded_dispatch: solve_forwarded_demand(&graph, function, DemandNode::dispatch_and_uses, lifted_demand),
+        returned: solve_forwarded_demand(
+            &graph,
+            function,
+            |node| node.local_result.clone(),
+            returned_through_edge,
+        ),
     };
     emit_input_demand_derived(tel, &function, &demand);
     let changed = world.define_input_demand(function, demand);
@@ -451,13 +488,13 @@ pub(super) fn derive_input_demand(
 ///   fixpoint, so its body is walked here and the cycle is solved in this run;
 /// - otherwise this run waits for its answer and publishes nothing.
 struct ForwardingWalk<'w> {
-    world: &'w World,
+    world: &'w mut World,
     uses: UseCollector,
     graph: BTreeMap<FunctionId, DemandNode>,
 }
 
 impl<'w> ForwardingWalk<'w> {
-    fn new(world: &'w World, function: FunctionId) -> Self {
+    fn new(world: &'w mut World, function: FunctionId) -> Self {
         Self {
             world,
             uses: UseCollector::new(Job::DeriveInputDemand(function)),
@@ -482,7 +519,7 @@ impl<'w> ForwardingWalk<'w> {
         // one here, the way `answer` would, would subscribe this walk to a
         // fact it otherwise never touches.
         let fact = FactKey::InputDemand(callee);
-        match self.uses.classify(self.world, fact) {
+        match self.uses.classify(&*self.world, fact) {
             AnswerUse::Concluded(read) => {
                 let answer = self
                     .world
@@ -490,6 +527,7 @@ impl<'w> ForwardingWalk<'w> {
                     .expect("a concluded InputDemand is present");
                 let leaf = DemandNode {
                     local: answer.forwarded_dispatch.clone(),
+                    uses: Vec::new(),
                     local_result: answer.returned.clone(),
                     forwards: Vec::new(),
                 };
@@ -521,8 +559,16 @@ impl<'w> ForwardingWalk<'w> {
         if matches!(self.world.function_body_shape(function), BodyShape::Extern) {
             // An extern is a leaf, known from its source head: it has no fz
             // body to forward through, and that answer never changes, so
-            // nothing here is read beyond the `StaticCallees` fact above.
-            self.graph.insert(function, DemandNode::default());
+            // nothing here is read beyond the `StaticCallees` fact above. Its
+            // result is typed by its declaration, never by which literal it
+            // was handed, so it asks nothing of an argument: the forwarded
+            // answer is `Ignore` per slot, while the entry-plan answer stays
+            // empty, which keeps every brand it is handed.
+            let node = DemandNode {
+                uses: vec![DispatchDemand::Ignore; self.world.function_arity(function)],
+                ..DemandNode::default()
+            };
+            self.graph.insert(function, node);
             return;
         }
         let lowered = FactKey::LoweredBody(function);
@@ -548,14 +594,15 @@ impl<'w> ForwardingWalk<'w> {
         self.read(lowered);
         // The plan states what it reads of its inputs; this walk only joins that
         // across the bodies a value is forwarded to.
-        let world = self.world;
+        let world = &*self.world;
         let local = world.entry_dispatch(function).input_demand().to_vec();
         let local_result = return_flow_mask(world, function, local.len());
-        let forwards = forwarded_inputs(world, function, local.len());
+        let BodyFlows { uses, forwards } = body_flows(world, function, local.len());
         self.visit_node(
             function,
             DemandNode {
                 local,
+                uses,
                 local_result,
                 forwards,
             },
@@ -564,30 +611,71 @@ impl<'w> ForwardingWalk<'w> {
 
     /// A protocol callback has no body: it is a name dispatch resolves to an
     /// implementation. Its own question is which implementation to reach,
-    /// and that is answered from the receiver's type, so its published
-    /// demand is `Whole` on the receiver and `Ignore` everywhere else.
+    /// and that is answered from the receiver's type: the receiver is `Class`
+    /// when no implementation's target can tell one literal from another --
+    /// the receiver's literals then pick no implementation -- and `Whole`
+    /// otherwise.
     ///
-    /// What an implementation asks of its inputs is asked where it is
-    /// called: `resolve_protocol_call` (`jobs/semantic.rs`) picks the
-    /// implementation from the receiver's type and keys its activation
-    /// through `prepare_function_call` with the implementation's own
-    /// demand, not the callback's. The callback forwards to nothing, so
-    /// this answer depends on no other fact -- it is published once and
-    /// never revised.
+    /// Everything else a call to the callback asks is asked by the
+    /// implementation it reaches, so the callback hands every input, and what
+    /// its result is built from, to the implementation of each arm of the
+    /// protocol's dispatch (`resolve_protocol_call`, `jobs/semantic.rs`, picks
+    /// one from the receiver's type and keys its activation with the
+    /// implementation's own demand). A callback that asked nothing of an
+    /// accumulator the implementation returns would let two callers that differ
+    /// only in that literal share a key and blend their answers.
+    ///
+    /// The providers and the dispatch are read, so an implementation that lands
+    /// later revises the answer.
     fn visit_protocol_callback(&mut self, function: FunctionId) {
+        let callback = self
+            .world
+            .protocol_callback(function)
+            .expect("a protocol callback is visited as one");
         let arity = self.world.function_arity(function);
+        let receiver = self.receiver_demand(callback.protocol);
         let mut local = vec![DispatchDemand::Ignore; arity];
-        if let Some(receiver) = local.first_mut() {
-            *receiver = DispatchDemand::Whole;
+        if let Some(slot) = local.first_mut() {
+            *slot = receiver;
+        }
+        // The implementation is reached by the receiver's type, and what it
+        // does with the other inputs is not known here: it may hand an
+        // accumulator back. Asking the implementation would make this answer
+        // depend on which implementations have landed, so a revision of the
+        // dispatch would re-key activations already made. The callback instead
+        // states the conservative fact itself: every other input may flow into
+        // the result.
+        let mut local_result = vec![DispatchDemand::Whole; arity];
+        if let Some(slot) = local_result.first_mut() {
+            *slot = DispatchDemand::Ignore;
         }
         self.visit_node(
             function,
             DemandNode {
                 local,
-                local_result: vec![DispatchDemand::Ignore; arity],
+                uses: Vec::new(),
+                local_result,
                 forwards: Vec::new(),
             },
         );
+    }
+
+    fn receiver_demand(&mut self, protocol: ModuleId) -> DispatchDemand {
+        self.read(FactKey::ProtocolImplProviders(protocol));
+        let mut blind = true;
+        for (target, _provider) in self.world.protocol_impl_providers(protocol) {
+            let mut reads = Vec::new();
+            let target_ty = self.world.module_impl_target_ty(target, &mut reads);
+            for read in reads {
+                self.read(read);
+            }
+            blind &= self.world.types().is_literal_blind(&target_ty);
+        }
+        if blind {
+            DispatchDemand::Class
+        } else {
+            DispatchDemand::Whole
+        }
     }
 
     fn visit_node(&mut self, function: FunctionId, node: DemandNode) {
@@ -599,50 +687,298 @@ impl<'w> ForwardingWalk<'w> {
     }
 }
 
-/// The parameters this body hands on unchanged, and where they land.
+/// What the rest of a body does with its inputs: the demand its own uses put
+/// on each slot, and the calls that carry a position on to a callee.
+struct BodyFlows {
+    uses: Vec<DispatchDemand>,
+    forwards: Vec<ForwardEdge>,
+}
+
+/// One way a value is used, as far as the demand on an input is concerned.
+#[derive(Debug, Clone)]
+enum ValueUse {
+    /// Read by something that asks this much of it.
+    Asks(DispatchDemand),
+    /// An argument of a direct call: the callee's demand is the demand.
+    Call { callee: FunctionId, callee_slot: usize },
+    /// Held by `container` at `step`: the container's demand, taken inside the
+    /// step, is the demand.
+    Within { container: ValueId, step: DemandPathStep },
+    /// Delivered into `join`: the demand on the delivered value is the demand
+    /// on the join.
+    Alias(ValueId),
+}
+
+/// Every use of every input-derived value, classified.
 ///
 /// A clause binds each of the function's semantic inputs to one `ValueId`
-/// (`clause.params[i]`), and those ids are function-wide, so a direct call's
-/// argument IS a parameter exactly when its value is one of them. A direct
-/// call's args are its callee's inputs one-for-one (`CallInputMode::Direct`),
-/// which is why the callee slot is the argument index.
-fn forwarded_inputs(world: &World, function: FunctionId, input_count: usize) -> Vec<ForwardEdge> {
+/// (`clause.params[i]`), and those ids are function-wide, so a use of a value
+/// is a use of the input positions that value names ([`input_positions`]).
+/// A direct call's args are its callee's inputs one-for-one
+/// (`CallInputMode::Direct`), which is why the callee slot is the argument
+/// index.
+///
+/// ```text
+/// returned                        nothing: the returned axis asks it
+/// a comparison, arithmetic        Class: the result cannot name a literal
+/// a branch, closure-call argument Whole
+/// a direct call's argument        what the callee asks, lifted back
+/// a construction                  what its holder asks, taken inside it
+/// ```
+fn body_flows(world: &World, function: FunctionId, input_count: usize) -> BodyFlows {
     let body = world.lowered_body(function);
-    let LoweredBody::Clauses { entries, .. } = &*body;
-    let slots_of = input_positions(&body, input_count)
-        .into_iter()
-        .map(|(value, positions)| {
-            (
-                value,
-                positions
-                    .into_iter()
-                    .filter_map(|(slot, path)| path.is_empty().then_some(slot))
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let mut edges = Vec::new();
-    for entry in entries {
-        let LoweredTail::DirectCall { callee, args, .. } = &entry.tail else {
-            continue;
-        };
-        let callee_inputs = world.function_arity(*callee);
-        for (arg_index, arg) in args.iter().enumerate() {
-            let Some(callee_slot) = CallInputMode::Direct.semantic_index(callee_inputs, args.len(), arg_index) else {
-                continue;
-            };
-            for slot in slots_of.get(&arg.value).into_iter().flatten().copied() {
-                edges.push(ForwardEdge {
-                    slot,
+    let positions = input_positions(&body, input_count);
+    let uses_of = value_uses(world, &body);
+    let mut flows = BodyFlows {
+        uses: vec![DispatchDemand::Ignore; input_count],
+        forwards: Vec::new(),
+    };
+    for (value, held_at) in &positions {
+        let mut asks = Vec::new();
+        let mut calls = Vec::new();
+        collect_demands(
+            &uses_of,
+            *value,
+            &mut Vec::new(),
+            &mut HashSet::new(),
+            &mut asks,
+            &mut calls,
+            &mut Vec::new(),
+        );
+        for (slot, path) in held_at {
+            for ask in &asks {
+                if let Some(mine) = flows.uses.get_mut(*slot) {
+                    mine.join_assign(demand_at_path(path, ask.clone()));
+                }
+            }
+            for (callee, callee_slot, descent) in &calls {
+                flows.forwards.push(ForwardEdge {
+                    slot: *slot,
+                    path: path.clone(),
+                    descent: descent.clone(),
                     callee: *callee,
-                    callee_slot,
+                    callee_slot: *callee_slot,
                 });
             }
         }
     }
-    edges.sort_unstable();
-    edges.dedup();
-    edges
+    flows.forwards.sort_unstable();
+    flows.forwards.dedup();
+    flows
+}
+
+/// Follows a value up through what holds it, to the reads and calls that
+/// decide what is asked of it. `inside` is the path from the value that is
+/// finally read down to `value`; `active` is the values on the way up to it.
+///
+/// A value reached again while it is still being followed, by a different
+/// path, is held by a construction that feeds itself (`acc = [x | acc]`):
+/// each trip around deepens the path, so what is asked of it is asked of the
+/// whole value. Every other revisit repeats a path already followed.
+fn collect_demands(
+    uses_of: &HashMap<ValueId, Vec<ValueUse>>,
+    value: ValueId,
+    inside: &mut Vec<DemandPathStep>,
+    seen: &mut HashSet<(ValueId, Vec<DemandPathStep>)>,
+    asks: &mut Vec<DispatchDemand>,
+    calls: &mut Vec<(FunctionId, usize, Vec<DemandPathStep>)>,
+    active: &mut Vec<ValueId>,
+) {
+    if !seen.insert((value, inside.clone())) {
+        return;
+    }
+    if active.contains(&value) {
+        asks.push(DispatchDemand::Whole);
+        return;
+    }
+    active.push(value);
+    for usage in uses_of.get(&value).into_iter().flatten() {
+        match usage {
+            ValueUse::Asks(demand) => asks.push(demand_within_path(demand, inside)),
+            ValueUse::Call { callee, callee_slot } => calls.push((*callee, *callee_slot, inside.clone())),
+            ValueUse::Within { container, step } => {
+                inside.insert(0, *step);
+                collect_demands(uses_of, *container, inside, seen, asks, calls, active);
+                inside.remove(0);
+            }
+            ValueUse::Alias(join) => collect_demands(uses_of, *join, inside, seen, asks, calls, active),
+        }
+    }
+    active.pop();
+}
+
+fn value_uses(world: &World, body: &LoweredBody) -> HashMap<ValueId, Vec<ValueUse>> {
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
+    let joins = delivered_value_joins(body);
+    let mut uses = HashMap::<ValueId, Vec<ValueUse>>::new();
+    let mut add = |value: ValueId, usage: ValueUse| uses.entry(value).or_default().push(usage);
+    for step in clauses
+        .iter()
+        .flat_map(|clause| clause.projections.iter())
+        .chain(entries.iter().flat_map(|entry| entry.steps.iter()))
+    {
+        step_value_uses(step, &mut add);
+    }
+    for entry in entries {
+        tail_value_uses(world, &entry.tail, &joins, &mut add);
+    }
+    uses
+}
+
+fn step_value_uses(step: &LoweredStep, add: &mut impl FnMut(ValueId, ValueUse)) {
+    use super::super::body::LoweredBitSize;
+    let whole = || ValueUse::Asks(DispatchDemand::Whole);
+    let class = || ValueUse::Asks(DispatchDemand::Class);
+    let within = |container: ValueId, step: DemandPathStep| ValueUse::Within { container, step };
+    match step {
+        // A projection's result is a position of its source
+        // (`input_positions`), so what asks of the result asks of the source
+        // there, and the source is asked nothing more.
+        LoweredStep::Const { .. }
+        | LoweredStep::FunctionRef { .. }
+        | LoweredStep::TupleField { .. }
+        | LoweredStep::SplitList { .. }
+        | LoweredStep::FieldAccess { .. }
+        | LoweredStep::RequireMapValue { .. } => {}
+        // Leaving a `try` reads no value.
+        LoweredStep::PopHandler => {}
+        LoweredStep::Tuple { value, items } => {
+            for (index, item) in items.iter().enumerate() {
+                add(item.value, within(*value, DemandPathStep::TupleField(index as u32)));
+            }
+        }
+        LoweredStep::List { value, items, tail, .. } => {
+            for item in items {
+                add(*item, within(*value, DemandPathStep::ListHead));
+            }
+            if let Some(tail) = tail {
+                add(*tail, within(*value, DemandPathStep::ListTail));
+            }
+        }
+        LoweredStep::Map { value, entries, .. } => {
+            for (key, item) in entries {
+                add(key.value, whole());
+                add(*item, within(*value, DemandPathStep::MapValue));
+            }
+        }
+        LoweredStep::MapUpdate { value, base, entries } => {
+            add(*base, whole());
+            for (key, item) in entries {
+                add(key.value, whole());
+                add(*item, within(*value, DemandPathStep::MapValue));
+            }
+        }
+        LoweredStep::Struct { value, fields, .. } => {
+            for (_name, item) in fields {
+                add(*item, within(*value, DemandPathStep::StructField));
+            }
+        }
+        LoweredStep::Bitstring { fields, .. } => {
+            for field in fields {
+                add(field.value, whole());
+                if let Some(size) = field.spec.size.as_ref().and_then(LoweredBitSize::read_value) {
+                    add(size, whole());
+                }
+            }
+        }
+        LoweredStep::Lambda { function, captures, .. } => {
+            // The captures are the lambda's leading inputs, so what the lambda
+            // asks of them is what the capturing body is asked.
+            for (callee_slot, capture) in captures.iter().enumerate() {
+                add(
+                    *capture,
+                    ValueUse::Call {
+                        callee: *function,
+                        callee_slot,
+                    },
+                );
+            }
+        }
+        LoweredStep::BinaryOp { left, right, .. } => {
+            add(*left, class());
+            add(*right, class());
+        }
+        LoweredStep::UnaryOp { input, .. } => add(*input, class()),
+        LoweredStep::MapIndex { base, key, .. } => {
+            add(*base, whole());
+            add(key.value, if key.literal.is_some() { class() } else { whole() });
+        }
+        LoweredStep::BitstringInit { source, .. } => add(*source, whole()),
+        LoweredStep::BitstringRead { reader, spec, .. } => {
+            add(*reader, whole());
+            if let Some(size) = spec.size.as_ref().and_then(LoweredBitSize::read_value) {
+                add(size, whole());
+            }
+        }
+    }
+}
+
+fn tail_value_uses(
+    world: &World,
+    tail: &LoweredTail,
+    joins: &HashMap<super::super::body::ControlEntryId, super::super::body::DeliveredValueJoin>,
+    add: &mut impl FnMut(ValueId, ValueUse),
+) {
+    let whole = || ValueUse::Asks(DispatchDemand::Whole);
+    match tail {
+        LoweredTail::Value { value, dest } => match dest {
+            ControlDestination::Return => {}
+            ControlDestination::Deliver(entry) => match joins.get(entry) {
+                Some(join) => add(*value, ValueUse::Alias(join.value)),
+                None => add(*value, whole()),
+            },
+        },
+        LoweredTail::DirectCall { callee, args, .. } => {
+            let callee_inputs = world.function_arity(*callee);
+            for (arg_index, arg) in args.iter().enumerate() {
+                match CallInputMode::Direct.semantic_index(callee_inputs, args.len(), arg_index) {
+                    Some(callee_slot) => add(
+                        arg.value,
+                        ValueUse::Call {
+                            callee: *callee,
+                            callee_slot,
+                        },
+                    ),
+                    None => add(arg.value, whole()),
+                }
+            }
+        }
+        LoweredTail::ClosureCall { args, .. } => {
+            // The callee is not a literal the call can read: which closure it
+            // is has its own question (brand erasure), and what it captured
+            // widens with the rest of the key.
+            for arg in args {
+                add(arg.value, whole());
+            }
+        }
+        LoweredTail::If { cond, .. } => add(*cond, whole()),
+        LoweredTail::Dispatch {
+            inputs,
+            bindings,
+            dispatch,
+        } => {
+            let asked = dispatch.plan.input_demand();
+            for (input, demand) in inputs.iter().zip(asked) {
+                if demand.asks_anything() {
+                    add(*input, ValueUse::Asks(demand.clone()));
+                }
+            }
+            for value in bindings.pinned.iter().chain(&bindings.prepared) {
+                add(*value, whole());
+            }
+        }
+        LoweredTail::Receive(receive) => {
+            for value in receive.bindings.pinned.iter().chain(&receive.bindings.prepared) {
+                add(*value, whole());
+            }
+            if let Some(after) = &receive.after {
+                add(after.timeout, whole());
+            }
+        }
+        // A `try` moves control into its body under a handler; it reads no
+        // value, and what its body and handler read is read by their entries.
+        LoweredTail::Try { .. } | LoweredTail::Unreachable => {}
+    }
 }
 
 /// The input positions this body's OWN returns are built from: the LOCAL half
@@ -1020,26 +1356,37 @@ fn returned_values(
 /// The least fixpoint of the input-forwarding graph, projected onto `function`.
 /// Kleene iteration joins each edge's callee demand into its caller slot and
 /// stops when one pass changes nothing.
+///
+/// Every edge is lifted from the callee's demand to the caller's slot, and a
+/// lift can deepen it (`go({_, rest})` asks `go(rest)`'s question one
+/// tuple deeper). An edge on a cycle that deepens would deepen its own input
+/// again on the next pass, without end, so it asks about the whole slot:
+/// the only lifts left to the cycle keep a demand's depth, and a demand's
+/// depth is bounded by the deepest seed, so the iteration ends.
 fn solve_forwarded_demand(
     graph: &BTreeMap<FunctionId, DemandNode>,
     function: FunctionId,
-    axis: impl Fn(&DemandNode) -> &Vec<DispatchDemand>,
+    axis: impl Fn(&DemandNode) -> Vec<DispatchDemand>,
+    lift: impl Fn(&ForwardEdge, &DispatchDemand) -> DispatchDemand,
 ) -> Vec<DispatchDemand> {
+    let reaches = forwarding_reach(graph);
     let mut demand = graph
         .iter()
-        .map(|(id, node)| (*id, axis(node).clone()))
+        .map(|(id, node)| (*id, axis(node)))
         .collect::<BTreeMap<_, _>>();
     loop {
         let mut changed = false;
         for (id, node) in graph {
             for edge in &node.forwards {
-                let Some(inherited) = demand
-                    .get(&edge.callee)
-                    .and_then(|callee| callee.get(edge.callee_slot))
-                    .cloned()
-                else {
+                let Some(callee) = demand.get(&edge.callee).and_then(|callee| callee.get(edge.callee_slot)) else {
                     continue;
                 };
+                let mut inherited = lift(edge, callee);
+                let on_a_cycle =
+                    edge.callee == *id || reaches.get(&edge.callee).is_some_and(|onward| onward.contains(id));
+                if on_a_cycle && inherited.depth() > callee.depth() {
+                    inherited = DispatchDemand::Whole;
+                }
                 let Some(slot) = demand.get_mut(id).and_then(|mine| mine.get_mut(edge.slot)) else {
                     continue;
                 };
@@ -1051,6 +1398,51 @@ fn solve_forwarded_demand(
         if !changed {
             return demand.remove(&function).unwrap_or_default();
         }
+    }
+}
+
+/// The functions each function of the graph forwards an input to, directly or
+/// through others.
+fn forwarding_reach(graph: &BTreeMap<FunctionId, DemandNode>) -> BTreeMap<FunctionId, BTreeSet<FunctionId>> {
+    let mut reach = graph
+        .iter()
+        .map(|(id, node)| {
+            (
+                *id,
+                node.forwards.iter().map(|edge| edge.callee).collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    loop {
+        let mut changed = false;
+        for id in graph.keys() {
+            let through = reach[id]
+                .iter()
+                .filter_map(|callee| reach.get(callee))
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>();
+            let mine = reach.get_mut(id).expect("every function of the graph has a reach");
+            for function in through {
+                changed |= mine.insert(function);
+            }
+        }
+        if !changed {
+            return reach;
+        }
+    }
+}
+
+impl DemandNode {
+    /// The forwarded axis's seed: what the entry plan asks, joined with what
+    /// the rest of the body does with its inputs.
+    fn dispatch_and_uses(&self) -> Vec<DispatchDemand> {
+        let mut seed = self.local.clone();
+        seed.resize(seed.len().max(self.uses.len()), DispatchDemand::Ignore);
+        for (slot, used) in seed.iter_mut().zip(&self.uses) {
+            slot.join_assign(used.clone());
+        }
+        seed
     }
 }
 
@@ -1117,3 +1509,7 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
         | LoweredTail::Unreachable => {}
     }
 }
+
+#[cfg(test)]
+#[path = "keying_test.rs"]
+mod keying_test;

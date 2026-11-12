@@ -799,19 +799,23 @@ impl ActivationAnalysis {
 }
 
 impl TrimmedPlans {
-    pub(crate) fn of(entry: Option<ReachedEdges>, cases: BTreeMap<ControlEntryId, ReachedEdges>) -> Self {
+    pub(crate) fn of(
+        types: &Types,
+        entry: Option<ReachedEdges>,
+        cases: BTreeMap<ControlEntryId, ReachedEdges>,
+    ) -> Self {
         let mut plans = Self::default();
-        plans.entry = entry.map(|reached| plans.trim(&reached));
+        plans.entry = entry.map(|reached| plans.trim(types, &reached));
         plans.cases = cases
             .into_iter()
-            .map(|(entry, reached)| (entry, plans.trim(&reached)))
+            .map(|(entry, reached)| (entry, plans.trim(types, &reached)))
             .collect();
         plans
     }
 
-    fn trim(&mut self, reached: &ReachedEdges) -> Rc<PatternDispatchPlan<Ty>> {
+    fn trim(&mut self, types: &Types, reached: &ReachedEdges) -> Rc<PatternDispatchPlan<Ty>> {
         let shared = reached.shared();
-        let trimmed = reached.trimmed();
+        let trimmed = reached.trimmed(types);
         if !Rc::ptr_eq(shared, &trimmed) {
             self.trimmed_tests += shared.graph.test_count() - trimmed.graph.test_count();
             self.removed_fails += usize::from(shared.can_fail() && !trimmed.can_fail());
@@ -904,6 +908,11 @@ impl SemanticOrd<Types> for ExecutableKey {
 /// nothing for runtime demand.
 pub trait JoinContribution: Clone + PartialEq {
     type Ctx;
+    /// The join is an exact set union: its result is the same whatever order
+    /// contributions arrive in and however they are grouped, so a contribution
+    /// that grows extends the aggregate in place instead of re-folding every
+    /// contributor in publisher order.
+    const EXACT: bool = false;
     /// The empty aggregate: the join of zero contributors (lattice bottom).
     fn bottom() -> Self;
     /// Monotone join: `self ⊔= other`.
@@ -918,7 +927,9 @@ pub trait JoinContribution: Clone + PartialEq {
 /// One key's per-publisher contributions and their joined aggregate.
 #[derive(Debug, Clone)]
 struct ContributionSlot<P, V> {
-    contributors: HashMap<P, V>,
+    /// Held in publisher semantic order, so folding them in order is
+    /// deterministic by construction and a publisher is found by bisection.
+    contributors: Vec<(P, V)>,
     joined: V,
 }
 
@@ -1405,34 +1416,33 @@ where
     /// it through the vanished publisher set.
     fn apply(&mut self, ctx: &mut V::Ctx, key: &K, publisher: &P, entry: SlotEntry<V>, join: bool) -> bool {
         let mut slot = self.slots.remove(key).unwrap_or_else(|| ContributionSlot {
-            contributors: HashMap::new(),
+            contributors: Vec::new(),
             joined: V::bottom(),
         });
         let old_joined = (!slot.contributors.is_empty()).then(|| slot.joined.clone());
         match entry {
-            SlotEntry::Upsert(value) => {
-                upsert_contribution(ctx, &mut slot.contributors, publisher, value, join);
+            SlotEntry::Upsert(value) if V::EXACT && join => {
+                slot.joined.join_assign(&value, ctx);
+                upsert_contribution(ctx, &mut slot.contributors, publisher, value, true);
+                let moved = !old_joined.as_ref().is_some_and(|old| old.equivalent(&slot.joined, ctx));
+                self.slots.insert(key.clone(), slot);
+                return moved;
             }
+            SlotEntry::Upsert(value) => upsert_contribution(ctx, &mut slot.contributors, publisher, value, join),
             SlotEntry::Withdraw => {
-                slot.contributors.remove(publisher);
+                if let Ok(index) = find_contributor(ctx, &slot.contributors, publisher) {
+                    slot.contributors.remove(index);
+                }
             }
         }
-        // `slot.contributors` is a `HashMap<P, V>`: folding `.values()` in its
-        // native order makes the joined aggregate a function of `RandomState`
-        // iteration, not of which publishers contributed. `V::join_assign`
-        // (e.g. pointwise `Types::union`) is not guaranteed to be
-        // representative-stable across fold order — two runs that fold the
-        // same contributor set in a different order can settle on
-        // equivalent-but-differently-interned `Ty`s — so pin the fold order
-        // itself to a deterministic, publisher-identity-derived key.
-        // `SemanticOrd` (not raw `Debug`) is load-bearing here: `Job` embeds
-        // `ActivationKey.arrow`, a bare interned `Ty`, and two runs can settle
-        // on an equal-but-differently-numbered arrow for the same activation —
-        // sorting by its raw id would reintroduce the very order-dependence
-        // this fold order exists to remove.
-        let mut ordered_contributors = slot.contributors.iter().collect::<Vec<_>>();
-        ordered_contributors.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
-        let joined = join_contributions(ctx, ordered_contributors.into_iter().map(|(_, value)| value));
+        // The fold runs in publisher semantic order, not hash order: a join such
+        // as pointwise `Types::union` is not guaranteed to be
+        // representative-stable across fold order, so two runs folding the same
+        // contributors differently could settle on equivalent-but-differently-
+        // interned `Ty`s. `SemanticOrd` (not raw ids) is the order because a
+        // `Job` embeds an `ActivationKey` arrow, and two runs can number an
+        // equal arrow differently.
+        let joined = join_contributions(ctx, slot.contributors.iter().map(|(_, value)| value));
         let moved = !old_joined.as_ref().is_some_and(|old| old.equivalent(&joined, ctx));
         if !slot.contributors.is_empty() {
             if moved {
@@ -1575,23 +1585,31 @@ impl CallSiteSummary {
 /// Install one publisher's contribution into a key's contributor table. `join`
 /// widens the publisher's prior entry (the within-epoch ascent); without it the
 /// entry replaces (the rebase path).
-fn upsert_contribution<P, V>(ctx: &mut V::Ctx, contributors: &mut HashMap<P, V>, publisher: &P, value: V, join: bool)
+fn upsert_contribution<P, V>(ctx: &mut V::Ctx, contributors: &mut Vec<(P, V)>, publisher: &P, value: V, join: bool)
 where
-    P: Clone + Eq + Hash,
+    P: Clone + Eq + SemanticOrd<V::Ctx>,
     V: JoinContribution,
 {
-    match contributors.entry(publisher.clone()) {
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(value);
-        }
-        std::collections::hash_map::Entry::Occupied(mut entry) => {
-            if join {
-                entry.get_mut().join_assign(&value, ctx);
-            } else {
-                entry.insert(value);
-            }
-        }
+    match find_contributor(ctx, contributors, publisher) {
+        Ok(index) if join => contributors[index].1.join_assign(&value, ctx),
+        Ok(index) => contributors[index].1 = value,
+        Err(index) => contributors.insert(index, (publisher.clone(), value)),
     }
+}
+
+/// Where `publisher` stands in the semantically ordered contributors: its
+/// index, or the index it would be inserted at.
+fn find_contributor<P, V>(ctx: &V::Ctx, contributors: &[(P, V)], publisher: &P) -> Result<usize, usize>
+where
+    P: Eq + SemanticOrd<V::Ctx>,
+    V: JoinContribution,
+{
+    let found = contributors.binary_search_by(|(standing, _)| standing.semantic_cmp(publisher, ctx));
+    debug_assert!(
+        found.is_err() || found.is_ok_and(|index| contributors[index].0 == *publisher),
+        "semantic order must tell publishers apart",
+    );
+    found
 }
 
 /// Join every contributor into the key's aggregate. The join of zero

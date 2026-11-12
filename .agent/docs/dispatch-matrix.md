@@ -51,6 +51,27 @@ governs type collapsing and activation keying, not the physical layout a
 parameter arrives in. The lattice is defined in `dispatch_matrix::demand`; the keying jobs in
 `compiler2::jobs::keying` join it across bodies into the published input demand.
 
+The lattice is `Ignore < Class < {ListShape, TupleFields, MapValues} < Whole`.
+`MapValues(d)` says every value of a map or struct is asked `d`: a map value or
+struct field is one of many values under a key the lattice does not name, so a
+structural question about one is a question about each. A `Class` or `Whole`
+question about a map value or struct field is the same question about the
+position; a list tail or bitstring field takes only `Ignore` and `Class`
+unchanged and is `Whole` for anything else.
+`demand_for_region` is the single site that decides what a question charges:
+a list shape question is `ListShape(Ignore)`, a tuple arity question is
+`TupleFields({})`, and a type test whose type names no atom
+(`Types::is_literal_blind`) or an equality against a constant that is no atom is
+`Class` -- the value is read, but nothing that reads it can tell one literal from
+another. Every other question (an atom or atom-bearing type test, an equality
+against an atom, `true`, `false` or `nil`, a pinned equality, a guard, the map
+and bitstring regions) needs the value itself and is `Whole`. The plan builder
+asks the type calculator through `PatternResolver::is_literal_blind`, and a plan
+trimmed to the edges an activation reaches asks again, so trimming a test away
+can lower what is read. `Class` joins as the lowest read: `Class ⊔ Ignore =
+Class`, and any structural demand or `Whole` absorbs it. At runtime a `Class`
+read is a read of the value (`runtime_demand_of_dispatch`).
+
 `compile_dispatch_matrix` is pure and side-effect-free. It consumes ordered arms
 into a deterministic graph, moving the matrix's subject table into that graph
 and dropping the arms and matrix-level outcome bookkeeping. It returns

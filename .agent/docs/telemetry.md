@@ -276,6 +276,16 @@ This keeps the session owner distinct from the identity inside the product
 key. Reads and wake causes additionally carry their `current` or `settled`
 use marker.
 
+`[fz, compiler2, activation_key, literal_widened]` fires from
+`ExecutionContext::complete_job`, once per distinct (function, slot, before,
+after), when minting an activation key drops a literal its evidence held:
+`measurements.slot` is the input position, `metadata.function_id` the function,
+and `metadata.before` / `metadata.after` the display forms of the slot's
+evidence type and key type. It is not public: it states where the key widened,
+for a reader asking why two callers share an activation. The widenings reach
+the emitter by the same producer/drain split as the next event
+(`World::take_literal_widenings`).
+
 `[fz, compiler2, activation_inputs, budget_collapsed]` is public (fz-0xp,
 allowlisted in `is_public_compiler2_trace_event`). It fires from
 `ExecutionContext::complete_job` only when that completion widened at least one

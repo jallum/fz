@@ -12443,10 +12443,13 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// both matches in `Enum.map_reduce_list/3` in `00569`, at each of its two
 /// activations, and one in `main/0` of `map_enumerable` and of
 /// `range_enumerable`.
+/// An activation key names only the literals a use can tell apart, so fewer
+/// plans exist: `case` 17 -> 16 plans, 17 -> 16 unreadable; `entry` 155 -> 153
+/// plans, 142 -> 140 unreadable.
 /// A self call keeps its caller's key at a slot the recursion supplies, so one
-/// fewer `entry` plan exists: 155 -> 154 plans, 142 -> 141 unreadable.
+/// fewer `entry` plan exists: 153 -> 152 plans, 140 -> 139 unreadable.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 17, 17), ("entry", 154, 141), ("receive", 2, 0)];
+    &[("case", 16, 16), ("entry", 152, 139), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -19974,11 +19977,19 @@ type PinnedLadder = (&'static str, &'static [PinnedAscent]);
 /// callee's keying facts early lets one more nesting rung be observed, so
 /// `JSON.array/2` and `JSON.array_next/2` each take one extra revision to
 /// settle.
+///
+/// A construction `[v | acc]` is a forwarding edge, so `JSON.array_element/2`
+/// and `JSON.array_item/2` inherit `JSON.array_next/2`'s `ListShape` demand on
+/// `acc` and are keyed per accumulator depth, as `JSON.array_next/2` always was.
 const RETURN_LADDERS: &[PinnedLadder] = &[
     ("fixtures2/behavior/return_tuple_ladder.fz", &[("build/1", 17, true)]),
     (
         "fixtures2/behavior/json_roundtrip.fz",
-        &[("JSON.array/2", 6, false), ("JSON.array_next/2", 6, false)],
+        &[
+            ("JSON.array/2", 6, false),
+            ("JSON.array_element/2", 6, false),
+            ("JSON.array_item/2", 6, false),
+        ],
     ),
 ];
 
@@ -21592,6 +21603,8 @@ const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
     ),
 ];
 
+/// The number of executables of the function labelled `label` that the program
+/// settles to, one per activation key.
 fn keyed_activations(label: &str, source: &str) -> usize {
     let tel = ConfiguredTelemetry::new();
     let backend = BackendProgramCapture::new();
@@ -21650,14 +21663,16 @@ fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
 /// to a call in its base clause, so every one is demanded; the outside caller
 /// seeds them with the literal `[]` and each self call hands back a `list(int)`.
 /// The self call keeps its caller's key at those slots, so the program settles
-/// one activation of `go/4` -- the seed's, which the ascent stays inside -- and
-/// adding accumulators does not multiply it.
+/// two activations of `go/4` -- the seed's and the ascent's -- and adding
+/// accumulators does not multiply them. The two differ at the list `go/4`
+/// walks, whose clauses tell the seed's `non_empty_list(int)` from the
+/// recursion's `list(int)`; every accumulator slot keys alike in both.
 const SUPPLIED_ACCUMULATOR_PROGRAMS: &[(&str, &str, &str, usize)] = &[
     (
         "three accumulators, each handed to a call in the base clause",
         "go/4",
         include_str!("../../fixtures/01075_three_accumulators_split_a_list_by_threshold.fz"),
-        1,
+        2,
     ),
     (
         "six accumulators, each handed to a call in the base clause",
@@ -21671,7 +21686,7 @@ const SUPPLIED_ACCUMULATOR_PROGRAMS: &[(&str, &str, &str, usize)] = &[
          def go([x | rest], a1, a2, a3, a4, a5, a6) when x > 1, do: go(rest, a1, a2, a3, a4, [x | a5], a6)\n\
          def go([x | rest], a1, a2, a3, a4, a5, a6), do: go(rest, a1, a2, a3, a4, a5, [x | a6])\n\
          def main(), do: dbg(go([1, 2, 3], [], [], [], [], [], []))\n",
-        1,
+        2,
     ),
 ];
 
@@ -21682,7 +21697,7 @@ fn compiler2_a_self_call_keeps_its_callers_key_at_a_slot_the_recursion_supplies(
         moved.is_empty(),
         "a self call hands a supplied slot a type the recursion built, and the outside caller's seed is what \
          tells callers apart there: the key stays the caller's own while the built type joins the \
-         activation's input evidence, so k accumulators cost one activation and not 2^k: {moved:#?}",
+         activation's input evidence, so k accumulators cost two activations and not 2^k: {moved:#?}",
     );
 }
 
@@ -21752,6 +21767,144 @@ fn compiler2_two_seeds_of_different_element_types_keep_their_returns_apart() {
             returns.iter().map(|ret| types.display(ret)).collect::<Vec<_>>(),
         );
     }
+}
+
+/// A literal is part of an activation's key only where some use can tell it
+/// from another literal of its kind. Each row calls one function at several
+/// literals of one kind and counts what the program settles to: one activation
+/// where no use reads the literal, one per literal where a use does.
+const LITERAL_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
+    (
+        "a comparison cannot name the literal it was handed, so atoms share one activation",
+        "same/1",
+        "def same(a), do: a === :x\n\
+         def main() do\n  dbg(same(:a))\n  dbg(same(:b))\n  dbg(same(:c))\nend\n",
+        1,
+    ),
+    (
+        "a literal the body returns is the answer, so each one is its own activation",
+        "echo/1",
+        "def echo(a), do: a\n\
+         def main() do\n  dbg(echo(:a))\n  dbg(echo(:b))\nend\n",
+        2,
+    ),
+    (
+        "a clause that tests the literal keys each one apart",
+        "pick/1",
+        "def pick(:a), do: 1\n\
+         def pick(_), do: 2\n\
+         def main() do\n  dbg(pick(:a))\n  dbg(pick(:b))\nend\n",
+        2,
+    ),
+    (
+        "a boolean the body branches on keeps true and false apart",
+        "flip/1",
+        "def flip(b), do: if(b, do: 1, else: 2)\n\
+         def main() do\n  dbg(flip(true))\n  dbg(flip(false))\nend\n",
+        2,
+    ),
+    (
+        "atoms inside a tuple that no use reads share one activation",
+        "same_in/1",
+        "def same_in({a, _b}), do: a === :x\n\
+         def main() do\n  dbg(same_in({:a, 1}))\n  dbg(same_in({:b, 1}))\nend\n",
+        1,
+    ),
+    (
+        "an integer has no literal to tell apart",
+        "inc/1",
+        "def inc(n), do: n + 1\n\
+         def main() do\n  dbg(inc(1))\n  dbg(inc(2))\n  dbg(inc(3))\nend\n",
+        1,
+    ),
+    (
+        "a float has no literal to tell apart",
+        "twice/1",
+        "def twice(x), do: x * 2.0\n\
+         def main() do\n  dbg(twice(1.5))\n  dbg(twice(2.5))\nend\n",
+        1,
+    ),
+    (
+        "a binary has no literal to tell apart",
+        "is_z/1",
+        "def is_z(b), do: b === \"z\"\n\
+         def main() do\n  dbg(is_z(\"a\"))\n  dbg(is_z(\"b\"))\nend\n",
+        1,
+    ),
+    (
+        "booleans and nil that only a comparison reads share one activation",
+        "is_nil/1",
+        "def is_nil(b), do: b == nil\n\
+         def main() do\n  dbg(is_nil(true))\n  dbg(is_nil(false))\n  dbg(is_nil(nil))\nend\n",
+        1,
+    ),
+    (
+        "an atom handed on to a callee that tests it is keyed by that test",
+        "outer/1",
+        "def pick(:a), do: 1\n\
+         def pick(_), do: 2\n\
+         def outer(a), do: pick(a)\n\
+         def main() do\n  dbg(outer(:a))\n  dbg(outer(:b))\nend\n",
+        2,
+    ),
+    (
+        "a projected atom handed to a callee that tests it is keyed by that test",
+        "first/1",
+        "def pick(:a), do: 1\n\
+         def pick(_), do: 2\n\
+         def first({a, _b}), do: pick(a)\n\
+         def main() do\n  dbg(first({:a, 1}))\n  dbg(first({:b, 1}))\nend\n",
+        2,
+    ),
+    (
+        "an atom rebuilt into a construction a callee tests is keyed by that test",
+        "wrap/1",
+        "def pick({:w, :a}), do: 1\n\
+         def pick(_), do: 2\n\
+         def wrap(a), do: pick({:w, a})\n\
+         def main() do\n  dbg(wrap(:a))\n  dbg(wrap(:b))\nend\n",
+        2,
+    ),
+    (
+        "an atom handed to a closure may be told apart by it",
+        "callit/2",
+        "def callit(f, a), do: f.(a)\n\
+         def main() do\n  g = fn (:a) -> 1\n (_) -> 2 end\n  dbg(callit(g, :a))\n  dbg(callit(g, :b))\nend\n",
+        2,
+    ),
+    (
+        "an atom a returned lambda hands back is the answer, so each one is its own activation",
+        "mk/1",
+        "def mk(a), do: fn () -> a end\n\
+         def main() do\n  dbg(mk(:a).())\n  dbg(mk(:b).())\nend\n",
+        2,
+    ),
+    (
+        "an atom a lambda captures and tests is keyed by that test",
+        "mk_pick/1",
+        "def pick(:a), do: 1\n\
+         def pick(_), do: 2\n\
+         def mk_pick(a), do: fn () -> pick(a) end\n\
+         def main() do\n  dbg(mk_pick(:a).())\n  dbg(mk_pick(:b).())\nend\n",
+        2,
+    ),
+    (
+        "atoms in a list that no use reads share one activation",
+        "count_atoms/1",
+        "def count_atoms([]), do: 0\n\
+         def count_atoms([_h | t]), do: 1 + count_atoms(t)\n\
+         def main() do\n  dbg(count_atoms([:a, :b]))\n  dbg(count_atoms([:c, :d]))\nend\n",
+        1,
+    ),
+];
+
+#[test]
+fn compiler2_literal_keying_names_only_the_literals_a_use_can_tell_apart() {
+    let moved = moved_keying_laws(LITERAL_KEYING_LAWS);
+    assert!(
+        moved.is_empty(),
+        "an activation key keeps a literal iff some use can tell it from another of its kind: {moved:#?}",
+    );
 }
 
 /// A producer that refuses a program says why, once. `Enum.count(:atom)` has
@@ -22860,4 +23013,66 @@ fn corpus_folds_settle_myreduce_to_int_fold_state_machine() {
     let mut settled = Drive::fixture(176).settle();
     let int_ty = settled.compiler_mut().types_mut_for_test().int();
     assert_settles_to(&settled, "myreduce", 3, int_ty, "int");
+}
+
+/// The event says which slots a key widened and nothing else: the slot of the
+/// comparison's atom, once per distinct literal the evidence held, and no event
+/// for a function whose literals the key kept.
+#[test]
+fn compiler2_literal_widening_reports_exactly_the_slots_the_key_widened() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let widened = Capture::new();
+    widened.install(&tel, &["fz", "compiler2", "activation_key"]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("literal widening telemetry.fz".to_string()),
+        text: "def same(a, n), do: a === :x and n > 0\n\
+               def echo(a), do: a\n\
+               def main() do\n  dbg(same(:a, 1))\n  dbg(same(:b, 2))\n  dbg(echo(:a))\n  dbg(echo(:b))\nend\n"
+            .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "the program settles");
+
+    let same = u64::from(function_id(&functions, "same", 2).as_u32());
+    let echo = u64::from(function_id(&functions, "echo", 1).as_u32());
+    let events = widened.find(&["fz", "compiler2", "activation_key", "literal_widened"]);
+    let of = |function: u64| {
+        events
+            .iter()
+            .filter(|event| matches!(event.metadata.get("function_id"), Some(Value::U64(id)) if *id == function))
+            .map(|event| {
+                let slot = match event.measurements.get("slot") {
+                    Some(Value::U64(slot)) => *slot,
+                    other => panic!("the event names its slot: {other:?}"),
+                };
+                let text = |key: &str| match event.metadata.get(key) {
+                    Some(Value::Str(text)) => text.to_string(),
+                    other => panic!("the event names `{key}`: {other:?}"),
+                };
+                (slot, text("before"), text("after"))
+            })
+            .collect::<BTreeSet<_>>()
+    };
+
+    assert_eq!(
+        of(same),
+        BTreeSet::from([
+            (0, ":a".to_string(), "atom".to_string()),
+            (0, ":b".to_string(), "atom".to_string()),
+        ]),
+        "the compared atom widens at slot 0, once per literal; the integer has none"
+    );
+    assert!(
+        of(echo).is_empty(),
+        "a returned atom is the answer, so its key keeps it"
+    );
 }

@@ -60,6 +60,7 @@ impl IncomingInputSources {
 
 impl JoinContribution for IncomingInputSources {
     type Ctx = Types;
+    const EXACT: bool = true;
 
     fn bottom() -> Self {
         Self::default()
@@ -73,10 +74,40 @@ impl JoinContribution for IncomingInputSources {
             self.0 = Rc::clone(&other.0);
             return;
         }
-        let union = self.0.iter().chain(other.0.iter()).cloned().collect::<HashSet<_>>();
-        if union.len() != self.0.len() {
-            *self = Self::new(union, types);
+        let merged = self.merged_with(other, types);
+        if merged.len() != self.0.len() {
+            self.0 = merged.into();
         }
+    }
+}
+
+impl IncomingInputSources {
+    /// The union of two sources already in semantic order, in semantic order:
+    /// one linear merge, so joining a contribution never re-sorts what both
+    /// sides already hold in order.
+    fn merged_with(&self, other: &Self, types: &Types) -> Vec<IncomingInputSource> {
+        let (mut left, mut right) = (self.0.iter().peekable(), other.0.iter().peekable());
+        let mut merged = Vec::with_capacity(self.0.len() + other.0.len());
+        loop {
+            let next = match (left.peek(), right.peek()) {
+                (Some(l), Some(r)) => match l.semantic_cmp(r, types) {
+                    std::cmp::Ordering::Less => left.next(),
+                    std::cmp::Ordering::Greater => right.next(),
+                    std::cmp::Ordering::Equal => {
+                        let source = left.next();
+                        if source == right.peek().copied() {
+                            right.next();
+                        }
+                        source
+                    }
+                },
+                (Some(_), None) => left.next(),
+                (None, Some(_)) => right.next(),
+                (None, None) => break,
+            };
+            merged.extend(next.cloned());
+        }
+        merged
     }
 }
 

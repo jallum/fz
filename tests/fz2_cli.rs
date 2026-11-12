@@ -59,7 +59,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // once more because `raise/2`'s demand concludes after their first
         // runs.
         // fz-sc8.8: 626 -> 658. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        runtime_demand_walks: 658,
+        // An activation key names only the literals a use can tell apart: 658 -> 649.
+        runtime_demand_walks: 649,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -69,7 +70,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // The same cause as `00420_enum_take_drop_split` above.
         // fz-sc8.37: 472 -> 473. Kernel defines `&&`, `||` and `!` as macros.
         // fz-sc8.8: 473 -> 528. Same cause.
-        runtime_demand_walks: 528,
+        // An activation key names only the literals a use can tell apart: 528 -> 512.
+        runtime_demand_walks: 512,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -82,7 +84,9 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // fz-sc8.8: 148 -> 183. `dbg` is `IO.inspect`, whose cone (`IO.puts`,
         // `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`,
         // `raise`, `==`) is walked.
-        runtime_demand_walks: 183,
+        // An activation key names only the literals a use can tell apart,
+        // so fewer activations are walked: 183 -> 179.
+        runtime_demand_walks: 179,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -2352,15 +2356,21 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // 207 -> 216, unchanged outputs 22 -> 23, wakes 150 -> 154,
             // blocked completions 62 -> 64. Kernel defines `&&`, `||` and `!`
             // as macros.
-            evaluations: 239,
+            // 239 -> 259 evaluations, initial 173 -> 189, content-caused
+            // 66 -> 70, changed outputs 216 -> 232, unchanged outputs
+            // 23 -> 27, wakes 154 -> 165, blocked completions 64 -> 68:
+            // literal-argument calls are no longer self-keyed, so Kernel's
+            // arithmetic and compare cone derives its input demand once per
+            // program.
+            evaluations: 259,
             runtime_demand_evaluations: 32,
-            initial: 173,
-            content_caused: 66,
+            initial: 189,
+            content_caused: 70,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 216,
-            unchanged_outputs: 23,
+            changed_outputs: 232,
+            unchanged_outputs: 27,
             // fz-afu.13: 73 -> 180. `wakes` sums every completion's raw
             // subscriber-wake log, counted once per wake regardless of
             // whether it enqueues a job or coalesces into one already
@@ -2381,8 +2391,8 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // blocked runs too.
             // 155 -> 150 wakes, 65 -> 62 blocked completions: the same
             // DeriveRecursive drop.
-            wakes: 154,
-            blocked_completions: 64,
+            wakes: 165,
+            blocked_completions: 68,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2440,7 +2450,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // `ExecutableInput` shape, `raise/2` one more `CallArg`, and
         // `arithmetic_error/0`, which now calls `raise/2` with a message,
         // gains a `CallArg` and a `Value` shape.
-        (335, 335, 335, 0, 12, 0),
+        // Literal-argument calls are no longer self-keyed: 335 -> 339 settled
+        // products, 12 -> 10 unchanged-by-content settlements.
+        (339, 339, 339, 0, 10, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(

@@ -38,6 +38,7 @@ use crate::telemetry::ConfiguredTelemetry;
 #[derive(Debug, Clone)]
 struct DemandRun {
     function: String,
+    qualified: String,
     read_count: usize,
     reads: Vec<DemandRead>,
 }
@@ -114,6 +115,7 @@ fn input_demand_work(source: &str) -> DemandWork {
                 work.answers.insert(name.clone(), format!("{demand:?}"));
             }
             work.runs.push(DemandRun {
+                qualified: qualified_function_name(world, function),
                 function: name,
                 read_count,
                 reads,
@@ -241,9 +243,9 @@ fn a_forwarding_cycle_is_solved_by_the_callee_that_is_waited_on() {
 /// composition. Composing from answers must not change them. `junk` (slot 2)
 /// is never read, matched, or returned, so it carries `Ignore` throughout.
 const PING_ANSWER: &str = "InputDemand { local_dispatch: [Ignore, Ignore, Ignore], forwarded_dispatch: \
-     [Whole, Ignore, Ignore], returned: [Ignore, Whole, Ignore] }";
-const PONG_ANSWER: &str = "InputDemand { local_dispatch: [Whole, Ignore, Ignore], forwarded_dispatch: \
-     [Whole, Ignore, Ignore], returned: [Ignore, Whole, Ignore] }";
+     [Class, Ignore, Ignore], returned: [Ignore, Whole, Ignore] }";
+const PONG_ANSWER: &str = "InputDemand { local_dispatch: [Class, Ignore, Ignore], forwarded_dispatch: \
+     [Class, Ignore, Ignore], returned: [Ignore, Whole, Ignore] }";
 
 /// `Enum.take/2` forwards its list and count through a dozen Enum helpers, a
 /// protocol callback and its implementation. Reading answers instead of
@@ -262,7 +264,10 @@ fn enum_take_derives_input_demand_proportionally() {
         (work.runs.len(), total_reads(&work), most_reads_in_one_run(&work)),
         // fz-sc8.9: 149 -> 146. `Enumerable` counts through Kernel's `length`
         // and `map_size`, whose answers are read in place of `List.count`'s.
-        (45, 146, 6)
+        // An activation key names only the literals a use can tell apart, so
+        // Kernel's arithmetic and compare cone derives its input demand once
+        // per program: (45, 146, 6) -> (76, 247, 8).
+        (76, 247, 8)
     );
 }
 
@@ -290,12 +295,32 @@ fn a_protocol_callback_s_input_demand_is_published_once() {
     assert_eq!(
         work.answers.get("Enumerable.reduce_while/3"),
         Some(
-            &"InputDemand { local_dispatch: [Whole, Ignore, Ignore], \
-              forwarded_dispatch: [Whole, Ignore, Ignore], returned: [Ignore, Ignore, Ignore] }"
+            &"InputDemand { local_dispatch: [Class, Ignore, Ignore], \
+              forwarded_dispatch: [Class, Ignore, Ignore], returned: [Ignore, Whole, Whole] }"
                 .to_string()
         ),
-        "the callback asks Whole of its receiver and nothing of its other slots"
+        "the callback reads its receiver and tells no literal of it apart, asks nothing of its other \
+         slots, and lets each of them flow into its result"
     );
+}
+
+/// A callback's answer is its own: it names no implementation's `InputDemand`,
+/// so an implementation landing later has nothing in the callback's answer to
+/// revise, and activations keyed from it are never re-keyed.
+#[test]
+fn a_protocol_callback_reads_no_implementation_demand() {
+    let work = input_demand_work("def main(), do: Enum.all?([1])\n");
+    let callback_runs = work
+        .runs
+        .iter()
+        .filter(|run| run.qualified == "Enumerable.reduce_while/3")
+        .collect::<Vec<_>>();
+    assert!(!callback_runs.is_empty(), "the callback's demand is derived");
+    let callback_reads = callback_runs
+        .iter()
+        .flat_map(|run| run.reads.iter().filter(|read| read.fact != "StaticCallees"))
+        .collect::<Vec<_>>();
+    assert_eq!(callback_reads, Vec::<&DemandRead>::new());
 }
 
 /// Every `InputDemand` publication that replaced an earlier one, and each
