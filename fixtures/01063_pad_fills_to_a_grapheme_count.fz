@@ -1,0 +1,47 @@
+#---
+# purpose: "String.pad_leading and pad_trailing fill to a grapheme count with a cycled binary or list, never truncate, and raise FunctionClauseError for a negative count or empty padding"
+# oracle: 01063_pad_fills_to_a_grapheme_count.oracle.exs
+#---
+def main() do
+  dbg(String.pad_leading("abc", 6))
+  dbg(String.pad_trailing("abc", 6))
+  dbg(String.pad_leading("abc", 6, "12"))
+  dbg(String.pad_trailing("abc", 6, "12"))
+  dbg(String.pad_trailing("abc", 6, ["x", "yz"]))
+  dbg(String.pad_leading("abc", 6, ["x", "yz"]))
+  dbg(String.pad_trailing("héllo", 3))
+  dbg(String.pad_leading("abc", 3))
+  dbg(String.pad_leading("a longer string than the count", 4))
+  dbg(String.pad_trailing("a longer string than the count", 4, ["x"]))
+  dbg(String.pad_leading("abc", 0))
+  dbg(String.pad_trailing("", 2, "ab"))
+  dbg(String.pad_trailing("é", 3, "ë"))
+  dbg(String.pad_leading(<<101, 204, 129>>, 3, "-"))
+  dbg(String.pad_leading("x", 4, <<101, 204, 129>>))
+  try do
+    String.pad_leading("abc", -1)
+  rescue
+    e -> dbg({e.__struct__, e.message})
+  end
+  try do
+    String.pad_trailing("abc", -1, "x")
+  rescue
+    e -> dbg({e.__struct__, e.message})
+  end
+  try do
+    String.pad_leading("abc", 5, "")
+  rescue
+    e -> dbg({e.__struct__, e.message})
+  end
+  try do
+    String.pad_trailing("abc", 5, [])
+  rescue
+    e -> dbg({e.__struct__, e.message})
+  end
+  try do
+    String.pad_leading("a", 3, ["x", 1])
+  rescue
+    e -> dbg({e.__struct__, e.message})
+  end
+  dbg(String.pad_leading("a", 2, ["x", 1]))
+end

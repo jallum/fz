@@ -1,0 +1,30 @@
+defmodule Tuple do
+  @moduledoc """
+  Functions over tuples.
+
+  Only `to_list/1` is built. The rest of Elixir's `Tuple` (`append`,
+  `delete_at`, `duplicate`, `insert_at`, `product`, `sum`) is not built.
+  """
+
+  @doc """
+  Returns the elements of `tuple` as a list, in order.
+
+  Raises `ArgumentError` when `tuple` is not a tuple.
+
+  ## Examples
+
+      Tuple.to_list({:a, 1, "b"})
+      #=> [:a, 1, "b"]
+
+      Tuple.to_list({})
+      #=> []
+
+  """
+  @spec to_list(any) :: list
+  def to_list(tuple :: tuple), do: to_list_from(tuple, tuple_size(tuple) - 1, [])
+  def to_list(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a tuple\n")
+
+  @spec to_list_from(tuple, integer, list) :: list
+  defp to_list_from(_tuple, -1, acc), do: acc
+  defp to_list_from(tuple, i, acc), do: to_list_from(tuple, i - 1, [elem(tuple, i) | acc])
+end

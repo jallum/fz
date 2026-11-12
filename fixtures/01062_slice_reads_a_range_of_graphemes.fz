@@ -1,0 +1,30 @@
+#---
+# purpose: "String.slice/2 reads a range's negative ends from the end, keeps every step-th grapheme, gives an empty range nothing, and raises for a negative step"
+# oracle: 01062_slice_reads_a_range_of_graphemes.oracle.exs
+#---
+def main() do
+  s = "héllo"
+  dbg(String.slice(s, 1..3))
+  dbg(String.slice(s, 1..-2//1))
+  dbg(String.slice(s, -4..-2))
+  dbg(String.slice(s, -10..2))
+  dbg(String.slice(s, 2..10))
+  dbg(String.slice(s, 0..4//2))
+  dbg(String.slice(s, 0..-1//2))
+  dbg(String.slice(s, 1..4//3))
+  dbg(String.slice(s, 3..1//1))
+  dbg(String.slice(s, 10..12))
+  dbg(String.slice(s, 0..-10//1))
+  dbg(String.slice("", 0..3))
+  dbg(String.slice(<<101, 204, 129, 120, 121>>, 0..1))
+  try do
+    String.slice(s, 0..2//-1)
+  rescue
+    e -> dbg({e.__struct__, e.message})
+  end
+  try do
+    String.slice(s, 4..0//-2)
+  rescue
+    e -> dbg({e.__struct__, e.message})
+  end
+end

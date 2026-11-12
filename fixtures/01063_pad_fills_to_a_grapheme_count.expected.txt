@@ -1,0 +1,21 @@
+"   abc"
+"abc   "
+"121abc"
+"abc121"
+"abcxyzx"
+"xyzxabc"
+"héllo"
+"abc"
+"a longer string than the count"
+"a longer string than the count"
+"abc"
+"ab"
+"éëë"
+"--é"
+"éééx"
+{FunctionClauseError, "no function clause matching in String.pad_leading/3"}
+{FunctionClauseError, "no function clause matching in String.pad_trailing/3"}
+{FunctionClauseError, "no function clause matching in String.pad_leading/3"}
+{FunctionClauseError, "no function clause matching in String.pad_trailing/3"}
+{ArgumentError, "expected a string padding element, got: 1"}
+"xa"

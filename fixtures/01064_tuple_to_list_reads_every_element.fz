@@ -1,0 +1,20 @@
+#---
+# purpose: "Tuple.to_list returns a tuple's elements in order, nested tuples stay whole, and a non-tuple raises ArgumentError"
+# oracle: 01064_tuple_to_list_reads_every_element.oracle.exs
+#---
+def main() do
+  dbg(Tuple.to_list({}))
+  dbg(Tuple.to_list({:a, 1, "b"}))
+  dbg(Tuple.to_list({{1, 2}, {}, [3]}))
+  dbg(Tuple.to_list({1}))
+  try do
+    Tuple.to_list([1])
+  rescue
+    e -> dbg({e.__struct__, e.message})
+  end
+  try do
+    Tuple.to_list(:atom)
+  rescue
+    e -> dbg({e.__struct__, e.message})
+  end
+end
