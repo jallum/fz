@@ -261,22 +261,6 @@ fn process_heap_alloc_stats_returns_pre_materialization_snapshot() {
     assert_eq!(after.total.allocs, 2);
 }
 
-#[test]
-fn frame_alloc_records_on_installed_process() {
-    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-    let mut proc_owned = Process::new(schemas);
-    let process = &mut proc_owned;
-    process.heap.reset_alloc_stats();
-
-    let _ = fz_alloc_frame_for_test(process, 7, 17);
-
-    let stats = process.heap.alloc_stats_snapshot();
-    assert_eq!(stats.frame.allocs, 1);
-    assert_eq!(stats.frame.bytes, 32);
-    assert_eq!(stats.total.allocs, 1);
-    assert_eq!(stats.total.bytes, 32);
-}
-
 /// Valid UTF-8 byte-aligned bitstring → 1.
 #[test]
 fn fz_bitstring_valid_utf8_accepts_byte_aligned_utf8() {

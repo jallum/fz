@@ -119,7 +119,6 @@ pub struct CompiledMetadata {
     )>,
     pub fn_ids: HashMap<u32, FuncId>,
     pub user_schemas: Rc<RefCell<SchemaRegistry>>,
-    pub frame_sizes: Vec<u32>,
     pub atom_names: Vec<String>,
     pub tuple_arities: Vec<u32>,
     pub named_schemas: Vec<(fz_runtime::module_name::ModuleName, Vec<String>)>,

@@ -9,7 +9,7 @@ use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilderContext;
 use cranelift_module::{DataId, FuncId, Linkage, Module as ClModule};
 use fz_runtime::any_value::ValueKind;
-use fz_runtime::heap::{FieldKind, Schema, SchemaRegistry};
+use fz_runtime::heap::{Schema, SchemaRegistry};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -52,33 +52,6 @@ fn collect_tuple_arities_and_register_schemas(
         }
     }
     (tuple_arities, tuple_schema_ids)
-}
-
-/// Build per-body frame schemas, refining entry-param kinds from each body's
-/// settled `NativeBody.value_types`. The dense body id for FnId K lands at
-/// index K (invariant) so any code path that uses fn_id.0 as a schema_id
-/// continues to hit the right schema. Sentinel slots get a zero-field
-/// placeholder schema; they're never reached at runtime.
-fn build_per_spec_schemas(body_slots: &[Option<NativeCodegenBody<'_>>]) -> Vec<Schema> {
-    let mut schemas: Vec<Schema> = Vec::with_capacity(body_slots.len());
-    for body_slot in body_slots {
-        let Some(body_slot) = body_slot.as_ref() else {
-            schemas.push(build_frame_schema("__sentinel", &[]));
-            continue;
-        };
-        let f = body_slot.body;
-        let entry_block = f.block(f.entry);
-        let mut kinds: Vec<FieldKind> = entry_block.params.iter().map(|_| FieldKind::AnyValue).collect();
-        for (j, repr) in body_slot.native_body.param_reprs.iter().copied().enumerate() {
-            match arg_repr_from_compiler2(repr) {
-                ArgRepr::RawF64 => kinds[j] = FieldKind::RawF64,
-                ArgRepr::RawInt => kinds[j] = FieldKind::RawI64,
-                _ => {}
-            }
-        }
-        schemas.push(build_frame_schema(&f.name, &kinds));
-    }
-    schemas
 }
 
 /// Per-spec Cranelift Signature: the typed args plus the continuation, in
@@ -928,9 +901,6 @@ pub(crate) fn compile_with_backend_surface<
     let module = surface.module;
     let body_slots = &surface.body_slots;
 
-    let schemas = build_per_spec_schemas(body_slots);
-    let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.allocation_payload_size() as u32).collect();
-
     let fn_sigs = build_fn_sigs(surface);
 
     let linkage = backend.fn_linkage();
@@ -1046,7 +1016,6 @@ pub(crate) fn compile_with_backend_surface<
             .collect(),
         fn_ids,
         user_schemas,
-        frame_sizes,
         atom_names: module.atom_names.clone(),
         tuple_arities: tuple_arities.iter().map(|&a| a as u32).collect(),
         named_schemas: module

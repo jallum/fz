@@ -3163,8 +3163,10 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     // bytes as it held live after its last collection, and a quantum allocates
     // about 12.8 KB, so the child is collected at live sizes of 13024, 38624,
     // 77024, 153824, 307424 and 614624 bytes, then at 800160 once the log is
-    // complete. The parent is collected once as it parks on its receive (640
-    // bytes, the closures its park record holds). The gifts it grafts afterwards
+    // complete. The parent is collected once as it parks on its receive (608
+    // bytes: the values the parked receive holds, among them the heap-stats
+    // maps the fixture binds, plus the closures its park record holds). The
+    // gifts it grafts afterwards
     // raise its baseline to its fill, so it is not collected again, and the
     // child's exit is not a collection.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
@@ -3177,15 +3179,16 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     assert_eq!(events.len(), 8, "run: one gc event per collection");
     assert_eq!(
         events.iter().map(|e| e.copied_bytes).sum::<usize>(),
-        2_005_344,
+        2_005_312,
         "run: the bytes every collection copied"
     );
 
     // The interpreter never yields, so the child builds and sends its whole
     // log inside one quantum and is never collected: it exits without a
-    // collection. The parent is collected as it parks (592 bytes, the
-    // values its parked receive holds: the JIT's 640 also counts the closures
-    // its park record holds); the gifts it grafts afterwards are baseline, so
+    // collection. The parent is collected as it parks (560 bytes, the
+    // values its parked receive holds, among them the heap-stats maps the
+    // fixture binds: the JIT's 608 also counts the closures its park record
+    // holds); the gifts it grafts afterwards are baseline, so
     // it is not collected again.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
     let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
@@ -3196,7 +3199,7 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     );
     assert_eq!(
         events.iter().map(|e| e.copied_bytes).sum::<usize>(),
-        592,
+        560,
         "interp: only the parent's park copies anything"
     );
 }

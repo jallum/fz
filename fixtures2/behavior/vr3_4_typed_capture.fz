@@ -21,8 +21,8 @@
 # emit_call emits a native chain — call double → call k_3 with
 # (result, captured_x, host_ctx) — and k_3 itself is declared with the
 # `tail` calling convention, taking captured_x as a typed block param.
-# Captures no longer live in a heap frame at all, so `fz_alloc_frame`
-# for k_3's frame is gone entirely.
+# Captures do not live in a heap frame at all, so k_3 has no frame
+# allocation.
 def double(x) do x * 2 end
 def use_x(x) do dbg(double(x) + x) end
 def main() do

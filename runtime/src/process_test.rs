@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 #[test]
 fn node_compares_atoms_by_name_not_intern_id() {
-    let node = Node::new(vec!["z".into(), "a".into(), "m".into()], Vec::new());
+    let node = Node::new(vec!["z".into(), "a".into(), "m".into()]);
 
     assert_eq!(node.cmp_atom_names(0, 1), std::cmp::Ordering::Greater);
     assert_eq!(node.cmp_atom_names(1, 2), std::cmp::Ordering::Less);

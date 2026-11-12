@@ -23,8 +23,8 @@
 # on the typed `(i64, i64, i64, i64) -> i64 tail` native sig, the body
 # sshrs each tagged arg once, then iadds. The wins are:
 #   * no `load.i64` (no entry frame at all)
-#   * no `fz_alloc_frame` at the caller's call site (the previous frame
-#     allocation was the dominant per-call overhead)
+#   * no heap frame at the caller's call site: arguments travel as
+#     typed call parameters
 #   * `tail` calling convention enables future return_call TCO
 def sum3(a, b, c) do
   a + b + c

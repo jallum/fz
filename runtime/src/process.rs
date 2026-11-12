@@ -262,7 +262,7 @@ impl AtomTable {
 /// Node-global state shared by every Process in one execution context — a JIT
 /// `Runtime`/`CompiledModule`, an interpreter instance, or an AOT run. The
 /// smallest shared home a process points at; today it owns the atom table and
-/// the per-fn frame-size table. Seeded from the linked module's compile-time
+/// the closure denotations. Seeded from the linked module's compile-time
 /// data and shared by `Rc` clone, so spawning a process copies a pointer rather
 /// than cloning the tables. The obvious accretion point for later node-global
 /// state (schemas, loaded code, pid allocation).
@@ -273,25 +273,20 @@ pub struct Node {
     /// Reached through `intern_atom` / `atom_name` / `reset_atoms`, never
     /// directly, so the interior mutability stays an implementation detail.
     atoms: RefCell<AtomTable>,
-    /// Per-fn frame sizes, indexed by `FnId.0`. Read-only after construction
-    /// (the JIT `fz_alloc_frame_dyn` reads it via `frame_size`); empty under
-    /// the interpreter and AOT, which do not use compiled frame tables.
-    frame_sizes: Vec<u32>,
     closure_denotations: RefCell<HashMap<ClosureDenotationId, Arc<FunctionDenotation>>>,
 }
 
 impl Node {
-    pub fn new(atoms: Vec<String>, frame_sizes: Vec<u32>) -> Self {
+    pub fn new(atoms: Vec<String>) -> Self {
         Self {
             atoms: RefCell::new(AtomTable::new(atoms)),
-            frame_sizes,
             closure_denotations: RefCell::new(HashMap::new()),
         }
     }
 
     /// No node-global tables: the shape a bare `Process::new` carries.
     pub fn empty() -> Self {
-        Self::new(Vec::new(), Vec::new())
+        Self::new(Vec::new())
     }
 
     pub fn register_closure_denotation(&self, id: ClosureDenotationId, origin: Arc<FunctionDenotation>) {
@@ -363,11 +358,6 @@ impl Node {
     /// Replace the atom table (interpreter REPL code-image refresh).
     pub fn reset_atoms(&self, names: &[String]) {
         self.atoms.borrow_mut().reset_from(names);
-    }
-
-    /// The compiled frame size for `fn_id`, or `None` if absent.
-    pub fn frame_size(&self, fn_id: u32) -> Option<u32> {
-        self.frame_sizes.get(fn_id as usize).copied()
     }
 }
 

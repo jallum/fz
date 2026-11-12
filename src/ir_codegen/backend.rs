@@ -128,7 +128,7 @@ impl Backend for JitBackend {
         _fbctx: &mut FunctionBuilderContext,
         _meta: &CompiledMetadata,
     ) -> Result<(), CodegenError> {
-        // No-op: JIT carries per-program metadata (fn_ptrs, frame_sizes,
+        // No-op: JIT carries per-program metadata (fn_ptrs,
         // atom_names) in the returned CompiledModule's Rust HashMaps.
         // The runtime reads them directly. No Cranelift carriers needed.
         Ok(())
@@ -147,7 +147,7 @@ impl Backend for JitBackend {
         let drain_dtor_entry_addr = jmod.get_finalized_function(meta.drain_dtor_entry_id);
         let resume_addr = jmod.get_finalized_function(meta.resume_id);
         // Build the module's shared node once; every Process clones the Rc.
-        let node = Rc::new(Node::new(meta.atom_names.clone(), meta.frame_sizes.clone()));
+        let node = Rc::new(Node::new(meta.atom_names.clone()));
         for (id, denotation) in &meta.closure_denotations {
             node.register_closure_denotation(*id, Arc::clone(denotation));
         }

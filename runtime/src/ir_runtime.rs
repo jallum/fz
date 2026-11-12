@@ -36,8 +36,8 @@ use crate::bitstr::{
 use crate::emit_print_line;
 use crate::exec_ctx::ExecCtx;
 use crate::heap::{
-    AllocStat, BITSTRING_READER_SCHEMA, BITSTRING_RESULT_SCHEMA, HeapAllocKind, closure_capture_ref, list_head_ref,
-    list_tail_ref, map_entry_refs,
+    AllocStat, BITSTRING_READER_SCHEMA, BITSTRING_RESULT_SCHEMA, closure_capture_ref, list_head_ref, list_tail_ref,
+    map_entry_refs,
 };
 use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
@@ -48,8 +48,6 @@ use crate::resource::{ResourceHandle, ResourceStub, alloc_resource, fz_resource_
 use crate::sched::{ReceiveStep, reach_receive};
 use crate::scheduler_hooks::YIELD_PTR;
 use crate::term::{NumericMode, TermComparator};
-use std::alloc::{Layout, alloc_zeroed, handle_alloc_error};
-use std::cell::Cell;
 use std::mem::{size_of, transmute};
 use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -146,7 +144,6 @@ pub extern "C" fn fz_process_heap_alloc_stats(process: *mut Process) -> u64 {
     alloc_stat_entries(process, &mut entries, "procbin", snapshot.procbin);
     alloc_stat_entries(process, &mut entries, "shared_bin", snapshot.shared_bin);
     alloc_stat_entries(process, &mut entries, "scalar_box", snapshot.scalar_box);
-    alloc_stat_entries(process, &mut entries, "frame", snapshot.frame);
     alloc_stat_entries(process, &mut entries, "resource", snapshot.resource);
     alloc_stat_entries(process, &mut entries, "other", snapshot.other);
     entries.push((
@@ -589,7 +586,6 @@ pub extern "C" fn fz_alloc_closure(
     halt_kind: u32,
     body_addr: u64,
 ) -> u64 {
-    FRAME_ALLOC_COUNT.with(|c| c.set(c.get() + 1));
     let bits = (unsafe { &mut *process }).heap.alloc_closure_slots(
         crate::any_value::ClosureDenotationId::from_runtime_word(denotation),
         arity as u16,
@@ -2267,70 +2263,6 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
         }
     }
     closure_ref_word_from_bits(bits)
-}
-
-/// Allocate a frame for fn `fn_id`, looking up its size in the current
-/// Process's frame_sizes table populated at make_process() time.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_frame_dyn(process: *mut Process, fn_id: u32) -> *mut u8 {
-    let size = (unsafe { &*process })
-        .node
-        .frame_size(fn_id)
-        .unwrap_or_else(|| panic!("frame_sizes has no entry for fn_id {}", fn_id));
-    fz_alloc_frame(process, fn_id, size)
-}
-
-/// Public wrapper around the internal frame allocator that records the
-/// allocation on the given process (frame-only when null). Test-support entry
-/// for the frame-alloc accounting path.
-pub fn fz_alloc_frame_for_test(process: *mut Process, schema_id: u32, total_size: u32) -> *mut u8 {
-    fz_alloc_frame(process, schema_id, total_size)
-}
-
-thread_local! {
-    static FRAME_ALLOC_COUNT: Cell<u64> = const { Cell::new(0) };
-}
-
-/// Reset the per-thread frame alloc counter. Call before the code under test.
-pub fn frame_alloc_count_reset() {
-    FRAME_ALLOC_COUNT.with(|c| c.set(0));
-}
-
-/// Drain and return the per-thread frame alloc count since last reset.
-pub fn frame_alloc_count_take() -> u64 {
-    FRAME_ALLOC_COUNT.with(|c| {
-        let n = c.get();
-        c.set(0);
-        n
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_frame(process: *mut Process, schema_id: u32, total_size: u32) -> *mut u8 {
-    FRAME_ALLOC_COUNT.with(|c| c.set(c.get() + 1));
-    // Round size up to a multiple of 16 to keep allocator happy and ensure
-    // the resulting block aligns whatever follows.
-    let rounded = ((total_size as usize) + 15) & !15;
-    let layout = Layout::from_size_align(rounded, 16).expect("bad frame layout");
-    // Codegen always passes the pinned Process*; the for-test helper passes
-    // null (it allocates a frame outside any process). Skip stats when absent.
-    if !process.is_null() {
-        unsafe { &mut *process }
-            .heap
-            .record_external_alloc(HeapAllocKind::Frame, rounded);
-    }
-    let p = unsafe { alloc_zeroed(layout) };
-    if p.is_null() {
-        handle_alloc_error(layout);
-    }
-    unsafe {
-        std::ptr::write(p as *mut u16, 0);
-        std::ptr::write(p.add(2) as *mut u16, 0);
-        std::ptr::write(p.add(4) as *mut u32, total_size);
-        std::ptr::write(p.add(8) as *mut u32, schema_id);
-        std::ptr::write(p.add(12) as *mut u32, 0);
-    }
-    p
 }
 
 // ===== Arith / cmp / eq cluster =====

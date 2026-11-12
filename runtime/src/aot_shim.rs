@@ -320,7 +320,7 @@ pub extern "C" fn fz_aot_setup(
 
     // The AOT run's node-global atom table, seeded from the program's atom
     // blob and shared (Rc) by every spawned process.
-    let node = Rc::new(Node::new(parse_atom_blob(atom_blob, atom_blob_len), Vec::new()));
+    let node = Rc::new(Node::new(parse_atom_blob(atom_blob, atom_blob_len)));
     let proc_box = Box::new(Process::with_node(node, schemas, 1, DEFAULT_REDUCTIONS_PER_QUANTUM));
 
     // Box and leak the scheduler so it outlives this call's stack frame and
