@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-12T20:16:27Z",
-  "description": "In a JIT or AOT receive, 'n == 1.0' with message 1, and 'n * 2 == 3' with 1.5, answer :b; the interpreter, entry guards and Elixir answer :a. emit_typed_eq_cmp falls to fz_value_eq_ref, which is strict. Present on develop before this epic.\n\nFails before, passes after: both programs on run and build.",
+  "description": "In a JIT or AOT receive, 'n == 1.0' with message 1, and 'n * 2 == 3' with 1.5, answer :b; the interpreter, entry guards and Elixir answer :a. emit_typed_eq_cmp falls to fz_value_eq_ref, which is strict. Present on develop before this epic.\n\nFails before, passes after: both programs on run and build.\n\nDone through one authority: fz_value_eq_widening_ref, which the interpreter (interp_operator_eq) and body lowering (prim.rs) already use. emit_typed_eq_cmp takes Equality::{Loose, Strict}; a guard's == and != are Loose, pinned matches, literal patterns and the boolean test stay Strict. Fixture 01093. The 'n * 2 == 3' case is guard arithmetic, not equality, and moved to fz-rs7.4.",
   "id": "fz-rs7.6",
   "labels": [],
   "parent": "fz-rs7",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A receive guard's == between a float and an integer is the loose equality",
   "type": "bug",
-  "updated_at": "2026-11-12T20:16:27Z"
+  "updated_at": "2026-11-12T21:54:09Z"
 }
