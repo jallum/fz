@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T22:09:20Z",
+  "description": "Goal: no clone, collect, placeholder or guard-drop exists only to get a\nvalue past the borrow checker. Where one remains, the ownership shape\naround it requires it and the reason is visible in the types.\n\nWhy: the workspace already warns on redundant_clone, implicit_clone,\nunnecessary_to_owned, iter_cloned_collect and map_clone, so the mechanical\ncases are gone. What is left are copies the current signatures REQUIRE: an\naccessor that returns an owned value because its callers hold \u0026mut World, a\nstruct that owns its immutable input beside its mutable working state, a\nRefCell emptied through a throwaway value. Each one is a symptom of an\nownership shape; this epic fixes the shapes.\n\nEvidence (develop @ cca160808, non-test sources, ~136k lines):\n1476 .clone(), 136 .to_vec(), 39 mem::take/replace, 36 explicit drop(..).\nMost clones sampled are key / id / Rc clones into maps and facts and are\nnot in scope. The sites in scope are named in the child tickets.\n\nStrategy, per ticket:\n1. Change the signature (return a borrow, hold a reference, take a slice)\n   and let `cargo check` enumerate the dependents.\n2. Sort the errors: callers that compile after a trivial edit were pure\n   appeasement; callers that fail to borrow interleave a read with a write.\n3. Resolve each interleaving caller by, in order of preference:\n   a. compute, then commit (finish the reads, then write);\n   b. split the borrow (take the field, not the whole; separate input from\n      working state);\n   c. share by Rc handle, only for data immutable after construction that\n      truly outlives the borrow. Last resort: it keeps the clone and makes\n      it cheap.\n4. If (c) is the only move left for most callers of a ticket, stop and\n   report: the knot is the owner itself and needs a design proposal.\n\nSignal: every ticket is a pure refactor. The full gate stays green with no\ngolden, census or pin movement; any movement is a defect in the change.\nEach ticket deletes the copies it makes unnecessary and any comment that\nexplained them, and reports the clone/to_vec count of the files it touched\nbefore and after.\n\nOrder: .1 first -- its error list shows how much of the World accessor\nfamily is pure appeasement versus real interleaving, which sizes .4 and .5.",
+  "id": "fz-gfx",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "[EPIC] Ownership shapes need no borrow-checker appeasement",
+  "type": "epic",
+  "updated_at": "2026-11-12T22:09:20Z"
+}
