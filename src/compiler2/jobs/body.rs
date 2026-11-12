@@ -1695,10 +1695,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             Expr::Lambda { occurrence, clauses } => self.lower_lambda(*occurrence, expr.span, clauses, env, steps),
             Expr::Quote(cursor, splices) => {
                 let source_map = self.world.source_map();
-                let sources = source_map.borrow();
-                let result = QuoteLowerer::new(self, env, steps, splices).lower(cursor, &sources);
-                drop(sources);
-                result
+                QuoteLowerer::new(self, env, steps, splices).lower(cursor, &source_map.borrow())
             }
             Expr::Unquote(_) => Err(emit_job_diagnostic(
                 self.telemetry,

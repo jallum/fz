@@ -976,14 +976,14 @@ struct StructLayout {
     offsets: Vec<u32>,
 }
 
-/// Schema name + field offsets, cloned so the registry borrow is released
-/// before recursing (nested structs in the same heap would otherwise double
-/// borrow). Quoted source structs must be AnyValue-only — raw fields are an
-/// error, not a comparison miss.
+/// Schema identity + field offsets. Quoted source structs must be
+/// AnyValue-only — raw fields are an error, not a comparison miss.
 fn struct_layout(proc: &Process, value: AnyValueRef) -> Result<StructLayout, QuotedSourceError> {
     let addr = value.struct_addr().map_err(QuotedSourceError::from)?;
     let schema_id = unsafe { struct_schema_id(addr as *const u8) };
-    let schema = proc.heap.schemas_registry().borrow().get(schema_id).clone();
+    let registry = proc.heap.schemas_registry();
+    let registry = registry.borrow();
+    let schema = registry.get(schema_id);
     if schema
         .fields
         .iter()
