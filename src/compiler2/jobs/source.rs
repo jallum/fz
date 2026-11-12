@@ -298,10 +298,12 @@ pub(super) fn define_function(
     }
     let expanded_source = world
         .expanded_function_source(function_id)
-        .expect("define_function_gates confirmed ExpandedFunctionSource is present");
+        .expect("define_function_gates confirmed ExpandedFunctionSource is present")
+        .clone();
     let raw_source = world
         .function_source(function_id)
-        .expect("define_function_gates confirmed FunctionSource is present");
+        .expect("define_function_gates confirmed FunctionSource is present")
+        .clone();
 
     let source_map = world.source_map();
     let surface =
@@ -366,7 +368,7 @@ pub(super) fn expand_function_source(
     products: Option<&super::super::pull::ProductSessions>,
     function_id: super::super::FunctionId,
 ) -> Result<JobEffects, FatalError> {
-    let Some(source) = world.function_source(function_id) else {
+    let Some(source) = world.function_source(function_id).cloned() else {
         // No walk has scoped this function yet. Wait on the scope that will,
         // named as a fact: a global-module function waits on
         // `CodeIndexed(source_owner)` for every still-`Pending` candidate home
