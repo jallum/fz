@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-12T20:16:26Z",
-  "description": "emit_ordering_cmp_value (integer fast path, else fz_value_cmp_ref) replaces emit_int_cmp_value in the JIT/AOT receive matcher, which unboxes float references as integers. Independent of the raises: ticket.\n\nFails before, passes after: a JIT or AOT receive 'n when n \u003e 1.5' with message 2.0 fails to compile at base; 'n \u003c :b' with 1 answers :b where Elixir and the interpreter answer :a.\n\nAcceptance: full gate green; no pin rises.",
+  "description": "emit_ordering_cmp_value (integer fast path, else fz_value_cmp_ref) replaces emit_int_cmp_value in the JIT/AOT receive matcher, which unboxes float references as integers. Independent of the raises: ticket.\n\nFails before, passes after: a JIT or AOT receive 'n when n \u003e 1.5' with message 2.0 fails to compile at base; 'n \u003c :b' with 1 also fails to compile on run and build ('expected int receive value'); the interpreter and Elixir answer :a. Fixture 01092.\n\nAcceptance: full gate green; no pin rises.",
   "id": "fz-rs7.2",
   "labels": [],
   "parent": "fz-rs7",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "The receive matcher orders by the dynamic comparison",
   "type": "bug",
-  "updated_at": "2026-11-12T20:16:26Z"
+  "updated_at": "2026-11-12T21:54:09Z"
 }
