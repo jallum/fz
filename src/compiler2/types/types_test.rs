@@ -5125,3 +5125,23 @@ fn a_callable_column_is_distinguished_from_a_container_of_callables() {
     assert!(!t.is_pure_callable(&tuple));
     assert!(!t.is_pure_callable(&int));
 }
+
+#[test]
+fn a_kept_key_leaf_holding_a_closure_stays_the_ground_type() {
+    let mut t = Types::new();
+    let int = t.int();
+    let closure = t.closure_lit(ClosureTarget(7), vec![int], 2);
+    let tag_f = t.atom_lit("f");
+    let tag_g = t.atom_lit("g");
+    let with_closure = t.tuple(&[tag_f, closure]);
+    let with_int = t.tuple(&[tag_g, int]);
+    let element = t.union(with_closure, with_int);
+
+    let kept = t.convergence_class_at(&element, &[], true);
+
+    assert!(
+        t.is_equivalent(&kept, &element),
+        "a demanded element that is ground except for a closure's own arrow is the key's meaning, \
+         not a position to be replaced by an address variable"
+    );
+}
