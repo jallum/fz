@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:16:28Z",
+  "description": "Remove the per-call Vec, CString and dlsym in call_lowered_extern and the transport lane clones. Re-profile first on the frame build; the page measured the remaining gain as thin (S6: 8%). If the re-profile shows nothing worth a commit, record the profile here and close.\n\nAcceptance: full gate green; same-binary A/B recorded.",
+  "id": "fz-e7w.3",
+  "labels": [],
+  "parent": "fz-e7w",
+  "priority": 3,
+  "status": "open",
+  "title": "A call on the interpreted path allocates nothing per call",
+  "type": "task",
+  "updated_at": "2026-11-12T20:16:28Z"
+}
