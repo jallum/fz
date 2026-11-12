@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-e7w.1"
+  ],
   "blocks": [],
   "created": "2026-11-12T20:16:28Z",
   "description": "The page's counts came from a temporary probe. Emit entries run, calls and frames started as permanent telemetry; add an interp-lane test pinning 20 entries per element on the issue's program.\n\nAcceptance: full gate green.",
