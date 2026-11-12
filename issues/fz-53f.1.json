@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-53f.7"
+  ],
   "created": "2026-11-12T22:34:13Z",
   "description": "reconcile_fact_movements builds three tables per call and 88 of 28,382 calls fill any; ProductValidationWalk.checked in stale_dependency is never filled; the woken set in enqueue_dependents is empty 98-100% of the time; mem::take / unwrap_or_default on ProductDependencies and membership leave default tables behind. Build them only when needed, or pass a slice. Removes about 150k tables per parse call (538,281 -\u003e 388,848); instructions -0.4% to -0.7%. Report what each temporary was for; delete any that turn out to have no reader. Proposal page: /Users/j5n/Workspace/compile-cost-round-two.html (https://claude.ai/artifact/4T5Lime7pQxKbCiKJqaJ8x). Spike (base c768670cd; port by reading, not by applying): /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/tables/stepZ.diff. Acceptance: stdout (interp and run), canonical dump, activation key counts and job counts identical to the base binary on /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/p/distinct1.fz, f761.fz (--top 1 --top 2), f765.fz (--max-top 3), /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/m/r6.fz, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/l/lit16.fz; release instructions retired re-measured on base and change binaries built the same way; full gate.",
   "id": "fz-53f.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A per-event temporary table is built only when there is something to put in it",
   "type": "task",
-  "updated_at": "2026-11-12T22:34:13Z"
+  "updated_at": "2026-11-12T22:34:36Z"
 }
