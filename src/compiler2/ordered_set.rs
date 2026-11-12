@@ -96,6 +96,15 @@ impl<'a, T> IntoIterator for &'a OrderedSet<T> {
     }
 }
 
+impl<T> IntoIterator for OrderedSet<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.order.into_iter()
+    }
+}
+
 #[cfg(test)]
 #[path = "ordered_set_test.rs"]
 mod ordered_set_test;

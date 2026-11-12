@@ -639,15 +639,15 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
     fn_ids: &HashMap<u32, FuncId>,
     mid_flight_cont_tail_fn_ids: &HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
 ) -> Result<(), CodegenError> {
-    for ((callee_sid, arg_shapes), tail_id) in mid_flight_cont_tail_fn_ids.clone() {
+    for ((callee_sid, arg_shapes), tail_id) in mid_flight_cont_tail_fn_ids {
         let callee_fid = *fn_ids
-            .get(&callee_sid)
+            .get(callee_sid)
             .ok_or_else(|| CodegenError::new(format!("missing callee FuncId {callee_sid}")))?;
         let tail_name = format!("fz_mid_flight_cont_fn_{callee_sid}_tail");
         let mut tail_sig = Signature::new(CallConv::Tail);
         tail_sig.params.push(AbiParam::new(types::I64));
         tail_sig.returns.push(AbiParam::new(types::I64));
-        emit_fn_body(m, fbctx, tail_sig, tail_id, move |m, b| {
+        emit_fn_body(m, fbctx, tail_sig, *tail_id, |m, b| {
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
@@ -661,7 +661,7 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
                 arg_shape.replay_from_capture(&mut cg, CodegenValue::AnyRef(value_ref), &mut args);
             }
             let mut callee_sig = Signature::new(CallConv::Tail);
-            for arg_shape in &arg_shapes {
+            for arg_shape in arg_shapes {
                 arg_shape.push_param(&mut callee_sig);
             }
             callee_sig.returns.push(AbiParam::new(types::I64));
