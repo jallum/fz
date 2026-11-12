@@ -1,5 +1,10 @@
-
 def main() do
-  spawn(fn () -> dbg(42) end)
-  0
+  parent = self()
+  spawn(fn () ->
+    dbg(42)
+    send(parent, :done)
+  end)
+  receive do
+    :done -> 0
+  end
 end

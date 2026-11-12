@@ -40,7 +40,7 @@ use fz_runtime::sched::{
     ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
 };
 use fz_runtime::sched_core::{
-    Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
+    Scheduler, SchedulingCore, end_quantum, halt_hook, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
 use fz_runtime::telemetry::{
     EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, Raise, RunEnded, RuntimeEvent, SCHEDULER_SLEPT, SEND_PROBE,
@@ -225,12 +225,11 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         self
     }
 
-    /// The exit status of the task `pid`: what an uncaught raise left it with,
-    /// 0 for a task that did not end that way. Exited tasks stay in the
-    /// registry, so a driver reads this after `run_until_idle` to give the main
-    /// process its exit status.
-    pub fn exit_status(&self, pid: PidId) -> i32 {
-        self.tasks.get(&pid).map_or(0, |task| task.exit_status)
+    /// The status the program ended with, once it has halted: a process called
+    /// `System.halt/1`, or the main process ended. `None` for a run that went
+    /// idle without halting.
+    pub fn halted(&self) -> Option<i32> {
+        self.core.halted()
     }
 
     /// Spawn a new task that begins execution at `fn_id` (which must take
@@ -322,6 +321,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             spawn: Some(spawn_hook_thunk::<T>),
             send: Some(send_hook_thunk::<T>),
             fault: Some(fz_runtime::failure::STDERR_FAULT_HOOK),
+            halt: Some(halt_hook::<Self>()),
             raise: Some(raise_hook_thunk::<T>),
             output: Some(OUTPUT_HOOK),
             timer_schedule: Some(timer_schedule_hook::<Self>()),

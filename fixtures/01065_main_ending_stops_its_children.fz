@@ -1,0 +1,14 @@
+#---
+# purpose: "A program ends when its main process ends: a child still waiting then never runs again"
+# oracle: 01065_main_ending_stops_its_children.oracle.exs
+#---
+def main() do
+  spawn(fn ->
+    receive do
+      :never -> :ok
+    after
+      100 -> IO.puts("late")
+    end
+  end)
+  IO.puts("main done")
+end

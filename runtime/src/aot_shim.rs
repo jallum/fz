@@ -28,13 +28,14 @@ use crate::any_value::AnyValueRef;
 use crate::exec_ctx::{Argv, ExecCtx};
 use crate::function_denotation::decode_closure_denotations;
 use crate::heap::{AddressMap, Schema, SchemaRegistry, deep_copy_any_value_ref, pool_outstanding_blocks};
+use crate::output::{OutputSink as _, STDOUT_OUTPUT};
 use crate::pinned_abi::{call1, call2};
 use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Node, Process, ProcessState};
 use crate::sched::{
     ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
 };
 use crate::sched_core::{
-    Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
+    MAIN_PID, Scheduler, SchedulingCore, end_quantum, halt_hook, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
 use crate::telemetry::{RunEnded, RuntimeEvent, write_line};
 use crate::timer::TimerId;
@@ -329,7 +330,7 @@ pub extern "C" fn fz_aot_setup(
     //
     // Timer schedule/cancel hooks for `receive ... after N`.
     let mut tasks = HashMap::new();
-    tasks.insert(1u32, proc_box);
+    tasks.insert(MAIN_PID, proc_box);
     let sched = Box::into_raw(Box::new(AotScheduler {
         pool_outstanding_before_run,
         log,
@@ -343,6 +344,7 @@ pub extern "C" fn fz_aot_setup(
         ctx: ExecCtx {
             output: Some(crate::output::STDOUT_OUTPUT_HOOK),
             fault: Some(crate::failure::STDERR_FAULT_HOOK),
+            halt: Some(halt_hook::<AotScheduler>()),
             spawn: Some(aot_spawn_hook),
             send: Some(aot_send_hook),
             timer_schedule: Some(timer_schedule_hook::<AotScheduler>()),
@@ -560,16 +562,17 @@ pub extern "C" fn fz_aot_run_main(
     // measures only main's execution.
     process.heap.reset_alloc_stats();
     unsafe {
-        (*sched).core.make_runnable(1, &mut process.state);
+        (*sched).core.make_runnable(MAIN_PID, &mut process.state);
     }
 
     unsafe { (*sched).observe(RuntimeEvent::ExecutionReady) };
     aot_run_queue_loop(sched);
+    STDOUT_OUTPUT.flush();
 
-    // A main process that ended by an uncaught raise decides the program's
-    // status; its line, if it has one, is already on stderr. Read the status
-    // before teardown frees the process.
-    let status = process.exit_status;
+    // The program's end decides its status: a `System.halt/1`, or main ending,
+    // normally or by an uncaught raise whose line, if it has one, is already
+    // on stderr. A run that went idle without halting ends with 0.
+    let status = unsafe { (*sched).core.halted() }.unwrap_or(0);
 
     // Teardown: reclaim the leaked scheduler box. Its drop frees the task
     // table (and every process heap), the timer wheel, and the run-queue in

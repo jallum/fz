@@ -1131,6 +1131,65 @@ fn a_main_that_exits_or_throws_ends_the_process_with_elixirs_status_and_line() {
     }
 }
 
+/// How `System.halt` ends the process on every door: Elixir's status, output
+/// flushed up to the halt, and nothing after it runs, not a `catch`, not an
+/// `after`, not another process.
+#[test]
+fn a_halt_ends_the_process_with_its_status_and_flushed_output() {
+    let argument_error =
+        "** (ArgumentError) errors were found at the given arguments:\n\n  * 1st argument: invalid status\n\n";
+    let cases: [(&str, &str, i32, &str, &str); 6] = [
+        (
+            "halt(3) after a partial line",
+            "IO.puts(\"line\")\n  IO.write(\"partial\")\n  System.halt(3)\n  IO.puts(\"unreached\")",
+            3,
+            "line\npartial",
+            "",
+        ),
+        ("halt()", "System.halt()\n  IO.puts(\"unreached\")", 0, "", ""),
+        ("halt(300)", "System.halt(300)", 44, "", ""),
+        (
+            "halt inside try, catch and after",
+            "try do\n    System.halt(2)\n  catch\n    _, _ -> IO.puts(\"catch ran\")\n  after\n    IO.puts(\"after ran\")\n  end",
+            2,
+            "",
+            "",
+        ),
+        (
+            "halt from a spawned child while main waits",
+            "spawn(fn -> System.halt(4) end)\n  receive do\n    :never -> IO.puts(\"unreached\")\n  after\n    5000 -> IO.puts(\"timed out\")\n  end",
+            4,
+            "",
+            "",
+        ),
+        ("halt(-1)", "System.halt(-1)", 1, "", argument_error),
+    ];
+    for (name, body, status, stdout, stderr) in cases {
+        let source = unique_temp_path("fz2_halt", ".fz");
+        write(&source, format!("def main() do\n  {body}\nend\n")).expect("write halt program");
+        let binary = unique_temp_path("fz2_halt", ".bin");
+        let built = run_fz2(&[
+            OsStr::new("build"),
+            source.as_os_str(),
+            OsStr::new("-o"),
+            binary.as_os_str(),
+        ]);
+        assert!(built.status.success(), "build {name}: {}", output_text(&built));
+        let outs = [
+            ("run", run_fz2(&[OsStr::new("run"), source.as_os_str()])),
+            ("interp", run_fz2(&[OsStr::new("interp"), source.as_os_str()])),
+            ("build", Command::new(&binary).output().expect("run the built program")),
+        ];
+        for (door, out) in outs {
+            assert_eq!(out.status.code(), Some(status), "{door} {name}: {}", output_text(&out));
+            assert_eq!(String::from_utf8_lossy(&out.stdout), stdout, "{door} {name}");
+            assert_eq!(String::from_utf8_lossy(&out.stderr), stderr, "{door} {name}");
+        }
+        let _ = remove_file(&source);
+        let _ = remove_file(&binary);
+    }
+}
+
 /// Before the source path the same spelling is fz2's own option.
 #[test]
 fn global_options_before_the_path_still_mean_what_they_say() {

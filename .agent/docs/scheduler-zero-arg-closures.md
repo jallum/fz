@@ -264,7 +264,9 @@ loop:
 
 A program is idle only when nothing is runnable and no timer is pending. The
 JIT's `run_until_idle`, `aot_run_queue_loop` and the interpreter's
-`drive_backend_until_idle` all loop on it. `timer_schedule_hook::<S>()` and
+`drive_backend_until_idle` all loop on it. The core also records the program's
+end (`halt`, `process_ended`), after which `next_runnable` returns `None`
+whatever is still runnable. `halt_hook::<S>()` is the `ExecCtx::halt` hook. `timer_schedule_hook::<S>()` and
 `timer_cancel_hook::<S>()` give the one pair of `ExecCtx` timer hooks,
 instantiated per scheduler type.
 

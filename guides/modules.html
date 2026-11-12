@@ -381,6 +381,18 @@ raises <code>ArgumentError</code>. The rest of Elixir's <code>Tuple</code>
 (<code>append</code>, <code>delete_at</code>, <code>duplicate</code>,
 <code>insert_at</code>, <code>product</code>, <code>sum</code>) is not built.</p>
 
+<p><code>System</code> (<code>lib/system.fz</code>) has <code>argv/0</code> and
+<code>halt/0,1</code>. <code>System.halt(status)</code> ends the program at once
+with <code>status</code> (0 for <code>halt/0</code>) from any process: stdout is
+flushed, no other process runs again, and no <code>catch</code> or
+<code>after</code> is reached. The operating system keeps the low 8 bits, so
+<code>halt(300)</code> exits 44. A negative status raises
+<code>ArgumentError</code> and a status that is not an integer raises
+<code>FunctionClauseError</code>; the binary and <code>:abort</code> forms of
+Elixir's <code>halt/1</code> are not built. A program also ends when its main
+process does, so a process still waiting then never runs again, as in an Elixir
+script.</p>
+
 <p><code>String.slice/2</code>, <code>String.slice/3</code>,
 <code>String.pad_leading/2,3</code> and <code>String.pad_trailing/2,3</code>
 count graphemes, as in Elixir. A <code>slice/2</code> range with a negative

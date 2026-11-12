@@ -508,9 +508,10 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
             .with_output(self.output.as_ref())
             .with_argv(&self.program_args);
         signal_execution_ready(tel);
-        let root_pid = runtime.spawn(program.entry);
+        runtime.spawn(program.entry);
         runtime.run_until_idle();
-        RunFailure::from_main_status(runtime.exit_status(root_pid))
+        self.output.flush();
+        RunFailure::from_main_status(runtime.halted().unwrap_or(0))
     }
 
     /// Runs an executable macro over a quoted source heap and returns the
