@@ -2616,7 +2616,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     apply_world_fact_movements(&mut driver, &prerequisite_settled.movements);
 
     let mut settled = None;
-    while let Some(ready) = world.next_ready_job(None) {
+    while let Some(ready) = world.pop_runnable() {
         if ready == observer {
             continue;
         }

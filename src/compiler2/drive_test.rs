@@ -23276,3 +23276,44 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
         "activations of the whole program"
     );
 }
+
+/// A completion queues a product request while the only job left on the
+/// agenda is gated; popping that job parks it and empties the agenda. The
+/// request is served at the drain that follows, so the drive resolves instead
+/// of stopping with an unresolved wait on the stranded reach.
+#[test]
+fn a_request_queued_behind_a_parked_job_is_served_at_the_drain() {
+    let tel = ConfiguredTelemetry::new();
+    let reaches = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&reaches);
+    tel.attach_raw_event2::<ProductKey, super::pull::ProductRequestId, _>(
+        &["fz", "compiler2", "pull", "product", "requested"],
+        move |_, _, _, product, _| {
+            if let ProductKey::Reach(ReachKey::Static(function)) = product {
+                observed.borrow_mut().push(*function);
+            }
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: None,
+        text: include_str!("../../fixtures/01069_a_request_queued_behind_a_parked_job_is_served_at_the_drain.fz")
+            .replace("dbg(by_name(spans()))", "length(by_name(spans()))"),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(4), "the drive resolves and runs");
+    let served = reaches
+        .borrow()
+        .iter()
+        .map(|function| compiler.world().function_ref(*function).display_name())
+        .collect::<Vec<_>>();
+    assert!(
+        served.iter().any(|name| name.contains("grapheme_bytes_step")),
+        "the reach of String.grapheme_bytes_step queued behind the parked job is served: {served:?}"
+    );
+}

@@ -10,7 +10,7 @@
 //! duplicating the loop.
 use std::rc::Rc;
 
-use super::drive::{ExecutionContext, FactKey, ProductAddress};
+use super::drive::{Drained, ExecutionContext, FactKey, ProductAddress};
 use super::facts::{FactReadiness, FactUse};
 use super::identity::RootId;
 use super::ordered_worklist::OrderedWorklist;
@@ -855,33 +855,23 @@ fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTe
             if product_fact_wait_is_satisfied(world, fact) {
                 break;
             }
-            if world.work_graph.pending_jobs() == 0
-                && let Some(sessions) = sessions.as_deref_mut()
-            {
-                let mut context = ExecutionContext::with_product_sessions(world, tel, sessions);
-                if context
-                    .drive_product_requests()
-                    .map_err(|(address, source)| E::dependency_failed(context.world, tel, address, source))?
-                {
-                    continue;
-                }
-            }
-            let job = match world.next_ready_job(sessions.as_deref()) {
-                Some(job) => {
-                    apply_quiescence(world, tel, driver, sessions.as_deref_mut());
-                    job
-                }
+            let job = match world.pop_runnable() {
+                Some(job) => job,
                 None => {
                     // One producer evaluation owns one exact prerequisite set.
                     // At a drain, arbitrate all of its settled questions in one
                     // scheduler step so their typed movements stay atomic.
-                    world.settle_quiescent_with_sessions(&settled_facts, sessions.as_deref());
-                    if apply_quiescence(world, tel, driver, sessions.as_deref_mut()) {
-                        continue;
+                    let mut context =
+                        ExecutionContext::with_optional_product_sessions(world, tel, sessions.as_deref_mut());
+                    match context
+                        .drain(&settled_facts)
+                        .map_err(|(address, source)| E::dependency_failed(context.world, tel, address, source))?
+                    {
+                        Drained::Served | Drained::Moved => continue,
+                        Drained::Silent => {}
                     }
                     producer_pokes += world.demand_fact_producer(fact.fact(), WorkStartReason::BlockedWaiterExpansion);
-                    let job = world.pop_runnable();
-                    let Some(job) = job else {
+                    let Some(job) = world.pop_runnable() else {
                         return Err(E::no_ready_producer(world, tel, scope, fact));
                     };
                     job
@@ -921,29 +911,6 @@ fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTe
         }
     }
     Ok(producer_pokes)
-}
-
-/// Emits the drain arbiter's readiness steps and feeds their movements to the
-/// product memo, exactly as a job completion's movements are fed. Returns
-/// whether the arbiter moved anything — a moved fact is a reason to re-ask the
-/// wait, whether or not the movement also woke a job.
-fn apply_quiescence<T: crate::telemetry::RawSpanTelemetry>(
-    world: &mut World,
-    tel: &T,
-    driver: &mut ProductDriver<'_, T>,
-    sessions: Option<&mut ProductSessions>,
-) -> bool {
-    let steps = super::drive::flush_quiescence(world, tel);
-    if let Some(sessions) = sessions {
-        for step in &steps {
-            ExecutionContext::with_product_sessions(world, tel, sessions).publish_dependency_movements(&step.movements);
-        }
-    } else {
-        for step in &steps {
-            driver.apply_fact_movements(&delivered_facts(&step.movements));
-        }
-    }
-    !steps.is_empty()
 }
 
 fn product_fact_wait_is_satisfied(world: &World, fact: &FactUse<FactKey>) -> bool {

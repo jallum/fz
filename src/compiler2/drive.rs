@@ -13,7 +13,7 @@ use super::code::SourceOwner;
 use super::facts::{ClaimShape, FactUse, Publisher};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::pull::{ProductKey, ProductScope};
-use super::scheduler::{DriveOutcome, Scheduler, WorkStartReason};
+use super::scheduler::{DriveOutcome, FatalError, Scheduler, WorkStartReason};
 use super::semantic::{CallSiteKey, CallableConstructionTargetKey, SemanticOrd};
 use super::types::Types;
 use super::world::World;
@@ -1172,21 +1172,6 @@ impl World {
         facts.sort_by(|left, right| left.semantic_cmp(right, self.types()));
         self.settle_quiescent_with_sessions(&facts, sessions);
     }
-
-    /// Pops the next ready job, settling quiescent waits once if the agenda
-    /// has drained. Every job loop (the bare drive and the product fact-wait
-    /// loops) pulls through this. There is no demand expansion left to do
-    /// here: a need starts its producer when it is recorded
-    /// (`demand_recorded_needs`, `park_on_gates`), never when the agenda
-    /// happens to run dry, so a drain only arbitrates the settled questions
-    /// standing over quiesced ground -- it starts nothing.
-    pub(crate) fn next_ready_job(&mut self, sessions: Option<&super::pull::ProductSessions>) -> Option<Job> {
-        if let Some(job) = self.pop_runnable() {
-            return Some(job);
-        }
-        self.settle_quiescent_waits(sessions);
-        self.pop_runnable()
-    }
 }
 
 impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
@@ -1206,6 +1191,43 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
     pub(crate) fn drain_pending_for(&mut self, timeout: Option<Duration>) -> DriveOutcome<Job, DependencyKey> {
         let deadline = timeout.map(|limit| Instant::now() + limit);
         self.drive_until(deadline, timeout, false)
+    }
+
+    /// Nothing is runnable: serves the product requests completions queued.
+    /// Every drain starts here, because a request queued behind a job that
+    /// parked on its gates is only observable once the agenda is empty.
+    pub(crate) fn serve_requests(&mut self) -> Result<Drained, (ProductAddress, FatalError)> {
+        Ok(if self.drive_product_requests()? {
+            Drained::Served
+        } else {
+            Drained::Silent
+        })
+    }
+
+    /// Nothing is runnable. First serves any product request a completion
+    /// queued, then arbitrates the settled questions standing over quiesced
+    /// ground (the blocked waiters' own, plus `also_settled`) and publishes
+    /// what moved. There is no demand expansion left to do here: a need
+    /// starts its producer when it is recorded (`demand_recorded_needs`,
+    /// `park_on_gates`), never when the agenda happens to run dry, so a
+    /// drain starts nothing itself. Both job loops (the bare drive and the
+    /// product fact-wait pump) answer "what work is left?" through this.
+    pub(crate) fn drain(&mut self, also_settled: &[FactKey]) -> Result<Drained, (ProductAddress, FatalError)> {
+        if let Drained::Served = self.serve_requests()? {
+            return Ok(Drained::Served);
+        }
+        self.world.settle_quiescent_waits(self.product_sessions.as_deref());
+        self.world
+            .settle_quiescent_with_sessions(also_settled, self.product_sessions.as_deref());
+        let steps = flush_quiescence(self.world, self.telemetry);
+        for step in &steps {
+            self.publish_dependency_movements(&step.movements);
+        }
+        Ok(if steps.is_empty() {
+            Drained::Silent
+        } else {
+            Drained::Moved
+        })
     }
 
     /// Runs queued jobs until the work graph has no ready work.
@@ -1282,40 +1304,27 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                         }
                     }
                 }
-                match ExecutionContext::with_optional_product_sessions(world, tel, product_sessions.as_deref_mut())
-                    .drive_product_requests()
-                {
-                    Ok(true) => continue 'drive,
-                    Ok(false) => {}
+                let mut context =
+                    ExecutionContext::with_optional_product_sessions(world, tel, product_sessions.as_deref_mut());
+                let drained = if settle_quiescent_on_drain {
+                    context.drain(&[])
+                } else {
+                    context.serve_requests()
+                };
+                match drained {
+                    Ok(Drained::Served | Drained::Moved) => continue 'drive,
+                    Ok(Drained::Silent) if !settle_quiescent_on_drain => {
+                        world.clear_unresolved_diagnostics();
+                        ExecutionContext::new(world, tel).flush_reported_warnings();
+                        break 'outcome DriveOutcome::Resolved;
+                    }
+                    Ok(Drained::Silent) => break 'drive,
                     Err((address, _)) => {
                         break 'outcome DriveOutcome::DependencyFailed {
                             dependency: DependencyKey::Product(address),
                         };
                     }
                 }
-                if !settle_quiescent_on_drain {
-                    world.clear_unresolved_diagnostics();
-                    ExecutionContext::new(world, tel).flush_reported_warnings();
-                    break 'outcome DriveOutcome::Resolved;
-                }
-                // The agenda drained. Every need starts its producer the
-                // moment it is recorded (`World::demand_recorded_needs`,
-                // `World::park_on_gates`), so there is no standing demand
-                // left to discover here -- the only drain work left is
-                // arbitration: every settled question standing over a
-                // quiesced cone is answerable. Answering one can satisfy a
-                // standing settled wait and wake real work, so a wake sends
-                // the loop back around; silence ends the drive.
-                world.settle_quiescent_waits(product_sessions.as_deref());
-                let quiesced = flush_quiescence(world, tel);
-                for step in &quiesced {
-                    ExecutionContext::with_optional_product_sessions(world, tel, product_sessions.as_deref_mut())
-                        .publish_dependency_movements(&step.movements);
-                }
-                if quiescence_woke_work(&quiesced) {
-                    continue 'drive;
-                }
-                break 'drive;
             }
             if !world.work_graph.has_unresolved() {
                 world.clear_unresolved_diagnostics();
@@ -1332,6 +1341,17 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
     }
 }
 
+/// What a drain found to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Drained {
+    /// A queued product request was driven.
+    Served,
+    /// Quiescence arbitration moved a fact's readiness.
+    Moved,
+    /// Neither: the drain changed nothing.
+    Silent,
+}
+
 /// Emits every drain-arbiter step `World` stashed, and hands them back.
 ///
 /// A readiness movement that satisfies a waiter is the one wake with no job
@@ -1346,11 +1366,6 @@ pub(super) fn flush_quiescence<T: RawSpanTelemetry>(
         tel.raw_event1(&["fz", "compiler2", "work_graph", "quiesced"], step);
     }
     steps
-}
-
-/// Whether any of `steps` started work.
-pub(super) fn quiescence_woke_work(steps: &[super::AppliedStep<Job, DependencyKey>]) -> bool {
-    steps.iter().any(|step| !step.wakes.is_empty())
 }
 
 fn emit_drive_timed_out(tel: &impl crate::telemetry::Telemetry, timeout: &Option<Duration>) {
