@@ -13,9 +13,11 @@ defmodule File do
   path-oriented operations open and close their private C stream before they
   return.
 
+  `stream!/1` reads a file lazily, one line at a time, as a `File.Stream`.
+
   This initial surface intentionally excludes `File.Stat`, directory listing,
-  recursive operations, streams, process cwd, and handle IO: each needs a
-  structured C out-parameter, a directory iterator, or guarded reusable
+  recursive operations, process cwd, and handle IO beyond that stream: each
+  needs a structured C out-parameter, a directory iterator, or guarded reusable
   resource access that fz does not yet expose.
   """
 
@@ -152,8 +154,28 @@ defmodule File do
   @spec close(t) :: :ok | {:error, :closed | :io}
   def close(handle :: t), do: close_claim(Kernel.claim_resource(handle))
 
+  @spec stream_open!(binary) :: t
+  def stream_open!(path), do: stream_value!(open(path, [:read]), path)
+
   @spec close!(t) :: :ok
   def close!(handle), do: result!(close(handle), :close)
+
+  @doc """
+  Returns the lines of `path` as a lazy `File.Stream`.
+
+  The file is not touched until the stream is enumerated, and a path that cannot
+  be opened then raises `File.Error`.
+
+  ## Examples
+
+      File.stream!("notes.txt") |> Enum.take(1)
+      #=> ["first line\\n"]
+
+  """
+  @spec stream!(binary) :: File.Stream.t
+  def stream!(path) do
+    %File.Stream{path: path, modes: [:raw, :read_ahead, :binary], line_or_bytes: :line, raw: true, node: :"nonode@nohost"}
+  end
 
   @spec read_open(c_pointer) :: {:ok, binary} | {:error, :io}
   defp read_open(0), do: {:error, :io}
@@ -241,6 +263,10 @@ defmodule File do
   defp open_value!({:ok, value}, _path), do: value
   defp open_value!({:error, reason}, path), do: raise_file({:open, path}, reason)
 
+  @spec stream_value!({:ok, t} | {:error, :badarg | :io}, binary) :: t
+  defp stream_value!({:ok, value}, _path), do: value
+  defp stream_value!({:error, reason}, path), do: raise_file({:stream, path}, reason)
+
   @spec result!(:ok | {:error, :badarg | :closed | :io}, tuple | :close) :: :ok
   defp result!(:ok, _operation), do: :ok
   defp result!({:error, reason}, operation), do: raise_file(operation, reason)
@@ -273,6 +299,7 @@ defmodule File do
   defp action(:rmdir), do: "remove directory"
   defp action(:chmod), do: "change mode for"
   defp action(:open), do: "open"
+  defp action(:stream), do: "stream"
 
   @spec reason_text(atom) :: binary
   defp reason_text(:io), do: "I/O error"

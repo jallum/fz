@@ -1101,6 +1101,50 @@ pub extern "C" fn fz_float_parse(process: *mut Process, binary_ref: u64) -> u64 
         .raw_word()
 }
 
+unsafe extern "C" {
+    fn fgetc(stream: *mut std::ffi::c_void) -> std::ffi::c_int;
+}
+
+/// `File.Stream`'s line reader: `[]` at end of file, else `[line]`, where `line`
+/// is the bytes up to and including the next `\n` (or the trailing bytes of a
+/// file that does not end in one). A line that ends in `\r\n` comes back
+/// ending in `\n`, as Elixir's `File.stream!` reads it; any other `\r` stays.
+///
+/// `stream` is the C `FILE *` a `File` handle carries. The line is gathered in
+/// one growing buffer and allocated on the heap once.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_file_read_line(process: *mut Process, stream: u64) -> u64 {
+    let line = read_line_bytes(stream as *mut std::ffi::c_void);
+    if line.is_empty() {
+        return AnyValueRef::empty_list().raw_word();
+    }
+    let heap = &mut unsafe { &mut *process }.heap;
+    let line_ref = heap.alloc_bitstring(&line, (line.len() * 8) as u64).ref_word();
+    heap.alloc_list_cons_ref(line_ref, AnyValueRef::empty_list())
+        .expect("fz_file_read_line list")
+        .raw_word()
+}
+
+/// The bytes of the next line of `stream`, newline included and `\r\n` folded to
+/// `\n`; empty at end of file.
+fn read_line_bytes(stream: *mut std::ffi::c_void) -> Vec<u8> {
+    let mut line = Vec::new();
+    loop {
+        let byte = unsafe { fgetc(stream) };
+        if byte < 0 {
+            return line;
+        }
+        line.push(byte as u8);
+        if byte == i32::from(b'\n') {
+            if line.ends_with(b"\r\n") {
+                line.truncate(line.len() - 2);
+                line.push(b'\n');
+            }
+            return line;
+        }
+    }
+}
+
 /// The float at the start of `bytes` and how many bytes spell it, or `None`.
 ///
 /// A float is an optional sign, one or more digits, an optional fraction (a

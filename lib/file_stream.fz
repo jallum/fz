@@ -1,0 +1,57 @@
+defmodule File.Stream do
+  @moduledoc """
+  A file read lazily, one line at a time.
+
+  `File.stream!/1` returns a `%File.Stream{}` without touching the file. It is
+  an `Enumerable`: the file opens when an `Enum` function starts to pull, each
+  line comes back with its newline (a line that ends in `\\r\\n` ends in `\\n`, and
+  a last line with no newline comes back as it is), and the file closes when the
+  enumeration finishes or halts. A path that cannot be opened raises
+  `File.Error` at that moment.
+
+  The handle is the resource `File.open/1` returns and `File.close/1` is the only
+  closer, so it closes exactly once; a suspended enumeration that is dropped is
+  closed when the handle is released. `count`, `member?` and `slice` do not
+  answer without a traversal, so `Enum` reduces.
+  """
+
+  defstruct [:path, :modes, :line_or_bytes, :raw, :node]
+
+  @type t :: %File.Stream{path: binary, modes: [atom], line_or_bytes: atom, raw: boolean, node: atom}
+
+  @spec step(File.t, {:cont, b} | {:halt, b} | {:suspend, b}, (binary, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
+  def step(handle, {:cont, acc}, reducer), do: line_step(read_line(handle.value), handle, acc, reducer)
+  def step(handle, {:halt, acc}, _reducer), do: closed(File.close(handle), {:halted, acc})
+  def step(handle, {:suspend, acc}, reducer), do: {:suspended, acc, (fn () -> step(handle, {:cont, acc}, reducer) end)}
+
+  @spec line_step([binary], File.t, b | c, (binary, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
+  defp line_step([], handle, acc, _reducer), do: closed(File.close(handle), {:done, acc})
+  defp line_step([line], handle, acc, reducer), do: step(handle, reducer.(line, acc), reducer)
+
+  @spec step_while(File.t, a, (binary, a) -> {:cont, a} | {:halt, b}) :: a | b
+  def step_while(handle, acc, reducer), do: line_step_while(read_line(handle.value), handle, acc, reducer)
+
+  @spec line_step_while([binary], File.t, a, (binary, a) -> {:cont, a} | {:halt, b}) :: a | b
+  defp line_step_while([], handle, acc, _reducer), do: closed(File.close(handle), acc)
+  defp line_step_while([line], handle, acc, reducer), do: after_line(reducer.(line, acc), handle, reducer)
+
+  @spec after_line({:cont, a} | {:halt, b}, File.t, (binary, a) -> {:cont, a} | {:halt, b}) :: a | b
+  defp after_line({:cont, acc}, handle, reducer), do: step_while(handle, acc, reducer)
+  defp after_line({:halt, acc}, handle, _reducer), do: closed(File.close(handle), acc)
+
+  @spec closed(:ok | {:error, :closed | :io}, a) :: a
+  defp closed(_close_status, answer), do: answer
+
+  @spec read_line(c_pointer) :: [binary]
+  defp read_line(stream), do: fz_file_read_line(stream)
+
+  extern "fz" defp fz_file_read_line(c_pointer) :: any
+end
+
+defimpl Enumerable, for: File.Stream do
+  def reduce(%File.Stream{path: path}, acc, reducer), do: File.Stream.step(File.stream_open!(path), acc, reducer)
+  def reduce_while(%File.Stream{path: path}, acc, reducer), do: File.Stream.step_while(File.stream_open!(path), acc, reducer)
+  def count(_stream), do: {:error, :unsupported}
+  def member?(_stream, _value), do: {:error, :unsupported}
+  def slice(_stream), do: {:error, :unsupported}
+end

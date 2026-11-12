@@ -784,3 +784,45 @@ fn float_prefix_reads_elixirs_prefix_and_reports_its_length() {
         assert_eq!(float_prefix(text.as_bytes()), *expected, "{text:?}");
     }
 }
+
+unsafe extern "C" {
+    fn fopen(path: *const std::ffi::c_char, mode: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    fn fclose(stream: *mut std::ffi::c_void) -> std::ffi::c_int;
+}
+
+fn lines_of(contents: &[u8]) -> Vec<Vec<u8>> {
+    let path = std::env::temp_dir().join(format!("fz_read_line_{}_{}.tmp", std::process::id(), contents.len()));
+    std::fs::write(&path, contents).expect("write temp file");
+    let c_path = std::ffi::CString::new(path.to_str().expect("utf8 path")).expect("no NUL");
+    let stream = unsafe { fopen(c_path.as_ptr(), c"rb".as_ptr()) };
+    assert!(!stream.is_null(), "fopen {path:?}");
+    let mut lines = Vec::new();
+    loop {
+        let line = read_line_bytes(stream);
+        if line.is_empty() {
+            break;
+        }
+        lines.push(line);
+    }
+    unsafe { fclose(stream) };
+    std::fs::remove_file(&path).expect("remove temp file");
+    lines
+}
+
+#[test]
+fn read_line_folds_crlf_to_lf_and_keeps_blank_and_unterminated_lines() {
+    let cases: &[(&[u8], &[&[u8]])] = &[
+        (b"a\nb\n\nc", &[b"a\n", b"b\n", b"\n", b"c"]),
+        (b"a\r\nb\n", &[b"a\n", b"b\n"]),
+        (b"a\r", &[b"a\r"]),
+        (b"a\r\r\n", &[b"a\r\n"]),
+        (b"a\rb\n", &[b"a\rb\n"]),
+        (b"\r\n", &[b"\n"]),
+        (b"", &[]),
+        (b"x", &[b"x"]),
+    ];
+    for (contents, expected) in cases {
+        let expected: Vec<Vec<u8>> = expected.iter().map(|line| line.to_vec()).collect();
+        assert_eq!(lines_of(contents), expected, "{contents:?}");
+    }
+}

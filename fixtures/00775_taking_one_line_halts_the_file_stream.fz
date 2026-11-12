@@ -1,0 +1,12 @@
+#---
+# purpose: "Enum.take(1) over a File.stream! of three lines reads the first line and halts, and a mapped stream over it sees one line only"
+# oracle: 00775_taking_one_line_halts_the_file_stream.oracle.exs
+#---
+def main() do
+  path = "00775_take.tmp"
+  File.write!(path, "one\ntwo\nthree\n")
+  dbg(Enum.take(File.stream!(path), 1))
+  dbg(Enum.take(File.stream!(path), 2))
+  dbg(Enum.take(Stream.map(File.stream!(path), fn line -> dbg(line) end), 1))
+  File.rm!(path)
+end

@@ -1,0 +1,9 @@
+#---
+# purpose: "File.stream! of a missing path builds without error and raises File.Error when enumerated; fz's text says I/O error where Elixir prints the POSIX reason, so there is no oracle until File's bang functions read errno"
+# expect: abort
+#---
+def main() do
+  stream = File.stream!("00776_missing.tmp")
+  dbg(:built)
+  Enum.to_list(stream)
+end

@@ -1,0 +1,49 @@
+defmodule Stream do
+  @moduledoc """
+  Lazy enumerables.
+
+  `Stream.map/2` returns a `%Stream{}` that holds the source enumerable and the
+  functions to apply. Nothing runs until an `Enum` function pulls: a `%Stream{}`
+  is an `Enumerable`, and its reduction hands the source's own reduction a
+  reducer with those functions applied first, in the order they were written. A
+  halt therefore stops the source.
+
+  `map/2` is the only `Stream` function. `count`, `member?` and `slice` do not
+  answer without a traversal, so `Enum` reduces.
+  """
+
+  defstruct [:enum, :funs]
+
+  @type t :: %Stream{enum: any, funs: [any]}
+
+  @doc """
+  Returns a stream that applies `fun` to each element of `enum` as it is pulled.
+
+  Over another stream, `fun` is added after the functions already there.
+
+  ## Examples
+
+      Enum.take(Stream.map([1, 2, 3], fn x -> x * 2 end), 2)
+      #=> [2, 4]
+
+  """
+  @spec map(Enumerable.t(a) | t, (a) -> b) :: t
+  def map(%Stream{enum: enum, funs: funs}, fun), do: %Stream{enum: enum, funs: [fun | funs]}
+  def map(enum, fun), do: %Stream{enum: enum, funs: [fun]}
+
+  @spec compose([(any) -> any], (any, c) -> d) :: (any, c) -> d
+  def compose(funs, reducer), do: fn entry, acc -> reducer.(apply_funs(funs, entry), acc) end
+
+  # `funs` holds the most recently added function first, so it is applied last.
+  @spec apply_funs([(any) -> any], any) :: any
+  defp apply_funs([], entry), do: entry
+  defp apply_funs([fun | earlier], entry), do: fun.(apply_funs(earlier, entry))
+end
+
+defimpl Enumerable, for: Stream do
+  def reduce(%Stream{enum: enum, funs: funs}, acc, reducer), do: Enumerable.reduce(enum, acc, Stream.compose(funs, reducer))
+  def reduce_while(%Stream{enum: enum, funs: funs}, acc, reducer), do: Enumerable.reduce_while(enum, acc, Stream.compose(funs, reducer))
+  def count(_stream), do: {:error, :unsupported}
+  def member?(_stream, _value), do: {:error, :unsupported}
+  def slice(_stream), do: {:error, :unsupported}
+end
