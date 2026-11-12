@@ -656,8 +656,8 @@ fn project_generic_owner_node(
     demand: &RuntimeDemand,
     publication: &TransportPosition,
 ) {
-    match world.shape(shape).clone() {
-        ShapeDescr::Callable(callable) => {
+    match world.shape(shape) {
+        &ShapeDescr::Callable(callable) => {
             record_generic_owner_facts(world, projected, shape, ty, demand, publication);
             let resolutions = exact_demand_resolution_symbols(source, demand, None);
             if let Some(draft) = projected.callables.get_mut(&callable) {
@@ -692,12 +692,13 @@ fn project_generic_owner_node(
             }
         }
         ShapeDescr::Tuple(fields) => {
+            let arity = fields.len();
             let ShapeDemand::TupleFields(field_demands) = &demand.shape else {
                 return;
             };
-            let field_tys =
-                exact_tuple_field_tys(world, ty).unwrap_or_else(|| vec![world.types_mut().any(); fields.len()]);
-            for ((field, field_ty), field_demand) in fields.iter().copied().zip(field_tys).zip(field_demands) {
+            let field_tys = exact_tuple_field_tys(world, ty).unwrap_or_else(|| vec![world.types_mut().any(); arity]);
+            for (index, (field_ty, field_demand)) in field_tys.into_iter().zip(field_demands).enumerate() {
+                let field = tuple_field(world, shape, index);
                 project_generic_owner_node(
                     world,
                     source,
@@ -750,8 +751,8 @@ fn record_generic_owner_facts(
     demand: &RuntimeDemand,
     publication: &TransportPosition,
 ) {
-    match world.shape(shape).clone() {
-        ShapeDescr::Callable(callable) => {
+    match world.shape(shape) {
+        &ShapeDescr::Callable(callable) => {
             let surfaces = &demand.callable.resolved;
             let surface_layouts = surface_layouts(world, surfaces);
             let surface_shapes = surface_shapes_from_layouts(&surface_layouts);
@@ -774,12 +775,13 @@ fn record_generic_owner_facts(
             facts.record_callable(callable, Vec::new(), surface_shapes, Vec::new(), boundary_ids);
         }
         ShapeDescr::Tuple(fields) => {
+            let arity = fields.len();
             let ShapeDemand::TupleFields(field_demands) = &demand.shape else {
                 return;
             };
-            let field_tys =
-                exact_tuple_field_tys(world, ty).unwrap_or_else(|| vec![world.types_mut().any(); fields.len()]);
-            for ((field, field_ty), field_demand) in fields.iter().copied().zip(field_tys).zip(field_demands) {
+            let field_tys = exact_tuple_field_tys(world, ty).unwrap_or_else(|| vec![world.types_mut().any(); arity]);
+            for (index, (field_ty, field_demand)) in field_tys.into_iter().zip(field_demands).enumerate() {
+                let field = tuple_field(world, shape, index);
                 record_generic_owner_facts(world, facts, field.structural, field_ty, field_demand, publication);
             }
         }
@@ -1093,6 +1095,10 @@ fn evaluate_transport_recipe(
     }
 }
 
+fn tuple_field(world: &World, tuple: ShapeId, index: usize) -> TransportLayout {
+    world.field_layouts(tuple).expect("a tuple shape has fields")[index]
+}
+
 fn tuple_layout(world: &mut World, fields: &[TransportLayout]) -> TransportLayout {
     TransportLayout {
         structural: world.intern_shape(ShapeDescr::Tuple(fields.to_vec().into_boxed_slice())),
@@ -1182,8 +1188,9 @@ fn combine_callable_requirements(
         .map(|(left, right)| combine_capture_requirements(world, left, right))
         .collect::<Option<Box<_>>>()?;
     Some(CallableDescr {
+        function: left.function,
+        arity: left.arity,
         capture_layouts,
-        ..left.clone()
     })
 }
 
@@ -1212,20 +1219,21 @@ fn combine_capture_requirements(
     let structural = if left.structural == right.structural {
         left.structural
     } else {
-        match (
-            world.shape(left.structural).clone(),
-            world.shape(right.structural).clone(),
-        ) {
-            (ShapeDescr::Tuple(left), ShapeDescr::Tuple(right)) if left.len() == right.len() => {
-                let fields = left
-                    .iter()
-                    .copied()
-                    .zip(right.iter().copied())
-                    .map(|(left, right)| combine_capture_requirements(world, left, right))
+        match (world.shape(left.structural), world.shape(right.structural)) {
+            (ShapeDescr::Tuple(left_fields), ShapeDescr::Tuple(right_fields))
+                if left_fields.len() == right_fields.len() =>
+            {
+                let arity = left_fields.len();
+                let fields = (0..arity)
+                    .map(|index| {
+                        let left = tuple_field(world, left.structural, index);
+                        let right = tuple_field(world, right.structural, index);
+                        combine_capture_requirements(world, left, right)
+                    })
                     .collect::<Option<Box<_>>>()?;
                 world.intern_shape(ShapeDescr::Tuple(fields))
             }
-            (ShapeDescr::Callable(left), ShapeDescr::Callable(right)) => {
+            (&ShapeDescr::Callable(left), &ShapeDescr::Callable(right)) => {
                 let left = world.callable(left).clone();
                 let right = world.callable(right).clone();
                 let combined = combine_callable_requirements(world, &left, &right)?;
@@ -2101,18 +2109,22 @@ fn tuple_refined_demand(world: &mut World, ty: Ty, demand: &RuntimeDemand) -> Ru
 /// shape answers for its whole type by construction -- its identity is the
 /// clause set, not a lane -- so it always carries.
 fn shape_carries(world: &mut World, shape: ShapeId, ty: Ty) -> bool {
-    match world.shape(shape).clone() {
+    match world.shape(shape) {
         ShapeDescr::Nothing => world.types().is_empty(&ty),
-        ShapeDescr::Lane(lane) => {
+        &ShapeDescr::Lane(lane) => {
             let lane_ty = world.lane(lane).ty;
             world.types().is_subtype(&ty, &lane_ty)
         }
         ShapeDescr::Tuple(fields) => {
-            has_exact_tuple_arity(world, ty, fields.len())
-                && tuple_field_tys(world, ty, fields.len())
+            let arity = fields.len();
+            has_exact_tuple_arity(world, ty, arity)
+                && tuple_field_tys(world, ty, arity)
                     .into_iter()
-                    .zip(fields.iter().copied())
-                    .all(|(field_ty, field)| layout_carries(world, field, field_ty))
+                    .enumerate()
+                    .all(|(index, field_ty)| {
+                        let field = tuple_field(world, shape, index);
+                        layout_carries(world, field, field_ty)
+                    })
         }
         ShapeDescr::Callable(_) => true,
     }
@@ -2446,20 +2458,22 @@ fn joined_tuple_structural<T: crate::telemetry::Telemetry>(
         return Ok(None);
     };
     let arity = field_tys.len();
-    let alternatives = layouts
+    let all_tuples = layouts
         .iter()
-        .map(|layout| match world.shape(layout.structural) {
-            ShapeDescr::Tuple(fields) if fields.len() == arity => Some(fields.to_vec()),
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>();
-    let (Some(alternatives), Some(field_demands)) = (alternatives, demand.shape.field_prefix(arity)) else {
+        .all(|layout| world.tuple_arity(layout.structural) == Some(arity));
+    let (true, Some(field_demands)) = (all_tuples, demand.shape.field_prefix(arity)) else {
         return Ok(None);
     };
     let mut fields = Vec::with_capacity(arity);
+    let mut column = Vec::with_capacity(layouts.len());
     for (index, (field_ty, field_demand)) in field_tys.into_iter().zip(field_demands).enumerate() {
-        let layouts = alternatives.iter().map(|fields| fields[index]).collect::<Vec<_>>();
-        match joined_transport_layout(world, reborrow_reads(&mut reads), field_ty, &field_demand, &layouts) {
+        column.clear();
+        column.extend(
+            layouts
+                .iter()
+                .map(|layout| tuple_field(world, layout.structural, index)),
+        );
+        match joined_transport_layout(world, reborrow_reads(&mut reads), field_ty, &field_demand, &column) {
             RecipeLayout::Exact(layout) => fields.push(layout),
             interrupted => return Err(interrupted),
         }
