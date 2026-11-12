@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:18:05Z",
+  "description": "Found by fz-8c on the stack tip; verified 2026-11-12 on c768670cd (release, interp):\n\n  Enum.to_list(Stream.map([fn x -\u003e x end], fn f -\u003e f.(1) end))\n\nelixir prints [1]. fz2 stops at compile: error[artifact/incomplete-semantic-plan]: boxed closure call in FunctionId(69) expects delivered lane(s) [] but construction wrapper ... publishes [ValueRef]: the two halves of one calling convention were compiled against different contracts. Repro: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/handoff/closure_elem.fz (.exs copy for elixir).\n\nSame diagnostic family as fz-sc8.119 item 1, but no Map.new / any-returning spec is involved, so the fz-sc8.123 spec change is not expected to cure it; check it there first and fold if it does. Minimize, find the mechanism (the empty expected lane list is the lead), fixture with an oracle on all three paths.",
+  "id": "fz-sc8.131",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A Stream.map mapper that calls a closure element compiles",
+  "type": "bug",
+  "updated_at": "2026-11-12T20:18:05Z"
+}
