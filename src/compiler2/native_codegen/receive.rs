@@ -45,7 +45,8 @@ use fz_runtime::ir_runtime::{
     fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_bs_field_spec, fz_bs_read_field_ref,
     fz_bs_reader_init_ref, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_matcher_eq_bytes,
     fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref, fz_struct_get_named_field_ref,
-    fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_value_eq_ref,
+    fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_value_cmp_ref,
+    fz_value_eq_ref,
 };
 use std::collections::HashMap;
 
@@ -1214,10 +1215,10 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
                     let neq = body.b.ins().bxor_imm(eq, 1);
                     emit_bool_value(body.b, neq)
                 }
-                PatternGuardBinOp::Lt => emit_int_cmp_value(body, IntCC::SignedLessThan, l, r)?,
-                PatternGuardBinOp::LtEq => emit_int_cmp_value(body, IntCC::SignedLessThanOrEqual, l, r)?,
-                PatternGuardBinOp::Gt => emit_int_cmp_value(body, IntCC::SignedGreaterThan, l, r)?,
-                PatternGuardBinOp::GtEq => emit_int_cmp_value(body, IntCC::SignedGreaterThanOrEqual, l, r)?,
+                PatternGuardBinOp::Lt => emit_ordering_cmp_value(body, ctx, IntCC::SignedLessThan, l, r)?,
+                PatternGuardBinOp::LtEq => emit_ordering_cmp_value(body, ctx, IntCC::SignedLessThanOrEqual, l, r)?,
+                PatternGuardBinOp::Gt => emit_ordering_cmp_value(body, ctx, IntCC::SignedGreaterThan, l, r)?,
+                PatternGuardBinOp::GtEq => emit_ordering_cmp_value(body, ctx, IntCC::SignedGreaterThanOrEqual, l, r)?,
                 PatternGuardBinOp::And => {
                     unreachable!("short-circuit guard op handled before eager operands")
                 }
@@ -1473,15 +1474,25 @@ fn bool_const_value(b: &mut FunctionBuilder<'_>, value: bool) -> ReceiveValue {
     ReceiveValue::Atom(b.ins().iconst(types::I64, raw as i64))
 }
 
-fn emit_int_cmp_value<M: cranelift_module::Module>(
+/// `<`, `<=`, `>` and `>=`. Two integers compare as machine words; anything
+/// else asks `fz_value_cmp_ref`, the one dynamic ordering a body uses too, so a
+/// float, a mixed pair or a value of unknown type gets the answer a body gives.
+fn emit_ordering_cmp_value<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
+    ctx: &DispatchCtx<'_>,
     cc: IntCC,
     lhs: ReceiveValue,
     rhs: ReceiveValue,
 ) -> Result<ReceiveValue, CodegenError> {
-    let lhs = receive_value_int(body, lhs)?;
-    let rhs = receive_value_int(body, rhs)?;
-    let cmp = body.b.ins().icmp(cc, lhs, rhs);
+    let cmp = match (&lhs, &rhs) {
+        (ReceiveValue::Int(l), ReceiveValue::Int(r)) => body.b.ins().icmp(cc, *l, *r),
+        _ => {
+            let lhs = emit_receive_value_ref(body, ctx, lhs)?;
+            let rhs = emit_receive_value_ref(body, ctx, rhs)?;
+            let ordering = runtime_call1!(body, fz_value_cmp_ref, [ctx.process, lhs, rhs]);
+            body.b.ins().icmp_imm(cc, ordering, 0)
+        }
+    };
     Ok(emit_bool_value(body.b, cmp))
 }
 
