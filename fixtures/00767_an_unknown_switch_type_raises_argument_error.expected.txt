@@ -1,0 +1,1 @@
+** (ArgumentError) invalid switch types/modifiers: :bogus

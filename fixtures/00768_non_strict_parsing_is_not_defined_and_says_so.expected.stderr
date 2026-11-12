@@ -1,0 +1,1 @@
+** (ArgumentError) OptionParser.parse/2 does not define the :switches option

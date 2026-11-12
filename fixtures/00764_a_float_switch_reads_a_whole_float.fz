@@ -1,0 +1,17 @@
+#---
+# purpose: "OptionParser.parse/2 gives a :float switch the float its whole value spells, including exponents and integers, and lists a partial or malformed value as invalid"
+# oracle: 00764_a_float_switch_reads_a_whole_float.oracle.exs
+# args: --ratio 2.5
+#---
+def main() do
+  dbg(OptionParser.parse(System.argv(), strict: [ratio: :float]))
+  dbg(OptionParser.parse(["--ratio", "1e3"], strict: [ratio: :float]))
+  dbg(OptionParser.parse(["--ratio", "3"], strict: [ratio: :float]))
+  dbg(OptionParser.parse(["--ratio=-0.5"], strict: [ratio: :float]))
+  dbg(OptionParser.parse(["--ratio", ".5"], strict: [ratio: :float]))
+  dbg(OptionParser.parse(["--ratio", "1."], strict: [ratio: :float]))
+  dbg(OptionParser.parse(["--ratio", "2.5kg"], strict: [ratio: :float]))
+  dbg(OptionParser.parse(["--ratio", "abc"], strict: [ratio: :float]))
+  dbg(OptionParser.parse(["--ratio", "1e400"], strict: [ratio: :float]))
+  dbg(OptionParser.parse(["--ratio", "0.1", "--ratio", "0.2"], strict: [ratio: :float]))
+end

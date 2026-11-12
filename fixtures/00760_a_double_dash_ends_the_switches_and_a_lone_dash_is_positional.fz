@@ -1,0 +1,20 @@
+#---
+# purpose: "OptionParser.parse/2 treats everything after -- as positional, drops the --, and treats a lone -, a '- x' token and a token starting with a digit after one - as positional"
+# oracle: 00760_a_double_dash_ends_the_switches_and_a_lone_dash_is_positional.oracle.exs
+# args: --top 5 -- --top 7
+#---
+def main() do
+  dbg(OptionParser.parse(System.argv(), strict: [top: :integer]))
+  dbg(OptionParser.parse(["-", "f"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["- x", "f"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["a", "--", "b"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--", "--"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["-5", "f"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["-5", "--top", "3"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--top", "-"], strict: [top: :string]))
+  dbg(OptionParser.parse(["--top", "--", "7"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--top", "-x"], strict: [top: :string]))
+  dbg(OptionParser.parse(["--top", "-7"], strict: [top: :string]))
+  dbg(OptionParser.parse(["--top", "--7"], strict: [top: :string]))
+end

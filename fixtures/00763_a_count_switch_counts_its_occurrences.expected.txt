@@ -1,0 +1,7 @@
+{[verbose: 3], ["f"], []}
+{[verbose: 1], [], []}
+{[verbose: 1], ["5"], []}
+{[], [], [{"--verbose", "3"}]}
+{[verbose: 3], [], []}
+{[verbose: 2, top: 1], [], []}
+{[verbose: 1, top: 2], [], []}

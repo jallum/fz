@@ -17,4 +17,70 @@ defmodule Integer do
   def to_string(i), do: fz_integer_to_binary(i)
 
   extern "fz" defp fz_integer_to_binary(integer) :: binary
+
+  @doc """
+  Parses the integer at the start of a binary and returns it with the text
+  that follows, or `:error` when the binary does not start with one.
+
+  The integer is an optional `+` or `-` followed by one or more decimal
+  digits. Nothing else is skipped or understood: leading whitespace, `_`
+  separators and `0x` prefixes are not part of the number, so `"1_000"` gives
+  `{1, "_000"}` and `" 5"` gives `:error`.
+
+  There is no base argument, and one thing differs from Elixir: fz integers
+  are 64 bits wide and there are no bignums. A number outside that range
+  raises `ArgumentError` rather than wrapping.
+
+  ## Examples
+
+      Integer.parse("42abc")
+      #=> {42, "abc"}
+
+      Integer.parse("-7")
+      #=> {-7, ""}
+
+      Integer.parse("abc")
+      #=> :error
+
+  """
+  @spec parse(binary) :: {integer, binary} | :error
+  def parse(<<45, rest :: binary>>), do: parse_digits(rest, true)
+  def parse(<<43, rest :: binary>>), do: parse_digits(rest, false)
+  def parse(s), do: parse_digits(s, false)
+
+  @spec parse_digits(binary, boolean) :: {integer, binary} | :error
+  defp parse_digits(s, negative), do: digit_run(s, digits_below_zero(s, 0), negative)
+
+  # A run that consumed nothing leaves the binary whole, so an unchanged size
+  # means no digit led.
+  @spec digit_run(binary, {integer, binary}, boolean) :: {integer, binary} | :error
+  defp digit_run(s, {_below_zero, rest}, _negative) when byte_size(rest) == byte_size(s), do: :error
+  defp digit_run(_s, run, negative), do: sign_result(run, negative)
+
+  # The magnitude is accumulated as a negative number, since the negatives are
+  # the larger half of the 64-bit range: `-9223372036854775808` fits where
+  # its positive twin does not.
+  @spec digits_below_zero(binary, integer) :: {integer, binary}
+  defp digits_below_zero(<<c, rest :: binary>>, acc) when c >= 48 and c <= 57 do
+    digit = c - 48
+    if acc < div(min_integer() + digit, 10) do
+      too_wide()
+    else
+      digits_below_zero(rest, acc * 10 - digit)
+    end
+  end
+  defp digits_below_zero(rest, acc), do: {acc, rest}
+
+  @spec sign_result({integer, binary}, boolean) :: {integer, binary}
+  defp sign_result({below_zero, rest}, true), do: {below_zero, rest}
+  defp sign_result({below_zero, rest}, false) do
+    if below_zero == min_integer(), do: too_wide(), else: {0 - below_zero, rest}
+  end
+
+  @spec min_integer() :: integer
+  defp min_integer(), do: -9223372036854775807 - 1
+
+  @spec too_wide() :: never
+  defp too_wide(),
+    do: raise(ArgumentError, "Integer.parse/1 cannot represent an integer wider than 64 bits: fz has no bignums")
 end

@@ -1,0 +1,13 @@
+#---
+# purpose: "The argument handling of tools/distill-telemetry.exs: one positional path and an optional --top integer defaulting to 20"
+# oracle: 00766_the_distillers_own_argument_parsing_reads_a_path_and_an_optional_top.oracle.exs
+# args: --top 3 trace.jsonl
+#---
+def main() do
+  args = System.argv()
+  {opts, [path], _} = OptionParser.parse(args, strict: [top: :integer])
+  top = Keyword.get(opts, :top, 20)
+  dbg({path, top})
+  {opts, [path], _} = OptionParser.parse([path], strict: [top: :integer])
+  dbg({path, Keyword.get(opts, :top, 20)})
+end

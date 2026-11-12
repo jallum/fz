@@ -352,37 +352,53 @@ defmodule Keyword do
   @doc """
   Applies `fun` to the value for `key`, or stores `default` when the key is absent.
 
-  When `key` is present this behaves like `update!/3`: every duplicate
-  entry for the key is removed and the updated value is stored once. When
-  it is absent, `default` is stored via `put/3`, unmodified by `fun`.
+  When `key` is present its first entry is updated where it stands and any
+  duplicate entries for the key are removed, as in `update!/3`. When it is
+  absent, `{key, default}` is added at the end of the list, unmodified by `fun`.
 
   ## Examples
 
-      Keyword.update([a: 1], :a, 0, fn x -> x + 1 end)
-      #=> [a: 2]
+      Keyword.update([a: 1, b: 2], :a, 0, fn x -> x + 1 end)
+      #=> [a: 2, b: 2]
 
       Keyword.update([a: 1], :z, 0, fn x -> x + 1 end)
-      #=> [z: 0, a: 1]
+      #=> [a: 1, z: 0]
 
   """
   @spec update(keyword(), atom, any, (any) -> any) :: keyword()
-  def update(keywords, key, default, fun), do: update_result(fetch(keywords, key), keywords, key, default, fun)
-
-  @spec update_result({:ok, any} | :error, keyword(), atom, any, (any) -> any) :: keyword()
-  defp update_result({:ok, value}, keywords, key, _default, fun), do: put(keywords, key, fun.(value))
-  defp update_result(:error, keywords, key, default, _fun), do: put(keywords, key, default)
+  def update([], key, default, _fun), do: [{key, default}]
+  def update([{entry_key, value} | tail], key, default, fun) do
+    if entry_key === key do
+      [{key, fun.(value)} | delete(tail, key)]
+    else
+      [{entry_key, value} | update(tail, key, default, fun)]
+    end
+  end
 
   @doc """
   Applies `fun` to the value for `key`, or halts when the key is absent.
 
+  The first entry for `key` is updated where it stands and any duplicate
+  entries for the key are removed.
+
   ## Examples
 
-      Keyword.update!([a: 1], :a, fn x -> x + 1 end)
-      #=> [a: 2]
+      Keyword.update!([a: 1, b: 2], :a, fn x -> x + 1 end)
+      #=> [a: 2, b: 2]
 
   """
   @spec update!(keyword(), atom, (any) -> any) :: keyword()
-  def update!(keywords, key, fun), do: put(keywords, key, fun.(fetch!(keywords, key)))
+  def update!(keywords, key, fun), do: update_existing(keywords, key, fun, keywords)
+
+  @spec update_existing(keyword(), atom, (any) -> any, keyword()) :: keyword()
+  defp update_existing([], key, _fun, original), do: Map.key_error(original, key)
+  defp update_existing([{entry_key, value} | tail], key, fun, original) do
+    if entry_key === key do
+      [{key, fun.(value)} | delete(tail, key)]
+    else
+      [{entry_key, value} | update_existing(tail, key, fun, original)]
+    end
+  end
 
   @doc """
   Removes every entry for `key`, returning `{value, rest}` for the first match.

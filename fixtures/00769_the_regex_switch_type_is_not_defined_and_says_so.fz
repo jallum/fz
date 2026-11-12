@@ -1,0 +1,7 @@
+#---
+# purpose: "OptionParser.parse/2 refuses the :regex switch type, which this runtime does not define, with ArgumentError. Elixir accepts it, so this fixture has no oracle"
+# expect: abort
+#---
+def main() do
+  OptionParser.parse(["--re", "a"], strict: [re: :regex])
+end

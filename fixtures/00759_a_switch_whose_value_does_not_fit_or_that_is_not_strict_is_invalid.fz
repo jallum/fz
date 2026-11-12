@@ -1,0 +1,21 @@
+#---
+# purpose: "OptionParser.parse/2 lists a strict switch whose value does not fit its type, or that has none, as {text, value}, and any name outside strict: as {text, nil} that never takes the next token"
+# oracle: 00759_a_switch_whose_value_does_not_fit_or_that_is_not_strict_is_invalid.oracle.exs
+# args: --top x f
+#---
+def main() do
+  dbg(OptionParser.parse(System.argv(), strict: [top: :integer]))
+  dbg(OptionParser.parse(["--top"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--top="], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--top=x"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--top", "5x"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--top", "1.5"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--top", ""], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--top", "x", "--top", "5"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--other", "f"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--other", "x", "f"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--other=3", "f"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--top", "x", "--other"], strict: [top: :integer]))
+  dbg(OptionParser.parse(["--max_top", "3"], strict: [max_top: :integer]))
+  dbg(OptionParser.parse(["--top", "99999999999"], strict: [top: :integer]))
+end
