@@ -1537,3 +1537,40 @@ fn a_continuation_whose_capture_is_unbound_is_refused() {
 
     assert_eq!(error, "backend continuation capture value 2 is unavailable");
 }
+
+fn interp_counts_for_list_of(n: u32) -> InterpRan {
+    use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+
+    let tel = ConfiguredTelemetry::new();
+    let reported = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = Rc::clone(&reported);
+    tel.attach_raw_event1::<InterpRan, _>(&INTERP_RAN, move |_, _, _, ran| sink.borrow_mut().push(*ran));
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("interp_counts.fz".into()),
+        text: format!("def main() do\n  list = Enum.to_list(1..{n})\n  Enum.count(list)\nend\n"),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(i64::from(n)));
+    let reported = reported.borrow();
+    assert_eq!(reported.len(), 1, "a run reports its counts once, when it ends");
+    reported[0]
+}
+
+/// Building and counting a list costs the same fixed work per element, so the
+/// difference between two list sizes is exact however much fixed work a run
+/// carries.
+#[test]
+fn building_and_counting_a_list_runs_eighteen_entries_per_element() {
+    let small = interp_counts_for_list_of(100);
+    let large = interp_counts_for_list_of(200);
+
+    assert_eq!(large.entries - small.entries, 18 * 100, "control entries per element");
+    assert_eq!(large.frames - small.frames, 11 * 100, "frames started per element");
+    assert_eq!(large.calls - small.calls, 11 * 100, "executables called per element");
+}

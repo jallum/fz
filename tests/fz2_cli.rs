@@ -1261,9 +1261,21 @@ fn execution_ready_separates_the_compile_from_the_program() {
     let source_path = unique_temp_path("fz2_execution_ready", ".fz");
     write(&source_path, "def main(), do: dbg(1 + 1)\n").expect("write execution-ready fixture");
 
-    for (command, product) in [
-        ("run", "fz.compiler2.native_backend.compile"),
-        ("interp", "fz.compiler2.backend_request.finished"),
+    for (command, product, program_events) in [
+        (
+            "run",
+            "fz.compiler2.native_backend.compile",
+            &["fz.runtime.process_exited", "fz.runtime.run_ended"][..],
+        ),
+        (
+            "interp",
+            "fz.compiler2.backend_request.finished",
+            &[
+                "fz.runtime.interp_ran",
+                "fz.runtime.process_exited",
+                "fz.runtime.run_ended",
+            ][..],
+        ),
     ] {
         let telemetry_path = unique_temp_path(&format!("fz2_execution_ready_{command}"), ".jsonl");
         let out = run_fz2(&[
@@ -1303,7 +1315,7 @@ fn execution_ready_separates_the_compile_from_the_program() {
             .collect::<BTreeSet<_>>();
         assert_eq!(
             after,
-            BTreeSet::from(["fz.runtime.process_exited", "fz.runtime.run_ended"]),
+            program_events.iter().copied().collect::<BTreeSet<_>>(),
             "fz2 {command} should do nothing but run the program after the boundary"
         );
 
