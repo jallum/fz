@@ -116,6 +116,17 @@ stable merge sort. The merge step builds the output list directly from the
 selected head and recursive tail, so return-context planning can reason about
 the list shape without a separate append cleanup phase.</p>
 
+<p><code>Collectable</code> is the mirror protocol: where <code>Enumerable</code>
+gives a value's elements out, <code>Collectable</code> takes them in. Its one
+callback, <code>into/1</code>, returns <code>{initial, collector}</code>. The
+collector is called as <code>collector.(acc, {:cont, element})</code> for each
+element and finally <code>collector.(acc, :done)</code>, which returns the
+finished collection; <code>:halt</code> returns <code>:ok</code>. Lists and maps
+implement it, and <code>Enum.into/2,3</code> drives it:</p>
+
+<pre>Enum.into([{1, :a}, {2, :b}], %{})   # %{1 =&gt; :a, 2 =&gt; :b}
+Enum.into(3..4, [1, 2])              # [1, 2, 3, 4]</pre>
+
 <h2 id="dispatch">6. Dispatch behavior</h2>
 
 <p>Protocol dispatch is planned before code runs. When the receiver type is

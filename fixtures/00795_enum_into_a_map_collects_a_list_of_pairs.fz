@@ -1,0 +1,8 @@
+#---
+# purpose: "Enum.into a map collects a list of pairs"
+# oracle: 00795_enum_into_a_map_collects_a_list_of_pairs.oracle.exs
+#---
+def main() do
+  m = Enum.into([{1, :a}, {2, :b}, {3, :c}], %{})
+  dbg(Enum.sort(Map.to_list(m)))
+end
