@@ -971,9 +971,9 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         match pattern {
             Pattern::Wildcard => {}
             Pattern::Var(name) => self.bind(name, span, subject, bindings)?,
-            Pattern::As(name, inner) => {
-                self.bind(name, span, subject, bindings)?;
-                self.append_pattern(&inner.node, inner.span, subject, questions, bindings, resolver)?;
+            Pattern::Both(left, right) => {
+                self.append_pattern(&left.node, left.span, subject, questions, bindings, resolver)?;
+                self.append_pattern(&right.node, right.span, subject, questions, bindings, resolver)?;
             }
             Pattern::Pinned(name) => {
                 let pinned = *self

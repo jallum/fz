@@ -1,0 +1,26 @@
+#---
+# purpose: "In a case clause, p1 = p2 matches both sides against the scrutinee"
+# oracle: 00790_a_pattern_equals_a_pattern_in_a_case_clause_matches_both_sides.oracle.exs
+#---
+def classify(s) do
+  case s do
+    {_id, %{name: "a"} = m} -> {:a, Map.get(m, :v)}
+    {_id, m = %{name: "b"}} -> {:b, Map.get(m, :v)}
+    {a, _} = {_, b} -> {:other, a, Map.get(b, :name)}
+  end
+end
+
+def run(l) do
+  case l do
+    [h | _] = [_, x | _] = all -> {h, x, length(all)}
+    _ -> :short
+  end
+end
+
+def main() do
+  dbg(classify({1, %{name: "a", v: 10}}))
+  dbg(classify({2, %{name: "b", v: 20}}))
+  dbg(classify({3, %{name: "c", v: 30}}))
+  dbg(run([1, 2, 3]))
+  dbg(run([1]))
+end

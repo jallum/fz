@@ -224,3 +224,45 @@ fn a_guard_extern_of_any_other_class_is_refused_where_the_node_is_made() {
         );
     }
 }
+
+fn both(left: Pattern, right: Pattern) -> Pattern {
+    Pattern::Both(Box::new(sp(left)), Box::new(sp(right)))
+}
+
+/// Intent: `{a, _} = {_, b}` binds the names of both sides, so a name on
+/// either side is visible to the clause body.
+#[test]
+fn both_sides_of_an_equals_pattern_contribute_bound_names() {
+    let pattern = both(
+        Pattern::Tuple(vec![sp(Pattern::Var(Var::user("a"))), sp(Pattern::Wildcard)]),
+        Pattern::Tuple(vec![sp(Pattern::Wildcard), sp(Pattern::Var(Var::user("b")))]),
+    );
+    let mut names = BTreeSet::new();
+    collect_bound_names_in_pattern(&pattern, &mut names);
+
+    assert_eq!(names, BTreeSet::from([Var::user("a"), Var::user("b")]));
+}
+
+/// Intent: a pin on either side of `=` is a requirement of the clause.
+#[test]
+fn a_pin_on_either_side_of_an_equals_pattern_is_collected() {
+    let pattern = both(Pattern::Pinned(Var::user("p")), Pattern::Pinned(Var::user("q")));
+    let mut pins = Vec::new();
+    collect_pinned_names_in_pattern(&sp(pattern), &mut pins);
+
+    let names: Vec<_> = pins.iter().map(|pin| pin.name.name.clone()).collect();
+    assert_eq!(names, vec!["p", "q"]);
+}
+
+/// Intent: asking the same shape question twice of one subject compiles, and
+/// the row it guards is still reached.
+#[test]
+fn the_same_question_twice_on_one_subject_compiles_to_one_reachable_row() {
+    let pair = || Pattern::Tuple(vec![sp(Pattern::Wildcard), sp(Pattern::Wildcard)]);
+    let patterns = SourcePatternRows::lexical(
+        1,
+        vec![row(vec![both(pair(), pair())], 0), row(vec![Pattern::Wildcard], 1)],
+    );
+
+    assert!(redundant_rows(&patterns).is_empty());
+}

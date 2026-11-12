@@ -1,0 +1,21 @@
+#---
+# purpose: "In a function head, p1 = p2 matches both sides against the one argument, with a variable on either side or a pattern on both"
+# oracle: 00789_a_pattern_equals_a_pattern_in_a_function_head_matches_both_sides.oracle.exs
+#---
+def kind(%{} = m, _tag) when map_size(m) == 0, do: :empty
+def kind(%{name: "a"} = m, tag), do: {:a, Map.get(m, :v), tag}
+def kind(m = %{name: "b"}, tag), do: {:b, Map.get(m, :v), tag}
+def kind(_m, _tag), do: :other
+
+def pair({a, _} = {_, b}), do: {a, b}
+
+def heads([h | _] = [_, x | _] = l), do: {h, x, length(l)}
+
+def main() do
+  dbg(kind(%{}, 0))
+  dbg(kind(%{name: "a", v: 1}, 1))
+  dbg(kind(%{name: "b", v: 2}, 2))
+  dbg(kind(%{name: "c", v: 3}, 3))
+  dbg(pair({1, 2}))
+  dbg(heads([5, 6, 7]))
+end

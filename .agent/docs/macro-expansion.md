@@ -329,7 +329,7 @@ macro's own `quote` wrote, distinguished by which of that macro's expansions
 produced it. `VarContext::Generated(ordinal)` is a variable the compiler
 synthesized itself — the capture (`&1`) and multi-clause lambda-sugar
 parameters — with no source spelling for a user's own variable to collide
-with. `Expr::Var`, `Pattern::Var`, `Pattern::Pinned`, an as-pattern's name, and
+with. `Expr::Var`, `Pattern::Var`, `Pattern::Pinned`, and
 a bitstring's `size(n)` all carry a `Var`, and every map that resolves a
 variable by name — the lowering environment, closure free/bound-name
 tracking, and dispatch_matrix's pattern-binding tables — is keyed by `Var`,

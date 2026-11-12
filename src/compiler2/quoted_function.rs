@@ -551,11 +551,9 @@ pub(super) fn decode_pattern(
         refuse_concat_call(&node, span, sources)?;
         return match atom_name(&node.head)?.as_str() {
             "=" => {
-                let Some(name) = pattern_var_name(&args[0], Some(span), sources)? else {
-                    return Err(QuotedSourceError::new("pattern as-bind lhs must be a variable"));
-                };
-                let inner = decode_pattern(&args[1], Some(span), sources)?;
-                Ok(Spanned::new(Pattern::As(name, Box::new(inner)), span))
+                let left = decode_pattern(&args[0], Some(span), sources)?;
+                let right = decode_pattern(&args[1], Some(span), sources)?;
+                Ok(Spanned::new(Pattern::Both(Box::new(left), Box::new(right)), span))
             }
             "^" => {
                 let Some(name) = pattern_var_name(&args[0], Some(span), sources)? else {

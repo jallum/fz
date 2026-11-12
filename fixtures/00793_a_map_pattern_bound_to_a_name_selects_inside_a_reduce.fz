@@ -1,0 +1,14 @@
+#---
+# purpose: "A map pattern bound to a name in a reduce clause filters the entries and keeps the whole map"
+# oracle: 00793_a_map_pattern_bound_to_a_name_selects_inside_a_reduce.oracle.exs
+#---
+def main() do
+  spans = %{1 => %{name: "a", v: 1}, 2 => %{name: "b", v: 2}, 3 => %{name: "a", v: 3}}
+  r = Enum.reduce(spans, [], fn x, acc ->
+    case x do
+      {_id, %{name: "a"} = s} -> [Map.get(s, :v) + 1 | acc]
+      _ -> acc
+    end
+  end)
+  dbg(List.reverse(r, []))
+end

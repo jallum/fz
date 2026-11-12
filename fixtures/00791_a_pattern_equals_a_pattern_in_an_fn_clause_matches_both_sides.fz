@@ -1,0 +1,12 @@
+#---
+# purpose: "In an fn clause, p1 = p2 matches both sides against the argument"
+# oracle: 00791_a_pattern_equals_a_pattern_in_an_fn_clause_matches_both_sides.oracle.exs
+#---
+def main() do
+  f = fn %{} = m -> map_size(m) end
+  g = fn {a, _} = {_, b} -> a + b end
+  h = fn [h | _] = [_, x | _] = l -> {h, x, length(l)} end
+  dbg(f.(%{a: 1, b: 2}))
+  dbg(g.({3, 4}))
+  dbg(h.([7, 8, 9]))
+end

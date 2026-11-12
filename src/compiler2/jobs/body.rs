@@ -662,8 +662,9 @@ pub(super) fn collect_local_pattern_requirements(
                 collect_local_pattern_requirements(world, tel, namespace, owner_module, owner, value, reads, waits)?;
             }
         }
-        Pattern::As(_, inner) => {
-            collect_local_pattern_requirements(world, tel, namespace, owner_module, owner, inner, reads, waits)?;
+        Pattern::Both(left, right) => {
+            collect_local_pattern_requirements(world, tel, namespace, owner_module, owner, left, reads, waits)?;
+            collect_local_pattern_requirements(world, tel, namespace, owner_module, owner, right, reads, waits)?;
         }
         Pattern::Bitstring(fields) => {
             for field in fields {
@@ -3094,9 +3095,9 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 }
                 Ok(())
             }
-            Pattern::As(name, inner) => {
-                env.insert(name.clone(), source);
-                self.bind_pattern(&inner.node, inner.span, source, env, steps)
+            Pattern::Both(left, right) => {
+                self.bind_pattern(&left.node, left.span, source, env, steps)?;
+                self.bind_pattern(&right.node, right.span, source, env, steps)
             }
             Pattern::Map(entries) => self.lower_map_pattern(entries, source, env, steps),
             Pattern::Struct { module, fields } => self.lower_struct_pattern(module, fields, span, source, env, steps),
@@ -4102,9 +4103,9 @@ fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<Var>) {
                 bind_pattern_names(&tail.node, bound);
             }
         }
-        Pattern::As(name, inner) => {
-            bound.insert(name.clone());
-            bind_pattern_names(&inner.node, bound);
+        Pattern::Both(left, right) => {
+            bind_pattern_names(&left.node, bound);
+            bind_pattern_names(&right.node, bound);
         }
         Pattern::Map(entries) => {
             for (key, value) in entries {
@@ -4304,7 +4305,10 @@ fn collect_pattern_free_names(pattern: &Pattern, bound: &mut HashSet<Var>, free:
                 collect_pattern_free_names(&tail.node, bound, free);
             }
         }
-        Pattern::As(_, inner) => collect_pattern_free_names(&inner.node, bound, free),
+        Pattern::Both(left, right) => {
+            collect_pattern_free_names(&left.node, bound, free);
+            collect_pattern_free_names(&right.node, bound, free);
+        }
         Pattern::Map(entries) => {
             for (key, value) in entries {
                 collect_pattern_free_names(&key.node, bound, free);
@@ -4544,7 +4548,7 @@ fn literal_from_pattern(pattern: &Pattern) -> Option<GroundValue> {
         | Pattern::Map(_)
         | Pattern::Struct { .. }
         | Pattern::Pinned(_)
-        | Pattern::As(_, _)
+        | Pattern::Both(_, _)
         | Pattern::Bitstring(_) => return None,
     })
 }
@@ -4564,7 +4568,7 @@ fn pattern_name(pattern: &Pattern) -> &'static str {
         Pattern::Map(_) => "Map",
         Pattern::Struct { .. } => "Struct",
         Pattern::Pinned(_) => "Pinned",
-        Pattern::As(_, _) => "As",
+        Pattern::Both(_, _) => "Both",
         Pattern::Bitstring(_) => "Bitstring",
     }
 }

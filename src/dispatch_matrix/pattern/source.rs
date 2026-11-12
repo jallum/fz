@@ -171,11 +171,12 @@ fn record_pinned_name(name: &Var, span: Span, kind: PinnedKind, out: &mut Vec<Pa
 
 pub(crate) fn collect_bound_names_in_pattern(pattern: &Pattern, out: &mut BTreeSet<Var>) {
     match pattern {
-        Pattern::Var(name) | Pattern::As(name, _) => {
+        Pattern::Var(name) => {
             out.insert(name.clone());
-            if let Pattern::As(_, inner) = pattern {
-                collect_bound_names_in_pattern(&inner.node, out);
-            }
+        }
+        Pattern::Both(left, right) => {
+            collect_bound_names_in_pattern(&left.node, out);
+            collect_bound_names_in_pattern(&right.node, out);
         }
         Pattern::Tuple(elems) | Pattern::List(elems, _) => {
             for elem in elems {
@@ -260,7 +261,10 @@ fn collect_pinned_names_in_pattern(pattern: &Spanned<Pattern>, out: &mut Vec<Pat
                 collect_pinned_names_in_pattern(val, out);
             }
         }
-        Pattern::As(_, inner) => collect_pinned_names_in_pattern(inner, out),
+        Pattern::Both(left, right) => {
+            collect_pinned_names_in_pattern(left, out);
+            collect_pinned_names_in_pattern(right, out);
+        }
         Pattern::Bitstring(fields) => {
             for field in fields {
                 collect_pinned_names_in_pattern(&field.value, out);
@@ -280,9 +284,9 @@ fn collect_pinned_names_in_pattern(pattern: &Spanned<Pattern>, out: &mut Vec<Pat
 pub(crate) fn direct_bitfield_bindings(pattern: &Pattern) -> Vec<Var> {
     match pattern {
         Pattern::Var(name) => vec![name.clone()],
-        Pattern::As(name, inner) => {
-            let mut out = vec![name.clone()];
-            out.extend(direct_bitfield_bindings(&inner.node));
+        Pattern::Both(left, right) => {
+            let mut out = direct_bitfield_bindings(&left.node);
+            out.extend(direct_bitfield_bindings(&right.node));
             out
         }
         _ => Vec::new(),
