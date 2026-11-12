@@ -28,3 +28,11 @@ subsystem model.
   went (by kind, by subject, by re-run and by the fact that woke each
   re-run), corroborate the magnitude with a sample of the plain binary, then
   name the mechanism and take it to Paper First.
+
+- [Ownership Shape](strategies/ownership-shape.md)
+  **Use when** a copy exists only so the code compiles: a `.clone()`, a
+  `.to_vec()`, a `collect`, a placeholder value or a hand-placed `drop` whose
+  one job is to get past the borrow checker. Change the signature so the
+  compiler lists the dependents, sort them into pure appeasement and real
+  read/write interleaving, and resolve each knot by reordering, splitting the
+  borrow or, last, sharing by handle.
