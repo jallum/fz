@@ -630,10 +630,23 @@ without running (`Scheduler::wait_without_running`) and is woken by it like any
 other waiter. After an edit this lets callees answer before their callers walk.
 
 This is the shape of `ExecutionContext::drive_until`, simplified; the real loop
-also reconciles product-pull requests each time the agenda empties (see
-*Product pulls for artifacts*) and can exit early on a caller-supplied
-deadline (`DriveOutcome::TimedOut`) or an unproducible product
-(`DriveOutcome::DependencyFailed`).
+can exit early on a caller-supplied deadline (`DriveOutcome::TimedOut`) or an
+unproducible product (`DriveOutcome::DependencyFailed`).
+
+When `pop_runnable` returns nothing the loop is at a drain, and
+`ExecutionContext::drain(also_settled)` is the one answer to "what work is
+left?". It first serves the product requests completions queued
+(`drive_product_requests`; see *Product pulls for artifacts*) -- a request
+queued behind a job that parked on its gates is only observable here, once the
+agenda is empty. Only when no request was served does it arbitrate: the blocked
+waiters' own settled questions plus `also_settled`, flushed as one set of
+readiness steps whose movements are published to the product sessions. It
+returns `Drained::Served`, `Drained::Moved` or `Drained::Silent`; `Served` and
+`Moved` send the loop back around, `Silent` ends it. `drive_until` calls
+`drain(&[])`; `drain_pending_for` calls `serve_requests`, the request half
+alone, and leaves quiescent questions indexed. The product fact-wait pump pops
+with `pop_runnable`, calls `drain` with its prerequisite set, and only on
+`Silent` demands the waited fact's producer and pops once more.
 
 A need starts its producer the moment it is recorded, not when the agenda
 happens to run dry. `World::demand_recorded_needs` is the one call site,
@@ -646,8 +659,8 @@ subscriptions carry every later revision from there). `pop_runnable` demands
 again for a job it pops before that job's own gates have landed
 (`park_on_gates`), and the product pull's fact-wait loop demands its own
 waits the same way. There is no drain-time sweep left that walks standing
-demand on a timer; when the agenda drains, `settle_quiescent_waits` only
-arbitrates facts that are already quiescent over quiesced ground — it starts
+demand on a timer; when the agenda drains, `drain` serves queued requests and
+`settle_quiescent_waits` only arbitrates facts that are already quiescent over quiesced ground — it starts
 nothing. A chain whose producer failed silently (a failed run concludes
 nothing and leaves no record, so nothing else will ever ask for it again) is
 the one case demand-at-record cannot reach on its own; `demand_producer_if_needed`

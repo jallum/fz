@@ -452,8 +452,10 @@ None of these three emit a standalone raw event the way the old drain pass's
 `Scheduler::enqueue`, visible as any other agenda insertion through the
 charging job's own `work_graph.applied` completion and through the
 `pull.session.finished` fields below. After the agenda empties,
-`settle_quiescent_waits` only arbitrates facts that are already quiescent
-over quiesced ground; it starts nothing, so a round that settles nothing new
+`ExecutionContext::drain` serves the product requests completions queued
+(each one is an ordinary `pull.product.requested`), and only when there is
+none does `settle_quiescent_waits` arbitrate facts that are already quiescent
+over quiesced ground; neither starts a need, so a round that settles nothing new
 is a genuine stall, and the drive then reports `DriveOutcome::Resolved` when
 no waiters remain or `DriveOutcome::Unresolved` otherwise. Separately,
 `[fz, compiler2, drive, timed_out]` fires
