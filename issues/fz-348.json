@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T20:15:48Z",
+  "description": "Proposal page (approved 2026-11-12): https://claude.ai/artifact/4zAuBQZFpQo6fee6ekkNt4 (local /Users/j5n/Workspace/gh-302.html, version 2). Closes GitHub #302.\n\nTypes::closure_lit mints free arrow variables for a closure literal, so has_vars(closure) is always true. Three readers take that as 'this type still needs evidence' and go wrong: ground_dispatch_surfaces drops closure surfaces (boxed-lane mismatch), instantiate_open_inputs collapses list(closure) against list(a) to [] (elements disappear), and the kept-leaf test in convergence_class_at loses a closure-bearing union element (missing semantic result type).\n\nRemedy: has_vars keeps meaning 'mentions a variable'. A new has_open_vars skips the argument and return slots of a closure-literal arrow and always walks captures. Three sites read it. key_has_vars is deleted for key_has_open_vars. closure_lit is unchanged. Measured alternatives and why they lose are on the page (binder-aware has_vars moves 26 pins; the inverse default moves 14).\n\nSpike: /Users/j5n/Workspace/gh-302-spikes/remedy-R3.patch (18 files, +340 -33, applies to d2ecc9d48; source, tests, fixtures 01080-01083). Full gate on the spike: 4977 passed, 0 failed; no pin moves.\n\nFixture block: 01080-01083.\n\nOrder against stack #274: fz-sc8.117 (fold_self_nested_closures) lands before this merges; the remedy removes an accidental bound on closure nesting at kept leaves. Re-check resolve_closure_call against the fold's fun_top when rebasing. fz-sc8.130 (an all-any arrow and fun intern to two ids) matters if a predicate compares callable types by id.",
+  "id": "fz-348",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Closure binder variables are not open evidence",
+  "type": "epic",
+  "updated_at": "2026-11-12T20:15:48Z"
+}
