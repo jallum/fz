@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T22:09:24Z",
+  "description": "RefCell borrows are released by copying or by hand-placed drops.\n\nEvidence (develop @ cca160808):\n- src/compiler2/source.rs:965-987 struct_layout clones the whole schema\n  (`schemas_registry().borrow().get(schema_id).clone()`) to release the\n  registry borrow, then copies the identity and offsets into StructLayout.\n  StructLayout is already the owned extract; building it inside the borrow\n  needs no schema clone. The doc comment explaining the clone goes with it.\n- src/compiler2/drive_harness.rs:795-798 defined_names collects the ids to\n  drop the borrow, then re-borrows once per id through qualified_name.\n- src/telemetry/jsonl.rs:1108, :1113, :1122, :1133 four `drop(canon)`\n  before self.append / self.append_without_world.\n- src/compiler2/pull.rs:2286 (and pull/rooted.rs:668)\n  `let external = self.session.external.clone()` -- an Rc cloned to hold a\n  borrow of session.external while session.memo is mutated.\n- src/compiler2/jobs/body.rs:1695-1698 `let result = ..; drop(sources);\n  result`.\n\nBefore building, per site: establish what the released borrow would\notherwise collide with (does JsonlBackend::append touch `canon`? does the\npull path call a \u0026mut self method while `external` is borrowed?). A site\nwhose drop or clone is load-bearing is recorded here with the reason and\nleft; a site that is not is restructured so the borrow's scope is the\nblock's scope.\n\nDepends on .3, which settles the lend / take idiom for cells.\n\nRemoval ledger: the schema clone and its comment; each drop/clone shown\nnot to be load-bearing.\n\nSignal: gate green, no golden/census/pin movement.",
+  "id": "fz-gfx.9",
+  "labels": [],
+  "parent": "fz-gfx",
+  "priority": 3,
+  "status": "open",
+  "title": "A RefCell borrow ends where its block ends",
+  "type": "task",
+  "updated_at": "2026-11-12T22:09:24Z"
+}
