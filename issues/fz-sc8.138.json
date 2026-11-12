@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-sc8.137"
+    "fz-sc8.137",
+    "fz-sc8.19"
   ],
   "created": "2026-11-12T22:39:35Z",
   "description": "A warm re-run of DeriveExecutableFacts with identical inputs returns a different value: demand_types.surfaces (RuntimeDemandTypeInputs, semantic.rs:577) loses entries the cold run had (6 of 33 keys on u2; 327 of 30,835 re-runs on d5). Suspect (inferred): prepare_type_projection (jobs/executable_facts.rs ~526-533) returns early on a world-global memo hit and skips the nested prepare_surface / prepare_runtime_demand_for_type calls that populate builder.inputs.surfaces. RuntimeDemandTypeInputs::surface() (semantic.rs:611) panics on a missing key, so this is a latent panic. Fix shape: the memoized projection carries the surface inputs it transitively prepared and a hit replays them, or surfaces are rebuilt per run. Test: project the same executable twice in one world and assert equality. Evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/spike_settle/exp1_instrumentation.patch.",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Executable facts are a pure function of their declared reads",
   "type": "bug",
-  "updated_at": "2026-11-12T22:39:47Z"
+  "updated_at": "2026-11-12T22:39:48Z"
 }
