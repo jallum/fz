@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T22:39:36Z",
+  "description": "With the settled-flip cure the distiller reaches a panic at src/compiler2/jobs/runtime_demand.rs:1294 (index out of bounds: the len is 0 but the index is 0; out.input_demands[index].join_assign). input_demands is sized by executable.activation.input_len(types) (~1228) while the clause has params. Also panics without the cure on /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/runaway/d5.fz. Culprit activation and minimal program: being identified (/private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/census/panic_min.fz).",
+  "id": "fz-sc8.140",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "Runtime demand indexes an activation that has no inputs",
+  "type": "bug",
+  "updated_at": "2026-11-12T22:39:36Z"
+}
