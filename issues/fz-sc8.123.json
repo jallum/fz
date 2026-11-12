@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-11-11T22:02:15Z",
-  "description": "lib/map.fz specs Map.put (and the put/delete/update externs and others) as returning any, where Elixir's return map. An any return makes every later protocol dispatch on the result reach every implementation, Stream included (the fz-sc8.117 small case). Tighten each Map function's spec to Elixir's return type and report any pin that moves. Lands after fz-sc8.117, which fixes the termination fault itself.",
+  "description": "lib/map.fz specs Map.put (and the put/delete/update externs and others) as returning any, where Elixir's return map. An any return makes every later protocol dispatch on the result reach every implementation, Stream included (the fz-sc8.117 small case). Tighten each Map function's spec to Elixir's return type and report any pin that moves. Lands after fz-sc8.117, which fixes the termination fault itself.\n\nIncludes Map.new/1 and Map.new/2 (lib/map.fz:38 and :51, both specced :: any). fz-8c showed (patch /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/handoff/sc8-spec-only.patch, two lines, on the stack tip) that changing those two to :: map cures fz-sc8.119 items 1 and 2 with or without the GH #302 remedy; reduced form: Enum.to_list(File.stream!(path)) next to Enum.reduce(Map.new([\"a\"], fn l -\u003e {l, 1} end), 0, ...). Acceptance adds: fz-sc8.119's repros (q1/s3 shapes, m2.fz, d2.fz in /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/handoff/) pass on all three paths against elixir.",
   "id": "fz-sc8.123",
   "labels": [],
   "parent": "fz-sc8",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Map's functions say they return maps",
   "type": "task",
-  "updated_at": "2026-11-11T22:02:19Z"
+  "updated_at": "2026-11-12T20:17:46Z"
 }
