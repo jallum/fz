@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T23:55:11Z",
+  "description": "RuntimeDemand::join_assign (src/compiler2/semantic.rs:511) is *self = self.join(other), and join (:504) is shape: self.shape.clone().join(other.shape.clone()). ShapeDemand::join (:416) consumes both sides and normalized() (:399) rebuilds the field Vec. Every lattice join therefore clones both demand trees and drops the old one. CallableDemand already has an in-place join_assign (:344).\nShape: ShapeDemand::join_assign(\u0026mut self, \u0026Self) that pads and joins fields in place; join becomes the wrapper. One implementation of the join, not two.\nAlso: jobs/runtime_demand.rs:2889 note_live_demand clones the demand before join_map_demand (:2899) even when the entry exists; take \u0026RuntimeDemand and clone only on insert. jobs/keying.rs:1397-1399 snapshots the slot to detect change; a join_assign that reports whether it changed removes the snapshot.\nHeat: per step, tail and entry of the reverse demand walk, per derive round, per DeriveRuntimeDemand run.\n\nMethod: .agent/strategies/ownership-shape.md. Change the signature and let cargo check enumerate dependents; resolve interleavings by compute-then-commit or a split borrow; stop and report if an Rc is the only move.\nSignal: pure refactor. Full gate green; no golden, census or pin moves. Report the clone/to_vec count of each touched file before and after.\nSites were read at develop 8bf8775ae and not compiled; confirm each with cargo check before relying on it.",
+  "id": "fz-gfx.15",
+  "labels": [],
+  "parent": "fz-gfx",
+  "priority": 2,
+  "status": "open",
+  "title": "RuntimeDemand joins in place",
+  "type": "task",
+  "updated_at": "2026-11-12T23:55:11Z"
+}
