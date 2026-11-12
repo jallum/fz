@@ -1340,8 +1340,7 @@ impl ProductMemo {
         let mut external_before = HashMap::new();
         let mut mutations = Vec::new();
         for (fact_key, final_state) in facts {
-            let readers = self.fact_readers.get(fact_key).cloned().unwrap_or_default();
-            for reader in readers {
+            for reader in self.fact_readers.get(fact_key).into_iter().flatten().cloned() {
                 if self.observed_products.contains(&reader) {
                     external_before
                         .entry(reader.clone())

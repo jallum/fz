@@ -675,21 +675,24 @@ pub(super) struct CallableFlowBuilder {
     first_class_surfaces: HashMap<ValueId, BTreeSet<CallableSurface>>,
 }
 
+static NO_SURFACES: BTreeSet<CallableSurface> = BTreeSet::new();
+static NO_TARGETS: BTreeSet<CallableTarget> = BTreeSet::new();
+
 impl CallableFlowBuilder {
     fn new() -> Self {
         Self::default()
     }
 
-    fn direct_surfaces(&self, value: ValueId) -> BTreeSet<CallableSurface> {
-        self.direct_surfaces.get(&value).cloned().unwrap_or_default()
+    fn direct_surfaces(&self, value: ValueId) -> &BTreeSet<CallableSurface> {
+        self.direct_surfaces.get(&value).unwrap_or(&NO_SURFACES)
     }
 
-    fn first_class_surfaces(&self, value: ValueId) -> BTreeSet<CallableSurface> {
-        self.first_class_surfaces.get(&value).cloned().unwrap_or_default()
+    fn first_class_surfaces(&self, value: ValueId) -> &BTreeSet<CallableSurface> {
+        self.first_class_surfaces.get(&value).unwrap_or(&NO_SURFACES)
     }
 
-    fn direct_targets(&self, value: ValueId) -> BTreeSet<CallableTarget> {
-        self.direct_targets.get(&value).cloned().unwrap_or_default()
+    fn direct_targets(&self, value: ValueId) -> &BTreeSet<CallableTarget> {
+        self.direct_targets.get(&value).unwrap_or(&NO_TARGETS)
     }
 
     fn record_direct_demand(&mut self, facts: &RuntimeDemandFacts<'_>, value: ValueId, demand: &RuntimeDemand) {
@@ -1071,15 +1074,15 @@ fn plan_callable_flows(
                 facts,
                 producer.function,
                 &producer.captures,
-                &direct_targets,
+                direct_targets,
             );
             let mut ground_source = producer_surfaces;
             ground_source.extend(direct_surfaces.iter().cloned());
             let first_class_surfaces =
-                ground_dispatch_surfaces(types, &callable_flows.first_class_surfaces(value), &ground_source);
+                ground_dispatch_surfaces(types, callable_flows.first_class_surfaces(value), &ground_source);
             let mut ordered = first_class_surfaces.iter().cloned().collect::<Vec<_>>();
             ordered.sort_by(|a, b| types.cmp_activation_tys(&a.inputs, &b.inputs));
-            (direct_surfaces, direct_edges, first_class_surfaces, ordered)
+            (direct_surfaces.clone(), direct_edges, first_class_surfaces, ordered)
         };
         let first_class_edges = ordered
             .iter()
@@ -2779,7 +2782,10 @@ fn record_first_class_boundary_demand(
             // the value's concrete call shapes. The publication surfaces are
             // grounded once, downstream, in `ground_dispatch_surfaces`.
             recorded.callable.resolved.extend(demand.callable.resolved.clone());
-            recorded.callable.resolved.extend(callable_flows.direct_surfaces(value));
+            recorded
+                .callable
+                .resolved
+                .extend(callable_flows.direct_surfaces(value).iter().cloned());
         }
         callable_flows.record_first_class_demand(facts, value, &recorded);
     }

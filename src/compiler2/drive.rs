@@ -775,7 +775,7 @@ impl World {
         let mut waits: Vec<FactKey> = self
             .work_graph
             .waits_for(job)
-            .into_iter()
+            .iter()
             .filter_map(|wait| wait.fact().fact().cloned())
             .collect();
         waits.sort_by(|left, right| left.semantic_cmp(right, self.types()));
@@ -812,7 +812,7 @@ impl World {
             let mut waits: Vec<FactKey> = self
                 .work_graph
                 .waits_for(&current)
-                .into_iter()
+                .iter()
                 .filter_map(|wait| wait.fact().fact().cloned())
                 .collect();
             waits.sort_by(|left, right| left.semantic_cmp(right, self.types()));
@@ -982,14 +982,15 @@ impl World {
     /// another is still unanswered, or it would immediately re-park on the
     /// one it was never actually given.
     fn concluded_answers_missing(&self, job: &Job) -> HashSet<FactUse<DependencyKey>> {
-        let concluded_facts = |uses: HashSet<FactUse<DependencyKey>>| {
-            uses.into_iter().filter_map(|use_| match use_ {
+        let waits = self.work_graph.waits_for(job).iter().cloned();
+        self.work_graph
+            .reads(job)
+            .into_iter()
+            .chain(waits)
+            .filter_map(|use_| match use_ {
                 FactUse::Concluded(DependencyKey::Fact(fact)) => Some(fact),
                 _ => None,
             })
-        };
-        concluded_facts(self.work_graph.reads(job))
-            .chain(concluded_facts(self.work_graph.waits_for(job)))
             .filter_map(|fact| match self.answer_use(job, fact) {
                 AnswerUse::Wait(wait) => Some(fact_dependency(wait)),
                 AnswerUse::Partner(_) | AnswerUse::Concluded(_) => None,

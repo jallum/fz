@@ -394,16 +394,18 @@ impl ProductMemo {
     }
 
     pub(super) fn rooted_member_dirty(&mut self, member: &ProductKey, work: &mut ProductValidation) -> Vec<ProductKey> {
-        let readers = self.rooted_readers.get(member).cloned().unwrap_or_default();
-        readers
+        self.rooted_readers
+            .get(member)
             .into_iter()
+            .flatten()
             .filter(|reader| {
                 work.mutation_edges += 1;
-                let rooted = self.rooted.get_mut(reader).expect("registered root");
+                let rooted = self.rooted.get_mut(*reader).expect("registered root");
                 let changed = rooted.mark_dirty(member);
                 rooted.collect_maintenance(work);
                 changed
             })
+            .cloned()
             .collect()
     }
 
@@ -415,8 +417,8 @@ impl ProductMemo {
     /// per root from `propagate_program_changes` for exactly the keys the
     /// program session just changed.
     pub(super) fn mark_rooted_member_changed(&mut self, member: &ProductKey) {
-        for reader in self.rooted_readers.get(member).cloned().unwrap_or_default() {
-            if let Some(rooted) = self.rooted.get_mut(&reader) {
+        for reader in self.rooted_readers.get(member).into_iter().flatten() {
+            if let Some(rooted) = self.rooted.get_mut(reader) {
                 rooted.changes.insert(member.clone());
             }
         }
