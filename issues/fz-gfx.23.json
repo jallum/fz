@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T23:55:13Z",
+  "description": "Five sites in src/compiler2/jobs/native.rs clone a DispatchNode (a RegionPredicate and two edges with evidence for Test nodes) before matching on it: :447, :2002, :3020, :3076, :3591, all of the form plan.graph.node(node_id).cloned(). In each the plan arrives as a reference parameter or through the program reference, not through \u0026mut self.\nAlso unforced in the same file: :2295 entry.origin.clone() followed by tys.to_vec() / reprs.to_vec(); :2818 (entry.captures.clone(), entry.physical_captures.clone()); :3203 lanes.clone(). And src/compiler2/native_codegen/prim.rs:1808 decl.params.clone().\nOut of scope: the ShapeDescr / CallableDescr clones through self.world (:764, :1378, :2949, :4149, :4416, :4433, :4552); they need a different shape and their own ticket if this one goes cleanly.\nHeat: every node of every dispatch tree lowered, per executable.\n\nMethod: .agent/strategies/ownership-shape.md. Change the signature and let cargo check enumerate dependents; resolve interleavings by compute-then-commit or a split borrow; stop and report if an Rc is the only move.\nSignal: pure refactor. Full gate green; no golden, census or pin moves. Report the clone/to_vec count of each touched file before and after.\nSites were read at develop 8bf8775ae and not compiled; confirm each with cargo check before relying on it.",
+  "id": "fz-gfx.23",
+  "labels": [],
+  "parent": "fz-gfx",
+  "priority": 2,
+  "status": "open",
+  "title": "The native lowerer matches a dispatch node where it lives",
+  "type": "task",
+  "updated_at": "2026-11-12T23:55:13Z"
+}
