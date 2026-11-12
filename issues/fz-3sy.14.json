@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T23:56:31Z",
+  "description": "A function stored in a map or struct field cannot be called after it is read back. The compiler panics on interp and run; Elixir prints 1001.\n\nSmallest repro:\n\n    def sample(n), do: %{step: fn x -\u003e x + n end}\n\n    def main() do\n      s = sample(1)\n      dbg(s.step.(1000))\n    end\n\nSame failure with a struct (`defstruct [:step]`, `%Sample{step: fn x -\u003e x + n end}`), whether called as `s.step.(1000)` or through `f = s.step; f.(1000)`, and whether the read is in the same function or a callee.\n\nPanic: src/compiler2/jobs/transport.rs:913 \"closure callee layout TransportLayout { structural: ShapeId(12), carrier: Absent } carries neither the captures of the 1 target(s) its callsite names nor one public word\".\n\nWhat is known:\n- Present on develop (seen at cca160808 and again on the tip based on 8bf8775ae), so it predates the fz-3sy typed-path work.\n- The same closure carried in a tuple and destructured works: `{:ok, f} = sample(1); f.(1000)` prints 1001 on run.\n- The callee value read from the field has an Absent carrier: the field read is not demanding the closure as a callable word, while the callsite still names its one target.\n- GH #302 is a different closure defect; no board ticket covers this.\n\nNot yet known: whether the miss is in the demand the field read places on the stored closure, or in the transport of a closure through a map/struct field. Investigate before building; proposal page first.\n\nDone when: the three shapes above (map field, struct field direct, struct field via a local) print 1001 on interp, run and build against the Elixir oracle, and fixture 00855 can call the function from its struct field directly instead of carrying it inside a tuple.",
+  "id": "fz-3sy.14",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 2,
+  "status": "open",
+  "title": "Calling a closure read from a map or struct field panics the compiler",
+  "type": "bug",
+  "updated_at": "2026-11-12T23:56:31Z"
+}
