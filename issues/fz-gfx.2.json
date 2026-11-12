@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-12T22:09:21Z",
+  "description": "Lowerer (src/compiler2/jobs/body.rs:936-950) owns `source: FunctionSource`\nand `surface: FunctionSurface` beside its mutable working state (world,\ncounters, generated outputs). Walking the input therefore conflicts with\nevery `\u0026mut self` method, and the walks clone the input to proceed:\n\n- body.rs:1248  `for clause in self.surface.clauses.clone()` -- every\n  clause of the function, deep-copied, to call lower_clause(\u0026mut self, ..).\n- body.rs:1269  `for capture in self.source.capture_params.clone()`.\n\nChange: the input is not part of the mutable state. Lowerer holds its\nsource and surface by reference (or `lower` receives them), so a walk over\nthe input borrows something `\u0026mut self` does not cover.\n\nBefore building: list every read of self.source / self.surface inside\nLowerer and QuoteLowerer (lower_clause reads self.surface.is_macro) and\nconfirm none of them needs the value owned.\n\nRemoval ledger: the two clones above, plus any other clone of source or\nsurface data the cargo check pass shows was there for the same reason.\n\nSignal: gate green, no golden/census/pin movement.",
+  "id": "fz-gfx.2",
+  "labels": [],
+  "parent": "fz-gfx",
+  "priority": 3,
+  "status": "open",
+  "title": "Lowerer borrows the function it lowers",
+  "type": "task",
+  "updated_at": "2026-11-12T22:09:21Z"
+}
