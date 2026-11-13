@@ -1,0 +1,11 @@
+#---
+# purpose: the micro sign in a name is folded to Greek small mu, so both spellings are one variable, atom and keyword key, and an allowed titlecase letter starts an atom and a keyword key
+# oracle: 01221_the_micro_sign_in_a_name_is_folded_to_greek_small_mu.oracle.exs
+#---
+def main() do
+  µ = 40
+  dbg(μ + 2)
+  dbg({:µ == :μ, :xµ == :xμ, [µ: 1] == [μ: 1]})
+  dbg([µ: 1, xμ: 2])
+  dbg({:ᾨ, [ᾨ: 1]})
+end

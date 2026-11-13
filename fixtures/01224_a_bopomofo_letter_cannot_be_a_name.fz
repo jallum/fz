@@ -1,0 +1,7 @@
+#---
+# purpose: a name may not be the Bopomofo letter U+3105, which Unicode restricts from identifiers although it is XID_Start
+# expect: diagnostic
+#---
+ㄅ = 1
+
+def main(), do: 1

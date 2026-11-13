@@ -1,0 +1,7 @@
+error[parse/expected-token]: unexpected character 'ㄅ'
+  --> fixtures/01224_a_bopomofo_letter_cannot_be_a_name.fz:1:1
+   |
+1 | ㄅ = 1
+   | ^
+   |
+
