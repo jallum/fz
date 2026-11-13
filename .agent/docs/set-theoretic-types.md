@@ -413,7 +413,8 @@ empty-clause invariant on all five axes, that the four denotational axes have
 nothing left to absorb, and callable idempotence; it runs on an index miss, so
 it costs one sweep per distinct descriptor. The tuple-emptiness
 recursion (`emptiness::phi_tuple`) returns early on an empty coordinate and drops
-negations disjoint from the product, so it explores only inhabited splits
+negations disjoint from the product (`Descr::is_disjoint` answers that
+without building the meet), so it explores only inhabited splits
 instead of fanning out `arity^|negs|` branches.
 
 ## One implementation, shared trait
