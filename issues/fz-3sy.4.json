@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-3sy.5",
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-3sy",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A call on a module value: one atom or a finite set of atoms",
   "type": "feature",
-  "updated_at": "2026-11-11T19:01:40Z"
+  "updated_at": "2026-11-13T13:28:08Z"
 }
