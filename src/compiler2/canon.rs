@@ -639,13 +639,13 @@ impl ProgramCanon<'_> {
     /// ordered on an entry-local alpha-normalized form before the shared alpha
     /// environment renders them.
     fn callable_demand(&mut self, demand: &CallableDemand) -> String {
-        let mut ordered_resolved = demand.resolved.iter().collect::<Vec<_>>();
-        ordered_resolved.sort_by_cached_key(|surface| self.formula_sort_key(|local| local.callable_surface(surface)));
-        let mut resolved = ordered_resolved
+        let mut ordered_unnamed = demand.unnamed.iter().collect::<Vec<_>>();
+        ordered_unnamed.sort_by_cached_key(|surface| self.formula_sort_key(|local| local.callable_surface(surface)));
+        let mut unnamed = ordered_unnamed
             .into_iter()
             .map(|surface| self.callable_surface(surface))
             .collect::<Vec<_>>();
-        resolved.sort();
+        unnamed.sort();
         let mut ordered_targets = demand.targets.iter().collect::<Vec<_>>();
         ordered_targets.sort_by_cached_key(|target| self.formula_sort_key(|local| local.callable_target(target)));
         let mut targets = ordered_targets
@@ -654,8 +654,8 @@ impl ProgramCanon<'_> {
             .collect::<Vec<_>>();
         targets.sort();
         format!(
-            "callable(resolved=[{}] targets=[{}] opaque={} escape={})",
-            resolved.join("; "),
+            "callable(unnamed=[{}] targets=[{}] opaque={} escape={})",
+            unnamed.join("; "),
             targets.join("; "),
             demand.opaque,
             demand.escape

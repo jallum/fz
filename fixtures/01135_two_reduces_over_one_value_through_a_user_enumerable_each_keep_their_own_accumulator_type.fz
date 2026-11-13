@@ -1,0 +1,36 @@
+#---
+# purpose: "Two Enum.reduce calls over one decoded map, one counting and one collecting into a map, each reach their reducer through a user enumerable that composes it with a function, and print what Elixir prints"
+# kind: run
+# oracle: 01135_two_reduces_over_one_value_through_a_user_enumerable_each_keep_their_own_accumulator_type.oracle.exs
+#---
+defmodule W do
+  defstruct [:enum, :funs]
+
+  def wrap(enum, fun), do: %W{enum: enum, funs: [fun]}
+
+  @spec compose([(any) -> any], (any, c) -> d) :: (any, c) -> d
+  def compose(funs, reducer), do: fn entry, acc -> reducer.(apply_funs(funs, entry), acc) end
+
+  @spec apply_funs([(any) -> any], any) :: any
+  defp apply_funs([], entry), do: entry
+  defp apply_funs([fun | earlier], entry), do: fun.(apply_funs(earlier, entry))
+end
+
+defimpl Enumerable, for: W do
+  def reduce(%W{enum: enum, funs: funs}, acc, reducer), do: Enumerable.reduce(enum, acc, W.compose(funs, reducer))
+  def reduce_while(%W{enum: enum, funs: funs}, acc, reducer), do: Enumerable.reduce_while(enum, acc, W.compose(funs, reducer))
+  def count(_w), do: {:error, :unsupported}
+  def member?(_w, _value), do: {:error, :unsupported}
+  def slice(_w), do: {:error, :unsupported}
+end
+
+defmodule P do
+  def main() do
+    items = Enum.to_list(W.wrap(["{\"a\": {\"b\": 1}}"], &JSON.decode!/1))
+    [%{"a" => v} | _] = items
+    x = Enum.reduce(v, 0, fn _e, acc -> acc + 1 end)
+    y = Enum.reduce(v, %{}, fn e, acc -> Map.put(acc, :k, e) end)
+    IO.inspect({x, y})
+  end
+end
+P.main()

@@ -23048,7 +23048,7 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
 
     let counted = |label: &str| activations.get(label).map_or(0, BTreeSet::len);
     let measured = [
-        ("Stream.compose/2#lambda@0/2", 8),
+        ("Stream.compose/2#lambda@0/2", 7),
         ("Stream.compose/2", 2),
         ("Enumerable.Stream.reduce/3", 2),
         ("Enumerable.List.reduce/3", 4),
@@ -23063,8 +23063,102 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
     }
     assert_eq!(
         activations.values().map(BTreeSet::len).sum::<usize>(),
-        145,
+        140,
         "activations of the whole program"
+    );
+}
+
+/// Compiles `source` and reports how many `SeedActivation` jobs ran and how many
+/// activations the `Enum.reduce` wrapper closure has.
+fn seed_activations_and_reduce_wrapper_activations(source: &str) -> (usize, usize) {
+    let tel = ConfiguredTelemetry::new();
+    let seeds = Rc::new(RefCell::new(0usize));
+    let seeded = Rc::clone(&seeds);
+    tel.attach_raw_span1_0::<Job, _, _, _>(
+        &["fz", "compiler2", "job"],
+        move |_, _, _, job| {
+            if matches!(job, Job::SeedActivation(_)) {
+                *seeded.borrow_mut() += 1;
+            }
+        },
+        |_, _, _, _| {},
+        |_, _, _, _| {},
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("same_seed_reduces.fz".into()),
+        text: source.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let inventory = compiler
+        .product_executable_inventory(root)
+        .expect("the program settles");
+    let wrapper = inventory
+        .iter()
+        .filter(|executable| {
+            super::canon::function_label(compiler.world(), executable.activation.function) == "Enum.reduce/3#lambda@0/2"
+        })
+        .map(|executable| &executable.activation)
+        .collect::<BTreeSet<_>>()
+        .len();
+    let seeds = *seeds.borrow();
+    (seeds, wrapper)
+}
+
+fn reduces_over_one_list_each_seeded_with_an_empty_list(accumulated: &[&str]) -> String {
+    let sites = accumulated
+        .iter()
+        .enumerate()
+        .map(|(site, element)| format!("    r{site} = Enum.reduce(v, [], fn e, acc -> [{element} | acc] end)\n"))
+        .collect::<String>();
+    let results = (0..accumulated.len())
+        .map(|site| format!("r{site}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "defmodule P do\n  def main() do\n    v = [1, 2, 3]\n{sites}    IO.inspect({{{results}}})\n  end\nend\nP.main()\n"
+    )
+}
+
+/// A closure is compiled only for the argument types its call sites name. Each
+/// `Enum.reduce` site has a reducer called at its own accumulator types: the
+/// seed and the list it builds. Two sites that share a seed type are four
+/// calls, so the wrapper closure has four activations and no activation is
+/// minted for a pairing no call site made.
+#[test]
+fn compiler2_two_reduces_sharing_a_seed_compile_the_four_calls_their_sites_name() {
+    let source = reduces_over_one_list_each_seeded_with_an_empty_list(&["e", "{e, 6}"]);
+    assert_eq!(
+        seed_activations_and_reduce_wrapper_activations(&source),
+        (0, 4),
+        "seed activations, and activations of the reduce wrapper closure"
+    );
+}
+
+/// The wrapper closure of n sites that share a seed type keeps two activations
+/// per site, not one for every pairing of a site's closure with another site's
+/// accumulator.
+#[test]
+fn compiler2_eight_reduces_sharing_a_seed_compile_two_wrapper_activations_each() {
+    let source = reduces_over_one_list_each_seeded_with_an_empty_list(&[
+        "e",
+        "{e, 6}",
+        "{e, 6, 7}",
+        "[e]",
+        "%{k: e}",
+        "{e}",
+        "{e, \"s\"}",
+        "{e, 2.5}",
+    ]);
+    assert_eq!(
+        seed_activations_and_reduce_wrapper_activations(&source),
+        (0, 16),
+        "seed activations, and activations of the reduce wrapper closure"
     );
 }
 

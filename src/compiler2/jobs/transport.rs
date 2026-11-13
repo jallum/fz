@@ -676,7 +676,7 @@ fn project_generic_owner_node(
                     projected.record_boundary(*boundary, publication.clone());
                 }
             }
-            for (index, surface) in demand.callable.resolved.iter().enumerate() {
+            for (index, surface) in demand.callable.surfaces().iter().enumerate() {
                 let Some(&boundary) = projected
                     .callables
                     .get(&callable)
@@ -752,7 +752,7 @@ fn record_generic_owner_facts(
 ) {
     match world.shape(shape) {
         &ShapeDescr::Callable(callable) => {
-            let surfaces = &demand.callable.resolved;
+            let surfaces = &demand.callable.surfaces();
             let surface_layouts = surface_layouts(world, surfaces);
             let surface_shapes = surface_shapes_from_layouts(&surface_layouts);
             let boundary_ids = if demand.callable.is_first_class() && !surfaces.is_empty() {
@@ -2736,7 +2736,7 @@ fn boundary_runtime_demand(world: &mut World, ty: Ty) -> RuntimeDemand {
         return RuntimeDemand::whole();
     };
     RuntimeDemand::callable(CallableDemand {
-        resolved: clauses
+        unnamed: clauses
             .into_iter()
             .map(|clause| CallableSurface::new(clause.args, world.types_mut()))
             .collect::<BTreeSet<_>>(),

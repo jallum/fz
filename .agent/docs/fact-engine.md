@@ -884,6 +884,26 @@ dependencies. Retention does not feed Whole demand back into member input
 contracts. Members execute only their demanded projections of the one retained
 environment.
 
+A closure call's runtime demand names its callees exactly. Each target that has
+an activation is one `CallableTarget` in `CallableDemand.targets`: the surface it
+is called at and the activation that serves it. That is the single record of
+which closure meets which argument types. `CallableDemand.unnamed` holds only
+the surfaces no target names: the surface of a target without an activation, the
+joined actual-argument surface when some target is unnamed or the call has no
+targets, and a boundary type's surfaces. `CallableDemand::surfaces()` is every
+surface the value is called at: `unnamed` plus each target's surface.
+
+A construction's first-class surfaces are the `unnamed` surfaces recorded for it
+plus the surfaces of the first-class targets that name it (the targets whose
+function and capture types are the construction's, from
+`callable_flow_edges_for_targets`). They join before `ground_dispatch_surfaces`
+grounds templates. A construction's direct surfaces likewise include the
+surfaces of its direct edges. A closure is therefore compiled only for the
+argument types its call sites name: two `Enum.reduce` calls that share a seed
+type give the wrapper closure four activations and no `SeedActivation` job, not
+one per pairing of a closure with another site's accumulator
+(`compiler2_two_reduces_sharing_a_seed_compile_the_four_calls_their_sites_name`).
+
 Executable-scoped producers ask for `ExecutableFacts(E)`, `RuntimeDemand(E)`,
 and every position-owned semantic fact nameable from the key in the same
 evaluation (`ActivationInputs` for an executable input; `ReturnType` for an

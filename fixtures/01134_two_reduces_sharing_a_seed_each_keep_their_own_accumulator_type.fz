@@ -1,0 +1,19 @@
+#---
+# purpose: "Two Enum.reduce calls over one list, both seeded with an empty list, compile each reducer for the accumulator its own call builds, and print what Elixir prints"
+# kind: run
+# oracle: 01134_two_reduces_sharing_a_seed_each_keep_their_own_accumulator_type.oracle.exs
+#---
+defmodule P do
+  def main() do
+    v = [1, 2, 3]
+    a = Enum.reduce(v, [], fn e, acc ->
+      case acc do
+        [] -> [e]
+        [h | _] -> [h + e | acc]
+      end
+    end)
+    b = Enum.reduce(v, [], fn e, acc -> [{e, 6} | acc] end)
+    IO.inspect({a, b})
+  end
+end
+P.main()
