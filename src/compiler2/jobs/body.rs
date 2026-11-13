@@ -332,6 +332,7 @@ pub(super) fn lower_function(
         return Ok(JobEffects::wait_on_current(gate));
     }
     let (source, surface) = world.function_definition(function);
+    let (source, surface) = (source.clone(), surface.clone());
     debug_assert!(
         surface.extern_abi.is_none(),
         "an extern has no LoweredBody; nothing should ever demand one for {function:?}"

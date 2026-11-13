@@ -1048,8 +1048,9 @@ impl World {
             return root;
         }
         let (source, surface) = self.function_definition(function);
+        let width = 1 + source.capture_params.len() + surface.arity();
         let any = self.types.any();
-        let input = vec![any; 1 + source.capture_params.len() + surface.arity()];
+        let input = vec![any; width];
         let root = self.roots.define(RootEntry {
             function,
             input,
@@ -1808,18 +1809,22 @@ impl World {
         self.fact_revision(&FactKey::FunctionContract(function))
     }
 
-    pub(crate) fn function_definition(&self, function: FunctionId) -> (FunctionSource, FunctionSurface) {
+    pub(crate) fn function_definition(&self, function: FunctionId) -> (&FunctionSource, &FunctionSurface) {
         match self.functions.get(function) {
-            super::identity::FunctionState::Defined { source, surface, .. } => (*source.clone(), *surface.clone()),
+            super::identity::FunctionState::Defined { source, surface, .. } => (source, surface),
             super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => {
                 panic!("function definitions should only be read from defined functions")
             }
         }
     }
 
-    pub(crate) fn function_surface(&self, function: FunctionId) -> FunctionSurface {
-        let (_, surface) = self.function_definition(function);
-        surface
+    pub(crate) fn function_surface(&self, function: FunctionId) -> &FunctionSurface {
+        match self.functions.get(function) {
+            super::identity::FunctionState::Defined { surface, .. } => surface,
+            super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => {
+                panic!("function definitions should only be read from defined functions")
+            }
+        }
     }
 
     pub(crate) fn function_module(&self, function: FunctionId) -> ModuleId {
@@ -3580,11 +3585,6 @@ impl World {
         surface: FunctionSurface,
     ) -> (FunctionId, bool) {
         let (owner_source, _) = self.function_definition(owner);
-        let owner_module = self.functions.reference_for(owner).module;
-        let id = self
-            .functions
-            .reference_generated(owner, owner_module, occurrence, surface.arity());
-        self.share_callable_origin(id);
         let fn_source = FunctionSource {
             owner: owner_source.owner,
             owner_module: owner_source.owner_module,
@@ -3592,8 +3592,13 @@ impl World {
             capture_params,
             required_remote_macros: owner_source.required_remote_macros.clone(),
             variadic: surface.variadic,
-            source: owner_source.source,
+            source: owner_source.source.clone(),
         };
+        let owner_module = self.functions.reference_for(owner).module;
+        let id = self
+            .functions
+            .reference_generated(owner, owner_module, occurrence, surface.arity());
+        self.share_callable_origin(id);
         let changed = self.functions.define(id, fn_source.clone(), fn_source, surface);
         (id, changed)
     }

@@ -47,7 +47,7 @@ pub(super) fn reify_guard_dispatch(
         return Ok(world.wait_for_function_definition(function));
     };
 
-    let (_, surface) = world.function_definition(function);
+    let surface = world.function_surface(function);
     if surface.is_macro {
         return Err(emit_job_diagnostic(
             tel,
@@ -55,7 +55,7 @@ pub(super) fn reify_guard_dispatch(
                 codes::LOWER_UNSUPPORTED,
                 format!(
                     "compiler2 cannot reify macro `{}` as a dispatch-pure helper",
-                    function_label(&surface)
+                    function_label(surface)
                 ),
                 surface.span,
             ),
@@ -111,6 +111,7 @@ pub(super) fn plan_entry_dispatch(
     };
 
     let (source, surface) = world.function_definition(function);
+    let (source, surface) = (source.clone(), surface.clone());
     let mut reads = vec![FactKey::FunctionDefined(function)];
     let mut waits = HashSet::new();
     collect_annotation_requirements(world, function, &mut reads, &mut waits);
@@ -253,6 +254,10 @@ fn collect_requirements(
         }
         return Ok(());
     }
+    let namespace = source.namespace;
+    let owner_module = source.owner_module;
+    let owner = source.owner;
+    let surface = surface.clone();
     collect_annotation_requirements(world, function, reads, waits);
     stack.push(function);
     for clause in &surface.clauses {
@@ -260,9 +265,9 @@ fn collect_requirements(
             super::body::collect_local_pattern_requirements(
                 world,
                 tel,
-                source.namespace,
-                source.owner_module,
-                source.owner,
+                namespace,
+                owner_module,
+                owner,
                 pattern,
                 reads,
                 waits,
@@ -272,7 +277,7 @@ fn collect_requirements(
     for call in collect_guard_calls_in_fn(&surface).map_err(|span| {
         emit_guard_dispatch_error(tel, world, function, span, SourcePatternError::UnsupportedGuardExpr)
     })? {
-        let callee = resolve_guard_callee(world, tel, source.namespace, &call)?;
+        let callee = resolve_guard_callee(world, tel, namespace, &call)?;
         collect_requirements(world, tel, callee, reads, waits, seen, stack)?;
     }
     stack.pop();
@@ -289,7 +294,7 @@ fn build_guard_dispatch(
         return Ok(callee.clone());
     }
     if stack.contains(&function) {
-        let (_, surface) = world.function_definition(function);
+        let surface = world.function_surface(function);
         return Err(SourcePatternError::GuardCallCycle(
             surface.name.clone(),
             surface.arity(),
@@ -312,11 +317,13 @@ fn build_guard_dispatch(
         return Ok(callee);
     }
     let namespace = source.namespace;
+    let owner = source.owner_module;
+    let surface = surface.clone();
     stack.push(function);
     let mut resolver = super::super::dispatch::SourcePatternResolver {
         world,
         namespace,
-        owner: source.owner_module,
+        owner,
         guard: |world: &mut World, callee: &Callee, arity: usize| {
             let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
             Ok(Some(build_guard_dispatch(world, callee, cache, stack)?))
@@ -598,9 +605,9 @@ fn emit_cycle(
 ) -> FatalError {
     let mut path = cycle
         .iter()
-        .map(|function| function_label(&world.function_surface(*function)))
+        .map(|function| function_label(world.function_surface(*function)))
         .collect::<Vec<_>>();
-    path.push(function_label(&world.function_surface(function)));
+    path.push(function_label(world.function_surface(function)));
     emit_job_diagnostic(
         tel,
         Diagnostic::error(
@@ -618,7 +625,7 @@ fn emit_guard_dispatch_error(
     span: Span,
     error: SourcePatternError,
 ) -> FatalError {
-    let label = function_label(&world.function_surface(function));
+    let label = function_label(world.function_surface(function));
     match error {
         SourcePatternError::UnsupportedGuardExpr => emit_job_diagnostic(
             tel,
@@ -702,7 +709,7 @@ fn emit_entry_guard_error(
             codes::LOWER_UNSUPPORTED,
             format!(
                 "compiler2 entry guards for `{}` {reason} and cannot be planned",
-                function_label(&world.function_surface(function))
+                function_label(world.function_surface(function))
             ),
             span,
         ),
@@ -716,7 +723,7 @@ fn emit_entry_dispatch_error(
     span: Span,
     error: PatternDispatchError,
 ) -> FatalError {
-    let label = function_label(&world.function_surface(function));
+    let label = function_label(world.function_surface(function));
     match error {
         PatternDispatchError::SourcePattern(SourcePatternError::UnsupportedGuardExpr) => {
             emit_entry_guard_error(tel, world, function, span, "are not dispatch-pure")
