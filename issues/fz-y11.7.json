@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:38:53Z",
+  "description": "Parser: bump() (frontdoor.rs:2154) clones the token it advances over; collect_line_tokens (:2203) bumps and discards, then :2208 copies the same tokens again with to_vec; parse_prefix (:828) takes Tok::Ident(name) and builds Var::user(name.as_str()) (:860), a second String. About 13k allocations (lexer.rs:21, lexer.rs:163, ast/mod.rs:153).\nFunction grouping: quoted_surface.rs:247-248 clones FunctionGroupKey twice per clause (order_key and entry(key.clone())) even when the group exists; the key's name is a fresh to_string() at :947/:953. About 11k.\nAtom names turned into Strings to be read as \u0026str: lexer.rs:194 source_word_token builds keyword_or_ident(name.to_string()) and callers match only the variant (quoted_surface.rs:972/951), about 5k; quoted_function.rs:2377 atom_name(cursor) -\u003e String used for == \"@spec\" and starts_with('@') (:51/:72), about 5k.\nShape: advance() for callers that discard; the token String moves into the Var; probe the group map by reference and clone on insert; a \u0026str keyword classifier shared by keyword_or_ident; return the AtomName handle.\nCare: bump() leaves the token in place at end of input.\n\nCounts are sampling estimates at develop 742e688b5 (line numbers refer to /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src); re-measure on your base first. Signal: see the epic.",
+  "id": "fz-y11.7",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "The front end moves tokens and names it would otherwise copy",
+  "type": "task",
+  "updated_at": "2026-11-13T03:38:53Z"
+}
