@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-53f.7"
+  ],
   "created": "2026-11-13T02:01:34Z",
   "description": "Deduplicating a job's fact list builds an intermediate OrderedSet. One pre-sized HashSet\u003c\u0026FactKey\u003e with retain keeps the first occurrence, which is the order the existing comment requires. Spike: -0.88/-0.55/-0.38/+0.03/-0.40%. Diff: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/small/cand_dedupe_job_facts.diff. Neighbours: #359 (merged; standing_claims_and_reads, job_outputs) and #362 (open; facts.rs replace_outputs_after_run). Spike base 72c22569b, release instructions on distinct1/f761/f765/r6/lit16; the saving is within about twice the noise floor, so re-measure interleaved (base and change alternating, median of 9) before claiming it. Port by reading the spike diff, not by applying it; numbers in /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/small/results.md. Acceptance: stdout (interp and run), canonical dump, activation key counts and job counts identical to the base binary on the five probes (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/p/distinct1.fz, f761.fz --top 1 --top 2, f765.fz --max-top 3, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/m/r6.fz, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/l/lit16.fz); full gate; no pin, golden or census movement.",
   "id": "fz-53f.13",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A job's facts are deduplicated in one pass over the list",
   "type": "task",
-  "updated_at": "2026-11-13T02:01:34Z"
+  "updated_at": "2026-11-13T02:01:36Z"
 }
