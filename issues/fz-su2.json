@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T13:33:05Z",
   "created": "2026-11-13T04:19:22Z",
   "description": "A guard that calls a helper whose only clause head is a cons pattern panics the compiler on run when the argument's static type is not a list. interp answers correctly.\n\nProbe:\ndef first([h | _]), do: h\ndef f(l) when first(l) \u003e 0, do: :a\ndef f(_), do: :b\ndef main(), do: dbg([f([1]), f([]), f(7), f(:x)])\n\ninterp: [:a, :b, :b, :b]\nrun: panic at src/compiler2/native_codegen/value.rs:171, 'known_list_ref_for_var requires a list ref'\nbuild: not yet run; it shares the lowering.\n\nWith a second clause def first(_), do: 0 the program compiles and runs on both paths, and so does the one-clause helper when the argument arrives through a receive (static type any). So the failing case is the helper's cons clause lowered for an activation whose argument is known not to be a list: the clause cannot match, the guard is false, and no list read should be emitted.\n\nA second failure, same helper shape, in a receive guard (confirmed on a develop-based binary):\n\ndefp first([h | _]), do: h\ndef main() do\n  send(self(), [3])\n  send(self(), :no)\n  receive do\n    l when first(l) == 3 -\u003e dbg(:a)\n  end\n  receive do\n    l when first(l) == 3 -\u003e dbg(:a)\n    _ -\u003e dbg(:b)\n  end\nend\n\ninterp: :a then :b. run: panic in cranelift-frontend, 'FunctionBuilder finalized, but block block8 is not filled'.\n\nFails before, passes after: a fixture with the probe above on interp, run and build, with an Elixir oracle; a receive-guard fixture with the second probe.\n\nAcceptance: full gate green; no pin rises.",
   "id": "fz-su2",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A guard helper with a cons pattern, called with a value that is not a list, compiles on the native paths",
   "type": "bug",
-  "updated_at": "2026-11-13T05:00:39Z"
+  "updated_at": "2026-11-13T13:33:05Z"
 }
