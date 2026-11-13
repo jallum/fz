@@ -444,7 +444,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         args: &[Var],
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
-        let Some(node) = plan.graph.node(node_id).cloned() else {
+        let Some(node) = plan.graph.node(node_id) else {
             return Err(incomplete_native_program(
                 self.telemetry,
                 self.root_id,
@@ -462,7 +462,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             DispatchNode::Outcome { outcome, .. } => {
                 let body_id = plan
-                    .outcome(outcome)
+                    .outcome(*outcome)
                     .ok_or_else(|| {
                         incomplete_native_program(
                             self.telemetry,
@@ -484,9 +484,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             } => self.lower_dispatch_test(
                 ctx,
                 plan,
-                &predicate,
-                &on_match,
-                &on_miss,
+                predicate,
+                on_match,
+                on_miss,
                 BranchOrigin::ClauseDispatch,
                 state,
                 &mut |lowerer, ctx, target, state| {
@@ -2007,7 +2007,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         node_id: GraphNodeId,
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
-        let Some(node) = dispatch.plan.graph.node(node_id).cloned() else {
+        let Some(node) = dispatch.plan.graph.node(node_id) else {
             return Err(incomplete_native_program(
                 self.telemetry,
                 self.root_id,
@@ -2020,7 +2020,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 Ok(())
             }
             DispatchNode::Outcome { outcome, .. } => {
-                let Some(arm) = dispatch.arm(outcome) else {
+                let Some(arm) = dispatch.arm(*outcome) else {
                     ctx.set_term(Term::Unreachable);
                     return Ok(());
                 };
@@ -2045,9 +2045,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             } => self.lower_dispatch_test(
                 ctx,
                 &dispatch.plan,
-                &predicate,
-                &on_match,
-                &on_miss,
+                predicate,
+                on_match,
+                on_miss,
                 BranchOrigin::User,
                 state,
                 &mut |lowerer, ctx, target, state| {
@@ -2300,7 +2300,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     .unwrap_or_else(|| self.world.types_mut().any())
             })
             .collect::<Vec<_>>();
-        match entry.origin.clone() {
+        match &entry.origin {
             BackendEntryOrigin::Clause => panic!("clause entries are lowered through their owning clause"),
             BackendEntryOrigin::Branch => {
                 let mut param_reprs = param_tys
@@ -2819,21 +2819,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .iter()
             .map(|edge| edge.target)
             .chain(after.iter().map(|after| after.entry));
-        let capture_ids = iter
+        let (capture_ids, physical_captures) = iter
             .next()
             .map(|entry_id| {
                 let entry = &entries[entry_id.as_u32() as usize];
-                (entry.captures.clone(), entry.physical_captures.clone())
+                (entry.captures.as_slice(), entry.physical_captures.as_slice())
             })
             .unwrap_or_default();
-        let (capture_ids, physical_captures) = capture_ids;
         for entry_id in iter {
             let entry_captures = &entries[entry_id.as_u32() as usize].captures;
             if entries[entry_id.as_u32() as usize].physical_captures != physical_captures
                 || entry_captures.len() != capture_ids.len()
                 || entry_captures
                     .iter()
-                    .zip(&capture_ids)
+                    .zip(capture_ids)
                     .any(|(left, right)| !same_entry_capture_contract(left, right))
             {
                 return Err(incomplete_native_program(
@@ -3030,7 +3029,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         helper_ids: &[FnId],
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
-        let Some(node) = dispatch.plan().graph.node(node_id).cloned() else {
+        let Some(node) = dispatch.plan().graph.node(node_id) else {
             return Err(incomplete_native_program(
                 self.telemetry,
                 self.root_id,
@@ -3040,7 +3039,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         match node {
             DispatchNode::Fail => self.raise_last_resort(ctx, dispatch.plan(), state),
             DispatchNode::Outcome { outcome, .. } => {
-                let Some(clause_index) = dispatch.clause_index(outcome) else {
+                let Some(clause_index) = dispatch.clause_index(*outcome) else {
                     ctx.set_term(Term::Unreachable);
                     return Ok(());
                 };
@@ -3060,9 +3059,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             } => self.lower_dispatch_test(
                 ctx,
                 dispatch.plan(),
-                &predicate,
-                &on_match,
-                &on_miss,
+                predicate,
+                on_match,
+                on_miss,
                 BranchOrigin::ClauseDispatch,
                 state,
                 &mut |lowerer, ctx, target, state| {
@@ -3086,7 +3085,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         node_id: GraphNodeId,
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
-        let Some(node) = plan.graph.node(node_id).cloned() else {
+        let Some(node) = plan.graph.node(node_id) else {
             return Err(incomplete_native_program(
                 self.telemetry,
                 self.root_id,
@@ -3122,9 +3121,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             } => self.lower_dispatch_test(
                 ctx,
                 plan,
-                &predicate,
-                &on_match,
-                &on_miss,
+                predicate,
+                on_match,
+                on_miss,
                 BranchOrigin::User,
                 state,
                 &mut |lowerer, ctx, target, state| {
@@ -3213,7 +3212,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     format!("native type test has no value to ask in {:?}", ctx.origin),
                 ));
             }
-            NativeBoundValue::Transport { shape, lanes } => (*shape, lanes.clone()),
+            NativeBoundValue::Transport { shape, lanes } => (*shape, lanes),
         };
         let Some(arity) = self.world.tuple_arity(shape) else {
             return Err(incomplete_native_program(
@@ -3227,7 +3226,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             TuplePositions::Always => return Ok(DispatchAnswer::Static(true)),
             TuplePositions::AnyOf(shapes) => shapes,
         };
-        let views = self.transport_field_views(shape, &lanes)?;
+        let views = self.transport_field_views(shape, lanes)?;
         let mut admitted = DispatchAnswer::Static(false);
         for shape in positions {
             let mut matched = DispatchAnswer::Static(true);
@@ -3601,7 +3600,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         fail: &mut Option<BlockId>,
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
-        let Some(node) = plan.graph.node(node_id).cloned() else {
+        let Some(node) = plan.graph.node(node_id) else {
             return Err(incomplete_native_program(
                 self.telemetry,
                 self.root_id,
@@ -3615,7 +3614,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 Ok(())
             }
             DispatchNode::Outcome { outcome, .. } => {
-                let outcome = plan.outcome(outcome).ok_or_else(|| {
+                let outcome = plan.outcome(*outcome).ok_or_else(|| {
                     incomplete_native_program(
                         self.telemetry,
                         self.root_id,
@@ -3640,9 +3639,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             } => self.lower_dispatch_test(
                 ctx,
                 plan,
-                &predicate,
-                &on_match,
-                &on_miss,
+                predicate,
+                on_match,
+                on_miss,
                 BranchOrigin::ClauseDispatch,
                 state,
                 &mut |lowerer, ctx, target, state| {

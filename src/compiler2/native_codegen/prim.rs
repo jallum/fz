@@ -1805,7 +1805,7 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         body.cache.extern_funcs.insert(*eid, fref);
         fref
     };
-    let param_kinds: Vec<ExternTy> = decl.params.clone();
+    let param_kinds = &decl.params;
     // Arity is enforced in ir_lower; this assert is
     // defense-in-depth so a future caller that bypasses lowering
     // can't silently truncate args via `.zip()`.
