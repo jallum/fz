@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T21:18:50Z",
+  "description": ":+, :\u003c\u003e, [+: 1] do not lex; ':' handles only '::', an identifier start and a quote.",
+  "id": "fz-iqp.7",
+  "labels": [],
+  "parent": "fz-iqp",
+  "priority": 3,
+  "status": "open",
+  "title": "Operator atoms and operator keyword keys lex",
+  "type": "task",
+  "updated_at": "2026-11-13T21:18:50Z"
+}
