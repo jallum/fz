@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T23:58:50Z",
+  "close_reason": "committed 18b4384b8; PR opened",
   "created": "2026-11-13T23:11:47Z",
   "description": "Found by the fz-iqp.4 builder's probes against Elixir 1.19.4 (not re-probed by me). fz reads names with XID_Start/XID_Continue (unicode-ident). Elixir builds its set from general categories plus Other_ID_Start/Continue, minus Pattern_Syntax and the UTS 39 restricted identifier types (lib/elixir/unicode/tokenizer.ex). Differences seen: the ligature U+FB01 as a variable and a followed by U+00AA are rejected by Elixir and accepted by fz; Bopomofo U+3105 is rejected by Elixir and accepted by fz. Two related gaps: Elixir folds the micro sign U+00B5 to Greek mu U+03BC in names (fz keeps two variables); Elixir re-validates the NFC form of a name (invalid_normalized) and fz does not. Signal: a differential run against String.Tokenizer over the identifier code points, as the mixed-script rule had (about 520,000 names, 0 mismatches).",
   "id": "fz-iqp.9",
   "labels": [],
   "parent": "fz-iqp",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "A name's characters are Elixir's identifier set, not XID",
   "type": "bug",
-  "updated_at": "2026-11-13T23:11:47Z"
+  "updated_at": "2026-11-13T23:58:50Z"
 }
