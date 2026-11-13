@@ -787,36 +787,20 @@ fn stamp_hygiene(
         return owner.builder().tuple(&[head, node.meta.root(), tail]);
     }
     match cursor.root().tag() {
-        ValueKind::LIST => {
-            let items = cursor.list_items()?;
-            let mut changed = false;
-            let mut out = Vec::with_capacity(items.len());
-            for item in &items {
-                let stamped = stamp_hygiene(owner, item, function, ordinal, sources)?;
-                changed |= stamped != item.root();
-                out.push(stamped);
-            }
-            if changed {
-                owner.builder().list(&out)
-            } else {
-                Ok(cursor.root())
-            }
-        }
-        ValueKind::STRUCT => {
-            let items = cursor.tuple_items()?;
-            let mut changed = false;
-            let mut out = Vec::with_capacity(items.len());
-            for item in &items {
-                let stamped = stamp_hygiene(owner, item, function, ordinal, sources)?;
-                changed |= stamped != item.root();
-                out.push(stamped);
-            }
-            if changed {
-                owner.builder().tuple(&out)
-            } else {
-                Ok(cursor.root())
-            }
-        }
+        ValueKind::LIST => match changed_elements(
+            || Ok(cursor.list_iter()),
+            |item| stamp_hygiene(owner, item, function, ordinal, sources),
+        )? {
+            Some(out) => owner.builder().list(&out),
+            None => Ok(cursor.root()),
+        },
+        ValueKind::STRUCT => match changed_elements(
+            || cursor.tuple_iter(),
+            |item| stamp_hygiene(owner, item, function, ordinal, sources),
+        )? {
+            Some(out) => owner.builder().tuple(&out),
+            None => Ok(cursor.root()),
+        },
         ValueKind::MAP => {
             let entries = cursor.map_entries()?;
             let mut changed = false;
@@ -835,6 +819,37 @@ fn stamp_hygiene(
         }
         _ => Ok(cursor.root()),
     }
+}
+
+/// The elements of a list or tuple after `visit` has rewritten each one, or
+/// `None` when no element changed. `walk` starts a fresh read of the
+/// elements; a second read supplies the unchanged prefix when the first
+/// change is found, so an unchanged value is walked without collecting it.
+fn changed_elements<I>(
+    walk: impl Fn() -> Result<I, QuotedSourceError>,
+    mut visit: impl FnMut(&QuotedSourceCursor) -> Result<AnyValueRef, QuotedSourceError>,
+) -> Result<Option<Vec<AnyValueRef>>, QuotedSourceError>
+where
+    I: Iterator<Item = Result<QuotedSourceCursor, QuotedSourceError>>,
+{
+    let mut out: Option<Vec<AnyValueRef>> = None;
+    for (index, item) in walk()?.enumerate() {
+        let item = item?;
+        let stamped = visit(&item)?;
+        match &mut out {
+            Some(out) => out.push(stamped),
+            None if stamped != item.root() => {
+                let mut seeded = walk()?
+                    .take(index)
+                    .map(|passed| passed.map(|passed| passed.root()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                seeded.push(stamped);
+                out = Some(seeded);
+            }
+            None => {}
+        }
+    }
+    Ok(out)
 }
 
 fn stamp_meta_ordinal(
@@ -897,36 +912,20 @@ fn stamp_span_fallback(
         return owner.builder().tuple(&[head, node.meta.root(), tail]);
     }
     match cursor.root().tag() {
-        ValueKind::LIST => {
-            let items = cursor.list_items()?;
-            let mut changed = false;
-            let mut out = Vec::with_capacity(items.len());
-            for item in &items {
-                let stamped = stamp_span_fallback(owner, item, macro_call_span, sources)?;
-                changed |= stamped != item.root();
-                out.push(stamped);
-            }
-            if changed {
-                owner.builder().list(&out)
-            } else {
-                Ok(cursor.root())
-            }
-        }
-        ValueKind::STRUCT => {
-            let items = cursor.tuple_items()?;
-            let mut changed = false;
-            let mut out = Vec::with_capacity(items.len());
-            for item in &items {
-                let stamped = stamp_span_fallback(owner, item, macro_call_span, sources)?;
-                changed |= stamped != item.root();
-                out.push(stamped);
-            }
-            if changed {
-                owner.builder().tuple(&out)
-            } else {
-                Ok(cursor.root())
-            }
-        }
+        ValueKind::LIST => match changed_elements(
+            || Ok(cursor.list_iter()),
+            |item| stamp_span_fallback(owner, item, macro_call_span, sources),
+        )? {
+            Some(out) => owner.builder().list(&out),
+            None => Ok(cursor.root()),
+        },
+        ValueKind::STRUCT => match changed_elements(
+            || cursor.tuple_iter(),
+            |item| stamp_span_fallback(owner, item, macro_call_span, sources),
+        )? {
+            Some(out) => owner.builder().tuple(&out),
+            None => Ok(cursor.root()),
+        },
         ValueKind::MAP => {
             let entries = cursor.map_entries()?;
             let mut changed = false;

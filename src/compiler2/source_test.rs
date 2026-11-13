@@ -635,3 +635,51 @@ fn map_value_reads_entries_only_up_to_the_match() {
     );
     assert!(cursor.map_entries().is_err(), "a full read reports it");
 }
+
+#[test]
+fn list_and_tuple_iterators_read_the_items_the_vec_accessors_collect() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let numbers = [3, 1, 4, 1, 5].map(|n| builder.int(n));
+    let list = builder.root(builder.list(&numbers).expect("list")).expect("list root");
+    let tuple = builder
+        .root(builder.tuple(&numbers).expect("tuple"))
+        .expect("tuple root");
+    let ints = |items: Vec<QuotedSourceCursor>| -> Vec<i64> {
+        items.iter().map(|item| item.int_value().expect("int")).collect()
+    };
+
+    let streamed_list = list
+        .cursor()
+        .list_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("list_iter");
+    let streamed_tuple = tuple
+        .cursor()
+        .tuple_iter()
+        .expect("tuple_iter")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("tuple fields");
+
+    assert_eq!(
+        ints(streamed_list),
+        ints(list.cursor().list_items().expect("list_items"))
+    );
+    assert_eq!(
+        ints(streamed_tuple),
+        ints(tuple.cursor().tuple_items().expect("tuple_items"))
+    );
+    assert_eq!(tuple.cursor().tuple_arity().expect("arity"), 5);
+}
+
+#[test]
+fn list_iterator_reports_a_non_list_once_and_stops() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let not_a_list = builder.root(builder.int(7)).expect("int root");
+
+    let mut items = not_a_list.cursor().list_iter();
+
+    assert!(items.next().is_some_and(|item| item.is_err()));
+    assert!(items.next().is_none());
+}

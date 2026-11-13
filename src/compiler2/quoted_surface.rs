@@ -935,7 +935,7 @@ fn parse_function_head_key_inner(
         };
         return parse_function_head_key_inner(inner, allow_reserved_macro_name, false, sources);
     }
-    let arity = function_head_args(&node.tail)?.len();
+    let arity = function_head_arity(&node.tail)?;
     if let Some(arities) = definable_operator_arities(&name) {
         if !arities.contains(&arity) {
             return Err(QuotedSourceError::new(format!(
@@ -1004,6 +1004,14 @@ fn is_local_function_name(name: &str, allow_reserved_macro_name: bool) -> bool {
 /// argument list. That is a bare name with zero arguments, whatever context
 /// its tail carries — the same "variable or call?" question `decode_expr`
 /// answers with `is_list_like`.
+pub(crate) fn function_head_arity(tail: &QuotedSourceCursor) -> Result<usize, QuotedSourceError> {
+    if tail.is_list_like() {
+        tail.list_iter().try_fold(0, |count, item| item.map(|_| count + 1))
+    } else {
+        Ok(0)
+    }
+}
+
 pub(crate) fn function_head_args(tail: &QuotedSourceCursor) -> Result<Vec<QuotedSourceCursor>, QuotedSourceError> {
     if tail.is_list_like() {
         tail.list_items()
@@ -1109,8 +1117,8 @@ fn first_non_attr_node(root: &QuotedSourceRoot, sources: &SourceMap) -> Result<Q
     if let Some(node) = root.cursor().ast_node(sources)? {
         return Ok(node);
     }
-    for item in root.cursor().list_items()? {
-        let Some(node) = item.ast_node(sources)? else {
+    for item in root.cursor().list_iter() {
+        let Some(node) = item?.ast_node(sources)? else {
             return Err(QuotedSourceError::new("expected quoted grouped surface item AST node"));
         };
         if !atom_head_name(&node)?.is_some_and(|head| head.starts_with('@')) {
