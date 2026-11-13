@@ -1,0 +1,6 @@
+#---
+# purpose: a name that mixes Latin and Cyrillic letters is rejected, and the diagnostic names it
+# expect: diagnostic
+#---
+aа = 1
+def main(), do: 1
