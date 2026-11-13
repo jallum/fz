@@ -117,8 +117,8 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
                 .movements
                 .into_iter()
                 .filter_map(|movement| {
-                    movement.key.fact().map(|key| super::facts::FactMovement {
-                        key: key.clone(),
+                    movement.key.into_fact().map(|key| super::facts::FactMovement {
+                        key,
                         state: movement.state,
                     })
                 })
@@ -505,6 +505,13 @@ pub enum DependencyKey {
 
 impl DependencyKey {
     pub(crate) fn fact(&self) -> Option<&FactKey> {
+        match self {
+            Self::Fact(fact) => Some(fact),
+            Self::Product(_) => None,
+        }
+    }
+
+    pub(crate) fn into_fact(self) -> Option<FactKey> {
         match self {
             Self::Fact(fact) => Some(fact),
             Self::Product(_) => None,
