@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T18:05:59Z",
+  "description": "def g; defoverridable g: 1; then a macro call whose expansion holds def g. The walk counts a macro's definitions when it reserves the macro's fragment, which is when it reaches the call, so at the first def g nothing more is known to come: the default's source is published, then the replacement's (two 'function source noted' events, and a FunctionSource change a re-run of the walk repeats). The result is correct. A definition written in the body after the mark is counted up front and the default is never published (fz-3sy.7). Remove the extra write if a shape that needs it appears: for example, publish an overridable function's source when the body's walk ends rather than when the definition is reached. Blocks nothing.",
+  "id": "fz-3sy.23",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 3,
+  "status": "open",
+  "title": "A replacement that a macro emits after the mark writes the default's source first",
+  "type": "task",
+  "updated_at": "2026-11-13T18:05:59Z"
+}
