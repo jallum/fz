@@ -2972,3 +2972,33 @@ fn a_destination_filled_in_key_order_publishes_the_bytes_a_sorted_one_does() {
     };
     assert_eq!(bytes(ordered), bytes(sorted));
 }
+
+#[test]
+fn map_publication_orders_keys_and_keeps_the_last_value_of_a_repeated_key_at_every_size() {
+    // Lists shorter than, equal to and longer than the stack buffer all give
+    // the same map: keys ascending, one entry per key, the last value kept.
+    for distinct in [
+        0usize,
+        1,
+        5,
+        imp::MAP_STACK_ENTRIES - 1,
+        imp::MAP_STACK_ENTRIES,
+        imp::MAP_STACK_ENTRIES + 7,
+    ] {
+        let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+        let mut entries: Vec<(AnyValue, AnyValue)> = (0..distinct as i64)
+            .rev()
+            .map(|key| (AnyValue::int(key), AnyValue::int(key * 10)))
+            .collect();
+        if distinct > 0 {
+            entries.push((AnyValue::int(0), AnyValue::int(-1)));
+        }
+        let map = heap.alloc_map_slots(&entries);
+        let layout = MapLayout::Entries(map_addr_from_tagged(map).expect("a map"));
+        let published = heap.map_view_entries(layout);
+        let expected: Vec<(AnyValue, AnyValue)> = (0..distinct as i64)
+            .map(|key| (AnyValue::int(key), AnyValue::int(if key == 0 { -1 } else { key * 10 })))
+            .collect();
+        assert_eq!(published, expected, "{distinct} distinct keys");
+    }
+}
