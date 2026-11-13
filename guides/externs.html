@@ -181,6 +181,17 @@ callee receives a single word, so it is only appropriate for helper
 boundaries that already know they are receiving tagged heap bits or another
 documented raw payload shape.</p>
 
+<h3>A value of the wrong kind</h3>
+
+<p>An extern declaration is a function with one typed clause. Passing it a
+value of a kind the parameter does not accept raises
+<code>FunctionClauseError</code>, exactly as an ordinary function does, and
+<code>rescue</code> catches it. When the compiler can see the argument's type
+is outside the parameter's type it refuses the call instead; when the type is
+<code>any</code> the check happens when the call runs. A parameter declared
+<code>pid</code>, <code>ref</code> or <code>c_pointer</code> accepts every
+value at that check.</p>
+
 <h3>The <code>c_string</code> trick</h3>
 
 <p>C strings end with a zero byte. fz binaries don't. So how do we hand a

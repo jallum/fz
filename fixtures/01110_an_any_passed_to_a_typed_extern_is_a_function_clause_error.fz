@@ -1,0 +1,17 @@
+#---
+# purpose: "A value whose static type is any, passed to an extern whose parameter is integer, aborts with the function clause error an ordinary typed function raises, on every path"
+# expect: abort
+#---
+#
+# An extern is a function with one typed clause. The received 1.5 is not an
+# integer, so no clause matches, exactly as for `def f(x :: integer)`.
+extern "C" defp fz_op_add_ii(integer, integer) :: integer,
+  raises: ArithmeticError,
+  message: "bad argument in arithmetic expression"
+
+def main() do
+  send(self(), 1.5)
+  receive do
+    x -> dbg(fz_op_add_ii(x, 1))
+  end
+end

@@ -300,6 +300,14 @@ impl ContractArrow {
         types.clause_domain_row(&params, &self.bounds)
     }
 
+    /// What a value must be to enter the clause, one type per declared
+    /// parameter: a variable with a bound reads as that bound and an unbounded
+    /// one as `any`. An extern's entry dispatch tests exactly this.
+    pub(crate) fn entry_domain(&self, types: &mut Types) -> Vec<Ty> {
+        let params = types.arrow_params(&self.arrow);
+        types.clause_domain_at_every_instantiation(&params, &self.bounds)
+    }
+
     /// This clause's domain for a call of `row_len` arguments, rendered as a
     /// single readable string: each fixed position named individually, and,
     /// past them, the variadic tail's type named once and marked `...` (the

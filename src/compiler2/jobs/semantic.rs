@@ -406,11 +406,7 @@ pub(super) fn analyze_activation(
     }
 
     emit_semantic_walk(tel, function, walks.entries_walked);
-    let trimmed = TrimmedPlans::of(
-        world.types(),
-        (!is_extern).then_some(entry_edges),
-        std::mem::take(&mut walks.cases),
-    );
+    let trimmed = TrimmedPlans::of(world.types(), entry_edges, std::mem::take(&mut walks.cases));
     let analysis_changed = super::super::drive::ExecutionContext::new(world, tel).define_activation_analysis(
         activation,
         ActivationAnalysis {

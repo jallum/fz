@@ -20,8 +20,8 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
-    GuardCallee, GuardExtern, LastResort, PatternDispatchError, PatternPinnedInput, PatternRow, SourcePatternError,
-    SourcePatternRows, guard_dispatch_from_rows, pattern_dispatch_from_source_with_resolver,
+    GuardCallee, GuardExtern, LastResort, PatternDispatchError, PatternPinnedInput, PatternRow, PatternSubjectRef,
+    SourcePatternError, SourcePatternRows, guard_dispatch_from_rows, pattern_dispatch_from_source_with_resolver,
 };
 use crate::function_surface::FunctionSurface;
 use crate::source::Span;
@@ -115,6 +115,14 @@ pub(super) fn plan_entry_dispatch(
     let mut reads = vec![FactKey::FunctionDefined(function)];
     let mut waits = HashSet::new();
     collect_annotation_requirements(world, function, &mut reads, &mut waits);
+    if surface.extern_abi.is_some() {
+        let contract = FactKey::FunctionContract(function);
+        if world.has_fact(&contract) {
+            reads.push(contract);
+        } else {
+            waits.insert(contract);
+        }
+    }
     for clause in &surface.clauses {
         for pattern in &clause.params {
             super::body::collect_local_pattern_requirements(
@@ -374,7 +382,7 @@ fn entry_source_patterns(
                 patterns: (0..input_count)
                     .map(|_| Spanned::new(Pattern::Wildcard, surface.span))
                     .collect(),
-                preconditions: Vec::new(),
+                preconditions: extern_entry_preconditions(world, function),
                 guard: None,
                 body_id: 0,
             }],
@@ -387,6 +395,29 @@ fn entry_source_patterns(
         .map_err(|error| emit_guard_dispatch_error(tel, world, function, surface.span, error))?;
 
     Ok(SourcePatternRows::entry(input_count, rows, captures))
+}
+
+/// An extern is a function with one typed clause: a call whose argument is
+/// outside a declared parameter's type meets the same arm of last resort an
+/// ordinary function's mismatch does. A parameter that admits every value
+/// asks nothing.
+fn extern_entry_preconditions(world: &mut World, function: FunctionId) -> Vec<(PatternSubjectRef, Ty)> {
+    let (contract, types) = world
+        .function_contract_and_types_mut(function)
+        .expect("an extern's contract is settled before its entry dispatch is planned");
+    let domain = contract.arrows[0].entry_domain(types);
+    let any = types.any();
+    domain
+        .into_iter()
+        .enumerate()
+        .filter(|(_, ty)| *ty != any)
+        .map(|(index, ty)| {
+            (
+                PatternSubjectRef::Input(index as u32),
+                types.runtime_type_test_envelope(ty),
+            )
+        })
+        .collect()
 }
 
 fn collect_guard_calls_in_guards(def: &FunctionSurface) -> Result<Vec<GuardCall>, Span> {

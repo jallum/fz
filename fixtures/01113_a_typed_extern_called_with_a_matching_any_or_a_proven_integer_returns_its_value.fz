@@ -1,0 +1,15 @@
+#---
+# purpose: "A typed extern returns its value when the argument is an integer, whether the argument is proven at the call or arrives as any"
+# oracle: 01113_a_typed_extern_called_with_a_matching_any_or_a_proven_integer_returns_its_value.oracle.exs
+#---
+extern "C" defp fz_op_add_ii(integer, integer) :: integer,
+  raises: ArithmeticError,
+  message: "bad argument in arithmetic expression"
+
+def main() do
+  dbg(fz_op_add_ii(2, 3))
+  send(self(), 7)
+  receive do
+    x -> dbg(fz_op_add_ii(x, 1))
+  end
+end

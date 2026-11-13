@@ -781,7 +781,7 @@ pub struct ActivationAnalysis {
 /// plan its types narrow nothing in is the shared plan itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TrimmedPlans {
-    /// `None` for an extern, which has no clauses to select among.
+    /// `None` only for a hand-built analysis that ran no entry dispatch.
     pub(crate) entry: Option<Rc<PatternDispatchPlan<Ty>>>,
     pub(crate) cases: BTreeMap<ControlEntryId, Rc<PatternDispatchPlan<Ty>>>,
     /// How many questions the types answered, over the entry and the cases.
@@ -799,13 +799,9 @@ impl ActivationAnalysis {
 }
 
 impl TrimmedPlans {
-    pub(crate) fn of(
-        types: &Types,
-        entry: Option<ReachedEdges>,
-        cases: BTreeMap<ControlEntryId, ReachedEdges>,
-    ) -> Self {
+    pub(crate) fn of(types: &Types, entry: ReachedEdges, cases: BTreeMap<ControlEntryId, ReachedEdges>) -> Self {
         let mut plans = Self::default();
-        plans.entry = entry.map(|reached| plans.trim(types, &reached));
+        plans.entry = Some(plans.trim(types, &entry));
         plans.cases = cases
             .into_iter()
             .map(|(entry, reached)| (entry, plans.trim(types, &reached)))

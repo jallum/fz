@@ -26,29 +26,28 @@ use std::sync::atomic::Ordering;
 /// bytes, an fz runtime helper wants the tagged value ref it works in.
 fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy, fz_abi: bool) -> Result<ArgWord, String> {
     Ok(match ty {
-        ExternTy::I64 => ArgWord::Int(
-            value
-                .as_i64()
-                .ok_or_else(|| "extern integer arg must be Int".to_string())? as u64,
-        ),
+        ExternTy::I64 => ArgWord::Int(value.as_i64().ok_or_else(|| {
+            "internal error: an integer extern parameter received a non-integer after entry dispatch".to_string()
+        })? as u64),
         // A C `int` parameter is the low half of the fz integer. The word is
         // still handed over whole -- a callee reading an `int` reads the low
         // 32 bits of the register -- so narrowing here is what makes the
         // variadic tail, which promotes the same word back, agree.
-        ExternTy::I32 => ArgWord::Int(
-            value
-                .as_i64()
-                .ok_or_else(|| "extern integer arg must be Int".to_string())? as i32 as i64 as u64,
-        ),
-        ExternTy::F64 => ArgWord::Float(
-            value
-                .as_float()
-                .ok_or_else(|| "extern float arg must be Float".to_string())?,
-        ),
+        ExternTy::I32 => ArgWord::Int(value.as_i64().ok_or_else(|| {
+            "internal error: an integer extern parameter received a non-integer after entry dispatch".to_string()
+        })? as i32 as i64 as u64),
+        ExternTy::F64 => ArgWord::Float(value.as_float().ok_or_else(|| {
+            "internal error: a float extern parameter received a non-float after entry dispatch".to_string()
+        })?),
         ExternTy::Bool => ArgWord::Int(match value {
             AnyValue::Atom(id) if id == fz_runtime::any_value::FALSE_ATOM_ID => 0,
             AnyValue::Atom(id) if id == fz_runtime::any_value::TRUE_ATOM_ID => 1,
-            _ => return Err("extern boolean arg must be false or true".to_string()),
+            _ => {
+                return Err(
+                    "internal error: a boolean extern parameter received a non-boolean after entry dispatch"
+                        .to_string(),
+                );
+            }
         }),
         ExternTy::Binary | ExternTy::CString if fz_abi => ArgWord::Int(value.extern_arg_ref_word(proc)?),
         ExternTy::Binary => ArgWord::Int((unsafe { fz_binary_as_ptr(value.extern_arg_ref_word(proc)?) }) as u64),

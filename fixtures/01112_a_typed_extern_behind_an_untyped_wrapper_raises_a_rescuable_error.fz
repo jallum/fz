@@ -1,0 +1,17 @@
+#---
+# purpose: "Integer.to_string over a received float raises an error rescue catches, instead of a host panic, on every path"
+#---
+#
+# `Integer.to_string/1` passes its argument straight to a typed extern, so the
+# argument's type is any when the extern is called.
+def main() do
+  send(self(), 1.5)
+  receive do
+    x ->
+      try do
+        dbg(Integer.to_string(x))
+      rescue
+        e -> dbg(e.__struct__)
+      end
+  end
+end

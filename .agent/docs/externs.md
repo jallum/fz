@@ -445,6 +445,45 @@ whole definition and the row came straight from the one caller that made it.
 `libc::printf("%f", 1.5)` names the tail domain past the fixed `fmt`
 parameter in its diagnostic, marked `...` (`00253_variadic_float_error.fz`).
 
+## An extern is a function with one typed clause
+
+An extern's entry dispatch is a single row of wildcard patterns plus one type
+precondition per declared fixed parameter, built by `extern_entry_preconditions`
+(`src/compiler2/jobs/dispatch.rs`) from the contract's first arrow. The type
+asked is `ContractArrow::entry_domain`: a variable with a bound reads as that
+bound, an unbounded variable and `any` read as `any`, and a parameter that
+admits every value adds no precondition. The row's precondition goes through
+`runtime_type_test_envelope`, the same wrapping an annotated parameter of an
+ordinary function gets, and its arm of last resort is the function-clause
+error: `** (FunctionClauseError) no function clause matching in
+fz_op_add_ii/2`. `rescue` catches it.
+
+A call whose arguments are proven to fit the parameters leaves a plan that
+wins its one outcome without asking, so `executable_dispatch` retains no
+dispatch and the executable is the extern call alone on every door. A call with
+an `any` argument keeps the test:
+
+- the interpreter runs `select_clause` before `call_lowered_extern`
+  (`step_extern_executable`, `ir_interp/backend.rs`) and raises the last resort
+  when nothing matches;
+- native lowering emits the dispatch in the executable and tail-calls a
+  `<name>__call` function that holds the extern call
+  (`lower_extern_executable`, `jobs/native.rs`), and `collect_executable_atoms`
+  interns the last resort's atoms for an extern as for any clause body.
+
+Which arguments the compiler refuses outright and which it tests at run time is
+unchanged: an argument whose type is narrower than `any` and outside the
+parameter's type is `spec/violation`; an `any` argument is tested.
+
+The entry test for `pid`, `ref` and `c_pointer` admits every value, because the
+run-time type predicate has no axis for those types. An ordinary function
+annotated `pid` admits every value the same way.
+
+The interpreter's `marshal_arg` keeps its conversions as internal-error guards:
+after the entry dispatch an integer, float or boolean parameter always holds
+the right kind of value, and a variadic tail argument is resolved by the
+call-site marshal class instead.
+
 ## Marshal classes resolve per call site
 
 The `ret` and fixed `params` are fixed by the declaration. A variadic call's
@@ -715,6 +754,9 @@ cargo test --test fixture_matrix variadic_three_integers  # variadic ABI, 3 door
 cargo test --test aot_variadic_open                   # variadic call through the linker
 cargo test --test fixture_matrix 00605_libc_abs_arg_outside_declared_domain  # row outside a fixed extern's domain, 3 doors
 cargo test --test fixture_matrix 00253_variadic_float_error  # row outside a variadic extern's tail domain, 3 doors
+cargo test --test fixture_matrix 01110_an_any_passed_to_a_typed_extern  # entry test of a typed extern, 3 doors
+cargo test --test fixture_matrix 01111_a_function_clause_error_from_a_typed_extern  # rescued, 3 doors
+cargo test --lib extern_entry_dispatch  # preconditions per parameter type; proven call asks nothing
 cargo test --lib compiler2::contract_test::extern_row_outside_its_declared_contract_is_a_spec_violation
 cargo test --lib compiler2::contract_test::variadic_extern_violation_names_the_tail_domain_past_the_fixed_params
 ```

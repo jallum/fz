@@ -911,10 +911,18 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
 ) -> Result<BackendEvalTransition, String> {
     runtime.counts.calls += 1;
     match &executable.body {
-        BackendBody::Extern { signature } => {
-            let value = call_lowered_extern(runtime, signature, None, &args)?;
-            continue_after_extern(runtime, transport, program, value, continuations)
-        }
+        BackendBody::Extern { signature } => step_extern_executable(
+            runtime,
+            types,
+            transport,
+            program,
+            module,
+            &executable,
+            signature,
+            None,
+            &args,
+            continuations,
+        ),
         BackendBody::Clauses { clauses, entries, .. } => {
             let semantic_inputs = bind_executable_inputs(transport, types, runtime, &executable, &args)?;
             let clause_index = match &executable.abi.materialized.entry_dispatch {
@@ -923,18 +931,13 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                     match select_clause(runtime, types, transport, program, module, dispatch, &semantic_inputs)? {
                         Some(index) => index,
                         None => {
-                            let last_resort = dispatch.plan().last_resort.as_ref().ok_or_else(|| {
-                                format!(
-                                    "internal error: executable {:?} matched no clause and its clauses raise nothing",
-                                    executable.key
-                                )
-                            })?;
-                            return raise_last_resort(
+                            return raise_unmatched_entry(
                                 runtime,
                                 transport,
                                 program,
-                                last_resort,
-                                DispatchInputs::Values(&semantic_inputs),
+                                &executable,
+                                dispatch,
+                                &semantic_inputs,
                                 continuations,
                             );
                         }
@@ -999,6 +1002,64 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
 }
 
 /// Which clause of an executable's entry dispatch its arguments choose.
+/// An extern is a function with one typed clause: its entry dispatch, when the
+/// call's types leave one to ask, selects that clause or raises the arm of
+/// last resort as an ordinary function's does.
+fn step_extern_executable(
+    runtime: &mut IrInterpRuntime,
+    types: &crate::compiler2::Types,
+    transport: &TransportStore,
+    program: &BackendProgram,
+    module: &Module,
+    executable: &BackendExecutable,
+    signature: &crate::compiler2::LoweredExtern,
+    extern_marshals: Option<&[crate::fz_ir::ExternTy]>,
+    args: &[AnyValue],
+    continuations: Vec<BackendContinuation>,
+) -> Result<BackendEvalTransition, String> {
+    if let Some(dispatch) = &executable.abi.materialized.entry_dispatch {
+        let semantic_inputs = bind_executable_inputs(transport, types, runtime, executable, args)?;
+        if select_clause(runtime, types, transport, program, module, dispatch, &semantic_inputs)?.is_none() {
+            return raise_unmatched_entry(
+                runtime,
+                transport,
+                program,
+                executable,
+                dispatch,
+                &semantic_inputs,
+                continuations,
+            );
+        }
+    }
+    let value = call_lowered_extern(runtime, signature, extern_marshals, args)?;
+    continue_after_extern(runtime, transport, program, value, continuations)
+}
+
+fn raise_unmatched_entry(
+    runtime: &mut IrInterpRuntime,
+    transport: &TransportStore,
+    program: &BackendProgram,
+    executable: &BackendExecutable,
+    dispatch: &ExecutableDispatch,
+    semantic_inputs: &[Option<BackendBoundValue>],
+    continuations: Vec<BackendContinuation>,
+) -> Result<BackendEvalTransition, String> {
+    let last_resort = dispatch.plan().last_resort.as_ref().ok_or_else(|| {
+        format!(
+            "internal error: executable {:?} matched no clause and its clauses raise nothing",
+            executable.key
+        )
+    })?;
+    raise_last_resort(
+        runtime,
+        transport,
+        program,
+        last_resort,
+        DispatchInputs::Values(semantic_inputs),
+        continuations,
+    )
+}
+
 fn select_clause(
     runtime: &mut IrInterpRuntime,
     types: &crate::compiler2::Types,
@@ -1218,6 +1279,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 types,
                 transport,
                 program,
+                module,
                 callee,
                 args,
                 extern_marshals,
@@ -2133,6 +2195,7 @@ fn eval_backend_direct_call_edge(
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
     program: &BackendProgram,
+    module: &Module,
     callee: &CallTarget<ExecutableKey>,
     args: &[crate::compiler2::BackendCallArg],
     extern_marshals: Option<&[crate::fz_ir::ExternTy]>,
@@ -2149,6 +2212,7 @@ fn eval_backend_direct_call_edge(
                 types,
                 transport,
                 program,
+                module,
                 callee,
                 args,
                 extern_marshals,
@@ -2170,6 +2234,7 @@ fn eval_direct_call(
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
     program: &BackendProgram,
+    module: &Module,
     callee: Rc<BackendExecutable>,
     args: &[crate::compiler2::BackendCallArg],
     extern_marshals: Option<&[crate::fz_ir::ExternTy]>,
@@ -2194,10 +2259,18 @@ fn eval_direct_call(
         }
     };
     match &executable.body {
-        BackendBody::Extern { signature } => {
-            let value = call_lowered_extern(runtime, signature, extern_marshals, &call_args)?;
-            continue_after_extern(runtime, transport, program, value, continuations)
-        }
+        BackendBody::Extern { signature } => step_extern_executable(
+            runtime,
+            types,
+            transport,
+            program,
+            module,
+            executable,
+            signature,
+            extern_marshals,
+            &call_args,
+            continuations,
+        ),
         BackendBody::Clauses { .. } => Ok(BackendEvalTransition::Next(BackendEvalState::Executable {
             executable: callee,
             args: call_args,
