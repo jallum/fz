@@ -35,6 +35,10 @@ use std::ptr::{copy_nonoverlapping, read, write, write_bytes};
 use std::rc::Rc;
 use std::slice::from_raw_parts;
 
+/// Map entry lists up to this length are normalized without a heap vector.
+/// It is the longest the standard stable sort orders without allocating.
+pub(super) const MAP_STACK_ENTRIES: usize = 20;
+
 // Pure reads that need no heap state. Reading a list head/tail or a
 // closure capture is a dereference of the self-describing value pointer, so these
 // are free functions (the `Heap::read_*` methods below delegate). BIFs call them
@@ -411,39 +415,59 @@ impl Heap {
 
     /// Publish a map, normalizing its strict structural keys exactly once.
     pub fn alloc_map_refs_bits(&mut self, entries: &[(AnyValueRef, AnyValueRef)]) -> u64 {
-        let entries = entries
-            .iter()
-            .map(|&(key, value)| {
-                (
-                    AnyValue::from_ref(key).expect("map key"),
-                    AnyValue::from_ref(value).expect("map value"),
-                )
-            })
-            .collect();
-        self.publish_map_entries(entries)
+        self.publish_map_entries(entries.iter().map(|&(key, value)| {
+            (
+                AnyValue::from_ref(key).expect("map key"),
+                AnyValue::from_ref(value).expect("map value"),
+            )
+        }))
     }
 
     pub fn alloc_map_slots(&mut self, entries: &[(AnyValue, AnyValue)]) -> u64 {
-        self.publish_map_entries(entries.to_vec())
+        self.publish_map_entries(entries.iter().copied())
     }
 
-    fn publish_map_entries(&mut self, mut entries: Vec<(AnyValue, AnyValue)>) -> u64 {
-        self.normalize_map_entries(&mut entries);
-        self.alloc_ordered_map_entries(entries.into_iter())
+    /// Entries up to `MAP_STACK_ENTRIES` are normalized in a stack buffer; a
+    /// larger list is collected once. The buffer stays within the length the
+    /// standard stable sort handles without allocating.
+    fn publish_map_entries(&mut self, entries: impl ExactSizeIterator<Item = (AnyValue, AnyValue)>) -> u64 {
+        let len = entries.len();
+        if len <= MAP_STACK_ENTRIES {
+            let mut buffer = [(AnyValue::int(0), AnyValue::int(0)); MAP_STACK_ENTRIES];
+            for (slot, entry) in buffer.iter_mut().zip(entries) {
+                *slot = entry;
+            }
+            self.publish_normalized_map_entries(&mut buffer[..len])
+        } else {
+            let mut collected: Vec<_> = entries.collect();
+            self.publish_normalized_map_entries(&mut collected)
+        }
     }
 
-    fn normalize_map_entries(&self, entries: &mut Vec<(AnyValue, AnyValue)>) {
+    fn publish_normalized_map_entries(&mut self, entries: &mut [(AnyValue, AnyValue)]) -> u64 {
+        let count = self.normalize_map_entries(entries);
+        self.alloc_ordered_map_entries(entries[..count].iter().copied())
+    }
+
+    /// Sort the entries by strict structural key and merge equal keys, the
+    /// last value winning. Answers how many leading entries remain.
+    fn normalize_map_entries(&self, entries: &mut [(AnyValue, AnyValue)]) -> usize {
         let schemas = self.schemas.borrow();
         let comparator = TermComparator::new(&self.node, &schemas);
         entries.sort_by(|a, b| comparator.compare(a.0, b.0, NumericMode::Strict));
-        entries.dedup_by(|later, earlier| {
-            if comparator.compare(later.0, earlier.0, NumericMode::Strict).is_eq() {
-                earlier.1 = later.1;
-                true
+        let mut kept = 0;
+        for index in 1..entries.len() {
+            if comparator
+                .compare(entries[index].0, entries[kept].0, NumericMode::Strict)
+                .is_eq()
+            {
+                entries[kept].1 = entries[index].1;
             } else {
-                false
+                kept += 1;
+                entries[kept] = entries[index];
             }
-        });
+        }
+        if entries.is_empty() { 0 } else { kept + 1 }
     }
 
     /// Copy entries whose ordering is preserved by an immutable map operation.
@@ -580,8 +604,8 @@ impl Heap {
         match kind {
             MapDestinationKind::Build => {
                 let mut entries: Vec<_> = (0..filled).map(|i| unsafe { map_entry(dest, i) }).collect();
-                self.normalize_map_entries(&mut entries);
-                self.write_ordered_map_entries(dest, entries.len(), entries.into_iter());
+                let count = self.normalize_map_entries(&mut entries);
+                self.write_ordered_map_entries(dest, count, entries.into_iter().take(count));
             }
             MapDestinationKind::Update => self.publish_entries_in_place(dest, filled),
         }

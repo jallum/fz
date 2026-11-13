@@ -6,6 +6,8 @@ use std::rc::Rc;
 use std::slice;
 use std::sync::OnceLock;
 
+use smallvec::SmallVec;
+
 use fz_runtime::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, ValueKind, map_count, map_key_kind, map_keys_ptr, map_tag_ptr,
     map_value_kind, map_values_ptr, struct_schema_id,
@@ -24,6 +26,9 @@ const NIL_ATOM: &str = "nil";
 const TRUE_ATOM: &str = "true";
 const FALSE_ATOM: &str = "false";
 
+/// The metadata keys a quoted node can carry: module, span, bound callable,
+/// brackets and hygiene.
+const META_ENTRY_CAPACITY: usize = 5;
 pub(crate) const META_MODULE_KEY: &str = "__fz_module__";
 pub(crate) const META_SPAN_KEY: &str = "__fz_span__";
 pub(crate) const META_SPAN_START_KEY: &str = "start";
@@ -349,7 +354,7 @@ impl QuotedSourceBuilder {
     }
 
     pub fn meta(&self, meta: &QuotedSourceMetadata) -> Result<AnyValueRef, QuotedSourceError> {
-        let mut entries = Vec::new();
+        let mut entries: SmallVec<[(AnyValueRef, AnyValueRef); META_ENTRY_CAPACITY]> = SmallVec::new();
         if let Some(module) = &meta.module {
             entries.push((self.atom(META_MODULE_KEY), self.module_denotation(module)?));
         }
