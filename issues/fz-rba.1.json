@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-rba.3"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-rba",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A collapsed tuple with statically known fields materializes",
   "type": "bug",
-  "updated_at": "2026-11-13T21:18:48Z"
+  "updated_at": "2026-11-13T21:19:17Z"
 }
