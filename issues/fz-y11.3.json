@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:38:52Z",
+  "description": "World::canonical_activation_key (world.rs:2353) calls self_keyed_activation, which builds ActivationKey::from_inputs (:2344); when the probe fails canonical_activation_key_inner builds the same key again (:2380), about 11k allocations of pure repeat. Under from_inputs (identity.rs:116-129), about 52k in all: result_alpha() re-interns a constant variable per key (descr.rs:135); addressed.rs:365 FiniteSet::finite(set) re-collects the BTreeSet it was handed; addressed.rs:293 collects originals into a Vec to iterate; addressed.rs:390-439 and types/mod.rs:1656 copy the address path per child (path.to_vec()) where one push/pop buffer serves; identity.rs:129 / world.rs:2345 call arrow_params (types/mod.rs:1368), cloning the input Vec from_inputs already held; addressed.rs:275 clones a descriptor and re-interns it when nothing changed.\nShape: pass the key built by the probe into the inner function; hold the constant alpha Tys on Types; construct the FiniteSet from the set; one path buffer; return the inputs from_inputs already has.\nCare: addressing order decides interning order and pinned output; keep every visiting order.\n\nCounts are sampling estimates at develop 742e688b5 (line numbers refer to /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src); re-measure on your base first. Signal: see the epic.",
+  "id": "fz-y11.3",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "An activation key is derived once per request",
+  "type": "task",
+  "updated_at": "2026-11-13T03:38:52Z"
+}
