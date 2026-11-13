@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:54:12Z",
+  "description": "Sites: src/compiler2/world.rs:874 (activation_inputs_joined returns Vec\u003cTy\u003e; callers at jobs/transport.rs:551 and :1762 read one element; return a slice); world.rs:957 (Vec\u003cDispatchDemand\u003e cloned to end a borrow before \u0026mut self.types); world.rs:1189 (clone made for an interner insert and dropped on a hit); src/runtime_type_predicate.rs:1172, 1192, 1314, 1529 (BTreeSets of schema, arity and atom ids rebuilt per test and only queried with contains); src/compiler2/jobs/backend.rs:273, 274 (ABI dependency endpoints copied into an owned HashMap that is only looked up); src/telemetry/causal.rs:1545 and :111-113 (evaluations deep-cloned, Json subtrees cloned from a local dropped at function end); src/compiler2/semantic.rs:1421, 1497.\nLine numbers are at develop d0c3ae00c. Site-by-site ledger (class, what is copied, fix shape): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-jobs.md, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-core.md, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-rest.md.\nSignal: full gate green; no golden, census or pin moves; program output and canonical backend dump identical on the probe; allocation count before and after from /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/measure.sh in the commit.\nRemoves: each named copy, and any accessor left without callers.",
+  "id": "fz-gfx.35",
+  "labels": [],
+  "parent": "fz-gfx",
+  "priority": 3,
+  "status": "open",
+  "title": "Single-site copies: a slice, a set and a lookup table are borrowed",
+  "type": "task",
+  "updated_at": "2026-11-13T03:54:12Z"
+}
