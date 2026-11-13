@@ -1583,16 +1583,15 @@ impl Types {
     }
 
     pub fn convergence_class(&mut self, a: &Ty) -> Ty {
-        let descr = self.descr(a).clone();
         let any = self.any();
+        let descr = self.descr(a);
         if descr.as_pure_list(any).is_some() {
             self.list(any)
         } else if let Some(tuple) = descr.pure_tuple() {
-            let elems = tuple
-                .elems
-                .iter()
-                .map(|elem| self.convergence_class(elem))
-                .collect::<Vec<_>>();
+            let mut elems = tuple.elems.clone();
+            for elem in &mut elems {
+                *elem = self.convergence_class(elem);
+            }
             self.tuple(&elems)
         } else if let Some(resource) = descr.pure_resource(any) {
             let payload = self.convergence_class(&resource.payload);
@@ -1600,12 +1599,11 @@ impl Types {
         } else if descr.is_pure_callable() {
             self.intern(Descr::fun_top())
         } else if let Some(record) = descr.pure_record() {
-            let fields = record
-                .fields
-                .iter()
-                .map(|(key, value)| (key.clone(), self.convergence_class(value)))
-                .collect::<Vec<_>>();
-            self.intern(Descr::record(record.tag.clone(), fields))
+            let mut record = record.clone();
+            for value in record.fields.values_mut() {
+                *value = self.convergence_class(value);
+            }
+            self.intern(Descr::record(record.tag, record.fields))
         } else {
             *a
         }
@@ -1633,7 +1631,7 @@ impl Types {
     /// caller passes `false` and gets the freight collapse unchanged.
     fn convergence_class_at(&mut self, a: &Ty, path: &[AddrStep], keep_elements: bool) -> Ty {
         const ADDRESS_COLLAPSE_DEPTH: usize = 8;
-        let descr = self.descr(a).clone();
+        let descr = self.descr(a);
         if descr.is_pure_list_family() {
             if path.len() >= ADDRESS_COLLAPSE_DEPTH {
                 let any = self.any();
@@ -1642,7 +1640,7 @@ impl Types {
             let mut child = path.to_vec();
             child.push(AddrStep::Elem);
             let elem = if keep_elements {
-                let elem_descr = list_element_type(self.ctx(), &descr);
+                let elem_descr = list_element_type(self.ctx(), descr);
                 let elem = self.intern(elem_descr);
                 self.convergence_class_at(&elem, &child, true)
             } else {
@@ -1655,35 +1653,27 @@ impl Types {
             // reducer still narrows at its call.
             self.address_var(path)
         } else if let Some(tuple) = descr.pure_tuple() {
-            let elems = tuple
-                .elems
-                .iter()
-                .enumerate()
-                .map(|(j, elem)| {
-                    let mut child = path.to_vec();
-                    child.push(AddrStep::Field(j as u16));
-                    self.convergence_class_at(elem, &child, keep_elements)
-                })
-                .collect::<Vec<_>>();
+            let mut elems = tuple.elems.clone();
+            for (j, elem) in elems.iter_mut().enumerate() {
+                let mut child = path.to_vec();
+                child.push(AddrStep::Field(j as u16));
+                *elem = self.convergence_class_at(elem, &child, keep_elements);
+            }
             self.tuple(&elems)
-        } else if let Some(resource) = descr.pure_resource(self.any()) {
+        } else if let Some(resource) = descr.pure_resource(self.core.any) {
             let payload = resource.payload;
             let mut child = path.to_vec();
             child.push(AddrStep::Payload);
             let payload = self.convergence_class_at(&payload, &child, keep_elements);
             self.resource(payload)
         } else if let Some(record) = descr.pure_record() {
-            let fields = record
-                .fields
-                .iter()
-                .enumerate()
-                .map(|(j, (key, value))| {
-                    let mut child = path.to_vec();
-                    child.push(AddrStep::MapField(j as u16));
-                    (key.clone(), self.convergence_class_at(value, &child, keep_elements))
-                })
-                .collect::<Vec<_>>();
-            self.intern(Descr::record(record.tag.clone(), fields))
+            let mut record = record.clone();
+            for (j, value) in record.fields.values_mut().enumerate() {
+                let mut child = path.to_vec();
+                child.push(AddrStep::MapField(j as u16));
+                *value = self.convergence_class_at(value, &child, keep_elements);
+            }
+            self.intern(Descr::record(record.tag, record.fields))
         } else if keep_elements && self.has_open_vars(a) {
             // A kept leaf that still carries an open variable (not a closure's own
             // arrow variables) is replaced by the canonical address var for its
@@ -4704,9 +4694,7 @@ fn runtime_reading(t: &mut Types, a: Ty) -> Descr {
 /// so a widened type is never an un-interned `Descr` that a caller might compare
 /// or store without canonicalization.
 fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
-    let lhs = t.descr(&a).clone();
-    let rhs = t.descr(&b).clone();
-    if let (Some(l), Some(r)) = (lhs.pure_tuple().cloned(), rhs.pure_tuple().cloned())
+    if let (Some(l), Some(r)) = (t.descr(&a).pure_tuple().cloned(), t.descr(&b).pure_tuple().cloned())
         && l.elems.len() == r.elems.len()
     {
         let elems: Vec<Ty> = l
@@ -4718,7 +4706,7 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
         return t.intern(Descr::tuple_of(elems));
     }
     let any = t.any();
-    if let (Some(l), Some(r)) = (lhs.as_pure_list(any), rhs.as_pure_list(any)) {
+    if let (Some(l), Some(r)) = (t.descr(&a).as_pure_list(any), t.descr(&b).as_pure_list(any)) {
         let elem = match (l.elem, r.elem) {
             (Some(l), Some(r)) => Some(t.refine_widen(&l, &r)),
             (Some(l), None) => Some(l),
@@ -4734,11 +4722,11 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
         };
         return t.intern(d);
     }
-    if let (Some(l), Some(r)) = (lhs.pure_resource(any), rhs.pure_resource(any)) {
+    if let (Some(l), Some(r)) = (t.descr(&a).pure_resource(any), t.descr(&b).pure_resource(any)) {
         let payload = t.refine_widen(&l.payload, &r.payload);
         return t.resource(payload);
     }
-    if let (Some(l), Some(r)) = (lhs.pure_arrow().cloned(), rhs.pure_arrow().cloned())
+    if let (Some(l), Some(r)) = (t.descr(&a).pure_arrow().cloned(), t.descr(&b).pure_arrow().cloned())
         && l.args.len() == r.args.len()
     {
         // Pairwise arrow-merging is only a valid economy when both clauses
@@ -4754,10 +4742,9 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
             {
                 let captures = lhs_lit
                     .captures
-                    .clone()
-                    .into_iter()
-                    .zip(rhs_lit.captures.clone())
-                    .map(|(lhs_capture, rhs_capture)| t.refine_widen(&lhs_capture, &rhs_capture))
+                    .iter()
+                    .zip(&rhs_lit.captures)
+                    .map(|(lhs_capture, rhs_capture)| t.refine_widen(lhs_capture, rhs_capture))
                     .collect();
                 Some(Some(ClosureLit {
                     kind: lhs_lit.kind,
@@ -4776,7 +4763,7 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
             });
         }
     }
-    if let (Some(l), Some(r)) = (lhs.pure_record().cloned(), rhs.pure_record().cloned())
+    if let (Some(l), Some(r)) = (t.descr(&a).pure_record().cloned(), t.descr(&b).pure_record().cloned())
         && l.tag == r.tag
     {
         let mut fields = l.fields;
@@ -4794,15 +4781,14 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
 }
 
 fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
-    let d = t.descr(&a).clone();
-    if !has_vars(t.ctx(), &d, false) {
-        return d;
+    let mut base = t.descr(&a).clone();
+    if !has_vars(t.ctx(), &base, false) {
+        return base;
     }
     let mut substituted = Descr::none();
-    let mut base = d.clone();
     if !base.vars.cofinite {
         let mut new_set = BTreeSet::new();
-        for id in &d.vars.values {
+        for id in &base.vars.values {
             match sigma.get(id) {
                 Some(replacement) => {
                     substituted = substituted.union(t.ctx(), t.descr(replacement));
@@ -4856,9 +4842,9 @@ fn collect_subst_into(
     target: BindingSide,
     sigma: &mut Sigma<Ty>,
 ) {
-    let pat = t.descr(&pattern).clone();
-    let wit = t.descr(&witness).clone();
-    if let Some(ids) = pure_var_ids(&pat) {
+    let any = t.any();
+    let (pat, wit) = (t.descr(&pattern), t.descr(&witness));
+    if let Some(ids) = pure_var_ids(pat) {
         if side == target {
             for id in ids {
                 sigma.entry(id).or_insert(witness);
@@ -4866,38 +4852,37 @@ fn collect_subst_into(
         }
         return;
     }
+    let mut children: Vec<(Ty, Ty, BindingSide)> = Vec::new();
     if let (Some(ps), Some(ws)) = (pat.pure_tuple(), wit.pure_tuple())
         && ps.elems.len() == ws.elems.len()
     {
-        for (p, w) in ps.elems.iter().zip(ws.elems.iter()) {
-            collect_subst_into(t, *p, *w, side, target, sigma);
-        }
+        children.extend(ps.elems.iter().zip(&ws.elems).map(|(p, w)| (*p, *w, side)));
     }
-    let any = t.any();
     if let (Some(ps), Some(ws)) = (pat.as_pure_list(any), wit.as_pure_list(any))
         && let (Some(p), Some(w)) = (ps.elem, ws.elem)
     {
-        collect_subst_into(t, p, w, side, target, sigma);
+        children.push((p, w, side));
     }
     if let (Some(ps), Some(ws)) = (pat.pure_resource(any), wit.pure_resource(any)) {
-        collect_subst_into(t, ps.payload, ws.payload, side, target, sigma);
+        children.push((ps.payload, ws.payload, side));
     }
     if let (Some(ps), Some(ws)) = (pat.pure_arrow(), wit.pure_arrow())
         && ps.args.len() == ws.args.len()
     {
-        for (p, w) in ps.args.iter().zip(ws.args.iter()) {
-            collect_subst_into(t, *p, *w, side.flipped(), target, sigma);
-        }
-        collect_subst_into(t, ps.ret, ws.ret, side, target, sigma);
+        children.extend(ps.args.iter().zip(&ws.args).map(|(p, w)| (*p, *w, side.flipped())));
+        children.push((ps.ret, ws.ret, side));
     }
     if let (Some(ps), Some(ws)) = (pat.pure_record(), wit.pure_record())
         && ps.tag == ws.tag
     {
-        for (key, p) in &ps.fields {
-            if let Some(w) = ws.fields.get(key) {
-                collect_subst_into(t, *p, *w, side, target, sigma);
-            }
-        }
+        children.extend(
+            ps.fields
+                .iter()
+                .filter_map(|(key, p)| ws.fields.get(key).map(|w| (*p, *w, side))),
+        );
+    }
+    for (p, w, child_side) in children {
+        collect_subst_into(t, p, w, child_side, target, sigma);
     }
 }
 
