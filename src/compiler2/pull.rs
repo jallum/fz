@@ -353,7 +353,12 @@ enum ProductCompletion {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ReaderMutation {
+    /// The reader's value or pending formula is discarded, and so is that of
+    /// every pending reader above it.
     Invalidate,
+    /// A dependency settled with a new value: the reader is displaced, but a
+    /// pending reader above a pending one still stands on its recorded wait.
+    Wake,
     Dirty,
     Refresh,
 }
@@ -362,8 +367,18 @@ impl ReaderMutation {
     fn rank(self) -> u8 {
         match self {
             Self::Invalidate => 0,
-            Self::Dirty => 1,
-            Self::Refresh => 2,
+            Self::Wake => 1,
+            Self::Dirty => 2,
+            Self::Refresh => 3,
+        }
+    }
+
+    /// What a displaced pending reader hands to its own readers.
+    fn through_pending_reader(self) -> Option<Self> {
+        match self {
+            Self::Invalidate => Some(Self::Invalidate),
+            Self::Wake => None,
+            Self::Dirty | Self::Refresh => unreachable!("only displacing mutations meet a pending reader's formula"),
         }
     }
 }
@@ -1088,7 +1103,7 @@ impl ProductMemo {
             self.reader_mutations(
                 key,
                 if *changed {
-                    ReaderMutation::Invalidate
+                    ReaderMutation::Wake
                 } else {
                     ReaderMutation::Refresh
                 },
@@ -1286,13 +1301,13 @@ impl ProductMemo {
                 .contains(&reader)
                 .then(|| self.external_state(&reader));
             match mutation {
-                ReaderMutation::Invalidate => {
+                ReaderMutation::Invalidate | ReaderMutation::Wake => {
                     for root in self.rooted_member_dirty(&reader, &mut wave.work) {
                         let _ = wave.push(ReaderMutation::Dirty, root, types);
                     }
                     let (was_pending, was_produced) = self.displace_for_reproduction_shallow(tel, &reader);
                     let next = if was_pending {
-                        Some(ReaderMutation::Invalidate)
+                        mutation.through_pending_reader()
                     } else if was_produced {
                         Some(ReaderMutation::Dirty)
                     } else {
