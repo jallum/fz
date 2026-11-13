@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T01:40:36Z",
   "created": "2026-11-12T23:55:11Z",
   "description": "FactTable::replace_outputs_after_run (src/compiler2/facts.rs:433-474) builds touched by cloning every output key and every previous key, clones each key again at the loop top and again at reinsert, and moves each slot out of the map and back. extend_outputs_after_run (:541-559) has the same shape. The loop touches only self.slots.\nContributionMap::conclude / apply (src/compiler2/semantic.rs:1330-1451) repeats it: SlotEntry::Upsert(value.clone()) at :1339 from an owned map that is dead after the loop, slots.remove at :1418 with slots.insert(key.clone(), slot) at :1428/:1451, and touched built by cloning an owned parameter.\nShape: walk emission order then leftovers without a union set; get_mut the slot and remove only when emptied; move values out of the owned map. The wake order must stay exactly emission order then leftovers. The key cloned into a stored FactChange stays.\nHeat: per key, per publisher, per completed job.\n\nMethod: .agent/strategies/ownership-shape.md. Change the signature and let cargo check enumerate dependents; resolve interleavings by compute-then-commit or a split borrow; stop and report if an Rc is the only move.\nSignal: pure refactor. Full gate green; no golden, census or pin moves. Report the clone/to_vec count of each touched file before and after.\nSites were read at develop 8bf8775ae and not compiled; confirm each with cargo check before relying on it.",
   "id": "fz-gfx.17",
   "labels": [],
   "parent": "fz-gfx",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A fact commit touches each slot in place",
   "type": "task",
-  "updated_at": "2026-11-13T01:12:09Z"
+  "updated_at": "2026-11-13T01:40:36Z"
 }
