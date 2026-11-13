@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T01:23:07Z",
   "created": "2026-11-12T23:55:13Z",
   "description": "A sweep of clones that no borrow forces:\n- src/compiler2/jobs/body.rs:1088 lower_unquote clones a whole spliced Expr; splices is a shared slice and lower_expr touches other fields.\n- src/compiler2/canon.rs:512, :527, :543, :562 clone shape / lane / callable / boundary descriptors; world is a shared reference.\n- src/compiler2/jobs/source.rs:78 world.code_source(..).is_none() and :258 world.module_scope(..).is_some() clone a whole source to test presence.\n- src/compiler2/jobs/artifact.rs:994, :1079 summaries.get(..).cloned(); call_destinations already clones what it keeps.\n- src/compiler2/jobs/transport.rs:1535 flow.first_class_surfaces.clone(), only borrowed afterwards; :1128 demand.callable.targets.clone() in exact_direct_callable_layout.\n- src/compiler2/world.rs:1381 type_defs.get(..).clone() ahead of \u0026mut self.types, a disjoint field.\n- src/compiler2/jobs/semantic.rs:268-270 outcome_inputs.iter().cloned() from a value dead after the loop.\nAny site that turns out to be load-bearing stays, named in the report with who keeps the copy.\n\nMethod: .agent/strategies/ownership-shape.md. Change the signature and let cargo check enumerate dependents; resolve interleavings by compute-then-commit or a split borrow; stop and report if an Rc is the only move.\nSignal: pure refactor. Full gate green; no golden, census or pin moves. Report the clone/to_vec count of each touched file before and after.\nSites were read at develop 8bf8775ae and not compiled; confirm each with cargo check before relying on it.",
   "id": "fz-gfx.24",
   "labels": [],
   "parent": "fz-gfx",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Readers that hold a shared reference stop cloning what they read",
   "type": "task",
-  "updated_at": "2026-11-13T00:41:42Z"
+  "updated_at": "2026-11-13T01:23:07Z"
 }
