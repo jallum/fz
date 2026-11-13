@@ -420,7 +420,7 @@ pub(crate) fn callsite_dispatch_demands(
 ) -> HashMap<CallSiteId, Box<[DispatchDemand]>> {
     callsites
         .iter()
-        .filter(|(_, summary)| summary.targets.len() > 1)
+        .filter(|(_, summary)| summary.is_decision())
         .filter_map(|(&callsite, summary)| match call_destinations(types, summary) {
             Ok(CallDestinations::Dispatch(dispatch)) => Some((callsite, dispatch.plan.input_demand().into())),
             Ok(CallDestinations::Direct(_) | CallDestinations::None) | Err(_) => None,

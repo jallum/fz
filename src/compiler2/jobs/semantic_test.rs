@@ -882,3 +882,28 @@ fn an_any_receiver_waits_on_every_overlapping_impl_provider_even_when_an_arm_mat
         );
     }
 }
+
+/// The values a protocol call's receiver allows beyond its implementations are
+/// what it raises for: none for a receiver the implementations cover, some for
+/// one they do not.
+#[test]
+fn a_receiver_reaches_beyond_the_implementations_only_where_they_leave_values_over() {
+    let mut types = Types::new();
+    let (int, float, any) = (types.int(), types.float(), types.any());
+    let int_or_float = types.union(int, float);
+
+    assert!(
+        !reaches_beyond(&mut types, int, int),
+        "an exact implementation covers it"
+    );
+    assert!(
+        !reaches_beyond(&mut types, int, int_or_float),
+        "a wider implementation covers it"
+    );
+    assert!(!reaches_beyond(&mut types, int_or_float, int_or_float));
+    assert!(reaches_beyond(&mut types, int_or_float, int), "floats are left over");
+    assert!(
+        reaches_beyond(&mut types, any, int_or_float),
+        "anything else is left over"
+    );
+}

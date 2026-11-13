@@ -4,7 +4,8 @@ use super::*;
 use crate::compiler2::NativeEntryAbi;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{
-    self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, ReceiveAfter, ReceiveClause, Term, Var,
+    self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, RaiseSubject, ReceiveAfter, ReceiveClause, Term,
+    Var,
 };
 use crate::types::{ClosureTypes, Types};
 use cranelift_codegen::ir::TrapCode;
@@ -12,7 +13,7 @@ use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Sig
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
-use fz_runtime::failure::{fz_raise, fz_raise_showing, fz_reraise};
+use fz_runtime::failure::{fz_raise, fz_raise_naming_kind, fz_raise_showing, fz_reraise};
 use fz_runtime::ir_runtime::{
     fz_receive_park_matched, fz_try_push, fz_yield_mid_flight_report, fz_yield_slow_path_begin,
 };
@@ -485,15 +486,19 @@ fn emit_raise<M: cranelift_module::Module>(
     var_env: &HashMap<u32, CodegenValue>,
     exception: Var,
     message: Var,
-    subject: Option<Var>,
+    subject: Option<RaiseSubject>,
 ) -> Result<(), CodegenError> {
     let exception = body.any_ref_for_var(var_env, exception.0);
     let message = body.any_ref_for_var(var_env, message.0);
     let process = body.process_arg();
     match subject {
-        Some(subject) => {
+        Some(RaiseSubject::Shown(subject)) => {
             let subject = body.any_ref_for_var(var_env, subject.0);
             runtime_call!(body, fz_raise_showing, [process, exception, message, subject]);
+        }
+        Some(RaiseSubject::ShownWithKind(subject)) => {
+            let subject = body.any_ref_for_var(var_env, subject.0);
+            runtime_call!(body, fz_raise_naming_kind, [process, exception, message, subject]);
         }
         None => {
             runtime_call!(body, fz_raise, [process, exception, message]);

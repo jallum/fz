@@ -1,4 +1,4 @@
-use super::LastResort;
+use super::{LastResort, MessageSubject};
 
 #[test]
 fn a_function_head_miss_names_the_function_it_missed() {
@@ -72,4 +72,23 @@ fn a_handlers_last_resort_continues_the_raise_it_was_delivered() {
     );
     assert_eq!(LastResort::case_clause().consumed_inputs(), 1);
     assert_eq!(LastResort::cond_clause().consumed_inputs(), 0);
+}
+
+#[test]
+fn a_protocol_miss_names_the_protocol_and_leads_the_kind_of_the_value_that_missed() {
+    let raised = LastResort::protocol_undefined("String.Chars");
+    assert_eq!(raised.exception(), Some("Elixir.Protocol.UndefinedError"));
+    assert_eq!(raised.message(), Some("protocol String.Chars not implemented for "));
+    assert_eq!(
+        raised.consumed_inputs(),
+        1,
+        "the kind and the value both come from input 0"
+    );
+    assert!(matches!(
+        raised,
+        LastResort::Exception {
+            subject: MessageSubject::ShownWithKind,
+            ..
+        }
+    ));
 }

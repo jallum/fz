@@ -210,7 +210,7 @@ fn term_raise_pretty_prints_what_it_raises_and_shows() {
         Term::Raise {
             exception,
             message,
-            subject: Some(subject),
+            subject: Some(RaiseSubject::Shown(subject)),
         },
     );
     let s = format!("{}", b.build());
@@ -252,4 +252,26 @@ fn goto_with_args_pretty_prints() {
     b.set_terminator(next, Term::Return(Var(99)));
     let s = format!("{}", b.build());
     assert!(s.contains("goto bb1(v0)"));
+}
+
+#[test]
+fn term_raise_naming_the_kind_pretty_prints_that_it_does() {
+    let mut b = FnBuilder::new(FnId(5), "top");
+    let entry = b.block(vec![]);
+    let exception = b.let_(entry, Prim::Const(Const::Atom(0)));
+    let message = b.let_(
+        entry,
+        Prim::ConstBitstring(b"protocol P not implemented for ".to_vec(), 248),
+    );
+    let subject = b.let_(entry, Prim::Const(Const::Int(3)));
+    b.set_terminator(
+        entry,
+        Term::Raise {
+            exception,
+            message,
+            subject: Some(RaiseSubject::ShownWithKind(subject)),
+        },
+    );
+    let s = format!("{}", b.build());
+    assert!(s.contains("raise v0 v1 showing v2 and its kind"), "{s}");
 }

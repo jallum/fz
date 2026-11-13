@@ -733,6 +733,23 @@ pub enum BranchOrigin {
     ClauseDispatch,
 }
 
+/// The value a raised message goes on to show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RaiseSubject {
+    /// The lead, then the value.
+    Shown(Var),
+    /// The lead, the name of the value's kind, `Got value:`, then the value.
+    ShownWithKind(Var),
+}
+
+impl RaiseSubject {
+    pub fn var(self) -> Var {
+        match self {
+            Self::Shown(var) | Self::ShownWithKind(var) => var,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Term {
     Goto(BlockId, Vec<Var>),
@@ -791,7 +808,7 @@ pub enum Term {
     Raise {
         exception: Var,
         message: Var,
-        subject: Option<Var>,
+        subject: Option<RaiseSubject>,
     },
     /// The process continues the raise a handler was delivered: `kind` is the
     /// atom the handler received for its kind, `value` the raised value. The
@@ -1449,8 +1466,13 @@ impl fmt::Display for Term {
             Term::Raise {
                 exception,
                 message,
-                subject: Some(subject),
+                subject: Some(RaiseSubject::Shown(subject)),
             } => write!(f, "raise {exception} {message} showing {subject}"),
+            Term::Raise {
+                exception,
+                message,
+                subject: Some(RaiseSubject::ShownWithKind(subject)),
+            } => write!(f, "raise {exception} {message} showing {subject} and its kind"),
             Term::Raise {
                 exception,
                 message,

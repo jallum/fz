@@ -18,8 +18,8 @@ use crate::dispatch_matrix::OutcomeId;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::{
     Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternMarshalSite, ExternTy,
-    ExternalCallEdge, FnId, FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter as IrReceiveAfter,
-    ReceiveClause as IrReceiveClause, Stmt as IrStmt, Term as IrTerm, Var,
+    ExternalCallEdge, FnId, FnIr as IrFn, Module as IrModule, Prim as IrPrim, RaiseSubject,
+    ReceiveAfter as IrReceiveAfter, ReceiveClause as IrReceiveClause, Stmt as IrStmt, Term as IrTerm, Var,
 };
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::CallableShape;
@@ -848,7 +848,7 @@ pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
             } => {
                 other_uses.insert(*exception);
                 other_uses.insert(*message);
-                other_uses.extend(*subject);
+                other_uses.extend(subject.map(RaiseSubject::var));
             }
             IrTerm::Reraise { kind, value } => {
                 other_uses.insert(*kind);

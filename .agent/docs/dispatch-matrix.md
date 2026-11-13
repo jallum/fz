@@ -1198,24 +1198,32 @@ carries the existing impl `CallTarget`, return flow, and extern marshal facts
 outside `DispatchMatrix`. The arm table is in dense `OutcomeId` order, so a
 winning outcome routes directly to its artifact-owned arm; it is not translated
 through a copied body-id table. Dispatch misses are unreachable for closed
-receiver unions and lower to `Term::Unreachable`, which traps; the interpreter
-reports them as internal errors. There is no residual protocol-stub outcome in
-the matrix.
+receiver unions that the implementations cover. A protocol callsite whose
+receiver type reaches beyond every implementation carries a `LastResort`
+(`Protocol.UndefinedError`, whose message names the kind of the receiver), so
+the plan tests the receiver even where one implementation is left, and a miss
+raises it on every path. A callsite plan with no last resort belongs to a
+closure callsite or to a protocol call whose implementations cover the receiver;
+its `Fail` node lowers to `Term::Unreachable` in native code and is an internal
+error in the interpreter. There is no residual protocol-stub outcome in the
+matrix.
 
 A decision that can end with no outcome names what it raises:
 `PatternDispatchPlan::last_resort` is a `LastResort`, set when the rows are built through
 `SourcePatternRows::raising` and kept through narrowing and type mapping. A
-`LastResort` has two forms: `Exception` (exception module, message, and whether
-the message shows input 0) and `Reraise`, which continues the raise a handler
+`LastResort` has two forms: `Exception` (exception module, message, and a
+`MessageSubject`: nothing, input 0 after the lead, or input 0 after a lead that
+ends with the name of its kind) and `Reraise`, which continues the raise a handler
 was delivered, with inputs 0 and 1 as its kind and value; a `try` handler's
 dispatch, and an `after`'s dispatch with no rows, end in it. A plan with no last
 resort belongs to a construct that handles the miss itself: a `with` binding
 (its `else` takes the value, or without one the `with` yields it), a guard,
 `receive`. Native
-lowering of a reached fail emits `Term::Raise`, which calls `fz_raise` or
-`fz_raise_showing`, or `Term::Reraise`, which calls `fz_reraise`; the
-interpreter's `raise_last_resort` calls `failure::raise_exception` (or
-`failure::raise_exception_showing` with the subject), or `failure::reraise`,
+lowering of a reached fail emits `Term::Raise`, which calls `fz_raise`,
+`fz_raise_showing` or `fz_raise_naming_kind`, or `Term::Reraise`, which calls
+`fz_reraise`; the interpreter's `raise_last_resort` calls
+`failure::raise_exception` (or `failure::raise_exception_showing` or
+`failure::raise_exception_naming_kind` with the subject), or `failure::reraise`,
 and then `after_panic`. The raise goes to the nearest handler, so a `rescue` around the
 decision catches it like any raise; with no handler the process prints Elixir's
 line for that exception and ends, and drivers read `Process.failed`, never

@@ -40,7 +40,8 @@ use crate::fast_hash::HashMap;
 use std::sync::Arc;
 
 use crate::dispatch_matrix::pattern::{
-    LastResort, PatternDispatchOutcome, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr, PatternPinnedInput,
+    LastResort, MessageSubject, PatternDispatchOutcome, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr,
+    PatternPinnedInput,
 };
 use crate::dispatch_matrix::{
     BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchEdge, DispatchGraph,
@@ -1536,9 +1537,13 @@ impl ProgramCanon<'_> {
             Some(LastResort::Exception {
                 exception,
                 message,
-                shows_subject,
+                subject,
             }) => {
-                let showing = if *shows_subject { " showing input 0" } else { "" };
+                let showing = match subject {
+                    MessageSubject::Absent => "",
+                    MessageSubject::Shown => " showing input 0",
+                    MessageSubject::ShownWithKind => " showing input 0 and its kind",
+                };
                 out.put(&format!("raises {exception} {message:?}{showing}"));
             }
             Some(LastResort::Reraise) => out.put("reraises input 0 as kind, input 1 as value"),

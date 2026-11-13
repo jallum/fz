@@ -1,0 +1,45 @@
+an integer, 7
+protocol Sizer not implemented for Float
+
+Got value:
+
+    1.5
+
+protocol Sizer not implemented for Foo (a struct)
+
+Got value:
+
+    %Foo{a: 1}
+
+protocol Sizer not implemented for Atom
+
+Got value:
+
+    :ok
+
+protocol Sizer not implemented for List
+
+Got value:
+
+    [1, 2]
+
+protocol Sizer not implemented for Tuple
+
+Got value:
+
+    {1, 2}
+
+protocol Sizer not implemented for Map
+
+Got value:
+
+    %{a: 1}
+
+protocol Sizer not implemented for BitString
+
+Got value:
+
+    "text"
+
+an integer, 7
+protocol Sizer not implemented for Function

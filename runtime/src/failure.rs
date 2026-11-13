@@ -24,11 +24,12 @@
 //!
 //! `raise_exception` builds an exception from a name and a message and raises
 //! it as an error; `raise_exception_showing` also carries the term the message
-//! shows, in the exception's `term` field. Compiled code reaches it through `fz_raise` and
-//! `fz_raise_showing` when a decision raises the exception Elixir raises for
-//! it, and `Kernel.raise/2` calls `fz_raise`.
+//! shows, in the exception's `term` field; `raise_exception_naming_kind` also
+//! names the term's kind first. Compiled code reaches them through `fz_raise`,
+//! `fz_raise_showing` and `fz_raise_naming_kind` when a decision raises the
+//! exception Elixir raises for it, and `Kernel.raise/2` calls `fz_raise`.
 
-use crate::any_value::debug::render_value;
+use crate::any_value::debug::{kind_name, render_value};
 use crate::any_value::{AnyValue, AnyValueRef, ValueKind, map_addr_from_tagged};
 use crate::exec_ctx::ExecCtx;
 use crate::ir_runtime::{bitstring_like_word, fz_tuple_elem, fz_tuple_size};
@@ -359,6 +360,15 @@ pub fn raise_exception_showing(process: *mut Process, name: AnyValue, lead: &str
     raise(process, RaiseKind::Error, exception);
 }
 
+/// Raise the exception `name` about `term` the way Elixir's
+/// `Protocol.UndefinedError` words it: `lead` ends the line that names the
+/// term's kind, then a blank line, `Got value:`, a blank line and the term
+/// indented.
+pub fn raise_exception_naming_kind(process: *mut Process, name: AnyValue, lead: &str, term: AnyValue) {
+    let lead = format!("{lead}{}\n\nGot value:", kind_name(process, term));
+    raise_exception_showing(process, name, &lead, term);
+}
+
 fn text(process: *mut Process, text: &str) -> AnyValue {
     let process = unsafe { &mut *process };
     process.heap.alloc_bitstring(text.as_bytes(), 8 * text.len() as u64)
@@ -404,6 +414,19 @@ pub extern "C" fn fz_raise_showing(process: *mut Process, name_ref: u64, lead_re
         binary_text(value_from_word(lead_ref, "fz_raise_showing lead")).expect("fz_raise_showing: a binary lead");
     let term = value_from_word(term_ref, "fz_raise_showing term");
     raise_exception_showing(process, name, &lead, term);
+}
+
+/// Raise the exception named by the atom `name_ref` with a message about the
+/// term `term_ref`, led by the binary `lead_ref` and the name of the term's
+/// kind.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_raise_naming_kind(process: *mut Process, name_ref: u64, lead_ref: u64, term_ref: u64) {
+    let name = value_from_word(name_ref, "fz_raise_naming_kind name");
+    let lead = binary_text(value_from_word(lead_ref, "fz_raise_naming_kind lead"))
+        .expect("fz_raise_naming_kind: a binary lead");
+    let term = value_from_word(term_ref, "fz_raise_naming_kind term");
+    raise_exception_naming_kind(process, name, &lead, term);
 }
 
 #[cfg(test)]

@@ -18,7 +18,7 @@ use crate::compiler2::{
     ControlDestination, ExecutableDispatch, ValueId,
 };
 use crate::compiler2::{ExecutableKey, FunctionId, RunFailure};
-use crate::dispatch_matrix::pattern::LastResort;
+use crate::dispatch_matrix::pattern::{LastResort, MessageSubject};
 use crate::exec::runtime::emit_runtime_event;
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::CallableShape;
@@ -1253,14 +1253,24 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         DispatchSource::Inputs(&inputs),
                     )?;
                     let operands = values.over(transport, &inputs);
-                    let decided = Dispatch::new(runtime, types, program, module, &dispatch.plan, operands)
-                        .run()?
-                        .ok_or_else(|| {
+                    let Some(decided) =
+                        Dispatch::new(runtime, types, program, module, &dispatch.plan, operands).run()?
+                    else {
+                        let last_resort = dispatch.plan.last_resort.as_ref().ok_or_else(|| {
                             format!(
                                 "backend dispatch callsite in executable {:?} missed an exhaustive dispatch",
                                 executable.key
                             )
                         })?;
+                        return raise_last_resort(
+                            runtime,
+                            transport,
+                            program,
+                            last_resort,
+                            DispatchInputs::Values(&inputs),
+                            continuations,
+                        );
+                    };
                     let outcome = decided.outcome();
                     let arm = dispatch
                         .arm(outcome)
@@ -2339,13 +2349,17 @@ fn raise_last_resort(
         LastResort::Exception {
             exception,
             message,
-            shows_subject,
+            subject,
         } => {
             let exception = fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(exception));
-            if *shows_subject {
-                fz_runtime::failure::raise_exception_showing(proc, exception, message, input(0)?);
-            } else {
-                fz_runtime::failure::raise_exception(proc, exception, message);
+            match subject {
+                MessageSubject::Absent => fz_runtime::failure::raise_exception(proc, exception, message),
+                MessageSubject::Shown => {
+                    fz_runtime::failure::raise_exception_showing(proc, exception, message, input(0)?)
+                }
+                MessageSubject::ShownWithKind => {
+                    fz_runtime::failure::raise_exception_naming_kind(proc, exception, message, input(0)?)
+                }
             }
         }
     }

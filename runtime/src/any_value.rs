@@ -1538,6 +1538,39 @@ pub mod debug {
         render_with_limit(proc, value, Limit::DEFAULT)
     }
 
+    /// The name Elixir's `Protocol.UndefinedError` gives a value's kind:
+    /// `Integer`, `Float`, `Atom`, `List`, `Map`, `Tuple`, `BitString`,
+    /// `Function`, `Reference` for a resource, and `Name (a struct)` for a named
+    /// struct. A pid and a reference are integers at runtime and are named as
+    /// one.
+    pub fn kind_name(proc: *mut Process, value: AnyValue) -> String {
+        match value.kind() {
+            ValueKind::INT => "Integer".to_string(),
+            ValueKind::FLOAT => "Float".to_string(),
+            ValueKind::ATOM => "Atom".to_string(),
+            ValueKind::LIST => "List".to_string(),
+            ValueKind::MAP => "Map".to_string(),
+            ValueKind::CLOSURE => "Function".to_string(),
+            ValueKind::RESOURCE => "Reference".to_string(),
+            kind if kind.is_binary_repr() => "BitString".to_string(),
+            ValueKind::STRUCT => struct_kind_name(proc, value),
+            kind => panic!("a value of kind {kind:?} has no protocol kind name"),
+        }
+    }
+
+    fn struct_kind_name(proc: *mut Process, value: AnyValue) -> String {
+        let bits = value.heap_object_word().expect("a struct is a heap object");
+        let address = struct_addr_from_tagged(bits).expect("struct bits");
+        let schema_id = unsafe { struct_schema_id(address) };
+        let registry = unsafe { &*proc }.heap.schemas_registry();
+        let registry = registry.borrow();
+        match &registry.get(schema_id).identity {
+            SchemaIdentity::Tuple(_) => "Tuple".to_string(),
+            SchemaIdentity::Named(module) => format!("{module} (a struct)"),
+            SchemaIdentity::Internal(name) => panic!("internal storage schema {name} is not a language value"),
+        }
+    }
+
     /// `inspect/2` with `limit:`.
     pub fn render_with_limit(proc: *mut Process, value: AnyValue, limit: Limit) -> String {
         Renderer { proc, limit }.value(value)
