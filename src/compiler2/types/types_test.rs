@@ -4,6 +4,7 @@ use std::slice;
 
 use super::*;
 use crate::compiler2::ModuleId;
+use crate::compiler2::allocation_probe::allocations_during;
 use crate::compiler2::drive_harness::module_name;
 use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::finite_set::FiniteSet;
@@ -5221,5 +5222,22 @@ fn a_kept_key_leaf_holding_a_closure_stays_the_ground_type() {
         t.is_equivalent(&kept, &element),
         "a demanded element that is ground except for a closure's own arrow is the key's meaning, \
          not a position to be replaced by an address variable"
+    );
+}
+
+#[test]
+fn interning_a_new_descriptor_stores_it_once() {
+    let mut t = Types::new();
+    let int = t.int();
+    let atom = t.atom();
+    let descr = Descr::tuple_of(vec![int, atom]);
+    let probe = descr.clone();
+
+    let (ty, allocations) = allocations_during(|| t.interner.intern(probe));
+
+    assert_eq!(t.descr(&ty), &descr);
+    assert_eq!(
+        allocations, 4,
+        "a new entry allocates the growth of the arena and the index; the descriptor moves into the arena and no copy of it is made"
     );
 }

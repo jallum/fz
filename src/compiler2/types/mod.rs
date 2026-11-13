@@ -18,8 +18,12 @@ mod order;
 mod sigs;
 
 use std::cell::RefCell;
+use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::BuildHasher;
 use std::sync::Arc;
+
+use hashbrown::HashTable;
 
 use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::finite_set::FiniteSet;
@@ -202,8 +206,14 @@ impl Default for Types {
 
 #[derive(Default)]
 struct TypeInterner {
+    /// The one stored copy of every interned descriptor, by id.
     arena: Vec<Descr>,
-    index: HashMap<Descr, Ty>,
+    /// The ids of `arena`, found by the hash of the descriptor each names and
+    /// confirmed by comparing against `arena`. The seed belongs to this
+    /// interner alone and the table is never iterated, so no order is
+    /// observable.
+    index: HashTable<Ty>,
+    hasher: RandomState,
     #[cfg(test)]
     work: InterningWork,
 }
@@ -360,16 +370,19 @@ impl TypeInterner {
         {
             self.work.canonical_index_probes += 1;
         }
-        if let Some(ty) = self.index.get(&d) {
-            return *ty;
+        let hash = self.hasher.hash_one(&d);
+        if let Some(ty) = self.find(hash, &d) {
+            return ty;
         }
         #[cfg(debug_assertions)]
         self.debug_assert_dnf_axes_hygienic(&d);
         let raw = self.arena.len();
         assert!(u32::try_from(raw).is_ok(), "type interner exhausted ids");
         let ty = Ty(raw as u32);
-        self.arena.push(d.clone());
-        self.index.insert(d, ty);
+        self.arena.push(d);
+        let (arena, hasher) = (&self.arena, &self.hasher);
+        self.index
+            .insert_unique(hash, ty, |ty| hasher.hash_one(&arena[ty.0 as usize]));
         #[cfg(test)]
         {
             self.work.inserted += 1;
@@ -391,7 +404,11 @@ impl TypeInterner {
         {
             self.work.raw_index_probes += 1;
         }
-        self.index.get(d).copied()
+        self.find(self.hasher.hash_one(d), d)
+    }
+
+    fn find(&self, hash: u64, d: &Descr) -> Option<Ty> {
+        self.index.find(hash, |ty| &self.arena[ty.0 as usize] == d).copied()
     }
 
     fn normalized(&mut self) {
