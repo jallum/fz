@@ -1,0 +1,7 @@
+error[parse/expected-token]: write the newline character literal as `?\n`
+  --> fixtures/01220_a_second_question_mark_after_a_name_is_rejected.fz:1:11
+   |
+1 | x = ready??
+   |           ^
+   |
+

@@ -38,11 +38,16 @@ top-level expressions are its `main/0`".
 
 The lexer reads characters, not bytes, for names. A name, atom or keyword key
 starts with `_`, an ASCII letter, or a non-ASCII `XID_Start` character that is
-not titlecase, and continues with `XID_Continue` characters plus `?` and `!`
-(`unicode-ident`). A variable or function name cannot start with an uppercase
-letter outside ASCII (`unexpected character`); an atom (`:Élan`) or keyword key
-(`Élan: 1`) can. An alias, a word starting with an ASCII uppercase letter, is
-ASCII only: its first other character is reported as `invalid character`.
+not titlecase, and continues with `XID_Continue` characters (`unicode-ident`).
+A name takes one `?` or `!` as its last character and ends there: `a?b` is the
+name `a?` followed by the name `b`, `a??` is `a?` followed by a `?` that quotes
+nothing, and `:a?b` is the atom `:a?` followed by `b`. A variable or function
+name cannot start with an uppercase letter outside ASCII (`unexpected
+character`); an atom (`:Élan`) or keyword key (`Élan: 1`) can. An alias, a word
+starting with an ASCII uppercase letter, holds ASCII letters, digits and
+underscores only: its first other character, a non-ASCII character or a `?` or
+`!` mark, is reported as `invalid character`. An atom or keyword key spelled
+like an alias may end in a mark (`:Ab?`, `[Ab?: 1]`).
 `source_word` applies the same classes to a quoted name, so the macro surface
 and the lexer agree on what one source word is.
 

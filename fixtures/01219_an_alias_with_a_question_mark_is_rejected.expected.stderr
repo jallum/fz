@@ -1,0 +1,7 @@
+error[parse/expected-token]: invalid character '?' (code point U+003F) in alias (only ASCII characters are allowed): Ab?
+  --> fixtures/01219_an_alias_with_a_question_mark_is_rejected.fz:1:1
+   |
+1 | Ab? = 1
+   | ^^^
+   |
+
