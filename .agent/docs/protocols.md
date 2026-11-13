@@ -133,16 +133,17 @@ type — the first argument:
 
 ```text
 receiver = input_types[0]
-for each registered (protocol, target) impl:
+for each registered (protocol, target) impl whose target overlaps receiver:
+    wait until its impl module is defined
+then, for each registered (protocol, target) impl:
     if runtime_type_predicate(receiver) overlaps runtime_type_predicate(impl_target_ty(target))
        and intersect(receiver, impl_target_ty(target)) is non-empty
        and it has this callback:
         collect it
 exactly one match  -> activate that impl callback as an ordinary call
                       (the protocol callsite becomes a direct call to the impl)
-no match           -> demand the typed impl owner (from the provider
-                      index) whose target overlaps the receiver, then retry
-many matches       -> unresolved (any): the receiver is open/ambiguous here
+no match           -> the call is bottom: no implementation can take this receiver
+many matches       -> every match is activated; the callsite dispatches among them
 ```
 
 The runtime-predicate check is what keeps runtime identity authoritative. A
@@ -153,13 +154,18 @@ Selection is lazy about impl code, and there is a single discovery path: the
 **provider index** (`ProtocolImplProviders(protocol)`). Scope time records every
 `defimpl` as a `(protocol, target) -> impl_module` entry — built-in impls
 co-located with the protocol's own source, and impls in a module the program
-never reaches by name alike. When no registered arm matches, the job reads that
-index and demands `DefineModule(impl_module)` for each target the receiver
-overlaps by the same runtime-predicate-plus-intersection test; the impl is the
-unit of demand, not the arbitrarily-named module it
-sits inside, and its lexical host is never pulled. There is **no** receiver-type
-module-name scan: a protocol call always names the protocol, and that reference
-scopes its co-located `defimpl`s, so built-in impls ride in on the protocol. A
+never reaches by name alike. Before reading the dispatch's arms, the job reads
+that index and waits on `ModuleDefined(impl_module)` for every target the
+receiver overlaps by the same runtime-predicate-plus-intersection test, so the
+arm set it then reads is complete. The wait does not depend on whether some arm
+already matches: a receiver typed `any` (a `Map.put` result, whose spec says
+`any`) could be a value of any implementing type, and each impl it could reach
+must be compiled for the runtime dispatch to find it. The impl is the unit of
+demand, not the arbitrarily-named module it sits inside, and its lexical host is
+never pulled. The index is read unconditionally, so a `defimpl` scoped later
+re-wakes the callsite. There is **no** receiver-type module-name scan: a protocol
+call always names the protocol, and that reference scopes its co-located
+`defimpl`s, so built-in impls ride in on the protocol. A
 single match activates `selected.function` through the ordinary call path — so a
 known list receiver at `Enumerable.reduce/3` resolves to the List impl callback
 (displayed `Enumerable.List.reduce/3`), and the callsite summary identifies that
