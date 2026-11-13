@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rba.1",
     "fz-rba.2"
@@ -14,8 +14,8 @@
   "labels": [],
   "parent": "fz-rba",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "One function decides how a tuple travels",
   "type": "task",
-  "updated_at": "2026-11-13T21:47:14Z"
+  "updated_at": "2026-11-13T21:47:15Z"
 }
