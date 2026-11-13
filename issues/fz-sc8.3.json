@@ -12,9 +12,15 @@
   "id": "fz-sc8.3",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Unblocked by fz-3sy.4 once stack #428 (PRs #407, #427, #434) lands: x.f(a) on a module value is a DirectCall with DirectCallee::ModuleValue, resolved in semantic's resolve_module_value_call through ModuleName::from_atom_name -\u003e World::reference_module -\u003e World::module_public_function. What remains here: ModuleName::from_atom_name maps only Elixir.-prefixed atoms, so :erlang.abs(-3) is refused with type/module-value-call (emit_atom_names_no_module, jobs/semantic.rs); teach that function and defmodule :erlang about bare-atom module names. A receiver typed plain atom stays refused until fz-3sy.5. (Reported by the fz-da session; not re-verified here.)",
+      "timestamp": "2026-11-13T14:09:56Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "`defmodule :erlang` and :erlang.float_to_binary/2",
   "type": "bug",
-  "updated_at": "2026-11-11T15:21:30Z"
+  "updated_at": "2026-11-13T14:09:56Z"
 }
