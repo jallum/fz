@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use super::super::code::SourceOwner;
 use super::super::drive::{FactKey, JobEffects, current_uses};
@@ -53,7 +54,7 @@ pub(super) fn index_code(
 
     let quoted = QuotedCodeSource {
         quoted: quoted_root,
-        surface,
+        surface: Rc::new(surface),
     };
     let code_changed = world.finish_code_index(source_owner, quoted);
     outputs.push(FactKey::CodeIndexed(source_owner));
@@ -103,9 +104,12 @@ pub(super) fn scope_code(
     if let Some(gate) = scope_code_gates(world, source_owner).into_iter().next() {
         return Ok(JobEffects::wait_on_current(gate));
     }
-    let source = world
-        .code_source(source_owner)
-        .expect("scope_code_gates confirmed CodeIndexed is present");
+    let surface = Rc::clone(
+        &world
+            .code_source(source_owner)
+            .expect("scope_code_gates confirmed CodeIndexed is present")
+            .surface,
+    );
     let mut reads = Vec::new();
     let base_namespace = if world.is_runtime_prelude(source_owner) {
         Namespace::default()
@@ -126,7 +130,7 @@ pub(super) fn scope_code(
         products,
         source_owner,
         ScopeSnapshot::module(ModuleId::GLOBAL, base_namespace),
-        &source.surface,
+        &surface,
     )? {
         ScopePublication::Complete {
             namespace,
@@ -189,7 +193,10 @@ pub(super) fn define_module(
     products: Option<&super::super::pull::ProductSessions>,
     module_id: ModuleId,
 ) -> Result<JobEffects, FatalError> {
-    if let Some((source, scope)) = world.module_scope(module_id) {
+    if let Some((source, scope)) = world
+        .module_scope(module_id)
+        .map(|(source, scope)| (source.clone(), scope))
+    {
         let result = match &source.kind {
             ModuleSourceKind::Body(surface) => {
                 source_publish::publish_scope(world, tel, products, source.owner, scope, surface)?
@@ -209,7 +216,7 @@ pub(super) fn define_module(
                 source.owner,
                 module_id,
                 scope.namespace(),
-                &impl_source.clone(),
+                impl_source,
             )?,
         };
         return match result {

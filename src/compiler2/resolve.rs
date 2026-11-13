@@ -297,20 +297,11 @@ impl World {
                 // does not declare is diagnosed through that obligation,
                 // never dropped here. This read only asks for what the
                 // schema says exists.
-                let field_order = self.struct_def_fields(module_id).map(|fields| fields.to_vec());
-                let any = self.types_mut().any();
-                let mut by_name = HashMap::new();
+                let mut written = Vec::with_capacity(fields.len());
                 for (name, field) in fields {
-                    let field_ty = self.resolve_ty(namespace, field, vars)?;
-                    by_name.insert(name.clone(), field_ty);
+                    written.push((name.clone(), self.resolve_ty(namespace, field, vars)?));
                 }
-                let ordered_names =
-                    field_order.unwrap_or_else(|| fields.iter().map(|(name, _)| name.clone()).collect());
-                let ordered_fields = ordered_names
-                    .iter()
-                    .map(|name| by_name.get(name).copied().unwrap_or(any))
-                    .collect::<Vec<_>>();
-                Ok(self.struct_value_ty(module_id, &ordered_names, &ordered_fields))
+                Ok(self.struct_record_ty(module_id, written))
             }
             TypeExpr::Map(pairs) => {
                 let mut fields = Vec::with_capacity(pairs.len());
@@ -371,10 +362,10 @@ impl World {
                 Ok((entry.build)(self.types_mut(), &arg_tys))
             }
             NameClass::Named(type_name) => {
-                let Some(def) = self.type_def(&type_name).cloned() else {
+                let Some(ty) = self.instantiate_type_def(&type_name, &arg_tys) else {
                     return Err(self.name_error(path, "type is referenced before it is resolved"));
                 };
-                Ok(def.instantiate(self.types_mut(), &arg_tys))
+                Ok(ty)
             }
             NameClass::Var(id) => {
                 if !args.is_empty() {

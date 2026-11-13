@@ -1316,8 +1316,16 @@ impl World {
     /// callee-tier `type defined` signal. The definition and the interner ride
     /// the event as opaque refs, so handlers that want the resolved surface
     /// render it themselves at event time.
+    #[cfg(test)]
     pub(crate) fn type_def(&self, name: &TypeName) -> Option<&TypeDef> {
         self.type_defs.get(name)
+    }
+
+    /// `name`'s definition instantiated at `args`, or `None` when it has not
+    /// been published.
+    pub(crate) fn instantiate_type_def(&mut self, name: &TypeName, args: &[Ty]) -> Option<Ty> {
+        let def = self.type_defs.get(name)?;
+        Some(def.instantiate(&mut self.types, args))
     }
 
     /// Reads `module`'s resolved `defstruct`, if `StructDefined(module)` has
@@ -1692,6 +1700,55 @@ impl World {
             .get(module)
             .interface()
             .expect("module interface should only be read when it exists")
+    }
+
+    /// Binds into `scope` the callable `module`'s published interface exports
+    /// as `name/arity`, or `None` when it exports no such callable.
+    pub(crate) fn bind_interface_callable(
+        &mut self,
+        scope: Namespace,
+        module: ModuleId,
+        name: &str,
+        arity: usize,
+    ) -> Option<Namespace> {
+        let callable = self
+            .modules
+            .get(module)
+            .interface()?
+            .callables()
+            .iter()
+            .find(|callable| callable.matches_name_arity(name, arity))?;
+        Some(self.namespaces.bind(
+            scope,
+            callable.reference.name().to_string(),
+            callable.namespace_symbol(),
+        ))
+    }
+
+    /// Binds into `scope` every callable of `module`'s published interface
+    /// that `keep` accepts, in the interface's order.
+    pub(crate) fn bind_interface_callables(
+        &mut self,
+        scope: Namespace,
+        module: ModuleId,
+        keep: impl Fn(&super::module_interface::ModuleInterfaceCallable) -> bool,
+    ) -> Namespace {
+        let interface = self
+            .modules
+            .get(module)
+            .interface()
+            .expect("module interface should only be read when it exists");
+        interface
+            .callables()
+            .iter()
+            .filter(|callable| keep(callable))
+            .fold(scope, |scope, callable| {
+                self.namespaces.bind(
+                    scope,
+                    callable.reference.name().to_string(),
+                    callable.namespace_symbol(),
+                )
+            })
     }
 
     pub fn module_interface_if_present(&self, module: ModuleId) -> Option<&ModuleInterface> {
@@ -2263,10 +2320,10 @@ impl World {
             .expect("guard dispatch should only be read after its fact is defined")
     }
 
-    pub fn code_source(&self, id: SourceOwner) -> Option<QuotedCodeSource> {
+    pub fn code_source(&self, id: SourceOwner) -> Option<&QuotedCodeSource> {
         match self.code.get(id) {
             super::code::CodeState::Indexed { source, .. } | super::code::CodeState::Scoped { source, .. } => {
-                Some(source.clone())
+                Some(source)
             }
             super::code::CodeState::Reserved | super::code::CodeState::Pending { .. } => None,
         }
@@ -2281,14 +2338,14 @@ impl World {
         }
     }
 
-    pub fn module_scope(&self, module: ModuleId) -> Option<(super::identity::ModuleSource, ScopeSnapshot)> {
+    pub fn module_scope(&self, module: ModuleId) -> Option<(&super::identity::ModuleSource, ScopeSnapshot)> {
         match self.modules.get(module) {
-            ModuleState::Scoped { source, base, .. } => Some((source.clone(), ScopeSnapshot::module(module, *base))),
+            ModuleState::Scoped { source, base, .. } => Some((source, ScopeSnapshot::module(module, *base))),
             ModuleState::Defined {
                 source: Some(source),
                 base,
                 ..
-            } => Some((source.clone(), ScopeSnapshot::module(module, *base))),
+            } => Some((source, ScopeSnapshot::module(module, *base))),
             _ => None,
         }
     }
@@ -2450,21 +2507,25 @@ impl World {
     }
 
     pub(crate) fn struct_value_ty(&mut self, module: ModuleId, field_names: &[String], field_tys: &[Ty]) -> Ty {
-        debug_assert_eq!(
-            field_names.len(),
-            field_tys.len(),
-            "struct type fields must be ordered against their schema"
-        );
-        let module_name = self
-            .module_name(module)
-            .unwrap_or_else(|| panic!("named struct module {} should have a reverse lookup", module.as_u32()))
-            .clone();
-        let map_fields = field_names
+        struct_value_ty(&self.modules, &mut self.types, module, field_names, field_tys)
+    }
+
+    /// The type of `%Module{..}` written with `written` field types. Fields
+    /// take the schema's order, and a field the record leaves out is `any`.
+    /// A module with no published schema keeps the written order.
+    pub(crate) fn struct_record_ty(&mut self, module: ModuleId, written: Vec<(String, Ty)>) -> Ty {
+        let any = self.types.any();
+        let Some(schema) = self.struct_defs.get(module) else {
+            let (names, tys): (Vec<String>, Vec<Ty>) = written.into_iter().unzip();
+            return struct_value_ty(&self.modules, &mut self.types, module, &names, &tys);
+        };
+        let by_name: HashMap<String, Ty> = written.into_iter().collect();
+        let tys: Vec<Ty> = schema
+            .fields
             .iter()
-            .zip(field_tys.iter().copied())
-            .map(|(name, ty)| (MapKey::Atom(name.clone()), ty))
-            .collect::<Vec<_>>();
-        self.types.struct_map(module, module_name, &map_fields)
+            .map(|name| by_name.get(name).copied().unwrap_or(any))
+            .collect();
+        struct_value_ty(&self.modules, &mut self.types, module, &schema.fields, &tys)
     }
 
     pub(crate) fn resolve_module_name(
@@ -4133,4 +4194,28 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
 
 fn emit_code_submitted(tel: &impl Telemetry, world: &World, code: &SourceOwner) {
     tel.raw_event2(&["fz", "compiler2", "code", "submitted"], world, code);
+}
+
+fn struct_value_ty(
+    modules: &ModuleMap,
+    types: &mut Types,
+    module: ModuleId,
+    field_names: &[String],
+    field_tys: &[Ty],
+) -> Ty {
+    debug_assert_eq!(
+        field_names.len(),
+        field_tys.len(),
+        "struct type fields must be ordered against their schema"
+    );
+    let module_name = modules
+        .name(module)
+        .unwrap_or_else(|| panic!("named struct module {} should have a reverse lookup", module.as_u32()))
+        .clone();
+    let map_fields = field_names
+        .iter()
+        .zip(field_tys.iter().copied())
+        .map(|(name, ty)| (MapKey::Atom(name.clone()), ty))
+        .collect::<Vec<_>>();
+    types.struct_map(module, module_name, &map_fields)
 }
