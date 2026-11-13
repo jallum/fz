@@ -20,7 +20,9 @@ defmodule Kernel do
       `length/1`, `elem/2`, `hd/1` and `tl/1`, the numeric functions `abs/1`,
       `round/1`, `trunc/1`, `floor/1` and `ceil/1`, and the type tests `is_integer/1`,
       `is_float/1`, `is_binary/1`, `is_list/1`, `is_map/1`, `is_tuple/1`,
-      `is_atom/1`, `is_boolean/1` and `is_nil/1`, all of which a guard may call
+      `is_atom/1`, `is_boolean/1`, `is_nil/1`, `is_struct/1` and `is_struct/2`, all
+      of which a guard may call
+    * `match?/2`, a macro answering whether a value matches a pattern
 
   Every arithmetic and comparison operator is a typed clause family: one
   clause per pair of operand types it supports. The `@spec` of an arithmetic
@@ -311,6 +313,62 @@ defmodule Kernel do
   @spec is_exception(any) :: boolean
   def is_exception(%{__struct__: module, __exception__: true}) when is_atom(module), do: true
   def is_exception(_), do: false
+
+  @doc """
+  Answers `true` when `term` is a struct: a map whose `__struct__` field is an
+  atom.
+
+  ## Examples
+
+      is_struct(%ArgumentError{message: "bad"})
+      #=> true
+
+      is_struct(%{a: 1})
+      #=> false
+
+  """
+  @spec is_struct(any) :: boolean
+  def is_struct(%{__struct__: module}) when is_atom(module), do: true
+  def is_struct(_), do: false
+
+  @doc """
+  Answers `true` when `term` is a struct of the module `name`.
+
+  ## Examples
+
+      is_struct(%ArgumentError{message: "bad"}, ArgumentError)
+      #=> true
+
+      is_struct(%ArgumentError{message: "bad"}, RuntimeError)
+      #=> false
+
+  """
+  @spec is_struct(any, atom) :: boolean
+  def is_struct(%{__struct__: module}, name) when is_atom(module) and is_atom(name), do: module == name
+  def is_struct(_, name) when is_atom(name), do: false
+
+  @doc """
+  Answers `true` when `expression` matches `pattern`, and `false` otherwise.
+  The pattern may carry a `when` guard; the variables it binds stay inside the
+  match. A macro, so a guard refuses it.
+
+  ## Examples
+
+      match?({:ok, _}, {:ok, 1})
+      #=> true
+
+      match?({:ok, n} when n > 1, {:ok, 1})
+      #=> false
+
+  """
+  defmacro match?(pattern, expression) do
+    quote do
+      case unquote(expression) do
+        unquote(pattern) -> true
+        _ -> false
+      end
+    end
+  end
 
   @doc """
   Answers the struct `base` names, each field at its default. `base` is a
