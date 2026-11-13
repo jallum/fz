@@ -992,13 +992,13 @@ fn materialize_direct_call_edge(
     // and matrix -- so the store answers alone: fz-kdt.69.2. fz-kdt.69.3
     // makes the ledger authoritative over exactly this divergence; revisit
     // then.)
-    let Some(summary) = summaries.get(&callsite).cloned() else {
+    let Some(summary) = summaries.get(&callsite) else {
         return Ok(None);
     };
     // The callsite's DESTINATIONS, not its settled targets: a target the
     // runtime could never route to is no destination at all (fz-kdt.104), and
     // a callsite left with one of them is a direct call.
-    let dispatch = match call_destinations(world.types_mut(), &summary) {
+    let dispatch = match call_destinations(world.types_mut(), summary) {
         Ok(CallDestinations::None) => return Ok(None),
         Ok(CallDestinations::Direct(target)) => {
             let (direct, return_ty) = lower_materialized_call_target(
@@ -1077,13 +1077,13 @@ fn materialize_closure_call_edge(
     original_entry_ids: &[ControlEntryId],
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<MaterializedCallEdge, FatalError> {
-    let summary = summaries.get(&callsite).cloned();
+    let summary = summaries.get(&callsite);
     // One question decides the call, and `closure_call_form` is where it is
     // asked: can this caller supply the target's capture inputs out of what it
     // holds, and if not, is what it holds a word the seam can open? The form
     // travels with the edge, so native lowering, the interpreter and the
     // boxed-apply contract all emit what this one answer promised.
-    match closure_call_form(world, callee_layout, summary.as_ref(), need) {
+    match closure_call_form(world, callee_layout, summary, need) {
         // Nothing can be called here, so this call really never happens. Lower
         // it as the dead call it is — every `ClosureCall` tail needs a return
         // flow, and `NoReturn` is the name for one that never returns. Emitting
@@ -1106,8 +1106,7 @@ fn materialize_closure_call_edge(
         // `none` (fz-kdt.130). It is also where a lambda goes when the tuple
         // carrying it is used whole beside being taken apart.
         ClosureCallForm::Seam => {
-            let return_ty =
-                public_indirect_return_ty(world, tel, root_id, analysis, summary.as_ref(), callsite, result_value)?;
+            let return_ty = public_indirect_return_ty(world, tel, root_id, analysis, summary, callsite, result_value)?;
             let return_flow = if world.types().is_empty(&return_ty) {
                 CallReturnFlow::NoReturn { local_source: None }
             } else {

@@ -1125,12 +1125,12 @@ fn exact_direct_callable_layout(
     demand: &RuntimeDemand,
     position: &TransportPosition,
 ) -> Option<RecipeLayout> {
-    let targets = demand.callable.targets.clone();
+    let targets = &demand.callable.targets;
     if demand.callable.is_first_class() || targets.is_empty() {
         return None;
     }
     let mut settled: Option<CallableDescr> = None;
-    for target in &targets {
+    for target in targets {
         match direct_callable_descr(world, tel, context, ty, demand, position, target) {
             DirectCallableDescr::Descr(descr) => {
                 settled = Some(match &settled {
@@ -1532,9 +1532,9 @@ fn produce_local_callable_construction(
         arity,
         capture_layouts: capture_layouts.clone().into_boxed_slice(),
     });
-    let boundary_surfaces = flow.first_class_surfaces.clone();
-    let boundary_layouts = surface_layouts(world, &boundary_surfaces);
-    let boundary_resolutions = boundary_resolution_symbols_for_flow_surfaces(flow, &boundary_surfaces, world.types());
+    let boundary_surfaces = &flow.first_class_surfaces;
+    let boundary_layouts = surface_layouts(world, boundary_surfaces);
+    let boundary_resolutions = boundary_resolution_symbols_for_flow_surfaces(flow, boundary_surfaces, world.types());
     let producer_position = TransportPosition::Value {
         executable: symbol,
         value,
@@ -1543,7 +1543,7 @@ fn produce_local_callable_construction(
         world,
         &mut builder,
         callable,
-        &boundary_surfaces,
+        boundary_surfaces,
         &boundary_layouts,
         callable_ty,
         &boundary_resolutions,

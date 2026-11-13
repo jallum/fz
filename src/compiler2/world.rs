@@ -1378,7 +1378,7 @@ impl World {
             name: "t".to_string(),
             arity: 0,
         };
-        let def = self.type_defs.get(&name)?.clone();
+        let def = self.type_defs.get(&name)?;
         Some(def.instantiate(&mut self.types, &[]))
     }
 

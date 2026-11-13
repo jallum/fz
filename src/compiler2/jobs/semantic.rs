@@ -265,8 +265,7 @@ pub(super) fn analyze_activation(
         entry_edges.absorb(&dispatch_reachability);
         let clause_inputs = dispatch_reachability
             .outcome_inputs
-            .iter()
-            .cloned()
+            .into_iter()
             .filter_map(|(outcome, inputs)| entry_dispatch.outcome(outcome).map(|outcome| (outcome.body_id, inputs)))
             .collect::<Vec<_>>();
         reachable_clauses.extend(clause_inputs.iter().map(|(clause, _)| *clause));
