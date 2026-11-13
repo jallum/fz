@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T01:34:53Z",
   "created": "2026-11-12T23:55:12Z",
   "description": "Scheduler::reads, output_keys and dependency_uses (src/compiler2/scheduler.rs:494-519) each build an owned union across every answer a job owns. Consumers filter or probe it once: drive.rs concluded_answers_missing (reads + waits, once per pop_runnable), drive.rs:64 apply_completion (dependency_uses, to pull Product addresses), drive.rs:1110-1115 output_keys(\u0026job).contains(..). Other callers: world.rs:626, :783, :789, telemetry/jsonl.rs:1344.\nShape: iterate the derivations' read sets by reference; a claims(job, \u0026F) -\u003e bool that walks derivations x outputs. Builds on the borrowed DependencyIndex accessors.\nAlso unforced in scheduler.rs: :701 concluded.output_keys.clone() and :737-741 previously_owned cloned, both dead after the line, so a move does it.\nOut of scope: the sorted Vec\u003cP\u003e snapshots in deps.rs subscribers / waiters / readers_of.\nHeat: per job pop and per completed job.\n\nMethod: .agent/strategies/ownership-shape.md. Change the signature and let cargo check enumerate dependents; resolve interleavings by compute-then-commit or a split borrow; stop and report if an Rc is the only move.\nSignal: pure refactor. Full gate green; no golden, census or pin moves. Report the clone/to_vec count of each touched file before and after.\nSites were read at develop 8bf8775ae and not compiled; confirm each with cargo check before relying on it.",
   "id": "fz-gfx.20",
   "labels": [],
   "parent": "fz-gfx",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Scheduler read accessors answer without building a set",
   "type": "task",
-  "updated_at": "2026-11-13T00:41:41Z"
+  "updated_at": "2026-11-13T01:34:53Z"
 }
