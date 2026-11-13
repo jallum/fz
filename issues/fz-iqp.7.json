@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T21:20:16Z",
+  "close_reason": "Duplicate of fz-sc8.158 (operator atoms fail with 'unsupported expression prefix: Colon'), which another session owns and builds.",
   "created": "2026-11-13T21:18:50Z",
   "description": ":+, :\u003c\u003e, [+: 1] do not lex; ':' handles only '::', an identifier start and a quote.",
   "id": "fz-iqp.7",
   "labels": [],
   "parent": "fz-iqp",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Operator atoms and operator keyword keys lex",
   "type": "task",
-  "updated_at": "2026-11-13T21:18:50Z"
+  "updated_at": "2026-11-13T21:20:16Z"
 }
