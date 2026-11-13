@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-eo2.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-eo2.3"
+  ],
   "created": "2026-11-13T21:18:51Z",
   "description": "Runs Elixir and rewrites golden plus stamp for one fixture or all; has a check-only mode that ignores stamps. Replaces the BLESS=1 branch of oracle_goldens_match_elixir. Stamps all 362.",
   "id": "fz-eo2.2",

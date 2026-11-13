@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-eo2.2"
+  ],
   "blocks": [],
   "created": "2026-11-13T21:18:52Z",
   "description": "Signal: an unchanged tree spawns zero elixir children (counted); editing an .exs, a golden or an args line runs exactly that fixture. CI runs the check-only mode when the pinned Elixir version changes. Docs: .agent/docs/fixtures.md oracle section. Note on fz-rgk: oracle half of its evidence goes away.",
