@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T05:17:05Z",
   "created": "2026-11-13T03:54:11Z",
   "description": "Sites: src/dispatch_matrix/demand.rs:139-142 and :150 (demand_within_step returns an owned deep clone of the DispatchDemand subtree at each step; demand_within_path folds over it); src/compiler2/types/addressed.rs:313, 344, 356, 390, 402, 410, 419, 423, 428, 439 (path.to_vec() plus one pushed step at every node of the type recursion).\nShape: the step function returns a reference (Ignore, Class and Whole as statics) and the path walk clones once at the end; the type recursion shares one push/pop path stack. fz-y11.3 names some addressed.rs sites; whichever lands second drops them.\nLine numbers are at develop d0c3ae00c. Site-by-site ledger (class, what is copied, fix shape): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-jobs.md, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-core.md, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-rest.md.\nSignal: full gate green; no golden, census or pin moves; program output and canonical backend dump identical on the probe; allocation count before and after from /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/measure.sh in the commit.\nRemoves: each named copy, and any accessor left without callers.",
   "id": "fz-gfx.33",
   "labels": [],
   "parent": "fz-gfx",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A demand path walk borrows until its last step",
   "type": "task",
-  "updated_at": "2026-11-13T05:00:40Z"
+  "updated_at": "2026-11-13T05:17:05Z"
 }
