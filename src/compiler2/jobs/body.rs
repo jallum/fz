@@ -1114,8 +1114,8 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
     fn lower_unquote(&mut self) -> Result<ValueId, FatalError> {
         let index = self.next_splice;
         self.next_splice += 1;
-        let expr = self.splices[index].clone();
-        self.lowerer.lower_expr(&expr, self.env, self.steps)
+        let splices = self.splices;
+        self.lowerer.lower_expr(&splices[index], self.env, self.steps)
     }
 
     /// The callable this quoted call names here, where the quote is written.

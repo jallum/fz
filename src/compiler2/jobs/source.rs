@@ -75,7 +75,7 @@ pub(super) fn index_code(
 /// prelude the moment the current one scopes rather than bundling every
 /// remaining prelude into one AND-wait.
 pub(super) fn scope_code_gates(world: &World, source_owner: SourceOwner) -> Vec<FactKey> {
-    if world.code_source(source_owner).is_none() {
+    if world.code_surface(source_owner).is_none() {
         return vec![FactKey::CodeIndexed(source_owner)];
     }
     if world.is_runtime_prelude(source_owner) {

@@ -510,14 +510,14 @@ impl ProgramCanon<'_> {
         if let Some(hit) = self.shapes.get(&id) {
             return Arc::clone(hit);
         }
-        let text: Arc<str> = match self.world.shape(id).clone() {
+        let text: Arc<str> = match self.world.shape(id) {
             ShapeDescr::Nothing => "nothing".to_string(),
-            ShapeDescr::Lane(lane) => format!("lane({})", self.lane(lane)),
+            ShapeDescr::Lane(lane) => format!("lane({})", self.lane(*lane)),
             ShapeDescr::Tuple(fields) => {
                 let fields: Vec<String> = fields.iter().map(|field| self.transport_layout(*field)).collect();
                 format!("shape{{{}}}", fields.join(", "))
             }
-            ShapeDescr::Callable(callable) => format!("callable({})", self.callable(callable)),
+            ShapeDescr::Callable(callable) => format!("callable({})", self.callable(*callable)),
         }
         .into();
         self.shapes.insert(id, Arc::clone(&text));
@@ -525,7 +525,7 @@ impl ProgramCanon<'_> {
     }
 
     fn lane(&mut self, id: LaneId) -> String {
-        let descr = self.world.lane(id).clone();
+        let descr = self.world.lane(id);
         format!("{:?}:{}", descr.class, self.ty(descr.ty))
     }
 
@@ -541,7 +541,7 @@ impl ProgramCanon<'_> {
         if let Some(hit) = self.callables.get(&id) {
             return Arc::clone(hit);
         }
-        let descr = self.world.callable(id).clone();
+        let descr = self.world.callable(id);
         let function = descr
             .function
             .map(|function| function_label(self.world, function))
@@ -560,7 +560,7 @@ impl ProgramCanon<'_> {
         if let Some(hit) = self.boundaries.get(&id) {
             return Arc::clone(hit);
         }
-        let descr = self.world.boundary(id).clone();
+        let descr = self.world.boundary(id);
         let args: Vec<String> = descr
             .surface_arg_layouts
             .iter()
