@@ -43,14 +43,19 @@ impl Code {
     }
 }
 
+/// Characters in valid UTF-8 `bytes`: every byte that is not a continuation byte
+/// starts one.
+fn character_count(bytes: &[u8]) -> u32 {
+    bytes.iter().filter(|b| (**b & 0xC0) != 0x80).count() as u32
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Location {
     pub source_version: SourceVersion,
     /// 1-based line number of `span.start`.
     pub line: u32,
-    /// 1-based display column at `span.start`. v1 = byte-count within line
-    /// (ASCII-clean fixtures). The .20.6 renderer is where tab expansion
-    /// and unicode width handling land.
+    /// 1-based column at `span.start`, counted in characters from the start
+    /// of the line. The renderer owns tab expansion.
     pub col: u32,
     /// Byte range `[start, end)` of the line containing `span.start`. Used
     /// by the renderer to extract the source snippet.
@@ -123,7 +128,7 @@ impl SourceMap {
         Location {
             source_version: span.source_version,
             line: (idx + 1) as u32,
-            col: off - line_start + 1,
+            col: character_count(&f.bytes.as_bytes()[line_start as usize..off as usize]) + 1,
             line_start,
             line_end,
         }

@@ -162,7 +162,7 @@ impl<'a> Renderer<'a> {
         }
         let loc = self.sm.locate(sl.span);
         let f = self.sm.code(loc.source_version);
-        let source_line = &f.bytes.as_bytes()[loc.line_start as usize..loc.line_end as usize];
+        let source_line = &f.bytes[loc.line_start as usize..loc.line_end as usize];
         let (expanded_line, byte_to_col) = expand_tabs(source_line, self.tab_width as usize);
 
         // Source line itself. Color is applied to the underline glyph
@@ -268,27 +268,26 @@ fn line_digit_count(n: u32) -> usize {
 
 /// Expand tabs in `line` to spaces at `tab_width` stops. Returns the
 /// expanded line plus a `byte_to_col` table: `out[byte_idx]` is the
-/// display column position where the byte at that index starts.
-/// `out[line.len()]` is the total display width.
-fn expand_tabs(line: &[u8], tab_width: usize) -> (String, Vec<usize>) {
+/// column where the character containing that byte starts; columns count
+/// characters. `out[line.len()]` is the total width.
+fn expand_tabs(line: &str, tab_width: usize) -> (String, Vec<usize>) {
     let mut out = String::with_capacity(line.len() + 4);
     let mut col = 0usize;
     let mut map: Vec<usize> = Vec::with_capacity(line.len() + 1);
-    for &b in line {
-        map.push(col);
-        if b == b'\t' {
-            let stop = tab_width - (col % tab_width);
-            for _ in 0..stop {
-                out.push(' ');
+    for ch in line.chars() {
+        map.extend(repeat_n(col, ch.len_utf8()));
+        match ch {
+            '\t' => {
+                let stop = tab_width - (col % tab_width);
+                out.extend(repeat_n(' ', stop));
+                col += stop;
             }
-            col += stop;
-        } else if b == b'\r' {
             // Trailing CR before LF; render as nothing.
-        } else {
-            // Render as a single char. Non-ASCII byte counts as 1 display
-            // column in v1 (ASCII-clean fixtures keep this honest).
-            out.push(b as char);
-            col += 1;
+            '\r' => {}
+            _ => {
+                out.push(ch);
+                col += 1;
+            }
         }
     }
     map.push(col);

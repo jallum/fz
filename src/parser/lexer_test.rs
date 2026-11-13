@@ -565,3 +565,15 @@ fn heredoc_refuses_content_on_its_opening_line() {
         err.msg
     );
 }
+
+#[test]
+fn an_unexpected_non_ascii_character_is_named_whole_and_spanned_exactly() {
+    let src = "café = 1";
+    let mut sources = SourceMap::new();
+    let version = sources.add_code(Some("<test>"), src);
+    let err = Lexer::with_source_version_and_name(src, version, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect_err("`é` is not an identifier character");
+    assert_eq!(err.msg, "unexpected character 'é'");
+    assert_eq!(&src[err.span.start as usize..err.span.end as usize], "é");
+}

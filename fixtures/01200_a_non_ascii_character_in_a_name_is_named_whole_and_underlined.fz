@@ -1,0 +1,6 @@
+#---
+# purpose: a non-ASCII character where no token may start is named whole and underlined as one character
+# expect: diagnostic
+#---
+café = 1
+def main(), do: café

@@ -173,6 +173,7 @@ pub struct Token {
 }
 
 pub struct Lexer<'a> {
+    text: &'a str,
     src: &'a [u8],
     pos: usize,
     source_version: SourceVersion,
@@ -263,6 +264,7 @@ impl<'a> Lexer<'a> {
         source_name: impl AsRef<str>,
     ) -> Self {
         Self {
+            text: src,
             src: src.as_bytes(),
             pos: 0,
             source_version,
@@ -751,6 +753,20 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Consumes the whole character at `start` and names it. The source is a
+    /// `&str`, so `start` is always on a character boundary.
+    fn unexpected_character(&mut self, start: usize) -> LexError {
+        let ch = self.text[start..]
+            .chars()
+            .next()
+            .expect("an unexpected character is only reported where a byte was peeked");
+        self.pos = start + ch.len_utf8();
+        LexError {
+            msg: format!("unexpected character {:?}", ch),
+            span: self.span_from(start),
+        }
+    }
+
     fn keyword_or_ident(name: String) -> Tok {
         match classify_source_word(&name) {
             SourceWord::Keyword(keyword) => keyword,
@@ -1073,10 +1089,7 @@ impl<'a> Lexer<'a> {
                     Self::keyword_or_ident(name)
                 }
             }
-            other => {
-                self.bump();
-                return Err(self.err(format!("unexpected character {:?}", other as char)));
-            }
+            _ => return Err(self.unexpected_character(start)),
         };
 
         Ok(Token {
