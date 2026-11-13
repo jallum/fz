@@ -14,11 +14,7 @@ pub(crate) fn encode_tokens(builder: &QuotedSourceBuilder, tokens: &[Token]) -> 
 }
 
 pub(crate) fn decode_tokens(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Vec<Token>, QuotedSourceError> {
-    cursor
-        .list_items()?
-        .into_iter()
-        .map(|item| decode_token(&item, sources))
-        .collect()
+    cursor.list_iter().map(|item| decode_token(&item?, sources)).collect()
 }
 
 fn encode_token(builder: &QuotedSourceBuilder, token: &Token) -> Result<AnyValueRef, QuotedSourceError> {
@@ -127,19 +123,18 @@ fn encode_tok(builder: &QuotedSourceBuilder, tok: &Tok) -> Result<(&'static str,
 }
 
 fn decode_token(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Token, QuotedSourceError> {
-    let fields = cursor.tuple_items()?;
-    if fields.len() != 6 {
+    let arity = cursor.tuple_arity()?;
+    if arity != 6 {
         return Err(QuotedSourceError::new(format!(
-            "encoded token expects 6 fields, got {}",
-            fields.len()
+            "encoded token expects 6 fields, got {arity}"
         )));
     }
-    let kind = fields[0].atom_name()?;
-    let tok = decode_tok(&kind, &fields[1])?;
-    let start = decode_u32(&fields[2], "token start")?;
-    let end = decode_u32(&fields[3], "token end")?;
-    let space_before = decode_bool(&fields[4], "token space_before")?;
-    let source_version = decode_u32(&fields[5], "token source version")?;
+    let kind = cursor.tuple_item(0)?.atom_name()?;
+    let tok = decode_tok(&kind, &cursor.tuple_item(1)?)?;
+    let start = decode_u32(&cursor.tuple_item(2)?, "token start")?;
+    let end = decode_u32(&cursor.tuple_item(3)?, "token end")?;
+    let space_before = decode_bool(&cursor.tuple_item(4)?, "token space_before")?;
+    let source_version = decode_u32(&cursor.tuple_item(5)?, "token source version")?;
     let span = sources
         .checked_span(source_version, start, end)
         .ok_or_else(|| QuotedSourceError::new("encoded token span does not resolve in the source map"))?;

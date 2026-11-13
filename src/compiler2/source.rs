@@ -567,6 +567,36 @@ pub struct QuotedSourceCursor {
     root: AnyValueRef,
 }
 
+/// The cells of a quoted list still to be read; `None` once the list ends or
+/// a cell failed to read.
+pub struct ListItems {
+    heap: Rc<QuotedSourceHeap>,
+    rest: Option<AnyValueRef>,
+}
+
+impl Iterator for ListItems {
+    type Item = Result<QuotedSourceCursor, QuotedSourceError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let cell = self.rest.take().filter(|cell| !cell.is_empty_list())?;
+        let proc = self.heap.process();
+        let read = proc
+            .heap
+            .read_list_head_ref(cell)
+            .and_then(|head| proc.heap.read_list_tail_ref(cell).map(|tail| (head, tail)));
+        match read {
+            Ok((head, tail)) => {
+                self.rest = Some(tail);
+                Some(Ok(QuotedSourceCursor {
+                    heap: Rc::clone(&self.heap),
+                    root: head,
+                }))
+            }
+            Err(error) => Some(Err(QuotedSourceError::from(error))),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct QuotedAstNode {
     pub head: QuotedSourceCursor,
@@ -690,22 +720,17 @@ impl QuotedSourceCursor {
     }
 
     pub fn list_items(&self) -> Result<Vec<Self>, QuotedSourceError> {
-        let proc = self.heap.process();
-        let mut cursor = self.root;
-        let mut items = Vec::new();
-        loop {
-            if cursor.is_empty_list() {
-                break;
-            }
-            let head = proc.heap.read_list_head_ref(cursor).map_err(QuotedSourceError::from)?;
-            let tail = proc.heap.read_list_tail_ref(cursor).map_err(QuotedSourceError::from)?;
-            items.push(Self {
-                heap: self.heap.clone(),
-                root: head,
-            });
-            cursor = tail;
+        self.list_iter().collect()
+    }
+
+    /// The items of a quoted list in order, read one cell per step. The
+    /// process is borrowed only while a cell is read, so the caller may build
+    /// values between steps.
+    pub fn list_iter(&self) -> ListItems {
+        ListItems {
+            heap: Rc::clone(&self.heap),
+            rest: Some(self.root),
         }
-        Ok(items)
     }
 
     pub fn list_atom_names(&self) -> Result<Vec<String>, QuotedSourceError> {
@@ -716,12 +741,18 @@ impl QuotedSourceCursor {
     }
 
     pub fn tuple_items(&self) -> Result<Vec<Self>, QuotedSourceError> {
-        (0..self.tuple_arity()?).map(|index| self.tuple_item(index)).collect()
+        self.tuple_iter()?.collect()
+    }
+
+    /// The fields of a quoted tuple in order, each read when the iterator
+    /// reaches it.
+    pub fn tuple_iter(&self) -> Result<impl Iterator<Item = Result<Self, QuotedSourceError>> + '_, QuotedSourceError> {
+        Ok((0..self.tuple_arity()?).map(|index| self.tuple_item(index)))
     }
 
     /// The number of fields of a quoted tuple, once every field is known to
     /// hold a value this reader can follow.
-    fn tuple_arity(&self) -> Result<usize, QuotedSourceError> {
+    pub(crate) fn tuple_arity(&self) -> Result<usize, QuotedSourceError> {
         let addr = self.root.struct_addr().map_err(QuotedSourceError::from)?;
         let schema_id = unsafe { struct_schema_id(addr as *const u8) };
         let proc = self.heap.process();
@@ -741,7 +772,7 @@ impl QuotedSourceCursor {
         Ok(schema.fields.len())
     }
 
-    fn tuple_item(&self, index: usize) -> Result<Self, QuotedSourceError> {
+    pub(crate) fn tuple_item(&self, index: usize) -> Result<Self, QuotedSourceError> {
         let addr = self.root.struct_addr().map_err(QuotedSourceError::from)?;
         let schema_id = unsafe { struct_schema_id(addr as *const u8) };
         let proc = self.heap.process();
