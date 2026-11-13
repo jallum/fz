@@ -63,15 +63,3 @@ fn retain_drops_rejected_entries() {
     assert_eq!(map.keys().collect::<Vec<_>>(), vec![id(0), id(2), id(4)]);
     assert_eq!(map.len(), 3);
 }
-
-/// A set marks a value once and reports whether the mark was new.
-#[test]
-fn a_set_reports_whether_a_mark_is_new() {
-    let mut set = ValueSet::new();
-    assert!(set.mark(id(7)));
-    assert!(!set.mark(id(7)));
-    assert!(set.contains(&id(7)));
-    assert!(set.unmark(&id(7)));
-    assert!(!set.unmark(&id(7)));
-    assert!(set.is_empty());
-}

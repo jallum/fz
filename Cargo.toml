@@ -36,7 +36,7 @@ cranelift-jit = "0.131"
 cranelift-native = "0.131"
 target-lexicon = "0.13"
 fz-runtime = { path = "runtime" }
-smallvec = { version = "1.15.1", default-features = false }
+smallvec = { version = "1.15.1", default-features = false, features = ["union"] }
 rustyline = { version = "18.0.0", default-features = false }
 serde_json = "1"
 

@@ -55,8 +55,14 @@ the caller's own return withholds instead of publishing from an incomplete walk,
 and the caller re-runs once, when the wait resolves, not once per intermediate
 revision.
 
-A table over the values of one body is a `ValueMap<V>` (a set is a
-`ValueSet`): a vector indexed by `ValueId`, in `compiler2/value_map.rs`.
+A table over the values of one body is a `ValueMap<V>`: a vector indexed by
+`ValueId`, in `compiler2/value_map.rs`. A set of values is a `ValueSet`
+(`compiler2/value_set.rs`): one bit per id, sized once from the body's
+`value_count` and never grown (marking an id past the count panics). The words
+are one `SmallVec<[u64; 2]>`, so a set over a body of up to 128 values lives in
+its own 24 bytes and allocates nothing, and a difference is a zip over two word
+slices. `LoweredBody::value_count` is set before captures are constructed and
+raised where that construction mints a value.
 `Lowerer::fresh_value` numbers a body's values from zero, so the ids of one body
 are a small range and a slot per id replaces a hash. Iteration follows the id,
 not a per-process hash seed. A table that spans several bodies, or whose key

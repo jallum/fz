@@ -143,7 +143,7 @@ pub(crate) fn produce_materialized_executable_product(
     };
     let call_edges = call_edges.expect("product materialization should have complete call edges after waits");
     let retained_values = super::body::retained_value_ids(&body);
-    analysis.value_types.retain(|value, _| retained_values.contains(value));
+    analysis.value_types.retain(|value, _| retained_values.contains(*value));
     let effects = local_effects(&body, extern_wire.as_ref(), &call_edges);
     let struct_modules = reachable_struct_modules(
         world.types(),
