@@ -1151,7 +1151,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         &mut 0,
                     )?
                 } else {
-                    env_get_value(&env, *value)?
+                    env_get_value(&env, *value)?.clone()
                 };
                 continue_backend_value(runtime, transport, program, result, continuations)
             }
@@ -1348,7 +1348,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         wrapper,
                         member,
                     }
-                    .encode(&capture_lanes, args, |arg| env_get_value(&env, arg.value))?;
+                    .encode(&capture_lanes, args, |arg| env_get_value(&env, arg.value).cloned())?;
                     (callee_executable, lanes)
                 }
             };
@@ -1904,17 +1904,15 @@ fn eval_steps<T: Telemetry + ?Sized>(
             ProgramStep::TupleField { value, source, index } => {
                 let field = match env_get_value(env, *source)? {
                     BackendBoundValue::Transport { shape, lanes }
-                        if transport.interners().tuple_arity(shape).is_some() =>
+                        if transport.interners().tuple_arity(*shape).is_some() =>
                     {
-                        transport_field_views(transport, shape, &lanes)?
-                            .get(*index)
-                            .cloned()
+                        transport_field_view(transport, *shape, lanes, *index)?
                             .ok_or_else(|| {
                                 format!("internal error: tuple-field index {index} is out of bounds after its decision proved the arity")
                             })?
                     }
                     other => {
-                        let source = materialize_backend_value(transport, runtime.cur_proc(), &other)?;
+                        let source = materialize_backend_value(transport, runtime.cur_proc(), other)?;
                         BackendBoundValue::Runtime(
                             with_value_ref(runtime.cur_proc(), source, "backend tuple field", |struct_ref| {
                                 fz_struct_get_field_ref(runtime.cur_proc(), struct_ref, (*index as u32) * 8)
@@ -2427,13 +2425,11 @@ pub(super) fn env_get(
     env: &Frame,
     value: ValueId,
 ) -> Result<AnyValue, String> {
-    let value = env_get_value(env, value)?;
-    materialize_backend_value(transport, proc, &value)
+    materialize_backend_value(transport, proc, env_get_value(env, value)?)
 }
 
-fn env_get_value(env: &Frame, value: ValueId) -> Result<BackendBoundValue, String> {
+fn env_get_value(env: &Frame, value: ValueId) -> Result<&BackendBoundValue, String> {
     env.get(value)
-        .cloned()
         .ok_or_else(|| format!("backend value {} is unbound", value.as_u32()))
 }
 
@@ -2564,7 +2560,7 @@ fn direct_callable_value(
     for (capture, layout) in captures.iter().copied().zip(callable.capture_layouts.iter().copied()) {
         if transport.interners().layout_width(layout) != 0 {
             let bound = env_get_value(env, capture)?;
-            encode_transport_layout(transport, program, proc, &bound, layout, &mut lanes)?;
+            encode_transport_layout(transport, program, proc, bound, layout, &mut lanes)?;
         }
     }
     let expected = transport.interners().shape_width(shape);
@@ -2972,7 +2968,7 @@ fn encode_call_args(
                 arg.value,
             )
         })?;
-        encode_runtime_input_binding(transport, program, runtime.cur_proc(), &value, binding, &mut lanes).map_err(
+        encode_runtime_input_binding(transport, program, runtime.cur_proc(), value, binding, &mut lanes).map_err(
             |error| {
                 format!(
                     "backend encode_call_args callee_fn={} semantic_index={} shape={:?} arg_value={:?}: {error}",
@@ -3450,7 +3446,7 @@ fn tuple_step_value(
         for (item, field_layout) in items.iter().copied().zip(fields.iter().copied()) {
             if transport.interners().layout_width(field_layout) != 0 {
                 let bound = env_get_value(env, item.value)?;
-                encode_transport_layout(transport, program, proc, &bound, field_layout, &mut lanes)?;
+                encode_transport_layout(transport, program, proc, bound, field_layout, &mut lanes)?;
             }
         }
         return Ok(BackendBoundValue::Transport {
