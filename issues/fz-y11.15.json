@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T18:43:19Z",
   "created": "2026-11-13T18:22:56Z",
   "description": "ActivationSymbol (src/compiler2/transport.rs) stores a boxed copy of its arrow's parameter list. Identity ignores it (fz-53f.6), and production reads it in one place: the telemetry writer (src/telemetry/jsonl.rs write_activation_symbol), which prints it as the \"input\" array beside the arrow. Every clone of an ActivationSymbol / ExecutableSymbol / TransportPosition copies the box.\n\nMeasured on develop ac3750d1e plus the fz-sc8.95 hasher fix (532f77b88): transport.rs:211 (the derived Clone) is 106,672 of 969,355 allocations on the OptionParser probe. Spike (field removed, telemetry no longer writes \"input\"): 857,327 allocations, program output and canonical backend dump identical.\n\nChange: remove the field, ActivationSymbol::new and input(); the symbol is {function, arrow} and Copy with derived Eq/Hash. Telemetry writes function and arrow; the parameter list is a function of the arrow, which the type table on the stream already resolves. Tests that read input() read types.arrow_params(\u0026arrow); tests that pin the list being shared by pointer go with the list. .agent/docs/telemetry.md states the arrow field alone.\n\nSignal: full gate green; no golden, census or pin rises; probe output and canon identical; allocation count before and after in the commit.",
   "id": "fz-y11.15",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "An activation symbol is its function and arrow, and carries no parameter list",
   "type": "task",
-  "updated_at": "2026-11-13T18:22:56Z"
+  "updated_at": "2026-11-13T18:43:19Z"
 }
