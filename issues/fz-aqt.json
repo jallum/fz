@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-13T00:44:29Z",
@@ -7,8 +7,8 @@
   "id": "fz-aqt",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Fixtures that write files race with their own other paths",
   "type": "bug",
-  "updated_at": "2026-11-13T00:44:29Z"
+  "updated_at": "2026-11-13T02:29:48Z"
 }
