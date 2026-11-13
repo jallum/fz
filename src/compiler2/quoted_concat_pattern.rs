@@ -367,7 +367,7 @@ fn render_literal(operand: &QuotedSourceCursor, sources: &SourceMap) -> String {
         ValueKind::INT => operand.int_value().map(|value| value.to_string()),
         ValueKind::FLOAT => root.load_float().map(|value| value.to_string()).map_err(Into::into),
         ValueKind::ATOM => operand.atom_name().map(|name| match name.as_str() {
-            "nil" | "true" | "false" => name,
+            "nil" | "true" | "false" => name.to_string(),
             _ => format!(":{name}"),
         }),
         ValueKind::BITSTRING | ValueKind::PROCBIN => operand

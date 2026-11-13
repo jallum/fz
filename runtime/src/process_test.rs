@@ -21,6 +21,24 @@ fn node_compares_atoms_by_name_not_intern_id() {
 }
 
 #[test]
+fn reading_an_atom_name_shares_the_table_entry() {
+    let node = Node::new(vec!["alpha".into()]);
+    let interned = node.intern_atom("beta");
+
+    let first = node.atom_name(interned).expect("interned atom has a name");
+    let second = node.atom_name(interned).expect("interned atom has a name");
+    assert_eq!(first, "beta");
+    assert!(
+        std::sync::Arc::ptr_eq(&first.0, &second.0),
+        "two reads share one allocation"
+    );
+
+    let seeded = node.atom_name(0).expect("seeded atom has a name");
+    assert!(std::sync::Arc::ptr_eq(&seeded.0, &node.atom_name(0).unwrap().0));
+    assert_eq!(node.atom_name(99), None);
+}
+
+#[test]
 fn reduction_budget_resets_and_spends() {
     let schemas = Rc::new(RefCell::new(crate::heap::SchemaRegistry::new()));
     let mut process = Process::new(schemas);

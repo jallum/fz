@@ -324,12 +324,11 @@ fn report_raise(
     let Some(observe) = ctx.raise else {
         return;
     };
-    let name = name
-        .and_then(|name| match name {
-            AnyValue::Atom(id) => process.node.atom_name(id),
-            _ => None,
-        })
-        .unwrap_or_default();
+    let name = name.and_then(|name| match name {
+        AnyValue::Atom(id) => process.node.atom_name(id),
+        _ => None,
+    });
+    let name = name.as_deref().unwrap_or_default();
     unsafe {
         observe(
             ctx.scheduler,

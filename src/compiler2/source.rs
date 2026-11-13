@@ -4,6 +4,7 @@ use std::fmt;
 use std::ptr;
 use std::rc::Rc;
 use std::slice;
+use std::sync::OnceLock;
 
 use fz_runtime::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, ValueKind, map_count, map_key_kind, map_keys_ptr, map_tag_ptr,
@@ -12,7 +13,7 @@ use fz_runtime::any_value::{
 use fz_runtime::heap::{Schema, SchemaRegistry};
 use fz_runtime::procbin::bitstring_bit_len as tagged_bitstring_bit_len;
 use fz_runtime::procbin::bitstring_byte_ptr as procbin_byte_ptr;
-use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
+use fz_runtime::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 
 use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::source::{SourceMap, Span};
@@ -652,7 +653,7 @@ impl QuotedSourceCursor {
         self.root
     }
 
-    pub fn atom_name(&self) -> Result<String, QuotedSourceError> {
+    pub fn atom_name(&self) -> Result<AtomName, QuotedSourceError> {
         let atom_id = self.root.load_atom().map_err(QuotedSourceError::from)? as u32;
         let proc = self.heap.process();
         render_atom_name(&proc, atom_id)
@@ -714,7 +715,7 @@ impl QuotedSourceCursor {
     pub fn list_atom_names(&self) -> Result<Vec<String>, QuotedSourceError> {
         self.list_items()?
             .into_iter()
-            .map(|item| item.atom_name())
+            .map(|item| item.atom_name().map(|name| name.to_string()))
             .collect::<Result<Vec<_>, _>>()
     }
 
@@ -1088,16 +1089,20 @@ fn storage_ref(raw_slot: *const u64, kind: ValueKind) -> Result<AnyValueRef, Quo
     })
 }
 
-fn render_atom_name(proc: &Process, atom_id: u32) -> Result<String, QuotedSourceError> {
+fn render_atom_name(proc: &Process, atom_id: u32) -> Result<AtomName, QuotedSourceError> {
     match atom_id {
-        0 => Ok(NIL_ATOM.to_string()),
-        1 => Ok(TRUE_ATOM.to_string()),
-        2 => Ok(FALSE_ATOM.to_string()),
+        0..=2 => Ok(well_known_atom_names()[atom_id as usize].clone()),
         _ => proc
             .node
             .atom_name(atom_id)
             .ok_or_else(|| QuotedSourceError::new(format!("unknown atom id {atom_id}"))),
     }
+}
+
+/// The names of the atoms every node reserves ids 0, 1 and 2 for.
+fn well_known_atom_names() -> &'static [AtomName; 3] {
+    static NAMES: OnceLock<[AtomName; 3]> = OnceLock::new();
+    NAMES.get_or_init(|| [NIL_ATOM, TRUE_ATOM, FALSE_ATOM].map(AtomName::from))
 }
 
 fn any_value_from_ref(value: AnyValueRef) -> Result<AnyValue, QuotedSourceError> {

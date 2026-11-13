@@ -21962,7 +21962,7 @@ fn retained_quoted_call(cursor: &crate::compiler2::QuotedSourceCursor) -> Option
         && let Ok(Some(function)) = node.meta.bound_callable()
         && let Ok(spelling) = node.head.atom_name()
     {
-        return Some((spelling, function));
+        return Some((spelling.to_string(), function));
     }
     let children = match cursor.root().tag() {
         ValueKind::LIST => cursor.list_items().ok()?,

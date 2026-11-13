@@ -1047,7 +1047,7 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
                     "true" => GroundValue::Bool(true),
                     "false" => GroundValue::Bool(false),
                     "nil" => GroundValue::Nil,
-                    _ => GroundValue::Atom(atom),
+                    _ => GroundValue::Atom(atom.to_string()),
                 };
                 Ok(self.lowerer.push_const(self.steps, literal))
             }
