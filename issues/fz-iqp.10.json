@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-13T23:11:48Z",
-  "description": "Elixir strings accept backslash-x followed by one or two hex digits, and backslash-x with braces; fz rejects them as unknown escapes. Found by the fz-iqp.5 builder (not re-probed by me). Lexer::read_escape is the one reader. Signal: oracle fixture; diagnostic fixture for a malformed form.",
+  "description": "Elixir 1.19.4 (builder's probes): backslash-x with two hex digits is a RAW BYTE, not a code point: \"\\xFF\" is \u003c\u003c255\u003e\u003e, \"\\xe9\" is \u003c\u003c233\u003e\u003e, exactly two digits are read (\"\\x414\" is \u003c\u003c65, 52\u003e\u003e). One digit is accepted with a deprecation warning. The braced form is a code point encoded as UTF-8 (\"\\x{e9}\" is \u003c\u003c195, 169\u003e\u003e), deprecated with a warning; out-of-range and surrogate values give 'invalid or reserved Unicode code point'; malformed forms give 'invalid hex escape character, expected \\xHH where H is a hexadecimal digit'. Heredocs the same. In a quoted atom or keyword key a byte that is not valid UTF-8 is an 'invalid encoding' error. ?\\x41 is a syntax error.\nWhy the first attempt stopped: Lexer::read_escape returns a char and a raw byte above 0x7F is not one. What has to change: read_escape returns a character or a byte; string and heredoc parts (already byte vectors, StringPart::Bytes) push the byte; the quoted-atom and keyword-key paths reject a byte that breaks UTF-8; ?\\x stays an error. Elixir's two deprecation warnings have no channel in fz's lexer: decide error or accept. A string holding a non-UTF-8 byte is new for fz: check what printing, String functions and inspect do with it on all three paths before building. Fixtures 01225-01229 are free.",
   "id": "fz-iqp.10",
   "labels": [],
   "parent": "fz-iqp",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Strings accept Elixir's hex escapes",
   "type": "feature",
-  "updated_at": "2026-11-13T23:11:48Z"
+  "updated_at": "2026-11-13T23:58:51Z"
 }
