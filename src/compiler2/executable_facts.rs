@@ -223,8 +223,8 @@ impl RuntimeDemandFacts<'_> {
     }
 
     pub(crate) fn callable_surfaces(&self, ty: Ty) -> Option<&BTreeSet<CallableSurface>> {
-        let resolved = &self.projection(ty).boundary.callable.resolved;
-        (!resolved.is_empty()).then_some(resolved)
+        let unnamed = &self.projection(ty).boundary.callable.unnamed;
+        (!unnamed.is_empty()).then_some(unnamed)
     }
 
     pub(crate) fn callable_value_demand(&self, ty: Ty) -> Option<RuntimeDemand> {
@@ -583,13 +583,13 @@ fn prepare_type_projection(world: &mut World, builder: &mut RuntimeDemandTypeBui
     let boundary = prepare_runtime_demand_for_type(world, builder, ty, true);
     let dispatch = prepare_runtime_demand_for_type(world, builder, ty, false);
     let callable_value_demand = world.types_mut().callable_value_clauses(&ty).and_then(|clauses| {
-        let resolved = clauses
+        let unnamed = clauses
             .into_iter()
             .map(|clause| resolve_surface(world, builder, &clause.args))
             .collect::<BTreeSet<_>>();
-        (!resolved.is_empty()).then(|| {
+        (!unnamed.is_empty()).then(|| {
             RuntimeDemand::callable(CallableDemand {
-                resolved,
+                unnamed,
                 ..CallableDemand::default()
             })
         })
@@ -635,12 +635,12 @@ fn prepare_runtime_demand_for_type(
     if !escape {
         return RuntimeDemand::whole();
     }
-    let resolved = clauses
+    let unnamed = clauses
         .into_iter()
         .map(|clause| resolve_surface(world, builder, &clause.args))
         .collect();
     RuntimeDemand::callable(CallableDemand {
-        resolved,
+        unnamed,
         targets: BTreeSet::new(),
         opaque: false,
         escape: true,

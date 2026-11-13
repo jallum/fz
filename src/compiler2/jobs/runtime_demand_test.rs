@@ -394,7 +394,7 @@ mod tests {
         );
         let capture_demand = |surface: CallableSurface| {
             RuntimeDemand::callable(CallableDemand {
-                resolved: BTreeSet::from([surface]),
+                unnamed: BTreeSet::from([surface]),
                 ..CallableDemand::default()
             })
         };
@@ -406,14 +406,14 @@ mod tests {
             .get(&capture)
             .expect("one available target can publish retention");
         assert_eq!(retained.shape, ShapeDemand::Whole);
-        assert_eq!(retained.callable.resolved, BTreeSet::from([int_surface.clone()]));
+        assert_eq!(retained.callable.unnamed, BTreeSet::from([int_surface.clone()]));
         inputs
             .target_inputs
             .insert(atom_target, vec![capture_demand(atom_surface.clone())]);
         let complete = derive(&inputs);
         assert_eq!(complete[&capture].shape, ShapeDemand::Whole);
         assert_eq!(
-            complete[&capture].callable.resolved,
+            complete[&capture].callable.unnamed,
             BTreeSet::from([int_surface, atom_surface])
         );
     }

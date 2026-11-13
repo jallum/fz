@@ -2086,7 +2086,7 @@ def main(), do: make(fn x -> x + 1 end)
         captured_demand.is_callable(),
         "the impl's captured callable parameter `f` should carry a callable demand, got {captured_demand:?}"
     );
-    let surfaces = &captured_demand.callable.resolved;
+    let surfaces = &captured_demand.callable.surfaces();
     assert!(
         !surfaces.is_empty(),
         "the escaped continuation's body proves it invokes `f` at one argument; \
@@ -2884,8 +2884,8 @@ fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
             demand.input_demands.as_slice(),
             [input] if !input.callable.is_empty()
                 && input.callable.opaque
-                && input.callable.resolved.len() == 1
-                && input.callable.resolved.iter().any(|surface| surface.inputs.len() == 1)
+                && input.callable.unnamed.len() == 1
+                && input.callable.unnamed.iter().any(|surface| surface.inputs.len() == 1)
         ),
         "an unresolved closure call should keep opaque callable demand and its observed surface explicit: {demand:?}",
     );
@@ -2927,7 +2927,7 @@ end
             matches!(
                 demands.as_slice(),
                 [arg] if !arg.callable.is_empty()
-                    && arg.callable.escape && !arg.callable.opaque && arg.callable.resolved.is_empty()
+                    && arg.callable.escape && !arg.callable.opaque && arg.callable.unnamed.is_empty()
             )
         }),
         "opaque closure-call argument demand should preserve callable escape before transport runs: {demand:?}",
@@ -3031,7 +3031,11 @@ fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce
     }
     let joined_callable = &joined_demand.callable;
     assert!(
-        joined_callable.escape && joined_callable.resolved.iter().any(|surface| surface.inputs.len() == 2),
+        joined_callable.escape
+            && joined_callable
+                .surfaces()
+                .iter()
+                .any(|surface| surface.inputs.len() == 2),
         "the delivered joined callable value itself must publish a first-class discriminator before downstream lowering: {joined_callable:?}",
     );
 }
@@ -5992,7 +5996,7 @@ fn assert_generic_callable_shape_matches_upstream_demand(
         .unwrap_or_else(|| panic!("callable facts should exist for generic callable {callable:?}"));
     assert_eq!(
         facts.boundary_ids.len(),
-        usize::from(demand.opaque || demand.escape) * demand.resolved.len(),
+        usize::from(demand.opaque || demand.escape) * demand.surfaces().len(),
         "generic callable boundaries should be published from upstream callable surfaces"
     );
 }

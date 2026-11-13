@@ -15,7 +15,7 @@ use super::super::semantic::{
 fn joining_tuple_field_demands_of_different_length_keeps_every_field() {
     let mut world = World::new();
     let int = world.types_mut().int();
-    let callable = RuntimeDemand::callable(CallableDemand::resolved(vec![int], world.types_mut()));
+    let callable = RuntimeDemand::callable(CallableDemand::unnamed(vec![int], world.types_mut()));
     let first_field_only = RuntimeDemand::tuple_fields(vec![callable.clone()]);
     let second_field_only = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
 
@@ -543,7 +543,7 @@ mod tests {
     }
 
     fn resolved_surface(tys: &[Ty], types: &mut Types) -> CallableDemand {
-        CallableDemand::resolved(tys.to_vec(), types)
+        CallableDemand::unnamed(tys.to_vec(), types)
     }
 
     use super::super::super::types::TypeVarId;
@@ -1006,7 +1006,7 @@ mod tests {
 
         assert_eq!(
             joined,
-            RuntimeDemand::callable(CallableDemand::resolved(vec![int], world.types_mut())),
+            RuntimeDemand::callable(CallableDemand::unnamed(vec![int], world.types_mut())),
             "bottom must contribute nothing to callable demand",
         );
     }
@@ -1023,7 +1023,7 @@ mod tests {
         assert_eq!(
             joined,
             RuntimeDemand::callable(CallableDemand {
-                resolved: BTreeSet::from([CallableSurface::new(vec![int], world.types_mut())]),
+                unnamed: BTreeSet::from([CallableSurface::new(vec![int], world.types_mut())]),
                 targets: BTreeSet::new(),
                 opaque: false,
                 escape: true,
@@ -1049,7 +1049,7 @@ mod tests {
 
         let left = RuntimeDemand::callable(resolved_surface(&[int], world.types_mut()));
         let right = RuntimeDemand::callable(CallableDemand {
-            resolved: BTreeSet::from([CallableSurface::new(vec![atom], world.types_mut())]),
+            unnamed: BTreeSet::from([CallableSurface::new(vec![atom], world.types_mut())]),
             targets: BTreeSet::new(),
             opaque: false,
             escape: true,
@@ -1063,7 +1063,7 @@ mod tests {
         assert_eq!(
             joined,
             RuntimeDemand::callable(CallableDemand {
-                resolved: expected_resolved,
+                unnamed: expected_resolved,
                 targets: BTreeSet::new(),
                 opaque: false,
                 escape: true,

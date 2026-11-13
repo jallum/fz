@@ -687,6 +687,7 @@ pub(super) struct CallableFlowBuilder {
     direct_surfaces: ValueMap<BTreeSet<CallableSurface>>,
     direct_targets: ValueMap<BTreeSet<CallableTarget>>,
     first_class_surfaces: ValueMap<BTreeSet<CallableSurface>>,
+    first_class_targets: ValueMap<BTreeSet<CallableTarget>>,
 }
 
 static NO_SURFACES: BTreeSet<CallableSurface> = BTreeSet::new();
@@ -709,13 +710,13 @@ impl CallableFlowBuilder {
         self.direct_targets.get(&value).unwrap_or(&NO_TARGETS)
     }
 
+    fn first_class_targets(&self, value: ValueId) -> &BTreeSet<CallableTarget> {
+        self.first_class_targets.get(&value).unwrap_or(&NO_TARGETS)
+    }
+
     fn record_direct_demand(&mut self, facts: &RuntimeDemandFacts<'_>, value: ValueId, demand: &RuntimeDemand) {
-        self.record_direct_surfaces(facts, value, &demand.callable.resolved);
-        let targets = &demand.callable.targets;
-        if !targets.is_empty() {
-            let mut seen = ValueSet::for_values(facts.body.value_count());
-            self.record_direct_targets_for_value(facts, value, targets, &mut seen);
-        }
+        self.record_direct_surfaces(facts, value, &demand.callable.unnamed);
+        record_for_delivered_callables(facts, value, &mut self.direct_targets, &demand.callable.targets);
     }
 
     fn record_direct_surfaces(
@@ -724,108 +725,46 @@ impl CallableFlowBuilder {
         value: ValueId,
         surfaces: &BTreeSet<CallableSurface>,
     ) {
-        if surfaces.is_empty() {
-            return;
-        }
-        let mut seen = ValueSet::for_values(facts.body.value_count());
-        self.record_direct_surfaces_for_value(facts, value, surfaces, &mut seen);
+        record_for_delivered_callables(facts, value, &mut self.direct_surfaces, surfaces);
     }
 
     fn record_first_class_demand(&mut self, facts: &RuntimeDemandFacts<'_>, value: ValueId, demand: &RuntimeDemand) {
         if demand.callable.is_first_class() {
-            self.record_first_class_surfaces(facts, value, &demand.callable.resolved);
+            record_for_delivered_callables(facts, value, &mut self.first_class_surfaces, &demand.callable.unnamed);
+            record_for_delivered_callables(facts, value, &mut self.first_class_targets, &demand.callable.targets);
         }
     }
+}
 
-    fn record_first_class_surfaces(
-        &mut self,
-        facts: &RuntimeDemandFacts<'_>,
-        value: ValueId,
-        surfaces: &BTreeSet<CallableSurface>,
-    ) {
-        if surfaces.is_empty() {
-            return;
-        }
-        let mut seen = ValueSet::for_values(facts.body.value_count());
-        self.record_first_class_surfaces_for_value(facts, value, surfaces, &mut seen);
+/// Adds `items` to the entry of every callable-producing value that `value`
+/// is, or is joined from through delivered local values.
+fn record_for_delivered_callables<T: Clone + Ord>(
+    facts: &RuntimeDemandFacts<'_>,
+    value: ValueId,
+    recorded: &mut ValueMap<BTreeSet<T>>,
+    items: &BTreeSet<T>,
+) {
+    if items.is_empty() {
+        return;
     }
-
-    fn record_direct_surfaces_for_value(
-        &mut self,
-        facts: &RuntimeDemandFacts<'_>,
-        value: ValueId,
-        surfaces: &BTreeSet<CallableSurface>,
-        seen: &mut ValueSet,
-    ) {
+    let mut seen = ValueSet::for_values(facts.body.value_count());
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
         if !seen.mark(value) {
-            return;
+            continue;
         }
         if facts.callable_origin(value).is_some() {
-            self.direct_surfaces
-                .entry(value)
-                .or_default()
-                .extend(surfaces.iter().cloned());
+            recorded.entry(value).or_default().extend(items.iter().cloned());
         }
-        for join in facts.delivered_value_joins.values().filter(|join| join.value == value) {
-            for source in &join.sources {
-                let DeliveredValueSource::LocalValue(source) = source else {
-                    continue;
-                };
-                self.record_direct_surfaces_for_value(facts, *source, surfaces, seen);
-            }
-        }
-    }
-
-    fn record_first_class_surfaces_for_value(
-        &mut self,
-        facts: &RuntimeDemandFacts<'_>,
-        value: ValueId,
-        surfaces: &BTreeSet<CallableSurface>,
-        seen: &mut ValueSet,
-    ) {
-        if !seen.mark(value) {
-            return;
-        }
-        if facts.callable_origin(value).is_some() {
-            self.first_class_surfaces
-                .entry(value)
-                .or_default()
-                .extend(surfaces.iter().cloned());
-        }
-        for join in facts.delivered_value_joins.values().filter(|join| join.value == value) {
-            for source in &join.sources {
-                let DeliveredValueSource::LocalValue(source) = source else {
-                    continue;
-                };
-                self.record_first_class_surfaces_for_value(facts, *source, surfaces, seen);
-            }
-        }
-    }
-
-    fn record_direct_targets_for_value(
-        &mut self,
-        facts: &RuntimeDemandFacts<'_>,
-        value: ValueId,
-        targets: &BTreeSet<CallableTarget>,
-        seen: &mut ValueSet,
-    ) {
-        if !seen.mark(value) {
-            return;
-        }
-        if facts.callable_origin(value).is_some() {
-            self.direct_targets
-                .entry(value)
-                .or_default()
-                .extend(targets.iter().cloned());
-        }
-        for join in facts.delivered_value_joins.values().filter(|join| join.value == value) {
-            for source in &join.sources {
-                let DeliveredValueSource::LocalValue(source) = source else {
-                    continue;
-                };
-                self.record_direct_targets_for_value(facts, *source, targets, seen);
-            }
-        }
+        let joined_sources = facts
+            .delivered_value_joins
+            .values()
+            .filter(|join| join.value == value)
+            .flat_map(|join| &join.sources);
+        pending.extend(joined_sources.filter_map(|source| match source {
+            DeliveredValueSource::LocalValue(source) => Some(*source),
+            _ => None,
+        }));
     }
 }
 
@@ -1078,23 +1017,23 @@ fn plan_callable_flows(
             continue;
         }
         let types = world.types();
-        let direct_surfaces = callable_flows.direct_surfaces(value);
-        let direct_edges = callable_flow_edges_for_targets(
-            types,
-            executable,
-            facts,
-            producer.function,
-            &producer.captures,
-            callable_flows.direct_targets(value),
+        let edges_of = |targets| {
+            callable_flow_edges_for_targets(types, executable, facts, producer.function, &producer.captures, targets)
+        };
+        let direct_edges = edges_of(callable_flows.direct_targets(value));
+        let mut direct_surfaces = callable_flows.direct_surfaces(value).clone();
+        direct_surfaces.extend(direct_edges.iter().map(|edge| edge.surface.clone()));
+        let mut named_surfaces = callable_flows.first_class_surfaces(value).clone();
+        named_surfaces.extend(
+            edges_of(callable_flows.first_class_targets(value))
+                .into_iter()
+                .map(|edge| edge.surface),
         );
         let producer_surfaces = callable_value_type_demand(facts, value)
-            .map(|demand| demand.callable.resolved)
+            .map(|demand| demand.callable.unnamed)
             .unwrap_or_default();
-        let first_class_surfaces = ground_dispatch_surfaces(
-            types,
-            callable_flows.first_class_surfaces(value),
-            producer_surfaces.iter().chain(direct_surfaces),
-        );
+        let first_class_surfaces =
+            ground_dispatch_surfaces(types, &named_surfaces, producer_surfaces.iter().chain(&direct_surfaces));
         let mut ordered = first_class_surfaces.iter().collect::<Vec<_>>();
         ordered.sort_by(|a, b| types.cmp_activation_tys(&a.inputs, &b.inputs));
         let first_class_edges = ordered
@@ -1116,7 +1055,7 @@ fn plan_callable_flows(
         plans.push(CallableFlowPlan {
             value,
             producer: producer.clone(),
-            direct_surfaces: direct_surfaces.clone(),
+            direct_surfaces,
             direct_edges,
             first_class_surfaces,
             first_class_edges,
@@ -2449,7 +2388,7 @@ fn propagate_lambda_capture_demands(
             continue;
         };
         for (capture, demand) in captures.iter().zip(callee_inputs) {
-            callable_flows.record_direct_surfaces(facts, *capture, &demand.callable.resolved);
+            callable_flows.record_direct_demand(facts, *capture, demand);
             let mut demand = closure_capture_boundary_demand(facts, callable_flows, *capture, demand, &callable);
             if callable.is_first_class() {
                 demand.shape = ShapeDemand::Whole;
@@ -2496,27 +2435,28 @@ fn direct_only_capture_callable_demand(
     let type_demand = callable_value_type_demand(facts, value)?;
     let arities = type_demand
         .callable
-        .resolved
+        .unnamed
         .iter()
         .map(|surface| surface.inputs.len())
         .collect::<HashSet<_>>();
     let closure_surfaces = closure
-        .resolved
+        .unnamed
         .iter()
         .filter(|surface| arities.contains(&surface.inputs.len()))
         .cloned()
         .collect::<BTreeSet<_>>();
-    if closure_surfaces.is_empty() {
+    let targets = closure
+        .targets
+        .iter()
+        .filter(|target| arities.contains(&target.surface.inputs.len()))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if closure_surfaces.is_empty() && targets.is_empty() {
         return Some(type_demand);
     }
     Some(RuntimeDemand::callable(CallableDemand {
-        resolved: closure_surfaces,
-        targets: closure
-            .targets
-            .iter()
-            .filter(|target| arities.contains(&target.surface.inputs.len()))
-            .cloned()
-            .collect(),
+        unnamed: closure_surfaces,
+        targets,
         opaque: false,
         escape: false,
     }))
@@ -2632,10 +2572,10 @@ fn arg_demands_for_summary(
                 .get(offset)
                 .map_or_else(|| Cow::Owned(facts.boundary_demand(fallback_ty)), Cow::Borrowed);
             if records_direct_arg_surfaces {
-                let direct_surfaces = facts
-                    .callable_surfaces(fallback_ty)
-                    .unwrap_or(&observed.callable.resolved);
-                callable_flows.record_direct_surfaces(facts, arg.value, direct_surfaces);
+                match facts.callable_surfaces(fallback_ty) {
+                    Some(surfaces) => callable_flows.record_direct_surfaces(facts, arg.value, surfaces),
+                    None => callable_flows.record_direct_demand(facts, arg.value, &observed),
+                }
             }
             let mut observed = boundary_value_flow_demand_at(facts, callable_flows, arg.value, observed, fallback_ty);
             if !records_direct_arg_surfaces {
@@ -2675,7 +2615,7 @@ fn arg_demands_for_summary(
 /// Seed an escaping callable argument's surface from the boundary it crosses.
 ///
 /// `boundary_value_demand` raises first-class `escape` on the callable axis but
-/// records no `resolved` surface — the axis is type-blind by construction. The
+/// records no `unnamed` surface — the axis is type-blind by construction. The
 /// surface the callee actually invokes the argument at is the boundary's settled
 /// parameter type (`boundary_ty`), which pins free callable type variables to
 /// their grounded instantiation. Unioning that surface onto an escaping callable
@@ -2695,7 +2635,7 @@ fn ground_first_class_callable_surface(facts: &RuntimeDemandFacts<'_>, demand: &
     let Some(surfaces) = facts.callable_surfaces(boundary_ty) else {
         return;
     };
-    demand.callable.resolved.extend(surfaces.iter().cloned());
+    demand.callable.unnamed.extend(surfaces.iter().cloned());
 }
 
 fn local_target_input_demands<'a>(
@@ -2775,7 +2715,7 @@ fn value_is_callable(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> bool {
 /// A callable consumed for its whole representation, with no resolved call
 /// contract, escapes first-class. That is recorded by joining `escape` onto the
 /// value's callable axis: a monotone raise that preserves the shape axis,
-/// preserves any accumulated `resolved` surfaces, and never clears `opaque`.
+/// preserves any accumulated `unnamed` surfaces, and never clears `opaque`.
 /// Non-callable values, and callables that already carry a call contract, pass
 /// through unchanged. There is no re-grounding from the value's type: the
 /// callable axis is never erased by a shape join, so nothing needs recovering.
@@ -2830,12 +2770,13 @@ fn record_first_class_boundary_demand(
 ) {
     if demand.callable.is_first_class() {
         let mut recorded = RuntimeDemand::callable(CallableDemand {
-            resolved: BTreeSet::new(),
-            targets: BTreeSet::new(),
+            unnamed: BTreeSet::new(),
+            targets: demand.callable.targets.clone(),
             opaque: demand.callable.opaque,
             escape: demand.callable.escape,
         });
-        let may_seed_from_value_type = demand.callable.resolved.is_empty() || facts.callable_origin(value).is_some();
+        let may_seed_from_value_type = (demand.callable.unnamed.is_empty() && demand.callable.targets.is_empty())
+            || facts.callable_origin(value).is_some();
         let type_seed = boundary_ty.or_else(|| {
             may_seed_from_value_type
                 .then(|| facts.value_types.get(&value).copied())
@@ -2848,10 +2789,13 @@ fn record_first_class_boundary_demand(
             // No boundary type to ground against: seed the escaping surfaces from
             // the value's concrete call shapes. The publication surfaces are
             // grounded once, downstream, in `ground_dispatch_surfaces`.
-            recorded.callable.resolved.extend(demand.callable.resolved.clone());
             recorded
                 .callable
-                .resolved
+                .unnamed
+                .extend(demand.callable.unnamed.iter().cloned());
+            recorded
+                .callable
+                .unnamed
                 .extend(callable_flows.direct_surfaces(value).iter().cloned());
         }
         callable_flows.record_first_class_demand(facts, value, &recorded);
@@ -2880,27 +2824,34 @@ fn closure_callee_demand(
     }
     let Some(summary) = summary else {
         let mut demand = CallableDemand {
-            resolved: Default::default(),
+            unnamed: Default::default(),
             targets: BTreeSet::new(),
             opaque: true,
             escape: false,
         };
-        demand.resolved.insert(facts.demand_types.surface(&actual_inputs));
+        demand.unnamed.insert(facts.demand_types.surface(&actual_inputs));
         return demand;
     };
     let mut demand = CallableDemand::default();
-    demand.resolved.insert(facts.demand_types.surface(&actual_inputs));
     for target in &summary.targets {
         let surface = facts.demand_types.surface(&target.surface_inputs);
-        demand.resolved.insert(surface.clone());
-        if let (Some(activation), Some(activation_inputs)) = (&target.activation, &target.activation_inputs) {
-            demand.targets.insert(CallableTarget {
-                surface,
-                activation: activation.clone(),
-                activation_inputs: activation_inputs.clone(),
-                need,
-            });
+        match (&target.activation, &target.activation_inputs) {
+            (Some(activation), Some(activation_inputs)) => {
+                demand.targets.insert(CallableTarget {
+                    surface,
+                    activation: activation.clone(),
+                    activation_inputs: activation_inputs.clone(),
+                    need,
+                });
+            }
+            _ => {
+                demand.unnamed.insert(surface);
+            }
         }
+    }
+    let every_target_named = !summary.targets.is_empty() && demand.unnamed.is_empty();
+    if !every_target_named {
+        demand.unnamed.insert(facts.demand_types.surface(&actual_inputs));
     }
     let exact_local_target = matches!(
         summary.targets.as_slice(),

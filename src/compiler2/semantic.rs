@@ -314,18 +314,21 @@ pub struct CallableTarget {
 /// callable-flow fact per local producer.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct CallableDemand {
-    pub resolved: BTreeSet<CallableSurface>,
+    /// The surfaces the value is called at that no target names: a call whose
+    /// callee is unresolved, or a boundary type's surface. A surface that a
+    /// target in `targets` names is carried by that target alone.
+    pub unnamed: BTreeSet<CallableSurface>,
     pub targets: BTreeSet<CallableTarget>,
     pub opaque: bool,
     pub escape: bool,
 }
 
 impl CallableDemand {
-    pub fn resolved(inputs: Vec<Ty>, types: &mut Types) -> Self {
-        let mut resolved = BTreeSet::new();
-        resolved.insert(CallableSurface::new(inputs, types));
+    pub fn unnamed(inputs: Vec<Ty>, types: &mut Types) -> Self {
+        let mut unnamed = BTreeSet::new();
+        unnamed.insert(CallableSurface::new(inputs, types));
         Self {
-            resolved,
+            unnamed,
             targets: BTreeSet::new(),
             opaque: false,
             escape: false,
@@ -334,7 +337,7 @@ impl CallableDemand {
 
     pub fn opaque() -> Self {
         Self {
-            resolved: BTreeSet::new(),
+            unnamed: BTreeSet::new(),
             targets: BTreeSet::new(),
             opaque: true,
             escape: false,
@@ -343,7 +346,7 @@ impl CallableDemand {
 
     pub fn escaped() -> Self {
         Self {
-            resolved: BTreeSet::new(),
+            unnamed: BTreeSet::new(),
             targets: BTreeSet::new(),
             opaque: false,
             escape: true,
@@ -351,7 +354,7 @@ impl CallableDemand {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.resolved.is_empty() && self.targets.is_empty() && !self.opaque && !self.escape
+        self.unnamed.is_empty() && self.targets.is_empty() && !self.opaque && !self.escape
     }
 
     /// Whether the callable crosses a boundary that cannot carry a grounded
@@ -362,6 +365,17 @@ impl CallableDemand {
         self.opaque || self.escape
     }
 
+    /// Every surface this demand calls the value at: the surfaces no target
+    /// names, and the surface of each target. A set, because consumers pair
+    /// its canonical order with per-surface layouts.
+    pub fn surfaces(&self) -> BTreeSet<CallableSurface> {
+        self.unnamed
+            .iter()
+            .chain(self.targets.iter().map(|target| &target.surface))
+            .cloned()
+            .collect()
+    }
+
     pub fn join(&self, other: &Self) -> Self {
         let mut joined = self.clone();
         joined.join_assign(other);
@@ -369,7 +383,7 @@ impl CallableDemand {
     }
 
     pub fn join_assign(&mut self, other: &Self) {
-        self.resolved.extend(other.resolved.iter().cloned());
+        self.unnamed.extend(other.unnamed.iter().cloned());
         self.targets.extend(other.targets.iter().cloned());
         self.opaque |= other.opaque;
         self.escape |= other.escape;
@@ -545,8 +559,8 @@ impl RuntimeDemand {
     /// instantiation. See
     /// [`ground_dispatch_surfaces`].
     pub(crate) fn ground_callable_surfaces(&mut self, types: &Types) {
-        if !self.callable.resolved.is_empty() {
-            self.callable.resolved = ground_dispatch_surfaces(types, &self.callable.resolved, &self.callable.resolved);
+        if !self.callable.unnamed.is_empty() {
+            self.callable.unnamed = ground_dispatch_surfaces(types, &self.callable.unnamed, &self.callable.unnamed);
         }
         if let ShapeDemand::TupleFields(fields) = &mut self.shape {
             for field in fields {
