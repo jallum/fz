@@ -1403,9 +1403,14 @@ pub enum BackendStep {
         tail: Option<ValueId>,
         retention: Option<crate::fz_ir::ListRetention<ValueId>>,
     },
+    /// A map literal. `in_key_order` says `entries` are already in the
+    /// runtime's key order with no key repeated, so the map is published as
+    /// written; otherwise they are in source order and the runtime sorts
+    /// them, a later entry replacing an earlier one with the same key.
     Map {
         value: ValueId,
         entries: Vec<(ValueId, ValueId)>,
+        in_key_order: bool,
         quoted_span: Option<Span>,
     },
     /// `%{base | k: v, ...}`. `value` is the updated map when `ok`, which is

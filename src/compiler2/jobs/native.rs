@@ -1152,6 +1152,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 BackendStep::Map {
                     value,
                     entries,
+                    in_key_order,
                     quoted_span,
                 } => {
                     if quoted_span.is_some() {
@@ -1183,7 +1184,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         )));
                         map = ctx.emit_map_put(map, key, span_map);
                     }
-                    let (var, _) = ctx.emit_let(Prim::DestMapFreeze(map));
+                    let (var, _) = ctx.emit_let(if *in_key_order {
+                        Prim::DestMapPublish(map)
+                    } else {
+                        Prim::DestMapFreeze(map)
+                    });
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::MapUpdate {

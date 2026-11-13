@@ -31,10 +31,10 @@ use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule}
 use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
 use fz_runtime::heap::{GcStats, Schema};
 use fz_runtime::ir_runtime::{
-    fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_dest_begin_update,
-    fz_map_dest_freeze, fz_map_dest_put_ref, fz_map_empty, fz_map_get_atom_key_ref, fz_mark_published_ref_aliased,
-    fz_matcher_map_get_ref, fz_struct_copy, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module,
-    fz_struct_store_ref,
+    fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_dest_begin,
+    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_empty,
+    fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_copy,
+    fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module, fz_struct_store_ref,
 };
 use fz_runtime::module_name::STRUCT_MODULE_FIELD;
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
@@ -1655,7 +1655,29 @@ fn eval_steps<T: Telemetry + ?Sized>(
             ProgramStep::Map {
                 value,
                 entries,
+                in_key_order: true,
+                ..
+            } => {
+                let proc = runtime.cur_proc();
+                let mut dest = fz_map_dest_begin(proc, entries.len() as u32);
+                for (key, item) in entries {
+                    let key = env_get(transport, proc, env, *key)?;
+                    let item = env_get(transport, proc, env, *item)?;
+                    dest = interp_map_dest_put(proc, dest, key, item, "backend map")?;
+                }
+                env.insert(
+                    *value,
+                    BackendBoundValue::Runtime(interp_value_from_ref_word(
+                        fz_map_dest_publish(proc, dest),
+                        "backend map",
+                    )?),
+                );
+            }
+            ProgramStep::Map {
+                value,
+                entries,
                 quoted_span,
+                in_key_order: false,
             } => {
                 let mut map_bits = if entries.is_empty() || quoted_span.is_some() {
                     fz_map_empty(runtime.cur_proc())
@@ -1710,11 +1732,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 for (key, item) in entries {
                     let key = env_get(transport, proc, env, *key)?;
                     let item = publish_runtime_value(proc, env_get(transport, proc, env, *item)?)?;
-                    dest = with_value_ref(proc, key, "backend map update key", |key_ref| {
-                        with_value_ref(proc, item, "backend map update value", |item_ref| {
-                            fz_map_dest_put_ref(proc, dest, key_ref, item_ref)
-                        })
-                    })??;
+                    dest = interp_map_dest_put(proc, dest, key, item, "backend map update")?;
                 }
                 let updated = interp_value_from_ref_word(fz_map_dest_freeze(proc, dest), "backend map update")?;
                 env.insert(
@@ -3357,6 +3375,27 @@ fn encode_direct_callable_captures(
         encode_transport_layout(transport, program, proc, capture, layout, lanes)?;
     }
     Ok(())
+}
+
+/// Put one entry in the map destination `dest`; the answer is the
+/// destination the next put or the freeze takes.
+fn interp_map_dest_put(
+    proc: *mut Process,
+    dest: u64,
+    key: AnyValue,
+    value: AnyValue,
+    context: &str,
+) -> Result<u64, String> {
+    let key = key.value(proc).map_err(|err| format!("{context}: key: {err}"))?;
+    let value = value.value(proc).map_err(|err| format!("{context}: value: {err}"))?;
+    Ok(fz_map_dest_put_parts(
+        proc,
+        dest,
+        key.raw(),
+        key.kind().tag() as u64,
+        value.raw(),
+        value.kind().tag() as u64,
+    ))
 }
 
 fn publish_runtime_value(proc: *mut Process, value: AnyValue) -> Result<AnyValue, String> {

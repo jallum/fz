@@ -3600,6 +3600,60 @@ fn an_update_that_cannot_miss_compiles_no_key_error_path() {
     );
 }
 
+/// A map literal whose keys are all literal atoms is written into the
+/// backend program in the runtime's key order, one entry per key, so no path
+/// sorts it at run time. Every value is still evaluated, in source order. A
+/// literal with any other key keeps its source order for the runtime to sort.
+#[test]
+fn a_map_literal_of_literal_atom_keys_is_written_in_key_order() {
+    use crate::compiler2::{BackendBody, BackendStep};
+
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("map_literal.fz".to_string()),
+        text: concat!(
+            "def keyed(k), do: %{k => 1, a: 2}\n",
+            "def main() do\n",
+            "  m = %{c: 3, a: 1, b: 2, a: 10}\n",
+            "  m.a + m.b + m.c + keyed(:z).z\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let main = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(main), Ok(16));
+
+    let program = compiler.retained_backend_program(main);
+    let literals: Vec<(usize, bool)> = program
+        .executables()
+        .into_iter()
+        .filter_map(|executable| match &executable.body {
+            BackendBody::Clauses { entries, .. } => Some(entries.iter().flat_map(|entry| &entry.steps)),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|step| match step {
+            BackendStep::Map {
+                entries, in_key_order, ..
+            } => Some((entries.len(), *in_key_order)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        literals.contains(&(3, true)),
+        "four entries over three atom keys are three entries in key order: {literals:?}"
+    );
+    assert!(
+        literals.contains(&(2, false)),
+        "a key known only at run time leaves both entries for the runtime to sort: {literals:?}"
+    );
+}
+
 /// Where the type says which struct is being updated and every key names one
 /// of its fields, the compiler writes the slots to replace into the backend
 /// program: the update copies the struct and stores them, and cannot miss. A

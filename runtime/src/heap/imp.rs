@@ -583,16 +583,43 @@ impl Heap {
                 self.normalize_map_entries(&mut entries);
                 self.write_ordered_map_entries(dest, entries.len(), entries.into_iter());
             }
-            MapDestinationKind::Update => {
-                for i in 0..filled {
-                    let (key, value) = unsafe { map_entry(dest, i) };
-                    self.publish_contained_parts(key.raw(), key.kind());
-                    self.publish_contained_parts(value.raw(), value.kind());
-                }
-                unsafe { write(dest as *mut u64, map_header_word(filled)) };
-            }
+            MapDestinationKind::Update => self.publish_entries_in_place(dest, filled),
         }
         Some(entries_map_ref(dest))
+    }
+
+    /// Publish a build destination whose entries were put in key order with
+    /// no key repeated, which is how the compiler writes a map literal whose
+    /// keys are all literal atoms. Nothing is sorted or moved.
+    pub fn map_destination_publish(&mut self, dest_bits: u64) -> AnyValueRef {
+        let dest = map_addr_from_tagged(dest_bits).expect("a map destination");
+        let (_, filled, _) = unsafe { map_destination_state(dest) };
+        debug_assert!(
+            self.entries_are_in_key_order(dest, filled),
+            "a map published in place must already be in key order"
+        );
+        self.publish_entries_in_place(dest, filled);
+        entries_map_ref(dest)
+    }
+
+    /// Make the first `filled` entries of the destination at `dest` the
+    /// published map, where they stand.
+    fn publish_entries_in_place(&mut self, dest: *mut u8, filled: usize) {
+        for i in 0..filled {
+            let (key, value) = unsafe { map_entry(dest, i) };
+            self.publish_contained_parts(key.raw(), key.kind());
+            self.publish_contained_parts(value.raw(), value.kind());
+        }
+        unsafe { write(dest as *mut u64, map_header_word(filled)) };
+    }
+
+    fn entries_are_in_key_order(&self, dest: *mut u8, filled: usize) -> bool {
+        let schemas = self.schemas.borrow();
+        let comparator = TermComparator::new(&self.node, &schemas);
+        (1..filled).all(|i| {
+            let (earlier, later) = unsafe { (map_entry(dest, i - 1).0, map_entry(dest, i).0) };
+            comparator.compare(earlier, later, NumericMode::Strict).is_lt()
+        })
     }
 
     pub fn alloc_map_refs(&mut self, entries: &[(AnyValueRef, AnyValueRef)]) -> Result<AnyValueRef, AnyValueRefError> {

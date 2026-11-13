@@ -506,6 +506,9 @@ pub enum Prim {
     /// Publish a map destination as the immutable map: a literal's entries
     /// are sorted and deduplicated, an update's are already in place.
     DestMapFreeze(Var),
+    /// Publish a map destination whose entries were put in key order with no
+    /// key repeated. Nothing is sorted or moved.
+    DestMapPublish(Var),
     /// A copy of the struct `base`, which has `arity` fields, with each of
     /// `fields` stored in its slot.
     StructWith {
@@ -631,7 +634,7 @@ impl Prim {
                 used.insert(*key);
                 used.insert(*value);
             }
-            Prim::DestMapFreeze(map) => {
+            Prim::DestMapFreeze(map) | Prim::DestMapPublish(map) => {
                 used.insert(*map);
             }
             Prim::StructWith { base, fields, .. } => {
@@ -1374,6 +1377,7 @@ impl fmt::Display for Prim {
             Prim::DestMapBegin(DestMapSeed::Update(base)) => write!(f, "dest_map_begin(update={})", base),
             Prim::DestMapPut { map, key, value } => write!(f, "dest_map_put({}, key={}, value={})", map, key, value),
             Prim::DestMapFreeze(map) => write!(f, "dest_map_freeze({})", map),
+            Prim::DestMapPublish(map) => write!(f, "dest_map_publish({})", map),
             Prim::StructWith { base, fields, .. } => {
                 write!(f, "struct_with({}", base)?;
                 for (slot, v) in fields {

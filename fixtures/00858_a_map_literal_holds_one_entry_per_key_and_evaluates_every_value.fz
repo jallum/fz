@@ -1,0 +1,32 @@
+#---
+# purpose: "a map literal whose keys are literal atoms written out of order, with a key repeated, holds the last value written for each key, evaluates every value once in source order, and equals the same map built key by key"
+# oracle: 00858_a_map_literal_holds_one_entry_per_key_and_evaluates_every_value.oracle.exs
+#---
+#
+# The order keys are written in is not part of a map, and a repeated key
+# keeps the value written last. A value that is replaced is still computed,
+# and its effects happen where it stands in the source.
+def note(v) do
+  dbg(v)
+  v
+end
+
+def keyed(k), do: %{k => note(:late), :b => note(:b), k => note(:later)}
+
+def main() do
+  m = %{d: note(4), b: note(2), a: note(1), b: note(20), c: note([3])}
+  dbg(m.a)
+  dbg(m.b)
+  dbg(m.c)
+  dbg(m.d)
+  dbg(map_size(m))
+  dbg(m == Map.put(Map.put(Map.put(Map.put(%{}, :a, 1), :b, 20), :c, [3]), :d, 4))
+  dbg(Enum.sort(Map.keys(%{zz: 1, z: 2, a: 3, aa: 4})))
+  dbg(%{y: 1.5, x: "s"})
+  dbg(%{only: {1, 2}})
+  dbg(%{})
+  k = keyed(:a)
+  dbg(k.a)
+  dbg(k.b)
+  dbg(map_size(keyed(:b)))
+end
