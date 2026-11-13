@@ -315,6 +315,17 @@ fn non_ascii_alias_character(name: &str) -> Option<char> {
 const UNICODE_ESCAPE_SHAPE: &str =
     "invalid Unicode escape character, expected \\uHHHH or \\u{H*} where H is a hexadecimal digit";
 
+/// The name and escape letter of the whitespace characters a literal must spell as an escape.
+fn whitespace_escape(c: char) -> Option<(&'static str, char)> {
+    match c {
+        ' ' => Some(("space", 's')),
+        '\n' => Some(("newline", 'n')),
+        '\t' => Some(("tab", 't')),
+        '\r' => Some(("carriage return", 'r')),
+        _ => None,
+    }
+}
+
 /// Appends the UTF-8 encoding of `c`.
 fn push_char(bytes: &mut Vec<u8>, c: char) {
     bytes.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
@@ -723,10 +734,47 @@ impl<'a> Lexer<'a> {
             Some(b'\\') => Ok('\\'),
             Some(b'"') => Ok('"'),
             Some(b'#') => Ok('#'),
+            Some(b'\'') => Ok('\''),
+            Some(b's') => Ok(' '),
+            Some(b'0') => Ok('\0'),
+            Some(b'a') => Ok('\u{7}'),
+            Some(b'b') => Ok('\u{8}'),
+            Some(b'd') => Ok('\u{7f}'),
+            Some(b'e') => Ok('\u{1b}'),
+            Some(b'f') => Ok('\u{c}'),
+            Some(b'v') => Ok('\u{b}'),
             Some(b'u') => self.read_unicode_escape(start),
-            Some(c) => Err(self.err(format!("unknown escape `\\{}` in string literal", c as char))),
+            Some(c) => Err(self.escape_error(start, &format!("unknown escape `\\{}`", c as char))),
             None => Err(self.err("unterminated escape".into())),
         }
+    }
+
+    /// `?c` or `?\e`: the code point of one character or escape, as an integer.
+    /// Elixir only warns about a literal whose character is whitespace; fz
+    /// asks for the escape, because the bare form hides in a stray `?`.
+    fn read_character_literal(&mut self, start: usize) -> Result<Tok, LexError> {
+        self.bump(); // consume ?
+        let Some(c) = self.char_at(self.pos) else {
+            return Err(self.escape_error(start, "a character literal needs a character after `?`"));
+        };
+        let c = if c == '\\' {
+            self.bump();
+            if self.peek(0) == Some(b'u') {
+                self.bump();
+                return Err(self.escape_error(
+                    start,
+                    "`?\\u` is not an escape in a character literal; write the character itself",
+                ));
+            }
+            self.read_escape()?
+        } else {
+            self.pos += c.len_utf8();
+            if let Some((name, escape)) = whitespace_escape(c) {
+                return Err(self.escape_error(start, &format!("write the {name} character literal as `?\\{escape}`")));
+            }
+            c
+        };
+        Ok(Tok::Int(i64::from(u32::from(c))))
     }
 
     /// `\uHHHH` or `\u{H...}` with one to six digits, after the `u`.
@@ -1230,6 +1278,7 @@ impl<'a> Lexer<'a> {
                     Tok::Binary(bytes)
                 }
             }
+            b'?' => self.read_character_literal(start)?,
             c if c.is_ascii_digit() => self.read_number()?,
             _ if self.char_at(self.pos).is_some_and(is_name_start) => {
                 let name = self.read_ident()?;

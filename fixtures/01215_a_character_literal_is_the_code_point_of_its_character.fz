@@ -1,0 +1,18 @@
+#---
+# purpose: ?c is the code point of c, ?\e the code point of an escape, and a literal works in expressions, patterns and next to a name ending in a question mark
+# oracle: 01215_a_character_literal_is_the_code_point_of_its_character.oracle.exs
+#---
+def kind(?a), do: :a
+def kind(?\n), do: :newline
+def kind(_), do: :other
+
+def ready?(), do: true
+
+def main() do
+  dbg({?a, ?A, ?0, ?é, ?😀, ??, ?", ?#, ?(, ?:, ?_})
+  dbg({?\n, ?\t, ?\r, ?\s, ?\0, ?\\, ?\', ?\", ?\#})
+  dbg({?\a, ?\b, ?\d, ?\e, ?\f, ?\v})
+  dbg({?a + 1, ?z - ?a, ?a == 97, ?é == 233})
+  dbg({kind(97), kind(10), kind(?b)})
+  dbg(if ready?(), do: ?y, else: ?n)
+end

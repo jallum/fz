@@ -1,0 +1,12 @@
+kind = fn
+  ?a -> :a
+  ?\n -> :newline
+  _ -> :other
+end
+ready? = fn -> true end
+IO.inspect({?a, ?A, ?0, ?é, ?😀, ??, ?", ?#, ?(, ?:, ?_})
+IO.inspect({?\n, ?\t, ?\r, ?\s, ?\0, ?\\, ?\', ?\", ?\#})
+IO.inspect({?\a, ?\b, ?\d, ?\e, ?\f, ?\v})
+IO.inspect({?a + 1, ?z - ?a, ?a == 97, ?é == 233})
+IO.inspect({kind.(97), kind.(10), kind.(?b)})
+IO.inspect(if ready?.(), do: ?y, else: ?n)

@@ -1,0 +1,6 @@
+#---
+# purpose: a character literal with an escape fz does not know is rejected and underlined
+# expect: diagnostic
+#---
+x = ?\z
+def main(), do: 1

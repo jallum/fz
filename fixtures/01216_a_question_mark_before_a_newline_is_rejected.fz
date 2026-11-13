@@ -1,0 +1,7 @@
+#---
+# purpose: a ? followed by a newline is not a character literal and the diagnostic names the escape to write
+# expect: diagnostic
+#---
+x = ?
+
+def main(), do: 1
