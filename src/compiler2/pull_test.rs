@@ -741,8 +741,46 @@ fn changed_group_drains_produced_and_pending_reader_diamond_in_semantic_order() 
         assert!(memo.get(join).is_some());
         assert!(memo.dirty_descendants.contains(join));
         assert!(!memo.pending_dependencies.contains_key(pending));
-        assert!(!memo.pending_dependencies.contains_key(pending_child));
+        assert!(memo.pending_dependencies.contains_key(pending_child));
     }
+}
+
+#[test]
+fn a_settle_keeps_the_pending_formula_two_levels_above_it_so_the_cycle_still_closes() {
+    let types = fake_types();
+    let root = RootId::for_test(18);
+    let settling = ProductKey::AbiExecutable(fake_executable_with_function(root, 180));
+    let below = ProductKey::AbiExecutable(fake_executable_with_function(root, 181));
+    let above = ProductKey::AbiExecutable(fake_executable_with_function(root, 182));
+    let mut memo = ProductMemo::default();
+    for (reader, dependency) in [(&below, &settling), (&above, &below)] {
+        memo.unblock(
+            ProductRequestId(NonZeroU64::MIN),
+            reader,
+            ProductDependencies {
+                rooted_read: None,
+                products: IndexMap::from_iter([(dependency.clone(), None)]),
+                facts: HashMap::default(),
+            },
+            HashSet::default(),
+        );
+    }
+
+    finish_test_product(&mut memo, &settling, ProductValue::Unit, []);
+
+    assert!(!memo.pending_dependencies.contains_key(&below));
+    assert!(memo.pending_dependencies.contains_key(&above));
+    let below_reads_above = ProductDependencies {
+        rooted_read: None,
+        products: IndexMap::from_iter([(above.clone(), None)]),
+        facts: HashMap::default(),
+    };
+    let (members, search) = memo.pending_strong_component(&below, &below_reads_above, &above, &types);
+    assert!(search.cycle_closed, "the retained wait above still evidences the cycle");
+    assert_eq!(
+        members.map(|members| members.into_iter().collect::<HashSet<_>>()),
+        Some(HashSet::from_iter([below, above]))
+    );
 }
 
 #[test]

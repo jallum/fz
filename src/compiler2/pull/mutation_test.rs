@@ -59,6 +59,7 @@ fn mutation_admission_keeps_single_products_inline_and_never_clones_rejected_key
     let mut admissions = MutationAdmissions::Empty;
     let strengths = [
         ReaderMutation::Invalidate,
+        ReaderMutation::Wake,
         ReaderMutation::Dirty,
         ReaderMutation::Refresh,
     ];
@@ -73,7 +74,7 @@ fn mutation_admission_keeps_single_products_inline_and_never_clones_rejected_key
     let MutationAdmissions::One(stored, mask) = &admissions else {
         panic!("one key stays inline")
     };
-    assert_eq!(*mask, 7);
+    assert_eq!(*mask, 15);
     let first_storage = stored.input.as_ptr();
     let size = 512;
     for id in 1..size {

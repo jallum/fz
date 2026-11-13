@@ -2530,7 +2530,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // products, 12 -> 10 unchanged-by-content settlements.
         // (339, 339, 339, 0, 10, 0) -> (281, 281, 281, 0, 10, 0): no result-decoding
         // function settles a product.
-        (281, 281, 281, 0, 10, 0),
+        // 10 -> 8 cache hits: a settle wakes only the pending reader directly
+        // above it, so the readers above that one are not re-requested.
+        (281, 281, 281, 0, 8, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(

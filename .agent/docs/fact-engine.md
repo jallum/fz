@@ -1009,15 +1009,21 @@ only the direct fact producer needed for that exact fact, while deferring
 forbidden root artifact jobs for the submitted root.
 
 Reader changes propagate through one transient `ProductMutationWave`. Its
-move-only `OrderedWorklist` orders typed product keys, then `Invalidate`, `Dirty`,
+move-only `OrderedWorklist` orders typed product keys, then `Invalidate`, `Wake`, `Dirty`,
 and `Refresh`; newly discovered smaller keys compete immediately. Admission is
 wave-wide and exact for each product/strength pair. One product stays inline
-with a three-bit mutation mask; a second distinct product moves that first key
+with a four-bit mutation mask; a second distinct product moves that first key
 into the single admission map. Further strengths reuse the existing map key.
 The heap retains the original seed vector. Borrowed reader edges get an owned
 heap key only after admission succeeds, while owned pending-reader escalation
 moves its key. A completed mutation retains no scheduling permission beyond
-that wave. One aggregate work report covers the whole wave, including duplicate
+that wave. A product commit with a changed value seeds `Wake` on its readers:
+a displaced pending reader loses its formula and the wave goes no further,
+because the pending readers above it recorded that reader as absent and its
+own commit wakes them; this keeps the pending cycle evidence of a recursive
+group intact while its members settle one by one. Fact movements and explicit
+invalidation seed `Invalidate`, which also discards the formulas of every
+pending reader above. One aggregate work report covers the whole wave, including duplicate
 attempts, rather than attributing only validation-triggered refreshes.
 
 ### Product sessions and executable artifacts
