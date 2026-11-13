@@ -1,0 +1,26 @@
+#---
+# purpose: "Ten closures returned in one tuple are each called after the tuple is destructured, in the function that receives it and in a clause head"
+# oracle: oracle.exs
+# oracle.stamp: 020c05c2780dbd79
+#---
+#
+# Ten fields are more than a tuple travels in field by field, so the closures
+# leave `fns/1` inside a built tuple and each is called as a value.
+def fns(k) do
+  {fn x -> x + k end, fn x -> x * k end, fn x -> x - k end, fn x -> x + 1 end, fn x -> x + 2 end,
+   fn x -> x + 3 end, fn x -> x + 4 end, fn x -> x + 5 end, fn x -> x + 6 end, fn x -> k end}
+end
+
+def all({a, b, c, d, e, f, g, h, i, j}, x) do
+  a.(x) + b.(x) + c.(x) + d.(x) + e.(x) + f.(x) + g.(x) + h.(x) + i.(x) + j.(x)
+end
+
+def main() do
+  t = fns(3)
+  dbg(all(t, 10))
+  {_, mul, _, _, _, _, _, _, _, last} = t
+  dbg(mul.(5))
+  dbg(last.(5))
+  dbg(tuple_size(t))
+  dbg(elem(t, 2).(10))
+end
