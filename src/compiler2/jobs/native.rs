@@ -3501,6 +3501,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let float = self.world.types_mut().float();
                 ctx.value_types.insert(var, float);
             }
+            ExternTy::Bool => {
+                let boolean = self.world.types_mut().bool();
+                ctx.value_types.insert(var, boolean);
+            }
             _ => {}
         }
         Ok(var)

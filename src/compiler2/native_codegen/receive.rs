@@ -1295,9 +1295,10 @@ fn fail_guard<M: cranelift_module::Module>(body: &mut DispatchBody<'_, '_, M>, f
 /// A call to an extern, made from the receive matcher.
 ///
 /// The matcher holds its values as refs or raw words, so the call carries three
-/// classes: an integer, a float, and a reference word. The guard's extern was
-/// admitted on that rule where the node was made, so no other class reaches
-/// here. A checked return's failure leaves through `fail`: the clause does not
+/// classes of operand: an integer, a float, and a reference word. A result is
+/// one of those or a boolean word, answered as the atom `true` or `false`. The
+/// guard's extern was admitted on that rule where the node was made, so no
+/// other class reaches here. A checked return's failure leaves through `fail`: the clause does not
 /// match.
 fn emit_guard_extern<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
@@ -1358,6 +1359,10 @@ fn emit_guard_extern<M: cranelift_module::Module>(
         ExternTy::I64 => Ok(ReceiveValue::Int(raw)),
         ExternTy::F64 => Ok(ReceiveValue::Float(raw)),
         ExternTy::Any => Ok(ReceiveValue::AnyRef(raw)),
+        ExternTy::Bool => {
+            let truthy = body.b.ins().icmp_imm(IntCC::NotEqual, raw, 0);
+            Ok(emit_bool_value(body.b, truthy))
+        }
         other => Err(CodegenError::new(format!(
             "guard extern `{}` returns {other:?}, which the receive matcher does not carry",
             extern_fn.symbol

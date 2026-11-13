@@ -206,7 +206,6 @@ fn a_guard_extern_of_any_other_class_is_refused_where_the_node_is_made() {
     use crate::fz_ir::{ExternReturn, ExternTy};
     let refused = [
         guard_extern(&[ExternTy::Binary], ExternReturn::Scalar(ExternTy::I64), false),
-        guard_extern(&[ExternTy::Any], ExternReturn::Scalar(ExternTy::Bool), false),
         guard_extern(&[ExternTy::Any], ExternReturn::Scalar(ExternTy::Unit), false),
         guard_extern(&[ExternTy::Any], ExternReturn::Scalar(ExternTy::I64), true),
     ];
@@ -216,6 +215,19 @@ fn a_guard_extern_of_any_other_class_is_refused_where_the_node_is_made() {
             "expected a class refusal, got {result:?}"
         );
     }
+}
+
+/// Intent: a guard function may answer a boolean, which is how a comparison
+/// such as `===` is a guard, plainly or with a declared failure.
+#[test]
+fn a_guard_extern_may_return_a_boolean() {
+    use crate::fz_ir::{ExternReturn, ExternTy};
+    let admitted = guard_extern(
+        &[ExternTy::Any, ExternTy::Any],
+        ExternReturn::Scalar(ExternTy::Bool),
+        false,
+    );
+    assert!(admitted.is_ok(), "expected the extern to be admitted, got {admitted:?}");
 }
 
 /// Intent: a guard function may take and return numbers, and may declare a

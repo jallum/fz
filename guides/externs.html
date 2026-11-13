@@ -547,8 +547,8 @@ prototype in the C header.
       raises an arg exception if you try.</li>
 <li><strong>Guards can call externs of three classes.</strong> A guard
       may call an extern whose parameters are integers, floats or reference
-      words and whose return is an integer, a float, a reference word or
-      <code>never</code>. Any other class is a compile error. An extern that
+      words and whose return is an integer, a float, a boolean, a reference
+      word or <code>never</code>. Any other class is a compile error. An extern that
       declares <code>raises:</code> is callable too: where a body would raise,
       the guard fails and its clause does not match. Guard functions such as
       <code>map_size/1</code> and <code>elem/2</code> are Kernel functions that
