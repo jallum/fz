@@ -58,12 +58,12 @@ impl BoxedApplyRequirement {
                     }
                     // A tail call hands the seam's result straight on to this
                     // body's own caller without touching it, so this body's own
-                    // return form is what the seam has to produce. `NoReturn`
-                    // and a missing flow lower to the same tail term, so they
-                    // read the same way.
-                    Some(BackendReturnFlow::Tail | BackendReturnFlow::NoReturn) | None => {
-                        abi.return_layout.layout.reprs.clone()
-                    }
+                    // return form is what the seam has to produce. A missing
+                    // flow lowers to the same tail term.
+                    Some(BackendReturnFlow::Tail) | None => abi.return_layout.layout.reprs.clone(),
+                    // A call whose result type is empty never comes back, so
+                    // nothing is read from the seam: it demands nothing.
+                    Some(BackendReturnFlow::NoReturn) => return None,
                 };
                 Some(Self {
                     arity: args.len(),

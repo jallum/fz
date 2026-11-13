@@ -990,7 +990,10 @@ mixed empty and nonempty returning members are invalid. The public form is not
 copied from one private member or reconstructed from a semantic return type.
 The construction owner contributes every member's exact return contract.
 `BoxedContracts` requires callers and nondiverging wrappers of the same arity
-to agree on delivered lanes. Caller requirements are extracted once per backend
+to agree on delivered lanes. A seam call that delivers or continues demands
+its destination's lanes, a tail seam call demands its own body's return lanes,
+and a seam call that never returns (`NoReturn`) reads nothing back and demands
+nothing. Caller requirements are extracted once per backend
 body; exact caller and wrapper changes update only their arity buckets. Equal
 contributions leave those buckets alone. Packaging rejects a retained mismatch
 witness, preserving the calling-convention check without a whole-root scan.
