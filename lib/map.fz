@@ -323,6 +323,48 @@ defmodule Map do
   def update!(map, key, fun), do: put(map, key, fun.(fetch!(map, key)))
 
   @doc """
+  Puts `value` under `key` when `map` already has `key`, and returns `map`
+  unchanged when it does not.
+
+  ## Examples
+
+      Map.replace(%{a: 1}, :a, 2)
+      #=> %{a: 2}
+
+      Map.replace(%{a: 1}, :b, 2)
+      #=> %{a: 1}
+
+  """
+  @spec replace(any, any, any) :: any
+  def replace(map, key, value), do: replaced(map, key, value, has_key?(map, key))
+
+  @spec replaced(any, any, any, boolean) :: any
+  defp replaced(map, key, value, true), do: put(map, key, value)
+  defp replaced(map, _key, _value, false), do: map
+
+  @doc """
+  Puts `value` under `key` when `map` already has `key`, and raises `KeyError`
+  when it does not.
+
+  ## Examples
+
+      Map.replace!(%{a: 1}, :a, 2)
+      #=> %{a: 2}
+
+      Map.replace!(%{a: 1}, :b, 2)
+      # ** (KeyError) key :b not found in:
+      #
+      #     %{a: 1}
+
+  """
+  @spec replace!(any, any, any) :: any
+  def replace!(map, key, value), do: replaced!(map, key, value, has_key?(map, key))
+
+  @spec replaced!(any, any, any, boolean) :: any
+  defp replaced!(map, key, value, true), do: put(map, key, value)
+  defp replaced!(map, key, _value, false), do: key_error(map, key)
+
+  @doc """
   Returns the map with `fun` applied to the value at `key`, or with `key`
   put to `default` when it is absent. `fun` is not called for an absent key.
 

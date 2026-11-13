@@ -1,0 +1,51 @@
+#---
+# purpose: "struct/1, struct/2 and struct!/2 build a struct from a module or a struct and a keyword list or map, as Elixir does"
+# oracle: 00880_struct_builds_a_struct_from_a_module_and_its_fields.oracle.exs
+#---
+#
+# A module that declares a struct answers it from `__struct__/0`, each field
+# at its default. `struct/2` starts there and replaces the fields it is
+# given, leaving out any key the struct does not declare; `struct!/2` raises
+# KeyError for one.
+defmodule Pt do
+  defstruct x: 0, y: 0
+end
+
+defmodule Named do
+  defstruct [:name, kind: :plain]
+end
+
+def message(f) do
+  try do
+    f.()
+  rescue
+    e in KeyError -> e.message
+  end
+end
+
+def pick(true), do: Pt
+def pick(false), do: Named
+
+def main() do
+  dbg(Pt.__struct__())
+  dbg(Named.__struct__())
+  dbg(struct(Pt))
+  dbg(struct(Pt, []))
+  dbg(struct(Pt, x: 1))
+  dbg(struct(Pt, x: 1, z: 9))
+  dbg(struct(Pt, %{y: 7}))
+  dbg(struct(%Pt{x: 5}, y: 6))
+  dbg(struct(%Pt{x: 5}, __struct__: Named, y: 6))
+  dbg(struct(Named, name: "a"))
+  dbg(struct(pick(true), x: 3))
+  dbg(struct(pick(false), name: "b", x: 3))
+  dbg(struct!(Pt, x: 1))
+  dbg(struct!(%Pt{x: 5}, y: 6))
+  dbg(struct!(%Pt{x: 5}, __struct__: Named, y: 6))
+  dbg(message(fn -> struct!(Pt, z: 9) end))
+  dbg(message(fn -> struct!(%Pt{}, z: 9) end))
+  dbg(Map.replace(%{a: 1}, :a, 2))
+  dbg(Map.replace(%{a: 1}, :b, 2))
+  dbg(Map.replace!(%{a: 1}, :a, 2))
+  dbg(message(fn -> Map.replace!(%{a: 1}, :b, 2) end))
+end

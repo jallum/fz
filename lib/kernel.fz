@@ -244,6 +244,72 @@ defmodule Kernel do
   end
 
   @doc """
+  Answers the struct `base` names, each field at its default. `base` is a
+  module that declares a struct, or a struct.
+
+  ## Examples
+
+      struct(Point)
+      #=> %Point{x: 0, y: 0}
+
+  """
+  @spec struct(any) :: any
+  def struct(base), do: struct(base, [])
+
+  @doc """
+  Answers the struct `base` names with the fields `fields` gives. `base` is
+  a module that declares a struct, or a struct to start from. `fields` is
+  a keyword list or a map. A key the struct does not declare is ignored, and
+  so is `:__struct__`.
+
+  ## Examples
+
+      struct(Point, x: 1)
+      #=> %Point{x: 1, y: 0}
+
+      struct(%Point{x: 1}, y: 2, z: 3)
+      #=> %Point{x: 1, y: 2}
+
+  """
+  @spec struct(any, any) :: any
+  def struct(module :: atom, fields), do: struct(module.__struct__(), fields)
+  def struct(base, fields), do: Enum.reduce(fields, base, &replace_field/2)
+
+  @spec replace_field({any, any}, any) :: any
+  defp replace_field({:__struct__, _}, base), do: base
+  defp replace_field({key, value}, base), do: Map.replace(base, key, value)
+
+  @doc """
+  Like `struct/2`, and raises `KeyError` for a key the struct does not
+  declare.
+
+  ## Examples
+
+      struct!(Point, x: 1)
+      #=> %Point{x: 1, y: 0}
+
+      struct!(Point, z: 3)
+      # ** (KeyError) key :z not found
+
+  """
+  @spec struct!(any, any) :: any
+  def struct!(module :: atom, fields), do: Enum.reduce(fields, module.__struct__(), &put_declared_field!/2)
+  def struct!(base, fields), do: Enum.reduce(fields, base, &replace_field!/2)
+
+  @spec put_declared_field!({any, any}, any) :: any
+  defp put_declared_field!({:__struct__, _}, base), do: base
+
+  defp put_declared_field!({key, value}, base) do
+    if Map.has_key?(base, key),
+      do: Map.put(base, key, value),
+      else: raise(KeyError, "key " <> inspect(key) <> " not found")
+  end
+
+  @spec replace_field!({any, any}, any) :: any
+  defp replace_field!({:__struct__, _}, base), do: base
+  defp replace_field!({key, value}, base), do: Map.replace!(base, key, value)
+
+  @doc """
   Answers `true` when `value` is `nil` or `false`, and `false` otherwise.
 
   ## Examples

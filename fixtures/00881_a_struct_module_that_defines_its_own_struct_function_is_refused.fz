@@ -1,0 +1,12 @@
+#---
+# purpose: "defstruct defines the module's __struct__/0, so a module that also writes one defines it twice"
+# expect: diagnostic
+# diagnostic.code: resolve/duplicate-function
+#---
+defmodule Pt do
+  defstruct x: 0
+
+  def __struct__(), do: %{x: 1}
+end
+
+def main(), do: dbg(Pt.__struct__())

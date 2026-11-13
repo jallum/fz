@@ -152,6 +152,21 @@ a value that reaches none of them raises, as in Elixir:</p>
 <code>m.exception([])</code>. The function is an atom and the arguments
 are a list, both written out at the call.</p>
 
+<p>A module that declares a struct answers it from
+<code>__struct__()</code>, each field at its default.
+<code>struct(m, fields)</code> starts there and sets the fields a keyword
+list or map names, leaving out any key the struct does not declare;
+<code>struct!(m, fields)</code> raises <code>KeyError</code> for one. Both
+also take a struct to start from.</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">Point</span> <span class="kw">do</span>
+  <span class="kw">defstruct</span> x: <span class="num">0</span>, y: <span class="num">0</span>
+<span class="kw">end</span>
+
+<span class="ty">Point</span>.<span class="fn">__struct__</span>()          <span class="com"># %Point{x: 0, y: 0}</span>
+<span class="fn">struct</span>(<span class="ty">Point</span>, x: <span class="num">5</span>, z: <span class="num">1</span>)    <span class="com"># %Point{x: 5, y: 0}</span>
+<span class="fn">struct!</span>(<span class="ty">Point</span>, z: <span class="num">1</span>)         <span class="com"># ** (KeyError) key :z not found</span></pre>
+
 <p>A value that is not an atom at run time raises
 <code>ArgumentError</code>. A value whose type holds no atom at all can
 never be a module, and that call is refused at compile time with

@@ -825,11 +825,14 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                         self.reserve_local_callable(&name, arity, is_macro, true);
                     }
                 }
+                // A `defstruct` defines the module's `__struct__/0`.
+                ScopeForm::Struct(_) => {
+                    self.reserve_local_callable(STRUCT_FUNCTION, 0, false, true);
+                }
                 ScopeForm::Alias(_)
                 | ScopeForm::Import(_)
                 | ScopeForm::Require(_)
                 | ScopeForm::CompilerService(_)
-                | ScopeForm::Struct(_)
                 | ScopeForm::Overridable(_)
                 | ScopeForm::Statement(_)
                 | ScopeForm::ProtocolImpl(_) => {}
@@ -1099,24 +1102,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 self.mark_overridable(overridable)?;
                 Ok(None)
             }
-            ScopeForm::Function(function) => {
-                if !self.definition_stands(function)? {
-                    return Ok(None);
-                }
-                let publication = self.define_source_function(
-                    self.current_module,
-                    context.owner_module,
-                    self.namespace,
-                    function,
-                    context,
-                )?;
-                self.callables
-                    .retain(|callable| callable.function != publication.function);
-                if let Some(callable) = publication.callable {
-                    self.callables.push(callable);
-                }
-                Ok(None)
-            }
+            ScopeForm::Function(function) => self.apply_function(function, context),
             ScopeForm::Module(module) => {
                 let module_id = reference_declared_module(self.world, self.current_module, &module.name);
                 self.world.scope_module(module_id, self.namespace);
@@ -1135,9 +1121,35 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             ScopeForm::Statement(statement) => self.apply_statement(statement),
             ScopeForm::Struct(def) => {
                 self.publish_struct_def(&def.def)?;
-                Ok(None)
+                let function = build_struct_function(def.def.span).map_err(|error| {
+                    emit_internal_surface_error(self.telemetry, format!("struct function synthesis failed: {error}"))
+                })?;
+                self.apply_function(&function, context)
             }
         }
+    }
+
+    fn apply_function(
+        &mut self,
+        function: &FunctionForm,
+        context: &FragmentPublicationContext,
+    ) -> Result<Option<JobEffects>, FatalError> {
+        if !self.definition_stands(function)? {
+            return Ok(None);
+        }
+        let publication = self.define_source_function(
+            self.current_module,
+            context.owner_module,
+            self.namespace,
+            function,
+            context,
+        )?;
+        self.callables
+            .retain(|callable| callable.function != publication.function);
+        if let Some(callable) = publication.callable {
+            self.callables.push(callable);
+        }
+        Ok(None)
     }
 
     /// Records that the walk has reached `function`, and answers whether this
@@ -2052,7 +2064,7 @@ fn build_module_info_function(
     let macros = module_info_pairs(&builder, callables, |kind| matches!(kind, InterfaceCallableKind::Macro))?;
     let kind = builder.variable(&Var::user("kind"), &meta)?;
     let body = module_info_case(&builder, &meta, kind, functions, macros, builder.atom(module_name))?;
-    let clause = module_info_function_clause(&builder, &meta, kind, body)?;
+    let clause = def_clause(&builder, &meta, "__info__", &[kind], body)?;
     Ok(FunctionForm {
         source: builder.root(builder.list(&[clause])?)?,
         name: "__info__".to_string(),
@@ -2082,13 +2094,38 @@ fn module_info_pairs(
     builder.list(&pairs)
 }
 
-fn module_info_function_clause(
+/// The function a `defstruct` gives its module.
+const STRUCT_FUNCTION: &str = "__struct__";
+
+/// `def __struct__(), do: %__MODULE__{}`: the struct the module declares, each
+/// field at its default.
+fn build_struct_function(span: Span) -> Result<FunctionForm, QuotedSourceError> {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let meta = QuotedSourceMetadata::default();
+    let module = builder.user_variable("__MODULE__", &meta)?;
+    let fields = builder.call("%{}", &meta, &[])?;
+    let body = builder.call("%", &meta, &[module, fields])?;
+    let clause = def_clause(&builder, &meta, STRUCT_FUNCTION, &[], body)?;
+    Ok(FunctionForm {
+        source: builder.root(builder.list(&[clause])?)?,
+        name: STRUCT_FUNCTION.to_string(),
+        arity: 0,
+        is_macro: false,
+        is_private: false,
+        variadic: false,
+        span,
+    })
+}
+
+fn def_clause(
     builder: &super::source::QuotedSourceBuilder,
     meta: &QuotedSourceMetadata,
-    param: AnyValueRef,
+    name: &str,
+    params: &[AnyValueRef],
     body: AnyValueRef,
 ) -> Result<AnyValueRef, QuotedSourceError> {
-    let head = builder.call("__info__", meta, &[param])?;
+    let head = builder.call(name, meta, params)?;
     let do_kw = builder.keyword("do", body)?;
     let kw = builder.list(&[do_kw])?;
     builder.call("def", meta, &[head, kw])

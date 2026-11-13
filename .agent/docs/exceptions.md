@@ -312,7 +312,8 @@ match is left to the decision's own `FunctionClauseError`.
 | `elem/2` with a non-integer index | `** (ArithmeticError) bad argument in arithmetic expression`, as Elixir adds one to the index |
 | `abs/1` of the minimum integer; `round/1`, `trunc/1`, `floor/1`, `ceil/1` of a float outside the 64-bit range (Elixir answers a bignum) | `** (ArithmeticError) bad argument in arithmetic expression` |
 | `div/2`, `rem/2`, `/` and the other arithmetic that fails | `** (ArithmeticError) bad argument in arithmetic expression` |
-| `Map.fetch!/2`, `Map.update!/3`, `Keyword.fetch!/2` | `** (KeyError) key <key> not found in:` then the collection |
+| `Map.fetch!/2`, `Map.update!/3`, `Map.replace!/3`, `Keyword.fetch!/2`, `struct!/2` on a struct | `** (KeyError) key <key> not found in:` then the collection |
+| `struct!/2` on a module, naming a key its struct does not declare | `** (KeyError) key <key> not found` |
 | `%{map \| k: v}` naming a key `map` lacks | `** (KeyError) key <key> not found`, the first such key in the order written |
 | `Enum.max/1` and the other empty reductions | `** (Enum.EmptyError) empty error` |
 | `Enum.fetch!/2` | `** (Enum.OutOfBoundsError) out of bounds error at position <n> when traversing enumerable <enumerable>` |
