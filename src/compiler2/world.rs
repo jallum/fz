@@ -2127,6 +2127,9 @@ impl World {
             span: None,
             hygiene_ordinal: None,
         };
+        if denotation.named_path().is_some_and(ModuleName::is_bare_atom) {
+            return Ok(builder.atom(&denotation.atom_name()));
+        }
         let segments = denotation.display_segments().map(String::as_str).collect::<Vec<_>>();
         builder.alias(&metadata, &segments)
     }
@@ -2135,10 +2138,7 @@ impl World {
     /// module is in value position, and nil outside any module.
     pub(crate) fn module_atom_value(&self, builder: &QuotedSourceBuilder, module: ModuleId) -> AnyValueRef {
         match self.module_denotation(module) {
-            Some(denotation) => {
-                let segments = denotation.display_segments().cloned().collect();
-                builder.atom(&ModuleName::from_segments(segments).atom_name())
-            }
+            Some(denotation) => builder.atom(&denotation.atom_name()),
             None => builder.nil(),
         }
     }

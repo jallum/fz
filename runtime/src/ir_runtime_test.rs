@@ -959,3 +959,34 @@ fn grapheme_size_treats_an_invalid_byte_as_its_own_grapheme() {
     assert_eq!(first_grapheme_size(&[0xFF, b'a']), 1);
     assert_eq!(first_grapheme_size(&[b'e', 0xCC, 0x81, 0xC3]), 3);
 }
+
+#[test]
+fn fixed_notation_rounds_the_exact_value_and_sends_a_tie_away_from_zero() {
+    let cases: &[(f64, usize, &str)] = &[
+        (0.05, 0, "0"),
+        (0.05, 1, "0.1"),
+        (2.675, 1, "2.7"),
+        (2.675, 3, "2.675"),
+        (2.675, 2, "2.67"),
+        (-0.04, 0, "-0"),
+        (-0.04, 3, "-0.040"),
+        (1.0e10, 1, "10000000000.0"),
+        (123456.789, 0, "123457"),
+        (9.99, 1, "10.0"),
+        (99.5, 0, "100"),
+        (2.5, 0, "3"),
+        (0.125, 2, "0.13"),
+        (-2.5, 0, "-3"),
+        (0.0, 2, "0.00"),
+    ];
+    for &(value, decimals, expected) in cases {
+        assert_eq!(fixed_notation(value, decimals), expected, "{value} at {decimals}");
+    }
+}
+
+#[test]
+fn fixed_notation_spells_the_smallest_float_in_full() {
+    let text = fixed_notation(f64::from_bits(1), 253);
+    assert_eq!(text.len(), "0.".len() + 253);
+    assert!(text.bytes().all(|b| b == b'0' || b == b'.'));
+}

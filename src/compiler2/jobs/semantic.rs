@@ -1688,7 +1688,7 @@ fn emit_atom_names_no_module(
             format!("call to `{function}/{arity}` on the atom `:{atom}`, which names no module"),
             span,
         )
-        .with_label("a module's atom starts with `Elixir.`")],
+        .with_label("an atom that starts with `Elixir.` needs a module path after it")],
     );
     FatalError
 }
