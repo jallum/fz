@@ -226,7 +226,7 @@ pub(super) fn analyze_activation(
     let Some(alternatives) = world.activation_input_alternatives(activation) else {
         return Ok(JobEffects::wait_on_current(activation_inputs_fact));
     };
-    let alternatives = alternatives.clone();
+    let input_rows: Vec<Vec<Ty>> = alternatives.rows().iter().map(|row| row.columns().to_vec()).collect();
 
     // `FunctionDefined`, `EntryDispatch(function)`, and `LoweredBody`
     // (non-extern only) are this job's start gate (`analyze_activation_gates`,
@@ -260,8 +260,8 @@ pub(super) fn analyze_activation(
     let mut reachable_clauses = Vec::new();
     let mut entry_edges = ReachedEdges::of(entry_dispatch.clone());
     let mut row_clause_inputs = Vec::new();
-    for row in alternatives.rows() {
-        let dispatch_reachability = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, row.columns());
+    for columns in &input_rows {
+        let dispatch_reachability = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, columns);
         entry_edges.absorb(&dispatch_reachability);
         let clause_inputs = dispatch_reachability
             .outcome_inputs
@@ -326,8 +326,8 @@ pub(super) fn analyze_activation(
             return_evidence = join_evidence(world, return_evidence, clause_return);
         }
     }
-    for row in alternatives.rows() {
-        if let Some(contract_return_ty) = activation_contract_return(world, tel, function, row.columns(), walk.uses)? {
+    for columns in &input_rows {
+        if let Some(contract_return_ty) = activation_contract_return(world, tel, function, columns, walk.uses)? {
             return_evidence = if is_extern {
                 // An extern's declaration is its only witness: the contract
                 // applied to this row IS the return, not a refinement of a
@@ -414,7 +414,7 @@ pub(super) fn analyze_activation(
     let analysis_changed = super::super::drive::ExecutionContext::new(world, tel).define_activation_analysis(
         activation,
         ActivationAnalysis {
-            input_rows: alternatives.rows().iter().map(|row| row.columns().to_vec()).collect(),
+            input_rows,
             entry_reachability,
             trimmed,
             reachable_entries: {

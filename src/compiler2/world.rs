@@ -1864,7 +1864,7 @@ impl World {
         self.fact_revision(&FactKey::FunctionContract(function))
     }
 
-    pub(crate) fn function_definition(&self, function: FunctionId) -> (&FunctionSource, &FunctionSurface) {
+    pub(crate) fn function_definition(&self, function: FunctionId) -> (&Rc<FunctionSource>, &Rc<FunctionSurface>) {
         match self.functions.get(function) {
             super::identity::FunctionState::Defined { source, surface, .. } => (source, surface),
             super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => {
