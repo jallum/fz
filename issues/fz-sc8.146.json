@@ -17,11 +17,15 @@
     {
       "text": "2026-11-13 evening, develop 7faa29377 (.150 stream flattening and .151 evidence-row fold merged): OptionParser traced and spiked the remaining fz-sc8.127 defect (a caller reads the callee's whole joined callable-parameter demand; k127c/k127d reports) and it does NOT move the distiller: still 63,457 requests on base and spike. So the residue here is not .127. A fresh anatomy is running (scratch an146/): census by product kind, activations per function against call sites, cross product vs per-site growth on an N-site series.",
       "timestamp": "2026-11-13T18:00:35Z"
+    },
+    {
+      "text": "Reproduced on develop ac3750d1e + #454/#453: the cross-site pairing is also a correctness hole, not only wasted work. OptionParser's 13-line typed repro (scratch grok/err.fz in its session): two Enum.reduce over [1,2,3] seeded [], one lambda does h + e on the accumulator head, the other conses {e, 6}. Elixir prints {[6, 3, 1], [{3, 6}, {2, 6}, {1, 6}]}; fz2 interp rejects with spec/violation +/2 ({int, int}, int) at the first lambda. Either site alone compiles. No any, no streams. OptionParser is writing the re-proposal for the user; a measuring spike (scratch sp146/) is running for the any/Stream variant.",
+      "timestamp": "2026-11-13T18:30:25Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "The distiller's compile finishes",
   "type": "bug",
-  "updated_at": "2026-11-13T18:10:36Z"
+  "updated_at": "2026-11-13T18:30:25Z"
 }
