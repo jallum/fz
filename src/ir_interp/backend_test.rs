@@ -1459,6 +1459,15 @@ impl CaptureEntry {
             frame,
         )
     }
+
+    fn handler_frame(&self, body: &Frame) -> Result<Frame, String> {
+        handler_frame_from_captures(
+            &self.transport,
+            std::slice::from_ref(&self.entry),
+            ControlEntryId::from_u32(0),
+            body,
+        )
+    }
 }
 
 fn frame_holding(ids: &[u32]) -> Frame {
@@ -1496,6 +1505,46 @@ fn a_parked_frame_holds_only_the_target_entrys_captures() {
         retained.get(physical),
         Some(BackendBoundValue::Runtime(AnyValue::Int(5)))
     ));
+}
+
+#[test]
+fn a_try_handler_frame_is_built_from_the_captures_and_leaves_the_body_frame_whole() {
+    let logical = ValueId::from_u32(2);
+    let physical = ValueId::from_u32(5);
+    let captures = CaptureEntry::new(&[logical], &[physical, logical]);
+    let body = frame_holding(&[1, 2, 5, 7]);
+
+    let handler = captures.handler_frame(&body).expect("every capture is bound");
+
+    for id in [1, 7] {
+        assert!(
+            handler.get(ValueId::from_u32(id)).is_none(),
+            "value {id} is not captured by the handler, so its frame must not hold it"
+        );
+        assert!(
+            body.get(ValueId::from_u32(id)).is_some(),
+            "the body keeps running in its own frame, so value {id} stays there"
+        );
+    }
+    for id in [2, 5] {
+        assert!(matches!(
+            handler.get(ValueId::from_u32(id)),
+            Some(BackendBoundValue::Runtime(AnyValue::Int(n))) if *n == i64::from(id)
+        ));
+        assert!(body.get(ValueId::from_u32(id)).is_some());
+    }
+}
+
+#[test]
+fn a_try_handler_whose_capture_is_unbound_is_refused() {
+    let captures = CaptureEntry::new(&[ValueId::from_u32(2)], &[]);
+
+    let error = captures
+        .handler_frame(&frame_holding(&[1]))
+        .err()
+        .expect("a capture the body frame lacks cannot be parked");
+
+    assert_eq!(error, "backend continuation capture value 2 is unavailable");
 }
 
 #[test]
