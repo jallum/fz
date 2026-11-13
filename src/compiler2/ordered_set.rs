@@ -23,41 +23,37 @@
 //! stable. Keeping the order the producer already established costs nothing and
 //! is correct by construction.
 
-use std::collections::HashSet;
-use std::hash::Hash;
-
+/// The set is its order vector. Membership is a linear scan of that order: the
+/// sets compiler2 keeps are small, so scanning costs less than hashing and
+/// keeping a second copy of every member.
 #[derive(Debug, Clone)]
 pub struct OrderedSet<T> {
     order: Vec<T>,
-    members: HashSet<T>,
 }
 
 impl<T> Default for OrderedSet<T> {
     fn default() -> Self {
-        Self {
-            order: Vec::new(),
-            members: HashSet::new(),
-        }
+        Self { order: Vec::new() }
     }
 }
 
-impl<T: Clone + Eq + Hash> OrderedSet<T> {
+impl<T: Eq> OrderedSet<T> {
     pub fn insert(&mut self, value: T) -> bool {
-        if self.members.insert(value.clone()) {
-            self.order.push(value);
-            return true;
+        if self.contains(&value) {
+            return false;
         }
-        false
+        self.order.push(value);
+        true
     }
 
     pub fn remove(&mut self, value: &T) {
-        if self.members.remove(value) {
-            self.order.retain(|existing| existing != value);
+        if let Some(index) = self.order.iter().position(|existing| existing == value) {
+            self.order.remove(index);
         }
     }
 
     pub fn contains(&self, value: &T) -> bool {
-        self.members.contains(value)
+        self.order.contains(value)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -69,7 +65,7 @@ impl<T: Clone + Eq + Hash> OrderedSet<T> {
     }
 }
 
-impl<T: Clone + Eq + Hash> FromIterator<T> for OrderedSet<T> {
+impl<T: Eq> FromIterator<T> for OrderedSet<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let mut set = Self::default();
         for value in iter {
@@ -79,7 +75,7 @@ impl<T: Clone + Eq + Hash> FromIterator<T> for OrderedSet<T> {
     }
 }
 
-impl<T: Clone + Eq + Hash> Extend<T> for OrderedSet<T> {
+impl<T: Eq> Extend<T> for OrderedSet<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         for value in iter {
             self.insert(value);
