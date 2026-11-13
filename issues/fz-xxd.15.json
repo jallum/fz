@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T00:57:41Z",
+  "description": "A user program can reach a Rust panic by passing a value whose static type is any to an extern with a typed parameter.\n\nProgram (develop 8f63dd600):\n\nextern \"C\" defp fz_op_add_ii(integer, integer) :: integer,\n  raises: ArithmeticError,\n  message: \"bad argument in arithmetic expression\"\n\ndef main() do\n  send(self(), 1.5)\n  receive do\n    x -\u003e dbg(fz_op_add_ii(x, 1))\n  end\nend\n\nObserved:\n- fz2 interp: stops with the host message 'fz2 interp: extern integer arg must be Int'.\n- fz2 run and the built binary: 'thread caused non-unwinding panic. aborting.' with fz_unbox_int (runtime/src/ir_runtime.rs:217) on the stack.\n\nWhen the argument's static type is narrower than any and outside the parameter's type, the compiler already refuses the call with error[spec/violation] (for example an argument typed float | :atom). The hole is the any case: the call is admitted and the wrapper unboxes without a check that can fail in Fz terms.\n\nExpected: all three paths end the process with the same Fz error for the argument (Elixir's shape for the equivalent is an ArgumentError / ArithmeticError raised at the call), catchable by rescue, with no Rust panic and no host-only message.\n\nFails before, passes after: a fixture with the program above and expect: abort with the Fz error on stderr, three paths; a second fixture that rescues it.\n\nAcceptance: full gate green.",
+  "id": "fz-xxd.15",
+  "labels": [],
+  "parent": "fz-xxd",
+  "priority": 1,
+  "status": "open",
+  "title": "A value of the wrong kind passed to a typed extern is a Fz error, not a host panic",
+  "type": "bug",
+  "updated_at": "2026-11-13T00:57:41Z"
+}
