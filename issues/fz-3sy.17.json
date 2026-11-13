@@ -4,14 +4,15 @@
   "blocks": [
     "fz-3sy.2"
   ],
+  "closed_at": "2026-11-13T04:40:14Z",
   "created": "2026-11-13T04:01:55Z",
   "description": "Why: once a struct type is a record with a `__struct__` key (fz-3sy.2), the type says which struct a value is, not how it is laid out. A struct that grew a key through Map.put, or a map built by hand with `__struct__`, is in the entries layout. `BackendStep::StructSlot` and `StructUpdate` assume the struct layout, so they must ask.\n\nChosen over two alternatives (spike, 2026-11-12): (b) keeping a layout tag in the types was ruled out; (c) a closed struct record plus one freeze-time normalisation is not buildable as described: the type kernel has only open records (`MapSig`), and entries maps are published from several sites, not one freeze.\n\nWhat: `StructSlot { base, module, slot, field }` and `StructUpdate { base, module, arity, stores }` test the base at run time: kind is STRUCT and the first word is the struct header word. In the struct layout: slot load, or copy and stores. Otherwise: the read by name `FieldAccess` uses, or the update destination `MapUpdate` uses. Native code tests inline (`CodegenFn::has_struct_layout`); the interpreter asks `Heap::has_struct_layout_of`. No new runtime entry point.\n\nMeasured cost, instructions per iteration net of a loop baseline, develop d0c3ae00c then guard, dev profile opt-level 1:\n- two field reads per iteration: run 219 -\u003e 253, build 214 -\u003e 249, interp 1644 -\u003e 2083 (about 17 per read compiled, about 220 interpreted).\n- update of a 2-field struct: run 358 -\u003e 372, build 357 -\u003e 372, interp 4832 -\u003e 4875.\n- update of an 8-field struct: run 529 -\u003e 543, build 529 -\u003e 543, interp 5007 -\u003e 5047.\n\nAcceptance: gate green; struct fixtures unchanged on interp, run and build; runtime test of the layout question. No program reaches the entries side until fz-3sy.2, whose fixtures cover a grown struct read and updated through a typed step.\n\nThe interpreted read: of the 220 instructions, about 60 are the call and the larger step, 80 the registry borrow and schema fetch, 80 the module name comparison. The last two would go if the step held the schema id, but the interpreter runs the shared backend program (`ProgramStep` is `BackendStep`) and the heap registry assigns schema ids per run, so a step has no place for a value resolved once; a table keyed by module name costs a hash per read, which is no cheaper than the comparison.",
   "id": "fz-3sy.17",
   "labels": [],
   "parent": "fz-3sy",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A typed struct read or update asks at run time which layout the value has",
   "type": "task",
-  "updated_at": "2026-11-13T04:06:55Z"
+  "updated_at": "2026-11-13T04:40:14Z"
 }
