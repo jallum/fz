@@ -1,5 +1,4 @@
 use std::cell::OnceCell;
-use std::collections::HashMap;
 use std::slice::from_raw_parts;
 
 use super::backend::{
@@ -9,7 +8,7 @@ use super::backend::{
 use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::*;
 use crate::compiler2::transport::TransportStore;
-use crate::compiler2::{BackendProgram, DispatchBindings, LoweredExtern, Ty, Types, ValueId};
+use crate::compiler2::{BackendProgram, DispatchBindings, LoweredExtern, Ty, Types};
 use crate::dispatch_matrix::pattern::{
     GuardExtern, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp, PatternPinnedInput,
 };
@@ -196,7 +195,7 @@ pub(super) struct DispatchOperands<'a> {
 pub(super) enum DispatchSource<'a> {
     Inputs(&'a [Option<BackendBoundValue>]),
     Bound {
-        env: &'a HashMap<ValueId, BackendBoundValue>,
+        env: &'a Frame,
         bindings: &'a DispatchBindings,
     },
 }

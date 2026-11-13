@@ -1392,6 +1392,7 @@ fn prune_lowered_body(
     reachable_clauses: &[u32],
     reachable_entries: &[ControlEntryId],
 ) -> PrunedLoweredBody {
+    let value_count = body.value_count();
     let LoweredBody::Clauses {
         clauses,
         entries,
@@ -1419,7 +1420,7 @@ fn prune_lowered_body(
         .collect::<Vec<_>>();
     reindex_entries(&mut clauses, &mut kept, &needed);
     PrunedLoweredBody {
-        body: LoweredBody::clauses(clauses, kept, generated),
+        body: LoweredBody::clauses(clauses, kept, generated).with_value_count(value_count),
         original_entry_ids: kept_ids,
     }
 }

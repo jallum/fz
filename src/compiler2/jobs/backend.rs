@@ -288,10 +288,12 @@ pub(crate) fn produce_backend_executable_product(
         .expect("symbolic backend lowering should be complete after ABI product exists");
     let boxed_apply_requirements =
         super::super::backend_program::boxed_contract::BoxedApplyRequirement::for_body(&lowered, &abi);
+    let value_count = abi.materialized.body.value_count();
     let mut backend = BackendExecutable {
         key: executable.clone(),
         abi,
         body: lowered,
+        value_count,
         construction_wrappers,
         atom_names: Box::default(),
         boxed_apply_requirements,
