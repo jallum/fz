@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T18:05:59Z",
+  "description": "defmodule Hidden do defp g(x), do: {:private, x} end; def main(), do: dbg(Hidden.g(1)) prints {:private, 1} on interp (probed on 47b41b805 and with fz-3sy.7). Elixir raises UndefinedFunctionError: function Hidden.g/1 is undefined or private. The module's interface leaves a defp out (ModuleInterfaceCallable is built only for non-private definitions, publish_function_source in src/compiler2/source_publish.rs), but a qualified call resolves the function anyway. Related: fz-afu.20 (a module's exports are answered from its function heads). Find where a remote call resolves its callee and make it ask the interface; the miss is the same UndefinedFunctionError a call on a module value raises (fz-3sy.5), or a compile error where the module is written out, decided on the proposal-method hand answer. Oracle fixture on interp, run and build.",
+  "id": "fz-3sy.22",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 2,
+  "status": "open",
+  "title": "A defp is not callable from another module",
+  "type": "bug",
+  "updated_at": "2026-11-13T18:05:59Z"
+}
