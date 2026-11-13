@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-13T19:11:23Z",
-  "description": "dedupe_job_facts (src/compiler2/world.rs:3026) builds a HashSet and a Vec\u003cbool\u003e per call (lines 3033/3034, ~9,800 allocations); it is called twice per job completion (world.rs:725, 727).\n\nChange: confirm the length distribution on the probe first (temporary counter, removed before commit). Deduplicate in place keeping first occurrences and order, without heap scratch for the lengths that actually occur; one implementation, not a fast path beside the old one.\n\nEvidence: allocation census of the OptionParser probe at bf51f11c1 (develop ac3750d1e + hasher fix + fz-y11.15 spike; 857,327 calls). Ranked sites: /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/bf51f11c1_top.txt; call chains: python3 /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/chain.py /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/bf51f11c1.pkl \u003cfile:line\u003e \u003cdepth\u003e. Counts are 1-in-16 sampling estimates; line numbers are at that commit. Method and signal: see the epic (bw show fz-y11). Every site is a claim read from the census and the source, to be confirmed first.",
+  "description": "dedupe_job_facts (src/compiler2/world.rs) builds a HashSet and a Vec\u003cbool\u003e per call, twice per job completion.\n\nMeasured on the OptionParser probe (5,100 calls): 253 empty lists, 2,806 of one fact, 651 of two, 90% at most eight, maximum 84; 504 calls contained a repeat.\n\nBuilt: a list shorter than two facts is returned untouched (3,059 of 5,100 calls). Longer lists are deduplicated as before. A scan of the kept prefix in place of the set was built and rejected: it is quadratic in list length and lists reach 84 facts on this probe alone.\n\nResult: 844,040 -\u003e 838,419 allocations on the probe; output and canon identical.",
   "id": "fz-y11.21",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
   "status": "in_progress",
-  "title": "A job's fact lists are deduplicated without a scratch set",
+  "title": "A job fact list that cannot hold a repeat is returned as it is",
   "type": "task",
-  "updated_at": "2026-11-13T19:11:33Z"
+  "updated_at": "2026-11-13T19:38:01Z"
 }
