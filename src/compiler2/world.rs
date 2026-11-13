@@ -1437,6 +1437,13 @@ impl World {
         self.function_contracts.get(function)
     }
 
+    pub(crate) fn function_contract_and_types_mut(
+        &mut self,
+        function: FunctionId,
+    ) -> Option<(&FunctionContract, &mut Types)> {
+        Some((self.function_contracts.get(function)?, &mut self.types))
+    }
+
     pub(crate) fn function_declares_contract(&self, function: FunctionId) -> bool {
         match self.functions.get(function) {
             super::identity::FunctionState::Defined { surface, .. } => {
