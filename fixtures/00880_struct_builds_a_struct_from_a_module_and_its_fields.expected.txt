@@ -1,0 +1,21 @@
+%Pt{x: 0, y: 0}
+%Named{name: nil, kind: :plain}
+%Pt{x: 0, y: 0}
+%Pt{x: 0, y: 0}
+%Pt{x: 1, y: 0}
+%Pt{x: 1, y: 0}
+%Pt{x: 0, y: 7}
+%Pt{x: 5, y: 6}
+%Pt{x: 5, y: 6}
+%Named{name: "a", kind: :plain}
+%Pt{x: 3, y: 0}
+%Named{name: "b", kind: :plain}
+%Pt{x: 1, y: 0}
+%Pt{x: 5, y: 6}
+%Pt{x: 5, y: 6}
+"key :z not found"
+"key :z not found in:\n\n    %Pt{x: 0, y: 0}\n"
+%{a: 2}
+%{a: 1}
+%{a: 2}
+"key :b not found in:\n\n    %{a: 1}\n"

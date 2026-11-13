@@ -290,6 +290,16 @@ second definition and are refused, where Elixir warns and joins them.
 `super` is not supported. Fixture `00872` is the oracle fixture; `00873`
 through `00875` are the refusals.
 
+A `defstruct` form defines the module's `__struct__/0`. The walk reserves it
+with the body's other names and applies `def __struct__(), do: %__MODULE__{}`
+(`build_struct_function`) where the form stands, through the path a written
+`def` takes, so a module that writes its own `__struct__/0` is refused with
+`resolve/duplicate-function` (fixture `00881`). `Kernel.struct/1`,
+`struct/2` and `struct!/2` (`lib/kernel.fz`) start from `module.__struct__()`,
+a call on a module value, and replace the fields they are given with
+`Map.replace/3` and `Map.replace!/3`. Fixture `00880` agrees with Elixir on
+interp, run and build.
+
 A non-private function or macro becomes a `ModuleInterfaceCallable`; `defp`
 functions stay callable in-module but out of the interface. Non-global
 modules that do not define `__info__/1` get a synthesized ordinary function
