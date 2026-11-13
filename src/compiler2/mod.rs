@@ -53,7 +53,9 @@ mod type_expr;
 mod typedef;
 mod types;
 mod value_map;
-pub use value_map::{ValueMap, ValueSet};
+mod value_set;
+pub use value_map::ValueMap;
+pub use value_set::ValueSet;
 mod world;
 
 pub use agenda::Agenda;

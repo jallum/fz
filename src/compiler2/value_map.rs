@@ -3,8 +3,7 @@
 //! A body numbers its values from zero (`Lowerer::fresh_value`), so the ids of
 //! one body are a small dense range and a slot per id is cheaper than hashing
 //! one: no hasher, no second copy of the key, and iteration follows the id
-//! rather than a per-process random seed. A set of values is a `ValueSet`,
-//! the same table with no payload.
+//! rather than a per-process random seed. A set of values is a `ValueSet`.
 
 use super::body::ValueId;
 
@@ -17,9 +16,6 @@ pub struct ValueMap<V> {
     slots: Vec<Option<V>>,
     len: usize,
 }
-
-/// The values a body has marked.
-pub type ValueSet = ValueMap<()>;
 
 impl<V> Default for ValueMap<V> {
     fn default() -> Self {
@@ -47,7 +43,7 @@ impl<V> ValueMap<V> {
         self.slots.get(value.as_u32() as usize)?.as_ref()
     }
 
-    pub fn get_mut(&mut self, value: &ValueId) -> Option<&mut V> {
+    fn get_mut(&mut self, value: &ValueId) -> Option<&mut V> {
         self.slots.get_mut(value.as_u32() as usize)?.as_mut()
     }
 
@@ -129,22 +125,6 @@ impl<V: Default> ValueMap<V> {
     }
 }
 
-impl ValueSet {
-    /// Mark `value`; true when it was not marked before.
-    pub fn mark(&mut self, value: ValueId) -> bool {
-        self.insert(value, ()).is_none()
-    }
-
-    pub fn contains(&self, value: &ValueId) -> bool {
-        self.contains_key(value)
-    }
-
-    /// Unmark `value`; true when it was marked.
-    pub fn unmark(&mut self, value: &ValueId) -> bool {
-        self.remove(value).is_some()
-    }
-}
-
 pub struct ValueEntry<'a, V> {
     map: &'a mut ValueMap<V>,
     value: ValueId,
@@ -214,24 +194,10 @@ impl<V> FromIterator<(ValueId, V)> for ValueMap<V> {
     }
 }
 
-impl FromIterator<ValueId> for ValueSet {
-    fn from_iter<I: IntoIterator<Item = ValueId>>(iter: I) -> Self {
-        iter.into_iter().map(|value| (value, ())).collect()
-    }
-}
-
 impl<V> Extend<(ValueId, V)> for ValueMap<V> {
     fn extend<I: IntoIterator<Item = (ValueId, V)>>(&mut self, iter: I) {
         for (value, v) in iter {
             self.insert(value, v);
-        }
-    }
-}
-
-impl Extend<ValueId> for ValueSet {
-    fn extend<I: IntoIterator<Item = ValueId>>(&mut self, iter: I) {
-        for value in iter {
-            self.mark(value);
         }
     }
 }

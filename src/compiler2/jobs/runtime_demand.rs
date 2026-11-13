@@ -700,7 +700,7 @@ impl CallableFlowBuilder {
         self.record_direct_surfaces(facts, value, &demand.callable.resolved);
         let targets = &demand.callable.targets;
         if !targets.is_empty() {
-            let mut seen = ValueSet::new();
+            let mut seen = ValueSet::for_values(facts.body.value_count());
             self.record_direct_targets_for_value(facts, value, targets, &mut seen);
         }
     }
@@ -714,7 +714,7 @@ impl CallableFlowBuilder {
         if surfaces.is_empty() {
             return;
         }
-        let mut seen = ValueSet::new();
+        let mut seen = ValueSet::for_values(facts.body.value_count());
         self.record_direct_surfaces_for_value(facts, value, surfaces, &mut seen);
     }
 
@@ -733,7 +733,7 @@ impl CallableFlowBuilder {
         if surfaces.is_empty() {
             return;
         }
-        let mut seen = ValueSet::new();
+        let mut seen = ValueSet::for_values(facts.body.value_count());
         self.record_first_class_surfaces_for_value(facts, value, surfaces, &mut seen);
     }
 
@@ -1832,7 +1832,7 @@ fn value_depends_on_callsite_return(facts: &RuntimeDemandFacts<'_>, value: Value
 /// Every callsite whose returned value flows into `value`, through delivered
 /// joins and the steps that build one value from others.
 fn callsite_returns_feeding(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> HashSet<CallSiteId> {
-    let mut seen = ValueSet::new();
+    let mut seen = ValueSet::for_values(facts.body.value_count());
     let mut feeding = HashSet::new();
     let mut pending = vec![value];
     while let Some(value) = pending.pop() {

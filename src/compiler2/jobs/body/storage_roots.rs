@@ -44,7 +44,7 @@ impl StorageRootIndex {
                 sites.entry(*value).or_default().push((entry, *step));
             }
         }
-        let mut footprints = Footprints::default();
+        let mut footprints = Footprints::new(body.value_count());
         let mut users: HashMap<SubjectOriginRoot, Vec<ValueId>> = HashMap::new();
         let mut open_users = Vec::new();
         for value in sites.keys() {
@@ -153,13 +153,19 @@ pub(super) fn entries_reached_from(body: &LoweredBody, entry: usize) -> HashSet<
 /// Footprints memoised as they are first needed. A value met again while its
 /// own footprint is being computed is part of a cycle and makes the footprint
 /// open.
-#[derive(Default)]
 struct Footprints {
     known: ValueMap<Rc<Footprint>>,
     in_progress: ValueSet,
 }
 
 impl Footprints {
+    fn new(value_count: usize) -> Self {
+        Self {
+            known: ValueMap::new(),
+            in_progress: ValueSet::for_values(value_count),
+        }
+    }
+
     fn of(&mut self, body: &LoweredBody, origins: &Origins, value: ValueId) -> Rc<Footprint> {
         if let Some(known) = self.known.get(&value) {
             return known.clone();
@@ -186,7 +192,7 @@ impl Footprints {
             footprint.open |= reached.open;
             footprint.roots.extend(reached.roots.iter().copied());
         }
-        self.in_progress.unmark(&value);
+        self.in_progress.unmark(value);
         let footprint = Rc::new(footprint);
         self.known.insert(value, footprint.clone());
         footprint

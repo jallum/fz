@@ -298,7 +298,7 @@ mod tests {
                 callsites: Vec::new(),
                 value_types: ValueMap::new(),
             },
-            body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
+            body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()).with_value_count(2),
             extern_wire: None,
             entry_dispatch: None,
             callsite_dispatch_demand: HashMap::new(),

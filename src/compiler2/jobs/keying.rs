@@ -1032,7 +1032,7 @@ fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> 
     let LoweredBody::Clauses { clauses, entries, .. } = &*body;
     let origins = input_positions(&body, input_count);
     for (slot, path) in returned_values(&body, clauses, entries)
-        .keys()
+        .iter()
         .filter_map(|value| origins.get(&value))
         .flatten()
     {
@@ -1217,7 +1217,13 @@ fn input_positions(body: &LoweredBody, input_count: usize) -> ValueMap<Vec<(usiz
         }
     }
     for value in origins.keys() {
-        resolve_input_positions(body, value, &origins, &mut positions, &mut ValueSet::new());
+        resolve_input_positions(
+            body,
+            value,
+            &origins,
+            &mut positions,
+            &mut ValueSet::for_values(body.value_count()),
+        );
     }
     positions
 }
@@ -1239,7 +1245,7 @@ fn resolve_input_positions(
         .get(&value)
         .map(|origin| input_origin_positions(body, origin, origins, positions, visiting))
         .unwrap_or_default();
-    visiting.unmark(&value);
+    visiting.unmark(value);
     positions.insert(value, found.clone());
     found
 }
@@ -1293,7 +1299,7 @@ fn returned_values(
     clauses: &[super::super::body::LoweredClause],
     entries: &[super::super::body::LoweredEntry],
 ) -> ValueSet {
-    let mut returned = ValueSet::new();
+    let mut returned = ValueSet::for_values(body.value_count());
     let mut frontier = Vec::new();
     for entry in entries {
         if let LoweredTail::Value {

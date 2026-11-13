@@ -3190,9 +3190,10 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 entry,
             });
         }
-        let mut body = LoweredBody::clauses(lowered, entries, self.generated_ids.clone());
+        let mut body = LoweredBody::clauses(lowered, entries, self.generated_ids.clone())
+            .with_value_count(self.next_value as usize);
         self.construct_entry_captures(&mut body);
-        body.with_value_count(self.next_value as usize)
+        body
     }
 
     fn construct_entry_captures(&mut self, body: &mut LoweredBody) {
@@ -3200,7 +3201,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         use crate::fz_ir::ListRewritePermission;
         let scanned = Cell::new(0);
         let compared = Cell::new(0);
-        let clause_bounds = clause_bounds(body);
         let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
         let LoweredBody::Clauses { entries, .. } = body;
         let constructions = scan_steps(entries, &scanned)
@@ -3230,7 +3230,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     input
                 }
                 TransportOrigin::OutcomeSubject { owner, subject } => {
-                    let LoweredBody::Clauses { entries, .. } = body;
+                    let LoweredBody::Clauses {
+                        entries, value_count, ..
+                    } = body;
                     let (target, existing) = {
                         let edge = entries[owner.as_u32() as usize]
                             .tail
@@ -3250,6 +3252,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         existing
                     } else {
                         let parameter = self.fresh_value();
+                        *value_count = self.next_value as usize;
                         entries[target.as_u32() as usize].params.push(parameter);
                         entries[target.as_u32() as usize].physical_params.push(parameter);
                         let edge = entries[owner.as_u32() as usize]
@@ -3277,9 +3280,11 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 ListRewritePermission::RetainOnly,
             );
         }
+        let value_count = body.value_count();
+        let clause_bounds = clause_bounds(body);
         let LoweredBody::Clauses { entries, tables, .. } = body;
-        let semantic = compute_entry_captures(entries, tables, &clause_bounds, false);
-        let mut physical = compute_entry_captures(entries, tables, &clause_bounds, true);
+        let semantic = compute_entry_captures(entries, tables, &clause_bounds, value_count, false);
+        let mut physical = compute_entry_captures(entries, tables, &clause_bounds, value_count, true);
         for entry in entries.iter() {
             let LoweredTail::Receive(receive) = &entry.tail else {
                 continue;
@@ -4014,7 +4019,8 @@ fn clause_bounds(body: &LoweredBody) -> HashMap<ControlEntryId, ValueSet> {
         .iter()
         .enumerate()
         .map(|(index, clause)| {
-            let mut bound = clause.params.iter().copied().collect::<ValueSet>();
+            let mut bound = ValueSet::for_values(body.value_count());
+            bound.extend(clause.params.iter().copied());
             bound.extend(tables.clause_defines(index));
             (clause.entry, bound)
         })
@@ -4042,12 +4048,21 @@ fn compute_entry_captures(
     entries: &[LoweredEntry],
     tables: &BodyTables,
     clause_bounds: &HashMap<ControlEntryId, ValueSet>,
+    value_count: usize,
     physical: bool,
 ) -> Vec<Vec<ValueId>> {
     let mut memo = HashMap::new();
     for entry_id in 0..entries.len() {
         let entry_id = ControlEntryId::from_u32(entry_id as u32);
-        let _ = entry_captures(entries, tables, clause_bounds, entry_id, physical, &mut memo);
+        let _ = entry_captures(
+            entries,
+            tables,
+            clause_bounds,
+            value_count,
+            entry_id,
+            physical,
+            &mut memo,
+        );
     }
     (0..entries.len())
         .map(|index| memo.remove(&ControlEntryId::from_u32(index as u32)).unwrap_or_default())
@@ -4184,7 +4199,7 @@ fn list_can_rewrite(
     !items
         .iter()
         .chain(tail)
-        .any(|operand| value_may_retain_source(body, origins, *operand, &source, Some(*value), &mut ValueSet::new()))
+        .any(|operand| value_retains_source(body, origins, *operand, &source, Some(*value)))
         && !source_used_after(body, origins, entry, step, &source)
 }
 
@@ -4201,9 +4216,7 @@ fn source_used_after(
         _ => None,
     };
     any_later_ownership_use(body, entry, step, |value, role| match role {
-        super::super::body::ValueRole::Semantic => {
-            value_may_retain_source(body, origins, value, source, exempt, &mut ValueSet::new())
-        }
+        super::super::body::ValueRole::Semantic => value_retains_source(body, origins, value, source, exempt),
         super::super::body::ValueRole::Physical => origin_source_path(
             body,
             origins,
@@ -4242,8 +4255,9 @@ fn any_later_ownership_use(
         {
             return true;
         }
-        let used = tables.entry_uses_from(block_id, start).collect::<ValueSet>();
-        if used.keys().any(|value| competes(value, ValueRole::Semantic)) {
+        let mut used = ValueSet::for_values(body.value_count());
+        used.extend(tables.entry_uses_from(block_id, start));
+        if used.iter().any(|value| competes(value, ValueRole::Semantic)) {
             return true;
         }
         let block = &entries[block_id.as_u32() as usize];
@@ -4292,6 +4306,17 @@ fn origin_is_new_owner_projection(
     }
 }
 
+fn value_retains_source(
+    body: &LoweredBody,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
+    value: ValueId,
+    source: &SourcePath,
+    exempt: Option<ValueId>,
+) -> bool {
+    let mut visiting = ValueSet::for_values(body.value_count());
+    value_may_retain_source(body, origins, value, source, exempt, &mut visiting)
+}
+
 fn value_may_retain_source(
     body: &LoweredBody,
     origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
@@ -4310,7 +4335,7 @@ fn value_may_retain_source(
     if let Some((root, path)) = origin_source_path(body, origins, &TransportOrigin::LocalValue(value))
         && root == source.0
     {
-        visiting.unmark(&value);
+        visiting.unmark(value);
         return source.1.starts_with(&path);
     }
     let retained = if let Some(origin) = origins.get(&value) {
@@ -4334,7 +4359,7 @@ fn value_may_retain_source(
                 {
                     let identity = origin_source_path(body, origins, &TransportOrigin::LocalValue(retention.source));
                     if identity.as_ref().is_none_or(|identity| identity == source) {
-                        visiting.unmark(&value);
+                        visiting.unmark(value);
                         return true;
                     }
                 }
@@ -4345,7 +4370,7 @@ fn value_may_retain_source(
             None => true,
         }
     };
-    visiting.unmark(&value);
+    visiting.unmark(value);
     retained
 }
 
@@ -4416,7 +4441,12 @@ fn values_overlap_inner(
     visited: &mut ValueMap<ValueSet>,
 ) -> bool {
     use super::super::executable_facts::TransportOrigin;
-    if !visited.or_default(left).mark(right) {
+    let count = body.value_count();
+    if !visited
+        .entry(left)
+        .or_insert_with(|| ValueSet::for_values(count))
+        .mark(right)
+    {
         return false;
     }
     if exempt.is_some_and(|owner| {
@@ -4431,8 +4461,8 @@ fn values_overlap_inner(
     let Some(right_path) = origin_source_path(body, origins, &TransportOrigin::LocalValue(right)) else {
         return true;
     };
-    value_may_retain_source(body, origins, left, &right_path, exempt, &mut ValueSet::new())
-        || value_may_retain_source(body, origins, right, &left_path, exempt, &mut ValueSet::new())
+    value_retains_source(body, origins, left, &right_path, exempt)
+        || value_retains_source(body, origins, right, &left_path, exempt)
         || construction_children(body, origins, left)
             .into_iter()
             .any(|child| values_overlap_inner(body, origins, child, right, exempt, visited))
@@ -4523,7 +4553,7 @@ fn construct_call_ownership(
                                 else {
                                     return true;
                                 };
-                                value_may_retain_source(body, origins, *arg, &source, None, &mut ValueSet::new())
+                                value_retains_source(body, origins, *arg, &source, None)
                             })
                     } else {
                         false
@@ -4623,7 +4653,7 @@ fn tuple_item_has_old_owner(
             origins,
             &super::super::executable_facts::TransportOrigin::LocalValue(value),
         )
-        .is_none_or(|source| value_may_retain_source(body, origins, item, &source, Some(result), &mut ValueSet::new()))
+        .is_none_or(|source| value_retains_source(body, origins, item, &source, Some(result)))
     };
     let Some(competitors) = index.competitors_after(item, later) else {
         return any_later_ownership_use(body, later.entry(), later.step(), |value, role| match role {
@@ -4638,6 +4668,7 @@ fn entry_captures(
     entries: &[LoweredEntry],
     tables: &BodyTables,
     clause_bounds: &HashMap<ControlEntryId, ValueSet>,
+    value_count: usize,
     entry_id: ControlEntryId,
     physical: bool,
     memo: &mut HashMap<ControlEntryId, Vec<ValueId>>,
@@ -4647,27 +4678,31 @@ fn entry_captures(
     }
 
     let entry = &entries[entry_id.as_u32() as usize];
-    let mut bound = clause_bounds.get(&entry_id).cloned().unwrap_or_default();
+    let mut bound = clause_bounds
+        .get(&entry_id)
+        .cloned()
+        .unwrap_or_else(|| ValueSet::for_values(value_count));
     bound.extend(entry.params.iter().copied());
     if let Some(value) = entry.origin.input_value() {
         bound.mark(value);
     }
     bound.extend(tables.entry_defines(entry_id));
 
-    let mut needed = if physical {
-        tables.entry_retentions_from(entry_id, 0).collect::<ValueSet>()
+    let mut needed = ValueSet::for_values(value_count);
+    if physical {
+        needed.extend(tables.entry_retentions_from(entry_id, 0));
     } else {
-        tables.entry_uses_from(entry_id, 0).collect::<ValueSet>()
-    };
+        needed.extend(tables.entry_uses_from(entry_id, 0));
+    }
     for child in child_entries(&entry.tail) {
-        for capture in entry_captures(entries, tables, clause_bounds, child, physical, memo) {
-            if !bound.contains(&capture) {
+        for capture in entry_captures(entries, tables, clause_bounds, value_count, child, physical, memo) {
+            if !bound.contains(capture) {
                 needed.mark(capture);
             }
         }
     }
-    needed.retain(|value, _| !bound.contains(value));
-    let mut ordered = needed.keys().collect::<Vec<_>>();
+    needed.subtract(&bound);
+    let mut ordered = needed.iter().collect::<Vec<_>>();
     for capture in &entry.captures {
         if !ordered.contains(capture) {
             ordered.push(*capture);
@@ -4688,7 +4723,7 @@ pub(super) fn retained_value_ids(body: &LoweredBody) -> ValueSet {
         tables,
         ..
     } = body;
-    let mut retained = ValueSet::new();
+    let mut retained = ValueSet::for_values(body.value_count());
     for (index, clause) in clauses.iter().enumerate() {
         retained.extend(clause.params.iter().copied());
         retained.extend(tables.clause_defines(index));
