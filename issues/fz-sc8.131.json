@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.147"
+  ],
   "blocks": [],
   "created": "2026-11-12T20:18:05Z",
   "description": "Repros (elixir prints the value shown):\n- Enum.to_list(Stream.map([fn x -\u003e x end], fn f -\u003e f.(1) end))   # [1]; scratchpad handoff/closure_elem.fz\n- No Stream, 5 lines (scratchpad s131/min.fz, prints 1):\n    defmodule M do\n      def ap([], e), do: e\n      def ap([f | r], e), do: f.(ap(r, e))\n    end\n    IO.inspect(M.ap([fn f -\u003e f.(1) end], fn x -\u003e x end))\n  M.ap(f, e) without the list recursion passes; the recursion that makes ap return a union is needed.\n\nOn 3038a76af both stop first at the boxed-apply lane check (\"expects delivered lane(s) [] but construction wrapper publishes [ValueRef]\"). That check misfires on a call that never returns and is fixed by fz-sc8.147.\n\nWhat remains here, seen with the fz-sc8.147 change applied (verified location, cause inferred):\n- interp: \"backend continuation delivery executable=... entry=2: backend return layout decoded 0 lane(s), got 1\"\n- run: \"native cannot project captures out of a callable that names no function in Continuation { owner: FnId(N) }\"\nThe failing continuation is entry 2 of M.ap with inputs [a0_e], a1. Its expected layout is carrier Absent, 0 lanes, shape Callable(CallableId(0)), a statically zero-lane callable; the delivered value is a heap closure that encodes as one lane. One half treats the closure as a statically known zero-capture callable and the other passes the boxed word. The mapper also has a specialization over a free arrow variable (a0) sitting as a diverging member of the wrapper at main's construction site; that may be the root.\n\nNext: find which fact gives the continuation entry its Absent carrier and which gives the delivered value its one lane; fixture with an oracle on all three paths. Blocked on fz-sc8.147.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A Stream.map mapper that calls a closure element compiles",
   "type": "bug",
-  "updated_at": "2026-11-13T13:36:53Z"
+  "updated_at": "2026-11-13T13:37:40Z"
 }
