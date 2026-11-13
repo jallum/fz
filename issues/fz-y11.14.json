@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T13:27:32Z",
+  "description": "develop 1f82a18dc does not compile: src/compiler2/types/descr.rs clauses_within (from fz-y11.1, PR #398) passes InFlight::default() to the *_clause_empty functions, and fz-53f.18 (PR #395) removed InFlight and that parameter. The two merged cleanly as text; CI on develop is red (error E0425/E0433: cannot find type InFlight). Fix: clauses_within takes impl Fn(TyCtx, \u0026Conj\u003cT\u003e) -\u003e bool and calls clause_empty(cx, c). Signal: full gate green on develop plus the fix.",
+  "id": "fz-y11.14",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 0,
+  "status": "open",
+  "title": "develop compiles: the subtype test calls the clause-emptiness functions with the arguments they take",
+  "type": "bug",
+  "updated_at": "2026-11-13T13:27:32Z"
+}
