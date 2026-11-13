@@ -473,6 +473,7 @@ dependencies = [
  "cranelift-object",
  "fz-fixture-metadata",
  "fz-runtime",
+ "hashbrown 0.17.1",
  "indexmap",
  "libc",
  "libtest-mimic",
