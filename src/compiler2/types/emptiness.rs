@@ -1,6 +1,7 @@
 //! Per-axis emptiness algorithms for the interned descriptor kernel.
 
 use crate::fz_ir::FnId;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use super::conj::Conj;
@@ -187,23 +188,57 @@ pub(crate) fn list_denotation(cx: TyCtx<'_>, c: &Conj<ListSig>) -> Option<ListDe
     })
 }
 
+/// Whether a list clause denotes nothing: it holds no `[]` and no non-empty
+/// list. This is [`list_denotation`] being absent, decided without building
+/// the denotation. A single positive element is read where it lives, and a
+/// negative covers the fragment exactly when the fragment lies inside the
+/// negative's element (`F \ (F ∩ N) = F \ N`).
 pub(crate) fn list_clause_empty(cx: TyCtx<'_>, c: &Conj<ListSig>) -> bool {
-    list_denotation(cx, c).is_none()
+    if clause_holds_empty(c) {
+        return false;
+    }
+    let mut fragment: Option<Cow<'_, Descr>> = None;
+    for p in &c.pos {
+        let Some(elem) = &p.elem else {
+            return true;
+        };
+        let next = match fragment {
+            None => Cow::Borrowed(cx.descr(elem)),
+            Some(prev) => Cow::Owned(prev.intersect(cx.descr(elem))),
+        };
+        if next.is_empty(cx) {
+            return true;
+        }
+        fragment = Some(next);
+    }
+    if c.neg.iter().all(|n| n.elem.is_none()) {
+        return false;
+    }
+    let unconstrained;
+    let fragment = match &fragment {
+        Some(fragment) => fragment,
+        None => {
+            unconstrained = Cow::Owned(Descr::any());
+            &unconstrained
+        }
+    };
+    c.neg
+        .iter()
+        .filter_map(|n| n.elem.as_ref())
+        .any(|cut| fragment.diff(cx.descr(cut)).is_empty(cx))
 }
 
 pub(crate) fn resource_clause_empty(cx: TyCtx<'_>, c: &Conj<ResourceSig>) -> bool {
-    let payload = if c.pos.is_empty() {
-        Descr::any()
-    } else {
-        let mut payload = cx.descr(&c.pos[0].payload).clone();
-        for p in &c.pos[1..] {
-            payload = payload.intersect(cx.descr(&p.payload));
-        }
-        if payload.is_empty(cx) {
-            return true;
-        }
-        payload
+    let mut payload = match c.pos.first() {
+        Some(first) => Cow::Borrowed(cx.descr(&first.payload)),
+        None => Cow::Owned(Descr::any()),
     };
+    for p in c.pos.iter().skip(1) {
+        payload = Cow::Owned(payload.intersect(cx.descr(&p.payload)));
+    }
+    if !c.pos.is_empty() && payload.is_empty(cx) {
+        return true;
+    }
     if c.neg.is_empty() {
         return false;
     }
