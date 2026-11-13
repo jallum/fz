@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-13T03:38:53Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A value table is sized to its body, and an overlap test allocates only when it recurses",
   "type": "task",
-  "updated_at": "2026-11-13T03:38:53Z"
+  "updated_at": "2026-11-13T04:17:54Z"
 }
