@@ -246,7 +246,7 @@ fn resolve_extern_wire(
         &clause.bounds,
     )
     .map_err(|message| extern_abi_error(tel, surface, format!("`{}`: {message}", surface.name)))?;
-    let ret = match extern_failure(world, tel, source, surface)? {
+    let ret = match extern_failure(world, source, surface) {
         Some(failure) => checked_return(ret, abi, failure)
             .map_err(|message| extern_abi_error(tel, surface, format!("`{}`: {message}", surface.name)))?,
         None => ret,
@@ -263,26 +263,10 @@ fn resolve_extern_wire(
 
 /// What the extern's `raises:` declares, with the exception resolved the way
 /// a body resolves the same alias.
-fn extern_failure(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    source: &FunctionSource,
-    surface: &FunctionSurface,
-) -> Result<Option<LastResort>, FatalError> {
-    let Some(raises) = &surface.extern_raises else {
-        return Ok(None);
-    };
-    let Some(exception) = world.module_alias_atom(source.owner_module, source.namespace, &raises.exception) else {
-        return Err(extern_abi_error(
-            tel,
-            surface,
-            format!(
-                "`{}` raises `{}`, which names no module in scope",
-                surface.name, raises.exception
-            ),
-        ));
-    };
-    Ok(Some(LastResort::declared(exception, raises.message.clone())))
+fn extern_failure(world: &mut World, source: &FunctionSource, surface: &FunctionSurface) -> Option<LastResort> {
+    let raises = surface.extern_raises.as_ref()?;
+    let exception = world.module_alias_atom(source.owner_module, source.namespace, &raises.exception);
+    Some(LastResort::declared(exception, raises.message.clone()))
 }
 
 /// The return of an extern that declares `raises:`. A failure travels as the

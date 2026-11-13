@@ -877,14 +877,10 @@ pub(super) fn collect_local_pattern_requirements(
 /// is unknown until `StructDefined(Mod)` publishes, so the caller must wait
 /// rather than guess an order from the literal/pattern's own field list.
 ///
-/// Module resolution mirrors `Lowerer::resolve_struct_module` exactly (same
+/// Module resolution mirrors `Lowerer`'s struct lowering exactly (same
 /// `resolve_module_target` call against the same `owner_module`/`namespace`),
 /// so the module identity this pre-pass records obligations/waits against is
-/// always the module the later `Lowerer` pass will actually consume. If
-/// resolution itself fails, this records nothing and defers to
-/// `resolve_struct_module`'s own `LOWER_UNBOUND` diagnostic once lowering
-/// runs — an unresolvable module name is an unrelated, pre-existing failure
-/// mode, not a struct-schema question.
+/// always the module the later `Lowerer` pass will actually consume.
 #[allow(clippy::too_many_arguments)]
 fn record_struct_reference<'a>(
     world: &mut World,
@@ -898,9 +894,7 @@ fn record_struct_reference<'a>(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(), FatalError> {
-    let Some(module_id) = world.resolve_module_target(owner_module, namespace, module) else {
-        return Ok(());
-    };
+    let module_id = world.resolve_module_target(owner_module, namespace, module);
     let requester = InterfaceRequester {
         owner,
         module: owner_module,
@@ -1297,7 +1291,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         for param in &clause.params {
             let value = self.fresh_value();
             params.push(value);
-            self.bind_pattern(&param.node, param.span, value, &mut env, &mut projections)?;
+            self.bind_pattern(&param.node, value, &mut env, &mut projections)?;
         }
 
         let body = self.lower_expr_as_block(&clause.body, env)?;
@@ -1371,7 +1365,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             Expr::Atom(value) => Ok(self.push_const(steps, GroundValue::Atom(value.clone()))),
             Expr::Bool(value) => Ok(self.push_const(steps, GroundValue::Bool(*value))),
             Expr::Nil => Ok(self.push_const(steps, GroundValue::Nil)),
-            Expr::Alias(alias) => self.lower_alias(alias, expr.span, steps),
+            Expr::Alias(alias) => Ok(self.lower_alias(alias, steps)),
             Expr::Module(module) => Ok(QuoteLowerer::new(self, env, steps, &[]).lower_module(module, expr.span)),
             Expr::Var(name) => {
                 if let Some(value) = env.get(name) {
@@ -1995,7 +1989,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
-        let module_id = self.resolve_struct_module(module, span)?;
+        let module_id = self
+            .world
+            .resolve_module_target(self.source.owner_module, self.namespace, module);
         self.name_module_as_value(module_id);
         // `collect_local_dispatch_requirements`'s `Expr::Struct` arm already
         // recorded this literal's field obligations and waited on
@@ -2126,28 +2122,17 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         })
     }
 
-    fn lower_alias(
-        &mut self,
-        alias: &ModuleName,
-        span: Span,
-        steps: &mut Vec<ExprStep>,
-    ) -> Result<ValueId, FatalError> {
+    fn lower_alias(&mut self, alias: &ModuleName, steps: &mut Vec<ExprStep>) -> ValueId {
         let module = self
             .world
             .resolve_module_name(self.source.owner_module, self.namespace, alias);
-        let named = module.and_then(|module| Some((module, self.world.module_name(module)?.atom_name())));
-        let (module, atom) = named.ok_or_else(|| {
-            emit_job_diagnostic(
-                self.telemetry,
-                Diagnostic::error(
-                    codes::LOWER_UNBOUND,
-                    format!("compiler2 could not resolve module `{alias}`"),
-                    span,
-                ),
-            )
-        })?;
+        let atom = self
+            .world
+            .module_name(module)
+            .expect("a resolved module name is a named module")
+            .atom_name();
         self.name_module_as_value(module);
-        Ok(self.push_const(steps, GroundValue::Atom(atom)))
+        self.push_const(steps, GroundValue::Atom(atom))
     }
 
     /// This body writes `module`'s name as a value, so a value can name it.
@@ -2156,25 +2141,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         if self.world.note_nameable_module(module) {
             self.generated_changed.push(FactKey::NameableModules);
         }
-    }
-
-    fn resolve_struct_module(
-        &mut self,
-        module: &crate::ast::ModuleTarget,
-        span: Span,
-    ) -> Result<super::super::identity::ModuleId, FatalError> {
-        self.world
-            .resolve_module_target(self.source.owner_module, self.namespace, module)
-            .ok_or_else(|| {
-                emit_job_diagnostic(
-                    self.telemetry,
-                    Diagnostic::error(
-                        codes::LOWER_UNBOUND,
-                        format!("compiler2 could not resolve struct module `{module}`"),
-                        span,
-                    ),
-                )
-            })
     }
 
     fn lower_case(
@@ -2824,8 +2790,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             for exception in &rescue.exceptions {
                 let atom = self
                     .world
-                    .module_alias_atom(self.source.owner_module, self.namespace, exception)
-                    .unwrap_or_else(|| exception.atom_name());
+                    .module_alias_atom(self.source.owner_module, self.namespace, exception);
                 let wraps = atom == ERLANG_ERROR;
                 arms.push(HandlerArm::rescue(
                     PatternRow {
@@ -3633,7 +3598,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         let plan =
             self.compile_single_pattern_dispatch("match", pattern, pattern.span, Some(LastResort::match_error()))?;
         if plan.is_direct_outcome() {
-            self.bind_pattern(&pattern.node, pattern.span, value, env, steps)?;
+            self.bind_pattern(&pattern.node, value, env, steps)?;
             return Ok(None);
         }
         let bindings = self.lower_dispatch_bindings(&plan, env, steps)?;
@@ -3671,7 +3636,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     fn bind_pattern(
         &mut self,
         pattern: &Pattern,
-        span: Span,
         source: ValueId,
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
@@ -3693,7 +3657,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 for (index, item) in items.iter().enumerate() {
                     let value = self.fresh_value();
                     steps.push(ExprStep::TupleField { value, source, index });
-                    self.bind_pattern(&item.node, item.span, value, env, steps)?;
+                    self.bind_pattern(&item.node, value, env, steps)?;
                 }
                 Ok(())
             }
@@ -3707,20 +3671,20 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         head,
                         tail: tail_value,
                     });
-                    self.bind_pattern(&item.node, item.span, head, env, steps)?;
+                    self.bind_pattern(&item.node, head, env, steps)?;
                     current = tail_value;
                 }
                 if let Some(tail) = tail {
-                    self.bind_pattern(&tail.node, tail.span, current, env, steps)?;
+                    self.bind_pattern(&tail.node, current, env, steps)?;
                 }
                 Ok(())
             }
             Pattern::Both(left, right) => {
-                self.bind_pattern(&left.node, left.span, source, env, steps)?;
-                self.bind_pattern(&right.node, right.span, source, env, steps)
+                self.bind_pattern(&left.node, source, env, steps)?;
+                self.bind_pattern(&right.node, source, env, steps)
             }
             Pattern::Map(entries) => self.lower_map_pattern(entries, source, env, steps),
-            Pattern::Struct { module, fields } => self.lower_struct_pattern(module, fields, span, source, env, steps),
+            Pattern::Struct { module, fields } => self.lower_struct_pattern(module, fields, source, env, steps),
             Pattern::Bitstring(fields) => self.lower_bitstring_pattern(fields, source, env, steps),
         }
     }
@@ -3748,7 +3712,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             };
             let value = self.fresh_value();
             steps.push(ExprStep::RequireMapValue { value, source, key });
-            self.bind_pattern(&value_pattern.node, value_pattern.span, value, env, steps)?;
+            self.bind_pattern(&value_pattern.node, value, env, steps)?;
         }
         Ok(())
     }
@@ -3757,12 +3721,13 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         &mut self,
         module: &crate::ast::ModuleTarget,
         fields: &[(String, Spanned<Pattern>)],
-        span: Span,
         source: ValueId,
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<(), FatalError> {
-        let module_id = self.resolve_struct_module(module, span)?;
+        let module_id = self
+            .world
+            .resolve_module_target(self.source.owner_module, self.namespace, module);
         // Same invariant as `lower_struct_expr`: `collect_local_pattern_requirements`'s
         // `Pattern::Struct` arm already recorded this pattern's field
         // obligations and waited on `StructDefined(module_id)` before this
@@ -3785,7 +3750,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 base: source,
                 field,
             });
-            self.bind_pattern(&pattern.node, pattern.span, value, env, steps)?;
+            self.bind_pattern(&pattern.node, value, env, steps)?;
         }
         Ok(())
     }
@@ -3819,7 +3784,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 )?,
                 is_last: index + 1 == fields.len(),
             });
-            self.bind_pattern(&field.value.node, field.value.span, value, env, steps)?;
+            self.bind_pattern(&field.value.node, value, env, steps)?;
             reader = next_reader;
         }
         Ok(())
