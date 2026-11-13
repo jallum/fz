@@ -88,6 +88,31 @@ fn a_tail_call_through_the_seam_records_its_own_return_as_the_requirement() {
     );
 }
 
+/// A seam call whose result type is empty never comes back, so nothing is read
+/// from the seam: it demands nothing, whatever this body itself returns. The
+/// companion tail call, which does hand the seam's word on, still demands this
+/// body's return lanes.
+#[test]
+fn a_seam_call_that_never_returns_demands_nothing_of_the_apply_seam() {
+    let mut world = World::new();
+    let key = caller(&mut world, "caller");
+    for owning_return in [vec![], vec![AbiValueRepr::RawAtom], vec![AbiValueRepr::RawInt]] {
+        let never = boxed_caller_body(&mut world, &key, BackendReturnFlow::NoReturn, owning_return.clone());
+        let requirements = BoxedApplyRequirement::for_body(&never.body, &never.abi);
+        assert!(
+            requirements.is_empty(),
+            "a call that never returns reads nothing back, though its body returns {owning_return:?}: {requirements:?}"
+        );
+    }
+
+    let tail = boxed_caller_body(&mut world, &key, BackendReturnFlow::Tail, vec![AbiValueRepr::RawAtom]);
+    let requirements = BoxedApplyRequirement::for_body(&tail.body, &tail.abi);
+    let [requirement] = requirements.as_ref() else {
+        panic!("a tail call still states what its caller reads back: {requirements:?}")
+    };
+    assert_eq!(requirement.delivered.as_ref(), [AbiValueRepr::RawAtom]);
+}
+
 /// Lane COUNT is not the convention. A caller reading one raw integer and a
 /// wrapper handing back one boxed word agree on width and disagree on
 /// everything else; the caller prints the pointer.
