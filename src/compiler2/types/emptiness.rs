@@ -31,11 +31,11 @@ pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>, memo: &mut M
             t[i] = t[i].intersect(cx.descr(e));
         }
     }
-    let negs: Vec<Vec<Descr>> = c
+    let negs: Vec<Vec<&Descr>> = c
         .neg
         .iter()
         .filter(|n| n.elems.len() == arity)
-        .map(|n| n.elems.iter().map(|ty| cx.descr(ty).clone()).collect())
+        .map(|n| n.elems.iter().map(|ty| cx.descr(ty)).collect())
         .collect();
     phi_tuple(cx, &t, &negs, memo)
 }
@@ -46,7 +46,7 @@ pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>, memo: &mut M
 /// caller can decide `∏t ⊆ ⋃∏n` for rectangles it built but never interned.
 /// Every entry of `n` must have the same arity as `t`; a mismatched arity
 /// subtracts nothing and belongs to the caller's filter.
-pub(super) fn phi_tuple(cx: TyCtx<'_>, t: &[Descr], n: &[Vec<Descr>], memo: &mut Memo) -> bool {
+pub(super) fn phi_tuple(cx: TyCtx<'_>, t: &[Descr], n: &[Vec<&Descr>], memo: &mut Memo) -> bool {
     // One empty coordinate empties the whole product — no negation needed.
     // Checking at entry prunes every recursive branch whose diff/intersect
     // zeroed a coordinate; without this the recursion only discovers the
@@ -69,9 +69,9 @@ pub(super) fn phi_tuple(cx: TyCtx<'_>, t: &[Descr], n: &[Vec<Descr>], memo: &mut
     for i in 0..t.len() {
         let mut t_split = t.to_vec();
         for j in 0..i {
-            t_split[j] = t_split[j].intersect(&head[j]);
+            t_split[j] = t_split[j].intersect(head[j]);
         }
-        t_split[i] = t_split[i].diff(&head[i]);
+        t_split[i] = t_split[i].diff(head[i]);
         if !phi_tuple(cx, &t_split, rest, memo) {
             return false;
         }
@@ -313,21 +313,21 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, memo: &mut Me
         }
     }
 
-    let filtered_negs: Vec<ArrowSig> = n.iter().filter(|negj| negj.lit.is_none()).cloned().collect();
-    let n = &filtered_negs;
-    if n.is_empty() {
+    let mut plain_negs = n.iter().filter(|negj| negj.lit.is_none()).peekable();
+    if plain_negs.peek().is_none() {
         return false;
     }
     let n_pos = p.len();
-    'next_neg: for negj in n {
+    let pos_inputs: Vec<Descr> = p.iter().map(arrow_input).collect();
+    'next_neg: for negj in plain_negs {
         let s = arrow_input(negj);
-        let v = cx.descr(&negj.ret).clone();
+        let v = cx.descr(&negj.ret);
         for mask in 0u32..(1u32 << n_pos) {
             let mut union_in = Descr::none();
             let mut inter_out = Descr::any();
             for (i, pi) in p.iter().enumerate().take(n_pos) {
                 if (mask >> i) & 1 == 1 {
-                    union_in = union_in.union(cx, &arrow_input(pi));
+                    union_in = union_in.union(cx, &pos_inputs[i]);
                 } else {
                     inter_out = inter_out.intersect(cx.descr(&pi.ret));
                 }
@@ -335,7 +335,7 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, memo: &mut Me
             if s.diff(&union_in).is_empty_memo(cx, memo) {
                 continue;
             }
-            if inter_out.diff(&v).is_empty_memo(cx, memo) {
+            if inter_out.diff(v).is_empty_memo(cx, memo) {
                 continue;
             }
             continue 'next_neg;
