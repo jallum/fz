@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rba.3"
+  ],
   "blocks": [],
   "created": "2026-11-13T21:18:47Z",
   "description": "The budget is the Tail convention's argument registers less the fixed leading lanes, read from the target, not a constant. Whether Cranelift exposes the count is unverified; establish first.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The lane budget is derived from the calling convention",
   "type": "task",
-  "updated_at": "2026-11-13T21:18:47Z"
+  "updated_at": "2026-11-13T21:18:48Z"
 }
