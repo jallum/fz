@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rba.3"
+  ],
   "created": "2026-11-13T21:18:47Z",
   "description": "Spike at lane budget 4: matrix::ast_eval fails on interp, run and build: 'must be runtime-materializable ... native attempted to materialize absent value as runtime value with ty None' (near jobs/native.rs ~4155). A nested tuple of literal atoms collapsed to one value lane loses its absent fields. Cause is inferred, not proven: first step is to reproduce with the spike patch at budget 4 and establish it. Signal: fixture at the real budget on three paths.",
   "id": "fz-rba.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A collapsed tuple with statically known fields materializes",
   "type": "bug",
-  "updated_at": "2026-11-13T21:18:47Z"
+  "updated_at": "2026-11-13T21:18:48Z"
 }
