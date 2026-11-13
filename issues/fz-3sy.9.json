@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-3sy.8",
     "fz-3ul.4"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "The uncaught banner is rendered through Exception.message by an fz handler at the bottom of every process",
   "type": "feature",
-  "updated_at": "2026-11-11T15:21:31Z"
+  "updated_at": "2026-11-13T17:53:27Z"
 }
