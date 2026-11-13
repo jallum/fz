@@ -1,0 +1,7 @@
+error[parse/expected-token]: write the newline character literal as `?\n`
+  --> fixtures/01216_a_question_mark_before_a_newline_is_rejected.fz:1:5
+   |
+1 | x = ?
+   |     ^
+   |
+

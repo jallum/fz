@@ -944,3 +944,152 @@ fn a_non_character_code_point_is_accepted() {
     assert_eq!(string_bytes(r#""\uD7FF""#), "\u{D7FF}".as_bytes());
     assert_eq!(string_bytes(r#""\uE000""#), "\u{E000}".as_bytes());
 }
+
+fn char_literal(src: &str) -> Tok {
+    let mut kinds = lex_kinds(src).unwrap();
+    assert_eq!(kinds.pop(), Some(Tok::Eof), "{src}");
+    assert_eq!(kinds.len(), 1, "{src}");
+    kinds.remove(0)
+}
+
+/// `?` followed by a character is that character's code point.
+#[test]
+fn a_character_literal_is_the_code_point() {
+    assert_eq!(char_literal("?a"), Tok::Int(97));
+    assert_eq!(char_literal("?A"), Tok::Int(65));
+    assert_eq!(char_literal("?0"), Tok::Int(48));
+    assert_eq!(char_literal("?\u{e9}"), Tok::Int(233));
+    assert_eq!(char_literal("?\u{1F600}"), Tok::Int(128512));
+}
+
+/// Punctuation, including `?` and the quote and comment marks, is a literal too.
+#[test]
+fn punctuation_is_a_character_literal() {
+    for (src, code) in [
+        ("??", 63),
+        ("?\"", 34),
+        ("?'", 39),
+        ("?#", 35),
+        ("?(", 40),
+        ("?:", 58),
+        ("?_", 95),
+    ] {
+        assert_eq!(char_literal(src), Tok::Int(code), "{src}");
+    }
+}
+
+/// A backslash escape inside a literal is the code point the escape names.
+#[test]
+fn an_escaped_character_literal_is_the_escape_code_point() {
+    for (src, code) in [
+        ("?\\n", 10),
+        ("?\\t", 9),
+        ("?\\r", 13),
+        ("?\\s", 32),
+        ("?\\0", 0),
+        ("?\\a", 7),
+        ("?\\b", 8),
+        ("?\\d", 127),
+        ("?\\e", 27),
+        ("?\\f", 12),
+        ("?\\v", 11),
+        ("?\\\\", 92),
+        ("?\\\"", 34),
+        ("?\\'", 39),
+        ("?\\#", 35),
+    ] {
+        assert_eq!(char_literal(src), Tok::Int(code), "{src}");
+    }
+}
+
+/// The escapes `\s \0 \a \b \d \e \f \v \'` are Elixir's, in strings as in literals.
+#[test]
+fn a_string_accepts_the_same_named_escapes() {
+    assert_eq!(
+        string_bytes("\"\\s\\0\\a\\b\\d\\e\\f\\v\\'\""),
+        vec![32, 0, 7, 8, 127, 27, 12, 11, 39]
+    );
+}
+
+/// `?\u` is not an escape in Elixir; the unicode forms belong to strings.
+#[test]
+fn a_character_literal_has_no_unicode_escape() {
+    assert_eq!(
+        lex_kinds("?\\u{e9}").unwrap_err().msg,
+        "`?\\u` is not an escape in a character literal; write the character itself"
+    );
+}
+
+/// An escape fz does not know is rejected, as in a string.
+#[test]
+fn an_unknown_escape_in_a_character_literal_is_rejected() {
+    assert!(lex_kinds("?\\z").unwrap_err().msg.contains("unknown escape"));
+}
+
+/// A literal is an ordinary integer token, so it sits in expressions and patterns.
+#[test]
+fn a_character_literal_lexes_among_other_tokens() {
+    assert_eq!(
+        lex_kinds("?a + ?b").unwrap(),
+        vec![Tok::Int(97), Tok::Plus, Tok::Int(98), Tok::Eof]
+    );
+    assert_eq!(
+        lex_kinds("[?a, ?b]").unwrap()[1..4],
+        [Tok::Int(97), Tok::Comma, Tok::Int(98)]
+    );
+}
+
+/// A name that ends in `?` keeps it; the literal needs the `?` to start a token.
+#[test]
+fn a_name_ending_in_a_question_mark_is_not_a_literal() {
+    assert_eq!(
+        lex_kinds("ready? ?a").unwrap(),
+        vec![Tok::Ident("ready?".to_string()), Tok::Int(97), Tok::Eof]
+    );
+}
+
+/// A `?` with nothing after it is not a literal.
+#[test]
+fn a_question_mark_at_the_end_of_input_is_rejected() {
+    assert_eq!(
+        lex_kinds("x = ?").unwrap_err().msg,
+        "a character literal needs a character after `?`"
+    );
+}
+
+/// Whitespace after `?` is rejected where Elixir only warns, naming the escape to write.
+#[test]
+fn whitespace_after_a_question_mark_names_its_escape() {
+    assert_eq!(
+        lex_kinds("? ").unwrap_err().msg,
+        "write the space character literal as `?\\s`"
+    );
+    assert_eq!(
+        lex_kinds("?\n").unwrap_err().msg,
+        "write the newline character literal as `?\\n`"
+    );
+    assert_eq!(
+        lex_kinds("?\t").unwrap_err().msg,
+        "write the tab character literal as `?\\t`"
+    );
+    assert_eq!(
+        lex_kinds("?\r").unwrap_err().msg,
+        "write the carriage return character literal as `?\\r`"
+    );
+}
+
+/// A combining mark after the literal is its own (unexpected) token, as in Elixir.
+#[test]
+fn a_combining_mark_after_a_literal_is_not_part_of_it() {
+    assert!(lex_kinds("?e\u{301}").is_err());
+}
+
+/// The span of a literal covers the `?` and its character or escape.
+#[test]
+fn a_character_literal_spans_the_question_mark_and_its_character() {
+    let tokens = test_lexer("?\u{e9} ?\\n")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .unwrap();
+    assert_eq!((tokens[0].span.start, tokens[0].span.end), (0, 3));
+    assert_eq!((tokens[1].span.start, tokens[1].span.end), (4, 7));
+}

@@ -300,18 +300,31 @@ Elixir: `{:cont, if(x, do: a, else: b)}`, not `{:cont, if x, do: a, else: b}`.
 
 ## String escapes
 
-Strings, heredocs and quoted atoms read escapes with one function,
-`Lexer::read_escape`, which returns the character an escape denotes; the
-caller appends its UTF-8 encoding. The escapes are `\n \t \r \\ \" \#` and the
-two unicode forms: `\uHHHH` (exactly four hex digits) and `\u{H...}` (one to
-six). `"caf\u00e9"` and `"caf\u{e9}"` are both `"café"`, and `"\u{1F600}"` is
-four bytes. A malformed form (`\u`, `\u12`, `\u{}`, `\u{41`, seven digits)
-reports `invalid Unicode escape character, expected \uHHHH or \u{H*}` and a
-surrogate or a value above `10FFFF` reports `invalid or reserved Unicode code
-point`, both underlining the escape from its backslash. Any other escaped
-character is an `unknown escape` error, where Elixir would take it literally.
-A combining character can be written as an escape (`"e\u0301"`) instead of as
-bytes.
+Strings, heredocs, quoted atoms and character literals read escapes with one
+function, `Lexer::read_escape`, which returns the character an escape denotes;
+a string appends its UTF-8 encoding. The escapes are `\n \t \r \s \0 \a \b \d \e
+\f \v \\ \" \' \#` and the two unicode forms: `\uHHHH` (exactly four hex digits)
+and `\u{H...}` (one to six). `"caf\u00e9"` and `"caf\u{e9}"` are both `"café"`,
+and `"\u{1F600}"` is four bytes. A malformed form (`\u`, `\u12`, `\u{}`,
+`\u{41`, seven digits) reports `invalid Unicode escape character, expected
+\uHHHH or \u{H*}` and a surrogate or a value above `10FFFF` reports `invalid or
+reserved Unicode code point`; both underline the escape from its backslash.
+Any other escaped character is an `unknown escape` error, where Elixir would
+take it literally. A combining character can be written as an escape
+(`"e\u0301"`) instead of as bytes.
+
+## Character literals
+
+`?` starts a character literal, a `Tok::Int` holding the code point of the
+one character or escape after it: `?a` is 97, `?é` is 233, `?😀` is 128512,
+`??` is 63, `?\n` is 10, `?\s` is 32, `?\\` is 92. The escapes are the shared
+ones above except the unicode forms: `?\u` is an error, as in Elixir, where the
+character is written itself. Whitespace right after the `?` (space, tab,
+newline, carriage return) is an error naming the escape to write, where Elixir
+accepts it with a warning. A `?` at the end of input is an error. A name that
+ends in `?` keeps it (`ready? ?a` is a name and a literal), because names are
+read before a `?` can start a token. A combining mark after a literal is a
+separate, unexpected character.
 
 ## Heredocs are string literals
 
