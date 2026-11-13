@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T23:41:30Z",
   "created": "2026-11-13T23:00:33Z",
   "description": "Found while probing fz-sc8.165 on 6f631de13.\nRepro 1: defmodule P do defstruct [:x] end; IO.inspect(is_struct(%P{x: 1}, P)) -\u003e error[lower/unbound]: compiler2 lowering found unresolved direct runtime callee `is_struct/2`. Elixir prints true.\nRepro 2: IO.inspect(match?(%P{}, v)) and IO.inspect(match?({:ok, _}, {:ok, 1})) are refused at compile time (same class: an unresolved Kernel name); Elixir prints true.\nis_struct/1 and is_struct/2 are guard-safe Kernel functions; match?/2 is a Kernel macro that expands to a case returning true or false.\nDone when: an oracle fixture uses is_struct/1 and is_struct/2 in bodies and in guards, and match?/2 with tuple, struct, map and guarded patterns, and matches Elixir on interp, run and build. Not on the distiller path.",
   "id": "fz-sc8.166",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "is_struct/1, is_struct/2 and match?/2 exist",
   "type": "feature",
-  "updated_at": "2026-11-13T23:00:33Z"
+  "updated_at": "2026-11-13T23:41:30Z"
 }
