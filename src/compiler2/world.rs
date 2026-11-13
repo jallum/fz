@@ -1830,6 +1830,31 @@ impl World {
         function
     }
 
+    /// The public function `name/arity` of `module`: the one its interface
+    /// exports when the interface is known, and otherwise a reference the
+    /// interface is expected to answer, recorded with the site that asked.
+    pub(crate) fn module_public_function(
+        &mut self,
+        module: ModuleId,
+        name: &str,
+        arity: usize,
+        requester: InterfaceRequester,
+    ) -> FunctionId {
+        if let Some(function) = self
+            .module_interface_if_present(module)
+            .and_then(|interface| interface.public_function_with_name_arity(name, arity))
+        {
+            return function;
+        }
+        self.reference_module_interface_callable(
+            module,
+            name.to_string(),
+            arity,
+            InterfaceCallableKind::PublicFunction,
+            Some(requester),
+        )
+    }
+
     pub(crate) fn module_name(&self, module: ModuleId) -> Option<&ModuleName> {
         self.modules.name(module)
     }

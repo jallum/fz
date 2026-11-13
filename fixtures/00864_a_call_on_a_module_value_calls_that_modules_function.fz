@@ -1,0 +1,45 @@
+#---
+# purpose: "m.f(a) on a value that holds one module calls that module's f: a module passed as an argument, bound to a variable, read from a struct's __struct__ field, read from a map, and named by a nested alias; the module is evaluated before the arguments, and a field read without a call stays a field read"
+# oracle: 00864_a_call_on_a_module_value_calls_that_modules_function.oracle.exs
+#---
+#
+# A module is an atom, and a call on a value holding one is a call of that
+# module's function. Each receiver here has one module in its type, so each
+# call is a direct call.
+defmodule Overdrawn do
+  defstruct [:amount]
+
+  def exception(attrs), do: {:overdrawn, attrs}
+  def message(e), do: {:short_by, e.amount}
+  def name(), do: :overdrawn
+end
+
+defmodule Bank.Frozen do
+  def exception(attrs), do: {:frozen, attrs}
+  def name(), do: :frozen
+end
+
+def pick(m), do: m.exception([])
+
+def named(m, attrs), do: {m.name(), m.exception(attrs)}
+
+def note(v) do
+  dbg(v)
+  v
+end
+
+def main() do
+  dbg(pick(Overdrawn))
+  dbg(pick(Bank.Frozen))
+  dbg(named(Bank.Frozen, [1, 2]))
+  m = Overdrawn
+  dbg(m.name())
+  e = %Overdrawn{amount: 7}
+  dbg(e.__struct__.message(e))
+  dbg(e.amount)
+  held = %{first: Overdrawn, second: Bank.Frozen}
+  dbg(held.second.exception(:b))
+  dbg(note(Overdrawn).exception(note(:attrs)))
+  callable = %{name: fn -> :a_field end}
+  dbg(callable.name.())
+end

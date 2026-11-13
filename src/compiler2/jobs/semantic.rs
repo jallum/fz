@@ -13,17 +13,19 @@ use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::LastResort;
 use crate::ground_value::GroundValue;
+use crate::modules::identity::ModuleName;
 use crate::source::Span;
 
 use super::super::SourceOwner;
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail,
-    ValueId,
+    CallArg, CallSiteId, ControlDestination, DirectCallee, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep,
+    LoweredTail, ValueId,
 };
 use super::super::contract::AppliedFunctionContract;
 use super::super::dispatch_reachability::{ReachedEdges, calculate_dispatch_reachability};
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, current_uses};
 use super::super::identity::{ActivationKey, FunctionId, ModuleId, function_id_of_closure_target};
+use super::super::module_interface::InterfaceRequester;
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
@@ -923,11 +925,24 @@ fn analyze_tail(
                 calls.push(reached_but_unresolved(activation, *callsite));
                 return Ok(None);
             };
-            let (emission, call_return) = if call_inputs_unknown(values, None, args) {
+            let (emission, call_return) = if call_inputs_unknown(values, callee.module_value(), args) {
                 calls.push(reached_but_unresolved(activation, *callsite));
                 (None, CallReturn::awaited(walk.uses))
             } else {
-                resolve_direct_call(world, tel, activation, *callsite, *callee, arg_types, walk.uses)?
+                match callee {
+                    DirectCallee::Function(callee) => {
+                        resolve_direct_call(world, tel, activation, *callsite, *callee, arg_types, walk.uses)?
+                    }
+                    DirectCallee::ModuleValue { module, function } => {
+                        let Some(module_ty) = value_ty(values, *module) else {
+                            calls.push(reached_but_unresolved(activation, *callsite));
+                            return Ok(None);
+                        };
+                        resolve_module_value_call(
+                            world, tel, activation, *callsite, module_ty, function, arg_types, walk.uses,
+                        )?
+                    }
+                }
             };
             if let Some(emission) = emission {
                 calls.push(emission);
@@ -1376,6 +1391,190 @@ fn resolve_direct_call(
     ))
 }
 
+/// Resolves `m.f(a)` from the type of `m`: one target per module the type
+/// names, each selected by its module's atom.
+///
+/// The type has to be a finite set of atoms. One atom leaves one target, an
+/// ordinary direct call; several leave a choice the run-time dispatch makes
+/// by reading the module value.
+#[allow(clippy::too_many_arguments)]
+fn resolve_module_value_call(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    caller: &ActivationKey,
+    callsite: CallSiteId,
+    module_ty: Ty,
+    function: &str,
+    arg_types: Vec<Ty>,
+    uses: &mut UseCollector,
+) -> Result<(Option<CallEmission>, CallReturn), FatalError> {
+    if callee_has_no_inhabitants(world.types(), module_ty) || arg_types.iter().any(|arg| world.types().is_empty(arg)) {
+        return Ok((None, CallReturn::Known(none_ty(world))));
+    }
+    let emission = |resolution, activations| CallEmission {
+        key: CallSiteKey {
+            activation: caller.clone(),
+            callsite,
+        },
+        resolution,
+        activations,
+    };
+    if world.types().has_vars(&module_ty) {
+        return Ok((
+            Some(emission(CallSiteResolution::Unresolved, Vec::new())),
+            CallReturn::Bottom,
+        ));
+    }
+    let callees = module_value_callees(
+        world,
+        tel,
+        caller,
+        module_ty,
+        function,
+        arg_types.len(),
+        callsite.span(),
+    )?;
+    if !every_module_callee_ready(world, &callees, uses) {
+        return Ok((
+            Some(emission(CallSiteResolution::Unresolved, Vec::new())),
+            CallReturn::awaited(uses),
+        ));
+    }
+    let mut targets = Vec::new();
+    let mut activations = Vec::new();
+    let mut call_return = CallReturn::Bottom;
+    for (selector, callee) in callees {
+        let (resolution, callee_activations, callee_return) =
+            resolve_function_call(world, tel, caller, callee, arg_types.clone(), callsite.span(), uses)?;
+        let CallSiteResolution::Resolved(summary) = resolution else {
+            return Ok((
+                Some(emission(CallSiteResolution::Unresolved, Vec::new())),
+                callee_return,
+            ));
+        };
+        targets.extend(summary.targets.into_iter().map(|target| CallTargetSummary {
+            selector: Some(selector),
+            ..target
+        }));
+        activations.extend(callee_activations);
+        call_return = join_call_return(world, call_return, callee_return);
+    }
+    let return_ty = call_return.evidence();
+    Ok((
+        Some(emission(
+            CallSiteResolution::Resolved(CallSiteSummary {
+                targets,
+                return_ty,
+                last_resort: None,
+            }),
+            activations,
+        )),
+        call_return,
+    ))
+}
+
+/// The function `function/arity` of each module `module_ty` names, beside the
+/// atom type that selects it.
+fn module_value_callees(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    caller: &ActivationKey,
+    module_ty: Ty,
+    function: &str,
+    arity: usize,
+    call_span: Span,
+) -> Result<Vec<(Ty, FunctionId)>, FatalError> {
+    let atoms = world.types().atom_literals(&module_ty);
+    if !world.types().is_atom_type(&module_ty) || atoms.is_empty() {
+        return Err(emit_module_value_unknown(
+            tel, world, module_ty, function, arity, call_span,
+        ));
+    }
+    let requester = InterfaceRequester {
+        owner: world.function_definition(caller.function).0.owner,
+        module: world.function_module(caller.function),
+        span: call_span,
+    };
+    atoms
+        .into_iter()
+        .map(|atom| {
+            let Some(name) = ModuleName::from_atom_name(&atom) else {
+                return Err(emit_atom_names_no_module(tel, &atom, function, arity, call_span));
+            };
+            let module = world.reference_module(name);
+            world.note_module_reference_expectation(module, requester.clone());
+            let callee = world.module_public_function(module, function, arity, requester.clone());
+            Ok((world.types_mut().atom_lit(&atom), callee))
+        })
+        .collect()
+}
+
+/// Every callee is asked before any is resolved, so a call learns all it
+/// waits for in one run. A protocol callback asks for its own prerequisites
+/// when it is resolved.
+fn every_module_callee_ready(world: &mut World, callees: &[(Ty, FunctionId)], uses: &mut UseCollector) -> bool {
+    let mut all_ready = true;
+    for (_, callee) in callees {
+        if world.protocol_callback(*callee).is_some() {
+            continue;
+        }
+        let module_ready = !wait_for_unresolved_function_module(world, *callee, uses);
+        let prerequisites_ready = require_direct_call_prerequisites(world, *callee, uses).is_some();
+        all_ready &= module_ready && prerequisites_ready;
+    }
+    all_ready
+}
+
+/// The receiver of `m.f(a)` is not a known set of modules: it holds no atom,
+/// or something besides atoms, or more atoms than its type lists.
+fn emit_module_value_unknown(
+    tel: &impl crate::telemetry::Telemetry,
+    world: &mut World,
+    module_ty: Ty,
+    function: &str,
+    arity: usize,
+    span: Span,
+) -> FatalError {
+    let atom = world.types_mut().atom();
+    let atoms = world.types_mut().intersect(module_ty, atom);
+    let shown = world.types().display_for_diag(&module_ty);
+    let (fault, label) = if world.types().is_empty(&atoms) {
+        ("is never a module", "a module is an atom")
+    } else if atoms != module_ty {
+        ("is not always a module", "a module is an atom")
+    } else {
+        (
+            "does not list the modules it can be",
+            "the call needs a type that names each module",
+        )
+    };
+    let message = format!("call to `{function}/{arity}` on a value of type `{shown}`, which {fault}");
+    emit_through(
+        tel,
+        &[Diagnostic::error(codes::MODULE_VALUE_CALL, message, span).with_label(label)],
+    );
+    FatalError
+}
+
+fn emit_atom_names_no_module(
+    tel: &impl crate::telemetry::Telemetry,
+    atom: &str,
+    function: &str,
+    arity: usize,
+    span: Span,
+) -> FatalError {
+    emit_through(
+        tel,
+        &[Diagnostic::error(
+            codes::MODULE_VALUE_CALL,
+            format!("call to `{function}/{arity}` on the atom `:{atom}`, which names no module"),
+            span,
+        )
+        .with_label("a module's atom starts with `Elixir.`")],
+    );
+    FatalError
+}
+
 /// Merge one path's observed value types into the activation's published
 /// summary. Paths join by clause-preserving UNION: the summary is what
 /// materialization reads to resolve escaped callables, so a case that yields
@@ -1523,6 +1722,7 @@ fn resolve_function_call(
     Ok((
         CallSiteResolution::Resolved(CallSiteSummary {
             targets: vec![CallTargetSummary {
+                selector: None,
                 callee: SelectedCallee::Function(function),
                 surface_inputs: input_types.clone(),
                 activation: Some(activation.clone()),
@@ -2417,6 +2617,7 @@ fn call_target_summary(
         SelectedCallee::ProviderBoundary(_) => None,
     };
     CallTargetSummary {
+        selector: None,
         callee,
         surface_inputs,
         activation,

@@ -1550,7 +1550,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             BackendTail::Value { value, dest } => {
                 self.lower_value_destination(ctx, executable, entries, entry_fns, env, *value, dest)
             }
-            BackendTail::DirectCall { target, args, dest, .. } => match target {
+            BackendTail::DirectCall {
+                target,
+                selector,
+                args,
+                dest,
+                ..
+            } => match target {
                 CallEdge::Direct(direct) => self.lower_direct_call_tail(
                     ctx,
                     executable,
@@ -1562,9 +1568,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     dest,
                     &direct.return_flow,
                 ),
-                CallEdge::Dispatch(dispatch) => {
-                    self.lower_dispatch_call_tail(ctx, executable, entries, entry_fns, env, dispatch, args, dest)
-                }
+                CallEdge::Dispatch(dispatch) => self.lower_dispatch_call_tail(
+                    ctx, executable, entries, entry_fns, env, dispatch, *selector, args, dest,
+                ),
                 CallEdge::Indirect { .. } => Err(incomplete_native_program(
                     self.telemetry,
                     self.root_id,
@@ -1973,15 +1979,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entry_fns: &mut EntryFns,
         env: &ValueEnv,
         dispatch: &DispatchCallEdge<ExecutableKey, BackendReturnFlow>,
+        selector: Option<ValueId>,
         args: &[super::super::artifact::BackendCallArg],
         dest: &ControlDestination,
     ) -> Result<(), FatalError> {
-        let word_inputs = args
-            .iter()
+        let word_inputs = selector
+            .into_iter()
+            .chain(args.iter().map(|arg| arg.value))
             .enumerate()
-            .map(|(index, arg)| {
+            .map(|(index, value)| {
                 NativeBoundValue::Runtime(if dispatch.plan.required_input(index) {
-                    self.env_runtime_var(ctx, executable, env, arg.value)
+                    self.env_runtime_var(ctx, executable, env, value)
                 } else {
                     ctx.emit_let(Prim::Const(Const::Nil)).0
                 })

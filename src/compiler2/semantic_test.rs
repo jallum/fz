@@ -128,6 +128,7 @@ fn a_provider_boundary_is_never_the_one_owned_target() {
     let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "impl", 1);
     let activation = ActivationKey::from_inputs(RootId::for_test(0), function, &[int], world.types_mut());
     let target = |callee| CallTargetSummary {
+        selector: None,
         callee,
         surface_inputs: vec![int],
         activation: Some(activation.clone()),
@@ -510,6 +511,7 @@ mod tests {
         let narrow = CallSiteSummary {
             last_resort: None,
             targets: vec![CallTargetSummary {
+                selector: None,
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![int],
                 activation: Some(activation.clone()),
@@ -522,6 +524,7 @@ mod tests {
         let wider = CallSiteSummary {
             last_resort: None,
             targets: vec![CallTargetSummary {
+                selector: None,
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![any],
                 activation: Some(activation),
@@ -567,6 +570,7 @@ mod tests {
         let ready = CallSiteSummary {
             last_resort: None,
             targets: vec![CallTargetSummary {
+                selector: None,
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![int],
                 activation: Some(callee_activation.clone()),
@@ -579,6 +583,7 @@ mod tests {
         let pending = CallSiteSummary {
             last_resort: None,
             targets: vec![CallTargetSummary {
+                selector: None,
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![int],
                 activation: Some(callee_activation),
@@ -629,6 +634,7 @@ mod tests {
         let summary_for = |activation: ActivationKey, input: Ty| CallSiteSummary {
             last_resort: None,
             targets: vec![CallTargetSummary {
+                selector: None,
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![input],
                 activation: Some(activation),
@@ -689,6 +695,7 @@ mod tests {
             last_resort: None,
             targets: vec![
                 CallTargetSummary {
+                    selector: None,
                     callee: SelectedCallee::Function(callee),
                     surface_inputs: vec![int],
                     activation: Some(int_activation.clone()),
@@ -697,6 +704,7 @@ mod tests {
                     return_ty: Some(int),
                 },
                 CallTargetSummary {
+                    selector: None,
                     callee: SelectedCallee::Function(callee),
                     surface_inputs: vec![float],
                     activation: Some(float_activation.clone()),
@@ -753,6 +761,7 @@ mod tests {
         let summary = |ty| CallSiteSummary {
             last_resort: None,
             targets: vec![CallTargetSummary {
+                selector: None,
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![ty],
                 activation: Some(callee_activation.clone()),

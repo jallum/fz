@@ -155,6 +155,50 @@ fn propagate_tuple_step_demand(
     out.value_demands
 }
 
+/// A call on a module value chooses among its targets by the module. What the
+/// choice reads of the module is kept apart from what it reads of the
+/// arguments, so the arguments stay one-for-one with the callee's inputs.
+#[test]
+fn a_call_on_a_module_value_asks_its_choice_of_the_module_and_not_of_a_shared_argument() {
+    use crate::compiler2::body::CallSiteId;
+    use crate::compiler2::executable_facts::callsite_dispatch_demands;
+    use crate::compiler2::semantic::{CallSiteSummary, CallTargetSummary, SelectedCallee};
+
+    let mut types = Types::new();
+    let int = types.int();
+    let mut target = |function: u32, module: &str| CallTargetSummary {
+        selector: Some(types.atom_lit(module)),
+        callee: SelectedCallee::Function(FunctionId::from_coordinate(function)),
+        surface_inputs: vec![int],
+        activation: None,
+        activation_inputs: None,
+        extern_params: None,
+        return_ty: None,
+    };
+    let callsite = CallSiteId::from_u32(0);
+    let summaries = HashMap::from_iter([(
+        callsite,
+        CallSiteSummary {
+            targets: vec![target(1, "Elixir.Overdrawn"), target(2, "Elixir.Frozen")],
+            return_ty: None,
+            last_resort: None,
+        },
+    )]);
+
+    let demands = callsite_dispatch_demands(&mut types, &summaries);
+    let demand = &demands[&callsite];
+
+    assert!(
+        demand.selector.as_ref().is_some_and(|module| module.asks_anything()),
+        "the choice reads which module the value is: {demand:?}"
+    );
+    assert_eq!(demand.args.len(), 1, "one argument, beside the module: {demand:?}");
+    assert!(
+        !demand.args[0].asks_anything(),
+        "both targets take the same argument, so the choice asks it nothing: {demand:?}"
+    );
+}
+
 /// A call that chooses between two destinations by looking at its second
 /// argument alone must hold that argument, wherever it sits, and has no
 /// reason to hold the first: what the choice reads comes from the call's own
@@ -169,6 +213,7 @@ fn a_call_between_destinations_asks_for_exactly_the_arguments_its_choice_reads()
     let mut types = Types::new();
     let (any, int, atom, float) = (types.any(), types.int(), types.atom(), types.float());
     let target = |function: u32, second: crate::compiler2::types::Ty| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(FunctionId::from_coordinate(function)),
         surface_inputs: vec![int, second],
         activation: None,
@@ -395,7 +440,7 @@ mod tests {
                 entry(LoweredTail::DirectCall {
                     value: direct_value,
                     callsite: direct_callsite,
-                    callee: FunctionId::from_coordinate(0),
+                    callee: crate::compiler2::body::DirectCallee::Function(FunctionId::from_coordinate(0)),
                     args: Vec::new(),
                     dest: ControlDestination::Return,
                 }),

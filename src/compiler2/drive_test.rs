@@ -300,7 +300,7 @@ fn assert_list_retention_ownership(
                     let LoweredBody::Clauses { entries, .. } = body;
 
                     entries.iter().any(|entry| match &entry.tail {
-                        LoweredTail::DirectCall { callee, args, .. } if *callee == shared_function => {
+                        LoweredTail::DirectCall { callee, args, .. } if callee.function() == Some(shared_function) => {
                             args[0].ownership == crate::fz_ir::OwnershipMode::Share
                         }
                         _ => false,
@@ -420,7 +420,7 @@ fn compiler2_forwarded_constructor_descendants_share_at_each_ownership_boundary(
         let modes = if let Some((callee, arity)) = callee {
             let target = function_id(&functions, callee, arity);
             entries.iter().find_map(|entry| match &entry.tail {
-                LoweredTail::DirectCall { callee, args, .. } if *callee == target => {
+                LoweredTail::DirectCall { callee, args, .. } if callee.function() == Some(target) => {
                     Some(args.iter().map(|arg| arg.ownership).collect::<Vec<_>>())
                 }
                 _ => None,
@@ -19169,7 +19169,7 @@ fn direct_call_in_entry(
             callsite,
             callee: function,
             ..
-        } if *function == callee => Some((*callsite, *value)),
+        } if function.function() == Some(callee) => Some((*callsite, *value)),
         crate::compiler2::LoweredTail::If {
             then_entry, else_entry, ..
         } => direct_call_in_entry(entries, *then_entry, callee)
@@ -19193,7 +19193,7 @@ pub(crate) fn direct_callee_in_entry(
 ) -> Option<FunctionId> {
     let entry = &entries[entry_id.as_u32() as usize];
     match &entry.tail {
-        crate::compiler2::LoweredTail::DirectCall { callee: function, .. } => Some(*function),
+        crate::compiler2::LoweredTail::DirectCall { callee: function, .. } => function.function(),
         crate::compiler2::LoweredTail::If {
             then_entry, else_entry, ..
         } => direct_callee_in_entry(entries, *then_entry).or_else(|| direct_callee_in_entry(entries, *else_entry)),
@@ -21484,6 +21484,71 @@ fn keyed_activations(label: &str, source: &str) -> usize {
             crate::compiler2::canon::function_label(world, executable.key.activation.function) == label
         })
         .count()
+}
+
+/// The call tails of every executable of the function labelled `label`.
+fn call_tails_of(program: &BackendProgram, world: &crate::compiler2::World, label: &str) -> Vec<BackendTail> {
+    program
+        .executables()
+        .iter()
+        .filter(|executable| {
+            crate::compiler2::canon::function_label(world, executable.key.activation.function) == label
+        })
+        .filter_map(|executable| match &executable.body {
+            crate::compiler2::BackendBody::Clauses { entries, .. } => Some(entries),
+            _ => None,
+        })
+        .flat_map(|entries| entries.iter().map(|entry| entry.tail.clone()))
+        .filter(|tail| matches!(tail, BackendTail::DirectCall { .. }))
+        .collect()
+}
+
+/// `pick(m)` is `m.exception([])`. Which module `m` is decides the function
+/// called, so a caller passing `Overdrawn` and a caller passing `Bank.Frozen`
+/// keep two keys, and each key's call has one target: a direct call that
+/// reads no module at run time. Fixture 00864.
+#[test]
+fn a_call_on_one_module_is_a_direct_call_keyed_by_the_module() {
+    let settled = Drive::fixture(864).dump_stage(super::dump::DumpStage::Backend);
+    let calls = call_tails_of(&settled.backend_program(), settled.world(), "pick/1");
+    assert_eq!(calls.len(), 2, "one executable of pick/1 per module passed: {calls:#?}");
+    for call in &calls {
+        let BackendTail::DirectCall {
+            target, selector, args, ..
+        } = call
+        else {
+            unreachable!("call_tails_of answers direct calls");
+        };
+        assert!(
+            matches!(target, CallEdge::Direct(_)),
+            "one module in the type leaves one target: {call:#?}"
+        );
+        assert!(selector.is_some(), "the call still names the value it was made on");
+        assert_eq!(args.len(), 1, "the module is not an argument of exception/1");
+    }
+}
+
+/// `pick(choose(n))` passes a value that is `Overdrawn` or `Frozen`. One key
+/// serves both, and its call chooses between two targets by reading the
+/// module; the argument list is the callee's own. Fixture 00865.
+#[test]
+fn a_call_on_one_of_two_modules_dispatches_on_the_module_and_passes_only_the_arguments() {
+    let settled = Drive::fixture(865).dump_stage(super::dump::DumpStage::Backend);
+    let calls = call_tails_of(&settled.backend_program(), settled.world(), "pick/1");
+    let [
+        BackendTail::DirectCall {
+            target: CallEdge::Dispatch(dispatch),
+            selector: Some(_),
+            args,
+            ..
+        },
+    ] = calls.as_slice()
+    else {
+        panic!("pick/1 is one executable whose call dispatches on its module: {calls:#?}");
+    };
+    assert_eq!(dispatch.arms.len(), 2, "one target per module the value can be");
+    assert!(dispatch.plan.required_input(0), "the dispatch reads the module");
+    assert_eq!(args.len(), 1, "the module is not an argument of exception/1");
 }
 
 fn moved_keying_laws(laws: &[(&str, &str, &str, usize)]) -> Vec<String> {

@@ -1,0 +1,43 @@
+#---
+# purpose: "m.f(a) on a value that may hold one of several modules calls the f of the module it holds at run time: a module chosen by a branch, modules in a list, a module captured by a closure, and a module passed back to itself through a recursive call; the arguments reach the chosen function unchanged"
+# oracle: 00865_a_call_on_one_of_several_modules_is_chosen_by_the_value.oracle.exs
+#---
+#
+# The receiver's type lists the modules it can be. The call has one target per
+# module and reads the receiver to choose among them; the receiver is not an
+# argument of the function called.
+defmodule Overdrawn do
+  def exception(attrs), do: {:overdrawn, attrs}
+  def scale(n), do: n * 2
+  def count(_m, 0, acc), do: acc
+  def count(m, n, acc), do: m.count(m, n - 1, acc + 1)
+end
+
+defmodule Frozen do
+  def exception(attrs), do: {:frozen, attrs}
+  def scale(n), do: n + 100
+  def count(_m, 0, acc), do: acc
+  def count(m, n, acc), do: m.count(m, n - 1, acc + 2)
+end
+
+def choose(n) do
+  if n > 1, do: Overdrawn, else: Frozen
+end
+
+def pick(m), do: m.exception([])
+
+def scaled(m, xs), do: Enum.map(xs, fn x -> m.scale(x) end)
+
+def main() do
+  dbg(pick(choose(1)))
+  dbg(pick(choose(2)))
+  m = choose(2)
+  dbg(m.scale(5))
+  dbg(choose(0).scale(5))
+  dbg(Enum.map([Overdrawn, Frozen, Overdrawn], fn m -> m.exception(:each) end))
+  dbg(scaled(choose(1), [1, 2]))
+  dbg(scaled(choose(2), [1, 2]))
+  dbg(choose(1).count(choose(1), 4, 0))
+  dbg(choose(2).count(choose(1), 4, 0))
+  dbg(choose(2).count(choose(2), 1000, 0))
+end

@@ -822,7 +822,10 @@ fn target_questions(types: &mut Types, targets: &[CallTargetSummary]) -> Vec<Vec
 /// The semantic surface each target offers, which is all
 /// [`routable_alternatives`] reads of a target.
 fn target_surfaces(targets: &[CallTargetSummary]) -> Vec<Vec<Ty>> {
-    targets.iter().map(|target| target.surface_inputs.clone()).collect()
+    targets
+        .iter()
+        .map(|target| target.selector.iter().chain(&target.surface_inputs).copied().collect())
+        .collect()
 }
 
 /// Whether two of a callsite's targets sit on one callee -- the conjunct

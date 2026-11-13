@@ -102,6 +102,12 @@ and materialization follows the answer. The plan is a `PatternDispatchPlan<Ty>`
 built from the receiver-narrowed `CallTargetSummary.surface_inputs`, with opaque
 body ids assigned to the destinations in order.
 
+A call on a module value (`m.f(a)`) settles the same summary with one target
+per module `m` can be, and each target's `selector` is the atom of its module.
+The plan's first input is then the selector and the arguments follow it. The
+selector only chooses: `callsite_dispatch_demands` reports what the plan reads
+of it apart from what it reads of the arguments, and no target receives it.
+
 ### Which inputs the plan asks, and in what order
 
 `dispatch_columns` decides both, once, from the same runtime questions the drop

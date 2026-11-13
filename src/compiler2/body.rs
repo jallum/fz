@@ -235,7 +235,8 @@ pub(crate) fn tail_used_values(tail: &LoweredTail, out: &mut Vec<ValueId>) {
         LoweredTail::Value { value, .. } => {
             out.push(*value);
         }
-        LoweredTail::DirectCall { args, .. } => {
+        LoweredTail::DirectCall { callee, args, .. } => {
+            out.extend(callee.module_value());
             for arg in args {
                 out.push(arg.value);
             }
@@ -511,6 +512,15 @@ impl LoweredBody {
     pub(crate) fn call_args(&self, callsite: CallSiteId) -> Option<&[CallArg]> {
         match self.callsite_tail(callsite)? {
             LoweredTail::DirectCall { args, .. } | LoweredTail::ClosureCall { args, .. } => Some(args),
+            _ => None,
+        }
+    }
+
+    /// The module value the call at `callsite` reads to choose its target,
+    /// when it is a call on a module value.
+    pub(crate) fn call_module_value(&self, callsite: CallSiteId) -> Option<ValueId> {
+        match self.callsite_tail(callsite)? {
+            LoweredTail::DirectCall { callee, .. } => callee.module_value(),
             _ => None,
         }
     }
@@ -888,6 +898,33 @@ pub struct LoweredReceive {
     pub(crate) dispatch: Rc<PatternDispatchPlan<Ty>>,
 }
 
+/// Who a direct call names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirectCallee {
+    /// A function the source names.
+    Function(FunctionId),
+    /// The function `function` of the module the value `module` holds:
+    /// `m.f(a)`. The module only chooses the target; it is not an argument.
+    ModuleValue { module: ValueId, function: String },
+}
+
+impl DirectCallee {
+    pub fn function(&self) -> Option<FunctionId> {
+        match self {
+            DirectCallee::Function(function) => Some(*function),
+            DirectCallee::ModuleValue { .. } => None,
+        }
+    }
+
+    /// The module value a call on a module reads to choose its target.
+    pub fn module_value(&self) -> Option<ValueId> {
+        match self {
+            DirectCallee::Function(_) => None,
+            DirectCallee::ModuleValue { module, .. } => Some(*module),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoweredTail {
     Value {
@@ -897,7 +934,7 @@ pub enum LoweredTail {
     DirectCall {
         value: ValueId,
         callsite: CallSiteId,
-        callee: FunctionId,
+        callee: DirectCallee,
         args: Vec<CallArg>,
         dest: ControlDestination,
     },

@@ -1215,14 +1215,18 @@ impl ProgramCanon<'_> {
                 value,
                 callsite,
                 target,
+                selector,
                 args,
                 dest,
             } => {
                 let value = self.names.value(*value);
                 let callsite = self.names.callsite(*callsite);
+                let selector = selector
+                    .map(|selector| format!(" selector={}", self.names.value(selector)))
+                    .unwrap_or_default();
                 let args = self.call_args(args);
                 out.enter(&format!(
-                    "tail direct_call {value} {callsite} args=[{args}] {}",
+                    "tail direct_call {value} {callsite}{selector} args=[{args}] {}",
                     destination(dest)
                 ));
                 self.call_edge(out, target);

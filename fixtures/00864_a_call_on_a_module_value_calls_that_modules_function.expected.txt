@@ -1,0 +1,11 @@
+{:overdrawn, []}
+{:frozen, []}
+{:frozen, {:frozen, [1, 2]}}
+:overdrawn
+{:short_by, 7}
+7
+{:frozen, :b}
+Overdrawn
+:attrs
+{:overdrawn, :attrs}
+:a_field

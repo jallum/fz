@@ -24,6 +24,7 @@ fn one_target(world: &mut World, name: &str, surface_arity: usize, captures: usi
     let summary = CallSiteSummary {
         last_resort: None,
         targets: vec![CallTargetSummary {
+            selector: None,
             callee: SelectedCallee::Function(function),
             surface_inputs: vec![int; surface_arity],
             activation: Some(activation),

@@ -165,6 +165,7 @@ fn multi_target_summary_builds_receiver_type_dispatch_rows() {
         last_resort: None,
         targets: vec![
             CallTargetSummary {
+                selector: None,
                 callee: SelectedCallee::Function(list_impl),
                 surface_inputs: vec![list],
                 activation: None,
@@ -173,6 +174,7 @@ fn multi_target_summary_builds_receiver_type_dispatch_rows() {
                 return_ty: None,
             },
             CallTargetSummary {
+                selector: None,
                 callee: SelectedCallee::Function(range_impl),
                 surface_inputs: vec![range],
                 activation: None,
@@ -243,6 +245,7 @@ fn single_target_summary_stays_direct() {
     let summary = CallSiteSummary {
         last_resort: None,
         targets: vec![CallTargetSummary {
+            selector: None,
             callee: SelectedCallee::Function(function),
             surface_inputs: vec![any],
             activation: None,
@@ -273,6 +276,7 @@ fn a_one_target_call_that_can_miss_tests_its_receiver_and_raises_at_a_miss() {
     let int = world.types_mut().int();
     let target = CallTargetSummary {
         callee: SelectedCallee::Function(function),
+        selector: None,
         surface_inputs: vec![int],
         activation: None,
         activation_inputs: None,
@@ -305,7 +309,7 @@ fn a_one_target_call_that_can_miss_tests_its_receiver_and_raises_at_a_miss() {
         &crate::fast_hash::HashMap::from_iter([(callsite, can_miss)]),
     );
     assert_ne!(
-        demands.get(&callsite).and_then(|demand| demand.first()),
+        demands.get(&callsite).and_then(|demand| demand.args.first()),
         Some(&crate::dispatch_matrix::demand::DispatchDemand::Ignore),
         "the call reads the receiver it tests"
     );
@@ -350,6 +354,7 @@ fn a_narrower_twin_the_seat_would_not_put_first_is_no_destination() {
     let command = world.types_mut().union(cont, halt);
     let step = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reduce_while_step", 2);
     let target = |state| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(step),
         surface_inputs: vec![list, state],
         activation: None,
@@ -396,6 +401,7 @@ fn a_wider_domain_on_another_function_is_no_stand_in() {
     let wide_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "wide_impl", 2);
     let narrow_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "narrow_impl", 2);
     let target = |function, state| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(function),
         surface_inputs: vec![list, state],
         activation: None,
@@ -448,6 +454,7 @@ fn a_map_content_no_test_can_read_leaves_only_the_wider_arm() {
     let wide_map = world.types_mut().map(&[(key, ints_floats)]);
     let read = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "read_a", 1);
     let target = |input| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(read),
         surface_inputs: vec![input],
         activation: None,
@@ -508,6 +515,7 @@ fn a_narrower_arm_on_a_separating_axis_survives_and_is_seated_first() {
     let ints_floats = world.types_mut().union(int, float);
     let bump = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "bump", 1);
     let target = |input| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(bump),
         surface_inputs: vec![input],
         activation: None,
@@ -581,6 +589,7 @@ fn a_narrow_surface_carrying_the_wider_test_is_not_dropped_for_it() {
     let narrow_list = world.types_mut().union(empty_list, carved);
     let step = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reduce_while_step", 1);
     let target = |list| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(step),
         surface_inputs: vec![list],
         activation: None,
@@ -675,6 +684,7 @@ fn a_drop_that_dissolves_a_question_group_reseats_the_survivor_it_pinned() {
     let two = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "impl_two", 2);
     let zero = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "impl_zero", 2);
     let target = |callee, map, atom| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(callee),
         surface_inputs: vec![map, atom],
         activation: None,
@@ -758,6 +768,7 @@ fn a_closure_literal_tells_two_indistinguishable_states_apart() {
     let plain_reducer = world.types_mut().closure_lit(ClosureTarget(68), Vec::new(), 2);
     let step = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reduce_step", 2);
     let target = |state, reducer| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(step),
         surface_inputs: vec![state, reducer],
         activation: None,
@@ -829,6 +840,7 @@ fn a_closure_nested_in_a_tuple_is_named_by_the_test() {
     let boxed_other = world.types_mut().tuple(&[tag, other]);
     let apply = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "apply_boxed", 1);
     let target = |boxed| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(apply),
         surface_inputs: vec![boxed],
         activation: None,
@@ -888,6 +900,7 @@ fn a_nested_callables_captures_are_a_question() {
     let boxed_float = world.types_mut().tuple(&[tag, over_float]);
     let apply = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "apply_boxed", 1);
     let target = |boxed| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(apply),
         surface_inputs: vec![boxed],
         activation: None,
@@ -945,6 +958,7 @@ fn arms_that_differ_only_in_their_lambda_are_told_apart_by_it() {
     let other_reducer = world.types_mut().closure_lit(ClosureTarget(68), Vec::new(), 2);
     let apply = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "apply_twice", 2);
     let target = |reducer| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(apply),
         surface_inputs: vec![int, reducer],
         activation: None,
@@ -996,6 +1010,7 @@ fn a_narrower_arm_the_runtime_can_still_recognize_stays() {
     let timeout = world.types_mut().atom_lit("timeout");
     let bump = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "bump", 1);
     let target = |input| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(bump),
         surface_inputs: vec![input],
         activation: None,
@@ -1074,6 +1089,7 @@ fn distinguishable_arms_are_seated_by_what_they_say_not_by_when_they_arrived() {
     let wide_reducer = world.types_mut().union(some_all, empty);
     let step = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reduce_while_step", 3);
     let target = |state, reducer| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(step),
         surface_inputs: vec![list, state, reducer],
         activation: None,
@@ -1143,6 +1159,7 @@ fn an_arm_whose_test_admits_more_is_seated_after_the_arms_it_would_swallow() {
     let any_of_three = world.types_mut().union(all_one, two_or_empty);
     let step = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reduce_while_step", 3);
     let target = |list, reducer| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(step),
         surface_inputs: vec![list, int, reducer],
         activation: None,
@@ -1209,6 +1226,7 @@ fn arms_over_disjoint_element_types_cannot_take_each_others_values() {
     let either = world.types_mut().union(all_one, empty);
     let step = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reduce_while_step", 3);
     let target = |list, reducer| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(step),
         surface_inputs: vec![list, true_atom, reducer],
         activation: None,
@@ -1458,6 +1476,7 @@ fn arms_no_value_can_reach_both_of_are_not_a_seat_question() {
     let either_list = world.types_mut().union(int_list, mixed_list);
     let member = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reduce_while_step", 2);
     let target = |head, list| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(member),
         surface_inputs: vec![head, list],
         activation: None,
@@ -1579,6 +1598,7 @@ fn a_separated_run_a_meaning_bearing_pair_blocks_is_not_sorted_through() {
     let c = world.types_mut().tuple(&[p, tail_list]);
     let callee = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "step", 1);
     let target = |tagged| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(callee),
         surface_inputs: vec![tagged],
         activation: None,
@@ -1669,6 +1689,7 @@ fn two_arms_that_say_the_same_thing_are_one_group_and_never_a_tie() {
     let left_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "left_impl", 1);
     let right_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "right_impl", 1);
     let target = |function, surface| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(function),
         surface_inputs: vec![surface],
         activation: None,
@@ -1756,6 +1777,7 @@ fn an_untested_position_is_not_a_separation() {
         "the shared surface must be REALIZABLE, or the arms would be dead for an honest reason",
     );
     let target = |head, second| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(callee),
         surface_inputs: vec![head, second],
         activation: None,
@@ -1869,6 +1891,7 @@ fn a_list_head_drops_the_covered_arm_and_leaves_the_inseparable_pair_as_it_arriv
     let reducer = world.types_mut().closure_lit(ClosureTarget(1), Vec::new(), 2);
     let step = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reduce_while_cont", 3);
     let target = |list| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(step),
         surface_inputs: vec![list, true_atom, reducer],
         activation: None,
@@ -1962,6 +1985,7 @@ fn an_arm_whose_head_overlaps_a_wider_one_is_no_destination_beside_it() {
     let reducer = world.types_mut().closure_lit(ClosureTarget(1), Vec::new(), 2);
     let step = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reduce_while_step", 3);
     let target = |list| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(step),
         surface_inputs: vec![list, true_atom, reducer],
         activation: None,
@@ -2025,6 +2049,7 @@ fn runtime_indistinguishable_arms_keep_the_order_they_arrived_in() {
     let first_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "int_impl", 1);
     let second_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "float_impl", 1);
     let target = |function, reducer| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(function),
         surface_inputs: vec![reducer],
         activation: None,
@@ -2075,6 +2100,7 @@ fn callsite_summary_dispatches_on_the_surface_argument_that_distinguishes_target
         last_resort: None,
         targets: vec![
             CallTargetSummary {
+                selector: None,
                 callee: SelectedCallee::Function(function),
                 surface_inputs: vec![int, cont],
                 activation: None,
@@ -2083,6 +2109,7 @@ fn callsite_summary_dispatches_on_the_surface_argument_that_distinguishes_target
                 return_ty: None,
             },
             CallTargetSummary {
+                selector: None,
                 callee: SelectedCallee::Function(function),
                 surface_inputs: vec![int, halt],
                 activation: None,
@@ -2108,6 +2135,61 @@ fn callsite_summary_dispatches_on_the_surface_argument_that_distinguishes_target
             .iter()
             .any(|subject| subject.source == SubjectSource::Input { ordinal: 1 }),
         "the callsite must discriminate its command argument, not its shared first argument"
+    );
+}
+
+/// A call on a module value has one target per module the value can be. The
+/// targets take the same arguments, so nothing but the module tells them
+/// apart: the plan reads the module ahead of the arguments and asks the
+/// arguments nothing.
+#[test]
+fn a_call_on_a_module_value_is_chosen_by_the_module_ahead_of_its_arguments() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let int = world.types_mut().int();
+    let mut target = |module: &str| {
+        let owner = world.reference_module(crate::modules::identity::ModuleName::from_segments(vec![
+            module.to_string(),
+        ]));
+        CallTargetSummary {
+            selector: Some(world.types_mut().atom_lit(&format!("Elixir.{module}"))),
+            callee: SelectedCallee::Function(world.reference_function(owner, "exception", 1)),
+            surface_inputs: vec![int],
+            activation: None,
+            activation_inputs: None,
+            extern_params: None,
+            return_ty: None,
+        }
+    };
+    let summary = CallSiteSummary {
+        targets: vec![target("Overdrawn"), target("Frozen")],
+        return_ty: None,
+        last_resort: None,
+    };
+
+    let CallDestinations::Dispatch(dispatch) =
+        call_destinations(world.types_mut(), &summary).expect("dispatch should compile")
+    else {
+        panic!("two modules are two destinations");
+    };
+
+    assert_eq!(
+        dispatch.targets.len(),
+        2,
+        "each module keeps its own target: the atoms are disjoint, so neither stands in for the other"
+    );
+    assert_eq!(
+        dispatch.plan.input_demand().len(),
+        2,
+        "the plan's inputs are the module and then the one argument"
+    );
+    assert!(
+        dispatch.plan.required_input(0),
+        "the module is the only thing that tells the targets apart"
+    );
+    assert!(
+        !dispatch.plan.required_input(1),
+        "both targets take the same argument, so the choice does not read it"
     );
 }
 
@@ -2492,6 +2574,7 @@ fn a_seed_moves_an_arrival_order_the_group_reversal_cannot() {
     let gamma = world.types_mut().list(ok_or_tail);
     let tag = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "tag_impl", 1);
     let target = |atom| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(tag),
         surface_inputs: vec![atom],
         activation: None,
@@ -2595,6 +2678,7 @@ fn no_setting_asks_for_anything_but_the_settled_order() {
     let atom = world.types_mut().atom_lit("ok");
     let callee = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "impl", 1);
     let target = |ty| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(callee),
         surface_inputs: vec![ty],
         activation: None,
@@ -2723,6 +2807,7 @@ fn a_tie_break_folded_into_the_seat_loses_a_covering_seat() {
     let p_ty = world.types_mut().tuple(&[bb_list, t]);
     let callee = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "step", 1);
     let target = |ty| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(callee),
         surface_inputs: vec![ty],
         activation: None,
@@ -2864,6 +2949,7 @@ fn a_covering_pair_blocks_the_repair_and_leaves_the_arrival_showing() {
     let q_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "q_impl", 1);
     let r_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "r_impl", 1);
     let target = |function, ty| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(function),
         surface_inputs: vec![ty],
         activation: None,
@@ -2931,6 +3017,7 @@ fn three_disjoint_atom_arms_settle_to_one_order_from_every_arrival() {
     let gamma = world.types_mut().atom_lit("gamma");
     let tag = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "tag_impl", 1);
     let target = |atom| CallTargetSummary {
+        selector: None,
         callee: SelectedCallee::Function(tag),
         surface_inputs: vec![atom],
         activation: None,

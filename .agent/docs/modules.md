@@ -131,6 +131,45 @@ a placeholder id and starts no module work. A qualified callee
 (`Foo.Bar.f()`) reads the same segments as its `ModuleTarget::Unresolved`
 qualifier.
 
+## A call on a module value
+
+`m.f(a)` whose base is not a module name is a call on the module the value
+`m` holds. A field read is the same syntax without the call (`m.f`), and
+`m.f.(a)` calls the closure that field holds. Body lowering emits
+`LoweredTail::DirectCall` whose callee is
+`DirectCallee::ModuleValue { module, function }`: the value of `m`, lowered
+before the arguments, and the name `f`. The module is not one of the call's
+arguments.
+
+Semantic analysis resolves the call from the type of `m`
+(`jobs::semantic::resolve_module_value_call`). The type has to be a finite set
+of atoms. Each atom names a module absolutely through
+`ModuleName::from_atom_name` and `World::reference_module`, and
+`World::module_public_function` answers that module's public `f/n`; a
+qualified callee in source asks the same method. Each function is then
+resolved as any direct call is, and its targets carry the atom that selects
+them in `CallTargetSummary.selector`.
+
+| type of `m` | the call |
+| --- | --- |
+| one atom | one target: `CallDestinations::Direct`, and no read of `m` at run time |
+| several atoms | one target per atom: `CallDestinations::Dispatch`, whose plan reads `m` as its first input |
+| `atom`, or a type holding anything besides atoms | compile error `type/module-value-call` |
+| an atom outside the `Elixir.` namespace | compile error `type/module-value-call` |
+
+A dispatch plan's inputs are the selector and then the arguments
+(`CallSiteSummary::arity`). `BackendTail::DirectCall.selector` holds the value
+of `m`; both executors read it for the plan and pass only `args` to the
+target, so the arguments stay one-for-one with the callee's inputs.
+
+The activation key keeps `m` whole (`jobs::keying`), so callers passing
+different modules keep different keys and each key's call has one target.
+`e.__struct__.message(e)` is this call: the `__struct__` field of a struct
+type is one atom.
+
+Fixtures `00864` (one module) and `00865` (several) agree with Elixir on
+interp, run and build; `00866` and `00867` are the two refusals.
+
 ## Scoping a body
 
 `define_scope` walks a scope's items in two passes so bodies can reference names
@@ -226,6 +265,8 @@ jobs/source.rs index_code / scope_code / define_module / define_scope / discover
 ```text
 cargo test --lib compiler2::world_test
 cargo test --lib compiler2::namespace_test
+cargo test --lib compiler2::drive_test::a_call_on_one_module_is_a_direct_call_keyed_by_the_module
+cargo test --lib compiler2::drive_test::a_call_on_one_of_two_modules_dispatches_on_the_module_and_passes_only_the_arguments
 cargo test --lib compiler2::drive_test::compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_foo
 cargo test --lib compiler2::drive_test::compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer
 ```

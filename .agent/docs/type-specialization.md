@@ -197,7 +197,7 @@ demand(f, i) = local(f, i) ⊔ uses(f, i) ⊔ ⨆ { lift(demand(g, j)) : f forwa
 
 `uses` classifies EVERY use an input-derived value has, not only the entry
 dispatch. A value read by a comparison or arithmetic operand, or as a literal
-map key, is `Class`; read by an `if` condition, a closure call's argument, a pinned or prepared dispatch binding, a bitstring
+map key, is `Class`; read by an `if` condition, a closure call's argument, the module of a call on a module value (`m.f(a)`) or one of that call's arguments, a pinned or prepared dispatch binding, a bitstring
 field or a map base, it is `Whole`; the closure a call calls is asked nothing, because which closure it is has its own question (brand erasure, below); read by a body-local `case` it is what that
 plan asks; returned, it contributes nothing here, because the returned axis below
 asks. A lambda's captures are its leading inputs, so a captured value is asked what the lambda asks of it. A value held inside a construction (`{tag, x}`, `[x | acc]`, a struct) is

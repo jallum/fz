@@ -30,8 +30,8 @@ use crate::source::{SourceMap, Span};
 
 use super::super::body::{
     BodyTables, CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin,
-    DispatchBindings, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry,
-    LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, SubjectOriginRoot, ValueId, step_used_values,
+    DirectCallee, DispatchBindings, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause,
+    LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, SubjectOriginRoot, ValueId, step_used_values,
 };
 use super::super::code::SourceOwner;
 use super::super::drive::{FactKey, JobEffects, current_uses};
@@ -217,7 +217,7 @@ enum ExprStep {
     DirectCall {
         value: ValueId,
         callsite: CallSiteId,
-        callee: FunctionId,
+        callee: DirectCallee,
         args: Vec<CallArg>,
     },
     ClosureCall {
@@ -1561,14 +1561,33 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 Ok(value)
             }
             Expr::Call(target, args) => {
+                let callee = direct_callee(target, args.len(), env);
+                let module = match (&callee, module_value_callee(target)) {
+                    (None, Some((module, function))) => Some((self.lower_expr(module, env, steps)?, function)),
+                    _ => None,
+                };
                 let lowered_args = self.lower_call_args(args, env, steps)?;
                 let callsite = self.fresh_callsite(expr.span);
-                if let Some(callee) = direct_callee(target, args.len(), env) {
+                if let Some(callee) = callee {
+                    let value = self.fresh_value();
+                    let callee = self.resolve_callee(&callee, args.len(), target.span, "direct runtime callee")?;
+                    steps.push(ExprStep::DirectCall {
+                        value,
+                        callsite,
+                        callee: DirectCallee::Function(callee),
+                        args: lowered_args,
+                    });
+                    return Ok(value);
+                }
+                if let Some((module, function)) = module {
                     let value = self.fresh_value();
                     steps.push(ExprStep::DirectCall {
                         value,
                         callsite,
-                        callee: self.resolve_callee(&callee, args.len(), target.span, "direct runtime callee")?,
+                        callee: DirectCallee::ModuleValue {
+                            module,
+                            function: function.to_string(),
+                        },
                         args: lowered_args,
                     });
                     return Ok(value);
@@ -1607,7 +1626,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     steps.push(ExprStep::DirectCall {
                         value,
                         callsite: self.fresh_callsite(expr.span),
-                        callee: self.resolve_direct_callee(name, 2, expr.span)?,
+                        callee: DirectCallee::Function(self.resolve_direct_callee(name, 2, expr.span)?),
                         args: vec![
                             CallArg {
                                 value: left,
@@ -1867,20 +1886,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             );
             self.check_variadic_arity(&label, arity, span, minimum)?;
         }
-        if let Some(function) = self
-            .world
-            .module_interface_if_present(module)
-            .and_then(|interface| interface.public_function_with_name_arity(name, arity))
-        {
-            return Ok(function);
-        }
-        Ok(self.world.reference_module_interface_callable(
-            module,
-            name.to_string(),
-            arity,
-            InterfaceCallableKind::PublicFunction,
-            Some(self.interface_requester(span)),
-        ))
+        let requester = self.interface_requester(span);
+        Ok(self.world.module_public_function(module, name, arity, requester))
     }
 
     fn resolve_runtime_function(
@@ -2360,7 +2367,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 ExprStep::DirectCall {
                     value: raised,
                     callsite: self.fresh_callsite(span),
-                    callee,
+                    callee: DirectCallee::Function(callee),
                     args: [base, key_list]
                         .into_iter()
                         .map(|value| CallArg {
@@ -5138,6 +5145,18 @@ fn update_key_error_callee() -> Callee {
         ))),
         name: "update_key_error".to_string(),
     })
+}
+
+/// The module expression and function name of a call on a module value:
+/// `m.f(a)`, where `m` is any expression that is not a module name.
+fn module_value_callee(target: &Spanned<Expr>) -> Option<(&Spanned<Expr>, &str)> {
+    let Expr::Index(module, function) = &target.node else {
+        return None;
+    };
+    let Expr::Atom(function) = &function.node else {
+        return None;
+    };
+    Some((module, function))
 }
 
 fn direct_callee(expr: &Spanned<Expr>, arity: usize, env: &HashMap<Var, ValueId>) -> Option<Callee> {

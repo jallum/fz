@@ -68,6 +68,10 @@ pub enum SelectedCallee {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallTargetSummary {
     pub callee: SelectedCallee,
+    /// The modules that choose this target when the call is made on a module
+    /// value: the part of the receiver's type naming them. The receiver is
+    /// read to choose and is not passed on, so it is no surface input.
+    pub selector: Option<Ty>,
     /// The semantic call surface this callsite can send to the callee.
     ///
     /// This is not the same thing as the bounded recursive activation key.
@@ -1554,10 +1558,12 @@ impl CallSiteTargetsMap {
 }
 
 impl CallSiteSummary {
+    /// How many values the choice among targets can read: the arguments,
+    /// and ahead of them the module value when the call is made on one.
     pub fn arity(&self) -> usize {
         self.targets
             .first()
-            .map(|target| target.surface_inputs.len())
+            .map(|target| target.selector.iter().len() + target.surface_inputs.len())
             .unwrap_or(0)
     }
 
@@ -1565,6 +1571,12 @@ impl CallSiteSummary {
     /// a receiver beyond it can miss.
     pub fn is_decision(&self) -> bool {
         self.targets.len() > 1 || self.last_resort.is_some()
+    }
+
+    /// Whether the call is made on a module value, which the choice among
+    /// targets reads ahead of the arguments.
+    pub fn selects_by_module(&self) -> bool {
+        self.targets.iter().any(|target| target.selector.is_some())
     }
 
     pub fn single_target(&self) -> Option<&CallTargetSummary> {
