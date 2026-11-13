@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T00:57:40Z",
+  "description": "Raising a raw telemetry event does its full dispatch work when no sink is attached to it. The dispatch_raw_event! functions in src/telemetry/bus.rs (dispatch_raw_event0, dispatch_raw_event1, ...) walk the listener entries and compare name prefixes on every raise; there is no early answer for 'nobody listens to this event'.\n\nMeasured: with the interpreter raising one event per control entry, call and frame, the counting path was 5.9% of samples in a release profile of the GH #304 program (build a list, count it; n = 1,280,000) with nothing attached. fz-e7w.2 avoided the cost by counting in plain integers and raising one event at run end; the bus itself is unchanged, so any other per-occurrence event pays the same.\n\nOne concept: the bus answers whether anyone listens to an event before any per-raise work is done, and a raise with no listener returns at once. ConfiguredTelemetry already knows its attached prefixes.\n\nFails before, passes after: a test that raises an unobserved raw event many times and observes, through the bus's own counters or telemetry, that no listener entry was visited; a release profile of a per-occurrence event on the #304 program shows the raise path absent.\n\nAcceptance: full gate green; no pin rises.",
+  "id": "fz-e7w.4",
+  "labels": [],
+  "parent": "fz-e7w",
+  "priority": 2,
+  "status": "open",
+  "title": "An event nobody observes costs nothing to raise",
+  "type": "bug",
+  "updated_at": "2026-11-13T00:57:40Z"
+}
