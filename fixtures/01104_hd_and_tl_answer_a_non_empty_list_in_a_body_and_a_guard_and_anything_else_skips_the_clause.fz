@@ -1,0 +1,54 @@
+#---
+# purpose: "hd and tl answer the head and the tail of a non-empty list in a body, raising ArgumentError on an empty list or a non-list, and in a function-head guard and a receive guard the same failure leaves the clause unmatched"
+# oracle: oracle.exs
+#---
+#
+# In a guard a failure is the clause not
+# matching, so the next clause answers; `:a` means the guard held and `:b` means
+# it did not.
+
+def refused(f) do
+  try do
+    f.()
+  rescue
+    e in ArgumentError -> e.message
+  end
+end
+
+def entry_hd(l) when hd(l) == 1, do: :a
+def entry_hd(_), do: :b
+
+def entry_tl(l) when length(tl(l)) == 1, do: :a
+def entry_tl(_), do: :b
+
+def entry_hd_tl(l) when hd(tl(l)) == 2, do: :a
+def entry_hd_tl(_), do: :b
+
+def receive_hd(m) do
+  send(self(), m)
+  receive do
+    l when hd(l) == 1 -> :a
+    _ -> :b
+  end
+end
+
+def receive_tl(m) do
+  send(self(), m)
+  receive do
+    l when length(tl(l)) == 1 -> :a
+    _ -> :b
+  end
+end
+
+def main() do
+  dbg([hd([1, 2]), hd([[3]]), hd([:a, :b]), tl([1, 2]), tl([1]), tl([[1, 2]])])
+  dbg(refused(fn -> hd(JSON.decode!("[]")) end))
+  dbg(refused(fn -> hd(JSON.decode!("\"s\"")) end))
+  dbg(refused(fn -> tl(JSON.decode!("[]")) end))
+  dbg(refused(fn -> tl(JSON.decode!("5")) end))
+  dbg([entry_hd([1]), entry_hd([2]), entry_hd([]), entry_hd(5)])
+  dbg([entry_tl([1, 2]), entry_tl([1]), entry_tl([]), entry_tl(:x)])
+  dbg([entry_hd_tl([1, 2]), entry_hd_tl([1, 3]), entry_hd_tl([1]), entry_hd_tl([])])
+  dbg([receive_hd([1]), receive_hd([2]), receive_hd([]), receive_hd(5)])
+  dbg([receive_tl([1, 2]), receive_tl([1]), receive_tl([]), receive_tl(:x)])
+end

@@ -858,6 +858,55 @@ pub extern "C" fn fz_op_neg_f(value: f64) -> f64 {
     -value
 }
 
+/// `abs` of the minimum integer has no 64-bit answer, so it reports failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_abs_i(value: i64) -> FzIntegerArithmeticResult {
+    let (result, overflowed) = value.overflowing_abs();
+    FzIntegerArithmeticResult {
+        result,
+        failed: u64::from(overflowed),
+    }
+}
+
+/// `abs` clears the sign bit, so `-0.0` becomes `0.0`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_abs_f(value: f64) -> f64 {
+    value.abs()
+}
+
+/// An already-rounded float as an integer, or a failure when it lies outside
+/// the 64-bit range. The bounds are exact powers of two, so each is a float.
+fn rounded_float_as_integer(rounded: f64) -> FzIntegerArithmeticResult {
+    const LOWER: f64 = -9223372036854775808.0;
+    const UPPER: f64 = 9223372036854775808.0;
+    if (LOWER..UPPER).contains(&rounded) {
+        successful_integer(rounded as i64)
+    } else {
+        failed_integer(0)
+    }
+}
+
+/// Rounds half away from zero, as Elixir's `round/1` does.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_round_f(value: f64) -> FzIntegerArithmeticResult {
+    rounded_float_as_integer(value.round())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_trunc_f(value: f64) -> FzIntegerArithmeticResult {
+    rounded_float_as_integer(value.trunc())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_floor_f(value: f64) -> FzIntegerArithmeticResult {
+    rounded_float_as_integer(value.floor())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_ceil_f(value: f64) -> FzIntegerArithmeticResult {
+    rounded_float_as_integer(value.ceil())
+}
+
 macro_rules! integer_arithmetic_export {
     ($name:ident, $method:ident) => {
         #[unsafe(no_mangle)]
@@ -1979,9 +2028,9 @@ pub extern "C" fn fz_system_argv(process: *mut Process) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_is_cons(list_ref_word: u64) -> u8 {
+pub extern "C" fn fz_list_is_cons(list_ref_word: u64) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_is_cons");
-    (list.tag() == ValueKind::LIST && !list.is_empty_list()) as u8
+    u64::from(list.tag() == ValueKind::LIST && !list.is_empty_list())
 }
 
 #[unsafe(no_mangle)]

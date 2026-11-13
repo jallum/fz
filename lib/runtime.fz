@@ -44,13 +44,17 @@ import Kernel, only: [
   &&: 2,
   ||: 2,
   !: 1,
+  abs: 1,
   assert: 1,
   assert: 2,
   dbg: 1,
   div: 2,
   exit: 1,
+  floor: 1,
+  hd: 1,
   make_ref: 0,
   byte_size: 1,
+  ceil: 1,
   elem: 2,
   inspect: 1,
   inspect: 2,
@@ -73,13 +77,16 @@ import Kernel, only: [
   reraise: 2,
   range: 3,
   refute: 1,
+  round: 1,
   rem: 2,
   refute: 2,
   self: 0,
   send: 2,
   spawn: 1,
   throw: 1,
-  to_string: 1
+  tl: 1,
+  to_string: 1,
+  trunc: 1
 ]
 
 defmacro def(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))

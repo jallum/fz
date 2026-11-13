@@ -17,7 +17,8 @@ defmodule Kernel do
       failing the current process
     * `dbg/1`, `to_string/1`, `div/2`, `rem/2` and `range/3`
     * the sizes and accessors `byte_size/1`, `map_size/1`, `tuple_size/1`,
-      `length/1` and `elem/2`, and the type tests `is_integer/1`,
+      `length/1`, `elem/2`, `hd/1` and `tl/1`, the numeric functions `abs/1`,
+      `round/1`, `trunc/1`, `floor/1` and `ceil/1`, and the type tests `is_integer/1`,
       `is_float/1`, `is_binary/1`, `is_list/1`, `is_map/1`, `is_tuple/1`,
       `is_atom/1`, `is_boolean/1` and `is_nil/1`, all of which a guard may call
 
@@ -483,6 +484,159 @@ defmodule Kernel do
     raises: ArithmeticError,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_neg_f(float) :: float
+
+  @doc """
+  Returns the absolute value of `x`.
+
+  Raises `ArithmeticError` for the minimum 64-bit integer, whose absolute value
+  does not fit one, and `ArgumentError` when `x` is not a number.
+
+  ## Examples
+
+      Kernel.abs(-3)
+      #=> 3
+
+      Kernel.abs(-2.5)
+      #=> 2.5
+
+  """
+  @spec abs(integer) :: integer
+  @spec abs(float) :: float
+  def abs(x :: integer), do: fz_op_abs_i(x)
+  def abs(x :: float), do: fz_op_abs_f(x)
+  def abs(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
+
+  extern "C" defp fz_op_abs_i(integer) :: integer,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+  extern "C" defp fz_op_abs_f(float) :: float
+
+  @doc """
+  Returns `x` rounded to the nearest integer, halves away from zero.
+
+  Raises `ArithmeticError` when the result is outside the 64-bit integer
+  range, and `ArgumentError` when `x` is not a number.
+
+  ## Examples
+
+      Kernel.round(2.5)
+      #=> 3
+
+      Kernel.round(-2.5)
+      #=> -3
+
+  """
+  @spec round(integer) :: integer
+  @spec round(float) :: integer
+  def round(x :: integer), do: x
+  def round(x :: float), do: fz_op_round_f(x)
+  def round(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
+
+  extern "C" defp fz_op_round_f(float) :: integer,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+
+  @doc """
+  Returns `x` with its fractional part removed.
+
+  Raises `ArithmeticError` when the result is outside the 64-bit integer
+  range, and `ArgumentError` when `x` is not a number.
+
+  ## Examples
+
+      Kernel.trunc(-2.7)
+      #=> -2
+
+  """
+  @spec trunc(integer) :: integer
+  @spec trunc(float) :: integer
+  def trunc(x :: integer), do: x
+  def trunc(x :: float), do: fz_op_trunc_f(x)
+  def trunc(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
+
+  extern "C" defp fz_op_trunc_f(float) :: integer,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+
+  @doc """
+  Returns the greatest integer not above `x`.
+
+  Raises `ArithmeticError` when the result is outside the 64-bit integer
+  range, and `ArgumentError` when `x` is not a number.
+
+  ## Examples
+
+      Kernel.floor(-2.5)
+      #=> -3
+
+  """
+  @spec floor(integer) :: integer
+  @spec floor(float) :: integer
+  def floor(x :: integer), do: x
+  def floor(x :: float), do: fz_op_floor_f(x)
+  def floor(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
+
+  extern "C" defp fz_op_floor_f(float) :: integer,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+
+  @doc """
+  Returns the least integer not below `x`.
+
+  Raises `ArithmeticError` when the result is outside the 64-bit integer
+  range, and `ArgumentError` when `x` is not a number.
+
+  ## Examples
+
+      Kernel.ceil(-2.5)
+      #=> -2
+
+  """
+  @spec ceil(integer) :: integer
+  @spec ceil(float) :: integer
+  def ceil(x :: integer), do: x
+  def ceil(x :: float), do: fz_op_ceil_f(x)
+  def ceil(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
+
+  extern "C" defp fz_op_ceil_f(float) :: integer,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+
+  @doc """
+  Returns the first element of `list`.
+
+  Raises `ArgumentError` when `list` is not a non-empty list. In a guard that
+  makes the guard false.
+
+  ## Examples
+
+      Kernel.hd([1, 2])
+      #=> 1
+
+  """
+  @spec hd(any) :: any
+  def hd(list :: list) when fz_list_is_cons(list), do: fz_list_head_ref(list)
+  def hd(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a nonempty list\n")
+
+  @doc """
+  Returns `list` without its first element.
+
+  Raises `ArgumentError` when `list` is not a non-empty list. In a guard that
+  makes the guard false.
+
+  ## Examples
+
+      Kernel.tl([1, 2])
+      #=> [2]
+
+  """
+  @spec tl(any) :: any
+  def tl(list :: list) when fz_list_is_cons(list), do: fz_list_tail_ref(list)
+  def tl(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a nonempty list\n")
+
+  extern "C" defp fz_list_is_cons(any) :: boolean
+  extern "C" defp fz_list_head_ref(any) :: any
+  extern "C" defp fz_list_tail_ref(any) :: any
 
   @doc """
   Returns `x` unchanged.
