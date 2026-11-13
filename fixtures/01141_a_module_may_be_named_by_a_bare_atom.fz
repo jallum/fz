@@ -1,0 +1,20 @@
+#---
+# purpose: "defmodule :name defines the module whose atom is :name, called as :name.f(x) and reached by value; its atom prints as itself and __MODULE__ is that atom"
+# oracle: 01141_a_module_may_be_named_by_a_bare_atom.oracle.exs
+#---
+#
+# Elixir names a module by an atom: `Foo` is the atom `Elixir.Foo` and an
+# Erlang-style module is a bare atom.
+defmodule :my_atom_mod do
+  def f(x), do: x + 1
+  def me(), do: __MODULE__
+end
+
+def main() do
+  IO.puts(:my_atom_mod.f(1))
+  inspect(:my_atom_mod) |> IO.puts()
+  inspect(:my_atom_mod.me()) |> IO.puts()
+  m = :my_atom_mod
+  IO.puts(m.f(41))
+  IO.puts(:my_atom_mod.me() == m)
+end

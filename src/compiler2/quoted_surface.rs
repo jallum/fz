@@ -794,7 +794,7 @@ fn parse_module_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<Mo
     if args.is_empty() {
         return Err(QuotedSourceError::new("defmodule expects a module alias"));
     }
-    let name = ModuleName::from_segments(parse_alias_segments(&args[0], sources)?);
+    let name = parse_module_name(&args[0], sources)?;
     Ok(ModuleForm { source, name, span })
 }
 
@@ -985,7 +985,7 @@ pub(crate) fn reserved_source_definition(
             let Some(name) = args.first() else {
                 return Err(QuotedSourceError::new("defmodule expects a module alias"));
             };
-            let name = ModuleName::from_segments(parse_alias_segments(name, sources)?);
+            let name = parse_module_name(name, sources)?;
             Some(ReservedSourceDefinition::Module { name })
         }
         "defprotocol" => {
@@ -1130,6 +1130,17 @@ pub(crate) fn function_head_args(tail: &QuotedSourceCursor) -> Result<Vec<Quoted
     } else {
         Ok(Vec::new())
     }
+}
+
+/// The name a `defmodule` gives: an alias path, or a bare atom, which is the
+/// module's own name.
+fn parse_module_name(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<ModuleName, QuotedSourceError> {
+    if cursor.root().tag() == fz_runtime::any_value::ValueKind::ATOM {
+        return ModuleName::from_atom_name(&cursor.atom_name()?)
+            .filter(ModuleName::is_bare_atom)
+            .ok_or_else(|| QuotedSourceError::new("defmodule expects a module alias or a bare atom"));
+    }
+    Ok(ModuleName::from_segments(parse_alias_segments(cursor, sources)?))
 }
 
 fn parse_alias_segments(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Vec<String>, QuotedSourceError> {

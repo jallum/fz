@@ -162,6 +162,16 @@ a value that reaches none of them raises, as in Elixir:</p>
 <span class="com"># ** (UndefinedFunctionError) function :nowhere.exception/1 is undefined</span>
 <span class="com">#    (module :nowhere is not available)</span></pre>
 
+<p>A module's name is an atom, so a module can be named by a bare atom
+too, as Erlang modules are. <code>defmodule :my_mod</code> defines the
+module whose atom is <code>:my_mod</code>, called as
+<code>:my_mod.f(1)</code>. The library defines <code>:erlang</code> with
+<code>float_to_binary/2</code>, which writes a float in fixed notation:
+<code>:erlang.float_to_binary(2.675, decimals: 1)</code> is
+<code>"2.7"</code>. Calling a function of a bare atom that names no module,
+such as <code>:nosuch.thing(1)</code>, is refused at compile time as a call
+to any undefined module is.</p>
+
 <p><code>apply(m, :exception, [[]])</code> is another way to write
 <code>m.exception([])</code>. The function is an atom and the arguments
 are a list, both written out at the call.</p>

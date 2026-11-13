@@ -1,0 +1,15 @@
+#---
+# purpose: ":erlang.float_to_binary(x, decimals: n) writes the float in fixed notation with n digits after the point, correctly rounded as Elixir does; :erlang is a module whose name is a bare atom"
+# oracle: 01140_erlang_float_to_binary_writes_a_float_in_fixed_notation.oracle.exs
+#---
+#
+# The values are chosen for rounding: 0.05 and 2.675 sit just below or above
+# their decimal spelling, so the digits come from the float's exact value, and
+# 2.5 and 0.125 are exact ties, which Elixir rounds away from zero.
+def main() do
+  for x <- [0.05, 1.5 / 1_000_000, 2.675, -0.04, 1.0e10, 123_456.789, 2.5, 0.125] do
+    for n <- [0, 1, 2, 3] do
+      IO.puts(:erlang.float_to_binary(x, decimals: n))
+    end
+  end
+end

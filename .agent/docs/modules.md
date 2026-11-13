@@ -131,6 +131,36 @@ a placeholder id and starts no module work. A qualified callee
 (`Foo.Bar.f()`) reads the same segments as its `ModuleTarget::Unresolved`
 qualifier.
 
+## A module's atom
+
+A module's identity is an atom, as in Elixir. `ModuleName` holds either an
+alias path or a bare atom, and `ModuleName::atom_name` and
+`ModuleName::from_atom_name` are the one mapping between module and atom, in
+both directions:
+
+| module | atom |
+| --- | --- |
+| `Foo.Bar` (an alias path) | `Elixir.Foo.Bar` |
+| `:erlang` (a bare atom, `ModuleName::bare_atom`) | `erlang` |
+
+An atom that starts `Elixir.` followed by a well-formed path is that path's
+module. Any other non-empty atom is the bare-atom module of that name, so
+`:Foo` is a module distinct from `Foo`. `Elixir.` followed by no path, or an
+empty atom, names no module. A bare-atom module prints as `:erlang`
+(`ModuleName`'s `Display` and `dotted`, which `parse_dotted` reads back).
+
+`defmodule :name do ... end` parses to `defmodule` whose first argument is the
+atom, and `parse_module_name` in `quoted_surface.rs` reads it as the bare-atom
+module. Such a module is never nested under its parent and binds no alias in
+the namespace; it is reached by its atom. `__MODULE__` in it is that atom.
+Only `defmodule` takes a bare atom; protocols and implementations take alias
+paths.
+
+`lib/erlang.fz` defines `:erlang` with `float_to_binary/2`, which takes
+`decimals: n` for an integer `n` from 0 to 253 and writes the float in fixed
+notation (`fz_float_to_fixed_binary`, rounded from the exact value with a tie
+going away from zero). Any other option or an out-of-range `n` has no clause.
+
 ## A call on a module value
 
 `m.f(a)` whose base is not a module name is a call on the module the value
@@ -178,8 +208,7 @@ goes through `call_destinations` as any target does and materializes as
 | several atoms | one target per atom: `CallDestinations::Dispatch`, whose plan reads `m` as its first input |
 | `atom`, `any`, or a listed atom joined with something that is no atom | a target per nameable module that has `f/n`, and the miss |
 | a type holding no atom | compile error `type/module-value-call` |
-| a listed atom outside the `Elixir.` namespace | compile error `type/module-value-call` |
-| a listed atom naming no module, or a module without `f/n` | the compile error a qualified call to it gets |
+| a listed atom naming no module, or a module without `f/n` | the compile error a qualified call to it gets (`resolve/unknown-module` for `:nosuch.thing(1)`) |
 
 Both executors lower the miss as a raise that shows the value of `m`. Native
 lowering (`NativeLowerer::raise_undefined_function`) ends the block in
@@ -321,6 +350,9 @@ A runtime module is registered in two places: its `RuntimeModuleSource` entry in
 `src/modules/runtime_library.rs`, which names the file under `lib/`, and an
 `alias` line in `lib/runtime.fz`. Without the alias a call such as
 `OptionParser.parse/2` from user code is an unresolved direct runtime callee.
+A module named by a bare atom (`:erlang`, `lib/erlang.fz`) has the registry name
+`":erlang"` and no alias line: `:erlang.f(x)` names its module by the atom, and
+the first call pulls the source like any other runtime module.
 
 The one place the bootstrap is special is *reading*: `is_bootstrap(code)` (the
 prelude plus the runtime modules) is read canonically — definition heads are parsed as

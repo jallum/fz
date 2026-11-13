@@ -364,9 +364,8 @@ impl<'t> FrontDoorParser<'t> {
     fn parse_module(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         let start = self.cur_span();
         self.expect(&Tok::Defmodule, "`defmodule`")?;
-        let name_path = self.parse_upper_path("module")?;
+        let (name_path, name) = self.parse_module_name()?;
         let meta = self.meta(start)?;
-        let alias = self.builder.alias(&meta, &segments_ref(&name_path))?;
         self.expect(&Tok::Do, "`do`")?;
         self.skip_newlines();
         let mut nested_path = module_path.to_vec();
@@ -376,8 +375,24 @@ impl<'t> FrontDoorParser<'t> {
         let body = self.builder.list(&items)?;
         let kw = self.builder.list(&[self.builder.keyword("do", body)?])?;
         self.builder
-            .call("defmodule", &meta, &[alias, kw])
+            .call("defmodule", &meta, &[name, kw])
             .map_err(FrontDoorError::from)
+    }
+
+    /// The name a `defmodule` gives: an alias path, or a bare atom, which is
+    /// the module's own name as in `defmodule :erlang`. The path is what the
+    /// body nests under, and the node is the quoted form of the name.
+    fn parse_module_name(&mut self) -> Result<(Vec<String>, AnyValueRef), FrontDoorError> {
+        if let Tok::Atom(atom_name) = self.peek().clone() {
+            self.advance();
+            let node = self.builder.atom(&atom_name);
+            return Ok((vec![format!(":{atom_name}")], node));
+        }
+        let start = self.cur_span();
+        let path = self.parse_upper_path("module")?;
+        let meta = self.meta(start)?;
+        let alias = self.builder.alias(&meta, &segments_ref(&path))?;
+        Ok((path, alias))
     }
 
     /// `defstruct [:a, b: 1]` or the bare keyword form `defstruct a: nil, b: 1`.

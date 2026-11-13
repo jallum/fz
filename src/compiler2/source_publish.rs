@@ -2475,6 +2475,9 @@ fn declared_module_binding(
     name: &ModuleName,
     declared: ModuleId,
 ) -> Option<(String, ModuleId)> {
+    if name.is_bare_atom() {
+        return None;
+    }
     let first = name.segments().first()?.clone();
     if name.segments().len() == 1 {
         return Some((first, declared));
@@ -2501,8 +2504,10 @@ fn bind_declared_module(
 
 fn reference_declared_module(world: &mut World, parent: ModuleId, name: &ModuleName) -> ModuleId {
     let name = match world.module_name(parent) {
-        None => name.clone(),
-        Some(parent) => ModuleName::from_segments(parent.segments().iter().chain(name.segments()).cloned().collect()),
+        Some(parent) if !name.is_bare_atom() => {
+            ModuleName::from_segments(parent.segments().iter().chain(name.segments()).cloned().collect())
+        }
+        _ => name.clone(),
     };
     world.reference_module(name)
 }

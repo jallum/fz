@@ -4038,8 +4038,8 @@ fn runtime_type_predicate_map_modules(cx: TyCtx<'_>, descr: &Descr) -> (bool, Fi
 }
 
 /// For the type of a `__struct__` field: whether it admits a value that is
-/// not an atom, and the modules its atoms name. An atom outside the module
-/// namespace names no module the test can ask for, so it widens to all.
+/// not an atom, and the modules its atoms name. An atom that names no module,
+/// as `Elixir.` with no path does, widens to all.
 fn map_module_axes(module: &Descr) -> (bool, FiniteSet<ModuleName>) {
     let admits_non_atom = *module
         != Descr {

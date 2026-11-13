@@ -5,6 +5,15 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ModuleName {
     segments: Vec<String>,
+    root: Root,
+}
+
+/// Where a module's atom hangs: a dotted path lives under `Elixir`, and a bare
+/// atom such as `:erlang` is its own name, holding one segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Root {
+    Elixir,
+    Bare,
 }
 
 /// A module's source denotation. Implementation ownership includes the boundary
@@ -30,6 +39,17 @@ impl ModuleDenotation {
         match self {
             Self::Named(name) => Some(name),
             Self::ProtocolImpl { .. } => None,
+        }
+    }
+
+    /// The atom the module is in value position. An implementation's atom is
+    /// that of its display path.
+    pub fn atom_name(&self) -> String {
+        match self {
+            Self::Named(name) => name.atom_name(),
+            Self::ProtocolImpl { .. } => {
+                ModuleName::from_segments(self.display_segments().cloned().collect()).atom_name()
+            }
         }
     }
 
@@ -68,15 +88,37 @@ impl ModuleName {
             segments.iter().all(|s| !s.is_empty()),
             "ModuleName segments must be non-empty"
         );
-        Self { segments }
+        Self {
+            segments,
+            root: Root::Elixir,
+        }
     }
 
+    /// The module whose name is the atom `atom_name` itself, as `:erlang`.
+    pub fn bare_atom(atom_name: impl Into<String>) -> Self {
+        let atom_name = atom_name.into();
+        assert!(!atom_name.is_empty(), "a bare-atom module needs a name");
+        Self {
+            segments: vec![atom_name],
+            root: Root::Bare,
+        }
+    }
+
+    /// A module as source spells it: `Foo.Bar`, or `:erlang` for a bare atom.
     pub fn parse_dotted(text: &str) -> Result<Self, ModuleNameParseError> {
+        match text.strip_prefix(':') {
+            Some("") => Err(ModuleNameParseError { text: text.to_string() }),
+            Some(atom_name) => Ok(Self::bare_atom(atom_name)),
+            None => Self::parse_path(text),
+        }
+    }
+
+    fn parse_path(text: &str) -> Result<Self, ModuleNameParseError> {
         let segments = text.split('.').map(str::to_string).collect::<Vec<_>>();
         if segments.is_empty() || segments.iter().any(|segment| segment.is_empty()) {
             Err(ModuleNameParseError { text: text.to_string() })
         } else {
-            Ok(Self { segments })
+            Ok(Self::from_segments(segments))
         }
     }
 
@@ -85,7 +127,7 @@ impl ModuleName {
         let segment = segment.into();
         assert!(!segment.is_empty(), "ModuleName child must be non-empty");
         segments.push(segment);
-        Self { segments }
+        Self::from_segments(segments)
     }
 
     pub fn segments(&self) -> &[String] {
@@ -99,22 +141,44 @@ impl ModuleName {
     /// Display spelling used by current IR/debug output. Do not use this as
     /// the source of truth when a typed `ModuleName` is available.
     pub fn dotted(&self) -> String {
-        self.segments().join(".")
+        match self.root {
+            Root::Elixir => self.segments.join("."),
+            Root::Bare => format!(":{}", self.segments[0]),
+        }
     }
 
     /// The atom this module name is in value position: `Foo.Bar` is the atom
-    /// `Elixir.Foo.Bar`, as in Elixir.
+    /// `Elixir.Foo.Bar`, and the bare-atom module `:erlang` is the atom
+    /// `erlang`, as in Elixir.
     pub fn atom_name(&self) -> String {
-        format!("{ALIAS_ATOM_ROOT}.{}", self.dotted())
+        match self.root {
+            Root::Elixir => format!("{ALIAS_ATOM_ROOT}.{}", self.segments.join(".")),
+            Root::Bare => self.segments[0].clone(),
+        }
+    }
+
+    /// Whether the module is named by a bare atom rather than an alias path.
+    pub fn is_bare_atom(&self) -> bool {
+        self.root == Root::Bare
     }
 }
 
 impl ModuleName {
     /// The module an atom names in value position, the inverse of
-    /// `atom_name`: `Elixir.Foo.Bar` is `Foo.Bar`. Any other atom names none.
+    /// `atom_name`: `Elixir.Foo.Bar` is `Foo.Bar` and any other atom is the
+    /// bare-atom module of that name. An empty atom, or one that opens the
+    /// `Elixir.` namespace without a well-formed path, names none.
     pub fn from_atom_name(atom_name: &str) -> Option<Self> {
-        let dotted = atom_name.strip_prefix(ALIAS_ATOM_ROOT)?.strip_prefix('.')?;
-        Self::parse_dotted(dotted).ok()
+        if atom_name.is_empty() {
+            return None;
+        }
+        match atom_name
+            .strip_prefix(ALIAS_ATOM_ROOT)
+            .and_then(|rest| rest.strip_prefix('.'))
+        {
+            Some(path) => Self::parse_path(path).ok(),
+            None => Some(Self::bare_atom(atom_name)),
+        }
     }
 }
 

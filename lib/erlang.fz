@@ -1,0 +1,25 @@
+defmodule :erlang do
+  @moduledoc "The Erlang functions Elixir programs reach by the atom `:erlang`."
+
+  @doc """
+  Returns the float in fixed notation with `decimals` digits after the point,
+  `decimals` being an integer from 0 to 253. The digits are rounded from the
+  float's exact value, and a tie goes away from zero.
+
+  Any option other than `decimals: n` raises `FunctionClauseError`.
+
+  ## Examples
+
+      :erlang.float_to_binary(2.675, decimals: 1)
+      #=> "2.7"
+
+      :erlang.float_to_binary(1.0e10, decimals: 0)
+      #=> "10000000000"
+
+  """
+  @spec float_to_binary(float, [{:decimals, integer}]) :: binary
+  def float_to_binary(f, [decimals: n]) when is_float(f) and is_integer(n) and n >= 0 and n <= 253,
+    do: fz_float_to_fixed_binary(f, n)
+
+  extern "fz" defp fz_float_to_fixed_binary(float, integer) :: binary
+end
