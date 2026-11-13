@@ -7,7 +7,7 @@
     "fz-3sy.6"
   ],
   "created": "2026-11-11T15:21:28Z",
-  "description": "Receiver typed atom (or any): dispatch over modules World has referenced that define f/n; a miss raises UndefinedFunctionError (rescuable), a non-atom raises ArgumentError with Elixir's text. Candidate set is a monotone fact like ProtocolImplProviders, filtered by each module's scope-tier interface for f/n so that no body is defined just to ask. First step, before building: probe whether the filter stays at the interface tier without demanding DefineModule, and count the job trace on a hello-world program. Removes M1's plain-atom compile error.",
+  "description": "Receiver typed atom (or any): dispatch over modules World has referenced that define f/n; a miss raises UndefinedFunctionError (rescuable), a non-atom raises ArgumentError with Elixir's text. Candidate set is a monotone fact like ProtocolImplProviders, filtered by each module's scope-tier interface for f/n so that no body is defined just to ask. First step, before building: probe whether the filter stays at the interface tier without demanding DefineModule, and count the job trace on a hello-world program.\n\nRemoves the compile-time refusals of semantic's resolve_module_value_call (diagnostic type/module-value-call, fixtures 00866 and 00867): a receiver typed plain atom, a receiver that is only sometimes an atom (atom | int), and a receiver that is never one; those become the run-time errors above. The call keeps its shape: targets carry a selector atom and the dispatch matches the module value ahead of the arguments, so this ticket adds targets and a miss arm, not a second call path.",
   "id": "fz-3sy.5",
   "labels": [],
   "parent": "fz-3sy",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "A call on a plain-atom receiver dispatches over the modules the program can name",
   "type": "feature",
-  "updated_at": "2026-11-11T15:21:30Z"
+  "updated_at": "2026-11-13T14:09:37Z"
 }
