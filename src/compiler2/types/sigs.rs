@@ -328,7 +328,7 @@ impl MergeSig for ArrowSig {
 pub(super) fn specialize_surface(types: &mut Types, callable: (&[Ty], Ty), surface: (&[Ty], Ty)) -> (Vec<Ty>, Ty) {
     let (params, result) = callable;
     let (witness_params, witness_result) = surface;
-    let mut sigma = Sigma::new();
+    let mut sigma = Sigma::default();
     for (pattern, witness) in params.iter().zip(witness_params.iter()) {
         types.collect_instantiation_subst(pattern, witness, &mut sigma);
     }

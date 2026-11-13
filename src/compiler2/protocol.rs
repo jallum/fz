@@ -7,7 +7,7 @@
 //! registry and a co-defined protocol-dispatch artifact so type legality and
 //! impl selection stay separate in the fact graph.
 
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 
 use super::identity::{FunctionId, ModuleId};
 use crate::modules::identity::ModuleName;

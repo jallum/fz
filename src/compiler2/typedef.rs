@@ -10,7 +10,7 @@
 //! its resolved surface, and `DeriveTypeDef` publishes it under the type's
 //! [`TypeName`] identity for referencing consumers to read.
 
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 
 use super::identity::TypeName;
 use super::types::{Sigma, Ty, TypeVarId, Types};

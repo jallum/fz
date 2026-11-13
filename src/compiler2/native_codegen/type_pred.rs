@@ -1,6 +1,6 @@
 //! Type-predicate helpers used by codegen lowering decisions.
 
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 
 use crate::compiler2::Ty;
 use crate::fz_ir::Var;

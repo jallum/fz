@@ -157,7 +157,8 @@ fn a_provider_boundary_is_never_the_one_owned_target() {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeSet, HashMap, HashSet};
+    use crate::fast_hash::{HashMap, HashSet};
+    use std::collections::BTreeSet;
     use std::rc::Rc;
 
     use super::super::*;
@@ -196,24 +197,24 @@ mod tests {
         let first = contributions.conclude_exact(
             world.types_mut(),
             left.clone(),
-            HashSet::new(),
-            HashMap::from([(target.clone(), returning.clone())]),
+            HashSet::default(),
+            HashMap::from_iter([(target.clone(), returning.clone())]),
         );
-        assert_eq!(first.changed_keys, HashSet::from([target.clone()]));
+        assert_eq!(first.changed_keys, HashSet::from_iter([target.clone()]));
 
         let equal = contributions.conclude_exact(
             world.types_mut(),
             left.clone(),
             first.output_keys,
-            HashMap::from([(target.clone(), returning.clone())]),
+            HashMap::from_iter([(target.clone(), returning.clone())]),
         );
         assert!(equal.changed_keys.is_empty(), "an equal exact answer must not move");
 
         let second = contributions.conclude_exact(
             world.types_mut(),
             right.clone(),
-            HashSet::new(),
-            HashMap::from([(target.clone(), returning.clone())]),
+            HashSet::default(),
+            HashMap::from_iter([(target.clone(), returning.clone())]),
         );
         assert!(
             second.changed_keys.is_empty(),
@@ -221,16 +222,16 @@ mod tests {
         );
 
         let narrowed = TargetDemandContribution {
-            input_demands: HashMap::from([(0, RuntimeDemand::whole())]),
+            input_demands: HashMap::from_iter([(0, RuntimeDemand::whole())]),
             ..TargetDemandContribution::default()
         };
         let replacement = contributions.conclude_exact(
             world.types_mut(),
             left.clone(),
             equal.output_keys,
-            HashMap::from([(target.clone(), narrowed.clone())]),
+            HashMap::from_iter([(target.clone(), narrowed.clone())]),
         );
-        assert_eq!(replacement.changed_keys, HashSet::from([target.clone()]));
+        assert_eq!(replacement.changed_keys, HashSet::from_iter([target.clone()]));
         assert_eq!(
             contributions.get(&target).unwrap().return_demand,
             returning.return_demand
@@ -241,13 +242,13 @@ mod tests {
         );
 
         let left_retraction =
-            contributions.conclude_exact(world.types_mut(), left, replacement.output_keys, HashMap::new());
-        assert_eq!(left_retraction.changed_keys, HashSet::from([target.clone()]));
+            contributions.conclude_exact(world.types_mut(), left, replacement.output_keys, HashMap::default());
+        assert_eq!(left_retraction.changed_keys, HashSet::from_iter([target.clone()]));
         assert_eq!(contributions.get(&target), Some(&returning));
 
         let right_retraction =
-            contributions.conclude_exact(world.types_mut(), right, second.output_keys, HashMap::new());
-        assert_eq!(right_retraction.changed_keys, HashSet::from([target.clone()]));
+            contributions.conclude_exact(world.types_mut(), right, second.output_keys, HashMap::default());
+        assert_eq!(right_retraction.changed_keys, HashSet::from_iter([target.clone()]));
         assert!(contributions.get(&target).is_none());
     }
 
@@ -796,23 +797,23 @@ mod tests {
         let first = map.conclude(
             world.types_mut(),
             publisher.clone(),
-            HashSet::new(),
-            HashMap::from([(key.clone(), ActivationInputAlternatives::from_row(vec![input]))]),
+            HashSet::default(),
+            HashMap::from_iter([(key.clone(), ActivationInputAlternatives::from_row(vec![input]))]),
             false,
         );
-        assert_eq!(first.output_keys, HashSet::from([key.clone()]));
+        assert_eq!(first.output_keys, HashSet::from_iter([key.clone()]));
         assert_eq!(map.get(&key), Some(&ActivationInputAlternatives::from_row(vec![input])));
 
         let rebased = map.conclude_preserving_frontier(
             world.types_mut(),
             publisher,
-            HashSet::from([key.clone()]),
-            HashMap::new(),
+            HashSet::from_iter([key.clone()]),
+            HashMap::default(),
         );
 
         assert_eq!(
             rebased.output_keys,
-            HashSet::from([key.clone()]),
+            HashSet::from_iter([key.clone()]),
             "rebased activation-input evidence may pause but must not retract the publisher's prior edge"
         );
         assert!(
@@ -839,14 +840,14 @@ mod tests {
             let mut map = ActivationInputMap::new();
             let publisher_a = Job::SeedRoot(root);
             let publisher_b = Job::AnalyzeActivation(list_key.clone());
-            let first = HashMap::from([
+            let first = HashMap::from_iter([
                 (list_key.clone(), ActivationInputAlternatives::from_row(vec![int])),
                 (
                     non_empty_key.clone(),
                     ActivationInputAlternatives::from_row(vec![float]),
                 ),
             ]);
-            map.conclude(world.types_mut(), publisher_a, HashSet::new(), first, false);
+            map.conclude(world.types_mut(), publisher_a, HashSet::default(), first, false);
             let second = if reverse {
                 [
                     (
@@ -858,7 +859,7 @@ mod tests {
                 .into_iter()
                 .collect()
             } else {
-                HashMap::from([
+                HashMap::from_iter([
                     (list_key.clone(), ActivationInputAlternatives::from_row(vec![atom_a])),
                     (
                         non_empty_key.clone(),
@@ -869,7 +870,7 @@ mod tests {
             map.conclude(
                 world.types_mut(),
                 publisher_b,
-                HashSet::from([list_key.clone(), non_empty_key.clone()]),
+                HashSet::from_iter([list_key.clone(), non_empty_key.clone()]),
                 second,
                 false,
             );
@@ -1231,7 +1232,7 @@ mod tests {
     /// parameters and return replaced by concrete types.
     fn ground_instance(world: &mut World, lambda: Ty, args: &[Ty], ret: Ty) -> Ty {
         let shape = world.types_mut().arrow(args, ret);
-        let mut sigma = Sigma::new();
+        let mut sigma = Sigma::default();
         world
             .types_mut()
             .collect_instantiation_subst(&lambda, &shape, &mut sigma);

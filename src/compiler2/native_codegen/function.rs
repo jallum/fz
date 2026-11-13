@@ -1,6 +1,7 @@
 //! Per-function Cranelift body emission.
 
 use super::*;
+use crate::fast_hash::HashMap;
 use crate::fz_ir::{Block, FnIr, Prim, SourceInfo, Stmt, Term};
 use crate::ir_dce::classify_var_uses;
 use crate::source::Span;
@@ -10,7 +11,6 @@ use cranelift_codegen::{
     ir::{self, InstBuilder, types},
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use std::collections::HashMap;
 
 pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     jmod: &mut M,
@@ -28,7 +28,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     let is_cont_fn = cont_fns.contains(&f.id);
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
 
-    let mut block_map: HashMap<u32, ir::Block> = HashMap::new();
+    let mut block_map: HashMap<u32, ir::Block> = HashMap::default();
     for blk in &f.blocks {
         let cl_blk = b.create_block();
         block_map.insert(blk.id.0, cl_blk);

@@ -9,10 +9,10 @@ use super::{
     demand::DispatchDemand,
 };
 use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned, Var};
+use crate::fast_hash::HashMap;
 use crate::function_surface::CallableSurface;
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 use crate::source::Span;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(crate) mod last_resort;
@@ -570,7 +570,7 @@ where
     // bound before them. So a name in a helper body is either one its own head
     // bound or one that was never bound at all, and lowering the body says
     // which.
-    let pinned_by_name = HashMap::new();
+    let pinned_by_name = HashMap::default();
 
     let mut bodies = Vec::with_capacity(surface.clauses().len());
     for clause in surface.clauses() {
@@ -861,7 +861,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     {
         validate_source_rows(input_count, rows.clone())?;
         let mut builder = DispatchMatrixBuilder::typed();
-        let mut subjects = HashMap::new();
+        let mut subjects = HashMap::default();
         for ordinal in 0..input_count {
             let subject = builder.add_input_subject();
             let ordinal = ordinal as u32;
@@ -888,7 +888,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             prepared_keys: Vec::new(),
             outcomes: Vec::new(),
             guards: Vec::new(),
-            projections: HashMap::new(),
+            projections: HashMap::default(),
             last_resort: last_resort.cloned(),
         })
     }
@@ -930,7 +930,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             questions.push(RegionQuestion::type_region(subject, ty.clone()));
         }
         if let Some(guard) = &row.guard {
-            let mut bound: HashMap<Var, SubjectId> = HashMap::new();
+            let mut bound: HashMap<Var, SubjectId> = HashMap::default();
             for binding in &bindings {
                 bound.insert(binding.name.clone(), binding.source);
             }
@@ -1214,7 +1214,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         fields: &[crate::ast::BitField<Spanned<Pattern>>],
     ) -> Result<RegionQuestion<TypeHandle>, SourcePatternError> {
         let subject_id = self.subject_id(subject)?;
-        let mut binding_subjects: HashMap<Var, SubjectId> = HashMap::new();
+        let mut binding_subjects: HashMap<Var, SubjectId> = HashMap::default();
         let mut projections = Vec::new();
         let mut shapes = Vec::new();
         for (index, field) in fields.iter().enumerate() {

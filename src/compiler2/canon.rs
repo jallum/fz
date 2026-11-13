@@ -36,7 +36,7 @@
 
 use super::transport::TransportPosition;
 use crate::compiler2::ValueMap;
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 use std::sync::Arc;
 
 use crate::dispatch_matrix::pattern::{
@@ -214,12 +214,12 @@ impl<'a> ProgramCanon<'a> {
         Self {
             world,
             tyc,
-            executables: HashMap::new(),
-            wrappers: HashMap::new(),
+            executables: HashMap::default(),
+            wrappers: HashMap::default(),
             names: Names::default(),
-            shapes: HashMap::new(),
-            callables: HashMap::new(),
-            boundaries: HashMap::new(),
+            shapes: HashMap::default(),
+            callables: HashMap::default(),
+            boundaries: HashMap::default(),
             #[cfg(test)]
             strict_formula_names: false,
         }

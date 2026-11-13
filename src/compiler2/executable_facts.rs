@@ -5,7 +5,8 @@
 //! fact gathers its settled inputs; product producers only read this value.
 
 use crate::compiler2::ValueMap;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use crate::fast_hash::{HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use crate::dispatch_matrix::demand::DispatchDemand;
@@ -231,7 +232,7 @@ impl RuntimeDemandTypeBuilder {
     fn new(any: Ty) -> Self {
         Self {
             inputs: RuntimeDemandTypeInputs::new(any),
-            projections: HashMap::new(),
+            projections: HashMap::default(),
         }
     }
 
@@ -292,11 +293,11 @@ pub(crate) fn project_executable_facts(
     let (delivered_value_joins, value_origins, callable_origins, return_origins, callsite_needs) =
         if extern_wire.is_some() {
             (
-                HashMap::new(),
+                HashMap::default(),
                 ValueMap::new(),
                 ValueMap::new(),
                 Box::default(),
-                HashMap::new(),
+                HashMap::default(),
             )
         } else {
             let delivered_value_joins = delivered_value_joins(&body);
@@ -700,7 +701,7 @@ fn executable_callsite_needs(
     tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
 ) -> HashMap<CallSiteId, ExecutableNeed> {
-    let mut needs = HashMap::new();
+    let mut needs = HashMap::default();
     let LoweredBody::Clauses { clauses, entries, .. } = body;
     let mut walks = CallsiteNeedWalkTable::new();
     for clause_id in reachable_clauses {
@@ -1060,7 +1061,7 @@ fn step_transport_origins(step: &LoweredStep) -> Vec<(ValueId, TransportOrigin)>
 fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> Box<[TransportOrigin]> {
     let LoweredBody::Clauses { clauses, entries, .. } = body;
     let reachable = analysis.reachable_entries.iter().copied().collect::<HashSet<_>>();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut origins = Vec::new();
     let mut pending = analysis
         .entry_reachability

@@ -4,7 +4,7 @@
 //! generic traits and small shared data shapes that let compiler phases talk
 //! about types without depending on a particular representation.
 
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 use std::hash::Hash;
 
 mod closure;

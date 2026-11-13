@@ -488,7 +488,7 @@ fn resource_envelopes_contain_representative_concrete_instantiations() {
     let list = types.list(int);
 
     for witness in [int, atom, list] {
-        let mut sigma = Sigma::new();
+        let mut sigma = Sigma::default();
         sigma.insert(alpha_id, witness);
         for (template, envelope) in templates.iter().zip(envelopes.iter()) {
             let instantiated = types.instantiate(template, &sigma);
@@ -586,7 +586,7 @@ fn cofinite_double_negation_envelopes_contain_concrete_instantiations() {
     let list = types.list(int);
 
     for witness in [int, atom, list] {
-        let mut sigma = Sigma::new();
+        let mut sigma = Sigma::default();
         sigma.insert(alpha_id, witness);
         for (template, envelope) in templates.iter().zip(envelopes.iter()) {
             let instantiated = types.instantiate(template, &sigma);

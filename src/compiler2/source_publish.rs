@@ -3,7 +3,7 @@
 //! Source jobs schedule work. This module owns the source-form rules that turn
 //! quoted surface readers into namespace mutations and compiler2 fact outputs.
 
-use std::collections::{HashMap, HashSet};
+use crate::fast_hash::{HashMap, HashSet};
 use std::rc::Rc;
 
 use fz_runtime::any_value::AnyValueRef;
@@ -548,9 +548,9 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             source_owner,
             current_module: current_scope.module_id(),
             namespace: current_scope.namespace(),
-            local_callables: HashMap::new(),
+            local_callables: HashMap::default(),
             pending_types: Vec::new(),
-            required_remote_macros: HashSet::new(),
+            required_remote_macros: HashSet::default(),
             reads: Vec::new(),
             derivations: Vec::new(),
             outputs: Vec::new(),
@@ -1403,7 +1403,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             return Ok(selected);
         }
 
-        let mut denied = HashSet::new();
+        let mut denied = HashSet::default();
         for (name, arity) in import.except.as_deref().unwrap_or(&[]) {
             let Some(callable) = find_callable(callables, name, *arity) else {
                 return Err(emit_job_diagnostic(
@@ -1514,7 +1514,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             }
         } else if let Some(except) = import.except.as_deref() {
             let callables = self.world.module_interface(module).callables();
-            let mut deny = HashSet::new();
+            let mut deny = HashSet::default();
             for (name, arity) in except {
                 if find_callable(callables, name, *arity).is_none() {
                     return Err(unknown_import(self.telemetry, name, *arity));
@@ -1801,7 +1801,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             export_public: false,
             discovery: FragmentDiscovery::AlreadyIndexed,
         };
-        let mut callbacks = HashMap::new();
+        let mut callbacks = HashMap::default();
         for function in functions {
             let publication = self.define_source_function(impl_module, impl_module, impl_scope, &function, &context)?;
             // Key by the protocol's callback identity — the same interned

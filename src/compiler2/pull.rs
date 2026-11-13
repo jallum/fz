@@ -7,15 +7,15 @@
 
 mod rooted;
 
-use indexmap::IndexMap;
+use crate::fast_hash::IndexMap;
 use smallvec::SmallVec;
 
 #[cfg(test)]
 use super::body::{CallSiteId, ValueId};
 use super::reach::{ReachKey, ReachSet};
 use super::world::World;
+use crate::fast_hash::{HashMap, HashSet};
 use std::cell::{Cell, Ref, RefCell, RefMut};
-use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -384,7 +384,7 @@ impl<K: Eq + std::hash::Hash + Clone> MutationAdmissions<K> {
                 let Self::One(first, mask) = std::mem::replace(self, Self::Empty) else {
                     unreachable!()
                 };
-                *self = Self::Many(HashMap::from([(first, mask), (key.clone(), bit)]));
+                *self = Self::Many(HashMap::from_iter([(first, mask), (key.clone(), bit)]));
             }
             Self::Many(keys) => {
                 if let Some(mask) = keys.get_mut(key) {
@@ -535,9 +535,9 @@ impl PendingStrongComponent {
     ) -> (Vec<ProductKey>, u64, u64, u64) {
         let mut search = Self {
             next_index: 0,
-            nodes: HashMap::new(),
+            nodes: HashMap::default(),
             stack: Vec::new(),
-            on_stack: HashSet::new(),
+            on_stack: HashSet::default(),
             candidate_inventory: 0,
             vertex_visits: 0,
             edge_scans: 0,
@@ -936,8 +936,8 @@ impl ProductMemo {
                     self.reject_group(tel, &member_keys, types);
                     return false;
                 }
-                let mut product_observations = HashMap::new();
-                let mut fact_observations = HashMap::new();
+                let mut product_observations = HashMap::default();
+                let mut fact_observations = HashMap::default();
                 for (_, _, dependencies, _) in &members {
                     for (dependency, generation) in &dependencies.products {
                         if member_keys.contains(dependency) {
@@ -1346,8 +1346,8 @@ impl ProductMemo {
     ) {
         let mut facts = pending.iter().collect::<Vec<_>>();
         facts.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, types));
-        let mut prior_stale = HashMap::<ProductKey, bool>::new();
-        let mut external_before = HashMap::new();
+        let mut prior_stale = HashMap::<ProductKey, bool>::default();
+        let mut external_before = HashMap::default();
         let mut mutations = Vec::new();
         for (fact_key, final_state) in facts {
             for reader in self.fact_readers.get(fact_key).into_iter().flatten().cloned() {
@@ -1577,10 +1577,10 @@ impl PullSession {
             request_ids: ProductRequestIds::new(),
             scope,
             memo: ProductMemo::default(),
-            demanded_executables: HashSet::new(),
+            demanded_executables: HashSet::default(),
             producer_pokes: 0,
             work_starts: WorkStartTally::default(),
-            pending_fact_states: HashMap::new(),
+            pending_fact_states: HashMap::default(),
             external: None,
         }
     }
@@ -1757,7 +1757,7 @@ impl ProductSessions {
             return Vec::new();
         };
         let changes = std::mem::take(&mut session.borrow_mut().memo.external_changes);
-        let mut coalesced = HashMap::<ProductKey, FactChange<ProductKey>>::new();
+        let mut coalesced = HashMap::<ProductKey, FactChange<ProductKey>>::default();
         for change in changes {
             coalesced
                 .entry(change.key.clone())
@@ -1960,7 +1960,7 @@ impl ProductSessions {
             active_scopes,
             ..
         } = self;
-        let mut observed_scopes = HashSet::new();
+        let mut observed_scopes = HashSet::default();
         for movement in movements {
             for scope in scopes_by_fact.get(&movement.key).into_iter().flatten() {
                 let session = sessions.get(scope).expect("subscribed scope retains its session");
@@ -2132,7 +2132,7 @@ impl<'s> ProductReadContext<'s> {
         Self {
             session,
             dependencies: ProductDependencies::default(),
-            membership: HashSet::new(),
+            membership: HashSet::default(),
             product_reads_delivered: true,
             recursive_group: None,
         }

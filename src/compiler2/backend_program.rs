@@ -412,7 +412,7 @@ impl BackendProgram {
             program.executable(program.entry(), types).is_some(),
             "backend entry must belong to its program"
         );
-        let mut supplied = std::collections::HashSet::new();
+        let mut supplied = crate::fast_hash::HashSet::default();
         for wrapper in wrappers {
             let key = Rc::new(wrapper.identity.clone());
             assert!(

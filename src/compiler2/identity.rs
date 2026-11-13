@@ -1,5 +1,5 @@
+use crate::fast_hash::HashMap;
 use crate::modules::identity::{ModuleDenotation, ModuleName};
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -377,7 +377,7 @@ impl ModuleMap {
                 interface: ModuleInterface::default(),
             }],
             denotations: vec![None],
-            by_denotation: HashMap::new(),
+            by_denotation: HashMap::default(),
         }
     }
 

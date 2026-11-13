@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use crate::fast_hash::HashSet;
 
 use super::drive_harness::{CallsiteCapture, FunctionCapture, assert_resolved, function_id, module_name};
 use super::{CallSiteSummary, ExecutableNeed, FactKey, FunctionId, Job, RootId, SelectedCallee, World};
@@ -619,7 +619,7 @@ fn compiler2_semantic_callsite_retains_reduce_and_count_specializations() {
     );
 
     let retained_specializations = callsites.all().into_iter().find(|record| {
-        let mut targets_by_callee = std::collections::HashMap::new();
+        let mut targets_by_callee = crate::fast_hash::HashMap::default();
         for target in &record.summary.targets {
             let Some(activation) = target.activation.as_ref() else {
                 continue;
@@ -767,7 +767,7 @@ fn a_published_call_edge_names_every_activation_the_walk_took_evidence_from() {
             .collect::<Vec<_>>();
 
         let mut loss_events = 0_usize;
-        let mut lost_keys = HashSet::new();
+        let mut lost_keys = HashSet::default();
         let mut first = None;
         for activation in &analyzed {
             let job = Job::AnalyzeActivation(activation.clone());

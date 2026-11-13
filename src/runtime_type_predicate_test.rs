@@ -192,7 +192,7 @@ mod value_membership_tests {
         arities: &[(usize, u32)],
     ) -> usize {
         let tuple_schema_ids = arities.iter().copied().collect::<HashMap<_, _>>();
-        let named_schema_ids = HashMap::new();
+        let named_schema_ids = HashMap::default();
         let callables = |_: u64| None;
         let fields =
             |value: RuntimeAnyValue, index: usize| heap.fields_of(value).and_then(|fields| fields.get(index)).copied();
@@ -414,8 +414,8 @@ mod value_membership_tests {
             AnyValueRef::from_heap_object(ValueKind::MAP, 0x1000 as *const u8).expect("a map ref"),
         );
         let struct_value = heap.tuple(7, vec![RuntimeAnyValue::Int(1)]);
-        let tuple_schema_ids = HashMap::new();
-        let named_schema_ids = HashMap::from([(foo_name, 7)]);
+        let tuple_schema_ids = HashMap::default();
+        let named_schema_ids = HashMap::from_iter([(foo_name, 7)]);
         let callables = |_: u64| None;
         let fields =
             |value: RuntimeAnyValue, index: usize| heap.fields_of(value).and_then(|fields| fields.get(index)).copied();
@@ -502,8 +502,8 @@ mod value_membership_tests {
         };
         let mut element = RuntimeTypePredicate::none();
         element.callables = CallableShapes::exact(vec![shape.clone()]);
-        let tuple_schema_ids = HashMap::new();
-        let named_schema_ids = HashMap::new();
+        let tuple_schema_ids = HashMap::default();
+        let named_schema_ids = HashMap::default();
         let callables = move |code: u64| (code == 66).then(|| shape.clone());
         let fields =
             |value: RuntimeAnyValue, index: usize| heap.fields_of(value).and_then(|fields| fields.get(index)).copied();
@@ -623,8 +623,8 @@ mod value_membership_tests {
         element.callables = CallableShapes::exact(vec![shape.clone()]);
         let predicate = list_test(any_shape(), vec![element]);
 
-        let tuple_schema_ids = HashMap::new();
-        let named_schema_ids = HashMap::new();
+        let tuple_schema_ids = HashMap::default();
+        let named_schema_ids = HashMap::default();
         let callables = move |code: u64| {
             (code == 66).then(|| shape.clone()).or_else(|| {
                 (code == 67).then(|| CallableShape {

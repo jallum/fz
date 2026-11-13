@@ -1,5 +1,5 @@
+use crate::fast_hash::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
 use super::facts::{FactUse, Publisher};
@@ -36,14 +36,14 @@ pub struct DependencyIndex<P: Publisher, F> {
 impl<P: Publisher, F> Default for DependencyIndex<P, F> {
     fn default() -> Self {
         Self {
-            reads: HashMap::new(),
-            subscribers: HashMap::new(),
-            waits: HashMap::new(),
-            waiters: HashMap::new(),
-            outputs: HashMap::new(),
-            derivations: HashMap::new(),
+            reads: HashMap::default(),
+            subscribers: HashMap::default(),
+            waits: HashMap::default(),
+            waiters: HashMap::default(),
+            outputs: HashMap::default(),
+            derivations: HashMap::default(),
             no_outputs: OrderedSet::default(),
-            no_waits: HashSet::new(),
+            no_waits: HashSet::default(),
             no_derivations: OrderedSet::default(),
         }
     }

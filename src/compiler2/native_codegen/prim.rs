@@ -3,6 +3,7 @@
 use super::repr::ExternLane;
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use super::*;
+use crate::fast_hash::HashMap;
 use crate::fz_ir::{
     BinOp, BitSizeIr, BlockId, Const, DestMapSeed, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnId,
     Prim, UnOp, Var,
@@ -30,7 +31,6 @@ use fz_runtime::ir_runtime::{
 };
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
-use std::collections::HashMap;
 use target_lexicon::{Architecture, OperatingSystem, Triple};
 
 pub(crate) fn emit_map_get_value_ref_for_key<M: cranelift_module::Module, T: Types<Ty = Ty>>(

@@ -4,12 +4,13 @@
 //! Backends and the interpreter therefore answer runtime-membership questions
 //! by projecting semantic types into this explicit predicate layer.
 
+use crate::fast_hash::HashMap;
 use crate::finite_set::FiniteSet;
 use crate::fz_ir::Module;
 use crate::modules::identity::ModuleName;
 use crate::types::ClosureTarget;
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, closure_fn_ptr, struct_schema_id};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

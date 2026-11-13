@@ -27,7 +27,7 @@
 //! interned, and interning it here would mutate the very arena the canon
 //! describes.
 
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 use std::sync::Arc;
 
 use crate::finite_set::FiniteSet;
@@ -65,20 +65,20 @@ impl<'a> TyCanon<'a> {
     pub(crate) fn new(labels: &'a dyn Fn(FnId) -> String) -> Self {
         Self {
             labels,
-            bodies: HashMap::new(),
-            fingerprints: HashMap::new(),
-            whole: HashMap::new(),
+            bodies: HashMap::default(),
+            fingerprints: HashMap::default(),
+            whole: HashMap::default(),
             #[cfg(test)]
             alpha_names: None,
             #[cfg(test)]
-            structural_alpha_names: HashMap::new(),
+            structural_alpha_names: HashMap::default(),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn alpha_normalized(labels: &'a dyn Fn(FnId) -> String) -> Self {
         let mut canon = Self::new(labels);
-        canon.alpha_names = Some(HashMap::new());
+        canon.alpha_names = Some(HashMap::default());
         canon
     }
 

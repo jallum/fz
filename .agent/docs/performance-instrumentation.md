@@ -527,3 +527,17 @@ not the key it is filed under.
 `runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_orders`
 (`compiler2::drive_test`) perturbs root arrival while pinning the canonical
 backend, runtime output, and exact `DeriveRuntimeDemand` work multiset.
+
+## Hash tables
+
+The compiler's hash tables come from `src/fast_hash.rs`: `HashMap`, `HashSet`
+and `IndexMap` aliases over `foldhash::fast::RandomState`, which hashes a key
+in a fraction of the instructions std's SipHash needs. Each table draws its
+own random seed when built, so iteration order differs between two tables with
+the same contents; code that depends on it fails run to run. Tables are built
+with `default()` (or `with_capacity_and_hasher(n, Default::default())`) and
+filled from `from_iter`, since a table with a non-std hasher has no `new`,
+`with_capacity` or `from`. `clippy.toml` disallows `std::collections::HashMap`,
+`HashSet`, `std::hash::RandomState` and `indexmap::IndexMap`; `fast_hash.rs`
+is the one module that allows them. The runtime crate has its own
+`clippy.toml` and stays on std.

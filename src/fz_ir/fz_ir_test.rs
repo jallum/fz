@@ -77,7 +77,7 @@ fn list_retention_source_is_a_traced_construction_operand() {
             permission: ListRewritePermission::RetainOnly,
         }),
     );
-    let mut used = std::collections::HashSet::new();
+    let mut used = crate::fast_hash::HashSet::default();
     prim.collect_used_vars(&mut used);
     assert_eq!(used, [source, head, tail].into_iter().collect());
 }

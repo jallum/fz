@@ -2,10 +2,10 @@
 mod tests {
     use super::super::super::MapKey;
     use super::super::*;
-    use std::collections::HashMap;
+    use crate::fast_hash::HashMap;
 
     fn no_bounds() -> HashMap<TypeVarId, Ty> {
-        HashMap::new()
+        HashMap::default()
     }
 
     // Behavior 1: the Known / Underconstrained / Invalid trichotomy.
@@ -374,7 +374,7 @@ mod tests {
         let a = t.type_var(v);
         let int = t.int();
         let str_t = t.str_t();
-        let mut bounds = HashMap::new();
+        let mut bounds = HashMap::default();
         bounds.insert(v, int);
         assert_eq!(t.match_arrow(&[a], &a, &bounds, &[str_t]), ArrowMatch::Invalid);
     }
@@ -389,7 +389,7 @@ mod tests {
         let a = t.atom_lit("a");
         let b = t.atom_lit("b");
         let domain = t.union(a, b);
-        let mut bounds = HashMap::new();
+        let mut bounds = HashMap::default();
         bounds.insert(outer, inner_ty);
         bounds.insert(inner, domain);
 
@@ -412,10 +412,10 @@ mod tests {
 mod pinned_verdicts {
     use super::super::super::MapKey;
     use super::super::*;
-    use std::collections::HashMap;
+    use crate::fast_hash::HashMap;
 
     fn no_bounds() -> HashMap<TypeVarId, Ty> {
-        HashMap::new()
+        HashMap::default()
     }
 
     /// The verdict as the pin table records it.
@@ -656,7 +656,7 @@ mod pinned_verdicts {
         let float = t.float();
         let nil = t.nil();
         let dom = t.union(int, float);
-        let mut bounds = HashMap::new();
+        let mut bounds = HashMap::default();
         bounds.insert(v, dom);
         let pat_fn = t.arrow(&[tv], nil);
         let wit_fn = t.arrow(&[float], nil);
@@ -1068,7 +1068,7 @@ mod pinned_verdicts {
         let any = t.any();
         let int = t.int();
         let arrow_pat = t.arrow(&[a], nil);
-        let mut bounds = HashMap::new();
+        let mut bounds = HashMap::default();
         bounds.insert(v, int);
         let wit = t.arrow(&[any], nil);
         let verdict = t.match_arrow(&[a, arrow_pat], &a, &bounds, &[int, wit]);
@@ -1271,7 +1271,7 @@ mod pinned_verdicts {
         let arrow = t.arrow(&[any], a);
         let opaque1 = unanalyzed_arrow(&mut t, 1);
         let opaque2 = unanalyzed_arrow(&mut t, 1);
-        let mut bounds = HashMap::new();
+        let mut bounds = HashMap::default();
         bounds.insert(a_id, str_t);
         match t.match_arrow(&[a, arrow], &a, &bounds, &[opaque1, opaque2]) {
             ArrowMatch::Known { result, .. } => {
@@ -1297,7 +1297,7 @@ mod pinned_verdicts {
         let int = t.int();
         let str_t = t.str_t();
         let a_id = t.param_alpha_id(0);
-        let mut bounds = HashMap::new();
+        let mut bounds = HashMap::default();
         bounds.insert(a_id, str_t);
         match t.match_arrow(&[int], &a, &bounds, &[int]) {
             ArrowMatch::Known { result, .. } => {
@@ -1438,7 +1438,7 @@ mod pinned_verdicts {
         let list_str = t.list(str_t);
         let arrow_a = t.arrow(&[a], a);
         let opaque = unanalyzed_arrow(&mut t, 1);
-        let mut bounds = HashMap::new();
+        let mut bounds = HashMap::default();
         bounds.insert(a_id, str_t);
         match t.match_arrow(&[list_a, arrow_a], &list_a, &bounds, &[empty, opaque]) {
             ArrowMatch::Underconstrained { result, .. } => {
@@ -1488,7 +1488,7 @@ mod pinned_verdicts {
         let v = TypeVarId(7);
         let tv = t.type_var(v);
         let any = t.any();
-        let mut bounds = HashMap::new();
+        let mut bounds = HashMap::default();
         bounds.insert(v, any);
         let unanalyzed = unanalyzed_arrow(&mut t, 1);
         let verdict = t.match_arrow(&[tv], &tv, &bounds, &[unanalyzed]);
@@ -1504,7 +1504,7 @@ mod pinned_verdicts {
         let int = t.int();
         let float = t.float();
         let dom = t.union(int, float);
-        let mut bounds = HashMap::new();
+        let mut bounds = HashMap::default();
         bounds.insert(v, dom);
         let empty = t.empty_list();
         let verdict = t.match_arrow(&[tv], &tv, &bounds, &[empty]);

@@ -2,12 +2,12 @@
 
 use super::*;
 use crate::compiler2::NativeBody;
+use crate::fast_hash::{HashMap, HashSet};
 use crate::fz_ir::{BlockId, ExternId, FnId, Module, Var};
 use cranelift_codegen::ir::{self};
 use cranelift_module::{DataId, FuncId};
 use fz_runtime::any_value::AnyValue;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 
 pub(crate) struct CodegenEnv<'a> {
     pub(super) surface: &'a NativeCodegenSurface<'a>,

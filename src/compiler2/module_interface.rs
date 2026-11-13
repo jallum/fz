@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 
 use crate::source::Span;
 

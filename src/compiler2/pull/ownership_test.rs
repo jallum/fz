@@ -269,7 +269,7 @@ fn recursive_completion_preserves_each_pending_members_current_membership() {
     let mut producers = OwnershipProducers {
         telemetry: &tel,
         types: fake_types(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (
                 left.clone(),
                 OwnershipFormula::RecursiveMembership {
@@ -294,11 +294,11 @@ fn recursive_completion_preserves_each_pending_members_current_membership() {
     ));
     assert_eq!(
         driver.session().memo.produced[&left].membership,
-        HashSet::from([left_child])
+        HashSet::from_iter([left_child])
     );
     assert_eq!(
         driver.session().memo.produced[&right].membership,
-        HashSet::from([right_child])
+        HashSet::from_iter([right_child])
     );
 }
 
@@ -320,7 +320,7 @@ fn recursive_publication_exposes_a_child_once_after_all_owning_gates_clear() {
         telemetry: &tel,
         types: fake_types(),
         calls: Vec::new(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (
                 left.clone(),
                 OwnershipFormula::RecursiveMembership {
@@ -408,7 +408,7 @@ fn recursive_publication_cancels_old_suffix_owned_admissions_before_exposing_chi
         telemetry: &tel,
         types: fake_types(),
         calls: Vec::new(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (
                 seed.clone(),
                 OwnershipFormula::Seed(vec![member.clone()], ProductValue::Unit),
@@ -479,7 +479,7 @@ fn rooted_maintenance_is_reported_by_the_request_that_performs_it() {
     let mut producers = OwnershipProducers {
         telemetry: &tel,
         types: fake_types(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (seed.clone(), OwnershipFormula::Value(ProductValue::Unit)),
             (packaging.clone(), OwnershipFormula::Root(seed.clone())),
         ]),
@@ -527,7 +527,7 @@ fn replacing_or_retiring_a_waiting_witness_reports_its_disposal() {
         let mut producers = OwnershipProducers {
             telemetry: &tel,
             types: fake_types(),
-            formulas: HashMap::from([
+            formulas: HashMap::from_iter([
                 (old.clone(), OwnershipFormula::Unavailable),
                 (current.clone(), OwnershipFormula::Value(ProductValue::Unit)),
                 (packaging.clone(), OwnershipFormula::Root(old)),
@@ -618,7 +618,7 @@ fn a_product_that_needs_no_walk_is_judged_without_reporting_validation_work() {
     let unseen = ProductKey::RootBackendProduct(RootId::for_test(192));
     let known_stale = ProductKey::RootBackendProduct(RootId::for_test(193));
     memo.fact_stale_dependencies
-        .insert(known_stale.clone(), HashSet::new());
+        .insert(known_stale.clone(), HashSet::default());
     assert_eq!(memo.stale_dependency(&tel, &unseen, &types, None), None);
     assert_eq!(
         memo.stale_dependency(&tel, &known_stale, &types, None),
@@ -636,7 +636,7 @@ fn a_successful_formula_without_a_rooted_read_retires_only_its_own_witness() {
         telemetry: &tel,
         types: fake_types(),
         calls: Vec::new(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (seed.clone(), OwnershipFormula::Value(ProductValue::Unit)),
             (retired.clone(), OwnershipFormula::Root(seed.clone())),
             (retained.clone(), OwnershipFormula::Root(seed.clone())),
@@ -666,7 +666,7 @@ fn a_successful_formula_without_a_rooted_read_retires_only_its_own_witness() {
     );
     assert_eq!(
         driver.session().memo.rooted_readers[&seed],
-        HashSet::from([retained.clone()])
+        HashSet::from_iter([retained.clone()])
     );
     producers.calls.clear();
     producers.formulas.insert(seed.clone(), OwnershipFormula::Unavailable);
@@ -700,7 +700,7 @@ fn current_root_control_replaces_a_retained_or_waiting_membership_observation() 
                 telemetry: &tel,
                 types: fake_types(),
                 calls: Vec::new(),
-                formulas: HashMap::from([
+                formulas: HashMap::from_iter([
                     (old_seed.clone(), OwnershipFormula::Value(ProductValue::Unit)),
                     (new_seed.clone(), OwnershipFormula::Value(ProductValue::Unit)),
                     (selector.clone(), OwnershipFormula::Value(ownership_selected(true))),
@@ -790,7 +790,7 @@ fn changed_rooted_data_or_readiness_replays_control_before_a_pending_suffix() {
             telemetry: &tel,
             types: fake_types(),
             calls: Vec::new(),
-            formulas: HashMap::from([
+            formulas: HashMap::from_iter([
                 (seed.clone(), OwnershipFormula::Value(ownership_selected(true))),
                 (upstream.clone(), OwnershipFormula::Value(ProductValue::Unit)),
                 (child.clone(), OwnershipFormula::Copy(upstream.clone())),
@@ -864,7 +864,7 @@ fn a_waiting_formula_does_not_acknowledge_delivered_rooted_changes() {
         telemetry: &tel,
         types: fake_types(),
         calls: Vec::new(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (seed.clone(), OwnershipFormula::Value(ownership_selected(true))),
             (upstream.clone(), OwnershipFormula::Value(ProductValue::Unit)),
             (child.clone(), OwnershipFormula::Copy(upstream.clone())),
@@ -957,13 +957,13 @@ fn a_rejected_root_completion_retains_its_delivered_changes() {
             dependencies,
             &types
         ));
-        assert_eq!(session.memo.rooted[&packaging].changes, HashSet::from([seed.clone()]));
+        assert_eq!(session.memo.rooted[&packaging].changes, HashSet::from_iter([seed.clone()]));
     }
     let mut producers = OwnershipProducers {
         telemetry: &tel,
         types,
         calls: Vec::new(),
-        formulas: HashMap::from([(packaging.clone(), OwnershipFormula::Root(seed))]),
+        formulas: HashMap::from_iter([(packaging.clone(), OwnershipFormula::Root(seed))]),
     };
     assert_eq!(
         ownership_pull(&mut driver, &mut producers, &packaging),
@@ -1015,7 +1015,7 @@ fn assert_independent_rooted_prerequisite_batch(distinct_parents: bool) {
     let mut producers = OwnershipProducers {
         telemetry: &tel,
         types: fake_types(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (
                 seed.clone(),
                 OwnershipFormula::Seed(vec![first.clone(), prerequisite.clone()], ProductValue::Unit),
@@ -1091,7 +1091,7 @@ fn assert_newly_exposed_prerequisite_order(retained: bool) {
     let mut producers = OwnershipProducers {
         telemetry: &tel,
         types: fake_types(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (
                 seed.clone(),
                 OwnershipFormula::Seed(vec![first.clone(), reader.clone()], ProductValue::Unit),
@@ -1143,7 +1143,7 @@ fn an_alternate_parent_that_cleared_earlier_admits_the_reparented_branch() {
     let mut producers = OwnershipProducers {
         telemetry: &tel,
         types: fake_types(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (
                 seed.clone(),
                 OwnershipFormula::Seed(vec![owner.clone()], ProductValue::Unit),
@@ -1214,7 +1214,7 @@ fn restoring_an_interior_witness_entrance_admits_its_dirty_branch_before_queued_
         telemetry: &tel,
         types: fake_types(),
         calls: Vec::new(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (
                 seed.clone(),
                 OwnershipFormula::Seed(vec![owner.clone()], ProductValue::Unit),
@@ -1330,7 +1330,7 @@ fn reparent_admission_reuses_the_unchanged_common_witness_prefix() {
             .collect::<HashSet<_>>();
         let packaging_id = size * 3 + 1 + candidate_count * (candidate_depth + 1);
         let packaging = key(packaging_id);
-        let mut formulas = HashMap::new();
+        let mut formulas = HashMap::default();
         for (index, member) in prefix.iter().enumerate() {
             let next = prefix
                 .get(index + 1)
@@ -1447,7 +1447,7 @@ fn reparent_admission_reuses_the_unchanged_common_witness_prefix() {
         }
         for (index, child) in children.iter().enumerate() {
             let expected = if alternating {
-                HashSet::from([candidate_paths[index % candidate_count as usize]
+                HashSet::from_iter([candidate_paths[index % candidate_count as usize]
                     .last()
                     .unwrap()
                     .clone()])
@@ -1531,7 +1531,7 @@ fn queued_rooted_owners_cannot_outlive_a_fact_change_to_their_witness() {
         let mut producers = OwnershipProducers {
             telemetry: &tel,
             types: fake_types(),
-            formulas: HashMap::from([
+            formulas: HashMap::from_iter([
                 (
                     seed.clone(),
                     OwnershipFormula::FactMembership {
@@ -1602,7 +1602,7 @@ fn canceling_an_outer_rooted_query_discards_nested_waits_but_keeps_live_siblings
     let mut producers = OwnershipProducers {
         telemetry: &tel,
         types: fake_types(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (
                 seed.clone(),
                 OwnershipFormula::FactMembership {
@@ -1689,7 +1689,7 @@ fn canceling_a_nested_query_keeps_its_still_demanded_parent_admission() {
         telemetry: &tel,
         types: fake_types(),
         calls: Vec::new(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (
                 seed.clone(),
                 OwnershipFormula::Seed(vec![owner.clone(), reader.clone()], ProductValue::Unit),
@@ -1764,7 +1764,7 @@ fn wait_frames_belong_to_the_actual_pending_attempt_and_keep_its_oldest_registra
     let mut producers = OwnershipProducers {
         telemetry: &tel,
         types: fake_types(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (
                 seed.clone(),
                 OwnershipFormula::Seed(vec![child.clone()], ProductValue::Unit),
@@ -1826,7 +1826,7 @@ fn failed_rooted_drives_unregister_their_frames_before_retained_repair() {
     let mut producers = OwnershipProducers {
         telemetry: &tel,
         types: fake_types(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (
                 seed.clone(),
                 OwnershipFormula::Seed(vec![child.clone(), sibling.clone()], ProductValue::Unit),
@@ -1933,19 +1933,19 @@ fn an_equal_dirty_cycle_prefix_is_validated_once_before_a_missing_membership_cha
                     left.clone(),
                     ProductValue::Unit,
                     ProductDependencies {
-                        products: IndexMap::from([(selector.clone(), Some(1)), (right.clone(), None)]),
+                        products: IndexMap::from_iter([(selector.clone(), Some(1)), (right.clone(), None)]),
                         ..ProductDependencies::default()
                     },
-                    HashSet::from([chain[0].clone()])
+                    HashSet::from_iter([chain[0].clone()])
                 ),
                 (
                     right.clone(),
                     ProductValue::Unit,
                     ProductDependencies {
-                        products: IndexMap::from([(selector.clone(), Some(1)), (left.clone(), None)]),
+                        products: IndexMap::from_iter([(selector.clone(), Some(1)), (left.clone(), None)]),
                         ..ProductDependencies::default()
                     },
-                    HashSet::new()
+                    HashSet::default()
                 ),
             ],
             &producers.types
@@ -1994,7 +1994,7 @@ fn sibling_value_backedges_share_one_complete_rooted_proof() {
             telemetry: &tel,
             types: fake_types(),
             calls: Vec::new(),
-            formulas: HashMap::from([
+            formulas: HashMap::from_iter([
                 (selector.clone(), OwnershipFormula::Value(ProductValue::Unit)),
                 (seed.clone(), OwnershipFormula::Unavailable),
                 (left.clone(), OwnershipFormula::Unavailable),
@@ -2022,7 +2022,7 @@ fn sibling_value_backedges_share_one_complete_rooted_proof() {
                 &left,
                 ProductValue::Unit,
                 ProductDependencies {
-                    products: IndexMap::from([(selector.clone(), Some(1)), (packaging.clone(), Some(1))]),
+                    products: IndexMap::from_iter([(selector.clone(), Some(1)), (packaging.clone(), Some(1))]),
                     ..ProductDependencies::default()
                 },
                 &producers.types
@@ -2033,7 +2033,7 @@ fn sibling_value_backedges_share_one_complete_rooted_proof() {
                 &right,
                 ProductValue::Unit,
                 ProductDependencies {
-                    products: IndexMap::from([(packaging.clone(), Some(1))]),
+                    products: IndexMap::from_iter([(packaging.clone(), Some(1))]),
                     ..ProductDependencies::default()
                 },
                 &producers.types
@@ -2257,7 +2257,7 @@ fn a_failed_shared_control_validation_cannot_authorize_sibling_membership() {
         telemetry: &tel,
         types: fake_types(),
         calls: Vec::new(),
-        formulas: HashMap::from([
+        formulas: HashMap::from_iter([
             (first.clone(), OwnershipFormula::Copy(selector.clone())),
             (
                 second.clone(),
@@ -2386,11 +2386,11 @@ fn a_pending_formula_replaces_its_previous_attempts_observations() {
     let old = ProductKey::ExecutableEffects(fake_executable_with_function(root, 1821));
     let current = ProductKey::ExecutableEffects(fake_executable_with_function(root, 1822));
     let mut memo = ProductMemo::default();
-    memo.unblock(ProductRequestId(NonZeroU64::MIN), &reader, prospective_dependency(&old), HashSet::new());
+    memo.unblock(ProductRequestId(NonZeroU64::MIN), &reader, prospective_dependency(&old), HashSet::default());
     memo.unblock(
         ProductRequestId(NonZeroU64::MIN),
         &reader,
-        prospective_dependency(&current), HashSet::new(),
+        prospective_dependency(&current), HashSet::default(),
     );
     assert_eq!(
         memo.pending_product_dependencies(&reader),
@@ -2424,7 +2424,7 @@ fn assert_current_control_ownership(indirect: bool) {
             telemetry: &tel,
             types: fake_types(),
             calls: Vec::new(),
-            formulas: HashMap::from([
+            formulas: HashMap::from_iter([
                 (
                     reader.clone(),
                     OwnershipFormula::Reader {
@@ -2537,7 +2537,7 @@ fn assert_recursive_control_ownership(indirect: bool) {
             telemetry: &tel,
             types: fake_types(),
             calls: Vec::new(),
-            formulas: HashMap::from([
+            formulas: HashMap::from_iter([
                 (
                     first.clone(),
                     OwnershipFormula::Reader {

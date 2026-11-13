@@ -45,10 +45,10 @@ impl RootedProducts {
     fn new(seed: ProductKey) -> Self {
         Self {
             seed,
-            parents: HashMap::new(),
-            children: HashMap::new(),
+            parents: HashMap::default(),
+            children: HashMap::default(),
             dirty: DirtyWitness::default(),
-            changes: HashSet::new(),
+            changes: HashSet::default(),
             #[cfg(test)]
             last_detached: 0,
         }
@@ -62,7 +62,7 @@ impl RootedProducts {
         types: &super::super::types::Types,
     ) -> HashSet<ProductKey> {
         let mut pending = vec![(key, parent)];
-        let mut added = HashSet::new();
+        let mut added = HashSet::default();
         while let Some((key, parent)) = pending.pop() {
             if self.parents.contains_key(&key) {
                 continue;
@@ -115,7 +115,7 @@ impl RootedProducts {
         work: &mut ProductValidation,
     ) -> HashSet<ProductKey> {
         if self.parents.get(key) != Some(&Some(parent.clone())) {
-            return HashSet::new();
+            return HashSet::default();
         }
         let mut leaf = None;
         if let Some(alternate) = memo
@@ -138,9 +138,9 @@ impl RootedProducts {
         {
             self.reparent(key, alternate.clone());
             reparented.push(key.clone());
-            return HashSet::new();
+            return HashSet::default();
         }
-        let mut detached = HashMap::new();
+        let mut detached = HashMap::default();
         let mut pending = vec![key.clone()];
         while let Some(member) = pending.pop() {
             if detached
@@ -187,7 +187,7 @@ impl RootedProducts {
             left.semantic_cmp(right, types)
                 .then_with(|| parent.semantic_cmp(next_parent, types))
         });
-        let mut touched = HashSet::new();
+        let mut touched = HashSet::default();
         for (member, parent) in entrances {
             if self.parents.contains_key(&member) {
                 continue;
@@ -229,7 +229,7 @@ impl RootedProducts {
             .membership(owner)
             .expect("a successful member has committed dependencies");
         // New entry paths exist before obsolete support is repaired.
-        let mut touched = HashSet::new();
+        let mut touched = HashSet::default();
         let mut reparented = Vec::new();
         let (mut added, mut removed) = membership_delta(previous, next);
         added.sort_by(|left, right| left.semantic_cmp(right, types));
