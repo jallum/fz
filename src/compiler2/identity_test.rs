@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use super::super::identity::DeclaredCallableKind;
 use super::super::quoted_surface::ScopeSurface;
 use super::super::{
@@ -284,14 +286,14 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         source_owner,
         QuotedCodeSource {
             quoted: code_source.clone(),
-            surface: empty_scope_surface(),
+            surface: Rc::new(empty_scope_surface()),
         },
     );
     let same_indexed_code_changed = code.index(
         source_owner,
         QuotedCodeSource {
             quoted: code_source,
-            surface: empty_scope_surface(),
+            surface: Rc::new(empty_scope_surface()),
         },
     );
     assert!(indexed_code_changed, "first code index should be a change");
@@ -326,14 +328,14 @@ fn compiler2_code_index_revisions_ignore_quoted_heap_identity_when_semantics_mat
         source_owner,
         QuotedCodeSource {
             quoted: first,
-            surface: empty_scope_surface(),
+            surface: Rc::new(empty_scope_surface()),
         },
     );
     let second_changed = code.index(
         source_owner,
         QuotedCodeSource {
             quoted: second,
-            surface: empty_scope_surface(),
+            surface: Rc::new(empty_scope_surface()),
         },
     );
 

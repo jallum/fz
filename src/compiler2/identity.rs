@@ -1,5 +1,6 @@
 use crate::modules::identity::{ModuleDenotation, ModuleName};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::function_surface::FunctionSurface;
@@ -213,6 +214,15 @@ impl ModuleState {
         }
     }
 
+    fn set_interface(&mut self, next: ModuleInterface) {
+        match self {
+            ModuleState::Placeholder { interface }
+            | ModuleState::Indexed { interface, .. }
+            | ModuleState::Scoped { interface, .. } => *interface = Some(next),
+            ModuleState::Defined { interface, .. } => *interface = next,
+        }
+    }
+
     pub(crate) fn interface(&self) -> Option<&ModuleInterface> {
         match self {
             ModuleState::Placeholder { interface } => interface.as_ref(),
@@ -232,8 +242,8 @@ pub struct ModuleSource {
 
 #[derive(Debug, Clone)]
 pub enum ModuleSourceKind {
-    Body(ScopeSurface),
-    Protocol(ScopeSurface),
+    Body(Rc<ScopeSurface>),
+    Protocol(Rc<ScopeSurface>),
     /// A `defimpl Protocol, for: Target` owned by its typed protocol/target
     /// pair. `DefineModule(impl_module)` demands it independently of its
     /// lexical host. The protocol and target resolve at the declaration site;
@@ -245,7 +255,7 @@ pub enum ModuleSourceKind {
 pub struct ProtocolImplSource {
     pub protocol: ModuleId,
     pub target: ModuleId,
-    pub body: ScopeSurface,
+    pub body: Rc<ScopeSurface>,
 }
 
 #[derive(Debug, Clone)]
@@ -395,26 +405,9 @@ impl ModuleMap {
 
     pub fn define_interface(&mut self, id: ModuleId, interface: ModuleInterface) -> bool {
         let module = &mut self.slots[id.0 as usize];
-        let next = match module.clone() {
-            ModuleState::Placeholder { .. } => ModuleState::Placeholder {
-                interface: Some(interface),
-            },
-            ModuleState::Indexed { source, .. } => ModuleState::Indexed {
-                source,
-                interface: Some(interface),
-            },
-            ModuleState::Scoped { source, base, .. } => ModuleState::Scoped {
-                source,
-                base,
-                interface: Some(interface),
-            },
-            ModuleState::Defined { source, base, .. } => ModuleState::Defined {
-                source,
-                base,
-                interface,
-            },
-        };
-        update_if_changed(module, next)
+        let changed = module.interface() != Some(&interface);
+        module.set_interface(interface);
+        changed
     }
 
     pub fn record_interface_expectation(&mut self, id: ModuleId, expectation: InterfaceExpectation) {
@@ -428,24 +421,28 @@ impl ModuleMap {
             .slots
             .get_mut(id.0 as usize)
             .expect("module ids should be known before scoping modules");
-        let source = module
-            .source()
-            .expect("modules should be indexed before scoping")
-            .clone();
-        let next = if let ModuleState::Defined { interface, .. } = &*module {
-            ModuleState::Defined {
-                source: Some(source),
-                base: base_namespace,
-                interface: interface.clone(),
+        assert!(module.source().is_some(), "modules should be indexed before scoping");
+        match module {
+            ModuleState::Scoped { base, .. } | ModuleState::Defined { base, .. } => {
+                let changed = *base != base_namespace;
+                *base = base_namespace;
+                changed
             }
-        } else {
-            ModuleState::Scoped {
-                source,
-                base: base_namespace,
-                interface: module.interface().cloned(),
+            ModuleState::Indexed { .. } => {
+                let ModuleState::Indexed { source, interface } =
+                    std::mem::replace(module, ModuleState::Placeholder { interface: None })
+                else {
+                    unreachable!("the arm matched an indexed module")
+                };
+                *module = ModuleState::Scoped {
+                    source,
+                    base: base_namespace,
+                    interface,
+                };
+                true
             }
-        };
-        update_if_changed(module, next)
+            ModuleState::Placeholder { .. } => unreachable!("a module with a source is not a placeholder"),
+        }
     }
 
     pub fn index_body(
@@ -462,7 +459,7 @@ impl ModuleMap {
                 owner,
                 parent,
                 source,
-                kind: ModuleSourceKind::Body(surface),
+                kind: ModuleSourceKind::Body(Rc::new(surface)),
             },
             interface: module.interface().cloned(),
         };
@@ -483,7 +480,7 @@ impl ModuleMap {
                 owner,
                 parent,
                 source,
-                kind: ModuleSourceKind::Protocol(surface),
+                kind: ModuleSourceKind::Protocol(Rc::new(surface)),
             },
             interface: module.interface().cloned(),
         };

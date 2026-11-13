@@ -48,7 +48,7 @@ pub enum CodeState {
 #[derive(Debug, Clone)]
 pub struct QuotedCodeSource {
     pub quoted: QuotedSourceRoot,
-    pub surface: ScopeSurface,
+    pub surface: Rc<ScopeSurface>,
 }
 
 #[derive(Debug, Default)]

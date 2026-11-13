@@ -1288,15 +1288,18 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         Ok(None)
     }
 
-    fn blocked_effects(&self, mut effects: JobEffects) -> JobEffects {
-        effects.reads.extend(current_uses(self.reads.clone()));
-        effects.product_reads.extend(self.product_reads.clone());
+    /// The effects of a walk that has blocked, with everything the walk
+    /// accumulated moved in. A blocked walk ends the session, so the session
+    /// hands its collections over rather than copying them.
+    fn blocked_effects(&mut self, mut effects: JobEffects) -> JobEffects {
+        effects.reads.extend(current_uses(std::mem::take(&mut self.reads)));
+        effects.product_reads.append(&mut self.product_reads);
         // The answers the walk reached before it blocked are complete, and each
         // stands on the ground above it, so they are published as their own
         // derivations rather than left dirty behind the wait.
-        effects.derivations.extend(self.derivations.iter().cloned());
-        effects.outputs.extend(self.outputs.clone());
-        effects.changed.extend(self.changed.clone());
+        effects.derivations.append(&mut self.derivations);
+        effects.outputs.append(&mut self.outputs);
+        effects.changed.append(&mut self.changed);
         effects
     }
 
@@ -1447,88 +1450,84 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         self.refuse_module_defined_in_this_scope(import, imported_module)?;
         self.world
             .note_module_reference_expectation(imported_module, self.interface_requester(import.span));
-        let selected = if self.world.module_interface_revision(imported_module).is_none() {
-            if let Some(only) = import.only.as_deref() {
-                only.iter()
-                    .map(|(name, arity)| {
-                        let function = self.world.reference_module_interface_callable(
-                            imported_module,
-                            name.clone(),
-                            *arity,
-                            InterfaceCallableKind::Callable,
-                            Some(self.interface_requester(import.span)),
-                        );
-                        ModuleInterfaceCallable {
-                            function,
-                            reference: self.world.function_ref(function).clone(),
-                            kind: InterfaceCallableKind::Callable,
-                            variadic: false,
-                        }
-                    })
-                    .collect()
-            } else {
-                return Ok(Some(self.wait_for_module_interface(imported_module)));
-            }
-        } else {
-            let fact = FactKey::ModuleInterface(imported_module);
-            self.reads.push(fact);
-            let interface = self.world.module_interface(imported_module);
-            let callables = interface.callables();
-            if let Some(only) = import.only.as_deref() {
-                let mut selected = Vec::with_capacity(only.len());
-                for (name, arity) in only {
-                    let Some(callable) = find_callable(callables, name, *arity) else {
-                        return Err(emit_job_diagnostic(
-                            self.telemetry,
-                            Diagnostic::error(
-                                codes::RESOLVE_UNKNOWN_IMPORT,
-                                format!(
-                                    "module `{}` does not export `{}/{}`",
-                                    import.path.join("."),
-                                    name,
-                                    arity
-                                ),
-                                import.span,
-                            ),
-                        ));
-                    };
-                    selected.push(callable.clone());
-                }
-                selected
-            } else if let Some(except) = import.except.as_deref() {
-                let mut deny = HashSet::new();
-                for (name, arity) in except {
-                    if find_callable(callables, name, *arity).is_none() {
-                        return Err(emit_job_diagnostic(
-                            self.telemetry,
-                            Diagnostic::error(
-                                codes::RESOLVE_UNKNOWN_IMPORT,
-                                format!(
-                                    "module `{}` does not export `{}/{}`",
-                                    import.path.join("."),
-                                    name,
-                                    arity
-                                ),
-                                import.span,
-                            ),
-                        ));
-                    }
-                    deny.insert((name.as_str(), *arity));
-                }
-                callables
-                    .iter()
-                    .filter(|callable| !deny.contains(&(callable.reference.name(), callable.reference.arity)))
-                    .cloned()
-                    .collect()
-            } else {
-                callables.to_vec()
-            }
+        if self.world.module_interface_revision(imported_module).is_some() {
+            self.reads.push(FactKey::ModuleInterface(imported_module));
+            self.bind_interface_imports(import, imported_module)?;
+            return Ok(None);
+        }
+        let Some(only) = import.only.as_deref() else {
+            return Ok(Some(self.wait_for_module_interface(imported_module)));
         };
-
+        let selected: Vec<ModuleInterfaceCallable> = only
+            .iter()
+            .map(|(name, arity)| {
+                let function = self.world.reference_module_interface_callable(
+                    imported_module,
+                    name.clone(),
+                    *arity,
+                    InterfaceCallableKind::Callable,
+                    Some(self.interface_requester(import.span)),
+                );
+                ModuleInterfaceCallable {
+                    function,
+                    reference: self.world.function_ref(function).clone(),
+                    kind: InterfaceCallableKind::Callable,
+                    variadic: false,
+                }
+            })
+            .collect();
         for export in &selected {
             self.namespace = bind_callable(self.world, self.namespace, export);
         }
         Ok(None)
+    }
+
+    /// Binds the callables an `import` selects from `module`'s published
+    /// interface: the `only` list in its order, or every callable `except`
+    /// does not deny.
+    fn bind_interface_imports(
+        &mut self,
+        import: &super::quoted_surface::ImportForm,
+        module: ModuleId,
+    ) -> Result<(), FatalError> {
+        let unknown_import = |telemetry, name: &str, arity: usize| {
+            emit_job_diagnostic(
+                telemetry,
+                Diagnostic::error(
+                    codes::RESOLVE_UNKNOWN_IMPORT,
+                    format!(
+                        "module `{}` does not export `{}/{}`",
+                        import.path.join("."),
+                        name,
+                        arity
+                    ),
+                    import.span,
+                ),
+            )
+        };
+        if let Some(only) = import.only.as_deref() {
+            for (name, arity) in only {
+                self.namespace = self
+                    .world
+                    .bind_interface_callable(self.namespace, module, name, *arity)
+                    .ok_or_else(|| unknown_import(self.telemetry, name, *arity))?;
+            }
+        } else if let Some(except) = import.except.as_deref() {
+            let callables = self.world.module_interface(module).callables();
+            let mut deny = HashSet::new();
+            for (name, arity) in except {
+                if find_callable(callables, name, *arity).is_none() {
+                    return Err(unknown_import(self.telemetry, name, *arity));
+                }
+                deny.insert((name.as_str(), *arity));
+            }
+            self.namespace = self.world.bind_interface_callables(self.namespace, module, |callable| {
+                !deny.contains(&(callable.reference.name(), callable.reference.arity))
+            });
+        } else {
+            self.namespace = self.world.bind_interface_callables(self.namespace, module, |_| true);
+        }
+        Ok(())
     }
 
     /// A module is not loaded until the scope that defines it has finished,
@@ -1612,12 +1611,14 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         let target = reference_impl_target_module(self.world, current_module, self.namespace, &form.target);
         let impl_module = self.world.reference_protocol_impl_module(protocol, target);
         let source_map = self.world.source_map();
-        let body = read_protocol_impl_body_surface(form, &source_map.borrow()).map_err(|error| {
-            emit_internal_surface_error(
-                self.telemetry,
-                format!("quoted protocol impl body read failed: {error}"),
-            )
-        })?;
+        let body = Rc::new(
+            read_protocol_impl_body_surface(form, &source_map.borrow()).map_err(|error| {
+                emit_internal_surface_error(
+                    self.telemetry,
+                    format!("quoted protocol impl body read failed: {error}"),
+                )
+            })?,
+        );
         // The protocol owns this typed implementation pair, not its lexical
         // host. This edge keeps the implementation independently demandable.
         let revision = self.world.index_protocol_impl_module(
@@ -1628,7 +1629,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             ProtocolImplSource {
                 protocol,
                 target,
-                body: body.clone(),
+                body: Rc::clone(&body),
             },
         );
         self.world.scope_module(impl_module, self.namespace);
