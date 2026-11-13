@@ -489,26 +489,22 @@ where
         &self.facts
     }
 
-    /// Every key the job claims, in retained publication order.
-    /// Every fact this job claims, across every answer it owns.
-    pub fn output_keys(&self, job: &P::Run) -> OrderedSet<F> {
-        let mut keys = OrderedSet::default();
-        for publisher in self.deps.derivations_of(job) {
-            keys.extend(self.deps.output_keys(publisher).iter().cloned());
-        }
-        keys
+    /// Every fact this job claims, answer by answer in publication order. A
+    /// fact claimed by two of the job's answers appears once per answer.
+    pub fn output_keys(&self, job: &P::Run) -> impl Iterator<Item = &F> {
+        self.deps
+            .derivations_of(job)
+            .iter()
+            .flat_map(|publisher| self.deps.output_keys(publisher).iter())
     }
 
-    /// Every fact use the job's standing answer read.
     /// Every fact use this job read, across every answer it owns.
-    pub fn reads(&self, job: &P::Run) -> HashSet<FactUse<F>> {
+    pub fn reads(&self, job: &P::Run) -> impl Iterator<Item = &FactUse<F>> {
         self.deps
             .derivations_of(job)
             .iter()
             .filter_map(|publisher| self.deps.reads(publisher))
             .flatten()
-            .cloned()
-            .collect()
     }
 
     pub(crate) fn has_dependency_consumers(&self, key: &F) -> bool {
@@ -517,15 +513,8 @@ where
 
     /// Every fact use this job depends on: what each of its answers read, plus
     /// the waits that stopped its last run.
-    pub(crate) fn dependency_uses(&self, job: &P::Run) -> Vec<FactUse<F>> {
-        self.deps
-            .derivations_of(job)
-            .iter()
-            .filter_map(|publisher| self.deps.reads(publisher))
-            .flatten()
-            .cloned()
-            .chain(self.deps.waits_for(job).iter().cloned())
-            .collect()
+    pub(crate) fn dependency_uses(&self, job: &P::Run) -> impl Iterator<Item = &FactUse<F>> {
+        self.reads(job).chain(self.deps.waits_for(job))
     }
 
     #[cfg(test)]
@@ -697,8 +686,7 @@ where
                     unfinal,
                     rebased,
                 );
-                self.deps
-                    .replace_outputs(publisher.clone(), concluded.output_keys.clone());
+                self.deps.replace_outputs(publisher.clone(), concluded.output_keys);
                 changed.extend(concluded.changed);
             } else {
                 let extended = self.facts.extend_outputs_after_run(
@@ -733,11 +721,7 @@ where
         }
 
         let owned = if waiting {
-            previously_owned
-                .iter()
-                .cloned()
-                .chain(listed.iter().cloned())
-                .collect::<OrderedSet<P>>()
+            previously_owned.into_iter().chain(listed).collect::<OrderedSet<P>>()
         } else {
             listed
         };

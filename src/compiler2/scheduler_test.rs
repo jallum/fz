@@ -354,10 +354,7 @@ fn compiler2_scheduler_keeps_claims_in_the_ledger_not_the_completion_report() {
     assert_eq!(movements.len(), 1);
     assert!(wakes.is_empty());
     assert!(blocked.is_empty());
-    assert_eq!(
-        scheduler.output_keys(&1).iter().copied().collect::<Vec<_>>(),
-        vec!["answer"]
-    );
+    assert_eq!(scheduler.output_keys(&1).copied().collect::<Vec<_>>(), vec!["answer"]);
 }
 
 fn current(fact: &'static str) -> FactUse<&'static str> {

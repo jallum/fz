@@ -1349,8 +1349,11 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
         else {
             return;
         };
-        let job_reads = world.work_graph.reads(&completion.job);
-        let mut reads = job_reads.iter().collect::<Vec<_>>();
+        let distinct_reads = world
+            .work_graph
+            .reads(&completion.job)
+            .collect::<std::collections::HashSet<_>>();
+        let mut reads = distinct_reads.into_iter().collect::<Vec<_>>();
         reads.sort_by(|left, right| left.semantic_cmp(right, world.types()));
         out.push_str(",\"semantic\":{\"reads\":[");
         for (index, entry) in reads.iter().enumerate() {
