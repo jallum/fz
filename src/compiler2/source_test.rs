@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use fz_runtime::any_value::ValueKind;
+use fz_runtime::any_value::{ValueKind, map_count, map_values_ptr};
 
 use super::source::{
     META_FROM_OPERATOR_KEY, META_SPAN_KEY, META_SPAN_LENGTH_KEY, META_SPAN_START_KEY, META_SPAN_VERSION_KEY,
@@ -592,4 +592,46 @@ fn a_lent_process_is_returned_to_the_heap() {
     let result: Result<(), ()> = heap.lend_process(|process| (process, Ok(())));
     assert!(result.is_ok());
     assert_eq!(heap.builder().int(7).tag(), ValueKind::INT);
+}
+
+/// A map lookup answers from the entries up to its match. An entry the heap
+/// holds malformed after the match is not read by that lookup, and is still
+/// reported by a lookup that reaches it and by a full entry read.
+#[test]
+fn map_value_reads_entries_only_up_to_the_match() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let payload = builder.utf8_binary("payload").unwrap();
+    let map = builder
+        .map(&[
+            (builder.atom("a"), payload),
+            (builder.atom("b"), payload),
+            (builder.atom("c"), payload),
+        ])
+        .unwrap();
+    let root = builder.root(map).unwrap();
+    let cursor = root.cursor();
+    let position = |name: &str| {
+        cursor
+            .map_entries()
+            .unwrap()
+            .iter()
+            .position(|(key, _)| key.atom_name().as_deref() == Ok(name))
+            .unwrap()
+    };
+    let (first, last) = ("a", "c");
+    assert!(position(first) < position(last), "entries are read in map order");
+    let addr = map.map_addr().unwrap();
+    unsafe {
+        let count = map_count(addr as *const u8);
+        let values = map_values_ptr(addr as *const u8, count);
+        values.add(position(last)).write(0);
+    }
+
+    assert!(cursor.map_value(first).unwrap().is_some());
+    assert!(
+        cursor.map_value(last).is_err(),
+        "a lookup that reaches the entry reports it"
+    );
+    assert!(cursor.map_entries().is_err(), "a full read reports it");
 }
