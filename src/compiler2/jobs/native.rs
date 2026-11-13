@@ -1319,7 +1319,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         for (index, capture) in captures.iter().copied().enumerate() {
                             let ty = self.callable_boundaries[boundary.as_u32() as usize].captures[index].ty;
                             let local = env_local_value(env, capture)?;
-                            capture_values.push(self.materialize_native_value(ctx, Some(ty), &local)?);
+                            capture_values.push(self.materialize_native_value(ctx, Some(ty), local)?);
                         }
                         let var = self.emit_callable_construction(ctx, boundary, capture_values);
                         self.bind_runtime_value(ctx, executable, env, *value, var);
@@ -1404,10 +1404,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
                 BackendStep::TupleField { value, source, index } => {
                     let realized = env_local_value(env, *source)?;
-                    if let Some(field) = self.transport_tuple_field(&realized, *index)? {
+                    if let Some(field) = self.transport_tuple_field(realized, *index)? {
                         bind_local_value(ctx, executable, env, *value, field);
                     } else {
-                        let tuple = self.materialize_native_value(ctx, None, &realized)?;
+                        let tuple = self.materialize_native_value(ctx, None, realized)?;
                         let (var, _) = ctx.emit_let(Prim::TupleField(tuple, *index as u32));
                         bind_local_value(ctx, executable, env, *value, NativeBoundValue::Runtime(var));
                     }
@@ -1506,7 +1506,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 return_flow,
                 ..
             } => {
-                let callee_value = env.cloned_value(*callee);
+                let callee_value = env.value(*callee);
                 // The recorded call form carries the decision the artifact
                 // layer made. Native emits what that answer promised; it does
                 // not re-decide, and it does not re-derive where the target's
@@ -1518,7 +1518,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             ctx,
                             executable,
                             *callee,
-                            callee_value.as_ref(),
+                            callee_value,
                             target,
                             capture_inputs_end,
                         )?;
@@ -1563,7 +1563,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                                     ctx,
                                     callee_executable,
                                     Some(arg.value),
-                                    &local,
+                                    local,
                                     &target_input.layout,
                                     &mut call_args,
                                 )?;
@@ -1572,7 +1572,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                                     ctx,
                                     callee_executable,
                                     Some(arg.value),
-                                    &local,
+                                    local,
                                     target_input.layout.structural,
                                     &mut call_args,
                                 )?;
@@ -1634,7 +1634,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         return_flow,
                     )
                 } else {
-                    let callee_value = callee_value.as_ref().ok_or_else(|| {
+                    let callee_value = callee_value.ok_or_else(|| {
                         incomplete_native_program(
                             self.telemetry,
                             self.root_id,
@@ -1734,7 +1734,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 // never reads was never bound.
                 let input_values = inputs
                     .iter()
-                    .map(|input| env.cloned_value(*input).unwrap_or(NativeBoundValue::Absent))
+                    .map(|input| env.value(*input).cloned().unwrap_or(NativeBoundValue::Absent))
                     .collect();
                 let pinned_vars = self.env_runtime_vars(ctx, executable, env, &bindings.pinned);
                 let prepared = self.env_runtime_vars(ctx, executable, env, &bindings.prepared);
@@ -2043,7 +2043,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             ctx,
                             executable,
                             Some(arg.value),
-                            &local,
+                            local,
                             &target_input.layout,
                             &mut lanes,
                         )?;
@@ -2051,7 +2051,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         let value = self.materialize_native_value(
                             ctx,
                             executable.abi.materialized.value_types.get(&arg.value).copied(),
-                            &local,
+                            local,
                         )?;
                         lanes.push(value);
                     }
@@ -2193,13 +2193,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }
         let mut lanes = Vec::new();
         let local = env
-            .cloned_value(value_id)
+            .value(value_id)
             .ok_or_else(|| missing_backend_value(self.root_id, value_id))?;
         self.encode_runtime_value_for_layout(
             ctx,
             executable,
             Some(value_id),
-            &local,
+            local,
             &executable.abi.return_layout.layout,
             &mut lanes,
         )?;
@@ -2742,7 +2742,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ctx,
                 executable,
                 Some(capture.value),
-                &local,
+                local,
                 &capture.layout,
                 &mut args,
             )?;
@@ -2799,7 +2799,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ctx,
                 executable,
                 Some(capture.value),
-                &local,
+                local,
                 &capture.layout,
                 &mut args,
             )?;
@@ -2830,13 +2830,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             BackendEntryOrigin::DeliveredResume { layout, .. } => {
                 let mut lanes = Vec::new();
                 let local = env
-                    .cloned_value(value_id)
+                    .value(value_id)
                     .ok_or_else(|| missing_backend_value(self.root_id, value_id))?;
                 self.encode_runtime_value_for_layout(
                     ctx,
                     executable,
                     Some(value_id),
-                    &local,
+                    local,
                     &layout.layout,
                     &mut lanes,
                 )?;
@@ -4015,14 +4015,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         env: &ValueEnv,
         value_id: ValueId,
     ) -> Var {
-        let value = env.cloned_value(value_id).unwrap_or_else(|| {
+        let value = env.value(value_id).unwrap_or_else(|| {
             panic!(
                 "native lowering invariant failed: backend value {:?} in executable {:?} must be bound before runtime use",
                 value_id, executable.key
             )
         });
         let ty = executable.abi.materialized.value_types.get(&value_id).copied();
-        self.materialize_native_value(ctx, ty, &value).unwrap_or_else(|error| {
+        self.materialize_native_value(ctx, ty, value).unwrap_or_else(|error| {
             // fz-hwn.27.5 — name the predicate at the failure site. A bare-variable
             // (value-template) value has no runtime representation, so it binds
             // `Absent` and cannot be materialized. When that is the cause, this is
@@ -4497,9 +4497,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             return Ok(());
         }
         let local = env
-            .cloned_value(value_id)
+            .value(value_id)
             .ok_or_else(|| missing_backend_value(self.root_id, value_id))?;
-        self.encode_transport_layout(ctx, executable, Some(value_id), &local, layout, lanes)
+        self.encode_transport_layout(ctx, executable, Some(value_id), local, layout, lanes)
     }
 
     fn encode_runtime_value_for_layout(
@@ -4800,10 +4800,6 @@ impl ValueEnv {
         self.values.get(&value)
     }
 
-    fn cloned_value(&self, value: ValueId) -> Option<NativeBoundValue> {
-        self.value(value).cloned()
-    }
-
     fn runtime_var(&self, value: ValueId) -> Option<Var> {
         self.value(value).and_then(NativeBoundValue::runtime_word)
     }
@@ -5012,8 +5008,8 @@ impl NativeFnCtx {
     }
 }
 
-fn env_local_value(env: &ValueEnv, value: ValueId) -> Result<NativeBoundValue, FatalError> {
-    env.cloned_value(value).ok_or(FatalError)
+fn env_local_value(env: &ValueEnv, value: ValueId) -> Result<&NativeBoundValue, FatalError> {
+    env.value(value).ok_or(FatalError)
 }
 
 fn executable_input_tys(executable: &BackendExecutable) -> Vec<Ty> {
