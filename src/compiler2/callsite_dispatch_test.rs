@@ -162,6 +162,7 @@ fn multi_target_summary_builds_receiver_type_dispatch_rows() {
             "Range".into(),
         ]));
     let summary = CallSiteSummary {
+        last_resort: None,
         targets: vec![
             CallTargetSummary {
                 callee: SelectedCallee::Function(list_impl),
@@ -240,6 +241,7 @@ fn single_target_summary_stays_direct() {
     let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "impl", 1);
     let any = world.types_mut().any();
     let summary = CallSiteSummary {
+        last_resort: None,
         targets: vec![CallTargetSummary {
             callee: SelectedCallee::Function(function),
             surface_inputs: vec![any],
@@ -257,6 +259,55 @@ fn single_target_summary_stays_direct() {
             CallDestinations::Direct(_)
         ),
         "single-target callsites must remain ordinary direct calls"
+    );
+}
+
+/// A call whose one implementation takes only part of its receiver can miss:
+/// it tests the receiver, raises where the implementation does not take it,
+/// and asks for the receiver to be read. A call that cannot miss stays direct.
+#[test]
+fn a_one_target_call_that_can_miss_tests_its_receiver_and_raises_at_a_miss() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "impl", 1);
+    let int = world.types_mut().int();
+    let target = CallTargetSummary {
+        callee: SelectedCallee::Function(function),
+        surface_inputs: vec![int],
+        activation: None,
+        activation_inputs: None,
+        extern_params: None,
+        return_ty: None,
+    };
+    let summary = |last_resort| CallSiteSummary {
+        last_resort,
+        targets: vec![target.clone()],
+        return_ty: None,
+    };
+    let can_miss = summary(Some(LastResort::protocol_undefined("P")));
+    assert!(can_miss.is_decision());
+    assert!(!summary(None).is_decision());
+
+    let CallDestinations::Dispatch(dispatch) =
+        call_destinations(world.types_mut(), &can_miss).expect("one target with a last resort has a plan")
+    else {
+        panic!("a call that can miss is a decision, not a direct call");
+    };
+    assert_eq!(dispatch.plan.last_resort, can_miss.last_resort);
+    assert!(
+        dispatch.plan.can_fail(),
+        "a receiver beyond the implementation is a miss"
+    );
+
+    let callsite = crate::compiler2::body::CallSiteId::from_u32(0);
+    let demands = crate::compiler2::executable_facts::callsite_dispatch_demands(
+        world.types_mut(),
+        &crate::fast_hash::HashMap::from_iter([(callsite, can_miss)]),
+    );
+    assert_ne!(
+        demands.get(&callsite).and_then(|demand| demand.first()),
+        Some(&crate::dispatch_matrix::demand::DispatchDemand::Ignore),
+        "the call reads the receiver it tests"
     );
 }
 
@@ -309,6 +360,7 @@ fn a_narrower_twin_the_seat_would_not_put_first_is_no_destination() {
 
     for arrival in [vec![target(command), target(cont)], vec![target(cont), target(command)]] {
         let summary = CallSiteSummary {
+            last_resort: None,
             targets: arrival.clone(),
             return_ty: None,
         };
@@ -352,6 +404,7 @@ fn a_wider_domain_on_another_function_is_no_stand_in() {
         return_ty: None,
     };
     let summary = CallSiteSummary {
+        last_resort: None,
         targets: vec![target(wide_fn, command), target(narrow_fn, cont)],
         return_ty: None,
     };
@@ -415,6 +468,7 @@ fn a_map_content_no_test_can_read_leaves_only_the_wider_arm() {
     for order in [[&narrow, &wide], [&wide, &narrow]] {
         let arrival = order.into_iter().cloned().collect::<Vec<_>>();
         let summary = CallSiteSummary {
+            last_resort: None,
             targets: arrival.clone(),
             return_ty: None,
         };
@@ -466,6 +520,7 @@ fn a_narrower_arm_on_a_separating_axis_survives_and_is_seated_first() {
 
     for arrival in [vec![narrow.clone(), wide.clone()], vec![wide.clone(), narrow.clone()]] {
         let summary = CallSiteSummary {
+            last_resort: None,
             targets: arrival.clone(),
             return_ty: None,
         };
@@ -551,6 +606,7 @@ fn a_narrow_surface_carrying_the_wider_test_is_not_dropped_for_it() {
 
     for arrival in [vec![narrow.clone(), wide.clone()], vec![wide.clone(), narrow.clone()]] {
         let summary = CallSiteSummary {
+            last_resort: None,
             targets: arrival.clone(),
             return_ty: None,
         };
@@ -651,6 +707,7 @@ fn a_drop_that_dissolves_a_question_group_reseats_the_survivor_it_pinned() {
     );
 
     let summary = CallSiteSummary {
+        last_resort: None,
         targets: arrival,
         return_ty: None,
     };
@@ -709,6 +766,7 @@ fn a_closure_literal_tells_two_indistinguishable_states_apart() {
         return_ty: None,
     };
     let summary = CallSiteSummary {
+        last_resort: None,
         targets: vec![target(command, halting_reducer), target(cont, plain_reducer)],
         return_ty: None,
     };
@@ -793,6 +851,7 @@ fn a_closure_nested_in_a_tuple_is_named_by_the_test() {
     let CallDestinations::Dispatch(dispatch) = call_destinations(
         world.types_mut(),
         &CallSiteSummary {
+            last_resort: None,
             targets: vec![target(boxed_one), target(boxed_other)],
             return_ty: None,
         },
@@ -852,6 +911,7 @@ fn a_nested_callables_captures_are_a_question() {
     let CallDestinations::Dispatch(dispatch) = call_destinations(
         world.types_mut(),
         &CallSiteSummary {
+            last_resort: None,
             targets: vec![target(boxed_int), target(boxed_float)],
             return_ty: None,
         },
@@ -893,6 +953,7 @@ fn arms_that_differ_only_in_their_lambda_are_told_apart_by_it() {
         return_ty: None,
     };
     let summary = CallSiteSummary {
+        last_resort: None,
         targets: vec![target(one_reducer), target(other_reducer)],
         return_ty: None,
     };
@@ -943,6 +1004,7 @@ fn a_narrower_arm_the_runtime_can_still_recognize_stays() {
         return_ty: None,
     };
     let summary = CallSiteSummary {
+        last_resort: None,
         targets: vec![target(any), target(timeout)],
         return_ty: None,
     };
@@ -1024,6 +1086,7 @@ fn distinguishable_arms_are_seated_by_what_they_say_not_by_when_they_arrived() {
 
     for arrival in [vec![wide.clone(), narrow.clone()], vec![narrow.clone(), wide.clone()]] {
         let summary = CallSiteSummary {
+            last_resort: None,
             targets: arrival.clone(),
             return_ty: None,
         };
@@ -1091,6 +1154,7 @@ fn an_arm_whose_test_admits_more_is_seated_after_the_arms_it_would_swallow() {
     let mixed_arm = target(mixed_list, all_one);
     let widest_arm = target(int_list, any_of_three);
     let summary = CallSiteSummary {
+        last_resort: None,
         targets: vec![bools_arm.clone(), mixed_arm.clone(), widest_arm.clone()],
         return_ty: None,
     };
@@ -1165,6 +1229,7 @@ fn arms_over_disjoint_element_types_cannot_take_each_others_values() {
     for order in [[&atoms_arm, &ints_arm], [&ints_arm, &atoms_arm]] {
         let arrival = order.into_iter().cloned().collect::<Vec<_>>();
         let summary = CallSiteSummary {
+            last_resort: None,
             targets: arrival.clone(),
             return_ty: None,
         };
@@ -1444,6 +1509,7 @@ fn arms_no_value_can_reach_both_of_are_not_a_seat_question() {
     for arrival in [[&tails_arm, &ints_arm], [&ints_arm, &tails_arm]] {
         let targets = arrival.into_iter().cloned().collect::<Vec<_>>();
         let summary = CallSiteSummary {
+            last_resort: None,
             targets: targets.clone(),
             return_ty: None,
         };
@@ -1544,6 +1610,7 @@ fn a_separated_run_a_meaning_bearing_pair_blocks_is_not_sorted_through() {
 
     let seated = |world: &mut World, arrival: &[CallTargetSummary]| {
         let summary = CallSiteSummary {
+            last_resort: None,
             targets: arrival.to_vec(),
             return_ty: None,
         };
@@ -1732,6 +1799,7 @@ fn an_untested_position_is_not_a_separation() {
              `(:ok, pair)` to the wide body, which no arrival of these two arms does",
     );
     let summary = CallSiteSummary {
+        last_resort: None,
         targets: arms.to_vec(),
         return_ty: None,
     };
@@ -1834,6 +1902,7 @@ fn a_list_head_drops_the_covered_arm_and_leaves_the_inseparable_pair_as_it_arriv
     };
     for arrived in arrivals {
         let summary = CallSiteSummary {
+            last_resort: None,
             targets: arrived.iter().map(|which| arms[slot(which)].clone()).collect(),
             return_ty: None,
         };
@@ -1906,6 +1975,7 @@ fn an_arm_whose_head_overlaps_a_wider_one_is_no_destination_beside_it() {
     for order in [[&narrow, &wide], [&wide, &narrow]] {
         let arrival = order.into_iter().cloned().collect::<Vec<_>>();
         let summary = CallSiteSummary {
+            last_resort: None,
             targets: arrival.clone(),
             return_ty: None,
         };
@@ -1977,6 +2047,7 @@ fn runtime_indistinguishable_arms_keep_the_order_they_arrived_in() {
     for order in [[&ints, &atoms], [&atoms, &ints]] {
         let arrival = order.into_iter().cloned().collect::<Vec<_>>();
         let summary = CallSiteSummary {
+            last_resort: None,
             targets: arrival.clone(),
             return_ty: None,
         };
@@ -2001,6 +2072,7 @@ fn callsite_summary_dispatches_on_the_surface_argument_that_distinguishes_target
     let halt = world.types_mut().tuple(&[int]);
     let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "step", 2);
     let summary = CallSiteSummary {
+        last_resort: None,
         targets: vec![
             CallTargetSummary {
                 callee: SelectedCallee::Function(function),
@@ -2443,6 +2515,7 @@ fn a_seed_moves_an_arrival_order_the_group_reversal_cannot() {
         }
     }
     let summary = CallSiteSummary {
+        last_resort: None,
         targets: arrived.clone(),
         return_ty: None,
     };
@@ -2800,6 +2873,7 @@ fn a_covering_pair_blocks_the_repair_and_leaves_the_arrival_showing() {
     };
     let seated = |world: &mut World, arrival: &[CallTargetSummary]| {
         let summary = CallSiteSummary {
+            last_resort: None,
             targets: arrival.to_vec(),
             return_ty: None,
         };
@@ -2878,6 +2952,7 @@ fn three_disjoint_atom_arms_settle_to_one_order_from_every_arrival() {
         }
     }
     let summary = CallSiteSummary {
+        last_resort: None,
         targets: arrived,
         return_ty: None,
     };

@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, hash_map::Entry};
 use crate::ast::{BinOp, UnOp};
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
+use crate::dispatch_matrix::pattern::LastResort;
 use crate::ground_value::GroundValue;
 use crate::source::Span;
 
@@ -1507,6 +1508,7 @@ fn resolve_function_call(
                     Some(return_ty),
                 )],
                 return_ty: Some(return_ty),
+                last_resort: None,
             }),
             Vec::new(),
             CallReturn::Known(return_ty),
@@ -1529,6 +1531,7 @@ fn resolve_function_call(
                 return_ty,
             }],
             return_ty,
+            last_resort: None,
         }),
         vec![ActivationContribution {
             key: activation,
@@ -1570,6 +1573,22 @@ fn demand_overlapping_impl_providers(
         }
     }
     any_undefined
+}
+
+/// Whether `receiver_ty` allows a value outside `covered`.
+fn reaches_beyond(types: &mut Types, receiver_ty: Ty, covered: Ty) -> bool {
+    let remainder = types.difference(receiver_ty, covered);
+    !types.is_empty(&remainder)
+}
+
+/// What the call raises for the part of the receiver no implementation takes,
+/// when there is one.
+fn protocol_miss(world: &mut World, protocol: ModuleId, receiver_ty: Ty, covered: Ty) -> Option<LastResort> {
+    if !reaches_beyond(world.types_mut(), receiver_ty, covered) {
+        return None;
+    }
+    let name = world.module_name(protocol).expect("a defined protocol has a name");
+    Some(LastResort::protocol_undefined(&name.to_string()))
 }
 
 fn resolve_protocol_call(
@@ -1624,6 +1643,7 @@ fn resolve_protocol_call(
         .iter()
         .map(|arm| (arm.target, arm.callbacks.get(&callback_function).copied()))
         .collect::<Vec<_>>();
+    let mut covered = world.types_mut().none();
     for (target, callback) in arms {
         let mut target_reads = Vec::new();
         let target_ty = world.module_impl_target_ty(target, &mut target_reads);
@@ -1634,6 +1654,7 @@ fn resolve_protocol_call(
             continue;
         }
         let overlap = world.types_mut().intersect(receiver_ty, target_ty);
+        covered = world.types_mut().union(covered, overlap);
         if let Some(callback) = callback {
             matches.push((callback, overlap));
         }
@@ -1644,6 +1665,7 @@ fn resolve_protocol_call(
     }
 
     let matches = merge_protocol_matches_by_function(world, matches);
+    let last_resort = protocol_miss(world, protocol, receiver_ty, covered);
 
     if !every_target_ready(world, &matches, uses) {
         // Mirrors the same-pass ask in `resolve_function_call`: a target not
@@ -1704,7 +1726,11 @@ fn resolve_protocol_call(
     }
     let return_ty = call_return.evidence();
     Ok((
-        CallSiteResolution::Resolved(CallSiteSummary { targets, return_ty }),
+        CallSiteResolution::Resolved(CallSiteSummary {
+            targets,
+            return_ty,
+            last_resort,
+        }),
         activations,
         call_return,
     ))
@@ -1906,6 +1932,7 @@ fn resolve_closure_call(
             resolution: CallSiteResolution::Resolved(CallSiteSummary {
                 targets: selected_targets,
                 return_ty: call_return.evidence(),
+                last_resort: None,
             }),
             activations,
         }),

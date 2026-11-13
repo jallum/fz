@@ -2,7 +2,7 @@
 
 A raise takes one route on every execution path: `raise` in
 `runtime/src/failure.rs`, entered through `fz_panic`, `fz_throw`, `fz_exit`,
-`fz_reraise`, `fz_raise` or `fz_raise_showing`. This doc
+`fz_reraise`, `fz_raise`, `fz_raise_showing` or `fz_raise_naming_kind`. This doc
 covers that route end to end: the primitive and the three kinds of raise, the
 handler stack a `try` pushes, how a raise reaches the nearest handler on each
 path, what `try` with `rescue` and `catch` lowers to, the line an uncaught raise
@@ -113,7 +113,7 @@ is by kind, whatever it holds).
   `lower_extern_generic` emits `continue_after_raise`
   (`native_codegen/prim.rs`); `Term::Raise`, which lowering emits at a decision's
   arm of last resort, calls `fz_raise` (or `fz_raise_showing` when the message
-  shows the subject) and then the same; `Term::Reraise`, which lowering emits
+  shows the subject, `fz_raise_naming_kind` when it also names the subject's kind) and then the same; `Term::Reraise`, which lowering emits
   at a handler's arm of last resort, calls `fz_reraise` with the plan's first
   two inputs and then the same.
   The raising frame returns 0, as a yield does, and every frame above it
@@ -477,8 +477,9 @@ the raise. `Process::ended_in_failure` and
 
 - `runtime/src/failure.rs` — `RaiseKind`, `failure_line`, `exit_status`,
   `fz_panic`, `fz_throw`, `fz_exit`, `reraise`, `fz_reraise`,
-  `raise_exception`, `raise_exception_showing`, `fz_raise`,
-  `fz_raise_showing`, `STDERR_FAULT_HOOK`.
+  `raise_exception`, `raise_exception_showing`,
+  `raise_exception_naming_kind`, `fz_raise`, `fz_raise_showing`,
+  `fz_raise_naming_kind`, `STDERR_FAULT_HOOK`.
 - `src/dispatch_matrix/pattern/last_resort.rs` — `LastResort`.
 - `runtime/src/process.rs` — `Handler`, `Raised`, `handlers`, `raised`,
   `delivered`, `raises_delivered`, `exit_status`, `push_handler`, `pop_handler`,

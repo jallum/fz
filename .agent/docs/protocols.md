@@ -146,6 +146,19 @@ no match           -> the call is bottom: no implementation can take this receiv
 many matches       -> every match is activated; the callsite dispatches among them
 ```
 
+The values the receiver type allows beyond the union of the matched targets are
+the call's remainder. A non-empty remainder gives the callsite a `LastResort`
+(`CallSiteSummary::last_resort`, `LastResort::protocol_undefined`): the call is
+a decision even with one match, so it tests its receiver, and a receiver no
+implementation takes raises `Protocol.UndefinedError` on every path. The message
+is Elixir's: `protocol P not implemented for <kind>`, a blank line, `Got value:`,
+a blank line and the inspected value indented four spaces. The kind is
+`Integer`, `Float`, `Atom`, `List`, `Map`, `Tuple`, `BitString`, `Function`,
+`Reference` for a resource, or `<Module> (a struct)`; a pid and a reference are
+integers at runtime and are named `Integer`. `runtime::any_value::debug::kind_name`
+answers it for the interpreter and compiled code alike. A callsite with an empty
+remainder carries no last resort.
+
 The runtime-predicate check is what keeps runtime identity authoritative. A
 named struct is a tagged record, not a plain map; the `Enumerable` impl for `Range` therefore
 does not overlap the `Map` impl just because the two record shapes have fields.

@@ -180,6 +180,7 @@ fn a_call_between_destinations_asks_for_exactly_the_arguments_its_choice_reads()
     let summaries = HashMap::from_iter([(
         callsite,
         CallSiteSummary {
+            last_resort: None,
             targets: vec![target(1, int), target(2, atom)],
             return_ty: None,
         },

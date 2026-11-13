@@ -136,8 +136,30 @@ need a generic heap-boxed lookup just to find the callback.</p>
 
 <p>If the compiler proves a finite union of local implementations, it builds a
 DispatchMatrix and lowers a small type dispatch to those implementations. If the
-receiver is open or erased, the unmatched residual stays behind the protocol
-stub; there is still no broad dynamic lookup hidden behind the call.</p>
+receiver is open or erased, the call tests the receiver against the
+implementations; there is still no broad dynamic lookup hidden behind the call.</p>
+
+<p>A receiver that no implementation takes raises
+<code>Protocol.UndefinedError</code>, worded as Elixir words it: the protocol,
+the kind of the value (<code>Map</code>, <code>Float</code>,
+<code>Tuple</code>, <code>Foo (a struct)</code> and so on), and the value. A
+call whose receiver no implementation can take at all is refused at compile
+time.</p>
+
+<pre>defprotocol Sizer do
+  def size(value)
+end
+
+defimpl Sizer, for: Integer do
+  def size(value), do: value
+end
+
+Enum.map([1, 1.5], fn value -> Sizer.size(value) end)
+# ** (Protocol.UndefinedError) protocol Sizer not implemented for Float
+#
+# Got value:
+#
+#     1.5</pre>
 
 <h2 id="limits">7. Current limits</h2>
 

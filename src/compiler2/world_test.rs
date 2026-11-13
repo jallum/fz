@@ -2126,6 +2126,7 @@ fn resolving_a_published_unresolved_edge_wakes_its_readers() {
     );
 
     let resolved = super::semantic::CallSiteResolution::Resolved(super::CallSiteSummary {
+        last_resort: None,
         targets: vec![super::CallTargetSummary {
             callee: super::SelectedCallee::ProviderBoundary(callee),
             surface_inputs: Vec::new(),

@@ -20,13 +20,14 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
-    GuardExtern, LastResort, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp,
+    GuardExtern, LastResort, MessageSubject, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr,
+    PatternGuardUnaryOp,
 };
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
     BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DestMapSeed, DirectCallTarget,
     ExternAbi, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FnBuilder, FnCategory, FnId,
-    ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
+    ModuleBuilder, Prim, RaiseSubject, ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
 };
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate, TuplePositions};
@@ -2007,6 +2008,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             ));
         };
         match node {
+            DispatchNode::Fail if dispatch.plan.last_resort.is_some() => {
+                self.raise_last_resort(ctx, &dispatch.plan, state)
+            }
             DispatchNode::Fail => {
                 ctx.set_term(Term::Unreachable);
                 Ok(())
@@ -2911,12 +2915,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 format!("a dispatch with no last resort reached its fail in {:?}", ctx.origin),
             ));
         };
-        let (exception, message, shows_subject) = match last_resort {
+        let (exception, message, message_subject) = match last_resort {
             LastResort::Exception {
                 exception,
                 message,
-                shows_subject,
-            } => (exception, message, *shows_subject),
+                subject,
+            } => (exception, message, *subject),
             LastResort::Reraise => {
                 let kind = state.dispatch_inputs.first().ok_or(FatalError)?;
                 let kind = self.materialize_native_value(ctx, None, kind)?;
@@ -2926,18 +2930,23 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 return Ok(());
             }
         };
-        let subject = if shows_subject {
-            let input = state.dispatch_inputs.first().ok_or(FatalError)?;
-            Some(self.materialize_native_value(ctx, None, input)?)
-        } else {
-            None
+        let subject = match message_subject {
+            MessageSubject::Absent => None,
+            MessageSubject::Shown | MessageSubject::ShownWithKind => {
+                let input = state.dispatch_inputs.first().ok_or(FatalError)?;
+                let var = self.materialize_native_value(ctx, None, input)?;
+                Some(match message_subject {
+                    MessageSubject::ShownWithKind => RaiseSubject::ShownWithKind(var),
+                    _ => RaiseSubject::Shown(var),
+                })
+            }
         };
         self.emit_raise(ctx, exception, message, subject);
         Ok(())
     }
 
     /// Ends the block raising `exception` with `message`.
-    fn emit_raise(&mut self, ctx: &mut NativeFnCtx, exception: &str, message: &str, subject: Option<Var>) {
+    fn emit_raise(&mut self, ctx: &mut NativeFnCtx, exception: &str, message: &str, subject: Option<RaiseSubject>) {
         let (exception, _) = ctx.emit_let(Prim::Const(Const::Atom(self.atom_id(exception))));
         let message = message.as_bytes().to_vec();
         let bit_len = 8 * message.len() as u64;

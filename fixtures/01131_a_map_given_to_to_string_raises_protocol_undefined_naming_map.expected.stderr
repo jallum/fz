@@ -1,0 +1,6 @@
+** (Protocol.UndefinedError) protocol String.Chars not implemented for Map
+
+Got value:
+
+    %{"a" => 1}
+

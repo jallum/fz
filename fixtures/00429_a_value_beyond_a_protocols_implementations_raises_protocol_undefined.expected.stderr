@@ -1,0 +1,6 @@
+** (Protocol.UndefinedError) protocol Sizer not implemented for Float
+
+Got value:
+
+    1.0
+

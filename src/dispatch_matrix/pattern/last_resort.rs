@@ -8,6 +8,19 @@
 
 use std::borrow::Cow;
 
+/// What a last resort's message says about the subject, the plan's first
+/// input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MessageSubject {
+    /// Nothing: the message is fixed.
+    Absent,
+    /// The message is a lead, then the subject on a line of its own.
+    Shown,
+    /// The message is a lead that ends with the name of the subject's kind,
+    /// then the subject on a line of its own after `Got value:`.
+    ShownWithKind,
+}
+
 /// What a plan does at a `Fail`: raise an exception worded the way Elixir
 /// words it, or continue a raise that arrived.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -19,9 +32,8 @@ pub enum LastResort {
         /// The whole message, or the lead of a message that goes on to show
         /// the subject.
         message: String,
-        /// Whether the message shows the plan's subject, its first input, on a
-        /// line of its own after the lead.
-        shows_subject: bool,
+        /// What the message goes on to say about the plan's subject.
+        subject: MessageSubject,
     },
     /// Continue the raise a handler was delivered, with the plan's first two
     /// inputs as its kind and value.
@@ -41,6 +53,16 @@ impl LastResort {
     /// The left side of `=` does not match the right.
     pub(crate) fn match_error() -> Self {
         Self::showing("Elixir.MatchError", "no match of right hand side value:")
+    }
+
+    /// No implementation of `protocol` takes the receiver, which the message
+    /// shows after naming its kind, as Elixir's `Protocol.UndefinedError` does.
+    pub(crate) fn protocol_undefined(protocol: &str) -> Self {
+        Self::Exception {
+            exception: Cow::Borrowed("Elixir.Protocol.UndefinedError"),
+            message: format!("protocol {protocol} not implemented for "),
+            subject: MessageSubject::ShownWithKind,
+        }
     }
 
     /// No clause of a `case` matches.
@@ -109,7 +131,8 @@ impl LastResort {
     pub(crate) fn consumed_inputs(&self) -> usize {
         match self {
             Self::Exception {
-                shows_subject: true, ..
+                subject: MessageSubject::Shown | MessageSubject::ShownWithKind,
+                ..
             } => 1,
             Self::Exception { .. } => 0,
             Self::Reraise => 2,
@@ -122,7 +145,7 @@ impl LastResort {
         Self::Exception {
             exception: Cow::Owned(exception),
             message,
-            shows_subject: false,
+            subject: MessageSubject::Absent,
         }
     }
 
@@ -130,7 +153,7 @@ impl LastResort {
         Self::Exception {
             exception: Cow::Borrowed(exception),
             message,
-            shows_subject: false,
+            subject: MessageSubject::Absent,
         }
     }
 
@@ -138,7 +161,7 @@ impl LastResort {
         Self::Exception {
             exception: Cow::Borrowed(exception),
             message: lead.to_string(),
-            shows_subject: true,
+            subject: MessageSubject::Shown,
         }
     }
 }

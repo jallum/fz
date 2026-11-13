@@ -634,3 +634,56 @@ fn a_halt_reports_its_status_and_ends_the_process_past_every_handler_without_a_l
         assert!(process.raised.is_none() && !process.has_delivered_handler());
     });
 }
+
+/// A named struct as a value, with no fields.
+fn named_struct(process: &mut Process, name: &str) -> AnyValue {
+    let module = crate::module_name::ModuleName::from_segments(name.split('.').map(str::to_string).collect());
+    let schema = process.heap.register_schema(Schema::named_struct(module, []));
+    AnyValue::heap_ptr(process.heap.alloc_struct(schema), ValueKind::STRUCT)
+}
+
+#[test]
+fn a_value_is_named_by_its_kind_the_way_elixir_names_it_to_a_protocol() {
+    with_process(|process| {
+        let list_bits = process
+            .heap
+            .alloc_list_cons_slot(AnyValue::Int(1), crate::any_value::EMPTY_LIST_BITS);
+        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("list addr");
+        let list = AnyValue::from_ref(AnyValueRef::from_heap_object(ValueKind::LIST, list_addr).expect("list ref"))
+            .expect("list value");
+        let tuple = pair(process, AnyValue::Int(1), AnyValue::Int(2));
+        let map = map(process, &[("a", AnyValue::Int(1))]);
+        let text = binary(process, "text");
+        let struct_value = named_struct(process, "Geo.Point");
+        let ok = atom(process, "ok");
+        let process: *mut Process = process;
+        let cases = [
+            (AnyValue::Int(1), "Integer"),
+            (AnyValue::float(1.5), "Float"),
+            (ok, "Atom"),
+            (AnyValue::EmptyList, "List"),
+            (list, "List"),
+            (map, "Map"),
+            (tuple, "Tuple"),
+            (text, "BitString"),
+            (struct_value, "Geo.Point (a struct)"),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(kind_name(process, value), expected);
+        }
+    });
+}
+
+#[test]
+fn a_raise_naming_the_kind_prints_elixirs_protocol_undefined_banner() {
+    let (lines, failed) = recording(|process| {
+        let name = atom(process, "Elixir.Protocol.UndefinedError");
+        let term = AnyValue::float(1.5);
+        raise_exception_naming_kind(process, name, "protocol Sizer not implemented for ", term);
+    });
+    assert!(failed);
+    assert_eq!(
+        lines,
+        ["** (Protocol.UndefinedError) protocol Sizer not implemented for Float\n\nGot value:\n\n    1.5\n"]
+    );
+}

@@ -1,0 +1,14 @@
+1 2 3
+x y
+protocol String.Chars not implemented for Tuple
+
+Got value:
+
+    {2, 3}
+
+protocol String.Chars not implemented for Tuple
+
+Got value:
+
+    {1, 2}
+

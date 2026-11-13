@@ -173,6 +173,7 @@ fn try_materialize_closure_edge(
         world.define_callsite_summary(
             key,
             CallSiteResolution::Resolved(CallSiteSummary {
+                last_resort: None,
                 targets: [302, 303]
                     .into_iter()
                     .map(|function| CallTargetSummary {

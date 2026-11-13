@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 use std::rc::Rc;
 
-use crate::dispatch_matrix::pattern::PatternDispatchPlan;
+use crate::dispatch_matrix::pattern::{LastResort, PatternDispatchPlan};
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::dispatch_reachability::ReachedEdges;
@@ -125,6 +125,9 @@ impl CallTargetSummary {
 pub struct CallSiteSummary {
     pub targets: Vec<CallTargetSummary>,
     pub return_ty: Option<Ty>,
+    /// What the call raises for a receiver no target takes; present only when
+    /// the receiver type reaches beyond every target.
+    pub last_resort: Option<LastResort>,
 }
 
 impl CallSiteSummary {
@@ -1556,6 +1559,12 @@ impl CallSiteSummary {
             .first()
             .map(|target| target.surface_inputs.len())
             .unwrap_or(0)
+    }
+
+    /// Whether the callsite chooses at runtime: several targets, or one that
+    /// a receiver beyond it can miss.
+    pub fn is_decision(&self) -> bool {
+        self.targets.len() > 1 || self.last_resort.is_some()
     }
 
     pub fn single_target(&self) -> Option<&CallTargetSummary> {

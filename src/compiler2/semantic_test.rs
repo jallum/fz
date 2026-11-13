@@ -136,6 +136,7 @@ fn a_provider_boundary_is_never_the_one_owned_target() {
         return_ty: None,
     };
     let summary = |callee| CallSiteSummary {
+        last_resort: None,
         targets: vec![target(callee)],
         return_ty: None,
     };
@@ -507,6 +508,7 @@ mod tests {
         let any = world.types_mut().any();
 
         let narrow = CallSiteSummary {
+            last_resort: None,
             targets: vec![CallTargetSummary {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![int],
@@ -518,6 +520,7 @@ mod tests {
             return_ty: Some(int),
         };
         let wider = CallSiteSummary {
+            last_resort: None,
             targets: vec![CallTargetSummary {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![any],
@@ -562,6 +565,7 @@ mod tests {
             callsite: CallSiteId::from_u32(0),
         };
         let ready = CallSiteSummary {
+            last_resort: None,
             targets: vec![CallTargetSummary {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![int],
@@ -573,6 +577,7 @@ mod tests {
             return_ty: Some(int),
         };
         let pending = CallSiteSummary {
+            last_resort: None,
             targets: vec![CallTargetSummary {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![int],
@@ -622,6 +627,7 @@ mod tests {
             callsite: CallSiteId::from_u32(0),
         };
         let summary_for = |activation: ActivationKey, input: Ty| CallSiteSummary {
+            last_resort: None,
             targets: vec![CallTargetSummary {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![input],
@@ -680,6 +686,7 @@ mod tests {
             callsite: CallSiteId::from_u32(0),
         };
         let summary = CallSiteSummary {
+            last_resort: None,
             targets: vec![
                 CallTargetSummary {
                     callee: SelectedCallee::Function(callee),
@@ -744,6 +751,7 @@ mod tests {
             callsite: CallSiteId::from_u32(0),
         };
         let summary = |ty| CallSiteSummary {
+            last_resort: None,
             targets: vec![CallTargetSummary {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![ty],

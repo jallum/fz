@@ -4,8 +4,8 @@ use std::rc::Rc;
 
 use crate::ast::{Pattern, Spanned};
 use crate::dispatch_matrix::pattern::{
-    PatternBodyId, PatternDispatchError, PatternDispatchPlan, PatternRow, PatternSubjectRef, SourcePatternRows,
-    pattern_dispatch_from_source,
+    LastResort, PatternBodyId, PatternDispatchError, PatternDispatchPlan, PatternRow, PatternSubjectRef,
+    SourcePatternRows, pattern_dispatch_from_source,
 };
 use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::source::Span;
@@ -48,12 +48,18 @@ pub(crate) fn call_destinations(
     types: &mut Types,
     summary: &CallSiteSummary,
 ) -> Result<CallDestinations, PatternDispatchError> {
-    if summary.targets.len() <= 1 {
+    if !summary.is_decision() {
         return Ok(sole_destination(summary.targets.first().cloned()));
     }
     let arrived = arrival_order(types, &summary.targets);
     let surfaces = target_surfaces(&arrived);
-    let (order, plan) = routable_alternatives(types, summary.arity(), &surfaces, &same_callee(&arrived))?;
+    let (order, plan) = routable_alternatives(
+        types,
+        summary.arity(),
+        &surfaces,
+        &same_callee(&arrived),
+        summary.last_resort.as_ref(),
+    )?;
     let targets = order.iter().map(|index| arrived[*index].clone()).collect::<Vec<_>>();
     let Some(plan) = plan else {
         return Ok(sole_destination(targets.into_iter().next()));
@@ -96,13 +102,16 @@ fn sole_destination(target: Option<CallTargetSummary>) -> CallDestinations {
 /// the rows from a returned surface would be a second place deciding what the
 /// plan asks and in what order. Both doors -- a callsite and a construction
 /// wrapper -- get the same answer because there is only one place that gives
-/// it. `None` where one alternative is left, which is a direct call at a
-/// callsite and a single member at a wrapper.
+/// it. `None` where one alternative is left and nothing can miss, which is a
+/// direct call at a callsite and a single member at a wrapper. A `last_resort`
+/// makes even a single alternative a decision: the plan tests the first input
+/// and raises it where no alternative takes it.
 fn routable_alternatives(
     types: &mut Types,
     arity: usize,
     surfaces: &[Vec<Ty>],
     same_callee: &dyn Fn(usize, usize) -> bool,
+    last_resort: Option<&LastResort>,
 ) -> Result<(Vec<usize>, Option<PatternDispatchPlan<Ty>>), PatternDispatchError> {
     let observable_inputs = observable_inputs(types, surfaces);
     let questions = runtime_questions(types, &observable_inputs);
@@ -116,18 +125,27 @@ fn routable_alternatives(
     let (observable, questions): (Vec<_>, Vec<_>) = surviving.into_iter().unzip();
     let order = specificity_order(types, &questions, &observable);
     let alternatives = permuted(routable, &order);
-    if alternatives.len() <= 1 {
+    if alternatives.len() <= 1 && last_resort.is_none() {
         return Ok((alternatives, None));
     }
     let observable = permuted(observable, &order);
     let questions = permuted(questions, &order);
-    let columns = dispatch_columns(arity, &observable, &questions);
+    let mut columns = dispatch_columns(arity, &observable, &questions);
+    // A call that can miss tests its receiver, whether or not its arms ask
+    // anything of it.
+    if last_resort.is_some() && !columns.contains(&0) {
+        columns.insert(0, 0);
+    }
     let rows = observable
         .iter()
         .enumerate()
         .map(|(index, inputs)| dispatch_row(inputs, arity, &columns, index as PatternBodyId))
         .collect::<Vec<_>>();
-    let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(arity, rows))?;
+    let mut source = SourcePatternRows::lexical(arity, rows);
+    if let Some(last_resort) = last_resort {
+        source = source.raising(last_resort.clone());
+    }
+    let plan = pattern_dispatch_from_source(source)?;
     Ok((alternatives, Some(plan)))
 }
 
@@ -914,7 +932,7 @@ pub(crate) fn construction_member_selection(
 ) -> Result<ConstructionSelection, PatternDispatchError> {
     let arity = edges.first().map_or(0, |edge| edge.surface.inputs.len());
     let surfaces = edges.iter().map(|edge| edge.surface.inputs.clone()).collect::<Vec<_>>();
-    let (members, plan) = routable_alternatives(types, arity, &surfaces, &|_, _| true)?;
+    let (members, plan) = routable_alternatives(types, arity, &surfaces, &|_, _| true, None)?;
     Ok(ConstructionSelection {
         members,
         plan: plan.map(Rc::new),
