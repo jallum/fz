@@ -10,9 +10,15 @@
   "id": "fz-53f.14",
   "labels": [],
   "parent": "fz-53f",
+  "comments": [
+    {
+      "text": "Not built. Interleaved re-measure at 5b93e5fa9 (median/min %, 9 runs each): distinct1 0.00/+0.04, f761 -0.21/-0.20, f765 -0.14/-0.11, r6 +0.20/+0.26, lit16 +0.24/+0.14; allocation calls rise on all five probes (+1,696 on distinct1). No saving on every probe, so closed per the ticket's own rule.",
+      "timestamp": "2026-11-13T02:59:22Z"
+    }
+  ],
   "priority": 3,
   "status": "closed",
   "title": "The entry walk table is keyed by control entry",
   "type": "task",
-  "updated_at": "2026-11-13T02:59:16Z"
+  "updated_at": "2026-11-13T02:59:22Z"
 }
