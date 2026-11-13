@@ -6,13 +6,14 @@
     "fz-sc8.3",
     "fz-sc8.36"
   ],
+  "closed_at": "2026-11-13T14:09:37Z",
   "created": "2026-11-11T15:21:28Z",
   "description": "x.f(a...) whose base is not a module name is a call on a module value (a field read stays a field read). Body lowering emits a DirectCall whose callee is DirectCallee::ModuleValue { module, function }; the module is evaluated before the arguments. Semantic resolves from the receiver's type (resolve_module_value_call): the type must be within atom and list its atoms; each atom goes through ModuleName::from_atom_name -\u003e World::reference_module -\u003e World::module_public_function (the lookup Mod.f(...) resolution shares). One atom -\u003e a direct call; several -\u003e one target per atom, chosen at run time.\n\nAs built, the receiver is not an argument and no surface grows to arity n+1. Each CallTargetSummary carries selector: Option\u003cTy\u003e, the atom of its module. Dispatch surfaces are selector ++ surface inputs (callsite_dispatch::target_surfaces, CallSiteSummary::arity), and BackendTail::DirectCall.selector is prepended to the dispatch inputs in native and the interpreter, so arguments stay one-for-one with the callee's inputs. Keying asks the module value whole (two module receivers keep two keys, each a direct call); the dispatch demand reads its choice from the module (CallsiteDispatchDemand.selector).\n\nRefused at compile time with type/module-value-call: a receiver that is never an atom, one that is only sometimes an atom, one typed plain atom (lists no modules; fz-3sy.5 removes this refusal and decides the mixed case), and an atom outside Elixir. such as :erlang (ModuleName::from_atom_name maps only Elixir.-prefixed atoms; fz-sc8.3 adds the rest). An undefined module or function reuses resolve/unknown-module and resolve/unknown-import.\n\nRemoved direct_callee's field-read-then-closure-call fallback for a call on a bound base. Fixtures 00864-00867; e.__struct__.f(e) works on all three paths.",
   "id": "fz-3sy.4",
   "labels": [],
   "parent": "fz-3sy",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A call on a module value: one atom or a finite set of atoms",
   "type": "feature",
   "updated_at": "2026-11-13T14:09:37Z"
