@@ -452,7 +452,7 @@ impl Types {
             return;
         }
         if side == BindingSide::Lower || side == BindingSide::Unify {
-            out.extend(self.descr(pattern).clone().vars.values.iter().copied());
+            out.extend(self.descr(pattern).vars.values.iter().copied());
         }
         let arity = self.max_tuple_arity(pattern);
         for field in self.tuple_projections(pattern, arity) {
@@ -613,12 +613,13 @@ impl Types {
     /// product (negations or mixed arities inside one conjunction fall back
     /// to the caller's projection path).
     fn tuple_positive_alternatives(&mut self, ty: &Ty) -> Option<Vec<Vec<Ty>>> {
-        let conjs = self.descr(ty).tuples.clone();
-        if conjs.is_empty() {
+        let clauses = self.descr(ty).tuples.len();
+        if clauses == 0 {
             return None;
         }
         let mut alternatives = Vec::new();
-        for conj in conjs {
+        for clause in 0..clauses {
+            let conj = &self.descr(ty).tuples[clause];
             if !conj.neg.is_empty() || conj.pos.is_empty() {
                 return None;
             }
@@ -626,20 +627,14 @@ impl Types {
             if conj.pos.iter().any(|sig| sig.elems.len() != arity) {
                 return None;
             }
-            let mut fields: Option<Vec<Ty>> = None;
-            for sig in conj.pos {
-                fields = Some(match fields {
-                    Some(current) => current
-                        .iter()
-                        .zip(sig.elems.iter())
-                        .map(|(left, right)| self.intersect(*left, *right))
-                        .collect(),
-                    None => sig.elems,
-                });
+            let positives = conj.pos.len();
+            let mut fields = conj.pos[0].elems.clone();
+            for positive in 1..positives {
+                for (field, slot) in fields.iter_mut().enumerate() {
+                    let right = self.descr(ty).tuples[clause].pos[positive].elems[field];
+                    *slot = self.intersect(*slot, right);
+                }
             }
-            let Some(fields) = fields else {
-                continue;
-            };
             if fields.iter().all(|field| !self.is_empty(field)) {
                 alternatives.push(fields);
             }
