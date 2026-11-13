@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T19:38:02Z",
   "created": "2026-11-13T19:11:23Z",
   "description": "Claim: ReachabilityCalculator::visit (src/compiler2/dispatch_reachability.rs) clones the ReachabilityState to probe the visited set on every visit, so revisits pay for a copy they do not need.\n\nFinding (counter on the OptionParser probe, removed): 2,830 visits, 2,789 first visits, 41 revisits (1.4%). The visited set must own one copy of each new state and the state is read again after the insert, so the copy is required on every first visit. Probing by borrow would save 41 copies and needs the set reshaped into a map from node to states. Not worth building; closed with no change.",
   "id": "fz-y11.22",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Dispatch reachability copies a state only when it is new",
   "type": "task",
-  "updated_at": "2026-11-13T19:38:01Z"
+  "updated_at": "2026-11-13T19:38:02Z"
 }
