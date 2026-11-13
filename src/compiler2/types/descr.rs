@@ -819,7 +819,7 @@ fn clauses_within<T: Clone + PartialEq>(
     cx: TyCtx<'_>,
     ours: &[Conj<T>],
     theirs: &[Conj<T>],
-    clause_empty: impl Fn(TyCtx<'_>, &Conj<T>, InFlight<'_>) -> bool,
+    clause_empty: impl Fn(TyCtx<'_>, &Conj<T>) -> bool,
 ) -> bool {
     if ours.is_empty() {
         return true;
@@ -827,11 +827,11 @@ fn clauses_within<T: Clone + PartialEq>(
     if theirs.is_empty() {
         return ours
             .iter()
-            .all(|c| c.pos.iter().any(|p| c.neg.contains(p)) || clause_empty(cx, c, InFlight::default()));
+            .all(|c| c.pos.iter().any(|p| c.neg.contains(p)) || clause_empty(cx, c));
     }
     dnf_intersect(ours, &dnf_neg(theirs))
         .iter()
-        .all(|c| clause_empty(cx, c, InFlight::default()))
+        .all(|c| clause_empty(cx, c))
 }
 
 fn single_positive<T>(clauses: &[Conj<T>]) -> Option<&T> {
