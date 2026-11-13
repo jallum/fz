@@ -1434,7 +1434,11 @@ pub mod debug {
         if proc.is_null() {
             return None;
         }
-        unsafe { &*proc }.node.atom_name(id).filter(|name| !name.is_empty())
+        unsafe { &*proc }
+            .node
+            .atom_name(id)
+            .filter(|name| !name.is_empty())
+            .map(|name| name.to_string())
     }
 
     /// The operators and special forms Elixir writes without quotes:

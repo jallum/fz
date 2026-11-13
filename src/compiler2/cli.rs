@@ -567,7 +567,7 @@ fn collect_from_macro_call(
             let args = node.tail.list_items().map_err(|error| error.to_string())?;
             let name = match args.first() {
                 Some(first) if first.root().tag() == fz_runtime::any_value::ValueKind::ATOM => {
-                    Some(first.atom_name().map_err(|error| error.to_string())?)
+                    Some(first.atom_name().map_err(|error| error.to_string())?.to_string())
                 }
                 _ => None,
             };

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use fz_runtime::any_value::AnyValueRef;
+use fz_runtime::process::AtomName;
 
 use crate::ast::{Attribute, TypeAliasDecl, TypeExprBody};
 use crate::modules::identity::ModuleName;
@@ -248,10 +249,10 @@ fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeS
                     group_order.push(order_key);
                     PendingFunctionGroup {
                         item_roots: Vec::new(),
-                        kind: head_name.clone(),
+                        kind: head_name.to_string(),
                     }
                 });
-                if entry.kind != head_name {
+                if entry.kind != head_name.as_str() {
                     return Err(QuotedSourceError::user(
                         crate::diag::codes::PARSE_MIXED_FUNCTION_VISIBILITY,
                         node.span,
@@ -330,7 +331,7 @@ fn reject_dangling_function_attrs(
     let head = attr_root
         .cursor()
         .ast_node(sources)?
-        .map(|node| node.head.atom_name())
+        .map(|node| node.head.atom_name().map(|name| name.to_string()))
         .transpose()?
         .unwrap_or_else(|| "@doc/@spec".to_string());
     let span = surface_span(&attr_root, sources)?;
@@ -942,10 +943,16 @@ fn parse_function_head_key_inner(
                 if operator_arity == 1 { "one" } else { "two" }
             )));
         }
-        return Ok(FunctionGroupKey { name, arity });
+        return Ok(FunctionGroupKey {
+            name: name.to_string(),
+            arity,
+        });
     }
     if is_local_function_name(&name, allow_reserved_macro_name) {
-        return Ok(FunctionGroupKey { name, arity });
+        return Ok(FunctionGroupKey {
+            name: name.to_string(),
+            arity,
+        });
     }
     Err(QuotedSourceError::new(format!(
         "`{name}` is not a definable function name"
@@ -1010,7 +1017,7 @@ fn parse_import_keyword_args(cursor: &QuotedSourceCursor) -> Result<ImportKeywor
         if tuple.len() != 2 {
             return Err(QuotedSourceError::new("expected keyword tuple"));
         }
-        let kind = tuple[0].atom_name()?;
+        let kind = tuple[0].atom_name()?.to_string();
         let values = tuple[1]
             .list_items()?
             .into_iter()
@@ -1019,7 +1026,7 @@ fn parse_import_keyword_args(cursor: &QuotedSourceCursor) -> Result<ImportKeywor
                 if tuple.len() != 2 {
                     return Err(QuotedSourceError::new("expected import filter tuple"));
                 }
-                Ok((tuple[0].atom_name()?, tuple[1].int_value()? as usize))
+                Ok((tuple[0].atom_name()?.to_string(), tuple[1].int_value()? as usize))
             })
             .collect::<Result<Vec<_>, _>>()?;
         out.push((kind, values));
@@ -1079,7 +1086,7 @@ fn extract_do_body_list_root(
     Err(QuotedSourceError::new("expected quoted do-body keyword"))
 }
 
-fn surface_head_name(root: &QuotedSourceRoot, sources: &SourceMap) -> Result<Option<String>, QuotedSourceError> {
+fn surface_head_name(root: &QuotedSourceRoot, sources: &SourceMap) -> Result<Option<AtomName>, QuotedSourceError> {
     if let Some(node) = root.cursor().ast_node(sources)? {
         return atom_head_name(&node);
     }
@@ -1137,7 +1144,7 @@ fn surface_span(root: &QuotedSourceRoot, sources: &SourceMap) -> Result<Span, Qu
     Ok(merged.unwrap_or(Span::DUMMY))
 }
 
-fn atom_head_name(node: &QuotedAstNode) -> Result<Option<String>, QuotedSourceError> {
+fn atom_head_name(node: &QuotedAstNode) -> Result<Option<AtomName>, QuotedSourceError> {
     if node.head.root().tag() != fz_runtime::any_value::ValueKind::ATOM {
         return Ok(None);
     }

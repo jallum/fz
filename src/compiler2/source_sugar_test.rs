@@ -93,7 +93,7 @@ fn stamp_after_rewriting(text: &str) -> Option<String> {
         .meta
         .map_value(super::super::source::META_FROM_OPERATOR_KEY)
         .expect("meta is a map")
-        .map(|stamp| stamp.atom_name().expect("the stamp is an atom"))
+        .map(|stamp| stamp.atom_name().expect("the stamp is an atom").to_string())
 }
 
 /// The operators a later decoder has to recognize again carry their stamp:
@@ -143,7 +143,7 @@ fn show(cursor: &crate::compiler2::QuotedSourceCursor, sources: &crate::source::
         };
     };
     if !node.tail.is_list_like() {
-        let name = node.head.atom_name().expect("variable name");
+        let name = node.head.atom_name().expect("variable name").to_string();
         return match node.meta.hygiene_ordinal().expect("hygiene") {
             Some(ordinal) => format!("{name}#{ordinal}"),
             None => name,

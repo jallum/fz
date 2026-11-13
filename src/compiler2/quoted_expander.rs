@@ -981,7 +981,7 @@ fn splice_candidate_name(node: &QuotedAstNode) -> Result<Option<String>, QuotedS
         return Ok(None);
     }
     let name = node.head.atom_name()?;
-    Ok((name.starts_with("__") && !is_list_like(&node.tail)).then_some(name))
+    Ok((name.starts_with("__") && !is_list_like(&node.tail)).then(|| name.to_string()))
 }
 
 pub(crate) fn expand_item_macro_fragment<C: QuotedExpansionCtx>(
@@ -1081,7 +1081,7 @@ fn item_macro_invocation(
                 return Ok(ItemMacroInvocation {
                     function: None,
                     args: Vec::new(),
-                    display_name: head,
+                    display_name: head.to_string(),
                     node: Some(node),
                 });
             }
@@ -1096,7 +1096,7 @@ fn item_macro_invocation(
                 return Ok(ItemMacroInvocation {
                     function: None,
                     args: Vec::new(),
-                    display_name: head,
+                    display_name: head.to_string(),
                     node: Some(node),
                 });
             }
@@ -1109,7 +1109,7 @@ fn item_macro_invocation(
             return Ok(ItemMacroInvocation {
                 function: Some(function),
                 args,
-                display_name: head,
+                display_name: head.to_string(),
                 node: None,
             });
         }
@@ -1143,7 +1143,7 @@ fn item_macro_invocation(
         if head.starts_with('@') {
             continue;
         }
-        display_name = head.clone();
+        display_name = head.to_string();
         let Some(symbol) = world.lookup_callable_namespace(scope.namespace(), &head, 1) else {
             return Err(item_macro_not_defmacro(tel, &display_name, span));
         };
@@ -1350,7 +1350,7 @@ pub(crate) fn item_macro_not_defmacro(
 
 fn item_macro_display_name(node: &QuotedAstNode, sources: &SourceMap) -> Result<String, QuotedSourceError> {
     if node.head.root().tag() == ValueKind::ATOM {
-        return node.head.atom_name();
+        return node.head.atom_name().map(|name| name.to_string());
     }
     let Some(head_node) = node.head.ast_node(sources)? else {
         return Ok("item".to_string());

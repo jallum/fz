@@ -25,7 +25,7 @@ pub(super) fn quoted_tokens(root: &QuotedSourceRoot) -> Vec<String> {
 
 fn collect_tokens(cursor: &QuotedSourceCursor, tokens: &mut Vec<String>) {
     match cursor.root().tag() {
-        ValueKind::ATOM => tokens.push(cursor.atom_name().expect("atom name")),
+        ValueKind::ATOM => tokens.push(cursor.atom_name().expect("atom name").to_string()),
         ValueKind::LIST => {
             for item in cursor.list_items().expect("list items") {
                 collect_tokens(&item, tokens);

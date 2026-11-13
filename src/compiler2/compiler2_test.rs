@@ -1539,7 +1539,7 @@ fn definition_target_from_macro_output(
         Some(call) => call.head.atom_name().ok(),
         None => head.atom_name().ok(),
     }?;
-    Some((name, definition.span?.source_version))
+    Some((name.to_string(), definition.span?.source_version))
 }
 
 #[test]

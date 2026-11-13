@@ -42,7 +42,7 @@ fn parse_quoted_error(
 }
 
 fn head_name(node: &super::QuotedAstNode) -> String {
-    node.head.atom_name().expect("ast head atom")
+    node.head.atom_name().expect("ast head atom").to_string()
 }
 
 fn map_value<'a>(
@@ -1236,7 +1236,7 @@ fn compiler2_frontdoor_continues_alias_path_across_newline_after_dot() {
         .list_items()
         .expect("alias segments")
         .iter()
-        .map(|item| item.atom_name().expect("alias segment atom"))
+        .map(|item| item.atom_name().expect("alias segment atom").to_string())
         .collect();
     assert_eq!(segments, vec!["Foo".to_string(), "Bar".to_string()]);
 }
@@ -1285,7 +1285,7 @@ fn compiler2_frontdoor_lowercase_field_after_dotted_newline_is_remote_access_not
         .list_items()
         .expect("receiver alias segments")
         .iter()
-        .map(|item| item.atom_name().expect("receiver alias segment atom"))
+        .map(|item| item.atom_name().expect("receiver alias segment atom").to_string())
         .collect();
     assert_eq!(
         receiver_segments,
@@ -1376,7 +1376,7 @@ fn compiler2_frontdoor_continues_upper_path_across_newline_after_dot() {
         .list_items()
         .expect("alias segments")
         .iter()
-        .map(|item| item.atom_name().expect("alias segment atom"))
+        .map(|item| item.atom_name().expect("alias segment atom").to_string())
         .collect();
     assert_eq!(segments, vec!["Foo".to_string(), "Bar".to_string()]);
 }
@@ -1736,7 +1736,7 @@ fn compiler2_frontdoor_parses_runtime_bootstrap_sources_directly() {
             .list_items()
             .expect("module name segments")
             .iter()
-            .map(|segment| segment.atom_name().expect("module name segment atom"))
+            .map(|segment| segment.atom_name().expect("module name segment atom").to_string())
             .collect::<Vec<_>>()
             .join(".");
         assert_eq!(

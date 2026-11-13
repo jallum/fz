@@ -403,7 +403,7 @@ fn decode_expr(
                     "true" => Expr::Bool(true),
                     "false" => Expr::Bool(false),
                     "nil" => Expr::Nil,
-                    _ => Expr::Atom(atom),
+                    _ => Expr::Atom(atom.to_string()),
                 },
                 span,
             ))
@@ -485,7 +485,7 @@ fn decode_named_expr(
         ("__aliases__", _) => Ok(Spanned::new(Expr::Alias(alias_from_args(args)?), span)),
         (".", 2) => {
             let base = decode_expr(occurrences, &args[0], Some(span), sources)?;
-            let field = Spanned::new(Expr::Atom(args[1].atom_name()?), span);
+            let field = Spanned::new(Expr::Atom(args[1].atom_name()?.to_string()), span);
             Ok(Spanned::new(Expr::Index(Box::new(base), Box::new(field)), span))
         }
         ("__block__", _) => Ok(Spanned::new(
@@ -609,7 +609,7 @@ pub(super) fn decode_pattern(
                     "true" => Pattern::Bool(true),
                     "false" => Pattern::Bool(false),
                     "nil" => Pattern::Nil,
-                    _ => Pattern::Atom(atom),
+                    _ => Pattern::Atom(atom.to_string()),
                 },
                 span,
             ))
@@ -1745,7 +1745,7 @@ fn decode_keyword_entries(cursor: &QuotedSourceCursor) -> Result<Vec<(String, Qu
         if items.len() != 2 {
             return Err(QuotedSourceError::new("quoted keyword entry expects a 2-tuple"));
         }
-        out.push((items[0].atom_name()?, items[1].clone()));
+        out.push((items[0].atom_name()?.to_string(), items[1].clone()));
     }
     Ok(out)
 }
@@ -2062,7 +2062,7 @@ fn decode_bit_size(
         // only ever a variable the user wrote. No producer in this compiler
         // emits a bitstring size this way today; a future one that does
         // still cannot mean anything but `User`.
-        fz_runtime::any_value::ValueKind::ATOM => Ok(BitSize::Var(Var::user(cursor.atom_name()?))),
+        fz_runtime::any_value::ValueKind::ATOM => Ok(BitSize::Var(Var::user(cursor.atom_name()?.to_string()))),
         other => Err(QuotedSourceError::user(
             crate::diag::codes::PARSE_BITSTRING_BAD_SIZE,
             Some(error_span),
@@ -2355,7 +2355,10 @@ fn optional_map_keyword_tokens(
         if items.len() != 2 {
             return Err(QuotedSourceError::new("quoted keyword entry expects a 2-tuple"));
         }
-        out.push((items[0].atom_name()?, token_payload::decode_tokens(&items[1], sources)?));
+        out.push((
+            items[0].atom_name()?.to_string(),
+            token_payload::decode_tokens(&items[1], sources)?,
+        ));
     }
     Ok(out)
 }
@@ -2371,7 +2374,7 @@ fn expect_ast_node(
 }
 
 fn atom_name(cursor: &QuotedSourceCursor) -> Result<String, QuotedSourceError> {
-    cursor.atom_name()
+    cursor.atom_name().map(|name| name.to_string())
 }
 
 /// A `Var`-shaped node's tail carries its hygiene context, exactly as
@@ -2427,7 +2430,7 @@ fn node_head_is_atom_named(node: &QuotedAstNode, name: &str) -> Result<bool, Quo
 fn alias_from_args(args: &[QuotedSourceCursor]) -> Result<ModuleName, QuotedSourceError> {
     let segments = args
         .iter()
-        .map(|segment| segment.atom_name())
+        .map(|segment| segment.atom_name().map(|name| name.to_string()))
         .collect::<Result<Vec<_>, _>>()?;
     if segments.iter().any(String::is_empty) || segments.is_empty() {
         return Err(QuotedSourceError::new(

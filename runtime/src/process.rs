@@ -287,14 +287,66 @@ pub struct Raised {
 /// and `by_name` for text→id so interning is a hash lookup, not a scan. The
 /// BEAM shape (index array + interning hash table), scaled to one node.
 pub struct AtomTable {
-    by_id: Vec<String>,
-    by_name: HashMap<String, u32>,
+    by_id: Vec<Arc<str>>,
+    by_name: HashMap<Arc<str>, u32>,
+}
+
+/// An atom's text, shared with the table that interned it: reading a name
+/// copies nothing, and holds no borrow of the table.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct AtomName(Arc<str>);
+
+impl AtomName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for AtomName {
+    fn from(name: &str) -> Self {
+        Self(Arc::from(name))
+    }
+}
+
+impl std::ops::Deref for AtomName {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PartialEq<str> for AtomName {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for AtomName {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl std::fmt::Display for AtomName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.as_str().fmt(f)
+    }
+}
+
+impl std::fmt::Debug for AtomName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
 }
 
 impl AtomTable {
     pub fn new(names: Vec<String>) -> Self {
-        let by_name = names.iter().enumerate().map(|(i, n)| (n.clone(), i as u32)).collect();
-        Self { by_id: names, by_name }
+        let mut table = Self {
+            by_id: Vec::new(),
+            by_name: HashMap::new(),
+        };
+        table.reset_from(&names);
+        table
     }
 
     /// Return the atom's id, allocating a fresh one (the next dense index) if
@@ -304,22 +356,28 @@ impl AtomTable {
             return id;
         }
         let id = self.by_id.len() as u32;
-        self.by_id.push(name.to_string());
-        self.by_name.insert(name.to_string(), id);
+        let name: Arc<str> = Arc::from(name);
+        self.by_id.push(Arc::clone(&name));
+        self.by_name.insert(name, id);
         id
     }
 
     /// The atom's text, or `None` if `id` is out of range. O(1).
-    pub fn name(&self, id: u32) -> Option<&str> {
-        self.by_id.get(id as usize).map(String::as_str)
+    pub fn name(&self, id: u32) -> Option<&Arc<str>> {
+        self.by_id.get(id as usize)
     }
 
     /// Replace the whole table with `names` (ids 0..len). Used by the
     /// interpreter when a REPL chunk's code image carries a new cumulative
     /// atom set.
     pub fn reset_from(&mut self, names: &[String]) {
-        self.by_id = names.to_vec();
-        self.by_name = names.iter().enumerate().map(|(i, n)| (n.clone(), i as u32)).collect();
+        self.by_id = names.iter().map(|name| Arc::from(name.as_str())).collect();
+        self.by_name = self
+            .by_id
+            .iter()
+            .enumerate()
+            .map(|(id, name)| (Arc::clone(name), id as u32))
+            .collect();
     }
 }
 
@@ -400,10 +458,9 @@ impl Node {
         self.atoms.borrow_mut().intern(name)
     }
 
-    /// The atom's text, or `None` if `id` is unknown. Returns an owned `String`
-    /// so callers do not hold the table borrow.
-    pub fn atom_name(&self, id: u32) -> Option<String> {
-        self.atoms.borrow().name(id).map(str::to_owned)
+    /// The atom's text, or `None` if `id` is unknown.
+    pub fn atom_name(&self, id: u32) -> Option<AtomName> {
+        self.atoms.borrow().name(id).cloned().map(AtomName)
     }
 
     /// Compare atom ids by their node-global names without cloning either
@@ -416,7 +473,7 @@ impl Node {
     }
 
     pub fn atom_names(&self) -> Vec<String> {
-        self.atoms.borrow().by_id.clone()
+        self.atoms.borrow().by_id.iter().map(|name| name.to_string()).collect()
     }
 
     /// Replace the atom table (interpreter REPL code-image refresh).
