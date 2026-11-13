@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:54:08Z",
+  "description": "bump and peek clone a Tok for every token because the parser owns its token Vec and cannot hand out a borrow.\nSites: src/compiler2/frontdoor.rs:2155 (bump), 1863, 2038, 2091, 2209; src/compiler2/quoted_function.rs:2187, 2195; src/compiler2/type_expr.rs:196, 241, 364, 369, 384, 393, 408 (self.peek().clone() to end the borrow before bump).\nShape: the parser holds a borrowed token slice (or peek returns a reference that outlives the cursor move), and matches on the borrowed token. Absorbs the token sites of fz-y11.7; whichever lands second drops them.\nLine numbers are at develop d0c3ae00c. Site-by-site ledger (class, what is copied, fix shape): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-jobs.md, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-core.md, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-rest.md.\nSignal: full gate green; no golden, census or pin moves; program output and canonical backend dump identical on the probe; allocation count before and after from /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/measure.sh in the commit.\nRemoves: each named copy, and any accessor left without callers.",
+  "id": "fz-gfx.25",
+  "labels": [],
+  "parent": "fz-gfx",
+  "priority": 2,
+  "status": "open",
+  "title": "A parser reads its tokens by reference",
+  "type": "task",
+  "updated_at": "2026-11-13T03:54:08Z"
+}
