@@ -5358,3 +5358,124 @@ fn interning_a_new_descriptor_stores_it_once() {
         "a new entry allocates the growth of the arena and the index; the descriptor moves into the arena and no copy of it is made"
     );
 }
+
+mod subtype_without_a_difference {
+    use super::*;
+
+    /// A spread of descriptors over every axis: scalars, atoms, a type variable,
+    /// brands, tuples, lists, a resource, an arrow, a map, and joins and meets
+    /// of them, including bottoms of every shape.
+    fn corpus(t: &mut Types) -> Vec<Ty> {
+        let (int, float, bin) = (t.int(), t.float(), t.str_t());
+        let (any, none, nil, atom) = (t.any(), t.none(), t.nil(), t.atom());
+        let (ok, error) = (t.atom_lit("ok"), t.atom_lit("error"));
+        let ok_or_error = t.union(ok, error);
+        let number = t.union(int, float);
+        let var = t.type_var(TypeVarId(7));
+        let meters = t.mint_brand(int, "Meters");
+        let feet = t.mint_brand(int, "Feet");
+        let utf8 = t.mint_brand(bin, "utf8");
+        let kinds_meet = t.intersect(int, bin);
+        let brands_meet = t.intersect(meters, feet);
+        let pair = t.tuple(&[int, atom]);
+        let wide_pair = t.tuple(&[number, atom]);
+        let ok_pair = t.tuple(&[int, ok]);
+        let empty_pair = t.tuple(&[int, none]);
+        let triple = t.tuple(&[int, int, int]);
+        let pairs_or_triples = t.union(pair, triple);
+        let ints = t.list(int);
+        let numbers = t.list(number);
+        let nothings = t.list(none);
+        let cell = t.resource(int);
+        let arrow = t.arrow(&[int], int);
+        let wide_arrow = t.arrow(&[number], number);
+        let map = t.map(&[(MapKey::Atom("k".into()), int)]);
+        let mixed = t.union(pairs_or_triples, ints);
+        let not_ok = t.difference(atom, ok);
+        let not_pair = t.difference(wide_pair, pair);
+        vec![
+            any,
+            none,
+            nil,
+            int,
+            float,
+            bin,
+            atom,
+            ok,
+            ok_or_error,
+            number,
+            var,
+            meters,
+            feet,
+            utf8,
+            kinds_meet,
+            brands_meet,
+            pair,
+            wide_pair,
+            ok_pair,
+            empty_pair,
+            triple,
+            pairs_or_triples,
+            ints,
+            numbers,
+            nothings,
+            cell,
+            arrow,
+            wide_arrow,
+            map,
+            mixed,
+            not_ok,
+            not_pair,
+        ]
+    }
+
+    /// The subtype test and the emptiness of the difference are one question:
+    /// the first answers it without building the difference.
+    #[test]
+    fn a_subtype_test_agrees_with_the_emptiness_of_the_difference() {
+        let mut t = Types::new();
+        let tys = corpus(&mut t);
+        let cx = t.ctx();
+        for a in &tys {
+            for b in &tys {
+                let (da, db) = (t.descr(a), t.descr(b));
+                assert_eq!(
+                    da.is_subtype(cx, db),
+                    da.diff(db).is_empty(cx),
+                    "{} <: {}",
+                    t.display(a),
+                    t.display(b)
+                );
+            }
+        }
+    }
+
+    /// A question about scalar kinds is a handful of set tests: the descriptor
+    /// it is asked of is read, and nothing is built.
+    #[test]
+    fn a_scalar_kind_test_allocates_nothing() {
+        let mut t = Types::new();
+        let int = t.int();
+        let float = t.float();
+        let number = t.union(int, float);
+        let ok = t.atom_lit("ok");
+        let nil = t.nil();
+        for ty in [int, float, number, ok, nil] {
+            let (answers, allocations) = allocations_during(|| {
+                [
+                    t.is_integer(&ty),
+                    t.is_floating(&ty),
+                    t.is_nil(&ty),
+                    t.is_atom_type(&ty),
+                ]
+            });
+            assert_eq!(allocations, 0, "{} allocated {allocations} times", t.display(&ty));
+            assert_eq!(
+                answers,
+                [ty == int, ty == float, ty == nil, ty == ok || ty == nil],
+                "{}",
+                t.display(&ty)
+            );
+        }
+    }
+}

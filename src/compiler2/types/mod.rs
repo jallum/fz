@@ -2758,30 +2758,31 @@ impl Types {
         tuple_lit_elems(self.ctx(), self.descr(a))
     }
 
+    /// Whether `a` lies inside one of the interned constants, read straight
+    /// from the two stored descriptors.
+    fn within_constant(&self, a: &Ty, constant: Ty) -> bool {
+        self.descr(a).is_subtype(self.ctx(), self.descr(&constant))
+    }
+
     pub fn is_integer(&self, a: &Ty) -> bool {
-        let cx = self.ctx();
-        self.descr(a).is_subtype(cx, &Descr::int())
+        self.within_constant(a, self.core.int)
     }
 
     pub fn is_floating(&self, a: &Ty) -> bool {
-        let cx = self.ctx();
-        self.descr(a).is_subtype(cx, &Descr::float())
+        self.within_constant(a, self.core.float)
     }
 
     pub fn is_nil(&self, a: &Ty) -> bool {
-        let cx = self.ctx();
-        self.descr(a).is_subtype(cx, &Descr::nil())
+        self.within_constant(a, self.core.nil)
     }
 
     #[cfg(test)]
     pub fn is_bool(&self, a: &Ty) -> bool {
-        let cx = self.ctx();
-        self.descr(a).is_subtype(cx, &Descr::bool_t())
+        self.within_constant(a, self.core.bool_t)
     }
 
     pub fn is_atom_type(&self, a: &Ty) -> bool {
-        let cx = self.ctx();
-        self.descr(a).is_subtype(cx, &Descr::atom_top())
+        self.within_constant(a, self.core.atom)
     }
 
     /// True when `a` mentions a type variable anywhere, including the arrow
