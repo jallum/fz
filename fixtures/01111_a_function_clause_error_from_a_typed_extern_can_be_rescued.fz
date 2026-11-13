@@ -1,0 +1,22 @@
+#---
+# purpose: "The function clause error a typed extern raises for an argument outside its parameter type is caught by rescue, on every path"
+# oracle: 01111_a_function_clause_error_from_a_typed_extern_can_be_rescued.oracle.exs
+#---
+#
+# The extern's own message names a private symbol, so the program prints only
+# the exception's module, which is the same in Elixir for a typed function.
+extern "C" defp fz_op_add_ii(integer, integer) :: integer,
+  raises: ArithmeticError,
+  message: "bad argument in arithmetic expression"
+
+def main() do
+  send(self(), 1.5)
+  receive do
+    x ->
+      try do
+        dbg(fz_op_add_ii(x, 1))
+      rescue
+        e -> dbg(e.__struct__)
+      end
+  end
+end

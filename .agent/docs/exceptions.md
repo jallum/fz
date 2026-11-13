@@ -357,6 +357,7 @@ ends the process the same way.
 | decision | prints |
 |---|---|
 | a function's clauses | `** (FunctionClauseError) no function clause matching in M.f/1` |
+| an extern's one typed clause, for an argument outside a parameter's type | `** (FunctionClauseError) no function clause matching in fz_op_add_ii/2` |
 | an anonymous function's clauses | `** (FunctionClauseError) no function clause matching in anonymous fn/1 in M.g/0` |
 | `pattern = value` | `** (MatchError) no match of right hand side value:` then the value |
 | `case` | `** (CaseClauseError) no case clause matching:` then the value |

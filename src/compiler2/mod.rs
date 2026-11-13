@@ -149,6 +149,8 @@ mod drive_test;
 #[cfg(test)]
 mod elixir_surface_fixtures_test;
 #[cfg(test)]
+mod extern_entry_dispatch_test;
+#[cfg(test)]
 mod facts_test;
 #[cfg(test)]
 mod fixture_contract_harness_test;

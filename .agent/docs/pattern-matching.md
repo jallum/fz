@@ -177,6 +177,13 @@ wait on the same facts through `collect_annotation_requirements`: the
 `TypeDefined` facts the annotations name and the `StructDefined` facts behind
 any `%Mod{}` they spell.
 
+An extern's entry row takes the same shape: wildcard patterns and one
+precondition per fixed parameter, from the contract's entry domain
+(`extern_entry_preconditions`), with no annotation to resolve. An unproven
+argument that fails one raises the same `FunctionClauseError`. The test for a
+`pid`, `ref` or `c_pointer` parameter admits every value, as it does for an
+annotated parameter of an ordinary function.
+
 A helper is a type predicate when it has exactly two guardless clauses over
 plain variable or `_` parameters: the first answers `true` with at least one
 parameter annotated, the second answers `false` with none annotated.

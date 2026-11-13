@@ -706,6 +706,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         })
     }
 
+    /// An extern is a function with one typed clause. When the call's types
+    /// leave that clause something to ask, the executable runs the entry
+    /// dispatch and its one outcome tail-calls the function that makes the
+    /// call; otherwise the executable is that function.
     fn lower_extern_executable(
         &mut self,
         index: usize,
@@ -720,12 +724,53 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 .display_name(),
             index
         );
+        if executable.abi.materialized.entry_dispatch.is_none() {
+            return self.lower_extern_call_fn(
+                index,
+                fn_id,
+                &name,
+                NativeBodyOrigin::Executable(executable.key.clone()),
+                executable,
+                signature,
+            );
+        }
+        let call_fn = self.module.fresh_fn_id();
         let return_reprs = executable.abi.return_layout.layout.reprs.to_vec();
         let mut ctx = NativeFnCtx::new(
             fn_id,
             &name,
             FnCategory::Prelude,
             NativeBodyOrigin::Executable(executable.key.clone()),
+            NativeEntryAbi::Direct,
+            executable.abi.param_reprs.clone(),
+            executable.abi.materialized.return_ty,
+            return_reprs,
+            executable.abi.effects,
+        );
+        self.lower_executable_entry_dispatch(&mut ctx, executable, &[call_fn])?;
+        self.finish_native_fn(ctx);
+        let origin = NativeBodyOrigin::Clause {
+            owner: executable.key.clone(),
+            index: 0,
+        };
+        self.lower_extern_call_fn(index, call_fn, &format!("{name}__call"), origin, executable, signature)
+    }
+
+    fn lower_extern_call_fn(
+        &mut self,
+        index: usize,
+        fn_id: FnId,
+        name: &str,
+        origin: NativeBodyOrigin,
+        executable: &BackendExecutable,
+        signature: &LoweredExtern,
+    ) -> Result<(), FatalError> {
+        let return_reprs = executable.abi.return_layout.layout.reprs.to_vec();
+        let mut ctx = NativeFnCtx::new(
+            fn_id,
+            name,
+            FnCategory::Prelude,
+            origin,
             NativeEntryAbi::Direct,
             executable.abi.param_reprs.clone(),
             executable.abi.materialized.return_ty,
@@ -819,6 +864,42 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             return_reprs,
             executable.abi.effects,
         );
+        self.lower_executable_entry_dispatch(&mut ctx, executable, &helper_ids)?;
+        self.finish_native_fn(ctx);
+
+        for (clause_index, (clause, helper_id)) in clauses.iter().zip(helper_ids.iter().copied()).enumerate() {
+            self.lower_clause_body_fn(
+                helper_id,
+                executable,
+                &format!(
+                    "{}__clause_{}",
+                    self.world
+                        .function_ref(executable.key.activation.function)
+                        .display_name(),
+                    clause_index
+                ),
+                FnCategory::MultiClauseCont,
+                NativeBodyOrigin::Clause {
+                    owner: executable.key.clone(),
+                    index: clause_index as u32,
+                },
+                entries,
+                entry_fns,
+                clause,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Emits the executable's entry dispatch into `ctx`: each outcome tail-calls
+    /// the helper `helper_ids` names for its clause, and a miss raises the plan's
+    /// arm of last resort.
+    fn lower_executable_entry_dispatch(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        helper_ids: &[FnId],
+    ) -> Result<(), FatalError> {
         let entry_tys = executable_input_tys(executable);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
         let semantic_inputs = self.bind_executable_inputs(executable, &entry_vars)?;
@@ -849,32 +930,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 },
             )
             .collect::<Result<Vec<_>, _>>()?;
-        let bindings = self.lower_argument_bindings(&mut ctx, dispatch.plan(), &inputs)?;
+        let bindings = self.lower_argument_bindings(ctx, dispatch.plan(), &inputs)?;
         let mut state = DispatchState::new(inputs, entry_vars, bindings);
-        self.lower_dispatch_node(&mut ctx, dispatch, dispatch.plan().graph.root, &helper_ids, &mut state)?;
-        self.finish_native_fn(ctx);
-
-        for (clause_index, (clause, helper_id)) in clauses.iter().zip(helper_ids.iter().copied()).enumerate() {
-            self.lower_clause_body_fn(
-                helper_id,
-                executable,
-                &format!(
-                    "{}__clause_{}",
-                    self.world
-                        .function_ref(executable.key.activation.function)
-                        .display_name(),
-                    clause_index
-                ),
-                FnCategory::MultiClauseCont,
-                NativeBodyOrigin::Clause {
-                    owner: executable.key.clone(),
-                    index: clause_index as u32,
-                },
-                entries,
-                entry_fns,
-                clause,
-            )?;
-        }
+        self.lower_dispatch_node(ctx, dispatch, dispatch.plan().graph.root, helper_ids, &mut state)?;
         Ok(())
     }
 

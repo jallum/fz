@@ -1191,6 +1191,9 @@ fn collect_executable_atoms(
     seen: &mut HashSet<String>,
     atoms: &mut Vec<String>,
 ) {
+    if let Some(dispatch) = &executable.abi.materialized.entry_dispatch {
+        collect_dispatch_atoms(world, dispatch.plan(), seen, atoms);
+    }
     match &executable.body {
         BackendBody::Extern { signature } => {
             if let Some(exception) = match &signature.ret {
@@ -1201,9 +1204,6 @@ fn collect_executable_atoms(
             }
         }
         BackendBody::Clauses { clauses, entries, .. } => {
-            if let Some(dispatch) = &executable.abi.materialized.entry_dispatch {
-                collect_dispatch_atoms(world, dispatch.plan(), seen, atoms);
-            }
             for clause in clauses {
                 collect_step_atoms(world, &clause.projections, seen, atoms);
             }
