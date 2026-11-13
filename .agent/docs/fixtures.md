@@ -67,6 +67,9 @@ only the keys below:
   `interp`, or `build`.
 - `oracle:` — relative path to a sibling Elixir twin whose stdout owns
   `expected.txt`.
+- `oracle.stamp:` — 16 lowercase hex digits, only with `oracle`: the stamp of
+  the pair Elixir last confirmed (see the oracle section). Written by
+  `ORACLE=regen`, never by hand.
 - `args:` — the program's command line. The tokens are split on whitespace
   outside double quotes; a quoted token keeps its spaces and may be empty
   (`args: -- "" "a b"` is three arguments). The matrix passes them after the
@@ -276,20 +279,49 @@ These `actual.*` files are gitignored.
 ### The Elixir oracle
 
 A fixture that declares `oracle: oracle.exs` makes "matches Elixir" mechanical.
-The single static trial `oracle_goldens_match_elixir` runs every oracle script
-under the real `elixir` binary and asserts its stdout equals `expected.txt`.
-For a successful fixture, the per-path matrix trials independently reproduce
-that same golden, so `fz == Elixir` holds transitively. For an `expect: abort`
-fixture, the oracle instead makes a silent assertion that Elixir rejects the
-input; each fz path independently proves rejection through `expected.stderr`.
-That pins the shared boundary without claiming byte-identical exception text
-between the two runtimes. Elixir owns the golden: under `ORACLE=regen` the oracle
-trial rewrites `expected.txt` and the header's `oracle.stamp` from Elixir's
-output, and per-path bless never rewrites it for an oracle fixture.
-`ORACLE=check` runs Elixir for every pair and fails on any difference from the
-golden. `ORACLE_FIXTURE=<stem>` narrows either mode to one fixture, e.g.
-`ORACLE=regen ORACLE_FIXTURE=00863_name cargo test --test fixture_matrix oracle_goldens_match_elixir`. The oracle is a hard prerequisite, not an optional skip — a
-missing or failing `elixir` is a loud failure. CI installs Elixir (1.19)
+The single static trial `oracle_goldens_match_elixir` checks every oracle pair
+against the real `elixir` binary: the script's stdout must equal
+`expected.txt`. For a successful fixture, the per-path matrix trials
+independently reproduce that same golden, so `fz == Elixir` holds
+transitively. For an `expect: abort` fixture, the oracle instead makes a silent
+assertion that Elixir rejects the input; each fz path independently proves
+rejection through `expected.stderr`. That pins the shared boundary without
+claiming byte-identical exception text between the two runtimes.
+
+**The stamp.** The header's `oracle.stamp` is a 64-bit FNV-1a, written as 16
+lowercase hex digits (`fz_fixture_metadata::oracle_stamp`), over the oracle
+script bytes, a 0 byte, the `expected.txt` bytes on disk (empty when the file
+is absent), a 0 byte, and each `args:` token followed by a 0 byte. It detects
+that a pair changed since Elixir last confirmed it; it is not a security
+boundary.
+
+**Default run.** A pair whose header stamp equals the stamp of what is on disk
+does not start Elixir. A pair with a different or missing stamp is run and
+compared; if Elixir agrees but the stamp is stale or missing, the trial fails
+and names the regen command, so the tree never carries a wrong stamp. The
+tests `oracle_stamps_in_the_tree_are_current_so_no_elixir_starts` and
+`oracle_unchanged_pair_does_not_start_elixir` observe the spawn through
+`OracleVerdict::spawned_elixir`, set on the production path.
+
+**Modes**, selected by environment variables on that trial:
+
+- `ORACLE=regen` runs Elixir for each pair, rewrites `expected.txt` only when
+  its normalized text differs from Elixir's normalized output (a matching
+  golden stays byte for byte; empty output removes the file), and writes the
+  pair's `oracle.stamp` after the `oracle:` line.
+- `ORACLE=check` runs Elixir for every pair, ignoring stamps, and fails on any
+  difference from the golden. Run it after changing the Elixir version.
+- `ORACLE_FIXTURE=<stem>` narrows either mode to one fixture.
+
+```
+ORACLE=regen cargo test --test fixture_matrix oracle_goldens_match_elixir
+ORACLE=regen ORACLE_FIXTURE=<stem> cargo test --test fixture_matrix oracle_goldens_match_elixir
+ORACLE=check cargo test --test fixture_matrix oracle_goldens_match_elixir
+```
+
+Per-path bless never rewrites an oracle fixture's `expected.txt`. The oracle is
+a hard prerequisite, not an optional skip: a missing or failing `elixir` is a
+loud failure whenever Elixir is needed. CI installs Elixir 1.19.5 (OTP 28.5.0.1)
 through `erlef/setup-beam`.
 
 ## The media
@@ -380,7 +412,7 @@ two independent kinds of intent:
 The shared grammar is intentionally small:
 
 - `purpose:` — one-line reason the contract exists.
-- `kind:` / `expect:` / `diagnostic.code:` / `defer:` / `oracle:` / `args:` —
+- `kind:` / `expect:` / `diagnostic.code:` / `defer:` / `oracle:` / `oracle.stamp:` / `args:` —
   behavioural matrix policy knobs, using the same meanings as the old
   directory-shaped fixtures.
 - `timeout.<path>_secs:` — behavioural matrix hang-guard overrides.
