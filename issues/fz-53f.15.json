@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:18:20Z",
+  "description": "callsite_call_args(body) walks every entry of a lowered body and builds a fresh HashMap on each call: 4,093 builds over 445 bodies on one OptionParser.parse call (about nine per body), four of them in jobs/transport.rs to look up one call site. callsite_input_modes (1,487 builds) and collect_callsite_return_origins (998) have the same shape. A lowered body is immutable and already carries BodyTables; call sites are minted densely per function (next_callsite in jobs/body.rs; pruning in jobs/artifact.rs only leaves holes). Fold: BodyTables gains one table from call-site number to the entry that makes the call, built once in LoweredBody::clauses; LoweredBody::call_args(cs), calls() and call_input_mode(cs) read it; a call's return origin is derived from its tail on demand. Deleted: the free functions callsite_call_args, callsite_input_modes and collect_callsite_return_origins, the HashMap\u003cCallSiteId, Vec\u003cCallArg\u003e\u003e parameter threaded through five functions in jobs/artifact.rs, the ExecutableFacts.callsite_return_origins field and the callsite_return_origins parameter of collect_value_origins. The invariant that no call site is named by two entries moves onto the table builder and is stated there. Spike (base 6d8368db4, release instructions, alternating 9 runs, median, distinct1/f761/f765/r6/lit16): args only -0.66/-0.72/-0.76/-0.43/-0.12%; plus input modes -0.75/-0.99/-0.96/-0.49/-0.16%; plus return origins -1.08/-1.22/-1.22/-0.95/-0.35%; allocation calls -0.9 to -1.1% on the OptionParser probes. Outputs and canonical dumps identical. The spike ran lib tests only, not fixture_matrix or AOT. Not in scope: collect_value_origins (runs once per executable, value-keyed). Spike diffs, cumulative (port by reading): /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/callargs/p1_call_args.diff, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/callargs/p2_cumulative_call_args_input_modes.diff, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/callargs/p3_cumulative_plus_return_origins.diff; counts in /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/callargs/counts.txt. Stacks on fz-53f.13 (PR #383), which already makes callsite_call_args return borrowed slices. Acceptance: stdout (interp and run), canonical dump, activation key counts and job counts identical to the base binary on the five probes; instructions and allocation calls re-measured; full gate; no pin, golden or census movement.",
+  "id": "fz-53f.15",
+  "labels": [],
+  "parent": "fz-53f",
+  "priority": 2,
+  "status": "open",
+  "title": "A call site's arguments, input mode and return origin are read from the body's tables",
+  "type": "task",
+  "updated_at": "2026-11-13T03:18:20Z"
+}
