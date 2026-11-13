@@ -9,7 +9,7 @@
     "fz-rba.5"
   ],
   "created": "2026-11-13T21:18:47Z",
-  "description": "Four sites in jobs/transport.rs build a tuple shape (layout_from_demand, TransportRecipe::Tuple/tuple_layout, joined_tuple_structural, combine_capture_requirements). All ask one function; the bound turns on here. Removes tuple_refined_demand and the repeated has_exact_tuple_arity / exact_tuple_field_tys reads. Signal: widest signature at 1,000 elements is a handful of parameters; wide5000 run time; pins may only fall.",
+  "description": "GH #297. One change, three parts, all reading one constant TUPLE_LANE_BUDGET = 8 (semantic.rs).\n1. ShapeDemand::normalize turns a field reading that asks for more lanes than the budget into Whole. This is what fz-rba.1 and fz-rba.2 needed: the first spike collapsed the layout in transport only, while the demand stayed fields(ignore, whole, ...); producers left the ignored fields absent and the whole tuple could not be materialized (proven by backend dump on matrix::ast_eval at budget 4). With the bound in the demand a producer is never told it may leave a field of a whole-travelling tuple unbuilt, and closures in a wide tuple escape first-class.\n2. decomposed_field_tys (jobs/transport.rs) is the one answer for a Whole demand on an exact tuple type: field types while the lanes (nested tuples included) fit, otherwise none and the layout is one value lane. tuple_refined_demand, joined_tuple_structural, layout_from_demand and the TransportRecipe::Tuple arm read it.\n3. collect_entry_callsite_needs (executable_facts.rs) asks for ExecutableNeed::TupleFields only inside the budget (was fz-rba.5).\nThe bound is per demand level: a field reading within the budget whose Whole leaves each expand within the budget can reach about budget squared lanes; it is not a strict total.\nSignal: unit tests in semantic_test.rs and transport_test.rs; fixtures 01230-01232 (Elixir-checked, three paths); budget-4 stress run of the fixture matrix 3203 passed; at budget 8 no pin moved. wide5000 run 2.26 s to 0.09 s, chain60 1.90 s to 1.20 s (debug, opt-level 1).\nNot removed: tuple_refined_demand stays (it now reads decomposed_field_tys); its removal is fz-rba.4.",
   "id": "fz-rba.3",
   "labels": [],
   "parent": "fz-rba",
@@ -17,5 +17,5 @@
   "status": "open",
   "title": "One function decides how a tuple travels",
   "type": "task",
-  "updated_at": "2026-11-13T21:18:48Z"
+  "updated_at": "2026-11-13T21:47:14Z"
 }
