@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-d7w"
+  ],
   "blocks": [],
   "created": "2026-11-13T21:18:22Z",
   "description": "GH #296. Page: /Users/j5n/Workspace/gh-296-297.html (Proposal B). PRODUCT_DRIVE_BUDGET is a flat 50,000 requests. On develop ff4a75ada a tuple of 308 computed elements compiles, 400 does not ('exhausted its budget of 50000 requests'; the message was fixed by fz-sc8.148). N elements need about N^2/2 transport_shape products (one per continuation capture). Wanted: the limit is a multiple of the distinct products requested so far, so size is allowed and a product evaluated again and again is still caught. Spike first: tests that force exhaustion with a small budget must still fail as now. Open: whether the inner fact-wait budget changes the same way. Fixture: 1,000 computed elements on interp; run/build once the stack overflow at 1,000 is understood.",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "The product drive budget bounds repetition, not program size",
   "type": "bug",
-  "updated_at": "2026-11-13T21:18:22Z"
+  "updated_at": "2026-11-13T21:18:24Z"
 }
