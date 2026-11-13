@@ -2,7 +2,6 @@
 
 use crate::module_name::{ModuleName, STRUCT_MODULE_FIELD};
 use std::borrow::Cow;
-use std::cmp::Ordering;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SchemaIdentity {
@@ -12,16 +11,6 @@ pub enum SchemaIdentity {
 }
 
 impl SchemaIdentity {
-    pub fn semantic_cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            (Self::Tuple(a), Self::Tuple(b)) => a.cmp(b),
-            (Self::Named(a), Self::Named(b)) => a.cmp(b),
-            (Self::Tuple(_), Self::Named(_)) => Ordering::Less,
-            (Self::Named(_), Self::Tuple(_)) => Ordering::Greater,
-            _ => panic!("internal storage schema is not a language value"),
-        }
-    }
-
     pub fn display_name(&self) -> Cow<'_, str> {
         match self {
             Self::Tuple(arity) => Cow::Owned(format!("Tuple{arity}")),

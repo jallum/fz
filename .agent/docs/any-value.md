@@ -502,6 +502,25 @@ struct, and `None` for every other value, a tuple included. A struct's keys
 come in map key order, `__struct__` among them; `SchemaRegistry::map_keys`
 holds that order once per schema.
 
+Comparison and printing read the map, not the layout.
+`TermComparator` (`runtime/src/term.rs`) places a named struct in the map
+category of the term order, after every tuple, and compares two maps by size,
+then keys, then values in key order, reading either layout through
+`MapTerm`. So `%Pt{x: 1, y: 2} == Map.put(%{x: 1, y: 2}, :__struct__, Pt)`,
+each finds the other as a map key, a pin of one matches the other, and two
+structs of one size and key set differ first by the module under
+`__struct__`, the least of their keys. A struct's fields are compared in key
+order whatever order it declares them in. Two structs of one schema share
+size, keys and module, so only their fields are read.
+
+A map prints as `%Name{...}` exactly when it holds what the struct it names
+declares. A value in the struct layout always does. A map in the entries
+layout does when `Heap::entries_spelling_a_struct` answers: its `__struct__`
+names a registered schema and its keys are that schema's fields and nothing
+else. Its fields print in declaration order. Any other map naming a module
+prints as a map, `__struct__` among its keys: `Map.delete(p, :y)` is
+`%{__struct__: Pt, x: 1}`.
+
 Writes keep the struct layout while the key set stays the schema's.
 `Map.put` of a field copies the object with that field replaced. A key outside
 the schema, or a deletion, changes the key set, so the answer is published in

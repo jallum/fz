@@ -231,9 +231,11 @@ retained body-to-target lookup authority.
 
 **Map key identity and order** — `TermComparator` in `Strict` mode owns both.
 Tuple/list/map keys compare structurally; binary storage kinds share bit
-identity; `SchemaIdentity` distinguishes tuple arity from named source module
-segments. Neither flattening a module name nor parsing a rendered schema label
-participates in schema publication, transport, or comparison.
+identity; tuples compare by arity and then elements, and a named struct
+compares as the map it is, its module the atom under `__struct__`, equal to
+an entries map holding the same keys and values. Neither flattening a module
+name nor parsing a rendered schema label participates in schema publication,
+transport, or comparison.
 The registry rejects a second layout for an existing identity, so one borrowed
 schema can read both compared objects without a layout compatibility path.
 Closures compare source denotation then exact environment; resources compare

@@ -114,6 +114,34 @@ impl Heap {
         }
     }
 
+    /// The struct a map in the entries layout spells: the module it names
+    /// and that struct's fields in declaration order, when its keys are
+    /// exactly the struct's.
+    pub fn entries_spelling_a_struct(&self, map: AnyValueRef) -> Option<(ModuleName, Vec<(String, AnyValue)>)> {
+        let addr = map.map_addr().ok()?;
+        let NamedSchema::Schema(schema_id) = self.entries_named_schema(addr) else {
+            return None;
+        };
+        let keys = self.struct_map(schema_id);
+        if unsafe { map_count(addr) } != keys.atoms.len() {
+            return None;
+        }
+        let schemas = self.schemas.borrow();
+        let schema = schemas.get(schema_id);
+        let SchemaIdentity::Named(module) = &schema.identity else {
+            return None;
+        };
+        let mut fields = vec![None; schema.fields.len()];
+        for (key, atom) in keys.keys.iter().zip(&keys.atoms) {
+            let index = self.map_key_position(addr, *atom).ok()?;
+            if let StructKey::Field(field) = key {
+                let name = schema.fields[*field].name.clone()?;
+                fields[*field] = Some((name, unsafe { map_entry(addr, index) }.1));
+            }
+        }
+        Some((module.clone(), fields.into_iter().collect::<Option<_>>()?))
+    }
+
     /// `map_layout`, for a caller whose value the types promise is a map.
     pub fn expect_map_layout(&self, value: AnyValueRef, context: &str) -> MapLayout {
         self.map_layout(value)
