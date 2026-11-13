@@ -4,14 +4,15 @@
   "blocks": [
     "fz-53f.7"
   ],
+  "closed_at": "2026-11-13T00:06:56Z",
   "created": "2026-11-12T22:34:13Z",
   "description": "ValueId is dense per function (max 101, 49-82% filled). value_types (jobs/semantic.rs), BodyTables definitions (body.rs), collect_value_origins (executable_facts.rs) and the collect at world.rs:584 become Vec\u003cOption\u003cV\u003e\u003e (one shared small type, not four hand-rolled ones). Also convert the sites the spike left: 29,917 tables / 160,650 hash calls per parse call in jobs/keying.rs, jobs/runtime_demand.rs, ir_interp and value_layouts. Spike saving for the first four sites: lit16 -15.7%, others about -1%. Proposal page: /Users/j5n/Workspace/compile-cost-round-two.html (https://claude.ai/artifact/4T5Lime7pQxKbCiKJqaJ8x). Spike (base c768670cd; port by reading, not by applying): /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/tables/stepB.diff. Acceptance: stdout (interp and run), canonical dump, activation key counts and job counts identical to the base binary on /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/p/distinct1.fz, f761.fz (--top 1 --top 2), f765.fz (--max-top 3), /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/m/r6.fz, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/l/lit16.fz; release instructions retired re-measured on base and change binaries built the same way; full gate.",
   "id": "fz-53f.3",
   "labels": [],
   "parent": "fz-53f",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A table keyed by a value's number in its body is a vector indexed by that number",
   "type": "task",
-  "updated_at": "2026-11-12T22:34:37Z"
+  "updated_at": "2026-11-13T00:06:56Z"
 }
