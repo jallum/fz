@@ -18,7 +18,7 @@ use super::super::body::{
     CallArg, CallSiteId, ControlDestination, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail,
     ValueId,
 };
-use super::super::contract::{AppliedFunctionContract, FunctionContract};
+use super::super::contract::AppliedFunctionContract;
 use super::super::dispatch_reachability::{ReachedEdges, calculate_dispatch_reachability};
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, current_uses};
 use super::super::identity::{ActivationKey, FunctionId, ModuleId, function_id_of_closure_target};
@@ -1582,13 +1582,16 @@ fn resolve_protocol_call(
     let receiver_ty = input_types.first().cloned().unwrap_or_else(|| any_ty(world));
 
     let mut matches = Vec::new();
-    let dispatch = world
+    let arms = world
         .protocol_dispatch(protocol)
         .expect("protocol dispatch fact should be stored before semantic reads it")
-        .clone();
-    for arm in dispatch.arms {
+        .arms
+        .iter()
+        .map(|arm| (arm.target, arm.callbacks.get(&callback_function).copied()))
+        .collect::<Vec<_>>();
+    for (target, callback) in arms {
         let mut target_reads = Vec::new();
-        let target_ty = world.module_impl_target_ty(arm.target, &mut target_reads);
+        let target_ty = world.module_impl_target_ty(target, &mut target_reads);
         for read in target_reads {
             uses.read(read);
         }
@@ -1596,7 +1599,7 @@ fn resolve_protocol_call(
             continue;
         }
         let overlap = world.types_mut().intersect(receiver_ty, target_ty);
-        if let Some(callback) = arm.callbacks.get(&callback_function).copied() {
+        if let Some(callback) = callback {
             matches.push((callback, overlap));
         }
     }
@@ -1867,7 +1870,7 @@ fn resolve_closure_call(
         // actually produced. `refine_observed_return` already refuses the
         // mirror of this narrowing on the return side; the argument side owes
         // the same. Declared `@spec` contracts still refine, in
-        // `apply_function_contract`, where the surface is enforced.
+        // `refine_function_call_surface`, where the surface is enforced.
         let mut inputs = closure.captures;
         inputs.extend(arg_types.iter().copied());
         let (resolution, clause_activations, observed_return) =
@@ -2008,43 +2011,15 @@ fn refine_function_call_surface(
     if !world.function_declares_contract(function) {
         return Ok((input_types, None));
     }
-    let contract = world
-        .function_contract(function)
-        .cloned()
+    let (contract, types) = world
+        .function_contract_and_types_mut(function)
         .expect("a declared contract must be proven present before the call surface is refined");
-    apply_function_contract(
-        world,
-        tel,
-        function,
-        &contract,
-        input_types,
-        caller_owner,
-        violation_span,
-    )
-}
-
-fn apply_function_contract(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    function: FunctionId,
-    contract: &FunctionContract,
-    input_types: Vec<Ty>,
-    caller_owner: SourceOwner,
-    violation_span: Span,
-) -> Result<RefinedCallSurface, FatalError> {
-    let application = contract.apply(world.types_mut(), &input_types);
+    let application = contract.apply(types, &input_types);
     if !application.enforceable_satisfied
         && function_contract_is_enforced(world, function, caller_owner)
         && spec_violation_is_actionable(world, &input_types)
     {
-        return Err(emit_spec_violation(
-            tel,
-            world,
-            function,
-            contract,
-            &input_types,
-            violation_span,
-        ));
+        return Err(emit_spec_violation(tel, world, function, &input_types, violation_span));
     }
     let refined_inputs = instantiate_open_inputs(
         world,
@@ -2114,11 +2089,13 @@ fn emit_spec_violation(
     tel: &impl crate::telemetry::Telemetry,
     world: &mut World,
     function: FunctionId,
-    contract: &FunctionContract,
     input_types: &[Ty],
     span: Span,
 ) -> FatalError {
-    let domain_rows = contract.matched_domain_rows(world.types_mut(), input_types.len());
+    let (contract, types) = world
+        .function_contract_and_types_mut(function)
+        .expect("a violated contract is present");
+    let domain_rows = contract.matched_domain_rows(types, input_types.len());
     let function_ref = world.function_ref(function);
     let observed = input_types
         .iter()
