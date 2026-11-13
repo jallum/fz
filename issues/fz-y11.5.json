@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:38:52Z",
+  "description": "list_clause_empty (types/emptiness.rs:203-205) calls list_denotation and returns .is_none(). The denotation clones the first element descriptor (:104), boxes the next (:110), builds Descr::any() (five vec![Conj::top()], descr.rs:74-78) for a clause with no positives (:117), and builds minus and NonEmptyLists per clause (:181-196). About 32k allocations (emptiness.rs:28/110/117, descr.rs:59-62), via descr.rs:760 and retain_inhabited at intern (axis.rs:574).\nShape: a helper that answers only whether the clause denotes nothing: check c.is_top() first; for a clause with no negatives the answer is whether the positives' element intersection is empty and the clause holds no []; borrow cx.descr(elem). list_denotation stays for callers that read the denotation (types/mod.rs:794, axis.rs).\nAlso in this file: tuple_clause_empty (:28) clones every element into Vec\u003cDescr\u003e though phi_tuple only reads; resource_clause_empty (:211) clones the payload before intersecting. Borrow where there is one positive.\n\nCounts are sampling estimates at develop 742e688b5 (line numbers refer to /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src); re-measure on your base first. Signal: see the epic.",
+  "id": "fz-y11.5",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "List clause emptiness is answered without building the list's denotation",
+  "type": "task",
+  "updated_at": "2026-11-13T03:38:52Z"
+}
