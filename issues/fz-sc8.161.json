@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T21:40:21Z",
+  "description": "Found while reviewing fz-sc8.3. src/compiler2/frontdoor.rs threads a module_path: \u0026[String] parameter through parse_item, parse_module, parse_struct_item, parse_expr and the rest (about 25 signatures). Its only use is parse_module extending it into nested_path and passing that on; grep finds no site that reads the path for a decision or a value. Verified by grep on 2053b04a5, not by removing it.\n\nDone when: the parameter is renamed with a leading underscore to let cargo check enumerate real readers; if there are none, the parameter and nested_path are deleted from every signature. A pure removal: no fixture or pin moves.",
+  "id": "fz-sc8.161",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "The source parser threads no module path it never reads",
+  "type": "task",
+  "updated_at": "2026-11-13T21:40:21Z"
+}
