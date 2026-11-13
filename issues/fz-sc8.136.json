@@ -11,5 +11,5 @@
   "status": "open",
   "title": "The compiled result differs when the fact queue is popped newest-first",
   "type": "bug",
-  "updated_at": "2026-11-12T22:34:14Z"
+  "updated_at": "2026-11-13T03:29:47Z"
 }
