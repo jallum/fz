@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T21:18:23Z",
+  "description": "@spec f(integer) over an untyped clause, called with 1.5 through an any: interp prints 1.5; run and build panic in fz_ref_load_int (ExpectedTag). Probe: scratchpad txxd15/p2s.fz (session d1d265b3).",
+  "id": "fz-i89",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "A @spec over an untyped clause is not enforced at run time",
+  "type": "bug",
+  "updated_at": "2026-11-13T21:18:23Z"
+}
