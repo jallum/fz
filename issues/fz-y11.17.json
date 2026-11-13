@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T19:39:30Z",
   "created": "2026-11-13T19:11:22Z",
   "description": "QuotedCursor::list_items (src/compiler2/source.rs:737) collects a Vec of cursors (~23,900 allocations); list_iter already walks one cell per step. src/compiler2/quoted_surface.rs has 30 list_items() calls (top: lines 900, 1209, 709, 735, 697), most iterating once or reading the first element. tuple_items (source.rs:758, ~2,300) has the same shape.\n\nChange: callers that iterate once use list_iter / tuple_iter; callers that need the first element or the length read them without collecting. A caller that indexes repeatedly keeps the vector. If no caller of list_items remains, delete it and list_atom_names' use of it.\n\nEvidence: allocation census of the OptionParser probe at bf51f11c1 (develop ac3750d1e + hasher fix + fz-y11.15 spike; 857,327 calls). Ranked sites: /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/bf51f11c1_top.txt; call chains: python3 /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/chain.py /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/bf51f11c1.pkl \u003cfile:line\u003e \u003cdepth\u003e. Counts are 1-in-16 sampling estimates; line numbers are at that commit. Method and signal: see the epic (bw show fz-y11). Every site is a claim read from the census and the source, to be confirmed first.",
   "id": "fz-y11.17",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A quoted list read once is walked, not collected",
   "type": "task",
-  "updated_at": "2026-11-13T19:11:32Z"
+  "updated_at": "2026-11-13T19:39:30Z"
 }
