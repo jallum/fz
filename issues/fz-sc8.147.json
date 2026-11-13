@@ -4,14 +4,15 @@
   "blocks": [
     "fz-sc8.131"
   ],
+  "closed_at": "2026-11-13T13:48:33Z",
   "created": "2026-11-13T13:36:53Z",
   "description": "Symptom: error[artifact/incomplete-semantic-plan] \"boxed closure call in FunctionId(N) expects delivered lane(s) [] / [RawAtom] but construction wrapper ... publishes [ValueRef]\" (a panic at jobs/backend.rs:180 on some paths). This is fz-sc8.119 item 1 (scratchpad handoff/m2.fz) and the error fz-sc8.131's repro stops at first.\n\nCause (verified by probe on 3038a76af): BoxedApplyRequirement::for_body (src/compiler2/backend_program/boxed_contract.rs) gives a Seam closure call whose return flow is NoReturn the owning body's own return lanes. A NoReturn call has an empty result type and reads nothing back from the seam (native lowers it to TailCallClosure), so the requirement is invented: [] when the body diverges, [RawAtom] when the body returns an atom such as :first. BoxedContracts::validate reconciles requirements per arity across the whole program, so that invented requirement is compared with an unrelated wrapper's [ValueRef].\n\nFix: a NoReturn seam call contributes no requirement. Tail and a missing flow keep the body's return lanes.\n\nSpike (scratchpad s131/spike.patch, 4 lines): m2.fz and OptionParser's n1b.fz compile and match elixir on interp, run and build; lib 2169 passed, no pin moved.\n\nAcceptance: a boxed_contract test stating the intent; fixtures from m2.fz and n1b.fz with elixir oracles on three paths; full gate; distill gate after landing.\n\nDoes not fix fz-sc8.131's own repro: past this check it hits a second fault (a continuation entry laid out for a zero-lane callable receives a boxed closure), which stays on fz-sc8.131.",
   "id": "fz-sc8.147",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A closure call that never returns asks nothing of the boxed return convention",
   "type": "bug",
-  "updated_at": "2026-11-13T13:37:40Z"
+  "updated_at": "2026-11-13T13:48:33Z"
 }
