@@ -1451,9 +1451,18 @@ fn write_callsite_summary(
             out.push(',');
         }
         out.push_str("{\"callee\":");
-        let (kind, function) = match target.callee {
-            crate::compiler2::SelectedCallee::Function(function) => ("function", function),
-            crate::compiler2::SelectedCallee::ProviderBoundary(function) => ("provider_boundary", function),
+        let (kind, name, arity) = match &target.callee {
+            crate::compiler2::SelectedCallee::Function(function) => {
+                let function_ref = world.function_ref(*function);
+                ("function", function_ref.display_name(), function_ref.arity)
+            }
+            crate::compiler2::SelectedCallee::ProviderBoundary(function) => {
+                let function_ref = world.function_ref(*function);
+                ("provider_boundary", function_ref.display_name(), function_ref.arity)
+            }
+            crate::compiler2::SelectedCallee::Undefined(undefined) => {
+                ("undefined", undefined.function.clone(), undefined.arity)
+            }
         };
         out.push('{');
         write_str_lit(out, "kind");
@@ -1462,12 +1471,11 @@ fn write_callsite_summary(
         out.push(',');
         write_str_lit(out, "name");
         out.push(':');
-        let function_ref = world.function_ref(function);
-        write_str_lit(out, &function_ref.display_name());
+        write_str_lit(out, &name);
         out.push(',');
         write_str_lit(out, "arity");
         out.push(':');
-        push_u64(out, function_ref.arity as u64);
+        push_u64(out, arity as u64);
         out.push('}');
         out.push_str(",\"inputs\":");
         write_types(out, world, &target.surface_inputs);
@@ -2265,6 +2273,7 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::Recursive(function)
         | FactKey::InputDemand(function) => write_function_id(out, *function),
         FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
+        FactKey::NameableModules => {}
         FactKey::RootEntry(root) => write_root_id(out, *root),
         FactKey::Activation(key)
         | FactKey::ActivationInputs(key)
@@ -2501,6 +2510,7 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::StructDefined(_) => "StructDefined",
         FactKey::ProtocolDispatch(_) => "ProtocolDispatch",
         FactKey::ProtocolImplProviders(_) => "ProtocolImplProviders",
+        FactKey::NameableModules => "NameableModules",
         FactKey::FunctionDefined(_) => "FunctionDefined",
         FactKey::FunctionContract(_) => "FunctionContract",
         FactKey::LoweredBody(_) => "LoweredBody",

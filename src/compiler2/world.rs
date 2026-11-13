@@ -35,8 +35,8 @@ use super::drive::{ExecutionContext, FactKey, Job, JobEffects, UseCollector, Wor
 use super::facts::FactUse;
 use super::identity::{
     ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
-    FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl,
-    RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
+    FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NameableModules,
+    NotedTypeDecl, RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{BodyKeying, BodyKeyingMap, InputDemand, InputDemandMap, StaticCalleeMap};
@@ -157,6 +157,7 @@ pub struct World {
     protocol_impls: ProtocolImplMap,
     protocol_dispatches: ProtocolDispatchMap,
     protocol_impl_providers: ProtocolImplProviderMap,
+    nameable_modules: NameableModules,
     activations: ActivationMap,
     activation_inputs: ActivationInputMap<Job>,
     callsites: CallSiteMap,
@@ -330,6 +331,7 @@ impl World {
             protocol_impls: ProtocolImplMap::new(),
             protocol_dispatches: ProtocolDispatchMap::new(),
             protocol_impl_providers: ProtocolImplProviderMap::new(),
+            nameable_modules: NameableModules::default(),
             activations: ActivationMap::new(),
             activation_inputs: ActivationInputMap::new(),
             callsites: CallSiteMap::new(),
@@ -1421,6 +1423,17 @@ impl World {
     /// receiver.
     pub(crate) fn protocol_impl_providers(&self, protocol: ModuleId) -> Vec<(ModuleId, ModuleId)> {
         self.protocol_impl_providers.providers_for_protocol(protocol)
+    }
+
+    /// Records that a value can name `module`: its source is indexed, or a
+    /// lowered body writes its name as a value. Returns whether that is news.
+    pub(crate) fn note_nameable_module(&mut self, module: ModuleId) -> bool {
+        self.nameable_modules.note(module)
+    }
+
+    /// Every module a value can name, in the order each was first noted.
+    pub(crate) fn nameable_modules(&self) -> impl Iterator<Item = ModuleId> + '_ {
+        self.nameable_modules.modules()
     }
 
     /// The qualified tag a nominal `@type` (`refines` / `opaque`) brands under.
@@ -2747,6 +2760,7 @@ impl World {
             | FactKey::CodeScoped(_)
             | FactKey::ProtocolDispatch(_)
             | FactKey::ProtocolImplProviders(_)
+            | FactKey::NameableModules
             | FactKey::FunctionContract(_)
             | FactKey::LoweredBody(_)
             | FactKey::GuardDispatch(_)

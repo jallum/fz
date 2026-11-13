@@ -608,6 +608,109 @@ fn a_raise_showing_a_term_delivers_an_exception_carrying_the_term_and_the_banner
     });
 }
 
+fn undefined_function_raise(
+    process: &mut Process,
+    receiver: AnyValue,
+    function: &str,
+    arity: i64,
+    module_is_defined: bool,
+) -> (AnyValue, String) {
+    process.push_handler(Handler::Interpreter);
+    let function = atom(process, function);
+    raise_undefined_function(process, receiver, function, arity, module_is_defined);
+    let raised = process.raised.take().expect("the raise waits in the process");
+    let exception = AnyValue::from_ref(raised.value).expect("exception");
+    let message = exception_field(process, exception, "message").expect("message");
+    (exception, binary_text(message).expect("a binary message"))
+}
+
+#[test]
+fn a_call_on_an_atom_that_reaches_no_function_raises_elixirs_undefined_function_error() {
+    with_observed_process(|process, _| {
+        let name = atom(process, "Elixir.UndefinedFunctionError");
+        let square = atom(process, "Elixir.Square");
+        let nowhere = atom(process, "nowhere");
+        let nil = atom(process, "nil");
+
+        let (exception, message) = undefined_function_raise(process, nowhere, "area", 1, false);
+        assert_eq!(exception_name(process, exception), Some(name));
+        assert_eq!(
+            message, "function :nowhere.area/1 is undefined (module :nowhere is not available)",
+            "an atom naming no module says the module is not available"
+        );
+        assert_eq!(exception_field(process, exception, "module"), Some(nowhere));
+        assert_eq!(
+            exception_field(process, exception, "function"),
+            Some(atom(process, "area"))
+        );
+        assert_eq!(exception_field(process, exception, "arity"), Some(AnyValue::Int(1)));
+        assert_eq!(exception_field(process, exception, "reason"), Some(nil));
+
+        let (_, message) = undefined_function_raise(process, square, "nope", 0, true);
+        assert_eq!(
+            message, "function Square.nope/0 is undefined or private",
+            "a module that lacks the function says so"
+        );
+
+        let (_, message) = undefined_function_raise(process, nil, "area", 1, false);
+        assert_eq!(
+            message, "function nil.area/1 is undefined",
+            "nil is reported without a module"
+        );
+    });
+}
+
+#[test]
+fn a_call_on_a_value_that_is_no_atom_raises_elixirs_argument_error() {
+    with_observed_process(|process, _| {
+        let name = atom(process, "Elixir.ArgumentError");
+
+        let (exception, message) = undefined_function_raise(process, AnyValue::Int(1), "area", 1, false);
+        assert_eq!(exception_name(process, exception), Some(name));
+        assert_eq!(
+            message,
+            "you attempted to apply a function on 1. Modules (the first argument of apply) must always be an atom"
+        );
+
+        let (_, message) = undefined_function_raise(process, AnyValue::Int(1), "nope", 0, false);
+        assert_eq!(
+            message,
+            "you attempted to apply a function named :nope on 1. If you are using Kernel.apply/3, make sure the \
+             module is an atom. If you are using the dot syntax, such as module.function(), make sure the \
+             left-hand side of the dot is an atom representing a module",
+            "a call with no arguments names the function, as it may have been meant as a field read"
+        );
+    });
+}
+
+#[test]
+fn the_extern_raise_finds_the_receiver_among_the_modules_that_lack_the_function() {
+    with_observed_process(|process, _| {
+        process.push_handler(Handler::Interpreter);
+        let square = atom(process, "Elixir.Square");
+        let circle = atom(process, "Elixir.Circle");
+        let nope = atom(process, "nope");
+        let modules = [square, circle]
+            .into_iter()
+            .fold(AnyValueRef::empty_list(), |tail, module| {
+                process.heap.alloc_list_cons_any(module, tail).expect("a list cell")
+            });
+        let word = |process: &mut Process, value| process.heap.box_any_value_ref(value).raw_word();
+        let (receiver, function) = (word(process, square), word(process, nope));
+        let modules = modules.raw_word();
+
+        fz_raise_undefined_function(process, receiver, function, 0, modules);
+
+        let raised = process.raised.expect("the raise waits in the process");
+        let exception = AnyValue::from_ref(raised.value).expect("exception");
+        let message = exception_field(process, exception, "message").expect("message");
+        assert_eq!(
+            binary_text(message).as_deref(),
+            Some("function Square.nope/0 is undefined or private")
+        );
+    });
+}
+
 extern "C" fn recording_halt(scheduler: *mut (), status: i32) {
     unsafe { &mut *(scheduler as *mut Vec<i32>) }.push(status);
 }

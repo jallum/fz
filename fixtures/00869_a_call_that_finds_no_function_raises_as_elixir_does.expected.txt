@@ -1,0 +1,26 @@
+9
+UndefinedFunctionError
+function :nowhere.area/1 is undefined (module :nowhere is not available)
+UndefinedFunctionError
+function Nowhere.Deep.area/1 is undefined (module Nowhere.Deep is not available)
+UndefinedFunctionError
+function Circle.area/1 is undefined or private
+UndefinedFunctionError
+function nil.area/1 is undefined
+UndefinedFunctionError
+function true.area/1 is undefined (module true is not available)
+ArgumentError
+you attempted to apply a function on 1. Modules (the first argument of apply) must always be an atom
+ArgumentError
+you attempted to apply a function on "str". Modules (the first argument of apply) must always be an atom
+ArgumentError
+you attempted to apply a function on {Square, 1}. Modules (the first argument of apply) must always be an atom
+ArgumentError
+you attempted to apply a function on [Square]. Modules (the first argument of apply) must always be an atom
+"circle"
+UndefinedFunctionError
+function Square.name/0 is undefined or private
+ArgumentError
+you attempted to apply a function named :name on 1. If you are using Kernel.apply/3, make sure the module is an atom. If you are using the dot syntax, such as module.function(), make sure the left-hand side of the dot is an atom representing a module
+{:nowhere, :area, 1, nil}
+{Circle, :area, 1, nil}

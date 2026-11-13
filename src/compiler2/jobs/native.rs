@@ -47,7 +47,7 @@ use super::super::body::{ControlDestination, ControlEntryId, DispatchBindings, L
 use super::super::identity::RootId;
 use super::super::pull::{ProductKey, ProductReadContext, ProductValue, PullOutcome};
 use super::super::scheduler::FatalError;
-use super::super::semantic::{RuntimeDemand, ShapeDemand};
+use super::super::semantic::{RuntimeDemand, ShapeDemand, UndefinedFunction};
 use super::super::transport::{BoundValue, CallableId, ShapeDescr, ShapeId, TransportLayout};
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
@@ -1564,6 +1564,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     entry_fns,
                     env,
                     &direct.callee,
+                    *selector,
                     args,
                     dest,
                     &direct.return_flow,
@@ -1952,10 +1953,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entry_fns: &mut EntryFns,
         env: &ValueEnv,
         callee: &CallTarget<ExecutableKey>,
+        selector: Option<ValueId>,
         args: &[super::super::artifact::BackendCallArg],
         dest: &ControlDestination,
         return_flow: &BackendReturnFlow,
     ) -> Result<(), FatalError> {
+        if let CallTarget::Undefined(undefined) = callee {
+            return self.raise_undefined_function(ctx, executable, env, undefined, selector);
+        }
         let (callee, call_args) = self.native_direct_call_target_and_args(ctx, executable, env, callee, args)?;
         self.emit_native_direct_call_tail(
             ctx,
@@ -2004,6 +2009,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             entry_fns,
             env,
             dispatch,
+            selector,
             args,
             dest,
             dispatch.plan.graph.root,
@@ -2020,6 +2026,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entry_fns: &mut EntryFns,
         env: &ValueEnv,
         dispatch: &DispatchCallEdge<ExecutableKey, BackendReturnFlow>,
+        selector: Option<ValueId>,
         args: &[super::super::artifact::BackendCallArg],
         dest: &ControlDestination,
         node_id: GraphNodeId,
@@ -2045,16 +2052,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     ctx.set_term(Term::Unreachable);
                     return Ok(());
                 };
-                let (callee, call_args) =
-                    self.native_direct_call_target_and_args(ctx, executable, env, &arm.callee, args)?;
-                self.emit_native_direct_call_tail(
+                self.lower_direct_call_tail(
                     ctx,
                     executable,
                     entries,
                     entry_fns,
                     env,
-                    callee,
-                    call_args,
+                    &arm.callee,
+                    selector,
+                    args,
                     dest,
                     &arm.return_flow,
                 )
@@ -2073,7 +2079,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 state,
                 &mut |lowerer, ctx, target, state| {
                     lowerer.lower_dispatch_call_node(
-                        ctx, executable, entries, entry_fns, env, dispatch, args, dest, target, state,
+                        ctx, executable, entries, entry_fns, env, dispatch, selector, args, dest, target, state,
                     )
                 },
             ),
@@ -2148,7 +2154,49 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 DirectCallTarget::ProviderBoundary(self.world.function_mfa(*function)),
                 self.env_runtime_vars(ctx, executable, env, args.iter().map(|arg| arg.value)),
             )),
+            CallTarget::Undefined(undefined) => Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "a call that finds no `{}/{}` raises; it has no target to pass arguments to",
+                    undefined.function, undefined.arity
+                ),
+            )),
         }
+    }
+
+    /// Ends the block raising for a call on the module value `selector` that
+    /// found no function.
+    fn raise_undefined_function(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        env: &ValueEnv,
+        undefined: &UndefinedFunction,
+        selector: Option<ValueId>,
+    ) -> Result<(), FatalError> {
+        let Some(selector) = selector else {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "a call that finds no `{}/{}` has no module value to show",
+                    undefined.function, undefined.arity
+                ),
+            ));
+        };
+        let receiver = self.env_runtime_var(ctx, executable, env, selector);
+        let mut atom = |name: &str| ctx.emit_let(Prim::Const(Const::Atom(self.atom_id(name)))).0;
+        let function = atom(&undefined.function);
+        let modules = undefined.modules_without.iter().map(|module| atom(module)).collect();
+        let (modules_without, _) = ctx.emit_let(Prim::MakeList(modules, None, None));
+        ctx.set_term(Term::RaiseUndefined {
+            receiver,
+            function,
+            arity: undefined.arity,
+            modules_without,
+        });
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4744,6 +4792,7 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
                 | Term::ReturnLanes(_)
                 | Term::Raise { .. }
                 | Term::Reraise { .. }
+                | Term::RaiseUndefined { .. }
                 | Term::Unreachable => {}
             }
         }

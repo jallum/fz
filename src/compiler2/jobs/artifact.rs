@@ -1122,6 +1122,7 @@ fn lower_materialized_call_target(
     body: &LoweredBody,
     target: CallTargetSummary,
 ) -> Result<(DirectCallEdge<ExecutableKey>, Ty), FatalError> {
+    let return_ty = target.settled_return(world.types_mut());
     let (callee, extern_marshals) = match target.callee {
         SelectedCallee::Function(function) => {
             let activation = target.activation.clone().ok_or_else(|| {
@@ -1162,8 +1163,8 @@ fn lower_materialized_call_target(
             (CallTarget::Local(callee), extern_marshals)
         }
         SelectedCallee::ProviderBoundary(function) => (CallTarget::ProviderBoundary(function), None),
+        SelectedCallee::Undefined(undefined) => (CallTarget::Undefined(undefined), None),
     };
-    let return_ty = target.settled_return(world.types_mut());
     let return_flow = if world.types().is_empty(&return_ty) {
         exact_no_return_flow(&callee)
     } else {
@@ -1223,11 +1224,11 @@ fn call_return_flow(
                         executable: ExecutableSymbol::new(callee),
                     },
                     Some(CallTarget::ProviderBoundary(_)) => resume.clone(),
-                    None => {
+                    Some(CallTarget::Undefined(_)) | None => {
                         return Err(incomplete_semantic_plan(
                             tel,
                             root_id,
-                            "non-public call return flow has no callee",
+                            "non-public call return flow has no callee that returns",
                         ));
                     }
                 }
@@ -1647,14 +1648,9 @@ fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, Materialize
 }
 
 fn call_edge_calls_provider_boundary(edge: &MaterializedCallEdge) -> bool {
-    match edge.target() {
-        CallEdge::Direct(direct) => matches!(direct.callee, CallTarget::ProviderBoundary(_)),
-        CallEdge::Dispatch(dispatch) => dispatch
-            .arms
-            .iter()
-            .any(|arm| matches!(arm.callee, CallTarget::ProviderBoundary(_))),
-        CallEdge::Indirect { .. } => false,
-    }
+    edge.target()
+        .callees()
+        .any(|callee| matches!(callee, CallTarget::ProviderBoundary(_)))
 }
 
 fn build_executable_abi_plan(

@@ -896,6 +896,22 @@ trait Reconcile: Sized {
     fn reconcile(current: Option<&Self>, incoming: Self) -> (Self, bool);
 }
 
+/// The modules a value can name, in the order each was first noted. The set
+/// only grows.
+#[derive(Debug, Default)]
+pub(crate) struct NameableModules(indexmap::IndexSet<ModuleId>);
+
+impl NameableModules {
+    /// Returns whether `module` is new to the set.
+    pub(crate) fn note(&mut self, module: ModuleId) -> bool {
+        self.0.insert(module)
+    }
+
+    pub(crate) fn modules(&self) -> impl Iterator<Item = ModuleId> + '_ {
+        self.0.iter().copied()
+    }
+}
+
 /// The monotonic reconcile policy: the value always advances to `incoming`;
 /// `changed` is true unless `same` holds against the current value.
 fn monotonic<T>(current: Option<&T>, incoming: T, same: impl Fn(&T, &T) -> bool) -> (T, bool) {

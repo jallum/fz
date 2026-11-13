@@ -2193,6 +2193,81 @@ fn a_call_on_a_module_value_is_chosen_by_the_module_ahead_of_its_arguments() {
     );
 }
 
+/// A call on any atom has a target per module that has the function and one
+/// more, the miss, selected by every other value. The miss is a destination
+/// like the rest: the plan tells it from the module by reading the module, and
+/// a call with nothing but the miss needs no plan at all.
+#[test]
+fn a_miss_is_one_more_destination_selected_by_every_value_no_module_claims() {
+    use super::super::semantic::UndefinedFunction;
+
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let int = world.types_mut().int();
+    let none = world.types_mut().none();
+    let owner = world.reference_module(crate::modules::identity::ModuleName::from_segments(vec![
+        "Square".to_string(),
+    ]));
+    let square = world.types_mut().atom_lit("Elixir.Square");
+    let any = world.types_mut().any();
+    let every_other_value = world.types_mut().difference(any, square);
+    let hit = CallTargetSummary {
+        selector: Some(square),
+        callee: SelectedCallee::Function(world.reference_function(owner, "area", 1)),
+        surface_inputs: vec![int],
+        activation: None,
+        activation_inputs: None,
+        extern_params: None,
+        return_ty: None,
+    };
+    let miss = |selector| CallTargetSummary {
+        selector: Some(selector),
+        callee: SelectedCallee::Undefined(std::rc::Rc::new(UndefinedFunction {
+            function: "area".to_string(),
+            arity: 1,
+            modules_without: Vec::new(),
+        })),
+        surface_inputs: vec![int],
+        activation: None,
+        activation_inputs: None,
+        extern_params: None,
+        return_ty: Some(none),
+    };
+
+    let summary = CallSiteSummary {
+        targets: vec![hit, miss(every_other_value)],
+        return_ty: None,
+        last_resort: None,
+    };
+    let CallDestinations::Dispatch(dispatch) =
+        call_destinations(world.types_mut(), &summary).expect("dispatch should compile")
+    else {
+        panic!("a module and a miss are two destinations");
+    };
+    assert_eq!(dispatch.targets.len(), 2, "the module and the miss");
+    assert!(
+        dispatch.plan.required_input(0),
+        "only the module value tells a hit from a miss"
+    );
+    assert!(
+        !dispatch.plan.required_input(1),
+        "the argument is the same either way, so the choice does not read it"
+    );
+
+    let only_a_miss = CallSiteSummary {
+        targets: vec![miss(any)],
+        return_ty: Some(none),
+        last_resort: None,
+    };
+    assert!(
+        matches!(
+            call_destinations(world.types_mut(), &only_a_miss).expect("one destination"),
+            CallDestinations::Direct(_)
+        ),
+        "a call no module answers goes straight to the raise"
+    );
+}
+
 #[test]
 fn callable_flow_dispatches_on_the_surface_argument_that_distinguishes_members() {
     let _tel = ConfiguredTelemetry::new();

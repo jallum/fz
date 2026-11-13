@@ -100,6 +100,14 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
             used.insert(*kind);
             used.insert(*value);
         }
+        Term::RaiseUndefined {
+            receiver,
+            function,
+            modules_without,
+            arity: _,
+        } => {
+            used.extend([*receiver, *function, *modules_without]);
+        }
         Term::Unreachable => {}
         Term::ReturnLanes(lanes) => {
             for v in lanes {

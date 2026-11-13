@@ -1546,6 +1546,15 @@ fn collect_entry_live_demands(
                 );
                 note_live_demand(out, &mut live, module, asked.into_owned());
             }
+            if let Some(module) = callee.module_value()
+                && facts
+                    .callsites
+                    .get(callsite)
+                    .is_some_and(CallSiteSummary::may_be_undefined)
+            {
+                let shown = facts.boundary_demand(facts.argument_type(module));
+                note_live_demand(out, &mut live, module, boundary_value_demand(facts, module, shown));
+            }
         }
         LoweredTail::ClosureCall {
             value,
@@ -2709,6 +2718,9 @@ fn local_target_input_demands<'a>(
                 .map(|ty| facts.boundary_demand(ty))
                 .collect::<Vec<_>>()
                 .into()
+        }
+        super::super::semantic::SelectedCallee::Undefined(_) => {
+            vec![RuntimeDemand::ignore(); target.surface_inputs.len()].into()
         }
         super::super::semantic::SelectedCallee::Function(_) => {
             if let Some(extern_params) = target.extern_params {

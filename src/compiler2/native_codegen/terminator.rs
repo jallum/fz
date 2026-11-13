@@ -13,7 +13,7 @@ use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Sig
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
-use fz_runtime::failure::{fz_raise, fz_raise_naming_kind, fz_raise_showing, fz_reraise};
+use fz_runtime::failure::{fz_raise, fz_raise_naming_kind, fz_raise_showing, fz_raise_undefined_function, fz_reraise};
 use fz_runtime::ir_runtime::{
     fz_receive_park_matched, fz_try_push, fz_yield_mid_flight_report, fz_yield_slow_path_begin,
 };
@@ -319,6 +319,12 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
             subject,
         } => emit_raise(body, var_env, *exception, *message, *subject),
         Term::Reraise { kind, value } => emit_reraise(body, var_env, *kind, *value),
+        Term::RaiseUndefined {
+            receiver,
+            function,
+            arity,
+            modules_without,
+        } => emit_raise_undefined(body, var_env, *receiver, *function, *arity, *modules_without),
         Term::Unreachable => {
             body.b.ins().trap(TrapCode::user(1).unwrap());
             Ok(())
@@ -520,6 +526,31 @@ fn emit_reraise<M: cranelift_module::Module>(
     let value = body.any_ref_for_var(var_env, value.0);
     let process = body.process_arg();
     runtime_call!(body, fz_reraise, [process, kind, value]);
+    continue_after_raise(body);
+    Ok(())
+}
+
+/// `Term::RaiseUndefined` is a call on a module value that found nothing to
+/// call: the runtime raises Elixir's exception for the receiver it is shown,
+/// and what follows is what follows any raise.
+fn emit_raise_undefined<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    receiver: Var,
+    function: Var,
+    arity: usize,
+    modules_without: Var,
+) -> Result<(), CodegenError> {
+    let receiver = body.any_ref_for_var(var_env, receiver.0);
+    let function = body.any_ref_for_var(var_env, function.0);
+    let modules_without = body.any_ref_for_var(var_env, modules_without.0);
+    let arity = body.b.ins().iconst(types::I64, arity as i64);
+    let process = body.process_arg();
+    runtime_call!(
+        body,
+        fz_raise_undefined_function,
+        [process, receiver, function, arity, modules_without]
+    );
     continue_after_raise(body);
     Ok(())
 }

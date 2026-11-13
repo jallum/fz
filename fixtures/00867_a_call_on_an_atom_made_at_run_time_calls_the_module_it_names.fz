@@ -1,0 +1,40 @@
+#---
+# purpose: "m.f(a) on a value typed as any atom calls the function of the module the atom names at run time: an atom made from a binary, the __struct__ field of a value known only to be a map, and a module the program never writes as a value"
+# oracle: 00867_a_call_on_an_atom_made_at_run_time_calls_the_module_it_names.oracle.exs
+#---
+#
+# The receiver's type lists no module, so the call chooses among the modules
+# a value can name: every module the program defines. Bank.Frozen is never
+# written as a value and is still reached by its name.
+defmodule Circle do
+  defstruct [:r]
+
+  def area(c), do: 3 * c.r * c.r
+  def sides(), do: 0
+end
+
+defmodule Square do
+  defstruct [:s]
+
+  def area(s), do: s.s * s.s
+  def sides(), do: 4
+end
+
+defmodule Bank.Frozen do
+  def sides(), do: :none
+end
+
+def sides_of(name), do: String.to_atom(name).sides()
+
+def area_of(shape :: map), do: shape.__struct__.area(shape)
+
+def main() do
+  dbg(sides_of("Elixir.Square"))
+  dbg(sides_of("Elixir.Circle"))
+  dbg(sides_of("Elixir.Bank.Frozen"))
+  dbg(area_of(%Circle{r: 2}))
+  dbg(area_of(%Square{s: 2}))
+  dbg(Enum.map(["Elixir.Circle", "Elixir.Square"], fn name -> String.to_atom(name).sides() end))
+  m = String.to_atom("Elixir.Square")
+  dbg(m.area(%Square{s: 5}))
+end

@@ -63,6 +63,20 @@ impl<T> CallSiteResolution<T> {
 pub enum SelectedCallee {
     Function(FunctionId),
     ProviderBoundary(FunctionId),
+    /// No function: the call raises. A call on a module value reaches this
+    /// when the value names no module that has the function.
+    Undefined(std::rc::Rc<UndefinedFunction>),
+}
+
+/// The function a call on a module value asked for and did not find.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UndefinedFunction {
+    pub function: String,
+    pub arity: usize,
+    /// The atoms of the modules the program has that lack the function.
+    /// Elixir words the failure one way for these and another way for an
+    /// atom that names no module.
+    pub modules_without: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1577,6 +1591,14 @@ impl CallSiteSummary {
     /// targets reads ahead of the arguments.
     pub fn selects_by_module(&self) -> bool {
         self.targets.iter().any(|target| target.selector.is_some())
+    }
+
+    /// Whether the call can find no function to call: the module value it is
+    /// made on may name no module that has one. The failure shows that value.
+    pub fn may_be_undefined(&self) -> bool {
+        self.targets
+            .iter()
+            .any(|target| matches!(target.callee, SelectedCallee::Undefined(_)))
     }
 
     pub fn single_target(&self) -> Option<&CallTargetSummary> {

@@ -213,6 +213,7 @@ fn target_label(world: &World, callee: SelectedCallee, labels: &mut HashMap<Func
         SelectedCallee::ProviderBoundary(function) => {
             format!("provider:{}", canonical_function_label(world, function, labels))
         }
+        SelectedCallee::Undefined(undefined) => format!("undefined:{}/{}", undefined.function, undefined.arity),
     }
 }
 

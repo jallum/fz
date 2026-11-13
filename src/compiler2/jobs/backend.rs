@@ -22,7 +22,7 @@ use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
     BackendConstructionCapture, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry,
     BackendEntryCapture, BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout,
-    BackendStep, BackendTail, CallEdge, CallReturnFlow, DirectCallEdge, DispatchCallArm,
+    BackendStep, BackendTail, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep,
@@ -1298,20 +1298,37 @@ fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut Hash
 
 fn collect_tail_atoms(world: &mut World, tail: &BackendTail, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     match tail {
-        BackendTail::DirectCall {
-            target: CallEdge::Dispatch(dispatch),
-            ..
-        } => {
-            collect_dispatch_atoms(world, &dispatch.plan, seen, atoms);
+        BackendTail::DirectCall { target, .. } => {
+            for callee in target.callees() {
+                collect_undefined_function_atoms(callee, seen, atoms);
+            }
+            if let CallEdge::Dispatch(dispatch) = target {
+                collect_dispatch_atoms(world, &dispatch.plan, seen, atoms);
+            }
         }
         BackendTail::Dispatch { dispatch, .. } => collect_dispatch_atoms(world, &dispatch.plan, seen, atoms),
         BackendTail::Receive(receive) => collect_dispatch_atoms(world, &receive.dispatch, seen, atoms),
         BackendTail::Value { .. }
         | BackendTail::Unreachable
-        | BackendTail::DirectCall { .. }
         | BackendTail::ClosureCall { .. }
         | BackendTail::If { .. }
         | BackendTail::Try { .. } => {}
+    }
+}
+
+/// The raise of a call that found no function names the function and tells
+/// the modules that lack it from the atoms that name no module.
+fn collect_undefined_function_atoms(
+    callee: &CallTarget<ExecutableKey>,
+    seen: &mut HashSet<String>,
+    atoms: &mut Vec<String>,
+) {
+    let CallTarget::Undefined(undefined) = callee else {
+        return;
+    };
+    push_atom(seen, atoms, &undefined.function);
+    for module in &undefined.modules_without {
+        push_atom(seen, atoms, module);
     }
 }
 

@@ -1996,6 +1996,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let module_id = self.resolve_struct_module(module, span)?;
+        self.name_module_as_value(module_id);
         // `collect_local_dispatch_requirements`'s `Expr::Struct` arm already
         // recorded this literal's field obligations and waited on
         // `StructDefined(module_id)` before `lower_function` built this
@@ -2131,20 +2132,30 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         span: Span,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
-        let atom = self
+        let module = self
             .world
-            .module_alias_atom(self.source.owner_module, self.namespace, alias)
-            .ok_or_else(|| {
-                emit_job_diagnostic(
-                    self.telemetry,
-                    Diagnostic::error(
-                        codes::LOWER_UNBOUND,
-                        format!("compiler2 could not resolve module `{alias}`"),
-                        span,
-                    ),
-                )
-            })?;
+            .resolve_module_name(self.source.owner_module, self.namespace, alias);
+        let named = module.and_then(|module| Some((module, self.world.module_name(module)?.atom_name())));
+        let (module, atom) = named.ok_or_else(|| {
+            emit_job_diagnostic(
+                self.telemetry,
+                Diagnostic::error(
+                    codes::LOWER_UNBOUND,
+                    format!("compiler2 could not resolve module `{alias}`"),
+                    span,
+                ),
+            )
+        })?;
+        self.name_module_as_value(module);
         Ok(self.push_const(steps, GroundValue::Atom(atom)))
+    }
+
+    /// This body writes `module`'s name as a value, so a value can name it.
+    fn name_module_as_value(&mut self, module: super::super::identity::ModuleId) {
+        self.generated.push(FactKey::NameableModules);
+        if self.world.note_nameable_module(module) {
+            self.generated_changed.push(FactKey::NameableModules);
+        }
     }
 
     fn resolve_struct_module(

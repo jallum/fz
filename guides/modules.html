@@ -118,11 +118,23 @@ be called the same way, and the call reaches that module's function:</p>
 <p>The compiler resolves <code>m.exception([])</code> from the type of
 <code>m</code>. When the type names one module the call is an ordinary
 direct call. When it names several, the program reads <code>m</code> at
-run time and calls the function of the module it holds. A value typed as
-any atom, or as something that is not an atom, is refused at compile time
-with <code>type/module-value-call</code>, because its type does not say
-which modules it can be. Without the parentheses, <code>m.exception</code>
-is a field read.</p>
+run time and calls the function of the module it holds.</p>
+
+<p>When the type says only "some atom", as it does for
+<code>String.to_atom(name)</code>, the value can be any module the program
+has. The call then chooses among the modules that define the function, and
+a value that reaches none of them raises, as in Elixir:</p>
+
+<pre><span class="ty">String</span>.<span class="fn">to_atom</span>(<span class="str">"Elixir.Overdrawn"</span>).<span class="fn">exception</span>([])   <span class="com"># Overdrawn.exception([])</span>
+<span class="ty">String</span>.<span class="fn">to_atom</span>(<span class="str">"nowhere"</span>).<span class="fn">exception</span>([])
+<span class="com"># ** (UndefinedFunctionError) function :nowhere.exception/1 is undefined</span>
+<span class="com">#    (module :nowhere is not available)</span></pre>
+
+<p>A value that is not an atom at run time raises
+<code>ArgumentError</code>. A value whose type holds no atom at all can
+never be a module, and that call is refused at compile time with
+<code>type/module-value-call</code>. Without the parentheses,
+<code>m.exception</code> is a field read.</p>
 
 <div class="aside">
 Function identity is not "some string that happens to contain dots." The

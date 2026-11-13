@@ -291,6 +291,10 @@ pub enum FactKey {
     StructDefined(ModuleId),
     ProtocolDispatch(ModuleId),
     ProtocolImplProviders(ModuleId),
+    /// The modules a value can name: every module whose source is indexed
+    /// and every module a lowered body names as a value. A call on an atom
+    /// that lists no module chooses among these.
+    NameableModules,
     FunctionDefined(FunctionId),
     FunctionContract(FunctionId),
     LoweredBody(FunctionId),
@@ -342,6 +346,7 @@ impl FactKey {
             FactKey::StructDefined(_) => "a struct definition",
             FactKey::ProtocolDispatch(_) => "a protocol's dispatch",
             FactKey::ProtocolImplProviders(_) => "a protocol's implementation providers",
+            FactKey::NameableModules => "the modules a value can name",
             FactKey::FunctionDefined(_) => "a function definition",
             FactKey::FunctionContract(_) => "a function's contract",
             FactKey::LoweredBody(_) => "a function's lowered body",
@@ -446,6 +451,7 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::RuntimeDemandInput(_) => 33,
         FactKey::RuntimeDemandInputs(_) => 34,
         FactKey::IncomingInputSlot(_) => 37,
+        FactKey::NameableModules => 38,
     }
 }
 
@@ -866,7 +872,7 @@ impl World {
     ///
     /// Facts whose producers publish them only as a co-output of a broader
     /// job's conclusion (`ModuleIndexed`, `StructDefined`, `ProtocolDispatch`,
-    /// `ProtocolImplProviders`, `Executable`) have no arm: their demand rides
+    /// `ProtocolImplProviders`, `NameableModules`, `Executable`) have no arm: their demand rides
     /// the mapped facts that gate the job that co-produces them. Every fact
     /// with a single sole-producing job gets an arm here, even when that job
     /// is also the blocked branch of a `wait_on_current(fact)` bare wait elsewhere —
@@ -1009,7 +1015,7 @@ impl World {
     ///
     /// Facts whose producers publish them only as a co-output of a broader
     /// job's conclusion (`ModuleIndexed`, `StructDefined`, `ProtocolDispatch`,
-    /// `ProtocolImplProviders`, `Executable`) have no arm: their demand rides
+    /// `ProtocolImplProviders`, `NameableModules`, `Executable`) have no arm: their demand rides
     /// the mapped facts that gate the job that co-produces them. A function's
     /// source has no single producer either; `demand_fact_producer` expands it
     /// through its scope facts.

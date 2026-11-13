@@ -30,7 +30,7 @@ use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteResolution, CallSiteSummary, CallSiteTargets, CallTargetSummary,
-    SelectedCallee, TrimmedPlans,
+    SelectedCallee, TrimmedPlans, UndefinedFunction,
 };
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::{BodyShape, World};
@@ -1425,7 +1425,7 @@ fn resolve_module_value_call(
             CallReturn::Bottom,
         ));
     }
-    let callees = module_value_callees(
+    let receiver = module_value_receiver(
         world,
         tel,
         caller,
@@ -1433,8 +1433,15 @@ fn resolve_module_value_call(
         function,
         arg_types.len(),
         callsite.span(),
+        uses,
     )?;
-    if !every_module_callee_ready(world, &callees, uses) {
+    let Some(receiver) = receiver else {
+        return Ok((
+            Some(emission(CallSiteResolution::Unresolved, Vec::new())),
+            CallReturn::awaited(uses),
+        ));
+    };
+    if !every_module_callee_ready(world, &receiver.callees, uses) {
         return Ok((
             Some(emission(CallSiteResolution::Unresolved, Vec::new())),
             CallReturn::awaited(uses),
@@ -1443,7 +1450,7 @@ fn resolve_module_value_call(
     let mut targets = Vec::new();
     let mut activations = Vec::new();
     let mut call_return = CallReturn::Bottom;
-    for (selector, callee) in callees {
+    for (selector, callee) in receiver.callees {
         let (resolution, callee_activations, callee_return) =
             resolve_function_call(world, tel, caller, callee, arg_types.clone(), callsite.span(), uses)?;
         let CallSiteResolution::Resolved(summary) = resolution else {
@@ -1459,6 +1466,23 @@ fn resolve_module_value_call(
         activations.extend(callee_activations);
         call_return = join_call_return(world, call_return, callee_return);
     }
+    if let Some((selector, undefined)) = receiver.miss {
+        let never = none_ty(world);
+        if targets.is_empty() {
+            call_return = CallReturn::Known(never);
+        }
+        targets.push(CallTargetSummary {
+            selector: Some(selector),
+            ..call_target_summary(
+                world,
+                SelectedCallee::Undefined(std::rc::Rc::new(undefined)),
+                arg_types,
+                None,
+                None,
+                Some(never),
+            )
+        });
+    }
     let return_ty = call_return.evidence();
     Ok((
         Some(emission(
@@ -1473,9 +1497,20 @@ fn resolve_module_value_call(
     ))
 }
 
-/// The function `function/arity` of each module `module_ty` names, beside the
-/// atom type that selects it.
-fn module_value_callees(
+/// What the receiver of `m.f(a)` can be: the modules that have `f`, each
+/// beside the atom type that selects it, and the rest of the receiver's type,
+/// on which the call raises.
+struct ModuleValueReceiver {
+    callees: Vec<(Ty, FunctionId)>,
+    miss: Option<(Ty, UndefinedFunction)>,
+}
+
+/// Reads the receiver's type. A type that lists its atoms names its modules
+/// itself. Any other atom can be any module a value can name, so the call
+/// chooses among those that have the function. `None` while one of those
+/// modules is still to be defined.
+#[allow(clippy::too_many_arguments)]
+fn module_value_receiver(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     caller: &ActivationKey,
@@ -1483,13 +1518,54 @@ fn module_value_callees(
     function: &str,
     arity: usize,
     call_span: Span,
-) -> Result<Vec<(Ty, FunctionId)>, FatalError> {
-    let atoms = world.types().atom_literals(&module_ty);
-    if !world.types().is_atom_type(&module_ty) || atoms.is_empty() {
-        return Err(emit_module_value_unknown(
-            tel, world, module_ty, function, arity, call_span,
-        ));
+    uses: &mut UseCollector,
+) -> Result<Option<ModuleValueReceiver>, FatalError> {
+    let any_atom = world.types_mut().atom();
+    let atoms = world.types_mut().intersect(module_ty, any_atom);
+    if world.types().is_empty(&atoms) {
+        return Err(emit_never_a_module(tel, world, module_ty, function, arity, call_span));
     }
+    let listed = world.types().atom_literals(&atoms);
+    let ModuleCallees {
+        callees,
+        modules_without,
+    } = if listed.is_empty() {
+        let Some(nameable) = nameable_module_callees(world, atoms, function, arity, uses) else {
+            return Ok(None);
+        };
+        nameable
+    } else {
+        ModuleCallees {
+            callees: listed_module_callees(world, tel, caller, listed, function, arity, call_span)?,
+            modules_without: Vec::new(),
+        }
+    };
+    let mut rest = module_ty;
+    for (selector, _) in &callees {
+        rest = world.types_mut().difference(rest, *selector);
+    }
+    let miss = (!world.types().is_empty(&rest)).then(|| {
+        let undefined = UndefinedFunction {
+            function: function.to_string(),
+            arity,
+            modules_without,
+        };
+        (rest, undefined)
+    });
+    Ok(Some(ModuleValueReceiver { callees, miss }))
+}
+
+/// The function `function/arity` of each module the receiver's type lists,
+/// beside the atom type that selects it.
+fn listed_module_callees(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    caller: &ActivationKey,
+    atoms: Vec<String>,
+    function: &str,
+    arity: usize,
+    call_span: Span,
+) -> Result<Vec<(Ty, FunctionId)>, FatalError> {
     let requester = InterfaceRequester {
         owner: world.function_definition(caller.function).0.owner,
         module: world.function_module(caller.function),
@@ -1509,6 +1585,61 @@ fn module_value_callees(
         .collect()
 }
 
+/// The modules that have a function, each beside the atom type that selects
+/// it, and the atoms of the modules that lack it.
+struct ModuleCallees {
+    callees: Vec<(Ty, FunctionId)>,
+    modules_without: Vec<String>,
+}
+
+/// The function `function/arity` of each module a value can name whose atom
+/// is in `atoms`, and the modules among them that lack it. The set of nameable modules grows as
+/// source is indexed and bodies are lowered, so it is read whether or not it
+/// holds anything yet. `None` while a module's definition is awaited.
+fn nameable_module_callees(
+    world: &mut World,
+    atoms: Ty,
+    function: &str,
+    arity: usize,
+    uses: &mut UseCollector,
+) -> Option<ModuleCallees> {
+    uses.read(FactKey::NameableModules);
+    let modules = world.nameable_modules().collect::<Vec<_>>();
+    let mut callees = Vec::new();
+    let mut modules_without = Vec::new();
+    let mut awaited = false;
+    for module in modules {
+        let Some(atom) = world.module_name(module).map(ModuleName::atom_name) else {
+            continue;
+        };
+        let selector = world.types_mut().atom_lit(&atom);
+        if !world.types().is_subtype(&selector, &atoms) {
+            continue;
+        }
+        if world.module_defined_revision(module).is_none() {
+            if world.module_has_source_state(module) || world.is_runtime_module(module) {
+                uses.wait(FactKey::ModuleDefined(module));
+                awaited = true;
+            } else {
+                uses.read(FactKey::ModuleIndexed(module));
+            }
+            continue;
+        }
+        uses.read(FactKey::ModuleDefined(module));
+        match world
+            .module_interface(module)
+            .public_function_with_name_arity(function, arity)
+        {
+            Some(callee) => callees.push((selector, callee)),
+            None => modules_without.push(atom),
+        }
+    }
+    (!awaited).then_some(ModuleCallees {
+        callees,
+        modules_without,
+    })
+}
+
 /// Every callee is asked before any is resolved, so a call learns all it
 /// waits for in one run. A protocol callback asks for its own prerequisites
 /// when it is resolved.
@@ -1525,33 +1656,20 @@ fn every_module_callee_ready(world: &mut World, callees: &[(Ty, FunctionId)], us
     all_ready
 }
 
-/// The receiver of `m.f(a)` is not a known set of modules: it holds no atom,
-/// or something besides atoms, or more atoms than its type lists.
-fn emit_module_value_unknown(
+/// The receiver of `m.f(a)` holds no atom, so it is never a module.
+fn emit_never_a_module(
     tel: &impl crate::telemetry::Telemetry,
-    world: &mut World,
+    world: &World,
     module_ty: Ty,
     function: &str,
     arity: usize,
     span: Span,
 ) -> FatalError {
-    let atom = world.types_mut().atom();
-    let atoms = world.types_mut().intersect(module_ty, atom);
     let shown = world.types().display_for_diag(&module_ty);
-    let (fault, label) = if world.types().is_empty(&atoms) {
-        ("is never a module", "a module is an atom")
-    } else if atoms != module_ty {
-        ("is not always a module", "a module is an atom")
-    } else {
-        (
-            "does not list the modules it can be",
-            "the call needs a type that names each module",
-        )
-    };
-    let message = format!("call to `{function}/{arity}` on a value of type `{shown}`, which {fault}");
+    let message = format!("call to `{function}/{arity}` on a value of type `{shown}`, which is never a module");
     emit_through(
         tel,
-        &[Diagnostic::error(codes::MODULE_VALUE_CALL, message, span).with_label(label)],
+        &[Diagnostic::error(codes::MODULE_VALUE_CALL, message, span).with_label("a module is an atom")],
     );
     FatalError
 }
@@ -2614,7 +2732,7 @@ fn call_target_summary(
 ) -> CallTargetSummary {
     let extern_params = match callee {
         SelectedCallee::Function(function) => callee_extern_params(world, function),
-        SelectedCallee::ProviderBoundary(_) => None,
+        SelectedCallee::ProviderBoundary(_) | SelectedCallee::Undefined(_) => None,
     };
     CallTargetSummary {
         selector: None,

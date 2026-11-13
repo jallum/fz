@@ -1356,7 +1356,9 @@ fn origin_transport_recipe(
                                 }),
                             })
                         }
-                        (SelectedCallee::ProviderBoundary(_), _) | (_, None) => TransportRecipe::Terminal,
+                        (SelectedCallee::ProviderBoundary(_) | SelectedCallee::Undefined(_), _) | (_, None) => {
+                            TransportRecipe::Terminal
+                        }
                     })
                     .collect(),
             )
@@ -2284,6 +2286,7 @@ fn append_origin_children(
                 .unwrap_or(ExecutableNeed::Value);
             for target in &summary.targets {
                 match (&target.callee, &target.activation) {
+                    (SelectedCallee::Undefined(_), _) => {}
                     (SelectedCallee::ProviderBoundary(_), _) | (_, None) => return false,
                     (SelectedCallee::Function(_), Some(activation)) => {
                         children.push(TransportPosition::ExecutableReturn {

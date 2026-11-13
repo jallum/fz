@@ -256,6 +256,9 @@ fn render_callsite_summary(world: &World, summary: &super::semantic::CallSiteSum
                 super::semantic::SelectedCallee::ProviderBoundary(function) => {
                     format!("provider:{}", function_label(world, function))
                 }
+                super::semantic::SelectedCallee::Undefined(ref undefined) => {
+                    format!("undefined:{}/{}", undefined.function, undefined.arity)
+                }
             };
             let inputs = target
                 .surface_inputs
