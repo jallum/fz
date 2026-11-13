@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T21:18:22Z",
+  "description": "GH #295. Page: /Users/j5n/Workspace/gh-165-166-295.html. The lexer walks bytes with ASCII identifier rules; diagnostics count bytes as columns and print bytes as characters. Elixir 1.19.4 behaviour measured and listed on the page.",
+  "id": "fz-iqp",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Identifiers and atoms are read as characters",
+  "type": "epic",
+  "updated_at": "2026-11-13T21:18:22Z"
+}
