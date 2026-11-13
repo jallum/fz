@@ -686,11 +686,14 @@ code before they own it.
 Every extern is callable from a guard; the guard-expression node is
 `PatternGuardExpr::Extern`. `GuardExtern::new` (dispatch_matrix/pattern.rs)
 admits parameters of class `I64`, `F64` or `Any` and returns of `I64`, `F64`,
-`Any` or `never`, plain or `Checked`; any other class is
+`Any`, `Bool` or `never`, plain or `Checked`; any other class is
 `SourcePatternError::GuardExternClass`, a compile error on every path. The
-receive matcher's shim (`emit_guard_extern`) therefore marshals three classes:
-an integer (`receive_value_int`), a float (`receive_value_float`) and a
-reference word (`emit_receive_value_ref`). An extern returning `never` fails the
+receive matcher's shim (`emit_guard_extern`) therefore marshals three classes
+of operand: an integer (`receive_value_int`), a float (`receive_value_float`)
+and a reference word (`emit_receive_value_ref`); a `Bool` return is a nonzero
+word read as the atom `true` or `false`. `===` and `!==` in a guard are the
+Kernel functions a body calls, so they reach `fz_op_identical*` and
+`fz_op_not_identical*` through this node. An extern returning `never` fails the
 guard without being called, and a `Checked` extern that reports failure fails it
 too. The interpreter calls the extern through `call_lowered_extern`;
 native lowering emits `Prim::Extern`. Domain checks live in the Kernel heads

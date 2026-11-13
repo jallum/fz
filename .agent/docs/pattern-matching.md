@@ -411,7 +411,7 @@ extern is guard-callable. `Job::ReifyGuardDispatch` publishes the same
 `GuardDispatch(function)` fact for an extern, holding a `GuardExtern` built from
 the extern's settled wire, so a guard waits on the extern's `FunctionContract`.
 `GuardExtern::new` admits parameters of class `I64`, `F64` or `Any` and a return
-of `I64`, `F64`, `Any` or `Never`, either plain or `Checked` (an extern that
+of `I64`, `F64`, `Any`, `Bool` or `Never`, either plain or `Checked` (an extern that
 declares `raises:`); any other class (a binary, a pair, a variadic extern) is
 refused with `GuardExternClass` where the node is made, so no evaluator is handed
 a call it cannot carry. A `Checked` extern's failure is the guard's failure: the
@@ -424,7 +424,8 @@ node once:
   declares the extern the first time a guard names it, and branches a `Checked`
   return's `failed` lane to the guard's failure block;
 - the receive matcher (`emit_guard_extern`) carries an integer, a float and a
-  reference word (`emit_receive_value_ref`), and `emit_checked_return` branches
+  reference word (`emit_receive_value_ref`), and answers a `Bool` return as the
+  atom `true` or `false`, and `emit_checked_return` branches
   the `failed` lane to the guard's failure block.
 
 The arithmetic operators in a guard (`+ - * / %`, unary plus and unary minus) are calls, not

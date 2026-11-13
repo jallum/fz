@@ -280,9 +280,10 @@ impl<TypeHandle> GuardCallee<TypeHandle> {
     }
 }
 
-/// An extern a guard calls. Every parameter and the return are one of the
-/// classes all three guard evaluators can carry: an integer, a float, or a
-/// reference word. A return of `never` is the call that fails the guard, and
+/// An extern a guard calls. Every parameter is one of the classes all three
+/// guard evaluators can carry: an integer, a float, or a reference word. The
+/// return is one of those or a boolean, which the guard reads as `true` or
+/// `false`. A return of `never` is the call that fails the guard, and
 /// so is the failure a checked return declares: either way the clause does not
 /// match.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,12 +322,15 @@ impl GuardExtern {
         }
         let carried = match &ret {
             ExternReturn::Scalar(lane) | ExternReturn::Checked(lane, _) => {
-                matches!(lane, ExternTy::I64 | ExternTy::F64 | ExternTy::Any | ExternTy::Never)
+                matches!(
+                    lane,
+                    ExternTy::I64 | ExternTy::F64 | ExternTy::Any | ExternTy::Bool | ExternTy::Never
+                )
             }
         };
         if !carried {
             return Err(refuse(format!(
-                "return {ret:?} is neither a number nor a reference word"
+                "return {ret:?} is neither a number, a boolean nor a reference word"
             )));
         }
         Ok(Self {
