@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T14:46:36Z",
   "created": "2026-11-13T03:38:54Z",
   "description": "next_widening (types/axis.rs:848-872) runs inside a while-let loop and on every iteration rebuilds mats (:849-852, a clone of every coordinate of every rectangle), refolds the union of all same-arity siblings per coordinate (:857-859), clones rect for trial (:863) and builds cover (:865); one iteration changes one coordinate. Coord::descr (:750) returns an owned Descr: same_as (:757-760) clones both sides to compare, fuse_one_coordinate_unions (:808) clones both then unions. phi_tuple (types/emptiness.rs:49-80): :65 builds ti.intersect(h) only to test emptiness; :70 t.to_vec() per split. About 56k allocations under phi_tuple, 47k through join_evidence -\u003e Types::union -\u003e intern -\u003e normalize_tuple_axis (semantic.rs:785, types/mod.rs:2144/725/984).\nShape: materialise coordinates once and patch the one that changed; Coord::descr lends \u0026Descr; a Descr::is_disjoint that builds a clause product only where both sides have clauses.\nCare: the widening result must stay order-independent (axis.rs:781-785); phi_tuple is the tuple emptiness kernel. The disjointness replacement is unverified: prove it against the type-system tests before relying on it.\n\nCounts are sampling estimates at develop 742e688b5 (line numbers refer to /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src); re-measure on your base first. Signal: see the epic.",
   "id": "fz-y11.12",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Tuple-axis widening changes one coordinate without rebuilding the rest",
   "type": "task",
-  "updated_at": "2026-11-13T14:20:56Z"
+  "updated_at": "2026-11-13T14:46:36Z"
 }
