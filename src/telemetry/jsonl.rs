@@ -2147,18 +2147,6 @@ fn transport_position_kind(position: &crate::compiler2::transport::TransportPosi
 fn write_activation_symbol(out: &mut String, symbol: &crate::compiler2::transport::ActivationSymbol) {
     write_function_id(out, symbol.function);
     write_arrow(out, symbol.arrow);
-    out.push(',');
-    write_str_lit(out, "input");
-    out.push(':');
-    out.push('[');
-    for (index, ty) in symbol.input().iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        note_named_type(*ty);
-        push_u64(out, ty.as_u32() as u64);
-    }
-    out.push(']');
 }
 
 fn write_executable_symbol(out: &mut String, symbol: &crate::compiler2::transport::ExecutableSymbol) {

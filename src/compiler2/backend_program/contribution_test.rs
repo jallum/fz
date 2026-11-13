@@ -13,7 +13,7 @@ fn key(world: &mut World, name: &str) -> ExecutableKey {
 
 fn backend(world: &mut World, key: &ExecutableKey, atoms: &[&str]) -> Rc<BackendExecutable> {
     let nothing = world.intern_shape(ShapeDescr::Nothing);
-    let mut backend = BackendExecutable::for_test(key.clone(), world.types_mut().none(), nothing, world.types());
+    let mut backend = BackendExecutable::for_test(key.clone(), world.types_mut().none(), nothing);
     backend.atom_names = atoms.iter().map(|atom| AtomName::from(*atom)).collect();
     Rc::new(backend)
 }

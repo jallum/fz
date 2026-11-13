@@ -31,7 +31,7 @@ fn boxed_caller_body(
         reprs: reprs.into_boxed_slice(),
     };
     let callee = ValueId::from_u32(1);
-    let mut executable = BackendExecutable::for_test(key.clone(), int, nothing, world.types());
+    let mut executable = BackendExecutable::for_test(key.clone(), int, nothing);
     let abi = Rc::make_mut(&mut executable.abi);
     abi.value_layouts.insert(callee, layout(vec![AbiValueRepr::ValueRef]));
     abi.return_layout = BackendReturnLayout {
@@ -139,7 +139,7 @@ fn one_raw_lane_does_not_satisfy_a_wrapper_that_hands_back_a_boxed_word() {
         vec![AbiValueRepr::RawInt],
     );
     let requirements = BoxedApplyRequirement::for_body(&executable.body, &executable.abi);
-    let returning = wrapper(&key, 1, BackendCallableReturn::ValueRef, world.types());
+    let returning = wrapper(&key, 1, BackendCallableReturn::ValueRef);
 
     let tel = ConfiguredTelemetry::new();
     let mut contracts = BoxedContracts::default();
@@ -164,9 +164,9 @@ fn replacement_and_withdrawal_preserve_mismatch_rejection_and_agreement() {
         arity: 1,
         delivered: Box::new([AbiValueRepr::ValueRef]),
     }];
-    let absent = wrapper(&key, 1, BackendCallableReturn::Absent, world.types());
-    let returning = wrapper(&key, 1, BackendCallableReturn::ValueRef, world.types());
-    let divergent = wrapper(&key, 1, BackendCallableReturn::Diverges, world.types());
+    let absent = wrapper(&key, 1, BackendCallableReturn::Absent);
+    let returning = wrapper(&key, 1, BackendCallableReturn::ValueRef);
+    let divergent = wrapper(&key, 1, BackendCallableReturn::Diverges);
     let tel = ConfiguredTelemetry::new();
     let mut contracts = BoxedContracts::default();
     contracts.replace_caller(&key, &[], &one, world.types());
@@ -221,8 +221,8 @@ fn matching_first_lane_does_not_hide_another_conflicting_caller_or_wrapper() {
             delivered: Box::new([AbiValueRepr::ValueRef]),
         },
     ];
-    let absent = wrapper(&key, 1, BackendCallableReturn::Absent, world.types());
-    let returning = wrapper(&other, 1, BackendCallableReturn::ValueRef, world.types());
+    let absent = wrapper(&key, 1, BackendCallableReturn::Absent);
+    let returning = wrapper(&other, 1, BackendCallableReturn::ValueRef);
     let mut contracts = BoxedContracts::default();
     contracts.replace_caller(&key, &[], &requirements, world.types());
     contracts.replace_wrapper(None, Some(&absent), world.types());
@@ -259,8 +259,8 @@ fn wrapper_arity_replacement_checks_only_callers_of_its_current_arity() {
         arity: 1,
         delivered: Box::new([AbiValueRepr::ValueRef]),
     }];
-    let binary = wrapper(&key, 2, BackendCallableReturn::Absent, world.types());
-    let unary = wrapper(&key, 1, BackendCallableReturn::Absent, world.types());
+    let binary = wrapper(&key, 2, BackendCallableReturn::Absent);
+    let unary = wrapper(&key, 1, BackendCallableReturn::Absent);
     let mut contracts = BoxedContracts::default();
     contracts.replace_caller(&key, &[], &one, world.types());
     contracts.replace_wrapper(None, Some(&binary), world.types());
@@ -298,7 +298,7 @@ fn equal_contributions_do_no_work_and_changes_retain_unrelated_arity_allocations
         arity: 1,
         delivered: Box::default(),
     }];
-    let returning = wrapper(&key, 1, BackendCallableReturn::ValueRef, world.types());
+    let returning = wrapper(&key, 1, BackendCallableReturn::ValueRef);
     let mut contracts = BoxedContracts::default();
     contracts.replace_caller(&key, &[], &one, world.types());
     contracts.replace_caller(&other, &[], &two, world.types());
@@ -340,8 +340,8 @@ fn withdrawing_one_owner_keeps_other_owners_and_their_mismatch() {
         arity: 1,
         delivered: Box::new([AbiValueRepr::ValueRef]),
     }];
-    let absent = wrapper(&key, 1, BackendCallableReturn::Absent, world.types());
-    let other_absent = wrapper(&other, 1, BackendCallableReturn::Absent, world.types());
+    let absent = wrapper(&key, 1, BackendCallableReturn::Absent);
+    let other_absent = wrapper(&other, 1, BackendCallableReturn::Absent);
     let mut contracts = BoxedContracts::default();
     contracts.replace_caller(&key, &[], &one, world.types());
     contracts.replace_caller(&other, &[], &one, world.types());

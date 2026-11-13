@@ -397,8 +397,9 @@ then the referencing event:
 type, `compiler2::canon::function_label` for a function), never
 `Types::display` — display is measured non-injective, so two different
 activations would compare equal. The `type` domain covers every raw `Ty` on the
-stream: the `arrow` field and the elements of an `ActivationSymbol`'s `input`
-array both resolve through it. The canonical form is an EQUIVALENCE, not an
+stream: the `arrow` field of an `ActivationSymbol` resolves through it; the
+symbol is its function and arrow, and the parameter list is read from the
+arrow. The canonical form is an EQUIVALENCE, not an
 injection on ids: two mutually-subtype arena slots share one canonical form and
 are one identity to a reader, which is the point — that is the pair a
 renumbering is free to swap.

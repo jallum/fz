@@ -255,7 +255,7 @@ mod tests {
             activation: activation.clone(),
             need: ExecutableNeed::Value,
         };
-        let resolution = ExecutableSymbol::new(&executable, world.types());
+        let resolution = ExecutableSymbol::new(&executable);
         let surface = CallableSurface::new(Vec::new(), world.types_mut());
         let demand = RuntimeDemand::callable(CallableDemand {
             resolved: BTreeSet::from([surface.clone()]),

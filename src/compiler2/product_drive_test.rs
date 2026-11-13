@@ -2886,7 +2886,7 @@ mod wait_frame_tests {
     #[derive(Debug)]
     struct WaitStorage {
         buffer: *const PullWait,
-        inputs: Vec<*const crate::compiler2::Ty>,
+        functions: Vec<crate::compiler2::FunctionId>,
         message: String,
     }
 
@@ -2939,11 +2939,11 @@ mod wait_frame_tests {
             let (_, waits) = last_wait.as_ref().expect("the drive observed a wait");
             Self {
                 buffer: waits.as_ptr(),
-                inputs: waits
+                functions: waits
                     .iter()
                     .filter_map(|wait| {
                         let PullWait::Product(key) = wait else { return None };
-                        Some(positioned_input(key))
+                        Some(positioned_function(key))
                     })
                     .collect(),
                 message: String::request_budget_exhausted(world, tel, scope, budget, last_wait),
@@ -2951,27 +2951,29 @@ mod wait_frame_tests {
         }
     }
 
-    /// An arrow wide enough that its parameter list is a heap allocation.
-    fn wide_arrow(types: &mut crate::compiler2::Types) -> crate::compiler2::Ty {
+    fn any_arrow(types: &mut crate::compiler2::Types) -> crate::compiler2::Ty {
         let any = types.any();
-        types.arrow(&[any; 32], any)
+        types.arrow(&[any], any)
     }
 
-    fn positioned_key(types: &crate::compiler2::Types, arrow: crate::compiler2::Ty, id: u32) -> ProductKey {
+    fn positioned_key(arrow: crate::compiler2::Ty, id: u32) -> ProductKey {
         use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
         ProductKey::TransportShape(TransportPosition::ExecutableReturn {
             executable: ExecutableSymbol {
-                activation: ActivationSymbol::new(crate::compiler2::FunctionId::from_coordinate(id), arrow, types),
+                activation: ActivationSymbol {
+                    function: crate::compiler2::FunctionId::from_coordinate(id),
+                    arrow,
+                },
                 need: crate::compiler2::identity::ExecutableNeed::Value,
             },
         })
     }
 
-    fn positioned_input(key: &ProductKey) -> *const crate::compiler2::Ty {
+    fn positioned_function(key: &ProductKey) -> crate::compiler2::FunctionId {
         let ProductKey::TransportShape(position) = key else {
             panic!("expected a positioned product")
         };
-        position.executable().activation.input().as_ptr()
+        position.executable().activation.function
     }
 
     #[test]
@@ -2981,17 +2983,17 @@ mod wait_frame_tests {
             let mut world = World::new();
             let root = RootId::for_test(91);
             let root_key = ProductKey::RootBackendProduct(root);
-            let arrow = wide_arrow(world.types_mut());
+            let arrow = any_arrow(world.types_mut());
             let mut waits = (100..100 + product_count)
-                .map(|id| PullWait::Product(positioned_key(world.types(), arrow, id)))
+                .map(|id| PullWait::Product(positioned_key(arrow, id)))
                 .collect::<Vec<_>>();
             sort_product_waits(world.types(), &mut waits);
             let buffer = waits.as_ptr();
-            let inputs = waits
+            let functions = waits
                 .iter()
                 .map(|wait| {
                     let PullWait::Product(key) = wait else { unreachable!() };
-                    positioned_input(key)
+                    positioned_function(key)
                 })
                 .collect::<Vec<_>>();
             let expected_message = format!(
@@ -3031,8 +3033,8 @@ mod wait_frame_tests {
                 "remembering a wait moves its vector rather than cloning it"
             );
             assert_eq!(
-                error.inputs, inputs,
-                "positioned input backing is shared, not duplicated for diagnostics"
+                error.functions, functions,
+                "the diagnostic remembers the same positioned keys in the same order"
             );
         }
     }
@@ -3045,20 +3047,20 @@ mod wait_frame_tests {
             let code = world.submit_code(None, "def indexed_only() do\n 1\nend\n".to_owned());
             let root = RootId::for_test(95);
             let root_key = ProductKey::RootBackendProduct(root);
-            let arrow = wide_arrow(world.types_mut());
-            let child = positioned_key(world.types(), arrow, 100);
+            let arrow = any_arrow(world.types_mut());
+            let child = positioned_key(arrow, 100);
             let mut waits = vec![
-                PullWait::Product(positioned_key(world.types(), arrow, 102)),
+                PullWait::Product(positioned_key(arrow, 102)),
                 PullWait::Fact(FactUse::current(FactKey::CodeIndexed(code))),
-                PullWait::Product(positioned_key(world.types(), arrow, 101)),
+                PullWait::Product(positioned_key(arrow, 101)),
             ];
             sort_product_waits(world.types(), &mut waits);
             let buffer = waits.as_ptr();
-            let inputs = waits
+            let functions = waits
                 .iter()
                 .filter_map(|wait| {
                     let PullWait::Product(key) = wait else { return None };
-                    Some(positioned_input(key))
+                    Some(positioned_function(key))
                 })
                 .collect::<Vec<_>>();
             let expected = format!(
@@ -3070,7 +3072,7 @@ mod wait_frame_tests {
                 if waits.len() == 1 { "" } else { "s" },
             );
             let mut waits = Some(waits);
-            let mut selected_inputs = Vec::new();
+            let mut selected_functions = Vec::new();
             let mut driver = ProductDriver::new(&tel, root);
             let error = drive_root_product_with::<_, WaitStorage>(
                 &mut world,
@@ -3089,7 +3091,7 @@ mod wait_frame_tests {
                             .take()
                             .map_or(PullOutcome::Produced(ProductValue::Unit), PullOutcome::Waiting)
                     } else {
-                        selected_inputs.push(positioned_input(key));
+                        selected_functions.push(positioned_function(key));
                         PullOutcome::Produced(ProductValue::Unit)
                     }
                 },
@@ -3104,10 +3106,10 @@ mod wait_frame_tests {
                 "last_wait names the child, not the completed parent frame"
             );
             assert_eq!(error.buffer, buffer);
-            assert_eq!(error.inputs, inputs);
+            assert_eq!(error.functions, functions);
             if budget >= 4 {
                 assert_eq!(
-                    selected_inputs, inputs,
+                    selected_functions, functions,
                     "fact-prefix indices select each original product exactly once"
                 );
             }
@@ -3149,10 +3151,10 @@ mod wait_frame_tests {
         let root = RootId::for_test(97);
         let root_key = ProductKey::RootBackendProduct(root);
         let child = {
-            let arrow = wide_arrow(world.types_mut());
-            positioned_key(world.types(), arrow, 100)
+            let arrow = any_arrow(world.types_mut());
+            positioned_key(arrow, 100)
         };
-        let input = positioned_input(&child);
+        let function = positioned_function(&child);
         let mut waits = Some(vec![PullWait::Product(child)]);
         let mut driver = ProductDriver::new(&tel, root);
         let error = drive_root_product_with::<_, String>(
@@ -3169,9 +3171,9 @@ mod wait_frame_tests {
                     PullOutcome::Waiting(waits.take().unwrap())
                 } else {
                     assert_eq!(
-                        positioned_input(key),
-                        input,
-                        "a failed selection still borrows its original input"
+                        positioned_function(key),
+                        function,
+                        "a failed selection is the originally waited key"
                     );
                     PullOutcome::Failed
                 }
@@ -3203,12 +3205,12 @@ mod wait_frame_tests {
     }
 
     #[test]
-    fn healthy_wait_selection_borrows_the_original_positioned_input() {
+    fn healthy_wait_selection_hands_the_producer_the_waited_key() {
         struct Producers<'a> {
             world: &'a World,
             root: &'a ProductKey,
             waits: &'a mut Option<Vec<PullWait>>,
-            input: *const crate::compiler2::Ty,
+            function: crate::compiler2::FunctionId,
             child_pulls: &'a mut usize,
         }
         impl ProductProducers for Producers<'_> {
@@ -3223,9 +3225,9 @@ mod wait_frame_tests {
                 } else {
                     *self.child_pulls += 1;
                     assert_eq!(
-                        positioned_input(key),
-                        self.input,
-                        "selection and ProductDriver both borrow the original key"
+                        positioned_function(key),
+                        self.function,
+                        "selection and ProductDriver hand the producer the original key"
                     );
                     PullOutcome::Produced(ProductValue::Unit)
                 }
@@ -3236,10 +3238,10 @@ mod wait_frame_tests {
         let root = RootId::for_test(92);
         let root_key = ProductKey::RootBackendProduct(root);
         let child = {
-            let arrow = wide_arrow(world.types_mut());
-            positioned_key(world.types(), arrow, 101)
+            let arrow = any_arrow(world.types_mut());
+            positioned_key(arrow, 101)
         };
-        let input = positioned_input(&child);
+        let function = positioned_function(&child);
         let mut waits = Some(vec![PullWait::Product(child)]);
         let mut driver = ProductDriver::new(&tel, root);
         let mut child_pulls = 0;
@@ -3258,7 +3260,7 @@ mod wait_frame_tests {
                         world,
                         root: &root_key,
                         waits: &mut waits,
-                        input,
+                        function,
                         child_pulls: &mut child_pulls,
                     },
                     key,
@@ -3270,15 +3272,15 @@ mod wait_frame_tests {
     }
 
     #[test]
-    fn canceling_nested_frames_releases_batches_without_copying_the_resumed_owner() {
+    fn canceling_nested_frames_releases_batches_and_resumes_the_original_owner() {
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new();
-        let arrow = wide_arrow(world.types_mut());
+        let arrow = any_arrow(world.types_mut());
         let root = RootId::for_test(93);
-        let owner = positioned_key(world.types(), arrow, 100);
-        let owner_input = positioned_input(&owner);
-        let child = positioned_key(world.types(), arrow, 101);
-        let child_input = positioned_input(&child);
+        let owner = positioned_key(arrow, 100);
+        let owner_function = positioned_function(&owner);
+        let child = positioned_key(arrow, 101);
+        let child_function = positioned_function(&child);
         let mut current = Some(SelectedProduct::Owned(owner));
         let first = ProductWaitFrame::take_selection(&mut current, None, vec![PullWait::Product(child)], 0);
         let first_lifetime = Rc::downgrade(&first.batch);
@@ -3286,22 +3288,22 @@ mod wait_frame_tests {
         let mut driver = ProductDriver::new(&tel, root);
         let mut work = ProductValidation::default();
         current = next_waiting_product(&mut stack, &mut driver, world.types(), &mut work);
-        assert_eq!(positioned_input(current.as_ref().unwrap().key()), child_input);
+        assert_eq!(positioned_function(current.as_ref().unwrap().key()), child_function);
         let second = ProductWaitFrame::take_selection(&mut current, None, Vec::new(), 0);
         let second_lifetime = Rc::downgrade(&second.batch);
-        assert_ne!(
-            positioned_input(&second.batch.owner),
-            child_input,
-            "only a child that waits needs one independent owner copy"
+        assert_eq!(
+            positioned_function(&second.batch.owner),
+            child_function,
+            "a waiting child becomes the owner of its own observation"
         );
         let last_wait = Rc::clone(&second.batch);
         stack.push(second);
         let boundary = discard_wait_frames(&mut stack, &mut driver, 0, None, &mut work).unwrap();
         assert!(stack.is_empty());
         assert_eq!(
-            positioned_input(boundary.key()),
-            owner_input,
-            "canceling intermediate frames only moves handles"
+            positioned_function(boundary.key()),
+            owner_function,
+            "canceling intermediate frames resumes the original owner"
         );
         drop(boundary);
         assert!(
@@ -3320,17 +3322,17 @@ mod wait_frame_tests {
     }
 
     #[test]
-    fn completed_owner_retry_moves_its_input_and_allocates_no_product_inventory_for_fact_only_waits() {
+    fn completed_owner_retry_keeps_its_key_and_allocates_no_product_inventory_for_fact_only_waits() {
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new();
-        let arrow = wide_arrow(world.types_mut());
+        let arrow = any_arrow(world.types_mut());
         let root = RootId::for_test(94);
         for waits in [
             Vec::new(),
             vec![PullWait::Fact(FactUse::current(FactKey::RootEntry(root)))],
         ] {
-            let owner = positioned_key(world.types(), arrow, 100);
-            let input = positioned_input(&owner);
+            let owner = positioned_key(arrow, 100);
+            let function = positioned_function(&owner);
             let mut current = Some(SelectedProduct::Owned(owner));
             let fact_count = waits.len();
             let frame = ProductWaitFrame::take_selection(&mut current, None, waits, fact_count);
@@ -3370,12 +3372,12 @@ mod wait_frame_tests {
                 &mut ProductValidation::default(),
             );
             assert!(stack.is_empty());
-            assert_eq!(positioned_input(current.as_ref().unwrap().key()), input);
+            assert_eq!(positioned_function(current.as_ref().unwrap().key()), function);
             drop(last_wait.take());
             let replacement = ProductWaitFrame::take_selection(&mut current, None, Vec::new(), 0);
             assert_eq!(
-                positioned_input(&replacement.batch.owner),
-                input,
+                positioned_function(&replacement.batch.owner),
+                function,
                 "a drained owner moves into its next observation"
             );
             assert!(old_batch.upgrade().is_none());
@@ -3383,32 +3385,28 @@ mod wait_frame_tests {
     }
 
     #[test]
-    fn a_waiting_frame_takes_the_selected_positioned_key_without_copying_its_input() {
+    fn a_waiting_frame_takes_the_selected_positioned_key() {
         use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
         let mut types = crate::compiler2::Types::new();
-        let arrow = wide_arrow(&mut types);
-        let symbol = ActivationSymbol::new(crate::compiler2::FunctionId::from_coordinate(91), arrow, &types);
-        let storage = symbol.input().as_ptr();
-        let mut selected = Some(SelectedProduct::Owned(ProductKey::TransportShape(
-            TransportPosition::ExecutableReturn {
-                executable: ExecutableSymbol {
-                    activation: symbol,
-                    need: crate::compiler2::identity::ExecutableNeed::Value,
+        let arrow = any_arrow(&mut types);
+        let key = ProductKey::TransportShape(TransportPosition::ExecutableReturn {
+            executable: ExecutableSymbol {
+                activation: ActivationSymbol {
+                    function: crate::compiler2::FunctionId::from_coordinate(91),
+                    arrow,
                 },
+                need: crate::compiler2::identity::ExecutableNeed::Value,
             },
-        )));
+        });
+        let mut selected = Some(SelectedProduct::Owned(key.clone()));
         let frame = ProductWaitFrame::take_selection(&mut selected, None, Vec::new(), 0);
         assert!(
             selected.is_none(),
             "the suspended owner has exactly one current location"
         );
-        let ProductKey::TransportShape(position) = &frame.batch.owner else {
-            unreachable!()
-        };
         assert_eq!(
-            position.executable().activation.input().as_ptr(),
-            storage,
-            "suspending a selected key moves its boxed input rather than allocating a duplicate"
+            frame.batch.owner, key,
+            "the frame's observation is owned by the selected key"
         );
     }
 
