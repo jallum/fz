@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-iqp.2"
+  ],
   "created": "2026-11-13T21:18:49Z",
   "description": "lexer.rs fallback formats 'other as char' (one byte of a multi-byte character); diag/render.rs expand_tabs pushes each byte as a char and counts a column per byte; SourceMap::locate's column is a byte count. Any diagnostic on a line containing a non-ASCII character prints a mangled snippet with a misplaced underline. Wanted: the unexpected-character error names the whole character with a span ending on a character boundary; snippet, underline and column are character based. Removes the 'v1 = byte count' caveat in source_map.rs. Signal: diagnostic fixtures (bad non-ASCII character; an error after a non-ASCII string on the same line).",
   "id": "fz-iqp.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A diagnostic names and underlines whole characters",
   "type": "bug",
-  "updated_at": "2026-11-13T21:18:49Z"
+  "updated_at": "2026-11-13T21:18:50Z"
 }
