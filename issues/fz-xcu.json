@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:27:36Z",
+  "description": "Needs a proposal page before any build. Finding (OptionParser session, measured on one OptionParser.parse compile, release, 30 sampled runs; /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/why/attrib.txt): 26-44% of samples in SipHash and 21-32% in malloc/free; by phase, product pull machinery 29%, job completion bookkeeping 20%, analyze_activation 20%, scheduler dispatch 8%, interning 6%. Census: 2.2M hash calls into about 500k tables for 2,550 jobs. Ranking (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/hash/step1_distinct1_ranking.txt): FactSlot table 9.8%, ProductMemo.produced 4.2%, deps subscribers 3.1%, product_readers 2.3%, pending_dependencies 2.0%, read_finality 1.8%, rooted 1.6%. These tables are keyed by large structural values (FactKey, product addresses). Epic fz-53f removes temporaries, copies and per-body tables and swaps the hasher last (fz-53f.7) but does not change what these tables are keyed by. Idea to prove with a spike: intern each key kind once (World owns interning) and make the tables per-kind vectors indexed by the id, so a lookup is an index and a key is hashed once at interning. The proposal states what goes away (structural hashing on every read, the hash tables themselves) and measures hash calls and instructions before/after on OptionParser.parse and the distiller. Order: after fz-53f.5/.6 (type interner and activation symbol identity), which settle the ids this would index by.",
+  "id": "fz-xcu",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "The fact table, product memo and dependency index are indexed by small ids",
+  "type": "task",
+  "updated_at": "2026-11-13T03:27:36Z"
+}
