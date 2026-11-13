@@ -158,6 +158,25 @@ fn is_infix_only_continuation(tok: &Tok) -> bool {
     )
 }
 
+/// The spellings Elixir accepts as an atom after a colon with no quotes
+/// (`:+`, `:<>`, `:%{}`). An atom may also be written in quotes, which every
+/// spelling accepts.
+const OPERATOR_ATOMS: &[&str] = &[
+    "+", "-", "*", "/", "=", "!", "<", ">", "&", "|", "^", "@", "%", ".", "++", "--", "->", "**", "==", "=~", "!=",
+    "<-", "<=", "<>", "<~", ">=", "&&", "|>", "||", "~>", "..", "\\\\", "+++", "---", "===", "!==", "<<<", "<<~",
+    "<|>", "<~>", ">>>", "&&&", "|||", "^^^", "~>>", "~~~", "...", "%{}", "{}", "<<>>", "..//",
+];
+
+/// The length of the longest operator atom spelled at the start of `rest`,
+/// the source after a colon.
+fn operator_atom_len(rest: &[u8]) -> Option<usize> {
+    OPERATOR_ATOMS
+        .iter()
+        .filter(|spelling| rest.starts_with(spelling.as_bytes()))
+        .map(|spelling| spelling.len())
+        .max()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub tok: Tok,
@@ -1018,10 +1037,19 @@ impl<'a> Lexer<'a> {
                     // fz-axu.9 (L1) — atom names must be valid UTF-8.
                     Tok::Atom(self.read_string_utf8()?)
                 }
-                _ => {
-                    self.bump();
-                    Tok::Colon
-                }
+                _ => match operator_atom_len(&self.src[self.pos + 1..]) {
+                    Some(len) => {
+                        self.bump(); // consume :
+                        let name = from_utf8(&self.src[self.pos..self.pos + len]).expect("operator atoms are ASCII");
+                        let name = name.to_string();
+                        self.pos += len;
+                        Tok::Atom(name)
+                    }
+                    None => {
+                        self.bump();
+                        Tok::Colon
+                    }
+                },
             },
 
             b'"' if self.peek(1) == Some(b'"') && self.peek(2) == Some(b'"') => {

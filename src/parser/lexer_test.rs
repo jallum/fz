@@ -565,3 +565,93 @@ fn heredoc_refuses_content_on_its_opening_line() {
         err.msg
     );
 }
+
+fn kinds_of(src: &str) -> Vec<Tok> {
+    test_lexer(src)
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex")
+        .into_iter()
+        .map(|token| token.tok)
+        .filter(|tok| !matches!(tok, Tok::Newline | Tok::Eof))
+        .collect()
+}
+
+fn atom(name: &str) -> Tok {
+    Tok::Atom(name.to_string())
+}
+
+/// Every spelling Elixir accepts after a colon with no quotes.
+const ELIXIR_OPERATOR_ATOMS: &[&str] = &[
+    "+", "-", "*", "/", "=", "!", "<", ">", "&", "|", "^", "@", "%", ".", "++", "--", "->", "**", "==", "=~", "!=",
+    "<-", "<=", "<>", "<~", ">=", "&&", "|>", "||", "~>", "..", "\\\\", "+++", "---", "===", "!==", "<<<", "<<~",
+    "<|>", "<~>", ">>>", "&&&", "|||", "^^^", "~>>", "~~~", "...", "%{}", "{}", "<<>>", "..//",
+];
+
+#[test]
+fn an_operator_after_a_colon_is_one_atom() {
+    for name in ELIXIR_OPERATOR_ATOMS {
+        assert_eq!(kinds_of(&format!(":{name}")), vec![atom(name)], "operator atom :{name}");
+    }
+}
+
+#[test]
+fn an_operator_atom_takes_the_longest_operator_that_follows_the_colon() {
+    assert_eq!(kinds_of(":===="), vec![atom("==="), Tok::Eq]);
+    assert_eq!(kinds_of(":..//"), vec![atom("..//")]);
+    assert_eq!(kinds_of(":<<>>"), vec![atom("<<>>")]);
+}
+
+#[test]
+fn operator_atoms_stand_as_values_in_lists_tuples_and_comparisons() {
+    assert_eq!(
+        kinds_of("[:+, :-]"),
+        vec![Tok::LBrack, atom("+"), Tok::Comma, atom("-"), Tok::RBrack]
+    );
+    assert_eq!(
+        kinds_of("{:+, 1}"),
+        vec![Tok::LBrace, atom("+"), Tok::Comma, Tok::Int(1), Tok::RBrace]
+    );
+    assert_eq!(kinds_of(":+ == :+"), vec![atom("+"), Tok::EqEq, atom("+")]);
+}
+
+#[test]
+fn a_keyword_key_before_an_operator_is_not_an_operator_atom() {
+    assert_eq!(kinds_of("a: -1"), vec![Tok::KwKey("a".into()), Tok::Minus, Tok::Int(1)]);
+    assert_eq!(
+        kinds_of("[a: +x]"),
+        vec![
+            Tok::LBrack,
+            Tok::KwKey("a".into()),
+            Tok::Plus,
+            Tok::Ident("x".into()),
+            Tok::RBrack
+        ]
+    );
+}
+
+#[test]
+fn a_double_colon_is_never_an_operator_atom() {
+    assert_eq!(
+        kinds_of("x :: integer"),
+        vec![Tok::Ident("x".into()), Tok::ColonColon, Tok::Ident("integer".into())]
+    );
+    assert_eq!(
+        kinds_of("<<x::8>>"),
+        vec![
+            Tok::LBitstr,
+            Tok::Ident("x".into()),
+            Tok::ColonColon,
+            Tok::Int(8),
+            Tok::RBitstr
+        ]
+    );
+    assert_eq!(
+        kinds_of("x::-1"),
+        vec![Tok::Ident("x".into()), Tok::ColonColon, Tok::Minus, Tok::Int(1)]
+    );
+}
+
+#[test]
+fn a_colon_before_a_space_stays_a_bare_colon() {
+    assert_eq!(kinds_of("+: 2"), vec![Tok::Plus, Tok::Colon, Tok::Int(2)]);
+}
