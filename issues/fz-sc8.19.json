@@ -15,6 +15,7 @@
     "fz-sc8.139",
     "fz-sc8.14",
     "fz-sc8.140",
+    "fz-sc8.141",
     "fz-sc8.15",
     "fz-sc8.16",
     "fz-sc8.17",
@@ -44,5 +45,5 @@
   "status": "open",
   "title": "The distiller runs under fz2 and matches elixir on all three paths",
   "type": "task",
-  "updated_at": "2026-11-12T22:39:48Z"
+  "updated_at": "2026-11-13T02:55:41Z"
 }
