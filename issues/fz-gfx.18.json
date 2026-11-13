@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T01:55:26Z",
   "created": "2026-11-12T23:55:12Z",
   "description": "World::canonical_activation_key_inner (src/compiler2/world.rs:2358) clones the InputDemand (Vecs of recursive DispatchDemand) because input_demand(\u0026self) borrows all of World ahead of \u0026mut self.types; the fields are disjoint. Types::activation_key_arrow (src/compiler2/types/mod.rs:1787-1789) then copies local, forwarded and returned with to_vec to build a KeyQuery, which is stored on a miss and thrown away on a hit.\nShape: read the demand through the field so the borrow splits from types. For the memo probe, a hit should allocate nothing: prefer an interned demand id as the key over a borrowed-key lookup; if neither is clean, land the world.rs half and report.\nHeat: per call site per analysis round (prepare_function_call, jobs/semantic.rs:2245, from :1521 and :1694).\n\nMethod: .agent/strategies/ownership-shape.md. Change the signature and let cargo check enumerate dependents; resolve interleavings by compute-then-commit or a split borrow; stop and report if an Rc is the only move.\nSignal: pure refactor. Full gate green; no golden, census or pin moves. Report the clone/to_vec count of each touched file before and after.\nSites were read at develop 8bf8775ae and not compiled; confirm each with cargo check before relying on it.",
   "id": "fz-gfx.18",
   "labels": [],
   "parent": "fz-gfx",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Activation-key derivation borrows the input demand",
   "type": "task",
-  "updated_at": "2026-11-13T01:35:09Z"
+  "updated_at": "2026-11-13T01:55:26Z"
 }
