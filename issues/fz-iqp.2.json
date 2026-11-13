@@ -6,14 +6,16 @@
   "blocks": [
     "fz-iqp.3"
   ],
+  "closed_at": "2026-11-13T22:15:25Z",
+  "close_reason": "committed f7ae1b299; PR opened, stacked on #479",
   "created": "2026-11-13T21:18:49Z",
   "description": "XID_Start/XID_Continue from unicode-ident (in Cargo.lock, becomes direct), Elixir's lowercase-or-underscore start rule, trailing ? and !, non-ASCII alias rejected with Elixir's message. source_word_token (quoted_surface.rs is_local_function_name) and keyword_or_ident change in the same step. Removes byte predicates ident_start/ident_cont. Signal: oracle fixtures for a variable, function name, atom, keyword key on three paths; diagnostic fixture for a non-ASCII alias.",
   "id": "fz-iqp.2",
   "labels": [],
   "parent": "fz-iqp",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The lexer reads identifiers and atoms by Unicode class",
   "type": "task",
-  "updated_at": "2026-11-13T21:18:51Z"
+  "updated_at": "2026-11-13T22:15:25Z"
 }
