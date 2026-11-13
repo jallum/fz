@@ -244,6 +244,12 @@ Every callsite the walk REACHES publishes its edge, resolved or not
 
 - **no fact** — the call never happens. The walk never reached the callsite,
   or it proved the call dead (an uninhabited callee, a proven-empty argument).
+  Every reader of that fact agrees through `Types::has_empty_argument`: a
+  closure call with an argument no value inhabits asks its callee for no
+  surface (`closure_callee_demand` answers an empty `CallableDemand`, and the
+  executable's facts prepare none), so no callable construction target and no
+  activation is ever keyed by such an input (`ActivationKey::from_inputs`
+  asserts it).
 - **`Unresolved`** — the walk reached a live call and can name no target yet.
   This is NOT a provider boundary and NOT an empty target list; it is the
   lattice bottom, so `CallSiteMap`/`CallSiteTargetsMap` never let it overwrite

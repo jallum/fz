@@ -114,6 +114,10 @@ impl ActivationKey {
     /// single mint shared by
     /// `World::canonical_activation_key` and every other key-construction site.
     pub fn from_inputs(root: RootId, function: FunctionId, inputs: &[Ty], types: &mut super::types::Types) -> Self {
+        debug_assert!(
+            !types.has_empty_argument(inputs),
+            "an activation cannot be keyed by an input no value inhabits"
+        );
         let addressed = types.address_inputs(inputs);
         // The result slot is the addressed result var `r0` — "return not yet
         // known", an unknown to resolve — NOT `none()` (⊥). `none`, like `any`,

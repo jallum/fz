@@ -228,7 +228,7 @@ impl FunctionContract {
         }
         // A column no value inhabits is a call that cannot be made: dead code
         // is never refused, and answers nothing.
-        if arg_tys.iter().any(|ty| types.is_empty(ty)) {
+        if types.has_empty_argument(arg_tys) {
             matched_any = true;
             enforceable_matched = true;
         }
