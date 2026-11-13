@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::rc::Rc;
 
@@ -58,7 +59,7 @@ pub(crate) fn calculate_dispatch_reachability(
         max_root_slots: 0,
     };
     let list_shapes = vec![None; plan.graph.subjects.len()];
-    calculator.visit(plan.graph.root, ReachabilityState { roots, list_shapes });
+    calculator.visit(plan.graph.root, Cow::Owned(ReachabilityState { roots, list_shapes }));
     DispatchReachability {
         outcomes: calculator.outcomes.into_iter().collect(),
         outcome_inputs: calculator.outcome_inputs.into_iter().collect(),
@@ -152,12 +153,12 @@ struct ReachabilityCalculator<'a> {
 }
 
 impl ReachabilityCalculator<'_> {
-    fn visit(&mut self, node_id: GraphNodeId, state: ReachabilityState) {
+    fn visit(&mut self, node_id: GraphNodeId, state: Cow<'_, ReachabilityState>) {
         #[cfg(test)]
         {
             self.max_root_slots = self.max_root_slots.max(state.roots.len());
         }
-        if !self.visited.insert((node_id, state.clone())) {
+        if !self.visited.insert((node_id, state.as_ref().clone())) {
             return;
         }
         let Some(node) = self.plan.graph.node(node_id) else {
@@ -167,7 +168,7 @@ impl ReachabilityCalculator<'_> {
             DispatchNode::Fail => self.fail_reachable = true,
             DispatchNode::Outcome { outcome, .. } => {
                 self.outcomes.insert(*outcome);
-                self.outcome_inputs.insert((*outcome, state.roots));
+                self.outcome_inputs.insert((*outcome, state.into_owned().roots));
             }
             DispatchNode::Test { on_match, on_miss, .. } => {
                 let matched = self.apply_proofs(&state, &on_match.evidence.proofs);
@@ -185,26 +186,26 @@ impl ReachabilityCalculator<'_> {
         }
     }
 
-    fn apply_proofs(
+    fn apply_proofs<'s>(
         &mut self,
-        state: &ReachabilityState,
+        state: &'s ReachabilityState,
         proofs: &[crate::dispatch_matrix::Proof<Ty>],
-    ) -> Option<ReachabilityState> {
-        let mut refined = state.clone();
+    ) -> Option<Cow<'s, ReachabilityState>> {
+        let mut refined = Cow::Borrowed(state);
         for proof in proofs {
             refined = self.apply_proof(refined, &proof.predicate, proof.sense)?;
         }
         Some(refined)
     }
 
-    fn apply_proof(
+    fn apply_proof<'s>(
         &mut self,
-        mut state: ReachabilityState,
+        mut state: Cow<'s, ReachabilityState>,
         predicate: &RegionPredicate<Ty>,
         sense: ProofSense,
-    ) -> Option<ReachabilityState> {
+    ) -> Option<Cow<'s, ReachabilityState>> {
         let subject = predicate.subject;
-        self.record_list_shape(&state.roots, &mut state.list_shapes, predicate, subject, sense)?;
+        self.record_list_shape(&mut state, predicate, subject, sense)?;
         let Some(target) = predicate_target(self.types, &predicate.region) else {
             return Some(state);
         };
@@ -213,8 +214,8 @@ impl ReachabilityCalculator<'_> {
         let alternatives = self.types.projection_alternatives(root);
         let mut matched = None;
         let mut missed = None;
+        let mut row = state.roots.clone();
         for alternative in alternatives {
-            let mut row = state.roots.clone();
             row[ordinal] = alternative;
             let projected = project_subject(self.types, self.plan, &row, subject);
             let overlap = self.types.intersect(projected, target.ty);
@@ -251,14 +252,15 @@ impl ReachabilityCalculator<'_> {
             ProofSense::Holds => matched,
             ProofSense::DoesNotHold => missed,
         }?;
-        state.roots[ordinal] = selected;
+        if selected != root {
+            state.to_mut().roots[ordinal] = selected;
+        }
         Some(state)
     }
 
     fn record_list_shape(
         &mut self,
-        roots: &[Ty],
-        list_shapes: &mut [Option<ListRegion>],
+        state: &mut Cow<'_, ReachabilityState>,
         predicate: &RegionPredicate<Ty>,
         subject: SubjectId,
         sense: ProofSense,
@@ -269,7 +271,7 @@ impl ReachabilityCalculator<'_> {
         let known = match sense {
             ProofSense::Holds => region,
             ProofSense::DoesNotHold => {
-                let projected = project_subject(self.types, self.plan, roots, subject);
+                let projected = project_subject(self.types, self.plan, &state.roots, subject);
                 let any = self.types.any();
                 let proper_list = self.types.list(any);
                 if !self.types.is_subtype(&projected, &proper_list) {
@@ -281,12 +283,11 @@ impl ReachabilityCalculator<'_> {
                 }
             }
         };
-        let slot = list_shapes.get_mut(predicate.subject.0 as usize)?;
-        match slot {
+        match state.list_shapes.get(predicate.subject.0 as usize)? {
             Some(previous) if *previous != known => None,
             Some(_) => Some(()),
             None => {
-                *slot = Some(known);
+                state.to_mut().list_shapes[predicate.subject.0 as usize] = Some(known);
                 Some(())
             }
         }

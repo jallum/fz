@@ -530,8 +530,8 @@ fn result_consumers(facts: &RuntimeDemandFacts<'_>) -> HashMap<ExecutableKey, Re
         facts
             .callsites
             .get(callsite)
-            .map(|summary| local_call_targets(summary, need))
-            .unwrap_or_default()
+            .into_iter()
+            .flat_map(move |summary| local_call_targets(summary, need))
     };
     let mut consumers = HashMap::<ExecutableKey, ResultConsumers>::new();
     for callsite in facts.callsites.keys() {
@@ -542,7 +542,7 @@ fn result_consumers(facts: &RuntimeDemandFacts<'_>) -> HashMap<ExecutableKey, Re
         }
     }
     for (callsite, args) in callsite_call_args(facts.body) {
-        let consumer_targets = targets_of(&callsite);
+        let names_consumers = targets_of(&callsite).next().is_some();
         for arg in args {
             for producer_site in callsite_returns_feeding(facts, arg.value) {
                 for producer in targets_of(&producer_site) {
@@ -550,9 +550,7 @@ fn result_consumers(facts: &RuntimeDemandFacts<'_>) -> HashMap<ExecutableKey, Re
                         .entry(producer)
                         .or_insert_with(|| ResultConsumers::Named(HashSet::new()));
                     match entry {
-                        ResultConsumers::Named(named) if !consumer_targets.is_empty() => {
-                            named.extend(consumer_targets.iter().cloned())
-                        }
+                        ResultConsumers::Named(named) if names_consumers => named.extend(targets_of(&callsite)),
                         _ => *entry = ResultConsumers::Unnamed,
                     }
                 }
@@ -629,10 +627,7 @@ fn callsite_returns_reaching(
             .get(callsite)
             .copied()
             .unwrap_or(ExecutableNeed::Value);
-        if !local_call_targets(summary, need)
-            .iter()
-            .any(|target| unanswered.contains(target))
-        {
+        if !local_call_targets(summary, need).any(|target| unanswered.contains(&target)) {
             continue;
         }
         for arg in args.get(callsite).copied().into_iter().flatten() {
@@ -1201,12 +1196,11 @@ fn callable_boundary_input_demand_contributions_product(
     required
 }
 
-fn local_call_targets(summary: &CallSiteSummary, need: ExecutableNeed) -> Vec<ExecutableKey> {
+fn local_call_targets(summary: &CallSiteSummary, need: ExecutableNeed) -> impl Iterator<Item = ExecutableKey> + '_ {
     summary
         .targets
         .iter()
-        .filter_map(|target| target.runtime_executable(need))
-        .collect()
+        .filter_map(move |target| target.runtime_executable(need))
 }
 
 fn join_contributed_input_demands(input_demands: &mut [RuntimeDemand], contributed: &[RuntimeDemand]) {
