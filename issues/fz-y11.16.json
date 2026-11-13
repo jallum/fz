@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-13T19:11:21Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A quoted metadata map is built without scratch vectors",
   "type": "task",
-  "updated_at": "2026-11-13T19:11:21Z"
+  "updated_at": "2026-11-13T19:11:31Z"
 }
