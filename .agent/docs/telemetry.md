@@ -141,6 +141,14 @@ it retains.
 name matches its prefix and the event arity or span start/stop types match
 exactly. A lifecycle observer is payload-free and needs only a prefix.
 
+**An unobserved raw event returns at once.** `ConfiguredTelemetry` keeps the
+prefixes of its raw event and lifecycle registrations in one trie
+(`interest.rs`), updated on attach and detach. `is_raw_event_enabled` and every
+raw event dispatch ask it; a name no registered prefix covers is answered by
+walking at most its own segments, so a raise costs the same with one listener
+attached elsewhere as with twenty, and visits no listener entry. A raise that
+is observed scans the registrations in attach order as before.
+
 **Stats observes lifecycle without payloads.** `StatsHandler` counts raw events
 by their `.`-joined name and raw spans as `.start`, `.stop`, and `.exception`.
 Its lifecycle registration does not register interest in any typed payload.

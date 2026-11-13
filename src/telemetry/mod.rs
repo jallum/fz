@@ -38,6 +38,7 @@ pub mod causal;
 pub mod diag_render;
 pub mod event;
 pub mod handler;
+mod interest;
 pub mod jsonl;
 #[cfg(test)]
 pub mod public_trace;
