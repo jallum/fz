@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T02:55:40Z",
+  "description": "def main(), do: Enum.each(JSON.decode!(\"[]\"), fn r -\u003e Enum.join(r) end) reports error[spec/violation]: call to join/1 violates its @spec for arguments ({any, any}); the declared domain is ([a0_e]). elixir prints :ok. Same with Enum.join(r, \".\"). Visible once fz-sc8.139 is in: an element drawn from an any enumerable includes the Map impl's {key, value} pair. Cause (inferred): Enum.join's spec domain is a list where Elixir accepts any enumerable (Enum.join(%{}, \".\") is \"\"). Check the other Enum functions specced on a list for the same narrowing. Repro: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/land/join_spec_min.fz; 5-line variant /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/census/panic_min.fz.",
+  "id": "fz-sc8.141",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "Enum.join accepts any enumerable, as in Elixir",
+  "type": "bug",
+  "updated_at": "2026-11-13T02:55:40Z"
+}
