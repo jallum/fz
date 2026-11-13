@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:01:53Z",
+  "description": "A 335-line program panics the compiler instead of compiling or reporting an error: 'index out of bounds: the len is 0 but the index is 0' at src/compiler2/jobs/runtime_demand.rs:1298 (develop 5b93e5fa9), in derive_runtime_demand_fact, at out.input_demands[index].join_assign(\u0026demand) inside the loop over clause.params. A clause has parameters while out.input_demands is empty. Reproduces on every binary tried from cca160808 to 5b93e5fa9. Repro: fz2 interp /Users/j5n/Workspace/runtime-demand-panic-repro.fz (release build; the panic arrives after about 218 billion instructions, roughly 15 s, 394 MB peak, so the compile is also a runaway before it panics: the largest derivation set on one fact reaches 2,734 members). Not minimised. First step: minimise, then decide whether input_demands is sized from the wrong arity or the clause should not have reached this job.",
+  "id": "fz-sc8.142",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "Deriving runtime demand indexes an empty input-demand list and panics the compiler",
+  "type": "bug",
+  "updated_at": "2026-11-13T03:01:53Z"
+}
