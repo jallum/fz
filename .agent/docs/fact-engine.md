@@ -224,9 +224,9 @@ path a dead end) — announces a publisher and moves nothing. It is minted at
 revision **0**: present, at bottom, no content movement
 (`facts::appearance_revision`), and `None` <-> `Some(0)` is not a content
 change in either direction (`FactChange::content_changed`). `Current` readers
-stay asleep; a `Current` wait becomes satisfiable, and `Settled` subscribers
-wake on the readiness edge. The first claim that carries real evidence is an
-ordinary ascent, 0 -> 1. A run that instead reaches an unresolved call site or
+stay asleep; a `Current` wait becomes satisfiable, and a job parked on a
+`Settled` wait proceeds on the readiness edge. The first claim that carries
+real evidence is an ordinary ascent, 0 -> 1. A run that instead reaches an unresolved call site or
 an awaited callee (`reached_unknown`) claims nothing at all: an unknown
 absorbs the return, so neither a bottom claim nor a content one is made, and
 the previous claim, if any, simply stands (`jobs/semantic.rs::analyze_activation`).
@@ -287,7 +287,8 @@ an edge for EVERY callsite it reaches, unresolved and all
 about one really is knowledge and nothing about those kinds is preserved. A
 preserved claim is RE-LISTED, never re-published: its revision does not move, its stored
 value is untouched, and no `Current` reader wakes (a readiness flip on a
-re-listed key is representable and reaches `Settled` subscribers only). One
+re-listed key is representable and reaches only jobs parked on a `Settled`
+wait). One
 side effect is real: re-listed `Activation` keys pass
 back through the completion's frontier harvest, so an unsettled callee is
 re-noted on every preserving conclusion — bounded, and retired by the drain
@@ -471,10 +472,13 @@ claim from a publisher that is still deriving makes the fact unquiet, and that
 reader unfinalises through the same wave as any other reader.
 
 A readiness-only change (a fact losing or regaining finality with the same
-content) reaches `Settled` subscribers ONLY. Routing it
-to `Current` subscribers as well would recompute formulas whose input content
-never moved; `compiler2_scheduler_readiness_only_movement_evaluates_nobody`
-holds that line.
+content, at an unchanged revision) reaches only the jobs PARKED on a `Settled`
+wait for it: they proceed once it is settled (`wake_satisfied_waiters`). A
+completed `Settled` subscriber is neither enqueued nor dirtied, because
+re-running it would read the same content it already holds. Routing the flip to
+`Current` subscribers would recompute formulas whose input content never
+moved; `compiler2_scheduler_readiness_only_movement_evaluates_nobody` holds
+that line. A content movement still enqueues every `Settled` subscriber.
 
 ### The drain arbiter
 
