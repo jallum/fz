@@ -1,0 +1,17 @@
+Outer.Pt
+Outer.Pt
+Stamp
+%Outer.Pt{x: 0, y: 0}
+%Outer.Pt{x: 0, y: 0}
+%Outer.Pt{x: 3, y: 0}
+4
+true
+false
+{Outer.Pt, :tag}
+true
+false
+%Outer.Pt{x: 9, y: 0}
+:origin
+:point
+:other
+nil

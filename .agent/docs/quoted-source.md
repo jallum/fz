@@ -281,8 +281,10 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   `{module_id, namespace_head, function_id?}`.
 - `World::scope_lexical_context` derives quoted lexical metadata from that
   snapshot.
-- `World::project_module_value` and `World::project_env_value` project
-  `__MODULE__` / `__ENV__` as Fz-shaped values from the same snapshot.
+- `World::project_module_value` and `World::project_env_value` project the
+  `module` field of an env and `__ENV__` as Fz-shaped values from the same
+  snapshot. `__MODULE__` in a body is the module's atom
+  (`World::module_atom_value`).
 - A projected module alias carries its exact portable `ModuleDenotation` in
   existing quoted metadata, encoded as `{:named, segments}` or
   `{:protocol_impl, protocol_segments, target_segments}`. Its visible alias

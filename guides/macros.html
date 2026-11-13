@@ -234,6 +234,11 @@ function, and namespace. <code>__ENV__</code> is the same shape, but for
 where the macro <em>itself</em> was defined &mdash; useful for a macro that
 wants to refer back to its own defining module.</p>
 
+<p><code>__MODULE__</code> is the atom of the module it stands in, and
+<code>nil</code> outside any module. Inside a <code>quote</code> it names the
+module that calls the macro, so a macro can define functions that build and
+match the caller's own struct with <code>%__MODULE__{}</code>.</p>
+
 <div class="aside">
 Neither of these is a hygiene escape hatch on its own &mdash; they hand back
 data about a scope, not a way to read or write that scope's variables. Use

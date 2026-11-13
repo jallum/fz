@@ -4,7 +4,7 @@ use crate::ast::{
     WithBinding,
 };
 use crate::function_surface::FunctionSurface;
-use crate::modules::identity::ModuleName;
+use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::parser::lexer::{Tok, Token};
 use crate::source::{SourceMap, Span};
 
@@ -445,7 +445,7 @@ fn decode_named_expr(
     span: Span,
     sources: &SourceMap,
 ) -> Result<Spanned<Expr>, QuotedSourceError> {
-    if name == "%" && args.len() == 2 && is_alias(&args[0], sources)? {
+    if name == "%" && args.len() == 2 && names_a_module(&args[0], sources)? {
         return decode_struct_expr(occurrences, args, span, sources);
     }
     if let Some(op) = binop_from_name(&name)
@@ -577,7 +577,7 @@ pub(super) fn decode_pattern(
                 Ok(Spanned::new(Pattern::Pinned(name), span))
             }
             "%{}" => decode_map_pattern(&args, span, sources),
-            "%" if is_alias(&args[0], sources)? => decode_struct_pattern(&args, span, sources),
+            "%" if names_a_module(&args[0], sources)? => decode_struct_pattern(&args, span, sources),
             "{}" => Ok(Spanned::new(
                 Pattern::Tuple(
                     args.iter()
@@ -1783,6 +1783,9 @@ fn decode_module_target(
     cursor: &QuotedSourceCursor,
     sources: &SourceMap,
 ) -> Result<crate::ast::ModuleTarget, QuotedSourceError> {
+    if let Some(module) = module_atom(cursor) {
+        return Ok(crate::ast::ModuleTarget::Exact(ModuleDenotation::Named(module)));
+    }
     let node = expect_ast_node(cursor, "module alias", sources)?;
     if let Some(module) = node.meta.module_denotation()? {
         if module.named_path().is_none() {
@@ -2442,6 +2445,17 @@ fn alias_from_args(args: &[QuotedSourceCursor]) -> Result<ModuleName, QuotedSour
         ));
     }
     Ok(ModuleName::from_segments(segments))
+}
+
+/// The module an atom literal names, as `__MODULE__` is once it is expanded.
+fn module_atom(cursor: &QuotedSourceCursor) -> Option<ModuleName> {
+    ModuleName::from_atom_name(cursor.atom_name().ok()?.as_ref())
+}
+
+/// Whether the name position of a `%Name{}` holds a module: an alias as
+/// written, or the atom of one.
+fn names_a_module(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<bool, QuotedSourceError> {
+    Ok(module_atom(cursor).is_some() || is_alias(cursor, sources)?)
 }
 
 fn is_alias(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<bool, QuotedSourceError> {

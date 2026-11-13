@@ -93,7 +93,7 @@ savepoint into `NamespaceStore.bindings`. Binding a name pushes a
 backward and the first matching symbol wins. A `NamespaceSymbol` is a `Module`,
 `Function`, `Callable`, `Macro`, `Type`, or `Splice`. A `Splice` binds a name to
 a quoted AST snippet that the macro expander substitutes in place when the name
-is referenced — a generic primitive whose only current use is `__ENV__` (see
+is referenced — a generic primitive that binds `__ENV__` and `__MODULE__` (see
 macro-expansion.md).
 
 ```text

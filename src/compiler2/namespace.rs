@@ -29,9 +29,8 @@ pub enum NamespaceSymbol {
     /// of the same name never collide.
     Type(TypeName),
     /// A name bound to a quoted AST snippet, spliced in place when the name is
-    /// referenced during macro expansion. The mechanism is generic; today the
-    /// only such binding is `__ENV__`, bound to the definition env just before a
-    /// body is expanded.
+    /// referenced during macro expansion. The mechanism is generic: `__ENV__`
+    /// and `__MODULE__` are bound this way just before a body is expanded.
     Splice(QuotedSourceRoot),
 }
 

@@ -12,7 +12,7 @@ use super::super::quoted_expander::{
 use super::super::quoted_surface::{is_function_definition_head, read_compiler_fragment_surface, read_scope_surface};
 use super::super::scheduler::FatalError;
 use super::super::scope::ScopeSnapshot;
-use super::super::source::{QuotedSourceCursor, QuotedSourceRoot};
+use super::super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceRoot};
 use super::super::source_publish::{self, ScopePublication};
 use super::super::world::World;
 use super::super::{QuotedCodeSource, parse_quoted_program};
@@ -557,6 +557,12 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
         let namespace = self
             .world
             .bind_namespace(self.namespace, "__ENV__", NamespaceSymbol::Splice(env));
+        let module = source
+            .source
+            .subroot(self.world.module_atom_value(&builder, self.current_module));
+        let namespace = self
+            .world
+            .bind_namespace(namespace, "__MODULE__", NamespaceSymbol::Splice(module));
         let scope = ScopeSnapshot::function(self.current_module, namespace, self.function);
         let expanded = match self.expand_function_root(source.source.clone(), scope, 0)? {
             ExpandedRoot::Complete(expanded) => expanded,
@@ -685,7 +691,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             )
         })?;
 
-        let expanded_head = match self.expand_head_guard(owner, &args[0], scope, depth)? {
+        let expanded_head = match self.expand_head(owner, &args[0], scope, depth)? {
             ExpandedValue::Complete(head) => head,
             ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
         };
@@ -758,9 +764,11 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
         Ok(ExpandedValue::Complete(rebuilt))
     }
 
-    /// A clause head's guard expands like any other guard; its parameters are
-    /// patterns and stay as written.
-    fn expand_head_guard(
+    /// A clause head is its signature, or `signature when guard`. The
+    /// signature's parameters are patterns and expand as the patterns of a
+    /// `case` clause do; the signature itself is the definition's name, not a
+    /// call.
+    fn expand_head(
         &mut self,
         owner: &QuotedSourceRoot,
         head: &QuotedSourceCursor,
@@ -772,7 +780,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             emit_internal_surface_error(self.telemetry, format!("function clause head read failed: {error}"))
         })?;
         let Some(node) = node.filter(|node| node.head.atom_name().is_ok_and(|name| name == "when")) else {
-            return Ok(ExpandedValue::Complete(head.root()));
+            return self.expand_signature(owner, head, scope, depth);
         };
         let parts = node.tail.list_items().map_err(|error| {
             emit_internal_surface_error(self.telemetry, format!("function clause guard read failed: {error}"))
@@ -780,23 +788,70 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
         let [signature, guard] = parts.as_slice() else {
             return Ok(ExpandedValue::Complete(head.root()));
         };
-        let expanded = match self.expand_guard(owner, guard, scope, depth)? {
+        let expanded_signature = match self.expand_signature(owner, signature, scope, depth)? {
             ExpandedValue::Complete(expanded) => expanded,
             ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
         };
-        if expanded == guard.root() {
+        let expanded_guard = match self.expand_guard(owner, guard, scope, depth)? {
+            ExpandedValue::Complete(expanded) => expanded,
+            ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+        };
+        if expanded_signature == signature.root() && expanded_guard == guard.root() {
             return Ok(ExpandedValue::Complete(head.root()));
         }
-        let builder = owner.builder();
-        let tail = builder.list(&[signature.root(), expanded]).map_err(|error| {
-            emit_internal_surface_error(self.telemetry, format!("function clause guard rebuild failed: {error}"))
+        self.rebuild_head_node(owner, &node, &[expanded_signature, expanded_guard])
+    }
+
+    fn expand_signature(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        signature: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, FatalError> {
+        let source_map = self.world.source_map();
+        let node = signature.ast_node(&source_map.borrow()).map_err(|error| {
+            emit_internal_surface_error(
+                self.telemetry,
+                format!("function clause signature read failed: {error}"),
+            )
         })?;
-        let rebuilt = builder
-            .tuple(&[node.head.root(), node.meta.root(), tail])
+        let Some(node) = node.filter(|node| node.tail.is_list_like()) else {
+            return Ok(ExpandedValue::Complete(signature.root()));
+        };
+        let params = node.tail.list_items().map_err(|error| {
+            emit_internal_surface_error(
+                self.telemetry,
+                format!("function clause parameters read failed: {error}"),
+            )
+        })?;
+        let mut expanded = Vec::with_capacity(params.len());
+        for param in &params {
+            match self.expand_cursor(owner, param, scope, depth)? {
+                ExpandedValue::Complete(value) => expanded.push(value),
+                ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+            }
+        }
+        if expanded.iter().copied().eq(params.iter().map(QuotedSourceCursor::root)) {
+            return Ok(ExpandedValue::Complete(signature.root()));
+        }
+        self.rebuild_head_node(owner, &node, &expanded)
+    }
+
+    fn rebuild_head_node(
+        &self,
+        owner: &QuotedSourceRoot,
+        node: &QuotedAstNode,
+        tail: &[fz_runtime::any_value::AnyValueRef],
+    ) -> Result<ExpandedValue, FatalError> {
+        let builder = owner.builder();
+        builder
+            .list(tail)
+            .and_then(|tail| builder.tuple(&[node.head.root(), node.meta.root(), tail]))
+            .map(ExpandedValue::Complete)
             .map_err(|error| {
                 emit_internal_surface_error(self.telemetry, format!("function clause head rebuild failed: {error}"))
-            })?;
-        Ok(ExpandedValue::Complete(rebuilt))
+            })
     }
 
     fn blocked_effects(&self, mut effects: JobEffects) -> JobEffects {

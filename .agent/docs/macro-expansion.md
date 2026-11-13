@@ -199,6 +199,23 @@ binding is transient; it is never recorded on the function. The env is the lean
 appears. (`decode_expr` decodes a raw map value as a map literal, alongside
 lists and tuples, so the spliced env map decodes as source.)
 
+`__MODULE__` is bound beside `__ENV__` as a second splice: the atom the
+definition's module is in value position (`World::module_atom_value`), and nil
+in a definition outside any module. Code a macro quotes is expanded in the
+function it lands in, so a quoted `__MODULE__` names the module that called the
+macro. The atom stands wherever a module can:
+
+- as a value, it is the atom;
+- as the receiver of a call, it is a call on a module atom;
+- as the name of `%__MODULE__{}`, in a literal or a pattern. The front door
+  reads `%__MODULE__{...}` with the variable in the name position, and
+  `decode_module_target` reads a module atom there as that exact module.
+
+A clause head's parameters are patterns and expand as the patterns of a `case`
+clause do (`FunctionSourceExpander::expand_signature`), so a splice in a head
+pattern is resolved. The signature itself is the definition's name and is not
+expanded as a call.
+
 `__CALLER__` varies per invocation and cannot be a compile-time splice: a macro
 is compiled once and executed many times, and the caller is unknown when the
 macro body is expanded. So it stays a runtime parameter — `lower_clause`

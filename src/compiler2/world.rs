@@ -2131,6 +2131,18 @@ impl World {
         builder.alias(&metadata, &segments)
     }
 
+    /// `__MODULE__` where `module` is the enclosing module: the atom the
+    /// module is in value position, and nil outside any module.
+    pub(crate) fn module_atom_value(&self, builder: &QuotedSourceBuilder, module: ModuleId) -> AnyValueRef {
+        match self.module_denotation(module) {
+            Some(denotation) => {
+                let segments = denotation.display_segments().cloned().collect();
+                builder.atom(&ModuleName::from_segments(segments).atom_name())
+            }
+            None => builder.nil(),
+        }
+    }
+
     pub(crate) fn project_env_value(
         &self,
         builder: &QuotedSourceBuilder,
