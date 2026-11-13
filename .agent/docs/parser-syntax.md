@@ -298,6 +298,21 @@ element. A bare no-parens call used directly as a list, tuple, or call-argument
 *element* still needs parentheses around its own `do:`/`else:` tail, matching
 Elixir: `{:cont, if(x, do: a, else: b)}`, not `{:cont, if x, do: a, else: b}`.
 
+## String escapes
+
+Strings, heredocs and quoted atoms read escapes with one function,
+`Lexer::read_escape`, which returns the character an escape denotes; the
+caller appends its UTF-8 encoding. The escapes are `\n \t \r \\ \" \#` and the
+two unicode forms: `\uHHHH` (exactly four hex digits) and `\u{H...}` (one to
+six). `"caf\u00e9"` and `"caf\u{e9}"` are both `"café"`, and `"\u{1F600}"` is
+four bytes. A malformed form (`\u`, `\u12`, `\u{}`, `\u{41`, seven digits)
+reports `invalid Unicode escape character, expected \uHHHH or \u{H*}` and a
+surrogate or a value above `10FFFF` reports `invalid or reserved Unicode code
+point`, both underlining the escape from its backslash. Any other escaped
+character is an `unknown escape` error, where Elixir would take it literally.
+A combining character can be written as an escape (`"e\u0301"`) instead of as
+bytes.
+
 ## Heredocs are string literals
 
 `"""` opens a heredoc, which lexes to a single `Tok::Binary` holding its lines

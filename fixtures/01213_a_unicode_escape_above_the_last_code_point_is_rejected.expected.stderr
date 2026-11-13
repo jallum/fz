@@ -1,0 +1,7 @@
+error[parse/expected-token]: invalid or reserved Unicode code point \u{110000}
+  --> fixtures/01213_a_unicode_escape_above_the_last_code_point_is_rejected.fz:1:7
+   |
+1 | x = "a\u{110000}b"
+   |       ^^^^^^^^^^
+   |
+

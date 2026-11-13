@@ -1,0 +1,17 @@
+#---
+# purpose: a string, a heredoc and a quoted atom accept \uHHHH and \u{H...} escapes, which stand for the code point's UTF-8 bytes
+# oracle: 01211_a_string_accepts_unicode_escapes_in_two_forms.oracle.exs
+#---
+def main() do
+  four = "caf\u00e9"
+  braced = "caf\u{e9}"
+  dbg({four, braced, four == braced, byte_size(four), String.length(four)})
+  emoji = "\u{1F600}"
+  dbg({emoji, byte_size(emoji), String.length(emoji)})
+  dbg({"\u{0041}\u0042\u{43}", "a\u{10FFFF}b" == "a" <> <<244, 143, 191, 191>> <> "b"})
+  dbg(:"caf\u00e9" == :café)
+  dbg("""
+  \u00e9 and \u{1F600}
+  """)
+  dbg("e\u0301" == <<101, 204, 129>>)
+end

@@ -1,0 +1,7 @@
+error[parse/expected-token]: invalid Unicode escape character, expected \uHHHH or \u{H*} where H is a hexadecimal digit
+  --> fixtures/01212_a_malformed_unicode_escape_is_rejected.fz:1:7
+   |
+1 | x = "a\u{}b"
+   |       ^^^
+   |
+

@@ -1,0 +1,7 @@
+error[parse/expected-token]: invalid or reserved Unicode code point \u{d800}
+  --> fixtures/01214_a_unicode_escape_of_a_surrogate_is_rejected.fz:1:7
+   |
+1 | x = "a\ud800b"
+   |       ^^^^^^
+   |
+

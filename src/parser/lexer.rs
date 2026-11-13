@@ -312,6 +312,14 @@ fn non_ascii_alias_character(name: &str) -> Option<char> {
     name.chars().find(|c| !c.is_ascii())
 }
 
+const UNICODE_ESCAPE_SHAPE: &str =
+    "invalid Unicode escape character, expected \\uHHHH or \\u{H*} where H is a hexadecimal digit";
+
+/// Appends the UTF-8 encoding of `c`.
+fn push_char(bytes: &mut Vec<u8>, c: char) {
+    bytes.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+}
+
 #[derive(Debug)]
 pub struct LexError {
     pub msg: String,
@@ -553,7 +561,7 @@ impl<'a> Lexer<'a> {
                     parts.push(StringPart::Bytes(bytes));
                     return Ok(parts);
                 }
-                Some(b'\\') => bytes.push(self.read_escape_byte()?),
+                Some(b'\\') => push_char(&mut bytes, self.read_escape()?),
                 Some(b'#') if self.peek(0) == Some(b'{') => {
                     self.bump(); // consume {
                     let range = self.read_interpolation_range()?;
@@ -601,7 +609,7 @@ impl<'a> Lexer<'a> {
                     bytes.push(b'\n');
                     at_line_start = true;
                 }
-                Some(b'\\') => bytes.push(self.read_escape_byte()?),
+                Some(b'\\') => push_char(&mut bytes, self.read_escape()?),
                 Some(b'#') if self.peek(0) == Some(b'{') => {
                     self.bump(); // consume {
                     let range = self.read_interpolation_range()?;
@@ -704,16 +712,63 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn read_escape_byte(&mut self) -> Result<u8, LexError> {
+    /// The character an escape denotes, read after its backslash. Strings,
+    /// heredocs and quoted atoms share this reader.
+    fn read_escape(&mut self) -> Result<char, LexError> {
+        let start = self.pos - 1;
         match self.bump() {
-            Some(b'n') => Ok(b'\n'),
-            Some(b't') => Ok(b'\t'),
-            Some(b'r') => Ok(b'\r'),
-            Some(b'\\') => Ok(b'\\'),
-            Some(b'"') => Ok(b'"'),
-            Some(b'#') => Ok(b'#'),
+            Some(b'n') => Ok('\n'),
+            Some(b't') => Ok('\t'),
+            Some(b'r') => Ok('\r'),
+            Some(b'\\') => Ok('\\'),
+            Some(b'"') => Ok('"'),
+            Some(b'#') => Ok('#'),
+            Some(b'u') => self.read_unicode_escape(start),
             Some(c) => Err(self.err(format!("unknown escape `\\{}` in string literal", c as char))),
             None => Err(self.err("unterminated escape".into())),
+        }
+    }
+
+    /// `\uHHHH` or `\u{H...}` with one to six digits, after the `u`.
+    fn read_unicode_escape(&mut self, start: usize) -> Result<char, LexError> {
+        let braced = self.peek(0) == Some(b'{');
+        if braced {
+            self.bump();
+        }
+        let digits_start = self.pos;
+        let limit = if braced { usize::MAX } else { 4 };
+        let mut count = 0;
+        while count < limit && self.peek(0).is_some_and(|c| c.is_ascii_hexdigit()) {
+            self.bump();
+            count += 1;
+        }
+        let text = self.text;
+        let digits = &text[digits_start..self.pos];
+        let well_formed = if braced {
+            (1..=6).contains(&count) && self.peek(0) == Some(b'}')
+        } else {
+            count == 4
+        };
+        if !well_formed {
+            return Err(self.escape_error(start, UNICODE_ESCAPE_SHAPE));
+        }
+        let value = u32::from_str_radix(digits, 16).expect("the digits are hexadecimal");
+        if braced {
+            self.bump(); // consume }
+        }
+        char::from_u32(value).ok_or_else(|| {
+            self.escape_error(
+                start,
+                &format!("invalid or reserved Unicode code point \\u{{{digits}}}"),
+            )
+        })
+    }
+
+    /// An error underlining the escape from its backslash to the cursor.
+    fn escape_error(&self, start: usize, msg: &str) -> LexError {
+        LexError {
+            msg: msg.to_string(),
+            span: self.span_from(start),
         }
     }
 
@@ -811,17 +866,7 @@ impl<'a> Lexer<'a> {
             match self.bump() {
                 None => return Err(self.err("unterminated string".into())),
                 Some(b'"') => return Ok(bytes),
-                Some(b'\\') => match self.bump() {
-                    Some(b'n') => bytes.push(b'\n'),
-                    Some(b't') => bytes.push(b'\t'),
-                    Some(b'r') => bytes.push(b'\r'),
-                    Some(b'\\') => bytes.push(b'\\'),
-                    Some(b'"') => bytes.push(b'"'),
-                    Some(c) => {
-                        return Err(self.err(format!("unknown escape `\\{}` in string literal", c as char)));
-                    }
-                    None => return Err(self.err("unterminated escape".into())),
-                },
+                Some(b'\\') => push_char(&mut bytes, self.read_escape()?),
                 Some(c) => bytes.push(c),
             }
         }

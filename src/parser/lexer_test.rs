@@ -839,3 +839,108 @@ fn greek_small_mu_mixes_with_any_script() {
     assert!(lex_kinds("\u{3bc}\u{65e5}").is_ok());
     assert!(lex_kinds("\u{3b1}\u{3bc}a").is_err());
 }
+
+fn string_bytes(src: &str) -> Vec<u8> {
+    match lex_kinds(src).unwrap().remove(0) {
+        Tok::Binary(bytes) => bytes,
+        other => panic!("expected a binary, got {other:?}"),
+    }
+}
+
+/// `\uHHHH` with exactly four hex digits is that code point, UTF-8 encoded.
+#[test]
+fn a_four_digit_unicode_escape_is_utf8_encoded() {
+    assert_eq!(string_bytes(r#""\u00e9""#), "é".as_bytes());
+    assert_eq!(string_bytes(r#""\u00E9""#), "é".as_bytes());
+    assert_eq!(string_bytes(r#""\u0041""#), b"A");
+}
+
+/// `\u{H...}` with one to six hex digits is that code point, up to four bytes.
+#[test]
+fn a_braced_unicode_escape_is_utf8_encoded() {
+    assert_eq!(string_bytes(r#""\u{e9}""#), "é".as_bytes());
+    assert_eq!(string_bytes(r#""\u{1F600}""#), "😀".as_bytes());
+    assert_eq!(string_bytes(r#""\u{000041}""#), b"A");
+    assert_eq!(string_bytes(r#""\u{10FFFF}""#), "\u{10FFFF}".as_bytes());
+    assert_eq!(string_bytes(r#""\u{0}""#), vec![0]);
+}
+
+/// Escapes and ordinary text interleave, and the last digit of a four-digit escape ends it.
+#[test]
+fn a_unicode_escape_sits_among_other_text() {
+    assert_eq!(string_bytes(r#""a\u00e9b\u{42}\n""#), "aébB\n".as_bytes());
+    assert_eq!(string_bytes(r#""\u00e9e""#), "ée".as_bytes());
+}
+
+/// A heredoc reads the same escapes as a string.
+#[test]
+fn a_heredoc_accepts_unicode_escapes() {
+    assert_eq!(string_bytes("\"\"\"\n\\u00e9\\u{1F600}\n\"\"\"\n"), "é😀\n".as_bytes());
+}
+
+/// A quoted atom reads the same escapes as a string, so the two spellings name one atom.
+#[test]
+fn a_quoted_atom_accepts_unicode_escapes() {
+    assert_eq!(
+        lex_kinds(r#":"\u00e9""#).unwrap(),
+        vec![Tok::Atom("é".to_string()), Tok::Eof]
+    );
+}
+
+fn escape_error(src: &str) -> String {
+    lex_kinds(src).unwrap_err().msg
+}
+
+const MALFORMED: &str = "invalid Unicode escape character, expected \\uHHHH or \\u{H*} where H is a hexadecimal digit";
+
+/// A malformed `\u` escape is one error, whatever is wrong with it.
+#[test]
+fn a_malformed_unicode_escape_is_rejected() {
+    for src in [
+        r#""\u""#,
+        r#""\u12""#,
+        r#""\u12g4""#,
+        r#""\u{}""#,
+        r#""\u{ }""#,
+        r#""\u{41 }""#,
+        r#""\u{41""#,
+        r#""\u{4g}""#,
+        r#""\u{0000041}""#,
+        r#""\u{-1}""#,
+        r#""\u{41,42}""#,
+    ] {
+        assert_eq!(escape_error(src), MALFORMED, "{src}");
+    }
+}
+
+/// A surrogate or a value above U+10FFFF is not a code point.
+#[test]
+fn a_unicode_escape_must_be_a_code_point() {
+    assert_eq!(
+        escape_error(r#""\ud800""#),
+        "invalid or reserved Unicode code point \\u{d800}"
+    );
+    assert_eq!(
+        escape_error(r#""\u{DFFF}""#),
+        "invalid or reserved Unicode code point \\u{DFFF}"
+    );
+    assert_eq!(
+        escape_error(r#""\u{110000}""#),
+        "invalid or reserved Unicode code point \\u{110000}"
+    );
+}
+
+/// A bad escape is underlined from its backslash to the end of what was read.
+#[test]
+fn a_bad_unicode_escape_underlines_the_escape() {
+    let error = lex_kinds(r#""ab\u{110000}""#).unwrap_err();
+    assert_eq!((error.span.start, error.span.end), (3, 13));
+}
+
+/// Code points that are legal but unassigned or non-characters are accepted, as in Elixir.
+#[test]
+fn a_non_character_code_point_is_accepted() {
+    assert_eq!(string_bytes(r#""\uFFFF""#), "\u{FFFF}".as_bytes());
+    assert_eq!(string_bytes(r#""\uD7FF""#), "\u{D7FF}".as_bytes());
+    assert_eq!(string_bytes(r#""\uE000""#), "\u{E000}".as_bytes());
+}

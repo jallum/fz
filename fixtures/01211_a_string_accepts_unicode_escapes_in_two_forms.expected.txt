@@ -1,0 +1,6 @@
+{"café", "café", true, 5, 4}
+{"😀", 4, 1}
+{"ABC", true}
+true
+"é and 😀\n"
+true
