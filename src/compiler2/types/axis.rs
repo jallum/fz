@@ -862,7 +862,7 @@ fn next_widening(cx: TyCtx<'_>, rects: &[Rect]) -> Option<(usize, usize, Descr)>
             }
             let mut trial = rect.clone();
             trial[coord] = candidate.clone();
-            let cover: Vec<Vec<Descr>> = siblings.iter().map(|sibling| (*sibling).clone()).collect();
+            let cover: Vec<Vec<&Descr>> = siblings.iter().map(|sibling| sibling.iter().collect()).collect();
             if emptiness::phi_tuple(cx, &trial, &cover, &mut emptiness::Memo::default()) {
                 return Some((index, coord, candidate));
             }
