@@ -965,7 +965,7 @@ pub(crate) fn collect_value_origins(
     body: &LoweredBody,
     callsite_return_origins: &HashMap<CallSiteId, TransportOrigin>,
 ) -> ValueMap<TransportOrigin> {
-    let mut origins = ValueMap::new();
+    let mut origins = ValueMap::with_capacity(body.value_count());
     let LoweredBody::Clauses { clauses, entries, .. } = body;
     for clause in clauses {
         for step in &clause.projections {

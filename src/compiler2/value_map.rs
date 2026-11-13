@@ -31,6 +31,15 @@ impl<V> ValueMap<V> {
         Self::default()
     }
 
+    /// A table with room for the ids of a body that mints `value_count`
+    /// values, so filling it never grows it.
+    pub fn with_capacity(value_count: usize) -> Self {
+        Self {
+            slots: Vec::with_capacity(value_count),
+            len: 0,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }

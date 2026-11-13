@@ -103,8 +103,10 @@ struct DerivedExecutableDemand {
 /// the answer; a later arrival with an equal outgoing demand reuses it and
 /// walks nothing below it. The table lives for one
 /// [`derive_executable_runtime_demand`] call and is never published.
-#[derive(Default)]
 struct EntryDemandWalkTable {
+    /// How many values the walked body mints; every demand table of the walk
+    /// is sized to it.
+    value_count: usize,
     answers: HashMap<(ControlEntryId, RuntimeDemand), ValueMap<RuntimeDemand>>,
     /// What each walked entry reads of its parameters. A decision that hands
     /// an arm its parameters reads the subjects behind them this much.
@@ -115,8 +117,17 @@ struct EntryDemandWalkTable {
 }
 
 impl EntryDemandWalkTable {
-    fn new() -> Self {
-        Self::default()
+    fn new(value_count: usize) -> Self {
+        Self {
+            value_count,
+            answers: HashMap::new(),
+            parameters: ValueMap::with_capacity(value_count),
+            entries_walked: 0,
+        }
+    }
+
+    fn demand_table(&self) -> ValueMap<RuntimeDemand> {
+        ValueMap::with_capacity(self.value_count)
     }
 
     fn get(&self, key: &(ControlEntryId, RuntimeDemand)) -> Option<&ValueMap<RuntimeDemand>> {
@@ -1230,6 +1241,7 @@ fn derive_executable_runtime_demand(
         callable_activation_inputs: facts.callable_activation_inputs.to_vec(),
         return_demand: demands.own.return_demand.clone(),
         input_demands: vec![RuntimeDemand::ignore(); executable.activation.input_len(types)],
+        value_demands: ValueMap::with_capacity(facts.body.value_count()),
         ..ExecutableRuntimeDemand::default()
     };
     let mut call_return_demands = HashMap::new();
@@ -1267,7 +1279,7 @@ fn derive_executable_runtime_demand(
     // set by the trivial delta `trivial_value_clause_ids` identifies.
     let mut walked_clauses = facts.reachable_clauses.to_vec();
     walked_clauses.extend(trivial_value_clause_ids(facts.body, facts.reachable_clauses));
-    let mut walks = EntryDemandWalkTable::new();
+    let mut walks = EntryDemandWalkTable::new(facts.body.value_count());
     for clause_id in walked_clauses {
         let clause = &clauses[clause_id as usize];
         let mut live = collect_entry_live_demands(
@@ -1412,7 +1424,7 @@ fn collect_entry_external_demands(
         callable_flows,
         walks,
     );
-    let mut external = ValueMap::new();
+    let mut external = walks.demand_table();
     if let Some(value) = entry.origin.input_value()
         && let Some(demand) = live.remove(&value)
     {
@@ -1459,7 +1471,7 @@ fn collect_entry_live_demands(
     walks: &mut EntryDemandWalkTable,
 ) -> ValueMap<RuntimeDemand> {
     let entry = &entries[entry_id.as_u32() as usize];
-    let mut live = ValueMap::new();
+    let mut live = walks.demand_table();
     let mut tail_call_return = None;
     match &entry.tail {
         LoweredTail::Value { value, dest } => {
