@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T19:11:21Z",
+  "description": "QuotedSource::meta (src/compiler2/source.rs:346) pushes at most five entries into a Vec (source.rs:357, ~10,700 allocations) and QuotedSource::span builds a three-entry map; both call map(), whose heap routine alloc_map_refs_bits (runtime/src/heap/imp.rs:413) collects the entries into a second Vec to sort and dedup them (seen at source.rs:343, ~21,500). Every quoted AST node builds one or two such maps.\n\nChange: meta gathers its entries in a fixed-capacity stack buffer; the heap's map builder normalizes a small entry list without a heap vector (one implementation for all sizes if possible, e.g. sort the caller's entries in a stack buffer up to a small bound and fall back to the vector above it). Map contents and key order are unchanged. Do not special-case by caller.\n\nEvidence: allocation census of the OptionParser probe at bf51f11c1 (develop ac3750d1e + hasher fix + fz-y11.15 spike; 857,327 calls). Ranked sites: /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/bf51f11c1_top.txt; call chains: python3 /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/chain.py /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/bf51f11c1.pkl \u003cfile:line\u003e \u003cdepth\u003e. Counts are 1-in-16 sampling estimates; line numbers are at that commit. Method and signal: see the epic (bw show fz-y11). Every site is a claim read from the census and the source, to be confirmed first.",
+  "id": "fz-y11.16",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "A quoted metadata map is built without scratch vectors",
+  "type": "task",
+  "updated_at": "2026-11-13T19:11:21Z"
+}
