@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T04:17:35Z",
   "created": "2026-11-13T03:38:51Z",
   "description": "exact_tuple_field_tys (jobs/transport.rs:2745) builds Types::runtime_type_predicate(ty), reads tuples.arities(), then calls has_exact_tuple_arity (:2669/:2750) which builds the same predicate again. The predicate recurses unmemoised through every tuple element, list head and callable capture (types/mod.rs:2605, :2642); the callers read arities and a few emptiness flags. About 37k allocations (finite_set.rs:47/16, types/mod.rs:2541-2643); executable_facts.rs:585 is a third caller (about 3.8k).\nShape: Types::exact_tuple_arity(ty) -\u003e Option\u003cusize\u003e from the existing non-recursive helpers (runtime_type_predicate_widens_non_structs, _tuple_arities, _list_shapes); exact_tuple_field_tys asks once and passes the arity on.\nCare: prove the helper gives the same answer as the predicate path for every type in the type-system tests before switching callers; tuple_field_tys (:2766) must receive the same arity.\n\nCounts are sampling estimates at develop 742e688b5 (line numbers refer to /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src); re-measure on your base first. Signal: see the epic.",
   "id": "fz-y11.2",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "The exact tuple arity of a type is read without building its runtime predicate",
   "type": "task",
-  "updated_at": "2026-11-13T03:40:39Z"
+  "updated_at": "2026-11-13T04:17:35Z"
 }
