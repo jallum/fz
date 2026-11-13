@@ -37,7 +37,7 @@ pub(crate) struct ExecutableFacts {
     pub(super) entry_dispatch: Option<ExecutableDispatch>,
     /// What each multi-destination callsite's own choice between its
     /// destinations reads of its arguments.
-    pub(super) callsite_dispatch_demand: HashMap<CallSiteId, Box<[DispatchDemand]>>,
+    pub(super) callsite_dispatch_demand: HashMap<CallSiteId, CallsiteDispatchDemand>,
     pub(super) callsites: HashMap<CallSiteId, CallSiteSummary>,
     pub(super) callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
     pub(super) delivered_value_joins: HashMap<ControlEntryId, DeliveredValueJoin>,
@@ -58,7 +58,7 @@ pub(crate) struct RuntimeDemandFacts<'a> {
     pub(crate) entry_dispatch_demand: &'a [DispatchDemand],
     /// What each multi-destination callsite's own choice between its
     /// destinations reads of its arguments.
-    pub(crate) callsite_dispatch_demand: &'a HashMap<CallSiteId, Box<[DispatchDemand]>>,
+    pub(crate) callsite_dispatch_demand: &'a HashMap<CallSiteId, CallsiteDispatchDemand>,
     pub(crate) callsites: &'a HashMap<CallSiteId, CallSiteSummary>,
     pub(crate) callsite_needs: &'a HashMap<CallSiteId, ExecutableNeed>,
     pub(crate) delivered_value_joins: &'a HashMap<ControlEntryId, DeliveredValueJoin>,
@@ -200,8 +200,17 @@ impl RuntimeDemandFacts<'_> {
     pub(crate) fn callsite_dispatch_demand_of(&self, callsite: CallSiteId) -> &[DispatchDemand] {
         self.callsite_dispatch_demand
             .get(&callsite)
-            .map(AsRef::as_ref)
+            .map(|demand| demand.args.as_ref())
             .unwrap_or_default()
+    }
+
+    /// Whether this callsite's choice between its destinations reads the
+    /// module value the call is made on.
+    pub(crate) fn callsite_reads_its_module(&self, callsite: CallSiteId) -> bool {
+        self.callsite_dispatch_demand
+            .get(&callsite)
+            .and_then(|demand| demand.selector.as_ref())
+            .is_some_and(DispatchDemand::asks_anything)
     }
 
     /// The type a callsite argument carries, as the analysis settled it.
@@ -417,15 +426,36 @@ fn complete_settled_call_result_types(
 pub(crate) fn callsite_dispatch_demands(
     types: &mut Types,
     callsites: &HashMap<CallSiteId, CallSiteSummary>,
-) -> HashMap<CallSiteId, Box<[DispatchDemand]>> {
+) -> HashMap<CallSiteId, CallsiteDispatchDemand> {
     callsites
         .iter()
         .filter(|(_, summary)| summary.is_decision())
         .filter_map(|(&callsite, summary)| match call_destinations(types, summary) {
-            Ok(CallDestinations::Dispatch(dispatch)) => Some((callsite, dispatch.plan.input_demand().into())),
+            Ok(CallDestinations::Dispatch(dispatch)) => {
+                let inputs = dispatch.plan.input_demand();
+                let (selector, args) = match inputs.split_first() {
+                    Some((selector, args)) if summary.selects_by_module() => (Some(selector.clone()), args),
+                    _ => (None, inputs),
+                };
+                Some((
+                    callsite,
+                    CallsiteDispatchDemand {
+                        selector,
+                        args: args.into(),
+                    },
+                ))
+            }
             Ok(CallDestinations::Direct(_) | CallDestinations::None) | Err(_) => None,
         })
         .collect()
+}
+
+/// What a callsite's choice between its destinations reads: of the module
+/// value, when the call is made on one, and of each argument.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct CallsiteDispatchDemand {
+    pub(crate) selector: Option<DispatchDemand>,
+    pub(crate) args: Box<[DispatchDemand]>,
 }
 
 fn argument_type(value_types: &ValueMap<Ty>, any: Ty, value: ValueId) -> Ty {
@@ -439,7 +469,7 @@ fn prepare_runtime_demand_type_inputs(
     body: &LoweredBody,
     extern_wire: Option<&LoweredExtern>,
     entry_dispatch_demand: &[DispatchDemand],
-    callsite_dispatch_demand: &HashMap<CallSiteId, Box<[DispatchDemand]>>,
+    callsite_dispatch_demand: &HashMap<CallSiteId, CallsiteDispatchDemand>,
     callsites: &HashMap<CallSiteId, CallSiteSummary>,
 ) -> RuntimeDemandTypeBuilder {
     let any = world.types_mut().any();
@@ -455,11 +485,21 @@ fn prepare_runtime_demand_type_inputs(
     );
     for (callsite, demands) in callsite_dispatch_demand {
         let args = body.call_args(*callsite).unwrap_or_default();
+        let read_args = args
+            .iter()
+            .zip(demands.args.iter())
+            .filter(|(_, demand)| demand.asks_anything())
+            .map(|(arg, _)| arg.value);
+        let read_module = demands
+            .selector
+            .as_ref()
+            .filter(|demand| demand.asks_anything())
+            .and_then(|_| body.call_module_value(*callsite));
         tys.extend(
-            args.iter()
-                .zip(demands.iter())
-                .filter(|(_, demand)| demand.asks_anything())
-                .map(|(arg, _)| argument_type(&analysis.value_types, any, arg.value)),
+            read_module
+                .into_iter()
+                .chain(read_args)
+                .map(|value| argument_type(&analysis.value_types, any, value)),
         );
     }
     if let Some(signature) = extern_wire {

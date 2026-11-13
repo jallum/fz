@@ -108,6 +108,22 @@ module export: module <code>Math</code>, function <code>add</code>, arity
 different exports, just like <code>add(x)</code> and <code>add(x, y)</code>
 are different call shapes.</p>
 
+<p>A module name is also a value: an atom. A variable that holds one can
+be called the same way, and the call reaches that module's function:</p>
+
+<pre><span class="kw">def</span> <span class="fn">pick</span>(m), <span class="kw">do:</span> m.<span class="fn">exception</span>([])
+
+<span class="fn">pick</span>(<span class="ty">Overdrawn</span>)   <span class="com"># Overdrawn.exception([])</span></pre>
+
+<p>The compiler resolves <code>m.exception([])</code> from the type of
+<code>m</code>. When the type names one module the call is an ordinary
+direct call. When it names several, the program reads <code>m</code> at
+run time and calls the function of the module it holds. A value typed as
+any atom, or as something that is not an atom, is refused at compile time
+with <code>type/module-value-call</code>, because its type does not say
+which modules it can be. Without the parentheses, <code>m.exception</code>
+is a field read.</p>
+
 <div class="aside">
 Function identity is not "some string that happens to contain dots." The
 compiler keeps the module name, function name, and arity as separate facts.

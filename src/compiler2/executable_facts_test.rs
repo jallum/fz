@@ -111,7 +111,7 @@ fn preparing_a_callable_type_twice_yields_equal_inputs() {
 /// closure it called. A call site the body does not make has no return origin.
 #[test]
 fn a_calls_return_origin_is_derived_from_its_tail() {
-    use crate::compiler2::body::{ControlDestination, ControlEntryOrigin};
+    use crate::compiler2::body::{ControlDestination, ControlEntryOrigin, DirectCallee};
     use crate::source::Span;
     let entry = |tail| LoweredEntry {
         span: Span::DUMMY,
@@ -130,7 +130,7 @@ fn a_calls_return_origin_is_derived_from_its_tail() {
             entry(LoweredTail::DirectCall {
                 value: ValueId::from_u32(0),
                 callsite: direct,
-                callee: FunctionId::from_coordinate(0),
+                callee: DirectCallee::Function(FunctionId::from_coordinate(0)),
                 args: Vec::new(),
                 dest: ControlDestination::Return,
             }),

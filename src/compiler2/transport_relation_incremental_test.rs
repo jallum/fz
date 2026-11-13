@@ -353,7 +353,9 @@ fn generic_callable_owner_appears_and_withdraws_with_its_positioned_obligation()
         .iter()
         .find_map(|entry| match &entry.tail {
             super::body::LoweredTail::DirectCall { value, callee, .. }
-                if compiler.world().function_ref(*callee).is_named("value") =>
+                if callee
+                    .function()
+                    .is_some_and(|callee| compiler.world().function_ref(callee).is_named("value")) =>
             {
                 Some(*value)
             }

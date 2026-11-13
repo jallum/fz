@@ -718,9 +718,9 @@ fn lower_backend_tail(
         LoweredTail::DirectCall {
             value,
             callsite,
+            callee,
             args,
             dest,
-            ..
         } => {
             let edge = abi.call_edges.get(callsite).ok_or_else(|| {
                 incomplete_backend_program(
@@ -733,6 +733,7 @@ fn lower_backend_tail(
                 value: *value,
                 callsite: *callsite,
                 target: backend_call_edge(edge.target(), &lowerer.return_endpoints)?,
+                selector: callee.module_value(),
                 args: lowerer.lower_call_args(abi, *callsite, None, args)?,
                 dest: dest.clone(),
             }

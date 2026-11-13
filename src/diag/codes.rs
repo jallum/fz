@@ -56,6 +56,7 @@ pub const LOWER_TRY_ELSE_ONLY: DiagCode = DiagCode("lower/try-else-only");
 // ----- planner (post-.11.24) -----
 
 pub const TYPE_REDUNDANT_CLAUSE: DiagCode = DiagCode("type/redundant-clause");
+pub const MODULE_VALUE_CALL: DiagCode = DiagCode("type/module-value-call");
 pub const TYPE_NUMERIC_LITERAL_WIDENED: DiagCode = DiagCode("type/numeric-literal-widened");
 pub const SPEC_VIOLATION: DiagCode = DiagCode("spec/violation");
 

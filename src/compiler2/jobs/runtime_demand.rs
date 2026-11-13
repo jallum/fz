@@ -1498,9 +1498,9 @@ fn collect_entry_live_demands(
         LoweredTail::DirectCall {
             value,
             callsite,
+            callee,
             args,
             dest,
-            ..
         } => {
             let (boundary_demand, external_demands) = destination_demands(
                 types,
@@ -1532,6 +1532,19 @@ fn collect_entry_live_demands(
             record_call_arg_demands(out, *callsite, arg_demands.as_slice());
             for (arg, demand) in args.iter().zip(arg_demands) {
                 note_live_demand(out, &mut live, arg.value, demand);
+            }
+            if let Some(module) = callee.module_value()
+                && facts.callsite_reads_its_module(*callsite)
+            {
+                let ty = facts.argument_type(module);
+                let asked = boundary_value_flow_demand_at(
+                    facts,
+                    callable_flows,
+                    module,
+                    Cow::Owned(facts.dispatch_demand(ty)),
+                    ty,
+                );
+                note_live_demand(out, &mut live, module, asked.into_owned());
             }
         }
         LoweredTail::ClosureCall {

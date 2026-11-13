@@ -177,6 +177,7 @@ fn try_materialize_closure_edge(
                 targets: [302, 303]
                     .into_iter()
                     .map(|function| CallTargetSummary {
+                        selector: None,
                         callee: SelectedCallee::Function(FunctionId::from_coordinate(function)),
                         surface_inputs: vec![int],
                         activation: None,
@@ -332,7 +333,7 @@ fn a_pruned_body_answers_only_for_the_call_sites_it_kept() {
     let call = |callsite: u32, arg: u32| LoweredTail::DirectCall {
         value: ValueId::from_u32(10 + callsite),
         callsite: CallSiteId::from_u32(callsite),
-        callee: FunctionId::from_coordinate(0),
+        callee: DirectCallee::Function(FunctionId::from_coordinate(0)),
         args: vec![CallArg {
             value: ValueId::from_u32(arg),
             ascription: None,

@@ -1325,6 +1325,9 @@ pub enum BackendTail {
         value: ValueId,
         callsite: CallSiteId,
         target: CallEdge<ExecutableKey, BackendReturnFlow>,
+        /// The module value of a call made on one. A dispatch among targets
+        /// reads it ahead of the arguments; no target receives it.
+        selector: Option<ValueId>,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
     },

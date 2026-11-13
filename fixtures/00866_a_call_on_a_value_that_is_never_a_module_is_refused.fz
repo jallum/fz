@@ -1,0 +1,14 @@
+#---
+# purpose: "m.f(a) on a value whose type holds no atom is refused at compile time: a module is an atom, so the call can reach no function"
+# expect: diagnostic
+# diagnostic.code: type/module-value-call
+#---
+defmodule Overdrawn do
+  def exception(attrs), do: {:overdrawn, attrs}
+end
+
+def pick(m), do: m.exception([])
+
+def main() do
+  dbg(pick(3))
+end

@@ -766,6 +766,7 @@ fn an_unresolved_callsite_edge_renders_as_itself() {
         CallSiteResolution::Resolved(CallSiteSummary {
             last_resort: None,
             targets: vec![CallTargetSummary {
+                selector: None,
                 callee: SelectedCallee::ProviderBoundary(caller),
                 surface_inputs: Vec::new(),
                 activation: None,

@@ -26,7 +26,7 @@ fn direct(callsite: u32, args: Vec<CallArg>) -> LoweredEntry {
     entry(LoweredTail::DirectCall {
         value: ValueId::from_u32(100 + callsite),
         callsite: CallSiteId::from_u32(callsite),
-        callee: FunctionId::from_coordinate(0),
+        callee: DirectCallee::Function(FunctionId::from_coordinate(0)),
         args,
         dest: ControlDestination::Return,
     })

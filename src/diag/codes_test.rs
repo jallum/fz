@@ -32,6 +32,7 @@ fn all_codes_follow_stage_slash_kind_format() {
         LOWER_UNBOUND,
         LOWER_TRY_ELSE_ONLY,
         TYPE_REDUNDANT_CLAUSE,
+        MODULE_VALUE_CALL,
         TYPE_NUMERIC_LITERAL_WIDENED,
         SPEC_VIOLATION,
         ARTIFACT_INCOMPLETE_SEMANTIC_PLAN,

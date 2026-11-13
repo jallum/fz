@@ -22,8 +22,8 @@ use super::super::artifact::{
     PositionedCallableConstructionOwner, TransportLayouts,
 };
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
-    LoweredStep, LoweredTail, ValueId,
+    CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, DirectCallee, LoweredBody,
+    LoweredEntry, LoweredStep, LoweredTail, ValueId,
 };
 use super::super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::super::drive::FactKey;
@@ -821,7 +821,14 @@ fn materialize_call_edges(
                     body,
                 )?
                 else {
-                    return Err(call_reaches_no_target(world, tel, *callee));
+                    return Err(match callee {
+                        DirectCallee::Function(callee) => call_reaches_no_target(world, tel, *callee),
+                        DirectCallee::ModuleValue { .. } => incomplete_semantic_plan(
+                            tel,
+                            root_id,
+                            "a call on a module value settled no function to call",
+                        ),
+                    });
                 };
                 call_edges.insert(*callsite, edge);
             }

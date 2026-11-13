@@ -7,7 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_path, demand_within_path};
 
 use super::super::body::{
-    CallInputMode, ControlDestination, LoweredBody, LoweredStep, LoweredTail, ValueId, delivered_value_joins,
+    CallInputMode, ControlDestination, DirectCallee, LoweredBody, LoweredStep, LoweredTail, ValueId,
+    delivered_value_joins,
 };
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, ProductAddress, UseCollector, current_uses};
 use super::super::identity::{FunctionId, ModuleId};
@@ -936,7 +937,11 @@ fn tail_value_uses(
                 None => add(*value, whole()),
             },
         },
-        LoweredTail::DirectCall { callee, args, .. } => {
+        LoweredTail::DirectCall {
+            callee: DirectCallee::Function(callee),
+            args,
+            ..
+        } => {
             let callee_inputs = world.function_arity(*callee);
             for (arg_index, arg) in args.iter().enumerate() {
                 match CallInputMode::Direct.semantic_index(callee_inputs, args.len(), arg_index) {
@@ -949,6 +954,19 @@ fn tail_value_uses(
                     ),
                     None => add(arg.value, whole()),
                 }
+            }
+        }
+        LoweredTail::DirectCall {
+            callee: DirectCallee::ModuleValue { module, .. },
+            args,
+            ..
+        } => {
+            // Which atom the module is decides the function called, so the
+            // key keeps it whole. The callee is not known here, so neither is
+            // what it asks of its arguments.
+            add(*module, whole());
+            for arg in args {
+                add(arg.value, whole());
             }
         }
         LoweredTail::ClosureCall { args, .. } => {
@@ -1129,7 +1147,7 @@ fn recursion_supplied_positions(
         let LoweredTail::DirectCall { callee, args, .. } = &entry.tail else {
             continue;
         };
-        if *callee != function {
+        if callee.function() != Some(function) {
             continue;
         }
         for (arg_index, arg) in args.iter().enumerate() {
@@ -1515,7 +1533,7 @@ fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
 
 fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
     match tail {
-        LoweredTail::DirectCall { callee: function, .. } => edges.push(StaticEdge::Direct(*function)),
+        LoweredTail::DirectCall { callee, .. } => edges.extend(callee.function().map(StaticEdge::Direct)),
         LoweredTail::Value { .. }
         | LoweredTail::ClosureCall { .. }
         | LoweredTail::If { .. }

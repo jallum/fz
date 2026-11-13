@@ -1225,19 +1225,27 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 }))
             }
         },
-        BackendTail::DirectCall { target, args, dest, .. } => {
+        BackendTail::DirectCall {
+            target,
+            selector,
+            args,
+            dest,
+            ..
+        } => {
             let (callee, extern_marshals) = match target {
                 CallEdge::Direct(direct) => (&direct.callee, direct.extern_marshals.as_deref()),
                 CallEdge::Dispatch(dispatch) => {
-                    let inputs = args
+                    let inputs = selector
                         .iter()
+                        .copied()
+                        .chain(args.iter().map(|arg| arg.value))
                         .enumerate()
-                        .map(|(index, arg)| {
+                        .map(|(index, input)| {
                             let value = if dispatch.plan.required_input(index) {
-                                env_get(transport, runtime.cur_proc(), &env, arg.value).map_err(|error| {
+                                env_get(transport, runtime.cur_proc(), &env, input).map_err(|error| {
                                     format!(
-                                        "backend dispatch call requires semantic argument {index} value {}: {error}",
-                                        arg.value.as_u32()
+                                        "backend dispatch call requires input {index} value {}: {error}",
+                                        input.as_u32()
                                     )
                                 })?
                             } else {
