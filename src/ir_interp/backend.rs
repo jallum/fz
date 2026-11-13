@@ -918,7 +918,7 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
     match &executable.body {
         BackendBody::Extern { signature } => {
             let value = call_lowered_extern(runtime, signature, None, &args)?;
-            continue_after_extern(runtime, transport, program, &executable, value, continuations)
+            continue_after_extern(runtime, transport, program, value, continuations)
         }
         BackendBody::Clauses { clauses, entries, .. } => {
             let semantic_inputs = bind_executable_inputs(transport, types, runtime, &executable, &args)?;
@@ -2148,7 +2148,7 @@ fn eval_direct_call(
     match &executable.body {
         BackendBody::Extern { signature } => {
             let value = call_lowered_extern(runtime, signature, extern_marshals, &call_args)?;
-            continue_after_extern(runtime, transport, program, executable, value, continuations)
+            continue_after_extern(runtime, transport, program, value, continuations)
         }
         BackendBody::Clauses { .. } => Ok(BackendEvalTransition::Next(BackendEvalState::Executable {
             executable: callee,
@@ -2165,19 +2165,22 @@ fn continue_after_extern(
     runtime: &mut IrInterpRuntime,
     transport: &TransportStore,
     program: &BackendProgram,
-    executable: &BackendExecutable,
     result: ExternCallValue,
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     match result {
-        ExternCallValue::ProcessFailed => return after_panic(runtime, transport, program, continuations),
+        ExternCallValue::ProcessFailed => after_panic(runtime, transport, program, continuations),
         ExternCallValue::CheckedFailure(failure) => {
-            return raise_last_resort(runtime, transport, program, &failure, &[], continuations);
+            raise_last_resort(runtime, transport, program, &failure, &[], continuations)
         }
-        ExternCallValue::Scalar(_) | ExternCallValue::Pair(_) => {}
+        ExternCallValue::Scalar(value) => continue_backend_value(
+            runtime,
+            transport,
+            program,
+            BackendBoundValue::Runtime(value),
+            continuations,
+        ),
     }
-    let value = bind_extern_result(transport, program, runtime.cur_proc(), executable, result)?;
-    continue_backend_value(runtime, transport, program, value, continuations)
 }
 
 /// A decision's last resort: raise the plan's exception, or continue the raise
@@ -2279,52 +2282,6 @@ fn after_panic(
         env,
         continuations,
     }))
-}
-
-fn bind_extern_result(
-    transport: &TransportStore,
-    program: &BackendProgram,
-    proc: *mut Process,
-    executable: &BackendExecutable,
-    result: ExternCallValue,
-) -> Result<BackendBoundValue, String> {
-    let values = match result {
-        ExternCallValue::Scalar(value) => return Ok(BackendBoundValue::Runtime(value)),
-        ExternCallValue::Pair(values) => values,
-        ExternCallValue::ProcessFailed | ExternCallValue::CheckedFailure(_) => {
-            return Err("a failed extern has no result to bind".to_string());
-        }
-    };
-    let shape = executable.abi.return_layout.layout.structural;
-    let ShapeDescr::Tuple(fields) = transport.interners().shape(shape) else {
-        return Err(format!(
-            "extern scalar-pair result has non-tuple backend return shape {shape:?}"
-        ));
-    };
-    if fields.len() != values.len() {
-        return Err(format!(
-            "extern scalar-pair result has {} fields but backend shape {shape:?} has {}",
-            values.len(),
-            fields.len()
-        ));
-    }
-    let mut lanes = Lanes::new();
-    for (value, field_layout) in values.into_iter().zip(fields.iter().copied()) {
-        if transport.interners().layout_width(field_layout) != 0 {
-            encode_transport_layout(
-                transport,
-                program,
-                proc,
-                &BackendBoundValue::Runtime(value),
-                field_layout,
-                &mut lanes,
-            )?;
-        }
-    }
-    Ok(BackendBoundValue::Transport {
-        shape,
-        lanes: lanes.into_vec(),
-    })
 }
 
 /// A continuation resumes at `target`, which reads only its captures; every

@@ -1,0 +1,54 @@
+extern "C" defp fz_op_neg_i(integer) :: integer,
+  raises: ArithmeticError,
+  message: "bad argument in arithmetic expression"
+extern "C" defp fz_op_add_ii(integer, integer) :: integer,
+  raises: ArithmeticError,
+  message: "bad argument in arithmetic expression"
+extern "C" defp fz_op_sub_ii(integer, integer) :: integer,
+  raises: ArithmeticError,
+  message: "bad argument in arithmetic expression"
+extern "C" defp fz_op_mul_ii(integer, integer) :: integer,
+  raises: ArithmeticError,
+  message: "bad argument in arithmetic expression"
+extern "C" defp fz_op_div_ii(integer, integer) :: integer,
+  raises: ArithmeticError,
+  message: "bad argument in arithmetic expression"
+extern "C" defp fz_op_rem_ii(integer, integer) :: integer,
+  raises: ArithmeticError,
+  message: "bad argument in arithmetic expression"
+extern "C" defp fz_op_div_ff(float, float) :: float,
+  raises: ArithmeticError,
+  message: "bad argument in arithmetic expression"
+extern "C" defp fz_op_mul_ff(float, float) :: float,
+  raises: ArithmeticError,
+  message: "bad argument in arithmetic expression"
+
+def attempt(operation) do
+  try do
+    operation.()
+  rescue
+    ArithmeticError -> :failed
+  end
+end
+
+def main() do
+  minimum = fz_op_add_ii(-9223372036854775807, -1)
+  minimum_remainder = fz_op_rem_ii(minimum, -1)
+  finite_float = fz_op_div_ff(1.0, 2.0)
+
+  if minimum < -9223372036854775807 and minimum_remainder == 0 and finite_float == 0.5 and
+       attempt(fn -> fz_op_neg_i(minimum) end) == :failed and
+       attempt(fn -> fz_op_add_ii(9223372036854775807, 1) end) == :failed and
+       attempt(fn -> fz_op_sub_ii(minimum, 1) end) == :failed and
+       attempt(fn -> fz_op_mul_ii(9223372036854775807, 2) end) == :failed and
+       attempt(fn -> fz_op_div_ii(1, 0) end) == :failed and
+       attempt(fn -> fz_op_div_ii(minimum, -1) end) == :failed and
+       attempt(fn -> fz_op_rem_ii(1, 0) end) == :failed and
+       attempt(fn -> fz_op_div_ff(1.0, 0.0) end) == :failed and
+       attempt(fn -> fz_op_div_ff(1.0, -0.0) end) == :failed and
+       attempt(fn -> fz_op_mul_ff(1.0e308, 1.0e308) end) == :failed do
+    42
+  else
+    0
+  end
+end

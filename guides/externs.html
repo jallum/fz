@@ -124,20 +124,11 @@ expects</em> (and vice versa for returns).</p>
 </tbody>
 </table>
 
-<h3>Fixed two-field C results</h3>
+<h3>One scalar result</h3>
 
-<p>A fixed C extern may return a two-field tuple of <code>integer</code>,
-<code>float</code>, and <code>boolean</code>. It means a C <code>struct</code>
-returned by value, with fields in that order. fz keeps those fields in its
-ordinary tuple transport lanes; it does not first allocate an fz tuple just to
-cross the boundary. A boolean field is false for zero and true for any nonzero
-word.</p>
-
-<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">checked_add</span>(<span class="ty">integer</span>, <span class="ty">integer</span>) <span class="kw">::</span> {<span class="ty">integer</span>, <span class="ty">boolean</span>}</pre>
-
-<p>The full two-field declaration fixes the machine signature even when a
-caller ignores one field. Larger or nested aggregate results and aggregate
-arguments are not yet supported.</p>
+<p>An extern returns one scalar. A tuple result such as
+<code>:: {integer, boolean}</code> is refused at compile time; a C function that
+can have no result declares that with <code>raises:</code>, below.</p>
 
 <h3>A result that can fail</h3>
 
@@ -173,7 +164,7 @@ message. Kernel's arithmetic is declared this way, with
 
 <p><code>c_int</code>, <code>c_string</code> and <code>unit</code> name a machine
 lane rather than an fz type, and a lane is a whole register, so they stand only
-as a whole parameter or result. A field of a pair has no register of its own,
+as a whole parameter or result. A field of a tuple has no register of its own,
 so <code>:: {c_int, integer}</code> is refused, and the message says which
 spelling is misplaced and where it may stand.</p>
 

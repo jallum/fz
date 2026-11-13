@@ -742,12 +742,6 @@ impl<'a> Dispatch<'a> {
                 {
                     ExternCallValue::Scalar(value) => value,
                     ExternCallValue::CheckedFailure(_) => return Err(DispatchStop::NoMatch),
-                    ExternCallValue::Pair(_) => {
-                        return Err(DispatchStop::broken(format!(
-                            "guard extern `{}` returned a pair, which no guard evaluator carries",
-                            extern_fn.symbol
-                        )));
-                    }
                     ExternCallValue::ProcessFailed => {
                         return Err(DispatchStop::broken(format!(
                             "guard extern `{}` failed the process, which a guard never calls",

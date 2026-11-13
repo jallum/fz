@@ -22,9 +22,8 @@ pub(crate) use backend::{encode_macro_entry_inputs, run_backend_entry_on_process
 use binop::*;
 #[cfg(test)]
 pub(crate) use extern_call::{
-    tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset,
-    tests_support_integer_boolean_pair_addr, tests_support_lock, tests_support_resolved_symbol_addr,
-    tests_support_scalar_pair_symbols, tests_support_test_dtor_addr,
+    tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
+    tests_support_resolved_symbol_addr, tests_support_test_dtor_addr,
 };
 use prim::*;
 pub(crate) use value::AnyValue;

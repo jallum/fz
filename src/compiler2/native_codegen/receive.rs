@@ -1338,7 +1338,6 @@ fn emit_guard_extern<M: cranelift_module::Module>(
             scalar_type = [lane.lane().unwrap_or(types::I64)];
             (*lane, &scalar_type)
         }
-        ExternReturn::Pair(_) => unreachable!("a guard extern is never a pair"),
     };
     sig.returns.extend(physical.iter().copied().map(ir::AbiParam::new));
     let func_id = body

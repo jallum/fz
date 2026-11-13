@@ -323,7 +323,6 @@ impl GuardExtern {
             ExternReturn::Scalar(lane) | ExternReturn::Checked(lane, _) => {
                 matches!(lane, ExternTy::I64 | ExternTy::F64 | ExternTy::Any | ExternTy::Never)
             }
-            ExternReturn::Pair(_) => false,
         };
         if !carried {
             return Err(refuse(format!(

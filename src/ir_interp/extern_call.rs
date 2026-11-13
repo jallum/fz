@@ -62,7 +62,6 @@ fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy, fz_abi: bool) 
 #[derive(Debug)]
 pub(super) enum ExternCallValue {
     Scalar(AnyValue),
-    Pair([AnyValue; 2]),
     /// A checked extern reported that its operation has no result.
     CheckedFailure(crate::dispatch_matrix::pattern::LastResort),
     /// A `never` extern returned having failed the current process, as
@@ -357,10 +356,6 @@ unsafe fn call_declared_return(
             let value = unsafe { dispatch_fn_returning_int(fp, raw_args) };
             interp_value_from_extern_ref_word(value).map(ExternCallValue::Scalar)
         }
-        ExternReturn::Pair(fields) => {
-            let values = unsafe { dispatch_fn_returning_pair(fp, raw_args, *fields) }?;
-            Ok(ExternCallValue::Pair(values))
-        }
         ExternReturn::Checked(lane, failure) => {
             let fields = [*lane, ExternTy::Bool];
             let [value, failed] = unsafe { dispatch_fn_returning_pair(fp, raw_args, fields) }?;
@@ -602,16 +597,6 @@ pub(crate) fn tests_support_test_dtor_addr() -> *const u8 {
 }
 
 #[cfg(test)]
-pub(crate) fn tests_support_integer_boolean_pair_addr() -> *const u8 {
-    tests_support::_test_integer_boolean_pair as *const u8
-}
-
-#[cfg(test)]
-pub(crate) fn tests_support_scalar_pair_symbols() -> Vec<(&'static str, *const u8)> {
-    tests_support::scalar_pair_symbols()
-}
-
-#[cfg(test)]
 pub(crate) fn tests_support_resolved_symbol_addr(name: &str) -> Result<*const (), String> {
     resolve_symbol(name)
 }
@@ -651,59 +636,6 @@ pub(crate) mod tests_support {
 
     pub unsafe extern "C" fn _test_never_returns() {}
 
-    #[repr(C)]
-    pub struct TestIntegerBooleanPair {
-        pub value: i64,
-        pub failed: u64,
-    }
-
-    pub unsafe extern "C" fn _test_integer_boolean_pair(value: i64) -> TestIntegerBooleanPair {
-        TestIntegerBooleanPair { value, failed: 0 }
-    }
-
-    #[repr(C)]
-    pub struct TestWordWordPair(pub u64, pub u64);
-    #[repr(C)]
-    pub struct TestWordFloatPair(pub u64, pub f64);
-    #[repr(C)]
-    pub struct TestFloatWordPair(pub f64, pub u64);
-    #[repr(C)]
-    pub struct TestFloatFloatPair(pub f64, pub f64);
-
-    macro_rules! pair_fn {
-        ($name:ident, $ret:ty, $value:expr) => {
-            pub unsafe extern "C" fn $name() -> $ret {
-                $value
-            }
-        };
-    }
-
-    pair_fn!(_test_pair_ii, TestWordWordPair, TestWordWordPair(1, 2));
-    pair_fn!(_test_pair_ib, TestWordWordPair, TestWordWordPair(1, 0));
-    pair_fn!(_test_pair_bi, TestWordWordPair, TestWordWordPair(1, 2));
-    pair_fn!(_test_pair_bb, TestWordWordPair, TestWordWordPair(0, 1));
-    pair_fn!(_test_pair_if, TestWordFloatPair, TestWordFloatPair(1, 2.5));
-    pair_fn!(_test_pair_bf, TestWordFloatPair, TestWordFloatPair(1, 2.5));
-    pair_fn!(_test_pair_fi, TestFloatWordPair, TestFloatWordPair(1.5, 2));
-    pair_fn!(_test_pair_fb, TestFloatWordPair, TestFloatWordPair(1.5, 0));
-    pair_fn!(_test_pair_ff, TestFloatFloatPair, TestFloatFloatPair(1.5, 2.5));
-    pair_fn!(_test_pair_bad_bool, TestWordWordPair, TestWordWordPair(7, 2));
-
-    pub fn scalar_pair_symbols() -> Vec<(&'static str, *const u8)> {
-        vec![
-            ("_test_pair_ii", _test_pair_ii as *const u8),
-            ("_test_pair_ib", _test_pair_ib as *const u8),
-            ("_test_pair_bi", _test_pair_bi as *const u8),
-            ("_test_pair_bb", _test_pair_bb as *const u8),
-            ("_test_pair_if", _test_pair_if as *const u8),
-            ("_test_pair_bf", _test_pair_bf as *const u8),
-            ("_test_pair_fi", _test_pair_fi as *const u8),
-            ("_test_pair_fb", _test_pair_fb as *const u8),
-            ("_test_pair_ff", _test_pair_ff as *const u8),
-            ("_test_pair_bad_bool", _test_pair_bad_bool as *const u8),
-        ]
-    }
-
     /// Counter-bumping dtor. Used by the fz-side test as the
     /// `&_resource_test_dtor/1` wrapped extern: bumps a global counter
     /// and records the payload it received. Verifies that the BIF stored
@@ -719,10 +651,7 @@ pub(crate) mod tests_support {
         match name {
             "_resource_test_dtor" => Some(_resource_test_dtor as *const ()),
             "_test_never_returns" => Some(_test_never_returns as *const ()),
-            "_test_integer_boolean_pair" => Some(_test_integer_boolean_pair as *const ()),
-            name => scalar_pair_symbols()
-                .into_iter()
-                .find_map(|(candidate, address)| (name == candidate).then_some(address as *const ())),
+            _ => None,
         }
     }
 }

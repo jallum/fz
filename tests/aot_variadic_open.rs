@@ -242,14 +242,14 @@ fn aot_c_extern_nonzero_boolean_is_true() {
 }
 
 #[test]
-fn aot_raw_arithmetic_pair_edges_match_the_real_total_c_exports() {
-    let source_path = unique_temp_path("fz_arithmetic_raw_pair_edges_aot", ".fz");
-    let out_bin = unique_temp_path("fz_arithmetic_raw_pair_edges_aot", ".bin");
+fn aot_arithmetic_edges_raise_through_declared_externs() {
+    let source_path = unique_temp_path("fz_arithmetic_edges_raise_aot", ".fz");
+    let out_bin = unique_temp_path("fz_arithmetic_edges_raise_aot", ".bin");
     write(
         &source_path,
-        include_str!("../fixtures2/00556_arithmetic_raw_pair_edges.fz"),
+        include_str!("../fixtures2/00556_arithmetic_edges_raise_through_declared_externs.fz"),
     )
-    .expect("write arithmetic raw-pair fixture");
+    .expect("write arithmetic edges fixture");
 
     let build = run_with_args(&[
         OsStr::new("build"),
@@ -259,20 +259,20 @@ fn aot_raw_arithmetic_pair_edges_match_the_real_total_c_exports() {
     ]);
     assert!(
         build.status.success(),
-        "aot arithmetic raw-pair build failed; stdout={:?} stderr={:?}",
+        "aot arithmetic edges build failed; stdout={:?} stderr={:?}",
         String::from_utf8_lossy(&build.stdout),
         String::from_utf8_lossy(&build.stderr)
     );
 
     let run = Command::new(&out_bin)
         .output()
-        .expect("run arithmetic raw-pair aot binary");
+        .expect("run arithmetic edges aot binary");
     let _ = remove_file(&source_path);
     let _ = remove_file(&out_bin);
     let _ = remove_file(out_bin.with_extension("o"));
     assert!(
         run.status.success(),
-        "AOT raw arithmetic pair fixture failed; stdout={:?} stderr={:?}",
+        "AOT arithmetic edges fixture failed; stdout={:?} stderr={:?}",
         String::from_utf8_lossy(&run.stdout),
         String::from_utf8_lossy(&run.stderr),
     );

@@ -243,7 +243,6 @@ fn resolve_extern_wire(
         &surface.extern_ret_tokens,
         &result_ty,
         &clause.bounds,
-        abi,
     )
     .map_err(|message| extern_abi_error(tel, surface, format!("`{}`: {message}", surface.name)))?;
     let ret = match extern_failure(world, tel, source, surface)? {
@@ -344,50 +343,17 @@ fn extern_return_wire(
     body: &crate::ast::TypeExprBody,
     semantic_ty: &super::super::types::Ty,
     constraints: &HashMap<super::super::types::TypeVarId, super::super::types::Ty>,
-    abi: crate::fz_ir::ExternAbi,
 ) -> Result<crate::fz_ir::ExternReturn, String> {
     let resolved = if constraints.is_empty() {
         *semantic_ty
     } else {
         types.instantiate(semantic_ty, constraints)
     };
-    let tuple_arity = {
-        let predicate = types.runtime_type_predicate(&resolved);
-        let arities = predicate.tuples.arities();
-        (!arities.cofinite && arities.values.len() == 1)
-            .then(|| arities.values.iter().next().copied())
-            .flatten()
-    };
-    if let Some(arity) = tuple_arity {
-        if abi != crate::fz_ir::ExternAbi::C {
-            return Err("fixed scalar-pair returns are supported only by the `C` ABI".to_string());
-        }
-        if arity != 2 {
-            return Err(format!(
-                "C extern aggregate returns require exactly two scalar fields, found tuple arity {arity}"
-            ));
-        }
-        let fields = types.tuple_projections(&resolved, 2);
-        let fields: [crate::fz_ir::ExternTy; 2] = fields
-            .iter()
-            .map(|field| ty_to_extern_ty(types, field))
-            .collect::<Vec<_>>()
-            .try_into()
-            .expect("two tuple projections");
-        if fields.iter().any(|field| {
-            !matches!(
-                field,
-                crate::fz_ir::ExternTy::I64 | crate::fz_ir::ExternTy::F64 | crate::fz_ir::ExternTy::Bool
-            )
-        }) {
-            return Err(format!(
-                "C extern aggregate return fields must be integer, float, or boolean, found {fields:?}"
-            ));
-        }
-        return Ok(crate::fz_ir::ExternReturn::Pair(fields));
-    }
     if types.is_tuple_type(&resolved) {
-        return Err("C extern aggregate return must resolve to one exact two-field tuple".to_string());
+        return Err(
+            "an extern returns one scalar, not a `{value, failed}` tuple; declare the failure with `raises:` and `message:`"
+                .to_string(),
+        );
     }
     Ok(crate::fz_ir::ExternReturn::Scalar(extern_wire_ty(
         types,

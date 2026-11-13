@@ -8275,222 +8275,6 @@ fn compiler2_private_extern_capture_flows_through_an_ordinary_higher_order_call(
 }
 
 #[test]
-fn compiler2_interp_c_extern_scalar_pair_enters_existing_tuple_transport_lanes() {
-    let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/c_extern_scalar_pair.fz".to_string()),
-        text: concat!(
-            "extern \"C\" defp _test_integer_boolean_pair(integer) :: {integer, boolean}\n",
-            "def main() do\n",
-            "  case _test_integer_boolean_pair(42) do\n",
-            "    {value, false} -> value\n",
-            "    {_, true} -> 0\n",
-            "  end\n",
-            "end\n",
-        )
-        .to_string(),
-    });
-    let root = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_eq!(
-        compiler.run_root_interp(root),
-        Ok(42),
-        "a fixed C scalar-pair result must enter the ordinary tuple lanes without an Any/tuple/scalar box",
-    );
-}
-
-#[test]
-fn compiler2_jit_c_extern_scalar_pair_enters_existing_return_lanes() {
-    let tel = ConfiguredTelemetry::new();
-    let native = NativeProgramCapture::new();
-    native.install(&tel);
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/c_extern_scalar_pair_jit.fz".to_string()),
-        text: concat!(
-            "extern \"C\" defp _test_integer_boolean_pair(integer) :: {integer, boolean}\n",
-            "def main() do\n",
-            "  case _test_integer_boolean_pair(42) do\n",
-            "    {value, false} -> value\n",
-            "    {_, true} -> 0\n",
-            "  end\n",
-            "end\n",
-        )
-        .to_string(),
-    });
-    let root = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    settle_native_product(&mut compiler, root);
-    assert_resolved(compiler.drive(), "C scalar-pair native handoff");
-    let program = native.last(root).program;
-    let pair_extern = program
-        .module
-        .fns
-        .iter()
-        .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.stmts)
-        .find(|stmt| matches!(stmt, IrStmt::LetMany(vars, IrPrim::Extern(..)) if vars.len() == 2))
-        .expect("the physical C aggregate call must bind two internal results");
-    assert!(matches!(pair_extern, IrStmt::LetMany(_, _)));
-    let compiled = jit_compile_native_program(&mut compiler, &program);
-    assert_eq!(compiled.run(compiler.telemetry(), program.entry), 42);
-}
-
-#[test]
-fn compiler2_c_extern_scalar_pairs_cover_every_semantic_field_pair_without_name_semantics() {
-    let source = concat!(
-        "extern \"C\" defp _test_pair_ii() :: {integer, integer}\n",
-        "extern \"C\" defp _test_pair_ib() :: {integer, boolean}\n",
-        "extern \"C\" defp _test_pair_bi() :: {boolean, integer}\n",
-        "extern \"C\" defp _test_pair_bb() :: {boolean, boolean}\n",
-        "extern \"C\" defp _test_pair_if() :: {integer, float}\n",
-        "extern \"C\" defp _test_pair_bf() :: {boolean, float}\n",
-        "extern \"C\" defp _test_pair_fi() :: {float, integer}\n",
-        "extern \"C\" defp _test_pair_fb() :: {float, boolean}\n",
-        "extern \"C\" defp _test_pair_ff() :: {float, float}\n",
-        "def main() do\n",
-        "  case _test_pair_ii() do\n",
-        "    {1, 2} -> case _test_pair_ib() do\n",
-        "      {1, false} -> case _test_pair_bi() do\n",
-        "        {true, 2} -> case _test_pair_bb() do\n",
-        "          {false, true} -> case _test_pair_if() do\n",
-        "            {_, 2.5} -> case _test_pair_bf() do\n",
-        "              {true, 2.5} -> case _test_pair_fi() do\n",
-        "                {1.5, _} -> case _test_pair_fb() do\n",
-        "                  {1.5, false} -> case _test_pair_ff() do\n",
-        "                    {1.5, 2.5} -> 42\n",
-        "                    _ -> 0\n",
-        "                  end\n",
-        "                  _ -> 0\n",
-        "                end\n",
-        "                _ -> 0\n",
-        "              end\n",
-        "              _ -> 0\n",
-        "            end\n",
-        "            _ -> 0\n",
-        "          end\n",
-        "          _ -> 0\n",
-        "        end\n",
-        "        _ -> 0\n",
-        "      end\n",
-        "      _ -> 0\n",
-        "    end\n",
-        "    _ -> 0\n",
-        "  end\n",
-        "end\n",
-    );
-
-    let interp = {
-        let tel = ConfiguredTelemetry::new();
-        let mut compiler = Compiler2::new(tel);
-        compiler.submit_code(CodeSubmission {
-            name: Some("fixtures/c_extern_scalar_pair_matrix_interp.fz".to_string()),
-            text: source.to_string(),
-        });
-        let root = compiler.submit_root(RootSubmission {
-            module_name: None,
-            name: "main".to_string(),
-            arity: 0,
-            need: ExecutableNeed::Value,
-        });
-        compiler.run_root_interp(root)
-    };
-    assert_eq!(
-        interp,
-        Ok(42),
-        "the interpreter must decode every pair field through its declared wire type"
-    );
-
-    let tel = ConfiguredTelemetry::new();
-    let native = NativeProgramCapture::new();
-    native.install(&tel);
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/c_extern_scalar_pair_matrix_jit.fz".to_string()),
-        text: source.to_string(),
-    });
-    let root = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    settle_native_product(&mut compiler, root);
-    assert_resolved(compiler.drive(), "C scalar-pair matrix native handoff");
-    let program = native.last(root).program;
-    let compiled = jit_compile_native_program(&mut compiler, &program);
-    assert_eq!(compiled.run(compiler.telemetry(), program.entry), 42);
-}
-
-#[test]
-fn compiler2_c_extern_scalar_pair_nonzero_boolean_is_true_in_interpreter() {
-    let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/c_extern_scalar_pair_bad_boolean.fz".to_string()),
-        text: concat!(
-            "extern \"C\" defp _test_pair_bad_bool() :: {boolean, integer}\n",
-            "def main() do\n",
-            "  case _test_pair_bad_bool() do\n",
-            "    {true, 2} -> 42\n",
-            "    _ -> 0\n",
-            "  end\n",
-            "end\n",
-        )
-        .to_string(),
-    });
-    let root = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    assert_eq!(compiler.run_root_interp(root), Ok(42));
-}
-
-#[test]
-fn compiler2_jit_c_extern_scalar_pair_nonzero_boolean_is_true() {
-    let tel = ConfiguredTelemetry::new();
-    let native = NativeProgramCapture::new();
-    native.install(&tel);
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/c_extern_scalar_pair_nonzero_boolean_jit.fz".to_string()),
-        text: concat!(
-            "extern \"C\" defp _test_pair_bad_bool() :: {boolean, integer}\n",
-            "def main() do\n",
-            "  case _test_pair_bad_bool() do\n",
-            "    {true, 2} -> 42\n",
-            "    _ -> 0\n",
-            "  end\n",
-            "end\n",
-        )
-        .to_string(),
-    });
-    let root = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    settle_native_product(&mut compiler, root);
-    assert_resolved(compiler.drive(), "JIT nonzero C boolean handoff");
-    let program = native.last(root).program;
-    let compiled = jit_compile_native_program(&mut compiler, &program);
-    assert_eq!(compiled.run(compiler.telemetry(), program.entry), 42);
-}
-
-#[test]
 fn compiler2_native_program_jit_runs_map_fixture_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -16765,13 +16549,13 @@ fn compiler2_kernel_float_remainder_uses_the_declared_private_c_extern_at_every_
 }
 
 #[test]
-fn compiler2_raw_arithmetic_pair_edges_use_the_total_runtime_exports_at_interp_and_forced_native_c_doors() {
-    let source = include_str!("../../fixtures2/00556_arithmetic_raw_pair_edges.fz");
+fn compiler2_arithmetic_edges_raise_through_declared_externs_at_interp_and_forced_native_c_doors() {
+    let source = include_str!("../../fixtures2/00556_arithmetic_edges_raise_through_declared_externs.fz");
 
     let interp_tel = ConfiguredTelemetry::new();
     let mut interp = Compiler2::new(interp_tel);
     interp.submit_code(CodeSubmission {
-        name: Some("arithmetic_raw_pair_edges_interp.fz".to_string()),
+        name: Some("arithmetic_edges_raise_interp.fz".to_string()),
         text: source.to_string(),
     });
     let interp_root = interp.submit_root(RootSubmission {
@@ -16783,7 +16567,7 @@ fn compiler2_raw_arithmetic_pair_edges_use_the_total_runtime_exports_at_interp_a
     assert_eq!(
         interp.run_root_interp(interp_root),
         Ok(42),
-        "the interpreter must expose each real C result/status lane at arithmetic boundaries",
+        "the interpreter must raise ArithmeticError at each arithmetic edge a declared extern reports",
     );
 
     let native_tel = ConfiguredTelemetry::new();
@@ -16791,7 +16575,7 @@ fn compiler2_raw_arithmetic_pair_edges_use_the_total_runtime_exports_at_interp_a
     native.install(&native_tel);
     let mut forced_c = Compiler2::new(native_tel);
     forced_c.submit_code(CodeSubmission {
-        name: Some("arithmetic_raw_pair_edges_native.fz".to_string()),
+        name: Some("arithmetic_edges_raise_native.fz".to_string()),
         text: source.to_string(),
     });
     let native_root = forced_c.submit_root(RootSubmission {
@@ -16825,7 +16609,7 @@ fn compiler2_raw_arithmetic_pair_edges_use_the_total_runtime_exports_at_interp_a
     assert_eq!(
         compiled.run(forced_c.telemetry(), program.entry),
         42,
-        "the forced native C calls must expose the same result/status lanes as interpreter calls",
+        "the forced native C calls must raise at the same edges as interpreter calls",
     );
 }
 
