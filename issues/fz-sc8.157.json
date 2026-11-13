@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T23:23:37Z",
   "created": "2026-11-13T20:10:20Z",
   "description": "Approved as step 4 of /Users/j5n/Workspace/fz-sc8.146.html (user, 2026-11-13). Needs fz-sc8.127 (#469), fz-sc8.155 (#473) and fz-sc8.156 (#474) on one base; build after they merge.\n\nOn that combined stack the compile of tools/distill-telemetry.exs finishes on interp, run and build with the default PRODUCT_DRIVE_BUDGET of 50,000 (50,249 requests summed over all sessions; root session about 48,800). Nothing in the suite compiles the distiller, so a change that pushes it back over the budget is silent until someone runs it by hand.\n\nChange: one test compiles tools/distill-telemetry.exs through the production path and pins the root session's request count (observed through pull.product.requested telemetry), so a rise is loud and a fall is lowered. Until fz-sc8.3 lands the program fails at run time in Distill.fmt_ms/1, so the test stops after the compile settles; when the distiller runs end to end the test compares its output with tests/distill_telemetry expectations instead (fz-sc8.19).\n\nDone when: the test fails on a base without any one of the three changes and passes with all three.",
   "id": "fz-sc8.157",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A test holds the distiller's compile inside the request budget",
   "type": "task",
-  "updated_at": "2026-11-13T20:10:20Z"
+  "updated_at": "2026-11-13T23:23:37Z"
 }
