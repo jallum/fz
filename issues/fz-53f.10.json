@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-53f.9"
+  ],
   "blocks": [],
   "created": "2026-11-13T02:01:14Z",
   "description": "Every atom read in the macro front end allocates a fresh String from the runtime atom table; surface_head_name and atom_head_name allocate another per head. The atom table holds Arc\u003cstr\u003e; readers get a shared AtomName. Spike (base 72c22569b, release instructions on distinct1/f761/f765/r6/lit16): atom_name -6.40/-3.03/-3.27/-11.86/-8.74%, allocation calls -16.4% on distinct1 (2,956,477 -\u003e 2,472,805); head_name_shared on top -0.30/-0.12/-0.12/-1.39/-0.80%. About 14 files, mechanical. Not in scope and to be reported, not built: Module.atom_names as Vec\u003cArc\u003cstr\u003e\u003e (the macro-run atom table copy at backend.rs, 96k allocations, about 8 files). Spike diffs (port by reading): /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/small/cand_atom_name.diff, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/small/cand_head_name_shared_with_atom_name.diff; numbers in /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/small/results.md. Acceptance: stdout (interp and run), canonical dump, activation key counts and job counts identical to the base binary on /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/p/distinct1.fz, f761.fz (--top 1 --top 2), f765.fz (--max-top 3), /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/m/r6.fz, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/l/lit16.fz; release instructions retired and allocation calls re-measured on base and change binaries built the same way; full gate; no pin, golden or census movement.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "An atom's name is shared, not copied per read",
   "type": "task",
-  "updated_at": "2026-11-13T02:01:14Z"
+  "updated_at": "2026-11-13T02:01:34Z"
 }
