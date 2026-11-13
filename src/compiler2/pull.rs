@@ -8,6 +8,7 @@
 mod rooted;
 
 use indexmap::IndexMap;
+use smallvec::SmallVec;
 
 #[cfg(test)]
 use super::body::{CallSiteId, ValueId};
@@ -1034,54 +1035,56 @@ impl ProductMemo {
             }
         }
 
-        for (key, value, dependencies, generation, changed, membership, _) in &mut prepared {
+        let mut committed: SmallVec<[(ProductKey, bool, HashSet<ProductKey>); 1]> = SmallVec::new();
+        for (key, value, dependencies, generation, changed, membership, previous_membership) in prepared {
             if dependencies.rooted_read.is_none() {
-                self.retire_rooted(key).report(tel, key);
+                self.retire_rooted(&key).report(tel, &key);
             }
             if dependencies.rooted_read.is_some_and(|read| read.delivered) {
                 self.rooted
-                    .get_mut(key)
+                    .get_mut(&key)
                     .expect("delivered rooted observation")
                     .changes
                     .clear();
             }
-            self.install_reader_dependencies(key, dependencies);
-            self.fact_stale_dependencies.remove(key);
-            self.dirty_descendants.remove(key);
-            self.produced.insert(
-                key.clone(),
-                ProductEntry {
-                    value: value.clone(),
-                    generation: *generation,
-                    dependencies: Rc::new(std::mem::take(dependencies)),
-                    membership: std::mem::take(membership),
-                },
-            );
+            self.install_reader_dependencies(&key, &dependencies);
+            self.fact_stale_dependencies.remove(&key);
+            self.dirty_descendants.remove(&key);
             tel.raw_event3(
                 &["fz", "compiler2", "pull", "product", "settled"],
-                key,
-                value,
+                &key,
+                &value,
                 &ProductSettlement {
-                    generation: *generation,
-                    changed: *changed,
+                    generation,
+                    changed,
                     group,
                 },
             );
             if emit_causal && group.is_some() {
-                tel.raw_event2(RECURSIVE_GROUP_PUBLISHED_EVENT, requested, key);
+                tel.raw_event2(RECURSIVE_GROUP_PUBLISHED_EVENT, requested, &key);
             }
+            self.produced.insert(
+                key.clone(),
+                ProductEntry {
+                    value,
+                    generation,
+                    dependencies: Rc::new(dependencies),
+                    membership,
+                },
+            );
+            committed.push((key, changed, previous_membership));
         }
         for (key, before) in external_before {
             self.record_external_change(&key, before);
         }
-        for (key, _, _, _, _, _, previous) in &prepared {
+        for (key, _, previous) in &committed {
             self.replace_membership_readers(key, previous);
         }
         let mut rooted_mutations = Vec::new();
-        for (key, _, _, _, changed, _, previous) in &prepared {
+        for (key, changed, previous) in &committed {
             rooted_mutations.extend(self.committed_rooted_member(tel, key, previous, *changed, types));
         }
-        let mutations = prepared.iter().flat_map(|(key, _, _, _, changed, _, _)| {
+        let mutations = committed.iter().flat_map(|(key, changed, _)| {
             self.reader_mutations(
                 key,
                 if *changed {
@@ -1401,7 +1404,6 @@ impl ProductMemo {
         types: &super::types::Types,
         external: Option<&ProductMemo>,
     ) -> Option<ProductKey> {
-        let mut walk = ProductValidationWalk::default();
         let resumable = self.pending_dependencies.get(key).is_some_and(|pending| {
             pending
                 .dependencies
@@ -1409,6 +1411,10 @@ impl ProductMemo {
                 .is_some_and(|read| !read.delivered && read.controls_delivered)
                 && !self.fact_stale_dependencies.contains_key(key)
         });
+        if !resumable && let Some(verdict) = self.verdict_without_walk(key) {
+            return verdict;
+        }
+        let mut walk = ProductValidationWalk::default();
         let stale = if resumable {
             self.rooted_stale_dependency(tel, key, &mut walk, types, false, external)
                 .or_else(|| Some(key.clone()))
@@ -1463,6 +1469,18 @@ impl ProductMemo {
         work
     }
 
+    /// The answer for a product that needs no walk: already known stale, or
+    /// with nothing dirty beneath it. `None` means the dependencies must be
+    /// walked.
+    fn verdict_without_walk(&self, key: &ProductKey) -> Option<Option<ProductKey>> {
+        if self.fact_stale_dependencies.contains_key(key) || self.displaced.contains_key(key) {
+            return Some(Some(key.clone()));
+        }
+        let clean =
+            !self.dirty_descendants.contains(key) && self.rooted.get(key).is_none_or(|rooted| rooted.dirty.is_empty());
+        (clean || !self.produced.contains_key(key)).then_some(None)
+    }
+
     fn stale_dependency_inner(
         &mut self,
         tel: &impl Telemetry,
@@ -1472,17 +1490,8 @@ impl ProductMemo {
         complete: bool,
         external: Option<&ProductMemo>,
     ) -> Option<ProductKey> {
-        if self.fact_stale_dependencies.contains_key(key) {
-            return Some(key.clone());
-        }
-        if self.displaced.contains_key(key) {
-            return Some(key.clone());
-        }
-        if !self.dirty_descendants.contains(key) && self.rooted.get(key).is_none_or(|rooted| rooted.dirty.is_empty()) {
-            return None;
-        }
-        if !self.produced.contains_key(key) {
-            return None;
+        if let Some(verdict) = self.verdict_without_walk(key) {
+            return verdict;
         }
         if !visiting.checked.insert(key.clone()) {
             return None;
@@ -1624,6 +1633,9 @@ impl PullSession {
     }
 
     fn reconcile_fact_movements(&mut self, tel: &impl Telemetry, types: &super::types::Types) {
+        if self.pending_fact_states.is_empty() {
+            return;
+        }
         let pending = std::mem::take(&mut self.pending_fact_states);
         self.memo.reconcile_fact_movements(tel, &pending, types);
     }

@@ -1217,6 +1217,27 @@ where
         P: SemanticOrd<Ctx>,
         P::Run: SemanticOrd<Ctx>,
     {
+        let subscribers = self.deps.subscribers(&fact_use, ctx);
+        if !subscribers.is_empty() {
+            self.reopen_and_wake_subscribers(subscribers, &fact_use, shift, pending_changes, wakes, ctx);
+        }
+
+        self.wake_satisfied_waiters(fact_use, pending_changes, wakes, external, ctx);
+    }
+
+    /// Reopens the answers `subscribers` hold and wakes each of their jobs once.
+    fn reopen_and_wake_subscribers<Ctx>(
+        &mut self,
+        subscribers: Vec<P>,
+        fact_use: &FactUse<F>,
+        shift: bool,
+        pending_changes: &mut impl Extend<FactChange<F>>,
+        wakes: &mut Vec<Wake<P::Run, F>>,
+        ctx: &Ctx,
+    ) where
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
+    {
         // A movement reopens exactly the answers that read it, and wakes the
         // job that gives them once: the run is what re-derives them, so one
         // movement is one work start. An answer of the same job that did not
@@ -1224,7 +1245,7 @@ where
         // already says -- and dirtying it anyway would reopen, on every wake,
         // the very thing a concluded answer is for.
         let mut woken = OrderedSet::default();
-        for publisher in self.deps.subscribers(&fact_use, ctx) {
+        for publisher in subscribers {
             if shift {
                 self.rebased.insert(publisher.clone());
             }
@@ -1232,10 +1253,8 @@ where
             woken.insert(publisher.run().clone());
         }
         for job in woken {
-            self.enqueue_step(job, &fact_use, shift, wakes);
+            self.enqueue_step(job, fact_use, shift, wakes);
         }
-
-        self.wake_satisfied_waiters(fact_use, pending_changes, wakes, external, ctx);
     }
 
     /// The waiter half of a movement's dispatch, on its own so a PRESENCE

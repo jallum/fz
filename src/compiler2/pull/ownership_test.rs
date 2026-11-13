@@ -605,6 +605,29 @@ fn validation_reports_work_even_when_no_dirty_vertex_is_checked() {
 }
 
 #[test]
+fn a_product_that_needs_no_walk_is_judged_without_reporting_validation_work() {
+    let tel = ConfiguredTelemetry::new();
+    let reports = Rc::new(RefCell::new(0));
+    let observed = Rc::clone(&reports);
+    tel.attach_raw_event2::<ProductKey, ProductValidation, _>(
+        &["fz", "compiler2", "pull", "product", "validation"],
+        move |_, _, _, _, _| *observed.borrow_mut() += 1,
+    );
+    let types = fake_types();
+    let mut memo = ProductMemo::default();
+    let unseen = ProductKey::RootBackendProduct(RootId::for_test(192));
+    let known_stale = ProductKey::RootBackendProduct(RootId::for_test(193));
+    memo.fact_stale_dependencies
+        .insert(known_stale.clone(), HashSet::new());
+    assert_eq!(memo.stale_dependency(&tel, &unseen, &types, None), None);
+    assert_eq!(
+        memo.stale_dependency(&tel, &known_stale, &types, None),
+        Some(known_stale)
+    );
+    assert_eq!(*reports.borrow(), 0, "neither verdict walked a dependency");
+}
+
+#[test]
 fn a_successful_formula_without_a_rooted_read_retires_only_its_own_witness() {
     let tel = ConfiguredTelemetry::new();
     let key = |id| ProductKey::RootBackendProduct(RootId::for_test(id));
