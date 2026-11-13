@@ -2207,3 +2207,21 @@ fn a_stalled_compiler_internal_wait_is_reported_as_an_internal_error() {
         crate::diag::codes::INTERNAL_UNRESOLVED_WAIT.0
     );
 }
+
+#[test]
+fn deduped_job_facts_keep_the_first_occurrence_in_emission_order() {
+    let defined = FactKey::ModuleDefined(ModuleId::GLOBAL);
+    let interface = FactKey::ModuleInterface(ModuleId::GLOBAL);
+    let indexed = FactKey::CodeIndexed(super::SourceOwner::for_test(0));
+
+    let facts = vec![
+        indexed.clone(),
+        interface.clone(),
+        indexed.clone(),
+        defined.clone(),
+        interface.clone(),
+        defined.clone(),
+    ];
+
+    assert_eq!(super::world::dedupe_job_facts(facts), vec![indexed, interface, defined]);
+}

@@ -2959,8 +2959,15 @@ fn runtime_demand_contribution_derivations(
 /// every job's outputs at the one place they all funnel through, which is how
 /// two compiles of the same input published different raw `Ty` numbering
 /// (fz-f98.19).
-fn dedupe_job_facts(facts: Vec<FactKey>) -> Vec<FactKey> {
-    facts.into_iter().collect::<OrderedSet<_>>().into_iter().collect()
+pub(super) fn dedupe_job_facts(mut facts: Vec<FactKey>) -> Vec<FactKey> {
+    let mut keep = first_occurrences(&facts).into_iter();
+    facts.retain(|_| keep.next().unwrap_or(false));
+    facts
+}
+
+fn first_occurrences(facts: &[FactKey]) -> Vec<bool> {
+    let mut seen = HashSet::with_capacity(facts.len());
+    facts.iter().map(|fact| seen.insert(fact)).collect()
 }
 
 fn callable_match_score(fixed_arity: usize, variadic: bool, actual_arity: usize) -> Option<CallableMatchScore> {
