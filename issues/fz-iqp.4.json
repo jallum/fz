@@ -4,14 +4,16 @@
     "fz-iqp.3"
   ],
   "blocks": [],
+  "closed_at": "2026-11-13T23:11:35Z",
+  "close_reason": "committed; PR opened",
   "created": "2026-11-13T21:18:49Z",
   "description": "As Elixir ('invalid mixed-script identifier found'). Needs script data (new dependency). Signal: diagnostic fixture.",
   "id": "fz-iqp.4",
   "labels": [],
   "parent": "fz-iqp",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "A mixed-script identifier is rejected",
   "type": "task",
-  "updated_at": "2026-11-13T21:18:51Z"
+  "updated_at": "2026-11-13T23:11:35Z"
 }
