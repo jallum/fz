@@ -257,12 +257,12 @@ pub struct ProtocolImplSource {
 pub enum FunctionState {
     Placeholder,
     Noted {
-        source: Box<FunctionSource>,
+        source: Rc<FunctionSource>,
     },
     Defined {
-        source: Box<FunctionSource>,
+        source: Rc<FunctionSource>,
         expanded_source: Box<FunctionSource>,
-        surface: Box<FunctionSurface>,
+        surface: Rc<FunctionSurface>,
     },
 }
 
@@ -647,13 +647,13 @@ impl FunctionMap {
         match function {
             FunctionState::Placeholder => {
                 *function = FunctionState::Noted {
-                    source: Box::new(source),
+                    source: Rc::new(source),
                 };
                 true
             }
             FunctionState::Noted { source: current } => {
                 let changed = !source_same(current, &source);
-                **current = source;
+                *current = Rc::new(source);
                 changed
             }
             FunctionState::Defined { source: current, .. } => {
@@ -663,7 +663,7 @@ impl FunctionMap {
                 // until DefineFunction recomputes it. Otherwise stable scope
                 // publication can demote a defined function back to Noted and
                 // manufacture a revision churn loop.
-                **current = source;
+                *current = Rc::new(source);
                 changed
             }
         }
@@ -678,9 +678,9 @@ impl FunctionMap {
     ) -> bool {
         let function = &mut self.slots[id.0 as usize];
         let next = FunctionState::Defined {
-            source: Box::new(source),
+            source: Rc::new(source),
             expanded_source: Box::new(expanded_source),
-            surface: Box::new(surface),
+            surface: Rc::new(surface),
         };
         update_if_changed(function, next)
     }

@@ -111,7 +111,7 @@ pub(super) fn plan_entry_dispatch(
     };
 
     let (source, surface) = world.function_definition(function);
-    let (source, surface) = (source.clone(), surface.clone());
+    let (source, surface) = (Rc::clone(source), Rc::clone(surface));
     let mut reads = vec![FactKey::FunctionDefined(function)];
     let mut waits = HashSet::new();
     collect_annotation_requirements(world, function, &mut reads, &mut waits);
@@ -329,7 +329,11 @@ fn build_guard_dispatch(
         },
     };
     let rows = super::super::dispatch::surface_pattern_rows(resolver.world, namespace, &surface, &[])?;
-    let callee = GuardCallee::Helper(Arc::new(guard_dispatch_from_rows(&surface, rows, &mut resolver)?));
+    let callee = GuardCallee::Helper(Arc::new(guard_dispatch_from_rows(
+        surface.as_ref(),
+        rows,
+        &mut resolver,
+    )?));
     stack.pop();
     cache.insert(function, callee.clone());
     Ok(callee)

@@ -51,7 +51,7 @@ pub(super) fn derive_function_contract(
     let specs = if !declared_specs.is_empty() {
         declared_specs
     } else {
-        match extern_semantic_contract(&surface) {
+        match extern_semantic_contract(surface.as_ref()) {
             Ok(spec) => vec![spec],
             Err(ExternContractError::NotAnExtern) => Vec::new(),
             Err(refusal @ ExternContractError::WireSpellingInsideType { .. }) => {
