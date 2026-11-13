@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T22:15:25Z",
+  "description": "Found while building fz-iqp.2; older than it (the deleted ident_cont allowed ? and ! anywhere). fz accepts ? and ! in the middle of a name (a?b) and in an alias (Ab?). Elixir 1.19 allows them only as the last character of a variable, function name or atom and rejects Ab? with the alias error. Builder's Elixir probes; fz side not re-probed by me. Signal: diagnostic fixtures for a?b and Ab?; oracle fixture for a trailing mark.",
+  "id": "fz-iqp.8",
+  "labels": [],
+  "parent": "fz-iqp",
+  "priority": 3,
+  "status": "open",
+  "title": "A name takes ? or ! only as its last character, and an alias takes neither",
+  "type": "bug",
+  "updated_at": "2026-11-13T22:15:25Z"
+}
