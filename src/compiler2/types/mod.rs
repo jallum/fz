@@ -503,12 +503,12 @@ fn dedupe_exact_clauses<T: PartialEq>(clauses: &mut Vec<Conj<T>>) {
 fn debug_assert_no_empty_clauses<T>(
     cx: TyCtx<'_>,
     clauses: &[Conj<T>],
-    clause_empty: fn(TyCtx<'_>, &Conj<T>, emptiness::InFlight<'_>) -> bool,
+    clause_empty: fn(TyCtx<'_>, &Conj<T>) -> bool,
     axis: &str,
 ) {
     for c in clauses {
         debug_assert!(
-            !clause_empty(cx, c, emptiness::InFlight::default()),
+            !clause_empty(cx, c),
             "interned descr carries a provably-empty clause on the {axis} axis"
         );
     }
@@ -724,7 +724,7 @@ impl Types {
     /// holds no clause" are the same question. Reading the descriptor
     /// structurally also means the check never descends through interned
     /// children, so it can neither mint the id it is about to reject nor
-    /// inherit the recursion's coinductive assumption about a cycle.
+    /// descend into one.
     ///
     /// One pass suffices because the composition is idempotent: re-interning an
     /// already-interned descriptor finds its tuple axis already at the carving
@@ -808,7 +808,7 @@ impl Types {
         }
         let denotation = {
             let cx = self.ctx();
-            emptiness::list_denotation(cx, &c, emptiness::InFlight::default())
+            emptiness::list_denotation(cx, &c)
         };
         match denotation {
             None => c,
