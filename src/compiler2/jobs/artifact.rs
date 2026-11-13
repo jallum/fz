@@ -73,11 +73,11 @@ pub(crate) fn produce_materialized_executable_product(
     }
 
     let executable_facts = executable_facts.expect("executable-facts wait should have been satisfied");
-    let mut analysis = executable_facts.analysis().clone();
+    let analysis = executable_facts.analysis();
     let return_ty = world
         .activation_return(&executable.activation)
         .unwrap_or_else(|| world.types_mut().none());
-    let lowered = executable_facts.body().clone();
+    let lowered = executable_facts.body();
     let extern_wire = executable_facts.extern_wire().cloned();
     let (dispatch_outcomes, retained_entries) = if extern_wire.is_some() {
         // An extern has no clauses or entries to prune: `analysis` may still
@@ -86,7 +86,7 @@ pub(crate) fn produce_materialized_executable_product(
         // into an empty body.
         (Vec::new(), Vec::new())
     } else {
-        let LoweredBody::Clauses { ref clauses, .. } = lowered;
+        let LoweredBody::Clauses { clauses, .. } = lowered;
         let mut entries = analysis.reachable_entries.clone();
         entries.extend(
             analysis
@@ -132,7 +132,7 @@ pub(crate) fn produce_materialized_executable_product(
         context.session().root().expect("executable products are root-scoped"),
         &transport_plan,
         executable,
-        &analysis,
+        analysis,
         executable_facts.callsites(),
         executable_facts.callsite_needs(),
         &body,
@@ -143,23 +143,22 @@ pub(crate) fn produce_materialized_executable_product(
     };
     let call_edges = call_edges.expect("product materialization should have complete call edges after waits");
     let retained_values = super::body::retained_value_ids(&body);
-    analysis.value_types.retain(|value, _| retained_values.contains(*value));
+    let value_types: ValueMap<Ty> = analysis
+        .value_types
+        .iter()
+        .filter(|(value, _)| retained_values.contains(*value))
+        .map(|(value, ty)| (value, *ty))
+        .collect();
     let effects = local_effects(&body, extern_wire.as_ref(), &call_edges);
-    let struct_modules = reachable_struct_modules(
-        world.types(),
-        executable,
-        &body,
-        return_ty,
-        &analysis.value_types,
-        &call_edges,
-    );
+    let struct_modules =
+        reachable_struct_modules(world.types(), executable, &body, return_ty, &value_types, &call_edges);
     let materialized = Rc::new(MaterializedExecutable {
         entry_dispatch: executable_facts.entry_dispatch().cloned(),
         return_ty,
         runtime_demand: runtime_demand.expect("runtime-demand fact wait should have been satisfied"),
         transport,
         original_entry_ids: pruned.original_entry_ids,
-        value_types: analysis.value_types,
+        value_types,
         effects,
         struct_modules,
         body,
@@ -1374,7 +1373,7 @@ fn require_transport_layout(
 }
 
 fn prune_lowered_body(
-    body: LoweredBody,
+    body: &LoweredBody,
     reachable_clauses: &[u32],
     reachable_entries: &[ControlEntryId],
 ) -> PrunedLoweredBody {
@@ -1393,20 +1392,20 @@ fn prune_lowered_body(
     let mut needed = HashMap::new();
     let mut kept_ids = Vec::new();
     for clause in &clauses {
-        collect_reachable_entries(&entries, clause.entry, &reachable_entries, &mut kept_ids, &mut needed);
+        collect_reachable_entries(entries, clause.entry, &reachable_entries, &mut kept_ids, &mut needed);
     }
     let mut kept = kept_ids
         .iter()
         .map(|entry_id| {
             specialize_entry(
-                entries[entry_id.as_u32() as usize].clone(),
+                &entries[entry_id.as_u32() as usize],
                 reachable_entries.contains(entry_id),
             )
         })
         .collect::<Vec<_>>();
     reindex_entries(&mut clauses, &mut kept, &needed);
     PrunedLoweredBody {
-        body: LoweredBody::clauses(clauses, kept, generated).with_value_count(value_count),
+        body: LoweredBody::clauses(clauses, kept, generated.clone()).with_value_count(value_count),
         original_entry_ids: kept_ids,
     }
 }
@@ -1466,13 +1465,20 @@ fn collect_reachable_entries(
     }
 }
 
-fn specialize_entry(mut entry: LoweredEntry, is_reachable: bool) -> LoweredEntry {
+fn specialize_entry(entry: &LoweredEntry, is_reachable: bool) -> LoweredEntry {
     if is_reachable {
-        return entry;
+        return entry.clone();
     }
-    entry.steps.clear();
-    entry.tail = LoweredTail::Unreachable;
-    entry
+    LoweredEntry {
+        span: entry.span,
+        origin: entry.origin.clone(),
+        params: entry.params.clone(),
+        captures: entry.captures.clone(),
+        physical_captures: entry.physical_captures.clone(),
+        physical_params: entry.physical_params.clone(),
+        steps: Vec::new(),
+        tail: LoweredTail::Unreachable,
+    }
 }
 
 fn reindex_entries(
