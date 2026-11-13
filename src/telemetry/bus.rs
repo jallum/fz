@@ -14,6 +14,7 @@ use crate::measurements;
 
 use super::event::{Measurements, Metadata};
 use super::handler::{Event, EventKind, Handler, HandlerId};
+use super::interest::Interest;
 use super::sink::{RawSpanTelemetry, Span, Telemetry};
 
 struct Entry {
@@ -136,8 +137,12 @@ macro_rules! attach_raw_span {
 macro_rules! dispatch_raw_event {
     ($method:ident, $variant:ident $(, $arg:ident)*) => {
         fn $method(&self, name: &[&'static str], $($arg: &dyn Any),*) {
+            if !self.raw_interest.borrow().observes(name) {
+                return;
+            }
             let (span_id, parent_span_id) = self.current_span_ids();
             for entry in self.raw_events.borrow().iter() {
+                self.note_entry_visit();
                 if name.starts_with(&entry.prefix) {
                     if let RawEventCallback::$variant(callback) = &entry.callback {
                         callback(name, span_id, parent_span_id, $($arg),*);
@@ -260,13 +265,9 @@ macro_rules! forward_raw_span_stop {
     };
 }
 
-fn remove_entry<T>(entries: &mut Vec<T>, id: HandlerId, entry_id: impl Fn(&T) -> HandlerId) -> bool {
-    if let Some(position) = entries.iter().position(|entry| entry_id(entry) == id) {
-        entries.remove(position);
-        true
-    } else {
-        false
-    }
+fn remove_entry<T>(entries: &mut Vec<T>, id: HandlerId, entry_id: impl Fn(&T) -> HandlerId) -> Option<T> {
+    let position = entries.iter().position(|entry| entry_id(entry) == id)?;
+    Some(entries.remove(position))
 }
 
 impl RawSpanEntry {
@@ -284,11 +285,17 @@ pub struct ConfiguredTelemetry {
     raw_events: RefCell<Vec<RawEventEntry>>,
     raw_spans: RefCell<Vec<RawSpanEntry>>,
     raw_lifecycle: RefCell<Vec<RawLifecycleEntry>>,
+    /// The prefixes of `raw_events` and `raw_lifecycle`, kept in step with
+    /// them; the single answer to whether a raw event has a listener.
+    raw_interest: RefCell<Interest>,
     next_handler_id: Cell<u64>,
     next_span_id: Cell<u64>,
     /// Stack of open span ids — used to populate `span_id` and
     /// `parent_span_id` on every event emitted while spans are open.
     span_stack: RefCell<Vec<u64>>,
+    /// Raw event and lifecycle listener entries examined by dispatch.
+    #[cfg(test)]
+    entry_visits: Cell<u64>,
 }
 
 impl ConfiguredTelemetry {
@@ -298,10 +305,27 @@ impl ConfiguredTelemetry {
             raw_events: RefCell::new(Vec::new()),
             raw_spans: RefCell::new(Vec::new()),
             raw_lifecycle: RefCell::new(Vec::new()),
+            raw_interest: RefCell::new(Interest::default()),
             next_handler_id: Cell::new(1),
             next_span_id: Cell::new(1),
             span_stack: RefCell::new(Vec::new()),
+            #[cfg(test)]
+            entry_visits: Cell::new(0),
         }
+    }
+
+    #[cfg(test)]
+    fn note_entry_visit(&self) {
+        self.entry_visits.set(self.entry_visits.get() + 1);
+    }
+
+    #[cfg(not(test))]
+    #[inline(always)]
+    fn note_entry_visit(&self) {}
+
+    #[cfg(test)]
+    pub fn entry_visits(&self) -> u64 {
+        self.entry_visits.get()
     }
 
     /// Attach `handler` to events whose name starts with `prefix`.
@@ -319,6 +343,7 @@ impl ConfiguredTelemetry {
 
     fn attach_raw_event(&self, prefix: &[&'static str], callback: RawEventCallback) -> HandlerId {
         let id = self.next_id();
+        self.raw_interest.borrow_mut().add(prefix);
         self.raw_events.borrow_mut().push(RawEventEntry {
             id,
             prefix: prefix.to_vec(),
@@ -337,6 +362,7 @@ impl ConfiguredTelemetry {
         F: Fn(&[&'static str], EventKind, u64, u64, Option<u64>) + 'static,
     {
         let id = self.next_id();
+        self.raw_interest.borrow_mut().add(prefix);
         self.raw_lifecycle.borrow_mut().push(RawLifecycleEntry {
             id,
             prefix: prefix.to_vec(),
@@ -380,10 +406,21 @@ impl ConfiguredTelemetry {
 
     /// Remove a previously attached handler. Returns true if removed.
     pub fn detach(&self, id: HandlerId) -> bool {
-        remove_entry(&mut self.handlers.borrow_mut(), id, |entry| entry.id)
-            || remove_entry(&mut self.raw_events.borrow_mut(), id, |entry| entry.id)
-            || remove_entry(&mut self.raw_spans.borrow_mut(), id, |entry| entry.id)
-            || remove_entry(&mut self.raw_lifecycle.borrow_mut(), id, |entry| entry.id)
+        if remove_entry(&mut self.handlers.borrow_mut(), id, |entry| entry.id).is_some() {
+            return true;
+        }
+        if let Some(entry) = remove_entry(&mut self.raw_events.borrow_mut(), id, |entry| entry.id) {
+            self.raw_interest.borrow_mut().remove(&entry.prefix);
+            return true;
+        }
+        if remove_entry(&mut self.raw_spans.borrow_mut(), id, |entry| entry.id).is_some() {
+            return true;
+        }
+        if let Some(entry) = remove_entry(&mut self.raw_lifecycle.borrow_mut(), id, |entry| entry.id) {
+            self.raw_interest.borrow_mut().remove(&entry.prefix);
+            return true;
+        }
+        false
     }
 
     /// Number of currently attached handlers. Test/diagnostic helper.
@@ -450,6 +487,7 @@ impl ConfiguredTelemetry {
         elapsed_ns: Option<u64>,
     ) {
         for entry in self.raw_lifecycle.borrow().iter() {
+            self.note_entry_visit();
             if name.starts_with(&entry.prefix) {
                 (entry.callback)(name, kind, span_id, parent_span_id, elapsed_ns);
             }
@@ -519,15 +557,7 @@ impl Telemetry for ConfiguredTelemetry {
     }
 
     fn is_raw_event_enabled(&self, name: &[&'static str]) -> bool {
-        self.raw_events
-            .borrow()
-            .iter()
-            .any(|entry| name.starts_with(&entry.prefix))
-            || self
-                .raw_lifecycle
-                .borrow()
-                .iter()
-                .any(|entry| name.starts_with(&entry.prefix))
+        self.raw_interest.borrow().observes(name)
     }
 
     fn dispatch(&self, name: &[&'static str], measurements: &Measurements, metadata: &Metadata) {

@@ -459,3 +459,67 @@ struct NoopHandler;
 impl Handler for NoopHandler {
     fn handle(&self, _: &Event<'_, '_, '_>) {}
 }
+
+#[test]
+fn an_event_nobody_observes_visits_no_listener_entry() {
+    let t = ConfiguredTelemetry::new();
+    let calls = Rc::new(Cell::new(0));
+    let sink = Rc::clone(&calls);
+    t.attach_raw_event1::<u64, _>(&["fz", "listened"], move |_, _, _, _| sink.set(sink.get() + 1));
+    t.attach_raw_lifecycle(&["fz", "traced"], |_, _, _, _, _| {});
+    let value = 1_u64;
+
+    for _ in 0..1000 {
+        t.raw_event1(&["fz", "unlistened"], &value);
+        t.raw_event0(&["other"]);
+    }
+
+    assert_eq!(t.entry_visits(), 0);
+    assert_eq!(calls.get(), 0);
+}
+
+#[test]
+fn an_event_raised_with_no_listener_attached_visits_nothing() {
+    let t = ConfiguredTelemetry::new();
+    let value = 1_u64;
+
+    for _ in 0..1000 {
+        t.raw_event1(&["fz", "unlistened"], &value);
+    }
+
+    assert_eq!(t.entry_visits(), 0);
+}
+
+#[test]
+fn a_listener_attached_after_unobserved_raises_receives_later_events() {
+    let t = ConfiguredTelemetry::new();
+    let value = 1_u64;
+    t.raw_event1(&["fz", "raw", "event"], &value);
+    t.raw_event1(&["fz", "raw", "event"], &value);
+
+    let calls = Rc::new(Cell::new(0));
+    let sink = Rc::clone(&calls);
+    let id = t.attach_raw_event1::<u64, _>(&["fz", "raw"], move |_, _, _, _| sink.set(sink.get() + 1));
+    t.raw_event1(&["fz", "raw", "event"], &value);
+    assert_eq!(calls.get(), 1);
+
+    assert!(t.detach(id));
+    let visits = t.entry_visits();
+    t.raw_event1(&["fz", "raw", "event"], &value);
+    assert_eq!(calls.get(), 1);
+    assert_eq!(t.entry_visits(), visits, "a detached prefix no longer observes");
+}
+
+#[test]
+fn a_lifecycle_listener_observes_raw_events_it_covers() {
+    let t = ConfiguredTelemetry::new();
+    let seen = Rc::new(Cell::new(0));
+    let sink = Rc::clone(&seen);
+    t.attach_raw_lifecycle(&["fz", "traced"], move |_, _, _, _, _| sink.set(sink.get() + 1));
+    let value = 1_u64;
+
+    t.raw_event1(&["fz", "traced", "event"], &value);
+    t.raw_event1(&["fz", "elsewhere"], &value);
+
+    assert_eq!(seen.get(), 1);
+}
