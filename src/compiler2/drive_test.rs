@@ -23046,14 +23046,14 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
 
     let counted = |label: &str| activations.get(label).map_or(0, BTreeSet::len);
     let measured = [
-        ("Stream.compose/2#lambda@0/2", 42),
-        ("Stream.compose/2", 5),
-        ("Enumerable.Stream.reduce/3", 5),
-        ("Enumerable.List.reduce/3", 6),
-        ("Enumerable.Map.reduce/3", 4),
-        ("Enumerable.Range.reduce/3", 4),
+        ("Stream.compose/2#lambda@0/2", 8),
+        ("Stream.compose/2", 2),
+        ("Enumerable.Stream.reduce/3", 2),
+        ("Enumerable.List.reduce/3", 4),
+        ("Enumerable.Map.reduce/3", 2),
+        ("Enumerable.Range.reduce/3", 2),
         ("List.reduce_cont/3", 4),
-        ("Map.reduce_cont/5", 2),
+        ("Map.reduce_cont/5", 3),
         ("Range.reduce_cont/6", 2),
     ];
     for (label, expected) in measured {
@@ -23061,7 +23061,7 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
     }
     assert_eq!(
         activations.values().map(BTreeSet::len).sum::<usize>(),
-        206,
+        145,
         "activations of the whole program"
     );
 }

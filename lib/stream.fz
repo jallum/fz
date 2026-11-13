@@ -6,7 +6,8 @@ defmodule Stream do
   functions to apply. Nothing runs until an `Enum` function pulls: a `%Stream{}`
   is an `Enumerable`, and its reduction hands the source's own reduction a
   reducer with those functions applied first, in the order they were written. A
-  halt therefore stops the source.
+  halt therefore stops the source. A stream whose source is another stream
+  reduces as one stream: the inner functions apply before the outer ones.
 
   `map/2` is the only `Stream` function. `count`, `member?` and `slice` do not
   answer without a traversal, so `Enum` reduces.
@@ -41,8 +42,19 @@ defmodule Stream do
 end
 
 defimpl Enumerable, for: Stream do
-  def reduce(%Stream{enum: enum, funs: funs}, acc, reducer), do: Enumerable.reduce(enum, acc, Stream.compose(funs, reducer))
-  def reduce_while(%Stream{enum: enum, funs: funs}, acc, reducer), do: Enumerable.reduce_while(enum, acc, Stream.compose(funs, reducer))
+  def reduce(%Stream{enum: enum, funs: funs}, acc, reducer) do
+    case enum do
+      %Stream{enum: source, funs: inner} -> reduce(%Stream{enum: source, funs: funs ++ inner}, acc, reducer)
+      source -> Enumerable.reduce(source, acc, Stream.compose(funs, reducer))
+    end
+  end
+
+  def reduce_while(%Stream{enum: enum, funs: funs}, acc, reducer) do
+    case enum do
+      %Stream{enum: source, funs: inner} -> reduce_while(%Stream{enum: source, funs: funs ++ inner}, acc, reducer)
+      source -> Enumerable.reduce_while(source, acc, Stream.compose(funs, reducer))
+    end
+  end
   def count(_stream), do: {:error, :unsupported}
   def member?(_stream, _value), do: {:error, :unsupported}
   def slice(_stream), do: {:error, :unsupported}
