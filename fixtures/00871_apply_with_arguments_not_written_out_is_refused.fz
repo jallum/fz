@@ -1,0 +1,13 @@
+#---
+# purpose: "apply/3 whose arguments are not a list written at the call is refused at compile time, at the call: the call it stands for cannot be written without knowing how many arguments there are"
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+defmodule Overdrawn do
+  def exception(attrs), do: {:overdrawn, attrs}
+end
+
+def main() do
+  args = [[]]
+  dbg(apply(Overdrawn, :exception, args))
+end

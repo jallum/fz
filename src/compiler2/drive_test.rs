@@ -3007,6 +3007,53 @@ fn compiler2_struct_spec_type_diagnoses_reference_to_non_struct_module() {
     );
 }
 
+/// A macro that raises while it is expanded fails the compile at the call
+/// that asked for it. `apply/3` raises when its arguments are not a list
+/// written at the call: there is no call it could stand for.
+#[test]
+fn a_macro_that_raises_is_diagnosed_at_its_call() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
+    let source = concat!(
+        "defmodule Overdrawn do\n",
+        "  def exception(attrs), do: {:overdrawn, attrs}\n",
+        "end\n",
+        "\n",
+        "def main() do\n",
+        "  args = [[]]\n",
+        "  apply(Overdrawn, :exception, args)\n",
+        "end\n",
+    )
+    .to_string();
+    compiler.submit_code(CodeSubmission {
+        name: Some("apply_with_a_variable_list.fz".to_string()),
+        text: source.clone(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "apply/3 with a list it cannot see refuses the program",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("the macro's raise is a diagnostic");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::LOWER_UNSUPPORTED.0);
+    assert!(
+        metadata_str(&diagnostic, "message").contains("apply/3 takes the function as an atom"),
+        "the diagnostic carries what the macro raised: {}",
+        metadata_str(&diagnostic, "message")
+    );
+    let diagnostic = diagnostic.diagnostic.as_ref().expect("the diagnostic payload");
+    assert_primary_span_contains(diagnostic, &source, "apply(Overdrawn, :exception, args)");
+}
+
 #[test]
 fn compiler2_zero_field_struct_spec_type_diagnoses_non_struct_module_at_reference_span() {
     let tel = ConfiguredTelemetry::new();

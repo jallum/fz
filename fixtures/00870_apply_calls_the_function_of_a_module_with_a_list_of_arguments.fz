@@ -1,0 +1,43 @@
+#---
+# purpose: "apply(m, :f, [a, b]) is the call m.f(a, b): on a module written out, on a module held in a variable, on an atom made at run time, with no arguments, and with arguments evaluated left to right after the module; a miss raises as the call does"
+# oracle: 00870_apply_calls_the_function_of_a_module_with_a_list_of_arguments.oracle.exs
+#---
+#
+# The function is an atom and the arguments are a list, both written out, so
+# apply/3 is the call on the module value and nothing more.
+defmodule Overdrawn do
+  def exception(attrs), do: {:overdrawn, attrs}
+  def name(), do: :overdrawn
+  def short_by(amount, fee), do: amount + fee
+end
+
+defmodule Frozen do
+  def name(), do: :frozen
+end
+
+def note(v) do
+  dbg(v)
+  v
+end
+
+def name_of(m), do: apply(m, :name, [])
+
+def missed(m) do
+  try do
+    apply(m, :short_by, [1, 2])
+  rescue
+    e in UndefinedFunctionError -> {e.module, e.function, e.arity}
+  end
+end
+
+def main() do
+  dbg(apply(Overdrawn, :exception, [[]]))
+  dbg(apply(Overdrawn, :short_by, [40, 2]))
+  dbg(name_of(Overdrawn))
+  dbg(name_of(Frozen))
+  dbg(name_of(String.to_atom("Elixir.Frozen")))
+  dbg(apply(note(Overdrawn), :short_by, [note(1), note(2)]))
+  dbg(apply(String, :upcase, ["abc"]))
+  dbg(missed(String.to_atom("Elixir.Frozen")))
+  dbg(missed(String.to_atom("nowhere")))
+end

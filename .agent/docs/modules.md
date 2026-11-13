@@ -214,9 +214,15 @@ different modules keep different keys and each key's call has one target.
 `e.__struct__.message(e)` is this call: the `__struct__` field of a struct
 type is one atom.
 
+`apply(m, :f, [a, b])` is this call too. `Kernel.apply/3` (`lib/kernel.fz`) is
+a macro that answers the remote-call node `m.f(a, b)` when the function is an
+atom and the arguments are a list, both written at the call. Any other call of
+it raises in the macro, and a macro's raise is a compile error at the call
+(`lower/unsupported`).
+
 Fixtures `00864` (one module), `00865` (several), `00867` (an atom made at
-run time) and `00869` (every miss) agree with Elixir on interp, run and build;
-`00866` is the refusal.
+run time), `00869` (every miss) and `00870` (`apply/3`) agree with Elixir on
+interp, run and build; `00866` and `00871` are the refusals.
 
 ## Scoping a body
 

@@ -618,7 +618,8 @@ pub(crate) trait QuotedExpansionCtx {
         let expanded = super::drive::ExecutionContext::new(world, tel)
             .run_macro_on_source(&program, owner, caller, &arg_roots)
             .map_err(|error| {
-                emit_job_diagnostic(tel, Diagnostic::error(codes::LOWER_UNSUPPORTED, error, Span::DUMMY))
+                let span = macro_call_span.unwrap_or(Span::DUMMY);
+                emit_job_diagnostic(tel, Diagnostic::error(codes::LOWER_UNSUPPORTED, error, span))
             })?;
         let source_map = world.source_map();
         let expanded = if let Some(macro_call_span) = macro_call_span {

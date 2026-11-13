@@ -130,6 +130,10 @@ a value that reaches none of them raises, as in Elixir:</p>
 <span class="com"># ** (UndefinedFunctionError) function :nowhere.exception/1 is undefined</span>
 <span class="com">#    (module :nowhere is not available)</span></pre>
 
+<p><code>apply(m, :exception, [[]])</code> is another way to write
+<code>m.exception([])</code>. The function is an atom and the arguments
+are a list, both written out at the call.</p>
+
 <p>A value that is not an atom at run time raises
 <code>ArgumentError</code>. A value whose type holds no atom at all can
 never be a module, and that call is refused at compile time with
