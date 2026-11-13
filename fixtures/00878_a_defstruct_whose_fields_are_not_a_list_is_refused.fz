@@ -1,0 +1,19 @@
+#---
+# purpose: "defstruct takes a list of fields; an expression that computes one where the declaration stands is refused, since a macro computes the list and splices it in whole"
+# expect: diagnostic
+# diagnostic.code: parse/struct-fields
+#---
+defmodule Shapes do
+  defmacro tagged(fields) do
+    quote do
+      defstruct [tag: :shape] ++ unquote(fields)
+    end
+  end
+end
+
+defmodule Tagged do
+  import Shapes
+  tagged([:name])
+end
+
+def main(), do: dbg(%Tagged{})

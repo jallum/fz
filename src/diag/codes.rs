@@ -22,6 +22,8 @@ pub const PARSE_COMPREHENSION: DiagCode = DiagCode("parse/comprehension");
 pub const PARSE_INVALID_TRY: DiagCode = DiagCode("parse/invalid-try");
 /// A `defstruct` field default that is not a literal.
 pub const PARSE_STRUCT_DEFAULT: DiagCode = DiagCode("parse/struct-default");
+/// A `defstruct` whose argument is not a list of fields.
+pub const PARSE_STRUCT_FIELDS: DiagCode = DiagCode("parse/struct-fields");
 
 // ----- resolver -----
 
