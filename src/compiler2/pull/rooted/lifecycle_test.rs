@@ -9,19 +9,25 @@ fn packaging() -> ProductKey {
     member(99)
 }
 
-fn membership(children: &[u32]) -> ProductDependencies {
-    ProductDependencies {
-        membership: children.iter().map(|n| member(*n)).collect(),
-        ..ProductDependencies::default()
-    }
+fn membership(children: &[u32]) -> HashSet<ProductKey> {
+    children.iter().map(|n| member(*n)).collect()
 }
 
-fn commit(memo: &mut ProductMemo, key: ProductKey, dependencies: ProductDependencies) -> bool {
+fn commit(memo: &mut ProductMemo, key: ProductKey, membership: HashSet<ProductKey>) -> bool {
+    commit_with(memo, key, ProductDependencies::default(), membership)
+}
+
+fn commit_with(
+    memo: &mut ProductMemo,
+    key: ProductKey,
+    dependencies: ProductDependencies,
+    membership: HashSet<ProductKey>,
+) -> bool {
     memo.finish_completion(
         &ConfiguredTelemetry::new(),
         false,
         &key,
-        ProductCompletion::Single(ProductValue::Unit, dependencies),
+        ProductCompletion::Single(ProductValue::Unit, dependencies, membership),
         &crate::compiler2::Types::new(),
     )
 }
@@ -51,10 +57,15 @@ fn only_a_successful_replacement_can_change_committed_root_membership() {
     assert_original_membership(&memo);
 
     assert!(memo.begin(member(0)));
-    memo.unblock(ProductRequestId(NonZeroU64::MIN), &member(0), membership(&[2]));
+    memo.unblock(
+        ProductRequestId(NonZeroU64::MIN),
+        &member(0),
+        ProductDependencies::default(),
+        membership(&[2]),
+    );
     assert_original_membership(&memo);
     assert_eq!(
-        memo.pending_dependencies[&member(0)].dependencies.membership,
+        memo.pending_dependencies[&member(0)].membership,
         HashSet::from([member(2)]),
         "waiting retains the current attempt for group handoff without publishing it"
     );
@@ -72,18 +83,22 @@ fn only_a_successful_replacement_can_change_committed_root_membership() {
     );
     assert_original_membership(&memo);
 
-    let mut left = membership(&[2]);
-    left.products.insert(member(7), Some(1));
-    let mut right = membership(&[]);
-    right.products.insert(member(7), Some(2));
+    let left = ProductDependencies {
+        products: IndexMap::from([(member(7), Some(1))]),
+        ..ProductDependencies::default()
+    };
+    let right = ProductDependencies {
+        products: IndexMap::from([(member(7), Some(2))]),
+        ..ProductDependencies::default()
+    };
     assert!(
         !memo.finish_completion(
             &tel,
             false,
             &member(0),
             ProductCompletion::RecursiveGroup(vec![
-                (member(0), ProductValue::Unit, left),
-                (member(2), ProductValue::Unit, right),
+                (member(0), ProductValue::Unit, left, membership(&[2])),
+                (member(2), ProductValue::Unit, right, membership(&[])),
             ]),
             &types,
         ),
@@ -388,7 +403,7 @@ fn an_independent_member_proof_does_not_clear_its_readers_stale_later_control() 
         products: IndexMap::from([(member(1), Some(1))]),
         ..ProductDependencies::default()
     };
-    assert!(commit(&mut memo, packaging(), dependencies));
+    assert!(commit_with(&mut memo, packaging(), dependencies, membership(&[])));
     memo.register_rooted(packaging(), member(0), &types);
     Rc::get_mut(&mut memo.produced.get_mut(&packaging()).unwrap().dependencies)
         .unwrap()
@@ -434,9 +449,11 @@ fn a_mixed_membership_and_value_cycle_validates_equal_observations_together() {
     let types = crate::compiler2::Types::new();
     let mut memo = ProductMemo::default();
     assert!(commit(&mut memo, packaging(), membership(&[])));
-    let mut dependency = membership(&[]);
-    dependency.products.insert(packaging(), memo.generation(&packaging()));
-    assert!(commit(&mut memo, member(0), dependency));
+    let dependency = ProductDependencies {
+        products: IndexMap::from([(packaging(), memo.generation(&packaging()))]),
+        ..ProductDependencies::default()
+    };
+    assert!(commit_with(&mut memo, member(0), dependency, membership(&[])));
     memo.register_rooted(packaging(), member(0), &types);
     Rc::get_mut(&mut memo.produced.get_mut(&packaging()).unwrap().dependencies)
         .unwrap()

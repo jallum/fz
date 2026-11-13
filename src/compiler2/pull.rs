@@ -326,11 +326,13 @@ pub struct ProductMemo {
     rooted_readers: HashMap<ProductKey, HashSet<ProductKey>>,
 }
 
-type ProductCommitMember = (ProductKey, ProductValue, ProductDependencies);
+type ProductMembership = HashSet<ProductKey>;
+type ProductCommitMember = (ProductKey, ProductValue, ProductDependencies, ProductMembership);
 
 #[derive(Debug)]
 struct PendingProduct {
     dependencies: ProductDependencies,
+    membership: HashSet<ProductKey>,
     request: ProductRequestId,
     waiting_frame: Option<usize>,
 }
@@ -345,7 +347,7 @@ struct WaitFrameExposure {
 }
 
 enum ProductCompletion {
-    Single(ProductValue, ProductDependencies),
+    Single(ProductValue, ProductDependencies, HashSet<ProductKey>),
     RecursiveGroup(Vec<ProductCommitMember>),
 }
 
@@ -683,7 +685,6 @@ struct ProductDependencies {
     products: IndexMap<ProductKey, Option<u64>>,
     rooted_read: Option<RootedRead>,
     facts: HashMap<FactUse<FactKey>, FactState>,
-    membership: HashSet<ProductKey>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -899,7 +900,7 @@ impl ProductMemo {
         types: &super::types::Types,
     ) -> bool {
         match completion {
-            ProductCompletion::Single(value, dependencies) => {
+            ProductCompletion::Single(value, dependencies, membership) => {
                 if self.invalidated_in_progress.remove(requested) {
                     self.in_progress.remove(requested);
                     self.produced.remove(requested);
@@ -909,15 +910,15 @@ impl ProductMemo {
                     tel,
                     emit_causal,
                     requested,
-                    std::iter::once((requested.clone(), value, dependencies)),
+                    std::iter::once((requested.clone(), value, dependencies, membership)),
                     None,
                     types,
                 );
             }
             ProductCompletion::RecursiveGroup(mut members) => {
-                members.sort_by(|(left, _, _), (right, _, _)| left.semantic_cmp(right, types));
+                members.sort_by(|(left, ..), (right, ..)| left.semantic_cmp(right, types));
                 assert!(
-                    members.iter().any(|(key, _, _)| key == requested),
+                    members.iter().any(|(key, ..)| key == requested),
                     "a recursive completion must include its actual owner"
                 );
                 for pair in members.windows(2) {
@@ -930,14 +931,14 @@ impl ProductMemo {
                         pair[1].0
                     );
                 }
-                let member_keys = members.iter().map(|(key, _, _)| key.clone()).collect::<HashSet<_>>();
+                let member_keys = members.iter().map(|(key, ..)| key.clone()).collect::<HashSet<_>>();
                 if member_keys.iter().any(|key| self.invalidated_in_progress.contains(key)) {
                     self.reject_group(tel, &member_keys, types);
                     return false;
                 }
                 let mut product_observations = HashMap::new();
                 let mut fact_observations = HashMap::new();
-                for (_, _, dependencies) in &members {
+                for (_, _, dependencies, _) in &members {
                     for (dependency, generation) in &dependencies.products {
                         if member_keys.contains(dependency) {
                             continue;
@@ -979,7 +980,7 @@ impl ProductMemo {
     ) {
         let mut prepared = Vec::with_capacity(members.len());
         let mut external_before = Vec::new();
-        for (key, value, mut dependencies) in members {
+        for (key, value, dependencies, membership) in members {
             if self.observed_products.contains(&key) {
                 external_before.push((key.clone(), self.external_state(&key)));
             }
@@ -1006,8 +1007,7 @@ impl ProductMemo {
                     entry.generation
                 }
             });
-            let membership = std::mem::take(&mut dependencies.membership);
-            let previous_membership = previous.map(|entry| entry.membership).unwrap_or_default();
+            let previous_membership = previous.map(|entry| entry.membership);
             prepared.push((
                 key,
                 value,
@@ -1035,7 +1035,7 @@ impl ProductMemo {
             }
         }
 
-        let mut committed: SmallVec<[(ProductKey, bool, HashSet<ProductKey>); 1]> = SmallVec::new();
+        let mut committed: SmallVec<[(ProductKey, bool, Option<ProductMembership>); 1]> = SmallVec::new();
         for (key, value, dependencies, generation, changed, membership, previous_membership) in prepared {
             if dependencies.rooted_read.is_none() {
                 self.retire_rooted(&key).report(tel, &key);
@@ -1078,11 +1078,11 @@ impl ProductMemo {
             self.record_external_change(&key, before);
         }
         for (key, _, previous) in &committed {
-            self.replace_membership_readers(key, previous);
+            self.replace_membership_readers(key, previous.as_ref());
         }
         let mut rooted_mutations = Vec::new();
         for (key, changed, previous) in &committed {
-            rooted_mutations.extend(self.committed_rooted_member(tel, key, previous, *changed, types));
+            rooted_mutations.extend(self.committed_rooted_member(tel, key, previous.as_ref(), *changed, types));
         }
         let mutations = committed.iter().flat_map(|(key, changed, _)| {
             self.reader_mutations(
@@ -1126,7 +1126,13 @@ impl ProductMemo {
         self.mutate_product_wave(tel, mutations, types);
     }
 
-    fn unblock(&mut self, request: ProductRequestId, key: &ProductKey, dependencies: ProductDependencies) {
+    fn unblock(
+        &mut self,
+        request: ProductRequestId,
+        key: &ProductKey,
+        dependencies: ProductDependencies,
+        membership: HashSet<ProductKey>,
+    ) {
         self.in_progress.remove(key);
         self.invalidated_in_progress.remove(key);
         self.take_pending_dependencies(key);
@@ -1135,6 +1141,7 @@ impl ProductMemo {
             key.clone(),
             PendingProduct {
                 dependencies,
+                membership,
                 request,
                 waiting_frame: None,
             },
@@ -2109,6 +2116,7 @@ impl super::scheduler::ExternalDependencyStates<DependencyKey> for ProductSessio
 pub struct ProductReadContext<'s> {
     session: &'s mut PullSession,
     dependencies: ProductDependencies,
+    membership: HashSet<ProductKey>,
     product_reads_delivered: bool,
     recursive_group: Option<Vec<ProductCommitMember>>,
 }
@@ -2124,6 +2132,7 @@ impl<'s> ProductReadContext<'s> {
         Self {
             session,
             dependencies: ProductDependencies::default(),
+            membership: HashSet::new(),
             product_reads_delivered: true,
             recursive_group: None,
         }
@@ -2246,16 +2255,13 @@ impl<'s> ProductReadContext<'s> {
             .zip(&values)
             .find_map(|(member, value)| (member == current).then(|| value.clone()))
             .expect("recursive completion must contain its requested anchor");
-        let dependencies = self
-            .recorded_recursive_group_dependencies(current, members)
-            .into_iter()
-            .cloned();
         let entries = members
             .iter()
-            .cloned()
             .zip(values)
-            .zip(dependencies)
-            .map(|((key, value), dependencies)| (key, value, dependencies))
+            .map(|(member, value)| {
+                let (dependencies, membership) = self.recorded_recursive_group_member(current, member);
+                (member.clone(), value, dependencies.clone(), membership.clone())
+            })
             .collect();
         assert!(
             self.recursive_group.replace(entries).is_none(),
@@ -2275,17 +2281,26 @@ impl<'s> ProductReadContext<'s> {
         );
         members
             .iter()
-            .map(|member| {
-                if member == current {
-                    &self.dependencies
-                } else {
-                    self.session
-                        .memo
-                        .pending_product_dependencies(member)
-                        .expect("a non-current recursive member must have a freshly evaluated pending formula")
-                }
-            })
+            .map(|member| self.recorded_recursive_group_member(current, member).0)
             .collect()
+    }
+
+    fn recorded_recursive_group_member<'a>(
+        &'a self,
+        current: &ProductKey,
+        member: &ProductKey,
+    ) -> (&'a ProductDependencies, &'a HashSet<ProductKey>) {
+        if member == current {
+            (&self.dependencies, &self.membership)
+        } else {
+            let pending = self
+                .session
+                .memo
+                .pending_dependencies
+                .get(member)
+                .expect("a non-current recursive member must have a freshly evaluated pending formula");
+            (&pending.dependencies, &pending.membership)
+        }
     }
 
     fn read_product_entry(
@@ -2363,8 +2378,14 @@ impl<'s> ProductReadContext<'s> {
         self.session
     }
 
-    fn into_completion(self) -> (ProductDependencies, Option<Vec<ProductCommitMember>>) {
-        (self.dependencies, self.recursive_group)
+    fn into_completion(
+        self,
+    ) -> (
+        ProductDependencies,
+        HashSet<ProductKey>,
+        Option<Vec<ProductCommitMember>>,
+    ) {
+        (self.dependencies, self.membership, self.recursive_group)
     }
 }
 
@@ -2660,12 +2681,12 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             "safe product producers cannot recursively enter ProductDriver::pull"
         );
 
-        let (outcome, dependencies, recursive_group) = {
+        let (outcome, dependencies, membership, recursive_group) = {
             let mut session = self.session_mut();
             let mut context = ProductReadContext::new(&mut session);
             let outcome = producers.produce(&mut context, key);
-            let (dependencies, recursive_group) = context.into_completion();
-            (outcome, dependencies, recursive_group)
+            let (dependencies, membership, recursive_group) = context.into_completion();
+            (outcome, dependencies, membership, recursive_group)
         };
         if self.emit_causal_products {
             tel.raw_event3(PRODUCT_EVALUATED_EVENT, key, &request, &outcome);
@@ -2676,7 +2697,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                 let completion = if let Some(members) = recursive_group {
                     ProductCompletion::RecursiveGroup(members)
                 } else {
-                    ProductCompletion::Single(value, dependencies)
+                    ProductCompletion::Single(value, dependencies, membership)
                 };
                 let settled = self.session_mut().memo.finish_completion(
                     tel,
@@ -2699,7 +2720,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                 }
             }
             PullOutcome::Waiting(waits) => {
-                self.session_mut().memo.unblock(request, key, dependencies);
+                self.session_mut().memo.unblock(request, key, dependencies, membership);
                 PullOutcome::Waiting(waits)
             }
             PullOutcome::Failed => {
