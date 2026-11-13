@@ -1163,13 +1163,12 @@ pub(crate) struct RuntimeValueReader<'a> {
 }
 
 impl RuntimeValueReader<'_> {
-    /// The schema ids of every named struct the module declares.
-    fn known_named_schemas(&self) -> BTreeSet<u32> {
+    /// Whether `schema` is the id of a named struct the module declares.
+    fn is_named_schema(&self, schema: u32) -> bool {
         self.module
             .struct_schemas
             .keys()
-            .filter_map(|name| self.named_schema_ids.get(name).copied())
-            .collect()
+            .any(|name| self.named_schema_ids.get(name) == Some(&schema))
     }
 
     /// Whether `schema` is an UNNAMED struct whose arity `arities` admits.
@@ -1188,12 +1187,11 @@ impl RuntimeValueReader<'_> {
         let of_arities = arities
             .values
             .iter()
-            .filter_map(|arity| self.tuple_schema_ids.get(arity).copied())
-            .collect::<BTreeSet<_>>();
+            .any(|arity| self.tuple_schema_ids.get(arity) == Some(&schema));
         if !arities.cofinite {
-            return of_arities.contains(&schema);
+            return of_arities;
         }
-        !self.known_named_schemas().contains(&schema) && !of_arities.contains(&schema)
+        !self.is_named_schema(schema) && !of_arities
     }
 
     fn tuple_arity_of(&self, schema: u32) -> Option<usize> {
@@ -1303,17 +1301,8 @@ fn matches_runtime_callable(
     }
 }
 
-fn mapped_membership<T, U>(set: &FiniteSet<T>, actual: U, mut map: impl FnMut(&T) -> Option<U>) -> bool
-where
-    T: Ord,
-    U: Ord,
-{
-    set.values
-        .iter()
-        .filter_map(&mut map)
-        .collect::<BTreeSet<_>>()
-        .contains(&actual)
-        != set.cofinite
+fn mapped_membership<T, U: PartialEq>(set: &FiniteSet<T>, actual: U, map: impl FnMut(&T) -> Option<U>) -> bool {
+    set.values.iter().filter_map(map).any(|mapped| mapped == actual) != set.cofinite
 }
 
 /// "Is this an admitted tuple, of an admitted shape?"
@@ -1517,20 +1506,18 @@ fn matches_named_struct_axis(
     let Some(actual) = struct_schema_of(value) else {
         return false;
     };
-    let known_named = reader.known_named_schemas();
     if predicate.named_structs.is_any() {
-        return known_named.contains(&actual);
+        return reader.is_named_schema(actual);
     }
     let relevant = predicate
         .named_structs
         .values
         .iter()
-        .filter_map(|name| reader.named_schema_ids.get(name).copied())
-        .collect::<BTreeSet<_>>();
+        .any(|name| reader.named_schema_ids.get(name) == Some(&actual));
     if predicate.named_structs.cofinite {
-        known_named.contains(&actual) && !relevant.contains(&actual)
+        reader.is_named_schema(actual) && !relevant
     } else {
-        relevant.contains(&actual)
+        relevant
     }
 }
 

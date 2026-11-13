@@ -73,7 +73,8 @@ fn resolve_return_flow_rejects_divergence_contradictions() {
         diverges,
     };
 
-    let returning = HashMap::from([(position.clone(), layout(false))]);
+    let returning_layout = layout(false);
+    let returning = HashMap::from([(&position, &returning_layout)]);
     assert!(
         resolve_return_flow(
             &CallReturnFlow::NoReturn {
@@ -84,12 +85,13 @@ fn resolve_return_flow_rejects_divergence_contradictions() {
         .is_err()
     );
 
-    let divergent = HashMap::from([(position.clone(), layout(true))]);
+    let divergent_layout = layout(true);
+    let divergent = HashMap::from([(&position, &divergent_layout)]);
     assert!(
         resolve_return_flow(
             &CallReturnFlow::Deliver {
                 source: position.clone(),
-                resume: position,
+                resume: position.clone(),
                 entry: ControlEntryId::from_u32(0),
             },
             &divergent,

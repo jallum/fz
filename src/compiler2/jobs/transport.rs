@@ -535,6 +535,16 @@ fn generic_owner_ty_fact(executable: &ExecutableKey, position: &TransportPositio
     }
 }
 
+/// The column type of an executable's input, read from the joined input
+/// evidence when it exists and from the activation key otherwise.
+fn joined_input_ty(world: &mut World, executable: &ExecutableKey, index: usize) -> Ty {
+    let column = match world.activation_inputs_joined(&executable.activation) {
+        Some(joined) => joined.get(index).copied(),
+        None => executable.activation.inputs(world.types()).get(index).copied(),
+    };
+    column.unwrap_or_else(|| world.types_mut().any())
+}
+
 /// The analyzed type and runtime demand a generic callable-owner position
 /// carries. This pair is the filter every facts projection runs through, so it
 /// is derived per position -- never inherited from a group-mate.
@@ -547,12 +557,7 @@ fn generic_owner_ty_and_demand(
 ) -> (Ty, RuntimeDemand) {
     match position {
         TransportPosition::ExecutableInput { semantic_index, .. } => (
-            world
-                .activation_inputs_joined(&executable.activation)
-                .unwrap_or_else(|| executable.activation.inputs(world.types()))
-                .get(*semantic_index)
-                .copied()
-                .unwrap_or_else(|| world.types_mut().any()),
+            joined_input_ty(world, executable, *semantic_index),
             runtime.input_demands.get(*semantic_index).cloned().unwrap_or_default(),
         ),
         TransportPosition::ExecutableReturn { .. } | TransportPosition::ReturnPayload { .. } => {
@@ -1758,12 +1763,7 @@ fn produce_named_transport_position(
     let mut recipe = TransportRecipe::Terminal;
     let (ty, demand) = match position {
         TransportPosition::ExecutableInput { semantic_index, .. } => {
-            let ty = world
-                .activation_inputs_joined(&executable.activation)
-                .unwrap_or_else(|| executable.activation.inputs(world.types()))
-                .get(*semantic_index)
-                .copied()
-                .unwrap_or_else(|| world.types_mut().any());
+            let ty = joined_input_ty(world, executable, *semantic_index);
             let demand = runtime.input_demands.get(*semantic_index).cloned().unwrap_or_default();
             (ty, demand)
         }

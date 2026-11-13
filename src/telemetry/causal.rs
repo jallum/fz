@@ -78,7 +78,7 @@ pub fn parse_public_trace(bytes: &[u8]) -> Vec<PublicEvent> {
 }
 
 fn parse_public_event(line: &str) -> PublicEvent {
-    let value: Json =
+    let mut value: Json =
         serde_json::from_str(line).unwrap_or_else(|error| panic!("malformed public JSONL line: {error}\n{line}"));
     let name = value["name"]
         .as_array()
@@ -108,9 +108,9 @@ fn parse_public_event(line: &str) -> PublicEvent {
         kind,
         span_id,
         parent_span_id,
-        measurements: value["measurements"].clone(),
-        metadata: value["metadata"].clone(),
-        semantic: value["semantic"].clone(),
+        measurements: value["measurements"].take(),
+        metadata: value["metadata"].take(),
+        semantic: value["semantic"].take(),
     }
 }
 
@@ -1537,18 +1537,19 @@ impl Replay {
             .as_u64()
             .expect("product evaluation request identity");
         let session_id = session.id;
-        let (requested_product, started) = session.requests[&request].clone();
+        let (requested_product, started) = &session.requests[&request];
+        let started = *started;
         assert_eq!(
-            requested_product, product,
+            requested_product, &product,
             "session {session_id} request {request} evaluated a different product"
         );
-        let prior = session.evaluations.get(&product).cloned();
+        let prior = session.evaluations.get(&product);
+        let prior_evaluation = prior.map(|(position, _)| *position);
         let prior_waits = prior
-            .as_ref()
             .map(|(_, waits)| waits.iter().map(|wait| wait.wait.clone()).collect())
             .unwrap_or_default();
         let mut triggers = Vec::new();
-        if let Some((previous, waits)) = &prior {
+        if let Some((previous, waits)) = prior {
             for wait in waits {
                 match &wait.lookup {
                     WaitLookup::Product(dependency) => {
@@ -1601,7 +1602,7 @@ impl Replay {
                 });
             }
         }
-        let cause = evaluation_cause(prior.is_none(), &triggers);
+        let cause = evaluation_cause(prior_evaluation.is_none(), &triggers);
         let waits = event
             .metadata
             .get("outcome")
@@ -1630,7 +1631,7 @@ impl Replay {
         work.unexplained_evaluations += u64::from(cause == ProductEvaluationCause::Unexplained);
         self.report.product_evaluations.push(ProductEvaluationRecord {
             position,
-            prior_evaluation: prior.as_ref().map(|(position, _)| *position),
+            prior_evaluation,
             session: session_id,
             request,
             product,

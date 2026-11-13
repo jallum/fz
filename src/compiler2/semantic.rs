@@ -132,7 +132,9 @@ impl CallSiteSummary {
         self.return_ty.unwrap_or_else(|| types.none())
     }
 
-    fn replace_targets_join_returns(&mut self, types: &mut Types, mut observed: Self) {
+    /// Replaces this summary with `observed`, joining the returns of targets
+    /// both name, and reports whether the stored summary changed.
+    fn replace_targets_join_returns(&mut self, types: &mut Types, mut observed: Self) -> bool {
         observed.coalesce_targets(types);
         for observed_target in &mut observed.targets {
             if let Some(current_target) = self
@@ -155,7 +157,9 @@ impl CallSiteSummary {
             }
         }
         observed.return_ty = join_optional_ty(types, self.return_ty, observed.return_ty);
+        let changed = *self != observed;
         *self = observed;
+        changed
     }
 
     fn coalesce_targets(&mut self, types: &mut Types) {
@@ -1418,12 +1422,13 @@ where
             self.slots.insert(key.clone(), empty);
         }
         let slot = self.slots.get_mut(key).expect("slot was just ensured");
-        let old_joined = (!slot.contributors.is_empty()).then(|| slot.joined.clone());
+        let had_contributors = !slot.contributors.is_empty();
         match entry {
             SlotEntry::Upsert(value) if V::EXACT && join => {
+                let old_joined = had_contributors.then(|| slot.joined.clone());
                 slot.joined.join_assign(&value, ctx);
                 upsert_contribution(ctx, &mut slot.contributors, publisher, value, true);
-                return !old_joined.as_ref().is_some_and(|old| old.equivalent(&slot.joined, ctx));
+                return !old_joined.is_some_and(|old| old.equivalent(&slot.joined, ctx));
             }
             SlotEntry::Upsert(value) => upsert_contribution(ctx, &mut slot.contributors, publisher, value, join),
             SlotEntry::Withdraw => {
@@ -1440,7 +1445,7 @@ where
         // `Job` embeds an `ActivationKey` arrow, and two runs can number an
         // equal arrow differently.
         let joined = join_contributions(ctx, slot.contributors.iter().map(|(_, value)| value));
-        let moved = !old_joined.as_ref().is_some_and(|old| old.equivalent(&joined, ctx));
+        let moved = !(had_contributors && slot.joined.equivalent(&joined, ctx));
         if slot.contributors.is_empty() {
             self.slots.remove(key);
         } else if moved {
@@ -1494,9 +1499,7 @@ impl CallSiteMap {
         };
         summary.coalesce_targets(types);
         if let Some(CallSiteResolution::Resolved(current)) = self.slots.get_mut(&key) {
-            let before = current.clone();
-            current.replace_targets_join_returns(types, summary);
-            return before != *current;
+            return current.replace_targets_join_returns(types, summary);
         }
         self.slots.insert(key, CallSiteResolution::Resolved(summary));
         true
