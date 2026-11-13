@@ -22,8 +22,8 @@ use fz_runtime::ir_runtime::{
     fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_bs_begin, fz_bs_field_spec, fz_bs_finalize,
     fz_bs_read_field_ref, fz_bs_reader_done_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref, fz_fmod,
     fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
-    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_put_parts, fz_map_dest_put_ref, fz_map_get_atom_key_ref,
-    fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_matcher_map_get_ref,
+    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_dest_put_ref,
+    fz_map_get_atom_key_ref, fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_matcher_map_get_ref,
     fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref,
     fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref, fz_try_pop, fz_value_cmp_raw_const,
     fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
@@ -564,6 +564,11 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             }
             LowerOut::ValueRef(object.reference)
         }
+        Prim::DestMapPublish(map) => {
+            let map_bits = body.any_ref_for_var(var_env, map.0);
+            let process = body.process_arg();
+            LowerOut::ValueRef(runtime_call1!(body, fz_map_dest_publish, [process, map_bits]))
+        }
         Prim::DestMapFreeze(map) => {
             let map_bits = body.any_ref_for_var(var_env, map.0);
             let process = body.process_arg();
@@ -961,6 +966,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::DestMapBegin(..)
         | Prim::DestMapPut { .. }
         | Prim::DestMapFreeze(..)
+        | Prim::DestMapPublish(..)
         | Prim::StructWith { .. }
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)

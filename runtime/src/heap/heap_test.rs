@@ -2944,3 +2944,31 @@ fn a_struct_copy_holds_every_field_and_leaves_the_original_alone() {
     assert_eq!(h.read_field_slot(copy, 0), AnyValue::atom(3));
     assert_eq!(h.read_field_slot(original, 0), AnyValue::int(41));
 }
+
+/// A map literal whose keys the compiler has already put in key order needs
+/// no sort: publishing it in place leaves the same bytes a sorted build of
+/// the same entries does.
+#[test]
+fn a_destination_filled_in_key_order_publishes_the_bytes_a_sorted_one_does() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let [a, b, c] = ["a", "b", "c"].map(|name| AnyValue::atom(h.node.intern_atom(name)));
+    let list = heap_root(h.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST));
+    let entries = [(a, AnyValue::int(1)), (b, list), (c, AnyValue::float(2.5))];
+
+    let sorted = h.alloc_map_destination(3);
+    for (key, value) in [entries[2], entries[0], entries[1]] {
+        unsafe { h.map_destination_put(sorted, key, value) };
+    }
+    let sorted = h.map_destination_freeze(sorted).expect("a build publishes");
+
+    let ordered = h.alloc_map_destination(3);
+    for (key, value) in entries {
+        unsafe { h.map_destination_put(ordered, key, value) };
+    }
+    let ordered = h.map_destination_publish(ordered);
+
+    let bytes = |map: AnyValueRef| unsafe {
+        std::slice::from_raw_parts(map.map_addr().expect("map").cast_const(), map_size_for_count(3))
+    };
+    assert_eq!(bytes(ordered), bytes(sorted));
+}

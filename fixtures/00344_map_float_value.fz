@@ -1,5 +1,5 @@
 #---
-# purpose: a map with a float value allocates exactly one map object; whether the float is separately boxed is path-variant
+# purpose: a map with a float value allocates exactly one map object and no box for the float, on every path
 #---
 def main() do
   m = %{a: 3.14}

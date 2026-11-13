@@ -894,14 +894,19 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 value,
                 entries,
                 quoted_span,
-            } => self.step_or_omitted_when_absent(
-                *value,
-                BackendStep::Map {
-                    value: *value,
-                    entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
-                    quoted_span: *quoted_span,
-                },
-            ),
+            } => {
+                let in_key_order = quoted_span.is_none().then(|| entries_in_key_order(entries)).flatten();
+                self.step_or_omitted_when_absent(
+                    *value,
+                    BackendStep::Map {
+                        value: *value,
+                        in_key_order: in_key_order.is_some(),
+                        entries: in_key_order
+                            .unwrap_or_else(|| entries.iter().map(|(key, value)| (key.value, *value)).collect()),
+                        quoted_span: *quoted_span,
+                    },
+                )
+            }
             LoweredStep::MapUpdate {
                 value,
                 ok,
@@ -1201,6 +1206,20 @@ fn collect_executable_atoms(
             }
         }
     }
+}
+
+/// A map literal's entries in the runtime's key order with no key repeated,
+/// when every key is a literal atom. Atoms order by name, and of two entries
+/// with one key the later one in the source is the one the map holds.
+fn entries_in_key_order(entries: &[(LoweredMapKey, ValueId)]) -> Option<Vec<(ValueId, ValueId)>> {
+    let mut by_name = std::collections::BTreeMap::new();
+    for (key, value) in entries {
+        let GroundValue::Atom(name) = key.literal.as_ref()? else {
+            return None;
+        };
+        by_name.insert(name.as_str(), (key.value, *value));
+    }
+    Some(by_name.into_values().collect())
 }
 
 fn slot_of(fields: &[String], field: &str) -> Option<u32> {

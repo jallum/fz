@@ -1651,6 +1651,17 @@ pub extern "C" fn fz_map_dest_freeze(process: *mut Process, dest_ref_word: u64) 
         .raw_word()
 }
 
+/// Publish a map literal's destination whose entries compiled code put in
+/// key order with no key repeated.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_dest_publish(process: *mut Process, dest_ref_word: u64) -> u64 {
+    let dest_bits = destination_bits_from_ref_word(dest_ref_word, "fz_map_dest_publish dest");
+    (unsafe { &mut *process })
+        .heap
+        .map_destination_publish(dest_bits)
+        .raw_word()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_get_ref(process: *mut Process, map_ref_word: u64, key_ref_word: u64) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_get_ref map");

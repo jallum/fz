@@ -440,6 +440,18 @@ binary search; put/delete preserve order while copying the new sequence, and
 an absent deletion returns the original map with no allocation. GC and
 cross-heap transport preserve structural order without a sort.
 
+A map literal whose keys are all literal atoms is sorted by the compiler, not
+the runtime. Atoms order by name, so `entries_in_key_order`
+(`src/compiler2/jobs/backend.rs`) writes `BackendStep::Map`'s entries in key
+order, keeping the last entry written for a repeated key, and marks the step
+`in_key_order`. Every value is its own earlier step, so each is still
+evaluated, in source order. Such a literal fills its destination in order and
+ends in `Prim::DestMapPublish` (`Heap::map_destination_publish`), which
+publishes the entries where they stand; a debug build asserts the order. For
+example, `%{b: f(), a: g(), b: h()}` calls `f`, `g` and `h` in that order and
+puts `a` then `b`, with `h`'s value. A literal with any other key keeps its
+source order and ends in the freeze, which sorts.
+
 A single update copies the flat array, so repeated updates remain quadratic.
 Use bulk operations when touching several keys. Iteration follows strict fz
 term order, including atom names and binary content; Elixir's atom-key

@@ -3,15 +3,12 @@
 #---
 #
 # The allocation counts are part of the ordering contract. Comparing atom
-# names must not materialize fz strings. Native construction allocates the one
-# 64-byte source map; normalization reuses that destination without allocating.
-# That allocation is classified as Map, not Other; total allocation stays fixed.
+# names must not materialize fz strings. Construction allocates the one
+# 64-byte source map, written in key order, on every path. That allocation is
+# classified as Map, not Other; total allocation stays fixed: map `1/64`,
+# list cons `15/240`, struct `3/96`, scalar box `7/112`.
 #
-# - native: map `1/64`, list cons `15/240`, struct `3/96`, scalar box `7/112`;
-# - interpreter: map `3/144`, list cons `15/240`, struct `3/96`, scalar box
-#   `10/160`.
-#
-# Both have Other `0/0`; native total is `26/512`, interpreter total `31/640`.
+# Other is `0/0` and the total `41/880`.
 # Dynamic list heads use the same source-retention guard as statically known heads.
 # Each pair is `allocs/bytes`. The fixed atom-list input to
 # `Enum.sort/1` is deliberate: feeding it `Map.keys/1` would change merge-sort's
