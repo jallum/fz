@@ -1,0 +1,26 @@
+#---
+# purpose: "A user enumerable whose reduce wraps the reducer in a new closure on each lap compiles, and reducing a decoded map with it prints what Elixir prints"
+# kind: run
+# oracle: 01130_a_reducer_wrapped_in_a_new_closure_on_each_lap_compiles_and_reduces.oracle.exs
+#---
+defmodule W do
+  defstruct [:enum]
+end
+
+defimpl Enumerable, for: W do
+  def reduce(%W{enum: enum}, acc, reducer), do: Enumerable.reduce(enum, acc, fn e, a -> reducer.(e, a) end)
+  def reduce_while(%W{enum: enum}, acc, reducer), do: Enumerable.reduce_while(enum, acc, reducer)
+  def count(_w), do: {:error, :unsupported}
+  def member?(_w, _value), do: {:error, :unsupported}
+  def slice(_w), do: {:error, :unsupported}
+end
+
+defmodule P do
+  def main() do
+    %{"a" => v} = JSON.decode!("{\"a\": {\"b\": 1}}")
+    x = Enum.reduce(v, 0, fn _e, acc -> acc + 1 end)
+    y = Enum.reduce(v, %{}, fn e, acc -> Map.put(acc, :k, e) end)
+    IO.inspect({x, y})
+  end
+end
+P.main()

@@ -945,7 +945,10 @@ impl World {
             // built (fz-hwn.27.6, A): one shared addressing pass, so distinct
             // observed vars stay distinct and the evidence shares the key's
             // canonical form. Idempotent on already-addressed contributions.
-            let normalized = self.types.address_inputs(&inputs);
+            // A closure nested inside itself folds as it does in the key, so
+            // the rows under one key cannot grow a tower the key has cut.
+            let mut normalized = self.types.address_inputs(&inputs);
+            self.types.fold_self_nested_closures_in_inputs(&mut normalized);
             let normalized = if self
                 .body_keying(activation.function)
                 .is_some_and(|keying| keying.recursive)

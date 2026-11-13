@@ -371,7 +371,11 @@ finitely many lambdas and each appears at most once on any path from a key's
 root, so closure nesting in a key is bounded by the lambda count however deeply
 the running program nests. A stream over a stream over an `any` enumerable
 re-wraps its reducer once per lap; the key sees `L(R)`, then `L(fun)`, and
-stays there. Values keep their exact types; only keys fold. The fact is about
+stays there. The input evidence rows contributed under a key fold the same way
+(`World::normalize_contributions`, through the same
+`Types::fold_self_nested_closures_in_inputs` the key's fold calls), so the rows
+of one key never grow the tower the key has cut. Values keep their exact types;
+only keys and the evidence rows stored under them fold. The fact is about
 closures: a tuple names no builder, so a tuple ladder is not cut by it. Every
 widening that coarsens the stored value emits
 `fz.compiler2.return_type.widened`, so widening on a real program is a
