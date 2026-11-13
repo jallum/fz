@@ -182,16 +182,64 @@ pub struct Lexer<'a> {
     pending: VecDeque<Token>,
 }
 
+/// What a complete source word is: a keyword (or `_`), a capitalised name, or
+/// a lowercase name.
+pub(crate) enum SourceWord {
+    Keyword(Tok),
+    Upper,
+    Ident,
+}
+
+/// Classifies a source word. This is the one keyword table, used while lexing
+/// and when a quoted name is checked against source spelling.
+fn classify_source_word(name: &str) -> SourceWord {
+    match name {
+        "fn" => SourceWord::Keyword(Tok::Fn),
+        "extern" => SourceWord::Keyword(Tok::Extern),
+        "defmacro" => SourceWord::Keyword(Tok::Defmacro),
+        "defmodule" => SourceWord::Keyword(Tok::Defmodule),
+        "defstruct" => SourceWord::Keyword(Tok::Defstruct),
+        "defprotocol" => SourceWord::Keyword(Tok::Defprotocol),
+        "defimpl" => SourceWord::Keyword(Tok::Defimpl),
+        "alias" => SourceWord::Keyword(Tok::Alias),
+        "import" => SourceWord::Keyword(Tok::Import),
+        "require" => SourceWord::Keyword(Tok::Require),
+        "do" => SourceWord::Keyword(Tok::Do),
+        "end" => SourceWord::Keyword(Tok::End),
+        "else" => SourceWord::Keyword(Tok::Else),
+        "when" => SourceWord::Keyword(Tok::When),
+        "after" => SourceWord::Keyword(Tok::After),
+        "rescue" => SourceWord::Keyword(Tok::Rescue),
+        "catch" => SourceWord::Keyword(Tok::Catch),
+        "type" => SourceWord::Keyword(Tok::Type),
+        "in" => SourceWord::Keyword(Tok::In),
+        "not" => SourceWord::Keyword(Tok::Not),
+        "and" => SourceWord::Keyword(Tok::And),
+        "or" => SourceWord::Keyword(Tok::Or),
+        "true" => SourceWord::Keyword(Tok::True),
+        "false" => SourceWord::Keyword(Tok::False),
+        "nil" => SourceWord::Keyword(Tok::Nil),
+        "_" => SourceWord::Keyword(Tok::Underscore),
+        _ => {
+            if name.as_bytes()[0].is_ascii_uppercase() {
+                SourceWord::Upper
+            } else {
+                SourceWord::Ident
+            }
+        }
+    }
+}
+
 /// Classifies a complete source word through the same spelling and keyword
 /// authority used while lexing. `None` means source text cannot produce one
 /// word token with this spelling.
-pub(crate) fn source_word_token(name: &str) -> Option<Tok> {
+pub(crate) fn source_word(name: &str) -> Option<SourceWord> {
     let mut bytes = name.bytes();
     let first = bytes.next()?;
     if !Lexer::<'static>::ident_start(first) || !bytes.all(Lexer::<'static>::ident_cont) {
         return None;
     }
-    Some(Lexer::<'static>::keyword_or_ident(name.to_string()))
+    Some(classify_source_word(name))
 }
 
 #[derive(Debug)]
@@ -704,41 +752,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn keyword_or_ident(name: String) -> Tok {
-        match name.as_str() {
-            "fn" => Tok::Fn,
-            "extern" => Tok::Extern,
-            "defmacro" => Tok::Defmacro,
-            "defmodule" => Tok::Defmodule,
-            "defstruct" => Tok::Defstruct,
-            "defprotocol" => Tok::Defprotocol,
-            "defimpl" => Tok::Defimpl,
-            "alias" => Tok::Alias,
-            "import" => Tok::Import,
-            "require" => Tok::Require,
-            "do" => Tok::Do,
-            "end" => Tok::End,
-            "else" => Tok::Else,
-            "when" => Tok::When,
-            "after" => Tok::After,
-            "rescue" => Tok::Rescue,
-            "catch" => Tok::Catch,
-            "type" => Tok::Type,
-            "in" => Tok::In,
-            "not" => Tok::Not,
-            "and" => Tok::And,
-            "or" => Tok::Or,
-            "true" => Tok::True,
-            "false" => Tok::False,
-            "nil" => Tok::Nil,
-            "_" => Tok::Underscore,
-            _ => {
-                let first = name.as_bytes()[0];
-                if first.is_ascii_uppercase() {
-                    Tok::Upper(name)
-                } else {
-                    Tok::Ident(name)
-                }
-            }
+        match classify_source_word(&name) {
+            SourceWord::Keyword(keyword) => keyword,
+            SourceWord::Upper => Tok::Upper(name),
+            SourceWord::Ident => Tok::Ident(name),
         }
     }
 

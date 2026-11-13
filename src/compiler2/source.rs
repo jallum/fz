@@ -400,7 +400,21 @@ impl QuotedSourceBuilder {
         var: &crate::ast::Var,
         meta: &QuotedSourceMetadata,
     ) -> Result<AnyValueRef, QuotedSourceError> {
-        let (tail, ordinal) = match var.context {
+        self.variable_named(&var.name, var.context, meta)
+    }
+
+    /// A user-written variable named `name`, without building a `Var` for it.
+    pub fn user_variable(&self, name: &str, meta: &QuotedSourceMetadata) -> Result<AnyValueRef, QuotedSourceError> {
+        self.variable_named(name, crate::ast::VarContext::User, meta)
+    }
+
+    fn variable_named(
+        &self,
+        name: &str,
+        context: crate::ast::VarContext,
+        meta: &QuotedSourceMetadata,
+    ) -> Result<AnyValueRef, QuotedSourceError> {
+        let (tail, ordinal) = match context {
             crate::ast::VarContext::User => (self.nil(), None),
             crate::ast::VarContext::Generated(ordinal) => (self.atom("generated"), Some(ordinal)),
             crate::ast::VarContext::Macro(function, ordinal) => (self.int(i64::from(function.as_u32())), Some(ordinal)),
@@ -409,7 +423,7 @@ impl QuotedSourceBuilder {
             hygiene_ordinal: ordinal,
             ..meta.clone()
         };
-        self.ast_node(self.atom(&var.name), &meta, tail)
+        self.ast_node(self.atom(name), &meta, tail)
     }
 
     pub fn call(

@@ -48,7 +48,7 @@ pub(crate) fn source_heads(root: &QuotedSourceRoot, sources: &SourceMap) -> Resu
     let mut first_form = true;
     for item in root.cursor().list_items()? {
         let node = expect_ast_node(&item, "grouped function item", sources)?;
-        let head = atom_name(&node.head)?;
+        let head = node.head.atom_name()?;
         if head == "@spec" {
             heads.declares_spec = true;
         } else if !head.starts_with('@') && first_form {
@@ -69,7 +69,7 @@ pub(crate) fn derive_function_surface(
     let mut forms = Vec::new();
     for item in root.cursor().list_items()? {
         let node = expect_ast_node(&item, "grouped function item", sources)?;
-        let head = atom_name(&node.head)?;
+        let head = node.head.atom_name()?;
         if head.starts_with('@') {
             attr_spans.push(node.span.unwrap_or(Span::DUMMY));
             attrs.push(decode_attribute(&item, sources)?);
@@ -83,7 +83,7 @@ pub(crate) fn derive_function_surface(
     }
 
     let first = expect_ast_node(&forms[0], "function form", sources)?;
-    let form_head = atom_name(&first.head)?;
+    let form_head = first.head.atom_name()?;
     if form_head == "extern" {
         if forms.len() != 1 {
             return Err(QuotedSourceError::new(
@@ -101,7 +101,7 @@ pub(crate) fn derive_function_surface(
 
     for form in forms {
         let node = expect_ast_node(&form, "function clause", sources)?;
-        let head_name = atom_name(&node.head)?;
+        let head_name = node.head.atom_name()?;
         if head_name != form_head {
             return Err(QuotedSourceError::new(format!(
                 "grouped quoted function mixes `{form_head}` and `{head_name}`"
@@ -167,7 +167,7 @@ pub(crate) fn derive_function_surface(
 
 fn decode_attribute(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Attribute, QuotedSourceError> {
     let node = expect_ast_node(cursor, "function attribute", sources)?;
-    let head = atom_name(&node.head)?;
+    let head = node.head.atom_name()?;
     let args = node.tail.list_items()?;
     let Some(value) = args.first() else {
         return Err(QuotedSourceError::new(format!(
@@ -273,7 +273,7 @@ fn decode_function_head(
 ) -> Result<DecodedFnHead, QuotedSourceError> {
     let node = expect_ast_node(cursor, "function head", sources)?;
     let span = node.span.unwrap_or(Span::DUMMY);
-    if atom_name(&node.head)? == "when" {
+    if node.head.atom_name()? == "when" {
         let parts = node.tail.list_items()?;
         if parts.len() != 2 {
             return Err(QuotedSourceError::new(
@@ -285,7 +285,7 @@ fn decode_function_head(
         return Ok((name, params, annotations, name_span, Some(guard)));
     }
 
-    let name = atom_name(&node.head)?;
+    let name = node.head.atom_name()?;
     let mut params = Vec::new();
     let mut annotations = Vec::new();
     for arg in function_head_args(&node.tail)? {
@@ -303,7 +303,7 @@ fn decode_function_head(
         params.push(decode_pattern(&arg, Some(span), sources)?);
         annotations.push(None);
     }
-    Ok((name, params, annotations, span, None))
+    Ok((name.to_string(), params, annotations, span, None))
 }
 
 fn decode_do_body(
@@ -344,7 +344,7 @@ fn decode_expr(
         }
         if !node.tail.is_list_like() {
             let var = Var {
-                name: atom_name(&node.head)?,
+                name: node.head.atom_name()?.to_string(),
                 context: decode_var_context(&node)?,
             };
             return Ok(Spanned::new(Expr::Var(var), span));
@@ -353,7 +353,7 @@ fn decode_expr(
         let args = node.tail.list_items()?;
         if node.head.root().tag() != fz_runtime::any_value::ValueKind::ATOM {
             if let Some(head_node) = node.head.ast_node(sources)?
-                && atom_name(&head_node.head)? == "."
+                && head_node.head.atom_name()? == "."
             {
                 let callee_parts = head_node.tail.list_items()?;
                 if callee_parts.len() == 1 {
@@ -381,7 +381,7 @@ fn decode_expr(
 
         return decode_named_expr(
             occurrences,
-            atom_name(&node.head)?,
+            node.head.atom_name()?.to_string(),
             node.meta.bound_callable()?,
             &args,
             span,
@@ -546,13 +546,13 @@ pub(super) fn decode_pattern(
     if let Some(node) = cursor.ast_node(sources)? {
         let span = node.span.unwrap_or(Span::DUMMY);
         if !node.tail.is_list_like() {
-            let name = atom_name(&node.head)?;
+            let name = node.head.atom_name()?;
             return Ok(Spanned::new(
                 if name == "_" {
                     Pattern::Wildcard
                 } else {
                     Pattern::Var(Var {
-                        name,
+                        name: name.to_string(),
                         context: decode_var_context(&node)?,
                     })
                 },
@@ -564,7 +564,7 @@ pub(super) fn decode_pattern(
             return decode_concat_pattern(&concat, span, sources);
         }
         refuse_concat_call(&node, span, sources)?;
-        return match atom_name(&node.head)?.as_str() {
+        return match node.head.atom_name()?.as_str() {
             "=" => {
                 let left = decode_pattern(&args[0], Some(span), sources)?;
                 let right = decode_pattern(&args[1], Some(span), sources)?;
@@ -698,7 +698,7 @@ fn decode_clause_list_or_empty_block(
     sources: &SourceMap,
 ) -> Result<Vec<MatchClause>, QuotedSourceError> {
     if let Some(node) = body.ast_node(sources)?
-        && atom_name(&node.head)? == "__block__"
+        && node.head.atom_name()? == "__block__"
     {
         if node.tail.list_items()?.is_empty() {
             return Ok(Vec::new());
@@ -726,7 +726,7 @@ fn decode_cond(
     let mut clauses = Vec::new();
     for clause in body.list_items()? {
         let node = expect_ast_node(&clause, "cond clause", sources)?;
-        if atom_name(&node.head)? != "->" {
+        if node.head.atom_name()? != "->" {
             return Err(QuotedSourceError::new("quoted `cond` body expects `->` clauses"));
         }
         let parts = node.tail.list_items()?;
@@ -1291,7 +1291,7 @@ fn decode_struct_expr(
 ) -> Result<Spanned<Expr>, QuotedSourceError> {
     let module = decode_module_target(&args[0], sources)?;
     let map = expect_ast_node(&args[1], "struct map payload", sources)?;
-    if atom_name(&map.head)? != "%{}" {
+    if map.head.atom_name()? != "%{}" {
         return Err(QuotedSourceError::new("quoted struct payload must be a `%{}` node"));
     }
     let mut fields = Vec::new();
@@ -1343,7 +1343,7 @@ fn decode_fn_ref_expr(
     sources: &SourceMap,
 ) -> Result<Spanned<Expr>, QuotedSourceError> {
     let node = expect_ast_node(cursor, "function reference payload", sources)?;
-    if atom_name(&node.head)? != "/" {
+    if node.head.atom_name()? != "/" {
         return Err(QuotedSourceError::new("quoted `&` expects a `/` target"));
     }
     let parts = node.tail.list_items()?;
@@ -1366,7 +1366,7 @@ fn decode_match_clause(
 ) -> Result<MatchClause, QuotedSourceError> {
     let node = expect_ast_node(cursor, "match clause", sources)?;
     let span = node.span.unwrap_or(Span::DUMMY);
-    if atom_name(&node.head)? != "->" {
+    if node.head.atom_name()? != "->" {
         return Err(QuotedSourceError::new("quoted clause expects a `->` head"));
     }
     let parts = node.tail.list_items()?;
@@ -1408,7 +1408,7 @@ fn decode_after_clause(
 ) -> Result<AfterClause, QuotedSourceError> {
     let node = expect_ast_node(cursor, "after clause", sources)?;
     let span = node.span.unwrap_or(Span::DUMMY);
-    if atom_name(&node.head)? != "->" {
+    if node.head.atom_name()? != "->" {
         return Err(QuotedSourceError::new("quoted `after` clause expects `->`"));
     }
     let parts = node.tail.list_items()?;
@@ -1435,7 +1435,7 @@ fn decode_lambda_clause(
 ) -> Result<LambdaClause, QuotedSourceError> {
     let node = expect_ast_node(cursor, "lambda clause", sources)?;
     let span = node.span.unwrap_or(Span::DUMMY);
-    if atom_name(&node.head)? != "->" {
+    if node.head.atom_name()? != "->" {
         return Err(QuotedSourceError::new("quoted lambda clause expects `->`"));
     }
     let parts = node.tail.list_items()?;
@@ -1502,7 +1502,7 @@ fn decode_struct_pattern(
 ) -> Result<Spanned<Pattern>, QuotedSourceError> {
     let module = decode_module_target(&args[0], sources)?;
     let map = expect_ast_node(&args[1], "struct pattern payload", sources)?;
-    if atom_name(&map.head)? != "%{}" {
+    if map.head.atom_name()? != "%{}" {
         return Err(QuotedSourceError::new("quoted struct pattern payload must be `%{}`"));
     }
     let mut fields = Vec::new();
@@ -1776,7 +1776,7 @@ fn quoted_do_entry(cursor: &QuotedSourceCursor) -> Option<QuotedSourceCursor> {
 /// clause list is already there.
 fn quoted_clause_list_shaped(cursor: &QuotedSourceCursor, sources: &SourceMap) -> bool {
     cursor.is_list_like()
-        || matches!(cursor.ast_node(sources), Ok(Some(node)) if atom_name(&node.head).is_ok_and(|name| name == "__block__"))
+        || matches!(cursor.ast_node(sources), Ok(Some(node)) if node.head.atom_name().is_ok_and(|name| name == "__block__"))
 }
 
 fn decode_module_target(
@@ -1790,7 +1790,7 @@ fn decode_module_target(
         }
         return Ok(crate::ast::ModuleTarget::Exact(module));
     }
-    if atom_name(&node.head)? != "__aliases__" {
+    if node.head.atom_name()? != "__aliases__" {
         return Err(QuotedSourceError::new("quoted module path expects an __aliases__ node"));
     }
     Ok(crate::ast::ModuleTarget::Unresolved(ModuleName::from_segments(
@@ -1979,7 +1979,7 @@ fn apply_bit_spec_modifier(
         } else {
             Vec::new()
         };
-        return match atom_name(&node.head)?.as_str() {
+        return match node.head.atom_name()?.as_str() {
             "-" if args.len() == 2 => {
                 apply_bit_spec_modifier(&args[0], spec, field_span, sources)?;
                 apply_bit_spec_modifier(&args[1], spec, field_span, sources)
@@ -2060,7 +2060,7 @@ fn decode_bit_size(
         && !node.tail.is_list_like()
     {
         return Ok(BitSize::Var(Var {
-            name: atom_name(&node.head)?,
+            name: node.head.atom_name()?.to_string(),
             context: decode_var_context(&node)?,
         }));
     }
@@ -2381,10 +2381,6 @@ fn expect_ast_node(
         .ok_or_else(|| QuotedSourceError::new(format!("expected quoted AST node for {context}")))
 }
 
-fn atom_name(cursor: &QuotedSourceCursor) -> Result<String, QuotedSourceError> {
-    cursor.atom_name().map(|name| name.to_string())
-}
-
 /// A `Var`-shaped node's tail carries its hygiene context, exactly as
 /// [`super::source::QuotedSourceBuilder::variable`] wrote it: `nil` for a
 /// variable the user wrote, the quoting macro's coordinate for one it
@@ -2432,7 +2428,7 @@ fn node_head_is_atom_named(node: &QuotedAstNode, name: &str) -> Result<bool, Quo
     if node.head.root().tag() != fz_runtime::any_value::ValueKind::ATOM {
         return Ok(false);
     }
-    Ok(atom_name(&node.head)? == name)
+    Ok(node.head.atom_name()? == name)
 }
 
 fn alias_from_args(args: &[QuotedSourceCursor]) -> Result<ModuleName, QuotedSourceError> {
