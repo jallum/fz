@@ -630,7 +630,7 @@ fn an_atom_may_start_with_a_non_ascii_uppercase_letter() {
     );
 }
 
-/// A titlecase letter cannot start an atom, which Elixir rejects as well.
+/// The titlecase letter U+01C5 is restricted by UTS 39, so it cannot start an atom.
 #[test]
 fn an_atom_cannot_start_with_a_titlecase_letter() {
     let error = lex_kinds(":ǅa").unwrap_err();
@@ -650,7 +650,7 @@ fn a_non_ascii_uppercase_letter_cannot_start_a_variable() {
     assert_eq!(error.msg, "unexpected character 'É'");
 }
 
-/// A titlecase letter cannot start a variable either.
+/// A restricted titlecase letter cannot start a variable either.
 #[test]
 fn a_titlecase_letter_cannot_start_a_variable() {
     let error = lex_kinds("ǅa").unwrap_err();
@@ -1182,4 +1182,118 @@ fn source_word_accepts_a_mark_only_at_the_end() {
     assert!(source_word("a?b").is_none());
     assert!(source_word("a??").is_none());
     assert!(source_word("Ab?").is_none());
+}
+
+/// Elixir builds its name characters from general categories and drops every
+/// character UTS 39 does not allow in identifiers, so the ligature U+FB01, the
+/// ordinal indicator U+00AA and Bopomofo U+3105 are not name characters although
+/// they are `XID_Start` or `XID_Continue`.
+#[test]
+fn a_character_uts39_restricts_cannot_start_a_name() {
+    for restricted in ["\u{fb01}", "\u{aa}", "\u{3105}", "\u{115}"] {
+        assert!(lex_kinds(restricted).is_err(), "{restricted:?} starts a variable");
+        assert!(
+            lex_kinds(&format!(":{restricted}")).is_err(),
+            "{restricted:?} starts an atom"
+        );
+        assert!(
+            lex_kinds(&format!("[{restricted}: 1]")).is_err(),
+            "{restricted:?} starts a key"
+        );
+    }
+}
+
+/// A restricted character does not continue a name either.
+#[test]
+fn a_character_uts39_restricts_cannot_continue_a_name() {
+    for restricted in ["\u{fb01}", "\u{aa}", "\u{3105}", "\u{115}"] {
+        assert!(
+            lex_kinds(&format!("a{restricted}")).is_err(),
+            "{restricted:?} continues a name"
+        );
+        assert!(
+            lex_kinds(&format!("_{restricted}")).is_err(),
+            "{restricted:?} continues `_`"
+        );
+    }
+}
+
+/// An allowed character outside ASCII still starts and continues a name.
+#[test]
+fn an_allowed_character_outside_ascii_still_starts_and_continues_a_name() {
+    assert_eq!(
+        lex_kinds("\u{e9}a_\u{e9}").unwrap(),
+        vec![Tok::Ident("\u{e9}a_\u{e9}".to_string()), Tok::Eof]
+    );
+}
+
+/// Elixir folds the micro sign U+00B5 to Greek small mu U+03BC wherever it
+/// appears in a name, so both spellings are one variable, atom and keyword key.
+#[test]
+fn the_micro_sign_is_folded_to_greek_small_mu() {
+    assert_eq!(
+        lex_kinds("\u{b5} x\u{b5}y \u{3bc}").unwrap(),
+        vec![
+            Tok::Ident("\u{3bc}".to_string()),
+            Tok::Ident("x\u{3bc}y".to_string()),
+            Tok::Ident("\u{3bc}".to_string()),
+            Tok::Eof
+        ]
+    );
+    assert_eq!(lex_kinds(":\u{b5}").unwrap()[0], Tok::Atom("\u{3bc}".to_string()));
+    assert_eq!(lex_kinds("[\u{b5}: 1]").unwrap()[1], Tok::KwKey("\u{3bc}".to_string()));
+}
+
+/// A folded micro sign takes Greek small mu's place in the script check, so it
+/// mixes with Latin letters as the Greek letter does.
+#[test]
+fn a_folded_micro_sign_mixes_with_latin_letters() {
+    assert_eq!(
+        lex_kinds("x\u{b5}").unwrap(),
+        vec![Tok::Ident("x\u{3bc}".to_string()), Tok::Eof]
+    );
+}
+
+/// A word spelled with the micro sign is never produced by the lexer, so a
+/// quoted name holding one is not a source word.
+#[test]
+fn source_word_rejects_the_micro_sign() {
+    assert!(source_word("x\u{b5}").is_none());
+    assert!(matches!(source_word("x\u{3bc}"), Some(SourceWord::Ident)));
+}
+
+/// The titlecase letters UTS 39 allows, U+1FA8 to U+1FAF, start an atom or a
+/// keyword key as uppercase letters do, and cannot start a variable.
+#[test]
+fn an_allowed_titlecase_letter_starts_an_atom_and_a_key_but_not_a_variable() {
+    assert_eq!(lex_kinds(":\u{1fa8}").unwrap()[0], Tok::Atom("\u{1fa8}".to_string()));
+    assert_eq!(
+        lex_kinds("[\u{1fa8}: 1]").unwrap()[1],
+        Tok::KwKey("\u{1fa8}".to_string())
+    );
+    assert_eq!(
+        lex_kinds("\u{1fa8}").unwrap_err().msg,
+        "unexpected character '\u{1fa8}'"
+    );
+}
+
+/// A name that NFC composes into a restricted character is accepted, as in
+/// Elixir 1.19: `e` and a combining breve become U+0115.
+#[test]
+fn a_name_may_compose_into_a_restricted_character() {
+    assert_eq!(
+        lex_kinds("e\u{306}").unwrap(),
+        vec![Tok::Ident("\u{115}".to_string()), Tok::Eof]
+    );
+}
+
+/// A word is an alias when its first source character is an ASCII capital, even
+/// if NFC composes it into a character outside ASCII, so Elixir's alias error
+/// names the composed character.
+#[test]
+fn a_capital_that_composes_outside_ascii_is_an_alias() {
+    assert_eq!(
+        lex_kinds("E\u{301}").unwrap_err().msg,
+        "invalid character '\u{c9}' (code point U+00C9) in alias (only ASCII characters are allowed): \u{c9}"
+    );
 }

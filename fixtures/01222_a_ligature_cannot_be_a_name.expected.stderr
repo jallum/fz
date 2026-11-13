@@ -1,0 +1,7 @@
+error[parse/expected-token]: unexpected character 'ﬁ'
+  --> fixtures/01222_a_ligature_cannot_be_a_name.fz:1:1
+   |
+1 | ﬁ = 1
+   | ^
+   |
+

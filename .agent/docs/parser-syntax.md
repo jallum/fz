@@ -37,19 +37,30 @@ top-level expressions are its `main/0`".
 ## Identifiers and atoms are read by Unicode class
 
 The lexer reads characters, not bytes, for names. A name, atom or keyword key
-starts with `_`, an ASCII letter, or a non-ASCII `XID_Start` character that is
-not titlecase, and continues with `XID_Continue` characters (`unicode-ident`).
+starts with `_`, an ASCII letter, or a non-ASCII `XID_Start` character, and
+continues with `XID_Continue` characters (`unicode-ident`). A non-ASCII
+character is a name character only when UTS 39 allows it in identifiers
+(`unicode-security`, identifier status Inclusion or Recommended), which is how
+Elixir builds its set: the ligature U+FB01, the ordinal indicator U+00AA,
+Bopomofo U+3105 and U+0115 are `XID_Start` or `XID_Continue` and are not name
+characters (`unexpected character`). The micro sign U+00B5 is a name character
+that `read_ident` folds into Greek small mu U+03BC before the NFC and script
+checks, so `µ` and `μ` are one variable, atom and keyword key; `source_word`
+rejects a name holding U+00B5.
+
 A name takes one `?` or `!` as its last character and ends there: `a?b` is the
 name `a?` followed by the name `b`, `a??` is `a?` followed by a `?` that quotes
 nothing, and `:a?b` is the atom `:a?` followed by `b`. A variable or function
-name cannot start with an uppercase letter outside ASCII (`unexpected
-character`); an atom (`:Élan`) or keyword key (`Élan: 1`) can. An alias, a word
-starting with an ASCII uppercase letter, holds ASCII letters, digits and
-underscores only: its first other character, a non-ASCII character or a `?` or
-`!` mark, is reported as `invalid character`. An atom or keyword key spelled
-like an alias may end in a mark (`:Ab?`, `[Ab?: 1]`).
-`source_word` applies the same classes to a quoted name, so the macro surface
-and the lexer agree on what one source word is.
+name cannot start with an uppercase or titlecase letter outside ASCII
+(`unexpected character`); an atom (`:Élan`) or keyword key (`Élan: 1`) can, and
+so can the allowed titlecase letters U+1FA8 to U+1FAF. Whether a word is an
+alias is decided by its first character as written: an ASCII uppercase letter
+starts an alias even when NFC composes it into a non-ASCII letter. An alias
+holds ASCII letters, digits and underscores only: its first other character, a
+non-ASCII character or a `?` or `!` mark, is reported as `invalid character`.
+An atom or keyword key spelled like an alias may end in a mark (`:Ab?`,
+`[Ab?: 1]`). `source_word` applies the same classes to a quoted name, so the
+macro surface and the lexer agree on what one source word is.
 
 Unquoted names, atoms and keyword keys are spelled in NFC
 (`unicode-normalization`), so `cafe` plus U+0301 and the single character `é`
@@ -66,8 +77,9 @@ sets (`unicode-security`): Han, Hiragana and Katakana together are Japanese,
 Han and Hangul together are Korean, and ASCII digits and `_` belong to every
 script, while a non-ASCII digit belongs to its own script. Greek small mu
 (`μ`) belongs to every script, and so does a character that UTS 39 restricts
-from identifiers when NFC composition produces one. Quoted atoms and strings
-are not checked. `read_ident` and `source_word` share `is_single_script`.
+from identifiers when NFC composition produces one; Elixir 1.19 accepts such
+a composed name (`e` plus U+0306 is `ĕ`, U+0115). Quoted atoms and strings are
+not checked. `read_ident` and `source_word` share `is_single_script`.
 
 ## Newline continuation is grammar-owned, not a parser lookahead
 

@@ -1,0 +1,7 @@
+#---
+# purpose: a name may not be the ligature U+FB01, which Unicode restricts from identifiers although it is XID_Start
+# expect: diagnostic
+#---
+ﬁ = 1
+
+def main(), do: 1

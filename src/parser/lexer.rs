@@ -240,7 +240,12 @@ fn classify_source_word(name: &str) -> SourceWord {
 /// word token with this spelling.
 pub(crate) fn source_word(name: &str) -> Option<SourceWord> {
     let mut chars = name.strip_suffix(is_name_mark).unwrap_or(name).chars();
-    if !is_variable_start(chars.next()?) || !chars.all(is_word_continue) || !is_nfc(name) || !is_single_script(name) {
+    if !is_variable_start(chars.next()?)
+        || !chars.all(is_word_continue)
+        || !is_nfc(name)
+        || name.contains(MICRO_SIGN)
+        || !is_single_script(name)
+    {
         return None;
     }
     let word = classify_source_word(name);
@@ -250,25 +255,40 @@ pub(crate) fn source_word(name: &str) -> Option<SourceWord> {
     Some(word)
 }
 
+const MICRO_SIGN: char = '\u{b5}';
+const GREEK_SMALL_MU: char = '\u{3bc}';
+
+/// Elixir folds the micro sign into Greek small mu in every name.
+fn fold_micro_sign(c: char) -> char {
+    if c == MICRO_SIGN { GREEK_SMALL_MU } else { c }
+}
+
+/// A character outside ASCII Elixir lets into a name must be one UTS 39 allows
+/// in identifiers, or the micro sign, which is folded before it is checked.
+fn is_allowed_outside_ascii(c: char) -> bool {
+    c == MICRO_SIGN || c.identifier_allowed()
+}
+
 /// A name, atom or keyword key starts with an underscore, an ASCII letter, or
-/// a non-ASCII `XID_Start` character that is not titlecase.
+/// an allowed non-ASCII `XID_Start` character.
 fn is_name_start(c: char) -> bool {
     if c.is_ascii() {
         c.is_ascii_alphabetic() || c == '_'
     } else {
-        unicode_ident::is_xid_start(c) && !is_titlecase(c)
+        unicode_ident::is_xid_start(c) && is_allowed_outside_ascii(c)
     }
 }
 
-/// A variable or function name additionally cannot start with an uppercase
-/// letter outside ASCII; only atoms and keyword keys may.
+/// A variable or function name additionally cannot start with an uppercase or
+/// titlecase letter outside ASCII; only atoms and keyword keys may.
 fn is_variable_start(c: char) -> bool {
-    is_name_start(c) && (c.is_ascii() || !c.is_uppercase())
+    is_name_start(c) && (c.is_ascii() || !is_uppercase_or_titlecase(c))
 }
 
-/// A titlecase letter is not uppercase but has a different lowercase form.
-fn is_titlecase(c: char) -> bool {
-    !c.is_uppercase() && c.to_lowercase().next() != Some(c)
+/// An uppercase letter, or a titlecase letter, which is not uppercase but has a
+/// different lowercase form.
+fn is_uppercase_or_titlecase(c: char) -> bool {
+    c.is_uppercase() || c.to_lowercase().next() != Some(c)
 }
 
 /// The `?` or `!` that may end a name and nothing else in it.
@@ -276,12 +296,13 @@ fn is_name_mark(c: char) -> bool {
     matches!(c, '?' | '!')
 }
 
-/// Every character after the first and before the optional final mark: `XID_Continue`.
+/// Every character after the first and before the optional final mark: an
+/// allowed `XID_Continue` character.
 fn is_word_continue(c: char) -> bool {
     if c.is_ascii() {
         c.is_ascii_alphanumeric() || c == '_'
     } else {
-        unicode_ident::is_xid_continue(c)
+        unicode_ident::is_xid_continue(c) && is_allowed_outside_ascii(c)
     }
 }
 
@@ -308,7 +329,6 @@ fn resolved_script_set(chunk: &str) -> AugmentedScriptSet {
 /// restricts from identifiers can only reach a name by NFC composition, and
 /// Elixir gives such a composed character no script either.
 fn constrains_script(c: char) -> bool {
-    const GREEK_SMALL_MU: char = '\u{3bc}';
     c.is_ascii() || (c != GREEK_SMALL_MU && c.identifier_allowed())
 }
 
@@ -411,8 +431,9 @@ impl<'a> Lexer<'a> {
     }
 
     /// The name at the cursor in its NFC spelling, which is how Elixir spells
-    /// every unquoted name. The name ends after its first `?` or `!`. Spans
-    /// keep the source text as written. A name mixing scripts is rejected.
+    /// every unquoted name, with the micro sign folded into Greek small mu. The
+    /// name ends after its first `?` or `!`. Spans keep the source text as
+    /// written. A name mixing scripts is rejected.
     fn read_ident(&mut self) -> Result<String, LexError> {
         let start = self.pos;
         let first = self
@@ -425,7 +446,7 @@ impl<'a> Lexer<'a> {
         if self.char_at(self.pos).is_some_and(is_name_mark) {
             self.pos += 1;
         }
-        let name: String = self.text[start..self.pos].nfc().collect();
+        let name: String = self.text[start..self.pos].chars().map(fold_micro_sign).nfc().collect();
         if !is_single_script(&name) {
             return Err(LexError {
                 msg: format!("invalid mixed-script identifier found: {name}"),
@@ -436,14 +457,19 @@ impl<'a> Lexer<'a> {
     }
 
     /// A word that is not a keyword-list key: a keyword, variable, function
-    /// name or alias. Only atoms and keys may start with a non-ASCII uppercase
-    /// letter, and aliases are ASCII letters, digits and underscores only.
+    /// name or alias. The first character as written decides which: only atoms
+    /// and keys may start with a non-ASCII uppercase letter, and aliases are
+    /// ASCII letters, digits and underscores only.
     fn bare_word_token(&mut self, name: String, start: usize) -> Result<Tok, LexError> {
-        let first = name.chars().next().expect("a word has a first character");
+        let first = self.char_at(start).expect("a word starts at a character");
         if !is_variable_start(first) {
             return Err(self.unexpected_character(start));
         }
-        let tok = Self::keyword_or_ident(name);
+        let tok = if first.is_ascii_uppercase() {
+            Tok::Upper(name)
+        } else {
+            Self::keyword_or_ident(name)
+        };
         if let Tok::Upper(alias) = &tok {
             self.reject_invalid_alias(alias, start)?;
         }

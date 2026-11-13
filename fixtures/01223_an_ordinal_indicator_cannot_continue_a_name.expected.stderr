@@ -1,0 +1,7 @@
+error[parse/expected-token]: unexpected character 'ª'
+  --> fixtures/01223_an_ordinal_indicator_cannot_continue_a_name.fz:1:2
+   |
+1 | aª = 1
+   |  ^
+   |
+

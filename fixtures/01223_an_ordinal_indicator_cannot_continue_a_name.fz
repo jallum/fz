@@ -1,0 +1,7 @@
+#---
+# purpose: a name may not contain the ordinal indicator U+00AA, which Unicode restricts from identifiers although it is XID_Continue
+# expect: diagnostic
+#---
+aª = 1
+
+def main(), do: 1
