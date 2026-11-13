@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T16:54:17Z",
+  "description": "Why: an activation's key folds a closure nested inside itself to fun (Types::fold_self_nested_closures), but the input evidence rows contributed under that key are not folded. Under one key the rows then grow as a tower of ever-deeper closures. A reducer wrapped in a closure on each lap (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/k127b/../k127/p2/w2.fz) never finishes compiling: over 600 s CPU on develop b0c459d12. One question (what is this input, with self-nesting folded) is answered by two rules.\n\nWhat: World::normalize_contributions (src/compiler2/world.rs ~945) runs each contributed input through the same fold the key uses, before address_inputs. Spike: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/k127b/spike_r1.diff, five lines, no second implementation of the fold.\n\nMeasured (report /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/k127b/report.md Part 2), on fz-sc8.150's commit 347dca983: w2.fz terminates in 0.2 s, 3,197 jobs, matches elixir on interp and run. The five OptionParser probes are identical in keys, jobs, interp/run output and canonical backend dump. Lib tests 2184 passed, 0 failed. The distiller's root session needs 63,457 product requests with and without it. Without fz-sc8.150 one pin moves toward less work (drive_test compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite 42 -\u003e 36) and the k = 8 series stops at the product budget, so this lands after fz-sc8.150.\n\nNot fixed by this: the wrong spec/violation on the user-written wrapper (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/k127b/../k127/p2/w.fz), which is fz-sc8.127; the row budget still fires where rows differ in atom literals or distinct wrapper closures.\n\nAcceptance: fixture from w2.fz (red on base: does not finish; green: matches elixir on interp, run and build); identity on the five probes; no pin rises; fixture matrix green.",
+  "id": "fz-sc8.151",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "An activation's evidence rows fold nested closures the way its key does",
+  "type": "bug",
+  "updated_at": "2026-11-13T16:54:17Z"
+}
