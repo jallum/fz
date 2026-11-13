@@ -1,0 +1,55 @@
+#---
+# purpose: "defoverridable marks a function a later definition may replace: with no later definition the first stands; with one the later stands, for callers written before it too; a defp may replace a def; a default a macro defines is replaced by the module that calls the macro"
+# oracle: 00872_a_definition_marked_overridable_is_replaced_by_a_later_one.oracle.exs
+#---
+defmodule Defaults do
+  defmacro defaults() do
+    [
+      quote do
+        def message(_e), do: "default"
+      end,
+      quote do
+        defoverridable message: 1
+      end
+    ]
+  end
+end
+
+defmodule Stands do
+  def g(x), do: {:default, x}
+  defoverridable g: 1
+end
+
+defmodule Replaced do
+  def caller(x), do: g(x)
+  def g(x), do: {:default, x}
+  defoverridable g: 1
+  def g(x), do: {:mine, x}
+end
+
+defmodule Hidden do
+  def g(x), do: {:default, x}
+  defoverridable g: 1
+  defp g(x), do: {:private, x}
+  def reach(x), do: g(x)
+end
+
+defmodule Plain do
+  import Defaults
+  defaults()
+end
+
+defmodule Mine do
+  import Defaults
+  defaults()
+  def message(_e), do: "mine"
+end
+
+def main() do
+  dbg(Stands.g(1))
+  dbg(Replaced.g(2))
+  dbg(Replaced.caller(3))
+  dbg(Hidden.reach(4))
+  dbg(Plain.message(5))
+  dbg(Mine.message(6))
+end

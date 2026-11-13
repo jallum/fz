@@ -3054,6 +3054,72 @@ fn a_macro_that_raises_is_diagnosed_at_its_call() {
     assert_primary_span_contains(diagnostic, &source, "apply(Overdrawn, :exception, args)");
 }
 
+/// A definition that a later one replaces is never the function's source:
+/// the walk writes the source of the definition that stands, once, and the
+/// module's interface is that definition's. A `defp` that replaces a `def`
+/// takes the function out of the interface.
+#[test]
+fn a_replaced_definition_is_never_noted_and_the_interface_follows_the_one_that_stands() {
+    let tel = ConfiguredTelemetry::new();
+    let source_notes = SourceNoteCapture::new();
+    source_notes.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("overridable.fz".to_string()),
+        text: concat!(
+            "defmodule Defaults do\n",
+            "  defmacro defaults() do\n",
+            "    [\n",
+            "      quote do\n",
+            "        def described(_e), do: \"default\"\n",
+            "      end,\n",
+            "      quote do\n",
+            "        defoverridable described: 1\n",
+            "      end\n",
+            "    ]\n",
+            "  end\n",
+            "end\n",
+            "\n",
+            "defmodule Mine do\n",
+            "  import Defaults\n",
+            "  defaults()\n",
+            "  def kept(x), do: x\n",
+            "  defoverridable kept: 1\n",
+            "  def hidden(x), do: x\n",
+            "  defoverridable hidden: 1\n",
+            "  defp hidden(x), do: {:private, x}\n",
+            "  def described(e), do: hidden(e)\n",
+            "end\n",
+            "\n",
+            "def main(), do: {Mine.described(1), Mine.kept(2)}\n",
+        )
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "a module that replaces its defaults compiles");
+
+    for (name, arity) in [("described", 1), ("kept", 1), ("hidden", 1)] {
+        assert_eq!(
+            source_notes.count(name, arity),
+            1,
+            "{name}/{arity} has one definition that stands, and only its source is written"
+        );
+    }
+    let mine = compiler.world_mut().reference_module(module_name("Mine"));
+    let interface = compiler.world().module_interface(mine);
+    assert!(interface.public_function_with_name_arity("described", 1).is_some());
+    assert!(interface.public_function_with_name_arity("kept", 1).is_some());
+    assert!(
+        interface.public_function_with_name_arity("hidden", 1).is_none(),
+        "a function replaced by a defp is not in the interface"
+    );
+}
+
 #[test]
 fn compiler2_zero_field_struct_spec_type_diagnoses_non_struct_module_at_reference_span() {
     let tel = ConfiguredTelemetry::new();

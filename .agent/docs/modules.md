@@ -257,6 +257,39 @@ declared later in the same scope:
    that each exact expectation was actually exported. Then define each reserved
    function and scope each child module onto the current head.
 
+### One definition stands
+
+The clauses of a function that sit together in a body are one definition
+(`read_surface` gathers neighbours of one name and arity into one form). The
+walk keeps, for each function of the module, a `LocalCallable`: its symbol, how
+many of its definitions are reserved and not yet reached, and where it stands
+(`Standing::NotDefined`, `Defined` or `Overridable`). `definition_stands`
+applies the rules as the walk reaches each definition:
+
+| The function is | Arrives | Result |
+|---|---|---|
+| not defined | a definition | defined |
+| defined | `defoverridable name: arity` | overridable |
+| overridable | a definition of the same kind | the new definition stands, and the mark is spent |
+| defined | a definition | `resolve/duplicate-function`, pointing at both |
+| not defined, or overridable | `defoverridable` | `resolve/overridable` |
+| overridable function | a macro, or the reverse | `resolve/overridable` |
+
+A definition with another of the same function still to come is recorded and
+not published: its source is never noted, so nothing expands or compiles it.
+The definition that stands is published once, and the interface is that
+definition's, so a `defp` that replaces a `def` takes the function out of the
+interface. A definition a macro expands to is counted when the macro's
+fragment is reserved, which is when the walk reaches the macro call; a
+replacement that arrives that way, after the default was already published,
+replaces the published source.
+
+`defoverridable` is `ScopeForm::Overridable`, read by `build_form`. It takes
+`name: arity` pairs. Clauses of one function separated by another form are a
+second definition and are refused, where Elixir warns and joins them.
+`super` is not supported. Fixture `00872` is the oracle fixture; `00873`
+through `00875` are the refusals.
+
 A non-private function or macro becomes a `ModuleInterfaceCallable`; `defp`
 functions stay callable in-module but out of the interface. Non-global
 modules that do not define `__info__/1` get a synthesized ordinary function
@@ -321,6 +354,7 @@ cargo test --lib compiler2::world_test
 cargo test --lib compiler2::namespace_test
 cargo test --lib compiler2::drive_test::a_call_on_one_module_is_a_direct_call_keyed_by_the_module
 cargo test --lib compiler2::drive_test::a_call_on_one_of_two_modules_dispatches_on_the_module_and_passes_only_the_arguments
+cargo test --lib compiler2::drive_test::a_replaced_definition_is_never_noted_and_the_interface_follows_the_one_that_stands
 cargo test --lib compiler2::drive_test::compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_foo
 cargo test --lib compiler2::drive_test::compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer
 ```

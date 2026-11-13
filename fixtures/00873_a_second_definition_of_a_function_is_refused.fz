@@ -1,0 +1,12 @@
+#---
+# purpose: "a function defined a second time, apart from its first clauses and with no defoverridable between, is refused: the later definition does not replace the earlier one"
+# expect: diagnostic
+# diagnostic.code: resolve/duplicate-function
+#---
+defmodule Twice do
+  def f(1), do: :one
+  alias String, as: Text
+  def f(1), do: :again
+end
+
+def main(), do: dbg(Twice.f(1))

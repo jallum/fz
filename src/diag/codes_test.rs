@@ -22,6 +22,7 @@ fn all_codes_follow_stage_slash_kind_format() {
         RESOLVE_TYPE_ALIAS,
         RESOLVE_DUPLICATE_STRUCT,
         RESOLVE_DUPLICATE_FUNCTION,
+        RESOLVE_OVERRIDABLE,
         RESOLVE_SCRIPT_AND_MAIN,
         RESOLVE_NOT_A_PROTOCOL,
         PROTOCOL_MISSING_CALLBACK,

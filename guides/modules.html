@@ -77,6 +77,24 @@ qualified as <code>Math.double(21)</code>.</p>
 
 <p>The full name of that function is <code>App.Clock.tick/0</code>.</p>
 
+<p>A function is defined once in a module. Its clauses sit together; a
+second definition further down the body is an error that points at both. A
+module can mark a function so that a later definition replaces it:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">NotFound</span> <span class="kw">do</span>
+  <span class="kw">def</span> <span class="fn">message</span>(_e), <span class="kw">do:</span> <span class="str">"not found"</span>
+  <span class="kw">defoverridable</span> message: <span class="num">1</span>
+
+  <span class="kw">def</span> <span class="fn">message</span>(e), <span class="kw">do:</span> <span class="str">"no file "</span> &lt;&gt; e.path
+<span class="kw">end</span></pre>
+
+<p>The later <code>message/1</code> is the module's <code>message/1</code>,
+for every caller. Without it the first one stands. This is how a macro gives a
+module a default that the module may write for itself.
+<code>defoverridable</code> names functions the module has already defined, as
+<code>name: arity</code> pairs. Elixir's <code>super</code> is not
+supported.</p>
+
 <p>A file can also be a script. Expressions written at the top level run in
 order as the program's <code>main/0</code>, after every definition in the file
 is available, so a statement can call a function or module defined further
