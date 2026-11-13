@@ -1186,8 +1186,9 @@ impl World {
     }
 
     pub fn reference_function(&mut self, module: ModuleId, name: impl Into<String>, arity: usize) -> FunctionId {
-        let denotation = self.modules.denotation(module).cloned();
-        let id = self.functions.reference(module, denotation, name, arity);
+        let id = self
+            .functions
+            .reference(module, self.modules.denotation(module), name, arity);
         self.share_callable_origin(id);
         id
     }

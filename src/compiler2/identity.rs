@@ -555,7 +555,7 @@ impl FunctionMap {
     pub fn reference(
         &mut self,
         module: ModuleId,
-        module_denotation: Option<ModuleDenotation>,
+        module_denotation: Option<&ModuleDenotation>,
         name: impl Into<String>,
         arity: usize,
     ) -> FunctionId {
@@ -575,7 +575,7 @@ impl FunctionMap {
             module,
             denotation: Arc::new(FunctionDenotation {
                 origin: FunctionOrigin::Named {
-                    module: module_denotation,
+                    module: module_denotation.cloned(),
                     name,
                 },
                 arity,

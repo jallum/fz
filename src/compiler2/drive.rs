@@ -917,6 +917,9 @@ impl World {
     /// answer. The walk follows standing waits to their producers and visits
     /// each job once.
     pub(crate) fn waits_reach(&self, from: &Job, to: &Job) -> bool {
+        if self.work_graph.waits_for(from).is_empty() {
+            return false;
+        }
         let mut pending = vec![from.clone()];
         let mut seen = HashSet::new();
         while let Some(job) = pending.pop() {
