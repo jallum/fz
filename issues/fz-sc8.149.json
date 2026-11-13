@@ -7,9 +7,15 @@
   "id": "fz-sc8.149",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Spiked 2026-11-13 on 347dca983 (/private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/s149/spike.patch, fz2.base, fz2.spike): CallSiteSummary.last_resort + is_decision() + raise at the callsite Fail arm cures all three repros on interp/run/build; lib 2184 passed with no pin moved; fixture_matrix fails only 00429_external_impl_residual (it passes today because a float enters the Integer impl untested); executables unchanged; 65 callsites in 28 fixtures gain a last resort. Gap: the message lacks Elixir's 'for \u003cType\u003e'. Proposal page /Users/j5n/Workspace/fz-sc8.149.html awaits the user (decisions: build incl. the type name; restate 00429).",
+      "timestamp": "2026-11-13T15:54:35Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A protocol call on a value no implementation covers raises Protocol.UndefinedError",
   "type": "bug",
-  "updated_at": "2026-11-13T15:20:36Z"
+  "updated_at": "2026-11-13T15:54:35Z"
 }
