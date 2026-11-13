@@ -3,12 +3,12 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-13T21:18:25Z",
-  "description": "x1 = {x0, 1}; x2 = {x1, 2}; ... depth 60: 1.9 s run, 2.2 s interp on develop ff4a75ada (depth 30: 0.12 s). Independent of tuple lanes. Samples: jobs/body.rs value_may_retain_source, origin_source_path, LoweredBody::value_definition. Programs: scratchpad s297/chain*.fz.",
+  "description": "x1 = {x0, 1}; x2 = {x1, 2}; ... Programs: scratchpad s297/chain*.fz. interp on fz-rba.4 81dc420d4 (debug, opt-level 1): depth 30 0.06 s, 40 0.17 s, 50 0.46 s, 60 1.09 s, 70 2.48 s; doubling the depth costs about 18x, so the cost grows with roughly the fourth to fifth power of the depth. Independent of tuple lanes.\nWhere (sample at depth 90, s297/chain90.sample): all of it is tuple ownership in body lowering. construct_tuple_ownership (jobs/body.rs) asks, for every tuple step and each item, tuple_item_has_old_owner against the later uses; each comparison is values_overlap_inner, which recurses through construction_children on both sides (a visited set of value pairs, so up to depth squared pairs), and at every pair calls value_retains_source twice, a depth-first walk down the origin chain (value_may_retain_source / origin_may_retain_source, whose visiting set is unmarked on return, so nothing is remembered between queries) that calls origin_source_path at each level, itself a walk that rebuilds a projection path Vec. Sample tops: value_may_retain_source 663, origin_source_path 525, LoweredBody::value_definition 257, Vec/TransportOrigin drops about 450.\nWhy the existing StorageRootIndex (jobs/body/storage_roots.rs) does not help: it prunes comparisons between values with disjoint storage roots; in a chain every value shares the root x0, so every later use is a competitor and each comparison is the deep walk.\nNot designed. Direction to examine on paper first: the retention answer for (value, source path) is a function of the body alone, so it can be recorded once per value instead of walked per query; nothing here depends on the order of queries. Needs a proposal page and a spike before a build.",
   "id": "fz-1y9",
   "labels": [],
   "priority": 3,
   "status": "open",
   "title": "A nested pair chain costs steeply more than its depth",
   "type": "bug",
-  "updated_at": "2026-11-13T21:18:25Z"
+  "updated_at": "2026-11-13T22:17:23Z"
 }
