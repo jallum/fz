@@ -2357,7 +2357,7 @@ fn effect_test_ty() -> super::super::Ty {
 /// The arrow of a fake key is minted by `fake_types`' first activation, so it
 /// resolves there.
 fn executable_symbol_for_test(executable: &ExecutableKey) -> super::super::transport::ExecutableSymbol {
-    super::super::transport::ExecutableSymbol::new(executable, &fake_types())
+    super::super::transport::ExecutableSymbol::new(executable)
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -2594,7 +2594,7 @@ fn callable_owner_products_aggregate_order_free_and_retract_independently() {
     );
 }
 
-type OwnerSymbolKey = (u32, super::super::types::Ty, Vec<super::super::types::Ty>, u8, usize);
+type OwnerSymbolKey = (u32, super::super::types::Ty, u8, usize);
 type OwnerPositionKey = (u8, OwnerSymbolKey, u64, u64, usize);
 
 fn owner_symbol_key(symbol: &ExecutableSymbol) -> OwnerSymbolKey {
@@ -2605,7 +2605,6 @@ fn owner_symbol_key(symbol: &ExecutableSymbol) -> OwnerSymbolKey {
     (
         symbol.activation.function.as_u32(),
         symbol.activation.arrow,
-        symbol.activation.input().to_vec(),
         need.0,
         need.1,
     )
@@ -3042,7 +3041,7 @@ fn publication_moves_observation_and_membership_storage_into_the_entry() {
     let root = RootId::for_test(61);
     let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 610));
     let wide = fake_executable_with_inputs(&mut types, root, 612, 32);
-    let executable = super::super::transport::ExecutableSymbol::new(&wide, &types);
+    let executable = super::super::transport::ExecutableSymbol::new(&wide);
     let external = ProductKey::TransportShape(TransportPosition::ExecutableReturn { executable });
     let membership = HashSet::from_iter([external.clone()]);
     let dependencies = ProductDependencies {
@@ -3052,10 +3051,6 @@ fn publication_moves_observation_and_membership_storage_into_the_entry() {
     };
     let mut memo = ProductMemo::default();
     let product_storage = dependencies.products.get_index(0).unwrap().0 as *const ProductKey;
-    let ProductKey::TransportShape(position) = dependencies.products.get_index(0).unwrap().0 else {
-        unreachable!()
-    };
-    let input_storage = position.executable().activation.input().as_ptr();
     let membership_storage = membership.get(&external).unwrap() as *const ProductKey;
     assert!(memo.begin(left.clone()));
     assert!(finish_test_entry_with_membership(
@@ -3072,10 +3067,6 @@ fn publication_moves_observation_and_membership_storage_into_the_entry() {
         entry.dependencies.products.get_index(0).unwrap().0 as *const ProductKey,
         product_storage
     );
-    let ProductKey::TransportShape(position) = entry.dependencies.products.get_index(0).unwrap().0 else {
-        unreachable!()
-    };
-    assert_eq!(position.executable().activation.input().as_ptr(), input_storage);
     assert_eq!(
         entry.membership.get(&external).unwrap() as *const ProductKey,
         membership_storage

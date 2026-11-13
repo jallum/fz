@@ -103,10 +103,9 @@ pub(crate) fn produce_materialized_executable_product(
     let pruned = prune_lowered_body(lowered, &dispatch_outcomes, &retained_entries);
     let body = pruned.body;
     let mut transport_positions = vec![TransportPosition::ExecutableReturn {
-        executable: ExecutableSymbol::new(executable, world.types()),
+        executable: ExecutableSymbol::new(executable),
     }];
     transport_positions.extend(required_call_edge_transport_positions(
-        world,
         executable,
         &executable_facts,
         &body,
@@ -121,7 +120,7 @@ pub(crate) fn produce_materialized_executable_product(
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
-    let transport = materialized_executable_transport(position_layouts, executable, world.types());
+    let transport = materialized_executable_transport(position_layouts, executable);
     let transport_plan = &transport.position_layouts;
     // A call this program cannot lower has already said why through a
     // diagnostic; the root stops on that diagnostic rather than unwinding here.
@@ -341,7 +340,7 @@ pub(crate) fn produce_abi_executable_product(
     };
     let transport = waits
         .is_empty()
-        .then(|| materialized_executable_transport(position_layouts, executable, world.types()));
+        .then(|| materialized_executable_transport(position_layouts, executable));
     let mut callable_owners = Vec::new();
     let owner_transport = transport.as_ref().unwrap_or(&materialized.transport);
     let facts = context
@@ -403,9 +402,8 @@ struct PrunedLoweredBody {
 fn materialized_executable_transport(
     position_layouts: TransportLayouts,
     executable: &ExecutableKey,
-    types: &Types,
 ) -> MaterializedExecutableTransport {
-    let symbol = ExecutableSymbol::new(executable, types);
+    let symbol = ExecutableSymbol::new(executable);
     let mut input_positions = Vec::new();
     let mut return_position = None;
     let mut resume_positions = Vec::new();
@@ -443,12 +441,11 @@ fn materialized_executable_transport(
 }
 
 fn required_entry_capture_transport_positions(
-    world: &World,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
     let LoweredBody::Clauses { entries, .. } = &materialized.body;
-    let symbol = ExecutableSymbol::new(executable, world.types());
+    let symbol = ExecutableSymbol::new(executable);
     let mut positions = Vec::new();
     for (entry_index, entry) in entries.iter().enumerate() {
         let entry_id = materialized
@@ -480,31 +477,18 @@ fn required_executable_transport_positions(
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
     let mut positions = Vec::new();
-    positions.extend(required_executable_input_transport_positions(
-        world,
-        executable,
-        materialized,
-    ));
-    positions.extend(required_entry_capture_transport_positions(
-        world,
-        executable,
-        materialized,
-    ));
+    positions.extend(required_executable_input_transport_positions(executable, materialized));
+    positions.extend(required_entry_capture_transport_positions(executable, materialized));
     positions.extend(required_resume_transport_positions(world, executable, materialized));
-    positions.extend(required_local_backend_transport_positions(
-        world,
-        executable,
-        materialized,
-    ));
+    positions.extend(required_local_backend_transport_positions(executable, materialized));
     positions
 }
 
 fn required_executable_input_transport_positions(
-    world: &World,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
-    let symbol = ExecutableSymbol::new(executable, world.types());
+    let symbol = ExecutableSymbol::new(executable);
     materialized
         .runtime_demand
         .input_demands
@@ -529,7 +513,7 @@ fn required_resume_transport_positions(
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
     let LoweredBody::Clauses { entries, .. } = &materialized.body;
-    let symbol = ExecutableSymbol::new(executable, world.types());
+    let symbol = ExecutableSymbol::new(executable);
     let mut positions = Vec::new();
     let mut deliver_callsites = HashMap::default();
     for entry in entries {
@@ -588,12 +572,11 @@ fn required_resume_transport_positions(
 }
 
 fn required_local_backend_transport_positions(
-    world: &World,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
     let LoweredBody::Clauses { clauses, entries, .. } = &materialized.body;
-    let symbol = ExecutableSymbol::new(executable, world.types());
+    let symbol = ExecutableSymbol::new(executable);
     let mut positions = Vec::new();
     positions.extend(
         materialized
@@ -719,13 +702,12 @@ pub(crate) fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::
 }
 
 fn required_call_edge_transport_positions(
-    world: &mut World,
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
     body: &LoweredBody,
 ) -> Vec<TransportPosition> {
     let LoweredBody::Clauses { entries, .. } = body;
-    let caller_symbol = ExecutableSymbol::new(executable, world.types());
+    let caller_symbol = ExecutableSymbol::new(executable);
     let callsite_needs = facts.callsite_needs();
     let summaries = facts.callsites();
     let mut positions = HashSet::default();
@@ -744,7 +726,6 @@ fn required_call_edge_transport_positions(
                             )
                         })
                     }),
-                    world.types(),
                 );
             }
             LoweredTail::ClosureCall {
@@ -772,14 +753,7 @@ fn required_call_edge_transport_positions(
                         })
                     })
                     .collect::<Vec<_>>();
-                record_return_flow_transport_positions(
-                    &mut positions,
-                    &caller_symbol,
-                    *callsite,
-                    dest,
-                    callees,
-                    world.types(),
-                );
+                record_return_flow_transport_positions(&mut positions, &caller_symbol, *callsite, dest, callees);
             }
             LoweredTail::Value { .. }
             | LoweredTail::If { .. }
@@ -798,9 +772,8 @@ fn record_return_flow_transport_positions(
     callsite: CallSiteId,
     dest: &ControlDestination,
     callees: impl IntoIterator<Item = ExecutableKey>,
-    types: &Types,
 ) {
-    let callee_symbols = callees.into_iter().map(|callee| ExecutableSymbol::new(&callee, types));
+    let callee_symbols = callees.into_iter().map(|callee| ExecutableSymbol::new(&callee));
     for position in return_flow_transport_positions(caller_symbol, callsite, dest, callee_symbols) {
         positions.insert(position);
     }
@@ -878,7 +851,7 @@ fn materialize_call_edges(
                 ..
             } => {
                 let callee_position = TransportPosition::Value {
-                    executable: ExecutableSymbol::new(executable, world.types()),
+                    executable: ExecutableSymbol::new(executable),
                     value: *callee,
                 };
                 let callee_layout = require_transport_layout(tel, root_id, transport_plan, &callee_position)?;
@@ -1062,7 +1035,6 @@ fn materialize_closure_call_edge(
                 CallReturnFlow::NoReturn { local_source: None }
             } else {
                 call_return_flow(
-                    world,
                     tel,
                     root_id,
                     transport_plan,
@@ -1204,10 +1176,9 @@ fn lower_materialized_call_target(
     };
     let return_ty = target.settled_return(world.types_mut());
     let return_flow = if world.types().is_empty(&return_ty) {
-        exact_no_return_flow(world, &callee)
+        exact_no_return_flow(&callee)
     } else {
         call_return_flow(
-            world,
             tel,
             root_id,
             transport_plan,
@@ -1230,7 +1201,6 @@ fn lower_materialized_call_target(
 }
 
 fn call_return_flow(
-    world: &World,
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
     transport_plan: &TransportLayouts,
@@ -1241,7 +1211,7 @@ fn call_return_flow(
     original_entry_ids: &[ControlEntryId],
     public_callable: bool,
 ) -> Result<CallReturnFlow, FatalError> {
-    let caller_symbol = ExecutableSymbol::new(executable, world.types());
+    let caller_symbol = ExecutableSymbol::new(executable);
     match dest {
         ControlDestination::Deliver(entry) => {
             let transport_entry = original_entry_ids
@@ -1261,7 +1231,7 @@ fn call_return_flow(
             } else {
                 match callee {
                     Some(CallTarget::Local(callee)) => TransportPosition::ExecutableReturn {
-                        executable: ExecutableSymbol::new(callee, world.types()),
+                        executable: ExecutableSymbol::new(callee),
                     },
                     Some(CallTarget::ProviderBoundary(_)) => resume.clone(),
                     None => {
@@ -1291,7 +1261,7 @@ fn call_return_flow(
                 payload.clone()
             } else if let Some(CallTarget::Local(callee)) = callee {
                 TransportPosition::ExecutableReturn {
-                    executable: ExecutableSymbol::new(callee, world.types()),
+                    executable: ExecutableSymbol::new(callee),
                 }
             } else {
                 payload.clone()
@@ -1315,9 +1285,9 @@ fn call_return_flow(
     }
 }
 
-fn exact_no_return_flow(world: &World, callee: &CallTarget<ExecutableKey>) -> CallReturnFlow {
+fn exact_no_return_flow(callee: &CallTarget<ExecutableKey>) -> CallReturnFlow {
     let local_source = callee.local().map(|callee| TransportPosition::ExecutableReturn {
-        executable: ExecutableSymbol::new(callee, world.types()),
+        executable: ExecutableSymbol::new(callee),
     });
     CallReturnFlow::NoReturn { local_source }
 }

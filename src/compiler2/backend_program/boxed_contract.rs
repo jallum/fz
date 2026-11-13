@@ -303,7 +303,6 @@ pub(super) mod tests {
         key: &ExecutableKey,
         arity: usize,
         return_form: BackendCallableReturn,
-        types: &Types,
     ) -> BackendConstructionWrapper {
         BackendConstructionWrapper {
             denotation: key.activation.function.denotation(),
@@ -313,7 +312,7 @@ pub(super) mod tests {
                 0,
             )),
             identity: TransportPosition::ExecutableReturn {
-                executable: ExecutableSymbol::new(key, types),
+                executable: ExecutableSymbol::new(key),
             },
             callable: CallableId::for_test(0),
             captures: Box::default(),

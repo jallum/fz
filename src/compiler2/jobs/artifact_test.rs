@@ -88,8 +88,8 @@ fn return_payload_is_owned_only_by_its_caller() {
     let mut world = World::new();
     let caller = fake_call_executable(&mut world, 10, 11, &[]);
     let callee = fake_call_executable(&mut world, 10, 12, &[]);
-    let caller_symbol = ExecutableSymbol::new(&caller, world.types());
-    let callee_symbol = ExecutableSymbol::new(&callee, world.types());
+    let caller_symbol = ExecutableSymbol::new(&caller);
+    let callee_symbol = ExecutableSymbol::new(&callee);
     let callsite = CallSiteId::from_u32(7);
 
     let positions = return_flow_transport_positions(
@@ -117,13 +117,13 @@ fn local_no_return_flow_carries_exact_return_endpoint() {
     let mut world = World::new();
     let callee = fake_call_executable(&mut world, 100, 102, &[]);
     let target = CallTarget::Local(callee.clone());
-    let flow = exact_no_return_flow(&world, &target);
+    let flow = exact_no_return_flow(&target);
 
     assert_eq!(
         flow,
         CallReturnFlow::NoReturn {
             local_source: Some(TransportPosition::ExecutableReturn {
-                executable: ExecutableSymbol::new(&callee, world.types()),
+                executable: ExecutableSymbol::new(&callee),
             }),
         }
     );
@@ -199,7 +199,7 @@ fn try_materialize_closure_edge(
         value_types: call_returns.then_some((result_value, int)).into_iter().collect(),
     };
     let positions = if call_returns {
-        let caller_symbol = ExecutableSymbol::new(&caller, world.types());
+        let caller_symbol = ExecutableSymbol::new(&caller);
         let caller_return = TransportPosition::ExecutableReturn {
             executable: caller_symbol.clone(),
         };

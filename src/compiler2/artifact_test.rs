@@ -49,7 +49,7 @@ fn backend_program_rejects_duplicate_member_identities() {
         activation,
         need: ExecutableNeed::Value,
     };
-    let member = std::rc::Rc::new(BackendExecutable::for_test(key.clone(), int, shape, world.types()));
+    let member = std::rc::Rc::new(BackendExecutable::for_test(key.clone(), int, shape));
     BackendProgram::new(
         key,
         Vec::new(),
@@ -83,7 +83,7 @@ fn backend_program_rejects_duplicate_construction_owners() {
         activation,
         need: ExecutableNeed::Value,
     };
-    let member = std::rc::Rc::new(BackendExecutable::for_test(key.clone(), int, shape, world.types()));
+    let member = std::rc::Rc::new(BackendExecutable::for_test(key.clone(), int, shape));
     let wrapper = std::rc::Rc::new(super::artifact::BackendConstructionWrapper {
         denotation: key.activation.function.denotation(),
         source_origin: std::sync::Arc::new(fz_runtime::function_denotation::FunctionDenotation::named(
@@ -583,13 +583,10 @@ fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authori
 fn input_layouts(count: usize) -> (TransportLayouts, impl Fn(usize) -> TransportPosition) {
     let mut world = super::World::new();
     let (_, _, activation) = stub_activation_key(world.types_mut(), Vec::new());
-    let symbol = ExecutableSymbol::new(
-        &ExecutableKey {
-            activation,
-            need: ExecutableNeed::Value,
-        },
-        world.types(),
-    );
+    let symbol = ExecutableSymbol::new(&ExecutableKey {
+        activation,
+        need: ExecutableNeed::Value,
+    });
     let shape = world.intern_shape(ShapeDescr::Nothing);
     let position = move |semantic_index| TransportPosition::ExecutableInput {
         executable: symbol.clone(),

@@ -324,34 +324,21 @@ fn produce_generic_callable_owner(
                     .incoming_input_sources(&slot)
                     .expect("settled input slot has an authoritative answer");
                 source_positions.extend(sources.iter().map(|source| TransportPosition::Value {
-                    executable: ExecutableSymbol::new(&source.producer, world.types()),
+                    executable: ExecutableSymbol::new(&source.producer),
                     value: source.value,
                 }));
             }
             TransportPosition::Value { value, .. } => {
                 if let Some(origin) = facts.value_origin(*value)
-                    && !append_origin_children(
-                        world,
-                        executable,
-                        position.executable(),
-                        facts,
-                        origin,
-                        &mut source_positions,
-                    )
+                    && !append_origin_children(executable, position.executable(), facts, origin, &mut source_positions)
                 {
                     source_positions.clear();
                 }
             }
             TransportPosition::ExecutableReturn { .. } => {
                 for origin in facts.return_origins() {
-                    if !append_origin_children(
-                        world,
-                        executable,
-                        position.executable(),
-                        facts,
-                        origin,
-                        &mut source_positions,
-                    ) {
+                    if !append_origin_children(executable, position.executable(), facts, origin, &mut source_positions)
+                    {
                         source_positions.clear();
                         break;
                     }
@@ -375,14 +362,7 @@ fn produce_generic_callable_owner(
             }
             TransportPosition::ReturnPayload { callsite, .. } => {
                 if facts.callsite_return_origin(*callsite).is_none_or(|origin| {
-                    !append_origin_children(
-                        world,
-                        executable,
-                        position.executable(),
-                        facts,
-                        &origin,
-                        &mut source_positions,
-                    )
+                    !append_origin_children(executable, position.executable(), facts, &origin, &mut source_positions)
                 }) {
                     source_positions.clear();
                 }
@@ -405,7 +385,6 @@ fn produce_generic_callable_owner(
                 if let Some(callsite) = callsite {
                     if facts.callsite_return_origin(*callsite).is_none_or(|origin| {
                         !append_origin_children(
-                            world,
                             executable,
                             position.executable(),
                             facts,
@@ -1282,7 +1261,7 @@ fn direct_callable_descr(
         activation: target.activation.clone(),
         need: target.need,
     };
-    let executable = ExecutableSymbol::new(&executable, world.types());
+    let executable = ExecutableSymbol::new(&executable);
     let mut capture_layouts = Vec::with_capacity(capture_count);
     for semantic_index in 0..capture_count {
         let capture = TransportPosition::ExecutableInput {
@@ -1340,7 +1319,6 @@ fn singleton_closure_call_target(
 }
 
 fn origin_transport_recipe(
-    world: &World,
     symbol: &ExecutableSymbol,
     facts: &ExecutableFacts,
     origin: &TransportSource,
@@ -1372,13 +1350,10 @@ fn origin_transport_recipe(
                     .map(|target| match (&target.callee, &target.activation) {
                         (SelectedCallee::Function(_), Some(activation)) => {
                             TransportRecipe::Alias(TransportPosition::ExecutableReturn {
-                                executable: ExecutableSymbol::new(
-                                    &ExecutableKey {
-                                        activation: activation.clone(),
-                                        need,
-                                    },
-                                    world.types(),
-                                ),
+                                executable: ExecutableSymbol::new(&ExecutableKey {
+                                    activation: activation.clone(),
+                                    need,
+                                }),
                             })
                         }
                         (SelectedCallee::ProviderBoundary(_), _) | (_, None) => TransportRecipe::Terminal,
@@ -1402,13 +1377,10 @@ fn origin_transport_recipe(
                 },
                 grounded: singleton_closure_call_target(facts, callsite).map(|(activation, need)| {
                     let recipe = TransportRecipe::Alias(TransportPosition::ExecutableReturn {
-                        executable: ExecutableSymbol::new(
-                            &ExecutableKey {
-                                activation: activation.clone(),
-                                need,
-                            },
-                            world.types(),
-                        ),
+                        executable: ExecutableSymbol::new(&ExecutableKey {
+                            activation: activation.clone(),
+                            need,
+                        }),
                     });
                     Box::new(DirectClosureTarget {
                         target: activation,
@@ -1420,7 +1392,7 @@ fn origin_transport_recipe(
         TransportSource::Join(origins) => TransportRecipe::Alternatives(
             origins
                 .iter()
-                .map(|origin| origin_transport_recipe(world, symbol, facts, origin))
+                .map(|origin| origin_transport_recipe(symbol, facts, origin))
                 .collect(),
         ),
         TransportSource::TupleValue(values) => TransportRecipe::Tuple(
@@ -1520,7 +1492,7 @@ fn produce_local_callable_construction(
             capture.join_assign(input);
         }
     }
-    let symbol = ExecutableSymbol::new(executable, world.types());
+    let symbol = ExecutableSymbol::new(executable);
     let mut capture_layouts = Vec::with_capacity(producer.captures.len());
     for (index, capture) in producer.captures.iter().copied().enumerate() {
         let key = ProductKey::TransportShape(TransportPosition::Value {
@@ -1554,7 +1526,7 @@ fn produce_local_callable_construction(
     });
     let boundary_surfaces = &flow.first_class_surfaces;
     let boundary_layouts = surface_layouts(world, boundary_surfaces);
-    let boundary_resolutions = boundary_resolution_symbols_for_flow_surfaces(flow, boundary_surfaces, world.types());
+    let boundary_resolutions = boundary_resolution_symbols_for_flow_surfaces(flow, boundary_surfaces);
     let producer_position = TransportPosition::Value {
         executable: symbol,
         value,
@@ -1571,11 +1543,7 @@ fn produce_local_callable_construction(
     );
     builder.record_callable(
         callable,
-        &flow
-            .resolutions
-            .iter()
-            .map(|resolution| ExecutableSymbol::new(resolution, world.types()))
-            .collect::<Vec<_>>(),
+        &flow.resolutions.iter().map(ExecutableSymbol::new).collect::<Vec<_>>(),
         &direct_surfaces,
         &direct_edges,
         &boundaries_by_surface.values().copied().collect::<Vec<_>>(),
@@ -1607,7 +1575,7 @@ fn produce_local_callable_construction(
                 .zip(capture_tys)
                 .map(|((value, layout), ty)| CallableConstructionCapture {
                     source: TransportPosition::Value {
-                        executable: ExecutableSymbol::new(executable, world.types()),
+                        executable: ExecutableSymbol::new(executable),
                         value,
                     },
                     layout,
@@ -1800,7 +1768,7 @@ fn produce_named_transport_position(
                 facts
                     .return_origins()
                     .iter()
-                    .map(|origin| origin_transport_recipe(world, &symbol, &facts, origin))
+                    .map(|origin| origin_transport_recipe(&symbol, &facts, origin))
                     .collect(),
             );
             (ty, Cow::Borrowed(&runtime.return_demand))
@@ -1824,7 +1792,7 @@ fn produce_named_transport_position(
                         None => PullOutcome::wait_on_product(key),
                     });
                 }
-                Some(origin) => recipe = origin_transport_recipe(world, &symbol, &facts, origin),
+                Some(origin) => recipe = origin_transport_recipe(&symbol, &facts, origin),
                 None => {}
             }
             (ty, demand)
@@ -1870,13 +1838,10 @@ fn produce_named_transport_position(
                         continue;
                     };
                     let target = TransportRecipe::Alias(TransportPosition::ExecutableInput {
-                        executable: ExecutableSymbol::new(
-                            &ExecutableKey {
-                                activation: activation.clone(),
-                                need,
-                            },
-                            world.types(),
-                        ),
+                        executable: ExecutableSymbol::new(&ExecutableKey {
+                            activation: activation.clone(),
+                            need,
+                        }),
                         semantic_index: target_index,
                     });
                     match &mut recipe {
@@ -1906,7 +1871,6 @@ fn produce_named_transport_position(
                 return Some(bottom_transport_shape(world));
             };
             recipe = origin_transport_recipe(
-                world,
                 &symbol,
                 &facts,
                 &facts
@@ -1956,7 +1920,6 @@ fn produce_named_transport_position(
             let value = resume_payload_value(&facts, *entry);
             if let Some(callsite) = callsite {
                 recipe = origin_transport_recipe(
-                    world,
                     &symbol,
                     &facts,
                     &facts
@@ -2295,7 +2258,6 @@ fn bottom_transport_shape(world: &mut World) -> PullOutcome {
 }
 
 fn append_origin_children(
-    world: &World,
     executable: &ExecutableKey,
     symbol: &ExecutableSymbol,
     facts: &ExecutableFacts,
@@ -2325,13 +2287,10 @@ fn append_origin_children(
                     (SelectedCallee::ProviderBoundary(_), _) | (_, None) => return false,
                     (SelectedCallee::Function(_), Some(activation)) => {
                         children.push(TransportPosition::ExecutableReturn {
-                            executable: ExecutableSymbol::new(
-                                &ExecutableKey {
-                                    activation: activation.clone(),
-                                    need,
-                                },
-                                world.types(),
-                            ),
+                            executable: ExecutableSymbol::new(&ExecutableKey {
+                                activation: activation.clone(),
+                                need,
+                            }),
                         });
                     }
                 }
@@ -2348,13 +2307,13 @@ fn append_origin_children(
             });
             if let Some((activation, need)) = singleton_closure_call_target(facts, callsite) {
                 children.push(TransportPosition::ExecutableReturn {
-                    executable: ExecutableSymbol::new(&ExecutableKey { activation, need }, world.types()),
+                    executable: ExecutableSymbol::new(&ExecutableKey { activation, need }),
                 });
             }
         }
         TransportSource::Join(origins) => {
             for origin in origins {
-                if !append_origin_children(world, executable, symbol, facts, origin, children) {
+                if !append_origin_children(executable, symbol, facts, origin, children) {
                     return false;
                 }
             }
@@ -2583,7 +2542,7 @@ fn callable_direct_edges(
         .map(|edge| CallableDirectEdge {
             surface_inputs: edge.surface.inputs.clone().into_boxed_slice(),
             surface_arg_shapes: surface_shape(world, &edge.surface),
-            resolution: ExecutableSymbol::new(&edge.resolution, world.types()),
+            resolution: ExecutableSymbol::new(&edge.resolution),
             capture_semantic_inputs: edge.capture_semantic_inputs.clone(),
             surface_semantic_inputs: edge.surface_semantic_inputs.clone(),
         })
@@ -2722,7 +2681,6 @@ fn publish_boundaries_for_callable(
 fn boundary_resolution_symbols_for_flow_surfaces(
     flow: &CallableFlowFact,
     surfaces: &BTreeSet<CallableSurface>,
-    types: &Types,
 ) -> Vec<Vec<ExecutableSymbol>> {
     surfaces
         .iter()
@@ -2730,7 +2688,7 @@ fn boundary_resolution_symbols_for_flow_surfaces(
             flow.first_class_edges
                 .iter()
                 .filter(|edge| &edge.surface == surface)
-                .map(|edge| ExecutableSymbol::new(&edge.resolution, types))
+                .map(|edge| ExecutableSymbol::new(&edge.resolution))
                 .collect::<Vec<_>>()
         })
         .collect()

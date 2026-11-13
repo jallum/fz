@@ -1245,7 +1245,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
     let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let session = &*driver.session();
-    assert_plan_executable_references_are_root_scoped(&world, &plan, session);
+    assert_plan_executable_references_are_root_scoped(&plan, session);
 
     let pair = executable_for(&world, session, "pair", 1);
     let main = executable_for(&world, session, "main", 0);
@@ -2165,7 +2165,8 @@ end
                     .find(|(executable, _)| {
                         executable.need == resolution.need
                             && executable.activation.function == resolution.activation.function
-                            && executable.activation.inputs(world.types()).as_slice() == resolution.activation.input()
+                            && executable.activation.inputs(world.types()).as_slice()
+                                == world.types().arrow_params(&resolution.activation.arrow).as_slice()
                     })
                     .map(|(_, demand)| demand.return_demand.clone());
                 (resolution.clone(), demand)
@@ -2354,7 +2355,7 @@ end
             panic!("each callable boundary should name its exact executable target: {boundary:?} -> {facts:?}")
         };
         assert_eq!(
-            target.activation.input().len(),
+            world.types().arrow_params(&target.activation.arrow).len(),
             boundary_descr.surface_arg_layouts.len(),
             "boundary target arity should match the boundary's published surface"
         );
@@ -2420,9 +2421,12 @@ fn compiler2_transport_plan_scopes_enum_predicate_callback_inputs_to_concrete_ac
     let _ = &plan;
     let session = &*driver.session();
     assert!(
-        executable_membership(&world, session)
-            .iter()
-            .any(|executable| function_is(&world, executable.activation.function, "reduce_while_cont", 3)),
+        executable_membership(session).iter().any(|executable| function_is(
+            &world,
+            executable.activation.function,
+            "reduce_while_cont",
+            3
+        )),
         "Enum predicate/search should keep List.reduce_while_cont/3 in the transport frontier"
     );
 }
@@ -3345,7 +3349,7 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
     let root = submit_enum_reduce_operator_ref_root(&mut world, &tel, "pull_transport_enum_reduce_operator_refs.fz");
     let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let main_return = TransportPosition::ExecutableReturn {
-        executable: ExecutableSymbol::new(plan.entry(), world.types()),
+        executable: ExecutableSymbol::new(plan.entry()),
     };
 
     let returned =
@@ -3414,7 +3418,7 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
     let plus_layout = retained_layout_at(
         &plan,
         &TransportPosition::ExecutableInput {
-            executable: ExecutableSymbol::new(zero_capture_plus_input.0, world.types()),
+            executable: ExecutableSymbol::new(zero_capture_plus_input.0),
             semantic_index: zero_capture_plus_input.1,
         },
     )
@@ -3445,7 +3449,7 @@ fn compiler2_pull_transport_shape_is_stable_across_product_request_order() {
     );
     let (_, plan) = pull_backend_for_test(&tel, &mut world, root);
     let main_return = TransportPosition::ExecutableReturn {
-        executable: ExecutableSymbol::new(plan.entry(), world.types()),
+        executable: ExecutableSymbol::new(plan.entry()),
     };
     let root_first_shape =
         retained_shape_at(&plan, &main_return).expect("packaged root product should publish main return shape");
@@ -3731,15 +3735,21 @@ end
     let session = &*driver.session();
     let callables = callable_contributions(session);
     assert!(
-        executable_membership(&world, session)
-            .iter()
-            .any(|executable| function_is(&world, executable.activation.function, "add_a", 2)),
+        executable_membership(session).iter().any(|executable| function_is(
+            &world,
+            executable.activation.function,
+            "add_a",
+            2
+        )),
         "the joined reducer frontier should keep add_a/2 live"
     );
     assert!(
-        executable_membership(&world, session)
-            .iter()
-            .any(|executable| function_is(&world, executable.activation.function, "add_b", 2)),
+        executable_membership(session).iter().any(|executable| function_is(
+            &world,
+            executable.activation.function,
+            "add_b",
+            2
+        )),
         "the joined reducer frontier should keep add_b/2 live"
     );
 
@@ -3972,7 +3982,7 @@ fn compiler2_singleton_callable_input_retains_its_source_environment_layout() {
         })
         .expect("apply1/2 should receive one exact captured lambda target");
     let position = TransportPosition::ExecutableInput {
-        executable: ExecutableSymbol::new(&executable, world.types()),
+        executable: ExecutableSymbol::new(&executable),
         semantic_index,
     };
     let layout = retained_layout_at(&plan, &position).expect("captured callable input layout");
@@ -4131,7 +4141,7 @@ fn compiler2_layout_distinct_input_positions_keep_independent_owned_answers() {
     let distinct = inputs.values().find(|answers| {
         answers
             .iter()
-            .map(|(position, _)| position.executable().activation.input())
+            .map(|(position, _)| world.types().arrow_params(&position.executable().activation.arrow))
             .collect::<BTreeSet<_>>()
             .len()
             >= 2
@@ -4905,7 +4915,7 @@ fn ignored_forwarded_input_requests_no_positioned_products() {
         );
     }
     let position = TransportPosition::ExecutableInput {
-        executable: ExecutableSymbol::new(executable, world.types()),
+        executable: ExecutableSymbol::new(executable),
         semantic_index: 0,
     };
     let forbidden = [
@@ -4982,7 +4992,7 @@ def main(), do: make(41).(1)
     let (_, capture_abi) = session
         .memo()
         .abi_executables()
-        .find(|(key, _)| ExecutableSymbol::new(key, world.types()) == *capture_executable)
+        .find(|(key, _)| ExecutableSymbol::new(key) == *capture_executable)
         .expect("capture producer ABI");
     assert!(
         capture_abi.transport.value_positions.contains(&capture.source),
@@ -5000,7 +5010,7 @@ def main(), do: make(41).(1)
                     !abi.transport
                         .input_positions
                         .contains(&TransportPosition::ExecutableInput {
-                            executable: ExecutableSymbol::new(key, world.types()),
+                            executable: ExecutableSymbol::new(key),
                             semantic_index,
                         }),
                     "lexical metadata must not retain an ignored input ABI position"
@@ -5295,7 +5305,7 @@ end
         })
         .unwrap_or_else(|| panic!("the direct reducer should capture the predicate as a callable shape"));
     let (_reducer_shape, _predicate_shape, predicate_callable, reducer_resolutions) = reducer;
-    let reduce_plain_executables = executable_membership(&world, session)
+    let reduce_plain_executables = executable_membership(session)
         .into_iter()
         .filter(|symbol| function_is(&world, symbol.activation.function, "reduce_plain", 3))
         .collect::<Vec<_>>();
@@ -5347,8 +5357,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let session = &*driver.session();
-    let owner =
-        super::jobs::backend::executable_key_for_symbol(root, &ExecutableSymbol::new(plan.entry(), world.types()));
+    let owner = super::jobs::backend::executable_key_for_symbol(root, &ExecutableSymbol::new(plan.entry()));
     let owner_demand = world.runtime_demand(&owner).expect("main demand");
     let (value, flow) = owner_demand
         .callable_flows
@@ -5425,7 +5434,7 @@ fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_produce
 
     for flow in direct_flows {
         let callables = &producer_owner_for_flow(&world, session, flow).callable_facts;
-        let flow_resolutions = flow_resolution_symbols(&world, flow);
+        let flow_resolutions = flow_resolution_symbols(flow);
         let matching_callables = callables
             .iter()
             .filter(|(callable, facts)| {
@@ -5478,12 +5487,12 @@ fn compiler2_declared_struct_field_types_keep_integer_range_elements_off_float()
     // may carry `float` (only the generic Enum/dbg entry points legitimately
     // accept the whole element domain).
     let candidates: Vec<(String, Vec<Ty>)> = {
-        executable_membership(&world, session)
+        executable_membership(session)
             .iter()
             .filter_map(|sym| {
                 let name = world.function_ref(sym.activation.function).source_name()?;
                 (name.contains("reduce_cont") || name.contains("reduce_step") || name.contains("done?"))
-                    .then(|| (name.to_string(), sym.activation.input().to_vec()))
+                    .then(|| (name.to_string(), world.types().arrow_params(&sym.activation.arrow)))
             })
             .collect()
     };
@@ -5500,11 +5509,11 @@ fn compiler2_declared_struct_field_types_keep_integer_range_elements_off_float()
     );
 }
 
-fn executable_membership(world: &World, session: &PullSession) -> Vec<ExecutableSymbol> {
+fn executable_membership(session: &PullSession) -> Vec<ExecutableSymbol> {
     session
         .demanded_executables()
         .iter()
-        .map(|key| ExecutableSymbol::new(key, world.types()))
+        .map(ExecutableSymbol::new)
         .collect()
 }
 
@@ -5516,7 +5525,7 @@ fn executable_for(world: &World, session: &PullSession, name: &str, arity: usize
             let function_ref = world.function_ref(key.activation.function);
             function_ref.is_named(name) && function_ref.arity == arity
         })
-        .map(|key| ExecutableSymbol::new(key, world.types()))
+        .map(ExecutableSymbol::new)
         .unwrap_or_else(|| panic!("transport plan executable {name}/{arity}"))
 }
 
@@ -6001,7 +6010,7 @@ fn assert_callable_facts_match_upstream_flow(
         .unwrap_or_else(|| panic!("callable facts should exist for {callable:?}"));
     assert_eq!(
         sorted_executable_symbols(facts.resolutions.as_ref()),
-        flow_resolution_symbols(world, flow),
+        flow_resolution_symbols(flow),
         "transport callable resolutions should exactly project upstream callable-flow evidence"
     );
     assert_transport_surfaces_match_upstream(world, &facts.direct_surfaces, &flow.direct_surfaces);
@@ -6032,12 +6041,8 @@ fn producer_owner_for_flow<'a>(
         .expect("the upstream producer flow must retain its exact positioned callable owner")
 }
 
-fn flow_resolution_symbols(world: &World, flow: &CallableFlowFact) -> Vec<ExecutableSymbol> {
-    let mut symbols = flow
-        .resolutions
-        .iter()
-        .map(|resolution| ExecutableSymbol::new(resolution, world.types()))
-        .collect::<Vec<_>>();
+fn flow_resolution_symbols(flow: &CallableFlowFact) -> Vec<ExecutableSymbol> {
+    let mut symbols = flow.resolutions.iter().map(ExecutableSymbol::new).collect::<Vec<_>>();
     symbols.sort_by_key(executable_symbol_test_key);
     symbols
 }
@@ -6053,7 +6058,7 @@ fn assert_boundary_resolutions_match_upstream_flow(
         expected_by_surface
             .entry(edge.surface.clone())
             .or_default()
-            .push(ExecutableSymbol::new(&edge.resolution, world.types()));
+            .push(ExecutableSymbol::new(&edge.resolution));
     }
     for symbols in expected_by_surface.values_mut() {
         symbols.sort_by_key(executable_symbol_test_key);
@@ -6089,14 +6094,14 @@ fn sorted_executable_symbols(symbols: &[ExecutableSymbol]) -> Vec<ExecutableSymb
     sorted
 }
 
-fn executable_symbol_test_key(symbol: &ExecutableSymbol) -> (u32, Vec<Ty>, u8, usize) {
+fn executable_symbol_test_key(symbol: &ExecutableSymbol) -> (u32, Ty, u8, usize) {
     let need = match symbol.need {
         ExecutableNeed::Value => (0, 0),
         ExecutableNeed::TupleFields(arity) => (1, arity),
     };
     (
         symbol.activation.function.as_u32(),
-        symbol.activation.input().to_vec(),
+        symbol.activation.arrow,
         need.0,
         need.1,
     )
@@ -6221,18 +6226,14 @@ fn shape_leaf_lanes(world: &World, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
         .collect()
 }
 
-fn assert_plan_executable_references_are_root_scoped(
-    world: &World,
-    transport: &super::BackendProgram,
-    session: &PullSession,
-) {
+fn assert_plan_executable_references_are_root_scoped(transport: &super::BackendProgram, session: &PullSession) {
     let membership = session
         .demanded_executables()
         .iter()
-        .map(|key| ExecutableSymbol::new(key, world.types()))
+        .map(ExecutableSymbol::new)
         .collect::<HashSet<_>>();
     assert!(
-        membership.contains(&ExecutableSymbol::new(transport.entry(), world.types())),
+        membership.contains(&ExecutableSymbol::new(transport.entry())),
         "the root plan entry must be part of executable membership: {membership:?}"
     );
     for (position, _) in retained_layouts(transport) {
@@ -6265,7 +6266,7 @@ fn assert_plan_executable_references_are_root_scoped(
             );
             for member in wrapper.members.iter() {
                 assert!(
-                    membership.contains(&ExecutableSymbol::new(&member.target, world.types())),
+                    membership.contains(&ExecutableSymbol::new(&member.target)),
                     "runtime wrapper targets belong to root-member executables"
                 );
             }
@@ -6547,8 +6548,8 @@ fn callable_owner_positions_break_sibling_ties_on_canonical_inputs() {
         .filter(|pair| {
             types
                 .cmp_activation_tys(
-                    pair[0].identity.executable().activation.input(),
-                    pair[1].identity.executable().activation.input(),
+                    &types.arrow_params(&pair[0].identity.executable().activation.arrow),
+                    &types.arrow_params(&pair[1].identity.executable().activation.arrow),
                 )
                 .is_gt()
         })

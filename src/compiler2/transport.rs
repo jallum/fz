@@ -5,7 +5,7 @@
 //! Positions may mention semantic body evidence, but descriptor keys must not.
 
 use crate::fast_hash::HashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::Range;
 use std::rc::Rc;
@@ -200,44 +200,11 @@ pub struct LaneDescr {
     pub class: TransportClass,
 }
 
-/// An activation named by its function and arrow. The input list is the arrow's
-/// parameter list, read once at construction and kept for readers that want
-/// the slice; nothing else can set it, so it is a function of `arrow` and takes
-/// no part in identity.
-#[derive(Debug, Clone)]
+/// An activation named by its function and arrow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ActivationSymbol {
     pub function: FunctionId,
     pub arrow: Ty,
-    input: Box<[Ty]>,
-}
-
-impl ActivationSymbol {
-    pub fn new(function: FunctionId, arrow: Ty, types: &Types) -> Self {
-        Self {
-            function,
-            arrow,
-            input: types.arrow_params(&arrow).into_boxed_slice(),
-        }
-    }
-
-    pub fn input(&self) -> &[Ty] {
-        &self.input
-    }
-}
-
-impl PartialEq for ActivationSymbol {
-    fn eq(&self, other: &Self) -> bool {
-        self.function == other.function && self.arrow == other.arrow
-    }
-}
-
-impl Eq for ActivationSymbol {}
-
-impl Hash for ActivationSymbol {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.function.hash(state);
-        self.arrow.hash(state);
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -247,9 +214,12 @@ pub struct ExecutableSymbol {
 }
 
 impl ExecutableSymbol {
-    pub fn new(key: &ExecutableKey, types: &Types) -> Self {
+    pub fn new(key: &ExecutableKey) -> Self {
         Self {
-            activation: ActivationSymbol::new(key.activation.function, key.activation.arrow, types),
+            activation: ActivationSymbol {
+                function: key.activation.function,
+                arrow: key.activation.arrow,
+            },
             need: key.need,
         }
     }

@@ -1676,7 +1676,7 @@ impl References {
                     match (key.as_str(), field) {
                         ("arrow", Json::Number(id)) => self.types.extend(id.as_u64()),
                         ("function_id", Json::Number(id)) => self.functions.extend(id.as_u64()),
-                        ("input" | "surface" | "surface_tys", Json::Array(tys)) => {
+                        ("surface" | "surface_tys", Json::Array(tys)) => {
                             self.types.extend(tys.iter().filter_map(Json::as_u64));
                         }
                         _ => self.walk(field),
@@ -1726,7 +1726,7 @@ fn canonical_product_value(value: &Json, canon: &CanonTables) -> Json {
                         ("function_id", Json::Number(id)) => {
                             Json::String(canon.function(id.as_u64().unwrap_or_default()))
                         }
-                        ("input" | "surface" | "surface_tys", Json::Array(tys)) => Json::Array(
+                        ("surface" | "surface_tys", Json::Array(tys)) => Json::Array(
                             tys.iter()
                                 .map(|ty| {
                                     ty.as_u64().map_or_else(
@@ -1768,7 +1768,7 @@ fn identity_field(key: &str, field: &Json, canon: Option<&CanonTables>) -> Json 
         (canon, "product", _) => canon.map_or_else(|| field.clone(), |canon| canonical_product_value(field, canon)),
         (Some(canon), "arrow", Json::Number(id)) => Json::String(canon.ty(id.as_u64().unwrap_or_default())),
         (Some(canon), "function_id", Json::Number(id)) => Json::String(canon.function(id.as_u64().unwrap_or_default())),
-        (Some(canon), "input" | "surface" | "surface_tys", Json::Array(tys)) => Json::Array(
+        (Some(canon), "surface" | "surface_tys", Json::Array(tys)) => Json::Array(
             tys.iter()
                 .map(|ty| Json::String(canon.ty(ty.as_u64().unwrap_or_default())))
                 .collect(),

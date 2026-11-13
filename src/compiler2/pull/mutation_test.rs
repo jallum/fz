@@ -117,15 +117,8 @@ fn mutation_admission_keeps_single_products_inline_and_never_clones_rejected_key
 
 fn mutation_positioned_key(types: &mut super::super::Types, id: u32) -> ProductKey {
     let executable = fake_executable_with_inputs(types, RootId::for_test(100), id, 32);
-    let symbol = super::super::transport::ExecutableSymbol::new(&executable, types);
+    let symbol = super::super::transport::ExecutableSymbol::new(&executable);
     ProductKey::TransportShape(TransportPosition::ExecutableReturn { executable: symbol })
-}
-
-fn mutation_input(key: &ProductKey) -> *const super::super::Ty {
-    let ProductKey::TransportShape(position) = key else {
-        panic!("positioned key")
-    };
-    position.executable().activation.input().as_ptr()
 }
 
 #[test]
@@ -135,7 +128,7 @@ fn mutation_heap_reuses_owned_positioned_keys_and_returns_rejected_escalations()
     let mut originals = Vec::new();
     for id in [3, 1, 2] {
         let key = mutation_positioned_key(&mut types, id);
-        originals.push((key.clone(), mutation_input(&key)));
+        originals.push(key.clone());
         seeds.push((ReaderMutation::Dirty, key));
     }
     let buffer = seeds.as_ptr();
@@ -151,11 +144,9 @@ fn mutation_heap_reuses_owned_positioned_keys_and_returns_rejected_escalations()
     let (mutation, selected) = wave.pop(&types).unwrap();
     assert_eq!(mutation, ReaderMutation::Dirty);
     assert_eq!(
-        selected, originals[1].0,
+        selected, originals[1],
         "typed product ordering selects the smallest key"
     );
-    let input = mutation_input(&selected);
-    assert_eq!(input, originals[1].1);
     assert!(wave.push(ReaderMutation::Invalidate, selected, &types).is_none());
     let (mutation, selected) = wave.pop(&types).unwrap();
     assert_eq!(
@@ -164,39 +155,23 @@ fn mutation_heap_reuses_owned_positioned_keys_and_returns_rejected_escalations()
         "a newly stronger same-key mutation competes immediately"
     );
     assert_eq!(
-        mutation_input(&selected),
-        input,
-        "pending escalation moves its original positioned input"
+        selected, originals[1],
+        "pending escalation keeps its original positioned key"
     );
     let rejected = wave.push(ReaderMutation::Invalidate, selected, &types).unwrap();
     assert_eq!(
-        mutation_input(&rejected),
-        input,
+        rejected, originals[1],
         "rejected owned escalation returns its original key for attribution"
     );
-    let MutationAdmissions::Many(admissions) = &wave.admissions else {
-        unreachable!()
-    };
-    let map_input = mutation_input(admissions.get_key_value(&rejected).unwrap().0);
     wave.push_borrowed(ReaderMutation::Refresh, &rejected, &types);
     wave.push_borrowed(ReaderMutation::Refresh, &rejected, &types);
     let (mutation, selected) = wave.pop(&types).unwrap();
     assert_eq!(mutation, ReaderMutation::Refresh);
     assert_eq!(selected, rejected);
-    let MutationAdmissions::Many(admissions) = &wave.admissions else {
-        unreachable!()
-    };
-    assert_eq!(
-        mutation_input(admissions.get_key_value(&selected).unwrap().0),
-        map_input,
-        "all three strengths share the same map-owned input"
-    );
     while let Some((_, key)) = wave.pop(&types) {
-        let (_, input) = originals.iter().find(|(expected, _)| *expected == key).unwrap();
-        assert_eq!(
-            mutation_input(&key),
-            *input,
-            "heap selection moves each original key without cloning it"
+        assert!(
+            originals.contains(&key),
+            "heap selection yields only the seeded keys"
         );
     }
     assert_eq!(wave.work.mutation_pops, 5);

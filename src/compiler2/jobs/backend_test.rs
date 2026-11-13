@@ -17,7 +17,7 @@ fn named_function_construction_uses_the_materialized_value_layout() {
     let nothing = world.intern_shape(ShapeDescr::Nothing);
     let ty = world.types_mut().int();
     let value = ValueId::from_u32(0);
-    let mut executable = BackendExecutable::for_test(key, ty, nothing, world.types());
+    let mut executable = BackendExecutable::for_test(key, ty, nothing);
     let abi = Rc::make_mut(&mut executable.abi);
     abi.value_layouts.insert(
         value,
@@ -59,7 +59,10 @@ fn resolve_return_flow_rejects_divergence_contradictions() {
     let arrow = world.types_mut().arrow(&[], ty);
     let position = TransportPosition::ExecutableReturn {
         executable: ExecutableSymbol {
-            activation: ActivationSymbol::new(FunctionId::from_coordinate(1), arrow, world.types()),
+            activation: ActivationSymbol {
+                function: FunctionId::from_coordinate(1),
+                arrow,
+            },
             need: ExecutableNeed::Value,
         },
     };
@@ -137,7 +140,7 @@ fn the_seam_tripwire_refuses_a_lane_mismatch_and_passes_agreement() {
             },
             need: ExecutableNeed::Value,
         };
-        let mut executable = BackendExecutable::for_test(key.clone(), int, shape, world.types());
+        let mut executable = BackendExecutable::for_test(key.clone(), int, shape);
         Rc::make_mut(&mut executable.abi).value_layouts.insert(
             callee,
             value_layout(

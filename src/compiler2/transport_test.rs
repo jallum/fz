@@ -81,7 +81,7 @@ fn transport_consumers_share_one_typed_semantic_order() {
         activation: ActivationKey::from_inputs(root, function, &[input], &mut types),
         need: ExecutableNeed::Value,
     });
-    let symbols = keys.each_ref().map(|key| ExecutableSymbol::new(key, &types));
+    let symbols = keys.each_ref().map(ExecutableSymbol::new);
     let positions = symbols.each_ref().map(|executable| TransportPosition::ExecutableInput {
         executable: executable.clone(),
         semantic_index: 0,
@@ -238,7 +238,10 @@ fn transport_descriptors_share_across_root_positions() {
     let shape = interners.intern_shape(ShapeDescr::Lane(lane));
     let add_arrow = types.arrow(&[int, int], int);
     let executable = ExecutableSymbol {
-        activation: ActivationSymbol::new(add, add_arrow, &types),
+        activation: ActivationSymbol {
+            function: add,
+            arrow: add_arrow,
+        },
         need: ExecutableNeed::Value,
     };
     let first_position = TransportPosition::ExecutableInput {
@@ -482,17 +485,35 @@ fn an_activation_symbol_is_identified_by_its_function_and_arrow_alone() {
     let mut functions = FunctionMap::new();
     let add = functions.reference(ModuleId::GLOBAL, None, "add", 2);
 
-    let symbol = ActivationSymbol::new(add, arrow, &types);
+    let symbol = ActivationSymbol { function: add, arrow };
 
-    assert_eq!(
-        symbol.input(),
-        types.arrow_params(&arrow),
-        "the input list is the arrow's parameter list, read from the arrow"
-    );
     assert_eq!(
         bytes_written_by(&symbol),
         bytes_written_by(&(add, arrow)),
         "hashing an activation symbol writes its function and arrow and nothing derived from them"
     );
-    assert_eq!(symbol, ActivationSymbol::new(add, arrow, &types));
+    assert_eq!(symbol, ActivationSymbol { function: add, arrow });
+}
+
+#[test]
+fn an_activation_symbol_built_from_a_key_is_exactly_the_keys_function_and_arrow() {
+    let mut types = Types::new();
+    let int = types.int();
+    let mut functions = FunctionMap::new();
+    let function = functions.reference(ModuleId::GLOBAL, None, "add", 2);
+    let key = ExecutableKey {
+        activation: ActivationKey::from_inputs(RootId::for_test(0), function, &[int, int], &mut types),
+        need: ExecutableNeed::Value,
+    };
+
+    let symbol = ExecutableSymbol::new(&key);
+
+    assert_eq!(
+        symbol.activation,
+        ActivationSymbol {
+            function: key.activation.function,
+            arrow: key.activation.arrow,
+        }
+    );
+    assert_eq!(symbol.need, key.need);
 }
