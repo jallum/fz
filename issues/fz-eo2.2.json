@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-eo2.1"
+  ],
   "blocks": [],
   "created": "2026-11-13T21:18:51Z",
   "description": "Runs Elixir and rewrites golden plus stamp for one fixture or all; has a check-only mode that ignores stamps. Replaces the BLESS=1 branch of oracle_goldens_match_elixir. Stamps all 362.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "One command regenerates oracle goldens and stamps",
   "type": "task",
-  "updated_at": "2026-11-13T21:18:51Z"
+  "updated_at": "2026-11-13T21:18:52Z"
 }
