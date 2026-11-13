@@ -719,62 +719,78 @@ impl QuotedSourceCursor {
     }
 
     pub fn tuple_items(&self) -> Result<Vec<Self>, QuotedSourceError> {
+        (0..self.tuple_arity()?).map(|index| self.tuple_item(index)).collect()
+    }
+
+    /// The number of fields of a quoted tuple, once every field is known to
+    /// hold a value this reader can follow.
+    fn tuple_arity(&self) -> Result<usize, QuotedSourceError> {
         let addr = self.root.struct_addr().map_err(QuotedSourceError::from)?;
         let schema_id = unsafe { struct_schema_id(addr as *const u8) };
         let proc = self.heap.process();
         let schema_handle = proc.heap.schemas_registry();
-        let schema = schema_handle.borrow();
-        let fields = schema.get(schema_id).fields.clone();
-        let mut items = Vec::with_capacity(fields.len());
-        for field in fields {
-            if field.kind != fz_runtime::heap::FieldKind::AnyValue {
-                return Err(QuotedSourceError::new(format!(
-                    "quoted source tuple cannot read raw field in schema {}",
-                    schema.get(schema_id).identity.display_name()
-                )));
-            }
-            let value = proc
-                .heap
-                .read_struct_field_ref(self.root, field.offset)
-                .map_err(QuotedSourceError::from)?;
-            items.push(Self {
-                heap: self.heap.clone(),
-                root: value,
-            });
+        let schema_registry = schema_handle.borrow();
+        let schema = schema_registry.get(schema_id);
+        if schema
+            .fields
+            .iter()
+            .any(|field| field.kind != fz_runtime::heap::FieldKind::AnyValue)
+        {
+            return Err(QuotedSourceError::new(format!(
+                "quoted source tuple cannot read raw field in schema {}",
+                schema.identity.display_name()
+            )));
         }
-        Ok(items)
+        Ok(schema.fields.len())
+    }
+
+    fn tuple_item(&self, index: usize) -> Result<Self, QuotedSourceError> {
+        let addr = self.root.struct_addr().map_err(QuotedSourceError::from)?;
+        let schema_id = unsafe { struct_schema_id(addr as *const u8) };
+        let proc = self.heap.process();
+        let offset = proc.heap.schemas_registry().borrow().get(schema_id).fields[index].offset;
+        let value = proc
+            .heap
+            .read_struct_field_ref(self.root, offset)
+            .map_err(QuotedSourceError::from)?;
+        Ok(Self {
+            heap: self.heap.clone(),
+            root: value,
+        })
     }
 
     pub fn map_entries(&self) -> Result<Vec<(Self, Self)>, QuotedSourceError> {
         let addr = self.root.map_addr().map_err(QuotedSourceError::from)?;
         let count = unsafe { map_count(addr as *const u8) };
-        let mut entries = Vec::with_capacity(count);
-        for index in 0..count {
-            let tag = unsafe { ptr::read(map_tag_ptr(addr as *const u8).add(index)) };
-            let keys = unsafe { map_keys_ptr(addr as *const u8, count) };
-            let values = unsafe { map_values_ptr(addr as *const u8, count) };
-            let key = storage_ref(unsafe { keys.add(index) }, map_key_kind(tag))?;
-            let value = storage_ref(unsafe { values.add(index) }, map_value_kind(tag))?;
-            entries.push((
-                Self {
-                    heap: self.heap.clone(),
-                    root: key,
-                },
-                Self {
-                    heap: self.heap.clone(),
-                    root: value,
-                },
-            ));
-        }
-        Ok(entries)
+        (0..count).map(|index| self.map_entry(addr, count, index)).collect()
     }
 
+    fn map_entry(&self, addr: *mut u8, count: usize, index: usize) -> Result<(Self, Self), QuotedSourceError> {
+        let tag = unsafe { ptr::read(map_tag_ptr(addr as *const u8).add(index)) };
+        let keys = unsafe { map_keys_ptr(addr as *const u8, count) };
+        let values = unsafe { map_values_ptr(addr as *const u8, count) };
+        let key = storage_ref(unsafe { keys.add(index) }, map_key_kind(tag))?;
+        let value = storage_ref(unsafe { values.add(index) }, map_value_kind(tag))?;
+        Ok((
+            Self {
+                heap: self.heap.clone(),
+                root: key,
+            },
+            Self {
+                heap: self.heap.clone(),
+                root: value,
+            },
+        ))
+    }
+
+    /// The value under the atom key `key_name`. Entries are read in map order
+    /// and reading stops at the match, so a lookup builds no entry list.
     pub fn map_value(&self, key_name: &str) -> Result<Option<Self>, QuotedSourceError> {
-        for (key, value) in self.map_entries()? {
-            if key.root.tag() != ValueKind::ATOM {
-                continue;
-            }
-            if key.atom_name()? == key_name {
+        let addr = self.root.map_addr().map_err(QuotedSourceError::from)?;
+        let count = unsafe { map_count(addr as *const u8) };
+        for index in 0..count {
+            let (key, value) = self.map_entry(addr, count, index)?;
+            if key.root.tag() == ValueKind::ATOM && key.atom_name()? == key_name {
                 return Ok(Some(value));
             }
         }
@@ -782,14 +798,10 @@ impl QuotedSourceCursor {
     }
 
     fn ast_node_parts(&self) -> Result<Option<[Self; 3]>, QuotedSourceError> {
-        if self.root.tag() != ValueKind::STRUCT {
+        if self.root.tag() != ValueKind::STRUCT || self.tuple_arity()? != 3 {
             return Ok(None);
         }
-        let items = self.tuple_items()?;
-        if items.len() != 3 {
-            return Ok(None);
-        }
-        Ok(Some([items[0].clone(), items[1].clone(), items[2].clone()]))
+        Ok(Some([self.tuple_item(0)?, self.tuple_item(1)?, self.tuple_item(2)?]))
     }
 
     /// Reads an untrusted AST node only after validating its own metadata
