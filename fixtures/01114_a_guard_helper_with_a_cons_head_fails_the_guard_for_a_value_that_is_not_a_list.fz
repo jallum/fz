@@ -1,0 +1,17 @@
+#---
+# purpose: "A function-head guard that calls a helper whose only clause is a cons pattern holds for a list with a positive head and fails for every value that is not a list, as Elixir's hd/1 does in a guard"
+# oracle: oracle.exs
+#---
+#
+# `:a` means the guard held and `:b` means it did not. The helper has no clause
+# for an empty list, an integer, an atom, a float, a tuple, a binary or a map,
+# and a call that matches no clause fails the guard that made it.
+def first([h | _]), do: h
+
+def f(l) when first(l) > 0, do: :a
+def f(_), do: :b
+
+def main() do
+  dbg([f([1]), f([]), f(7), f(:x)])
+  dbg([f([-1]), f(1.5), f({1, 2}), f("abc"), f(%{k: 1})])
+end

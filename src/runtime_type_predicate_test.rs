@@ -74,6 +74,19 @@ fn a_scalar_lane_is_settled_when_its_axis_admits_all_or_none() {
     );
 }
 
+/// A test admits a list when its list axis names any shape, and not otherwise,
+/// so a variable typed as an integer is never asked a list question.
+#[test]
+fn a_predicate_admits_a_list_only_when_its_list_axis_names_a_shape() {
+    let mut predicate = RuntimeTypePredicate::none();
+    predicate.ints = FiniteSet::any();
+    assert!(!predicate.admits_a_list());
+
+    predicate.lists = ListShapes::shape_only(FiniteSet::finite([ListShape::NonEmpty]));
+    assert!(predicate.admits_a_list());
+    assert!(RuntimeTypePredicate::any().admits_a_list());
+}
+
 #[cfg(test)]
 mod value_membership_tests {
     use super::super::surface_membership::SurfaceMembershipCensus;

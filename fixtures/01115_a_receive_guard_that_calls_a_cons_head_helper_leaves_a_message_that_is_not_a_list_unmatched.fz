@@ -1,0 +1,30 @@
+#---
+# purpose: "A receive guard that calls a helper whose only clause is a cons pattern takes a list with a matching head and leaves any other message unmatched, as Elixir's hd/1 does in a guard"
+# oracle: oracle.exs
+#---
+#
+# The atom `:no` and the empty list have no head, so the guard fails for them
+# and the next clause takes them.
+defp first([h | _]), do: h
+
+def main() do
+  send(self(), [3])
+  send(self(), :no)
+  send(self(), [])
+  send(self(), [4])
+  receive do
+    l when first(l) == 3 -> dbg(:a)
+  end
+  receive do
+    l when first(l) == 3 -> dbg(:a)
+    _ -> dbg(:b)
+  end
+  receive do
+    l when first(l) == 3 -> dbg(:a)
+    _ -> dbg(:b)
+  end
+  receive do
+    l when first(l) == 3 -> dbg(:a)
+    _ -> dbg(:b)
+  end
+end

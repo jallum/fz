@@ -3127,6 +3127,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         predicate.settled_for_scalar_lane(kind)
     }
 
+    /// Whether a value held in this form can be a list. A tuple held as lanes
+    /// cannot, and a variable whose type has no list in it cannot, so a list
+    /// question of either is settled without reading it as a list.
+    fn value_may_be_list(&mut self, ctx: &NativeFnCtx, value: &NativeBoundValue) -> bool {
+        match value {
+            NativeBoundValue::Transport { .. } => false,
+            NativeBoundValue::Absent => true,
+            NativeBoundValue::Runtime(var) => match ctx.value_types.get(var).copied() {
+                Some(ty) => self.world.types().runtime_type_predicate(&ty).admits_a_list(),
+                None => true,
+            },
+        }
+    }
+
     /// Ask a type test of a value in whatever form it is held.
     ///
     /// A whole value answers with one `RuntimeTypeTest`. A tuple held as lanes
@@ -3203,14 +3217,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let predicate = self.world.types().runtime_type_predicate(ty);
                 return self.lane_form_type_test(ctx, value, &predicate);
             }
-            Region::List(ListRegion::Empty) => {
+            Region::List(list) => {
+                let value = self.dispatch_subject_value(ctx, plan, state, subject)?;
+                if !self.value_may_be_list(ctx, value) {
+                    return Ok(DispatchAnswer::Static(false));
+                }
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
-                let (var, _) = ctx.emit_let(Prim::IsEmptyList(subject));
-                var
-            }
-            Region::List(ListRegion::Cons) => {
-                let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
-                let (var, _) = ctx.emit_let(Prim::IsListCons(subject));
+                let question = match list {
+                    ListRegion::Empty => Prim::IsEmptyList(subject),
+                    ListRegion::Cons => Prim::IsListCons(subject),
+                };
+                let (var, _) = ctx.emit_let(question);
                 var
             }
             Region::TupleArity(arity) => {

@@ -453,6 +453,14 @@ settled_for_scalar_lane` supplies the answer, entry dispatch
 lane (`as_raw_i64`, `as_raw_f64`, `receive_value_int`, `receive_value_float`)
 refuse rather than reinterpret.
 
+A list question (`Region::List`) of a value that cannot be a list is answered
+`false` the same way: entry dispatch asks `value_may_be_list`, which is false for
+a tuple held as lanes and for a variable whose type
+`RuntimeTypePredicate::admits_a_list` refuses. A helper whose clause head is a
+cons pattern, called with an integer, an atom or a tuple, therefore lowers only
+its failure successor, and the cons clause's `ListHead` and `ListTail` projections
+are never emitted for a value that is not a list.
+
 `tests/guard_matrix_test.rs` runs 296 generated mixed-lane guard programs
 (`tests/guard_matrix/programs.json`, with Elixir's answers recorded in it) on the
 interpreter, the JIT and AOT; `tests/guard_matrix/generate.py` regenerates the
