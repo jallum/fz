@@ -1,4 +1,5 @@
 use crate::compiler2::{ValueMap, ValueSet};
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -1857,7 +1858,7 @@ fn callsite_returns_feeding(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> H
         }
         let LoweredBody::Clauses { entries, .. } = &facts.body;
         for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
-            pending.extend(step_sources_of(step, value));
+            push_step_sources(step, value, &mut pending);
         }
         pending.extend(
             entries
@@ -1882,67 +1883,68 @@ fn decision_source_of(tail: &LoweredTail, value: ValueId) -> Option<ValueId> {
         .map(|argument| inputs[subject_input_ordinal(&dispatch.plan, argument.subject) as usize])
 }
 
-/// The values `step` reads to define `value`; empty when `step` does not
-/// define it.
-fn step_sources_of(step: &LoweredStep, value: ValueId) -> Vec<ValueId> {
+/// Appends to `out` the values `step` reads to define `value`; appends nothing
+/// when `step` does not define it.
+fn push_step_sources(step: &LoweredStep, value: ValueId, out: &mut Vec<ValueId>) {
     let size_value = |size: &Option<super::super::body::LoweredBitSize>| {
         size.as_ref().and_then(super::super::body::LoweredBitSize::read_value)
     };
     match step {
         LoweredStep::Tuple { value: defined, items } if *defined == value => {
-            items.iter().map(|item| item.value).collect()
+            out.extend(items.iter().map(|item| item.value))
         }
         LoweredStep::List {
             value: defined,
             items,
             tail,
             ..
-        } if *defined == value => items.iter().copied().chain(*tail).collect(),
+        } if *defined == value => out.extend(items.iter().copied().chain(*tail)),
         LoweredStep::Map {
             value: defined,
             entries,
             ..
-        } if *defined == value => entries.iter().flat_map(|(key, field)| [key.value, *field]).collect(),
+        } if *defined == value => out.extend(entries.iter().flat_map(|(key, field)| [key.value, *field])),
         LoweredStep::MapUpdate {
             value: defined,
             ok,
             base,
             entries,
-        } if *defined == value || *ok == value => std::iter::once(*base)
-            .chain(entries.iter().flat_map(|(key, field)| [key.value, *field]))
-            .collect(),
+        } if *defined == value || *ok == value => {
+            out.extend(std::iter::once(*base).chain(entries.iter().flat_map(|(key, field)| [key.value, *field])))
+        }
         LoweredStep::Struct {
             value: defined, fields, ..
-        } if *defined == value => fields.iter().map(|(_, field)| *field).collect(),
-        LoweredStep::Bitstring { value: defined, fields } if *defined == value => fields
-            .iter()
-            .flat_map(|field| std::iter::once(field.value).chain(size_value(&field.spec.size)))
-            .collect(),
+        } if *defined == value => out.extend(fields.iter().map(|(_, field)| *field)),
+        LoweredStep::Bitstring { value: defined, fields } if *defined == value => out.extend(
+            fields
+                .iter()
+                .flat_map(|field| std::iter::once(field.value).chain(size_value(&field.spec.size))),
+        ),
         LoweredStep::BinaryOp {
             value: defined,
             left,
             right,
             ..
-        } if *defined == value => vec![*left, *right],
+        } if *defined == value => out.extend([*left, *right]),
         LoweredStep::UnaryOp {
             value: defined, input, ..
-        } if *defined == value => vec![*input],
+        } if *defined == value => out.push(*input),
         LoweredStep::MapIndex {
             value: defined,
             base,
             key,
-        } if *defined == value => vec![*base, key.value],
+        } if *defined == value => out.extend([*base, key.value]),
         LoweredStep::FieldAccess {
             value: defined, base, ..
-        } if *defined == value => vec![*base],
+        } if *defined == value => out.push(*base),
         LoweredStep::RequireMapValue {
             value: defined, source, ..
-        } if *defined == value => vec![*source],
+        } if *defined == value => out.push(*source),
         LoweredStep::TupleField {
             value: defined, source, ..
-        } if *defined == value => vec![*source],
-        LoweredStep::SplitList { source, head, tail } if *head == value || *tail == value => vec![*source],
-        LoweredStep::BitstringInit { reader, source } if *reader == value => vec![*source],
+        } if *defined == value => out.push(*source),
+        LoweredStep::SplitList { source, head, tail } if *head == value || *tail == value => out.push(*source),
+        LoweredStep::BitstringInit { reader, source } if *reader == value => out.push(*source),
         LoweredStep::BitstringRead {
             ok,
             value: read_value,
@@ -1951,7 +1953,7 @@ fn step_sources_of(step: &LoweredStep, value: ValueId) -> Vec<ValueId> {
             spec,
             ..
         } if *ok == value || *read_value == value || *next_reader == value => {
-            std::iter::once(*reader).chain(size_value(&spec.size)).collect()
+            out.extend(std::iter::once(*reader).chain(size_value(&spec.size)))
         }
         LoweredStep::Const { .. }
         | LoweredStep::FunctionRef { .. }
@@ -1971,7 +1973,7 @@ fn step_sources_of(step: &LoweredStep, value: ValueId) -> Vec<ValueId> {
         | LoweredStep::TupleField { .. }
         | LoweredStep::SplitList { .. }
         | LoweredStep::BitstringInit { .. }
-        | LoweredStep::BitstringRead { .. } => Vec::new(),
+        | LoweredStep::BitstringRead { .. } => {}
     }
 }
 
@@ -2661,13 +2663,13 @@ fn ground_first_class_callable_surface(facts: &RuntimeDemandFacts<'_>, demand: &
     demand.callable.resolved.extend(surfaces.iter().cloned());
 }
 
-fn local_target_input_demands(
+fn local_target_input_demands<'a>(
     types: &Types,
     facts: &RuntimeDemandFacts<'_>,
     target: &super::super::semantic::CallTargetSummary,
     need: ExecutableNeed,
-    demands: &RuntimeDemandFormulaSnapshot,
-) -> Vec<RuntimeDemand> {
+    demands: &'a RuntimeDemandFormulaSnapshot,
+) -> Cow<'a, [RuntimeDemand]> {
     match target.callee {
         super::super::semantic::SelectedCallee::ProviderBoundary(_function) => {
             // A provider boundary is interface-only by construction: it has no
@@ -2679,7 +2681,8 @@ fn local_target_input_demands(
                 .iter()
                 .copied()
                 .map(|ty| facts.boundary_demand(ty))
-                .collect()
+                .collect::<Vec<_>>()
+                .into()
         }
         super::super::semantic::SelectedCallee::Function(_) => {
             if let Some(extern_params) = target.extern_params {
@@ -2694,7 +2697,8 @@ fn local_target_input_demands(
                             facts.boundary_demand(*ty)
                         }
                     })
-                    .collect();
+                    .collect::<Vec<_>>()
+                    .into();
             }
             let Some(activation) = target.activation.clone() else {
                 return target
@@ -2702,15 +2706,19 @@ fn local_target_input_demands(
                     .iter()
                     .copied()
                     .map(|ty| facts.boundary_demand(ty))
-                    .collect();
+                    .collect::<Vec<_>>()
+                    .into();
             };
             demands
                 .target_inputs
                 .get(&ExecutableKey { activation, need })
-                .cloned()
-                .unwrap_or_else(|| {
-                    vec![RuntimeDemand::ignore(); target.activation.as_ref().map_or(0, |a| a.input_len(types))]
-                })
+                .map_or_else(
+                    || {
+                        vec![RuntimeDemand::ignore(); target.activation.as_ref().map_or(0, |a| a.input_len(types))]
+                            .into()
+                    },
+                    |stored| Cow::Borrowed(stored.as_slice()),
+                )
         }
     }
 }

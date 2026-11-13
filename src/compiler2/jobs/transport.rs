@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
@@ -548,23 +549,27 @@ fn joined_input_ty(world: &mut World, executable: &ExecutableKey, index: usize) 
 /// The analyzed type and runtime demand a generic callable-owner position
 /// carries. This pair is the filter every facts projection runs through, so it
 /// is derived per position -- never inherited from a group-mate.
-fn generic_owner_ty_and_demand(
+fn generic_owner_ty_and_demand<'a>(
     world: &mut World,
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
-    runtime: &ExecutableRuntimeDemand,
+    runtime: &'a ExecutableRuntimeDemand,
     position: &TransportPosition,
-) -> (Ty, RuntimeDemand) {
+) -> (Ty, Cow<'a, RuntimeDemand>) {
     match position {
         TransportPosition::ExecutableInput { semantic_index, .. } => (
             joined_input_ty(world, executable, *semantic_index),
-            runtime.input_demands.get(*semantic_index).cloned().unwrap_or_default(),
+            runtime
+                .input_demands
+                .get(*semantic_index)
+                .map(Cow::Borrowed)
+                .unwrap_or_default(),
         ),
         TransportPosition::ExecutableReturn { .. } | TransportPosition::ReturnPayload { .. } => {
             let Some(ty) = world.activation_return(&executable.activation) else {
                 unreachable!("bottom transport layouts return before callable-owner derivation")
             };
-            (ty, runtime.return_demand.clone())
+            (ty, Cow::Borrowed(&runtime.return_demand))
         }
         TransportPosition::Value { value, .. } => (
             facts
@@ -573,7 +578,7 @@ fn generic_owner_ty_and_demand(
                 .get(value)
                 .copied()
                 .unwrap_or_else(|| world.types_mut().any()),
-            runtime.value_demands.get(value).cloned().unwrap_or_default(),
+            runtime.value_demands.get(value).map(Cow::Borrowed).unwrap_or_default(),
         ),
         TransportPosition::CallArg {
             callsite,
@@ -592,7 +597,7 @@ fn generic_owner_ty_and_demand(
                     .call_arg_demands
                     .get(callsite)
                     .and_then(|demands| demands.get(*semantic_index))
-                    .cloned()
+                    .map(Cow::Borrowed)
                     .unwrap_or_default(),
             )
         }
@@ -607,7 +612,7 @@ fn generic_owner_ty_and_demand(
                     .entry_capture_demands
                     .get(entry)
                     .and_then(|demands| demands.get(*capture_index))
-                    .cloned()
+                    .map(Cow::Borrowed)
                     .unwrap_or_default(),
             )
         }
@@ -624,8 +629,8 @@ fn generic_owner_ty_and_demand(
                     .and_then(|value| facts.analysis().value_types.get(&value).copied())
                     .unwrap_or_else(|| world.types_mut().any()),
                 value
-                    .and_then(|value| runtime.value_demands.get(&value).cloned())
-                    .unwrap_or_else(RuntimeDemand::whole),
+                    .and_then(|value| runtime.value_demands.get(&value))
+                    .map_or_else(|| Cow::Owned(RuntimeDemand::whole()), Cow::Borrowed),
             )
         }
     }
@@ -1764,7 +1769,11 @@ fn produce_named_transport_position(
     let (ty, demand) = match position {
         TransportPosition::ExecutableInput { semantic_index, .. } => {
             let ty = joined_input_ty(world, executable, *semantic_index);
-            let demand = runtime.input_demands.get(*semantic_index).cloned().unwrap_or_default();
+            let demand = runtime
+                .input_demands
+                .get(*semantic_index)
+                .map(Cow::Borrowed)
+                .unwrap_or_default();
             (ty, demand)
         }
         TransportPosition::ExecutableReturn { .. } => {
@@ -1778,7 +1787,7 @@ fn produce_named_transport_position(
                     .map(|origin| origin_transport_recipe(world, &symbol, &facts, origin))
                     .collect(),
             );
-            (ty, runtime.return_demand.clone())
+            (ty, Cow::Borrowed(&runtime.return_demand))
         }
         TransportPosition::Value { value, .. } => {
             let ty = facts
@@ -1787,7 +1796,7 @@ fn produce_named_transport_position(
                 .get(value)
                 .copied()
                 .unwrap_or_else(|| world.types_mut().any());
-            let demand = runtime.value_demands.get(value).cloned().unwrap_or_default();
+            let demand = runtime.value_demands.get(value).map(Cow::Borrowed).unwrap_or_default();
             match facts.value_origin(*value) {
                 Some(TransportSource::CallableValue(_)) if runtime.callable_flows.contains_key(value) => {
                     let key = ProductKey::CallableConstruction(position.clone());
@@ -1872,8 +1881,8 @@ fn produce_named_transport_position(
                 .call_arg_demands
                 .get(callsite)
                 .and_then(|demands| demands.get(*semantic_index))
-                .cloned()
-                .or_else(|| runtime.value_demands.get(&arg.value).cloned())
+                .or_else(|| runtime.value_demands.get(&arg.value))
+                .map(Cow::Borrowed)
                 .unwrap_or_default();
             (ty, demand)
         }
@@ -1905,9 +1914,9 @@ fn produce_named_transport_position(
                         .get(&value)
                         .copied()
                         .unwrap_or_else(|| world.types_mut().any()),
-                    runtime.value_demands.get(&value).cloned().unwrap_or_default(),
+                    runtime.value_demands.get(&value).map(Cow::Borrowed).unwrap_or_default(),
                 ),
-                _ => (caller_return_ty, runtime.return_demand.clone()),
+                _ => (caller_return_ty, Cow::Borrowed(&runtime.return_demand)),
             }
         }
         TransportPosition::EntryCapture {
@@ -1924,7 +1933,7 @@ fn produce_named_transport_position(
                     .entry_capture_demands
                     .get(entry)
                     .and_then(|demands| demands.get(*capture_index))
-                    .cloned()
+                    .map(Cow::Borrowed)
                     .unwrap_or_default(),
             )
         }
@@ -1947,7 +1956,7 @@ fn produce_named_transport_position(
             }
             (
                 resume_payload_ty(world.types(), executable, &facts, *entry),
-                runtime.value_demands.get(&value).cloned().unwrap_or_default(),
+                runtime.value_demands.get(&value).map(Cow::Borrowed).unwrap_or_default(),
             )
         }
     };
