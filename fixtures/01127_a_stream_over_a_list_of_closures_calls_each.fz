@@ -1,0 +1,8 @@
+#---
+# purpose: "A stream mapped over a list of closures calls each closure element, so a closure crossing the stream's recursion keeps one carrier"
+# kind: run
+# oracle: 01127_a_stream_over_a_list_of_closures_calls_each.oracle.exs
+#---
+def main() do
+  dbg(Enum.to_list(Stream.map([fn x -> x end], fn f -> f.(1) end)))
+end

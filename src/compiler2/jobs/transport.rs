@@ -2390,8 +2390,8 @@ fn reborrow_reads<'r, 'ctx, T: crate::telemetry::Telemetry>(
 ///
 /// Naming a callable's exact direct layout means reading its target's capture
 /// positions, so a derivation with no reads settles every callable on the
-/// generic boxed shape -- and, having nothing to wait on and no capture cycle
-/// to cut, it always answers exactly.
+/// generic callable, carried as a `ValueRef` -- and, having nothing to wait on
+/// and no capture cycle to cut, it always answers exactly.
 ///
 /// Only the reads make an interrupted answer possible, so a return type that
 /// could not express one would have to be chosen by the presence of the reads:
@@ -2624,8 +2624,11 @@ fn layout_from_demand<T: crate::telemetry::Telemetry>(
 /// A demand that names its targets, and can read their capture positions, gets
 /// the exact direct layout: the target's own identity beside the capture lanes
 /// the caller will have to supply. Everything else gets the generic callable,
-/// which names no function and carries no captures; a first-class demand puts
-/// that one in the `ValueRef` carrier and calls it through the apply seam.
+/// which names no function and carries no captures. Nothing static can stand in
+/// for such a value, so it always travels in the `ValueRef` carrier and is
+/// called through the apply seam: its layout is a function of the type alone,
+/// and the two ends of a recursion edge, each asking with its own demand,
+/// agree by construction.
 fn callable_layout_from_demand<T: crate::telemetry::Telemetry>(
     world: &mut World,
     reads: Option<CallableReads<'_, '_, T>>,
@@ -2646,11 +2649,7 @@ fn callable_layout_from_demand<T: crate::telemetry::Telemetry>(
     });
     RecipeLayout::Exact(TransportLayout {
         structural: world.intern_shape(ShapeDescr::Callable(callable)),
-        carrier: if demand.callable.is_first_class() {
-            TransportCarrier::ValueRef(value_lane(world, ty))
-        } else {
-            TransportCarrier::Absent
-        },
+        carrier: TransportCarrier::ValueRef(value_lane(world, ty)),
     })
 }
 

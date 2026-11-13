@@ -3,10 +3,14 @@
 
 use super::super::transport::{ClosureCallForm, closure_call_form};
 use crate::compiler2::artifact::ClosureCallEdge;
+use crate::compiler2::drive_harness::{Drive, Settled};
+use crate::compiler2::dump::DumpStage;
 use crate::compiler2::identity::{ExecutableNeed, ModuleId, RootId};
 use crate::compiler2::pull::TransportLayout;
 use crate::compiler2::semantic::{CallSiteSummary, CallTargetSummary, SelectedCallee};
-use crate::compiler2::transport::{CallableDescr, LaneDescr, ShapeDescr, TransportCarrier, TransportClass};
+use crate::compiler2::transport::{
+    CallableDescr, LaneDescr, ShapeDescr, TransportCarrier, TransportClass, TransportPosition,
+};
 use crate::compiler2::{ActivationKey, FunctionId, Ty, World};
 
 /// A target that takes `captures` values beyond the arity its source was
@@ -487,6 +491,51 @@ mod tests {
             (world.shape_count(), world.lane_count()),
             before,
             "an exact concordant join must not construct an unused generic layout",
+        );
+    }
+}
+
+/// Every position of the settled program whose layout is a callable naming no
+/// function, with the carrier that position settled on.
+fn generic_callable_carriers(settled: &Settled) -> Vec<(TransportPosition, TransportCarrier)> {
+    let world = settled.world();
+    settled
+        .backend_program()
+        .executables()
+        .iter()
+        .flat_map(|executable| executable.abi.transport.position_layouts.iter())
+        .filter_map(|(position, layout)| match world.shape(layout.structural) {
+            ShapeDescr::Callable(callable) if world.callable(*callable).function.is_none() => {
+                Some((position.clone(), layout.carrier))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A callable that names no function has nothing static to stand in for the
+/// value, so it is carried wherever it appears: the two ends of a recursion
+/// edge, which each derive their layout from their own demand, cannot disagree
+/// on whether it travels.
+#[test]
+fn a_callable_naming_no_function_is_carried_at_every_position_it_appears() {
+    for fixture in [1126, 1127] {
+        let settled = Drive::fixture(fixture).dump_stage(DumpStage::Backend);
+        let carriers = generic_callable_carriers(&settled);
+
+        assert!(
+            carriers
+                .iter()
+                .any(|(position, _)| matches!(position, TransportPosition::ExecutableReturn { .. })),
+            "fixture {fixture} returns a callable that names no function"
+        );
+        let uncarried: Vec<_> = carriers
+            .iter()
+            .filter(|(_, carrier)| !matches!(carrier, TransportCarrier::ValueRef(_)))
+            .collect();
+        assert!(
+            uncarried.is_empty(),
+            "fixture {fixture} leaves generic callables uncarried: {uncarried:?}"
         );
     }
 }
