@@ -4,6 +4,7 @@
 //! quoted surface readers into namespace mutations and compiler2 fact outputs.
 
 use crate::fast_hash::{HashMap, HashSet};
+use std::collections::hash_map::Entry;
 use std::rc::Rc;
 
 use fz_runtime::any_value::AnyValueRef;
@@ -29,9 +30,9 @@ use super::quoted_expander::{
     item_macro_not_defmacro, read_compiler_fragment_root,
 };
 use super::quoted_surface::{
-    CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, ProtocolImplForm, ReservedSourceDefinition,
-    ScopeForm, ScopeSurface, StatementForm, read_module_body_surface, read_protocol_body_surface,
-    read_protocol_impl_body_surface, reserved_source_definition,
+    CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, OverridableForm, ProtocolImplForm,
+    ReservedSourceDefinition, ScopeForm, ScopeSurface, StatementForm, defines_a_function, read_module_body_surface,
+    read_protocol_body_surface, read_protocol_impl_body_surface, reserved_source_definition,
 };
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
@@ -79,6 +80,10 @@ struct FragmentPublicationContext {
     owner_module: ModuleId,
     export_public: bool,
     discovery: FragmentDiscovery,
+    /// Whether a function form of this fragment is a definition the walk has
+    /// not counted yet. The fragment `Fz.Compiler.define` hands back is the
+    /// `def` the walk already reserved.
+    functions_are_new: bool,
 }
 
 impl FragmentPublicationContext {
@@ -87,6 +92,7 @@ impl FragmentPublicationContext {
             owner_module: current_module,
             export_public: true,
             discovery: FragmentDiscovery::AlreadyIndexed,
+            functions_are_new: true,
         }
     }
 
@@ -95,6 +101,7 @@ impl FragmentPublicationContext {
             owner_module: current_module,
             export_public: true,
             discovery: FragmentDiscovery::DiscoverNestedModules,
+            functions_are_new: true,
         }
     }
 
@@ -103,8 +110,34 @@ impl FragmentPublicationContext {
             owner_module: current_module,
             export_public: true,
             discovery: FragmentDiscovery::DiscoverNestedModules,
+            functions_are_new: false,
         }
     }
+}
+
+/// What the walk knows about one function of the module it is walking.
+struct LocalCallable {
+    symbol: NamespaceSymbol,
+    /// The definitions of this function the walk has reserved and has yet to
+    /// reach.
+    to_come: usize,
+    standing: Standing,
+}
+
+/// Where a function stands as the walk reaches each of its forms.
+#[derive(Clone, Copy)]
+enum Standing {
+    NotDefined,
+    Defined(StandingDefinition),
+    /// Defined, and marked by `defoverridable`: the next definition replaces
+    /// this one.
+    Overridable(StandingDefinition),
+}
+
+#[derive(Clone, Copy)]
+struct StandingDefinition {
+    is_macro: bool,
+    span: Span,
 }
 
 struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
@@ -115,7 +148,7 @@ struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
     source_owner: SourceOwner,
     current_module: ModuleId,
     namespace: Namespace,
-    local_callables: HashMap<(String, usize), NamespaceSymbol>,
+    local_callables: HashMap<(String, usize), LocalCallable>,
     pending_types: Vec<PendingType>,
     required_remote_macros: HashSet<FunctionId>,
     reads: Vec<FactKey>,
@@ -173,8 +206,8 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for ScopeS
     }
 
     fn lookup_current_module_macro(&mut self, _scope: ScopeSnapshot, name: &str, arity: usize) -> Option<FunctionId> {
-        match self.local_callables.get(&(name.to_string(), arity)).cloned() {
-            Some(NamespaceSymbol::Macro(function)) if self.world.function_module(function) == self.current_module => {
+        match self.local_callables.get(&(name.to_string(), arity))?.symbol {
+            NamespaceSymbol::Macro(function) if self.world.function_module(function) == self.current_module => {
                 Some(function)
             }
             _ => None,
@@ -597,7 +630,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         };
         let span = first.span.merge(last.span);
         if let Some(main) = self.local_callables.get(&("main".to_string(), 0)) {
-            return Err(self.script_and_main_diagnostic(first.span, main.clone()));
+            return Err(self.script_and_main_diagnostic(first.span, main.symbol.clone()));
         }
         let function = build_script_main(&self.statements, span).map_err(|error| {
             emit_internal_surface_error(self.telemetry, format!("script main synthesis failed: {error}"))
@@ -718,21 +751,49 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         Ok(())
     }
 
-    fn reserve_local_forms(&mut self, forms: &[ScopeForm]) -> Result<(), FatalError> {
+    /// Binds the name of a definition the walk will reach, and counts the
+    /// definition unless the walk counted it already.
+    fn reserve_local_callable(&mut self, name: &str, arity: usize, is_macro: bool, is_new: bool) {
+        let callable = match self.local_callables.entry((name.to_string(), arity)) {
+            Entry::Occupied(callable) => callable.into_mut(),
+            Entry::Vacant(vacant) => {
+                let kind = declared_callable_kind(is_macro);
+                let function =
+                    self.world
+                        .reference_declared_callable(self.current_module, name.to_string(), arity, kind);
+                vacant.insert(LocalCallable {
+                    symbol: kind.namespace_symbol(function),
+                    to_come: 0,
+                    standing: Standing::NotDefined,
+                })
+            }
+        };
+        if is_new {
+            callable.to_come += 1;
+        }
+        // Bound wherever the name does not already reach this function, so the
+        // module's own function stands in front of a name an `import` above it
+        // bound.
+        if self.world.lookup_namespace(self.namespace, name).as_ref() != Some(&callable.symbol) {
+            let symbol = callable.symbol.clone();
+            self.namespace = self.world.bind_namespace(self.namespace, name.to_string(), symbol);
+        }
+    }
+
+    fn reserve_local_forms(
+        &mut self,
+        forms: &[ScopeForm],
+        context: &FragmentPublicationContext,
+    ) -> Result<(), FatalError> {
         for form in forms {
             match form {
                 ScopeForm::Function(function) => {
-                    let kind = declared_callable_kind(function.is_macro);
-                    let function_id = self.world.reference_declared_callable(
-                        self.current_module,
-                        function.name.clone(),
+                    self.reserve_local_callable(
+                        &function.name,
                         function.arity,
-                        kind,
+                        function.is_macro,
+                        context.functions_are_new,
                     );
-                    let symbol = kind.namespace_symbol(function_id);
-                    self.local_callables
-                        .insert((function.name.clone(), function.arity), symbol.clone());
-                    self.namespace = self.world.bind_namespace(self.namespace, function.name.clone(), symbol);
                 }
                 ScopeForm::Module(module) => {
                     let module_id = reference_declared_module(self.world, self.current_module, &module.name);
@@ -749,11 +810,27 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                         protocol_id,
                     );
                 }
+                // A `Fz.Compiler.define` call written into a fragment is a
+                // definition the walk has not met as a `def`.
+                ScopeForm::CompilerService(service) if context.functions_are_new => {
+                    let source_map = self.world.source_map();
+                    let definition =
+                        reserved_source_definition(&service.source, &source_map.borrow()).map_err(|error| {
+                            emit_internal_surface_error(
+                                self.telemetry,
+                                format!("compiler service reservation failed: {error}"),
+                            )
+                        })?;
+                    if let Some(ReservedSourceDefinition::Function { name, arity, is_macro }) = definition {
+                        self.reserve_local_callable(&name, arity, is_macro, true);
+                    }
+                }
                 ScopeForm::Alias(_)
                 | ScopeForm::Import(_)
                 | ScopeForm::Require(_)
                 | ScopeForm::CompilerService(_)
                 | ScopeForm::Struct(_)
+                | ScopeForm::Overridable(_)
                 | ScopeForm::Statement(_)
                 | ScopeForm::ProtocolImpl(_) => {}
                 ScopeForm::MacroCall(macro_call) => {
@@ -770,13 +847,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                     };
                     match definition {
                         ReservedSourceDefinition::Function { name, arity, is_macro } => {
-                            let kind = declared_callable_kind(is_macro);
-                            let function_id =
-                                self.world
-                                    .reference_declared_callable(self.current_module, name.clone(), arity, kind);
-                            let symbol = kind.namespace_symbol(function_id);
-                            self.local_callables.insert((name.clone(), arity), symbol.clone());
-                            self.namespace = self.world.bind_namespace(self.namespace, name, symbol);
+                            self.reserve_local_callable(&name, arity, is_macro, true);
                         }
                         ReservedSourceDefinition::Module { name } => {
                             let module_id = reference_declared_module(self.world, self.current_module, &name);
@@ -962,7 +1033,15 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         if !self.is_script_scope() && surface.forms.iter().any(is_expression_form) {
             return Err(item_macro_expanded_to_a_non_definition(self.telemetry, macro_call.span));
         }
-        let context = FragmentPublicationContext::expanded_fragment(self.current_module);
+        // The fragment a `def` expands to is the definition the walk counted
+        // when it reserved the `def`.
+        let source_map = self.world.source_map();
+        let functions_are_new = !defines_a_function(&macro_call.source, &source_map.borrow())
+            .map_err(|error| emit_surface_read_error(self.telemetry, "item macro call read failed", &error))?;
+        let context = FragmentPublicationContext {
+            functions_are_new,
+            ..FragmentPublicationContext::expanded_fragment(self.current_module)
+        };
         self.apply_surface_fragment(&surface, &context)
     }
 
@@ -991,7 +1070,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             )?;
         }
         self.reserve_types(&surface.attrs)?;
-        self.reserve_local_forms(&surface.forms)?;
+        self.reserve_local_forms(&surface.forms, context)?;
         self.note_pending_types()?;
         self.apply_ordered_forms(&surface.forms, context)
     }
@@ -1016,7 +1095,14 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             ScopeForm::Import(import) => self.apply_import(import),
             ScopeForm::Require(import) => self.apply_require(import),
             ScopeForm::CompilerService(service) => self.apply_compiler_service(service),
+            ScopeForm::Overridable(overridable) => {
+                self.mark_overridable(overridable)?;
+                Ok(None)
+            }
             ScopeForm::Function(function) => {
+                if !self.definition_stands(function)? {
+                    return Ok(None);
+                }
                 let publication = self.define_source_function(
                     self.current_module,
                     context.owner_module,
@@ -1024,6 +1110,8 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                     function,
                     context,
                 )?;
+                self.callables
+                    .retain(|callable| callable.function != publication.function);
                 if let Some(callable) = publication.callable {
                     self.callables.push(callable);
                 }
@@ -1050,6 +1138,71 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 Ok(None)
             }
         }
+    }
+
+    /// Records that the walk has reached `function`, and answers whether this
+    /// definition is the one that stands. A definition with another still to
+    /// come does not stand: the one to come replaces it or is refused.
+    fn definition_stands(&mut self, function: &FunctionForm) -> Result<bool, FatalError> {
+        let callable = self
+            .local_callables
+            .get_mut(&(function.name.clone(), function.arity))
+            .expect("a definition is reserved before the walk reaches it");
+        callable.to_come = callable
+            .to_come
+            .checked_sub(1)
+            .expect("the walk reaches each definition it counted once");
+        let arrives = StandingDefinition {
+            is_macro: function.is_macro,
+            span: function.span,
+        };
+        let refusal = match callable.standing {
+            Standing::NotDefined => None,
+            Standing::Overridable(replaced) if replaced.is_macro == arrives.is_macro => None,
+            Standing::Overridable(replaced) => Some(overridden_as_another_kind(function, replaced)),
+            Standing::Defined(first) => Some(
+                Diagnostic::error(
+                    codes::RESOLVE_DUPLICATE_FUNCTION,
+                    format!("`{}/{}` is already defined", function.name, function.arity),
+                    function.span,
+                )
+                .with_secondary(first.span, "first defined here")
+                .with_help("`defoverridable` after the first definition lets a later one replace it"),
+            ),
+        };
+        if let Some(refusal) = refusal {
+            return Err(emit_job_diagnostic(self.telemetry, refusal));
+        }
+        callable.standing = Standing::Defined(arrives);
+        Ok(callable.to_come == 0)
+    }
+
+    fn mark_overridable(&mut self, overridable: &OverridableForm) -> Result<(), FatalError> {
+        for (name, arity) in &overridable.functions {
+            let standing = self
+                .local_callables
+                .get_mut(&(name.clone(), *arity))
+                .map(|callable| &mut callable.standing);
+            match standing {
+                Some(standing @ Standing::Defined(_)) => {
+                    let Standing::Defined(definition) = *standing else {
+                        unreachable!("matched above")
+                    };
+                    *standing = Standing::Overridable(definition);
+                }
+                Some(Standing::NotDefined | Standing::Overridable(_)) | None => {
+                    return Err(emit_job_diagnostic(
+                        self.telemetry,
+                        Diagnostic::error(
+                            codes::RESOLVE_OVERRIDABLE,
+                            format!("cannot make function `{name}/{arity}` overridable because it was not defined"),
+                            overridable.span,
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Publishes `def`'s ordered fields under the enclosing module and emits
@@ -1800,6 +1953,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             owner_module: impl_module,
             export_public: false,
             discovery: FragmentDiscovery::AlreadyIndexed,
+            functions_are_new: true,
         };
         let mut callbacks = HashMap::default();
         for function in functions {
@@ -1967,6 +2121,20 @@ fn module_info_match_clause(
 ) -> Result<AnyValueRef, QuotedSourceError> {
     let patterns = builder.list(&[pattern])?;
     builder.call("->", meta, &[patterns, body])
+}
+
+fn overridden_as_another_kind(function: &FunctionForm, replaced: StandingDefinition) -> Diagnostic {
+    let (was, now) = if replaced.is_macro {
+        ("macro", "a function")
+    } else {
+        ("function", "a macro")
+    };
+    Diagnostic::error(
+        codes::RESOLVE_OVERRIDABLE,
+        format!("cannot override {was} `{}/{}` as {now}", function.name, function.arity),
+        function.span,
+    )
+    .with_secondary(replaced.span, "the definition it would replace")
 }
 
 fn declared_callable_kind(is_macro: bool) -> DeclaredCallableKind {

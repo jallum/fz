@@ -1,0 +1,11 @@
+#---
+# purpose: "defoverridable names a function the module has defined above it; one it has not defined is refused"
+# expect: diagnostic
+# diagnostic.code: resolve/overridable
+#---
+defmodule Early do
+  defoverridable g: 1
+  def g(x), do: x
+end
+
+def main(), do: dbg(Early.g(1))

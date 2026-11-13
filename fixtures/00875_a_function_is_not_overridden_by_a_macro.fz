@@ -1,0 +1,12 @@
+#---
+# purpose: "an overridable function is replaced by a function; a macro of the same name and arity is refused"
+# expect: diagnostic
+# diagnostic.code: resolve/overridable
+#---
+defmodule Kind do
+  def g(x), do: x
+  defoverridable g: 1
+  defmacro g(x), do: x
+end
+
+def main(), do: dbg(Kind.g(1))

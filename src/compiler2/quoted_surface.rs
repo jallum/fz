@@ -39,8 +39,17 @@ pub enum ScopeForm {
     Protocol(ProtocolForm),
     ProtocolImpl(ProtocolImplForm),
     Struct(StructForm),
+    Overridable(OverridableForm),
     MacroCall(MacroCallForm),
     Statement(StatementForm),
+}
+
+/// `defoverridable name: arity, ..`: the functions a later definition in the
+/// same module may replace.
+#[derive(Debug, Clone)]
+pub struct OverridableForm {
+    pub functions: Vec<(String, usize)>,
+    pub span: Span,
 }
 
 /// A top-level item that is not a call: nothing can make it a definition, so
@@ -421,6 +430,7 @@ fn build_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeForm
             sources,
         )?)),
         "defstruct" => Ok(ScopeForm::Struct(parse_struct_form(source, sources)?)),
+        "defoverridable" => Ok(ScopeForm::Overridable(parse_overridable_form(source, sources)?)),
         _ => Ok(ScopeForm::MacroCall(MacroCallForm {
             span: surface_span(&source, sources)?,
             source,
@@ -891,6 +901,39 @@ fn parse_struct_field_default(
     Ok((name, term))
 }
 
+fn parse_overridable_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<OverridableForm, QuotedSourceError> {
+    let node = expect_surface_node(&source, sources)?;
+    let span = node.span.unwrap_or(Span::DUMMY);
+    let not_a_list = || {
+        QuotedSourceError::user(
+            crate::diag::codes::RESOLVE_OVERRIDABLE,
+            Some(span),
+            "defoverridable takes the functions to mark as `name: arity` pairs",
+        )
+    };
+    let args = node.tail.list_items()?;
+    let [functions] = args.as_slice() else {
+        return Err(not_a_list());
+    };
+    let functions = name_arity_pairs(functions).map_err(|_| not_a_list())?;
+    Ok(OverridableForm { functions, span })
+}
+
+/// The `name: arity` pairs of a keyword list.
+fn name_arity_pairs(cursor: &QuotedSourceCursor) -> Result<Vec<(String, usize)>, QuotedSourceError> {
+    cursor
+        .list_items()?
+        .into_iter()
+        .map(|pair| {
+            let pair = pair.tuple_items()?;
+            let [name, arity] = pair.as_slice() else {
+                return Err(QuotedSourceError::new("expected a `name: arity` pair"));
+            };
+            Ok((name.atom_name()?.to_string(), arity.int_value()? as usize))
+        })
+        .collect()
+}
+
 fn parse_function_group_key(
     root: &QuotedSourceRoot,
     sources: &SourceMap,
@@ -906,6 +949,12 @@ fn parse_function_group_key(
     parse_function_head_key(head, definition_head == "defmacro", sources)
 }
 
+/// Whether `source` is a `def`, `defp` or `defmacro`: a form
+/// [`reserved_source_definition`] answers with a function.
+pub(crate) fn defines_a_function(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<bool, QuotedSourceError> {
+    Ok(surface_head_name(source, sources)?.is_some_and(|head| is_function_definition_head(head.as_str())))
+}
+
 pub(crate) fn reserved_source_definition(
     source: &QuotedSourceRoot,
     sources: &SourceMap,
@@ -914,7 +963,7 @@ pub(crate) fn reserved_source_definition(
         return Ok(None);
     };
     Ok(match head.as_str() {
-        "def" | "defp" | "defmacro" => {
+        head if is_function_definition_head(head) => {
             let FunctionGroupKey { name, arity } = parse_function_group_key(source, sources)?;
             Some(ReservedSourceDefinition::Function {
                 name,
@@ -1093,17 +1142,7 @@ fn parse_import_keyword_args(cursor: &QuotedSourceCursor) -> Result<ImportKeywor
             return Err(QuotedSourceError::new("expected keyword tuple"));
         }
         let kind = tuple[0].atom_name()?.to_string();
-        let values = tuple[1]
-            .list_items()?
-            .into_iter()
-            .map(|value| {
-                let tuple = value.tuple_items()?;
-                if tuple.len() != 2 {
-                    return Err(QuotedSourceError::new("expected import filter tuple"));
-                }
-                Ok((tuple[0].atom_name()?.to_string(), tuple[1].int_value()? as usize))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let values = name_arity_pairs(&tuple[1])?;
         out.push((kind, values));
     }
     Ok(out)
