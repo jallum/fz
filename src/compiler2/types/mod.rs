@@ -1876,16 +1876,25 @@ impl Types {
         let Some(sig) = self.descr(&arrow).pure_arrow() else {
             return arrow;
         };
-        let params = sig.args.clone();
+        let mut params = sig.args.clone();
         let ret = sig.ret;
-        let folded = params
-            .iter()
-            .map(|param| self.fold_self_nested_closures(param))
-            .collect::<Vec<_>>();
-        if folded == params {
+        if !self.fold_self_nested_closures_in_inputs(&mut params) {
             return arrow;
         }
-        self.arrow(&folded, ret)
+        self.arrow(&params, ret)
+    }
+
+    /// Fold every input of an activation: the one place an activation's key
+    /// and the evidence rows contributed under it both ask how a closure
+    /// nested inside itself reads. Answers whether any input changed.
+    pub(crate) fn fold_self_nested_closures_in_inputs(&mut self, inputs: &mut [Ty]) -> bool {
+        let mut changed = false;
+        for input in inputs {
+            let folded = self.fold_self_nested_closures(input);
+            changed |= folded != *input;
+            *input = folded;
+        }
+        changed
     }
 
     pub(crate) fn convergence_collapse_evidence_inputs(&mut self, inputs: &[Ty], mask: &[DispatchDemand]) -> Vec<Ty> {

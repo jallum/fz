@@ -2,6 +2,7 @@ use crate::dispatch_matrix::demand::DispatchDemand;
 
 use super::facts::FactUse;
 use super::keying::{BodyKeying, InputDemand};
+use super::types::ClosureTarget;
 use super::{
     DriveOutcome, FactKey, FunctionSource, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, TypeName, Types,
     World, parse_quoted_program,
@@ -628,6 +629,50 @@ fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() 
     assert!(
         !world.types().is_equivalent(&canonical_input, &observed_inputs[0]),
         "recursive key convergence should not overwrite the separate activation-input evidence",
+    );
+}
+
+#[test]
+fn compiler2_an_evidence_row_folds_a_self_nested_closure_the_way_its_key_does() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let function = world.reference_function(ModuleId::GLOBAL, "reduce", 1);
+    assert!(world.define_body_keying(
+        function,
+        BodyKeying {
+            recursive: false,
+            consumes_callable_identity: true
+        }
+    ));
+    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
+
+    // A closure of one lambda nested in the captures of another closure of
+    // that lambda: the shape a reducer re-wrapped on every lap takes.
+    let lambda = ClosureTarget(3);
+    let int = world.types_mut().int();
+    let once = world.types_mut().closure_lit(lambda, vec![int], 2);
+    let nested = world.types_mut().closure_lit(lambda, vec![once], 2);
+    let folded = world.types_mut().fold_self_nested_closures(&nested);
+    assert_ne!(folded, nested, "the nesting is something to fold");
+    let folded = world.types_mut().address_inputs(&[folded]);
+    let key = world.activation_key(root, function, &[nested]);
+    assert_eq!(key.inputs(world.types()), folded, "the key folds the nesting");
+
+    world.complete_job(
+        Job::SeedRoot(root),
+        JobEffects {
+            activation_input_contributions: vec![(key.clone(), vec![nested])],
+            ..JobEffects::default()
+        },
+    );
+
+    assert_eq!(
+        world
+            .activation_inputs_joined(&key)
+            .expect("the contribution is stored"),
+        folded,
+        "the evidence row stored under a key folds the nesting exactly as the key does",
     );
 }
 
