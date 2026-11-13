@@ -734,14 +734,18 @@ fn body_flows(world: &World, function: FunctionId, input_count: usize) -> BodyFl
         uses: vec![DispatchDemand::Ignore; input_count],
         forwards: Vec::new(),
     };
+    let mut seen = ValueMap::with_capacity(body.value_count());
+    let mut asks = Vec::new();
+    let mut calls = Vec::new();
     for (value, held_at) in &positions {
-        let mut asks = Vec::new();
-        let mut calls = Vec::new();
+        seen.clear();
+        asks.clear();
+        calls.clear();
         collect_demands(
             &uses_of,
             value,
             &mut Vec::new(),
-            &mut ValueMap::new(),
+            &mut seen,
             &mut asks,
             &mut calls,
             &mut Vec::new(),
@@ -811,7 +815,7 @@ fn collect_demands(
 fn value_uses(world: &World, body: &LoweredBody) -> ValueMap<Vec<ValueUse>> {
     let LoweredBody::Clauses { clauses, entries, .. } = body;
     let joins = delivered_value_joins(body);
-    let mut uses = ValueMap::<Vec<ValueUse>>::new();
+    let mut uses = ValueMap::<Vec<ValueUse>>::with_capacity(body.value_count());
     let mut add = |value: ValueId, usage: ValueUse| uses.entry(value).or_default().push(usage);
     for step in clauses
         .iter()
@@ -1206,7 +1210,7 @@ fn input_positions(body: &LoweredBody, input_count: usize) -> ValueMap<Vec<(usiz
     use super::super::executable_facts::{collect_callsite_return_origins, collect_value_origins};
     let LoweredBody::Clauses { clauses, .. } = body;
     let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
-    let mut positions = ValueMap::<Vec<(usize, Vec<DemandPathStep>)>>::new();
+    let mut positions = ValueMap::<Vec<(usize, Vec<DemandPathStep>)>>::with_capacity(body.value_count());
     for clause in clauses {
         for (slot, value) in clause.params.iter().copied().enumerate().take(input_count) {
             let known = positions.entry(value).or_default();
@@ -1311,7 +1315,7 @@ fn returned_values(
             frontier.push(*value);
         }
     }
-    let mut built: ValueMap<Vec<ValueId>> = ValueMap::new();
+    let mut built: ValueMap<Vec<ValueId>> = ValueMap::with_capacity(body.value_count());
     for step in clauses
         .iter()
         .flat_map(|clause| clause.projections.iter())

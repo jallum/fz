@@ -4429,7 +4429,7 @@ fn values_overlap(
     left: ValueId,
     right: ValueId,
 ) -> bool {
-    values_overlap_inner(body, origins, left, right, None, &mut ValueMap::new())
+    values_overlap_inner(body, origins, left, right, None, &mut HashSet::new())
 }
 
 fn values_overlap_inner(
@@ -4438,15 +4438,10 @@ fn values_overlap_inner(
     left: ValueId,
     right: ValueId,
     exempt: Option<ValueId>,
-    visited: &mut ValueMap<ValueSet>,
+    visited: &mut HashSet<(ValueId, ValueId)>,
 ) -> bool {
     use super::super::executable_facts::TransportOrigin;
-    let count = body.value_count();
-    if !visited
-        .entry(left)
-        .or_insert_with(|| ValueSet::for_values(count))
-        .mark(right)
-    {
+    if !visited.insert((left, right)) {
         return false;
     }
     if exempt.is_some_and(|owner| {
@@ -4645,7 +4640,7 @@ fn tuple_item_has_old_owner(
     use super::super::body::ValueRole;
     let overlaps = |value: ValueId| {
         compared.set(compared.get() + 1);
-        values_overlap_inner(body, origins, value, item, Some(result), &mut ValueMap::new())
+        values_overlap_inner(body, origins, value, item, Some(result), &mut HashSet::new())
     };
     let retains = |value: ValueId| {
         origin_source_path(
