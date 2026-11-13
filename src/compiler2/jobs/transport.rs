@@ -2119,7 +2119,7 @@ fn shape_carries(world: &mut World, shape: ShapeId, ty: Ty) -> bool {
         }
         ShapeDescr::Tuple(fields) => {
             let arity = fields.len();
-            has_exact_tuple_arity(world, ty, arity)
+            world.types().exact_tuple_arity(&ty) == Some(arity)
                 && tuple_field_tys(world, ty, arity)
                     .into_iter()
                     .enumerate()
@@ -2654,24 +2654,6 @@ fn callable_layout_from_demand<T: crate::telemetry::Telemetry>(
     })
 }
 
-fn has_exact_tuple_arity(world: &World, ty: Ty, arity: usize) -> bool {
-    let predicate = world.types().runtime_type_predicate(&ty);
-    predicate.tuples.arities().finite_elems().is_some_and(|mut arities| {
-        arities.next() == Some(arity)
-            && arities.next().is_none()
-            && predicate.ints.is_none()
-            && predicate.floats.is_none()
-            && predicate.atoms.is_none()
-            && predicate.lists.shapes().is_none()
-            && predicate.named_structs.is_none()
-            && !predicate.allow_other_structs
-            && !predicate.maps
-            && !predicate.binaries
-            && predicate.callables.is_none()
-            && !predicate.resources
-    })
-}
-
 fn publish_boundaries_for_callable(
     world: &mut World,
     facts: &mut TransportFactsBuilder,
@@ -2731,12 +2713,8 @@ fn boundary_resolution_symbols_for_flow_surfaces(
 }
 
 fn exact_tuple_field_tys(world: &mut World, ty: Ty) -> Option<Vec<Ty>> {
-    let predicate = world.types().runtime_type_predicate(&ty);
-    if predicate.tuples.arities().cofinite || predicate.tuples.arities().values.len() != 1 {
-        return None;
-    }
-    let arity = *predicate.tuples.arities().values.iter().next()?;
-    has_exact_tuple_arity(world, ty, arity).then(|| tuple_field_tys(world, ty, arity))
+    let arity = world.types().exact_tuple_arity(&ty)?;
+    Some(tuple_field_tys(world, ty, arity))
 }
 
 fn value_lane_shape(world: &mut World, ty: Ty) -> ShapeId {
