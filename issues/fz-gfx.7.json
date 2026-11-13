@@ -11,7 +11,7 @@
   "parent": "fz-gfx",
   "priority": 3,
   "status": "in_progress",
-  "title": "NativeLowerer walks its callable boundaries without copying them",
+  "title": "An extern call borrows its marshal plan",
   "type": "task",
-  "updated_at": "2026-11-12T23:07:24Z"
+  "updated_at": "2026-11-13T00:28:21Z"
 }
