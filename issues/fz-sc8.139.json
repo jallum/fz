@@ -4,14 +4,15 @@
   "blocks": [
     "fz-sc8.19"
   ],
+  "closed_at": "2026-11-13T02:56:03Z",
   "created": "2026-11-12T22:39:35Z",
   "description": "def main(), do: dbg(Enum.to_list(Stream.map(Map.put(%{}, 1, 1), \u0026(\u00261)))) compiles, then hangs at run time on interp, run and build (elixir: [{1, 1}]). resolve_protocol_call (jobs/semantic.rs ~1544) builds matches from already-defined dispatch arms and demands overlapping impl providers only when matches is empty. An any receiver that already matches the Stream arm never demands Enumerable.Map/List/Range; the backend has no Map.reduce and Stream.reduce tail-calls itself. Same cause: 'missed an exhaustive dispatch' (s1/x44, x45, handoff/d2.fz with a path argument). Probed cure (/private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/census/dispatch_probe.patch, semantic.rs only, ~40 lines net -4): demand_overlapping_impl_providers runs before the arms are read and returns Unresolved/awaited while any overlapping provider is undefined. Measured on cca160808: one-liner, x41, x44, x45 print the elixir output on all three paths; lib 2117 passed; fixture_matrix 2971 listed all pass; no pin moved; job counts identical on 00567/00571/00420. Uncovered: panic_min.fz then reports spec/violation on Enum.join/2 for ({any, any}, binary) where elixir accepts (separate ticket once reproduced alone). Repros: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/s1/. Found by OptionParser.",
   "id": "fz-sc8.139",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A wide protocol receiver compiles every implementation it could reach",
   "type": "bug",
-  "updated_at": "2026-11-12T23:45:40Z"
+  "updated_at": "2026-11-13T02:56:03Z"
 }
