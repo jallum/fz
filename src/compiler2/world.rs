@@ -2357,9 +2357,9 @@ impl World {
         inputs: &[Ty],
     ) -> super::identity::ActivationKey {
         let demand = self
-            .input_demand(function)
-            .expect("activation keying should wait for input demand facts before activation")
-            .clone();
+            .input_demands
+            .get(function)
+            .expect("activation keying should wait for input demand facts before activation");
         let keying = self
             .body_keying(function)
             .expect("activation keying should wait for recursive facts before activation");

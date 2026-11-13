@@ -82,17 +82,21 @@ pub(crate) struct KeyDemand<'a> {
     pub(crate) consumes_callable_identity: bool,
 }
 
-/// Everything an activation key is a function of: the evidence arrow, the
-/// keying answer and the demand masks. Equal queries have equal keys, so the
-/// key is derived once per query and shared by every reader.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct KeyQuery {
-    arrow: Ty,
-    recursive: bool,
+/// The demand masks one activation key was derived under, with the key.
+/// Together with the evidence arrow and the keying answer they are everything
+/// a key is a function of: equal queries have equal keys, so the key is
+/// derived once per query and shared by every reader.
+struct KeyedDemand {
     local: Vec<DispatchDemand>,
     forwarded: Vec<DispatchDemand>,
     returned: Vec<DispatchDemand>,
-    consumes_callable_identity: bool,
+    key: Ty,
+}
+
+impl KeyedDemand {
+    fn answers(&self, demand: &KeyDemand<'_>) -> bool {
+        self.local == demand.local && self.forwarded == demand.forwarded && self.returned == demand.returned
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -134,7 +138,7 @@ pub struct Types {
     /// whose captures it sits inside.
     self_nested_closure_folds: HashMap<(Ty, Vec<FnId>), Ty>,
     /// Memoized `activation_key_arrow`: the dispatch key each query derives.
-    activation_key_arrows: HashMap<KeyQuery, Ty>,
+    activation_key_arrows: HashMap<(Ty, bool, bool), Vec<KeyedDemand>>,
     /// Interned structural addresses (`a0`, `a1_0`, `r0`, ...). Keyed by the
     /// address path so the same address always yields the same `TypeVarId`,
     /// making the addressed arrow canonical by construction. See `addressed`.
@@ -1782,19 +1786,21 @@ impl Types {
     /// key read one joined return, and a returned atom the key erased is a
     /// position on which two callers' answers blend.
     pub(crate) fn activation_key_arrow(&mut self, arrow: Ty, recursive: bool, demand: &KeyDemand<'_>) -> Ty {
-        let query = KeyQuery {
-            arrow,
-            recursive,
+        let query = (arrow, recursive, demand.consumes_callable_identity);
+        if let Some(keyed) = self
+            .activation_key_arrows
+            .get(&query)
+            .and_then(|keyed| keyed.iter().find(|keyed| keyed.answers(demand)))
+        {
+            return keyed.key;
+        }
+        let key = self.derive_activation_key_arrow(arrow, recursive, demand);
+        self.activation_key_arrows.entry(query).or_default().push(KeyedDemand {
             local: demand.local.to_vec(),
             forwarded: demand.forwarded.to_vec(),
             returned: demand.returned.to_vec(),
-            consumes_callable_identity: demand.consumes_callable_identity,
-        };
-        if let Some(&key) = self.activation_key_arrows.get(&query) {
-            return key;
-        }
-        let key = self.derive_activation_key_arrow(arrow, recursive, demand);
-        self.activation_key_arrows.insert(query, key);
+            key,
+        });
         key
     }
 
