@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-3ul.4"
+  ],
   "created": "2026-11-13T17:53:24Z",
   "description": "An item macro that returns quote do def a(), do: 1; def b(), do: 2 end is refused: 'item macro expansion returned a non-definition call'. A list of quotes works. item_macro_fragment_root (src/compiler2/quoted_expander.rs) takes a list as items and a __block__ as one item. A __block__ returned at item level is its statements, each an item, as in Elixir; Elixir's own defexception returns a block. Drive test and a fixture on interp, run and build.",
   "id": "fz-3sy.18",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "An item macro's block is its definitions",
   "type": "feature",
-  "updated_at": "2026-11-13T17:53:24Z"
+  "updated_at": "2026-11-13T17:53:25Z"
 }
