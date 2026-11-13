@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T15:26:18Z",
+  "description": "Step 1 of the fz-sc8.127 page (/Users/j5n/Workspace/fz-sc8.127.html), approved by the user 2026-11-13 ('proceed on sc8.127'), including the one rise: Map.reduce_cont/5 2 -\u003e 3 on fixture 01068.\n\nEnumerable.Stream.reduce and reduce_while (lib/stream.fz) look at the inner enumerable first, with a case: if it is a stream, its funs are appended and its inner enumerable is used; otherwise the reducer is composed and the inner enumerable reduced. The implementation then never re-enters itself with a deeper Stream.compose closure, which is what an any receiver otherwise forces (fold_self_nested_closures then cuts the nesting to bare fun and call sites share one key). Only the case form narrows the inner enumerable; a two-clause function head did not (OptionParser's finding).\n\nMeasured by OptionParser (k127/report.md): keys at 8 any-typed reduce sites 2,459 -\u003e 821; fixture 01068 pins total 207 -\u003e 146 (compose lambda 42 -\u003e 8, six others fall, two unchanged, Map.reduce_cont/5 2 -\u003e 3); a Stream program over a known list pays 13 more jobs (2,568 -\u003e 2,581). Measured here on f04c56f8e: distiller compile goes from exhausting the fact-wait budget at 62 s to 63,457 product requests (still over the 50,000 budget: that residue is fz-sc8.146 / fz-sc8.127 step 2).\n\nFixture: the two-site program k127/p2/b.fz (one site adds to an integer, one builds a map; on base the compiler reports a spec/violation on +/2). The user-written wrapper k127/p2/w.fz stays failing and belongs to fz-sc8.127.",
+  "id": "fz-sc8.150",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "A stream that wraps a stream reduces as one stream",
+  "type": "bug",
+  "updated_at": "2026-11-13T15:26:18Z"
+}
