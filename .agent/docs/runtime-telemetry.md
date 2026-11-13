@@ -147,6 +147,37 @@ scheduler has dropped. `tests/fixture_matrix.rs`
 (`a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`) asserts the
 equality for fixture 00903 on the `run`, `interp` and `build` paths.
 
+## `fz.runtime.interp_ran`
+
+The interpreter counts its own work in plain integer fields on
+`IrInterpRuntime` (`counts: InterpRan`), so the hot path pays an increment, and
+`run_backend_main` raises `INTERP_RAN` once, through `raw_event1`, after the
+runtime has dropped and just before `run_ended`:
+
+```text
+raw event:    fz.runtime.interp_ran
+signature:    (&InterpRan)
+```
+
+`InterpRan` is `{ entries, calls, frames }`:
+
+- `entries` — control entries run by `step_eval_entry`: a clause entry, a
+  call-return resume, a branch, a receive outcome.
+- `calls` — executables started by `step_backend_executable`, extern bodies
+  included.
+- `frames` — `Frame`s built, one per clause-backed executable started (see
+  [interpreter frame](interpreter-frame.md)); `calls` minus `frames` is the
+  extern calls.
+
+The counts are per run: one `IrInterpRuntime` serves every process of the run,
+so they sum over all of them. A macro expansion runs in its own runtime and
+reports nothing. `JsonlBackend` renders the three numbers as metadata; the
+payload is typed, so `--emit=stats` shows only that the event fired once.
+`Enum.to_list(1..n)` then `Enum.count` runs 18 entries, 11 calls and 11 frames
+per element; `building_and_counting_a_list_runs_eighteen_entries_per_element`
+(`ir_interp/backend_test.rs`) reads the event through `attach_raw_event1` and
+pins the three as the difference between two list sizes.
+
 ## `fz.runtime.send.probe`
 
 A send to another process runs `sched::probe_sender` on the sender: the

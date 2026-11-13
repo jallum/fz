@@ -129,6 +129,21 @@ impl BackendParkRecord {
     }
 }
 
+/// One per interpreted run, after every process has been torn down; carries
+/// the `InterpRan` counts.
+pub(crate) const INTERP_RAN: [&str; 3] = ["fz", "runtime", "interp_ran"];
+
+/// What the interpreter did over one run, across every process of the run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct InterpRan {
+    /// Control entries run.
+    pub(crate) entries: u64,
+    /// Executables started, extern bodies included.
+    pub(crate) calls: u64,
+    /// Frames built, one per clause-backed executable started.
+    pub(crate) frames: u64,
+}
+
 pub(crate) struct IrInterpRuntime {
     tasks: HashMap<u32, Box<Process>>,
     next_pid: u32,
@@ -145,6 +160,7 @@ pub(crate) struct IrInterpRuntime {
     /// carry the machine code the interpreter calls out through, so the
     /// runtime that hands out a trampoline owns the module it lives in.
     variadic_trampolines: Option<Box<extern_call::VariadicTrampolines>>,
+    counts: InterpRan,
 }
 
 impl IrInterpRuntime {
@@ -161,6 +177,7 @@ impl IrInterpRuntime {
             current_proc: std::ptr::null_mut(),
             callback_error: None,
             variadic_trampolines: None,
+            counts: InterpRan::default(),
         }
     }
 

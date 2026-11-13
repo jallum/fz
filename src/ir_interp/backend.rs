@@ -21,7 +21,7 @@ use crate::dispatch_matrix::pattern::LastResort;
 use crate::exec::runtime::emit_runtime_event;
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::CallableShape;
-use crate::telemetry::Telemetry;
+use crate::telemetry::{Telemetry, TelemetryExt};
 use crate::types::ClosureTarget;
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged};
 use fz_runtime::delivery::Delivery;
@@ -131,7 +131,9 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
         Ok(runtime.process_ref(MAIN_PID).map_or(0, |main| main.halt_value))
     })();
     output.flush();
+    let counts = runtime.counts;
     drop(runtime);
+    tel.raw_event1(&INTERP_RAN, &counts);
     emit_runtime_event(
         tel,
         RuntimeEvent::RunEnded(RunEnded::sample(pool_outstanding_before_run)),
@@ -912,6 +914,7 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
     args: Lanes,
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
+    runtime.counts.calls += 1;
     match &executable.body {
         BackendBody::Extern { signature } => {
             let value = call_lowered_extern(runtime, signature, None, &args)?;
@@ -954,6 +957,7 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                     semantic_inputs.len()
                 ));
             }
+            runtime.counts.frames += 1;
             let mut env = Frame::sized(executable.value_count);
             for (param, value) in clause.params.iter().copied().zip(semantic_inputs) {
                 if let Some(value) = value {
@@ -1097,6 +1101,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
     mut env: Frame,
     mut continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
+    runtime.counts.entries += 1;
     let entry = entries
         .get(entry_id.as_u32() as usize)
         .ok_or_else(|| format!("backend entry {} is out of bounds", entry_id.as_u32()))?;

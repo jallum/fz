@@ -746,6 +746,18 @@ impl JsonlBackend {
         telemetry.attach_raw_event1::<RunEnded, _>(&RUN_ENDED, move |_, _, _, ended| {
             ended_backend.append_runtime_event(&RuntimeEvent::RunEnded(*ended));
         });
+        let interp_backend = Rc::clone(backend);
+        telemetry.attach_raw_event1::<crate::ir_interp::InterpRan, _>(
+            &crate::ir_interp::INTERP_RAN,
+            move |name, span_id, parent_span_id, ran| {
+                interp_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! { entries: ran.entries, calls: ran.calls, frames: ran.frames },
+                );
+            },
+        );
         let gc_backend = Rc::clone(backend);
         telemetry.attach_raw_event1::<fz_runtime::process::Collection, _>(&GC, move |_, _, _, collection| {
             gc_backend.append_runtime_event(&RuntimeEvent::Gc(collection));
