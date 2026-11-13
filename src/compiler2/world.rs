@@ -3080,6 +3080,9 @@ fn runtime_demand_contribution_derivations(
 /// two compiles of the same input published different raw `Ty` numbering
 /// (fz-f98.19).
 pub(super) fn dedupe_job_facts(mut facts: Vec<FactKey>) -> Vec<FactKey> {
+    if facts.len() < 2 {
+        return facts;
+    }
     let mut keep = first_occurrences(&facts).into_iter();
     facts.retain(|_| keep.next().unwrap_or(false));
     facts
