@@ -680,6 +680,13 @@ and from nil when the field has none; the default is lowered where the literal
 stands, as the expression that writes it. A default that computes or names
 anything is the diagnostic `parse/struct-default` at the default.
 
+In an expression, which is where a `quote` body stands, `defstruct` is a call
+by name with the field list as its argument, so a macro declares the struct of
+the module it is called in. A list the macro computes is spliced in whole, as
+`defstruct unquote(fields)`. The declaration reads its argument as written and
+evaluates nothing, so an argument that is not a list of fields once the macro
+has run is the diagnostic `parse/struct-fields`.
+
 A `MapSig` is an open record: the keys it lists, each with a type, and any
 other keys besides. A struct type is the record whose `__struct__` field is the
 literal atom `Elixir.<Name>` beside the declared fields, so

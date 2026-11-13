@@ -1,0 +1,6 @@
+%Pt{x: 1, y: 2}
+%Pt{x: 1, y: nil}
+%Tagged{tag: :shape, name: "square", sides: 4}
+%Tagged{tag: :other, name: nil, sides: 3}
+%Sized{width: 1, height: 2}
+%Sized{width: 1, height: 5}

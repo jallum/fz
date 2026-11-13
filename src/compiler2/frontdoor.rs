@@ -923,6 +923,14 @@ impl<'t> FrontDoorParser<'t> {
             Tok::Fn => self.with_matched_do_boundary(|parser| parser.parse_lambda_expr(module_path, scope, start)),
             Tok::Amp => self.parse_capture_expr(module_path, scope, start),
             Tok::Caret => self.parse_pin_expr(module_path, scope, start),
+            // In an expression, which is where a `quote` body stands,
+            // `defstruct` is a call by name: its field list is an ordinary
+            // argument, so it can be built with `unquote`.
+            Tok::Defstruct => {
+                let meta = self.meta(start)?;
+                let root = self.builder.user_variable("defstruct", &meta)?;
+                Ok(ParsedExpr::direct_name(root, start, "defstruct".to_string()))
+            }
             other => Err(FrontDoorError::syntax(
                 format!("unsupported expression prefix in compiler2 front door: {:?}", other),
                 start,

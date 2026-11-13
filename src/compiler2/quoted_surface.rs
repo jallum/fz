@@ -853,7 +853,15 @@ fn parse_struct_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<St
     };
     let mut fields = Vec::new();
     let mut defaults = HashMap::default();
-    for field in declared.list_items()? {
+    let declared = declared.list_items().map_err(|_| {
+        QuotedSourceError::user(
+            crate::diag::codes::PARSE_STRUCT_FIELDS,
+            Some(span),
+            "defstruct takes a list of fields, each an atom or a `name: default` entry; \
+             a list a macro computes is spliced in whole, as `defstruct unquote(fields)`",
+        )
+    })?;
+    for field in declared {
         if let Ok(name) = field.atom_name() {
             fields.push(name.to_string());
             continue;
