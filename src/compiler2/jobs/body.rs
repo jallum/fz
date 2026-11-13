@@ -5,6 +5,7 @@
 //! discovery, and generated-function definition path.
 
 use crate::compiler2::{ValueMap, ValueSet};
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -67,31 +68,21 @@ struct ExprBlock {
 }
 
 impl ExprBlock {
-    fn view(&self) -> BlockView<'_> {
-        BlockView {
+    fn into_pending(self) -> PendingBlock {
+        PendingBlock {
             span: self.span,
-            steps: &self.steps,
+            steps: self.steps.into_iter(),
             result: self.result,
         }
     }
 }
 
-/// The steps of a block still to be planned. Resuming after a step is the
-/// suffix of the same steps.
-#[derive(Debug, Clone, Copy)]
-struct BlockView<'a> {
+/// The steps of a block still to be planned, taken front to back. What is
+/// left after a step is the block that resumes there.
+struct PendingBlock {
     span: Span,
-    steps: &'a [ExprStep],
+    steps: std::vec::IntoIter<ExprStep>,
     result: ValueId,
-}
-
-impl<'a> BlockView<'a> {
-    fn after(self, index: usize) -> Self {
-        Self {
-            steps: &self.steps[index + 1..],
-            ..self
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -2417,7 +2408,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 let mut success_env = env.clone();
                 let arguments = self.bind_outcome_arguments(&plan.outcomes[0], &mut success_env);
                 let success_block = self.lower_with_block(span, rest, body, else_clauses, success_env)?;
-                let miss_block = Some(self.lower_with_fail_block(span, matched, else_clauses, env.clone())?);
+                let miss_block = Some(self.lower_with_fail_block(span, matched, else_clauses, &env)?);
                 let bindings = self.lower_dispatch_bindings(&plan, &env, &mut steps)?;
                 let value = self.fresh_value();
                 steps.push(ExprStep::Dispatch {
@@ -2447,7 +2438,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         span: Span,
         failed: ValueId,
         else_clauses: &[MatchClause],
-        env: HashMap<Var, ValueId>,
+        env: &HashMap<Var, ValueId>,
     ) -> Result<ExprBlock, FatalError> {
         if else_clauses.is_empty() {
             return Ok(ExprBlock {
@@ -2468,11 +2459,11 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         subject: ValueId,
         clauses: &[MatchClause],
         last_resort: LastResort,
-        env: HashMap<Var, ValueId>,
+        env: &HashMap<Var, ValueId>,
     ) -> Result<ExprBlock, FatalError> {
         let plan = self.compile_match_dispatch(label, span, 1, match_rows(clauses), Some(last_resort))?;
         let mut steps = Vec::new();
-        let bindings = self.lower_dispatch_bindings(&plan, &env, &mut steps)?;
+        let bindings = self.lower_dispatch_bindings(&plan, env, &mut steps)?;
         let arm_blocks = clauses
             .iter()
             .enumerate()
@@ -2727,14 +2718,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         if else_clauses.is_empty() {
             return Ok(value);
         }
-        let block = self.lower_clause_dispatch_block(
-            "try else",
-            span,
-            value,
-            else_clauses,
-            LastResort::try_clause(),
-            env.clone(),
-        )?;
+        let block =
+            self.lower_clause_dispatch_block("try else", span, value, else_clauses, LastResort::try_clause(), env)?;
         steps.extend(block.steps);
         Ok(block.result)
     }
@@ -3163,7 +3148,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         }
         self.generated_ids.push(function);
 
-        let captures = captures.into_iter().collect::<Vec<_>>();
         steps.push(ExprStep::Lambda {
             value,
             function,
@@ -3176,9 +3160,13 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         let mut lowered = Vec::with_capacity(clauses.len());
         let mut entries = Vec::new();
         for clause in clauses {
-            let projections = clause.projections.iter().map(lower_projection_step).collect::<Vec<_>>();
+            let projections = clause
+                .projections
+                .into_iter()
+                .map(lower_projection_step)
+                .collect::<Vec<_>>();
             let entry = self.plan_block(
-                clause.body.view(),
+                clause.body.into_pending(),
                 ControlEntryOrigin::Clause,
                 ControlDestination::Return,
                 Vec::new(),
@@ -3192,7 +3180,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 entry,
             });
         }
-        let mut body = LoweredBody::clauses(lowered, entries, self.generated_ids.clone())
+        let mut body = LoweredBody::clauses(lowered, entries, std::mem::take(&mut self.generated_ids))
             .with_value_count(self.next_value as usize);
         self.construct_entry_captures(&mut body);
         body
@@ -3204,8 +3192,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         let scanned = Cell::new(0);
         let compared = Cell::new(0);
         let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
-        let LoweredBody::Clauses { entries, .. } = body;
-        let constructions = scan_steps(entries, &scanned)
+        let LoweredBody::Clauses { entries, .. } = &*body;
+        let sources = scan_steps(entries, &scanned)
             .filter_map(|(entry, step, instruction)| {
                 let LoweredStep::List {
                     items, tail: Some(_), ..
@@ -3213,12 +3201,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 else {
                     return None;
                 };
-                (items.len() == 1).then_some((entry, step, items[0]))
-            })
-            .collect::<Vec<_>>();
-        let sources = constructions
-            .iter()
-            .filter_map(|&(entry, step, head)| {
+                let head = *items.first().filter(|_| items.len() == 1)?;
                 let origin = list_source_origin(body, &origins, head)?;
                 Some((entry, step, head, origin))
             })
@@ -3295,10 +3278,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 .outcomes
                 .iter()
                 .map(|edge| edge.target)
-                .chain(receive.after.iter().map(|after| after.entry))
-                .collect::<Vec<_>>();
+                .chain(receive.after.iter().map(|after| after.entry));
             let mut shared = targets
-                .iter()
+                .clone()
                 .flat_map(|target| physical[target.as_u32() as usize].iter().copied())
                 .collect::<Vec<_>>();
             shared.sort_unstable_by_key(|value| value.as_u32());
@@ -3328,17 +3310,18 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
 
     fn plan_block(
         &mut self,
-        block: BlockView<'_>,
+        block: PendingBlock,
         origin: ControlEntryOrigin,
         dest: ControlDestination,
         params: Vec<ValueId>,
         captures: Vec<ValueId>,
         entries: &mut Vec<LoweredEntry>,
     ) -> ControlEntryId {
+        let span = block.span;
         let (steps, tail) = self.plan_steps(block, dest, entries);
         let entry_id = ControlEntryId::from_u32(entries.len() as u32);
         entries.push(LoweredEntry {
-            span: block.span,
+            span,
             origin,
             params,
             captures,
@@ -3350,14 +3333,38 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         entry_id
     }
 
+    /// Where the value of a control step goes: out of the block when the step
+    /// is the block's last and its result, otherwise into an entry that plans
+    /// the rest of the block.
+    fn plan_continuation(
+        &mut self,
+        rest: PendingBlock,
+        value: ValueId,
+        dest: ControlDestination,
+        entries: &mut Vec<LoweredEntry>,
+    ) -> ControlDestination {
+        if rest.steps.len() == 0 && value == rest.result {
+            return dest;
+        }
+        let resume = self.plan_block(
+            rest,
+            ControlEntryOrigin::DeliveredResume { value },
+            dest,
+            Vec::new(),
+            Vec::new(),
+            entries,
+        );
+        ControlDestination::Deliver(resume)
+    }
+
     fn plan_steps(
         &mut self,
-        block: BlockView<'_>,
+        mut block: PendingBlock,
         dest: ControlDestination,
         entries: &mut Vec<LoweredEntry>,
     ) -> (Vec<LoweredStep>, LoweredTail) {
         let mut lowered = Vec::new();
-        for (index, step) in block.steps.iter().enumerate() {
+        while let Some(step) = block.steps.next() {
             match step {
                 ExprStep::DirectCall {
                     value,
@@ -3365,27 +3372,15 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     callee,
                     args,
                 } => {
-                    let tail_dest = if index + 1 == block.steps.len() && *value == block.result {
-                        dest
-                    } else {
-                        let resume = self.plan_block(
-                            block.after(index),
-                            ControlEntryOrigin::DeliveredResume { value: *value },
-                            dest,
-                            Vec::new(),
-                            Vec::new(),
-                            entries,
-                        );
-                        ControlDestination::Deliver(resume)
-                    };
+                    let dest = self.plan_continuation(block, value, dest, entries);
                     return (
                         lowered,
                         LoweredTail::DirectCall {
-                            value: *value,
-                            callsite: *callsite,
-                            callee: *callee,
-                            args: args.clone(),
-                            dest: tail_dest,
+                            value,
+                            callsite,
+                            callee,
+                            args,
+                            dest,
                         },
                     );
                 }
@@ -3395,27 +3390,15 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     callee,
                     args,
                 } => {
-                    let tail_dest = if index + 1 == block.steps.len() && *value == block.result {
-                        dest
-                    } else {
-                        let resume = self.plan_block(
-                            block.after(index),
-                            ControlEntryOrigin::DeliveredResume { value: *value },
-                            dest,
-                            Vec::new(),
-                            Vec::new(),
-                            entries,
-                        );
-                        ControlDestination::Deliver(resume)
-                    };
+                    let dest = self.plan_continuation(block, value, dest, entries);
                     return (
                         lowered,
                         LoweredTail::ClosureCall {
-                            value: *value,
-                            callsite: *callsite,
-                            callee: *callee,
-                            args: args.clone(),
-                            dest: tail_dest,
+                            value,
+                            callsite,
+                            callee,
+                            args,
+                            dest,
                         },
                     );
                 }
@@ -3425,21 +3408,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     then_block,
                     else_block,
                 } => {
-                    let branch_dest = if index + 1 == block.steps.len() && *value == block.result {
-                        dest
-                    } else {
-                        let resume = self.plan_block(
-                            block.after(index),
-                            ControlEntryOrigin::DeliveredResume { value: *value },
-                            dest,
-                            Vec::new(),
-                            Vec::new(),
-                            entries,
-                        );
-                        ControlDestination::Deliver(resume)
-                    };
+                    let branch_dest = self.plan_continuation(block, value, dest, entries);
                     let then_entry = self.plan_block(
-                        then_block.view(),
+                        then_block.into_pending(),
                         ControlEntryOrigin::Branch,
                         branch_dest.clone(),
                         Vec::new(),
@@ -3447,7 +3418,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         entries,
                     );
                     let else_entry = self.plan_block(
-                        else_block.view(),
+                        else_block.into_pending(),
                         ControlEntryOrigin::Branch,
                         branch_dest,
                         Vec::new(),
@@ -3457,7 +3428,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     return (
                         lowered,
                         LoweredTail::If {
-                            cond: *cond,
+                            cond,
                             then_entry,
                             else_entry,
                         },
@@ -3469,26 +3440,18 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     bindings,
                     dispatch,
                 } => {
-                    let branch_dest = if index + 1 == block.steps.len() && *value == block.result {
-                        dest
-                    } else {
-                        let resume = self.plan_block(
-                            block.after(index),
-                            ControlEntryOrigin::DeliveredResume { value: *value },
-                            dest,
-                            Vec::new(),
-                            Vec::new(),
-                            entries,
-                        );
-                        ControlDestination::Deliver(resume)
-                    };
-                    let outcomes = dispatch
-                        .arm_blocks
-                        .iter()
+                    let ExprDispatch {
+                        plan,
+                        arm_blocks,
+                        miss_block,
+                    } = *dispatch;
+                    let branch_dest = self.plan_continuation(block, value, dest, entries);
+                    let outcomes = arm_blocks
+                        .into_iter()
                         .map(|arm| {
                             let params = arm.arguments.iter().map(|argument| argument.parameter).collect();
                             let target = self.plan_block(
-                                arm.block.view(),
+                                arm.block.into_pending(),
                                 ControlEntryOrigin::Branch,
                                 branch_dest.clone(),
                                 params,
@@ -3497,13 +3460,13 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                             );
                             super::super::body::OutcomeEdge {
                                 target,
-                                arguments: arm.arguments.clone(),
+                                arguments: arm.arguments,
                             }
                         })
                         .collect::<Vec<_>>();
-                    let miss_entry = dispatch.miss_block.as_ref().map(|miss_block| {
+                    let miss_entry = miss_block.map(|miss_block| {
                         self.plan_block(
-                            miss_block.view(),
+                            miss_block.into_pending(),
                             ControlEntryOrigin::Branch,
                             branch_dest,
                             Vec::new(),
@@ -3514,38 +3477,28 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     return (
                         lowered,
                         LoweredTail::Dispatch {
-                            inputs: inputs.clone(),
-                            bindings: bindings.clone(),
-                            dispatch: Box::new(ControlDispatch::new(dispatch.plan.clone(), outcomes, miss_entry)),
+                            inputs,
+                            bindings,
+                            dispatch: Box::new(ControlDispatch::new(plan, outcomes, miss_entry)),
                         },
                     );
                 }
                 ExprStep::Receive(receive) => {
-                    let value = receive.value;
-                    let bindings = &receive.bindings;
-                    let dispatch = &receive.dispatch;
-                    let outcomes = &receive.outcomes;
-                    let after = &receive.after;
-                    let captures = &receive.captures;
-                    let branch_dest = if index + 1 == block.steps.len() && value == block.result {
-                        dest
-                    } else {
-                        let resume = self.plan_block(
-                            block.after(index),
-                            ControlEntryOrigin::DeliveredResume { value },
-                            dest,
-                            Vec::new(),
-                            Vec::new(),
-                            entries,
-                        );
-                        ControlDestination::Deliver(resume)
-                    };
+                    let ExprReceive {
+                        value,
+                        bindings,
+                        dispatch,
+                        outcomes,
+                        after,
+                        captures,
+                    } = *receive;
+                    let branch_dest = self.plan_continuation(block, value, dest, entries);
                     let receive_dest = branch_dest.clone();
                     let outcomes = outcomes
-                        .iter()
+                        .into_iter()
                         .map(|outcome| {
                             let target = self.plan_block(
-                                outcome.block.view(),
+                                outcome.block.into_pending(),
                                 ControlEntryOrigin::ReceiveOutcome,
                                 branch_dest.clone(),
                                 outcome.arguments.iter().map(|argument| argument.parameter).collect(),
@@ -3553,18 +3506,18 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                                 entries,
                             );
                             super::super::body::OutcomeEdge {
-                                arguments: outcome.arguments.clone(),
+                                arguments: outcome.arguments,
                                 target,
                             }
                         })
                         .collect::<Vec<_>>();
-                    let after = after.as_ref().map(|after| {
+                    let after = after.map(|after| {
                         let entry = self.plan_block(
-                            after.body.view(),
+                            after.body.into_pending(),
                             ControlEntryOrigin::ReceiveOutcome,
                             branch_dest,
                             Vec::new(),
-                            captures.clone(),
+                            captures,
                             entries,
                         );
                         ReceiveAfter {
@@ -3576,8 +3529,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     return (
                         lowered,
                         LoweredTail::Receive(Box::new(super::super::body::LoweredReceive {
-                            bindings: bindings.clone(),
-                            dispatch: dispatch.clone(),
+                            bindings,
+                            dispatch,
                             outcomes,
                             after,
                             dest: receive_dest,
@@ -3585,22 +3538,16 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     );
                 }
                 ExprStep::Try(try_step) => {
-                    let value = try_step.value;
-                    let branch_dest = if index + 1 == block.steps.len() && value == block.result {
-                        dest
-                    } else {
-                        let resume = self.plan_block(
-                            block.after(index),
-                            ControlEntryOrigin::DeliveredResume { value },
-                            dest,
-                            Vec::new(),
-                            Vec::new(),
-                            entries,
-                        );
-                        ControlDestination::Deliver(resume)
-                    };
+                    let ExprTry {
+                        value,
+                        body,
+                        handler,
+                        params,
+                        captures,
+                    } = *try_step;
+                    let branch_dest = self.plan_continuation(block, value, dest, entries);
                     let body = self.plan_block(
-                        try_step.body.view(),
+                        body.into_pending(),
                         ControlEntryOrigin::Branch,
                         branch_dest.clone(),
                         Vec::new(),
@@ -3608,16 +3555,16 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         entries,
                     );
                     let handler = self.plan_block(
-                        try_step.handler.view(),
+                        handler.into_pending(),
                         ControlEntryOrigin::Handler,
                         branch_dest,
-                        try_step.params.clone(),
-                        try_step.captures.clone(),
+                        params,
+                        captures,
                         entries,
                     );
                     return (lowered, LoweredTail::Try { body, handler });
                 }
-                _ => lowered.push(lower_projection_step(step)),
+                step => lowered.push(lower_projection_step(step)),
             }
         }
         (
@@ -3785,24 +3732,21 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         // `Lowerer` was built, so the ordered schema is present by
         // construction, and an unknown field is diagnosed durably through
         // that obligation store rather than a local check here.
-        let order = self
-            .world
-            .struct_def_fields(module_id)
-            .map(|fields| fields.to_vec())
-            .unwrap_or_else(|| fields.iter().map(|(name, _)| name.clone()).collect());
         let mut by_name = fields
             .iter()
             .map(|(name, pattern)| (name.as_str(), pattern))
             .collect::<HashMap<_, _>>();
-        for field in &order {
-            let Some(pattern) = by_name.remove(field.as_str()) else {
-                continue;
-            };
+        let mut matched = |name: &String| by_name.remove(name.as_str()).map(|pattern| (name.clone(), pattern));
+        let ordered = match self.world.struct_def_fields(module_id) {
+            Some(order) => order.iter().filter_map(&mut matched).collect::<Vec<_>>(),
+            None => fields.iter().map(|(name, _)| name).filter_map(&mut matched).collect(),
+        };
+        for (field, pattern) in ordered {
             let value = self.fresh_value();
             steps.push(ExprStep::FieldAccess {
                 value,
                 base: source,
-                field: field.clone(),
+                field,
             });
             self.bind_pattern(&pattern.node, pattern.span, value, env, steps)?;
         }
@@ -3863,20 +3807,17 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     }
 }
 
-fn lower_projection_step(step: &ExprStep) -> LoweredStep {
+fn lower_projection_step(step: ExprStep) -> LoweredStep {
     match step {
-        ExprStep::Const { value, literal } => LoweredStep::Const {
-            value: *value,
-            literal: literal.clone(),
-        },
+        ExprStep::Const { value, literal } => LoweredStep::Const { value, literal },
         ExprStep::Tuple { value, items } => LoweredStep::Tuple {
-            value: *value,
-            items: items.iter().copied().map(crate::fz_ir::OwnershipUse::share).collect(),
+            value,
+            items: items.into_iter().map(crate::fz_ir::OwnershipUse::share).collect(),
         },
         ExprStep::List { value, items, tail } => LoweredStep::List {
-            value: *value,
-            items: items.clone(),
-            tail: *tail,
+            value,
+            items,
+            tail,
             retention: None,
         },
         ExprStep::Map {
@@ -3884,9 +3825,9 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
             entries,
             quoted_span,
         } => LoweredStep::Map {
-            value: *value,
-            entries: entries.clone(),
-            quoted_span: *quoted_span,
+            value,
+            entries,
+            quoted_span,
         },
         ExprStep::MapUpdate {
             value,
@@ -3894,73 +3835,31 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
             base,
             entries,
         } => LoweredStep::MapUpdate {
-            value: *value,
-            ok: *ok,
-            base: *base,
-            entries: entries.clone(),
+            value,
+            ok,
+            base,
+            entries,
         },
-        ExprStep::Struct { value, module, fields } => LoweredStep::Struct {
-            value: *value,
-            module: *module,
-            fields: fields.clone(),
-        },
-        ExprStep::Bitstring { value, fields } => LoweredStep::Bitstring {
-            value: *value,
-            fields: fields.clone(),
-        },
-        ExprStep::FunctionRef { value, function } => LoweredStep::FunctionRef {
-            value: *value,
-            function: *function,
-        },
+        ExprStep::Struct { value, module, fields } => LoweredStep::Struct { value, module, fields },
+        ExprStep::Bitstring { value, fields } => LoweredStep::Bitstring { value, fields },
+        ExprStep::FunctionRef { value, function } => LoweredStep::FunctionRef { value, function },
         ExprStep::Lambda {
             value,
             function,
             captures,
         } => LoweredStep::Lambda {
-            value: *value,
-            function: *function,
-            captures: captures.clone(),
+            value,
+            function,
+            captures,
         },
-        ExprStep::BinaryOp { value, op, left, right } => LoweredStep::BinaryOp {
-            value: *value,
-            op: *op,
-            left: *left,
-            right: *right,
-        },
-        ExprStep::UnaryOp { value, op, input } => LoweredStep::UnaryOp {
-            value: *value,
-            op: *op,
-            input: *input,
-        },
-        ExprStep::MapIndex { value, base, key } => LoweredStep::MapIndex {
-            value: *value,
-            base: *base,
-            key: key.clone(),
-        },
-        ExprStep::FieldAccess { value, base, field } => LoweredStep::FieldAccess {
-            value: *value,
-            base: *base,
-            field: field.clone(),
-        },
-        ExprStep::RequireMapValue { value, source, key } => LoweredStep::RequireMapValue {
-            value: *value,
-            source: *source,
-            key: key.clone(),
-        },
-        ExprStep::TupleField { value, source, index } => LoweredStep::TupleField {
-            value: *value,
-            source: *source,
-            index: *index,
-        },
-        ExprStep::SplitList { source, head, tail } => LoweredStep::SplitList {
-            source: *source,
-            head: *head,
-            tail: *tail,
-        },
-        ExprStep::BitstringInit { reader, source } => LoweredStep::BitstringInit {
-            reader: *reader,
-            source: *source,
-        },
+        ExprStep::BinaryOp { value, op, left, right } => LoweredStep::BinaryOp { value, op, left, right },
+        ExprStep::UnaryOp { value, op, input } => LoweredStep::UnaryOp { value, op, input },
+        ExprStep::MapIndex { value, base, key } => LoweredStep::MapIndex { value, base, key },
+        ExprStep::FieldAccess { value, base, field } => LoweredStep::FieldAccess { value, base, field },
+        ExprStep::RequireMapValue { value, source, key } => LoweredStep::RequireMapValue { value, source, key },
+        ExprStep::TupleField { value, source, index } => LoweredStep::TupleField { value, source, index },
+        ExprStep::SplitList { source, head, tail } => LoweredStep::SplitList { source, head, tail },
+        ExprStep::BitstringInit { reader, source } => LoweredStep::BitstringInit { reader, source },
         ExprStep::BitstringRead {
             ok,
             value,
@@ -3969,12 +3868,12 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
             spec,
             is_last,
         } => LoweredStep::BitstringRead {
-            ok: *ok,
-            value: *value,
-            next_reader: *next_reader,
-            reader: *reader,
-            spec: spec.clone(),
-            is_last: *is_last,
+            ok,
+            value,
+            next_reader,
+            reader,
+            spec,
+            is_last,
         },
         ExprStep::PopHandler => LoweredStep::PopHandler,
         ExprStep::DirectCall { .. }
@@ -4056,7 +3955,7 @@ fn compute_entry_captures(
     let mut memo = HashMap::new();
     for entry_id in 0..entries.len() {
         let entry_id = ControlEntryId::from_u32(entry_id as u32);
-        let _ = entry_captures(
+        record_entry_captures(
             entries,
             tables,
             clause_bounds,
@@ -4263,7 +4162,7 @@ fn any_later_ownership_use(
             return true;
         }
         let block = &entries[block_id.as_u32() as usize];
-        pending.extend(child_entries(&block.tail).into_iter().map(|child| (child, 0)));
+        pending.extend(child_entries(&block.tail).map(|child| (child, 0)));
     }
     false
 }
@@ -4461,34 +4360,34 @@ fn values_overlap_inner(
     value_retains_source(body, origins, left, &right_path, exempt)
         || value_retains_source(body, origins, right, &left_path, exempt)
         || construction_children(body, origins, left)
-            .into_iter()
-            .any(|child| values_overlap_inner(body, origins, child, right, exempt, visited))
+            .iter()
+            .any(|&child| values_overlap_inner(body, origins, child, right, exempt, visited))
         || construction_children(body, origins, right)
-            .into_iter()
-            .any(|child| values_overlap_inner(body, origins, left, child, exempt, visited))
+            .iter()
+            .any(|&child| values_overlap_inner(body, origins, left, child, exempt, visited))
 }
 
-fn construction_children(
-    body: &LoweredBody,
-    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
+fn construction_children<'a>(
+    body: &'a LoweredBody,
+    origins: &'a ValueMap<super::super::executable_facts::TransportOrigin>,
     value: ValueId,
-) -> Vec<ValueId> {
+) -> Cow<'a, [ValueId]> {
     use super::super::executable_facts::TransportOrigin;
     use crate::dispatch_matrix::ProjectionKind;
     let Some((value, path)) = origin_source_path(body, origins, &TransportOrigin::LocalValue(value)) else {
-        return Vec::new();
+        return Cow::Borrowed(&[]);
     };
     let SubjectOriginRoot::Value(value) = value else {
-        return Vec::new();
+        return Cow::Borrowed(&[]);
     };
     if path.is_empty() {
         match origins.get(&value) {
-            Some(TransportOrigin::TupleValue(items)) => return items.to_vec(),
-            Some(TransportOrigin::CallableValue(producer)) => return producer.captures.to_vec(),
+            Some(TransportOrigin::TupleValue(items)) => return Cow::Borrowed(items),
+            Some(TransportOrigin::CallableValue(producer)) => return Cow::Borrowed(&producer.captures),
             _ => {}
         }
     }
-    match body.value_definition(value) {
+    let owned = match body.value_definition(value) {
         Some(LoweredStep::List { items, tail, .. })
             if path.iter().all(|kind| matches!(kind, ProjectionKind::ListTail)) =>
         {
@@ -4502,7 +4401,8 @@ fn construction_children(
             .chain(entries.iter().flat_map(|(key, value)| [key.value, *value]))
             .collect(),
         _ => Vec::new(),
-    }
+    };
+    Cow::Owned(owned)
 }
 
 fn construct_call_ownership(
@@ -4511,58 +4411,47 @@ fn construct_call_ownership(
 ) {
     use super::super::executable_facts::TransportOrigin;
     use crate::fz_ir::OwnershipMode;
-    let LoweredBody::Clauses { entries, .. } = body;
-    let calls = entries
-        .iter()
-        .enumerate()
-        .filter_map(|(index, entry)| {
-            let (args, dest) = match &entry.tail {
-                LoweredTail::DirectCall { args, dest, .. } | LoweredTail::ClosureCall { args, dest, .. } => {
-                    (args, dest)
+    let LoweredBody::Clauses { entries, .. } = &*body;
+    let entry_count = entries.len();
+    for index in 0..entry_count {
+        let LoweredBody::Clauses { entries, .. } = &*body;
+        let (args, dest) = match &entries[index].tail {
+            LoweredTail::DirectCall { args, dest, .. } | LoweredTail::ClosureCall { args, dest, .. } => (args, dest),
+            _ => continue,
+        };
+        let modes = args
+            .iter()
+            .enumerate()
+            .map(|(arg_index, arg)| {
+                let arg = arg.value;
+                let peers_overlap = args.iter().enumerate().any(|(peer_index, peer)| {
+                    arg_index != peer_index && values_overlap(body, origins, arg, peer.value)
+                });
+                let retained_overlap = if let ControlDestination::Deliver(target) = dest {
+                    let target = &entries[target.as_u32() as usize];
+                    target
+                        .captures
+                        .iter()
+                        .any(|capture| values_overlap(body, origins, arg, *capture))
+                        || target.physical_captures.iter().any(|capture| {
+                            let Some(source) =
+                                origin_source_path(body, origins, &TransportOrigin::LocalValue(*capture))
+                            else {
+                                return true;
+                            };
+                            value_retains_source(body, origins, arg, &source, None)
+                        })
+                } else {
+                    false
+                };
+                if peers_overlap || retained_overlap {
+                    OwnershipMode::Share
+                } else {
+                    OwnershipMode::Transfer
                 }
-                _ => return None,
-            };
-            Some((
-                index,
-                args.iter().map(|arg| arg.value).collect::<Vec<_>>(),
-                dest.clone(),
-            ))
-        })
-        .collect::<Vec<_>>();
-    for (index, args, dest) in calls {
-        let modes =
-            args.iter()
-                .enumerate()
-                .map(|(arg_index, arg)| {
-                    let peers_overlap = args.iter().enumerate().any(|(peer_index, peer)| {
-                        arg_index != peer_index && values_overlap(body, origins, *arg, *peer)
-                    });
-                    let retained_overlap = if let ControlDestination::Deliver(target) = dest {
-                        let LoweredBody::Clauses { entries, .. } = &*body;
-                        let target = &entries[target.as_u32() as usize];
-                        target
-                            .captures
-                            .iter()
-                            .any(|capture| values_overlap(body, origins, *arg, *capture))
-                            || target.physical_captures.iter().any(|capture| {
-                                let Some(source) =
-                                    origin_source_path(body, origins, &TransportOrigin::LocalValue(*capture))
-                                else {
-                                    return true;
-                                };
-                                value_retains_source(body, origins, *arg, &source, None)
-                            })
-                    } else {
-                        false
-                    };
-                    if peers_overlap || retained_overlap {
-                        OwnershipMode::Share
-                    } else {
-                        OwnershipMode::Transfer
-                    }
-                })
-                .collect::<Vec<_>>();
-        let LoweredBody::Clauses { entries, .. } = body;
+            })
+            .collect::<Vec<_>>();
+        let LoweredBody::Clauses { entries, .. } = &mut *body;
         let args = match &mut entries[index].tail {
             LoweredTail::DirectCall { args, .. } | LoweredTail::ClosureCall { args, .. } => args,
             _ => unreachable!(),
@@ -4580,21 +4469,19 @@ fn construct_tuple_ownership(
     compared: &Cell<u64>,
 ) {
     use crate::fz_ir::OwnershipMode;
-    let LoweredBody::Clauses { entries, .. } = body;
+    let LoweredBody::Clauses { entries, .. } = &*body;
     let tuples = scan_steps(entries, scanned)
-        .filter_map(|(entry, step, instruction)| match instruction {
-            LoweredStep::Tuple { value, items } => Some((
-                entry,
-                step,
-                *value,
-                items.iter().map(|item| item.value).collect::<Vec<_>>(),
-            )),
-            _ => None,
+        .filter_map(|(entry, step, instruction)| {
+            matches!(instruction, LoweredStep::Tuple { .. }).then_some((entry, step))
         })
         .collect::<Vec<_>>();
     let index = StorageRootIndex::new(body, origins);
     let mut reached = (usize::MAX, HashSet::new());
-    for (entry, step, result, items) in tuples {
+    for (entry, step) in tuples {
+        let LoweredBody::Clauses { entries, .. } = &*body;
+        let LoweredStep::Tuple { value: result, items } = &entries[entry].steps[step] else {
+            unreachable!()
+        };
         if reached.0 != entry {
             reached = (entry, entries_reached_from(body, entry));
         }
@@ -4606,9 +4493,9 @@ fn construct_tuple_ownership(
                 let peers_overlap = items
                     .iter()
                     .enumerate()
-                    .any(|(peer, other)| position != peer && values_overlap(body, origins, *item, *other));
-                let shares =
-                    peers_overlap || tuple_item_has_old_owner(body, origins, &index, &later, result, *item, compared);
+                    .any(|(peer, other)| position != peer && values_overlap(body, origins, item.value, other.value));
+                let shares = peers_overlap
+                    || tuple_item_has_old_owner(body, origins, &index, &later, *result, item.value, compared);
                 if shares {
                     OwnershipMode::Share
                 } else {
@@ -4616,7 +4503,7 @@ fn construct_tuple_ownership(
                 }
             })
             .collect::<Vec<_>>();
-        let LoweredBody::Clauses { entries, .. } = body;
+        let LoweredBody::Clauses { entries, .. } = &mut *body;
         let LoweredStep::Tuple { items, .. } = &mut entries[entry].steps[step] else {
             unreachable!()
         };
@@ -4661,7 +4548,9 @@ fn tuple_item_has_old_owner(
     later.retained_sources(body).any(retains) || competitors.into_iter().any(overlaps)
 }
 
-fn entry_captures(
+/// Records in `memo` the values `entry_id` and the entries below it read
+/// without defining, in value order.
+fn record_entry_captures(
     entries: &[LoweredEntry],
     tables: &BodyTables,
     clause_bounds: &HashMap<ControlEntryId, ValueSet>,
@@ -4669,22 +4558,12 @@ fn entry_captures(
     entry_id: ControlEntryId,
     physical: bool,
     memo: &mut HashMap<ControlEntryId, Vec<ValueId>>,
-) -> Vec<ValueId> {
-    if let Some(captures) = memo.get(&entry_id) {
-        return captures.clone();
+) {
+    if memo.contains_key(&entry_id) {
+        return;
     }
 
     let entry = &entries[entry_id.as_u32() as usize];
-    let mut bound = clause_bounds
-        .get(&entry_id)
-        .cloned()
-        .unwrap_or_else(|| ValueSet::for_values(value_count));
-    bound.extend(entry.params.iter().copied());
-    if let Some(value) = entry.origin.input_value() {
-        bound.mark(value);
-    }
-    bound.extend(tables.entry_defines(entry_id));
-
     let mut needed = ValueSet::for_values(value_count);
     if physical {
         needed.extend(tables.entry_retentions_from(entry_id, 0));
@@ -4692,13 +4571,21 @@ fn entry_captures(
         needed.extend(tables.entry_uses_from(entry_id, 0));
     }
     for child in child_entries(&entry.tail) {
-        for capture in entry_captures(entries, tables, clause_bounds, value_count, child, physical, memo) {
-            if !bound.contains(capture) {
-                needed.mark(capture);
-            }
-        }
+        record_entry_captures(entries, tables, clause_bounds, value_count, child, physical, memo);
+        needed.extend(memo[&child].iter().copied());
     }
-    needed.subtract(&bound);
+    if let Some(bound) = clause_bounds.get(&entry_id) {
+        needed.subtract(bound);
+    }
+    let defined_here = entry
+        .params
+        .iter()
+        .copied()
+        .chain(entry.origin.input_value())
+        .chain(tables.entry_defines(entry_id));
+    for value in defined_here {
+        needed.unmark(value);
+    }
     let mut ordered = needed.iter().collect::<Vec<_>>();
     for capture in &entry.captures {
         if !ordered.contains(capture) {
@@ -4706,8 +4593,7 @@ fn entry_captures(
         }
     }
     ordered.sort_by_key(|value| value.as_u32());
-    memo.insert(entry_id, ordered.clone());
-    ordered
+    memo.insert(entry_id, ordered);
 }
 
 /// Every value identity retained by a lowered body's executable surface.
@@ -4741,28 +4627,26 @@ pub(super) fn retained_value_ids(body: &LoweredBody) -> ValueSet {
     retained
 }
 
-fn child_entries(tail: &LoweredTail) -> Vec<ControlEntryId> {
-    match tail {
+fn child_entries(tail: &LoweredTail) -> impl Iterator<Item = ControlEntryId> + '_ {
+    let beside_the_outcomes = match tail {
         LoweredTail::Value { dest, .. }
         | LoweredTail::DirectCall { dest, .. }
         | LoweredTail::ClosureCall { dest, .. } => match dest {
-            ControlDestination::Return => Vec::new(),
-            ControlDestination::Deliver(entry) => vec![*entry],
+            ControlDestination::Return => [None, None],
+            ControlDestination::Deliver(entry) => [Some(*entry), None],
         },
         LoweredTail::If {
             then_entry, else_entry, ..
-        } => vec![*then_entry, *else_entry],
-        LoweredTail::Dispatch { dispatch, .. } => dispatch.successors().collect(),
-        LoweredTail::Receive(receive) => {
-            let mut children = receive.outcomes.iter().map(|edge| edge.target).collect::<Vec<_>>();
-            if let Some(after) = &receive.after {
-                children.push(after.entry);
-            }
-            children
-        }
-        LoweredTail::Try { body, handler } => vec![*body, *handler],
-        LoweredTail::Unreachable => Vec::new(),
-    }
+        } => [Some(*then_entry), Some(*else_entry)],
+        LoweredTail::Dispatch { dispatch, .. } => [dispatch.miss_entry, None],
+        LoweredTail::Receive(receive) => [receive.after.as_ref().map(|after| after.entry), None],
+        LoweredTail::Try { body, handler } => [Some(*body), Some(*handler)],
+        LoweredTail::Unreachable => [None, None],
+    };
+    tail.outcome_edges()
+        .iter()
+        .map(|edge| edge.target)
+        .chain(beside_the_outcomes.into_iter().flatten())
 }
 
 fn lambda_free_names(clauses: &[LambdaClause]) -> HashSet<Var> {
