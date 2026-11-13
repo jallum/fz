@@ -2947,11 +2947,12 @@ fn fixture_invocations_own_their_working_directory() {
 
     let dir_file = temp_build_output_path("scratch_dir_name");
     let error = fixture_command_output(
-        Command::new("sh")
-            .env("FZ_SCRATCH_DIR_PATH", &dir_file)
-            .args(["-c", "pwd > \"$FZ_SCRATCH_DIR_PATH\"; sleep 2"]),
+        Command::new("sh").env("FZ_SCRATCH_DIR_PATH", &dir_file).args([
+            "-c",
+            "pwd > \"$FZ_SCRATCH_DIR_PATH\"; printf . > /dev/fd/$FZ_EXEC_READY_FD; sleep 2",
+        ]),
         "timed-out relative file writer",
-        ExecutionBoundary::Spawn,
+        ExecutionBoundary::Announced,
         Duration::from_millis(500),
     )
     .expect_err("the probe outlives its window");
