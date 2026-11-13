@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T20:19:57Z",
+  "description": "Found by the fz-da session while writing the lib exception modules; reproduced on develop + #469/#473/#474.\n\nRepro: def main(), do: IO.inspect(:+)\nfz2: error[parse/expected-token]: unsupported expression prefix in compiler2 front door: Colon. Elixir prints :+. The quoted form :\"+\" works in fz and prints :+ in Elixir.\n\nElixir accepts operator atoms without quotes (:+, :-, :*, :/, :==, :\u003c\u003e, :++, :\u0026\u0026, :||, :!, :|\u003e, and the rest of its operator set). The lexer produces Colon followed by an operator token instead of one atom token.\n\nDone when: a fixture lists Elixir's operator atoms, prints them, and matches Elixir on interp, run and build (fz-sc8 block, 01140 onward). Not on the distiller's path; end of the epic.",
+  "id": "fz-sc8.158",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "An operator atom such as :+ parses",
+  "type": "bug",
+  "updated_at": "2026-11-13T20:19:57Z"
+}
