@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:38:51Z",
+  "description": "Descr::is_subtype (types/descr.rs:769) is self.diff(other).is_empty(cx): diff runs neg_structure (five dnf_neg, each a vec![Conj::top()]) and intersect (five dnf_intersect, each Vec::with_capacity even for an empty result) and deep-copies self's clauses, for a result read once. About 112k allocations (dnf.rs:61/84, conj.rs:6/28, finite_set.rs:16/47, descr.rs:59-63).\nWho asks: Types::is_integer / is_floating / is_nil / is_atom_type (types/mod.rs:2701-2725), uncached tests against a constant, about 76k, from AbiValueRepr::for_ty (artifact.rs:1527-1534, up to three per lane for the same Ty), abi_layout_contract (jobs/artifact.rs:1913), jobs/backend.rs:435/437; the cached Types::is_subtype about 16k; phi_tuple and list_denotation the rest.\nShape: answer axis by axis on borrowed clauses. An axis where other has no clauses asks only whether self's axis is empty; an empty self axis is skipped; scalar axes are FiniteSet subset tests; build a clause product only where both sides have clauses. The constant tests then cost nothing to speak of.\nCare: diff's three brand-slot cases keep their order (descr.rs:707-720); Types::is_empty reaches the same code; Memo.in_flight is owned by fz-53f.4, do not restructure it.\n\nCounts are sampling estimates at develop 742e688b5 (line numbers refer to /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src); re-measure on your base first. Signal: see the epic.",
+  "id": "fz-y11.1",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "A subtype test builds no difference descriptor",
+  "type": "task",
+  "updated_at": "2026-11-13T03:38:51Z"
+}
