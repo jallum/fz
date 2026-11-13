@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T04:12:47Z",
+  "description": "A runtime type test for pid, ref or c_pointer is always true. RuntimeTypePredicate (src/runtime_type_predicate.rs) has no axis for these opaque types, so the planner emits a test node that admits every value.\n\nProbe (interp and run): def f(p :: pid), do: :matched, called with a received 1.5, prints :matched. Expected: FunctionClauseError, as def f(x :: integer) gives for a float.\n\nConsequence for externs: after fz-xxd.15 an extern's typed parameters are tested at entry, but a pid, ref or c_pointer parameter still admits anything. In lib/ that is fz_send(pid, t) reached from the untyped Kernel.send (send(1.5, msg) is an unchecked raw-word read), and libc fclose, fgetc, ferror, fflush, fwrite and fz_file_read_line taking c_pointer. No lib extern takes a ref parameter.\n\nOne concept: each opaque runtime kind has a predicate axis, so its type test reads the value's kind like every other test. First confirm how pid, ref and c_pointer values are represented at run time on the three paths.\n\nFails before, passes after: fixtures on interp, run and build where a pid-, ref- and c_pointer-typed clause refuses an integer, float, atom, binary and list and admits the genuine value; send(1.5, :m) raises instead of reading a raw word.\n\nAcceptance: full gate green; no pin rises unexplained.",
+  "id": "fz-xxd.16",
+  "labels": [],
+  "parent": "fz-xxd",
+  "priority": 2,
+  "status": "open",
+  "title": "A pid, ref or c_pointer type test tells those values from every other value",
+  "type": "bug",
+  "updated_at": "2026-11-13T04:12:47Z"
+}
