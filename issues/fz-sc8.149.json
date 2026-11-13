@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T18:09:18Z",
   "created": "2026-11-13T15:20:36Z",
   "description": "Verified 2026-11-13 on f04c56f8e (unmodified), repros in /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/nx.\n\n1. Receiver typed any: `IO.puts(to_string(Map.put(%{}, \"a\", 1)))` (A3.exs). Elixir: ** (Protocol.UndefinedError) protocol String.Chars not implemented for Map. fz interp: internal error 'backend dispatch callsite ... missed an exhaustive dispatch'. fz run/build: exit 132 (SIGILL). The backend dump shows Kernel.to_string/1[any] with four arms (atom, binary, int, float) and no arm of last resort.\n2. Receiver partly covered: Enum.join([\"x\", {1, 2}], \" \") (c3.exs) raises 'not implemented for BitString' (Elixir: Tuple); Enum.join([1, {2, 3}], \" \") (c6.exs) gives interp 'extern integer arg must be Int' and run exit 134 (fz_ref_load_int ExpectedTag). The single overlapping impl is called directly with no test, so a value of the uncovered part enters the wrong impl.\n\nCause: resolve_protocol_call (src/compiler2/jobs/semantic.rs ~1578-1700) keeps the impls that overlap the receiver and never computes the remainder (receiver minus the union of overlapping impl targets). The only refusal is zero overlap (call_reaches_no_target, jobs/artifact.rs ~1887). The plan is built with SourcePatternRows::lexical (callsite_dispatch.rs:121), which has no last resort; interp reports the miss as an internal error (ir_interp/backend.rs:1199) and native emits Unreachable (jobs/native.rs:2988). .agent/docs/dispatch-matrix.md:1195-1203 states misses are unreachable for closed receiver unions; that does not hold for a protocol receiver.\n\nWanted: when the remainder is non-empty the callsite is a decision whose arm of last resort raises Protocol.UndefinedError with Elixir's message, through the same mechanism case and function clauses use (fz-sc8.63), on interp, run and build; a one-match plan with a non-empty remainder is not collapsed to a direct call. Zero overlap stays a compile-time refusal. Needs a spike for pin movement and a proposal page before building. Not on the distiller's own path (found in a mutated cut).",
   "id": "fz-sc8.149",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A protocol call on a value no implementation covers raises Protocol.UndefinedError",
   "type": "bug",
-  "updated_at": "2026-11-13T15:54:35Z"
+  "updated_at": "2026-11-13T18:09:18Z"
 }
