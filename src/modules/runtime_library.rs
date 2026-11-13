@@ -81,6 +81,10 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/integer.fz"),
     },
     RuntimeModuleSource {
+        name: "Exception",
+        source: include_str!("../../lib/exception.fz"),
+    },
+    RuntimeModuleSource {
         name: "Float",
         source: include_str!("../../lib/float.fz"),
     },

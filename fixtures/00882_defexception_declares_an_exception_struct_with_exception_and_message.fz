@@ -1,0 +1,69 @@
+#---
+# purpose: "defexception declares the struct with exception/1 and message/1, a module replaces either, Exception.message/1 calls the module's message/1, and is_exception/1 tells an exception from another struct, as Elixir does"
+# oracle: 00882_defexception_declares_an_exception_struct_with_exception_and_message.oracle.exs
+#---
+defmodule Plain do
+  defexception [:message]
+end
+
+defmodule Defaulted do
+  defexception message: "defaulted", code: 7
+end
+
+defmodule NotFound do
+  defexception [:path]
+
+  def message(e), do: "no file " <> e.path
+end
+
+defmodule Odd do
+  defexception [:message, :n]
+
+  def exception(n) when is_integer(n), do: %Odd{message: "odd", n: n}
+end
+
+defmodule Pt do
+  defstruct [:x]
+end
+
+def kind(e) when is_exception(e), do: :exception
+def kind(_), do: :other
+
+def rescued(f) do
+  try do
+    f.()
+  rescue
+    e in Plain -> {:plain, e.message}
+    e in Defaulted -> {:defaulted, Exception.message(e), e.code}
+  end
+end
+
+def raised_is_exception(f) do
+  try do
+    f.()
+  rescue
+    e -> is_exception(e)
+  end
+end
+
+def main() do
+  dbg(Plain.exception("x"))
+  dbg(Plain.exception(message: "y"))
+  dbg(Plain.exception([]))
+  dbg(Defaulted.exception([]))
+  dbg(Defaulted.exception(code: 9))
+  dbg(Exception.message(Defaulted.exception([])))
+  dbg(Exception.message(NotFound.exception(path: "/a")))
+  dbg(Odd.exception(3))
+  dbg(Exception.message(Odd.exception(3)))
+  dbg(rescued(fn -> raise Plain, "x" end))
+  dbg(is_exception(Plain.exception("x")))
+  dbg(is_exception(%Pt{x: 1}))
+  dbg(is_exception(%{__struct__: Pt}))
+  dbg(is_exception(%{__exception__: true}))
+  dbg(is_exception(:atom))
+  dbg(kind(NotFound.exception(path: "/a")))
+  dbg(kind(%Pt{x: 1}))
+  dbg(raised_is_exception(fn -> raise Plain, "x" end))
+  dbg(raised_is_exception(fn -> raise ArgumentError, "bad" end))
+end

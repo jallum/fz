@@ -1,0 +1,29 @@
+#---
+# purpose: "a map pattern in a function head takes a struct on every path when the caller's type says the value is that struct"
+# oracle: 00883_a_map_pattern_takes_a_struct_whose_type_is_known.oracle.exs
+#---
+defmodule Pt do
+  defstruct x: 1, flag: true
+end
+
+def x_of(%{x: x}), do: x
+def x_of(_), do: :none
+
+def module_of(%{__struct__: module}), do: module
+def module_of(_), do: :none
+
+def flagged(%{flag: true}), do: :yes
+def flagged(_), do: :no
+
+def flagged_struct(%{__struct__: module, flag: true}) when is_atom(module), do: :yes
+def flagged_struct(_), do: :no
+
+def main() do
+  dbg(x_of(%Pt{}))
+  dbg(module_of(%Pt{}))
+  dbg(flagged(%Pt{}))
+  dbg(flagged(%Pt{flag: false}))
+  dbg(flagged_struct(%Pt{}))
+  dbg(flagged_struct(:atom))
+  dbg(flagged_struct(%{flag: true}))
+end

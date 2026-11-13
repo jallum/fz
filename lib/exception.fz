@@ -1,0 +1,15 @@
+defmodule Exception do
+  @moduledoc "Functions for working with exceptions."
+
+  @doc """
+  Returns the message of `exception`: what its module's `message/1` answers.
+
+  ## Examples
+
+      Exception.message(%ArgumentError{message: "bad"})
+      #=> "bad"
+
+  """
+  @spec message(any) :: any
+  def message(exception), do: exception.__struct__.message(exception)
+end

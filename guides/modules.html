@@ -95,6 +95,20 @@ module a default that the module may write for itself.
 <code>name: arity</code> pairs. Elixir's <code>super</code> is not
 supported.</p>
 
+<p><code>defexception</code> is such a macro. It declares the module's
+struct and gives it <code>exception/1</code>, which builds the exception
+from a keyword list, and, when the struct has a <code>message</code> field,
+<code>message/1</code>, which reads it. The module may write either
+itself:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">NotFound</span> <span class="kw">do</span>
+  <span class="kw">defexception</span> [<span class="atm">:path</span>]
+
+  <span class="kw">def</span> <span class="fn">message</span>(e), <span class="kw">do:</span> <span class="str">"no file "</span> &lt;&gt; e.path
+<span class="kw">end</span>
+
+<span class="ty">Exception</span>.<span class="fn">message</span>(<span class="ty">NotFound</span>.<span class="fn">exception</span>(path: <span class="str">"/a"</span>))   <span class="com"># "no file /a"</span></pre>
+
 <p>A file can also be a script. Expressions written at the top level run in
 order as the program's <code>main/0</code>, after every definition in the file
 is available, so a statement can call a function or module defined further

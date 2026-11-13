@@ -356,7 +356,8 @@ registry keeps no second copy. Three reads of that identity exist:
   schema order (a nested module as `%Outer.Inner{...}`), a tuple as `{a, b}`.
   A struct's fields are keyword entries: each name is spelled by the same
   keyword-key rule as a map's or a list's (`"foo bar": 1`), and each field
-  spends one from the `limit:` budget (`%Pt{x: 1, ...}`).
+  spends one from the `limit:` budget (`%Pt{x: 1, ...}`). The `__exception__`
+  field is not printed and spends nothing.
 
 ### A run-time type test reads the module in either layout
 
