@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T19:11:22Z",
+  "description": "src/compiler2/types/mod.rs: instantiate (lines ~4905-4937; clones via 4916, 4926, 4936, ~9,800 allocations), the runtime envelope (types.descr(\u0026ty).clone() at 4314 ~6,100 and Descr::any at 4323 ~4,000), and erase_closure_identity (4629, ~3,900) each clone a whole interned descriptor and then change at most the vars axis or the funcs axis, then walk children with map_recursive_inputs(_with), which takes the descriptor by value.\n\nChange: return the input Ty/descriptor untouched when nothing changes (no vars to substitute, no closure brand to erase), and otherwise copy only what is rebuilt. Confirm first how often each call changes nothing (count on the probe with a temporary counter, removed before commit).\n\nEvidence: allocation census of the OptionParser probe at bf51f11c1 (develop ac3750d1e + hasher fix + fz-y11.15 spike; 857,327 calls). Ranked sites: /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/bf51f11c1_top.txt; call chains: python3 /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/chain.py /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/bf51f11c1.pkl \u003cfile:line\u003e \u003cdepth\u003e. Counts are 1-in-16 sampling estimates; line numbers are at that commit. Method and signal: see the epic (bw show fz-y11). Every site is a claim read from the census and the source, to be confirmed first.",
+  "id": "fz-y11.19",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "Instantiation and the runtime envelope copy only the descriptor parts they change",
+  "type": "task",
+  "updated_at": "2026-11-13T19:11:22Z"
+}
