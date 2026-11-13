@@ -1,7 +1,8 @@
 use super::*;
 use crate::compiler2::LoweredExtern;
 use crate::compiler2::native_codegen::{ExternLane, emit_fn_body, emit_variadic_c_call, host_isa};
-use crate::fz_ir::{ExternReturn, ExternTy};
+use crate::dispatch_matrix::pattern::GuardExtern;
+use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -71,6 +72,27 @@ pub(super) enum ExternCallValue {
     ProcessFailed,
 }
 
+/// The parts of a fixed-arity extern a call reads, borrowed from whichever
+/// declaration holds them.
+#[derive(Clone, Copy)]
+pub(super) struct FixedExtern<'a> {
+    pub(super) abi: ExternAbi,
+    pub(super) symbol: &'a str,
+    pub(super) params: &'a [ExternTy],
+    pub(super) ret: &'a ExternReturn,
+}
+
+impl<'a> From<&'a GuardExtern> for FixedExtern<'a> {
+    fn from(guard: &'a GuardExtern) -> Self {
+        Self {
+            abi: guard.abi,
+            symbol: &guard.symbol,
+            params: &guard.params,
+            ret: &guard.ret,
+        }
+    }
+}
+
 pub(super) fn call_lowered_extern(
     runtime: &mut IrInterpRuntime,
     signature: &LoweredExtern,
@@ -80,7 +102,23 @@ pub(super) fn call_lowered_extern(
     if signature.variadic {
         return call_variadic_extern(runtime, signature, marshals, args);
     }
+    call_fixed_extern(
+        runtime,
+        FixedExtern {
+            abi: signature.abi,
+            symbol: &signature.symbol,
+            params: &signature.params,
+            ret: &signature.ret,
+        },
+        args,
+    )
+}
 
+pub(super) fn call_fixed_extern(
+    runtime: &mut IrInterpRuntime,
+    signature: FixedExtern<'_>,
+    args: &[AnyValue],
+) -> Result<ExternCallValue, String> {
     // Arity is enforced where the call is lowered; this guards the transmute
     // below against a caller that bypassed lowering, where `zip` would
     // silently truncate.
@@ -92,7 +130,7 @@ pub(super) fn call_lowered_extern(
             args.len()
         ));
     }
-    let fp = resolve_symbol(&signature.symbol)?;
+    let fp = resolve_symbol(signature.symbol)?;
     // An `extern "fz"` helper receives the current process as an implicit first
     // argument, declared rather than matched by name.
     let fz_abi = signature.abi.takes_process();
@@ -117,7 +155,7 @@ pub(super) fn call_lowered_extern(
             MAX_INTERP_EXTERN_ARGS,
         ));
     }
-    let result = unsafe { call_declared_return(fp, &raw_args, signature) };
+    let result = unsafe { call_declared_return(fp, &raw_args, signature.ret) };
     // A helper that reports through the execution context leaves its error
     // pending; that error is the answer whatever lane the call came back in.
     // A macro's fault sink reports a failure this way, so a failure during
@@ -318,13 +356,13 @@ fn load_word(b: &mut FunctionBuilder<'_>, words: ir::Value, index: usize, lane: 
 ///
 /// # Safety
 /// `fp` must be a function whose parameters travel in the banks `raw_args`
-/// names, in order, and whose return matches `signature.ret`.
+/// names, in order, and whose return matches `ret`.
 unsafe fn call_declared_return(
     fp: *const (),
     raw_args: &[ArgWord],
-    signature: &LoweredExtern,
+    ret: &ExternReturn,
 ) -> Result<ExternCallValue, String> {
-    match &signature.ret {
+    match ret {
         ExternReturn::Scalar(ExternTy::F64) => {
             let value = unsafe { dispatch_fn_returning_float(fp, raw_args) };
             Ok(ExternCallValue::Scalar(AnyValue::Float(value)))
