@@ -103,7 +103,10 @@ fn input_demand_work(source: &str) -> DemandWork {
             };
             let name = function_name(world, function);
             let answered = completion.step.blocked.is_empty();
-            let standing = world.work_graph.reads(&completion.job);
+            let standing = world
+                .work_graph
+                .reads(&completion.job)
+                .collect::<std::collections::HashSet<_>>();
             let read_count = standing.len();
             let mut reads = standing
                 .iter()

@@ -62,7 +62,6 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
             .world
             .work_graph
             .dependency_uses(&job)
-            .iter()
             .filter_map(|usage| match usage.fact() {
                 DependencyKey::Product(address) => Some(address.clone()),
                 _ => None,
@@ -982,13 +981,11 @@ impl World {
     /// another is still unanswered, or it would immediately re-park on the
     /// one it was never actually given.
     fn concluded_answers_missing(&self, job: &Job) -> HashSet<FactUse<DependencyKey>> {
-        let waits = self.work_graph.waits_for(job).iter().cloned();
         self.work_graph
             .reads(job)
-            .into_iter()
-            .chain(waits)
+            .chain(self.work_graph.waits_for(job))
             .filter_map(|use_| match use_ {
-                FactUse::Concluded(DependencyKey::Fact(fact)) => Some(fact),
+                FactUse::Concluded(DependencyKey::Fact(fact)) => Some(fact.clone()),
                 _ => None,
             })
             .filter_map(|fact| match self.answer_use(job, fact) {
@@ -1112,7 +1109,7 @@ impl World {
         if self
             .work_graph
             .output_keys(&job)
-            .contains(&DependencyKey::Fact(target_fact.clone()))
+            .any(|key| matches!(key, DependencyKey::Fact(fact) if fact == target_fact))
         {
             // The producer claims the fact and its ground stands: a
             // re-run would republish byte-identically.

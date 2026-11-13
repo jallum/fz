@@ -624,7 +624,6 @@ impl World {
         let previous_output_keys = self
             .work_graph
             .output_keys(&job)
-            .iter()
             .filter_map(|key| key.fact().cloned())
             .collect::<OrderedSet<FactKey>>();
         let previous_activation_input_outputs = previous_output_keys
@@ -781,13 +780,14 @@ impl World {
         let claims = self
             .work_graph
             .output_keys(job)
-            .iter()
             .filter_map(|key| key.fact().cloned())
+            .collect::<OrderedSet<FactKey>>()
+            .into_iter()
             .collect();
         let reads = self
             .work_graph
             .reads(job)
-            .into_iter()
+            .cloned()
             .filter_map(super::drive::as_fact_use)
             .collect();
         (claims, reads)
@@ -1948,7 +1948,7 @@ impl World {
     pub(crate) fn job_reads(&self, job: &Job) -> HashSet<FactUse<FactKey>> {
         self.work_graph
             .reads(job)
-            .into_iter()
+            .cloned()
             .filter_map(super::drive::as_fact_use)
             .collect()
     }
@@ -1957,8 +1957,9 @@ impl World {
     pub(crate) fn job_outputs(&self, job: &Job) -> Vec<FactKey> {
         self.work_graph
             .output_keys(job)
-            .iter()
             .filter_map(|key| key.fact().cloned())
+            .collect::<OrderedSet<FactKey>>()
+            .into_iter()
             .collect()
     }
 
