@@ -753,7 +753,7 @@ fn required_call_edge_transport_positions(
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
     body: &LoweredBody,
-    callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
+    callsite_args: &HashMap<CallSiteId, &[CallArg]>,
 ) -> Vec<TransportPosition> {
     let LoweredBody::Clauses { entries, .. } = body;
     let caller_symbol = transport_executable_symbol(executable, world.types());
@@ -785,7 +785,7 @@ fn required_call_edge_transport_positions(
                     executable: caller_symbol.clone(),
                     value: *callee,
                 });
-                for (semantic_index, _) in callsite_args.get(callsite).into_iter().flatten().enumerate() {
+                for (semantic_index, _) in callsite_args.get(callsite).copied().into_iter().flatten().enumerate() {
                     positions.insert(TransportPosition::CallArg {
                         executable: caller_symbol.clone(),
                         callsite: *callsite,
@@ -891,7 +891,7 @@ fn materialize_call_edges(
     callsite_needs: &HashMap<CallSiteId, ExecutableNeed>,
     body: &LoweredBody,
     original_entry_ids: &[ControlEntryId],
-    callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
+    callsite_args: &HashMap<CallSiteId, &[CallArg]>,
 ) -> Result<Option<HashMap<CallSiteId, MaterializedCallEdge>>, FatalError> {
     let mut call_edges = HashMap::new();
     let LoweredBody::Clauses { entries, .. } = body;
@@ -972,7 +972,7 @@ fn materialize_direct_call_edge(
     callsite: CallSiteId,
     dest: &ControlDestination,
     original_entry_ids: &[ControlEntryId],
-    callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
+    callsite_args: &HashMap<CallSiteId, &[CallArg]>,
 ) -> Result<Option<MaterializedCallEdge>, FatalError> {
     // One door: a callsite that named no targets -- never reached, proven
     // dead, or reached and still unresolved -- materializes no edge.
@@ -1075,7 +1075,7 @@ fn materialize_closure_call_edge(
     result_value: ValueId,
     dest: &ControlDestination,
     original_entry_ids: &[ControlEntryId],
-    callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
+    callsite_args: &HashMap<CallSiteId, &[CallArg]>,
 ) -> Result<MaterializedCallEdge, FatalError> {
     let summary = summaries.get(&callsite);
     // One question decides the call, and `closure_call_form` is where it is
@@ -1207,7 +1207,7 @@ fn lower_materialized_call_target(
     callsite: CallSiteId,
     dest: &ControlDestination,
     original_entry_ids: &[ControlEntryId],
-    callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
+    callsite_args: &HashMap<CallSiteId, &[CallArg]>,
     target: CallTargetSummary,
 ) -> Result<(DirectCallEdge<ExecutableKey>, Ty), FatalError> {
     let (callee, extern_marshals) = match target.callee {

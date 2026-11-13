@@ -532,7 +532,7 @@ fn result_consumers(facts: &RuntimeDemandFacts<'_>) -> HashMap<ExecutableKey, Re
     }
     for (callsite, args) in callsite_call_args(facts.body) {
         let consumer_targets = targets_of(&callsite);
-        for arg in &args {
+        for arg in args {
             for producer_site in callsite_returns_feeding(facts, arg.value) {
                 for producer in targets_of(&producer_site) {
                     let entry = consumers
@@ -624,7 +624,7 @@ fn callsite_returns_reaching(
         {
             continue;
         }
-        for arg in args.get(callsite).into_iter().flatten() {
+        for arg in args.get(callsite).copied().into_iter().flatten() {
             awaiting.extend(callsite_returns_feeding(facts, arg.value));
         }
     }

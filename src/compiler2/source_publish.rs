@@ -1332,7 +1332,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             let fact = FactKey::ModuleInterface(required_module);
             self.reads.push(fact);
             let interface = self.world.module_interface(required_module);
-            self.select_required_macro_exports(import, interface.callables())?
+            Self::select_required_macro_exports(self.telemetry, import, interface.callables())?
         };
         self.record_required_remote_macros(&selected);
         Ok(None)
@@ -1358,7 +1358,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
     }
 
     fn select_required_macro_exports(
-        &mut self,
+        telemetry: &T,
         import: &super::quoted_surface::ImportForm,
         callables: &[ModuleInterfaceCallable],
     ) -> Result<Vec<ModuleInterfaceCallable>, FatalError> {
@@ -1367,7 +1367,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             for (name, arity) in only {
                 let Some(callable) = find_callable(callables, name, *arity) else {
                     return Err(emit_job_diagnostic(
-                        self.telemetry,
+                        telemetry,
                         Diagnostic::error(
                             codes::RESOLVE_UNKNOWN_IMPORT,
                             format!(
@@ -1382,7 +1382,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 };
                 if !matches!(callable.kind, InterfaceCallableKind::Macro) {
                     return Err(emit_job_diagnostic(
-                        self.telemetry,
+                        telemetry,
                         Diagnostic::error(
                             codes::RESOLVE_UNKNOWN_IMPORT,
                             format!(
@@ -1404,7 +1404,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         for (name, arity) in import.except.as_deref().unwrap_or(&[]) {
             let Some(callable) = find_callable(callables, name, *arity) else {
                 return Err(emit_job_diagnostic(
-                    self.telemetry,
+                    telemetry,
                     Diagnostic::error(
                         codes::RESOLVE_UNKNOWN_IMPORT,
                         format!(
@@ -1419,7 +1419,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             };
             if !matches!(callable.kind, InterfaceCallableKind::Macro) {
                 return Err(emit_job_diagnostic(
-                    self.telemetry,
+                    telemetry,
                     Diagnostic::error(
                         codes::RESOLVE_UNKNOWN_IMPORT,
                         format!(

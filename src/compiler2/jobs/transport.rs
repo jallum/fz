@@ -1826,7 +1826,9 @@ fn produce_named_transport_position(
                     TransportShapeFact::Layout(layout),
                 )));
             };
-            let args_len = callsite_call_args(facts.body()).get(callsite).map_or(0, Vec::len);
+            let args_len = callsite_call_args(facts.body())
+                .get(callsite)
+                .map_or(0, |args| args.len());
             let mode = callsite_input_modes(facts.body()).get(callsite).copied();
             let need = facts
                 .callsite_needs()

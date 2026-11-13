@@ -1143,7 +1143,7 @@ impl World {
         mut interface: ModuleInterface,
     ) -> ModuleInterface {
         if let Some(prior) = self.module_interface_if_present(id) {
-            interface.inherit_expectations_from(&prior);
+            interface.inherit_expectations_from(prior);
         }
         interface
     }
@@ -1687,16 +1687,15 @@ impl World {
         self.namespaces.lookup(head, name).cloned()
     }
 
-    pub fn module_interface(&self, module: ModuleId) -> ModuleInterface {
+    pub fn module_interface(&self, module: ModuleId) -> &ModuleInterface {
         self.modules
             .get(module)
             .interface()
-            .cloned()
             .expect("module interface should only be read when it exists")
     }
 
-    pub fn module_interface_if_present(&self, module: ModuleId) -> Option<ModuleInterface> {
-        self.modules.get(module).interface().cloned()
+    pub fn module_interface_if_present(&self, module: ModuleId) -> Option<&ModuleInterface> {
+        self.modules.get(module).interface()
     }
 
     pub(crate) fn module_has_source_state(&self, module: ModuleId) -> bool {
@@ -1726,7 +1725,7 @@ impl World {
     }
 
     pub fn note_module_interface_expectation(&mut self, module: ModuleId, expectation: InterfaceExpectation) {
-        let mut interface = self.module_interface_if_present(module).unwrap_or_default();
+        let mut interface = self.module_interface_if_present(module).cloned().unwrap_or_default();
         interface.record_expectation(expectation);
         self.define_module_interface(module, interface);
     }
