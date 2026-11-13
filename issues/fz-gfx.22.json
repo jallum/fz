@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T00:40:26Z",
   "created": "2026-11-12T23:55:12Z",
   "description": "ArmCompileState owns questions: Vec\u003cRegionQuestion\u003e. src/dispatch_matrix/mod.rs:857 clones every arm's questions to start, and :897 copies arm.questions[1..].to_vec() for every arm at every shared prefix, so the copying is quadratic in prefix depth.\nShape: questions: \u0026[RegionQuestion], stripped by reslicing. The first_question cloned at :882 is stored by the test node and stays.\nHeat: per shared prefix and per arm in compile_arm_sequence, for every clause set compiled.\n\nMethod: .agent/strategies/ownership-shape.md. Change the signature and let cargo check enumerate dependents; resolve interleavings by compute-then-commit or a split borrow; stop and report if an Rc is the only move.\nSignal: pure refactor. Full gate green; no golden, census or pin moves. Report the clone/to_vec count of each touched file before and after.\nSites were read at develop 8bf8775ae and not compiled; confirm each with cargo check before relying on it.",
   "id": "fz-gfx.22",
   "labels": [],
   "parent": "fz-gfx",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "The dispatch compiler walks each arm's questions as a slice",
   "type": "task",
-  "updated_at": "2026-11-12T23:55:28Z"
+  "updated_at": "2026-11-13T00:40:26Z"
 }
