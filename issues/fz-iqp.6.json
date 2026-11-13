@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T21:18:50Z",
+  "description": "?a fails today with 'unexpected character' even for ASCII; ?é is 233 in Elixir.",
+  "id": "fz-iqp.6",
+  "labels": [],
+  "parent": "fz-iqp",
+  "priority": 3,
+  "status": "open",
+  "title": "Character literals: ?a is the code point of a",
+  "type": "task",
+  "updated_at": "2026-11-13T21:18:50Z"
+}
