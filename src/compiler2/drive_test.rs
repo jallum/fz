@@ -23061,7 +23061,7 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
     }
     assert_eq!(
         activations.values().map(BTreeSet::len).sum::<usize>(),
-        207,
+        206,
         "activations of the whole program"
     );
 }

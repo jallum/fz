@@ -302,7 +302,10 @@ callsite reaches is decided at the callsite from the argument types it holds
 (fz-kdt.132), so that choice never has to travel with the value. Only where
 the targets name different functions or incompatible physical capture
 requirements does no exact shared layout exist, and the position uses its
-generic layout. Counting targets instead of
+generic layout: a callable that names no function, carried in a `ValueRef` lane
+whatever the demand. Nothing static can stand in for such a value, so its layout
+depends on the type alone and the two ends of a cut recursion edge, each deriving
+from its own demand, agree on it. Counting targets instead of
 layouts made a many-target position carry NOTHING while the callsite still
 ground a direct call to one of them — the shape a mailbox-delivered reducer
 takes through `Enum.reduce/3`, where the accumulator specialization splits one
