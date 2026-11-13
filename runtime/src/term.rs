@@ -7,7 +7,8 @@ use crate::any_value::{
     AnyValue, ListCons, MAP_DESTINATION_FLAG, ValueKind, closure_capture_value, closure_captured_count,
     closure_denotation, map_count, map_entry, struct_schema_id,
 };
-use crate::heap::{FieldKind, SchemaRegistry};
+use crate::heap::{Schema, SchemaIdentity, SchemaRegistry, StructKey};
+use crate::module_name::STRUCT_MODULE_FIELD;
 use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
 use crate::process::Node;
 use crate::resource::ResourceStub;
@@ -57,68 +58,77 @@ impl<'a> TermComparator<'a> {
                 );
             }
         }
-        let category = rank(a.kind()).cmp(&rank(b.kind()));
-        if category != Ordering::Equal {
-            return category;
+        let category = self.category(a);
+        let order = category.cmp(&self.category(b));
+        if order != Ordering::Equal {
+            return order;
         }
-        match (a, b) {
-            (AnyValue::Int(a), AnyValue::Int(b)) => a.cmp(&b),
-            (AnyValue::Float(a), AnyValue::Float(b)) => float_cmp(f64::from_bits(a), f64::from_bits(b), mode),
-            (AnyValue::Int(a), AnyValue::Float(b)) => match mode {
-                NumericMode::Strict => compare_int_float(a, f64::from_bits(b)).then(Ordering::Less),
-                NumericMode::Widening => compare_int_float(a, f64::from_bits(b)),
-            },
-            (AnyValue::Float(a), AnyValue::Int(b)) => match mode {
-                NumericMode::Strict => compare_int_float(b, f64::from_bits(a))
-                    .reverse()
-                    .then(Ordering::Greater),
-                NumericMode::Widening => compare_int_float(b, f64::from_bits(a)).reverse(),
-            },
-            (AnyValue::Atom(a), AnyValue::Atom(b)) => self.node.cmp_atom_names(a, b),
-            _ if a.kind() == ValueKind::STRUCT => self.struct_cmp(address(a), address(b), mode),
-            _ if a.kind() == ValueKind::CLOSURE => self.closure_cmp(address(a), address(b)),
+        match category {
+            Category::Number => number_cmp(a, b, mode),
+            Category::Atom => self.node.cmp_atom_names(a.raw() as u32, b.raw() as u32),
+            Category::Tuple => self.tuple_cmp(address(a), address(b), mode),
+            Category::Closure => self.closure_cmp(address(a), address(b)),
             _ if a == b => Ordering::Equal,
-            _ if a.kind().is_binary_repr() => bitstring_cmp(
+            Category::Bitstring => bitstring_cmp(
                 a.heap_object_word().expect("bitstring"),
                 b.heap_object_word().expect("bitstring"),
             ),
-            _ if a.kind() == ValueKind::MAP => self.map_cmp(address(a), address(b), mode),
-            _ if a.kind() == ValueKind::LIST => self.list_cmp(address(a), address(b), mode),
-            _ if a.kind() == ValueKind::RESOURCE => {
+            Category::Map => self.map_cmp(self.map_term(a), self.map_term(b), mode),
+            Category::List => self.list_cmp(address(a), address(b), mode),
+            Category::Resource => {
                 let a = unsafe { ResourceStub::from_raw(address(a)) };
                 let b = unsafe { ResourceStub::from_raw(address(b)) };
                 a.id().cmp(&b.id())
             }
-            _ => unreachable!("unpublished runtime value"),
         }
     }
 
-    fn struct_cmp(&self, a: *const u8, b: *const u8, mode: NumericMode) -> Ordering {
-        let a_id = unsafe { struct_schema_id(a) };
-        let b_id = unsafe { struct_schema_id(b) };
-        let schema = self.schemas.get(a_id);
-        let identity = schema.identity.semantic_cmp(&self.schemas.get(b_id).identity);
-        if identity != Ordering::Equal || a == b {
-            return identity;
+    /// Where a value stands among the kinds of term. A struct stands with the
+    /// maps, whichever layout holds it.
+    fn category(&self, value: AnyValue) -> Category {
+        match value.kind() {
+            ValueKind::INT | ValueKind::FLOAT => Category::Number,
+            ValueKind::ATOM => Category::Atom,
+            ValueKind::RESOURCE => Category::Resource,
+            ValueKind::CLOSURE => Category::Closure,
+            ValueKind::STRUCT if self.struct_map_keys(address(value)).is_some() => Category::Map,
+            ValueKind::STRUCT => Category::Tuple,
+            ValueKind::MAP => Category::Map,
+            ValueKind::LIST => Category::List,
+            ValueKind::BITSTRING | ValueKind::PROCBIN => Category::Bitstring,
+            _ => unreachable!("runtime value kind"),
         }
-        let mut value_index = 0;
-        for field in &schema.fields {
-            let ap = unsafe { a.add(8 + field.offset as usize) };
-            let bp = unsafe { b.add(8 + field.offset as usize) };
-            let order = match field.kind {
-                FieldKind::AnyValue => {
-                    let kind_offset = 8 + schema.size as usize + value_index;
-                    value_index += 1;
-                    let av = unsafe { AnyValue::decode_parts(read(ap.cast()), read(a.add(kind_offset))) }
-                        .expect("published struct field");
-                    let bv = unsafe { AnyValue::decode_parts(read(bp.cast()), read(b.add(kind_offset))) }
-                        .expect("published struct field");
-                    self.compare(av, bv, mode)
-                }
-                FieldKind::RawI64 => unsafe { read(ap.cast::<i64>()).cmp(&read(bp.cast::<i64>())) },
-                FieldKind::RawF64 => unsafe { float_cmp(read(ap.cast()), read(bp.cast()), mode) },
-                FieldKind::RawBytes(n) => unsafe { from_raw_parts(ap, n as usize).cmp(from_raw_parts(bp, n as usize)) },
-            };
+    }
+
+    fn struct_map_keys(&self, object: *const u8) -> Option<&'a [StructKey]> {
+        self.schemas.map_keys(unsafe { struct_schema_id(object) })
+    }
+
+    fn map_term(&self, value: AnyValue) -> MapTerm<'a> {
+        let addr = address(value) as *const u8;
+        match value.kind() {
+            ValueKind::MAP => MapTerm::Entries(addr),
+            _ => MapTerm::Struct {
+                object: addr,
+                schema: self.schemas.get(unsafe { struct_schema_id(addr) }),
+                keys: self.struct_map_keys(addr).expect("a struct in the map category"),
+            },
+        }
+    }
+
+    fn tuple_cmp(&self, a: *const u8, b: *const u8, mode: NumericMode) -> Ordering {
+        let schema = self.schemas.get(unsafe { struct_schema_id(a) });
+        let other = self.schemas.get(unsafe { struct_schema_id(b) });
+        let (SchemaIdentity::Tuple(arity), SchemaIdentity::Tuple(other_arity)) = (&schema.identity, &other.identity)
+        else {
+            panic!("internal storage schema is not a language value");
+        };
+        let size = arity.cmp(other_arity);
+        if size != Ordering::Equal || a == b {
+            return size;
+        }
+        for index in 0..*arity {
+            let order = self.compare(field_value(schema, a, index), field_value(schema, b, index), mode);
             if order != Ordering::Equal {
                 return order;
             }
@@ -126,29 +136,99 @@ impl<'a> TermComparator<'a> {
         Ordering::Equal
     }
 
-    fn map_cmp(&self, a: *const u8, b: *const u8, mode: NumericMode) -> Ordering {
-        let count = unsafe { map_count(a) };
-        let size = count.cmp(&unsafe { map_count(b) });
+    /// Maps order by size, then by their keys, then by their values in key
+    /// order. Two structs of one schema have the same size, keys and module,
+    /// so only their fields are read.
+    fn map_cmp(&self, a: MapTerm<'a>, b: MapTerm<'a>, mode: NumericMode) -> Ordering {
+        if let (
+            MapTerm::Struct { object, schema, keys },
+            MapTerm::Struct {
+                object: other,
+                schema: other_schema,
+                ..
+            },
+        ) = (a, b)
+            && std::ptr::eq(schema, other_schema)
+        {
+            return self.fields_cmp(schema, keys, object, other, mode);
+        }
+        let count = self.map_count(a);
+        let size = count.cmp(&self.map_count(b));
         if size != Ordering::Equal {
             return size;
         }
         for i in 0..count {
-            let order = self.compare(
-                unsafe { map_entry(a, i).0 },
-                unsafe { map_entry(b, i).0 },
-                NumericMode::Strict,
-            );
+            let order = self.compare(self.map_key(a, i), self.map_key(b, i), NumericMode::Strict);
             if order != Ordering::Equal {
                 return order;
             }
         }
         for i in 0..count {
-            let order = self.compare(unsafe { map_entry(a, i).1 }, unsafe { map_entry(b, i).1 }, mode);
+            let order = self.compare(self.map_value(a, i), self.map_value(b, i), mode);
             if order != Ordering::Equal {
                 return order;
             }
         }
         Ordering::Equal
+    }
+
+    fn fields_cmp(
+        &self,
+        schema: &Schema,
+        keys: &[StructKey],
+        a: *const u8,
+        b: *const u8,
+        mode: NumericMode,
+    ) -> Ordering {
+        for key in keys {
+            let StructKey::Field(index) = *key else {
+                continue;
+            };
+            let order = self.compare(field_value(schema, a, index), field_value(schema, b, index), mode);
+            if order != Ordering::Equal {
+                return order;
+            }
+        }
+        Ordering::Equal
+    }
+
+    fn map_count(&self, map: MapTerm<'a>) -> usize {
+        match map {
+            MapTerm::Entries(addr) => unsafe { map_count(addr) },
+            MapTerm::Struct { keys, .. } => keys.len(),
+        }
+    }
+
+    fn map_key(&self, map: MapTerm<'a>, index: usize) -> AnyValue {
+        match map {
+            MapTerm::Entries(addr) => unsafe { map_entry(addr, index).0 },
+            MapTerm::Struct { schema, keys, .. } => match keys[index] {
+                StructKey::Module => self.atom(STRUCT_MODULE_FIELD),
+                StructKey::Field(field) => self.atom(
+                    schema.fields[field]
+                        .name
+                        .as_deref()
+                        .expect("a named struct's field has a name"),
+                ),
+            },
+        }
+    }
+
+    fn map_value(&self, map: MapTerm<'a>, index: usize) -> AnyValue {
+        match map {
+            MapTerm::Entries(addr) => unsafe { map_entry(addr, index).1 },
+            MapTerm::Struct { object, schema, keys } => match keys[index] {
+                StructKey::Module => match &schema.identity {
+                    SchemaIdentity::Named(module) => self.atom(&module.atom_name()),
+                    other => panic!("schema {} has no module", other.display_name()),
+                },
+                StructKey::Field(field) => field_value(schema, object, field),
+            },
+        }
+    }
+
+    fn atom(&self, name: &str) -> AnyValue {
+        AnyValue::atom(self.node.intern_atom(name))
     }
 
     fn list_cmp(&self, mut a: *const u8, mut b: *const u8, mode: NumericMode) -> Ordering {
@@ -191,17 +271,58 @@ impl<'a> TermComparator<'a> {
     }
 }
 
-fn rank(kind: ValueKind) -> u8 {
-    match kind {
-        ValueKind::INT | ValueKind::FLOAT => 0,
-        ValueKind::ATOM => 1,
-        ValueKind::RESOURCE => 2,
-        ValueKind::CLOSURE => 3,
-        ValueKind::STRUCT => 4,
-        ValueKind::MAP => 5,
-        ValueKind::LIST => 6,
-        ValueKind::BITSTRING | ValueKind::PROCBIN => 7,
-        _ => unreachable!("runtime value kind"),
+/// The kinds of term, in term order.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Category {
+    Number,
+    Atom,
+    Resource,
+    Closure,
+    Tuple,
+    Map,
+    List,
+    Bitstring,
+}
+
+/// A map in either layout, read in map key order.
+#[derive(Clone, Copy)]
+enum MapTerm<'a> {
+    Entries(*const u8),
+    Struct {
+        object: *const u8,
+        schema: &'a Schema,
+        keys: &'a [StructKey],
+    },
+}
+
+/// The value in field `index` of a tuple or struct whose fields are all
+/// language values.
+fn field_value(schema: &Schema, object: *const u8, index: usize) -> AnyValue {
+    let offset = schema.fields[index].offset as usize;
+    unsafe {
+        AnyValue::decode_parts(
+            read(object.add(8 + offset).cast()),
+            read(object.add(8 + schema.size as usize + index)),
+        )
+    }
+    .expect("published field")
+}
+
+fn number_cmp(a: AnyValue, b: AnyValue, mode: NumericMode) -> Ordering {
+    match (a, b) {
+        (AnyValue::Int(a), AnyValue::Int(b)) => a.cmp(&b),
+        (AnyValue::Float(a), AnyValue::Float(b)) => float_cmp(f64::from_bits(a), f64::from_bits(b), mode),
+        (AnyValue::Int(a), AnyValue::Float(b)) => match mode {
+            NumericMode::Strict => compare_int_float(a, f64::from_bits(b)).then(Ordering::Less),
+            NumericMode::Widening => compare_int_float(a, f64::from_bits(b)),
+        },
+        (AnyValue::Float(a), AnyValue::Int(b)) => match mode {
+            NumericMode::Strict => compare_int_float(b, f64::from_bits(a))
+                .reverse()
+                .then(Ordering::Greater),
+            NumericMode::Widening => compare_int_float(b, f64::from_bits(a)).reverse(),
+        },
+        _ => unreachable!("a number is an integer or a float"),
     }
 }
 

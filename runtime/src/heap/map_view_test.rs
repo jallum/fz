@@ -300,3 +300,159 @@ fn a_map_names_the_module_under_its_struct_key_in_either_layout() {
     let undeclared = AnyValueRef::from_heap_object(ValueKind::MAP, addr).expect("map ref");
     assert_eq!(f.heap.named_schema(undeclared), NamedSchema::Undeclared);
 }
+
+impl Fixture {
+    fn order(&self, a: AnyValueRef, b: AnyValueRef) -> std::cmp::Ordering {
+        let schemas = self.heap.schemas.borrow();
+        let value = |object: AnyValueRef| AnyValue::heap_ptr(object.storage_addr(), object.tag());
+        TermComparator::new(&self.node, &schemas).compare(value(a), value(b), NumericMode::Strict)
+    }
+
+    fn entries_map(&mut self, entries: &[(AnyValue, AnyValue)]) -> AnyValueRef {
+        let bits = self.heap.alloc_map_slots(entries);
+        let addr = map_addr_from_tagged(bits).expect("published map");
+        AnyValueRef::from_heap_object(ValueKind::MAP, addr).expect("map ref")
+    }
+
+    fn tuple(&mut self, values: &[i64]) -> AnyValueRef {
+        let schema = self.heap.register_schema(Schema::tuple_of_arity(values.len()));
+        let object = self.heap.alloc_struct(schema);
+        for (index, value) in values.iter().enumerate() {
+            unsafe {
+                self.heap
+                    .write_field_slot(object, (index * 8) as u32, AnyValue::int(*value))
+            };
+        }
+        AnyValueRef::from_heap_object(ValueKind::STRUCT, object).expect("tuple ref")
+    }
+}
+
+/// Equality is a question about a map's keys and values. A struct and the
+/// entries map holding the same module and fields are the same term, in
+/// either order of asking.
+#[test]
+fn a_struct_equals_the_entries_map_that_holds_its_module_and_fields() {
+    use std::cmp::Ordering;
+    let mut f = fixture();
+    let p = f.point(1, 2);
+    let spelled = f.point_entries(1, 2);
+    let spelled = f.entries_map(&spelled);
+    assert_eq!(f.order(p, spelled), Ordering::Equal);
+    assert_eq!(f.order(spelled, p), Ordering::Equal);
+
+    let other = f.point_entries(1, 3);
+    let other = f.entries_map(&other);
+    assert_eq!(f.order(p, other), Ordering::Less, "the y values decide");
+    assert_eq!(f.order(other, p), Ordering::Greater);
+}
+
+/// A struct takes a map's place in the term order: after every tuple, and
+/// among maps by size, then keys, then values in key order.
+#[test]
+fn a_struct_orders_as_the_map_it_is() {
+    use std::cmp::Ordering;
+    let mut f = fixture();
+    let p = f.point(1, 2);
+
+    let wide_tuple = f.tuple(&[9, 9, 9, 9, 9]);
+    assert_eq!(f.order(wide_tuple, p), Ordering::Less, "a tuple is before any map");
+    assert_eq!(f.order(p, wide_tuple), Ordering::Greater);
+
+    let smaller = f.plain(&[("x", 9), ("y", 9)]);
+    assert_eq!(f.order(smaller, p), Ordering::Less, "two keys are before three");
+
+    let same_size = f.plain(&[("a", 0), ("x", 1), ("y", 2)]);
+    assert_eq!(
+        f.order(p, same_size),
+        Ordering::Less,
+        "at one size the keys decide, and __struct__ is before a"
+    );
+
+    let layout = f.heap.expect_map_layout(p, "test");
+    let z = f.atom("z");
+    let grown = f.heap.map_view_put(layout, z, AnyValue::int(3));
+    assert_eq!(f.order(p, grown), Ordering::Less);
+}
+
+/// Two structs of one size and one set of keys differ first by the module
+/// under `__struct__`, the least of their keys, and then by their fields in
+/// key order, whatever order the struct declares them in.
+#[test]
+fn two_structs_order_by_module_and_then_by_fields_in_key_order() {
+    use std::cmp::Ordering;
+    let mut f = fixture();
+    let other = f.heap.register_schema(Schema::named_struct(
+        ModuleName::from_segments(vec!["Qt".to_string()]),
+        ["y".to_string(), "x".to_string()],
+    ));
+    let q = |f: &mut Fixture, x: i64, y: i64| {
+        let object = f.heap.alloc_struct(other);
+        unsafe {
+            f.heap.write_field_slot(object, 0, AnyValue::int(y));
+            f.heap.write_field_slot(object, 8, AnyValue::int(x));
+        }
+        AnyValueRef::from_heap_object(ValueKind::STRUCT, object).expect("struct ref")
+    };
+    let p = f.point(5, 5);
+    let low = q(&mut f, 0, 0);
+    assert_eq!(
+        f.order(p, low),
+        Ordering::Less,
+        "Pt is before Qt whatever the fields hold"
+    );
+
+    let x_first = q(&mut f, 1, 9);
+    let y_first = q(&mut f, 2, 0);
+    assert_eq!(
+        f.order(x_first, y_first),
+        Ordering::Less,
+        "x is compared before y though y is declared first"
+    );
+}
+
+/// A map prints as a struct when it holds exactly what the struct it names
+/// declares: the module and every field, and no other key. The fields are
+/// answered in the order the struct declares them.
+#[test]
+fn an_entries_map_spells_a_struct_when_its_keys_are_exactly_the_structs() {
+    let mut f = fixture();
+    let spelled = f.point_entries(1, 2);
+    let spelled = f.entries_map(&spelled);
+    let (module, fields) = f.heap.entries_spelling_a_struct(spelled).expect("spells Pt");
+    assert_eq!(module, ModuleName::from_segments(vec!["Pt".to_string()]));
+    assert_eq!(
+        fields,
+        vec![("x".to_string(), AnyValue::int(1)), ("y".to_string(), AnyValue::int(2))]
+    );
+
+    let mut grown = f.point_entries(1, 2);
+    grown.push((f.atom("z"), AnyValue::int(3)));
+    let grown = f.entries_map(&grown);
+    assert_eq!(f.heap.entries_spelling_a_struct(grown), None, "a key the struct lacks");
+
+    let fewer = [
+        (f.atom("__struct__"), f.atom("Elixir.Pt")),
+        (f.atom("x"), AnyValue::int(1)),
+    ];
+    let fewer = f.entries_map(&fewer);
+    assert_eq!(f.heap.entries_spelling_a_struct(fewer), None, "a field is missing");
+
+    let renamed = [
+        (f.atom("__struct__"), f.atom("Elixir.Pt")),
+        (f.atom("x"), AnyValue::int(1)),
+        (f.atom("z"), AnyValue::int(2)),
+    ];
+    let renamed = f.entries_map(&renamed);
+    assert_eq!(
+        f.heap.entries_spelling_a_struct(renamed),
+        None,
+        "the right number of keys, one of them not a field"
+    );
+
+    let undeclared = [(f.atom("__struct__"), f.atom("Elixir.Nowhere"))];
+    let undeclared = f.entries_map(&undeclared);
+    assert_eq!(f.heap.entries_spelling_a_struct(undeclared), None);
+
+    let plain = f.plain(&[("x", 1), ("y", 2)]);
+    assert_eq!(f.heap.entries_spelling_a_struct(plain), None);
+}

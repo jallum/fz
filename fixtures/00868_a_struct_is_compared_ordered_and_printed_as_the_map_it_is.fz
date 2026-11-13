@@ -1,0 +1,82 @@
+#---
+# purpose: "a struct is equal to, ordered with and found by any map holding the same module and fields, however either was built; it stands among the maps in the term order; and a map prints as a struct exactly when its keys are that struct's"
+# oracle: 00868_a_struct_is_compared_ordered_and_printed_as_the_map_it_is.oracle.exs
+#---
+#
+# A struct built with %Pt{} and a map that reaches the same keys and values
+# another way (a put of __struct__, a key added and removed) are one term.
+# Maps order by size, then keys, then values in key order, so two structs
+# differ first by the module under __struct__, and a struct's fields are
+# compared in key order whatever order it declares them in.
+defmodule Pt do
+  defstruct [:x, :y]
+end
+
+defmodule Qt do
+  defstruct [:x, :y]
+end
+
+defmodule Yx do
+  defstruct [:y, :x]
+end
+
+def same?(a, b), do: a == b
+
+def pinned(a, b) do
+  case b do
+    ^a -> :same
+    _ -> :different
+  end
+end
+
+def main() do
+  p = %Pt{x: 1, y: 2}
+  spelled = Map.put(%{x: 1, y: 2}, :__struct__, Pt)
+  grown = Map.put(p, :z, 3)
+  shrunk = Map.delete(grown, :z)
+  fewer = Map.delete(p, :y)
+  plain = %{x: 1, y: 2}
+  q = %Qt{x: 1, y: 2}
+
+  dbg(p == spelled)
+  dbg(spelled == p)
+  dbg(p === spelled)
+  dbg(p == shrunk)
+  dbg(p != spelled)
+  dbg(p == grown)
+  dbg(same?(p, plain))
+  dbg(same?(p, q))
+  dbg({p, [spelled]} == {shrunk, [p]})
+
+  dbg(spelled)
+  dbg(shrunk)
+  dbg({p, [spelled]})
+  dbg(Map.delete(fewer, :x))
+  dbg(Map.put(%{}, :__struct__, Nowhere))
+  dbg(Enum.sort(Map.keys(grown)))
+  dbg(String.starts_with?(inspect(grown), "%{"))
+  dbg(String.starts_with?(inspect(fewer), "%{"))
+
+  dbg(p < grown)
+  dbg(grown < p)
+  dbg(spelled < %Pt{x: 1, y: 3})
+  dbg(%Pt{x: 1, y: 3} < spelled)
+  dbg(p < q)
+  dbg(%Qt{x: 0, y: 0} < spelled)
+  dbg(plain < p)
+  dbg(fewer < plain)
+  dbg({9, 9, 9, 9, 9} < p)
+  dbg(%Yx{y: 0, x: 2} < %Yx{y: 1, x: 1})
+  dbg(Enum.sort([q, spelled, plain, p, grown, fewer]) == [fewer, plain, p, p, q, grown])
+
+  by_point = %{p => :found}
+  dbg(Map.get(by_point, spelled))
+  dbg(Map.get(by_point, shrunk))
+  dbg(Map.get(by_point, grown))
+  dbg(map_size(Map.put(by_point, spelled, :again)))
+  dbg(length(Enum.uniq([p, spelled, shrunk, grown])))
+  dbg(MapSet.size(MapSet.new([p, spelled, shrunk])))
+  dbg(spelled in [q, p])
+  dbg(pinned(p, spelled))
+  dbg(pinned(p, grown))
+end

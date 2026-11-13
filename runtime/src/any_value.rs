@@ -1396,6 +1396,8 @@ mod any_value_test;
 /// nullable `*mut Process`) so two schedulers can render concurrently
 /// without an ambient thread-local.
 pub mod debug {
+    use crate::module_name::ModuleName;
+
     use super::{
         AnyValue, AnyValueRef, EMPTY_LIST, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
         bitstring_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_denotation, list_addr_from_tagged,
@@ -1693,15 +1695,14 @@ pub mod debug {
             };
             match identity {
                 SchemaIdentity::Named(module) => {
-                    let open = format!("%{}{{", atom_literal(&module.atom_name()));
-                    let entries = fields
+                    let fields = fields
                         .into_iter()
                         .map(|(name, offset)| {
                             let name = name.expect("a named struct's fields are named");
-                            (atom_key(&name), heap.read_field_slot(p, offset))
+                            (name, heap.read_field_slot(p, offset))
                         })
                         .collect();
-                    self.keyword_container(&open, "}", entries)
+                    self.named_struct(&module, fields)
                 }
                 SchemaIdentity::Tuple(_) | SchemaIdentity::Internal(_) => {
                     self.container("{", "}", fields, |renderer, (_, offset)| {
@@ -1709,6 +1710,16 @@ pub mod debug {
                     })
                 }
             }
+        }
+
+        /// `%Name{field: value}`, the fields in the struct's declared order.
+        fn named_struct(&mut self, module: &ModuleName, fields: Vec<(String, AnyValue)>) -> String {
+            let open = format!("%{}{{", atom_literal(&module.atom_name()));
+            let entries = fields
+                .into_iter()
+                .map(|(name, value)| (atom_key(&name), value))
+                .collect();
+            self.keyword_container(&open, "}", entries)
         }
 
         fn range(&self, bits: u64) -> String {
@@ -1751,9 +1762,14 @@ pub mod debug {
         }
 
         /// A heap Map as `%{k => v}`, or `%{k: v}` when every key can head a
-        /// keyword entry, in the map's own order.
+        /// keyword entry, in the map's own order. A map whose keys spell a
+        /// declared struct prints as that struct.
         fn map(&mut self, bits: u64) -> String {
             let p = map_addr_from_tagged(bits).unwrap();
+            let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, p).expect("map ref");
+            if let Some((module, fields)) = unsafe { &*self.proc }.heap.entries_spelling_a_struct(map_ref) {
+                return self.named_struct(&module, fields);
+            }
             let count = unsafe { map_count(p) };
             let entries: Vec<(AnyValue, AnyValue)> = (0..count)
                 .map(|i| {

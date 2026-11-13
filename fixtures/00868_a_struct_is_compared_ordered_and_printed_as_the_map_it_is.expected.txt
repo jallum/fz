@@ -1,0 +1,37 @@
+true
+true
+true
+true
+false
+false
+false
+false
+true
+%Pt{x: 1, y: 2}
+%Pt{x: 1, y: 2}
+{%Pt{x: 1, y: 2}, [%Pt{x: 1, y: 2}]}
+%{__struct__: Pt}
+%{__struct__: Nowhere}
+[:__struct__, :x, :y, :z]
+true
+true
+true
+false
+true
+false
+true
+false
+true
+true
+true
+false
+true
+:found
+:found
+nil
+1
+2
+1
+true
+:same
+:different
