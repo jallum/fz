@@ -1,0 +1,7 @@
+#---
+# purpose: an alias takes no ? or ! mark, and the diagnostic names the mark
+# expect: diagnostic
+#---
+Ab? = 1
+
+def main(), do: 1

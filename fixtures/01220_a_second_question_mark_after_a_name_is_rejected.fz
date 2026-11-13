@@ -1,0 +1,7 @@
+#---
+# purpose: a name takes one mark at most, so a second ? after a name has nothing to quote
+# expect: diagnostic
+#---
+x = ready??
+
+def main(), do: 1

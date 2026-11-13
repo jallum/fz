@@ -1,0 +1,18 @@
+#---
+# purpose: a name, atom or keyword key may end in ? or !, a capitalised atom or key may too, and the name ends at that mark so a name written after it is a separate word
+# oracle: 01218_a_name_takes_a_question_mark_or_bang_only_as_its_last_character.oracle.exs
+#---
+def big?(n), do: n > 10
+def save!(n), do: n + 1
+def second?(a, b), do: {a, b}
+
+def main() do
+  dbg({big?(11), save!(1)})
+  value = 4
+  dbg(save! value)
+  dbg(second?(1, value))
+  dbg([ready?: 1, done!: 2, Loud?: 3, Hot!: 4])
+  dbg({:big?, :save!, :Loud?, :Hot!, :_?})
+  dbg(Atom.to_string(:a?))
+  dbg(big?(1) == false)
+end

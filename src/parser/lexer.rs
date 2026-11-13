@@ -239,12 +239,12 @@ fn classify_source_word(name: &str) -> SourceWord {
 /// authority used while lexing. `None` means source text cannot produce one
 /// word token with this spelling.
 pub(crate) fn source_word(name: &str) -> Option<SourceWord> {
-    let mut chars = name.chars();
+    let mut chars = name.strip_suffix(is_name_mark).unwrap_or(name).chars();
     if !is_variable_start(chars.next()?) || !chars.all(is_word_continue) || !is_nfc(name) || !is_single_script(name) {
         return None;
     }
     let word = classify_source_word(name);
-    if matches!(word, SourceWord::Upper) && non_ascii_alias_character(name).is_some() {
+    if matches!(word, SourceWord::Upper) && invalid_alias_character(name).is_some() {
         return None;
     }
     Some(word)
@@ -271,10 +271,15 @@ fn is_titlecase(c: char) -> bool {
     !c.is_uppercase() && c.to_lowercase().next() != Some(c)
 }
 
-/// Every character after the first: `XID_Continue`, plus the `?` and `!` marks.
+/// The `?` or `!` that may end a name and nothing else in it.
+fn is_name_mark(c: char) -> bool {
+    matches!(c, '?' | '!')
+}
+
+/// Every character after the first and before the optional final mark: `XID_Continue`.
 fn is_word_continue(c: char) -> bool {
     if c.is_ascii() {
-        c.is_ascii_alphanumeric() || matches!(c, '_' | '?' | '!')
+        c.is_ascii_alphanumeric() || c == '_'
     } else {
         unicode_ident::is_xid_continue(c)
     }
@@ -307,9 +312,10 @@ fn constrains_script(c: char) -> bool {
     c.is_ascii() || (c != GREEK_SMALL_MU && c.identifier_allowed())
 }
 
-/// The first non-ASCII character of a word that is spelled as an alias.
-fn non_ascii_alias_character(name: &str) -> Option<char> {
-    name.chars().find(|c| !c.is_ascii())
+/// The first character of a word spelled as an alias that is not an ASCII
+/// letter, digit or underscore: a non-ASCII character or a `?` or `!` mark.
+fn invalid_alias_character(name: &str) -> Option<char> {
+    name.chars().find(|c| !(c.is_ascii_alphanumeric() || *c == '_'))
 }
 
 const UNICODE_ESCAPE_SHAPE: &str =
@@ -405,8 +411,8 @@ impl<'a> Lexer<'a> {
     }
 
     /// The name at the cursor in its NFC spelling, which is how Elixir spells
-    /// every unquoted name. Spans keep the source text as written. A name
-    /// mixing scripts is rejected.
+    /// every unquoted name. The name ends after its first `?` or `!`. Spans
+    /// keep the source text as written. A name mixing scripts is rejected.
     fn read_ident(&mut self) -> Result<String, LexError> {
         let start = self.pos;
         let first = self
@@ -415,6 +421,9 @@ impl<'a> Lexer<'a> {
         self.pos += first.len_utf8();
         while let Some(c) = self.char_at(self.pos).filter(|c| is_word_continue(*c)) {
             self.pos += c.len_utf8();
+        }
+        if self.char_at(self.pos).is_some_and(is_name_mark) {
+            self.pos += 1;
         }
         let name: String = self.text[start..self.pos].nfc().collect();
         if !is_single_script(&name) {
@@ -428,7 +437,7 @@ impl<'a> Lexer<'a> {
 
     /// A word that is not a keyword-list key: a keyword, variable, function
     /// name or alias. Only atoms and keys may start with a non-ASCII uppercase
-    /// letter, and aliases are ASCII only.
+    /// letter, and aliases are ASCII letters, digits and underscores only.
     fn bare_word_token(&mut self, name: String, start: usize) -> Result<Tok, LexError> {
         let first = name.chars().next().expect("a word has a first character");
         if !is_variable_start(first) {
@@ -436,14 +445,14 @@ impl<'a> Lexer<'a> {
         }
         let tok = Self::keyword_or_ident(name);
         if let Tok::Upper(alias) = &tok {
-            self.reject_non_ascii_alias(alias, start)?;
+            self.reject_invalid_alias(alias, start)?;
         }
         Ok(tok)
     }
 
-    /// The error names the first non-ASCII character of an alias.
-    fn reject_non_ascii_alias(&self, name: &str, start: usize) -> Result<(), LexError> {
-        let Some(c) = non_ascii_alias_character(name) else {
+    /// The error names the first character an alias may not hold.
+    fn reject_invalid_alias(&self, name: &str, start: usize) -> Result<(), LexError> {
+        let Some(c) = invalid_alias_character(name) else {
             return Ok(());
         };
         Err(LexError {

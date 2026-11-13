@@ -1093,3 +1093,93 @@ fn a_character_literal_spans_the_question_mark_and_its_character() {
     assert_eq!((tokens[0].span.start, tokens[0].span.end), (0, 3));
     assert_eq!((tokens[1].span.start, tokens[1].span.end), (4, 7));
 }
+
+/// A name takes `?` or `!` only as its last character, so the name ends at the first mark.
+#[test]
+fn a_name_ends_at_its_first_mark() {
+    assert_eq!(
+        lex_kinds("a?b a!b").unwrap(),
+        vec![
+            Tok::Ident("a?".to_string()),
+            Tok::Ident("b".to_string()),
+            Tok::Ident("a!".to_string()),
+            Tok::Ident("b".to_string()),
+            Tok::Eof
+        ]
+    );
+}
+
+/// A second mark is not part of the name: `a??` is the name `a?` and a `?` with nothing to quote.
+#[test]
+fn a_second_mark_is_not_part_of_the_name() {
+    assert!(lex_kinds("a??").is_err());
+    assert_eq!(
+        lex_kinds("a?!").unwrap(),
+        vec![Tok::Ident("a?".to_string()), Tok::Bang, Tok::Eof]
+    );
+    assert!(lex_kinds("a!?").is_err());
+}
+
+/// An atom ends at its first mark too, as in Elixir where `:a?b` is `:a?` and `b`.
+#[test]
+fn an_atom_ends_at_its_first_mark() {
+    assert_eq!(
+        lex_kinds(":a?b").unwrap(),
+        vec![Tok::Atom("a?".to_string()), Tok::Ident("b".to_string()), Tok::Eof]
+    );
+}
+
+/// A keyword key ends at its first mark: `[a?b: 1]` is the name `a?` and the key `b`.
+#[test]
+fn a_keyword_key_ends_at_its_first_mark() {
+    assert_eq!(
+        lex_kinds("[a?b: 1]").unwrap()[1..3],
+        [Tok::Ident("a?".to_string()), Tok::KwKey("b".to_string())]
+    );
+    assert_eq!(lex_kinds("[a?: 1]").unwrap()[1], Tok::KwKey("a?".to_string()));
+}
+
+/// A mark ends a name before the operator that follows it.
+#[test]
+fn a_name_with_a_trailing_mark_precedes_an_operator() {
+    assert_eq!(
+        lex_kinds("x!=y").unwrap(),
+        vec![
+            Tok::Ident("x!".to_string()),
+            Tok::Eq,
+            Tok::Ident("y".to_string()),
+            Tok::Eof
+        ]
+    );
+}
+
+/// An alias takes neither mark, and the error names the mark.
+#[test]
+fn an_alias_with_a_mark_is_rejected() {
+    assert_eq!(
+        lex_kinds("Ab?").unwrap_err().msg,
+        "invalid character '?' (code point U+003F) in alias (only ASCII characters are allowed): Ab?"
+    );
+    assert_eq!(
+        lex_kinds("Ab!").unwrap_err().msg,
+        "invalid character '!' (code point U+0021) in alias (only ASCII characters are allowed): Ab!"
+    );
+    assert!(lex_kinds("Ab?c").is_err());
+}
+
+/// An atom or keyword key spelled like an alias may end in a mark.
+#[test]
+fn a_capitalised_atom_or_keyword_key_may_end_in_a_mark() {
+    assert_eq!(lex_kinds(":Ab?").unwrap()[0], Tok::Atom("Ab?".to_string()));
+    assert_eq!(lex_kinds("[Ab?: 1]").unwrap()[1], Tok::KwKey("Ab?".to_string()));
+}
+
+/// A quoted name is one source word only when a mark, if any, is its last character.
+#[test]
+fn source_word_accepts_a_mark_only_at_the_end() {
+    assert!(matches!(source_word("a?"), Some(SourceWord::Ident)));
+    assert!(matches!(source_word("a!"), Some(SourceWord::Ident)));
+    assert!(source_word("a?b").is_none());
+    assert!(source_word("a??").is_none());
+    assert!(source_word("Ab?").is_none());
+}

@@ -1,0 +1,7 @@
+{true, 2}
+5
+{1, 4}
+[ready?: 1, done!: 2, Loud?: 3, Hot!: 4]
+{:big?, :save!, :Loud?, :Hot!, :_?}
+"a?"
+true
