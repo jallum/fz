@@ -415,11 +415,6 @@ pub enum Const {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
     /// The `==` OPERATOR, which compares numbers by value: `1 == 1.0` is true,
     /// and so are `[1] == [1.0]` and `%{a: 1} == %{a: 1.0}`.
     Eq,
@@ -1290,11 +1285,6 @@ impl fmt::Display for Const {
 impl fmt::Display for BinOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            BinOp::Add => "+",
-            BinOp::Sub => "-",
-            BinOp::Mul => "*",
-            BinOp::Div => "/",
-            BinOp::Mod => "%",
             BinOp::Eq => "==",
             BinOp::Neq => "!=",
             BinOp::Identical => "===",

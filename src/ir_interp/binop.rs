@@ -8,18 +8,6 @@ use fz_runtime::process::Process;
 use std::ptr::null_mut;
 
 pub(super) fn eval_binop(proc: *mut Process, op: BinOp, a: AnyValue, b: AnyValue) -> Result<AnyValue, String> {
-    macro_rules! int_arith {
-        ($op:tt) => {
-            match (a.as_i64(), b.as_i64()) {
-                (Some(x), Some(y)) => Ok(AnyValue::Int(x $op y)),
-                _ => {
-                    let af = a.as_float().ok_or_else(|| "lhs is not numeric".to_string())?;
-                    let bf = b.as_float().ok_or_else(|| "rhs is not numeric".to_string())?;
-                    Ok(AnyValue::Float(af $op bf))
-                }
-            }
-        };
-    }
     // fz-5xp.18 — ordering asks the same runtime function native asks, the way
     // equality already asks `fz_value_eq_ref`. Two hand-rolled implementations
     // of one question is why the doors disagreed on `2 >= 1.0`.
@@ -30,11 +18,6 @@ pub(super) fn eval_binop(proc: *mut Process, op: BinOp, a: AnyValue, b: AnyValue
         }};
     }
     match op {
-        BinOp::Add => int_arith!(+),
-        BinOp::Sub => int_arith!(-),
-        BinOp::Mul => int_arith!(*),
-        BinOp::Div => int_arith!(/),
-        BinOp::Mod => int_arith!(%),
         // `==` widens numerics; `===` does not. Two questions, two ops -- they
         // shared one op until fz-5xp.24, and a guard asked the wrong one.
         BinOp::Eq => Ok(interp_bool_value(interp_operator_eq(proc, a, b)?)),
