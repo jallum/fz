@@ -11,11 +11,15 @@
     {
       "text": "2026-11-13 grid on 549fd7447 (develop + .140 + .147 + .131), interp, binaries in scratchpad grid/: OptionParser's library spike S1 (nested stream flattened) alone makes s133/min.fz, min_missing.fz, x2.fz, the sfor/ for/reduce programs, R4, M1, n1, anat/min.fz and min_plus_site compile and match; the one-fact spike alone leaves the for/reduce programs at 'Enumerable.reduce/3 has no implementation' (the any of the bare-fun row widens Enum.to_list to any and drives one lambda with {any, any} and int | float); both together equal S1 alone. Recommendation withdrawn: this ticket waits for fz-sc8.127 and should follow its per-row design; it may be unnecessary once fun rows are not manufactured. The missing/no-implementation forms are the same root (sfor/ investigation), not separate bugs.",
       "timestamp": "2026-11-13T14:43:07Z"
+    },
+    {
+      "text": "2026-11-13: OptionParser's step 2 spike (k127b/report.md) found per-row returns is not the fix and dropped it, so this ticket no longer waits on that design. With fz-sc8.150 (stream flattening, PR #447) the repros here compile and match Elixir (grid on 549fd7447, re-checked s133/min.fz on 347dca983's predecessor build). Parked: reopen the design only if a program shows the summary/value-type disagreement again on a base with .150. OptionParser's new lead for the remaining growth is ActivationInputAlternatives rows not folding self-nested closures the way the key does (row budget 8 collapses both sites' towers into one row).",
+      "timestamp": "2026-11-13T16:23:29Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A public closure callsite's settled return agrees with its semantic result",
   "type": "bug",
-  "updated_at": "2026-11-13T14:43:07Z"
+  "updated_at": "2026-11-13T16:23:29Z"
 }
