@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T21:18:24Z",
+  "description": "With the request budget raised, {n + 0, ..., n + 999} on fz2 run ends in 'fatal runtime error: stack overflow'. Not investigated. Blocks the run/build legs of the GH #296 fixture.",
+  "id": "fz-d7w",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz2 run overflows the stack on a tuple of 1,000 computed elements",
+  "type": "bug",
+  "updated_at": "2026-11-13T21:18:24Z"
+}
