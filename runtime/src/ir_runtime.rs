@@ -1182,6 +1182,54 @@ pub extern "C" fn fz_float_to_binary(process: *mut Process, value: f64) -> u64 {
     alloc_text(process, &crate::any_value::debug::float_to_string(value))
 }
 
+/// `:erlang.float_to_binary(x, decimals: n)`: `x` in fixed notation with `n`
+/// digits after the point.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_float_to_fixed_binary(process: *mut Process, value: f64, decimals: i64) -> u64 {
+    let decimals = usize::try_from(decimals).expect("decimals are checked by :erlang.float_to_binary/2");
+    alloc_text(process, &fixed_notation(value, decimals))
+}
+
+/// More digits than any `f64` has after the point (the smallest subnormal,
+/// 2^-1074, has 1074), so Rust prints the value's exact expansion.
+const EXACT_FRACTION_DIGITS: usize = 1100;
+
+/// `value` with `decimals` digits after the point, rounded from the float's
+/// exact decimal expansion with a tie going away from zero, as Erlang does.
+/// Rust's own `{:.n}` breaks a tie to even (`2.5` is `2` at no decimals).
+fn fixed_notation(value: f64, decimals: usize) -> String {
+    let exact = format!("{:.EXACT_FRACTION_DIGITS$}", value.abs());
+    let (whole, fraction) = exact.split_once('.').expect("a fixed-notation float has a point");
+    let mut digits: Vec<u8> = whole.bytes().chain(fraction.bytes().take(decimals)).collect();
+    if fraction.as_bytes()[decimals] >= b'5' {
+        increment_decimal(&mut digits);
+    }
+    let point = digits.len() - decimals;
+    let (whole, fraction) = digits.split_at(point);
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    let whole = std::str::from_utf8(whole).expect("ascii digits");
+    let fraction = std::str::from_utf8(fraction).expect("ascii digits");
+    if decimals == 0 {
+        format!("{sign}{whole}")
+    } else {
+        format!("{sign}{whole}.{fraction}")
+    }
+}
+
+/// Adds one to the ascii decimal number `digits`, growing it by a digit on
+/// overflow.
+fn increment_decimal(digits: &mut Vec<u8>) {
+    for digit in digits.iter_mut().rev() {
+        if *digit == b'9' {
+            *digit = b'0';
+        } else {
+            *digit += 1;
+            return;
+        }
+    }
+    digits.insert(0, b'1');
+}
+
 /// `Float.parse/1`: `[]` when the binary does not start with a float, else the
 /// two-element list `[float, rest]` that the `Float` module builds its tuple from.
 ///

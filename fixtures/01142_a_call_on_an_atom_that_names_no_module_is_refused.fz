@@ -1,0 +1,11 @@
+#---
+# purpose: "A call on an atom literal that names no module, :nosuch.thing(1), is refused at compile time as a qualified call to an undefined module is, so it never reaches run time"
+# expect: diagnostic
+# diagnostic.code: resolve/unknown-module
+#---
+#
+# The atom is a module's name whether the module is written as an alias or as
+# a bare atom, so the literal is resolved where a qualified call is.
+def main() do
+  IO.puts(:nosuch.thing(1))
+end
