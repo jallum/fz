@@ -49,11 +49,15 @@
     {
       "text": "From fz-8c's fz-75e measuring spike on develop ff4a75ada (their instrumented binary; not re-verified here): PRODUCT_DRIVE_BUDGET bounds one drive (one drive_root_product_with call), not a compile. A compile runs 1 to 47 drives across the 791 fixtures, which is why the distiller on fz-sc8.3 exits 0 with 51,170 pull.product.requested events. Healthy envelope on interp: 1.0 to 1.69 requests per distinct key per compile, at most 17 pulls of one key. Computed tuples: N=308 largest drive 49,548; N=400 82,622; N=1000 505,922; about 1.01 requests per key. Data: /private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/s75e/. The re-measure for this ticket should report the largest single drive, not only the event total.",
       "timestamp": "2026-11-13T21:54:24Z"
+    },
+    {
+      "text": "Re-measured at 05bdf8892 + fz-sc8.157 (stack #478 \u003c- #488 \u003c- #489), interp, default budget: the compile finishes, exit 0. 51,196 requests in 28 drives; largest drive 49,760 (240 under 50,000); 35,619 distinct keys (1.44 requests per key); 12,892 jobs, 11,677 in the largest session. Largest drive by kind: transport_shape 31,054 (25,033 distinct), callable_construction 3,522, reach 3,516, executable_effects 3,510, abi_executable 3,385, materialized_executable 2,548, backend_executable 2,218. Enum.reduce/3#lambda@0/2 still leads at 110 transport keys per position, so the cross-site accumulator mixing described above is still there. Pinned by tests/distill_telemetry_test.rs. Closing on this ticket's own condition (finishes inside the default budget).",
+      "timestamp": "2026-11-13T23:23:38Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "The distiller's compile finishes",
   "type": "bug",
-  "updated_at": "2026-11-13T21:54:24Z"
+  "updated_at": "2026-11-13T23:23:38Z"
 }
