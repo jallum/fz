@@ -9,17 +9,6 @@ fn build_identity() -> FnIr {
     b.build()
 }
 
-/// fn add1(x) = x + 1
-fn build_add1() -> FnIr {
-    let mut b = FnBuilder::new(FnId(1), "add1");
-    let x = b.fresh_var();
-    let entry = b.block(vec![x]);
-    let one = b.let_(entry, Prim::Const(Const::Int(1)));
-    let sum = b.let_(entry, Prim::BinOp(BinOp::Add, x, one));
-    b.set_terminator(entry, Term::Return(sum));
-    b.build()
-}
-
 /// fn iszero(x) = if x == 0 then true else false
 fn build_iszero() -> FnIr {
     let mut b = FnBuilder::new(FnId(2), "iszero");
@@ -94,21 +83,6 @@ fn list_retention_source_is_a_traced_construction_operand() {
 }
 
 #[test]
-fn build_add1_has_two_lets_and_returns_sum() {
-    let fn_ir = build_add1();
-    let entry = fn_ir.block(fn_ir.entry);
-    assert_eq!(entry.stmts.len(), 2);
-    match &entry.stmts[0] {
-        Stmt::Let(_, Prim::Const(Const::Int(1))) => {}
-        other => panic!("expected let _ = const(1), got {:?}", other),
-    }
-    match &entry.stmts[1] {
-        Stmt::Let(_, Prim::BinOp(BinOp::Add, _, _)) => {}
-        other => panic!("expected let _ = add, got {:?}", other),
-    }
-}
-
-#[test]
 fn build_iszero_has_three_blocks_with_if_then_else() {
     let fn_ir = build_iszero();
     assert_eq!(fn_ir.blocks.len(), 3);
@@ -127,11 +101,11 @@ fn build_iszero_has_three_blocks_with_if_then_else() {
 fn module_holds_multiple_fns_and_lookup_by_name() {
     let mut mb = ModuleBuilder::new();
     mb.add_fn(build_identity());
-    mb.add_fn(build_add1());
+    mb.add_fn(build_iszero());
     let m = mb.build();
     assert_eq!(m.fns.len(), 2);
     assert_eq!(m.fn_by_id(FnId(0)).name, "identity");
-    assert_eq!(m.fn_by_id(FnId(1)).name, "add1");
+    assert_eq!(m.fn_by_id(FnId(2)).name, "iszero");
 }
 
 #[test]
@@ -164,15 +138,6 @@ fn pretty_print_identity() {
 }
 
 #[test]
-fn pretty_print_add1() {
-    let fn_ir = build_add1();
-    let s = format!("{}", fn_ir);
-    assert!(s.contains("let v1 = const(1)"));
-    assert!(s.contains("let v2 = v0 + v1"));
-    assert!(s.contains("return v2"));
-}
-
-#[test]
 fn pretty_print_iszero_branches() {
     let fn_ir = build_iszero();
     let s = format!("{}", fn_ir);
@@ -184,12 +149,12 @@ fn pretty_print_iszero_branches() {
 fn pretty_print_module() {
     let mut mb = ModuleBuilder::new();
     mb.add_fn(build_identity());
-    mb.add_fn(build_add1());
+    mb.add_fn(build_iszero());
     let m = mb.build();
     let s = format!("{}", m);
     assert!(s.starts_with("module"));
     assert!(s.contains("identity"));
-    assert!(s.contains("add1"));
+    assert!(s.contains("iszero"));
 }
 
 #[test]

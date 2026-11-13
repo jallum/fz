@@ -5272,11 +5272,6 @@ fn lower_dispatch_const(
 
 fn lower_binop(op: crate::ast::BinOp) -> IrBinOp {
     match op {
-        crate::ast::BinOp::Add => IrBinOp::Add,
-        crate::ast::BinOp::Sub => IrBinOp::Sub,
-        crate::ast::BinOp::Mul => IrBinOp::Mul,
-        crate::ast::BinOp::Div => IrBinOp::Div,
-        crate::ast::BinOp::Rem => IrBinOp::Mod,
         crate::ast::BinOp::Eq => IrBinOp::Eq,
         crate::ast::BinOp::Neq => IrBinOp::Neq,
         crate::ast::BinOp::Lt => IrBinOp::Lt,

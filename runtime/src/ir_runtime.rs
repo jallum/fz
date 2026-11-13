@@ -2420,15 +2420,6 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
 
 // ===== Arith / cmp / eq cluster =====
 
-/// Tag-promotion helper for the JIT's mixed-type arithmetic slow path.
-/// The JIT promotes integer operands here; raw float operands stay in typed lanes.
-/// f64 remainder (fmod-style: truncated, sign of dividend). Cranelift has no
-/// frem opcode, so the JIT's float-mod slow path calls out here.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_fmod(a: f64, b: f64) -> f64 {
-    a % b
-}
-
 /// Checked `==` between a dynamic `AnyValueRef` and an unboxed int/atom raw
 /// payload, with no allocation on either side. `expected_tag` is an
 /// `INT`/`ATOM` `ValueKind` tag byte. Reads `ref_word`'s runtime tag and

@@ -167,7 +167,8 @@ macro_rules! runtime_call1 {
 
 /// The function-local reference to a runtime helper, for a site that needs
 /// the reference itself rather than a call. The parentheses hold one `_` per
-/// parameter: `runtime_func_ref!(body, fz_fmod(_, _))`.
+/// parameter: `runtime_func_ref!(body, fz_type_of(_))`.
+#[cfg(test)]
 macro_rules! runtime_func_ref {
     ($body:expr, $item:ident($($lane:tt),* $(,)?)) => {{
         let item: unsafe extern "C" fn($($lane),*) -> _ = $item;
@@ -186,4 +187,6 @@ macro_rules! runtime_fn_id {
     }};
 }
 
-pub(crate) use {runtime_call, runtime_call1, runtime_fn_id, runtime_func_ref};
+#[cfg(test)]
+pub(crate) use runtime_func_ref;
+pub(crate) use {runtime_call, runtime_call1, runtime_fn_id};

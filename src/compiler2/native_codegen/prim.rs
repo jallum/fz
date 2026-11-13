@@ -20,8 +20,8 @@ use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::{
     fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_bs_begin, fz_bs_field_spec, fz_bs_finalize,
-    fz_bs_read_field_ref, fz_bs_reader_done_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref, fz_fmod,
-    fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
+    fz_bs_read_field_ref, fz_bs_reader_done_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref, fz_int_float_cmp,
+    fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
     fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_dest_put_ref,
     fz_map_get_atom_key_ref, fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_matcher_map_get_ref,
     fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref,
@@ -828,9 +828,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             // tagged-path branches (int fast path, scalar Eq/Neq,
             // dispatch fallback) pay it.
             match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                    lower_arith_binop(body, t, value_types, var_env, *op, *a, *bv)
-                }
                 BinOp::Eq | BinOp::Neq | BinOp::Identical => {
                     lower_eq_binop(body, t, value_types, var_env, *op, *a, *bv, dest_var)
                 }
@@ -1168,14 +1165,9 @@ fn emit_is_list_cons_flag<M: cranelift_module::Module>(
     }
 }
 
-/// Same-kind typed fast path for a binop: when the typer proves both
-/// operands share the int or float lane, extract their raw values and
-/// run the matching op closure, bypassing tagged dispatch. Returns None
-/// when neither lane applies (caller falls back to runtime tag tests).
 /// Negation is PER-LANE. `ineg` on a float's bits is not negation of that
 /// float -- it is two's complement applied to an IEEE-754 encoding, which lands
-/// nowhere near the answer. The operand's lane is the same question
-/// `lower_arith_binop` asks of its operands, and for one operand the codegen
+/// nowhere near the answer. For one operand the codegen
 /// value's repr IS the lane.
 ///
 /// Before this, `-3.0` reached `as_raw_i64` and aborted with "cannot read raw
@@ -1236,6 +1228,10 @@ where
     Ok(LowerOut::ValueRef(body.b.block_params(join_blk)[0]))
 }
 
+/// Same-kind typed fast path for a binop: when the typer proves both
+/// operands share the int or float lane, extract their raw values and
+/// run the matching op closure, bypassing tagged dispatch. Returns None
+/// when neither lane applies (caller falls back to runtime tag tests).
 fn try_typed_binop_fast_path<T, F, I, M>(
     body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
@@ -1275,93 +1271,6 @@ where
         }
     }
     None
-}
-
-/// Float `%`. Cranelift has no `frem`, so where `+ - * /` are one instruction
-/// this is a call into the runtime. Mod belongs on the float paths with them:
-/// the float lane is where `7.5 % 2.0` is answered.
-fn emit_float_rem<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, M>,
-    left: ir::Value,
-    right: ir::Value,
-) -> ir::Value {
-    runtime_call1!(body, fz_fmod, [left, right])
-}
-
-/// Lower a `Prim::BinOp` arithmetic op (Add/Sub/Mul/Div/Mod). Two code paths:
-/// float coercion (int and float mix) and the typed fast path (same-kind int or
-/// float).
-fn lower_arith_binop<M, T>(
-    body: &mut CodegenFn<'_, '_, M>,
-    t: &mut T,
-    value_types: &HashMap<Var, Ty>,
-    var_env: &HashMap<u32, CodegenValue>,
-    op: BinOp,
-    a: Var,
-    bv: Var,
-) -> Result<LowerOut, CodegenError>
-where
-    M: cranelift_module::Module,
-    T: Types<Ty = Ty>,
-{
-    let mop = op;
-    let a_repr = var_env.get(&a.0).expect("binop lhs").repr();
-    let b_repr = var_env.get(&bv.0).expect("binop rhs").repr();
-    if matches!(
-        (a_repr, b_repr),
-        (ArgRepr::RawF64, ArgRepr::RawInt) | (ArgRepr::RawInt, ArgRepr::RawF64)
-    ) {
-        let af = as_known_numeric_f64(var_env, body.b, a.0);
-        let bf = as_known_numeric_f64(var_env, body.b, bv.0);
-        return Ok(LowerOut::RawF64(match mop {
-            BinOp::Add => body.b.ins().fadd(af, bf),
-            BinOp::Sub => body.b.ins().fsub(af, bf),
-            BinOp::Mul => body.b.ins().fmul(af, bf),
-            BinOp::Div => body.b.ins().fdiv(af, bf),
-            BinOp::Mod => emit_float_rem(body, af, bf),
-            _ => unreachable!(),
-        }));
-    }
-    // Typed fast paths: float and int. Float `%` is the one that is a CALL
-    // rather than an instruction, so its funcref is declared up front — the
-    // closure below is handed a builder, not the module.
-    let rem_fref = matches!(mop, BinOp::Mod).then(|| runtime_func_ref!(body, fz_fmod(_, _)));
-    if let Some(out) = try_typed_binop_fast_path(
-        body,
-        t,
-        value_types,
-        a,
-        bv,
-        var_env,
-        |b, af, bf| {
-            Some(LowerOut::RawF64(match mop {
-                BinOp::Add => b.ins().fadd(af, bf),
-                BinOp::Sub => b.ins().fsub(af, bf),
-                BinOp::Mul => b.ins().fmul(af, bf),
-                BinOp::Div => b.ins().fdiv(af, bf),
-                BinOp::Mod => {
-                    let inst = b.ins().call(rem_fref.expect("float rem funcref"), &[af, bf]);
-                    b.inst_results(inst)[0]
-                }
-                _ => unreachable!(),
-            }))
-        },
-        |b, ai, bi| {
-            Some(LowerOut::RawI64(match mop {
-                BinOp::Add => b.ins().iadd(ai, bi),
-                BinOp::Sub => b.ins().isub(ai, bi),
-                BinOp::Mul => b.ins().imul(ai, bi),
-                BinOp::Div => b.ins().sdiv(ai, bi),
-                BinOp::Mod => b.ins().srem(ai, bi),
-                _ => unreachable!(),
-            }))
-        },
-    ) {
-        return Ok(out);
-    }
-    Err(CodegenError::new(format!(
-        "{op:?} lowers only operands of one raw lane; Kernel's operator calls carry every other operand"
-    )))
 }
 
 /// If `raw_side` is natively unboxed (`RawInt`/`RawAtom`, or a `Known`

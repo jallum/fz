@@ -230,27 +230,6 @@ pub(crate) fn known_kind_ref_tag(b: &mut FunctionBuilder<'_>, _payload: ir::Valu
     b.ins().iconst(types::I8, kind.tag() as i64)
 }
 
-/// Check if both BinOp args have narrow typed types and, if so, apply
-/// the matching fast-path closure. Returns Some(LowerOut) on a hit, None
-/// to signal fall-through to the tagged slow path.
-///
-/// float_op / int_op each return Option<LowerOut> so callers can opt out
-/// of a specific fast path (e.g. Mod has no float fast path → return None).
-pub(crate) fn as_known_numeric_f64(
-    var_env: &HashMap<u32, CodegenValue>,
-    b: &mut FunctionBuilder<'_>,
-    v: u32,
-) -> ir::Value {
-    let vb = var_env.get(&v).expect("unbound var");
-    match vb.repr() {
-        ArgRepr::RawF64 => vb.value(),
-        ArgRepr::RawInt => b.ins().fcvt_from_sint(types::F64, vb.value()),
-        ArgRepr::RawAtom => panic!("atom is not numeric"),
-        ArgRepr::ValueRef => panic!("tagged numeric-to-f64 conversion has been retired"),
-        ArgRepr::Condition => unreachable!("condition is not numeric"),
-    }
-}
-
 /// The tagged ref to the program's one static closure for callable boundary
 /// `spec_id`.
 pub(crate) fn static_closure_ref<M: Module>(
