@@ -10,11 +10,15 @@
     {
       "text": "Second sighting 2026-11-13 on the stack rebased onto develop e1e941f42: the same EPERM (\"kill process group N: Operation not permitted (os error 1); leader reaped as exit status: 0\") failed the sibling test fixture_readiness_eof_before_exit in the workspace all-targets run; the standalone fixture_matrix run in the same gate passed 3086/0. So the race is in the shared teardown (killing an already-reaped child's process group), not in one test.",
       "timestamp": "2026-11-13T14:52:17Z"
+    },
+    {
+      "text": "fz-sc8.164 (e83107bb1) changed the teardown: a waiter thread reaps the child, and finish() no longer kills the group of a child whose exit was already delivered. That is the path both sightings took (leader reaped as exit status 0). Left open until the commit is on develop and the flake has not recurred.",
+      "timestamp": "2026-11-13T23:16:01Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Tearing down an already-exited fixture child does not fail on EPERM from its process group",
   "type": "bug",
-  "updated_at": "2026-11-13T14:52:17Z"
+  "updated_at": "2026-11-13T23:16:01Z"
 }
