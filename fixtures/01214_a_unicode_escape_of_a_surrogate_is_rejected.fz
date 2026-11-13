@@ -1,0 +1,6 @@
+#---
+# purpose: a unicode escape of a surrogate is rejected and underlined
+# expect: diagnostic
+#---
+x = "a\ud800b"
+def main(), do: 1
