@@ -4,14 +4,15 @@
   "blocks": [
     "fz-53f.7"
   ],
+  "closed_at": "2026-11-13T00:57:45Z",
   "created": "2026-11-13T00:09:15Z",
   "description": "fz-53f.3 made ValueSet an alias for ValueMap\u003c()\u003e: a Vec\u003cOption\u003c()\u003e\u003e with one byte per value number plus a length. About thirty sites use it as a pure set: the visiting / seen / visited sets of the origin and retention walks (jobs/body.rs, jobs/keying.rs, jobs/runtime_demand.rs, storage_roots.rs), clause_bounds, retained_value_ids, and ValueMap\u003cValueSet\u003e (visited: a set per value). Many are built fresh per call (`\u0026mut ValueSet::new()` in value_may_retain_source and friends), so each allocates on its first mark.\n\nChange: ValueSet is its own type, a bitset over value numbers: one bit per value, words held inline for the common body size so a typical walk allocates nothing (bodies on the probes top out at value 101; the largest seen is 479), spilling to the heap only beyond that. Membership, mark and unmark are a shift and a mask; union / intersection / is-disjoint / is-subset work a word at a time and replace the per-element loops where a site does those by hand. Iteration stays in number order. ValueMap\u003c()\u003e stops being used as a set anywhere.\n\nCheck first whether cranelift-bitset (already in Cargo.lock) or an existing bitset in the tree fits; otherwise one small type beside ValueMap. Look for sites that copy a set only to iterate it or to get past the borrow checker and remove those copies (.agent/strategies/ownership-shape.md).\n\nNot established: the size of the win. fz-53f.3 measured the vector form at -21.7% on the sixteen-literal program and about -1% elsewhere; this ticket reports allocation calls and instructions before and after, per probe, and which sites gained word-at-a-time operations. If it is not a measurable win and not simpler, stop and report rather than commit. Proposal page: /Users/j5n/Workspace/compile-cost-round-two.html. Raised in review of PR #341.",
   "id": "fz-53f.8",
   "labels": [],
   "parent": "fz-53f",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A set of a body's values is a bitset",
   "type": "task",
-  "updated_at": "2026-11-13T00:09:15Z"
+  "updated_at": "2026-11-13T00:57:45Z"
 }
