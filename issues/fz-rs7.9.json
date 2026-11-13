@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T03:00:57Z",
   "created": "2026-11-13T01:33:49Z",
   "description": "+n does not parse anywhere (probed on fz-rs7.4, PR #358):\n\ndef main(), do: dbg(+3)\nerror[parse/expected-token]: unsupported expression prefix in compiler2 front door: Plus\n\nThe same error is reported for def f(n) when +n \u003e 0. Elixir accepts unary plus in bodies and guards (Kernel.+/1, the identity on numbers; ArithmeticError on anything else, and a non-matching clause in a guard).\n\nChange: the parser accepts prefix + and it resolves as a call to Kernel's +/1, the way unary minus resolves through CallableName::negation.\n\nFails before, passes after, three paths, with an Elixir oracle: +3, +n in a body, +n in a function-head guard and a receive guard, and +:a (raises in a body, clause not matched in a guard).\n\nAcceptance: full gate green.",
   "id": "fz-rs7.9",
   "labels": [],
   "parent": "fz-rs7",
   "priority": 4,
-  "status": "open",
+  "status": "closed",
   "title": "Unary plus parses, in bodies and guards",
   "type": "bug",
-  "updated_at": "2026-11-13T01:33:49Z"
+  "updated_at": "2026-11-13T03:00:57Z"
 }
