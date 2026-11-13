@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
@@ -89,37 +90,11 @@ where
     }
 
     pub fn replace_reads(&mut self, publisher: P, next_reads: HashSet<FactUse<F>>) {
-        if let Some(previous_reads) = self.reads.insert(publisher.clone(), next_reads.clone()) {
-            for key in previous_reads {
-                if let Some(publishers) = self.subscribers.get_mut(&key) {
-                    publishers.remove(&publisher);
-                    if publishers.is_empty() {
-                        self.subscribers.remove(&key);
-                    }
-                }
-            }
-        }
-
-        for key in next_reads {
-            self.subscribers.entry(key).or_default().insert(publisher.clone());
-        }
+        replace_held(&mut self.reads, &mut self.subscribers, publisher, next_reads);
     }
 
     pub fn replace_waits(&mut self, job: P::Run, next_waits: HashSet<FactUse<F>>) {
-        if let Some(previous_waits) = self.waits.insert(job.clone(), next_waits.clone()) {
-            for fact in previous_waits {
-                if let Some(jobs) = self.waiters.get_mut(&fact) {
-                    jobs.remove(&job);
-                    if jobs.is_empty() {
-                        self.waiters.remove(&fact);
-                    }
-                }
-            }
-        }
-
-        for fact in next_waits {
-            self.waiters.entry(fact).or_default().insert(job.clone());
-        }
+        replace_held(&mut self.waits, &mut self.waiters, job, next_waits);
     }
 
     pub fn replace_outputs(&mut self, publisher: P, next_outputs: OrderedSet<F>) {
@@ -260,5 +235,36 @@ where
             }
         }
         self.outputs.remove(publisher);
+    }
+}
+
+/// Stores `next` as what `holder` holds, and brings the reverse index in line:
+/// the facts the holder no longer holds forget it, and the facts it holds
+/// remember it. The set is stored whole, then read back from where it lives.
+fn replace_held<K, F>(
+    held: &mut HashMap<K, HashSet<FactUse<F>>>,
+    holders_of: &mut HashMap<FactUse<F>, OrderedSet<K>>,
+    holder: K,
+    next: HashSet<FactUse<F>>,
+) where
+    K: Clone + Eq + Hash,
+    F: Clone + Eq + Hash,
+{
+    let stored = match held.entry(holder.clone()) {
+        Entry::Occupied(mut entry) => {
+            for fact in entry.insert(next) {
+                if let Some(holders) = holders_of.get_mut(&fact) {
+                    holders.remove(&holder);
+                    if holders.is_empty() {
+                        holders_of.remove(&fact);
+                    }
+                }
+            }
+            entry.into_mut()
+        }
+        Entry::Vacant(entry) => entry.insert(next),
+    };
+    for fact in stored.iter() {
+        holders_of.entry(fact.clone()).or_default().insert(holder.clone());
     }
 }
