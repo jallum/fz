@@ -427,10 +427,10 @@ node once:
   reference word (`emit_receive_value_ref`), and `emit_checked_return` branches
   the `failed` lane to the guard's failure block.
 
-The arithmetic operators in a guard (`+ - * / %` and unary minus) are calls, not
+The arithmetic operators in a guard (`+ - * / %`, unary plus and unary minus) are calls, not
 guard operators: `guard_expr_from_ast` resolves them through `guard_call_expr`
 to the same Kernel functions a body calls (`BinOp::arithmetic_function`,
-`CallableName::negation`), so a program that imports its own `+` is answered by
+`CallableName::negation`; unary plus is the call `+/1`), so a program that imports its own `+` is answered by
 that `+` in a guard as in a body, and a failed operation (overflow, `rem` or
 `/` by zero) leaves the clause unmatched. `PatternGuardBinOp` keeps comparison
 and boolean operators; `PatternGuardUnaryOp` is `Not`.

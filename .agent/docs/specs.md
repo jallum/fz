@@ -205,7 +205,7 @@ Compiler2 owns the active contract path:
   `defp name/arity` under `lib/` and requires a matching `@spec name/arity`,
   while activated fixtures prove those declared domains remove the warnings
   without hiding genuine user fallthroughs.
-- Kernel arithmetic (`+ - * / % div rem` and `negate`) is fully specced in
+- Kernel arithmetic (`+ - * / % div rem`, unary `+` and `negate`) is fully specced in
   `lib/kernel.fz`, so provably non-numeric operands at
   a user callsite (e.g. `:bad + 1`) are fatal compile-time spec violations on
   every path. Each ends in a default clause outside its `@spec`

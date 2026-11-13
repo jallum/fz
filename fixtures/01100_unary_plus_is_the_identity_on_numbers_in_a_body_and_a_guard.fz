@@ -1,0 +1,38 @@
+#---
+# purpose: "unary plus answers its number operand in a body, a function-head guard and a receive guard, raises ArithmeticError on an operand that is not a number in a body, and leaves the clause unmatched in a guard"
+# oracle: oracle.exs
+#---
+#
+# `+n` is the identity on an integer or a float. On anything else it fails: a
+# body raises, and a guard leaves its clause unmatched so the next clause
+# answers. `:a` means the guard held and `:b` means it did not.
+def literal(), do: +3
+
+def body(n), do: +n
+
+def entry(n) when +n > 0, do: :a
+def entry(_), do: :b
+
+def receive_guard(m) do
+  send(self(), m)
+  receive do
+    n when +n > 0 -> :a
+    _ -> :b
+  end
+end
+
+def raised(n) do
+  try do
+    +n
+  rescue
+    e in ArithmeticError -> e.message
+  end
+end
+
+def main() do
+  dbg([literal(), body(4), body(-2.5), body(0.0)])
+  dbg([entry(2), entry(-2), entry(1.5), entry(:x)])
+  dbg([receive_guard(2), receive_guard(-2), receive_guard(1.5), receive_guard(:x)])
+  dbg(raised(JSON.decode!("\"s\"")))
+  dbg(raised(JSON.decode!("[1]")))
+end

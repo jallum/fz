@@ -892,6 +892,7 @@ impl FrontDoorParser {
                 let meta = self.meta(span)?;
                 Ok(ParsedExpr::plain(self.builder.call("-", &meta, &[inner.root])?, span))
             }
+            Tok::Plus => self.parse_prefix_operator("+", start, module_path, scope),
             Tok::Not => self.parse_prefix_operator("not", start, module_path, scope),
             Tok::Bang => self.parse_prefix_operator("!", start, module_path, scope),
             Tok::Fn => self.with_matched_do_boundary(|parser| parser.parse_lambda_expr(module_path, scope, start)),

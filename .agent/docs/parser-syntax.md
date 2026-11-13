@@ -69,7 +69,10 @@ newline to guess intent.
   and modulo — so a `-` or `%` leading a fresh physical line always starts a
   *new* statement (mirrors Elixir's tokenizer, where a prefix-capable
   operator never swallows a preceding eol; `%` has no modulo in Elixir, so
-  that dual role is fz-specific).
+  that dual role is fz-specific). `Tok::Plus` stays infix-only at a line start
+  (a leading `+` continues the previous expression), yet the front door's
+  prefix parser accepts a `+` inside an expression as unary plus, the call
+  `+(n)`, as it does `-`.
 - **Statement/`eoe` separation**: a `Tok::Newline` that reaches `parse_bp`'s
   Pratt loop matches none of its arms, so the loop returns the completed
   left-hand side. Every newline-delimited sequence then calls
