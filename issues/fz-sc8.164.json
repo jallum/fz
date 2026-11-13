@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T23:16:01Z",
   "created": "2026-11-13T22:08:56Z",
   "description": "Rule: a test learns that something happened from a message or a telemetry event, never by waiting on a clock and never by polling.\n\nTrigger: on 2026-11-13, during a workspace gate run on a loaded machine, the oracle check ran real elixir on fixtures/00691_a_child_and_its_parent_both_time_out_in_order.oracle.exs and elixir itself printed :main_timeout before :child_timeout. The child times out after 20 ms and the parent after 80 ms; the order rests on the child being spawned, scheduled and printing inside the 60 ms gap. fz was not involved; three re-runs alone passed.\n\nCensus on 2053b04a5 (grep, not yet classified one by one):\n- 16 fixtures use a non-zero receive `after` timeout: 00247, 00515, 00686, 00687, 00688, 00690, 00691, 00692, 00693, 00905, 01065, and fixtures2/behavior guard_plan_inputs, list_retention_receive_capture, map_key_unreached, receive_selective_refs, receive_outcome_identity. No fixture calls Process.sleep or :timer.sleep.\n- Rust tests that sleep: src/aot_link_test.rs:167 (10 ms), src/telemetry/bus_test.rs:230, 255, 428, src/telemetry/jsonl_test.rs:295, src/telemetry/sink_test.rs:341 (50 us each).\n\nFor each one, decide which it is:\n1. The timeout is not the point (it stands in for \"nothing else arrives\"): use `after 0`, and fix any order between processes with a message.\n2. The timeout firing is the point, but only one process is involved: a single timeout has no race; keep the smallest value.\n3. An order between two timers or between a timer and another process is the point (00691, 00693, 00690, 00692): the order must not rest on a margin. Sequence with messages where Elixir can express the same thing; where the fact under test is the runtime timer order itself, assert it from telemetry (timer armed with its deadline, timer fired) in a Rust test, and keep the oracle fixture to what a message can order.\n4. Rust sleeps: replace each with the event the test is actually waiting for.\n\nDone when: every item above is classified in this ticket with what replaced it, no fixture output depends on a timing margin, no Rust test sleeps, and the suites are green on interp, run and build.",
   "id": "fz-sc8.164",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "No fixture or test gets its answer from a wall-clock wait",
   "type": "bug",
-  "updated_at": "2026-11-13T22:11:33Z"
+  "updated_at": "2026-11-13T23:16:01Z"
 }
