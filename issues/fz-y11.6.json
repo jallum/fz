@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:38:53Z",
+  "description": "Three walks clone a descriptor and intern it to get back an id that already exists. list_element_type (types/mod.rs:3626-3650, called :1504): for one clause with one positive it clones the element's descriptor, unions it with none (another clone), and the caller interns the result back to the element's own Ty; :3647 unwrap_or_else(Descr::any) alone is about 12k. tuple_projections (:3674-3699): clones every element (:3684) and unions it into an empty accumulator (:3694); a single-clause result is exactly sig.elems. instantiate (:4809-4834): the nested closure (:4829-4832) calls the Descr-returning instantiate for every child and re-interns it; a child with no variables is cloned and re-probed to get its own id back, where Types::instantiate (:2950) returns the Ty unchanged. About 60k allocations together.\nShape: a fast path for one clause, one positive, no negatives that returns the existing Ty(s); the nested walk goes through the Ty-returning instantiate.\nCare: interning is idempotent (types/mod.rs:712-718) so ids must come out identical; multi-clause and negative cases keep the union; list_element_type ignores negatives today and must still.\n\nCounts are sampling estimates at develop 742e688b5 (line numbers refer to /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src); re-measure on your base first. Signal: see the epic.",
+  "id": "fz-y11.6",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "A projection that names an existing type returns that type",
+  "type": "task",
+  "updated_at": "2026-11-13T03:38:53Z"
+}
