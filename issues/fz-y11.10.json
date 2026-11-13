@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:38:54Z",
+  "description": "scheduler.rs:895 builds moved_keys as a HashSet\u003cDependencyKey\u003e, drains it to a Vec (:903) and sorts it (:906): about 4.1k allocations, 4.8 MB. Push to a Vec, sort, dedup.\ndrive.rs:106/:123 publish_dependency_movements clones every FactKey into a Vec\u003cFactMovement\u003e to pass a slice to sessions.publish, on each loop round, from movements the caller owns: about 3.5k, 5.4 MB. Move the keys out of the owned movements, or let publish take an iterator of (\u0026FactKey, state).\nscheduler.rs:786 pending_changes.extend(changed.iter().cloned()) clones each FactChange (with its key, already cloned at facts.rs:484) to feed the wave queue (:302): about 6k, 5 MB. Let dispatch_changes return what it popped, or queue references.\nfacts.rs:420 changed_keys_set: a HashSet built per commit to assert no duplicates in a short list (2.6k).\nCare: the order of changed decides wake order; semantic equality must match key equality for the sort+dedup; do not change what any table is keyed by (fz-xcu).\n\nCounts are sampling estimates at develop 742e688b5 (line numbers refer to /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src); re-measure on your base first. Signal: see the epic.",
+  "id": "fz-y11.10",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "The scheduler passes fact changes on without copying their keys",
+  "type": "task",
+  "updated_at": "2026-11-13T03:38:54Z"
+}
