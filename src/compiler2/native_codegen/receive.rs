@@ -1283,13 +1283,19 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
     })
 }
 
-/// Leaves the guard through its failure block. What follows in the expression
-/// is unreachable, and goes on in a block nothing enters.
-fn fail_guard<M: cranelift_module::Module>(body: &mut DispatchBody<'_, '_, M>, fail: ir::Block) -> ReceiveValue {
+/// Leaves the guard through its failure block. What follows is unreachable,
+/// and goes on in a block nothing enters.
+fn leave_guard<M: cranelift_module::Module>(body: &mut DispatchBody<'_, '_, M>, fail: ir::Block) {
     body.b.ins().jump(fail, &[]);
     let dead = body.b.create_block();
     body.b.switch_to_block(dead);
     body.b.seal_block(dead);
+}
+
+/// A guard expression that fails the guard. The rest of the expression is
+/// lowered in the unreachable block, so it is handed a value to work on.
+fn fail_guard<M: cranelift_module::Module>(body: &mut DispatchBody<'_, '_, M>, fail: ir::Block) -> ReceiveValue {
+    leave_guard(body, fail);
     bool_const_value(body.b, false)
 }
 
@@ -1456,7 +1462,7 @@ fn emit_guard_dispatch_node<M: cranelift_module::Module>(
         .ok_or_else(|| CodegenError::new(format!("guard dispatch node {:?} out of bounds", node_id)))?;
     match node {
         DispatchNode::Fail => {
-            fail_guard(body, fail);
+            leave_guard(body, fail);
             Ok(())
         }
         DispatchNode::Outcome { outcome, .. } => {

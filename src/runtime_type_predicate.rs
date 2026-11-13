@@ -404,6 +404,11 @@ impl RuntimeTypePredicate {
         }
     }
 
+    /// Whether the test admits any list.
+    pub(crate) fn admits_a_list(&self) -> bool {
+        !self.is_none_on(RuntimeTestAxis::Lists)
+    }
+
     /// What this test answers for every value held unboxed in the scalar lane
     /// `kind`, when that is the same answer for all of them: `Some(true)` where
     /// the axis the lane reaches admits every value, `Some(false)` where it
