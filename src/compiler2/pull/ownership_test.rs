@@ -109,7 +109,7 @@ impl ProductProducers for OwnershipProducers<'_> {
             },
             OwnershipFormula::PrefixRoot(prefix, seed) => {
                 for control in prefix {
-                    if context.read_product(tel, control.clone(), &self.types).is_none() {
+                    if context.read_product(tel, &control, &self.types).is_none() {
                         return PullOutcome::wait_on_product(control);
                     }
                 }
@@ -124,7 +124,7 @@ impl ProductProducers for OwnershipProducers<'_> {
                 otherwise,
             } => {
                 let Some(ProductValue::ExecutableEffects(choice)) =
-                    context.read_product(tel, selector.clone(), &self.types)
+                    context.read_product(tel, &selector, &self.types)
                 else {
                     return PullOutcome::wait_on_product(selector);
                 };
@@ -149,7 +149,7 @@ impl ProductProducers for OwnershipProducers<'_> {
                 } else {
                     rooted.is_err()
                 };
-                if selected && context.read_product(tel, child.clone(), &self.types).is_none() {
+                if selected && context.read_product(tel, &child, &self.types).is_none() {
                     return match rooted {
                         Ok(_) => PullOutcome::wait_on_product(child),
                         Err(waits) => PullOutcome::Waiting(waits),
@@ -162,7 +162,7 @@ impl ProductProducers for OwnershipProducers<'_> {
             }
             OwnershipFormula::Membership { selector, child } => {
                 let Some(ProductValue::ExecutableEffects(selected)) =
-                    context.read_product(tel, selector.clone(), &self.types)
+                    context.read_product(tel, &selector, &self.types)
                 else {
                     return PullOutcome::wait_on_product(selector);
                 };
@@ -173,7 +173,7 @@ impl ProductProducers for OwnershipProducers<'_> {
             }
             OwnershipFormula::Value(value) => PullOutcome::Produced(value),
             OwnershipFormula::Unavailable => PullOutcome::Failed,
-            OwnershipFormula::Copy(child) => match context.read_product(tel, child.clone(), &self.types) {
+            OwnershipFormula::Copy(child) => match context.read_product(tel, &child, &self.types) {
                 Some(value) => PullOutcome::Produced(value.clone()),
                 None => PullOutcome::wait_on_product(child),
             },
@@ -184,7 +184,7 @@ impl ProductProducers for OwnershipProducers<'_> {
                 value,
             } => {
                 let Some(ProductValue::ExecutableEffects(selected)) =
-                    context.read_product(tel, selector.clone(), &self.types)
+                    context.read_product(tel, &selector, &self.types)
                 else {
                     return PullOutcome::wait_on_product(selector);
                 };
@@ -193,14 +193,14 @@ impl ProductProducers for OwnershipProducers<'_> {
                 }
                 if recursive {
                     ownership_recursive_read(context, tel, key, child, value, &self.types)
-                } else if context.read_product(tel, child.clone(), &self.types).is_none() {
+                } else if context.read_product(tel, &child, &self.types).is_none() {
                     PullOutcome::wait_on_product(child)
                 } else {
                     PullOutcome::Produced(value)
                 }
             }
             OwnershipFormula::Recursive { child, peer } => {
-                let Some(value) = context.read_product(tel, child.clone(), &self.types).cloned() else {
+                let Some(value) = context.read_product(tel, &child, &self.types).cloned() else {
                     return PullOutcome::wait_on_product(child);
                 };
                 ownership_recursive_read(context, tel, key, peer, value, &self.types)
@@ -221,7 +221,7 @@ fn ownership_recursive_read(
     value: ProductValue,
     types: &super::super::Types,
 ) -> PullOutcome {
-    match context.read_recursive_product(tel, peer.clone(), key, types) {
+    match context.read_recursive_product(tel, &peer, key, types) {
         RecursiveProductRead::Ready(value) => PullOutcome::Produced(value.clone()),
         RecursiveProductRead::Waiting => PullOutcome::wait_on_product(peer),
         RecursiveProductRead::Group(members) => {

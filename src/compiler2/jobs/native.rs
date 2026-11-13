@@ -56,7 +56,7 @@ pub(crate) fn produce_native_program(
     root_id: RootId,
 ) -> PullOutcome {
     let backend_key = ProductKey::RootBackendProduct(root_id);
-    let backend = match context.read_product(telemetry, backend_key.clone(), world.types()) {
+    let backend = match context.read_product(telemetry, &backend_key, world.types()) {
         Some(ProductValue::RootBackendProduct(backend)) => Rc::clone(backend),
         Some(value) => panic!("root backend content produced unexpected value {value:?}"),
         None => return PullOutcome::wait_on_product(backend_key),

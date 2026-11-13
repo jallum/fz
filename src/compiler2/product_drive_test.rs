@@ -130,10 +130,7 @@ impl ProductProducers for FailingNativeProducers {
             }
             ProductKey::NativeProgram(root) => {
                 let dependency = ProductKey::RootBackendProduct(*root);
-                if context
-                    .read_product(&telemetry, dependency.clone(), &self.types)
-                    .is_none()
-                {
+                if context.read_product(&telemetry, &dependency, &self.types).is_none() {
                     return PullOutcome::wait_on_product(dependency);
                 }
                 if std::mem::take(&mut self.fail_once) {

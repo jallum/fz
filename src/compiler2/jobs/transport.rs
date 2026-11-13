@@ -55,27 +55,27 @@ impl TransportFactsBuilder {
         for (callable, facts) in &owner.callable_facts {
             self.record_callable(
                 *callable,
-                facts.resolutions.to_vec(),
-                facts.direct_surfaces.to_vec(),
-                facts.direct_edges.to_vec(),
-                facts.boundary_ids.to_vec(),
+                &facts.resolutions,
+                &facts.direct_surfaces,
+                &facts.direct_edges,
+                &facts.boundary_ids,
             );
         }
         for (boundary, facts) in &owner.boundary_facts {
             for publication in facts.publications.iter().cloned() {
                 self.record_boundary(*boundary, publication);
             }
-            self.record_boundary_resolutions(*boundary, facts.resolutions.to_vec());
+            self.record_boundary_resolutions(*boundary, &facts.resolutions);
         }
     }
 
     fn record_callable(
         &mut self,
         callable: CallableId,
-        resolutions: Vec<ExecutableSymbol>,
-        direct_surfaces: Vec<Box<[ShapeId]>>,
-        direct_edges: Vec<CallableDirectEdge>,
-        boundary_ids: Vec<BoundaryId>,
+        resolutions: &[ExecutableSymbol],
+        direct_surfaces: &[Box<[ShapeId]>],
+        direct_edges: &[CallableDirectEdge],
+        boundary_ids: &[BoundaryId],
     ) {
         let entry = self.callables.entry(callable).or_insert_with(|| CallableFactsDraft {
             resolutions: Vec::new(),
@@ -99,7 +99,11 @@ impl TransportFactsBuilder {
         }
     }
 
-    fn record_boundary_resolutions(&mut self, boundary: BoundaryId, resolutions: Vec<ExecutableSymbol>) {
+    fn record_boundary_resolutions<'a>(
+        &mut self,
+        boundary: BoundaryId,
+        resolutions: impl IntoIterator<Item = &'a ExecutableSymbol>,
+    ) {
         let entry = self.boundaries.entry(boundary).or_insert_with(|| BoundaryFactsDraft {
             publications: Vec::new(),
             resolutions: Vec::new(),
@@ -118,17 +122,17 @@ impl TransportFactsBuilder {
         for (callable, draft) in &other.callables {
             self.record_callable(
                 *callable,
-                draft.resolutions.clone(),
-                draft.direct_surfaces.clone(),
-                draft.direct_edges.clone(),
-                draft.boundary_ids.clone(),
+                &draft.resolutions,
+                &draft.direct_surfaces,
+                &draft.direct_edges,
+                &draft.boundary_ids,
             );
         }
         for (boundary, draft) in &other.boundaries {
             for publication in &draft.publications {
                 self.record_boundary(*boundary, publication.clone());
             }
-            self.record_boundary_resolutions(*boundary, draft.resolutions.clone());
+            self.record_boundary_resolutions(*boundary, &draft.resolutions);
         }
     }
 
@@ -138,9 +142,11 @@ impl TransportFactsBuilder {
             .into_iter()
             .map(|(id, mut draft)| {
                 draft.resolutions.sort_by(|left, right| left.semantic_cmp(right, types));
-                draft
-                    .direct_surfaces
-                    .sort_by_cached_key(|surface| surface.iter().map(|shape| shape.as_u32()).collect::<Vec<_>>());
+                draft.direct_surfaces.sort_by(|left, right| {
+                    left.iter()
+                        .map(|shape| shape.as_u32())
+                        .cmp(right.iter().map(|shape| shape.as_u32()))
+                });
                 draft
                     .direct_edges
                     .sort_by(|left, right| compare_callable_direct_edges(left, right, types));
@@ -225,7 +231,7 @@ pub(crate) fn produce_callable_construction_product(
     let Some((value, producer, flow)) = local_callable_construction(&facts, &runtime, position) else {
         return produce_generic_callable_owner(world, tel, context, &executable, facts.as_ref(), &runtime, position);
     };
-    let demand = runtime.value_demands.get(&value).cloned().unwrap_or_default();
+    let demand = runtime.value_demands.get(&value).map(Cow::Borrowed).unwrap_or_default();
     match produce_local_callable_construction(
         world,
         tel,
@@ -235,7 +241,7 @@ pub(crate) fn produce_callable_construction_product(
         value,
         producer,
         flow,
-        demand,
+        &demand,
     ) {
         Ok(answer) => PullOutcome::Produced(ProductValue::CallableConstruction(Rc::new(answer))),
         Err(waits) => PullOutcome::Waiting(waits),
@@ -281,7 +287,7 @@ fn produce_generic_callable_owner(
             waits.push(PullWait::Fact(fact));
         }
     }
-    let layout = match context.read_product(tel, shape_key.clone(), world.types()) {
+    let layout = match context.read_product(tel, &shape_key, world.types()) {
         Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => Some(*layout),
         Some(value) => panic!("transport shape produced unexpected value {value:?}"),
         None => {
@@ -430,10 +436,10 @@ fn produce_generic_callable_owner(
     }
     let mut builder = TransportFactsBuilder::default();
     record_generic_owner_facts(world, &mut builder, layout.structural, ty, &demand, position);
+    let current = ProductKey::CallableConstruction(position.clone());
     for source in &source_positions {
         let key = ProductKey::CallableConstruction(source.clone());
-        let current = ProductKey::CallableConstruction(position.clone());
-        let members = match context.read_recursive_product(tel, key.clone(), &current, world.types()) {
+        let members = match context.read_recursive_product(tel, &key, &current, world.types()) {
             super::super::pull::RecursiveProductRead::Ready(ProductValue::CallableConstruction(owner)) => {
                 builder.merge_owner(owner);
                 continue;
@@ -669,9 +675,11 @@ fn project_generic_owner_node(
     match world.shape(shape) {
         &ShapeDescr::Callable(callable) => {
             record_generic_owner_facts(world, projected, shape, ty, demand, publication);
-            let resolutions = exact_demand_resolution_symbols(source, demand, None);
             if let Some(draft) = projected.callables.get_mut(&callable) {
-                extend_unique(&mut draft.resolutions, resolutions);
+                extend_unique(
+                    &mut draft.resolutions,
+                    exact_demand_resolution_symbols(source, demand, None),
+                );
             }
             if world.callable(callable).function.is_some()
                 && demand.callable.is_first_class()
@@ -681,20 +689,22 @@ fn project_generic_owner_node(
                     .callables
                     .get_mut(&callable)
                     .expect("the position published its callable");
-                extend_unique(&mut draft.boundary_ids, owner.boundary_ids.clone());
+                extend_unique(&mut draft.boundary_ids, &owner.boundary_ids);
                 for boundary in &owner.boundary_ids {
                     if let Some(facts) = source.boundaries.get(boundary) {
-                        projected.record_boundary_resolutions(*boundary, facts.resolutions.clone());
+                        projected.record_boundary_resolutions(*boundary, &facts.resolutions);
                     }
                     projected.record_boundary(*boundary, publication.clone());
                 }
             }
-            let boundary_ids = projected
-                .callables
-                .get(&callable)
-                .map(|draft| draft.boundary_ids.clone())
-                .unwrap_or_default();
-            for (surface, boundary) in demand.callable.resolved.iter().zip(boundary_ids) {
+            for (index, surface) in demand.callable.resolved.iter().enumerate() {
+                let Some(&boundary) = projected
+                    .callables
+                    .get(&callable)
+                    .and_then(|draft| draft.boundary_ids.get(index))
+                else {
+                    break;
+                };
                 projected.record_boundary_resolutions(
                     boundary,
                     exact_demand_resolution_symbols(source, demand, Some(surface)),
@@ -724,11 +734,11 @@ fn project_generic_owner_node(
     }
 }
 
-fn exact_demand_resolution_symbols(
-    source: &TransportFactsBuilder,
+fn exact_demand_resolution_symbols<'a>(
+    source: &'a TransportFactsBuilder,
     demand: &RuntimeDemand,
     surface: Option<&CallableSurface>,
-) -> Vec<ExecutableSymbol> {
+) -> Vec<&'a ExecutableSymbol> {
     let mut resolutions = Vec::new();
     for target in demand
         .callable
@@ -745,8 +755,8 @@ fn exact_demand_resolution_symbols(
                     && resolution.activation.arrow == target.activation.arrow
             })
         {
-            if !resolutions.contains(resolution) {
-                resolutions.push(resolution.clone());
+            if !resolutions.contains(&resolution) {
+                resolutions.push(resolution);
             }
         }
     }
@@ -782,7 +792,7 @@ fn record_generic_owner_facts(
             } else {
                 Vec::new()
             };
-            facts.record_callable(callable, Vec::new(), surface_shapes, Vec::new(), boundary_ids);
+            facts.record_callable(callable, &[], &surface_shapes, &[], &boundary_ids);
         }
         ShapeDescr::Tuple(fields) => {
             let arity = fields.len();
@@ -1010,7 +1020,7 @@ fn evaluate_transport_recipe(
             // recorded form, because this runs first: the edge is minted from
             // the layout this recipe settles.
             let callee_key = ProductKey::TransportShape(callee.clone());
-            let callee_layout = match context.read_product(tel, callee_key.clone(), world.types()) {
+            let callee_layout = match context.read_product(tel, &callee_key, world.types()) {
                 Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => *layout,
                 Some(value) => panic!("closure callee shape produced unexpected value {value:?}"),
                 None => return RecipeLayout::Waiting(callee_key),
@@ -1033,7 +1043,7 @@ fn evaluate_transport_recipe(
         TransportRecipe::CutEdge => RecipeLayout::Cut(Vec::new()),
         TransportRecipe::Alias(child) => {
             let key = ProductKey::TransportShape(child.clone());
-            match context.read_product(tel, key.clone(), world.types()) {
+            match context.read_product(tel, &key, world.types()) {
                 Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => RecipeLayout::Exact(*layout),
                 Some(value) => panic!("transport shape produced unexpected value {value:?}"),
                 None => RecipeLayout::Waiting(key),
@@ -1292,7 +1302,7 @@ fn direct_callable_descr(
             return DirectCallableDescr::Position(RecipeLayout::Cut(vec![layout]));
         }
         let key = ProductKey::TransportShape(capture);
-        match context.read_product(tel, key.clone(), world.types()) {
+        match context.read_product(tel, &key, world.types()) {
             Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => capture_layouts.push(*layout),
             Some(value) => panic!("transport shape produced unexpected value {value:?}"),
             None => return DirectCallableDescr::Position(RecipeLayout::Waiting(key)),
@@ -1471,7 +1481,7 @@ fn produce_local_callable_construction(
     value: ValueId,
     producer: &LocalCallableProducer,
     flow: &CallableFlowFact,
-    demand: RuntimeDemand,
+    demand: &RuntimeDemand,
 ) -> Result<CallableConstructionOwner, Vec<PullWait>> {
     assert_eq!(flow.function, producer.function);
     assert_eq!(flow.captures, producer.captures);
@@ -1517,7 +1527,7 @@ fn produce_local_callable_construction(
             executable: symbol.clone(),
             value: capture,
         });
-        match context.read_product(tel, key.clone(), world.types()) {
+        match context.read_product(tel, &key, world.types()) {
             Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => {
                 let mut layout = *layout;
                 if capture_demands[index].callable.is_first_class() && !layout.carrier.is_value_ref() {
@@ -1561,18 +1571,22 @@ fn produce_local_callable_construction(
     );
     builder.record_callable(
         callable,
-        flow.resolutions
+        &flow
+            .resolutions
             .iter()
             .map(|resolution| ExecutableSymbol::new(resolution, world.types()))
-            .collect(),
-        direct_surfaces,
-        direct_edges,
-        boundaries_by_surface.values().copied().collect(),
+            .collect::<Vec<_>>(),
+        &direct_surfaces,
+        &direct_edges,
+        &boundaries_by_surface.values().copied().collect::<Vec<_>>(),
     );
     let construction = if flow.first_class_edges.is_empty() {
         None
     } else {
-        let construction_edges = callable_direct_edges(world, &flow.first_class_edges);
+        let mut construction_edges = callable_direct_edges(world, &flow.first_class_edges)
+            .into_iter()
+            .map(Some)
+            .collect::<Vec<_>>();
         // ONE ROUTING RULE, MEMBER SELECTION INCLUDED (fz-kdt.179). The
         // selection names which edges are destinations at all and the order
         // the wrapper tests them in; the member list below is built by walking
@@ -1605,16 +1619,18 @@ fn produce_local_callable_construction(
                 .iter()
                 .map(|member| {
                     let source = &flow.first_class_edges[*member];
-                    let edge = &construction_edges[*member];
+                    let edge = construction_edges[*member]
+                        .take()
+                        .expect("a member selection names each edge at most once");
                     CallableConstructionMember {
                         boundary: *boundaries_by_surface
                             .get(&source.surface)
                             .expect("every construction edge surface should have a published boundary"),
-                        surface_inputs: edge.surface_inputs.clone(),
-                        surface_arg_shapes: edge.surface_arg_shapes.clone(),
-                        resolution: edge.resolution.clone(),
-                        capture_semantic_inputs: edge.capture_semantic_inputs.clone(),
-                        surface_semantic_inputs: edge.surface_semantic_inputs.clone(),
+                        surface_inputs: edge.surface_inputs,
+                        surface_arg_shapes: edge.surface_arg_shapes,
+                        resolution: edge.resolution,
+                        capture_semantic_inputs: edge.capture_semantic_inputs,
+                        surface_semantic_inputs: edge.surface_semantic_inputs,
                     }
                 })
                 .collect(),
@@ -1800,7 +1816,7 @@ fn produce_named_transport_position(
             match facts.value_origin(*value) {
                 Some(TransportSource::CallableValue(_)) if runtime.callable_flows.contains_key(value) => {
                     let key = ProductKey::CallableConstruction(position.clone());
-                    return Some(match context.read_product(tel, key.clone(), world.types()) {
+                    return Some(match context.read_product(tel, &key, world.types()) {
                         Some(ProductValue::CallableConstruction(construction)) => PullOutcome::Produced(
                             ProductValue::TransportShape(TransportShapeFact::Layout(construction.layout)),
                         ),
@@ -1818,17 +1834,17 @@ fn produce_named_transport_position(
             semantic_index,
             ..
         } => {
-            let arg = callsite_call_args(facts.body())
+            let arg_value = callsite_call_args(facts.body())
                 .get(callsite)
                 .and_then(|args| args.get(*semantic_index))
-                .cloned();
-            let Some(arg) = arg else {
+                .map(|arg| arg.value);
+            let Some(arg_value) = arg_value else {
                 let ty = world.types_mut().any();
                 let demand = runtime
                     .call_arg_demands
                     .get(callsite)
                     .and_then(|demands| demands.get(*semantic_index))
-                    .cloned()
+                    .map(Cow::Borrowed)
                     .unwrap_or_default();
                 let layout = derived_transport_layout(world, ty, &demand, &[]);
                 return Some(PullOutcome::Produced(ProductValue::TransportShape(
@@ -1874,14 +1890,14 @@ fn produce_named_transport_position(
             let ty = facts
                 .analysis()
                 .value_types
-                .get(&arg.value)
+                .get(&arg_value)
                 .copied()
                 .unwrap_or_else(|| world.types_mut().any());
             let demand = runtime
                 .call_arg_demands
                 .get(callsite)
                 .and_then(|demands| demands.get(*semantic_index))
-                .or_else(|| runtime.value_demands.get(&arg.value))
+                .or_else(|| runtime.value_demands.get(&arg_value))
                 .map(Cow::Borrowed)
                 .unwrap_or_default();
             (ty, demand)
@@ -2043,7 +2059,8 @@ fn with_value_ref_carrier(world: &mut World, ty: Ty, mut layout: TransportLayout
         return layout;
     }
     if !layout_carries(world, layout, ty) {
-        let complete = tuple_refined_demand(world, ty, &RuntimeDemand::whole());
+        let whole = RuntimeDemand::whole();
+        let complete = tuple_refined_demand(world, ty, &whole);
         layout = derived_transport_layout(world, ty, &complete, &[]);
     }
     layout.carrier = TransportCarrier::ValueRef(value_lane(world, ty));
@@ -2096,24 +2113,24 @@ fn contract_transport_layout(world: &mut World, ty: Ty, demand: &RuntimeDemand) 
 /// the same one from the same fact. A value of an exact tuple type is built
 /// decomposed, so the form its type describes is the form it already travels
 /// in.
-fn tuple_refined_demand(world: &mut World, ty: Ty, demand: &RuntimeDemand) -> RuntimeDemand {
+fn tuple_refined_demand<'a>(world: &mut World, ty: Ty, demand: &'a RuntimeDemand) -> Cow<'a, RuntimeDemand> {
     let ShapeDemand::Whole = demand.shape else {
-        return demand.clone();
+        return Cow::Borrowed(demand);
     };
     if demand.is_callable() {
-        return demand.clone();
+        return Cow::Borrowed(demand);
     }
     let Some(fields) = exact_tuple_field_tys(world, ty) else {
-        return demand.clone();
+        return Cow::Borrowed(demand);
     };
     let mut refined = demand.clone();
     refined.shape = ShapeDemand::TupleFields(
         fields
             .into_iter()
-            .map(|field_ty| tuple_refined_demand(world, field_ty, &RuntimeDemand::whole()))
+            .map(|field_ty| tuple_refined_demand(world, field_ty, &RuntimeDemand::whole()).into_owned())
             .collect(),
     );
-    refined
+    Cow::Owned(refined)
 }
 
 /// Whether every value of `ty` has somewhere to travel in `shape`. A callable
@@ -2166,7 +2183,7 @@ fn on_cycle(
         return Ok(true);
     }
     let reach = ProductKey::Reach(arm(from));
-    match context.read_product(tel, reach.clone(), world.types()) {
+    match context.read_product(tel, &reach, world.types()) {
         Some(ProductValue::Reach(reached)) => Ok(reached.contains(&arm(owner.clone()))),
         Some(other) => panic!("reach product produced unexpected value {other:?}"),
         None => Err(PullWait::Product(reach)),
@@ -2513,10 +2530,10 @@ fn compare_callable_direct_edges(left: &CallableDirectEdge, right: &CallableDire
         .then_with(|| left.resolution.semantic_cmp(&right.resolution, types))
 }
 
-fn extend_unique<T: PartialEq>(target: &mut Vec<T>, values: Vec<T>) {
+fn extend_unique<'a, T: PartialEq + Clone + 'a>(target: &mut Vec<T>, values: impl IntoIterator<Item = &'a T>) {
     for value in values {
-        if !target.contains(&value) {
-            target.push(value);
+        if !target.contains(value) {
+            target.push(value.clone());
         }
     }
 }
@@ -2602,7 +2619,7 @@ fn layout_from_demand<T: crate::telemetry::Telemetry>(
     if demand.is_callable() {
         return callable_layout_from_demand(world, reads, ty, demand);
     }
-    let field_demands = match &demand.shape {
+    let (field_tys, field_demands) = match &demand.shape {
         ShapeDemand::Ignore => {
             return RecipeLayout::Exact(TransportLayout::structural(world.intern_shape(ShapeDescr::Nothing)));
         }
@@ -2613,12 +2630,12 @@ fn layout_from_demand<T: crate::telemetry::Telemetry>(
             let Some(field_demands) = demand.shape.field_prefix(field_tys.len()) else {
                 return RecipeLayout::Exact(TransportLayout::structural(value_lane_shape(world, ty)));
             };
-            field_tys.into_iter().zip(field_demands).collect::<Vec<_>>()
+            (field_tys, field_demands)
         }
     };
     let mut items = Vec::with_capacity(field_demands.len());
-    for (field_ty, field_demand) in field_demands {
-        match layout_from_demand(world, reborrow_reads(&mut reads), field_ty, &field_demand) {
+    for (field_ty, field_demand) in field_tys.into_iter().zip(&field_demands) {
+        match layout_from_demand(world, reborrow_reads(&mut reads), field_ty, field_demand) {
             RecipeLayout::Exact(layout) => items.push(layout),
             interrupted => return interrupted,
         }
@@ -2697,7 +2714,7 @@ fn publish_boundaries_for_callable(
         if let Some(position) = publication.clone() {
             facts.record_boundary(boundary, position);
         }
-        facts.record_boundary_resolutions(boundary, resolutions.clone());
+        facts.record_boundary_resolutions(boundary, resolutions);
         boundaries_by_surface.insert(surface.clone(), boundary);
     }
     boundaries_by_surface

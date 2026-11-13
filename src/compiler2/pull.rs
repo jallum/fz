@@ -2141,7 +2141,7 @@ impl<'s> ProductReadContext<'s> {
     pub fn read_product(
         &mut self,
         tel: &impl Telemetry,
-        key: ProductKey,
+        key: &ProductKey,
         types: &super::types::Types,
     ) -> Option<&ProductValue> {
         self.read_product_entry(tel, key, types)
@@ -2155,21 +2155,21 @@ impl<'s> ProductReadContext<'s> {
     pub(crate) fn read_recursive_product(
         &mut self,
         tel: &impl Telemetry,
-        dependency: ProductKey,
+        dependency: &ProductKey,
         current: &ProductKey,
         types: &super::types::Types,
     ) -> RecursiveProductRead<'_> {
-        let generation = self.session.memo.generation(&dependency);
+        let generation = self.session.memo.generation(dependency);
         self.dependencies.products.insert(dependency.clone(), generation);
         let (members, search) =
             self.session
                 .memo
-                .pending_strong_component(current, &self.dependencies, &dependency, types);
+                .pending_strong_component(current, &self.dependencies, dependency, types);
         if search.vertex_visits > 0 {
             tel.raw_event3(
                 &["fz", "compiler2", "pull", "recursive_group", "searched"],
                 current,
-                &dependency,
+                dependency,
                 &search,
             );
         }
@@ -2306,22 +2306,22 @@ impl<'s> ProductReadContext<'s> {
     fn read_product_entry(
         &mut self,
         tel: &impl Telemetry,
-        key: ProductKey,
+        key: &ProductKey,
         types: &super::types::Types,
     ) -> Option<&ProductValue> {
         let external = self.session.external.as_ref().map(|handle| handle.borrow());
         let external_memo = external.as_deref().map(PullSession::memo);
-        if let Some(stale) = self.session.memo.stale_dependency(tel, &key, types, external_memo) {
+        if let Some(stale) = self.session.memo.stale_dependency(tel, key, types, external_memo) {
             self.product_reads_delivered = false;
             self.session.memo.prepare_stale_for_reproduction(tel, &stale, types);
-            let generation = self.session.memo.generation(&key);
+            let generation = self.session.memo.generation(key);
             self.dependencies.products.insert(key.clone(), generation);
             return None;
         }
-        let generation = self.session.memo.generation(&key);
+        let generation = self.session.memo.generation(key);
         self.product_reads_delivered &= generation.is_some();
         self.dependencies.products.insert(key.clone(), generation);
-        self.session.memo.get(&key)
+        self.session.memo.get(key)
     }
 
     pub(crate) fn read_runtime_demand_fact(

@@ -206,7 +206,7 @@ pub(crate) fn produce_backend_executable_product(
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
-    let Some(value) = context.read_product(tel, ProductKey::AbiExecutable(executable.clone()), world.types()) else {
+    let Some(value) = context.read_product(tel, &ProductKey::AbiExecutable(executable.clone()), world.types()) else {
         return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::AbiExecutable(executable.clone()))]);
     };
     let ProductValue::AbiExecutable(abi) = value else {
@@ -258,7 +258,7 @@ pub(crate) fn produce_backend_executable_product(
     let mut waits = Vec::new();
     for dependency in dependencies {
         let key = ProductKey::AbiExecutable(dependency.clone());
-        match context.read_product(tel, key.clone(), world.types()) {
+        match context.read_product(tel, &key, world.types()) {
             Some(ProductValue::AbiExecutable(answer)) => {
                 abis.insert(dependency, Rc::clone(answer));
             }

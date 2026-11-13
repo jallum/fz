@@ -283,7 +283,7 @@ mod tests {
             value: ValueId::from_u32(0),
         };
         let mut source = TransportFactsBuilder::default();
-        source.record_callable(generic, vec![resolution.clone()], Vec::new(), Vec::new(), Vec::new());
+        source.record_callable(generic, std::slice::from_ref(&resolution), &[], &[], &[]);
 
         let owner = project_owner_answer(&mut world, &source, layout, ty, &demand, &position);
 

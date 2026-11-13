@@ -539,7 +539,7 @@ fn recursive_reads_record_exact_dependency_generation_on_every_outcome() {
     {
         let mut context = ProductReadContext::new(&mut session);
         assert!(matches!(
-            context.read_recursive_product(&tel, missing.clone(), &current, &types),
+            context.read_recursive_product(&tel, &missing, &current, &types),
             RecursiveProductRead::Waiting
         ));
         assert_eq!(context.dependencies.products.get(&missing), Some(&None));
@@ -564,7 +564,7 @@ fn recursive_reads_record_exact_dependency_generation_on_every_outcome() {
     {
         let mut context = ProductReadContext::new(&mut session);
         assert!(matches!(
-            context.read_recursive_product(&tel, ready.clone(), &current, &types),
+            context.read_recursive_product(&tel, &ready, &current, &types),
             RecursiveProductRead::Ready(ProductValue::Unit)
         ));
         assert_eq!(context.dependencies.products.get(&ready), Some(&Some(1)));
@@ -581,8 +581,7 @@ fn recursive_reads_record_exact_dependency_generation_on_every_outcome() {
         HashSet::new(),
     );
     let mut context = ProductReadContext::new(&mut session);
-    let RecursiveProductRead::Group(members) = context.read_recursive_product(&tel, cyclic.clone(), &current, &types)
-    else {
+    let RecursiveProductRead::Group(members) = context.read_recursive_product(&tel, &cyclic, &current, &types) else {
         panic!("the prospective edge should close the pending cycle");
     };
     assert_eq!(
@@ -828,11 +827,7 @@ impl ProductProducers for FakeProducers {
                 let mut waits = self
                     .root_prerequisites
                     .iter()
-                    .filter(|prerequisite| {
-                        context
-                            .read_product_entry(&tel, (*prerequisite).clone(), &self.types)
-                            .is_none()
-                    })
+                    .filter(|prerequisite| context.read_product_entry(&tel, prerequisite, &self.types).is_none())
                     .cloned()
                     .map(PullWait::Product)
                     .collect::<Vec<_>>();
@@ -842,7 +837,7 @@ impl ProductProducers for FakeProducers {
                         .as_ref()
                         .expect("a recursive fake producer needs its driver telemetry");
                     if matches!(
-                        context.read_recursive_product(telemetry.as_ref(), prerequisite.clone(), key, &self.types,),
+                        context.read_recursive_product(telemetry.as_ref(), &prerequisite, key, &self.types,),
                         RecursiveProductRead::Waiting
                     ) {
                         waits.push(PullWait::Product(prerequisite));
@@ -853,10 +848,7 @@ impl ProductProducers for FakeProducers {
                 }
                 let prerequisite =
                     ProductKey::AbiExecutable(self.root_entry.clone().expect("fake root entry should be set"));
-                if context
-                    .read_product_entry(&tel, prerequisite.clone(), &self.types)
-                    .is_some()
-                {
+                if context.read_product_entry(&tel, &prerequisite, &self.types).is_some() {
                     self.produced.insert(ProductKey::RootBackendProduct(*root));
                     PullOutcome::Produced(ProductValue::Unit)
                 } else {
@@ -920,7 +912,7 @@ impl ProductProducers for FakeProducers {
                 }
                 if let Some(child) = self.runtime_children.get(key).cloned()
                     && context
-                        .read_product_entry(&ConfiguredTelemetry::new(), child.clone(), &self.types)
+                        .read_product_entry(&ConfiguredTelemetry::new(), &child, &self.types)
                         .is_none()
                 {
                     return PullOutcome::wait_on_product(child);
