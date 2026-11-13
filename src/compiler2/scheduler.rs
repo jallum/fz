@@ -376,6 +376,12 @@ impl ReadFinality {
     }
 }
 
+/// The facts whose quiet state moved between a snapshot and now, by direction.
+struct QuietFlips<F> {
+    became_quiet: Vec<F>,
+    became_unquiet: Vec<F>,
+}
+
 #[derive(Debug)]
 pub struct Scheduler<P: Publisher, F> {
     agenda: Agenda<P::Run>,
@@ -732,8 +738,8 @@ where
         let mut changed = Vec::new();
         for (derivation, concluding, rebased, unfinal) in conclusions {
             let publisher = derivation.publisher;
-            let previous_keys = self.deps.output_keys(&publisher);
             if concluding {
+                let previous_keys = self.deps.output_keys(&publisher);
                 let concluded = self.facts.replace_outputs_after_run(
                     &publisher,
                     previous_keys,
@@ -752,10 +758,8 @@ where
                     unfinal,
                     rebased,
                 );
-                let mut claims = previous_keys.clone();
-                claims.extend(extended.output_keys.iter().cloned());
-                let dirtied = self.facts.mark_dirty(&publisher, &claims);
-                self.deps.replace_outputs(publisher.clone(), claims);
+                let claims = self.deps.extend_outputs(&publisher, extended.output_keys);
+                let dirtied = self.facts.mark_dirty(&publisher, claims);
                 changed.extend(extended.changed);
                 pending_changes.extend(dirtied);
             }
@@ -784,7 +788,8 @@ where
         self.deps.replace_derivations(job.clone(), owned);
 
         pending_changes.extend(changed.iter().cloned());
-        self.propagate_quiet_flips(&touched, quiet_before, &mut pending_changes, ctx);
+        let flips = self.quiet_flips(&touched, quiet_before);
+        self.propagate_quiet_flips(flips, &mut pending_changes, ctx);
         let (wakes, movements) = self.dispatch_changes(pending_changes, external, ctx);
         AppliedStep {
             changed,
@@ -986,17 +991,18 @@ where
             .collect::<Vec<_>>();
         publishers.sort_by(|left, right| left.semantic_cmp(right, ctx));
         for publisher in publishers {
-            let keys = self.deps.output_keys(&publisher).clone();
-            let quiet_before = self.quiet_snapshot(&keys);
+            let keys = self.deps.output_keys(&publisher);
+            let quiet_before = self.quiet_snapshot(keys);
             if let Some(state) = self.read_finality.get_mut(&publisher) {
                 *state = ReadFinality::Quiescent(state.count());
             }
-            for key in &keys {
+            for key in keys {
                 if let Some(change) = self.facts.set_publisher_unfinal(key, &publisher, false) {
                     changes.push(change);
                 }
             }
-            self.propagate_quiet_flips(&keys, quiet_before, changes, ctx);
+            let flips = self.quiet_flips(keys, quiet_before);
+            self.propagate_quiet_flips(flips, changes, ctx);
         }
     }
 
@@ -1092,39 +1098,43 @@ where
         if (count > 0) == was_unfinal {
             return;
         }
-        let keys = self.deps.output_keys(publisher).clone();
-        let quiet_before = self.quiet_snapshot(&keys);
-        for key in &keys {
+        let keys = self.deps.output_keys(publisher);
+        let quiet_before = self.quiet_snapshot(keys);
+        for key in keys {
             if let Some(change) = self.facts.set_publisher_unfinal(key, publisher, count > 0) {
                 changes.push(change);
             }
         }
-        self.propagate_quiet_flips(&keys, quiet_before, changes, ctx);
+        let flips = self.quiet_flips(keys, quiet_before);
+        self.propagate_quiet_flips(flips, changes, ctx);
     }
 
-    /// Turns a before/after quiet snapshot of `keys` into the two sign-uniform
-    /// waves it implies.
-    fn propagate_quiet_flips<Ctx>(
-        &mut self,
-        keys: &OrderedSet<F>,
-        quiet_before: Vec<bool>,
-        changes: &mut impl Extend<FactChange<F>>,
-        ctx: &Ctx,
-    ) where
-        P: SemanticOrd<Ctx>,
-        P::Run: SemanticOrd<Ctx>,
-    {
-        let mut became_quiet = Vec::new();
-        let mut became_unquiet = Vec::new();
+    /// The facts of `keys` whose quiet state differs from the `quiet_before`
+    /// snapshot. It reads only the fact table, so `keys` may stay borrowed
+    /// from the dependency index.
+    fn quiet_flips(&self, keys: &OrderedSet<F>, quiet_before: Vec<bool>) -> QuietFlips<F> {
+        let mut flips = QuietFlips {
+            became_quiet: Vec::new(),
+            became_unquiet: Vec::new(),
+        };
         for (key, was_quiet) in keys.iter().zip(quiet_before) {
             match (was_quiet, self.facts.is_quiet(key)) {
-                (false, true) => became_quiet.push(key.clone()),
-                (true, false) => became_unquiet.push(key.clone()),
+                (false, true) => flips.became_quiet.push(key.clone()),
+                (true, false) => flips.became_unquiet.push(key.clone()),
                 _ => {}
             }
         }
-        self.propagate_quiet_wave(became_unquiet, false, changes, ctx);
-        self.propagate_quiet_wave(became_quiet, true, changes, ctx);
+        flips
+    }
+
+    /// Carries the two sign-uniform waves a quiet snapshot's flips imply.
+    fn propagate_quiet_flips<Ctx>(&mut self, flips: QuietFlips<F>, changes: &mut impl Extend<FactChange<F>>, ctx: &Ctx)
+    where
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
+    {
+        self.propagate_quiet_wave(flips.became_unquiet, false, changes, ctx);
+        self.propagate_quiet_wave(flips.became_quiet, true, changes, ctx);
     }
 
     /// Edge-triggered transitive finality. `seeds` have just flipped quiet
@@ -1295,10 +1305,11 @@ where
         P: SemanticOrd<Ctx>,
         P::Run: SemanticOrd<Ctx>,
     {
-        let keys = self.deps.output_keys(publisher).clone();
-        let quiet_before = self.quiet_snapshot(&keys);
-        let dirtied = self.facts.mark_dirty(publisher, &keys);
+        let keys = self.deps.output_keys(publisher);
+        let quiet_before = self.quiet_snapshot(keys);
+        let dirtied = self.facts.mark_dirty(publisher, keys);
         pending_changes.extend(dirtied);
-        self.propagate_quiet_flips(&keys, quiet_before, pending_changes, ctx);
+        let flips = self.quiet_flips(keys, quiet_before);
+        self.propagate_quiet_flips(flips, pending_changes, ctx);
     }
 }
