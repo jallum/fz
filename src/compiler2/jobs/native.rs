@@ -8,6 +8,7 @@
 
 use super::super::identity::{ExecutableKey, FunctionId};
 use super::super::transport::TransportPosition;
+use crate::compiler2::ValueMap;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
@@ -4808,7 +4809,7 @@ fn share_native_value(ctx: &mut NativeFnCtx, value: Option<&NativeBoundValue>) {
 
 #[derive(Default, Clone)]
 struct ValueEnv {
-    values: HashMap<ValueId, NativeBoundValue>,
+    values: ValueMap<NativeBoundValue>,
 }
 
 impl ValueEnv {

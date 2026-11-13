@@ -7,6 +7,7 @@
 //! the index records each value's roots once and lets an item meet only the
 //! values that share one.
 
+use crate::compiler2::{ValueMap, ValueSet};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -23,13 +24,13 @@ struct Footprint {
     open: bool,
 }
 
-type Origins = HashMap<ValueId, TransportOrigin>;
+type Origins = ValueMap<TransportOrigin>;
 
 /// The footprints of every value a body uses, and the values that use each
 /// root. Built once from the body and never changed.
 pub(super) struct StorageRootIndex {
-    footprints: HashMap<ValueId, Rc<Footprint>>,
-    sites: HashMap<ValueId, Vec<(u32, u32)>>,
+    footprints: ValueMap<Rc<Footprint>>,
+    sites: ValueMap<Vec<(u32, u32)>>,
     users: HashMap<SubjectOriginRoot, Vec<ValueId>>,
     open_users: Vec<ValueId>,
 }
@@ -37,7 +38,7 @@ pub(super) struct StorageRootIndex {
 impl StorageRootIndex {
     pub(super) fn new(body: &LoweredBody, origins: &Origins) -> Self {
         let LoweredBody::Clauses { entries, tables, .. } = body;
-        let mut sites: HashMap<ValueId, Vec<(u32, u32)>> = HashMap::new();
+        let mut sites: ValueMap<Vec<(u32, u32)>> = ValueMap::new();
         for entry in 0..entries.len() as u32 {
             for (step, value) in tables.entry_use_sites(ControlEntryId::from_u32(entry)) {
                 sites.entry(*value).or_default().push((entry, *step));
@@ -46,7 +47,7 @@ impl StorageRootIndex {
         let mut footprints = Footprints::default();
         let mut users: HashMap<SubjectOriginRoot, Vec<ValueId>> = HashMap::new();
         let mut open_users = Vec::new();
-        for &value in sites.keys() {
+        for value in sites.keys() {
             let footprint = footprints.of(body, origins, value);
             if footprint.open {
                 open_users.push(value);
@@ -154,8 +155,8 @@ pub(super) fn entries_reached_from(body: &LoweredBody, entry: usize) -> HashSet<
 /// open.
 #[derive(Default)]
 struct Footprints {
-    known: HashMap<ValueId, Rc<Footprint>>,
-    in_progress: HashSet<ValueId>,
+    known: ValueMap<Rc<Footprint>>,
+    in_progress: ValueSet,
 }
 
 impl Footprints {
@@ -163,7 +164,7 @@ impl Footprints {
         if let Some(known) = self.known.get(&value) {
             return known.clone();
         }
-        if !self.in_progress.insert(value) {
+        if !self.in_progress.mark(value) {
             return Rc::new(Footprint {
                 roots: HashSet::new(),
                 open: true,
@@ -185,7 +186,7 @@ impl Footprints {
             footprint.open |= reached.open;
             footprint.roots.extend(reached.roots.iter().copied());
         }
-        self.in_progress.remove(&value);
+        self.in_progress.unmark(&value);
         let footprint = Rc::new(footprint);
         self.known.insert(value, footprint.clone());
         footprint

@@ -4,6 +4,7 @@
 //! structured body form. It owns the local lowering algorithm, lambda capture
 //! discovery, and generated-function definition path.
 
+use crate::compiler2::{ValueMap, ValueSet};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -4006,13 +4007,13 @@ fn decision_input_value(
 
 /// The values a clause binds before its entry runs: the clause parameters and
 /// everything its projections define.
-fn clause_bounds(body: &LoweredBody) -> HashMap<ControlEntryId, HashSet<ValueId>> {
+fn clause_bounds(body: &LoweredBody) -> HashMap<ControlEntryId, ValueSet> {
     let LoweredBody::Clauses { clauses, tables, .. } = body;
     clauses
         .iter()
         .enumerate()
         .map(|(index, clause)| {
-            let mut bound = clause.params.iter().copied().collect::<HashSet<_>>();
+            let mut bound = clause.params.iter().copied().collect::<ValueSet>();
             bound.extend(tables.clause_defines(index));
             (clause.entry, bound)
         })
@@ -4039,7 +4040,7 @@ fn scan_steps<'a>(
 fn compute_entry_captures(
     entries: &[LoweredEntry],
     tables: &BodyTables,
-    clause_bounds: &HashMap<ControlEntryId, HashSet<ValueId>>,
+    clause_bounds: &HashMap<ControlEntryId, ValueSet>,
     physical: bool,
 ) -> Vec<Vec<ValueId>> {
     let mut memo = HashMap::new();
@@ -4054,7 +4055,7 @@ fn compute_entry_captures(
 
 fn list_source_origin(
     body: &LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     head: ValueId,
 ) -> Option<super::super::executable_facts::TransportOrigin> {
     use super::super::executable_facts::TransportOrigin;
@@ -4084,7 +4085,7 @@ type SourcePath = (SubjectOriginRoot, Vec<crate::dispatch_matrix::ProjectionKind
 
 fn origin_source_path(
     body: &LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     origin: &super::super::executable_facts::TransportOrigin,
 ) -> Option<SourcePath> {
     use super::super::executable_facts::TransportOrigin;
@@ -4133,7 +4134,7 @@ fn origin_source_path(
 
 fn construction_projection(
     body: &LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     root: ValueId,
     path: &[crate::dispatch_matrix::ProjectionKind],
 ) -> Option<(ValueId, usize)> {
@@ -4161,7 +4162,7 @@ fn construction_projection(
 
 fn list_can_rewrite(
     body: &LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     entry: usize,
     step: usize,
 ) -> bool {
@@ -4182,13 +4183,13 @@ fn list_can_rewrite(
     !items
         .iter()
         .chain(tail)
-        .any(|operand| value_may_retain_source(body, origins, *operand, &source, Some(*value), &mut HashSet::new()))
+        .any(|operand| value_may_retain_source(body, origins, *operand, &source, Some(*value), &mut ValueSet::new()))
         && !source_used_after(body, origins, entry, step, &source)
 }
 
 fn source_used_after(
     body: &LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     entry: usize,
     step: usize,
     source: &SourcePath,
@@ -4200,7 +4201,7 @@ fn source_used_after(
     };
     any_later_ownership_use(body, entry, step, |value, role| match role {
         super::super::body::ValueRole::Semantic => {
-            value_may_retain_source(body, origins, value, source, exempt, &mut HashSet::new())
+            value_may_retain_source(body, origins, value, source, exempt, &mut ValueSet::new())
         }
         super::super::body::ValueRole::Physical => origin_source_path(
             body,
@@ -4240,8 +4241,8 @@ fn any_later_ownership_use(
         {
             return true;
         }
-        let used = tables.entry_uses_from(block_id, start).collect::<HashSet<_>>();
-        if used.into_iter().any(|value| competes(value, ValueRole::Semantic)) {
+        let used = tables.entry_uses_from(block_id, start).collect::<ValueSet>();
+        if used.keys().any(|value| competes(value, ValueRole::Semantic)) {
             return true;
         }
         let block = &entries[block_id.as_u32() as usize];
@@ -4252,7 +4253,7 @@ fn any_later_ownership_use(
 
 fn value_is_new_owner_projection(
     body: &LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     value: ValueId,
     owner: ValueId,
 ) -> bool {
@@ -4264,7 +4265,7 @@ fn value_is_new_owner_projection(
 
 fn origin_is_new_owner_projection(
     body: &LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     origin: &super::super::executable_facts::TransportOrigin,
     owner: ValueId,
 ) -> bool {
@@ -4292,23 +4293,23 @@ fn origin_is_new_owner_projection(
 
 fn value_may_retain_source(
     body: &LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     value: ValueId,
     source: &SourcePath,
     exempt: Option<ValueId>,
-    visiting: &mut HashSet<ValueId>,
+    visiting: &mut ValueSet,
 ) -> bool {
     use super::super::executable_facts::TransportOrigin;
     if exempt.is_some_and(|owner| value_is_new_owner_projection(body, origins, value, owner)) {
         return false;
     }
-    if SubjectOriginRoot::Value(value) == source.0 || !visiting.insert(value) {
+    if SubjectOriginRoot::Value(value) == source.0 || !visiting.mark(value) {
         return true;
     }
     if let Some((root, path)) = origin_source_path(body, origins, &TransportOrigin::LocalValue(value))
         && root == source.0
     {
-        visiting.remove(&value);
+        visiting.unmark(&value);
         return source.1.starts_with(&path);
     }
     let retained = if let Some(origin) = origins.get(&value) {
@@ -4332,7 +4333,7 @@ fn value_may_retain_source(
                 {
                     let identity = origin_source_path(body, origins, &TransportOrigin::LocalValue(retention.source));
                     if identity.as_ref().is_none_or(|identity| identity == source) {
-                        visiting.remove(&value);
+                        visiting.unmark(&value);
                         return true;
                     }
                 }
@@ -4343,17 +4344,17 @@ fn value_may_retain_source(
             None => true,
         }
     };
-    visiting.remove(&value);
+    visiting.unmark(&value);
     retained
 }
 
 fn origin_may_retain_source(
     body: &LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     origin: &super::super::executable_facts::TransportOrigin,
     source: &SourcePath,
     exempt: Option<ValueId>,
-    visiting: &mut HashSet<ValueId>,
+    visiting: &mut ValueSet,
 ) -> bool {
     use super::super::executable_facts::TransportOrigin;
     if let Some((root, path)) = origin_source_path(body, origins, origin) {
@@ -4398,23 +4399,23 @@ fn origin_may_retain_source(
 
 fn values_overlap(
     body: &LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     left: ValueId,
     right: ValueId,
 ) -> bool {
-    values_overlap_inner(body, origins, left, right, None, &mut HashSet::new())
+    values_overlap_inner(body, origins, left, right, None, &mut ValueMap::new())
 }
 
 fn values_overlap_inner(
     body: &LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     left: ValueId,
     right: ValueId,
     exempt: Option<ValueId>,
-    visited: &mut HashSet<(ValueId, ValueId)>,
+    visited: &mut ValueMap<ValueSet>,
 ) -> bool {
     use super::super::executable_facts::TransportOrigin;
-    if !visited.insert((left, right)) {
+    if !visited.or_default(left).mark(right) {
         return false;
     }
     if exempt.is_some_and(|owner| {
@@ -4429,8 +4430,8 @@ fn values_overlap_inner(
     let Some(right_path) = origin_source_path(body, origins, &TransportOrigin::LocalValue(right)) else {
         return true;
     };
-    value_may_retain_source(body, origins, left, &right_path, exempt, &mut HashSet::new())
-        || value_may_retain_source(body, origins, right, &left_path, exempt, &mut HashSet::new())
+    value_may_retain_source(body, origins, left, &right_path, exempt, &mut ValueSet::new())
+        || value_may_retain_source(body, origins, right, &left_path, exempt, &mut ValueSet::new())
         || construction_children(body, origins, left)
             .into_iter()
             .any(|child| values_overlap_inner(body, origins, child, right, exempt, visited))
@@ -4441,7 +4442,7 @@ fn values_overlap_inner(
 
 fn construction_children(
     body: &LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     value: ValueId,
 ) -> Vec<ValueId> {
     use super::super::executable_facts::TransportOrigin;
@@ -4478,7 +4479,7 @@ fn construction_children(
 
 fn construct_call_ownership(
     body: &mut LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
 ) {
     use super::super::executable_facts::TransportOrigin;
     use crate::fz_ir::OwnershipMode;
@@ -4521,7 +4522,7 @@ fn construct_call_ownership(
                                 else {
                                     return true;
                                 };
-                                value_may_retain_source(body, origins, *arg, &source, None, &mut HashSet::new())
+                                value_may_retain_source(body, origins, *arg, &source, None, &mut ValueSet::new())
                             })
                     } else {
                         false
@@ -4546,7 +4547,7 @@ fn construct_call_ownership(
 
 fn construct_tuple_ownership(
     body: &mut LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     scanned: &Cell<u64>,
     compared: &Cell<u64>,
 ) {
@@ -4603,7 +4604,7 @@ fn construct_tuple_ownership(
 /// open item is set against every later use.
 fn tuple_item_has_old_owner(
     body: &LoweredBody,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     index: &StorageRootIndex,
     later: &LaterUses<'_>,
     result: ValueId,
@@ -4613,7 +4614,7 @@ fn tuple_item_has_old_owner(
     use super::super::body::ValueRole;
     let overlaps = |value: ValueId| {
         compared.set(compared.get() + 1);
-        values_overlap_inner(body, origins, value, item, Some(result), &mut HashSet::new())
+        values_overlap_inner(body, origins, value, item, Some(result), &mut ValueMap::new())
     };
     let retains = |value: ValueId| {
         origin_source_path(
@@ -4621,7 +4622,7 @@ fn tuple_item_has_old_owner(
             origins,
             &super::super::executable_facts::TransportOrigin::LocalValue(value),
         )
-        .is_none_or(|source| value_may_retain_source(body, origins, item, &source, Some(result), &mut HashSet::new()))
+        .is_none_or(|source| value_may_retain_source(body, origins, item, &source, Some(result), &mut ValueSet::new()))
     };
     let Some(competitors) = index.competitors_after(item, later) else {
         return any_later_ownership_use(body, later.entry(), later.step(), |value, role| match role {
@@ -4635,7 +4636,7 @@ fn tuple_item_has_old_owner(
 fn entry_captures(
     entries: &[LoweredEntry],
     tables: &BodyTables,
-    clause_bounds: &HashMap<ControlEntryId, HashSet<ValueId>>,
+    clause_bounds: &HashMap<ControlEntryId, ValueSet>,
     entry_id: ControlEntryId,
     physical: bool,
     memo: &mut HashMap<ControlEntryId, Vec<ValueId>>,
@@ -4648,25 +4649,24 @@ fn entry_captures(
     let mut bound = clause_bounds.get(&entry_id).cloned().unwrap_or_default();
     bound.extend(entry.params.iter().copied());
     if let Some(value) = entry.origin.input_value() {
-        bound.insert(value);
+        bound.mark(value);
     }
     bound.extend(tables.entry_defines(entry_id));
 
     let mut needed = if physical {
-        tables.entry_retentions_from(entry_id, 0).collect::<HashSet<_>>()
+        tables.entry_retentions_from(entry_id, 0).collect::<ValueSet>()
     } else {
-        tables.entry_uses_from(entry_id, 0).collect::<HashSet<_>>()
+        tables.entry_uses_from(entry_id, 0).collect::<ValueSet>()
     };
     for child in child_entries(&entry.tail) {
         for capture in entry_captures(entries, tables, clause_bounds, child, physical, memo) {
             if !bound.contains(&capture) {
-                needed.insert(capture);
+                needed.mark(capture);
             }
         }
     }
-    needed.retain(|value| !bound.contains(value));
-    let mut ordered = needed.into_iter().collect::<Vec<_>>();
-    ordered.sort_by_key(|value| value.as_u32());
+    needed.retain(|value, _| !bound.contains(value));
+    let mut ordered = needed.keys().collect::<Vec<_>>();
     for capture in &entry.captures {
         if !ordered.contains(capture) {
             ordered.push(*capture);
@@ -4680,14 +4680,14 @@ fn entry_captures(
 /// Every value identity retained by a lowered body's executable surface.
 /// Running this after artifact pruning gives downstream products the exact
 /// value-type subset that can still be interpreted or lowered.
-pub(super) fn retained_value_ids(body: &LoweredBody) -> HashSet<ValueId> {
+pub(super) fn retained_value_ids(body: &LoweredBody) -> ValueSet {
     let LoweredBody::Clauses {
         clauses,
         entries,
         tables,
         ..
     } = body;
-    let mut retained = HashSet::new();
+    let mut retained = ValueSet::new();
     for (index, clause) in clauses.iter().enumerate() {
         retained.extend(clause.params.iter().copied());
         retained.extend(tables.clause_defines(index));
@@ -4700,7 +4700,7 @@ pub(super) fn retained_value_ids(body: &LoweredBody) -> HashSet<ValueId> {
         retained.extend(entry.physical_captures.iter().copied());
         retained.extend(tables.entry_retentions_from(entry_id, 0));
         if let Some(value) = entry.origin.input_value() {
-            retained.insert(value);
+            retained.mark(value);
         }
         retained.extend(tables.entry_defines(entry_id));
         retained.extend(tables.entry_uses_from(entry_id, 0));

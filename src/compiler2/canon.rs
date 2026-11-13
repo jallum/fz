@@ -35,6 +35,7 @@
 //! to run even between equal structs.
 
 use super::transport::TransportPosition;
+use crate::compiler2::ValueMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -168,7 +169,7 @@ impl Out {
 /// itself fixes.
 #[derive(Clone, Default)]
 struct Names {
-    values: HashMap<ValueId, usize>,
+    values: ValueMap<usize>,
     callsites: HashMap<CallSiteId, usize>,
 }
 
@@ -425,7 +426,7 @@ impl<'a> ProgramCanon<'a> {
     }
 
     fn value_table(&mut self, executable: &BackendExecutable) -> Vec<String> {
-        let mut keys: Vec<&ValueId> = executable
+        let mut keys: Vec<ValueId> = executable
             .abi
             .materialized
             .value_types
@@ -440,18 +441,18 @@ impl<'a> ProgramCanon<'a> {
                 .abi
                 .materialized
                 .value_types
-                .get(value)
+                .get(&value)
                 .map(|ty| self.ty(*ty))
                 .unwrap_or_else(|| "-".to_string());
             let layout = executable
                 .abi
                 .value_layouts
-                .get(value)
+                .get(&value)
                 .map(|layout| self.layout(layout))
                 .unwrap_or_else(|| "-".to_string());
-            let name = self.names.known_value(*value);
+            let name = self.names.known_value(value);
             rows.push((
-                name.as_ref().map(|_| self.names.values[value]),
+                name.as_ref().map(|_| self.names.values[&value]),
                 format!("{} : {ty} / {layout}", name.unwrap_or_else(|| "v?".to_string())),
             ));
         }
@@ -774,20 +775,20 @@ impl ProgramCanon<'_> {
     /// A `HashMap` keyed by a body-local id, rendered in the order the body
     /// named its keys. Entries for values the body never mentions have no
     /// position, so they are ordered by their content instead.
-    fn keyed_by_value<V>(&mut self, map: &HashMap<ValueId, V>, render: fn(&mut Self, &V) -> String) -> Vec<String> {
-        let mut keys: Vec<&ValueId> = map.keys().collect();
+    fn keyed_by_value<V>(&mut self, map: &ValueMap<V>, render: fn(&mut Self, &V) -> String) -> Vec<String> {
+        let mut keys: Vec<ValueId> = map.keys().collect();
         keys.sort_by_key(|key| (self.names.values.get(key).copied().unwrap_or(usize::MAX), key.as_u32()));
         let mut rows: Vec<(Option<usize>, String)> = Vec::with_capacity(keys.len());
         for key in keys {
-            let value = render(self, &map[key]);
-            let named = self.names.known_value(*key);
+            let value = render(self, &map[&key]);
+            let named = self.names.known_value(key);
             #[cfg(test)]
             assert!(
                 named.is_some() || !self.strict_formula_names,
                 "formula canon missing body-local value {key:?}"
             );
             rows.push((
-                named.as_ref().map(|_| self.names.values[key]),
+                named.as_ref().map(|_| self.names.values[&key]),
                 format!("{} {value}", named.unwrap_or_else(|| "v?".to_string())),
             ));
         }

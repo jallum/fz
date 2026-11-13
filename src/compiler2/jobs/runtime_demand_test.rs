@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use crate::compiler2::ValueMap;
+
 use super::super::runtime_demand::{CallableFlowBuilder, propagate_steps_reverse};
 use crate::compiler2::body::{LoweredBody, LoweredStep, ValueId};
 use crate::compiler2::executable_facts::ExecutableFacts;
@@ -98,7 +100,7 @@ fn propagate_tuple_step_demand(
     steps: &[LoweredStep],
     value: ValueId,
     demand: RuntimeDemand,
-) -> HashMap<ValueId, RuntimeDemand> {
+) -> ValueMap<RuntimeDemand> {
     let mut types_for_key = Types::new();
     let any = types_for_key.any();
     let function = FunctionId::from_coordinate(1);
@@ -113,7 +115,7 @@ fn propagate_tuple_step_demand(
             entry_reachability: EntryReachability::new(Vec::new()),
             reachable_entries: Vec::new(),
             callsites: Vec::new(),
-            value_types: HashMap::new(),
+            value_types: ValueMap::new(),
         },
         body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
         extern_wire: None,
@@ -123,8 +125,8 @@ fn propagate_tuple_step_demand(
         callsite_needs: HashMap::new(),
         delivered_value_joins: HashMap::new(),
         callsite_return_origins: HashMap::new(),
-        value_origins: HashMap::new(),
-        callable_origins: HashMap::new(),
+        value_origins: ValueMap::new(),
+        callable_origins: ValueMap::new(),
         return_origins: Box::new([]),
         demand_types: RuntimeDemandTypeInputs::new(any),
         callable_activation_inputs: Vec::new(),
@@ -140,7 +142,7 @@ fn propagate_tuple_step_demand(
         HashMap::new(),
     );
 
-    let mut live = HashMap::from([(value, demand)]);
+    let mut live = ValueMap::from([(value, demand)]);
     let mut out = ExecutableRuntimeDemand::default();
     propagate_steps_reverse(
         types,
@@ -191,7 +193,7 @@ fn a_call_between_destinations_asks_for_exactly_the_arguments_its_choice_reads()
         ascription: None,
         ownership: crate::fz_ir::OwnershipMode::Share,
     });
-    let value_types = HashMap::from([(first, int), (second, float)]);
+    let value_types = ValueMap::from([(first, int), (second, float)]);
     let projection = |ty, dispatch| {
         (
             ty,
@@ -229,8 +231,8 @@ fn a_call_between_destinations_asks_for_exactly_the_arguments_its_choice_reads()
         callsite_needs: HashMap::new(),
         delivered_value_joins: HashMap::new(),
         callsite_return_origins: HashMap::new(),
-        value_origins: HashMap::new(),
-        callable_origins: HashMap::new(),
+        value_origins: ValueMap::new(),
+        callable_origins: ValueMap::new(),
         return_origins: Box::new([]),
         demand_types: RuntimeDemandTypeInputs::new(any),
         callable_activation_inputs: Vec::new(),
@@ -294,7 +296,7 @@ mod tests {
                 entry_reachability: EntryReachability::new(Vec::new()),
                 reachable_entries: Vec::new(),
                 callsites: Vec::new(),
-                value_types: HashMap::new(),
+                value_types: ValueMap::new(),
             },
             body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
             extern_wire: None,
@@ -304,8 +306,8 @@ mod tests {
             callsite_needs: HashMap::new(),
             delivered_value_joins: HashMap::new(),
             callsite_return_origins: HashMap::new(),
-            value_origins: HashMap::new(),
-            callable_origins: HashMap::new(),
+            value_origins: ValueMap::new(),
+            callable_origins: ValueMap::new(),
             return_origins: Box::new([]),
             demand_types: RuntimeDemandTypeInputs::new(any),
             callable_activation_inputs: Vec::new(),
@@ -327,7 +329,7 @@ mod tests {
             ]),
         };
         let derive = |inputs: &RuntimeDemandFormulaSnapshot| {
-            let mut live = HashMap::new();
+            let mut live = ValueMap::new();
             let mut out = ExecutableRuntimeDemand::default();
             propagate_lambda_capture_demands(
                 &types,

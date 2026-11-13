@@ -4,6 +4,7 @@
 //! producer names the exact fact or product it needs instead of deriving a
 //! root-wide projection stack.
 
+use crate::compiler2::ValueMap;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -173,7 +174,7 @@ fn reachable_struct_modules(
     executable: &ExecutableKey,
     body: &LoweredBody,
     return_ty: Ty,
-    value_types: &HashMap<ValueId, Ty>,
+    value_types: &ValueMap<Ty>,
     call_edges: &HashMap<CallSiteId, MaterializedCallEdge>,
 ) -> Box<[ModuleId]> {
     let mut modules = BTreeSet::new();
@@ -395,7 +396,7 @@ struct ExecutableAbiPlan {
     semantic_inputs: Box<[BackendSemanticInputLayout]>,
     return_layout: BackendReturnLayout,
     return_endpoints: Box<[(TransportPosition, BackendReturnLayout)]>,
-    value_layouts: HashMap<ValueId, BackendValueLayout>,
+    value_layouts: ValueMap<BackendValueLayout>,
 }
 
 struct PrunedLoweredBody {
@@ -638,11 +639,11 @@ fn required_local_backend_transport_positions(
                     .runtime_demand
                     .callable_flows
                     .values()
-                    .flat_map(|flow| flow.captures.iter()),
+                    .flat_map(|flow| flow.captures.iter().copied()),
             )
             .map(|value| TransportPosition::Value {
                 executable: symbol.clone(),
-                value: *value,
+                value,
             }),
     );
     for value in clauses
@@ -1540,7 +1541,7 @@ fn resolve_extern_marshals(
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
     args: &[CallArg],
-    value_types: &HashMap<super::super::body::ValueId, Ty>,
+    value_types: &ValueMap<Ty>,
     fixed_params: &[crate::fz_ir::ExternTy],
     variadic: bool,
 ) -> Result<Vec<crate::fz_ir::ExternTy>, FatalError> {
@@ -1779,7 +1780,7 @@ fn build_executable_abi_plan(
         .layout_at(return_position)
         .unwrap_or_else(|| panic!("transport plan should publish materialized return position {return_position:?}"));
     let return_contract = abi_layout_contract(world, return_layout);
-    let mut value_layouts: HashMap<ValueId, BackendValueLayout> = transport
+    let mut value_layouts: ValueMap<BackendValueLayout> = transport
         .value_positions
         .iter()
         .filter_map(|position| {

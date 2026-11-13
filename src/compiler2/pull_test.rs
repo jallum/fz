@@ -1,5 +1,6 @@
 include!("pull/ownership_test.rs");
 include!("pull/mutation_test.rs");
+use crate::compiler2::ValueMap;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -2251,7 +2252,7 @@ fn fake_effect_materialized(
             value_positions: Vec::new(),
         },
         original_entry_ids: Vec::new(),
-        value_types: HashMap::new(),
+        value_types: ValueMap::new(),
         effects,
         struct_modules: Box::default(),
         body: super::super::LoweredBody::clauses(

@@ -52,6 +52,8 @@ mod transport_relation_incremental_test;
 mod type_expr;
 mod typedef;
 mod types;
+mod value_map;
+pub use value_map::{ValueMap, ValueSet};
 mod world;
 
 pub use agenda::Agenda;

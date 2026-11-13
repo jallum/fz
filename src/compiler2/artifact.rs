@@ -8,6 +8,7 @@
 //! CPS/native handoff that carries only backend-consumption facts and never
 //! rebuilds `ModulePlan`, `PlannedProgram`, or `AbiFacts`.
 
+use crate::compiler2::ValueMap;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
@@ -171,7 +172,7 @@ pub struct MaterializedExecutable {
     pub runtime_demand: Rc<ExecutableRuntimeDemand>,
     pub transport: MaterializedExecutableTransport,
     pub original_entry_ids: Vec<ControlEntryId>,
-    pub value_types: HashMap<ValueId, Ty>,
+    pub value_types: ValueMap<Ty>,
     pub effects: EffectSummary,
     /// Struct schemas this pruned executable can construct, test, or name in
     /// its type surface, kept as typed compiler identities until root packaging.
@@ -1044,7 +1045,7 @@ pub struct AbiReadyExecutable {
     pub return_layout: BackendReturnLayout,
     pub return_endpoints: Box<[(TransportPosition, BackendReturnLayout)]>,
     pub transport: MaterializedExecutableTransport,
-    pub value_layouts: HashMap<ValueId, BackendValueLayout>,
+    pub value_layouts: ValueMap<BackendValueLayout>,
     pub effects: EffectSummary,
     pub call_edges: HashMap<CallSiteId, AbiReadyCallEdge>,
     pub callable_owners: Box<[PositionedCallableConstructionOwner]>,
@@ -1123,7 +1124,7 @@ impl BackendExecutable {
             runtime_demand: Rc::default(),
             transport: transport.clone(),
             original_entry_ids: Vec::new(),
-            value_types: HashMap::new(),
+            value_types: ValueMap::new(),
             effects: EffectSummary::default(),
             struct_modules: Box::default(),
             body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
@@ -1145,7 +1146,7 @@ impl BackendExecutable {
             },
             return_endpoints: Box::default(),
             transport,
-            value_layouts: HashMap::new(),
+            value_layouts: ValueMap::new(),
             effects: EffectSummary::default(),
             call_edges: HashMap::new(),
             callable_owners: Box::default(),

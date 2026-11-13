@@ -138,7 +138,7 @@ fn owner_fact_redefinition_replaces_the_target_through_its_producer() {
     let keys = world
         .runtime_demand_facts()
         .flat_map(|(owner, demand)| {
-            demand.callable_flows.iter().flat_map(move |(&value, flow)| {
+            demand.callable_flows.iter().flat_map(move |(value, flow)| {
                 flow.first_class_surfaces
                     .iter()
                     .map(move |surface| CallableConstructionTargetKey {

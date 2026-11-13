@@ -3,6 +3,7 @@
 //! This module packages product-keyed symbolic backend executables into the
 //! backend-owned program consumed by the interpreter and native lowering.
 
+use crate::compiler2::ValueMap;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -789,9 +790,9 @@ struct BackendLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
     world: &'a mut World,
     telemetry: &'tel T,
     root_id: RootId,
-    value_layouts: &'a HashMap<ValueId, super::super::artifact::BackendValueLayout>,
+    value_layouts: &'a ValueMap<super::super::artifact::BackendValueLayout>,
     return_endpoints: HashMap<TransportPosition, BackendReturnLayout>,
-    constructions: HashMap<ValueId, TransportPosition>,
+    constructions: ValueMap<TransportPosition>,
 }
 
 impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
@@ -799,9 +800,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
         world: &'a mut World,
         telemetry: &'tel T,
         root_id: RootId,
-        value_layouts: &'a HashMap<ValueId, super::super::artifact::BackendValueLayout>,
+        value_layouts: &'a ValueMap<super::super::artifact::BackendValueLayout>,
         return_endpoints: HashMap<TransportPosition, BackendReturnLayout>,
-        constructions: HashMap<ValueId, TransportPosition>,
+        constructions: ValueMap<TransportPosition>,
     ) -> Self {
         Self {
             world,
