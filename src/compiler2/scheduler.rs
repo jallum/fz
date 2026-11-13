@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
 
@@ -263,21 +264,76 @@ impl<P, F> CompletionEffects<P, F> {
     }
 }
 
-pub(super) fn take_next_fact_change<F, Ctx>(pending: &mut Vec<FactChange<F>>, ctx: &Ctx) -> Option<FactChange<F>>
-where
-    F: SemanticOrd<Ctx>,
-{
-    let next = pending
-        .iter()
-        .enumerate()
-        .min_by(|(left_index, left), (right_index, right)| {
-            left.key
-                .semantic_cmp(&right.key, ctx)
-                .then_with(|| right_index.cmp(left_index))
-        })
-        .map(|(index, _)| index)?;
-    Some(pending.remove(next))
+/// The pending fact changes of one dispatch wave. The next change is the one
+/// with the smallest key; changes with equal keys leave newest first. That
+/// order is what makes two compiles of one root run the same jobs in the same
+/// sequence, so it is a function of the keys and of arrival alone.
+pub(super) struct FactChangeQueue<'c, F, Ctx> {
+    heap: BinaryHeap<QueuedChange<'c, F, Ctx>>,
+    arrivals: u64,
+    ctx: &'c Ctx,
 }
+
+struct QueuedChange<'c, F, Ctx> {
+    change: FactChange<F>,
+    arrival: u64,
+    ctx: &'c Ctx,
+}
+
+impl<'c, F, Ctx> FactChangeQueue<'c, F, Ctx> {
+    pub(super) fn new(ctx: &'c Ctx) -> Self {
+        Self {
+            heap: BinaryHeap::new(),
+            arrivals: 0,
+            ctx,
+        }
+    }
+}
+
+impl<F: SemanticOrd<Ctx>, Ctx> FactChangeQueue<'_, F, Ctx> {
+    pub(super) fn pop(&mut self) -> Option<FactChange<F>> {
+        self.heap.pop().map(|queued| queued.change)
+    }
+}
+
+impl<F: SemanticOrd<Ctx>, Ctx> Extend<FactChange<F>> for FactChangeQueue<'_, F, Ctx> {
+    fn extend<I: IntoIterator<Item = FactChange<F>>>(&mut self, changes: I) {
+        for change in changes {
+            self.heap.push(QueuedChange {
+                change,
+                arrival: self.arrivals,
+                ctx: self.ctx,
+            });
+            self.arrivals += 1;
+        }
+    }
+}
+
+/// The heap pops its greatest entry, so the entry that must leave first has
+/// the smallest key and, among equal keys, the latest arrival.
+impl<F: SemanticOrd<Ctx>, Ctx> Ord for QueuedChange<'_, F, Ctx> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .change
+            .key
+            .semantic_cmp(&self.change.key, self.ctx)
+            .then_with(|| self.arrival.cmp(&other.arrival))
+    }
+}
+
+impl<F: SemanticOrd<Ctx>, Ctx> PartialOrd for QueuedChange<'_, F, Ctx> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<F: SemanticOrd<Ctx>, Ctx> PartialEq for QueuedChange<'_, F, Ctx> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl<F: SemanticOrd<Ctx>, Ctx> Eq for QueuedChange<'_, F, Ctx> {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FatalError;
@@ -754,7 +810,7 @@ where
     /// one-line "fix" fz-kdt.44 measured and rejected.
     fn dispatch_changes<Ctx>(
         &mut self,
-        mut pending_changes: Vec<FactChange<F>>,
+        changes: Vec<FactChange<F>>,
         external: &impl ExternalDependencyStates<F>,
         ctx: &Ctx,
     ) -> DispatchedWave<P::Run, F>
@@ -765,14 +821,11 @@ where
     {
         let mut wakes = Vec::new();
         let mut moved_keys = HashSet::new();
-        while !pending_changes.is_empty() {
-            // Dependents can append more movements while this wave drains, so
-            // select the typed minimum before each pop. Equal-key movements
-            // retain the prior newest-first behavior of stable descending
-            // sort followed by pop, without sorting and moving the whole
-            // growing frontier on every iteration.
-            let change =
-                take_next_fact_change(&mut pending_changes, ctx).expect("the non-empty change wave has a next fact");
+        let mut pending_changes = FactChangeQueue::new(ctx);
+        pending_changes.extend(changes);
+        // Dependents can append more movements while this wave drains, so the
+        // typed minimum is selected again at every pop.
+        while let Some(change) = pending_changes.pop() {
             let content_shift = change
                 .content_movement()
                 .map(|movement| movement == ContentMovement::Shift);
@@ -1043,7 +1096,7 @@ where
         &mut self,
         keys: &OrderedSet<F>,
         quiet_before: Vec<bool>,
-        changes: &mut Vec<FactChange<F>>,
+        changes: &mut impl Extend<FactChange<F>>,
         ctx: &Ctx,
     ) where
         P: SemanticOrd<Ctx>,
@@ -1077,7 +1130,7 @@ where
         &mut self,
         seeds: Vec<F>,
         became_quiet: bool,
-        changes: &mut Vec<FactChange<F>>,
+        changes: &mut impl Extend<FactChange<F>>,
         ctx: &Ctx,
     ) where
         P: SemanticOrd<Ctx>,
@@ -1100,7 +1153,7 @@ where
                 for key in self.deps.output_keys(&reader) {
                     let was_quiet = self.facts.is_quiet(key);
                     if let Some(change) = self.facts.set_publisher_unfinal(key, &reader, is_unfinal) {
-                        changes.push(change);
+                        changes.extend(std::iter::once(change));
                     }
                     if self.facts.is_quiet(key) != was_quiet {
                         frontier.push(key.clone());
@@ -1140,7 +1193,7 @@ where
         &mut self,
         fact_use: FactUse<F>,
         shift: bool,
-        pending_changes: &mut Vec<FactChange<F>>,
+        pending_changes: &mut impl Extend<FactChange<F>>,
         wakes: &mut Vec<Wake<P::Run, F>>,
         external: &impl ExternalDependencyStates<F>,
         ctx: &Ctx,
@@ -1182,7 +1235,7 @@ where
     fn wake_satisfied_waiters<Ctx>(
         &mut self,
         fact_use: FactUse<F>,
-        pending_changes: &mut Vec<FactChange<F>>,
+        pending_changes: &mut impl Extend<FactChange<F>>,
         wakes: &mut Vec<Wake<P::Run, F>>,
         external: &impl ExternalDependencyStates<F>,
         ctx: &Ctx,
@@ -1206,7 +1259,7 @@ where
     /// Marks every fact this answer claims dirty and carries the resulting
     /// unquiet flips down the cone. A reopened answer stops being final for
     /// everyone downstream of it, not just for its own readers.
-    fn dirty_claims<Ctx>(&mut self, publisher: &P, pending_changes: &mut Vec<FactChange<F>>, ctx: &Ctx)
+    fn dirty_claims<Ctx>(&mut self, publisher: &P, pending_changes: &mut impl Extend<FactChange<F>>, ctx: &Ctx)
     where
         P: SemanticOrd<Ctx>,
         P::Run: SemanticOrd<Ctx>,
