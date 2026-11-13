@@ -1,0 +1,7 @@
+#---
+# purpose: a function whose name holds a non-ASCII letter is defined and called
+# oracle: 01203_a_function_may_be_named_with_non_ascii_letters.oracle.exs
+#---
+def naïve(x), do: x * 2
+
+def main(), do: dbg(naïve(21))

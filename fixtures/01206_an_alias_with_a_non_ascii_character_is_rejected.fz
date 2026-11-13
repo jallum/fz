@@ -1,0 +1,6 @@
+#---
+# purpose: an alias that holds a non-ASCII character is rejected with the character named
+# expect: diagnostic
+#---
+Abé = 1
+def main(), do: 1

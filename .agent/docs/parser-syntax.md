@@ -34,6 +34,18 @@ a `ScopeForm::MacroCall` and a non-call item (a literal) is a
 `ScopeForm::Statement`. Expansion decides, per `pipeline.md` "A file's
 top-level expressions are its `main/0`".
 
+## Identifiers and atoms are read by Unicode class
+
+The lexer reads characters, not bytes, for names. A name, atom or keyword key
+starts with `_`, an ASCII letter, or a non-ASCII `XID_Start` character that is
+not titlecase, and continues with `XID_Continue` characters plus `?` and `!`
+(`unicode-ident`). A variable or function name cannot start with an uppercase
+letter outside ASCII (`unexpected character`); an atom (`:Élan`) or keyword key
+(`Élan: 1`) can. An alias, a word starting with an ASCII uppercase letter, is
+ASCII only: its first other character is reported as `invalid character`.
+`source_word` applies the same classes to a quoted name, so the macro surface
+and the lexer agree on what one source word is.
+
 ## Newline continuation is grammar-owned, not a parser lookahead
 
 Physical newlines are first-class `Tok::Newline` tokens. Whether a newline

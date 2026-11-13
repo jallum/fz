@@ -235,12 +235,50 @@ fn classify_source_word(name: &str) -> SourceWord {
 /// authority used while lexing. `None` means source text cannot produce one
 /// word token with this spelling.
 pub(crate) fn source_word(name: &str) -> Option<SourceWord> {
-    let mut bytes = name.bytes();
-    let first = bytes.next()?;
-    if !Lexer::<'static>::ident_start(first) || !bytes.all(Lexer::<'static>::ident_cont) {
+    let mut chars = name.chars();
+    if !is_variable_start(chars.next()?) || !chars.all(is_word_continue) {
         return None;
     }
-    Some(classify_source_word(name))
+    let word = classify_source_word(name);
+    if matches!(word, SourceWord::Upper) && non_ascii_alias_character(name).is_some() {
+        return None;
+    }
+    Some(word)
+}
+
+/// A name, atom or keyword key starts with an underscore, an ASCII letter, or
+/// a non-ASCII `XID_Start` character that is not titlecase.
+fn is_name_start(c: char) -> bool {
+    if c.is_ascii() {
+        c.is_ascii_alphabetic() || c == '_'
+    } else {
+        unicode_ident::is_xid_start(c) && !is_titlecase(c)
+    }
+}
+
+/// A variable or function name additionally cannot start with an uppercase
+/// letter outside ASCII; only atoms and keyword keys may.
+fn is_variable_start(c: char) -> bool {
+    is_name_start(c) && (c.is_ascii() || !c.is_uppercase())
+}
+
+/// A titlecase letter is not uppercase but has a different lowercase form.
+fn is_titlecase(c: char) -> bool {
+    !c.is_uppercase() && c.to_lowercase().next() != Some(c)
+}
+
+/// Every character after the first: `XID_Continue`, plus the `?` and `!` marks.
+fn is_word_continue(c: char) -> bool {
+    if c.is_ascii() {
+        c.is_ascii_alphanumeric() || matches!(c, '_' | '?' | '!')
+    } else {
+        unicode_ident::is_xid_continue(c)
+    }
+}
+
+/// The first non-ASCII character of a word that is spelled as an alias.
+fn non_ascii_alias_character(name: &str) -> Option<char> {
+    name.chars().find(|c| !c.is_ascii())
 }
 
 #[derive(Debug)]
@@ -311,18 +349,50 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn ident_start(c: u8) -> bool {
-        c.is_ascii_alphabetic() || c == b'_'
-    }
-    fn ident_cont(c: u8) -> bool {
-        c.is_ascii_alphanumeric() || c == b'_' || c == b'?' || c == b'!'
+    /// The character that starts at byte offset `at`, if it is on a boundary.
+    fn char_at(&self, at: usize) -> Option<char> {
+        self.text.get(at..)?.chars().next()
     }
 
     fn read_ident(&mut self) -> String {
         let start = self.pos;
-        self.bump();
-        self.eat_while(Self::ident_cont);
-        from_utf8(&self.src[start..self.pos]).unwrap().to_string()
+        let first = self
+            .char_at(start)
+            .expect("a name is only read where a character was peeked");
+        self.pos += first.len_utf8();
+        while let Some(c) = self.char_at(self.pos).filter(|c| is_word_continue(*c)) {
+            self.pos += c.len_utf8();
+        }
+        self.text[start..self.pos].to_string()
+    }
+
+    /// A word that is not a keyword-list key: a keyword, variable, function
+    /// name or alias. Only atoms and keys may start with a non-ASCII uppercase
+    /// letter, and aliases are ASCII only.
+    fn bare_word_token(&mut self, name: String, start: usize) -> Result<Tok, LexError> {
+        let first = name.chars().next().expect("a word has a first character");
+        if !is_variable_start(first) {
+            return Err(self.unexpected_character(start));
+        }
+        let tok = Self::keyword_or_ident(name);
+        if let Tok::Upper(alias) = &tok {
+            self.reject_non_ascii_alias(alias, start)?;
+        }
+        Ok(tok)
+    }
+
+    /// The error names the first non-ASCII character of an alias.
+    fn reject_non_ascii_alias(&self, name: &str, start: usize) -> Result<(), LexError> {
+        let Some(c) = non_ascii_alias_character(name) else {
+            return Ok(());
+        };
+        Err(LexError {
+            msg: format!(
+                "invalid character {:?} (code point U+{:04X}) in alias (only ASCII characters are allowed): {}",
+                c, c as u32, name
+            ),
+            span: self.span_from(start),
+        })
     }
 
     fn read_number(&mut self) -> Result<Tok, LexError> {
@@ -1024,7 +1094,7 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     Tok::ColonColon
                 }
-                Some(c2) if Self::ident_start(c2) => {
+                _ if self.char_at(self.pos + 1).is_some_and(is_name_start) => {
                     self.bump(); // consume :
                     let name = self.read_ident();
                     Tok::Atom(name)
@@ -1075,7 +1145,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             c if c.is_ascii_digit() => self.read_number()?,
-            c if Self::ident_start(c) => {
+            _ if self.char_at(self.pos).is_some_and(is_name_start) => {
                 let name = self.read_ident();
                 // `name:` (but not `::`) is a keyword-list key like `do:`.
                 if self.peek(0) == Some(b':') && self.peek(1) != Some(b':') {
@@ -1086,7 +1156,7 @@ impl<'a> Lexer<'a> {
                         return Err(self.err(format!("keyword argument must be followed by space after: {}:", name)));
                     }
                 } else {
-                    Self::keyword_or_ident(name)
+                    self.bare_word_token(name, start)?
                 }
             }
             _ => return Err(self.unexpected_character(start)),

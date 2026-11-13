@@ -1,0 +1,7 @@
+error[parse/expected-token]: invalid character 'é' (code point U+00E9) in alias (only ASCII characters are allowed): Abé
+  --> fixtures/01206_an_alias_with_a_non_ascii_character_is_rejected.fz:1:1
+   |
+1 | Abé = 1
+   | ^^^
+   |
+
