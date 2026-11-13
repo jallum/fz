@@ -7,9 +7,15 @@
   "id": "fz-sc8.142",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Duplicate of fz-sc8.140 (owned by the stack coordinator session, which has a five-line repro and the cause: an ActivationKey built from callable-surface inputs that include none, so input_len is 0 while the clause has params). /Users/j5n/Workspace/runtime-demand-panic-repro.fz is a second witness for that fix.",
+      "timestamp": "2026-11-13T03:02:34Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Deriving runtime demand indexes an empty input-demand list and panics the compiler",
   "type": "bug",
-  "updated_at": "2026-11-13T03:01:53Z"
+  "updated_at": "2026-11-13T03:02:34Z"
 }
