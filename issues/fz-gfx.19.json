@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-12T23:55:12Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-gfx",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Analysis reads contracts, protocol dispatch and call-site resolutions without cloning them",
   "type": "task",
-  "updated_at": "2026-11-12T23:55:12Z"
+  "updated_at": "2026-11-13T01:12:10Z"
 }
