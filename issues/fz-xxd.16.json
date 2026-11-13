@@ -7,9 +7,15 @@
   "id": "fz-xxd.16",
   "labels": [],
   "parent": "fz-xxd",
+  "comments": [
+    {
+      "text": "2026-11-13, from fz-sc8.149: the runtime kind name used in Protocol.UndefinedError (runtime/src/any_value.rs debug::kind_name) names a pid and a ref 'Integer' because both are integers at run time; Elixir says PID and Reference. When this ticket makes them distinguishable, kind_name gains those two names and fixture 01133 gains the two cases.",
+      "timestamp": "2026-11-13T18:09:18Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A pid, ref or c_pointer type test tells those values from every other value",
   "type": "bug",
-  "updated_at": "2026-11-13T05:20:03Z"
+  "updated_at": "2026-11-13T18:09:18Z"
 }
