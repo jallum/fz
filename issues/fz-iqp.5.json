@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T23:11:35Z",
+  "close_reason": "committed; PR opened",
   "created": "2026-11-13T21:18:50Z",
   "description": "Backslash-u with four hex digits and backslash-u with braces, in strings and heredocs (GH #295 comment). read_escape_byte returns one byte; it must append up to four. Docs can then drop byte-spelled combining characters.",
   "id": "fz-iqp.5",
   "labels": [],
   "parent": "fz-iqp",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Strings accept unicode escapes",
   "type": "task",
-  "updated_at": "2026-11-13T21:18:50Z"
+  "updated_at": "2026-11-13T23:11:35Z"
 }
