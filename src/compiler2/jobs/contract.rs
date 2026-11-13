@@ -39,6 +39,7 @@ pub(super) fn derive_function_contract(
     }
 
     let (source, surface) = world.function_definition(function);
+    let (source, surface) = (source.clone(), surface.clone());
     let declared_specs = surface
         .attrs
         .iter()

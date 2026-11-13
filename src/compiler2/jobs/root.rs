@@ -50,7 +50,7 @@ pub(super) fn seed_root(
     }
 
     let mut reads = vec![FactKey::FunctionDefined(root.function)];
-    let (_, surface) = world.function_definition(root.function);
+    let surface = world.function_surface(root.function);
     if root.kind == RootKind::Runtime && surface.is_macro {
         return Err(emit_root_error(
             tel,
