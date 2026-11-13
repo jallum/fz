@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T20:08:05Z",
   "created": "2026-11-13T19:44:48Z",
   "description": "Approved by the user 2026-11-13 (page /Users/j5n/Workspace/fz-sc8.146.html, change 2). Builds on top of fz-sc8.127's commit (OptionParser sends the hash); both edit src/compiler2/jobs/transport.rs.\n\nToday evaluate_transport_recipe returns the first child that is not ready (jobs/transport.rs ~1062, ~1083), so a tuple or alternatives recipe with several unready children discovers them one driver round at a time. Every transport wait list in the distiller trace has exactly one entry (8,700 rounds, 8,700 waits).\n\nChange: RecipeLayout::Waiting carries every unready child; Tuple and Alternatives collect them. The first-waiting return goes away entirely. Scratch patch: ts146/cfT_transport_rs.patch (also contains the .127 spike's 4-line transport.rs hunk; in the spike's Tuple arm a cut seen before a wait returns the wait, which the build must decide deliberately).\n\nMeasured on the .127 spike: distiller 53,684 -\u003e 52,352 requests, keys 34,327 and jobs 11,604 unchanged; two/sharedL_8/splitL_8 interp output byte-identical; fixture_matrix 3119/0. One work pin falls: product_drive_test native_root_product_is_lowered_once_and_reused_by_exact_identity 54 -\u003e 50 evaluations (lower and list).\n\nDone when: a test observes request telemetry showing a recipe with three unready children costs its owner two pulls; the distiller request count is re-measured at the landing commit; full gate green; all three paths.",
   "id": "fz-sc8.155",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A transport recipe lists every unready child in one round",
   "type": "task",
-  "updated_at": "2026-11-13T19:44:48Z"
+  "updated_at": "2026-11-13T20:08:05Z"
 }
