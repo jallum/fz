@@ -321,9 +321,9 @@ fn decode_do_body(
     decode_expr(occurrences, &body, fallback_span, sources)
 }
 
-/// A guard expression decoded from an expansion, outside any function's own
-/// lambda numbering.
-pub(crate) fn decode_guard_expr(
+/// An expression decoded on its own, outside any function's lambda
+/// numbering: a guard from an expansion, or a struct field's default.
+pub(crate) fn decode_standalone_expr(
     cursor: &QuotedSourceCursor,
     fallback_span: Option<Span>,
     sources: &SourceMap,

@@ -2011,10 +2011,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             .collect::<HashMap<_, _>>();
         let mut lowered = Vec::with_capacity(order.len());
         for field in order {
-            let value = if let Some(expr) = by_name.remove(field.as_str()) {
-                self.lower_expr(expr, env, steps)?
-            } else {
-                self.push_const(steps, GroundValue::Nil)
+            let value = match by_name.remove(field.as_str()) {
+                Some(expr) => self.lower_expr(expr, env, steps)?,
+                None => self.lower_omitted_struct_field(module_id, &field, span, steps)?,
             };
             lowered.push((field, value));
         }
@@ -2025,6 +2024,26 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             fields: lowered,
         });
         Ok(value)
+    }
+
+    /// The value a struct literal gives a field it does not name: the
+    /// field's declared default, or nil.
+    fn lower_omitted_struct_field(
+        &mut self,
+        module: ModuleId,
+        field: &str,
+        span: Span,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let default = self
+            .world
+            .struct_def(module)
+            .and_then(|def| def.defaults.get(field))
+            .map(|default| default.expr(span));
+        match default {
+            Some(default) => self.lower_expr(&default, &mut HashMap::new(), steps),
+            None => Ok(self.push_const(steps, GroundValue::Nil)),
+        }
     }
 
     fn lower_bitstring_expr(

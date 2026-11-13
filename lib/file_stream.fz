@@ -15,7 +15,7 @@ defmodule File.Stream do
   answer without a traversal, so `Enum` reduces.
   """
 
-  defstruct [:path, :modes, :line_or_bytes, :raw, :node]
+  defstruct path: nil, modes: [:raw, :read_ahead, :binary], line_or_bytes: :line, raw: true, node: :"nonode@nohost"
 
   @type t :: %File.Stream{path: binary, modes: [atom], line_or_bytes: atom, raw: boolean, node: atom}
 

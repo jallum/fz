@@ -174,7 +174,7 @@ defmodule File do
   """
   @spec stream!(binary) :: File.Stream.t
   def stream!(path) do
-    %File.Stream{path: path, modes: [:raw, :read_ahead, :binary], line_or_bytes: :line, raw: true, node: :"nonode@nohost"}
+    %File.Stream{path: path}
   end
 
   @spec read_open(c_pointer) :: {:ok, binary} | {:error, :io}

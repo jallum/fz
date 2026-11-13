@@ -30,7 +30,7 @@ use super::quoted_expander::{
 };
 use super::quoted_surface::{
     CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, ProtocolImplForm, ReservedSourceDefinition,
-    ScopeForm, ScopeSurface, StatementForm, StructForm, read_module_body_surface, read_protocol_body_surface,
+    ScopeForm, ScopeSurface, StatementForm, read_module_body_surface, read_protocol_body_surface,
     read_protocol_impl_body_surface, reserved_source_definition,
 };
 use super::scheduler::FatalError;
@@ -1039,7 +1039,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
             ScopeForm::Statement(statement) => self.apply_statement(statement),
             ScopeForm::Struct(def) => {
-                self.publish_struct_def(def)?;
+                self.publish_struct_def(&def.def)?;
                 Ok(None)
             }
         }
@@ -1063,12 +1063,8 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
     /// is a plain `HashMap::insert` (last-wins), so without this guard a
     /// malformed duplicate-defstruct module would silently flip which struct
     /// "wins" from one publish to the next, with no diagnostic either way.
-    fn publish_struct_def(&mut self, def: &StructForm) -> Result<(), FatalError> {
+    fn publish_struct_def(&mut self, def: &StructDef) -> Result<(), FatalError> {
         let module = self.current_module;
-        let incoming = StructDef {
-            fields: def.fields.clone(),
-            span: def.span,
-        };
         // A second `defstruct` form reached while publishing THIS module
         // body -- one `ScopeSession` covers exactly one execution of one
         // body, including every `defstruct` a macro expansion applies into
@@ -1099,12 +1095,12 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         // before `define_struct_def` could overwrite the kept-first
         // definition.
         if let Some(existing) = self.world.struct_def(module)
-            && *existing != incoming
+            && existing != def
         {
             return Err(self.duplicate_struct_diagnostic(module, def.span));
         }
         let changed =
-            super::drive::ExecutionContext::new(self.world, self.telemetry).define_struct_def(module, incoming);
+            super::drive::ExecutionContext::new(self.world, self.telemetry).define_struct_def(module, def.clone());
         self.outputs.push(FactKey::StructDefined(module));
         if changed {
             self.changed.push(FactKey::StructDefined(module));

@@ -1,0 +1,14 @@
+%Card{name: nil, suit: :spades, rank: 1, ratio: 0.5, tags: [:a, :b]}
+%Card{name: "ace", suit: :spades, rank: 14, ratio: 0.5, tags: [:a, :b]}
+%Card{name: nil, suit: :hearts, rank: 1, ratio: 0.5, tags: []}
+:spades
+%Card{name: "two", suit: :spades, rank: 1, ratio: 2.5, tags: [:a, :b]}
+[:a, :b]
+%Conf{path: nil, modes: [:raw, :binary], label: "none", pair: {:ok, 1}}
+%Conf{path: "p", modes: [], label: "none", pair: {:ok, 1}}
+"none"
+{:ok, 1}
+%Nest{meta: %{k: [1, 2]}, flag: true, none: nil, empty: []}
+%Nest{meta: %{}, flag: true, none: nil, empty: []}
+[1, 2]
+true

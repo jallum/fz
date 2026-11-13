@@ -13,7 +13,7 @@ use super::identity::{FunctionId, ModuleId};
 use super::jobs::is_guard_expr;
 use super::namespace::NamespaceSymbol;
 use super::pull::{ProductKey, ProductSessions, ProductValue};
-use super::quoted_function::decode_guard_expr;
+use super::quoted_function::decode_standalone_expr;
 use super::quoted_surface::{MacroCallForm, ScopeSurface, is_scope_definition_head, read_compiler_fragment_surface};
 use super::scope::ScopeSnapshot;
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
@@ -537,7 +537,7 @@ pub(crate) trait QuotedExpansionCtx {
         call_span: Option<Span>,
     ) -> Result<(), super::scheduler::FatalError> {
         let source_map = self.world().source_map();
-        let guardable = decode_guard_expr(&expansion.cursor(), call_span, &source_map.borrow())
+        let guardable = decode_standalone_expr(&expansion.cursor(), call_span, &source_map.borrow())
             .map(|expr| is_guard_expr(&expr))
             .unwrap_or(false);
         if guardable {
