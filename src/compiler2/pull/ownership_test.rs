@@ -947,7 +947,7 @@ fn a_rejected_root_completion_retains_its_delivered_changes() {
             context.read_rooted_products(&tel, packaging.clone(), seed.clone(), &types),
             Ok(vec![(seed.clone(), Some(ProductValue::Unit))])
         );
-        let (dependencies, _) = context.into_completion();
+        let (dependencies, _, _) = context.into_completion();
         session.memo.invalidate_products(&tel, [packaging.clone()], &types);
         assert!(!finish_test_entry(
             &mut session.memo,
@@ -1924,7 +1924,7 @@ fn an_equal_dirty_cycle_prefix_is_validated_once_before_a_missing_membership_cha
             ownership_pull(&mut driver, &mut producers, &selector),
             PullOutcome::Produced(ProductValue::Unit)
         );
-        assert!(finish_test_group(
+        assert!(finish_test_group_with_membership(
             &mut driver.session_mut().memo,
             &tel,
             &left,
@@ -1934,9 +1934,9 @@ fn an_equal_dirty_cycle_prefix_is_validated_once_before_a_missing_membership_cha
                     ProductValue::Unit,
                     ProductDependencies {
                         products: IndexMap::from([(selector.clone(), Some(1)), (right.clone(), None)]),
-                        membership: HashSet::from([chain[0].clone()]),
                         ..ProductDependencies::default()
-                    }
+                    },
+                    HashSet::from([chain[0].clone()])
                 ),
                 (
                     right.clone(),
@@ -1944,7 +1944,8 @@ fn an_equal_dirty_cycle_prefix_is_validated_once_before_a_missing_membership_cha
                     ProductDependencies {
                         products: IndexMap::from([(selector.clone(), Some(1)), (left.clone(), None)]),
                         ..ProductDependencies::default()
-                    }
+                    },
+                    HashSet::new()
                 ),
             ],
             &producers.types
@@ -2037,18 +2038,16 @@ fn sibling_value_backedges_share_one_complete_rooted_proof() {
                 },
                 &producers.types
             ));
-            assert!(finish_test_entry(
+            assert!(finish_test_entry_with_membership(
                 &mut session.memo,
                 &tel,
                 &seed,
                 ProductValue::Unit,
-                ProductDependencies {
-                    membership: [left.clone(), right.clone()]
-                        .into_iter()
-                        .chain(missing.then(|| child.clone()))
-                        .collect(),
-                    ..ProductDependencies::default()
-                },
+                ProductDependencies::default(),
+                [left.clone(), right.clone()]
+                    .into_iter()
+                    .chain(missing.then(|| child.clone()))
+                    .collect(),
                 &producers.types
             ));
             session.memo.register_rooted(packaging.clone(), seed, &producers.types);
@@ -2387,11 +2386,11 @@ fn a_pending_formula_replaces_its_previous_attempts_observations() {
     let old = ProductKey::ExecutableEffects(fake_executable_with_function(root, 1821));
     let current = ProductKey::ExecutableEffects(fake_executable_with_function(root, 1822));
     let mut memo = ProductMemo::default();
-    memo.unblock(ProductRequestId(NonZeroU64::MIN), &reader, prospective_dependency(&old));
+    memo.unblock(ProductRequestId(NonZeroU64::MIN), &reader, prospective_dependency(&old), HashSet::new());
     memo.unblock(
         ProductRequestId(NonZeroU64::MIN),
         &reader,
-        prospective_dependency(&current),
+        prospective_dependency(&current), HashSet::new(),
     );
     assert_eq!(
         memo.pending_product_dependencies(&reader),

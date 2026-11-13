@@ -217,7 +217,7 @@ impl RootedProducts {
         &mut self,
         memo: &ProductMemo,
         owner: &ProductKey,
-        previous: &HashSet<ProductKey>,
+        previous: Option<&HashSet<ProductKey>>,
         types: &super::super::types::Types,
         work: &mut ProductValidation,
     ) -> (HashSet<ProductKey>, Vec<ProductKey>) {
@@ -231,8 +231,7 @@ impl RootedProducts {
         // New entry paths exist before obsolete support is repaired.
         let mut touched = HashSet::new();
         let mut reparented = Vec::new();
-        let mut added = next.difference(previous).collect::<Vec<_>>();
-        let mut removed = previous.difference(next).collect::<Vec<_>>();
+        let (mut added, mut removed) = membership_delta(previous, next);
         added.sort_by(|left, right| left.semantic_cmp(right, types));
         removed.sort_by(|left, right| left.semantic_cmp(right, types));
         for child in added {
@@ -561,10 +560,11 @@ impl ProductMemo {
         work
     }
 
-    pub(super) fn replace_membership_readers(&mut self, owner: &ProductKey, previous: &HashSet<ProductKey>) {
+    pub(super) fn replace_membership_readers(&mut self, owner: &ProductKey, previous: Option<&HashSet<ProductKey>>) {
         let next = self.membership(owner).expect("committed membership");
-        let removed = previous.difference(next).cloned().collect::<Vec<_>>();
-        let added = next.difference(previous).cloned().collect::<Vec<_>>();
+        let (added, removed) = membership_delta(previous, next);
+        let removed = removed.into_iter().cloned().collect::<Vec<_>>();
+        let added = added.into_iter().cloned().collect::<Vec<_>>();
         for child in removed {
             let readers = self
                 .membership_readers
@@ -584,7 +584,7 @@ impl ProductMemo {
         &mut self,
         tel: &impl Telemetry,
         owner: &ProductKey,
-        previous: &HashSet<ProductKey>,
+        previous: Option<&HashSet<ProductKey>>,
         changed: bool,
         types: &super::super::types::Types,
     ) -> Vec<(ReaderMutation, ProductKey)> {
@@ -640,7 +640,7 @@ impl ProductMemo {
 
 impl ProductReadContext<'_> {
     pub(crate) fn include_product(&mut self, key: ProductKey) {
-        self.dependencies.membership.insert(key);
+        self.membership.insert(key);
     }
 
     pub(crate) fn read_rooted_products(
@@ -735,6 +735,18 @@ impl ProductReadContext<'_> {
             .get(key)
             .or_else(|| self.session.memo.displaced.get(key))
             .map(|entry| &entry.value)
+    }
+}
+
+/// The members `next` gains and loses relative to `previous`. A product that
+/// was never committed gains all of `next` and loses nothing.
+fn membership_delta<'a>(
+    previous: Option<&'a HashSet<ProductKey>>,
+    next: &'a HashSet<ProductKey>,
+) -> (Vec<&'a ProductKey>, Vec<&'a ProductKey>) {
+    match previous {
+        Some(previous) => (next.difference(previous).collect(), previous.difference(next).collect()),
+        None => (next.iter().collect(), Vec::new()),
     }
 }
 

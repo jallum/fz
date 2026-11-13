@@ -18,10 +18,8 @@ fn graph_with_telemetry(memo: &mut ProductMemo, node: u32, children: &[u32], tel
         &current,
         ProductCompletion::Single(
             ProductValue::Unit,
-            ProductDependencies {
-                membership: children.iter().map(|n| key(*n)).collect(),
-                ..ProductDependencies::default()
-            },
+            ProductDependencies::default(),
+            children.iter().map(|n| key(*n)).collect(),
         ),
         &types,
     );
@@ -225,10 +223,8 @@ fn a_multi_owner_commit_repairs_against_all_final_edges_without_membership_churn
             (
                 key(owner),
                 ProductValue::Unit,
-                ProductDependencies {
-                    membership: HashSet::from([key(child)]),
-                    ..ProductDependencies::default()
-                },
+                ProductDependencies::default(),
+                HashSet::from([key(child)]),
             )
         })
         .collect();
@@ -350,4 +346,31 @@ fn randomized_committed_membership_matches_reachability_from_the_root() {
             "the child index is exactly the selected-parent relation"
         );
     }
+}
+
+#[test]
+fn a_first_commit_gains_every_member_and_loses_none() {
+    let next = HashSet::from([key(1), key(2)]);
+    let (added, removed) = membership_delta(None, &next);
+    assert_eq!(added.into_iter().collect::<HashSet<_>>(), next.iter().collect());
+    assert!(removed.is_empty());
+}
+
+#[test]
+fn a_recommit_gains_and_loses_the_difference_from_what_it_held() {
+    let held = HashSet::from([key(1), key(2)]);
+    let next = HashSet::from([key(2), key(3)]);
+    let (added, removed) = membership_delta(Some(&held), &next);
+    assert_eq!(added, vec![&key(3)]);
+    assert_eq!(removed, vec![&key(1)]);
+}
+
+#[test]
+fn a_commit_that_held_no_members_is_not_a_first_commit() {
+    let held = HashSet::new();
+    let next = HashSet::from([key(1)]);
+    assert_eq!(membership_delta(Some(&held), &next), membership_delta(None, &next));
+    let (added, removed) = membership_delta(Some(&next), &held);
+    assert!(added.is_empty());
+    assert_eq!(removed, vec![&key(1)]);
 }
