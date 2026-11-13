@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T21:18:49Z",
+  "description": "As Elixir ('invalid mixed-script identifier found'). Needs script data (new dependency). Signal: diagnostic fixture.",
+  "id": "fz-iqp.4",
+  "labels": [],
+  "parent": "fz-iqp",
+  "priority": 3,
+  "status": "open",
+  "title": "A mixed-script identifier is rejected",
+  "type": "task",
+  "updated_at": "2026-11-13T21:18:49Z"
+}
