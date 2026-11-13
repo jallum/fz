@@ -7,9 +7,15 @@
   "id": "fz-sc8.154",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Unchanged by fz-sc8.127 (7764bbe51, OptionParser's check): interp reports the missed exhaustive dispatch and run exits 132 on base and change binaries.",
+      "timestamp": "2026-11-13T19:48:08Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Two callers of a helper whose reducer captures a flag run without a missed dispatch",
   "type": "bug",
-  "updated_at": "2026-11-13T19:30:17Z"
+  "updated_at": "2026-11-13T19:48:08Z"
 }
