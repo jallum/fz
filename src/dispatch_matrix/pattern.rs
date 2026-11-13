@@ -561,7 +561,7 @@ where
     // patterns, so a pin in one of its heads names a binding that never
     // existed and its own plan is where that is found.
     let source_patterns = SourcePatternRows::entry(arity, rows, Vec::new());
-    let mut plan = pattern_dispatch_from_source_with_resolver(source_patterns, resolver).map_err(|err| match err {
+    let mut plan = pattern_dispatch_from_source_with_resolver(&source_patterns, resolver).map_err(|err| match err {
         PatternDispatchError::SourcePattern(err) => err,
         other => SourcePatternError::DispatchMatrix(format!("{other:?}")),
     })?;
@@ -793,20 +793,43 @@ pub(crate) fn pattern_dispatch_from_source<TypeHandle: Clone + PartialEq + Eq>(
     let mut resolver = |_callee: &crate::ast::Callee,
                         _arity: usize|
      -> Result<Option<GuardCallee<TypeHandle>>, SourcePatternError> { Ok(None) };
-    pattern_dispatch_from_source_with_resolver(patterns, &mut resolver)
+    pattern_dispatch_from_source_with_resolver(&patterns, &mut resolver)
 }
 
 pub(crate) fn pattern_dispatch_from_source_with_resolver<F, TypeHandle>(
-    patterns: SourcePatternRows<TypeHandle>,
+    patterns: &SourcePatternRows<TypeHandle>,
     resolver: &mut F,
 ) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError>
 where
     F: PatternResolver<TypeHandle>,
     TypeHandle: Clone + PartialEq + Eq,
 {
-    let mut producer = PatternDispatchProducer::new(&patterns).map_err(PatternDispatchError::SourcePattern)?;
+    pattern_dispatch_from_rows(
+        patterns.input_count,
+        &patterns.prematch,
+        patterns.last_resort.as_ref(),
+        patterns.rows.iter(),
+        resolver,
+    )
+}
+
+/// A dispatch plan over `rows`, which need not be contiguous in the source
+/// rows they were taken from.
+pub(crate) fn pattern_dispatch_from_rows<'a, F, TypeHandle>(
+    input_count: usize,
+    prematch: &source::Prematch,
+    last_resort: Option<&LastResort>,
+    rows: impl Iterator<Item = &'a PatternRow<TypeHandle>> + Clone,
+    resolver: &mut F,
+) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError>
+where
+    F: PatternResolver<TypeHandle>,
+    TypeHandle: Clone + PartialEq + Eq + 'a,
+{
+    let mut producer = PatternDispatchProducer::new(input_count, prematch, last_resort, rows.clone())
+        .map_err(PatternDispatchError::SourcePattern)?;
     producer
-        .add_rows(patterns.rows, resolver)
+        .add_rows(rows, resolver)
         .map_err(PatternDispatchError::SourcePattern)?;
     producer.finish(&*resolver)
 }
@@ -827,11 +850,19 @@ struct PatternDispatchProducer<TypeHandle> {
 }
 
 impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
-    fn new(patterns: &SourcePatternRows<TypeHandle>) -> Result<Self, SourcePatternError> {
-        validate_source_rows(patterns)?;
+    fn new<'a>(
+        input_count: usize,
+        prematch: &source::Prematch,
+        last_resort: Option<&LastResort>,
+        rows: impl Iterator<Item = &'a PatternRow<TypeHandle>> + Clone,
+    ) -> Result<Self, SourcePatternError>
+    where
+        TypeHandle: 'a,
+    {
+        validate_source_rows(input_count, rows.clone())?;
         let mut builder = DispatchMatrixBuilder::typed();
         let mut subjects = HashMap::new();
-        for ordinal in 0..patterns.input_count {
+        for ordinal in 0..input_count {
             let subject = builder.add_input_subject();
             let ordinal = ordinal as u32;
             subjects.insert(PatternSubjectRef::Input(ordinal), subject);
@@ -840,7 +871,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             .get(&PatternSubjectRef::Input(0))
             .copied()
             .unwrap_or_else(|| builder.add_input_subject());
-        let pinned = collect_pinned_names(patterns);
+        let pinned = collect_pinned_names(prematch, rows);
         let pinned_by_name = pinned
             .iter()
             .enumerate()
@@ -848,8 +879,8 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             .collect();
         Ok(Self {
             builder,
-            input_count: patterns.input_count,
-            prematch: patterns.prematch.clone(),
+            input_count,
+            prematch: prematch.clone(),
             subjects,
             guard_subject,
             pinned,
@@ -858,13 +889,18 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             outcomes: Vec::new(),
             guards: Vec::new(),
             projections: HashMap::new(),
-            last_resort: patterns.last_resort.clone(),
+            last_resort: last_resort.cloned(),
         })
     }
 
-    fn add_rows<F>(&mut self, rows: Vec<PatternRow<TypeHandle>>, resolver: &mut F) -> Result<(), SourcePatternError>
+    fn add_rows<'a, F>(
+        &mut self,
+        rows: impl Iterator<Item = &'a PatternRow<TypeHandle>>,
+        resolver: &mut F,
+    ) -> Result<(), SourcePatternError>
     where
         F: PatternResolver<TypeHandle>,
+        TypeHandle: 'a,
     {
         for row in rows {
             self.add_row(row, resolver)?;
@@ -872,7 +908,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         Ok(())
     }
 
-    fn add_row<F>(&mut self, row: PatternRow<TypeHandle>, resolver: &mut F) -> Result<(), SourcePatternError>
+    fn add_row<F>(&mut self, row: &PatternRow<TypeHandle>, resolver: &mut F) -> Result<(), SourcePatternError>
     where
         F: PatternResolver<TypeHandle>,
     {
@@ -1413,20 +1449,21 @@ fn intern_prepared_key(keys: &mut Vec<GroundValue>, key: &GroundValue) -> Prepar
     PreparedKeyId(index as u32)
 }
 
-fn validate_source_rows<TypeHandle>(patterns: &SourcePatternRows<TypeHandle>) -> Result<(), SourcePatternError> {
-    for row in &patterns.rows {
+fn validate_source_rows<'a, TypeHandle: 'a>(
+    input_count: usize,
+    rows: impl Iterator<Item = &'a PatternRow<TypeHandle>> + Clone,
+) -> Result<(), SourcePatternError> {
+    for row in rows.clone() {
         let actual = row.patterns.len();
-        if actual != patterns.input_count {
+        if actual != input_count {
             return Err(SourcePatternError::RowPatternArity {
-                expected: patterns.input_count,
+                expected: input_count,
                 actual,
                 body_id: row.body_id,
             });
         }
     }
-    for pair in patterns.rows.windows(2) {
-        let previous = pair[0].body_id;
-        let current = pair[1].body_id;
+    for (previous, current) in rows.clone().zip(rows.skip(1)).map(|(a, b)| (a.body_id, b.body_id)) {
         if previous >= current {
             return Err(SourcePatternError::NonMonotonicBodyId { previous, current });
         }

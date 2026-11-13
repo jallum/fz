@@ -2659,8 +2659,11 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         body.steps.push(ExprStep::PopHandler);
         body.result = self.push_try_else(span, body.result, else_clauses, env, &mut body.steps)?;
 
-        let arms = self.handler_arms(rescue, catch);
-        let rows = arms.iter().map(|arm| arm.row.clone()).collect();
+        let (rows, clauses): (Vec<_>, Vec<_>) = self
+            .handler_arms(rescue, catch)
+            .into_iter()
+            .map(|arm| (arm.row, arm.clause))
+            .unzip();
         let plan = self.compile_match_dispatch(
             if catch.is_empty() { "rescue" } else { "catch" },
             span,
@@ -2678,8 +2681,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             .outcomes
             .iter()
             .map(|outcome| {
-                let arm = &arms[outcome.body_id as usize];
-                self.lower_handler_arm(outcome, arm.clause, (rescue, catch), raised, env.clone())
+                let clause = clauses[outcome.body_id as usize];
+                self.lower_handler_arm(outcome, clause, (rescue, catch), raised, env.clone())
             })
             .collect::<Result<Vec<_>, _>>()?;
         let dispatch_value = self.fresh_value();
@@ -2935,7 +2938,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             None => source,
         };
         let namespace = self.namespace;
-        let redundancy_check = (source.rows.len() > 1).then(|| source.clone());
         let mut resolver = super::super::dispatch::SourcePatternResolver {
             world: self.world,
             namespace,
@@ -2945,9 +2947,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 Ok(Some(world.guard_callee(callee)))
             },
         };
-        let plan = pattern_dispatch_from_source_with_resolver(source, &mut resolver)
+        let plan = pattern_dispatch_from_source_with_resolver(&source, &mut resolver)
             .map_err(|error| emit_local_dispatch_error(self.telemetry, label, span, error))?;
-        if let Some(source) = redundancy_check {
+        if source.rows.len() > 1 {
             let redundant_rows = crate::dispatch_matrix::pattern::source::find_redundant_rows_with_resolver(
                 &source,
                 &plan,
