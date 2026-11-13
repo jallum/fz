@@ -47,18 +47,18 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
 use fz_runtime::ir_runtime::{
-    fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_bs_field_spec, fz_bs_read_field_ref,
-    fz_bs_reader_init_ref, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_map_named_schema_ref,
-    fz_matcher_eq_bytes, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref,
-    fz_struct_get_named_field_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float,
-    fz_unbox_int, fz_value_cmp_ref, fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_box_float_for_any, fz_box_int_for_any, fz_bs_field_spec, fz_bs_read_field_ref, fz_bs_reader_init_ref,
+    fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_map_named_schema_ref, fz_matcher_eq_bytes,
+    fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref, fz_struct_get_named_field_ref,
+    fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_value_cmp_ref,
+    fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 
 use super::prim::c_pair_return_types;
 use super::repr::ExternLane;
 use super::runtime_call::{RuntimeCaller, RuntimeFn, declare_runtime_fn, runtime_call, runtime_call1};
-use super::{CodegenError, SLOT_BYTES, emit_fn_body};
+use super::{CodegenError, SLOT_BYTES, atom_ref_word, emit_fn_body};
 
 type ReceiveDispatchPlan = PatternDispatchPlan<RuntimeTypePredicate>;
 type ReceiveRegion = Region<RuntimeTypePredicate>;
@@ -280,7 +280,7 @@ fn emit_receive_value_ref<M: cranelift_module::Module>(
         ReceiveValue::AnyRef(value_ref) => Ok(value_ref),
         ReceiveValue::Int(raw) => Ok(runtime_call1!(body, fz_box_int_for_any, [ctx.process, raw])),
         ReceiveValue::Float(raw) => Ok(runtime_call1!(body, fz_box_float_for_any, [ctx.process, raw])),
-        ReceiveValue::Atom(raw) => Ok(runtime_call1!(body, fz_box_atom_for_any, [ctx.process, raw])),
+        ReceiveValue::Atom(raw) => Ok(atom_ref_word(body.b, raw)),
     }
 }
 

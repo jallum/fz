@@ -402,8 +402,6 @@ fn any_value_ref_map_lookup_reads_scalar_and_heap_values() {
     let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
     let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
     let int_key_slot = 1u64;
-    let atom_key_slot = u64::from(key_atom);
-    let missing_key_slot = u64::from(missing_atom);
 
     let scalar = h
         .read_map_value_ref(
@@ -415,20 +413,13 @@ fn any_value_ref_map_lookup_reads_scalar_and_heap_values() {
     assert_eq!(scalar.load_int(), Ok(10));
 
     let heap_value = h
-        .read_map_value_ref(
-            map_ref,
-            AnyValueRef::from_scalar_slot(ValueKind::ATOM, &atom_key_slot).expect("atom key"),
-        )
+        .read_map_value_ref(map_ref, AnyValueRef::atom(key_atom))
         .unwrap()
         .expect("present atom key");
     assert_eq!(heap_value.list_addr(), Ok(child_addr));
 
     assert_eq!(
-        h.read_map_value_ref(
-            map_ref,
-            AnyValueRef::from_scalar_slot(ValueKind::ATOM, &missing_key_slot).expect("missing key"),
-        )
-        .unwrap(),
+        h.read_map_value_ref(map_ref, AnyValueRef::atom(missing_atom),).unwrap(),
         None
     );
 }
@@ -523,10 +514,9 @@ fn any_value_ref_map_construction_and_put_write_scalar_and_heap_values() {
     let child_addr = list_addr_from_tagged(child_bits).expect("child addr");
     let child_ref = AnyValueRef::from_heap_object(ValueKind::LIST, child_addr).expect("child ref");
     let int_key_slot = 1u64;
-    let atom_key_slot = u64::from(key_atom);
     let int_any_value = 10u64;
     let int_key = AnyValueRef::from_scalar_slot(ValueKind::INT, &int_key_slot).expect("int key");
-    let atom_key = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &atom_key_slot).expect("atom key");
+    let atom_key = AnyValueRef::atom(key_atom);
 
     let map_ref = h
         .alloc_map_refs(&[(
@@ -600,8 +590,7 @@ fn any_value_ref_struct_and_closure_writes_store_scalar_and_heap_values() {
     let child_bits = h.alloc_map_slots(&[(AnyValue::atom(1), AnyValue::int(2))]);
     let child_addr = map_addr_from_tagged(child_bits).expect("child addr");
     let child_ref = AnyValueRef::from_heap_object(ValueKind::MAP, child_addr).expect("child ref");
-    let scalar_slot = 99u64;
-    let scalar_ref = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &scalar_slot).expect("scalar ref");
+    let scalar_ref = AnyValueRef::atom(99);
 
     let struct_addr = h.alloc_struct(struct_schema);
     let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr).expect("struct ref");
@@ -3001,4 +2990,119 @@ fn map_publication_orders_keys_and_keeps_the_last_value_of_a_repeated_key_at_eve
             .collect();
         assert_eq!(published, expected, "{distinct} distinct keys");
     }
+}
+
+#[test]
+fn boxing_an_atom_allocates_nothing_and_the_ref_carries_its_id() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let before = h.alloc_stats_snapshot();
+
+    let atom = h.box_any_value_ref(AnyValue::atom(1234));
+
+    let after = h.alloc_stats_snapshot();
+    assert_eq!(after.scalar_box.allocs, before.scalar_box.allocs);
+    assert_eq!(after.total.allocs, before.total.allocs);
+    assert_eq!(atom, AnyValueRef::atom(1234));
+    assert_eq!(atom.load_atom(), Ok(1234));
+}
+
+#[test]
+fn an_atom_ref_is_a_root_the_collector_leaves_as_it_is() {
+    let mut h = Heap::new(1024, fresh_registry());
+    let original = AnyValueRef::atom(77);
+    let mut roots = [original];
+
+    let stats = h.collect(&mut roots);
+
+    assert_eq!(roots[0], original);
+    assert_eq!(roots[0].load_atom(), Ok(77));
+    assert_eq!(stats.root_scalar_slots, 1);
+    assert_eq!(stats.root_heap_edges, 0);
+    assert_eq!(stats.copied_objects, 0);
+    assert_eq!(stats.copied_bytes, 0);
+}
+
+#[test]
+fn an_atom_read_from_a_list_head_is_the_atom_stored() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let bits = h.alloc_list_cons_slot(AnyValue::atom(9), EMPTY_LIST_BITS);
+    let list = AnyValueRef::from_heap_object(ValueKind::LIST, list_addr_from_tagged(bits).expect("list addr"))
+        .expect("list ref");
+
+    assert_eq!(list_head_ref(list), Ok(AnyValueRef::atom(9)));
+}
+
+#[test]
+fn an_atom_read_from_a_map_key_or_value_is_the_atom_stored() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let key_atom = h.node.intern_atom("key");
+    let value_atom = h.node.intern_atom("value");
+    let bits = h.alloc_map_slots(&[(AnyValue::atom(key_atom), AnyValue::atom(value_atom))]);
+    let map =
+        AnyValueRef::from_heap_object(ValueKind::MAP, map_addr_from_tagged(bits).expect("map addr")).expect("map ref");
+
+    let (key, value) = unsafe { super::ref_io::map_entry_refs(map.map_addr().expect("map addr"), 0) };
+
+    assert_eq!(key, AnyValueRef::atom(key_atom));
+    assert_eq!(value, AnyValueRef::atom(value_atom));
+    assert_eq!(
+        h.read_map_value_ref(map, AnyValueRef::atom(key_atom))
+            .expect("map read"),
+        Some(AnyValueRef::atom(value_atom))
+    );
+}
+
+#[test]
+fn an_atom_read_from_a_struct_field_or_closure_capture_is_the_atom_stored() {
+    let reg = fresh_registry();
+    let schema = reg.borrow_mut().register(Schema::tuple_of_arity(1));
+    let mut h = Heap::new(SIZE_TABLE[0], reg);
+
+    let struct_addr = h.alloc_struct(schema);
+    let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr).expect("struct ref");
+    let layout = SlotLayout::of(1);
+    unsafe {
+        h.store_struct_field_ref(
+            struct_addr,
+            SlotLayout::slot_offset(0),
+            layout.kind_offset(0),
+            AnyValueRef::atom(21),
+        )
+    }
+    .expect("write atom field");
+    assert_eq!(h.read_struct_field_ref(struct_ref, 0), Ok(AnyValueRef::atom(21)));
+
+    let closure_bits = h.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 1, 0);
+    let closure = AnyValueRef::from_heap_object(
+        ValueKind::CLOSURE,
+        closure_addr_from_tagged(closure_bits).expect("closure addr"),
+    )
+    .expect("closure ref");
+    unsafe { h.write_closure_capture_ref(closure, 0, AnyValueRef::atom(22)) }.expect("write atom capture");
+    assert_eq!(h.read_closure_capture_ref(closure, 0), Ok(AnyValueRef::atom(22)));
+}
+
+#[test]
+fn an_atom_read_from_a_literal_struct_names_no_literal() {
+    let reg = fresh_registry();
+    let schema = reg.borrow_mut().register(Schema::tuple_of_arity(1));
+    let mut h = Heap::new(SIZE_TABLE[0], reg);
+    let struct_addr = h.alloc_struct(schema);
+    let literal = AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr)
+        .expect("struct ref")
+        .literal();
+    unsafe {
+        h.store_struct_field_ref(
+            struct_addr,
+            SlotLayout::slot_offset(0),
+            SlotLayout::of(1).kind_offset(0),
+            AnyValueRef::atom(5),
+        )
+    }
+    .expect("write atom field");
+
+    let field = h.read_struct_field_ref(literal, 0).expect("field");
+
+    assert!(!field.is_literal());
+    assert_eq!(field, AnyValueRef::atom(5));
 }

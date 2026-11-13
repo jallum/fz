@@ -3663,13 +3663,13 @@ fn a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown() {
             .collect();
         // Each gift is measured first and occupies one block: the tuple and
         // its 1000 cells (32 + 1000 * 16), the tuple and its two cells
-        // (32 + 2 * 16), and one boxed atom.
+        // (32 + 2 * 16), and one atom, which is its own ref and takes no block.
         assert_eq!(
             misses_for_the_child,
             vec![
                 &SendProbeEvent::new("miss", 2, 16_032, 1),
                 &SendProbeEvent::new("miss", 2, 64, 1),
-                &SendProbeEvent::new("miss", 2, 16, 1),
+                &SendProbeEvent::new("miss", 2, 0, 0),
             ],
             "{label}: all three messages are probed and gifted to the parked child, which never grafts them; each holds one exactly sized block that teardown must return"
         );

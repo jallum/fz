@@ -17,14 +17,13 @@ use fz_runtime::any_value::{
     struct_header_word,
 };
 use fz_runtime::ir_runtime::{
-    fz_alloc_closure, fz_alloc_struct, fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any,
-    fz_closure_code_ref, fz_closure_get_capture_atom, fz_closure_get_capture_f64, fz_closure_get_capture_i64,
-    fz_closure_get_capture_ref, fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64,
-    fz_closure_set_capture_i64, fz_closure_set_capture_ref, fz_halt_implicit_atom, fz_halt_implicit_f64,
-    fz_halt_implicit_i64, fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref, fz_list_head_ref,
-    fz_list_reuse_or_cons_parts, fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_mark_published_ref_aliased,
-    fz_materialize_cont, fz_struct_copy, fz_struct_store_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float,
-    fz_unbox_int,
+    fz_alloc_closure, fz_alloc_struct, fz_box_float_for_any, fz_box_int_for_any, fz_closure_code_ref,
+    fz_closure_get_capture_atom, fz_closure_get_capture_f64, fz_closure_get_capture_i64, fz_closure_get_capture_ref,
+    fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64, fz_closure_set_capture_i64,
+    fz_closure_set_capture_ref, fz_halt_implicit_atom, fz_halt_implicit_f64, fz_halt_implicit_i64,
+    fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref, fz_list_head_ref, fz_list_reuse_or_cons_parts,
+    fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_mark_published_ref_aliased, fz_materialize_cont, fz_struct_copy,
+    fz_struct_store_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
 
 /// A struct or tuple that is allocated and whose fields are being stored.
@@ -250,9 +249,10 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         runtime_call1!(self, fz_box_float_for_any, [process, raw])
     }
 
+    /// An atom ref is its id under the atom tag: one `or`, no call and no
+    /// address to clear, on every arch.
     pub(crate) fn box_atom_for_any(&mut self, raw: ir::Value) -> ir::Value {
-        let process = self.process_arg();
-        runtime_call1!(self, fz_box_atom_for_any, [process, raw])
+        atom_ref_word(self.b, raw)
     }
 
     pub(crate) fn unbox_int(&mut self, value_ref: ir::Value) -> ir::Value {

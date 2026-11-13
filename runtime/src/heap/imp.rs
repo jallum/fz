@@ -366,13 +366,7 @@ impl Heap {
                 }
                 AnyValueRef::from_scalar_slot(ValueKind::FLOAT, slot as *const u64).expect("float ref")
             }
-            AnyValue::Atom(atom_id) => {
-                let slot = self.alloc_kind(HeapAllocKind::ScalarBox, size_of::<u64>()) as *mut u64;
-                unsafe {
-                    write(slot, atom_id as u64);
-                }
-                AnyValueRef::from_scalar_slot(ValueKind::ATOM, slot as *const u64).expect("atom ref")
-            }
+            AnyValue::Atom(atom_id) => AnyValueRef::atom(atom_id),
         }
     }
 
@@ -690,9 +684,7 @@ impl Heap {
         key: AnyValueRef,
         atom_id: u32,
     ) -> Result<AnyValueRef, AnyValueRefError> {
-        let atom_id = atom_id as u64;
-        let value = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &atom_id)?;
-        self.map_put_value(map, key, value)
+        self.map_put_value(map, key, AnyValueRef::atom(atom_id))
     }
 
     fn map_put_value(
@@ -1063,14 +1055,17 @@ impl Heap {
         let kind = unsafe { read(struct_field_kind_slot(addr as *const u8, kind_offset)) };
         let field =
             any_value_ref_from_storage(raw_slot as *const u64, ValueKind::new(kind).expect("struct field kind"))?;
-        // A scalar field's ref points into the struct's own payload, so it is
-        // read-only data exactly when the struct is. A heap field's ref is its
-        // stored address and already says what it names.
-        Ok(if obj.is_literal() && field.tag().is_scalar() {
-            field.literal()
-        } else {
-            field
-        })
+        // An integer or float field's ref points into the struct's own payload,
+        // so it is read-only data exactly when the struct is. A heap field's ref
+        // is its stored address and an atom field's ref is its id; each already
+        // says what it names.
+        Ok(
+            if obj.is_literal() && matches!(field.tag(), ValueKind::INT | ValueKind::FLOAT) {
+                field.literal()
+            } else {
+                field
+            },
+        )
     }
 
     pub fn read_struct_named_field_ref(

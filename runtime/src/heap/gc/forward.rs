@@ -22,7 +22,7 @@ pub fn forward_any_value_ref_root(
         return;
     }
     match value.tag() {
-        ValueKind::NULL => {
+        ValueKind::NULL | ValueKind::ATOM => {
             stats.root_scalar_slots += 1;
         }
         tag if tag.is_scalar() => {

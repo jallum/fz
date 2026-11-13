@@ -1393,11 +1393,10 @@ fn x86_packing_preserves_wide_canonical_user_addresses() {
 fn scalar_refs_load_full_width_payloads() {
     let int_slot = (-42i64) as u64;
     let float_slot = 3.5f64.to_bits();
-    let atom_slot = 99u64;
 
     let int_ref = AnyValueRef::from_scalar_slot(ValueKind::INT, &int_slot).expect("int ref");
     let float_ref = AnyValueRef::from_scalar_slot(ValueKind::FLOAT, &float_slot).expect("float ref");
-    let atom_ref = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &atom_slot).expect("atom ref");
+    let atom_ref = AnyValueRef::atom(99);
 
     assert_eq!(int_ref.load_int(), Ok(-42));
     assert_eq!(float_ref.load_float(), Ok(3.5));
@@ -1557,4 +1556,26 @@ fn a_literal_value_stored_in_a_payload_word_keeps_its_bit_and_reports_the_raw_ad
 
     assert!(AnyValueRefPacking::current().is_literal(value.raw()));
     assert_eq!(value.heap_addr(), Some(addr));
+}
+
+#[test]
+fn an_atom_ref_holds_its_id_in_the_address_field() {
+    for id in [0u32, 1, 1234, u32::MAX] {
+        let atom = AnyValueRef::atom(id);
+        assert_eq!(atom.tag(), ValueKind::ATOM);
+        assert_eq!(atom.load_atom(), Ok(u64::from(id)));
+        assert!(!atom.is_literal());
+        assert_eq!(AnyValue::from_ref(atom), Ok(AnyValue::Atom(id)));
+        assert_eq!(AnyValue::Atom(id).ref_word(), atom);
+        assert_eq!(AnyValueRef::from_raw_word(atom.raw_word()), Ok(atom));
+    }
+}
+
+#[test]
+fn an_atom_ref_is_never_built_over_a_slot() {
+    let slot = 7u64;
+    assert_eq!(
+        AnyValueRef::from_scalar_slot(ValueKind::ATOM, &slot),
+        Err(AnyValueRefError::AtomHasNoSlot)
+    );
 }

@@ -1132,6 +1132,7 @@ fn storage_ref(raw_slot: *const u64, kind: ValueKind) -> Result<AnyValueRef, Quo
     Ok(match kind {
         ValueKind::NULL => AnyValueRef::null(),
         ValueKind::LIST if unsafe { ptr::read(raw_slot) } == 0 => AnyValueRef::empty_list(),
+        ValueKind::ATOM => AnyValueRef::atom(unsafe { ptr::read(raw_slot) } as u32),
         tag if tag.is_scalar() => AnyValueRef::from_scalar_slot(tag, raw_slot).map_err(QuotedSourceError::from)?,
         tag => AnyValueRef::from_heap_object(tag, unsafe { ptr::read(raw_slot) } as *const u8)
             .map_err(QuotedSourceError::from)?,

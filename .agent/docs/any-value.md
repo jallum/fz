@@ -11,16 +11,17 @@ AnyValueRef = one word that says "here is a value"
 ```
 
 The word carries a 4-bit tag (what kind) and an address (where the payload is).
-Scalar refs point at a scalar payload word; heap refs point at a heap object. A
-heap reference is not a separate idea — it is the heap-object subset of
-`AnyValueRef`. The interpreter, REPL, JIT, and AOT paths all pass values through
+An int or float ref points at a scalar payload word; an atom ref holds the atom
+id in its address field and points at nothing, as `[]` and `null` do; heap refs
+point at a heap object. A heap reference is not a separate idea — it is the
+heap-object subset of `AnyValueRef`. The interpreter, REPL, JIT, and AOT paths all pass values through
 this one shape, so spawn, receive, matching, and heap reads behave the same on
 every path.
 
 ```text
 Int ref      -> i64 payload word        Map ref      -> map object
 Float ref    -> f64 payload word        List ref     -> cons cell
-Atom ref     -> atom-id payload word     Struct ref   -> tuple/struct object
+Atom ref     == the atom id itself      Struct ref   -> tuple/struct object
                                         Closure ref  -> closure object
                                         Bitstring/ProcBin ref -> binary object
                                         Resource ref -> resource object
@@ -33,15 +34,18 @@ owns packing, projection, and the platform difference behind the word.
 ## The Pieces And What They Own
 
 - **`AnyValueRef`**: the public word. Owns packing/unpacking and projection.
-  `tag()` returns a `ValueKind`; `load_int`/`load_float`/`load_atom` read scalar
-  payloads; `list_addr`/`map_addr`/`struct_addr`/… project heap refs to a
+  `tag()` returns a `ValueKind`; `load_int`/`load_float` read the payload word a
+  ref points at; `AnyValueRef::atom(id)` is the one constructor of an atom ref
+  and `load_atom` reads the id back out of the address field (an atom is never
+  built over a slot: `from_scalar_slot` rejects `ValueKind::ATOM`); `list_addr`/`map_addr`/`struct_addr`/… project heap refs to a
   cleared address (each checks the tag and errors on mismatch).
 - **`ValueKind`**: the tag, one byte. `is_heap()` (List..Resource) and
   `is_scalar()` (Int/Float/Atom) classify it.
 - **`AnyValue`**: the by-value enum a host caller decodes a ref into —
   `Null`, `EmptyList`, `Int(i64)`, `Float(u64)`, `Atom(u32)`, `HeapRef(AnyValueRef)`.
-  A scalar `AnyValue` has no address; `ref_word()` panics on a scalar because a
-  scalar needs object-local storage before it can become a ref. The interpreter's
+  An int or float `AnyValue` has no address; `ref_word()` panics on one because
+  it needs object-local storage before it can become a ref. An atom needs none:
+  `ref_word()` answers `AnyValueRef::atom(id)`. The interpreter's
   temporary `FnRef` view materializes a closure before a public boundary and
   returns its tagged ref word; the heap object's raw storage address is not a ref.
 - **Container object-local metadata**: each heap object stores payload words
@@ -68,10 +72,12 @@ fz_binary_concat(process, left, right)
 **Dynamic reads return refs into existing storage, not copies.**
 `fz_map_get_ref`, `fz_map_entry_key`/`_value`, `fz_list_head_ref`, and
 `fz_struct_get_field_ref` build a ref over the slot already living in the
-container. For a scalar slot the returned ref points straight at that payload
-word (`any_value_ref_from_storage`); for a heap slot it carries the slot's
-heap pointer. A struct read as a map is the one exception: its keys and its
-`__struct__` module live in no slot, so those come back boxed. `Enumerable.Map` (`lib/map.fz`) is plain
+container. For an int or float slot the returned ref points straight at that
+payload word (`any_value_ref_from_storage`); for a heap slot it carries the
+slot's heap pointer; for an atom slot it is the atom ref of the id the slot
+holds, so no ref to an atom points into the container. A struct read as a map
+keeps one more difference: its keys and its `__struct__` module live in no slot,
+and each is an atom, so each comes back as an atom ref. `Enumerable.Map` (`lib/map.fz`) is plain
 fz source that declares `fz_map_count`, `fz_map_entry_key`, `fz_map_entry_value`
 as externs and folds over the map's canonical sorted entries; the tuple/list it
 builds copies those values into fresh containers before publishing them.
@@ -181,13 +187,17 @@ atom-subtype -> `RawAtom`, else `ValueRef`. `CodegenValue` adds `AnyRef` (an
 both report `ArgRepr::ValueRef`. Every lane has `abi_arity() == 1`: a value is
 always one machine word across a call boundary, never split into payload + kind.
 
+A boundary crossing allocates only for an int or float. An atom has no box:
+native code ors the id with the atom tag word inline (`atom_ref_word`), the
+interpreter calls `AnyValueRef::atom`, and neither touches the heap.
+
 Boxing happens only where a typed lane meets an `any` boundary.
 `CodegenFn::coerce_binding_to` is the one seam:
 
 ```text
 RawInt   -> ValueRef : box_int_for_any
 RawF64   -> ValueRef : box_float_for_any
-RawAtom  -> ValueRef : box_atom_for_any
+RawAtom  -> ValueRef : box_atom_for_any (one `or` of the id with the atom tag)
 Condition-> ValueRef : select true/false atom, then box
 ValueRef -> RawInt/RawF64/RawAtom : unbox via the ref API
 matching lanes : pass through
@@ -228,6 +238,10 @@ x86_64 (canonical):   tagged = address | (tag << 57)
 `fz_ref_tag` returns the same semantic tag on both, so callers never see the
 difference.
 
+An atom ref is the tag word or'd with the id, on both archs. The id names no
+address, so the x86_64 clearing sequence below is never applied to it: only a
+fresh stack or heap pointer needs its high bits cleared.
+
 Compiler-emitted pointer refs follow the same split, in
 `src/compiler2/native_codegen/closure.rs` and
 `src/compiler2/native_codegen/fn_ctx.rs`. On arm64/TBI a fresh
@@ -241,7 +255,7 @@ compiler2 CLIF dumps aligned with the runtime packing model.
 
 A *literal* is an object the program carries in read-only data rather than on a
 heap: a static struct (`.fz_static_struct_*`), a static closure, a halt
-continuation, and the nil slot. Every reference to a literal has one bit set
+continuation. Every reference to a literal has one bit set
 above the kind field of its address word: `1 << (tag_shift + 5)`, bit 61 on
 arm64 and bit 62 on x86_64, owned by `AnyValueRefPacking`
 (`literal_bit`, `is_literal`, `raw_address`, `payload_mask`). The bit sits in the
@@ -252,9 +266,10 @@ unchanged, and `AnyValueRef::tag()` ignores the bit.
 
 The bit is set only where a literal is named: `static_object_ref`, the entry
 thunk, the child-literal payload words of a static struct (a relocation whose
-addend is the bit), `nil_atom_ref`, and a scalar field read from a literal
-struct (`read_struct_field_ref`; a heap child keeps the bit its stored payload
-word carries). Fresh heap allocations never set it. Anything that dereferences,
+addend is the bit), and an int or float field read from a literal struct
+(`read_struct_field_ref`; a heap child keeps the bit its stored payload word
+carries, and an atom field is its id, which names no object and carries no
+bit). Fresh heap allocations never set it. Anything that dereferences,
 compares identity, hashes or keys on an address reads it through
 `AnyValueRefPacking::raw_address` (`AnyValue::heap_addr`, `storage_addr`,
 `AnyValueRef::*_addr`), so a literal and its raw address agree; code that
@@ -624,11 +639,13 @@ follow: only heap-shaped payload words become child roots
 ```
 
 Heap-object refs (`Map, List, Struct, Closure, Bitstring, ProcBin, Resource`)
-are followed as edges. A scalar ref points at a payload word, not a child object;
-a scalar payload can *look* like an address, but the kind byte is the authority,
-so scalars are never chased. When a scalar ref sits in a durable root slot, GC
-copies its boxed payload (`copy_scalar_box_to_space`, a small `ScalarBox` heap
-object) and rewrites the root to the copy — copied, not followed.
+are followed as edges. An int or float ref points at a payload word, not a child
+object; a scalar payload can *look* like an address, but the kind byte is the
+authority, so scalars are never chased. When an int or float ref sits in a
+durable root slot, GC copies its boxed payload (`copy_scalar_box_to_space`, a
+small `ScalarBox` heap object) and rewrites the root to the copy — copied, not
+followed. An atom ref has no payload to copy: GC and deep copy leave it as it is,
+like `null`, and a measuring pass charges it nothing.
 
 Off-heap binaries and resources have their own atomic reference counts. A
 32-byte `ProcBin` stub owns one edge to a `SharedBin`; a resource stub owns one

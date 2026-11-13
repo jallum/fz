@@ -22,6 +22,7 @@ pub(super) fn any_value_ref_from_storage(
     match kind {
         ValueKind::NULL => Ok(AnyValueRef::null()),
         ValueKind::LIST if raw == 0 => Ok(AnyValueRef::empty_list()),
+        ValueKind::ATOM => Ok(AnyValueRef::atom(raw as u32)),
         tag if tag.is_scalar() => AnyValueRef::from_scalar_slot(tag, raw_slot),
         tag => AnyValueRef::from_heap_object(tag, raw as *const u8),
     }
