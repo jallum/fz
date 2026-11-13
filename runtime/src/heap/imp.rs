@@ -744,10 +744,8 @@ impl Heap {
             let p = alloc_procbin(self, handle, byte_offset).as_raw();
             return AnyValue::heap_ptr(p, ValueKind::PROCBIN);
         }
-        // Owned because `alloc_bitstring` takes `&mut self`; the buffer is
-        // off-heap and immovable, so the read itself is safe.
-        let owned = unsafe { from_raw_parts(buf_ptr.add(byte_offset as usize), suffix_bytes) }.to_vec();
-        self.alloc_bitstring(&owned, buf_bits - byte_offset * 8)
+        let suffix = unsafe { from_raw_parts(buf_ptr.add(byte_offset as usize), suffix_bytes) };
+        self.alloc_bitstring(suffix, buf_bits - byte_offset * 8)
     }
 
     /// Denotation, layout header, code pointer, then captures and their kind bytes.
