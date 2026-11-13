@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T19:39:29Z",
   "created": "2026-11-13T19:11:23Z",
   "description": "Parser primary for Tok::Ident (src/compiler2/frontdoor.rs:869) clones the identifier String (~5,600 allocations) so that the rare extern-symbol fold (name::second) can rebuild it.\n\nChange: borrow the name and build a new String only in the fold case. The same file's neighbours follow the pattern fz-y11.7 established (tokens are moved or borrowed, not cloned); check the adjacent Tok::Upper / Tok::Atom arms for the same shape and fix them in the same commit if they have it.\n\nEvidence: allocation census of the OptionParser probe at bf51f11c1 (develop ac3750d1e + hasher fix + fz-y11.15 spike; 857,327 calls). Ranked sites: /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/bf51f11c1_top.txt; call chains: python3 /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/chain.py /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/bf51f11c1.pkl \u003cfile:line\u003e \u003cdepth\u003e. Counts are 1-in-16 sampling estimates; line numbers are at that commit. Method and signal: see the epic (bw show fz-y11). Every site is a claim read from the census and the source, to be confirmed first.",
   "id": "fz-y11.23",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "The front door names a plain identifier without copying it",
   "type": "task",
-  "updated_at": "2026-11-13T19:11:33Z"
+  "updated_at": "2026-11-13T19:39:29Z"
 }
