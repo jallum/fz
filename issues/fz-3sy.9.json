@@ -6,7 +6,7 @@
   ],
   "blocks": [],
   "created": "2026-11-11T15:21:29Z",
-  "description": "As Elixir's CLI (cli.ex:134-183): a bottom handler written in fz formats the uncaught banner via Exception.message, computed only when uncaught; failure_line's exception branch leaves Rust. Earlier cost proxy: hello-world products 401 -\u003e 876, protocol_dispatch facts 2 -\u003e 18 (dispatch on any pulls every impl). Re-measure first; own proposal page.",
+  "description": "As Elixir's CLI (cli.ex:134-183): a bottom handler written in fz formats the uncaught banner via Exception.message, computed only when uncaught; failure_line's exception branch leaves Rust. Then the seven runtime-built clause errors (MatchError, CaseClauseError, WithClauseError, TryClauseError, BadBooleanError, CondClauseError, FunctionClauseError) drop their ready-made message and carry Elixir's fields only: LastResort carries a name and its terms and no wording, and raise_exception_showing, fz_raise_showing, exception_message and the wording in last_resort.rs go (plan: /Users/j5n/Workspace/fz-3sy.8.html, approved 2026-11-13). Open risk: a runtime-built MatchError names a module the program never wrote, and a call on a run-time atom reaches only nameable modules; the banner must reach MatchError.message/1 anyway. Earlier cost proxy: hello-world products 401 -\u003e 876, protocol_dispatch facts 2 -\u003e 18 (dispatch on any pulls every impl). Re-measure first; own proposal page.",
   "id": "fz-3sy.9",
   "labels": [],
   "parent": "fz-3sy",
@@ -14,5 +14,5 @@
   "status": "open",
   "title": "The uncaught banner is rendered through Exception.message by an fz handler at the bottom of every process",
   "type": "feature",
-  "updated_at": "2026-11-13T17:53:27Z"
+  "updated_at": "2026-11-13T17:53:45Z"
 }
