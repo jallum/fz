@@ -611,7 +611,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
 /// nothing in the frontier resolves to a named issue -- it names the
 /// wait's kind in plain terms, never the wait's own `Debug` form.
 ///
-/// `fact_wait_budget_exceeded` and `did_not_settle` fire on a counter
+/// `fact_wait_budget_exceeded` and `request_budget_exhausted` fire on a counter
 /// running out mid-progress, not on a dead end: a need parks a waiter on
 /// its producer as soon as it is recorded, so the frontier at a budget
 /// cutoff is routinely non-terminal work in progress, not a diagnosis.
@@ -665,28 +665,30 @@ impl super::product_drive::ProductDriveError for String {
         _world: &mut World,
         _tel: &T,
         scope: super::pull::ProductScope,
+        budget: u64,
         fact: &FactUse<FactKey>,
     ) -> Self {
         format!(
-            "compiler2 {scope} product path exceeded fact-wait budget for {}",
+            "compiler2 {scope} product path exhausted its fact-wait budget of {budget} jobs; the last wait was on {}",
             fact.fact().kind_label()
         )
     }
 
-    fn did_not_settle<T: Telemetry>(
+    fn request_budget_exhausted<T: Telemetry>(
         _world: &mut World,
         _tel: &T,
         scope: super::pull::ProductScope,
+        budget: u64,
         last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self {
         match last_wait {
             Some((key, waits)) => format!(
-                "compiler2 {scope} product backend did not settle waiting on {}, with {} pending wait{}",
+                "compiler2 {scope} product backend exhausted its budget of {budget} requests; the last request was waiting on {}, with {} pending wait{}",
                 key.kind(),
                 waits.len(),
                 if waits.len() == 1 { "" } else { "s" }
             ),
-            None => format!("compiler2 {scope} product backend did not settle"),
+            None => format!("compiler2 {scope} product backend exhausted its budget of {budget} requests"),
         }
     }
 }
