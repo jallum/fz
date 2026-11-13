@@ -115,20 +115,24 @@ pub(crate) trait ProductDriveError: Sized {
         scope: ProductScope,
         fact: &FactUse<FactKey>,
     ) -> Self;
-    /// The fact-wait for `fact` ran more jobs than the budget allows.
+    /// The fact-wait for `fact` ran more jobs than `budget` allows; `fact` is
+    /// the wait the budget ran out on.
     fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
         world: &mut World,
         tel: &T,
         scope: ProductScope,
+        budget: u64,
         fact: &FactUse<FactKey>,
     ) -> Self;
-    /// The outer product-pull stack exhausted its budget before the requested
-    /// product settled. `last_wait` is the last product key and waits observed,
-    /// when any wait was ever recorded.
-    fn did_not_settle<T: crate::telemetry::Telemetry>(
+    /// The outer product-pull stack spent all `budget` requests before the
+    /// requested product settled. `last_wait` is the last product key and waits
+    /// observed, when any wait was ever recorded; it is whichever request
+    /// happened to be the last, not a diagnosis.
+    fn request_budget_exhausted<T: crate::telemetry::Telemetry>(
         world: &mut World,
         tel: &T,
         scope: ProductScope,
+        budget: u64,
         last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self;
     /// `product` returned `PullOutcome::Failed`, which means the producer
@@ -163,7 +167,7 @@ pub(crate) fn drive_root_backend_product<'a, T: crate::telemetry::RawSpanTelemet
 /// test-only seam: `drive_root_backend_product` always passes
 /// `PRODUCT_DRIVE_BUDGET` for both, so production behavior is byte-identical
 /// to before the split. Tests pass a small budget to force
-/// `did_not_settle`/`fact_wait_budget_exceeded` on a genuine drive without
+/// `request_budget_exhausted`/`fact_wait_budget_exceeded` on a genuine drive without
 /// spending the real 50,000-job budget doing it. Production retains the same
 /// loop's session through `drive_retained_root_backend_product`.
 #[cfg(test)]
@@ -748,10 +752,11 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
                 }
             }
         }
-        Err(E::did_not_settle(
+        Err(E::request_budget_exhausted(
             world,
             tel,
             scope,
+            product_stack_budget,
             last_wait.as_ref().map(|batch| (&batch.owner, batch.waits.as_slice())),
         ))
     })();
@@ -906,7 +911,7 @@ fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTe
                 }
             }
             if jobs_ran > fact_wait_budget {
-                return Err(E::fact_wait_budget_exceeded(world, tel, scope, fact));
+                return Err(E::fact_wait_budget_exceeded(world, tel, scope, fact_wait_budget, fact));
             }
         }
     }

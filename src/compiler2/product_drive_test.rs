@@ -10,14 +10,14 @@
 //! compiler2 test that drives a root to a backend product (`compiler2_test`,
 //! `transport_contract_test`, `drive_test`, ...), so the risk unique to this
 //! seam is the `ProductDriveError` dispatch — that is what those tests pin.
-//! Only `String`'s `fact_wait_budget_exceeded` and `did_not_settle` keep a
+//! Only `String`'s `fact_wait_budget_exceeded` and `request_budget_exhausted` keep a
 //! direct-call test: their `*_end_to_end` counterparts below can only assert
 //! a message prefix (the exact `fact`/`last_wait` suffix they format at
 //! runtime bakes in incidental interned ids — `FunctionId`/`Ty` — that shift
 //! with unrelated compiler changes), so the direct tests are the only place
 //! the full plain-English fallback is pinned exactly. Every other
 //! direct-call test (`no_ready_producer`, `job_failed`, and `FatalError`'s
-//! `fact_wait_budget_exceeded`/`did_not_settle`) is redundant and deleted:
+//! `fact_wait_budget_exceeded`/`request_budget_exhausted`) is redundant and deleted:
 //! `no_ready_producer` and `job_failed`'s end-to-end counterparts already
 //! assert their full template exactly, and the `FatalError` variants of the
 //! three genuine-stall hooks report through
@@ -29,7 +29,7 @@
 //! genuine failure inside the product drive reaches the hook with
 //! the right `root`/`fact`/`job` arguments, not just that the hook formats
 //! them correctly in isolation. `fact_wait_budget_exceeded` and
-//! `did_not_settle` go through `drive_root_backend_product_with_budgets`, a
+//! `request_budget_exhausted` go through `drive_root_backend_product_with_budgets`, a
 //! test-only budget seam (`product_drive.rs`). The retained production drive
 //! calls the same inner loop with the real 50,000-job budgets. Since that
 //! seam trips its budget mid-progress rather than at a genuine dead end, the
@@ -1862,7 +1862,7 @@ fn live_executable_order_distinguishes_noninjective_display_pairs() {
 
 /// The `add1` fixture, submitted and rooted at `main/0`: the shared "ordinary,
 /// fully resolvable root" setup the `fact_wait_budget_exceeded`/
-/// `did_not_settle` end-to-end tests drive through the budget seam.
+/// `request_budget_exhausted` end-to-end tests drive through the budget seam.
 fn add1_world(_tel: &ConfiguredTelemetry) -> (World, RootId) {
     let mut world = World::new();
     world.submit_code(
@@ -1879,31 +1879,40 @@ fn string_error_reports_fact_wait_budget_exceeded() {
     let mut world = World::new();
     let root = RootId::for_test(7);
     let fact = some_fact();
+    let budget = 12;
 
-    let message =
-        <String as ProductDriveError>::fact_wait_budget_exceeded(&mut world, &tel, ProductScope::Root(root), &fact);
+    let message = <String as ProductDriveError>::fact_wait_budget_exceeded(
+        &mut world,
+        &tel,
+        ProductScope::Root(root),
+        budget,
+        &fact,
+    );
 
     assert_eq!(
         message,
         format!(
-            "compiler2 root {} product path exceeded fact-wait budget for {}",
+            "compiler2 root {} product path exhausted its fact-wait budget of {} jobs; the last wait was on {}",
             root.as_u32(),
+            budget,
             fact.fact().kind_label()
         )
     );
 }
 
 #[test]
-fn string_error_reports_did_not_settle_with_last_wait() {
+fn string_error_reports_request_budget_exhausted_with_last_wait() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     let root = RootId::for_test(7);
     let last_wait = Some((ProductKey::RootBackendProduct(root), vec![PullWait::Fact(some_fact())]));
+    let budget = 7;
 
-    let message = <String as ProductDriveError>::did_not_settle(
+    let message = <String as ProductDriveError>::request_budget_exhausted(
         &mut world,
         &tel,
         ProductScope::Root(root),
+        budget,
         last_wait.as_ref().map(|(key, waits)| (key, waits.as_slice())),
     );
 
@@ -1911,8 +1920,9 @@ fn string_error_reports_did_not_settle_with_last_wait() {
     assert_eq!(
         message,
         format!(
-            "compiler2 root {} product backend did not settle waiting on {}, with {} pending wait",
+            "compiler2 root {} product backend exhausted its budget of {} requests; the last request was waiting on {}, with {} pending wait",
             root.as_u32(),
+            budget,
             key.kind(),
             waits.len()
         )
@@ -2028,7 +2038,7 @@ fn string_error_end_to_end_fact_wait_budget_exceeded_on_a_real_drive() {
     };
     assert!(
         error.contains(&format!(
-            "compiler2 root {} product path exceeded fact-wait budget for",
+            "compiler2 root {} product path exhausted its fact-wait budget of 0 jobs; the last wait was on ",
             root.as_u32()
         )),
         "should report the fact-wait budget exceeded template, got: {error}"
@@ -2144,13 +2154,13 @@ fn fatal_error_end_to_end_fact_wait_budget_exceeded_on_a_real_drive() {
     );
 }
 
-/// `did_not_settle`: the same ordinary `add1` root, driven with the outer
+/// `request_budget_exhausted`: the same ordinary `add1` root, driven with the outer
 /// product-stack budget forced small enough that the stack pull cannot reach
 /// a settled `RootBackendProduct` before the budget runs out, while the inner
 /// fact-wait budget stays generous so real jobs run and populate `last_wait`
 /// with genuine content (not `None`).
 #[test]
-fn string_error_end_to_end_did_not_settle_on_a_real_drive() {
+fn string_error_end_to_end_request_budget_exhausted_on_a_real_drive() {
     let tel = ConfiguredTelemetry::new();
     let (mut world, root) = add1_world(&tel);
 
@@ -2167,10 +2177,10 @@ fn string_error_end_to_end_did_not_settle_on_a_real_drive() {
     };
     assert!(
         error.starts_with(&format!(
-            "compiler2 root {} product backend did not settle waiting on ",
+            "compiler2 root {} product backend exhausted its budget of 3 requests; the last request was waiting on ",
             root.as_u32()
         )) && error.contains("pending wait"),
-        "should report did-not-settle with a populated last wait, got: {error}"
+        "should report the request budget exhausted with a populated last wait, got: {error}"
     );
 }
 
@@ -2279,7 +2289,7 @@ fn fatal_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
 }
 
 #[test]
-fn fatal_error_end_to_end_did_not_settle_on_a_real_drive() {
+fn fatal_error_end_to_end_request_budget_exhausted_on_a_real_drive() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
@@ -2903,6 +2913,7 @@ mod wait_frame_tests {
             _: &mut World,
             _: &T,
             _: ProductScope,
+            _: u64,
             _: &FactUse<FactKey>,
         ) -> Self {
             panic!("unexpected fact budget failure")
@@ -2918,10 +2929,11 @@ mod wait_frame_tests {
         ) -> Self {
             panic!("unexpected dependency failure")
         }
-        fn did_not_settle<T: crate::telemetry::Telemetry>(
+        fn request_budget_exhausted<T: crate::telemetry::Telemetry>(
             world: &mut World,
             tel: &T,
             scope: ProductScope,
+            budget: u64,
             last_wait: Option<(&ProductKey, &[PullWait])>,
         ) -> Self {
             let (_, waits) = last_wait.as_ref().expect("the drive observed a wait");
@@ -2934,7 +2946,7 @@ mod wait_frame_tests {
                         Some(positioned_input(key))
                     })
                     .collect(),
-                message: String::did_not_settle(world, tel, scope, last_wait),
+                message: String::request_budget_exhausted(world, tel, scope, budget, last_wait),
             }
         }
     }
@@ -2983,8 +2995,9 @@ mod wait_frame_tests {
                 })
                 .collect::<Vec<_>>();
             let expected_message = format!(
-                "compiler2 root {} product backend did not settle waiting on {}, with {} pending wait{}",
+                "compiler2 root {} product backend exhausted its budget of {} requests; the last request was waiting on {}, with {} pending wait{}",
                 root.as_u32(),
+                budget,
                 root_key.kind(),
                 waits.len(),
                 if waits.len() == 1 { "" } else { "s" },
@@ -3049,8 +3062,9 @@ mod wait_frame_tests {
                 })
                 .collect::<Vec<_>>();
             let expected = format!(
-                "compiler2 root {} product backend did not settle waiting on {}, with {} pending wait{}",
+                "compiler2 root {} product backend exhausted its budget of {} requests; the last request was waiting on {}, with {} pending wait{}",
                 root.as_u32(),
+                budget,
                 child.kind(),
                 waits.len(),
                 if waits.len() == 1 { "" } else { "s" },

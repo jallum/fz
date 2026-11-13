@@ -5792,18 +5792,20 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
         _world: &mut World,
         _tel: &T,
         scope: super::pull::ProductScope,
+        budget: u64,
         fact: &FactUse<FactKey>,
     ) -> Self {
-        panic!("{scope} fact-wait budget exceeded for {fact:?}");
+        panic!("{scope} fact-wait budget of {budget} jobs exceeded for {fact:?}");
     }
 
-    fn did_not_settle<T: crate::telemetry::Telemetry>(
+    fn request_budget_exhausted<T: crate::telemetry::Telemetry>(
         _world: &mut World,
         _tel: &T,
         scope: super::pull::ProductScope,
+        budget: u64,
         last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self {
-        panic!("{scope} product did not settle; last wait: {last_wait:?}");
+        panic!("{scope} product exhausted its budget of {budget} requests; last wait: {last_wait:?}");
     }
 }
 

@@ -54,7 +54,7 @@ use super::super::world::World;
 /// same unknown-module/unbound-function/etc. issue the top-level drive
 /// would have named for the identical stall.
 ///
-/// `fact_wait_budget_exceeded` and `did_not_settle` are not dead ends --
+/// `fact_wait_budget_exceeded` and `request_budget_exhausted` are not dead ends --
 /// they are a counter (`jobs_ran`, the outer product-stack budget) running
 /// out mid-progress, while a need parks a waiter on its producer as soon as
 /// it is recorded, so the frontier a budget cutoff catches is routinely
@@ -102,15 +102,17 @@ impl super::super::product_drive::ProductDriveError for FatalError {
         _world: &mut World,
         _tel: &T,
         _scope: super::super::pull::ProductScope,
+        _budget: u64,
         _fact: &FactUse<FactKey>,
     ) -> Self {
         FatalError
     }
 
-    fn did_not_settle<T: crate::telemetry::Telemetry>(
+    fn request_budget_exhausted<T: crate::telemetry::Telemetry>(
         _world: &mut World,
         _tel: &T,
         _scope: super::super::pull::ProductScope,
+        _budget: u64,
         _last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self {
         FatalError
