@@ -105,6 +105,17 @@ where
         }
     }
 
+    /// Adds `keys` to the claims `publisher` already holds, in place, and
+    /// answers the union.
+    pub fn extend_outputs(&mut self, publisher: &P, keys: OrderedSet<F>) -> &OrderedSet<F> {
+        if keys.is_empty() {
+            return self.output_keys(publisher);
+        }
+        let held = self.outputs.entry(publisher.clone()).or_default();
+        held.extend(keys);
+        held
+    }
+
     pub fn output_keys(&self, publisher: &P) -> &OrderedSet<F> {
         self.outputs.get(publisher).unwrap_or(&self.no_outputs)
     }

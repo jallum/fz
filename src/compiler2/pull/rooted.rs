@@ -431,23 +431,31 @@ impl ProductMemo {
         if self.has_unsettled_inputs(member) {
             return Vec::new();
         }
-        let readers = self.rooted_readers.get(member).cloned().unwrap_or_default();
-        readers
+        let mut exposures = Vec::new();
+        let refreshed = self
+            .rooted_readers
+            .get(member)
             .into_iter()
+            .flatten()
             .filter(|reader| {
                 work.mutation_edges += 1;
-                let rooted = self.rooted.get_mut(reader).expect("registered root");
+                let rooted = self.rooted.get_mut(*reader).expect("registered root");
                 let waiting = rooted.dirty.waiting(member);
                 let changed = rooted.dirty.remove(member, &rooted.parents)
                     && rooted.dirty.is_empty()
                     && rooted.changes.is_empty();
                 rooted.collect_maintenance(work);
                 if let Some(request) = waiting {
-                    self.expose_waiting_branch(reader, request, member.clone(), false);
+                    exposures.push(((*reader).clone(), request));
                 }
                 changed
             })
-            .collect()
+            .cloned()
+            .collect();
+        for (reader, request) in exposures {
+            self.expose_waiting_branch(&reader, request, member.clone(), false);
+        }
+        refreshed
     }
 
     pub(super) fn rooted_stale_dependency(
@@ -505,10 +513,7 @@ impl ProductMemo {
     }
 
     fn membership(&self, key: &ProductKey) -> Option<&HashSet<ProductKey>> {
-        self.produced
-            .get(key)
-            .or_else(|| self.displaced.get(key))
-            .map(|entry| &entry.membership)
+        committed_membership(&self.produced, &self.displaced, key)
     }
 
     pub(super) fn register_rooted(
@@ -561,22 +566,23 @@ impl ProductMemo {
     }
 
     pub(super) fn replace_membership_readers(&mut self, owner: &ProductKey, previous: Option<&HashSet<ProductKey>>) {
-        let next = self.membership(owner).expect("committed membership");
+        let next = committed_membership(&self.produced, &self.displaced, owner).expect("committed membership");
         let (added, removed) = membership_delta(previous, next);
-        let removed = removed.into_iter().cloned().collect::<Vec<_>>();
-        let added = added.into_iter().cloned().collect::<Vec<_>>();
         for child in removed {
             let readers = self
                 .membership_readers
-                .get_mut(&child)
+                .get_mut(child)
                 .expect("committed reverse membership");
             readers.remove(owner);
             if readers.is_empty() {
-                self.membership_readers.remove(&child);
+                self.membership_readers.remove(child);
             }
         }
         for child in added {
-            self.membership_readers.entry(child).or_default().insert(owner.clone());
+            self.membership_readers
+                .entry(child.clone())
+                .or_default()
+                .insert(owner.clone());
         }
     }
 
@@ -736,6 +742,17 @@ impl ProductReadContext<'_> {
             .or_else(|| self.session.memo.displaced.get(key))
             .map(|entry| &entry.value)
     }
+}
+
+fn committed_membership<'a>(
+    produced: &'a HashMap<ProductKey, ProductEntry>,
+    displaced: &'a HashMap<ProductKey, ProductEntry>,
+    key: &ProductKey,
+) -> Option<&'a HashSet<ProductKey>> {
+    produced
+        .get(key)
+        .or_else(|| displaced.get(key))
+        .map(|entry| &entry.membership)
 }
 
 /// The members `next` gains and loses relative to `previous`. A product that
