@@ -763,11 +763,14 @@ where
     /// still deriving the fact: content that moves while a publisher is
     /// deriving reaches it when that publisher concludes, as one movement.
     ///
-    /// A readiness-only change (the finality flips this ticket added, and the
-    /// dirty/clean flips that were always here) reaches `Settled` subscribers
-    /// ONLY. Sending it to `Current` subscribers
-    /// would recompute a formula whose input content never moved, which is the
-    /// one-line "fix" fz-kdt.44 measured and rejected.
+    /// A readiness-only change (a finality flip, or a dirty/clean flip) moves
+    /// no content, so it reaches only the jobs parked on a `Settled` wait for
+    /// the fact: they proceed once it is settled. A completed `Settled`
+    /// subscriber already holds the value, and re-running it at an unchanged
+    /// revision would derive the same thing, so it is neither enqueued nor
+    /// dirtied. Sending the flip to `Current` subscribers would recompute a
+    /// formula whose input content never moved, which is the one-line "fix"
+    /// fz-kdt.44 measured and rejected.
     fn dispatch_changes<Ctx>(
         &mut self,
         mut pending_changes: Vec<FactChange<F>>,
@@ -834,10 +837,18 @@ where
                     ctx,
                 );
             }
-            if content_shift.is_some() || change.readiness_changed() {
+            if let Some(shift) = content_shift {
                 self.enqueue_dependents(
                     FactUse::settled(change.key.clone()),
-                    content_shift.unwrap_or(false),
+                    shift,
+                    &mut pending_changes,
+                    &mut wakes,
+                    external,
+                    ctx,
+                );
+            } else if change.readiness_changed() {
+                self.wake_satisfied_waiters(
+                    FactUse::settled(change.key.clone()),
                     &mut pending_changes,
                     &mut wakes,
                     external,

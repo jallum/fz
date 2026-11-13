@@ -1926,6 +1926,100 @@ fn compiler2_scheduler_readiness_only_movement_evaluates_nobody() {
     assert_eq!(scheduler.pending_jobs(), 0, "nothing may be left to evaluate");
 }
 
+/// A readiness flip at an unchanged revision reaches the jobs parked on a
+/// `Settled` wait and nobody else: the parked job is the only one that has not
+/// yet seen the fact, while a completed `Settled` subscriber already holds the
+/// same content. This covers first-run gating, including a fact that appears
+/// for the first time.
+#[test]
+fn compiler2_scheduler_readiness_flip_wakes_parked_settled_waiters_and_no_completed_subscriber() {
+    let mut scheduler = TestScheduler::new();
+    let upstream = 1_u32;
+    let producer = 2_u32;
+    let subscriber = 3_u32;
+    let parked = 4_u32;
+    let first_parked = 5_u32;
+    let first_producer = 6_u32;
+
+    complete(
+        &mut scheduler,
+        subscriber,
+        HashSet::from([settled("bar")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        producer,
+        HashSet::from([current("foo")]),
+        HashSet::new(),
+        vec!["bar"],
+        vec!["bar"],
+    );
+    let _ = scheduler.pop();
+    let _ = scheduler.pop();
+    let dirtied = complete(
+        &mut scheduler,
+        upstream,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["foo"],
+        vec!["foo"],
+    );
+    assert_eq!(enqueued_jobs(&dirtied), vec![producer]);
+    assert!(!scheduler.facts().is_settled(&"bar"));
+    assert!(
+        wakes_for(&dirtied, subscriber).is_empty(),
+        "dirtying a fact at an unchanged revision must not wake a completed Settled subscriber",
+    );
+
+    complete(
+        &mut scheduler,
+        parked,
+        HashSet::new(),
+        HashSet::from([settled("bar")]),
+        Vec::new(),
+        Vec::new(),
+    );
+    let settled_again = complete(
+        &mut scheduler,
+        producer,
+        HashSet::from([current("foo")]),
+        HashSet::new(),
+        vec!["bar"],
+        Vec::new(),
+    );
+    assert_eq!(
+        enqueued_jobs(&settled_again),
+        vec![parked],
+        "the readiness flip wakes the parked waiter and not the completed subscriber",
+    );
+    assert_eq!(scheduler.facts().revision(&"bar"), Some(1));
+
+    complete(
+        &mut scheduler,
+        first_parked,
+        HashSet::new(),
+        HashSet::from([settled("fresh")]),
+        Vec::new(),
+        Vec::new(),
+    );
+    let appeared = complete(
+        &mut scheduler,
+        first_producer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["fresh"],
+        vec!["fresh"],
+    );
+    assert_eq!(
+        enqueued_jobs(&appeared),
+        vec![first_parked],
+        "a fact's first appearance wakes the job parked on its settledness",
+    );
+}
+
 /// Spec test 2. When the head's content really does move, only the transitive
 /// CONTENT readers evaluate — one hop per completion, exactly as before this
 /// ticket. Transitive finality adds no evaluations.

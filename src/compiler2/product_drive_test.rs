@@ -427,7 +427,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             // pays for the same eventual run twice. `main/0` is self-keyed
             // (R1), so this re-run never wakes its `StaticCallees`,
             // `Recursive` or `InputDemand` either.
-            (WorkStartReason::ChangedRevisionWake, 11),
+            (WorkStartReason::ChangedRevisionWake, 10),
         ]),
         "a reached edit starts source ingestion and only exact changed-revision readers",
     );
@@ -2429,34 +2429,28 @@ fn executable_scoped_products_record_the_shared_executable_fact_as_an_ordinary_d
     }
 }
 
-/// A settled prerequisite's readiness movement reproduces an equal
-/// executable fact without touching any product: dirtying `LoweredBody`
-/// then reconcluding it with the same answer must move `ExecutableFacts`
-/// in readiness only, never bump its revision, and never validate an
-/// unrelated retained product.
+/// A settled prerequisite's readiness movement re-runs nobody. Dirtying
+/// `LoweredBody` moves `ExecutableFacts` in readiness only (same revision) and
+/// wakes no completed subscriber, `Settled` or `Current`; when the
+/// prerequisite settles again at the same revision the executable fact is
+/// settled again without its producer running, and no product is touched.
 #[test]
-fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_without_touching_products() {
+fn a_settled_prerequisites_readiness_flip_settles_its_dependent_fact_without_running_its_producer() {
     let tel = ConfiguredTelemetry::new();
     let executable_fact_trace = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(
         Job,
-        bool,
         Vec<super::super::FactChange<DependencyKey>>,
         Vec<super::super::FactMovement<DependencyKey>>,
-        Vec<FactUse<DependencyKey>>,
     )>::new()));
     let observed_trace = std::rc::Rc::clone(&executable_fact_trace);
     tel.attach_raw_event2::<World, super::super::JobCompletion, _>(
         &["fz", "compiler2", "work_graph", "applied"],
         move |_, _, _, _, completion| {
-            if matches!(completion.job, Job::DeriveExecutableFacts(_)) {
-                observed_trace.borrow_mut().push((
-                    completion.job.clone(),
-                    completion.rebased,
-                    completion.changed.clone(),
-                    completion.movements.clone(),
-                    completion.blocked.clone(),
-                ));
-            }
+            observed_trace.borrow_mut().push((
+                completion.job.clone(),
+                completion.changed.clone(),
+                completion.movements.clone(),
+            ));
         },
     );
     let mut world = World::new();
@@ -2540,39 +2534,26 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         },
         "the executable fact must move only in readiness while its settled prerequisite can move",
     );
-    assert!(
-        dirtied
-            .wakes
-            .iter()
-            .any(|wake| wake.job == producer
-                && wake.cause == FactUse::settled(DependencyKey::Fact(prerequisite.clone()))),
-        "the moved settled prerequisite must wake its exact executable-fact producer: {:?}",
-        dirtied.wakes,
-    );
-    assert!(
-        dirtied
-            .wakes
-            .iter()
-            .all(|wake| wake.cause != FactUse::current(DependencyKey::Fact(prerequisite.clone()))),
-        "the readiness-only prerequisite movement must not wake a Current reader: {:?}",
-        dirtied.wakes,
-    );
-    assert!(
-        dirtied
-            .wakes
-            .iter()
-            .any(|wake| wake.job == observer && wake.cause == FactUse::settled(DependencyKey::Fact(fact.clone()))),
-        "the downstream executable-fact readiness movement must wake its Settled reader: {:?}",
-        dirtied.wakes,
-    );
-    assert!(
-        dirtied
-            .wakes
-            .iter()
-            .all(|wake| wake.cause != FactUse::current(DependencyKey::Fact(fact.clone()))),
-        "the downstream executable-fact readiness movement must not wake its Current reader: {:?}",
-        dirtied.wakes,
-    );
+    for wake in &dirtied.wakes {
+        assert_ne!(
+            wake.job, producer,
+            "a completed Settled subscriber is not woken: {wake:?}"
+        );
+        assert_ne!(
+            wake.job, observer,
+            "a completed Settled subscriber is not woken: {wake:?}"
+        );
+        assert_ne!(
+            wake.cause,
+            FactUse::current(DependencyKey::Fact(prerequisite.clone())),
+            "readiness-only movement must not wake a Current reader",
+        );
+        assert_ne!(
+            wake.cause,
+            FactUse::current(DependencyKey::Fact(fact.clone())),
+            "readiness-only movement must not wake a Current reader",
+        );
+    }
     assert_eq!(world.fact_revision(&prerequisite), Some(prerequisite_revision));
     assert_eq!(world.fact_revision(&fact), Some(revision));
     assert!(!world.fact_is_settled(&prerequisite));
@@ -2603,19 +2584,15 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     )
     .expect("the unchanged prerequisite should reproduce");
     let prerequisite_settled =
-        super::super::drive::ExecutionContext::new(&mut world, &tel).complete_job(prerequisite_job, effects);
+        super::super::drive::ExecutionContext::new(&mut world, &tel).complete_job(prerequisite_job.clone(), effects);
     assert_eq!(world.fact_revision(&prerequisite), Some(prerequisite_revision));
     assert!(
         world.fact_is_settled(&prerequisite),
-        "the equal prerequisite conclusion must restore settledness before its reader reruns"
-    );
-    assert!(
-        !world.fact_is_settled(&fact),
-        "the executable fact must remain dirty until its own producer concludes"
+        "the equal prerequisite conclusion must restore settledness"
     );
     apply_world_fact_movements(&mut driver, &prerequisite_settled.movements);
 
-    let mut settled = None;
+    let mut rerun = Vec::new();
     while let Some(ready) = world.pop_runnable() {
         if ready == observer {
             continue;
@@ -2628,54 +2605,14 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         let completion =
             super::super::drive::ExecutionContext::new(&mut world, &tel).complete_job(ready.clone(), effects);
         apply_world_fact_movements(&mut driver, &completion.movements);
-        if ready == producer
-            && completion
-                .changed
-                .iter()
-                .any(|change| change.key == DependencyKey::Fact(fact.clone()) && change.new_settled)
-        {
-            settled = Some(completion);
-        }
+        rerun.push(ready);
     }
-    let settled = settled.expect("the equal prerequisite cone must restore the target executable fact");
-    let executable_fact_settled = settled
-        .changed
-        .iter()
-        .find(|change| change.key == DependencyKey::Fact(fact.clone()))
-        .unwrap_or_else(|| {
-            panic!(
-                "the equal conclusion must restore executable-fact readiness: changed={:?}, movements={:?}",
-                settled.changed, settled.movements,
-            )
-        });
-    assert_eq!(
-        (
-            executable_fact_settled.old_revision,
-            executable_fact_settled.new_revision,
-            executable_fact_settled.old_settled,
-            executable_fact_settled.new_settled,
-        ),
-        (Some(revision), Some(revision), false, true),
-        "equal reproduction must restore readiness without moving content",
+    assert!(
+        !rerun.contains(&producer),
+        "the executable fact settles again without its producer running: {rerun:?}",
     );
     assert_eq!(world.fact_revision(&fact), Some(revision));
     assert!(world.fact_is_settled(&fact));
-    assert!(
-        settled
-            .wakes
-            .iter()
-            .any(|wake| wake.job == observer && wake.cause == FactUse::settled(DependencyKey::Fact(fact.clone()))),
-        "equal settlement must trace the downstream Settled executable-fact wake: {:?}",
-        settled.wakes,
-    );
-    assert!(
-        settled
-            .wakes
-            .iter()
-            .all(|wake| wake.cause != FactUse::current(DependencyKey::Fact(fact.clone()))),
-        "equal settlement must not trace a downstream Current executable-fact wake: {:?}",
-        settled.wakes,
-    );
 
     assert_eq!(
         driver.pull(&mut WorldProductProducers::new(&mut world, &tel), unrelated_content),
@@ -2699,36 +2636,72 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     }
 
     let trace = executable_fact_trace.borrow();
-    let (traced_job, rebased, changes, movements, blocked) = trace
-        .iter()
-        .find(|(job, _, changes, _, _)| {
-            job == &producer
-                && changes
-                    .iter()
-                    .any(|change| change.key == DependencyKey::Fact(fact.clone()))
-        })
-        .expect("the trace must carry the equal executable-fact conclusion");
-    assert_eq!(traced_job, &producer);
-    assert!(!rebased, "a readiness-only input movement is not a ground shift");
-    assert!(blocked.is_empty(), "the equal executable-fact conclusion must be final");
-    assert!(
-        changes.iter().any(|change| {
-            change.key == DependencyKey::Fact(fact.clone())
-                && change.old_revision == Some(revision)
-                && change.new_revision == Some(revision)
-                && !change.old_settled
-                && change.new_settled
-        }),
-        "the work-graph trace must retain the equal readiness change: {changes:?}",
-    );
-    assert!(
-        movements
+    let fact_movements = |settled: bool| {
+        trace
             .iter()
-            .any(|movement| movement.key == DependencyKey::Fact(fact.clone())
-                && movement.state.revision == Some(revision)
-                && movement.state.settled),
-        "the work-graph trace must retain the fact's restored settled state: {movements:?}",
+            .flat_map(|(_, _, movements)| movements)
+            .filter(|movement| {
+                movement.key == DependencyKey::Fact(fact.clone())
+                    && movement.state.revision == Some(revision)
+                    && movement.state.settled == settled
+            })
+            .count()
+    };
+    assert_eq!(
+        fact_movements(false),
+        1,
+        "the work-graph trace must retain the fact's loss of readiness: {trace:?}",
     );
+    assert_eq!(
+        fact_movements(true),
+        1,
+        "the work-graph trace must retain the fact's restored readiness: {trace:?}",
+    );
+    assert!(
+        trace.iter().any(|(job, changes, _)| job == &prerequisite_job
+            && changes.iter().any(|change| {
+                change.key == DependencyKey::Fact(prerequisite.clone())
+                    && change.old_revision == Some(prerequisite_revision)
+                    && change.new_revision == Some(prerequisite_revision)
+                    && !change.old_settled
+                    && change.new_settled
+            })),
+        "the work-graph trace must retain the prerequisite's readiness change: {trace:?}",
+    );
+    assert!(
+        trace.iter().all(|(job, _, _)| job != &producer),
+        "no completion of the executable fact's producer appears in the trace: {trace:?}",
+    );
+}
+
+/// An executable's facts are derived once per executable: no readiness flip
+/// and no equal re-derivation sends a producer around again.
+#[test]
+fn each_executable_derives_its_facts_exactly_once() {
+    let tel = ConfiguredTelemetry::new();
+    let runs = std::rc::Rc::new(std::cell::RefCell::new(Vec::<super::super::ExecutableKey>::new()));
+    let observed = std::rc::Rc::clone(&runs);
+    tel.attach_raw_event2::<World, super::super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            if let Job::DeriveExecutableFacts(key) = &completion.job {
+                observed.borrow_mut().push(key.clone());
+            }
+        },
+    );
+    let mut world = World::new();
+    world.submit_code(
+        Some("derive_once.fz".to_string()),
+        "def main(), do: Enum.count(Stream.map([1], fn x -> x + 1 end))\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    super::super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+        .expect("the program should settle");
+
+    let runs = runs.borrow();
+    let keys = runs.iter().collect::<std::collections::HashSet<_>>();
+    assert!(!keys.is_empty());
+    assert_eq!(runs.len(), keys.len(), "every executable derives its facts once");
 }
 
 #[test]
