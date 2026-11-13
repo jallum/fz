@@ -6,14 +6,15 @@
   "blocks": [
     "fz-348.3"
   ],
+  "closed_at": "2026-11-13T00:40:32Z",
   "created": "2026-11-12T20:15:48Z",
   "description": "instantiate_open_inputs (src/compiler2/jobs/semantic.rs) asks column_is_open: a callable column stays on plain has_vars, every other column reads has_open_vars.\n\nFails before, passes after: instantiate_open_inputs_keeps_a_list_of_closures (left Ty(7) is [], right Ty(17)); instantiate_open_inputs_refines_a_callable_column_by_the_contract_arrow guards the callable column; fixture 01080 (base prints 1 1 2 2, Elixir 2 3 2 2) on three paths. Fixture 01082: at base it stops with the boxed-lane error; with the first site alone it compiles but Enum.map over a list of closures loses elements ([3] where Elixir prints [3, 4], [3, 3, 3] and [3, 3]); it passes here.\n\nAcceptance: full gate green; no pin changes.",
   "id": "fz-348.2",
   "labels": [],
   "parent": "fz-348",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A list of closures is not an open column",
   "type": "task",
-  "updated_at": "2026-11-12T20:19:15Z"
+  "updated_at": "2026-11-13T00:40:32Z"
 }
