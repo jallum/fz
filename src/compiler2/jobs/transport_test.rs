@@ -540,3 +540,53 @@ fn a_callable_naming_no_function_is_carried_at_every_position_it_appears() {
         );
     }
 }
+
+/// A tuple return whose three fields are calls to three not-yet-settled
+/// functions names all three as waits in its first pull, so the position costs
+/// its owner two pulls: one to discover its waits, one to resume.
+#[test]
+fn a_recipe_with_three_unready_children_costs_its_owner_two_pulls() {
+    use crate::compiler2::pull::{ProductKey, ProductRequestId, PullOutcome, PullWait};
+    use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
+    use crate::telemetry::ConfiguredTelemetry;
+
+    let tel = ConfiguredTelemetry::new();
+    let evaluations = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(ProductKey, PullOutcome)>::new()));
+    let observed = std::rc::Rc::clone(&evaluations);
+    tel.attach_raw_event3::<ProductKey, ProductRequestId, PullOutcome, _>(
+        &["fz", "compiler2", "pull", "product", "evaluated"],
+        move |_, _, _, key, _, outcome| observed.borrow_mut().push((key.clone(), outcome.clone())),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("three_unready.fz".to_string()),
+        text: "def a(x), do: x + 1\ndef b(x), do: {x, x}\ndef c(x), do: [x]\ndef main(), do: {a(1), b(2), c(3)}\n"
+            .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.compile_root_jit(root).expect("compiles");
+
+    let evaluations = evaluations.borrow();
+    let three_wait_owners: Vec<&ProductKey> = evaluations
+        .iter()
+        .filter(|(key, outcome)| {
+            matches!(key, ProductKey::TransportShape(_))
+                && matches!(outcome, PullOutcome::Waiting(waits)
+                    if waits.len() == 3 && waits.iter().all(|wait| matches!(wait, PullWait::Product(ProductKey::TransportShape(_)))))
+        })
+        .map(|(key, _)| key)
+        .collect();
+    assert!(
+        !three_wait_owners.is_empty(),
+        "a tuple of three unready calls names its three waits in one evaluation"
+    );
+    for owner in three_wait_owners {
+        let pulls = evaluations.iter().filter(|(key, _)| key == owner).count();
+        assert_eq!(pulls, 2, "{owner:?} is pulled to discover its waits and once to resume");
+    }
+}
