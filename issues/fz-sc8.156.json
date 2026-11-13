@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T20:08:58Z",
   "created": "2026-11-13T19:44:48Z",
   "description": "Approved by the user 2026-11-13 (page /Users/j5n/Workspace/fz-sc8.146.html, change 3), including rewriting the diamond test.\n\nSymptom: one group of 102 mutually recursive reach products takes 3,391 requests where ~204 would do (1,103 re-evaluations with an identical wait list while nothing waited on had settled; 1,692 memo hits). Cause: commit_members (pull.rs ~1085-1105) invalidates the readers of a settled product; for a pending reader that drops its pending formula, and mutate_product_wave (pull.rs ~1289-1304) then cascades the invalidation to that reader's pending readers, transitively. Each small settle erases the cycle evidence pending_strong_component needs, so the group is re-swept.\n\nChange: an invalidation seeded by a commit stops at the first pending reader. Fact-seeded and explicit invalidations (invalidate_products, reject_group) keep the full cascade; removing it everywhere fails reach::tests::a_callee_that_grows_an_edge_reopens_the_reach_above_it_and_closes_a_cycle and two retained_recursive_validation tests. The spike threads a bool through mutate_product_wave (rg146/E5_pull_commit_no_pending_cascade.patch); the build expresses it in the mutation itself so there is one wave function and no flag.\n\nSoundness argument: a pending reader C of pending B observed B as absent; a leaf settling under B does not change that; when B settles, B's own commit invalidates C.\n\nMeasured on .127 spike + transport cut: distiller 52,352 -\u003e 48,825 (finishes on the default 50,000 budget); the 102-group 3,391 -\u003e 431; keys/jobs unchanged; outputs byte-identical on three programs; fixture_matrix 3119/0. Not yet measured alone on develop.\n\nTests: pull_test changed_group_drains_produced_and_pending_reader_diamond_in_semantic_order pins the cascade (pull_test.rs ~744) and is rewritten to the new rule (direct pending reader loses its formula, the one above keeps it). New test: a settle does not make a pending product two levels up re-evaluate, observed through request telemetry.\n\nDone when: full gate green, falling pins lowered and listed, distiller request count measured at the landing commit on develop alone and with .127 + the transport change.",
   "id": "fz-sc8.156",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A product that settles wakes its readers, not their readers",
   "type": "task",
-  "updated_at": "2026-11-13T19:44:48Z"
+  "updated_at": "2026-11-13T20:08:58Z"
 }
