@@ -7,9 +7,15 @@
   "id": "fz-sc8.133",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "2026-11-13 grid on 549fd7447 (develop + .140 + .147 + .131), interp, binaries in scratchpad grid/: OptionParser's library spike S1 (nested stream flattened) alone makes s133/min.fz, min_missing.fz, x2.fz, the sfor/ for/reduce programs, R4, M1, n1, anat/min.fz and min_plus_site compile and match; the one-fact spike alone leaves the for/reduce programs at 'Enumerable.reduce/3 has no implementation' (the any of the bare-fun row widens Enum.to_list to any and drives one lambda with {any, any} and int | float); both together equal S1 alone. Recommendation withdrawn: this ticket waits for fz-sc8.127 and should follow its per-row design; it may be unnecessary once fun rows are not manufactured. The missing/no-implementation forms are the same root (sfor/ investigation), not separate bugs.",
+      "timestamp": "2026-11-13T14:43:07Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A public closure callsite's settled return agrees with its semantic result",
   "type": "bug",
-  "updated_at": "2026-11-13T05:17:23Z"
+  "updated_at": "2026-11-13T14:43:07Z"
 }
