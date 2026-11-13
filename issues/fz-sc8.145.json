@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T04:20:10Z",
   "created": "2026-11-13T03:52:32Z",
   "description": "develop d0c3ae00c is red on fixture_matrix fixtures_describe_themselves: 01100 and 01101 each name two fixtures (fz-sc8.139's wide-receiver fixtures and fz-rs7.9/.8's unary-plus and strict-equality fixtures). Both epics were given overlapping blocks. Fix: fz-rs7 keeps 01100-01119; fz-sc8's block becomes 01120-01199; the three fz-sc8.139 fixtures move to 01120-01122; .agent/docs/fixtures.md states both blocks.",
   "id": "fz-sc8.145",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 0,
-  "status": "open",
+  "status": "closed",
   "title": "Each fixture number names one fixture",
   "type": "bug",
-  "updated_at": "2026-11-13T03:52:32Z"
+  "updated_at": "2026-11-13T04:20:10Z"
 }
