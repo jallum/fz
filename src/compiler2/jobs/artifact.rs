@@ -222,7 +222,7 @@ pub(crate) fn produce_executable_effects_product<T: crate::telemetry::Telemetry>
     types: &Types,
 ) -> PullOutcome {
     let materialized_key = ProductKey::MaterializedExecutable(executable.clone());
-    let materialized = match context.read_product(tel, materialized_key.clone(), types) {
+    let materialized = match context.read_product(tel, &materialized_key, types) {
         Some(ProductValue::MaterializedExecutable(materialized)) => Rc::clone(materialized),
         Some(other) => panic!("materialized executable product produced unexpected value {other:?}"),
         None => return PullOutcome::wait_on_product(materialized_key),
@@ -241,7 +241,7 @@ pub(crate) fn produce_executable_effects_product<T: crate::telemetry::Telemetry>
     callees.dedup();
     for callee in callees {
         let key = ProductKey::ExecutableEffects(callee);
-        match context.read_recursive_product(tel, key.clone(), &current, types) {
+        match context.read_recursive_product(tel, &key, &current, types) {
             RecursiveProductRead::Ready(ProductValue::ExecutableEffects(callee_effects)) => {
                 effects.union_with(*callee_effects);
             }
@@ -300,7 +300,7 @@ pub(crate) fn produce_abi_executable_product(
 ) -> PullOutcome {
     let mut waits = Vec::new();
     let materialized_key = ProductKey::MaterializedExecutable(executable.clone());
-    let materialized = match context.read_product(tel, materialized_key.clone(), world.types()) {
+    let materialized = match context.read_product(tel, &materialized_key, world.types()) {
         Some(ProductValue::MaterializedExecutable(materialized)) => Some(Rc::clone(materialized)),
         Some(other) => panic!("materialized executable product produced unexpected value {other:?}"),
         None => {
@@ -309,7 +309,7 @@ pub(crate) fn produce_abi_executable_product(
         }
     };
     let effects_key = ProductKey::ExecutableEffects(executable.clone());
-    let effects = match context.read_product(tel, effects_key.clone(), world.types()) {
+    let effects = match context.read_product(tel, &effects_key, world.types()) {
         Some(ProductValue::ExecutableEffects(effects)) => Some(*effects),
         Some(other) => panic!("executable effects product produced unexpected value {other:?}"),
         None => {
@@ -359,7 +359,7 @@ pub(crate) fn produce_abi_executable_product(
             continue;
         }
         let key = ProductKey::CallableConstruction(position.clone());
-        match context.read_product(tel, key.clone(), world.types()) {
+        match context.read_product(tel, &key, world.types()) {
             Some(ProductValue::CallableConstruction(owner)) => {
                 callable_owners.push(PositionedCallableConstructionOwner {
                     position: position.clone(),
@@ -679,7 +679,7 @@ fn read_transport_layouts(
     let mut waits = Vec::new();
     for position in positions {
         let key = ProductKey::TransportShape(position.clone());
-        match context.read_product(tel, key.clone(), types) {
+        match context.read_product(tel, &key, types) {
             Some(ProductValue::TransportShape(super::super::pull::TransportShapeFact::Layout(layout))) => {
                 layouts.push((position, *layout));
             }

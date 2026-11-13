@@ -151,7 +151,7 @@ pub(crate) fn produce_reach_product(
     let mut recursive_group: Option<Vec<ProductKey>> = None;
     for successor in successors {
         let key = ProductKey::Reach(successor);
-        match context.read_recursive_product(tel, key.clone(), &current, types) {
+        match context.read_recursive_product(tel, &key, &current, types) {
             RecursiveProductRead::Ready(ProductValue::Reach(successor_reach)) => {
                 reach.extend(successor_reach.iter().cloned());
             }

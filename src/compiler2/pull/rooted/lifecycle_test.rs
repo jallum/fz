@@ -132,7 +132,7 @@ impl ProductProducers for EqualMemberProducers {
             }
         } else if matches!(key, ProductKey::NativeProgram(_)) {
             if context
-                .read_product(&ConfiguredTelemetry::new(), packaging(), &self.types)
+                .read_product(&ConfiguredTelemetry::new(), &packaging(), &self.types)
                 .is_none()
             {
                 return PullOutcome::wait_on_product(packaging());
