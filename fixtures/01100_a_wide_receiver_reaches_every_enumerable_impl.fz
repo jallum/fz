@@ -1,0 +1,8 @@
+#---
+# purpose: "A stream over a Map.put result, whose spec says any, reaches the Map impl of Enumerable even though the Stream arm already matches; it prints what Elixir prints instead of hanging"
+# oracle: 01100_a_wide_receiver_reaches_every_enumerable_impl.oracle.exs
+#---
+def main() do
+  dbg(Enum.to_list(Stream.map(Map.put(%{}, 1, 1), &(&1))))
+  dbg(Enum.to_list([2]))
+end

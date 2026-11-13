@@ -1541,6 +1541,40 @@ fn resolve_function_call(
     ))
 }
 
+/// Demands every `defimpl` whose target overlaps the receiver, so the arm set
+/// read next is complete whatever order the drive defined the impls in. Each
+/// `defimpl` is its own typed implementation owner recorded in the provider
+/// index at scope time (including built-ins co-located with the protocol, and
+/// impls in a module the program never otherwise reaches by name); the impl is
+/// the unit of demand. The provider index grows across the drive as more source
+/// is scoped, so the read is registered unconditionally -- even before any
+/// provider has been indexed -- or a later `defimpl` would never re-wake the
+/// callsite. Returns whether any overlapping provider is still undefined.
+fn demand_overlapping_impl_providers(
+    world: &mut World,
+    protocol: ModuleId,
+    receiver_ty: Ty,
+    uses: &mut UseCollector,
+) -> bool {
+    uses.read(FactKey::ProtocolImplProviders(protocol));
+    let mut any_undefined = false;
+    for (target, provider) in world.protocol_impl_providers(protocol) {
+        let mut target_reads = Vec::new();
+        let target_ty = world.module_impl_target_ty(target, &mut target_reads);
+        for read in target_reads {
+            uses.read(read);
+        }
+        if !protocol_receiver_target_overlaps(world, receiver_ty, target_ty) {
+            continue;
+        }
+        if world.module_defined_revision(provider).is_none() {
+            uses.wait(FactKey::ModuleDefined(provider));
+            any_undefined = true;
+        }
+    }
+    any_undefined
+}
+
 fn resolve_protocol_call(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -1581,6 +1615,10 @@ fn resolve_protocol_call(
 
     let receiver_ty = input_types.first().cloned().unwrap_or_else(|| any_ty(world));
 
+    if demand_overlapping_impl_providers(world, protocol, receiver_ty, uses) {
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
+    }
+
     let mut matches = Vec::new();
     let arms = world
         .protocol_dispatch(protocol)
@@ -1605,50 +1643,7 @@ fn resolve_protocol_call(
     }
 
     if matches.is_empty() {
-        // The dispatch holds no arm for this receiver yet. Each `defimpl` is its
-        // own typed implementation owner recorded in the provider index at scope
-        // time (including built-ins co-located with the protocol, and impls in a
-        // module the program never otherwise reaches by name). Demand the impl
-        // module whose target overlaps the receiver — the impl is the unit of
-        // demand. The provider index grows across the drive as more source is
-        // scoped (every module containing a `defimpl` for this protocol is a
-        // separate publisher), so the read must be registered unconditionally —
-        // even before any provider has been indexed — or a later `defimpl`
-        // discovery would never re-wake this callsite. There is no
-        // receiver-type module-name scan: referencing the protocol is the
-        // single discovery path.
-        uses.read(FactKey::ProtocolImplProviders(protocol));
-        let mut any_undefined = false;
-        for (target, provider) in world.protocol_impl_providers(protocol) {
-            let mut target_reads = Vec::new();
-            let target_ty = world.module_impl_target_ty(target, &mut target_reads);
-            for read in target_reads {
-                uses.read(read);
-            }
-            if !protocol_receiver_target_overlaps(world, receiver_ty, target_ty) {
-                continue;
-            }
-            if world.module_defined_revision(provider).is_none() {
-                // Every overlapping provider not yet defined earns its own
-                // wait: any of them may still supply the matching
-                // implementation once it is.
-                uses.wait(FactKey::ModuleDefined(provider));
-                any_undefined = true;
-            }
-        }
-        // When every overlapping provider is already defined and none
-        // matched, no further `defimpl` can appear here unnoticed: the
-        // `ProtocolImplProviders` read above re-wakes this callsite if one
-        // does, so the call is bottom, not an open wait.
-        return Ok((
-            CallSiteResolution::Unresolved,
-            Vec::new(),
-            if any_undefined {
-                CallReturn::awaited(uses)
-            } else {
-                CallReturn::Bottom
-            },
-        ));
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::Bottom));
     }
 
     let matches = merge_protocol_matches_by_function(world, matches);

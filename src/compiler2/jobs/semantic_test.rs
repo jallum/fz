@@ -822,3 +822,63 @@ fn instantiate_open_inputs_refines_a_callable_column_by_the_contract_arrow() {
         .remove(0);
     assert!(world.types().is_integer(&clause.args[0]));
 }
+
+/// A protocol call whose receiver is `any` could reach any implementation, so
+/// the callsite waits on every overlapping implementation's definition before
+/// it resolves, including when an arm it already matches (the stream's) is
+/// defined. A `Map.put` result is typed `any` by its spec, and reducing it
+/// through a stream must still compile the `Map` implementation the runtime
+/// value needs.
+#[test]
+fn an_any_receiver_waits_on_every_overlapping_impl_provider_even_when_an_arm_matches() {
+    use crate::compiler2::drive::DependencyKey;
+    use crate::compiler2::world::JobCompletion;
+    use crate::modules::identity::ModuleName;
+
+    let tel = ConfiguredTelemetry::new();
+    let awaited: Rc<RefCell<HashSet<ModuleId>>> = Rc::default();
+    let observed = Rc::clone(&awaited);
+    tel.attach_raw_event2::<World, JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _world, completion| {
+            if !matches!(completion.job, Job::AnalyzeActivation(_)) {
+                return;
+            }
+            for blocked in &completion.step.blocked {
+                if let DependencyKey::Fact(FactKey::ModuleDefined(module)) = blocked.fact() {
+                    observed.borrow_mut().insert(*module);
+                }
+            }
+        },
+    );
+
+    let mut world = World::new();
+    world.submit_code(
+        Some("wide_receiver.fz".to_string()),
+        "def main(), do: Enum.to_list(Stream.map(Map.put(%{}, 1, 1), &(&1)))\n".to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert!(matches!(
+        ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+
+    let enumerable = world.reference_module(ModuleName::parse_dotted("Enumerable").unwrap());
+    let providers = world.protocol_impl_providers(enumerable);
+    let awaited = awaited.borrow();
+    for target_name in ["Map", "List", "Range"] {
+        let provider = providers
+            .iter()
+            .find(|(target, _)| {
+                world
+                    .module_name(*target)
+                    .is_some_and(|name| name.to_string() == target_name)
+            })
+            .unwrap_or_else(|| panic!("Enumerable has a provider for {target_name}"))
+            .1;
+        assert!(
+            awaited.contains(&provider),
+            "the callsite never waited on the Enumerable.{target_name} implementation's definition"
+        );
+    }
+}

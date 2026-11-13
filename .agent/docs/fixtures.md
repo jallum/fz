@@ -107,6 +107,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01040-01059` | fz-sc8 (session fz-38: .77, .105) | in use through `01042` |
 | `01060-01079` | fz-sc8 (stack #274)               | in use through `01078` |
 | `01080-01099` | unallocated                       | free                   |
+| `01100-01199` | fz-sc8 (.139)                     | in use through `01102` |
 
 Behavioural routing lives in the filename when a fixture is path-specific.
 Ordinary fixtures run on all three compiler2 paths by default. A prefix before
