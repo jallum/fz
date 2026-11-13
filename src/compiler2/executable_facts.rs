@@ -358,7 +358,7 @@ pub(crate) fn project_executable_facts(
         .filter(|row| row.len() >= capture_count)
         .map(|row| {
             let captures = world.types_mut().address_inputs(&row[..capture_count]);
-            let surface = prepare_surface(world, &mut demand_builder, &row[capture_count..]);
+            let surface = prepare_surface(world, &mut demand_builder, &row[capture_count..]).clone();
             CallableActivationInput {
                 captures,
                 surface,
@@ -500,7 +500,26 @@ fn prepare_runtime_demand_type_inputs(
     builder
 }
 
-fn prepare_surface(
+/// Records the surface a consumer of this executable's facts looks up by its
+/// raw inputs: a callsite target's, a closure call's or an activation row's.
+/// Surfaces nested inside a type's projection travel in that projection and
+/// are never recorded here, so what is recorded does not depend on which
+/// projections were memoized.
+fn prepare_surface<'a>(
+    world: &mut World,
+    builder: &'a mut RuntimeDemandTypeBuilder,
+    surface_inputs: &[Ty],
+) -> &'a CallableSurface {
+    let surface = resolve_surface(world, builder, surface_inputs);
+    let surfaces = &mut builder.inputs.surfaces;
+    surfaces
+        .entry(surface.inputs.clone())
+        .or_insert_with(|| surface.clone());
+    surfaces.insert(surface_inputs.to_vec(), surface);
+    &surfaces[surface_inputs]
+}
+
+fn resolve_surface(
     world: &mut World,
     builder: &mut RuntimeDemandTypeBuilder,
     surface_inputs: &[Ty],
@@ -508,19 +527,10 @@ fn prepare_surface(
     for &ty in surface_inputs {
         prepare_type_projection(world, builder, ty);
     }
-    if let Some(surface) = builder.inputs.surfaces.get(surface_inputs) {
-        return surface.clone();
-    }
     let surface = CallableSurface::new(surface_inputs.to_vec(), world.types_mut());
     for &ty in &surface.inputs {
         prepare_type_projection(world, builder, ty);
     }
-    builder.inputs.surfaces.insert(surface_inputs.to_vec(), surface.clone());
-    builder
-        .inputs
-        .surfaces
-        .entry(surface.inputs.clone())
-        .or_insert_with(|| surface.clone());
     surface
 }
 
@@ -545,7 +555,7 @@ fn prepare_type_projection(world: &mut World, builder: &mut RuntimeDemandTypeBui
     let callable_value_demand = world.types_mut().callable_value_clauses(&ty).and_then(|clauses| {
         let resolved = clauses
             .into_iter()
-            .map(|clause| prepare_surface(world, builder, &clause.args))
+            .map(|clause| resolve_surface(world, builder, &clause.args))
             .collect::<BTreeSet<_>>();
         (!resolved.is_empty()).then(|| {
             RuntimeDemand::callable(CallableDemand {
@@ -605,7 +615,7 @@ fn prepare_runtime_demand_for_type(
     }
     let resolved = clauses
         .into_iter()
-        .map(|clause| prepare_surface(world, builder, &clause.args))
+        .map(|clause| resolve_surface(world, builder, &clause.args))
         .collect();
     RuntimeDemand::callable(CallableDemand {
         resolved,

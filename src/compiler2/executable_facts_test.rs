@@ -87,3 +87,21 @@ end
     );
     assert_eq!(hashed, 0, "{hashed} value ids were hashed while building the tables");
 }
+
+/// What one type contributes to an executable's runtime-demand inputs is a
+/// function of the type alone: preparing it again, once the world has memoized
+/// its projection, yields the same inputs as preparing it cold.
+#[test]
+fn preparing_a_callable_type_twice_yields_equal_inputs() {
+    let mut world = World::new();
+    let int = world.types_mut().int();
+    let callable = world.types_mut().arrow(&[int], int);
+    let any = world.types_mut().any();
+
+    let mut cold = RuntimeDemandTypeBuilder::new(any);
+    prepare_type_projection(&mut world, &mut cold, callable);
+    let mut warm = RuntimeDemandTypeBuilder::new(any);
+    prepare_type_projection(&mut world, &mut warm, callable);
+
+    assert_eq!(cold.inputs, warm.inputs);
+}
