@@ -2983,14 +2983,13 @@ impl Types {
     }
 
     pub fn runtime_envelope(&mut self, ty: Ty) -> Ty {
-        let descr = runtime_envelope(
+        runtime_envelope(
             self,
             ty,
             RuntimeEnvelopePolarity::Positive,
             RuntimeEnvelopePurpose::Projection,
             &Sigma::default(),
-        );
-        self.intern(descr)
+        )
     }
 
     /// A clause's domain over every instantiation of its free type variables:
@@ -3004,17 +3003,13 @@ impl Types {
     /// A variable with a closed bound in `closed` reads as that bound where it
     /// occurs covariantly.
     pub fn clause_domain_envelope(&mut self, ty: Ty, closed: &Sigma<Ty>) -> Ty {
-        if !self.has_vars(&ty) {
-            return ty;
-        }
-        let descr = runtime_envelope(
+        runtime_envelope(
             self,
             ty,
             RuntimeEnvelopePolarity::Positive,
             RuntimeEnvelopePurpose::ClauseDomain,
             closed,
-        );
-        self.intern(descr)
+        )
     }
 
     /// The static surface from which a runtime test and its projections are
@@ -3044,14 +3039,13 @@ impl Types {
     /// fz-kdt.125's defect one tuple deep, and leave a depth-0/depth-1 seam
     /// nothing in the runtime justifies.
     pub(crate) fn runtime_type_test_envelope(&mut self, ty: Ty) -> Ty {
-        let descr = runtime_envelope(
+        runtime_envelope(
             self,
             ty,
             RuntimeEnvelopePolarity::Positive,
             RuntimeEnvelopePurpose::Predicate,
             &Sigma::default(),
-        );
-        self.intern(descr)
+        )
     }
 
     pub fn instantiate(&mut self, a: &Ty, sigma: &Sigma<Ty>) -> Ty {
@@ -3284,8 +3278,7 @@ impl Types {
     }
 
     pub fn erase_closure_identity(&mut self, a: &Ty) -> Ty {
-        let d = erase_closure_identity(self, *a);
-        self.intern(d)
+        erase_closure_identity(self, *a)
     }
 
     /// The type as the runtime reads it: every brand erased, at any depth. A
@@ -4385,7 +4378,13 @@ fn runtime_envelope(
     polarity: RuntimeEnvelopePolarity,
     purpose: RuntimeEnvelopePurpose,
     bounds: &Sigma<Ty>,
-) -> Descr {
+) -> Ty {
+    if purpose == RuntimeEnvelopePurpose::ClauseDomain && !types.has_vars(&ty) {
+        return ty;
+    }
+    if is_envelope_leaf(types.descr(&ty)) {
+        return types.unchanged(ty);
+    }
     let mut descr = types.descr(&ty).clone();
     if !descr.vars.values.is_empty() {
         match (polarity, descr.vars.cofinite) {
@@ -4395,9 +4394,9 @@ fn runtime_envelope(
                     let cx = types.ctx();
                     descr = descr.union(cx, &bound);
                 }
-                None => return Descr::any(),
+                None => return types.any(),
             },
-            (RuntimeEnvelopePolarity::Negative, true) => return Descr::none(),
+            (RuntimeEnvelopePolarity::Negative, true) => return types.none(),
             (RuntimeEnvelopePolarity::Negative, false) => descr.vars = FiniteSet::none(),
         }
     }
@@ -4438,7 +4437,18 @@ fn runtime_envelope(
         .into_iter()
         .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, bounds, runtime_map_sig))
         .collect();
-    descr
+    types.intern(descr)
+}
+
+/// A descriptor with no variable and no structural axis: nothing in it is
+/// rewritten at any polarity or purpose, so its envelope is itself.
+fn is_envelope_leaf(d: &Descr) -> bool {
+    d.vars.values.is_empty()
+        && d.tuples.is_empty()
+        && d.lists.is_empty()
+        && d.resources.is_empty()
+        && d.funcs.is_empty()
+        && d.maps.is_empty()
 }
 
 /// The function axis reduced to the one question the runtime can ask of a
@@ -4492,7 +4502,7 @@ fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec
                 .captures
                 .iter()
                 .map(|capture| {
-                    runtime_envelope_ty(
+                    runtime_envelope(
                         types,
                         *capture,
                         RuntimeEnvelopePolarity::Positive,
@@ -4514,20 +4524,6 @@ fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec
         clauses.push(Conj { pos, neg: Vec::new() });
     }
     clauses
-}
-
-fn runtime_envelope_ty(
-    types: &mut Types,
-    ty: Ty,
-    polarity: RuntimeEnvelopePolarity,
-    purpose: RuntimeEnvelopePurpose,
-    bounds: &Sigma<Ty>,
-) -> Ty {
-    if purpose == RuntimeEnvelopePurpose::ClauseDomain && !types.has_vars(&ty) {
-        return ty;
-    }
-    let descr = runtime_envelope(types, ty, polarity, purpose, bounds);
-    types.intern(descr)
 }
 
 fn runtime_structural_conj<T>(
@@ -4560,7 +4556,7 @@ fn runtime_tuple_sig(
     let elems = sig
         .elems
         .into_iter()
-        .map(|ty| runtime_envelope_ty(types, ty, polarity, purpose, bounds))
+        .map(|ty| runtime_envelope(types, ty, polarity, purpose, bounds))
         .collect::<Vec<_>>();
     (!elems.iter().any(|ty| types.is_empty(ty))).then_some(TupleSig { elems })
 }
@@ -4575,9 +4571,9 @@ fn runtime_arrow_sig(
     let args = sig
         .args
         .iter()
-        .map(|ty| runtime_envelope_ty(types, *ty, polarity.flipped(), purpose, bounds))
+        .map(|ty| runtime_envelope(types, *ty, polarity.flipped(), purpose, bounds))
         .collect();
-    let ret = runtime_envelope_ty(types, sig.ret, polarity, purpose, bounds);
+    let ret = runtime_envelope(types, sig.ret, polarity, purpose, bounds);
     Some(ArrowSig {
         args,
         ret,
@@ -4594,7 +4590,7 @@ fn runtime_list_sig(
 ) -> Option<ListSig> {
     let elem = sig
         .elem
-        .map(|ty| runtime_envelope_ty(types, ty, polarity, purpose, bounds));
+        .map(|ty| runtime_envelope(types, ty, polarity, purpose, bounds));
     match elem {
         Some(elem) if types.is_empty(&elem) && !sig.empty => None,
         Some(elem) if types.is_empty(&elem) => Some(ListSig::empty()),
@@ -4609,7 +4605,7 @@ fn runtime_resource_sig(
     purpose: RuntimeEnvelopePurpose,
     bounds: &Sigma<Ty>,
 ) -> Option<ResourceSig> {
-    let payload = runtime_envelope_ty(types, sig.payload, polarity, purpose, bounds);
+    let payload = runtime_envelope(types, sig.payload, polarity, purpose, bounds);
     (!types.is_empty(&payload)).then_some(ResourceSig { payload })
 }
 
@@ -4642,7 +4638,7 @@ fn runtime_map_sig(
             let fields = sig
                 .fields
                 .into_iter()
-                .map(|(key, ty)| (key, runtime_envelope_ty(types, ty, polarity, purpose, bounds)))
+                .map(|(key, ty)| (key, runtime_envelope(types, ty, polarity, purpose, bounds)))
                 .collect::<BTreeMap<_, _>>();
             (!fields.values().any(|ty| types.is_empty(ty))).then_some(sigs::MapSig { fields })
         }
@@ -4698,9 +4694,12 @@ fn is_literal(cx: TyCtx<'_>, a: &Ty) -> bool {
 /// captured closure go too and same-typed literals still share one body. A
 /// literal with no captures has nothing left to say once its brand is gone, so
 /// it erases to the bare arrow it always did.
-fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
+fn erase_closure_identity(t: &mut Types, a: Ty) -> Ty {
+    if !mentions_closure_literal(t.ctx(), t.descr(&a)) {
+        return t.unchanged(a);
+    }
     let base = t.descr(&a).clone();
-    let mut erased = map_recursive_inputs(t, base, erase_closure_identity);
+    let mut erased = map_recursive_inputs_with(t, base, &mut erase_closure_identity);
     for conj in &mut erased.funcs {
         for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
             let Some(lit) = sig.lit.take() else {
@@ -4712,10 +4711,7 @@ fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
             let captures = lit
                 .captures
                 .iter()
-                .map(|capture| {
-                    let capture = erase_closure_identity(t, *capture);
-                    t.intern(capture)
-                })
+                .map(|capture| erase_closure_identity(t, *capture))
                 .collect();
             sig.lit = Some(ClosureLit {
                 kind: lit.kind,
@@ -4724,7 +4720,38 @@ fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
             });
         }
     }
-    erased
+    t.intern(erased)
+}
+
+/// Whether a closure literal occurs at any depth, in a position the walk of
+/// [`has_vars`] reaches: the types a closure literal's signature and captures
+/// name are children like any other.
+fn mentions_closure_literal(cx: TyCtx<'_>, d: &Descr) -> bool {
+    let walk = |t: &Ty| mentions_closure_literal(cx, cx.descr(t));
+    d.tuples
+        .iter()
+        .any(|c| c.pos.iter().chain(c.neg.iter()).any(|sig| sig.elems.iter().any(&walk)))
+        || d.lists.iter().any(|c| {
+            c.pos
+                .iter()
+                .chain(c.neg.iter())
+                .any(|sig| sig.elem.is_some_and(|t| walk(&t)))
+        })
+        || d.resources
+            .iter()
+            .any(|c| c.pos.iter().chain(c.neg.iter()).any(|sig| walk(&sig.payload)))
+        || d.funcs.iter().any(|c| {
+            c.pos
+                .iter()
+                .chain(c.neg.iter())
+                .any(|sig| sig.lit.is_some() || sig.args.iter().any(&walk) || walk(&sig.ret))
+        })
+        || d.maps.iter().any(|c| {
+            c.pos
+                .iter()
+                .chain(c.neg.iter())
+                .any(|sig| sig.fields.values().any(&walk))
+        })
 }
 
 /// `enclosing` holds every lambda whose captures the type sits inside, sorted.
@@ -5008,18 +5035,19 @@ fn records_of_one_kind(t: &Types, a: Ty, b: Ty) -> Option<(Fields, Fields, Vec<M
     })
 }
 
+/// `a` with its variables replaced by `sigma`, for a type that has some: the
+/// callers answer a variable-free type with itself before asking.
 fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
     let mut base = t.descr(&a).clone();
-    if !has_vars(t.ctx(), &base, false) {
-        return base;
-    }
     let mut substituted = Descr::none();
+    let mut replaced = false;
     if !base.vars.cofinite {
         let mut new_set = BTreeSet::new();
         for id in &base.vars.values {
             match sigma.get(id) {
                 Some(replacement) => {
                     substituted = substituted.union(t.ctx(), t.descr(replacement));
+                    replaced = true;
                 }
                 None => {
                     new_set.insert(*id);
@@ -5029,7 +5057,11 @@ fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
         base.vars = FiniteSet::finite(new_set);
     }
     let walked = map_recursive_inputs_with(t, base, &mut |t, nested| t.instantiate(&nested, sigma));
-    walked.union(t.ctx(), &substituted)
+    if replaced {
+        walked.union(t.ctx(), &substituted)
+    } else {
+        walked
+    }
 }
 
 /// Which side of a subtyping constraint the position being walked binds for.
@@ -5155,3 +5187,7 @@ mod types_test;
 #[cfg(test)]
 #[path = "projection_test.rs"]
 mod projection_test;
+
+#[cfg(test)]
+#[path = "rewrite_test.rs"]
+mod rewrite_test;
