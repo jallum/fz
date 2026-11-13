@@ -131,23 +131,22 @@ pub(crate) fn demand_at_path(path: &[DemandPathStep], demand: DispatchDemand) ->
 /// tells one literal from another, asks the same of every position inside; a
 /// demand that names the value's structure asks of a position what the
 /// structure says, and of a position it cannot name, everything.
-pub(crate) fn demand_within_step(demand: &DispatchDemand, step: &DemandPathStep) -> DispatchDemand {
+pub(crate) fn demand_within_step<'a>(demand: &'a DispatchDemand, step: &DemandPathStep) -> &'a DispatchDemand {
     use DispatchDemand::{Class, Ignore, ListShape, MapValues, TupleFields, Whole};
     match (demand, step) {
-        (Ignore, _) => Ignore,
-        (Class, _) => Class,
-        (TupleFields(fields), DemandPathStep::TupleField(field)) => fields.get(field).cloned().unwrap_or(Ignore),
-        (ListShape(element), DemandPathStep::ListHead) => (**element).clone(),
-        (ListShape(_), DemandPathStep::ListTail) => demand.clone(),
-        (MapValues(values), DemandPathStep::MapValue | DemandPathStep::StructField) => (**values).clone(),
-        _ => Whole,
+        (Ignore | Class, _) => demand,
+        (TupleFields(fields), DemandPathStep::TupleField(field)) => fields.get(field).unwrap_or(&Ignore),
+        (ListShape(element), DemandPathStep::ListHead) => element,
+        (ListShape(_), DemandPathStep::ListTail) => demand,
+        (MapValues(values), DemandPathStep::MapValue | DemandPathStep::StructField) => values,
+        _ => &Whole,
     }
 }
 
-/// [`demand_within_step`] along a whole path, outermost step first.
-pub(crate) fn demand_within_path(demand: &DispatchDemand, path: &[DemandPathStep]) -> DispatchDemand {
-    path.iter()
-        .fold(demand.clone(), |demand, step| demand_within_step(&demand, step))
+/// [`demand_within_step`] along a whole path, outermost step first. The answer
+/// is a position inside `demand` or one of the constant demands.
+pub(crate) fn demand_within_path<'a>(demand: &'a DispatchDemand, path: &[DemandPathStep]) -> &'a DispatchDemand {
+    path.iter().fold(demand, demand_within_step)
 }
 
 impl DispatchDemand {

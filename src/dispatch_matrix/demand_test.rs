@@ -41,7 +41,7 @@ fn a_question_about_the_structure_of_a_map_value_is_one_about_every_value() {
             demand_at_path(&[step, DemandPathStep::TupleField(0)], DispatchDemand::Whole),
             values
         );
-        assert_eq!(demand_within_step(&values, &step), fields);
+        assert_eq!(demand_within_step(&values, &step), &fields);
         assert_eq!(demand_at_path(&[step], DispatchDemand::Whole), DispatchDemand::Whole);
         assert_eq!(demand_at_path(&[step], DispatchDemand::Class), DispatchDemand::Class);
     }
@@ -128,10 +128,13 @@ fn a_literal_blind_read_survives_every_step_into_the_value() {
         DemandPathStep::TupleField(2),
         DemandPathStep::ListHead,
     ] {
-        assert_eq!(demand_within_step(&DispatchDemand::Class, &step), DispatchDemand::Class);
+        assert_eq!(
+            demand_within_step(&DispatchDemand::Class, &step),
+            &DispatchDemand::Class
+        );
         assert_eq!(
             demand_within_step(&DispatchDemand::Ignore, &step),
-            DispatchDemand::Ignore
+            &DispatchDemand::Ignore
         );
     }
     for step in [
@@ -150,10 +153,10 @@ fn a_literal_blind_read_survives_every_step_into_the_value() {
 fn a_question_about_the_elements_of_a_tail_is_one_about_the_elements_of_the_list() {
     let shape = DispatchDemand::ListShape(Box::new(DispatchDemand::Whole));
     assert_eq!(demand_at_path(&[DemandPathStep::ListTail], shape.clone()), shape);
-    assert_eq!(demand_within_step(&shape, &DemandPathStep::ListTail), shape);
+    assert_eq!(demand_within_step(&shape, &DemandPathStep::ListTail), &shape);
     assert_eq!(
         demand_within_step(&shape, &DemandPathStep::ListHead),
-        DispatchDemand::Whole
+        &DispatchDemand::Whole
     );
 }
 
@@ -162,10 +165,10 @@ fn a_question_about_the_elements_of_a_tail_is_one_about_the_elements_of_the_list
 fn a_demand_taken_inside_a_path_is_the_one_lifted_through_it() {
     let path = [DemandPathStep::TupleField(1), DemandPathStep::ListHead];
     let lifted = demand_at_path(&path, DispatchDemand::Class);
-    assert_eq!(demand_within_path(&lifted, &path), DispatchDemand::Class);
+    assert_eq!(demand_within_path(&lifted, &path), &DispatchDemand::Class);
     assert_eq!(
         demand_within_path(&lifted, &[DemandPathStep::TupleField(0)]),
-        DispatchDemand::Ignore,
+        &DispatchDemand::Ignore,
         "a field the question does not name is not asked about"
     );
     assert_eq!(lifted.depth(), 2);

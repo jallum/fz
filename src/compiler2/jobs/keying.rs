@@ -361,7 +361,7 @@ fn lifted_demand(edge: &ForwardEdge, callee: &DispatchDemand) -> DispatchDemand 
     if !inside.asks_anything() {
         return DispatchDemand::Ignore;
     }
-    demand_at_path(&edge.path, inside)
+    demand_at_path(&edge.path, inside.clone())
 }
 
 /// What a callee's returned demand asks of the caller's slot: only a slot
@@ -795,7 +795,7 @@ fn collect_demands(
     active.push(value);
     for usage in uses_of.get(&value).into_iter().flatten() {
         match usage {
-            ValueUse::Asks(demand) => asks.push(demand_within_path(demand, inside)),
+            ValueUse::Asks(demand) => asks.push(demand_within_path(demand, inside).clone()),
             ValueUse::Call { callee, callee_slot } => calls.push((*callee, *callee_slot, inside.clone())),
             ValueUse::Within { container, step } => {
                 inside.insert(0, *step);
