@@ -12,6 +12,8 @@ use crate::compiler2::ValueMap;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
+use indexmap::IndexMap;
+
 use crate::ast::{BinOp, UnOp};
 use crate::dispatch_matrix::OutcomeId;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
@@ -147,7 +149,7 @@ pub struct BackendConstructionCapture {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedExecutableTransport {
     pub executable: ExecutableSymbol,
-    pub position_layouts: Vec<(TransportPosition, TransportLayout)>,
+    pub position_layouts: TransportLayouts,
     pub input_positions: Vec<TransportPosition>,
     pub return_position: TransportPosition,
     pub resume_positions: Vec<TransportPosition>,
@@ -157,11 +159,39 @@ pub struct MaterializedExecutableTransport {
     pub value_positions: Vec<TransportPosition>,
 }
 
-impl MaterializedExecutableTransport {
+/// The settled layout of every transport position of one executable.
+///
+/// Positions are unique and iterate in the order they were collected, which is
+/// semantic position order. A layout is found by its position without
+/// visiting any other position.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TransportLayouts(IndexMap<TransportPosition, TransportLayout>);
+
+impl TransportLayouts {
     pub fn layout_at(&self, position: &TransportPosition) -> Option<TransportLayout> {
-        self.position_layouts
-            .iter()
-            .find_map(|(candidate, layout)| (candidate == position).then_some(*layout))
+        self.0.get(position).copied()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&TransportPosition, TransportLayout)> {
+        self.0.iter().map(|(position, layout)| (position, *layout))
+    }
+
+    pub fn positions(&self) -> impl Iterator<Item = &TransportPosition> {
+        self.0.keys()
+    }
+}
+
+impl FromIterator<(TransportPosition, TransportLayout)> for TransportLayouts {
+    fn from_iter<I: IntoIterator<Item = (TransportPosition, TransportLayout)>>(entries: I) -> Self {
+        let mut layouts = IndexMap::new();
+        for (position, layout) in entries {
+            let previous = layouts.insert(position, layout);
+            assert!(
+                previous.is_none(),
+                "one transport position must have one settled layout"
+            );
+        }
+        Self(layouts)
     }
 }
 
@@ -1108,7 +1138,7 @@ impl BackendExecutable {
         let symbol = ExecutableSymbol::new(&key, types);
         let transport = MaterializedExecutableTransport {
             executable: symbol.clone(),
-            position_layouts: Vec::new(),
+            position_layouts: TransportLayouts::default(),
             input_positions: Vec::new(),
             return_position: TransportPosition::ExecutableReturn { executable: symbol },
             resume_positions: Vec::new(),

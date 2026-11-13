@@ -2,7 +2,7 @@ use super::*;
 use crate::compiler2::semantic::{
     CallSiteResolution, CallSiteSummary, CallTargetSummary, EntryReachability, SelectedCallee,
 };
-use crate::compiler2::transport::{ActivationSymbol, LaneId, TransportCarrier};
+use crate::compiler2::transport::{LaneId, TransportCarrier};
 use crate::compiler2::{ActivationKey, FunctionId};
 use crate::fz_ir::{ExternAbi, ExternTy};
 use crate::telemetry::ConfiguredTelemetry;
@@ -68,37 +68,6 @@ fn carrier_provenance_forces_value_ref_for_a_raw_capable_lane() {
 
     assert_eq!(structural, vec![(int, AbiValueRepr::RawInt)]);
     assert_eq!(carrier, vec![(int, AbiValueRepr::ValueRef)]);
-}
-
-#[test]
-fn sort_transport_positions_orders_one_partition_by_structural_discriminants() {
-    // Each MaterializedExecutableTransport field vector holds ONE variant
-    // of ONE executable by construction (positions are gathered from the
-    // per-symbol index and partitioned by variant), so packaging order is
-    // decided purely by the variant-local structural discriminants --
-    // here CallArg's (callsite, semantic_index) -- independent of
-    // arrival order and of any interned-type identity.
-    let _tel = ConfiguredTelemetry::new();
-    let mut world = World::new();
-    world.submit_code(None, "def main(x), do: x".to_string());
-    let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
-    let function = world.root_entry(root).function;
-    let int = world.types_mut().int();
-    let arrow = world.types_mut().arrow(&[int], int);
-    let symbol = ExecutableSymbol {
-        activation: ActivationSymbol::new(function, arrow, world.types()),
-        need: ExecutableNeed::Value,
-    };
-    let call_arg = |callsite: u32, semantic_index: usize| TransportPosition::CallArg {
-        executable: symbol.clone(),
-        callsite: CallSiteId::from_u32(callsite),
-        semantic_index,
-    };
-
-    let mut positions = vec![call_arg(1, 1), call_arg(1, 0), call_arg(0, 1)];
-    sort_transport_positions(&mut positions, world.types());
-
-    assert_eq!(positions, vec![call_arg(0, 1), call_arg(1, 0), call_arg(1, 1)]);
 }
 
 fn fake_call_executable(world: &mut World, root: u32, function: u32, inputs: &[Ty]) -> ExecutableKey {
@@ -252,7 +221,7 @@ fn try_materialize_closure_edge(
     } else {
         Vec::new()
     };
-    let transport_plan = ArtifactTransportLookup { positions: &positions };
+    let transport_plan = positions.into_iter().collect::<TransportLayouts>();
     let callee_layout = TransportLayout {
         structural: world.intern_shape(ShapeDescr::Nothing),
         carrier,

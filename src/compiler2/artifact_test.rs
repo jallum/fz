@@ -5,11 +5,12 @@ use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, Function
 use crate::compiler2::artifact::{
     BackendCallableReturn, BackendExecutable, BackendProgram, BackendReturnLayout, BackendSemanticInputLayout,
     BackendValueLayout, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId,
-    NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram,
+    NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram, TransportLayouts,
 };
 use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::transport::{
-    BoundaryId, CallableId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportClass, TransportStore,
+    BoundaryId, CallableId, ExecutableSymbol, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportClass, TransportLayout,
+    TransportPosition, TransportStore,
 };
 use crate::compiler2::types::Ty;
 use crate::dispatch_matrix::OutcomeId;
@@ -576,5 +577,38 @@ fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authori
         program.bodies[0].extern_marshals.get(&marshal_site),
         Some(&ExternTy::CString),
         "compiler2-native codegen must treat NativeBody.extern_marshals as authority",
+    );
+}
+
+fn input_layouts(count: usize) -> (TransportLayouts, impl Fn(usize) -> TransportPosition) {
+    let mut world = super::World::new();
+    let (_, _, activation) = stub_activation_key(world.types_mut(), Vec::new());
+    let symbol = ExecutableSymbol::new(
+        &ExecutableKey {
+            activation,
+            need: ExecutableNeed::Value,
+        },
+        world.types(),
+    );
+    let shape = world.intern_shape(ShapeDescr::Nothing);
+    let position = move |semantic_index| TransportPosition::ExecutableInput {
+        executable: symbol.clone(),
+        semantic_index,
+    };
+    let layouts = (0..count)
+        .map(|index| (position(index), TransportLayout::structural(shape)))
+        .collect();
+    (layouts, position)
+}
+
+#[test]
+fn a_position_is_found_by_key_and_positions_keep_collection_order() {
+    let (layouts, position) = input_layouts(3);
+
+    assert!(layouts.layout_at(&position(2)).is_some());
+    assert_eq!(layouts.layout_at(&position(3)), None);
+    assert_eq!(
+        layouts.positions().cloned().collect::<Vec<_>>(),
+        vec![position(0), position(1), position(2)]
     );
 }

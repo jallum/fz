@@ -19,7 +19,7 @@ use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendReturnLayout, BackendSemanticInputLayout,
     BackendValueLayout, CallEdge, CallReturnFlow, CallTarget, ClosureCallEdge, DirectCallEdge, DispatchCallArm,
     DispatchCallEdge, EffectSummary, MaterializedCallEdge, MaterializedExecutable, MaterializedExecutableTransport,
-    PositionedCallableConstructionOwner,
+    PositionedCallableConstructionOwner, TransportLayouts,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
@@ -116,21 +116,21 @@ pub(crate) fn produce_materialized_executable_product(
         Ok(position_layouts) => position_layouts,
         Err(transport_waits) => {
             waits.extend(transport_waits);
-            Vec::new()
+            TransportLayouts::default()
         }
     };
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
     let transport = materialized_executable_transport(position_layouts, executable, world.types());
-    let transport_plan = transport_lookup(&transport.position_layouts);
+    let transport_plan = &transport.position_layouts;
     // A call this program cannot lower has already said why through a
     // diagnostic; the root stops on that diagnostic rather than unwinding here.
     let Ok(call_edges) = materialize_call_edges(
         world,
         tel,
         context.session().root().expect("executable products are root-scoped"),
-        &transport_plan,
+        transport_plan,
         executable,
         analysis,
         executable_facts.callsites(),
@@ -326,8 +326,8 @@ pub(crate) fn produce_abi_executable_product(
     let mut transport_positions = materialized
         .transport
         .position_layouts
-        .iter()
-        .map(|(position, _)| position.clone())
+        .positions()
+        .cloned()
         .collect::<Vec<_>>();
     transport_positions.extend(required_executable_transport_positions(
         world,
@@ -338,7 +338,7 @@ pub(crate) fn produce_abi_executable_product(
         Ok(position_layouts) => position_layouts,
         Err(transport_waits) => {
             waits.extend(transport_waits);
-            Vec::new()
+            TransportLayouts::default()
         }
     };
     let transport = waits
@@ -349,7 +349,7 @@ pub(crate) fn produce_abi_executable_product(
     let facts = context
         .read_executable_facts(world, executable)
         .expect("materialized prerequisite has settled executable facts");
-    for (position, layout) in &owner_transport.position_layouts {
+    for (position, layout) in owner_transport.position_layouts.iter() {
         if position.executable() != &owner_transport.executable {
             continue;
         }
@@ -374,8 +374,7 @@ pub(crate) fn produce_abi_executable_product(
         return PullOutcome::Waiting(waits);
     }
     let transport = transport.expect("complete transport reads must construct the ABI transport");
-    let transport_plan = transport_lookup(&transport.position_layouts);
-    let plan = build_executable_abi_plan(world, executable, &materialized, &transport, &transport_plan);
+    let plan = build_executable_abi_plan(world, executable, &materialized, &transport);
     let abi = Rc::new(
         build_abi_executable(
             materialized,
@@ -404,19 +403,11 @@ struct PrunedLoweredBody {
 }
 
 fn materialized_executable_transport(
-    mut position_layouts: Vec<(TransportPosition, TransportLayout)>,
+    position_layouts: TransportLayouts,
     executable: &ExecutableKey,
     types: &Types,
 ) -> MaterializedExecutableTransport {
     let symbol = ExecutableSymbol::new(executable, types);
-    position_layouts.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, types));
-    position_layouts.dedup_by(|left, right| {
-        if left.0 != right.0 {
-            return false;
-        }
-        assert_eq!(left.1, right.1, "one transport position must have one settled layout");
-        true
-    });
     let mut input_positions = Vec::new();
     let mut return_position = None;
     let mut resume_positions = Vec::new();
@@ -424,7 +415,7 @@ fn materialized_executable_transport(
     let mut entry_capture_positions = Vec::new();
     let mut call_arg_positions = Vec::new();
     let mut value_positions = Vec::new();
-    for (position, _) in &position_layouts {
+    for position in position_layouts.positions() {
         if position.executable() != &symbol {
             continue;
         }
@@ -438,12 +429,6 @@ fn materialized_executable_transport(
             TransportPosition::Value { .. } => value_positions.push(position.clone()),
         }
     }
-    sort_transport_positions(&mut input_positions, types);
-    sort_transport_positions(&mut resume_positions, types);
-    sort_transport_positions(&mut return_payload_positions, types);
-    sort_transport_positions(&mut entry_capture_positions, types);
-    sort_transport_positions(&mut call_arg_positions, types);
-    sort_transport_positions(&mut value_positions, types);
     MaterializedExecutableTransport {
         executable: symbol,
         position_layouts,
@@ -456,22 +441,6 @@ fn materialized_executable_transport(
         entry_capture_positions,
         call_arg_positions,
         value_positions,
-    }
-}
-
-struct ArtifactTransportLookup<'a> {
-    positions: &'a [(TransportPosition, TransportLayout)],
-}
-
-fn transport_lookup<'a>(positions: &'a [(TransportPosition, TransportLayout)]) -> ArtifactTransportLookup<'a> {
-    ArtifactTransportLookup { positions }
-}
-
-impl ArtifactTransportLookup<'_> {
-    fn layout_at(&self, position: &TransportPosition) -> Option<TransportLayout> {
-        self.positions
-            .iter()
-            .find_map(|(candidate, layout)| (candidate == position).then_some(*layout))
     }
 }
 
@@ -699,7 +668,7 @@ fn read_transport_layouts(
     context: &mut ProductReadContext<'_>,
     types: &Types,
     positions: impl IntoIterator<Item = TransportPosition>,
-) -> Result<Vec<(TransportPosition, TransportLayout)>, Vec<PullWait>> {
+) -> Result<TransportLayouts, Vec<PullWait>> {
     let mut positions = positions
         .into_iter()
         .collect::<HashSet<_>>()
@@ -718,7 +687,11 @@ fn read_transport_layouts(
             None => waits.push(PullWait::Product(key)),
         }
     }
-    if waits.is_empty() { Ok(layouts) } else { Err(waits) }
+    if waits.is_empty() {
+        Ok(layouts.into_iter().collect())
+    } else {
+        Err(waits)
+    }
 }
 
 pub(crate) fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::ValueId> {
@@ -862,15 +835,11 @@ fn return_flow_transport_positions(
     positions
 }
 
-fn sort_transport_positions(positions: &mut [TransportPosition], types: &Types) {
-    positions.sort_by(|left, right| left.semantic_cmp(right, types));
-}
-
 fn materialize_call_edges(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
-    transport_plan: &ArtifactTransportLookup<'_>,
+    transport_plan: &TransportLayouts,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     summaries: &HashMap<CallSiteId, CallSiteSummary>,
@@ -950,7 +919,7 @@ fn materialize_direct_call_edge(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
-    transport_plan: &ArtifactTransportLookup<'_>,
+    transport_plan: &TransportLayouts,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     summaries: &HashMap<CallSiteId, CallSiteSummary>,
@@ -1051,7 +1020,7 @@ fn materialize_closure_call_edge(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
-    transport_plan: &ArtifactTransportLookup<'_>,
+    transport_plan: &TransportLayouts,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     summaries: &HashMap<CallSiteId, CallSiteSummary>,
@@ -1186,7 +1155,7 @@ fn lower_materialized_call_target(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
-    transport_plan: &ArtifactTransportLookup<'_>,
+    transport_plan: &TransportLayouts,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     need: ExecutableNeed,
@@ -1268,7 +1237,7 @@ fn call_return_flow(
     world: &World,
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
-    transport_plan: &ArtifactTransportLookup<'_>,
+    transport_plan: &TransportLayouts,
     executable: &ExecutableKey,
     callee: Option<&CallTarget<ExecutableKey>>,
     callsite: CallSiteId,
@@ -1360,7 +1329,7 @@ fn exact_no_return_flow(world: &World, callee: &CallTarget<ExecutableKey>) -> Ca
 fn require_transport_layout(
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
-    transport_plan: &ArtifactTransportLookup<'_>,
+    transport_plan: &TransportLayouts,
     position: &TransportPosition,
 ) -> Result<super::super::pull::TransportLayout, FatalError> {
     transport_plan.layout_at(position).ok_or_else(|| {
@@ -1738,8 +1707,8 @@ fn build_executable_abi_plan(
     _key: &ExecutableKey,
     executable: &MaterializedExecutable,
     transport: &MaterializedExecutableTransport,
-    transport_plan: &ArtifactTransportLookup<'_>,
 ) -> ExecutableAbiPlan {
+    let transport_plan = &transport.position_layouts;
     let semantic_inputs = transport
         .input_positions
         .iter()

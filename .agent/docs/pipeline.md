@@ -910,6 +910,13 @@ facts, and call-result payload positions. One
 stages do not derive either component by rescanning semantic types or lowered
 bodies.
 
+One executable's settled layouts are one `TransportLayouts` value: a map keyed
+by `TransportPosition` that also iterates in semantic position order. It is
+built once, where the layout products are read, and a layout is found by its
+position without visiting any other position. The per-kind position lists on
+`MaterializedExecutableTransport` are filtered from that order, so they need no
+second sort.
+
 `CallableFlowFact` is the semantic authority for one producer construction. It
 keeps the producer's function and captures correlated with direct and
 first-class surfaces, resolved members, and semantic input mappings. Transport

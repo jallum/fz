@@ -2596,6 +2596,7 @@ def main(), do: Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end)
         .expect("the mapper overload should publish an ABI executable");
     assert_eq!(
         abi.transport
+            .position_layouts
             .layout_at(&TransportPosition::ExecutableInput {
                 executable: abi.transport.executable.clone(),
                 semantic_index: 1,
@@ -5665,19 +5666,13 @@ fn retained_layouts(program: &super::BackendProgram) -> impl Iterator<Item = (&T
         .executables()
         .iter()
         .flat_map(|backend| {
-            backend
-                .abi
-                .transport
-                .position_layouts
-                .iter()
-                .map(|(position, layout)| (position, *layout))
-                .chain(
-                    backend
-                        .abi
-                        .callable_owners
-                        .iter()
-                        .map(|positioned| (&positioned.position, positioned.owner.layout)),
-                )
+            backend.abi.transport.position_layouts.iter().chain(
+                backend
+                    .abi
+                    .callable_owners
+                    .iter()
+                    .map(|positioned| (&positioned.position, positioned.owner.layout)),
+            )
         })
         .filter(move |(position, layout)| match seen.insert(*position, *layout) {
             None => true,
@@ -5690,7 +5685,7 @@ fn retained_layouts(program: &super::BackendProgram) -> impl Iterator<Item = (&T
 
 fn retained_layout_at(program: &super::BackendProgram, position: &TransportPosition) -> Option<TransportLayout> {
     let abi = &retained_executable(program, position.executable()).abi;
-    abi.transport.layout_at(position).or_else(|| {
+    abi.transport.position_layouts.layout_at(position).or_else(|| {
         positioned_owners(program)
             .find(|positioned| &positioned.position == position)
             .map(|positioned| positioned.owner.layout)

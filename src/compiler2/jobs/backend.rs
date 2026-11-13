@@ -411,7 +411,7 @@ fn backend_entry_captures(
         .iter()
         .zip(positions)
         .map(|(value, position)| {
-            let layout = abi.transport.layout_at(position).ok_or(FatalError)?;
+            let layout = abi.transport.position_layouts.layout_at(position).ok_or(FatalError)?;
             let TransportPosition::EntryCapture {
                 entry, capture_index, ..
             } = position
