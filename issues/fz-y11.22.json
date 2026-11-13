@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T19:11:23Z",
+  "description": "ReachabilityCalculator::visit (src/compiler2/dispatch_reachability.rs:157) clones the ReachabilityState (two vectors, lines 140/141, ~8,600 allocations) to probe the visited set on every visit, including revisits, although it already receives the state as a Cow.\n\nChange: probe the visited set with the borrowed state and copy (or move the owned Cow) only on first visit; an Outcome node moves its roots out as it does now. Confirm the revisit ratio first; if nearly every visit is a first visit and the state is then cloned again downstream, report that instead.\n\nEvidence: allocation census of the OptionParser probe at bf51f11c1 (develop ac3750d1e + hasher fix + fz-y11.15 spike; 857,327 calls). Ranked sites: /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/bf51f11c1_top.txt; call chains: python3 /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/chain.py /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/bf51f11c1.pkl \u003cfile:line\u003e \u003cdepth\u003e. Counts are 1-in-16 sampling estimates; line numbers are at that commit. Method and signal: see the epic (bw show fz-y11). Every site is a claim read from the census and the source, to be confirmed first.",
+  "id": "fz-y11.22",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "Dispatch reachability copies a state only when it is new",
+  "type": "task",
+  "updated_at": "2026-11-13T19:11:23Z"
+}
