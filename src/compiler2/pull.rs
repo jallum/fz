@@ -659,6 +659,22 @@ pub struct ProductValidation {
     pub ordering_comparisons: u64,
 }
 
+/// What one `drive_root_product_with` call spent. `requests` counts the loop
+/// turns charged against `budget`; a turn that hands a program-scoped key to
+/// its own session is charged here but emits no `pull.product.requested` of its
+/// own, so a drive's request events can be fewer than its `requests`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProductDriveReport {
+    pub requests: u64,
+    pub budget: u64,
+}
+
+impl ProductDriveReport {
+    pub(super) fn report(&self, tel: &impl Telemetry, key: &ProductKey) {
+        tel.raw_event2(&["fz", "compiler2", "pull", "drive", "finished"], key, self);
+    }
+}
+
 #[derive(Default)]
 struct ProductValidationWalk {
     checked: HashSet<ProductKey>,

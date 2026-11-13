@@ -2184,6 +2184,52 @@ fn string_error_end_to_end_request_budget_exhausted_on_a_real_drive() {
     );
 }
 
+/// Every drive ends with one `pull.drive.finished` naming the turns it was
+/// charged against its budget: all of the budget when it ran out, and no more
+/// than the budget otherwise. Drives of program-scoped products nested inside
+/// the root's report on their own.
+#[test]
+fn every_drive_reports_the_requests_it_spent() {
+    let tel = ConfiguredTelemetry::new();
+    let drives = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed_drives = std::rc::Rc::clone(&drives);
+    let root_of_drive = std::rc::Rc::new(std::cell::Cell::new(RootId::for_test(0)));
+    let root_of_drive_observed = std::rc::Rc::clone(&root_of_drive);
+    tel.attach_raw_event2::<ProductKey, super::super::pull::ProductDriveReport, _>(
+        &["fz", "compiler2", "pull", "drive", "finished"],
+        move |_, _, _, key, report| {
+            if key == &ProductKey::RootBackendProduct(root_of_drive_observed.get()) {
+                observed_drives.borrow_mut().push(*report);
+            }
+        },
+    );
+    let (mut world, root) = add1_world(&tel);
+    root_of_drive.set(root);
+
+    let exhausted = super::super::product_drive::drive_root_backend_product_with_budgets::<_, String>(
+        &mut world,
+        &tel,
+        root,
+        3,
+        super::super::product_drive::PRODUCT_DRIVE_BUDGET,
+    );
+    assert!(exhausted.is_err());
+    let settled = super::super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root);
+    assert!(settled.is_ok());
+
+    let drives = drives.borrow();
+    let budget = super::super::product_drive::PRODUCT_DRIVE_BUDGET;
+    assert_eq!(drives.len(), 2);
+    assert_eq!(drives[0].requests, 3, "an exhausted drive spent its whole budget");
+    assert_eq!(drives[0].budget, 3);
+    assert!(
+        0 < drives[1].requests && drives[1].requests < budget,
+        "a settled drive spent some of its budget, got {}",
+        drives[1].requests
+    );
+    assert_eq!(drives[1].budget, budget);
+}
+
 /// `job_failed`: a runtime root submitted against a `defmacro` entry.
 /// `jobs::root::seed_root` rejects a `RootKind::Runtime` root whose function
 /// `is_macro` before it publishes anything, returning `Err(FatalError)`
