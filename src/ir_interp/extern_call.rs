@@ -63,6 +63,8 @@ fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy, fz_abi: bool) 
 pub(super) enum ExternCallValue {
     Scalar(AnyValue),
     Pair([AnyValue; 2]),
+    /// A checked extern reported that its operation has no result.
+    CheckedFailure(crate::dispatch_matrix::pattern::LastResort),
     /// A `never` extern returned having failed the current process, as
     /// `fz_panic` does: the process ends here.
     /// A `never`-returning extern came back: the process failed, or a raise
@@ -323,7 +325,7 @@ unsafe fn call_declared_return(
     raw_args: &[ArgWord],
     signature: &LoweredExtern,
 ) -> Result<ExternCallValue, String> {
-    match signature.ret {
+    match &signature.ret {
         ExternReturn::Scalar(ExternTy::F64) => {
             let value = unsafe { dispatch_fn_returning_float(fp, raw_args) };
             Ok(ExternCallValue::Scalar(AnyValue::Float(value)))
@@ -356,8 +358,19 @@ unsafe fn call_declared_return(
             interp_value_from_extern_ref_word(value).map(ExternCallValue::Scalar)
         }
         ExternReturn::Pair(fields) => {
-            let values = unsafe { dispatch_fn_returning_pair(fp, raw_args, fields) }?;
+            let values = unsafe { dispatch_fn_returning_pair(fp, raw_args, *fields) }?;
             Ok(ExternCallValue::Pair(values))
+        }
+        ExternReturn::Checked(lane, failure) => {
+            let fields = [*lane, ExternTy::Bool];
+            let [value, failed] = unsafe { dispatch_fn_returning_pair(fp, raw_args, fields) }?;
+            Ok(
+                if matches!(failed, AnyValue::Atom(id) if id == fz_runtime::any_value::TRUE_ATOM_ID) {
+                    ExternCallValue::CheckedFailure(failure.clone())
+                } else {
+                    ExternCallValue::Scalar(value)
+                },
+            )
         }
     }
 }

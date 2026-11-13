@@ -508,11 +508,16 @@ impl FrontDoorParser {
         }
         self.expect(&Tok::RParen, "`)`")?;
         self.expect(&Tok::ColonColon, "`::`")?;
-        let ret = self.collect_balanced_tokens_until(&[Tok::When, Tok::Newline, Tok::Eof, Tok::End])?;
+        let ret = self.collect_balanced_tokens_until(&[Tok::Comma, Tok::When, Tok::Newline, Tok::Eof, Tok::End])?;
         if ret.is_empty() {
             return self.err("expected extern return type after `::`");
         }
         let ret = token_payload::encode_tokens(&self.builder, &ret)?;
+        let raises = if self.eat(&Tok::Comma) {
+            Some(self.parse_extern_raises()?)
+        } else {
+            None
+        };
         let mut constraints = Vec::new();
         if self.eat(&Tok::When) {
             loop {
@@ -551,6 +556,10 @@ impl FrontDoorParser {
         if !constraints.is_empty() {
             entries.push((self.builder.atom("when"), self.builder.list(&constraints)?));
         }
+        if let Some((exception, message)) = raises {
+            entries.push((self.builder.atom("raises"), exception));
+            entries.push((self.builder.atom("message"), message));
+        }
         self.builder
             .call(
                 "extern",
@@ -558,6 +567,78 @@ impl FrontDoorParser {
                 &[self.builder.utf8_binary(&abi)?, self.builder.map(&entries)?],
             )
             .map_err(FrontDoorError::from)
+    }
+
+    /// The tail `raises: Exception, message: "text"` of an extern whose result
+    /// can fail: the exception a body raises, and what it says.
+    fn parse_extern_raises(&mut self) -> Result<(AnyValueRef, AnyValueRef), FrontDoorError> {
+        self.skip_newlines();
+        match self.bump() {
+            Tok::KwKey(key) if key == "raises" => {}
+            other => {
+                return Err(self.error(format!(
+                    "expected `raises:` after the extern return type, got {}; `raises:` is the only extern option",
+                    describe_token(&other)
+                )));
+            }
+        }
+        let exception = self.parse_extern_exception()?;
+        self.skip_newlines();
+        if !self.eat(&Tok::Comma) {
+            return Err(FrontDoorError::syntax(
+                "`raises:` needs a `message:` after it: fz exceptions carry no default message",
+                self.prev_span(),
+            ));
+        }
+        self.skip_newlines();
+        match self.bump() {
+            Tok::KwKey(key) if key == "message" => {}
+            other => {
+                return Err(self.error(format!(
+                    "expected `message:` after `raises:`, got {}",
+                    describe_token(&other)
+                )));
+            }
+        }
+        let message = self.parse_extern_message()?;
+        Ok((exception, message))
+    }
+
+    fn parse_extern_exception(&mut self) -> Result<AnyValueRef, FrontDoorError> {
+        let meta = self.meta(self.cur_span())?;
+        if !matches!(self.peek(), Tok::Upper(_)) {
+            let got = describe_token(self.peek());
+            return Err(self.error(format!(
+                "`raises:` names an exception module such as `ArithmeticError`, got {got}"
+            )));
+        }
+        let path = self.parse_upper_path("raises")?;
+        self.builder
+            .alias(&meta, &segments_ref(&path))
+            .map_err(FrontDoorError::from)
+    }
+
+    /// The message is fixed text, so a string that interpolates is refused
+    /// the way an interpolating `@doc` is.
+    fn parse_extern_message(&mut self) -> Result<AnyValueRef, FrontDoorError> {
+        let bytes = match self.bump() {
+            Tok::Binary(bytes) => bytes,
+            other => {
+                return Err(self.error(format!(
+                    "`message:` takes a literal string, got {}",
+                    describe_token(&other)
+                )));
+            }
+        };
+        if self.peek_is(&Tok::Concat) {
+            return Err(self.error(
+                "`message:` takes a literal string, and this one interpolates: \
+                 an exception message is fixed text in the declaration",
+            ));
+        }
+        let text = String::from_utf8(bytes)
+            .map_err(|error| self.error(format!("extern failure message must be valid UTF-8: {error}")))?;
+        self.builder.utf8_binary(&text).map_err(FrontDoorError::from)
     }
 
     /// A macro head is an ordinary expression, so `defmacro left || right`
@@ -2293,4 +2374,14 @@ impl FrontDoorParser {
 
 fn segments_ref(segments: &[String]) -> Vec<&str> {
     segments.iter().map(String::as_str).collect()
+}
+
+/// A token as a diagnostic names it: a keyword key as written, an atom with
+/// its colon, anything else as its variant.
+fn describe_token(token: &Tok) -> String {
+    match token {
+        Tok::KwKey(key) => format!("`{key}:`"),
+        Tok::Atom(name) => format!("the atom `:{name}`"),
+        other => format!("{other:?}"),
+    }
 }

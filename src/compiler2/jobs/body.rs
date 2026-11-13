@@ -3136,6 +3136,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             extern_param_tokens: Vec::new(),
             extern_ret_tokens: crate::ast::TypeExprBody(Vec::new()),
             extern_constraints: Vec::new(),
+            extern_raises: None,
             variadic: false,
             attrs: Vec::new(),
             span,

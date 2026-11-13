@@ -6,14 +6,16 @@
 //! the moment it is built, so each backend lowers a `Fail` the same way for
 //! every construct: build the exception and raise it.
 
+use std::borrow::Cow;
+
 /// What a plan does at a `Fail`: raise an exception worded the way Elixir
 /// words it, or continue a raise that arrived.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum LastResort {
+pub enum LastResort {
     /// Raise a new exception.
     Exception {
         /// The exception module's atom, such as `Elixir.MatchError`.
-        exception: &'static str,
+        exception: Cow<'static, str>,
         /// The whole message, or the lead of a message that goes on to show
         /// the subject.
         message: String,
@@ -84,7 +86,7 @@ impl LastResort {
     }
 
     /// The exception module's atom, for a last resort that raises one.
-    pub(crate) fn exception(&self) -> Option<&'static str> {
+    pub(crate) fn exception(&self) -> Option<&str> {
         match self {
             Self::Exception { exception, .. } => Some(exception),
             Self::Reraise => None,
@@ -114,9 +116,19 @@ impl LastResort {
         }
     }
 
+    /// The failure an extern declares with `raises:`: the exception it names,
+    /// raised with the message the declaration gives.
+    pub fn declared(exception: String, message: String) -> Self {
+        Self::Exception {
+            exception: Cow::Owned(exception),
+            message,
+            shows_subject: false,
+        }
+    }
+
     fn fixed(exception: &'static str, message: String) -> Self {
         Self::Exception {
-            exception,
+            exception: Cow::Borrowed(exception),
             message,
             shows_subject: false,
         }
@@ -124,7 +136,7 @@ impl LastResort {
 
     fn showing(exception: &'static str, lead: &str) -> Self {
         Self::Exception {
-            exception,
+            exception: Cow::Borrowed(exception),
             message: lead.to_string(),
             shows_subject: true,
         }

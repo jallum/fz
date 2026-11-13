@@ -1,0 +1,5 @@
+#---
+# purpose: "A body's integer + whose sum leaves the 64-bit word raises ArithmeticError with Elixir's message; Elixir widens to a bignum, so it has no oracle here"
+# expect: abort
+#---
+def main(), do: Enum.each([1], fn one -> dbg(9223372036854775807 + one) end)

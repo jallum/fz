@@ -159,6 +159,7 @@ pub(crate) fn derive_function_surface(
         extern_ret_tokens: TypeExprBody(Vec::new()),
         extern_constraints: Vec::new(),
         variadic: false,
+        extern_raises: None,
         attrs,
         span: group_span,
     })
@@ -198,6 +199,17 @@ fn decode_extern_fn(
     let ret = required_map_tokens(details, "return", sources)?;
     let variadic = required_map_bool(details, "variadic")?;
     let constraints = optional_map_keyword_tokens(details, "when", sources)?;
+    let extern_raises = match details.map_value("raises")? {
+        Some(exception) => Some(crate::function_surface::ExternRaises {
+            exception: ModuleName::from_segments(
+                expect_ast_node(&exception, "extern exception", sources)?
+                    .tail
+                    .list_atom_names()?,
+            ),
+            message: required_map_utf8(details, "message")?,
+        }),
+        None => None,
+    };
     let span = node.span.unwrap_or(Span::DUMMY);
 
     let extern_param_tokens = params
@@ -221,6 +233,7 @@ fn decode_extern_fn(
         extern_ret_tokens,
         extern_constraints,
         variadic,
+        extern_raises,
         attrs,
         span,
     })

@@ -1,0 +1,9 @@
+#---
+# purpose: "The exception an extern raises is written as a module alias, as raise/2 takes one"
+# expect: diagnostic
+#---
+extern "C" defp fz_op_rem_ii(integer, integer) :: integer,
+  raises: :badarith,
+  message: "bad argument in arithmetic expression"
+
+def main(), do: dbg(fz_op_rem_ii(1, 0))

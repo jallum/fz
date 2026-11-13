@@ -165,14 +165,15 @@ fn static_reach_work_on_enum_take_drop_split_is_proportional_to_edges() {
     // reached; the function and evaluation counts are unchanged.
     // fz-sc8.62: (106, 145, 208) -> (106, 147, 207). `Kernel.+/2` and
     // `Kernel.-/2` end in a default clause that calls `arithmetic_error/0`,
-    // so each gains that successor; `arithmetic_result/1` is evaluated twice
-    // instead of three times, one fewer wait on a callee the operators now
-    // reach directly. The function count is unchanged.
+    // so each gains that successor, and one fewer wait on a callee the
+    // operators now reach directly. The function count is unchanged.
     // fz-sc8.8: (106, 147, 207) -> (115, 157, 229). `dbg` is `IO.inspect`,
     // whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`,
     // `Binary.to_string`, `raise`, `==`) joins the static call graph.
     // Evaluations 229 -> 202: literal-argument calls are no longer self-keyed.
-    assert_eq!((functions, edges, evaluations), (115, 157, 202));
+    // (115, 157, 202) -> (114, 154, 200): the operators reach their extern
+    // wrappers directly, with no result decoder between them.
+    assert_eq!((functions, edges, evaluations), (114, 154, 200));
     assert!(
         evaluations <= functions + edges,
         "each function evaluates once to discover its callees and once more for each callee it waits on"

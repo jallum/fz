@@ -2151,8 +2151,12 @@ fn continue_after_extern(
     result: ExternCallValue,
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
-    if let ExternCallValue::ProcessFailed = result {
-        return after_panic(runtime, transport, program, continuations);
+    match result {
+        ExternCallValue::ProcessFailed => return after_panic(runtime, transport, program, continuations),
+        ExternCallValue::CheckedFailure(failure) => {
+            return raise_last_resort(runtime, transport, program, &failure, &[], continuations);
+        }
+        ExternCallValue::Scalar(_) | ExternCallValue::Pair(_) => {}
     }
     let value = bind_extern_result(transport, program, runtime.cur_proc(), executable, result)?;
     continue_backend_value(runtime, transport, program, value, continuations)
@@ -2267,8 +2271,8 @@ fn bind_extern_result(
     let values = match result {
         ExternCallValue::Scalar(value) => return Ok(BackendBoundValue::Runtime(value)),
         ExternCallValue::Pair(values) => values,
-        ExternCallValue::ProcessFailed => {
-            return Err("a failed process has no extern result to bind".to_string());
+        ExternCallValue::ProcessFailed | ExternCallValue::CheckedFailure(_) => {
+            return Err("a failed extern has no result to bind".to_string());
         }
     };
     let shape = executable.abi.return_layout.layout.structural;

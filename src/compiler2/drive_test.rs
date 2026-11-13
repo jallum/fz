@@ -21,14 +21,14 @@ use crate::compiler2::{
     World, parse_quoted_program,
 };
 use crate::diag::{Diagnostic, codes};
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
+use crate::dispatch_matrix::pattern::{LastResort, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::dispatch_matrix::{Region, SubjectId};
 use crate::exec::runtime::{DbgCapture, ProcessExitCapture};
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy, FnId, Prim as IrPrim, Stmt as IrStmt, Term as IrTerm};
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
 };
-use crate::modules::identity::{ModuleDenotation, ModuleName};
+use crate::modules::identity::ModuleDenotation;
 use crate::source::Span;
 use crate::telemetry::handler::{Event, EventKind};
 use crate::telemetry::sink::NullTelemetry;
@@ -11689,26 +11689,13 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
 #[test]
 fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
     let fixture = "fixtures2/behavior/same_lambda_two_capture_types.fz";
-    let (mut compiler, program) = driven_backend_program(fixture);
-    let kernel = compiler
-        .world_mut()
-        .reference_module(ModuleName::parse_dotted("Kernel").expect("Kernel module name"));
-    let arithmetic_result = compiler.world_mut().reference_function(kernel, "arithmetic_result", 1);
+    let (compiler, program) = driven_backend_program(fixture);
     let plans = artifact_plans(compiler.world(), &program);
-    let forwarded_callsite_plans = plans
-        .iter()
-        .filter(|plan| {
-            !matches!(
-                plan.site,
-                PlanSite::Entry { executable }
-                    if program.executables()[executable].key.activation.function == arithmetic_result
-            )
-        })
-        .collect::<Vec<_>>();
+    let forwarded_callsite_plans = plans.iter().collect::<Vec<_>>();
     assert!(
         forwarded_callsite_plans.is_empty(),
         "{fixture} passes a known closure at every call site, so its callsites and ordinary \
-         function entries other than Kernel.arithmetic_result/1 need no runtime test; {} plan(s) \
+         function entries need no runtime test; {} plan(s) \
          still dispatch: {:?}",
         forwarded_callsite_plans.len(),
         forwarded_callsite_plans
@@ -12482,11 +12469,11 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// `===` in the body instead, so the guard region it used to contribute goes
 /// away with it. The escape populations this census ratchets are unchanged.
 /// fz-5xp.30: `entry` 159 -> 179 plans, 151 -> 171 unreadable.
-/// `Kernel.arithmetic_result/1` remains an ordinary generic Fz call, so the
-/// twenty census specializations that call it each materialize its status-pair
-/// entry dispatch. They all ask `Region::TupleArity`, which this census counts
-/// as unreadable; the readable denominator stays 8 and every blind population
-/// is unchanged.
+/// An arithmetic operator's extern wrapper declares its failure, so no
+/// status-pair entry dispatch asks `Region::TupleArity` after it: `entry` 179
+/// -> 160 plans, 171 -> 148 unreadable there, and 155 -> 136, 142 -> 123 once
+/// the later changes below are counted. The readable denominator and every
+/// blind population are unchanged.
 /// `==` and `===` carry a typed clause per numeric pair, so each has an entry
 /// dispatch asking `Region::Type` where a lone `any`/`any` clause asks
 /// nothing. Those plans are `Kernel.==/2` in `00231_joined_fn_refs_enum_reduce`,
@@ -12513,7 +12500,7 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// A self call keeps its caller's key at a slot the recursion supplies, so one
 /// fewer `entry` plan exists: 153 -> 152 plans, 140 -> 139 unreadable.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 16, 16), ("entry", 152, 139), ("receive", 2, 0)];
+    &[("case", 16, 16), ("entry", 133, 120), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -16712,7 +16699,16 @@ fn compiler2_kernel_float_remainder_uses_the_declared_private_c_extern_at_every_
     assert_eq!(signature.symbol, "fz_op_rem_ff");
     assert_eq!(signature.abi, ExternAbi::C);
     assert_eq!(signature.params, vec![ExternTy::F64, ExternTy::F64]);
-    assert_eq!(signature.ret, ExternReturn::Pair([ExternTy::F64, ExternTy::Bool]));
+    assert_eq!(
+        signature.ret,
+        ExternReturn::Checked(
+            ExternTy::F64,
+            LastResort::declared(
+                "Elixir.ArithmeticError".to_string(),
+                "bad argument in arithmetic expression".to_string()
+            )
+        )
+    );
     assert!(
         !native_compiler
             .world()
@@ -16733,7 +16729,14 @@ fn compiler2_kernel_float_remainder_uses_the_declared_private_c_extern_at_every_
             decl.symbol == "fz_op_rem_ff"
                 && decl.abi == ExternAbi::C
                 && decl.params == [ExternTy::F64, ExternTy::F64]
-                && decl.ret == ExternReturn::Pair([ExternTy::F64, ExternTy::Bool])
+                && decl.ret
+                    == ExternReturn::Checked(
+                        ExternTy::F64,
+                        LastResort::declared(
+                            "Elixir.ArithmeticError".to_string(),
+                            "bad argument in arithmetic expression".to_string(),
+                        ),
+                    )
         }),
         "native codegen must receive the ordinary typed extern declaration",
     );
@@ -16827,7 +16830,7 @@ fn compiler2_raw_arithmetic_pair_edges_use_the_total_runtime_exports_at_interp_a
 }
 
 #[test]
-fn compiler2_typed_kernel_arithmetic_helpers_call_real_pair_exports_in_the_native_path() {
+fn compiler2_typed_kernel_arithmetic_helpers_call_real_checked_exports_in_the_native_path() {
     use object::{BinaryFormat, Object, ObjectSymbol};
 
     let source = r#"
@@ -16853,20 +16856,20 @@ end
     });
     settle_native_product(&mut compiler, root);
     let program = native.last(root).program;
-    let pair_exports = program
+    let checked_exports = program
         .module
         .externs
         .iter()
-        .filter_map(|decl| match (decl.abi, decl.ret) {
-            (ExternAbi::C, ExternReturn::Pair(_)) => Some(decl.symbol.as_str()),
+        .filter_map(|decl| match (decl.abi, &decl.ret) {
+            (ExternAbi::C, ExternReturn::Checked(..)) => Some(decl.symbol.as_str()),
             _ => None,
         })
         .collect::<BTreeSet<_>>();
     assert!(
         ["fz_op_add_ii", "fz_op_mul_ii", "fz_op_add_if", "fz_op_div_ff"]
             .iter()
-            .all(|symbol| pair_exports.contains(symbol)),
-        "the typed Kernel root must retain its resolved real C arithmetic declarations: {pair_exports:?}",
+            .all(|symbol| checked_exports.contains(symbol)),
+        "the typed Kernel root must retain its resolved real C arithmetic declarations: {checked_exports:?}",
     );
 
     let (jit, entry) = compiler
@@ -16887,7 +16890,7 @@ end
         .filter(|symbol| symbol.is_undefined())
         .filter_map(|symbol| symbol.name().ok())
         .collect::<BTreeSet<_>>();
-    let pair_imports = pair_exports
+    let checked_imports = checked_exports
         .iter()
         .map(|symbol| match object.format() {
             BinaryFormat::MachO => format!("_{symbol}"),
@@ -16895,8 +16898,8 @@ end
         })
         .collect::<BTreeSet<_>>();
     assert!(
-        pair_imports.iter().all(|symbol| imports.contains(symbol.as_str())),
-        "the shared native pair lowering must import every real C arithmetic export; pair={pair_imports:?} imports={imports:?}",
+        checked_imports.iter().all(|symbol| imports.contains(symbol.as_str())),
+        "the shared native checked-extern lowering must import every real C arithmetic export; pair={checked_imports:?} imports={imports:?}",
     );
 }
 
@@ -23272,7 +23275,7 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
     }
     assert_eq!(
         activations.values().map(BTreeSet::len).sum::<usize>(),
-        209,
+        207,
         "activations of the whole program"
     );
 }
@@ -23316,4 +23319,31 @@ fn a_request_queued_behind_a_parked_job_is_served_at_the_drain() {
         served.iter().any(|name| name.contains("grapheme_bytes_step")),
         "the reach of String.grapheme_bytes_step queued behind the parked job is served: {served:?}"
     );
+}
+
+/// Kernel's `+` and `rem` are each their extern wrapper alone: the failure of
+/// the C call is a branch to the raise inside that wrapper, so no result
+/// decoder and no continuation stand between a caller and the C symbol.
+/// Fixture 01088 calls both.
+#[test]
+fn a_sum_and_a_remainder_each_compile_to_one_native_function() {
+    let settled = Drive::fixture(1088).dump_stage(super::dump::DumpStage::Native);
+    let names = settled
+        .native_program()
+        .module
+        .fns
+        .iter()
+        .map(|function| function.name.clone())
+        .collect::<Vec<_>>();
+    for operator in ["+__", "rem__", "fz_op_add_ii__", "fz_op_rem_ii__"] {
+        let of_operator = names
+            .iter()
+            .filter(|name| name.starts_with(operator))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            of_operator.len(),
+            1,
+            "`{operator}` is one native function, with no resume after its extern call: {names:?}"
+        );
+    }
 }

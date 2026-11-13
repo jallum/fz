@@ -423,19 +423,16 @@ defmodule Kernel do
   @spec range(integer, integer, integer) :: any
   def range(first, last, step), do: Range.new(first, last, step)
 
-  # Arithmetic exports are total and communicate domain failures as an
-  # unboxed `{result, boolean}` pair. This is the sole source-level policy
-  # point: every failed arithmetic operation raises through `arithmetic_error/0`.
+  # An arithmetic extern declares with `raises:` that its operation can fail.
+  # The C function returns the pair `{result, failed}`, the declared result is
+  # the plain number, and a failed call raises `ArithmeticError`.
   # Each arithmetic function ends in a default clause outside its `@spec` that
-  # calls it, so an operand that is not a number, known only at runtime, raises
-  # `ArithmeticError` where a typed clause would otherwise be missed. The
-  # default clause returns `never`, so it adds nothing to the result type.
+  # calls `arithmetic_error/0`, so an operand that is not a number, known only
+  # at runtime, raises `ArithmeticError` where a typed clause would otherwise
+  # be missed. The default clause returns `never`, so it adds nothing to the
+  # result type.
   @spec arithmetic_error() :: never
   defp arithmetic_error(), do: raise(ArithmeticError, "bad argument in arithmetic expression")
-
-  @spec arithmetic_result({t, boolean}) :: t when t: any
-  defp arithmetic_result({result, false}), do: result
-  defp arithmetic_result({_, true}), do: arithmetic_error()
 
   @doc """
   Concatenates two binaries.
@@ -478,11 +475,13 @@ defmodule Kernel do
   """
   @spec negate(integer) :: integer
   @spec negate(float) :: float
-  def negate(x :: integer), do: arithmetic_result(fz_op_neg_i(x))
+  def negate(x :: integer), do: fz_op_neg_i(x)
   def negate(x :: float), do: fz_op_neg_f(x)
   def negate(_), do: arithmetic_error()
 
-  extern "C" defp fz_op_neg_i(integer) :: {integer, boolean}
+  extern "C" defp fz_op_neg_i(integer) :: integer,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_neg_f(float) :: float
 
   @doc """
@@ -505,15 +504,21 @@ defmodule Kernel do
   @spec float + float :: float
   @spec integer + float :: float
   @spec float + integer :: float
-  def (left :: integer) + (right :: integer), do: arithmetic_result(fz_op_add_ii(left, right))
-  def (left :: integer) + (right :: float), do: arithmetic_result(fz_op_add_if(left, right))
-  def (left :: float) + (right :: integer), do: arithmetic_result(fz_op_add_if(right, left))
-  def (left :: float) + (right :: float), do: arithmetic_result(fz_op_add_ff(left, right))
+  def (left :: integer) + (right :: integer), do: fz_op_add_ii(left, right)
+  def (left :: integer) + (right :: float), do: fz_op_add_if(left, right)
+  def (left :: float) + (right :: integer), do: fz_op_add_if(right, left)
+  def (left :: float) + (right :: float), do: fz_op_add_ff(left, right)
   def _left + _right, do: arithmetic_error()
 
-  extern "C" defp fz_op_add_ii(integer, integer) :: {integer, boolean}
-  extern "C" defp fz_op_add_if(integer, float) :: {float, boolean}
-  extern "C" defp fz_op_add_ff(float, float) :: {float, boolean}
+  extern "C" defp fz_op_add_ii(integer, integer) :: integer,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+  extern "C" defp fz_op_add_if(integer, float) :: float,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+  extern "C" defp fz_op_add_ff(float, float) :: float,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
 
   @doc """
   Returns the difference of `left` and `right`.
@@ -535,16 +540,24 @@ defmodule Kernel do
   @spec float - float :: float
   @spec integer - float :: float
   @spec float - integer :: float
-  def (left :: integer) - (right :: integer), do: arithmetic_result(fz_op_sub_ii(left, right))
-  def (left :: integer) - (right :: float), do: arithmetic_result(fz_op_sub_if(left, right))
-  def (left :: float) - (right :: integer), do: arithmetic_result(fz_op_sub_fi(left, right))
-  def (left :: float) - (right :: float), do: arithmetic_result(fz_op_sub_ff(left, right))
+  def (left :: integer) - (right :: integer), do: fz_op_sub_ii(left, right)
+  def (left :: integer) - (right :: float), do: fz_op_sub_if(left, right)
+  def (left :: float) - (right :: integer), do: fz_op_sub_fi(left, right)
+  def (left :: float) - (right :: float), do: fz_op_sub_ff(left, right)
   def _left - _right, do: arithmetic_error()
 
-  extern "C" defp fz_op_sub_ii(integer, integer) :: {integer, boolean}
-  extern "C" defp fz_op_sub_if(integer, float) :: {float, boolean}
-  extern "C" defp fz_op_sub_fi(float, integer) :: {float, boolean}
-  extern "C" defp fz_op_sub_ff(float, float) :: {float, boolean}
+  extern "C" defp fz_op_sub_ii(integer, integer) :: integer,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+  extern "C" defp fz_op_sub_if(integer, float) :: float,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+  extern "C" defp fz_op_sub_fi(float, integer) :: float,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+  extern "C" defp fz_op_sub_ff(float, float) :: float,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
 
   @doc """
   Returns the product of `left` and `right`.
@@ -566,15 +579,21 @@ defmodule Kernel do
   @spec float * float :: float
   @spec integer * float :: float
   @spec float * integer :: float
-  def (left :: integer) * (right :: integer), do: arithmetic_result(fz_op_mul_ii(left, right))
-  def (left :: integer) * (right :: float), do: arithmetic_result(fz_op_mul_if(left, right))
-  def (left :: float) * (right :: integer), do: arithmetic_result(fz_op_mul_if(right, left))
-  def (left :: float) * (right :: float), do: arithmetic_result(fz_op_mul_ff(left, right))
+  def (left :: integer) * (right :: integer), do: fz_op_mul_ii(left, right)
+  def (left :: integer) * (right :: float), do: fz_op_mul_if(left, right)
+  def (left :: float) * (right :: integer), do: fz_op_mul_if(right, left)
+  def (left :: float) * (right :: float), do: fz_op_mul_ff(left, right)
   def _left * _right, do: arithmetic_error()
 
-  extern "C" defp fz_op_mul_ii(integer, integer) :: {integer, boolean}
-  extern "C" defp fz_op_mul_if(integer, float) :: {float, boolean}
-  extern "C" defp fz_op_mul_ff(float, float) :: {float, boolean}
+  extern "C" defp fz_op_mul_ii(integer, integer) :: integer,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+  extern "C" defp fz_op_mul_if(integer, float) :: float,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+  extern "C" defp fz_op_mul_ff(float, float) :: float,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
 
   # `/` always returns a float, as in Elixir: `1 / 2` is `0.5`, not `0`. The
   # truncating form is `div/2` below. Getting this wrong is silent -- integer
@@ -600,16 +619,24 @@ defmodule Kernel do
   @spec float / float :: float
   @spec integer / float :: float
   @spec float / integer :: float
-  def (left :: integer) / (right :: integer), do: arithmetic_result(fz_op_div_ii_to_float(left, right))
-  def (left :: integer) / (right :: float), do: arithmetic_result(fz_op_div_if(left, right))
-  def (left :: float) / (right :: integer), do: arithmetic_result(fz_op_div_fi(left, right))
-  def (left :: float) / (right :: float), do: arithmetic_result(fz_op_div_ff(left, right))
+  def (left :: integer) / (right :: integer), do: fz_op_div_ii_to_float(left, right)
+  def (left :: integer) / (right :: float), do: fz_op_div_if(left, right)
+  def (left :: float) / (right :: integer), do: fz_op_div_fi(left, right)
+  def (left :: float) / (right :: float), do: fz_op_div_ff(left, right)
   def _left / _right, do: arithmetic_error()
 
-  extern "C" defp fz_op_div_ii_to_float(integer, integer) :: {float, boolean}
-  extern "C" defp fz_op_div_if(integer, float) :: {float, boolean}
-  extern "C" defp fz_op_div_fi(float, integer) :: {float, boolean}
-  extern "C" defp fz_op_div_ff(float, float) :: {float, boolean}
+  extern "C" defp fz_op_div_ii_to_float(integer, integer) :: float,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+  extern "C" defp fz_op_div_if(integer, float) :: float,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+  extern "C" defp fz_op_div_fi(float, integer) :: float,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+  extern "C" defp fz_op_div_ff(float, float) :: float,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
 
   @doc """
   Returns the truncating integer quotient of `left` divided by `right`.
@@ -625,10 +652,12 @@ defmodule Kernel do
 
   """
   @spec div(integer, integer) :: integer
-  def div(left :: integer, right :: integer), do: arithmetic_result(fz_op_div_ii(left, right))
+  def div(left :: integer, right :: integer), do: fz_op_div_ii(left, right)
   def div(_, _), do: arithmetic_error()
 
-  extern "C" defp fz_op_div_ii(integer, integer) :: {integer, boolean}
+  extern "C" defp fz_op_div_ii(integer, integer) :: integer,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
 
   @doc """
   Returns the remainder of `left` divided by `right`, with the sign of
@@ -646,7 +675,7 @@ defmodule Kernel do
 
   """
   @spec rem(integer, integer) :: integer
-  def rem(left :: integer, right :: integer), do: arithmetic_result(fz_op_rem_ii(left, right))
+  def rem(left :: integer, right :: integer), do: fz_op_rem_ii(left, right)
   def rem(_, _), do: arithmetic_error()
 
   @doc """
@@ -668,16 +697,24 @@ defmodule Kernel do
   @spec float % float :: float
   @spec integer % float :: float
   @spec float % integer :: float
-  def (left :: integer) % (right :: integer), do: arithmetic_result(fz_op_rem_ii(left, right))
-  def (left :: integer) % (right :: float), do: arithmetic_result(fz_op_rem_if(left, right))
-  def (left :: float) % (right :: integer), do: arithmetic_result(fz_op_rem_fi(left, right))
-  def (left :: float) % (right :: float), do: arithmetic_result(fz_op_rem_ff(left, right))
+  def (left :: integer) % (right :: integer), do: fz_op_rem_ii(left, right)
+  def (left :: integer) % (right :: float), do: fz_op_rem_if(left, right)
+  def (left :: float) % (right :: integer), do: fz_op_rem_fi(left, right)
+  def (left :: float) % (right :: float), do: fz_op_rem_ff(left, right)
   def _left % _right, do: arithmetic_error()
 
-  extern "C" defp fz_op_rem_ii(integer, integer) :: {integer, boolean}
-  extern "C" defp fz_op_rem_if(integer, float) :: {float, boolean}
-  extern "C" defp fz_op_rem_fi(float, integer) :: {float, boolean}
-  extern "C" defp fz_op_rem_ff(float, float) :: {float, boolean}
+  extern "C" defp fz_op_rem_ii(integer, integer) :: integer,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+  extern "C" defp fz_op_rem_if(integer, float) :: float,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+  extern "C" defp fz_op_rem_fi(float, integer) :: float,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+  extern "C" defp fz_op_rem_ff(float, float) :: float,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
 
   # Comparing an integer against a float is a comparison of two floats, and
   # widening the integer is this module's job. Arithmetic already spells its

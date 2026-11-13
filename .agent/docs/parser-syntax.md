@@ -139,6 +139,9 @@ reader only packages the distinct multi-argument clause shape
 guard; it does not own `when` precedence. The `when` following an `extern`
 return type remains a different production: it introduces type-variable
 constraints, not a guard expression.
+A comma after that return type begins the other tail, `raises: Alias, message:
+"text"` (`parse_extern_raises`), which names the exception a failing extern
+raises; see [externs](externs.md).
 
 Anonymous-function clause heads own the boundary immediately before that
 guard. `fn -> body end`, `fn pattern -> body end`, and `fn left, right -> body

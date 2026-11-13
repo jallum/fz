@@ -1,0 +1,12 @@
+#---
+# purpose: "An extern declared with raises: and message: returns its value when the operation succeeds and raises the named exception with that message when it fails"
+# expect: abort
+#---
+extern "C" defp fz_op_div_ii(integer, integer) :: integer,
+  raises: MyApp.DivisionByZero,
+  message: "cannot divide by zero"
+
+def main() do
+  dbg(fz_op_div_ii(7, 2))
+  dbg(fz_op_div_ii(7, 0))
+end

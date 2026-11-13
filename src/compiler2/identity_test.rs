@@ -101,6 +101,7 @@ fn function_surface_with_int(name: &str, value: i64) -> FunctionSurface {
         extern_param_tokens: vec![],
         extern_ret_tokens: TypeExprBody(vec![]),
         extern_constraints: vec![],
+        extern_raises: None,
         variadic: false,
         attrs: vec![],
         span: crate::source::Span::DUMMY,

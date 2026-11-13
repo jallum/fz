@@ -1,0 +1,12 @@
+#---
+# purpose: "A float-valued extern declared with raises: returns its value when the result is finite and raises the named exception when it is not"
+# expect: abort
+#---
+extern "C" defp fz_op_div_ff(float, float) :: float,
+  raises: MyApp.NotFinite,
+  message: "the quotient is not finite"
+
+def main() do
+  dbg(fz_op_div_ff(1.0, 4.0))
+  dbg(fz_op_div_ff(1.0, 0.0))
+end

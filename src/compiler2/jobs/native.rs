@@ -134,7 +134,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 symbol: signature.symbol.clone(),
                 params: signature.params.clone(),
                 variadic: signature.variadic,
-                ret: signature.ret,
+                ret: signature.ret.clone(),
                 abi: signature.abi,
             });
         }
@@ -750,16 +750,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             for (value, ty) in values.iter().copied().zip(field_tys) {
                 ctx.value_types.insert(value, ty);
             }
-            for (arg_index, marshal) in marshal_plan.iter().copied().enumerate() {
-                ctx.extern_marshals.insert(
-                    ExternMarshalSite {
-                        block: ctx.current_block,
-                        stmt_idx,
-                        arg_idx: arg_index,
-                    },
-                    marshal,
-                );
-            }
+            register_extern_marshals(&mut ctx, stmt_idx, &marshal_plan);
             let shape = executable.abi.return_layout.layout.structural;
             let ShapeDescr::Tuple(field_layouts) = self.world.shape(shape).clone() else {
                 return Err(incomplete_native_program(
@@ -788,17 +779,34 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             self.finish_native_fn(ctx);
             return Ok(());
         }
-        let (value, stmt_idx) = ctx.emit_let(prim);
-        for (arg_index, marshal) in marshal_plan.iter().copied().enumerate() {
-            ctx.extern_marshals.insert(
-                ExternMarshalSite {
-                    block: ctx.current_block,
-                    stmt_idx,
-                    arg_idx: arg_index,
-                },
-                marshal,
-            );
+        if let ExternReturn::Checked(_, failure) = &signature.ret {
+            let (values, stmt_idx) = ctx.emit_let_many(2, prim);
+            register_extern_marshals(&mut ctx, stmt_idx, &marshal_plan);
+            let (value, failed) = (values[0], values[1]);
+            let raise_b = ctx.builder.block(vec![]);
+            let value_b = ctx.builder.block(vec![]);
+            ctx.set_term(Term::If {
+                cond: failed,
+                then_b: raise_b,
+                else_b: value_b,
+                origin: BranchOrigin::ClauseDispatch,
+            });
+            ctx.current_block = raise_b;
+            let LastResort::Exception { exception, message, .. } = failure else {
+                return Err(incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!("extern `{}` declares a failure that raises nothing", signature.symbol),
+                ));
+            };
+            self.emit_raise(&mut ctx, exception, message, None);
+            ctx.current_block = value_b;
+            ctx.set_term(Term::Return(value));
+            self.finish_native_fn(ctx);
+            return Ok(());
         }
+        let (value, stmt_idx) = ctx.emit_let(prim);
+        register_extern_marshals(&mut ctx, stmt_idx, &marshal_plan);
         let result = if matches!(signature.ret, ExternReturn::Scalar(ExternTy::Unit | ExternTy::Never)) {
             let (nil, _) = ctx.emit_let(Prim::Const(Const::Nil));
             let _ = value;
@@ -2997,6 +3005,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         } else {
             None
         };
+        self.emit_raise(ctx, exception, message, subject);
+        Ok(())
+    }
+
+    /// Ends the block raising `exception` with `message`.
+    fn emit_raise(&mut self, ctx: &mut NativeFnCtx, exception: &str, message: &str, subject: Option<Var>) {
         let (exception, _) = ctx.emit_let(Prim::Const(Const::Atom(self.atom_id(exception))));
         let message = message.as_bytes().to_vec();
         let bit_len = 8 * message.len() as u64;
@@ -3006,7 +3020,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             message,
             subject,
         });
-        Ok(())
     }
 
     fn lower_dispatch_node(
@@ -5063,6 +5076,21 @@ fn bind_local_value(
         ctx.value_types.insert(var, ty);
     }
     env.insert(value, bound);
+}
+
+/// Records, for the extern call at statement `stmt_idx` of the current block,
+/// the wire type each of its arguments crosses in.
+fn register_extern_marshals(ctx: &mut NativeFnCtx, stmt_idx: usize, marshal_plan: &[ExternTy]) {
+    for (arg_idx, marshal) in marshal_plan.iter().copied().enumerate() {
+        ctx.extern_marshals.insert(
+            ExternMarshalSite {
+                block: ctx.current_block,
+                stmt_idx,
+                arg_idx,
+            },
+            marshal,
+        );
+    }
 }
 
 fn collect_extern_marshals(

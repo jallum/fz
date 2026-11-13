@@ -1104,7 +1104,14 @@ fn collect_executable_atoms(
     atoms: &mut Vec<String>,
 ) {
     match &executable.body {
-        BackendBody::Extern { .. } => {}
+        BackendBody::Extern { signature } => {
+            if let Some(exception) = match &signature.ret {
+                crate::fz_ir::ExternReturn::Checked(_, failure) => failure.exception(),
+                _ => None,
+            } {
+                push_atom(seen, atoms, exception);
+            }
+        }
         BackendBody::Clauses { clauses, entries, .. } => {
             if let Some(dispatch) = &executable.abi.materialized.entry_dispatch {
                 collect_dispatch_atoms(world, dispatch.plan(), seen, atoms);

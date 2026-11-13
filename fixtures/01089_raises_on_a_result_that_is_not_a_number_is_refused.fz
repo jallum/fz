@@ -1,0 +1,9 @@
+#---
+# purpose: "An extern that declares raises: must return an integer or a float, the payloads of the value-and-flag pair a failure travels in"
+# expect: diagnostic
+#---
+extern "C" defp fz_take(integer) :: binary,
+  raises: ArithmeticError,
+  message: "bad argument in arithmetic expression"
+
+def main(), do: dbg(fz_take(1))

@@ -60,7 +60,7 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // runs.
         // fz-sc8.8: 626 -> 658. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart: 658 -> 649.
-        runtime_demand_walks: 649,
+        runtime_demand_walks: 645,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -71,7 +71,7 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // fz-sc8.37: 472 -> 473. Kernel defines `&&`, `||` and `!` as macros.
         // fz-sc8.8: 473 -> 528. Same cause.
         // An activation key names only the literals a use can tell apart: 528 -> 512.
-        runtime_demand_walks: 512,
+        runtime_demand_walks: 505,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -86,7 +86,7 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // `raise`, `==`) is walked.
         // An activation key names only the literals a use can tell apart,
         // so fewer activations are walked: 183 -> 179.
-        runtime_demand_walks: 179,
+        runtime_demand_walks: 175,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -1443,6 +1443,9 @@ fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
         6,
         "each bundle must retain two separate-process observations"
     );
+    // Every `runtime_demand_walks` pin is lower than it was before Kernel's
+    // arithmetic externs declared their failure: no result-decoding function
+    // body is walked.
     for process_index in 0..2 {
         let aggregate_walks = observations
             .iter()
@@ -2216,21 +2219,23 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         readiness_changes,
         BTreeMap::from([
-            ("Activation", 13),
-            ("ActivationAnalyzed", 14),
-            ("ActivationInputs", 13),
-            ("CallSiteSummary", 15),
-            ("CallSiteTargets", 15),
+            ("Activation", 9),
+            ("ActivationAnalyzed", 10),
+            ("ActivationInputs", 9),
+            ("CallSiteSummary", 11),
+            ("CallSiteTargets", 11),
             // fz-sc8.64: 26 -> 28. Kernel's failure heads now reach `raise/2`
             // and `fz_raise/2` where they reached `panic/1` and `fz_panic/1`;
             // each of the pair has one more parameter than its predecessor
             // (`raise/2` two, `panic/1` one), so each publishes one more
             // slot.
-            ("IncomingInputSlot", 28),
-            ("ReturnType", 14),
-            ("RuntimeDemand", 14),
-            ("RuntimeDemandInput", 13),
-            ("RuntimeDemandInputs", 14),
+            ("IncomingInputSlot", 23),
+            ("ReturnType", 10),
+            ("RuntimeDemand", 10),
+            ("RuntimeDemandInput", 9),
+            ("RuntimeDemandInputs", 10),
+            // Readiness transitions fell because no result-decoding function
+            // publishes facts.
         ]),
         "ordinary generic helper co-outputs publish every exact readiness transition without changing values"
     );
@@ -2421,15 +2426,15 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // literal-argument calls are no longer self-keyed, so Kernel's
             // arithmetic and compare cone derives its input demand once per
             // program.
-            evaluations: 259,
-            runtime_demand_evaluations: 32,
-            initial: 189,
-            content_caused: 70,
+            evaluations: 204,
+            runtime_demand_evaluations: 24,
+            initial: 148,
+            content_caused: 56,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 232,
-            unchanged_outputs: 27,
+            changed_outputs: 179,
+            unchanged_outputs: 25,
             // fz-afu.13: 73 -> 180. `wakes` sums every completion's raw
             // subscriber-wake log, counted once per wake regardless of
             // whether it enqueues a job or coalesces into one already
@@ -2450,8 +2455,8 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // blocked runs too.
             // 155 -> 150 wakes, 65 -> 62 blocked completions: the same
             // DeriveRecursive drop.
-            wakes: 165,
-            blocked_completions: 68,
+            wakes: 130,
+            blocked_completions: 54,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2511,7 +2516,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // gains a `CallArg` and a `Value` shape.
         // Literal-argument calls are no longer self-keyed: 335 -> 339 settled
         // products, 12 -> 10 unchanged-by-content settlements.
-        (339, 339, 339, 0, 10, 0),
+        // (339, 339, 339, 0, 10, 0) -> (281, 281, 281, 0, 10, 0): no result-decoding
+        // function settles a product.
+        (281, 281, 281, 0, 10, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(
@@ -2602,7 +2609,8 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
     // fz-sc8.64: 16 -> 18. The fixture's `assert` keeps `panic/1` and
     // `fz_panic/1` live, and Kernel's failure heads now also define `raise/2`
     // and `fz_raise/2`.
-    assert_eq!(functions, 18, "the fixture compiles its known function population");
+    // 18 -> 14: no function decodes an arithmetic extern's result.
+    assert_eq!(functions, 14, "the fixture compiles its known function population");
     assert_eq!(
         counter("fz.compiler2.entry_dispatch.defined"),
         // fz-xxd.11: 24 -> 15. The nine uncalled typed-clause externs named
@@ -2610,7 +2618,8 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
         // `EntryDispatch` once nothing calls them.
         // fz-sc8.37: 15 -> 16. Kernel defines `&&`, `||` and `!` as macros.
         // fz-sc8.64: 16 -> 18, the same `raise/2` and `fz_raise/2` pair.
-        18,
+        // 18 -> 14, the same dropped decoding functions.
+        14,
         "every called function plans its own entry dispatch",
     );
 }

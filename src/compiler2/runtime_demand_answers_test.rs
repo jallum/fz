@@ -152,7 +152,7 @@ fn demand_sent_down_waits_for_the_consumer_of_the_result() {
 /// integer cannot be needed more than whole. Its answer is earned before
 /// anyone else answers, `g` reads it as `f`'s partner, and the demand `f`
 /// sends into Kernel arithmetic for `n - 1` is sent once, already final.
-/// By hand: main 2, f 3, g 1, and the arithmetic chain 11, plus both roots.
+/// By hand: main 2, f 3, g 1, and the arithmetic chain 3, plus both roots.
 #[test]
 fn a_recursive_pair_sends_demand_out_of_the_cycle_once() {
     let work = runtime_demand_work(
@@ -160,7 +160,8 @@ fn a_recursive_pair_sends_demand_out_of_the_cycle_once() {
         0,
     );
     // fz-sc8.37: 19 -> 20. Kernel defines `&&`, `||` and `!` as macros.
-    assert_eq!((work.runs, work.shift_wakes), (20, 0));
+    // 20 -> 12: the arithmetic chain is the operator and its extern wrapper.
+    assert_eq!((work.runs, work.shift_wakes), (12, 0));
 }
 
 /// A cycle made of closure calls, which the static call graph cannot see:
@@ -182,7 +183,7 @@ fn a_closure_cycle_climbs_once() {
 /// `acc = acc`: never needed. `loop` works out its own upward answer before
 /// the demand it sends down, so the arithmetic for `n - 1` is asked once, for
 /// all of its result.
-/// By hand: main 2, loop 2, and the arithmetic chain 11, plus both roots.
+/// By hand: main 2, loop 2, and the arithmetic chain 3, plus both roots.
 #[test]
 fn a_self_call_sends_demand_down_from_its_own_answer() {
     let work = runtime_demand_work(
@@ -190,5 +191,6 @@ fn a_self_call_sends_demand_down_from_its_own_answer() {
         0,
     );
     // fz-sc8.37: 17 -> 18. Kernel defines `&&`, `||` and `!` as macros.
-    assert_eq!((work.runs, work.shift_wakes), (18, 0));
+    // 18 -> 10: the arithmetic chain is the operator and its extern wrapper.
+    assert_eq!((work.runs, work.shift_wakes), (10, 0));
 }

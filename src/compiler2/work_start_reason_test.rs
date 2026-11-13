@@ -347,7 +347,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // Literal-argument calls are no longer self-keyed: 2516 -> 2528 steps
         // (Kernel's arithmetic and compare cone derives its input demand once
         // per program), 252 -> 248 executable facts (fewer activations).
-        (2528, 11, 28, 248),
+        // (2528, 11, 28, 248) -> (2513, 11, 28, 246): no result-decoding
+        // function is defined, analyzed or lowered.
+        (2513, 11, 28, 246),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -439,7 +441,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.8: 885 -> 960. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // Literal-argument calls are no longer self-keyed: each function
         // reached with an atom argument derives its demand: 960 -> 987.
-        987,
+        985,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -503,7 +505,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.8: 416 -> 440. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart:
         // 440 -> 424.
-        424,
+        420,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -563,7 +565,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.8: (573, 575, [24, 236, 82, 233, 0]) -> (605, 607, [24, 252, 82, 249, 0]). `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // Literal-argument calls are no longer self-keyed: (605, 607,
         // [24, 252, 82, 249, 0]) -> (596, 598, [24, 248, 82, 244, 0]).
-        (596, 598, [24, 248, 82, 244, 0]),
+        (592, 594, [24, 246, 82, 242, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
@@ -578,7 +580,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.8: 308 -> 324. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart:
         // 324 -> 320.
-        320,
+        318,
         "the demand frontier retains every ordinary generic helper key",
     );
     assert_eq!(
@@ -702,7 +704,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fewer: `raise/2`'s contract concludes after its callers' first
         // runs.
         // fz-sc8.8: 624 -> 669. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        669,
+        666,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();
@@ -723,7 +725,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.8: 236 -> 252. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart:
         // 252 -> 248.
-        248,
+        246,
         "the demand frontier's distinct activations, deduplicated across repeats",
     );
 
