@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-13T03:33:10Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-53f",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "A product's membership lives on its entry, and a first commit has no previous membership",
   "type": "task",
-  "updated_at": "2026-11-13T03:33:10Z"
+  "updated_at": "2026-11-13T13:55:58Z"
 }
