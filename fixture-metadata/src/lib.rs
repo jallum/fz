@@ -43,6 +43,10 @@ pub struct FixtureMatrixMetadata {
     pub defer: Option<String>,
     pub path_deferrals: Vec<PathDeferral>,
     pub oracle: Option<String>,
+    /// The `oracle.stamp` the header records: 16 lowercase hex digits, the
+    /// value [`oracle_stamp`] computed when the oracle pair was last verified
+    /// against Elixir. Present only alongside `oracle`.
+    pub oracle_stamp: Option<String>,
     /// The program's command line: the tokens after the source path.
     pub args: Vec<String>,
     pub path_timeouts: Vec<PathTimeout>,
@@ -237,6 +241,12 @@ pub fn parse_fixture_metadata(source: &str) -> Result<Option<FixtureMetadata>, F
             }
             "defer" => set_singleton(&mut metadata.matrix.defer, unquote(value).to_string(), line_no, key)?,
             "oracle" => set_singleton(&mut metadata.matrix.oracle, unquote(value).to_string(), line_no, key)?,
+            "oracle.stamp" => set_singleton(
+                &mut metadata.matrix.oracle_stamp,
+                parse_oracle_stamp(unquote(value), line_no)?,
+                line_no,
+                key,
+            )?,
             "args" => {
                 if !metadata.matrix.args.is_empty() {
                     return Err(FixtureMetadataError::new(line_no, "`args` may only appear once"));
@@ -283,7 +293,52 @@ pub fn parse_fixture_metadata(source: &str) -> Result<Option<FixtureMetadata>, F
         ));
     }
 
+    if metadata.matrix.oracle_stamp.is_some() && metadata.matrix.oracle.is_none() {
+        return Err(FixtureMetadataError::new(
+            first_line_idx + 1,
+            "`oracle.stamp` requires `oracle`",
+        ));
+    }
+
     Ok(Some(metadata))
+}
+
+const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fnv1a(hash: u64, bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .fold(hash, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(FNV1A_PRIME))
+}
+
+/// The stamp of an oracle pair: 64-bit FNV-1a, as 16 lowercase hex digits,
+/// over the oracle source bytes, a 0 byte, the golden bytes (empty when the
+/// golden is absent), a 0 byte, and then each argument followed by a 0 byte.
+/// The arguments are the exact tokens handed to `elixir` after the script
+/// path. The stamp detects that the pair changed since Elixir last confirmed
+/// it; it is not a security boundary.
+pub fn oracle_stamp(oracle_source: &[u8], golden: &[u8], args: &[String]) -> String {
+    let mut hash = fnv1a(FNV1A_OFFSET_BASIS, oracle_source);
+    hash = fnv1a(hash, &[0]);
+    hash = fnv1a(hash, golden);
+    hash = fnv1a(hash, &[0]);
+    for arg in args {
+        hash = fnv1a(hash, arg.as_bytes());
+        hash = fnv1a(hash, &[0]);
+    }
+    format!("{hash:016x}")
+}
+
+fn parse_oracle_stamp(value: &str, line_no: usize) -> Result<String, FixtureMetadataError> {
+    let is_stamp = value.len() == 16 && value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    if !is_stamp {
+        return Err(FixtureMetadataError::new(
+            line_no,
+            format!("`oracle.stamp` must be 16 lowercase hex digits, got `{value}`"),
+        ));
+    }
+    Ok(value.to_string())
 }
 
 pub fn fixture_frontmatter_prefix_bytes(source: &str) -> Result<Option<u32>, FixtureMetadataError> {
