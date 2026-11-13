@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.19"
+  ],
   "created": "2026-11-13T04:20:11Z",
   "description": "Distill gate first divergence once fz-sc8.140 is in (PR #401): fz2 interp tools/distill-telemetry.exs tests/distill_telemetry/main_returns_one.jsonl ends with 'compiler2 root 0 product path exceeded fact-wait budget for an executable's runtime demand' after about 51,000 jobs (about 110 s CPU). Probes on develop d0c3ae00c + the .140 fix: (1) tightening ten Map functions to return map (fz-sc8.123) changes nothing: same end, 113 s CPU; (2) with PRODUCT_DRIVE_BUDGET raised from 50,000 to 2,000,000 the compile is still running after 566 s CPU: it does not converge in any practical bound. A 200 s telemetry trace of that run is at /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/anat/tr.jsonl (1.8 GB, 232,332 records). Earlier count at the budget stop: 27,334 Derive*, 20,625 AnalyzeActivation, 1,125 SeedAc*. Unknown until the anatomy is read: whether new activation keys keep appearing (growth) or a fixed set re-runs (oscillation), and which functions. Concordant tickets: fz-sc8.127 (protocol callback non-receiver arguments keyed where an implementation returns them), fz-y5x (cont\u003c-\u003estep reduce recursion mints ascent rungs), fz-sc8.143 (per-literal keying). Second witnesses: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/runaway/d5.fz, /Users/j5n/Workspace/runtime-demand-panic-repro.fz.",
   "id": "fz-sc8.146",
