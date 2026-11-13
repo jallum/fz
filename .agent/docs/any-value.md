@@ -462,16 +462,34 @@ the schema, or a deletion, changes the key set, so the answer is published in
 the entries layout with `__struct__` an ordinary key, exactly the map Elixir
 makes (`Map.delete(p, :x)` is `%{__struct__: Pt, y: 2}`).
 
-`%{m | k: v}` uses an update destination (`Heap::alloc_map_update`): `m`'s
-entries copied in order, whose puts may only replace them. A put naming a key
-`m` lacks stores nothing and marks the destination; its freeze then publishes
-the copy and answers `None`, which `fz_map_dest_freeze` returns as the null
-ref, the same miss sentinel a map pattern's lookup answers. Since puts only
-replace, the copy stays in key order and freeze publishes it in place, with no
-sort. An entries-layout base is copied slot for slot; a struct base is read
-through the view and marked, and an update of a struct that did not miss
-freezes back into that struct's layout (`Heap::struct_of_entries`), so
-updating a struct keeps it one.
+`%{m | k: v}` uses an update destination (`Heap::alloc_map_update`): an
+unpublished copy of `m` in `m`'s own layout, whose puts may only replace what
+it holds. The destination is threaded through its puts.
+`Heap::map_destination_put` stores one entry and answers the destination the
+next put or the freeze continues with, and `Prim::DestMapPut` is that value in
+the IR, so the puts of one update form a chain and nothing else holds the
+destination.
+
+- An entries base is copied slot for slot. A put finds its key by the map's
+  binary search and replaces the value, so the copy stays in key order and
+  freeze publishes it in place, with no sort.
+- A struct base is copied by `Heap::copy_struct`. A put of a field stores it
+  in the copy's slot, and freeze answers the copy, so updating a struct keeps
+  it one. `__struct__` lives in no slot: a put of the struct's own module
+  changes nothing, and a put of any other module moves the copy's entries to
+  an entries destination that holds the new module as an ordinary key.
+- A put naming a key the base lacks has no destination to continue with and
+  answers `0`. Every later put passes `0` on, and freeze answers `None`, which
+  `fz_map_dest_freeze` returns as the null ref, the same miss sentinel a map
+  pattern's lookup answers.
+
+Where the types say which struct the base is (`Types::sole_struct`) and every
+key is a literal atom naming one of its fields, the update needs no
+destination. It is `BackendStep::StructUpdate { base, arity, slots }`, which
+cannot miss: `fz_struct_copy` copies the object and `CodegenFn::store_field`
+stores each replaced slot in place, the same stores a construction uses. For
+example, `%{p | y: 5}` with `p` a `Point` of fields `x` and `y` is one copy
+and one store at slot 1.
 
 Published language values are finite immutable DAGs. Low-level struct and closure
 writes are unsafe construction operations whose caller must own the unpublished

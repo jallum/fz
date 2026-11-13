@@ -1,7 +1,7 @@
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, EMPTY_LIST_BITS, ValueKind, closure_size_for_count, list_addr_from_tagged, map_count,
-    map_entry,
+    AnyValue, AnyValueRef, EMPTY_LIST_BITS, ValueKind, closure_size_for_count, heap_object_word, list_addr_from_tagged,
+    map_count, map_entry,
 };
 use crate::exec_ctx::Argv;
 use crate::heap::{Schema, SchemaRegistry};

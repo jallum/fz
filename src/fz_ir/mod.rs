@@ -223,15 +223,6 @@ impl<T> OwnershipUse<T> {
     }
 }
 
-/// Linear construction token for destination-passing IR.
-///
-/// A token names permission to initialize one unpublished destination state.
-/// Destination primitives consume one token and either produce the next token
-/// or freeze the value. Tokens are not source values and must never become
-/// observable runtime data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct InitTokenId(pub u32);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExternId(pub u32);
 
@@ -500,23 +491,27 @@ pub enum Prim {
     /// Allocate a closure: callable code identity plus the captured
     /// environment locals.
     MakeClosure(CallsiteIdent, FnId, Vec<Var>),
-    /// Allocate an unpublished map destination, from `seed`.
-    DestMapBegin {
-        token: InitTokenId,
-        seed: DestMapSeed,
-    },
-    /// Set one key/value pair in an unpublished map destination.
+    /// Allocate an unpublished map destination, from `seed`. A destination
+    /// is threaded: each put takes one and answers the one the next put or
+    /// the freeze takes, so nothing else can hold it.
+    DestMapBegin(DestMapSeed),
+    /// Set one key/value pair in an unpublished map destination and answer
+    /// the destination to continue with. An update that names a key its base
+    /// lacks has none, and its freeze answers the miss.
     DestMapPut {
         map: Var,
-        token: InitTokenId,
         key: Var,
         value: Var,
-        next: InitTokenId,
     },
-    /// Sort/dedup a map destination and publish the immutable map.
-    DestMapFreeze {
-        map: Var,
-        token: InitTokenId,
+    /// Publish a map destination as the immutable map: a literal's entries
+    /// are sorted and deduplicated, an update's are already in place.
+    DestMapFreeze(Var),
+    /// A copy of the struct `base`, which has `arity` fields, with each of
+    /// `fields` stored in its slot.
+    StructWith {
+        base: Var,
+        arity: u32,
+        fields: Vec<(u32, Var)>,
     },
     /// `m[k]` — bracket access. Returns nil if key absent.
     MapGet(Var, Var),
@@ -626,18 +621,24 @@ impl Prim {
                     used.insert(*v);
                 }
             }
-            Prim::DestMapBegin { seed, .. } => {
+            Prim::DestMapBegin(seed) => {
                 if let DestMapSeed::Update(base) = seed {
                     used.insert(*base);
                 }
             }
-            Prim::DestMapPut { map, key, value, .. } => {
+            Prim::DestMapPut { map, key, value } => {
                 used.insert(*map);
                 used.insert(*key);
                 used.insert(*value);
             }
-            Prim::DestMapFreeze { map, .. } => {
+            Prim::DestMapFreeze(map) => {
                 used.insert(*map);
+            }
+            Prim::StructWith { base, fields, .. } => {
+                used.insert(*base);
+                for (_, v) in fields {
+                    used.insert(*v);
+                }
             }
             Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
                 used.insert(*a);
@@ -1258,12 +1259,6 @@ impl fmt::Display for Var {
     }
 }
 
-impl fmt::Display for InitTokenId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "tok{}", self.0)
-    }
-}
-
 impl fmt::Display for BlockId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "bb{}", self.0)
@@ -1375,22 +1370,17 @@ impl fmt::Display for Prim {
             Prim::MakeClosure(_ident, fid, captured) => {
                 write!(f, "closure({}, captured=[{}])", fid, fmt_var_list(captured))
             }
-            Prim::DestMapBegin { token, seed } => match seed {
-                DestMapSeed::Capacity(capacity) => write!(f, "dest_map_begin(token={}, capacity={})", token, capacity),
-                DestMapSeed::Update(base) => write!(f, "dest_map_begin(token={}, update={})", token, base),
-            },
-            Prim::DestMapPut {
-                map,
-                token,
-                key,
-                value,
-                next,
-            } => write!(
-                f,
-                "dest_map_put({}, {}, key={}, value={}, next={})",
-                map, token, key, value, next
-            ),
-            Prim::DestMapFreeze { map, token } => write!(f, "dest_map_freeze({}, {})", map, token),
+            Prim::DestMapBegin(DestMapSeed::Capacity(capacity)) => write!(f, "dest_map_begin(capacity={})", capacity),
+            Prim::DestMapBegin(DestMapSeed::Update(base)) => write!(f, "dest_map_begin(update={})", base),
+            Prim::DestMapPut { map, key, value } => write!(f, "dest_map_put({}, key={}, value={})", map, key, value),
+            Prim::DestMapFreeze(map) => write!(f, "dest_map_freeze({})", map),
+            Prim::StructWith { base, fields, .. } => {
+                write!(f, "struct_with({}", base)?;
+                for (slot, v) in fields {
+                    write!(f, ", {}={}", slot, v)?;
+                }
+                write!(f, ")")
+            }
             Prim::MapGet(m, k) => write!(f, "map_get({}, {})", m, k),
             Prim::MatcherMapGet(m, k) => write!(f, "matcher_map_get({}, {})", m, k),
             Prim::IsMapMiss(v) => write!(f, "is_map_miss({})", v),

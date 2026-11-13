@@ -24,7 +24,7 @@ use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListReg
 use crate::fz_ir::{
     BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DestMapSeed, DirectCallTarget,
     ExternAbi, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FnBuilder, FnCategory, FnId,
-    InitTokenId, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
+    ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
 };
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate, TuplePositions};
@@ -1157,68 +1157,33 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     if quoted_span.is_some() {
                         self.ensure_quoted_span_atoms();
                     }
-                    let token = ctx.fresh_token();
-                    let (map, _) = ctx.emit_let(Prim::DestMapBegin {
-                        token,
-                        seed: DestMapSeed::Capacity(entries.len() + usize::from(quoted_span.is_some())),
-                    });
-                    let mut token = token;
+                    let (mut map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Capacity(
+                        entries.len() + usize::from(quoted_span.is_some()),
+                    )));
                     for (key, item) in entries {
-                        let next = ctx.fresh_token();
                         let key = self.env_runtime_var(ctx, executable, env, *key);
                         let value = self.env_runtime_var(ctx, executable, env, *item);
-                        let _ = ctx.emit_let(Prim::DestMapPut {
-                            map,
-                            token,
-                            key,
-                            value,
-                            next,
-                        });
-                        token = next;
+                        map = ctx.emit_map_put(map, key, value);
                     }
                     if let Some(span) = quoted_span {
-                        let span_token = ctx.fresh_token();
-                        let (span_map, _) = ctx.emit_let(Prim::DestMapBegin {
-                            token: span_token,
-                            seed: DestMapSeed::Capacity(3),
-                        });
-                        let mut span_token = span_token;
+                        let (mut span_map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Capacity(3)));
                         for (key, value) in super::super::source::quoted_span_entries(*span) {
-                            let next = ctx.fresh_token();
                             let (key, _) = ctx.emit_let(Prim::Const(Const::Atom(
                                 *self.atom_ids.get(key).expect("quoted metadata atom registered"),
                             )));
                             let (value, _) = ctx.emit_let(Prim::Const(Const::Int(value)));
-                            let _ = ctx.emit_let(Prim::DestMapPut {
-                                map: span_map,
-                                token: span_token,
-                                key,
-                                value,
-                                next,
-                            });
-                            span_token = next;
+                            span_map = ctx.emit_map_put(span_map, key, value);
                         }
-                        let (span_map, _) = ctx.emit_let(Prim::DestMapFreeze {
-                            map: span_map,
-                            token: span_token,
-                        });
-                        let next = ctx.fresh_token();
+                        let (span_map, _) = ctx.emit_let(Prim::DestMapFreeze(span_map));
                         let (key, _) = ctx.emit_let(Prim::Const(Const::Atom(
                             *self
                                 .atom_ids
                                 .get(super::super::source::META_SPAN_KEY)
                                 .expect("quoted metadata atom registered"),
                         )));
-                        let _ = ctx.emit_let(Prim::DestMapPut {
-                            map,
-                            token,
-                            key,
-                            value: span_map,
-                            next,
-                        });
-                        token = next;
+                        map = ctx.emit_map_put(map, key, span_map);
                     }
-                    let (var, _) = ctx.emit_let(Prim::DestMapFreeze { map, token });
+                    let (var, _) = ctx.emit_let(Prim::DestMapFreeze(map));
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::MapUpdate {
@@ -1228,29 +1193,37 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     entries,
                 } => {
                     let base = self.env_runtime_var(ctx, executable, env, *base);
-                    let token = ctx.fresh_token();
-                    let (map, _) = ctx.emit_let(Prim::DestMapBegin {
-                        token,
-                        seed: DestMapSeed::Update(base),
-                    });
-                    let mut token = token;
+                    let (mut map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Update(base)));
                     for (key, item) in entries {
-                        let next = ctx.fresh_token();
                         let key = self.env_runtime_var(ctx, executable, env, *key);
                         let value = self.env_runtime_var(ctx, executable, env, *item);
-                        let _ = ctx.emit_let(Prim::DestMapPut {
-                            map,
-                            token,
-                            key,
-                            value,
-                            next,
-                        });
-                        token = next;
+                        map = ctx.emit_map_put(map, key, value);
                     }
-                    let (var, _) = ctx.emit_let(Prim::DestMapFreeze { map, token });
+                    let (var, _) = ctx.emit_let(Prim::DestMapFreeze(map));
                     let (missed, _) = ctx.emit_let(Prim::IsMapMiss(var));
                     let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
                     let (ok_var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, missed, false_v));
+                    self.bind_runtime_value(ctx, executable, env, *ok, ok_var);
+                    self.bind_runtime_value(ctx, executable, env, *value, var);
+                }
+                BackendStep::StructUpdate {
+                    value,
+                    ok,
+                    base,
+                    arity,
+                    slots,
+                } => {
+                    let base = self.env_runtime_var(ctx, executable, env, *base);
+                    let fields = slots
+                        .iter()
+                        .map(|(slot, item)| (*slot, self.env_runtime_var(ctx, executable, env, *item)))
+                        .collect();
+                    let (var, _) = ctx.emit_let(Prim::StructWith {
+                        base,
+                        arity: *arity,
+                        fields,
+                    });
+                    let (ok_var, _) = ctx.emit_let(Prim::Const(Const::True));
                     self.bind_runtime_value(ctx, executable, env, *ok, ok_var);
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
@@ -4922,7 +4895,6 @@ struct NativeFnCtx {
     return_ty: Ty,
     return_reprs: Vec<AbiValueRepr>,
     effects: EffectSummary,
-    next_token: u32,
     entry_blocks: HashMap<ControlEntryId, (BlockId, Vec<Var>)>,
     pending_entry_blocks: VecDeque<ControlEntryId>,
 }
@@ -4953,7 +4925,6 @@ impl NativeFnCtx {
             return_ty,
             return_reprs,
             effects,
-            next_token: 0,
             entry_blocks: HashMap::new(),
             pending_entry_blocks: VecDeque::new(),
         }
@@ -5004,10 +4975,10 @@ impl NativeFnCtx {
         CallsiteIdent::from_source(Span::DUMMY)
     }
 
-    fn fresh_token(&mut self) -> InitTokenId {
-        let token = InitTokenId(self.next_token);
-        self.next_token += 1;
-        token
+    /// Put one entry in the map destination `map`; the answer is the
+    /// destination the next put or the freeze takes.
+    fn emit_map_put(&mut self, map: Var, key: Var, value: Var) -> Var {
+        self.emit_let(Prim::DestMapPut { map, key, value }).0
     }
 
     fn set_term(&mut self, term: Term) {

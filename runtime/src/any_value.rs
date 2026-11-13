@@ -1106,6 +1106,10 @@ impl SlotLayout {
         Self { fields }
     }
 
+    pub const fn fields(self) -> usize {
+        self.fields
+    }
+
     /// The bytes after the header: the slots and their kind bytes.
     pub const fn payload_size(self) -> usize {
         self.fields * 8 + ((self.fields + 7) & !7)
@@ -1225,26 +1229,17 @@ pub(crate) const MAP_DESTINATION_FLAG: u64 = 1 << 63;
 /// Marks a destination that updates existing keys only (`%{map | k: v}`), as
 /// opposed to one that builds a map from the keys it is given.
 const MAP_UPDATE_FLAG: u64 = 1 << 62;
-/// Marks an update destination that was asked to store a key its base lacks.
-const MAP_MISSED_FLAG: u64 = 1 << 61;
-/// Marks an update destination whose base was a struct.
-const MAP_STRUCT_BASE_FLAG: u64 = 1 << 60;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapDestinationKind {
     Build,
-    Update { missed: bool, struct_base: bool },
+    Update,
 }
 
 impl MapDestinationKind {
     fn flags(self) -> u64 {
         match self {
             Self::Build => 0,
-            Self::Update { missed, struct_base } => {
-                MAP_UPDATE_FLAG
-                    | if missed { MAP_MISSED_FLAG } else { 0 }
-                    | if struct_base { MAP_STRUCT_BASE_FLAG } else { 0 }
-            }
+            Self::Update => MAP_UPDATE_FLAG,
         }
     }
 
@@ -1252,10 +1247,7 @@ impl MapDestinationKind {
         if header & MAP_UPDATE_FLAG == 0 {
             Self::Build
         } else {
-            Self::Update {
-                missed: header & MAP_MISSED_FLAG != 0,
-                struct_base: header & MAP_STRUCT_BASE_FLAG != 0,
-            }
+            Self::Update
         }
     }
 }

@@ -325,8 +325,8 @@ match is left to the decision's own `FunctionClauseError`.
 | `File` bang functions | `** (File.Error)`, `File.CopyError`, `File.RenameError` or `File.LinkError`, with reason `I/O error` |
 
 An update is Elixir's `put_map_exact`: it may only replace keys the map has.
-The update destination itself notes a key its base lacks, and its freeze then
-answers the miss sentinel instead of a map; the lowering tests that answer
+A put naming a key its base lacks leaves the update with no destination, and
+its freeze then answers the miss sentinel instead of a map; the lowering tests that answer
 (`ok`, as a `cond`-shaped decision on `true`) and its miss arm calls
 `Map.update_key_error/2`, which finds the missing key and raises. When the
 base's type proves every updated key is present (`Types::map_surely_has_keys`),

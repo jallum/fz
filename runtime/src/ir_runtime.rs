@@ -24,10 +24,10 @@
 
 use crate::any_value::debug::{Limit, render_value, render_with_limit};
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_LAZY_CONT, ValueKind,
+    AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, TAG_LAZY_CONT, ValueKind,
     closure_addr_from_tagged, closure_capture_value, closure_captured_count, closure_denotation, closure_fn_ptr,
-    closure_halt_kind, heap_object_word, map_addr_from_tagged, object_size, procbin_addr_from_tagged,
-    struct_addr_from_tagged, struct_schema_id,
+    closure_halt_kind, map_addr_from_tagged, object_size, procbin_addr_from_tagged, struct_addr_from_tagged,
+    struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -190,12 +190,25 @@ pub extern "C" fn fz_process_heap_alloc_stats(process: *mut Process) -> u64 {
     map_ref_word_from_bits((unsafe { &mut *process }).heap.alloc_map_slots(&entries))
 }
 
-fn map_bits_from_ref_word(word: u64, context: &str) -> u64 {
-    let map = any_value_ref_from_word(word, context);
-    if map.tag() == ValueKind::NULL {
-        return 0;
+/// The heap bits of the unpublished destination a reference names. The null
+/// reference is `0`: an update that has missed a key has no destination.
+fn destination_bits_from_ref_word(word: u64, context: &str) -> u64 {
+    let dest = any_value_ref_from_word(word, context);
+    match dest.tag() {
+        ValueKind::NULL => 0,
+        ValueKind::MAP | ValueKind::STRUCT => dest.raw_word(),
+        other => panic!("{context}: {other:?} is no map destination"),
     }
-    heap_object_word(map.map_addr().expect(context), ValueKind::MAP)
+}
+
+/// The reference to the destination `bits` names, null for `0`. A heap
+/// object's bits are its reference word.
+fn destination_ref_word(bits: u64) -> u64 {
+    if bits == 0 {
+        AnyValueRef::null().raw_word()
+    } else {
+        bits
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1587,14 +1600,16 @@ pub extern "C" fn fz_map_dest_begin(process: *mut Process, extra: u32) -> u64 {
     map_ref_word_from_bits((unsafe { &mut *process }).heap.alloc_map_destination(extra as usize))
 }
 
-/// A destination for `%{base | k: v, ...}`: `base`'s entries, in either of its
-/// layouts, which the puts replace.
+/// A destination for `%{base | k: v, ...}`: `base`'s entries, which the puts
+/// replace. A struct's destination is a copy of the struct.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_dest_begin_update(process: *mut Process, base_ref_word: u64) -> u64 {
     let base = any_value_ref_from_word(base_ref_word, "fz_map_dest_begin_update base");
-    map_ref_word_from_bits((unsafe { &mut *process }).heap.alloc_map_update(base))
+    destination_ref_word((unsafe { &mut *process }).heap.alloc_map_update(base))
 }
 
+/// Store one entry and answer the destination to continue with: the null
+/// reference once an update has named a key its base lacks.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_dest_put_parts(
     process: *mut Process,
@@ -1603,31 +1618,32 @@ pub extern "C" fn fz_map_dest_put_parts(
     key_kind: u64,
     value_raw: u64,
     value_kind: u64,
-) {
-    let dest_bits = map_bits_from_ref_word(dest_ref_word, "fz_map_dest_put_parts dest");
+) -> u64 {
+    let dest_bits = destination_bits_from_ref_word(dest_ref_word, "fz_map_dest_put_parts dest");
     let key = AnyValue::decode_parts(key_raw, key_kind as u8).expect("fz_map_dest_put_parts key");
     let value = AnyValue::decode_parts(value_raw, value_kind as u8).expect("fz_map_dest_put_parts value");
-    unsafe { (*process).heap.map_destination_put(dest_bits, key, value) };
+    destination_ref_word(unsafe { (*process).heap.map_destination_put(dest_bits, key, value) })
 }
 
+/// `fz_map_dest_put_parts` for a key and a value held by reference.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_dest_put_ref(
     process: *mut Process,
     dest_ref_word: u64,
     key_ref_word: u64,
     value_ref_word: u64,
-) {
-    let dest_bits = map_bits_from_ref_word(dest_ref_word, "fz_map_dest_put_ref dest");
+) -> u64 {
+    let dest_bits = destination_bits_from_ref_word(dest_ref_word, "fz_map_dest_put_ref dest");
     let key = any_value_from_ref_word(key_ref_word, "fz_map_dest_put_ref key");
     let value = any_value_from_ref_word(value_ref_word, "fz_map_dest_put_ref value");
-    unsafe { (*process).heap.map_destination_put(dest_bits, key, value) };
+    destination_ref_word(unsafe { (*process).heap.map_destination_put(dest_bits, key, value) })
 }
 
-/// The published map, or the null ref when an update destination was asked
-/// for a key its base lacks; the caller tests for it and raises `KeyError`.
+/// The published map, or the null reference when an update named a key its
+/// base lacks; the caller tests for it and raises `KeyError`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_dest_freeze(process: *mut Process, dest_ref_word: u64) -> u64 {
-    let dest_bits = map_bits_from_ref_word(dest_ref_word, "fz_map_dest_freeze dest");
+    let dest_bits = destination_bits_from_ref_word(dest_ref_word, "fz_map_dest_freeze dest");
     (unsafe { &mut *process })
         .heap
         .map_destination_freeze(dest_bits)
@@ -2097,6 +2113,21 @@ pub extern "C" fn fz_alloc_struct(process: *mut Process, schema_id: u32, size: u
         .heap
         .alloc_struct_unwritten(schema_id, size as usize);
     heap_ref_word(ValueKind::STRUCT, p)
+}
+
+/// An unpublished copy of a struct of `fields` fields. Compiled code stores
+/// the fields an update replaces next, in place, before anything can read it.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_struct_copy(process: *mut Process, struct_ref_word: u64, fields: u32) -> u64 {
+    let object = any_value_ref_from_word(struct_ref_word, "fz_struct_copy")
+        .struct_addr()
+        .expect("fz_struct_copy");
+    let copy = unsafe {
+        (*process)
+            .heap
+            .copy_struct(object.cast_const(), SlotLayout::of(fields as usize))
+    };
+    heap_ref_word(ValueKind::STRUCT, copy)
 }
 
 /// Store a value held as a reference into a struct under construction, at

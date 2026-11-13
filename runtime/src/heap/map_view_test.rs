@@ -37,16 +37,20 @@ impl Fixture {
         AnyValueRef::from_heap_object(ValueKind::STRUCT, object).expect("struct ref")
     }
 
+    /// The entries layout map `%{name: value, ...}`.
+    fn plain(&mut self, entries: &[(&str, i64)]) -> AnyValueRef {
+        let entries: Vec<_> = entries
+            .iter()
+            .map(|(name, value)| (self.atom(name), AnyValue::int(*value)))
+            .collect();
+        let bits = self.heap.alloc_map_slots(&entries);
+        let addr = map_addr_from_tagged(bits).expect("published map");
+        AnyValueRef::from_heap_object(ValueKind::MAP, addr).expect("map ref")
+    }
+
     fn entries(&self, map: AnyValueRef) -> Vec<(AnyValue, AnyValue)> {
         let layout = self.heap.expect_map_layout(map, "test");
         self.heap.map_view_entries(layout)
-    }
-
-    /// `struct_of_entries` over the entries layout map holding `entries`.
-    fn struct_of_entries(&mut self, entries: &[(AnyValue, AnyValue)]) -> Option<AnyValueRef> {
-        let bits = self.heap.alloc_map_slots(entries);
-        let addr = map_addr_from_tagged(bits).expect("published map");
-        self.heap.struct_of_entries(addr)
     }
 
     fn point_entries(&self, x: i64, y: i64) -> Vec<(AnyValue, AnyValue)> {
@@ -149,45 +153,62 @@ fn an_update_of_a_struct_field_freezes_into_the_struct() {
     let p = f.point(1, 2);
     let dest = f.heap.alloc_map_update(p);
     let y = f.atom("y");
-    unsafe { f.heap.map_destination_put(dest, y, AnyValue::int(5)) };
+    let dest = unsafe { f.heap.map_destination_put(dest, y, AnyValue::int(5)) };
     let updated = f.heap.map_destination_freeze(dest).expect("every key is present");
     assert!(is_struct_layout(f.heap.map_layout(updated)));
     assert_eq!(f.entries(updated), f.point_entries(1, 5));
+    assert_eq!(f.entries(p), f.point_entries(1, 2), "the original is untouched");
 }
 
 #[test]
 fn an_update_naming_a_missing_key_makes_no_map() {
     let mut f = fixture();
     let p = f.point(1, 2);
-    let dest = f.heap.alloc_map_update(p);
+    let plain = f.plain(&[("x", 1)]);
     let x = f.atom("x");
     let z = f.atom("z");
-    unsafe {
-        f.heap.map_destination_put(dest, z, AnyValue::int(0));
-        f.heap.map_destination_put(dest, x, AnyValue::int(9));
+    for base in [p, plain] {
+        let dest = f.heap.alloc_map_update(base);
+        let dest = unsafe { f.heap.map_destination_put(dest, z, AnyValue::int(0)) };
+        let dest = unsafe { f.heap.map_destination_put(dest, x, AnyValue::int(9)) };
+        assert!(
+            f.heap.map_destination_freeze(dest).is_none(),
+            "a miss anywhere in the update answers no map"
+        );
     }
-    assert!(
-        f.heap.map_destination_freeze(dest).is_none(),
-        "a miss anywhere in the update answers no map"
-    );
 }
 
+/// A struct is the struct its module says. Naming the module it already has
+/// changes nothing; naming another leaves a map that holds the new module as
+/// an ordinary key, however many fields were replaced before or after.
 #[test]
-fn entries_whose_keys_are_a_structs_come_back_as_that_struct() {
+fn an_update_of_the_module_keeps_the_struct_only_when_the_module_is_its_own() {
     let mut f = fixture();
-    let exact = f.point_entries(3, 4);
-    let object = f.struct_of_entries(&exact).expect("the keys are exactly Pt's");
-    assert!(is_struct_layout(f.heap.map_layout(object)));
-    assert_eq!(f.entries(object), exact);
+    let p = f.point(1, 2);
+    let module_key = f.atom("__struct__");
+    let x = f.atom("x");
+    let y = f.atom("y");
 
-    let mut extra = f.point_entries(3, 4);
-    extra.push((f.atom("z"), AnyValue::int(0)));
-    assert!(f.struct_of_entries(&extra).is_none(), "an extra key is not Pt");
-    let unknown = vec![(f.atom("__struct__"), f.atom("Elixir.Nope"))];
-    assert!(
-        f.struct_of_entries(&unknown).is_none(),
-        "an unregistered module is no struct"
+    let own = f.atom("Elixir.Pt");
+    let dest = f.heap.alloc_map_update(p);
+    let dest = unsafe { f.heap.map_destination_put(dest, module_key, own) };
+    let dest = unsafe { f.heap.map_destination_put(dest, x, AnyValue::int(3)) };
+    let same = f.heap.map_destination_freeze(dest).expect("every key is present");
+    assert!(is_struct_layout(f.heap.map_layout(same)));
+    assert_eq!(f.entries(same), f.point_entries(3, 2));
+
+    let other = f.atom("Elixir.Far");
+    let dest = f.heap.alloc_map_update(p);
+    let dest = unsafe { f.heap.map_destination_put(dest, x, AnyValue::int(3)) };
+    let dest = unsafe { f.heap.map_destination_put(dest, module_key, other) };
+    let dest = unsafe { f.heap.map_destination_put(dest, y, AnyValue::int(4)) };
+    let moved = f.heap.map_destination_freeze(dest).expect("every key is present");
+    assert!(is_entries_layout(f.heap.map_layout(moved)));
+    assert_eq!(
+        f.entries(moved),
+        vec![(module_key, other), (x, AnyValue::int(3)), (y, AnyValue::int(4))]
     );
+    assert_eq!(f.entries(p), f.point_entries(1, 2), "the original is untouched");
 }
 
 #[test]

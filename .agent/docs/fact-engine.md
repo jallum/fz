@@ -1046,8 +1046,9 @@ not derive a second table from transport positions. Every fresh construction ste
 (`Tuple`/`List`/`Map`/`Struct`/`Bitstring`/`FunctionRef`/`Lambda`)
 and every projection (`FieldAccess`/`StructSlot`/`TupleField`) goes through
 `step_or_omitted_when_absent` and becomes `BackendStep::Omitted` when its own
-value is proven absent. `MapUpdate` is the exception: it also answers `ok`,
-which a decision reads to raise `KeyError`, so it always runs — a closure the plan proves is never invoked
+value is proven absent. `MapUpdate` and `StructUpdate` are the exception: an
+update also answers `ok`, which a decision reads to raise `KeyError`, so it
+always runs — a closure the plan proves is never invoked
 is never built, on any path. For example, a callback captured but proven dead
 along every branch the planner keeps needs no wrapper allocated for it at all.
 Runtime consumers therefore read an artifact that already carries no dead

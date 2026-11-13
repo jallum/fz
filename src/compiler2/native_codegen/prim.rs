@@ -64,12 +64,14 @@ pub(crate) fn emit_map_get_value_ref_for_key<M: cranelift_module::Module, T: Typ
     }
 }
 
+/// Put one entry in a map destination; the answer is the reference to the
+/// destination to continue with.
 fn emit_map_destination_put<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     map_bits: ir::Value,
     key: CodegenValue,
     value: CodegenValue,
-) {
+) -> ir::Value {
     if let (Some((key_raw, key_kind)), Some((value_raw, value_kind))) =
         (value_raw_kind_parts(body, key), value_raw_kind_parts(body, value))
         && key_kind.is_scalar()
@@ -78,16 +80,16 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
         let key_kind = body.b.ins().iconst(types::I64, key_kind.tag() as i64);
         let value_kind = body.b.ins().iconst(types::I64, value_kind.tag() as i64);
         let process = body.process_arg();
-        runtime_call!(
+        runtime_call1!(
             body,
             fz_map_dest_put_parts,
             [process, map_bits, key_raw, key_kind, value_raw, value_kind]
-        );
+        )
     } else {
         let key_ref = body.value_as_any_ref(key);
         let value_ref = body.value_as_any_ref(value);
         let process = body.process_arg();
-        runtime_call!(body, fz_map_dest_put_ref, [process, map_bits, key_ref, value_ref]);
+        runtime_call1!(body, fz_map_dest_put_ref, [process, map_bits, key_ref, value_ref])
     }
 }
 
@@ -529,7 +531,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 [process, reader_ref, field_spec, size_value]
             ))
         }
-        Prim::DestMapBegin { seed, .. } => {
+        Prim::DestMapBegin(seed) => {
             let process = body.process_arg();
             match seed {
                 DestMapSeed::Capacity(capacity) => {
@@ -542,14 +544,27 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 }
             }
         }
-        Prim::DestMapPut { map, key, value, .. } => {
+        Prim::DestMapPut { map, key, value } => {
             let map_bits = body.any_ref_for_var(var_env, map.0);
             let key = binding_for_var(var_env, key.0);
             let value = binding_for_var(var_env, value.0);
-            emit_map_destination_put(body, map_bits, key, value);
-            LowerOut::DeadUnit
+            LowerOut::ValueRef(emit_map_destination_put(body, map_bits, key, value))
         }
-        Prim::DestMapFreeze { map, .. } => {
+        Prim::StructWith { base, arity, fields } => {
+            let base_ref = body.any_ref_for_var(var_env, base.0);
+            let object = body.copy_struct(base_ref, *arity as usize);
+            for (slot, field) in fields {
+                let addressed_object = ty_is_addressed_object(t, value_types, *field);
+                body.store_field(
+                    &object,
+                    *slot as usize,
+                    binding_for_var(var_env, field.0),
+                    addressed_object,
+                );
+            }
+            LowerOut::ValueRef(object.reference)
+        }
+        Prim::DestMapFreeze(map) => {
             let map_bits = body.any_ref_for_var(var_env, map.0);
             let process = body.process_arg();
             LowerOut::ValueRef(runtime_call1!(body, fz_map_dest_freeze, [process, map_bits]))
@@ -943,9 +958,10 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::ConstBitstring(..)
         | Prim::BitReaderInit(..)
         | Prim::BitReadField { .. }
-        | Prim::DestMapBegin { .. }
+        | Prim::DestMapBegin(..)
         | Prim::DestMapPut { .. }
-        | Prim::DestMapFreeze { .. }
+        | Prim::DestMapFreeze(..)
+        | Prim::StructWith { .. }
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)
         | Prim::IsMapMiss(..) => lower_collection_prim(body, t, env, var_env, prim, dest_var, block_id),
