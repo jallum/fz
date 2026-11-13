@@ -414,14 +414,14 @@ where
         for key in outputs {
             assert!(output_keys.insert(key), "job emitted duplicate fact output for one key");
         }
-        let mut changed_keys_set = HashSet::new();
-        for key in changed_keys {
+        let mut changed_keys_set = HashSet::with_capacity(changed_keys.len());
+        for key in &changed_keys {
             assert!(
                 changed_keys_set.insert(key),
                 "job emitted duplicate changed fact for one key"
             );
         }
-        for key in &changed_keys_set {
+        for key in changed_keys_set.iter().copied() {
             assert!(
                 output_keys.contains(key) || previous_output_keys.contains(key),
                 "job marked a fact changed that it neither publishes nor previously owned"
@@ -527,8 +527,8 @@ where
         for key in outputs {
             assert!(output_keys.insert(key), "job emitted duplicate fact output for one key");
         }
-        let mut changed_keys_set = HashSet::new();
-        for key in changed_keys {
+        let mut changed_keys_set = HashSet::with_capacity(changed_keys.len());
+        for key in &changed_keys {
             assert!(
                 changed_keys_set.insert(key),
                 "job emitted duplicate changed fact for one key"

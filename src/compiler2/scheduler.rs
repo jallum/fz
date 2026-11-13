@@ -823,7 +823,7 @@ where
         F: SemanticOrd<Ctx>,
     {
         let mut wakes = Vec::new();
-        let mut moved_keys = HashSet::new();
+        let mut moved_keys = Vec::new();
         let mut pending_changes = FactChangeQueue::new(ctx);
         pending_changes.extend(changes);
         // Dependents can append more movements while this wave drains, so the
@@ -892,16 +892,17 @@ where
                     ctx,
                 );
             }
-            moved_keys.insert(change.key);
+            moved_keys.push(change.key);
         }
-        let mut movements = moved_keys
+        moved_keys.sort_by(|left, right| left.semantic_cmp(right, ctx));
+        moved_keys.dedup();
+        let movements = moved_keys
             .into_iter()
             .map(|key| FactMovement {
                 state: self.dependency_state(&key, external),
                 key,
             })
-            .collect::<Vec<_>>();
-        movements.sort_by(|left, right| left.key.semantic_cmp(&right.key, ctx));
+            .collect();
         (wakes, movements)
     }
 
