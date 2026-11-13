@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T01:04:29Z",
   "created": "2026-11-12T23:55:11Z",
   "description": "runtime/src/heap/imp.rs:749 copies the suffix bytes to a Vec so alloc_bitstring (\u0026mut self) can be called, which copies them again into the heap. The comment says the copy is for the borrow; the slice comes from from_raw_parts on an off-heap immovable buffer, so its lifetime is not tied to self. runtime/src/ir_runtime.rs:1516 does the same for an aligned binary field (the unaligned BitWriter arm really builds new bytes and keeps its Vec).\nBefore building: confirm alloc_bitstring / alloc_kind (imp.rs:690) cannot collect or move the source between reading the slice and copying it. If it can, stop and report.\nShape: pass the slice straight through; delete the comment that explained the copy.\nHeat: every \u003c\u003cc, rest::binary\u003e\u003e step on a small binary and every aligned binary field read, at program run time.\n\nMethod: .agent/strategies/ownership-shape.md. Change the signature and let cargo check enumerate dependents; resolve interleavings by compute-then-commit or a split borrow; stop and report if an Rc is the only move.\nSignal: pure refactor. Full gate green; no golden, census or pin moves. Report the clone/to_vec count of each touched file before and after.\nSites were read at develop 8bf8775ae and not compiled; confirm each with cargo check before relying on it.",
   "id": "fz-gfx.14",
   "labels": [],
   "parent": "fz-gfx",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A bitstring read copies its bytes once",
   "type": "task",
-  "updated_at": "2026-11-12T23:55:26Z"
+  "updated_at": "2026-11-13T01:04:29Z"
 }
