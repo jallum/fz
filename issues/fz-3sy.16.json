@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:30:09Z",
+  "description": "%{p | x: 1} on a known struct copies the struct and stores the replaced slots (BackendStep::StructUpdate, fz_struct_copy). The copy is made even when nothing else holds p, as in a loop that threads one struct through updates.\n\nList cons cells carry an aliased bit and a rewrite permission that let an unshared cell be rewritten in place. Structs have neither. Give a struct update the same treatment: when the base is unshared, the update is the stores and no copy.\n\nProposal page first. The page must show that it reuses the list cells' aliased bit and rewrite permission as they are, not a parallel mechanism, and what proves a base unshared on interp, run and build.\n\nMeasured today, instructions per update on run, dev profile: a known struct of 2 fields 359, of 8 fields 528.\n\nDone when: the page is approved; then the known-struct update on an unshared base falls below the copy cost on all three paths, a shared base still answers a fresh struct and leaves the base alone (fixture 00857 unchanged), and no pin rises. Sits at the end of the epic; does not block fz-3ul.4.",
+  "id": "fz-3sy.16",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 3,
+  "status": "open",
+  "title": "A struct update whose base nobody else holds stores in place",
+  "type": "feature",
+  "updated_at": "2026-11-13T03:30:09Z"
+}
