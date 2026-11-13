@@ -739,7 +739,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .extern_ids
             .get(&index)
             .expect("extern executable should have a declared ExternId");
-        let marshal_plan = self.extern_marshals.get(&index).cloned().unwrap_or_default();
+        let marshal_plan = self.extern_marshals.get(&index).map_or(&[][..], Vec::as_slice);
         let callsite = ctx.fresh_callsite();
         let prim = Prim::Extern(callsite, extern_id, extern_args);
         if let ExternReturn::Pair(fields) = signature.ret {
@@ -751,7 +751,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             for (value, ty) in values.iter().copied().zip(field_tys) {
                 ctx.value_types.insert(value, ty);
             }
-            register_extern_marshals(&mut ctx, stmt_idx, &marshal_plan);
+            register_extern_marshals(&mut ctx, stmt_idx, marshal_plan);
             let shape = executable.abi.return_layout.layout.structural;
             let ShapeDescr::Tuple(field_layouts) = self.world.shape(shape).clone() else {
                 return Err(incomplete_native_program(
@@ -782,7 +782,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }
         if let ExternReturn::Checked(_, failure) = &signature.ret {
             let (values, stmt_idx) = ctx.emit_let_many(2, prim);
-            register_extern_marshals(&mut ctx, stmt_idx, &marshal_plan);
+            register_extern_marshals(&mut ctx, stmt_idx, marshal_plan);
             let (value, failed) = (values[0], values[1]);
             let raise_b = ctx.builder.block(vec![]);
             let value_b = ctx.builder.block(vec![]);
@@ -807,7 +807,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             return Ok(());
         }
         let (value, stmt_idx) = ctx.emit_let(prim);
-        register_extern_marshals(&mut ctx, stmt_idx, &marshal_plan);
+        register_extern_marshals(&mut ctx, stmt_idx, marshal_plan);
         let result = if matches!(signature.ret, ExternReturn::Scalar(ExternTy::Unit | ExternTy::Never)) {
             let (nil, _) = ctx.emit_let(Prim::Const(Const::Nil));
             let _ = value;
