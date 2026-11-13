@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T02:01:34Z",
+  "description": "World::callsite_call_args returns cloned vectors and World::module_interface returns a cloned ModuleInterface on every read. Return \u0026[CallArg] and \u0026ModuleInterface; the three sites that mutate the world while holding an interface clone visibly at the call site. Spike: callsite_call_args_borrow -1.14/-0.62/-0.74/-0.86/-1.11%; module_interface_borrow -1.03/-0.52/-0.60/-0.67/-1.21%. Diffs: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/small/cand_callsite_call_args_borrow.diff, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/small/cand_module_interface_borrow.diff. Neighbours: #357 (merged) already borrows call-site summaries in jobs/artifact.rs; #363 and #365 (open) and fz-gfx.11 touch other functions in world.rs. Spike base 72c22569b, release instructions on distinct1/f761/f765/r6/lit16; the saving is within about twice the noise floor, so re-measure interleaved (base and change alternating, median of 9) before claiming it. Port by reading the spike diff, not by applying it; numbers in /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/small/results.md. Acceptance: stdout (interp and run), canonical dump, activation key counts and job counts identical to the base binary on the five probes (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/p/distinct1.fz, f761.fz --top 1 --top 2, f765.fz --max-top 3, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/m/r6.fz, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/l/lit16.fz); full gate; no pin, golden or census movement.",
+  "id": "fz-53f.11",
+  "labels": [],
+  "parent": "fz-53f",
+  "priority": 2,
+  "status": "open",
+  "title": "Call-site arguments and module interfaces are read by reference",
+  "type": "task",
+  "updated_at": "2026-11-13T02:01:34Z"
+}
