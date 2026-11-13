@@ -16,11 +16,15 @@
     {
       "text": "Unblocked by fz-3sy.4 once stack #428 (PRs #407, #427, #434) lands: x.f(a) on a module value is a DirectCall with DirectCallee::ModuleValue, resolved in semantic's resolve_module_value_call through ModuleName::from_atom_name -\u003e World::reference_module -\u003e World::module_public_function. What remains here: ModuleName::from_atom_name maps only Elixir.-prefixed atoms, so :erlang.abs(-3) is refused with type/module-value-call (emit_atom_names_no_module, jobs/semantic.rs); teach that function and defmodule :erlang about bare-atom module names. A receiver typed plain atom stays refused until fz-3sy.5. (Reported by the fz-da session; not re-verified here.)",
       "timestamp": "2026-11-13T14:09:56Z"
+    },
+    {
+      "text": "Confirmed 2026-11-13 as the distiller's next divergence once fz-sc8.146 is past (scratch: Stream flattening + raised budget): Distill.fmt_ms/1 fails with 'StructField: subject is not a map or Struct' on interp and exit 134 on run/build. One-line repro /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/nx/B.exs: IO.puts(:erlang.float_to_binary(1.5 / 1_000_000, decimals: 1)) (elixir prints 0.0); fails the same on unmodified f04c56f8e. The call lowers as const :erlang -\u003e field .float_to_binary -\u003e closure_call because direct_callee (jobs/body.rs ~5240) returns None on an Atom base. Also /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/nx/B2.exs: :nosuch.thing(1) crashes the same way where Elixir raises UndefinedFunctionError; this ticket's fix must make that loud too.",
+      "timestamp": "2026-11-13T15:20:36Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "`defmodule :erlang` and :erlang.float_to_binary/2",
   "type": "bug",
-  "updated_at": "2026-11-13T14:09:56Z"
+  "updated_at": "2026-11-13T15:20:36Z"
 }
