@@ -7,9 +7,15 @@
   "id": "fz-sc8.159",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Second program of the class, from fz-da, NOT fixed by the round-1 E8 patch (peer scratch s8/stall2.fz, 11 lines, on fz-da's wip tree where raise is a macro): module T with def go(a), do: raise(KeyError, key: a); main calls T.go(1) inside try/rescue. Fails with resolve/unknown-import: module T does not export go/1. Compiles without the try/rescue, with raise/1, or with panic(KeyError.exception(key: a)) written out. Last events: reach(static, 178) requested and waiting, ExpandFunctionSource(178) runs, then the diagnostic: an interface wait settles as unknown while that expansion's products are pending. Does not occur on 582cd31fa. Given to the round-2 spike.",
+      "timestamp": "2026-11-13T21:07:18Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "The Program scope is never held across a root drive",
   "type": "bug",
-  "updated_at": "2026-11-13T20:50:54Z"
+  "updated_at": "2026-11-13T21:07:18Z"
 }
