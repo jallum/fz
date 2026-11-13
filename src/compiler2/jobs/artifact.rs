@@ -5,7 +5,8 @@
 //! root-wide projection stack.
 
 use crate::compiler2::ValueMap;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use crate::fast_hash::{HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use crate::diag::Diagnostic;
@@ -530,7 +531,7 @@ fn required_resume_transport_positions(
     let LoweredBody::Clauses { entries, .. } = &materialized.body;
     let symbol = ExecutableSymbol::new(executable, world.types());
     let mut positions = Vec::new();
-    let mut deliver_callsites = HashMap::new();
+    let mut deliver_callsites = HashMap::default();
     for entry in entries {
         let Some((callsite, ControlDestination::Deliver(entry_id))) = (match &entry.tail {
             LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } => {
@@ -727,7 +728,7 @@ fn required_call_edge_transport_positions(
     let caller_symbol = ExecutableSymbol::new(executable, world.types());
     let callsite_needs = facts.callsite_needs();
     let summaries = facts.callsites();
-    let mut positions = HashSet::new();
+    let mut positions = HashSet::default();
     for entry in entries {
         match &entry.tail {
             LoweredTail::DirectCall { callsite, dest, .. } => {
@@ -843,7 +844,7 @@ fn materialize_call_edges(
     body: &LoweredBody,
     original_entry_ids: &[ControlEntryId],
 ) -> Result<Option<HashMap<CallSiteId, MaterializedCallEdge>>, FatalError> {
-    let mut call_edges = HashMap::new();
+    let mut call_edges = HashMap::default();
     let LoweredBody::Clauses { entries, .. } = body;
     for entry in entries {
         match &entry.tail {
@@ -1353,7 +1354,7 @@ fn prune_lowered_body(
         .iter()
         .map(|clause_id| clauses[*clause_id as usize].clone())
         .collect::<Vec<_>>();
-    let mut needed = HashMap::new();
+    let mut needed = HashMap::default();
     let mut kept_ids = Vec::new();
     for clause in &clauses {
         collect_reachable_entries(entries, clause.entry, &reachable_entries, &mut kept_ids, &mut needed);

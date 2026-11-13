@@ -1,6 +1,7 @@
 use crate::diag::Diagnostics;
 #[cfg(test)]
 use crate::exec::runtime::{ProcessExitCapture, Runtime};
+use crate::fast_hash::HashMap;
 use crate::fz_ir::FnId;
 use cranelift_jit::JITModule;
 use cranelift_module::FuncId;
@@ -8,7 +9,6 @@ use fz_runtime::heap::SchemaRegistry;
 use fz_runtime::pinned_abi::call1;
 use fz_runtime::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::ptr::null_mut;
 use std::rc::Rc;
 

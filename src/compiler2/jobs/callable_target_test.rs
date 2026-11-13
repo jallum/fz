@@ -1,5 +1,5 @@
+use crate::fast_hash::HashSet;
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::rc::Rc;
 
 use super::super::super::ExecutableNeed;
@@ -58,7 +58,7 @@ fn construction_target_is_exact_memoized_and_read_without_formula_minting() {
     );
     assert_eq!(
         world.job_reads(&job),
-        HashSet::from([
+        HashSet::from_iter([
             FactUse::current(FactKey::ExecutableFacts(key.owner.clone())),
             FactUse::current(FactKey::Recursive(target.activation.function)),
             FactUse::current(FactKey::InputDemand(target.activation.function)),

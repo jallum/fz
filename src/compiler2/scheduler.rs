@@ -1,5 +1,6 @@
+use crate::fast_hash::{HashMap, HashSet};
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::BinaryHeap;
 use std::fmt::Debug;
 use std::hash::Hash;
 
@@ -519,10 +520,10 @@ where
             agenda: Agenda::new(),
             facts: FactTable::new(),
             deps: DependencyIndex::new(),
-            rebased: HashSet::new(),
-            read_finality: HashMap::new(),
+            rebased: HashSet::default(),
+            read_finality: HashMap::default(),
             work_starts: WorkStartTally::default(),
-            pending_reason: HashMap::new(),
+            pending_reason: HashMap::default(),
         }
     }
 
@@ -1017,7 +1018,7 @@ where
     /// a partial accumulation over an undiscovered layer is not.
     fn quiescent_cone(&self, fact: &F, external: &impl ExternalDependencyStates<F>) -> Option<Vec<F>> {
         let mut pending = vec![fact];
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut cone = Vec::new();
         while let Some(key) = pending.pop() {
             if !seen.insert(key) {

@@ -335,8 +335,8 @@ fn a_published_schema_edit_moves_only_its_exact_retained_contribution() {
     use crate::compiler2::product_drive::drive_retained_root_backend_product;
     use crate::compiler2::pull::{ProductKey, ProductRequestId, ProductSessions, PullOutcome};
     use crate::compiler2::{FactKey, Job};
+    use crate::fast_hash::HashSet;
     use std::cell::RefCell;
-    use std::collections::HashSet;
 
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let evaluations = Rc::new(RefCell::new(Vec::new()));
@@ -424,7 +424,7 @@ fn a_published_schema_edit_moves_only_its_exact_retained_contribution() {
     );
     assert_eq!(
         evaluations.borrow().iter().cloned().collect::<HashSet<_>>(),
-        HashSet::from([item_key])
+        HashSet::from_iter([item_key])
     );
     assert_eq!(
         before
@@ -490,8 +490,8 @@ fn an_edit_to_a_shared_struct_module_wakes_both_roots_reading_it() {
     use crate::compiler2::product_drive::drive_retained_root_backend_product;
     use crate::compiler2::pull::{ProductKey, ProductRequestId, ProductSessions, PullOutcome};
     use crate::compiler2::{FactKey, Job};
+    use crate::fast_hash::HashSet;
     use std::cell::RefCell;
-    use std::collections::HashSet;
 
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let evaluations = Rc::new(RefCell::new(Vec::new()));
@@ -559,7 +559,7 @@ fn an_edit_to_a_shared_struct_module_wakes_both_roots_reading_it() {
     ));
     assert_eq!(
         evaluations.borrow().iter().cloned().collect::<HashSet<_>>(),
-        HashSet::from([item_key]),
+        HashSet::from_iter([item_key]),
         "one edit re-evaluates the one program-scoped schema once, not once per reading root"
     );
 }

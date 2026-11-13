@@ -45,10 +45,10 @@ use super::{
 };
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
 use crate::exec::runtime::DbgCapture;
+use crate::fast_hash::{HashMap, HashSet};
 use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::telemetry::{ConfiguredTelemetry, Value};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -549,7 +549,7 @@ pub(crate) struct LoweredBodyCapture {
 impl OutputCapture {
     pub(crate) fn new() -> Self {
         Self {
-            outputs: Rc::new(RefCell::new(HashMap::new())),
+            outputs: Rc::new(RefCell::new(HashMap::default())),
             stops: Rc::new(RefCell::new(Vec::new())),
         }
     }
@@ -652,7 +652,7 @@ impl WorkGraphCapture {
 impl FunctionCapture {
     pub(crate) fn new() -> Self {
         Self {
-            defs: Rc::new(RefCell::new(HashMap::new())),
+            defs: Rc::new(RefCell::new(HashMap::default())),
         }
     }
 
@@ -750,7 +750,7 @@ impl SourceNoteCapture {
 impl ModuleCapture {
     pub(crate) fn new() -> Self {
         Self {
-            defs: Rc::new(RefCell::new(HashMap::new())),
+            defs: Rc::new(RefCell::new(HashMap::default())),
         }
     }
 
@@ -1020,7 +1020,7 @@ impl NativeProgramCapture {
 impl GuardDispatchCapture {
     pub(crate) fn new() -> Self {
         Self {
-            dispatches: Rc::new(RefCell::new(HashMap::new())),
+            dispatches: Rc::new(RefCell::new(HashMap::default())),
         }
     }
 
@@ -1058,7 +1058,7 @@ impl GuardDispatchCapture {
 impl EntryDispatchCapture {
     pub(crate) fn new() -> Self {
         Self {
-            plans: Rc::new(RefCell::new(HashMap::new())),
+            plans: Rc::new(RefCell::new(HashMap::default())),
         }
     }
 
@@ -1098,7 +1098,7 @@ impl EntryDispatchCapture {
 impl LoweredBodyCapture {
     pub(crate) fn new() -> Self {
         Self {
-            bodies: Rc::new(RefCell::new(HashMap::new())),
+            bodies: Rc::new(RefCell::new(HashMap::default())),
         }
     }
 

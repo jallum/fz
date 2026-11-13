@@ -11,9 +11,10 @@ use super::{ArgRepr, MidFlightArgShape};
 use crate::compiler2::NativeBody;
 use crate::compiler2::artifact::NativeCallableBoundaryId;
 use crate::diag::Diagnostics;
+use crate::fast_hash::{HashMap, HashSet};
 use crate::fz_ir::{FnId, FnIr, Module};
 use crate::runtime_type_predicate::{CallableShape, CallableShapes};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeCallableBoundarySurface {

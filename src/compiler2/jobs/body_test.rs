@@ -121,7 +121,7 @@ struct TryShape {
     handlers: usize,
     pops: usize,
     reraising_dispatches: usize,
-    atom_consts: std::collections::HashMap<String, usize>,
+    atom_consts: crate::fast_hash::HashMap<String, usize>,
 }
 
 fn try_shape(fixture: u32, name: &str, arity: u64) -> TryShape {

@@ -238,7 +238,7 @@ fn root_owned_activations(
     activations: impl IntoIterator<Item = ActivationKey>,
 ) -> Vec<ActivationKey> {
     let root_code = world.function_definition(world.root_function(root)).0.owner;
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = crate::fast_hash::HashSet::default();
     activations
         .into_iter()
         .filter(|activation| world.function_definition(activation.function).0.owner == root_code)

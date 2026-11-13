@@ -36,13 +36,13 @@ fn cutting_the_only_entry_withdraws_an_internally_supported_cycle_and_reattaches
     graph(&mut memo, 1, &[2]);
     graph(&mut memo, 2, &[1]);
     memo.register_rooted(key(99), key(0), &super::super::super::types::Types::new());
-    assert_eq!(members(&memo), HashSet::from([key(0), key(1), key(2)]));
+    assert_eq!(members(&memo), HashSet::from_iter([key(0), key(1), key(2)]));
     graph(&mut memo, 0, &[]);
-    assert_eq!(members(&memo), HashSet::from([key(0)]));
+    assert_eq!(members(&memo), HashSet::from_iter([key(0)]));
     graph(&mut memo, 2, &[1, 3]);
     graph(&mut memo, 3, &[]);
     graph(&mut memo, 0, &[1]);
-    assert_eq!(members(&memo), HashSet::from([key(0), key(1), key(2), key(3)]));
+    assert_eq!(members(&memo), HashSet::from_iter([key(0), key(1), key(2), key(3)]));
 }
 
 #[test]
@@ -64,8 +64,8 @@ fn alternate_repair_uses_current_children_after_reparent_and_reattachment() {
         assert_eq!(memo.rooted[&key(99)].parents[&key(3)], Some(key(2)));
         memo.rooted.get_mut(&key(99)).unwrap().changes.clear();
         graph(&mut memo, 4, &[]);
-        assert_eq!(members(&memo), HashSet::from([key(0), key(1), key(4)]));
-        assert_eq!(memo.rooted[&key(99)].changes, HashSet::from([key(2), key(3)]));
+        assert_eq!(members(&memo), HashSet::from_iter([key(0), key(1), key(4)]));
+        assert_eq!(memo.rooted[&key(99)].changes, HashSet::from_iter([key(2), key(3)]));
         assert_eq!(memo.rooted[&key(99)].last_detached, 2);
         assert!(!memo.rooted_readers.contains_key(&key(2)));
         assert!(!memo.rooted_readers.contains_key(&key(3)));
@@ -92,7 +92,7 @@ fn absent_self_and_unreached_alternates_need_no_cycle_proof() {
             move |_, _, _, _, work| observed.borrow_mut().include(*work),
         );
         graph_with_telemetry(&mut memo, 0, &[], &tel);
-        assert_eq!(members(&memo), HashSet::from([key(0)]));
+        assert_eq!(members(&memo), HashSet::from_iter([key(0)]));
         assert_eq!(proof.borrow().reparent_candidates, (candidates.len() * 2) as u64);
         assert_eq!(proof.borrow().reparent_proof_nodes, 0);
     }
@@ -137,8 +137,8 @@ fn reseeding_retains_equal_shared_members_without_contribution_or_demand_work() 
     rooted.changes.clear();
     rooted.dirty.clear();
     memo.register_rooted(key(99), key(2), &types);
-    assert_eq!(members(&memo), HashSet::from([key(1), key(2)]));
-    assert_eq!(memo.rooted[&key(99)].changes, HashSet::from([key(0), key(2)]));
+    assert_eq!(members(&memo), HashSet::from_iter([key(1), key(2)]));
+    assert_eq!(memo.rooted[&key(99)].changes, HashSet::from_iter([key(0), key(2)]));
     assert!(!memo.rooted[&key(99)].dirty.contains(&key(1)));
 }
 
@@ -161,7 +161,11 @@ fn an_external_entry_inside_a_detached_cycle_restores_only_its_reachable_compone
         assert_eq!(members(&memo), expected.into_iter().map(key).collect());
         assert_eq!(
             memo.rooted[&key(99)].changes,
-            if cycle { HashSet::new() } else { HashSet::from([key(2)]) }
+            if cycle {
+                HashSet::default()
+            } else {
+                HashSet::from_iter([key(2)])
+            }
         );
         assert!(
             memo.rooted[&key(99)].dirty.is_empty(),
@@ -180,8 +184,8 @@ fn transactional_replacement_uses_the_new_entry_before_retiring_the_old_edge() {
     memo.register_rooted(key(99), key(0), &super::super::super::types::Types::new());
     memo.rooted.get_mut(&key(99)).unwrap().changes.clear();
     graph(&mut memo, 1, &[3]);
-    assert_eq!(members(&memo), HashSet::from([key(0), key(1), key(2), key(3)]));
-    assert_eq!(memo.rooted[&key(99)].changes, HashSet::from([key(3)]));
+    assert_eq!(members(&memo), HashSet::from_iter([key(0), key(1), key(2), key(3)]));
+    assert_eq!(memo.rooted[&key(99)].changes, HashSet::from_iter([key(3)]));
 }
 
 #[test]
@@ -224,7 +228,7 @@ fn a_multi_owner_commit_repairs_against_all_final_edges_without_membership_churn
                 key(owner),
                 ProductValue::Unit,
                 ProductDependencies::default(),
-                HashSet::from([key(child)]),
+                HashSet::from_iter([key(child)]),
             )
         })
         .collect();
@@ -278,7 +282,7 @@ fn local_witness_selection_and_repair_work_ignore_membership_insertion_order() {
 #[test]
 fn randomized_committed_membership_matches_reachability_from_the_root() {
     let mut memo = ProductMemo::default();
-    let mut edges = HashMap::<u32, Vec<u32>>::new();
+    let mut edges = HashMap::<u32, Vec<u32>>::default();
     memo.register_rooted(key(99), key(0), &super::super::super::types::Types::new());
     let mut random = 0x9723_a712_u64;
     for _ in 0..1200 {
@@ -292,7 +296,7 @@ fn randomized_committed_membership_matches_reachability_from_the_root() {
         let children = (0..12).filter(|n| random & (1 << (n + 12)) != 0).collect::<Vec<_>>();
         edges.insert(node, children.clone());
         graph(&mut memo, node, &children);
-        let mut expected = HashSet::new();
+        let mut expected = HashSet::default();
         let mut pending = vec![0];
         while let Some(next) = pending.pop() {
             if expected.insert(key(next)) {
@@ -313,7 +317,7 @@ fn randomized_committed_membership_matches_reachability_from_the_root() {
         for (member, parent) in &rooted.parents {
             if let Some(parent) = parent {
                 assert!(memo.membership(parent).unwrap().contains(member));
-                let mut ancestors = HashSet::from([member]);
+                let mut ancestors = HashSet::from_iter([member]);
                 let mut cursor = Some(parent);
                 while let Some(ancestor) = cursor {
                     assert!(
@@ -326,7 +330,7 @@ fn randomized_committed_membership_matches_reachability_from_the_root() {
                 assert_eq!(member, &rooted.seed);
             }
         }
-        let mut expected_children = HashMap::<ProductKey, HashSet<ProductKey>>::new();
+        let mut expected_children = HashMap::<ProductKey, HashSet<ProductKey>>::default();
         for (member, parent) in &rooted.parents {
             if let Some(parent) = parent {
                 expected_children
@@ -350,7 +354,7 @@ fn randomized_committed_membership_matches_reachability_from_the_root() {
 
 #[test]
 fn a_first_commit_gains_every_member_and_loses_none() {
-    let next = HashSet::from([key(1), key(2)]);
+    let next = HashSet::from_iter([key(1), key(2)]);
     let (added, removed) = membership_delta(None, &next);
     assert_eq!(added.into_iter().collect::<HashSet<_>>(), next.iter().collect());
     assert!(removed.is_empty());
@@ -358,8 +362,8 @@ fn a_first_commit_gains_every_member_and_loses_none() {
 
 #[test]
 fn a_recommit_gains_and_loses_the_difference_from_what_it_held() {
-    let held = HashSet::from([key(1), key(2)]);
-    let next = HashSet::from([key(2), key(3)]);
+    let held = HashSet::from_iter([key(1), key(2)]);
+    let next = HashSet::from_iter([key(2), key(3)]);
     let (added, removed) = membership_delta(Some(&held), &next);
     assert_eq!(added, vec![&key(3)]);
     assert_eq!(removed, vec![&key(1)]);
@@ -367,8 +371,8 @@ fn a_recommit_gains_and_loses_the_difference_from_what_it_held() {
 
 #[test]
 fn a_commit_that_held_no_members_is_not_a_first_commit() {
-    let held = HashSet::new();
-    let next = HashSet::from([key(1)]);
+    let held = HashSet::default();
+    let next = HashSet::from_iter([key(1)]);
     assert_eq!(membership_delta(Some(&held), &next), membership_delta(None, &next));
     let (added, removed) = membership_delta(Some(&next), &held);
     assert!(added.is_empty());

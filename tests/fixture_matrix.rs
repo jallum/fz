@@ -387,7 +387,7 @@ fn fixture_stem_is_numbered(stem: &str) -> bool {
 fn record_fixture_number(
     stem: &str,
     path: &Path,
-    numbers: &mut std::collections::HashMap<String, PathBuf>,
+    numbers: &mut std::collections::BTreeMap<String, PathBuf>,
     violations: &mut Vec<String>,
 ) {
     let number = &stem[..5];
@@ -412,7 +412,7 @@ fn record_fixture_number(
 /// than stopping at the first, so one failing trial reports the whole list.
 fn fixture_self_description_violations(described_dirs: &[&Path], number_only_dirs: &[&Path]) -> Vec<String> {
     let mut violations = Vec::new();
-    let mut numbers: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
+    let mut numbers: std::collections::BTreeMap<String, PathBuf> = std::collections::BTreeMap::new();
 
     let mut described: Vec<PathBuf> = Vec::new();
     for dir in described_dirs {
@@ -2651,7 +2651,7 @@ fn fixture_telemetry_concurrent_spec_violations() {
             .collect::<Vec<_>>()
     });
     assert_eq!(
-        paths.iter().collect::<std::collections::HashSet<_>>().len(),
+        paths.iter().collect::<std::collections::BTreeSet<_>>().len(),
         INVOCATIONS,
         "simultaneous paths, including repeated fixture legs, must never alias"
     );

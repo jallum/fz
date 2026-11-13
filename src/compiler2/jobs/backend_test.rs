@@ -39,7 +39,7 @@ fn named_function_construction_uses_the_materialized_value_layout() {
         RootId::for_test(0),
         &abi.value_layouts,
         &abi.materialized.value_types,
-        HashMap::new(),
+        HashMap::default(),
         ValueMap::new(),
     );
     let lowered = lowerer
@@ -74,7 +74,7 @@ fn resolve_return_flow_rejects_divergence_contradictions() {
     };
 
     let returning_layout = layout(false);
-    let returning = HashMap::from([(&position, &returning_layout)]);
+    let returning = HashMap::from_iter([(&position, &returning_layout)]);
     assert!(
         resolve_return_flow(
             &CallReturnFlow::NoReturn {
@@ -86,7 +86,7 @@ fn resolve_return_flow_rejects_divergence_contradictions() {
     );
 
     let divergent_layout = layout(true);
-    let divergent = HashMap::from([(&position, &divergent_layout)]);
+    let divergent = HashMap::from_iter([(&position, &divergent_layout)]);
     assert!(
         resolve_return_flow(
             &CallReturnFlow::Deliver {

@@ -128,7 +128,7 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
     let local_activations = executables
         .iter()
         .map(|executable| &executable.activation)
-        .collect::<std::collections::HashSet<_>>()
+        .collect::<crate::fast_hash::HashSet<_>>()
         .into_iter()
         .filter(|activation| world.function_definition(activation.function).0.owner == root_code)
         .count() as u64;

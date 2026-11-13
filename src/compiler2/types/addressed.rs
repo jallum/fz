@@ -27,7 +27,9 @@
 //! it lands beside the old per-position normalization and is wired into the
 //! resolver (fz-hwn.27.3) and the activation-key mint (fz-hwn.27.6) later.
 
-use std::collections::{BTreeSet, HashMap};
+use crate::fast_hash::HashMap;
+
+use std::collections::BTreeSet;
 
 use super::descr::Descr;
 use super::{Ty, TypeVarId, Types};

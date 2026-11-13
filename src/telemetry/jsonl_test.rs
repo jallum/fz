@@ -441,7 +441,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
 
     fn canonicalize_arrows(
         value: &serde_json::Value,
-        arrows: &std::collections::HashMap<u64, &'static str>,
+        arrows: &crate::fast_hash::HashMap<u64, &'static str>,
         field: Option<&str>,
     ) -> serde_json::Value {
         match (field, value) {
@@ -526,7 +526,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
             body.strip_prefix(',').expect("applied body starts with a field")
         );
         let raw: serde_json::Value = serde_json::from_str(&json).expect("applied step JSON");
-        let arrows = std::collections::HashMap::from([
+        let arrows = crate::fast_hash::HashMap::from_iter([
             (list.arrow.as_u32() as u64, "list-activation"),
             (non_empty.arrow.as_u32() as u64, "non-empty-list-activation"),
         ]);
@@ -617,7 +617,7 @@ fn incoming_slot_facts_identify_the_exact_root_executable_and_input() {
 
     let mut types = Types::new();
     let int = types.int();
-    let mut identities = std::collections::HashSet::new();
+    let mut identities = crate::fast_hash::HashSet::default();
     for root in [7, 8] {
         for index in [0, 1] {
             let activation = ActivationKey::from_inputs(
@@ -804,7 +804,7 @@ const ASCENDING_RETURN_SOURCE: &str =
 
 /// Names every function the trace canonicalized, so an assertion can talk
 /// about `build/1` rather than about whatever id it drew this run.
-fn canon_function_names(trace: &crate::telemetry::public_trace::PublicTrace) -> std::collections::HashMap<u64, String> {
+fn canon_function_names(trace: &crate::telemetry::public_trace::PublicTrace) -> crate::fast_hash::HashMap<u64, String> {
     trace
         .events_named(&["fz", "compiler2", "canon", "function"])
         .into_iter()

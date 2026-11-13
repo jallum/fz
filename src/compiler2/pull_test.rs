@@ -1,8 +1,8 @@
 include!("pull/ownership_test.rs");
 include!("pull/mutation_test.rs");
 use crate::compiler2::ValueMap;
+use crate::fast_hash::{HashMap, HashSet};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
@@ -24,8 +24,8 @@ use super::*;
 fn prospective_dependency(dependency: &ProductKey) -> ProductDependencies {
     ProductDependencies {
         rooted_read: None,
-        products: IndexMap::from([(dependency.clone(), None)]),
-        facts: HashMap::new(),
+        products: IndexMap::from_iter([(dependency.clone(), None)]),
+        facts: HashMap::default(),
     }
 }
 
@@ -37,7 +37,7 @@ fn finish_test_entry(
     dependencies: ProductDependencies,
     types: &super::super::types::Types,
 ) -> bool {
-    finish_test_entry_with_membership(memo, tel, key, value, dependencies, HashSet::new(), types)
+    finish_test_entry_with_membership(memo, tel, key, value, dependencies, HashSet::default(), types)
 }
 
 fn finish_test_entry_with_membership(
@@ -67,7 +67,7 @@ fn finish_test_group(
 ) -> bool {
     let members = members
         .into_iter()
-        .map(|(key, value, dependencies)| (key, value, dependencies, HashSet::new()))
+        .map(|(key, value, dependencies)| (key, value, dependencies, HashSet::default()))
         .collect();
     finish_test_group_with_membership(memo, tel, requested, members, types)
 }
@@ -99,8 +99,8 @@ fn retained_test_session(root: RootId, fact: &FactKey, types: &super::super::typ
         ProductValue::Unit,
         ProductDependencies {
             rooted_read: None,
-            products: IndexMap::new(),
-            facts: HashMap::from([(
+            products: IndexMap::default(),
+            facts: HashMap::from_iter([(
                 FactUse::settled(fact.clone()),
                 FactState {
                     revision: Some(1),
@@ -130,8 +130,8 @@ fn retiring_a_never_produced_observed_product_preserves_its_pending_demand() {
                 super::super::Job::SeedRoot(root),
                 crate::compiler2::drive::DerivationKey::Job,
             ),
-            HashSet::new(),
-            HashSet::from([FactUse::current(DependencyKey::Product(address.clone()))]),
+            HashSet::default(),
+            HashSet::from_iter([FactUse::current(DependencyKey::Product(address.clone()))]),
             Vec::new(),
             Vec::new(),
         ),
@@ -248,17 +248,17 @@ fn retained_session_broker_fans_runtime_demand_movement_to_dormant_and_nested_ac
     };
     assert_eq!(
         active_left.borrow().pending_fact_states,
-        HashMap::from([(fact.clone(), final_state)])
+        HashMap::from_iter([(fact.clone(), final_state)])
     );
     assert_eq!(
         active_right.borrow().pending_fact_states,
-        HashMap::from([(fact.clone(), final_state)])
+        HashMap::from_iter([(fact.clone(), final_state)])
     );
     assert_eq!(
         sessions.sessions[&ProductScope::Root(dormant)]
             .borrow()
             .pending_fact_states,
-        HashMap::from([(fact.clone(), final_state)])
+        HashMap::from_iter([(fact.clone(), final_state)])
     );
     sessions.finish_activation(
         ProductScope::Root(right),
@@ -277,7 +277,7 @@ fn retained_session_broker_fans_runtime_demand_movement_to_dormant_and_nested_ac
     assert_eq!(sessions.counts(), (2, 2));
     assert_eq!(
         sessions.scopes_by_fact[&fact],
-        HashSet::from([ProductScope::Root(right), ProductScope::Root(dormant)])
+        HashSet::from_iter([ProductScope::Root(right), ProductScope::Root(dormant)])
     );
 }
 
@@ -345,36 +345,41 @@ fn recursive_group_search_work_is_a_function_of_the_pending_graph() {
                 target.clone(),
                 ProductDependencies {
                     rooted_read: None,
-                    products: IndexMap::from([(current.clone(), None), (detour_1.clone(), None)]),
-                    facts: HashMap::new(),
+                    products: IndexMap::from_iter([(current.clone(), None), (detour_1.clone(), None)]),
+                    facts: HashMap::default(),
                 },
             ),
             (
                 detour_1.clone(),
                 ProductDependencies {
                     rooted_read: None,
-                    products: IndexMap::from([(detour_2.clone(), None)]),
-                    facts: HashMap::new(),
+                    products: IndexMap::from_iter([(detour_2.clone(), None)]),
+                    facts: HashMap::default(),
                 },
             ),
             (
                 detour_2.clone(),
                 ProductDependencies {
                     rooted_read: None,
-                    products: IndexMap::from([(detour_3.clone(), None)]),
-                    facts: HashMap::new(),
+                    products: IndexMap::from_iter([(detour_3.clone(), None)]),
+                    facts: HashMap::default(),
                 },
             ),
             (detour_3.clone(), ProductDependencies::default()),
         ] {
-            memo.unblock(ProductRequestId(NonZeroU64::MIN), &key, dependencies, HashSet::new());
+            memo.unblock(
+                ProductRequestId(NonZeroU64::MIN),
+                &key,
+                dependencies,
+                HashSet::default(),
+            );
         }
 
         let (members, search) =
             memo.pending_strong_component(&current, &prospective_dependency(&target), &target, &types);
         assert_eq!(
             members.map(|members| members.into_iter().collect::<HashSet<_>>()),
-            Some(HashSet::from([current.clone(), target.clone()]))
+            Some(HashSet::from_iter([current.clone(), target.clone()]))
         );
         assert_eq!(
             search,
@@ -435,7 +440,7 @@ fn recursive_group_search_matches_pending_graph_boundaries() {
         ProductRequestId(NonZeroU64::MIN),
         &current,
         ProductDependencies::default(),
-        HashSet::new(),
+        HashSet::default(),
     );
     assert_eq!(
         self_cycle.pending_strong_component(&current, &prospective_dependency(&current), &current, &types),
@@ -457,20 +462,20 @@ fn recursive_group_search_matches_pending_graph_boundaries() {
         &dependency,
         ProductDependencies {
             rooted_read: None,
-            products: IndexMap::from([(peer.clone(), None)]),
-            facts: HashMap::new(),
+            products: IndexMap::from_iter([(peer.clone(), None)]),
+            facts: HashMap::default(),
         },
-        HashSet::new(),
+        HashSet::default(),
     );
     disjoint.unblock(
         ProductRequestId(NonZeroU64::MIN),
         &peer,
         ProductDependencies {
             rooted_read: None,
-            products: IndexMap::from([(dependency.clone(), None)]),
-            facts: HashMap::new(),
+            products: IndexMap::from_iter([(dependency.clone(), None)]),
+            facts: HashMap::default(),
         },
-        HashSet::new(),
+        HashSet::default(),
     );
     assert_eq!(
         disjoint.pending_strong_component(&current, &prospective_dependency(&dependency), &dependency, &types,),
@@ -492,26 +497,26 @@ fn recursive_group_search_matches_pending_graph_boundaries() {
         &dependency,
         ProductDependencies {
             rooted_read: None,
-            products: IndexMap::from([(bridge.clone(), None)]),
-            facts: HashMap::new(),
+            products: IndexMap::from_iter([(bridge.clone(), None)]),
+            facts: HashMap::default(),
         },
-        HashSet::new(),
+        HashSet::default(),
     );
     cross_kind.unblock(
         ProductRequestId(NonZeroU64::MIN),
         &bridge,
         ProductDependencies {
             rooted_read: None,
-            products: IndexMap::from([(current.clone(), None)]),
-            facts: HashMap::new(),
+            products: IndexMap::from_iter([(current.clone(), None)]),
+            facts: HashMap::default(),
         },
-        HashSet::new(),
+        HashSet::default(),
     );
     let (members, search) =
         cross_kind.pending_strong_component(&current, &prospective_dependency(&dependency), &dependency, &types);
     assert_eq!(
         members.map(|members| members.into_iter().collect::<HashSet<_>>()),
-        Some(HashSet::from([current.clone(), dependency.clone()]))
+        Some(HashSet::from_iter([current.clone(), dependency.clone()]))
     );
     assert_eq!(
         search,
@@ -575,10 +580,10 @@ fn recursive_reads_record_exact_dependency_generation_on_every_outcome() {
         &cyclic,
         ProductDependencies {
             rooted_read: None,
-            products: IndexMap::from([(current.clone(), None)]),
-            facts: HashMap::new(),
+            products: IndexMap::from_iter([(current.clone(), None)]),
+            facts: HashMap::default(),
         },
-        HashSet::new(),
+        HashSet::default(),
     );
     let mut context = ProductReadContext::new(&mut session);
     let RecursiveProductRead::Group(members) = context.read_recursive_product(&tel, &cyclic, &current, &types) else {
@@ -586,7 +591,7 @@ fn recursive_reads_record_exact_dependency_generation_on_every_outcome() {
     };
     assert_eq!(
         members.into_iter().collect::<HashSet<_>>(),
-        HashSet::from([current, cyclic.clone()])
+        HashSet::from_iter([current, cyclic.clone()])
     );
     assert_eq!(context.dependencies.products.get(&cyclic), Some(&None));
 }
@@ -699,23 +704,23 @@ fn changed_group_drains_produced_and_pending_reader_diamond_in_semantic_order() 
             pending,
             ProductDependencies {
                 rooted_read: None,
-                products: IndexMap::from([
+                products: IndexMap::from_iter([
                     (left.clone(), memo.generation(left)),
                     (right.clone(), memo.generation(right)),
                 ]),
-                facts: HashMap::new(),
+                facts: HashMap::default(),
             },
-            HashSet::new(),
+            HashSet::default(),
         );
         memo.unblock(
             ProductRequestId(NonZeroU64::MIN),
             pending_child,
             ProductDependencies {
                 rooted_read: None,
-                products: IndexMap::from([(pending.clone(), None)]),
-                facts: HashMap::new(),
+                products: IndexMap::from_iter([(pending.clone(), None)]),
+                facts: HashMap::default(),
             },
-            HashSet::new(),
+            HashSet::default(),
         );
 
         let displaced = Rc::new(RefCell::new(Vec::new()));
@@ -757,10 +762,10 @@ fn transitive_dirtiness_retracts_pending_readers_but_leaves_settled_readers_lazy
         &pending,
         ProductDependencies {
             rooted_read: None,
-            products: IndexMap::from([(intermediate.clone(), Some(1))]),
-            facts: HashMap::new(),
+            products: IndexMap::from_iter([(intermediate.clone(), Some(1))]),
+            facts: HashMap::default(),
         },
-        HashSet::new(),
+        HashSet::default(),
     );
     finish_test_product(&mut memo, &settled, ProductValue::Unit, [intermediate.clone()]);
 
@@ -1071,7 +1076,7 @@ fn product_driver_correlates_waiting_producer_runs_and_cache_hits() {
         root_prerequisites: vec![moved.clone()],
         root_recursive_prerequisite: Some(dependency.clone()),
         recursive_telemetry: Some(Rc::clone(&tel)),
-        runtime_children: HashMap::from([(dependency.clone(), dependency_child.clone())]),
+        runtime_children: HashMap::from_iter([(dependency.clone(), dependency_child.clone())]),
         ..FakeProducers::default()
     };
     let mut driver = ProductDriver::new(tel.as_ref(), root);
@@ -1227,7 +1232,7 @@ fn product_driver_refreshes_deepest_stale_child_without_waking_equal_value_reade
     let mut producers = FakeProducers {
         root_entry: Some(executable),
         runtime_fact: Some(fact.clone()),
-        facts: HashMap::from([(
+        facts: HashMap::from_iter([(
             fact.fact().clone(),
             FactState {
                 revision: Some(1),
@@ -1325,8 +1330,8 @@ fn readiness_movement_invalidates_a_mixed_current_and_settled_fact_reader() {
         ProductValue::Unit,
         ProductDependencies {
             rooted_read: None,
-            products: IndexMap::new(),
-            facts: HashMap::from([
+            products: IndexMap::default(),
+            facts: HashMap::from_iter([
                 (
                     FactUse::current(fact.clone()),
                     FactState {
@@ -1371,8 +1376,8 @@ fn settled_reader_coalesces_dirty_and_equal_resettlement() {
         ProductValue::Unit,
         ProductDependencies {
             rooted_read: None,
-            products: IndexMap::new(),
-            facts: HashMap::from([(
+            products: IndexMap::default(),
+            facts: HashMap::from_iter([(
                 FactUse::settled(fact.clone()),
                 FactState {
                     revision: Some(1),
@@ -1412,8 +1417,8 @@ fn settled_reader_reproduces_after_changed_resettlement() {
         ProductValue::Unit,
         ProductDependencies {
             rooted_read: None,
-            products: IndexMap::new(),
-            facts: HashMap::from([(
+            products: IndexMap::default(),
+            facts: HashMap::from_iter([(
                 FactUse::settled(fact.clone()),
                 FactState {
                     revision: Some(1),
@@ -1447,9 +1452,9 @@ fn equal_parent_reproduction_does_not_invalidate_its_grandparent() {
             ProductKey::AbiExecutable(executable) => Some(executable.clone()),
             _ => unreachable!(),
         },
-        runtime_children: HashMap::from([(parent.clone(), child.clone())]),
+        runtime_children: HashMap::from_iter([(parent.clone(), child.clone())]),
         backend_fact: Some(fact.clone()),
-        facts: HashMap::from([(
+        facts: HashMap::from_iter([(
             fact.fact().clone(),
             FactState {
                 revision: Some(1),
@@ -1604,7 +1609,7 @@ fn executable_effects_reads_only_its_local_projection_and_direct_callee_products
         .filter(|(reader, _)| *reader == &caller_effects)
         .map(|(_, dependency)| dependency.clone())
         .collect::<HashSet<_>>();
-    assert_eq!(dependencies, HashSet::from([caller_materialized, callee_effects]));
+    assert_eq!(dependencies, HashSet::from_iter([caller_materialized, callee_effects]));
 }
 
 #[test]
@@ -1625,12 +1630,12 @@ fn executable_effects_product_settles_symbolic_mutual_recursion_without_root_loo
     assert!(memo_effects(&driver.session(), &second).is_some_and(|effects| effects.allocates));
     for member in [&first, &second] {
         let expected_dependencies = if member == &first {
-            HashSet::from([
+            HashSet::from_iter([
                 ProductKey::MaterializedExecutable(first.clone()),
                 ProductKey::ExecutableEffects(second.clone()),
             ])
         } else {
-            HashSet::from([
+            HashSet::from_iter([
                 ProductKey::MaterializedExecutable(second.clone()),
                 ProductKey::ExecutableEffects(first.clone()),
                 ProductKey::ExecutableEffects(leaf.clone()),
@@ -1679,7 +1684,7 @@ fn executable_effects_selects_the_group_after_all_direct_reads() {
 
     assert!(effects.allocates);
     for member in [&anchor, &first, &second] {
-        let mut expected_dependencies = HashSet::from([ProductKey::MaterializedExecutable(member.clone())]);
+        let mut expected_dependencies = HashSet::from_iter([ProductKey::MaterializedExecutable(member.clone())]);
         if member == &anchor {
             expected_dependencies.extend([
                 ProductKey::ExecutableEffects(first.clone()),
@@ -1728,7 +1733,7 @@ fn executable_effects_self_cycle_uses_the_generic_recursive_group() {
             .keys()
             .cloned()
             .collect::<HashSet<_>>(),
-        HashSet::from([
+        HashSet::from_iter([
             ProductKey::MaterializedExecutable(executable.clone()),
             ProductKey::ExecutableEffects(executable)
         ])
@@ -1908,7 +1913,7 @@ fn displaced_effect_dependencies_cannot_close_a_reversed_edge_cycle() {
             .keys()
             .cloned()
             .collect::<HashSet<_>>(),
-        HashSet::from([ProductKey::MaterializedExecutable(second.clone())])
+        HashSet::from_iter([ProductKey::MaterializedExecutable(second.clone())])
     );
     assert_eq!(
         driver
@@ -1919,7 +1924,7 @@ fn displaced_effect_dependencies_cannot_close_a_reversed_edge_cycle() {
             .keys()
             .cloned()
             .collect::<HashSet<_>>(),
-        HashSet::from([
+        HashSet::from_iter([
             ProductKey::MaterializedExecutable(first),
             ProductKey::ExecutableEffects(second),
         ])
@@ -1978,7 +1983,7 @@ fn dirty_external_chain_retracts_a_pending_effect_group_snapshot() {
         .expect("the refreshed group must settle");
     assert_eq!(
         group_dependencies.keys().cloned().collect::<HashSet<_>>(),
-        HashSet::from([
+        HashSet::from_iter([
             ProductKey::MaterializedExecutable(anchor.clone()),
             ProductKey::ExecutableEffects(peer.clone()),
         ])
@@ -2407,7 +2412,7 @@ fn callable_owner_answer(
     ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
         layout,
         construction: None,
-        callable_facts: HashMap::from([(
+        callable_facts: HashMap::from_iter([(
             callable,
             CallableFacts {
                 resolutions: Box::new([resolution.clone()]),
@@ -2416,7 +2421,7 @@ fn callable_owner_answer(
                 boundary_ids: Box::new([boundary]),
             },
         )]),
-        boundary_facts: HashMap::from([(
+        boundary_facts: HashMap::from_iter([(
             boundary,
             BoundaryFacts {
                 publications: Box::new([owner]),
@@ -2430,8 +2435,8 @@ fn withdrawn_callable_owner_answer(layout: TransportLayout) -> ProductValue {
     ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
         layout,
         construction: None,
-        callable_facts: HashMap::new(),
-        boundary_facts: HashMap::new(),
+        callable_facts: HashMap::default(),
+        boundary_facts: HashMap::default(),
     }))
 }
 
@@ -2458,7 +2463,7 @@ fn finish_test_product(
         ProductDependencies {
             rooted_read: None,
             products,
-            facts: HashMap::new(),
+            facts: HashMap::default(),
         },
         &fake_types(),
     ));
@@ -2525,23 +2530,23 @@ fn callable_owner_products_aggregate_order_free_and_retract_independently() {
     assert_eq!(forward, reverse);
     assert_eq!(
         forward.callables[&callable].resolutions,
-        HashSet::from([left_resolution.clone(), right_resolution.clone()])
+        HashSet::from_iter([left_resolution.clone(), right_resolution.clone()])
     );
     assert_eq!(
         forward.boundaries[&boundary].publications,
-        HashSet::from([left_position.clone(), right_position.clone()])
+        HashSet::from_iter([left_position.clone(), right_position.clone()])
     );
     assert_eq!(
         memo.product_dependencies(&left_abi).unwrap(),
-        &IndexMap::from([(left_key.clone(), Some(1))])
+        &IndexMap::from_iter([(left_key.clone(), Some(1))])
     );
     assert_eq!(
         memo.product_dependencies(&right_abi).unwrap(),
-        &IndexMap::from([(right_key.clone(), Some(1))])
+        &IndexMap::from_iter([(right_key.clone(), Some(1))])
     );
     assert_eq!(
         memo.product_dependencies(&root_key).unwrap(),
-        &IndexMap::from([(left_abi.clone(), Some(1)), (right_abi.clone(), Some(1))])
+        &IndexMap::from_iter([(left_abi.clone(), Some(1)), (right_abi.clone(), Some(1))])
     );
 
     let right_generation = memo.generation(&right_key);
@@ -2562,7 +2567,7 @@ fn callable_owner_products_aggregate_order_free_and_retract_independently() {
     let replaced = aggregate_callable_owners(&memo, &[left_key.clone(), right_key.clone()]);
     assert_eq!(
         replaced.callables[&callable].resolutions,
-        HashSet::from([replacement_resolution, right_resolution.clone()])
+        HashSet::from_iter([replacement_resolution, right_resolution.clone()])
     );
     assert!(!replaced.callables[&callable].resolutions.contains(&left_resolution));
     assert_eq!(memo.generation(&right_key), right_generation);
@@ -2581,11 +2586,11 @@ fn callable_owner_products_aggregate_order_free_and_retract_independently() {
     let withdrawn = aggregate_callable_owners(&memo, &[left_key, right_key]);
     assert_eq!(
         withdrawn.callables[&callable].resolutions,
-        HashSet::from([right_resolution])
+        HashSet::from_iter([right_resolution])
     );
     assert_eq!(
         withdrawn.boundaries[&boundary].publications,
-        HashSet::from([right_position])
+        HashSet::from_iter([right_position])
     );
 }
 
@@ -2647,8 +2652,8 @@ impl OwnerState {
     fn bottom(layout: TransportLayout) -> Self {
         Self {
             layout,
-            resolutions: HashSet::new(),
-            publications: HashSet::new(),
+            resolutions: HashSet::default(),
+            publications: HashSet::default(),
         }
     }
 
@@ -2773,7 +2778,7 @@ fn finish_owner_group(
                 ProductDependencies {
                     rooted_read: None,
                     products,
-                    facts: HashMap::new(),
+                    facts: HashMap::default(),
                 },
             )
         })
@@ -2827,8 +2832,11 @@ fn transport_shape_group_retains_external_dependencies_on_their_owning_member() 
                 ProductValue::TransportShape(TransportShapeFact::Layout(first_layout)),
                 ProductDependencies {
                     rooted_read: None,
-                    products: IndexMap::from([(right.clone(), None), (external.clone(), memo.generation(&external))]),
-                    facts: HashMap::new(),
+                    products: IndexMap::from_iter([
+                        (right.clone(), None),
+                        (external.clone(), memo.generation(&external)),
+                    ]),
+                    facts: HashMap::default(),
                 },
             ),
             (
@@ -2836,8 +2844,8 @@ fn transport_shape_group_retains_external_dependencies_on_their_owning_member() 
                 ProductValue::TransportShape(TransportShapeFact::Layout(first_layout)),
                 ProductDependencies {
                     rooted_read: None,
-                    products: IndexMap::from([(left.clone(), None)]),
-                    facts: HashMap::new(),
+                    products: IndexMap::from_iter([(left.clone(), None)]),
+                    facts: HashMap::default(),
                 },
             ),
         ];
@@ -2847,11 +2855,14 @@ fn transport_shape_group_retains_external_dependencies_on_their_owning_member() 
         assert!(finish_test_group(&mut memo, &tel, &left, entries, &types));
         assert_eq!(
             memo.product_dependencies(&left),
-            Some(&IndexMap::from([(right.clone(), Some(1)), (external.clone(), Some(1))]))
+            Some(&IndexMap::from_iter([
+                (right.clone(), Some(1)),
+                (external.clone(), Some(1))
+            ]))
         );
         assert_eq!(
             memo.product_dependencies(&right),
-            Some(&IndexMap::from([(left.clone(), Some(1))]))
+            Some(&IndexMap::from_iter([(left.clone(), Some(1))]))
         );
 
         finish_test_product(&mut memo, &left_reader, ProductValue::Unit, [left.clone()]);
@@ -2885,11 +2896,11 @@ fn transport_shape_group_retains_external_dependencies_on_their_owning_member() 
                     ProductValue::TransportShape(TransportShapeFact::Layout(second_layout)),
                     ProductDependencies {
                         rooted_read: None,
-                        products: IndexMap::from([
+                        products: IndexMap::from_iter([
                             (right.clone(), right_generation),
                             (external.clone(), external_generation),
                         ]),
-                        facts: HashMap::new(),
+                        facts: HashMap::default(),
                     },
                 ),
                 (
@@ -2897,8 +2908,8 @@ fn transport_shape_group_retains_external_dependencies_on_their_owning_member() 
                     ProductValue::TransportShape(TransportShapeFact::Layout(second_layout)),
                     ProductDependencies {
                         rooted_read: None,
-                        products: IndexMap::from([(left.clone(), left_generation)]),
-                        facts: HashMap::new(),
+                        products: IndexMap::from_iter([(left.clone(), left_generation)]),
+                        facts: HashMap::default(),
                     },
                 ),
             ],
@@ -3033,11 +3044,11 @@ fn publication_moves_observation_and_membership_storage_into_the_entry() {
     let wide = fake_executable_with_inputs(&mut types, root, 612, 32);
     let executable = super::super::transport::ExecutableSymbol::new(&wide, &types);
     let external = ProductKey::TransportShape(TransportPosition::ExecutableReturn { executable });
-    let membership = HashSet::from([external.clone()]);
+    let membership = HashSet::from_iter([external.clone()]);
     let dependencies = ProductDependencies {
         rooted_read: None,
-        products: IndexMap::from([(external.clone(), Some(7))]),
-        facts: HashMap::new(),
+        products: IndexMap::from_iter([(external.clone(), Some(7))]),
+        facts: HashMap::default(),
     };
     let mut memo = ProductMemo::default();
     let product_storage = dependencies.products.get_index(0).unwrap().0 as *const ProductKey;
@@ -3098,10 +3109,10 @@ fn changed_product_authority_discards_pending_reader_snapshots_before_group_sett
             &left,
             ProductDependencies {
                 rooted_read: None,
-                products: IndexMap::from([(right.clone(), None), (external.clone(), Some(1))]),
-                facts: HashMap::new(),
+                products: IndexMap::from_iter([(right.clone(), None), (external.clone(), Some(1))]),
+                facts: HashMap::default(),
             },
-            HashSet::new(),
+            HashSet::default(),
         );
         assert!(memo.pending_dependencies.contains_key(&left));
 
@@ -3129,8 +3140,8 @@ fn changed_product_authority_discards_pending_reader_snapshots_before_group_sett
                 ProductValue::Unit,
                 ProductDependencies {
                     rooted_read: None,
-                    products: IndexMap::from([(right.clone(), None), (external.clone(), Some(2))]),
-                    facts: HashMap::new(),
+                    products: IndexMap::from_iter([(right.clone(), None), (external.clone(), Some(2))]),
+                    facts: HashMap::default(),
                 },
             ),
             (
@@ -3138,8 +3149,8 @@ fn changed_product_authority_discards_pending_reader_snapshots_before_group_sett
                 ProductValue::Unit,
                 ProductDependencies {
                     rooted_read: None,
-                    products: IndexMap::from([(left.clone(), None), (external.clone(), Some(2))]),
-                    facts: HashMap::new(),
+                    products: IndexMap::from_iter([(left.clone(), None), (external.clone(), Some(2))]),
+                    facts: HashMap::default(),
                 },
             ),
         ];
@@ -3151,7 +3162,10 @@ fn changed_product_authority_discards_pending_reader_snapshots_before_group_sett
             let peer = if key == &left { &right } else { &left };
             assert_eq!(
                 memo.product_dependencies(key),
-                Some(&IndexMap::from([(peer.clone(), Some(1)), (external.clone(), Some(2))]))
+                Some(&IndexMap::from_iter([
+                    (peer.clone(), Some(1)),
+                    (external.clone(), Some(2))
+                ]))
             );
         }
         assert_eq!(memo.generation(&unrelated), unrelated_generation);
@@ -3194,16 +3208,16 @@ fn changed_fact_authority_discards_only_pending_readers_of_that_fact() {
             key,
             ProductDependencies {
                 rooted_read: None,
-                products: IndexMap::new(),
-                facts: HashMap::from([(dependency, state)]),
+                products: IndexMap::default(),
+                facts: HashMap::from_iter([(dependency, state)]),
             },
-            HashSet::new(),
+            HashSet::default(),
         );
     }
 
-    memo.reconcile_fact_movements(&tel, &HashMap::from([(fact.fact().clone(), first)]), &types);
+    memo.reconcile_fact_movements(&tel, &HashMap::from_iter([(fact.fact().clone(), first)]), &types);
     assert!(memo.pending_dependencies.contains_key(&reader));
-    memo.reconcile_fact_movements(&tel, &HashMap::from([(fact.fact().clone(), second)]), &types);
+    memo.reconcile_fact_movements(&tel, &HashMap::from_iter([(fact.fact().clone(), second)]), &types);
 
     assert!(!memo.pending_dependencies.contains_key(&reader));
     assert!(memo.pending_dependencies.contains_key(&unrelated));
@@ -3244,20 +3258,20 @@ fn group_settlement_rejects_discordant_dependency_snapshots_before_publication()
             let unrelated_generation = memo.generation(&unrelated);
             let left_dependencies = ProductDependencies {
                 rooted_read: None,
-                products: IndexMap::from([(external.clone(), if discordant_fact { Some(2) } else { Some(1) })]),
-                facts: HashMap::from([(fact.clone(), fact_one)]),
+                products: IndexMap::from_iter([(external.clone(), if discordant_fact { Some(2) } else { Some(1) })]),
+                facts: HashMap::from_iter([(fact.clone(), fact_one)]),
             };
             let right_dependencies = ProductDependencies {
                 rooted_read: None,
-                products: IndexMap::from([(external.clone(), Some(2))]),
-                facts: HashMap::from([(fact.clone(), if discordant_fact { fact_two } else { fact_one })]),
+                products: IndexMap::from_iter([(external.clone(), Some(2))]),
+                facts: HashMap::from_iter([(fact.clone(), if discordant_fact { fact_two } else { fact_one })]),
             };
             assert!(memo.begin(left.clone()));
             memo.unblock(
                 ProductRequestId(NonZeroU64::MIN),
                 &left,
                 left_dependencies.clone(),
-                HashSet::new(),
+                HashSet::default(),
             );
             assert!(memo.begin(right.clone()));
             let mut entries = vec![
@@ -3291,8 +3305,8 @@ fn group_settlement_rejects_discordant_dependency_snapshots_before_publication()
             }
             let concordant = ProductDependencies {
                 rooted_read: None,
-                products: IndexMap::from([(external.clone(), Some(2))]),
-                facts: HashMap::from([(fact.clone(), fact_two)]),
+                products: IndexMap::from_iter([(external.clone(), Some(2))]),
+                facts: HashMap::from_iter([(fact.clone(), fact_two)]),
             };
             assert!(finish_test_group(
                 &mut memo,
@@ -3324,8 +3338,8 @@ fn rejected_group_retries_without_displaced_dependency_snapshots() {
         }
         let first = ProductDependencies {
             rooted_read: None,
-            products: IndexMap::from([(external.clone(), Some(1))]),
-            facts: HashMap::new(),
+            products: IndexMap::from_iter([(external.clone(), Some(1))]),
+            facts: HashMap::default(),
         };
         assert!(finish_test_group(
             &mut memo,
@@ -3344,14 +3358,14 @@ fn rejected_group_retries_without_displaced_dependency_snapshots() {
         assert!(memo.begin(right.clone()));
         let current = ProductDependencies {
             rooted_read: None,
-            products: IndexMap::from([(external.clone(), Some(2))]),
-            facts: HashMap::new(),
+            products: IndexMap::from_iter([(external.clone(), Some(2))]),
+            facts: HashMap::default(),
         };
         memo.unblock(
             ProductRequestId(NonZeroU64::MIN),
             &right,
             current.clone(),
-            HashSet::new(),
+            HashSet::default(),
         );
         assert!(memo.begin(left.clone()));
         let stale = memo
@@ -3427,8 +3441,8 @@ fn callable_owner_scc_is_finite_order_free_and_contains_only_pass_through_owners
 
     let seed = OwnerState {
         layout: x_layout,
-        resolutions: HashSet::from([left_resolution.clone(), left_resolution, right_resolution]),
-        publications: HashSet::from([x, left, right]),
+        resolutions: HashSet::from_iter([left_resolution.clone(), left_resolution, right_resolution]),
+        publications: HashSet::from_iter([x, left, right]),
     };
     let pair = [
         OwnerEquation {
@@ -3531,8 +3545,8 @@ fn callable_owner_group_is_atomic_replacement_safe_and_frontier_relative() {
             OwnerEquation {
                 seed: OwnerState {
                     layout,
-                    resolutions: HashSet::from([resolution]),
-                    publications: HashSet::from([publication, x_position.clone()]),
+                    resolutions: HashSet::from_iter([resolution]),
+                    publications: HashSet::from_iter([publication, x_position.clone()]),
                 },
                 children: vec![1],
             },

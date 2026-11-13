@@ -33,7 +33,7 @@ fn generic_extern_effects_do_not_depend_on_privileged_symbol_spellings() {
         "fz_send",
         "fz_spawn",
     ] {
-        let local = local_effects(&empty_body, Some(&extern_wire(symbol)), &HashMap::new());
+        let local = local_effects(&empty_body, Some(&extern_wire(symbol)), &HashMap::default());
         assert_eq!(local, expected_local, "`{symbol}` must use generic extern effects");
 
         let mut caller = EffectSummary {
@@ -232,7 +232,7 @@ fn try_materialize_closure_edge(
             callsite,
         })
         .cloned()
-        .map(|summary| HashMap::from([(callsite, summary)]))
+        .map(|summary| HashMap::from_iter([(callsite, summary)]))
         .unwrap_or_default();
     let edge = materialize_closure_call_edge(
         &mut world,

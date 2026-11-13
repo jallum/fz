@@ -4,7 +4,7 @@
 //! call resolution consumes it to refine observed arguments before waking
 //! activations or callable-boundary demand.
 
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 
 use crate::ast::Attribute;
 use crate::diag::Diagnostic;

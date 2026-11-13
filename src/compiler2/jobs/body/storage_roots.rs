@@ -8,7 +8,7 @@
 //! values that share one.
 
 use crate::compiler2::{ValueMap, ValueSet};
-use std::collections::{HashMap, HashSet};
+use crate::fast_hash::{HashMap, HashSet};
 use std::rc::Rc;
 
 use super::{child_entries, construction_children, origin_source_path};
@@ -45,7 +45,7 @@ impl StorageRootIndex {
             }
         }
         let mut footprints = Footprints::new(body.value_count());
-        let mut users: HashMap<SubjectOriginRoot, Vec<ValueId>> = HashMap::new();
+        let mut users: HashMap<SubjectOriginRoot, Vec<ValueId>> = HashMap::default();
         let mut open_users = Vec::new();
         for value in sites.keys() {
             let footprint = footprints.of(body, origins, value);
@@ -140,7 +140,7 @@ impl<'a> LaterUses<'a> {
 /// itself.
 pub(super) fn entries_reached_from(body: &LoweredBody, entry: usize) -> HashSet<u32> {
     let LoweredBody::Clauses { entries, .. } = body;
-    let mut reached = HashSet::new();
+    let mut reached = HashSet::default();
     let mut pending = child_entries(&entries[entry].tail).collect::<Vec<_>>();
     while let Some(block) = pending.pop() {
         if block.as_u32() as usize != entry && reached.insert(block.as_u32()) {
@@ -172,12 +172,12 @@ impl Footprints {
         }
         if !self.in_progress.mark(value) {
             return Rc::new(Footprint {
-                roots: HashSet::new(),
+                roots: HashSet::default(),
                 open: true,
             });
         }
         let mut footprint = Footprint {
-            roots: HashSet::from([SubjectOriginRoot::Value(value)]),
+            roots: HashSet::from_iter([SubjectOriginRoot::Value(value)]),
             open: false,
         };
         let mut reaches = Vec::new();

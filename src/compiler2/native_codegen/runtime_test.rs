@@ -33,7 +33,7 @@
 //! [`crate::runtime_type_predicate::RuntimeTypePredicate::tuple_positions`]
 //! depends on: a named struct never answers a tuple's position questions.
 
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 
 use cranelift_codegen::ir::{self, BlockArg, InstBuilder, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;

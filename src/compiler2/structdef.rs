@@ -26,7 +26,7 @@
 //! `World::note_struct_field_expectation`, and
 //! `World::validate_struct_field_expectations`).
 
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 
 use crate::source::Span;
 

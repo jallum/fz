@@ -1,5 +1,5 @@
+use crate::fast_hash::HashSet;
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::rc::Rc;
 
 use super::super::drive_harness::Drive;
@@ -12,7 +12,7 @@ use crate::telemetry::ConfiguredTelemetry;
 /// `successors` directly. This is the question a reach product answers
 /// without walking, so it is the oracle the products are checked against.
 fn walked_reach(world: &World, from: &ReachKey) -> HashSet<ReachKey> {
-    let mut reached = HashSet::new();
+    let mut reached = HashSet::default();
     let mut frontier = from.successors(world);
     while let Some(node) = frontier.pop() {
         if reached.insert(node.clone()) {

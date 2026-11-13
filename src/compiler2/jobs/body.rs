@@ -5,9 +5,9 @@
 //! discovery, and generated-function definition path.
 
 use crate::compiler2::{ValueMap, ValueSet};
+use crate::fast_hash::{HashMap, HashSet};
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::{
@@ -330,7 +330,7 @@ pub(super) fn lower_function(
     );
 
     let mut reads = vec![FactKey::FunctionDefined(function)];
-    let mut waits = HashSet::new();
+    let mut waits = HashSet::default();
     for clause in &surface.clauses {
         for param in &clause.params {
             collect_local_pattern_requirements(
@@ -1281,7 +1281,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     }
 
     fn lower_clause(&mut self, clause: &FnClause) -> Result<ExprClause, FatalError> {
-        let mut env = HashMap::new();
+        let mut env = HashMap::default();
         let mut projections = Vec::new();
         let mut params = Vec::new();
         if self.surface.is_macro {
@@ -2602,8 +2602,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             result: reraised,
         };
 
-        let mut free = HashSet::new();
-        collect_expr_free_names(&after.node, &mut HashSet::new(), &mut free);
+        let mut free = HashSet::default();
+        collect_expr_free_names(&after.node, &mut HashSet::default(), &mut free);
         let captures = self.capture_values(free, env);
         let value = self.fresh_value();
         steps.push(ExprStep::Try(Box::new(ExprTry {
@@ -2664,9 +2664,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         )?;
         let mut handler_steps = Vec::new();
         let bindings = self.lower_dispatch_bindings(&plan, env, &mut handler_steps)?;
-        let mut free = HashSet::new();
-        collect_rescue_clause_free_names(rescue, &mut HashSet::new(), &mut free);
-        collect_catch_clause_free_names(catch, &mut HashSet::new(), &mut free);
+        let mut free = HashSet::default();
+        collect_rescue_clause_free_names(rescue, &mut HashSet::default(), &mut free);
+        collect_catch_clause_free_names(catch, &mut HashSet::default(), &mut free);
         let captures = self.capture_values(free, env);
         let arm_blocks = plan
             .outcomes
@@ -3069,12 +3069,12 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         after: Option<&AfterClause>,
         env: &HashMap<Var, ValueId>,
     ) -> Vec<ValueId> {
-        let mut free = HashSet::new();
-        let mut bound = HashSet::new();
+        let mut free = HashSet::default();
+        let mut bound = HashSet::default();
         collect_match_clause_free_names(clauses, &mut bound, &mut free);
         if let Some(after) = after {
-            collect_expr_free_names(&after.timeout.node, &mut HashSet::new(), &mut free);
-            collect_expr_free_names(&after.body.node, &mut HashSet::new(), &mut free);
+            collect_expr_free_names(&after.timeout.node, &mut HashSet::default(), &mut free);
+            collect_expr_free_names(&after.body.node, &mut HashSet::default(), &mut free);
         }
         let mut captures = free
             .into_iter()
@@ -3952,7 +3952,7 @@ fn compute_entry_captures(
     value_count: usize,
     physical: bool,
 ) -> Vec<Vec<ValueId>> {
-    let mut memo = HashMap::new();
+    let mut memo = HashMap::default();
     for entry_id in 0..entries.len() {
         let entry_id = ControlEntryId::from_u32(entry_id as u32);
         record_entry_captures(
@@ -4145,7 +4145,7 @@ fn any_later_ownership_use(
     use super::super::body::ValueRole;
     let LoweredBody::Clauses { entries, tables, .. } = body;
     let mut pending = vec![(ControlEntryId::from_u32(entry as u32), step as u32 + 1)];
-    let mut visited = HashSet::new();
+    let mut visited = HashSet::default();
     while let Some((block_id, start)) = pending.pop() {
         if !visited.insert(block_id) {
             continue;
@@ -4330,7 +4330,7 @@ fn values_overlap(
     left: ValueId,
     right: ValueId,
 ) -> bool {
-    values_overlap_inner(body, origins, left, right, None, &mut HashSet::new())
+    values_overlap_inner(body, origins, left, right, None, &mut HashSet::default())
 }
 
 fn values_overlap_inner(
@@ -4476,7 +4476,7 @@ fn construct_tuple_ownership(
         })
         .collect::<Vec<_>>();
     let index = StorageRootIndex::new(body, origins);
-    let mut reached = (usize::MAX, HashSet::new());
+    let mut reached = (usize::MAX, HashSet::default());
     for (entry, step) in tuples {
         let LoweredBody::Clauses { entries, .. } = &*body;
         let LoweredStep::Tuple { value: result, items } = &entries[entry].steps[step] else {
@@ -4529,7 +4529,7 @@ fn tuple_item_has_old_owner(
     use super::super::body::ValueRole;
     let overlaps = |value: ValueId| {
         compared.set(compared.get() + 1);
-        values_overlap_inner(body, origins, value, item, Some(result), &mut HashSet::new())
+        values_overlap_inner(body, origins, value, item, Some(result), &mut HashSet::default())
     };
     let retains = |value: ValueId| {
         origin_source_path(
@@ -4650,9 +4650,9 @@ fn child_entries(tail: &LoweredTail) -> impl Iterator<Item = ControlEntryId> + '
 }
 
 fn lambda_free_names(clauses: &[LambdaClause]) -> HashSet<Var> {
-    let mut free = HashSet::new();
+    let mut free = HashSet::default();
     for clause in clauses {
-        let mut bound = HashSet::new();
+        let mut bound = HashSet::default();
         // A pin in a parameter names a value bound before the clause began, so
         // the lambda has to close over it just like a body reference. Free
         // names come first, against the empty pre-pattern scope, because the

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use crate::fast_hash::HashSet;
 
 use fz_runtime::any_value::{AnyValueRef, ValueKind};
 

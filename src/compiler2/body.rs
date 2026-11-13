@@ -5,7 +5,8 @@
 //! it stops above old-world CPS IR and planner concerns.
 
 use crate::compiler2::ValueMap;
-use std::collections::{BTreeMap, HashMap};
+use crate::fast_hash::HashMap;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::ast::{BinOp, BitType, Endian, TypeExprBody, UnOp};
@@ -648,13 +649,13 @@ impl ControlEntryOrigin {
 
 pub(crate) fn delivered_value_joins(body: &LoweredBody) -> HashMap<ControlEntryId, DeliveredValueJoin> {
     let LoweredBody::Clauses { entries, .. } = body;
-    let mut delivered_values = HashMap::new();
+    let mut delivered_values = HashMap::default();
     for (entry_index, entry) in entries.iter().enumerate() {
         if let ControlEntryOrigin::DeliveredResume { value } = entry.origin {
             delivered_values.insert(ControlEntryId::from_u32(entry_index as u32), value);
         }
     }
-    let mut sources = HashMap::<ControlEntryId, Vec<DeliveredValueSource>>::new();
+    let mut sources = HashMap::<ControlEntryId, Vec<DeliveredValueSource>>::default();
     for entry in entries {
         collect_tail_deliveries(&entry.tail, &delivered_values, &mut sources);
     }

@@ -1,6 +1,6 @@
 //! Independent census of the native handoff's references and executable closure.
 
-use std::collections::{HashMap, HashSet};
+use crate::fast_hash::{HashMap, HashSet};
 
 use super::artifact::{NativeBodyOrigin, NativeProgram, ir_control_fn_ids};
 use crate::fz_ir::{FnId, Prim, Stmt};
@@ -40,7 +40,7 @@ pub(super) fn unreachable_native_functions(program: &NativeProgram) -> Vec<FnId>
     }
     let mut roots = vec![program.entry];
     roots.extend(program.executable_entries.iter().map(|entry| entry.fn_id));
-    let mut identities = HashMap::new();
+    let mut identities = HashMap::default();
     for boundary in &program.callable_boundaries {
         assert!(
             identities.insert(boundary.identity_fn, boundary.wrapper_fn).is_none(),
@@ -54,7 +54,7 @@ pub(super) fn unreachable_native_functions(program: &NativeProgram) -> Vec<FnId>
             .get(&id)
             .unwrap_or_else(|| panic!("unpublished native construction identity: {id:?}"))
     };
-    let mut control = HashMap::new();
+    let mut control = HashMap::default();
     for function in &program.module.fns {
         let targets = ir_control_fn_ids(function);
         targets.iter().copied().for_each(&require_function);
@@ -69,7 +69,7 @@ pub(super) fn unreachable_native_functions(program: &NativeProgram) -> Vec<FnId>
         }
     }
     roots.iter().copied().for_each(require_function);
-    let mut reached = HashSet::new();
+    let mut reached = HashSet::default();
     while let Some(id) = roots.pop() {
         if reached.insert(id) {
             roots.extend(control[&id].iter().copied());
@@ -113,9 +113,9 @@ fn inventory_fixture(count: u32) -> NativeProgram {
             param_reprs: Vec::new(),
             return_ty: ty,
             return_reprs: Vec::new(),
-            block_param_reprs: HashMap::new(),
-            value_types: HashMap::new(),
-            extern_marshals: HashMap::new(),
+            block_param_reprs: HashMap::default(),
+            value_types: HashMap::default(),
+            extern_marshals: HashMap::default(),
             effects: EffectSummary::default(),
         });
     }

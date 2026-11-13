@@ -4,9 +4,9 @@ use crate::compiler2::dump::DumpStage;
 use crate::compiler2::types::TypeVarId;
 use crate::compiler2::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, RootSubmission};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
+use crate::fast_hash::HashSet;
 use crate::telemetry::ConfiguredTelemetry;
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::rc::Rc;
 
 /// Every `Job::AnalyzeActivation` span started during a drive, recorded

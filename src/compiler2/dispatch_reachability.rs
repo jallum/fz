@@ -1,5 +1,6 @@
+use crate::fast_hash::HashSet;
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
@@ -50,7 +51,7 @@ pub(crate) fn calculate_dispatch_reachability(
     let mut calculator = ReachabilityCalculator {
         types,
         plan,
-        visited: HashSet::new(),
+        visited: HashSet::default(),
         outcomes: BTreeSet::new(),
         outcome_inputs: BTreeSet::new(),
         fail_reachable: false,

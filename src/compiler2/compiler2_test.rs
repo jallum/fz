@@ -1,12 +1,12 @@
 use super::{CodeSubmission, Compiler2, DriveOutcome, Job, ModuleInterface, SourceOwner, World};
 use crate::exec::runtime::{DbgCapture, ProcessExitCapture};
+use crate::fast_hash::{HashMap, HashSet};
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
 };
 use crate::source::{SourceMap, SourceVersion};
 use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -1141,7 +1141,7 @@ impl JobCapture {
     fn install(&self, telemetry: &ConfiguredTelemetry) {
         let starts = Rc::clone(&self.starts);
         let stops = Rc::clone(&self.stops);
-        let jobs_by_span = Rc::new(RefCell::new(HashMap::new()));
+        let jobs_by_span = Rc::new(RefCell::new(HashMap::default()));
         let started_jobs = Rc::clone(&jobs_by_span);
         let stopped_jobs = Rc::clone(&jobs_by_span);
         telemetry.attach_raw_span1_0::<Job, _, _, _>(
@@ -1287,13 +1287,13 @@ fn def_and_defp_bounce_through_definition_macros_and_preserve_visibility() {
                 None
             }
         })
-        .fold(HashMap::new(), |mut counts, target| {
+        .fold(HashMap::default(), |mut counts, target| {
             *counts.entry(target).or_insert(0) += 1;
             counts
         });
     assert_eq!(
         expansion_targets,
-        HashMap::from([
+        HashMap::from_iter([
             (("def".to_string(), "main".to_string()), 1),
             (("def".to_string(), "public".to_string()), 1),
             (("defp".to_string(), "private".to_string()), 1),
@@ -1305,13 +1305,13 @@ fn def_and_defp_bounce_through_definition_macros_and_preserve_visibility() {
         .iter()
         .filter(|(_, source_owner)| *source_owner == code)
         .map(|(function, _)| compiler.world().function_ref(*function).name().to_string())
-        .fold(HashMap::new(), |mut counts, name| {
+        .fold(HashMap::default(), |mut counts, name| {
             *counts.entry(name).or_insert(0) += 1;
             counts
         });
     assert_eq!(
         defined_names,
-        HashMap::from([
+        HashMap::from_iter([
             ("__info__".to_string(), 1),
             ("generated".to_string(), 1),
             ("main".to_string(), 1),
@@ -1710,7 +1710,7 @@ fn compiler2_macro_ignoring_caller_runs_with_elided_caller_lane() {
 /// it.
 fn drive_and_count_expanded_against_scoped_sources(name: &str, source: &str) -> (usize, usize) {
     let tel = ConfiguredTelemetry::new();
-    let scoped = Rc::new(RefCell::new(HashSet::<super::FunctionId>::new()));
+    let scoped = Rc::new(RefCell::new(HashSet::<super::FunctionId>::default()));
     let scope_sink = Rc::clone(&scoped);
     tel.attach_raw_event3::<super::World, super::FunctionId, super::FunctionSource, _>(
         &["fz", "compiler2", "compiler_service", "define"],

@@ -39,8 +39,8 @@
 //! Every other kind, and every other subject of a gated kind -- including
 //! every `SeedRoot` -- runs exactly once.
 
+use crate::fast_hash::HashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::drive::DependencyKey;
@@ -148,7 +148,7 @@ fn def_main_do_1_starts_each_job_once_per_subject() {
         subjects_and_kinds(),
     );
 
-    let mut per_subject: HashMap<(&'static str, &str), usize> = HashMap::new();
+    let mut per_subject: HashMap<(&'static str, &str), usize> = HashMap::default();
     for (kind, record) in runs.iter() {
         *per_subject.entry((*kind, record.subject.as_str())).or_default() += 1;
     }

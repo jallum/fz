@@ -5,7 +5,7 @@
 //! real reference pulls the owning runtime module through ordinary `CodeMap`
 //! and source-surface jobs.
 
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 
 use crate::modules::identity::ModuleName;
 use crate::modules::runtime_library;
@@ -21,7 +21,7 @@ pub(crate) struct RuntimeModuleCode {
 }
 
 pub(crate) fn bootstrap(modules: &mut ModuleMap, code: &mut CodeMap) -> HashMap<ModuleId, RuntimeModuleCode> {
-    let mut runtime_modules = HashMap::new();
+    let mut runtime_modules = HashMap::default();
 
     for (name, source) in runtime_library::module_sources() {
         let module = modules.reference_named(ModuleName::parse_dotted(name).expect("runtime module name"));

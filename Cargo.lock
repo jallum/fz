@@ -471,6 +471,7 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "cranelift-object",
+ "foldhash",
  "fz-fixture-metadata",
  "fz-runtime",
  "hashbrown 0.17.1",

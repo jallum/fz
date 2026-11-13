@@ -34,7 +34,7 @@
 //! for exactly that class: if the external ignition count ever exceeds the
 //! true front-door count, an internal caller mislabeled its work-start.
 
-use std::collections::HashSet;
+use crate::fast_hash::HashSet;
 
 use super::drive::Job;
 use super::{CodeSubmission, Compiler2, ExecutableNeed, FactKey, FactUse, RootSubmission, WorkStartReason};
@@ -133,11 +133,11 @@ fn pull_only_guard_holds_for_protocol_impl_dispatch() {
 #[test]
 fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     let telemetry = ConfiguredTelemetry::new();
-    let macro_definition_consumers = std::rc::Rc::new(std::cell::RefCell::new(HashSet::<Job>::new()));
+    let macro_definition_consumers = std::rc::Rc::new(std::cell::RefCell::new(HashSet::<Job>::default()));
     let observed_macro_consumers = std::rc::Rc::clone(&macro_definition_consumers);
     let source_work = std::rc::Rc::new(std::cell::RefCell::new((0_u64, 0_u64, 0_u64, 0_u64)));
     let observed_source_work = std::rc::Rc::clone(&source_work);
-    let demand_work = std::rc::Rc::new(std::cell::RefCell::new((0_u64, 0_u64, HashSet::<Job>::new())));
+    let demand_work = std::rc::Rc::new(std::cell::RefCell::new((0_u64, 0_u64, HashSet::<Job>::default())));
     let observed_demand_work = std::rc::Rc::clone(&demand_work);
     let demand_wake_causes = std::rc::Rc::new(std::cell::RefCell::new([0_u64; 5]));
     let observed_demand_wake_causes = std::rc::Rc::clone(&demand_wake_causes);
@@ -192,7 +192,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
             }
         },
     );
-    let macro_product_consumers = std::rc::Rc::new(std::cell::RefCell::new(HashSet::<Job>::new()));
+    let macro_product_consumers = std::rc::Rc::new(std::cell::RefCell::new(HashSet::<Job>::default()));
     let observed_product_consumers = std::rc::Rc::clone(&macro_product_consumers);
     telemetry.attach_raw_event1::<super::AppliedStep<Job, super::DependencyKey>, _>(
         &["fz", "compiler2", "work_graph", "dependencies_moved"],

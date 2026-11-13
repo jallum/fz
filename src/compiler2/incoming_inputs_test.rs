@@ -3,7 +3,7 @@ use super::super::facts::FactUse;
 use super::super::identity::{ActivationKey, ExecutableNeed, FunctionId, RootId};
 use super::super::world::World;
 use super::*;
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 
 fn executable(world: &mut World, id: u32) -> ExecutableKey {
     ExecutableKey {
@@ -19,9 +19,9 @@ fn executable(world: &mut World, id: u32) -> ExecutableKey {
 
 fn contribution(world: &World, slot: &InputSlot, source: IncomingInputSource) -> JobEffects {
     JobEffects {
-        incoming_input_contributions: HashMap::from([(
+        incoming_input_contributions: HashMap::from_iter([(
             slot.clone(),
-            IncomingInputSources::new(HashSet::from([source]), world.types()),
+            IncomingInputSources::new(HashSet::from_iter([source]), world.types()),
         )]),
         ..Default::default()
     }
@@ -42,7 +42,7 @@ fn slot_ownership_extends_while_waiting_and_withdraws_only_the_concluding_publis
     world.complete_job(
         empty_owner,
         JobEffects {
-            incoming_input_contributions: HashMap::from([(slot.clone(), IncomingInputSources::default())]),
+            incoming_input_contributions: HashMap::from_iter([(slot.clone(), IncomingInputSources::default())]),
             ..Default::default()
         },
     );

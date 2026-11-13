@@ -6,6 +6,7 @@ mod dispatch_matrix;
 mod exec;
 mod execution_ready;
 mod extern_contract;
+mod fast_hash;
 mod finite_set;
 mod function_surface;
 mod fz_ir;

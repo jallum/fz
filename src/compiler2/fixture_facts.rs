@@ -8,7 +8,7 @@
 //! identity comes from source provenance: callsite spans and owner-relative
 //! lambda provenance.
 
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 
 use crate::source::Span;
 
@@ -40,7 +40,7 @@ pub(crate) fn canonical_call_edge_facts(
     inventory: &[ActivationKey],
 ) -> Vec<CanonicalCallEdgeFact> {
     let root_code = world.function_definition(world.root_function(root)).0.owner;
-    let mut labels = HashMap::new();
+    let mut labels = HashMap::default();
     let mut activations = inventory.to_vec();
     activations.retain(|activation| world.function_definition(activation.function).0.owner == root_code);
     activations.sort_by(|left, right| activation_cmp(world, left, right, &mut labels));
@@ -161,7 +161,7 @@ impl CallsiteDispatchKind {
 }
 
 fn callsite_kinds(body: &LoweredBody) -> HashMap<CallSiteId, CallsiteDispatchKind> {
-    let mut out = HashMap::new();
+    let mut out = HashMap::default();
     let LoweredBody::Clauses { entries, .. } = body;
 
     for entry in entries {
@@ -337,7 +337,7 @@ fn stable_var_label(world: &World, var_id: u32) -> String {
         ClosureSurfacePos::Arg(pos) if (pos as usize) < arity => format!("a{pos}"),
         ClosureSurfacePos::Arg(_) => return bare(),
     };
-    let label = canonical_function_label(world, function, &mut HashMap::new());
+    let label = canonical_function_label(world, function, &mut HashMap::default());
     format!("{label}:{slot}")
 }
 

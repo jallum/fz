@@ -1,7 +1,7 @@
 //! Backend interpreter for compiler2 programs.
 
+use crate::fast_hash::HashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::compiler2::transport::BoundValue;
@@ -169,13 +169,13 @@ pub(crate) struct IrInterpRuntime {
 impl IrInterpRuntime {
     pub(crate) fn fresh() -> Self {
         Self {
-            tasks: HashMap::new(),
+            tasks: HashMap::default(),
             next_pid: 2,
             schemas: Rc::new(RefCell::new(SchemaRegistry::new())),
-            tuple_schema_ids: HashMap::new(),
+            tuple_schema_ids: HashMap::default(),
             core: SchedulingCore::new(),
-            backend_resume: HashMap::new(),
-            backend_parked: HashMap::new(),
+            backend_resume: HashMap::default(),
+            backend_parked: HashMap::default(),
             node: Rc::new(Node::empty()),
             current_proc: std::ptr::null_mut(),
             callback_error: None,

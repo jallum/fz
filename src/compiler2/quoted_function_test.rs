@@ -119,7 +119,7 @@ fn source_lambda_occurrences_survive_cloning_and_decode_retries() {
     let decoded = derive_function_surface(&root, &sources).expect("decode source");
     let first = occurrences(&decoded);
     assert_eq!(
-        first.iter().copied().collect::<std::collections::HashSet<_>>().len(),
+        first.iter().copied().collect::<crate::fast_hash::HashSet<_>>().len(),
         4,
         "nested lambdas, siblings, and grouped clauses are distinct source occurrences"
     );

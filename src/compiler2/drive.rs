@@ -4,7 +4,7 @@
 //! effects, and the drive loop. Concrete job implementations live under
 //! `compiler2::jobs`.
 
-use std::collections::HashSet;
+use crate::fast_hash::HashSet;
 use std::time::{Duration, Instant};
 
 use crate::telemetry::{RawSpanGuard, RawSpanStop0, RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt};
@@ -66,7 +66,7 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
                 DependencyKey::Product(address) => Some(address.clone()),
                 _ => None,
             })
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<crate::fast_hash::HashSet<_>>();
         let Some(sessions) = self.product_sessions.as_deref_mut() else {
             assert!(
                 effects.product_reads.is_empty() && effects.product_waits.is_empty(),
@@ -562,7 +562,7 @@ impl UseCollector {
         Self {
             reader,
             reads: Vec::new(),
-            waits: HashSet::new(),
+            waits: HashSet::default(),
         }
     }
 
@@ -740,10 +740,10 @@ pub(crate) struct JobEffects {
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
     pub(crate) runtime_demand_input_contributions: Vec<(ExecutableKey, super::semantic::TargetDemandContribution)>,
     pub(crate) incoming_input_contributions:
-        std::collections::HashMap<super::incoming_inputs::InputSlot, super::incoming_inputs::IncomingInputSources>,
+        crate::fast_hash::HashMap<super::incoming_inputs::InputSlot, super::incoming_inputs::IncomingInputSources>,
     /// What the demand sent to each callee stands on, when that is less than
     /// everything the run read.
-    pub(crate) send_reads: std::collections::HashMap<ExecutableKey, Vec<FactUse<FactKey>>>,
+    pub(crate) send_reads: crate::fast_hash::HashMap<ExecutableKey, Vec<FactUse<FactKey>>>,
 }
 
 impl JobEffects {
@@ -812,7 +812,7 @@ impl World {
     /// actually demanded.
     fn revive_blocked_chain(&mut self, job: &Job) -> u64 {
         let mut demanded = 0_u64;
-        let mut visited = HashSet::from([job.clone()]);
+        let mut visited = HashSet::from_iter([job.clone()]);
         let mut frontier = vec![job.clone()];
         while let Some(current) = frontier.pop() {
             let mut waits: Vec<FactKey> = self
@@ -928,7 +928,7 @@ impl World {
             return false;
         }
         let mut pending = vec![from.clone()];
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         while let Some(job) = pending.pop() {
             if !seen.insert(job.clone()) {
                 continue;

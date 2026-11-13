@@ -56,7 +56,7 @@ struct Binding {
 #[derive(Debug, Default)]
 pub struct NamespaceStore {
     bindings: Vec<Binding>,
-    by_binding: std::collections::HashMap<Binding, Namespace>,
+    by_binding: crate::fast_hash::HashMap<Binding, Namespace>,
     prelude_head: Namespace,
 }
 

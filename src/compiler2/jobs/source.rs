@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use crate::fast_hash::HashSet;
 use std::rc::Rc;
 
 use super::super::code::SourceOwner;

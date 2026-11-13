@@ -1,6 +1,7 @@
+use crate::fast_hash::HashMap;
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use super::super::artifact::{AbiValueRepr, ClosureCallEdge};
@@ -300,8 +301,8 @@ fn produce_generic_callable_owner(
         return PullOutcome::Produced(ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
             layout,
             construction: None,
-            callable_facts: HashMap::new(),
-            boundary_facts: HashMap::new(),
+            callable_facts: HashMap::default(),
+            boundary_facts: HashMap::default(),
         })));
     }
     if let Some(fact) = generic_owner_ty_fact(executable, position) {

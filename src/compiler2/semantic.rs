@@ -4,8 +4,9 @@
 //! shapes, reachable callsites, settled return types, and runtime demand.
 
 use crate::compiler2::ValueMap;
+use crate::fast_hash::{HashMap, HashSet};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 use std::rc::Rc;
 
@@ -603,7 +604,7 @@ impl RuntimeDemandTypeInputs {
     pub(crate) fn new(any: Ty) -> Self {
         Self {
             any,
-            surfaces: HashMap::new(),
+            surfaces: HashMap::default(),
         }
     }
 
@@ -947,7 +948,9 @@ pub struct ContributionMap<K, P, V> {
 
 impl<K, P, V> Default for ContributionMap<K, P, V> {
     fn default() -> Self {
-        Self { slots: HashMap::new() }
+        Self {
+            slots: HashMap::default(),
+        }
     }
 }
 
@@ -962,8 +965,8 @@ pub struct ContributionReplace<K> {
 impl<K> Default for ContributionReplace<K> {
     fn default() -> Self {
         Self {
-            output_keys: HashSet::new(),
-            changed_keys: HashSet::new(),
+            output_keys: HashSet::default(),
+            changed_keys: HashSet::default(),
         }
     }
 }
@@ -1336,7 +1339,7 @@ where
                 .map(|key| (key, SlotEntry::Withdraw)),
         );
         touched.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
-        let mut changed_keys = HashSet::new();
+        let mut changed_keys = HashSet::default();
         for (key, entry) in touched {
             if self.apply(ctx, &key, &publisher, entry, !rebased) {
                 changed_keys.insert(key);
@@ -1374,7 +1377,7 @@ where
         ordered_next.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
         let mut output_keys = previous_output_keys;
         output_keys.extend(ordered_next.iter().map(|(key, _)| key.clone()));
-        let mut changed_keys = HashSet::new();
+        let mut changed_keys = HashSet::default();
         for (key, value) in ordered_next {
             if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
                 changed_keys.insert(key);
@@ -1396,7 +1399,7 @@ where
         let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
         let mut ordered_next = next.into_iter().collect::<Vec<_>>();
         ordered_next.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
-        let mut changed_keys = HashSet::new();
+        let mut changed_keys = HashSet::default();
         for (key, value) in ordered_next {
             if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
                 changed_keys.insert(key);

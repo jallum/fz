@@ -142,7 +142,7 @@
 //! read, not only the `[]`-shaped one — so nothing is left for a witness-shaped
 //! veto to do.
 
-use std::collections::{HashMap, HashSet};
+use crate::fast_hash::{HashMap, HashSet};
 
 use super::descr::Descr;
 use super::{BindingSide, Sigma, Ty, TypeVarId, Types};
@@ -237,7 +237,7 @@ impl Types {
     /// nothing ground in it and stays var-carrying.
     #[cfg(test)]
     pub(crate) fn clause_domain_row(&mut self, params: &[Ty], bounds: &HashMap<TypeVarId, Ty>) -> Vec<Ty> {
-        let closed = self.close_bounds(bounds, &HashMap::new());
+        let closed = self.close_bounds(bounds, &HashMap::default());
         params
             .iter()
             .map(|pattern| self.instantiate(pattern, &closed))
@@ -253,7 +253,7 @@ impl Types {
         params: &[Ty],
         bounds: &HashMap<TypeVarId, Ty>,
     ) -> Vec<Ty> {
-        let closed = self.close_bounds(bounds, &HashMap::new());
+        let closed = self.close_bounds(bounds, &HashMap::default());
         params
             .iter()
             .map(|pattern| self.clause_domain_envelope(*pattern, &closed))
@@ -425,7 +425,7 @@ impl Types {
             // outcome. A collector that skips a single occurrence while a
             // sibling reads another leaves the node `Known` and marks nothing
             // -- see the `p5_`/`p10_` known-wrong pins for the two that do.
-            let mut seen = HashSet::new();
+            let mut seen = HashSet::default();
             self.collect_lower_occurrences(pattern, side, &mut seen, &mut bounds.undetermined);
         }
         outcome

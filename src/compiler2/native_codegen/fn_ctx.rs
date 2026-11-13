@@ -7,6 +7,7 @@
 //! runtime helper calls remain an implementation detail behind those methods.
 
 use super::*;
+use crate::fast_hash::HashMap;
 use crate::fz_ir::Var;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlags, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
@@ -24,7 +25,6 @@ use fz_runtime::ir_runtime::{
     fz_materialize_cont, fz_struct_copy, fz_struct_store_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float,
     fz_unbox_int,
 };
-use std::collections::HashMap;
 
 /// A struct or tuple that is allocated and whose fields are being stored.
 pub(crate) struct NewStruct {
@@ -57,8 +57,8 @@ where
 impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     pub(crate) fn new(b: &'a mut FunctionBuilder<'fb>, jmod: &'a mut M, cache: &'a mut CodegenCache) -> Self {
         Self {
-            imports: HashMap::new(),
-            process_by_block: HashMap::new(),
+            imports: HashMap::default(),
+            process_by_block: HashMap::default(),
             b,
             jmod,
             cache,

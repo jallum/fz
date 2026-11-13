@@ -175,8 +175,8 @@ pub struct JsonlBackend {
 /// `span_stop`.
 #[derive(Default)]
 struct CanonStream {
-    defined_types: std::collections::HashSet<crate::compiler2::Ty>,
-    defined_functions: std::collections::HashSet<crate::compiler2::FunctionId>,
+    defined_types: crate::fast_hash::HashSet<crate::compiler2::Ty>,
+    defined_functions: crate::fast_hash::HashSet<crate::compiler2::FunctionId>,
     parked_types: Vec<crate::compiler2::Ty>,
     parked_functions: Vec<crate::compiler2::FunctionId>,
     parked_lines: Vec<u8>,
@@ -1352,7 +1352,7 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
         let distinct_reads = world
             .work_graph
             .reads(&completion.job)
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<crate::fast_hash::HashSet<_>>();
         let mut reads = distinct_reads.into_iter().collect::<Vec<_>>();
         reads.sort_by(|left, right| left.semantic_cmp(right, world.types()));
         out.push_str(",\"semantic\":{\"reads\":[");

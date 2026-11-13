@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use crate::fast_hash::HashSet;
 
 use super::{Agenda, AppliedStep, DependencyIndex, FactUse, Scheduler, Wake, WakeDisposition};
 use crate::compiler2::facts::ClaimShape;
@@ -49,7 +49,13 @@ fn external_product_cannot_gain_a_second_publisher_in_the_fact_table() {
     });
     scheduler.complete_ordered_with_external(
         &1,
-        CompletionEffects::single(1, HashSet::new(), HashSet::new(), vec!["product"], vec!["product"]),
+        CompletionEffects::single(
+            1,
+            HashSet::default(),
+            HashSet::default(),
+            vec!["product"],
+            vec!["product"],
+        ),
         &product,
         &TestOrder,
     );
@@ -73,8 +79,8 @@ fn external_product_wait_uses_authoritative_readiness_alongside_fact_waits() {
         &1,
         CompletionEffects::single(
             1,
-            HashSet::new(),
-            HashSet::from([FactUse::settled("product"), FactUse::current("input")]),
+            HashSet::default(),
+            HashSet::from_iter([FactUse::settled("product"), FactUse::current("input")]),
             Vec::new(),
             Vec::new(),
         ),
@@ -83,7 +89,7 @@ fn external_product_wait_uses_authoritative_readiness_alongside_fact_waits() {
     );
     scheduler.complete_ordered_with_external(
         &2,
-        CompletionEffects::single(2, HashSet::new(), HashSet::new(), vec!["input"], vec!["input"]),
+        CompletionEffects::single(2, HashSet::default(), HashSet::default(), vec!["input"], vec!["input"]),
         &product,
         &TestOrder,
     );
@@ -106,10 +112,10 @@ fn replacing_external_reads_detaches_the_old_dependency() {
         revision: Some(1),
         settled: true,
     });
-    for reads in [HashSet::from([FactUse::current("product")]), HashSet::new()] {
+    for reads in [HashSet::from_iter([FactUse::current("product")]), HashSet::default()] {
         scheduler.complete_ordered_with_external(
             &1,
-            CompletionEffects::single(1, reads, HashSet::new(), vec!["answer"], Vec::new()),
+            CompletionEffects::single(1, reads, HashSet::default(), vec!["answer"], Vec::new()),
             &product,
             &TestOrder,
         );
@@ -139,8 +145,8 @@ fn quiescence_cannot_certify_a_fact_while_its_external_ground_is_dirty() {
             &job,
             CompletionEffects::single(
                 job,
-                HashSet::from([FactUse::current(input)]),
-                HashSet::new(),
+                HashSet::from_iter([FactUse::current(input)]),
+                HashSet::default(),
                 vec![output],
                 vec![output],
             ),
@@ -158,8 +164,8 @@ fn quiescence_cannot_certify_a_fact_while_its_external_ground_is_dirty() {
         &3,
         CompletionEffects::single(
             3,
-            HashSet::new(),
-            HashSet::from([FactUse::settled("downstream")]),
+            HashSet::default(),
+            HashSet::from_iter([FactUse::settled("downstream")]),
             Vec::new(),
             Vec::new(),
         ),
@@ -181,16 +187,16 @@ fn clean_cycle() -> TestScheduler {
     complete(
         &mut scheduler,
         JOB_A,
-        HashSet::from([current("cum_b")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_b")]),
+        HashSet::default(),
         vec!["cum_a"],
         vec!["cum_a"],
     );
     complete(
         &mut scheduler,
         JOB_B,
-        HashSet::from([current("cum_a")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_a")]),
+        HashSet::default(),
         vec!["cum_b"],
         vec!["cum_b"],
     );
@@ -198,8 +204,8 @@ fn clean_cycle() -> TestScheduler {
     complete(
         &mut scheduler,
         JOB_A,
-        HashSet::from([current("cum_b")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_b")]),
+        HashSet::default(),
         vec!["cum_a"],
         Vec::new(),
     );
@@ -234,8 +240,8 @@ fn external_product_equal_validation_restores_finality_without_running_its_reade
         &1,
         CompletionEffects::single(
             1,
-            HashSet::from([FactUse::current("product")]),
-            HashSet::new(),
+            HashSet::from_iter([FactUse::current("product")]),
+            HashSet::default(),
             vec!["answer"],
             vec!["answer"],
         ),
@@ -377,8 +383,8 @@ fn compiler2_scheduler_keeps_claims_in_the_ledger_not_the_completion_report() {
     let step = complete(
         &mut scheduler,
         1,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["answer"],
         vec!["answer"],
     );
@@ -439,7 +445,7 @@ fn compiler2_agenda_coalesces_and_requeues_after_pop() {
 #[test]
 fn compiler2_dependency_index_wakes_exact_waiters() {
     let mut deps: DependencyIndex<u32, &'static str> = DependencyIndex::new();
-    deps.replace_waits(3_u32, HashSet::from([current("foo")]));
+    deps.replace_waits(3_u32, HashSet::from_iter([current("foo")]));
 
     let waiters = deps.waiters(&current("foo"), &TestOrder);
     assert_eq!(waiters, vec![3], "exact fact waiters should wake on matching fact");
@@ -456,8 +462,8 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
     let subscribe = complete(
         &mut scheduler,
         subscriber,
-        HashSet::from([current(fact)]),
-        HashSet::new(),
+        HashSet::from_iter([current(fact)]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
@@ -477,8 +483,8 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
     let first = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec![fact],
         vec![fact],
     );
@@ -493,8 +499,8 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
     let second = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec![fact],
         Vec::new(),
     );
@@ -510,8 +516,8 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
     let third = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec![fact],
         vec![fact],
     );
@@ -529,24 +535,24 @@ fn compiler2_scheduler_reports_the_full_fact_movement_wave() {
     complete(
         &mut scheduler,
         1,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["source"],
         vec!["source"],
     );
     complete(
         &mut scheduler,
         2,
-        HashSet::from([settled("source")]),
-        HashSet::new(),
+        HashSet::from_iter([settled("source")]),
+        HashSet::default(),
         vec!["derived"],
         vec!["derived"],
     );
     complete(
         &mut scheduler,
         3,
-        HashSet::from([settled("derived")]),
-        HashSet::new(),
+        HashSet::from_iter([settled("derived")]),
+        HashSet::default(),
         vec!["leaf"],
         vec!["leaf"],
     );
@@ -554,8 +560,8 @@ fn compiler2_scheduler_reports_the_full_fact_movement_wave() {
     let movement = complete(
         &mut scheduler,
         1,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["source"],
         vec!["source"],
     );
@@ -582,8 +588,8 @@ fn compiler2_scheduler_reports_final_state_after_same_key_publication_then_dirty
     complete(
         &mut scheduler,
         1,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["claim"],
         vec!["claim"],
     );
@@ -591,8 +597,8 @@ fn compiler2_scheduler_reports_final_state_after_same_key_publication_then_dirty
     let blocked = complete(
         &mut scheduler,
         1,
-        HashSet::new(),
-        HashSet::from([current("missing")]),
+        HashSet::default(),
+        HashSet::from_iter([current("missing")]),
         vec!["claim"],
         vec!["claim"],
     );
@@ -625,16 +631,16 @@ fn compiler2_scheduler_retracts_outputs_a_job_stops_publishing() {
     complete(
         &mut scheduler,
         subscriber,
-        HashSet::from([current(fact)]),
-        HashSet::new(),
+        HashSet::from_iter([current(fact)]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
     complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec![fact],
         vec![fact],
     );
@@ -644,8 +650,8 @@ fn compiler2_scheduler_retracts_outputs_a_job_stops_publishing() {
     let retracted = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
@@ -671,16 +677,16 @@ fn compiler2_scheduler_wakes_waiters_when_a_matching_fact_appears() {
     complete(
         &mut scheduler,
         waiter,
-        HashSet::new(),
-        HashSet::from([current("foo")]),
+        HashSet::default(),
+        HashSet::from_iter([current("foo")]),
         Vec::new(),
         Vec::new(),
     );
     let result = complete(
         &mut scheduler,
         1_u32,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["foo"],
         vec!["foo"],
     );
@@ -695,8 +701,8 @@ fn compiler2_scheduler_parks_waiters_until_their_full_wait_set_is_satisfied() {
     complete(
         &mut scheduler,
         waiter,
-        HashSet::new(),
-        HashSet::from([current("foo"), current("bar")]),
+        HashSet::default(),
+        HashSet::from_iter([current("foo"), current("bar")]),
         Vec::new(),
         Vec::new(),
     );
@@ -704,8 +710,8 @@ fn compiler2_scheduler_parks_waiters_until_their_full_wait_set_is_satisfied() {
     let foo = complete(
         &mut scheduler,
         1_u32,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["foo"],
         vec!["foo"],
     );
@@ -722,8 +728,8 @@ fn compiler2_scheduler_parks_waiters_until_their_full_wait_set_is_satisfied() {
     let bar = complete(
         &mut scheduler,
         2_u32,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["bar"],
         vec!["bar"],
     );
@@ -746,8 +752,8 @@ fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializi
     complete(
         &mut scheduler,
         4_u32,
-        HashSet::new(),
-        HashSet::from([current("foo")]),
+        HashSet::default(),
+        HashSet::from_iter([current("foo")]),
         Vec::new(),
         Vec::new(),
     );
@@ -759,8 +765,8 @@ fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializi
     complete(
         &mut scheduler,
         1_u32,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["foo"],
         vec!["foo"],
     );
@@ -772,8 +778,8 @@ fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializi
     complete(
         &mut scheduler,
         4_u32,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
@@ -790,21 +796,21 @@ fn compiler2_scheduler_reports_blocked_exact_facts() {
     let step = complete(
         &mut scheduler,
         1_u32,
-        HashSet::new(),
-        HashSet::from([current("module_surface"), current("function_defined")]),
+        HashSet::default(),
+        HashSet::from_iter([current("module_surface"), current("function_defined")]),
         Vec::new(),
         Vec::new(),
     );
 
     assert_eq!(
         step.blocked.into_iter().collect::<HashSet<_>>(),
-        HashSet::from([current("module_surface"), current("function_defined")]),
+        HashSet::from_iter([current("module_surface"), current("function_defined")]),
         "blocked facts should be the exact keys the completed job is waiting on"
     );
     let unresolved = scheduler.unresolved(&TestOrder);
     assert_eq!(
         unresolved.into_iter().map(|wait| wait.fact).collect::<HashSet<_>>(),
-        HashSet::from([current("module_surface"), current("function_defined")]),
+        HashSet::from_iter([current("module_surface"), current("function_defined")]),
         "unresolved waits should expose exact fact keys, not patterns"
     );
 }
@@ -820,16 +826,16 @@ fn compiler2_scheduler_stable_recompute_wakes_settled_waiters_without_revision_b
     complete(
         &mut scheduler,
         current_reader,
-        HashSet::from([current("bar")]),
-        HashSet::new(),
+        HashSet::from_iter([current("bar")]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
     complete(
         &mut scheduler,
         producer,
-        HashSet::from([current("foo")]),
-        HashSet::new(),
+        HashSet::from_iter([current("foo")]),
+        HashSet::default(),
         vec!["bar"],
         vec!["bar"],
     );
@@ -839,8 +845,8 @@ fn compiler2_scheduler_stable_recompute_wakes_settled_waiters_without_revision_b
     let upstream_change = complete(
         &mut scheduler,
         upstream,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["foo"],
         vec!["foo"],
     );
@@ -859,8 +865,8 @@ fn compiler2_scheduler_stable_recompute_wakes_settled_waiters_without_revision_b
     complete(
         &mut scheduler,
         settled_waiter,
-        HashSet::new(),
-        HashSet::from([settled("bar")]),
+        HashSet::default(),
+        HashSet::from_iter([settled("bar")]),
         Vec::new(),
         Vec::new(),
     );
@@ -869,8 +875,8 @@ fn compiler2_scheduler_stable_recompute_wakes_settled_waiters_without_revision_b
     let settled = complete(
         &mut scheduler,
         producer,
-        HashSet::from([current("foo")]),
-        HashSet::new(),
+        HashSet::from_iter([current("foo")]),
+        HashSet::default(),
         vec!["bar"],
         Vec::new(),
     );
@@ -894,16 +900,16 @@ fn compiler2_scheduler_multi_publisher_fact_settles_only_when_every_publisher_is
     complete(
         &mut scheduler,
         producer_a,
-        HashSet::from([current("a")]),
-        HashSet::new(),
+        HashSet::from_iter([current("a")]),
+        HashSet::default(),
         vec!["shared"],
         vec!["shared"],
     );
     complete(
         &mut scheduler,
         producer_b,
-        HashSet::from([current("b")]),
-        HashSet::new(),
+        HashSet::from_iter([current("b")]),
+        HashSet::default(),
         vec!["shared"],
         Vec::new(),
     );
@@ -912,8 +918,8 @@ fn compiler2_scheduler_multi_publisher_fact_settles_only_when_every_publisher_is
     complete(
         &mut scheduler,
         upstream_a,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["a"],
         vec!["a"],
     );
@@ -925,8 +931,8 @@ fn compiler2_scheduler_multi_publisher_fact_settles_only_when_every_publisher_is
     complete(
         &mut scheduler,
         upstream_b,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["b"],
         vec!["b"],
     );
@@ -935,8 +941,8 @@ fn compiler2_scheduler_multi_publisher_fact_settles_only_when_every_publisher_is
     complete(
         &mut scheduler,
         producer_a,
-        HashSet::from([current("a")]),
-        HashSet::new(),
+        HashSet::from_iter([current("a")]),
+        HashSet::default(),
         vec!["shared"],
         Vec::new(),
     );
@@ -948,8 +954,8 @@ fn compiler2_scheduler_multi_publisher_fact_settles_only_when_every_publisher_is
     complete(
         &mut scheduler,
         producer_b,
-        HashSet::from([current("b")]),
-        HashSet::new(),
+        HashSet::from_iter([current("b")]),
+        HashSet::default(),
         vec!["shared"],
         Vec::new(),
     );
@@ -964,8 +970,8 @@ fn compiler2_scheduler_waiting_completion_preserves_standing_claims() {
     complete(
         &mut scheduler,
         job,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["fact"],
         vec!["fact"],
     );
@@ -978,8 +984,8 @@ fn compiler2_scheduler_waiting_completion_preserves_standing_claims() {
     complete(
         &mut scheduler,
         job,
-        HashSet::new(),
-        HashSet::from([current("gate")]),
+        HashSet::default(),
+        HashSet::from_iter([current("gate")]),
         Vec::new(),
         Vec::new(),
     );
@@ -997,8 +1003,8 @@ fn compiler2_scheduler_waiting_completion_preserves_standing_claims() {
     complete(
         &mut scheduler,
         job,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["fact"],
         Vec::new(),
     );
@@ -1015,8 +1021,8 @@ fn compiler2_scheduler_waiting_completion_keeps_subscriptions() {
     complete(
         &mut scheduler,
         reader,
-        HashSet::from([current("foo")]),
-        HashSet::new(),
+        HashSet::from_iter([current("foo")]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
@@ -1025,8 +1031,8 @@ fn compiler2_scheduler_waiting_completion_keeps_subscriptions() {
     complete(
         &mut scheduler,
         reader,
-        HashSet::new(),
-        HashSet::from([current("gate")]),
+        HashSet::default(),
+        HashSet::from_iter([current("gate")]),
         Vec::new(),
         Vec::new(),
     );
@@ -1034,8 +1040,8 @@ fn compiler2_scheduler_waiting_completion_keeps_subscriptions() {
     let step = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["foo"],
         vec!["foo"],
     );
@@ -1055,8 +1061,8 @@ fn compiler2_scheduler_waiting_completion_publishes_alongside_the_wait() {
     complete(
         &mut scheduler,
         job,
-        HashSet::new(),
-        HashSet::from([current("gate")]),
+        HashSet::default(),
+        HashSet::from_iter([current("gate")]),
         vec!["root"],
         Vec::new(),
     );
@@ -1083,8 +1089,8 @@ fn compiler2_scheduler_replacing_change_rebases_readers_without_retracting() {
     complete(
         &mut scheduler,
         reader,
-        HashSet::from([current("def")]),
-        HashSet::new(),
+        HashSet::from_iter([current("def")]),
+        HashSet::default(),
         vec!["claim"],
         vec!["claim"],
     );
@@ -1092,8 +1098,8 @@ fn compiler2_scheduler_replacing_change_rebases_readers_without_retracting() {
     let step = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["def"],
         vec!["def"],
     );
@@ -1108,8 +1114,8 @@ fn compiler2_scheduler_replacing_change_rebases_readers_without_retracting() {
     let step = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["def"],
         vec!["def"],
     );
@@ -1138,16 +1144,16 @@ fn compiler2_scheduler_cumulative_ascent_wakes_without_rebasing() {
     complete(
         &mut scheduler,
         reader,
-        HashSet::from([current("cum_ret")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_ret")]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
     complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["cum_ret"],
         vec!["cum_ret"],
     );
@@ -1155,8 +1161,8 @@ fn compiler2_scheduler_cumulative_ascent_wakes_without_rebasing() {
     let step = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["cum_ret"],
         vec!["cum_ret"],
     );
@@ -1177,24 +1183,24 @@ fn scheduler_with_cumulative_reader_and_two_publishers(
     complete(
         &mut scheduler,
         reader,
-        HashSet::from([current("cum_inputs")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_inputs")]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
     complete(
         &mut scheduler,
         withdrawing_writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["cum_inputs"],
         vec!["cum_inputs"],
     );
     complete(
         &mut scheduler,
         surviving_writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["cum_inputs"],
         surviving_publication_changed
             .then_some("cum_inputs")
@@ -1216,8 +1222,8 @@ fn compiler2_scheduler_changed_cumulative_withdrawal_rebases_readers_while_the_f
     let step = complete(
         &mut scheduler,
         withdrawing_writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         Vec::new(),
         vec!["cum_inputs"],
     );
@@ -1251,8 +1257,8 @@ fn compiler2_scheduler_equal_cumulative_withdrawal_wakes_nobody() {
     let step = complete(
         &mut scheduler,
         withdrawing_writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
@@ -1290,16 +1296,16 @@ fn compiler2_scheduler_cumulative_appearance_at_bottom_wakes_no_current_reader()
     complete(
         &mut scheduler,
         reader,
-        HashSet::from([current("cum_ret")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_ret")]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
     complete(
         &mut scheduler,
         settled_waiter,
-        HashSet::new(),
-        HashSet::from([settled("cum_ret")]),
+        HashSet::default(),
+        HashSet::from_iter([settled("cum_ret")]),
         Vec::new(),
         Vec::new(),
     );
@@ -1308,8 +1314,8 @@ fn compiler2_scheduler_cumulative_appearance_at_bottom_wakes_no_current_reader()
     let step = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["cum_ret"],
         Vec::new(),
     );
@@ -1350,24 +1356,24 @@ fn compiler2_scheduler_first_cumulative_content_after_bottom_wakes_the_reader_on
     complete(
         &mut scheduler,
         reader,
-        HashSet::from([current("cum_ret")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_ret")]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
     let at_bottom = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["cum_ret"],
         Vec::new(),
     );
     let ascent = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["cum_ret"],
         vec!["cum_ret"],
     );
@@ -1408,16 +1414,16 @@ fn compiler2_scheduler_replacing_appearance_wakes_current_readers_unmarked() {
     complete(
         &mut scheduler,
         reader,
-        HashSet::from([current("def")]),
-        HashSet::new(),
+        HashSet::from_iter([current("def")]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
     let step = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["def"],
         Vec::new(),
     );
@@ -1444,16 +1450,16 @@ fn compiler2_scheduler_contentful_retraction_shifts() {
     complete(
         &mut scheduler,
         reader,
-        HashSet::from([current("cum_ret")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_ret")]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
     complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["cum_ret"],
         vec!["cum_ret"],
     );
@@ -1463,8 +1469,8 @@ fn compiler2_scheduler_contentful_retraction_shifts() {
     let step = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
@@ -1483,24 +1489,24 @@ fn compiler2_scheduler_rebased_conclusion_propagates_changes_as_shifts() {
     complete(
         &mut scheduler,
         downstream,
-        HashSet::from([current("cum_mid")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_mid")]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
     complete(
         &mut scheduler,
         middle,
-        HashSet::from([current("def")]),
-        HashSet::new(),
+        HashSet::from_iter([current("def")]),
+        HashSet::default(),
         vec!["cum_mid"],
         vec!["cum_mid"],
     );
     complete(
         &mut scheduler,
         upstream,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["def"],
         vec!["def"],
     );
@@ -1509,8 +1515,8 @@ fn compiler2_scheduler_rebased_conclusion_propagates_changes_as_shifts() {
     complete(
         &mut scheduler,
         upstream,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["def"],
         vec!["def"],
     );
@@ -1521,8 +1527,8 @@ fn compiler2_scheduler_rebased_conclusion_propagates_changes_as_shifts() {
     let step = complete(
         &mut scheduler,
         middle,
-        HashSet::from([current("def")]),
-        HashSet::new(),
+        HashSet::from_iter([current("def")]),
+        HashSet::default(),
         vec!["cum_mid"],
         vec!["cum_mid"],
     );
@@ -1544,24 +1550,24 @@ fn compiler2_scheduler_rebased_equal_conclusion_stops_the_cone() {
     complete(
         &mut scheduler,
         downstream,
-        HashSet::from([current("cum_mid")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_mid")]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
     complete(
         &mut scheduler,
         middle,
-        HashSet::from([current("def")]),
-        HashSet::new(),
+        HashSet::from_iter([current("def")]),
+        HashSet::default(),
         vec!["cum_mid"],
         vec!["cum_mid"],
     );
     complete(
         &mut scheduler,
         upstream,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["def"],
         vec!["def"],
     );
@@ -1569,8 +1575,8 @@ fn compiler2_scheduler_rebased_equal_conclusion_stops_the_cone() {
     complete(
         &mut scheduler,
         upstream,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["def"],
         vec!["def"],
     );
@@ -1581,8 +1587,8 @@ fn compiler2_scheduler_rebased_equal_conclusion_stops_the_cone() {
     let step = complete(
         &mut scheduler,
         middle,
-        HashSet::from([current("def")]),
-        HashSet::new(),
+        HashSet::from_iter([current("def")]),
+        HashSet::default(),
         vec!["cum_mid"],
         Vec::new(),
     );
@@ -1603,16 +1609,16 @@ fn compiler2_scheduler_waiting_keeps_rebase_pending() {
     complete(
         &mut scheduler,
         reader,
-        HashSet::from([current("def")]),
-        HashSet::new(),
+        HashSet::from_iter([current("def")]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
     complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["def"],
         vec!["def"],
     );
@@ -1620,8 +1626,8 @@ fn compiler2_scheduler_waiting_keeps_rebase_pending() {
     complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["def"],
         vec!["def"],
     );
@@ -1632,8 +1638,8 @@ fn compiler2_scheduler_waiting_keeps_rebase_pending() {
     complete(
         &mut scheduler,
         reader,
-        HashSet::new(),
-        HashSet::from([current("gate")]),
+        HashSet::default(),
+        HashSet::from_iter([current("gate")]),
         Vec::new(),
         Vec::new(),
     );
@@ -1655,8 +1661,8 @@ fn compiler2_scheduler_wake_attributes_each_coalesced_cause_to_a_single_evaluati
     complete(
         &mut scheduler,
         subscriber,
-        HashSet::from([current("f1"), current("f2")]),
-        HashSet::new(),
+        HashSet::from_iter([current("f1"), current("f2")]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
@@ -1664,8 +1670,8 @@ fn compiler2_scheduler_wake_attributes_each_coalesced_cause_to_a_single_evaluati
     let step = complete(
         &mut scheduler,
         producer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["f1", "f2"],
         vec!["f1", "f2"],
     );
@@ -1770,11 +1776,11 @@ fn compiler2_scheduler_a_concluded_derivation_is_final_while_its_job_waits() {
             CompletionEffects {
                 derivations: vec![DerivationEffects {
                     publisher: (JOB_A, 1),
-                    reads: HashSet::from([current("b")]),
+                    reads: HashSet::from_iter([current("b")]),
                     outputs: vec!["early"],
                     changed,
                 }],
-                waits: HashSet::from([current("late")]),
+                waits: HashSet::from_iter([current("late")]),
             },
             &TestOrder,
         );
@@ -1786,8 +1792,8 @@ fn compiler2_scheduler_a_concluded_derivation_is_final_while_its_job_waits() {
         &JOB_B,
         CompletionEffects::single(
             (JOB_B, 0),
-            HashSet::from([current("early")]),
-            HashSet::new(),
+            HashSet::from_iter([current("early")]),
+            HashSet::default(),
             vec!["b"],
             vec!["b"],
         ),
@@ -1823,32 +1829,32 @@ fn chain_a_b_c() -> TestScheduler {
     complete(
         &mut scheduler,
         UPSTREAM,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["u"],
         vec!["u"],
     );
     complete(
         &mut scheduler,
         JOB_A,
-        HashSet::from([current("u")]),
-        HashSet::new(),
+        HashSet::from_iter([current("u")]),
+        HashSet::default(),
         vec!["a"],
         vec!["a"],
     );
     complete(
         &mut scheduler,
         JOB_B,
-        HashSet::from([current("a")]),
-        HashSet::new(),
+        HashSet::from_iter([current("a")]),
+        HashSet::default(),
         vec!["b"],
         vec!["b"],
     );
     complete(
         &mut scheduler,
         JOB_C,
-        HashSet::from([current("b")]),
-        HashSet::new(),
+        HashSet::from_iter([current("b")]),
+        HashSet::default(),
         vec!["c"],
         vec!["c"],
     );
@@ -1867,8 +1873,8 @@ fn compiler2_scheduler_dirtying_a_chain_head_unsettles_the_whole_chain_without_e
     let step = complete(
         &mut scheduler,
         UPSTREAM,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["u"],
         vec!["u"],
     );
@@ -1901,8 +1907,8 @@ fn compiler2_scheduler_dirtying_a_chain_head_unsettles_the_whole_chain_without_e
     let concluded = complete(
         &mut scheduler,
         JOB_A,
-        HashSet::from([current("u")]),
-        HashSet::new(),
+        HashSet::from_iter([current("u")]),
+        HashSet::default(),
         vec!["a"],
         Vec::new(),
     );
@@ -1932,8 +1938,8 @@ fn compiler2_scheduler_readiness_only_movement_evaluates_nobody() {
     let step = complete(
         &mut scheduler,
         UPSTREAM,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["u"],
         vec!["u"],
     );
@@ -1941,8 +1947,8 @@ fn compiler2_scheduler_readiness_only_movement_evaluates_nobody() {
     let concluded = complete(
         &mut scheduler,
         JOB_A,
-        HashSet::from([current("u")]),
-        HashSet::new(),
+        HashSet::from_iter([current("u")]),
+        HashSet::default(),
         vec!["a"],
         Vec::new(),
     );
@@ -1980,16 +1986,16 @@ fn compiler2_scheduler_readiness_flip_wakes_parked_settled_waiters_and_no_comple
     complete(
         &mut scheduler,
         subscriber,
-        HashSet::from([settled("bar")]),
-        HashSet::new(),
+        HashSet::from_iter([settled("bar")]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
     complete(
         &mut scheduler,
         producer,
-        HashSet::from([current("foo")]),
-        HashSet::new(),
+        HashSet::from_iter([current("foo")]),
+        HashSet::default(),
         vec!["bar"],
         vec!["bar"],
     );
@@ -1998,8 +2004,8 @@ fn compiler2_scheduler_readiness_flip_wakes_parked_settled_waiters_and_no_comple
     let dirtied = complete(
         &mut scheduler,
         upstream,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["foo"],
         vec!["foo"],
     );
@@ -2013,16 +2019,16 @@ fn compiler2_scheduler_readiness_flip_wakes_parked_settled_waiters_and_no_comple
     complete(
         &mut scheduler,
         parked,
-        HashSet::new(),
-        HashSet::from([settled("bar")]),
+        HashSet::default(),
+        HashSet::from_iter([settled("bar")]),
         Vec::new(),
         Vec::new(),
     );
     let settled_again = complete(
         &mut scheduler,
         producer,
-        HashSet::from([current("foo")]),
-        HashSet::new(),
+        HashSet::from_iter([current("foo")]),
+        HashSet::default(),
         vec!["bar"],
         Vec::new(),
     );
@@ -2036,16 +2042,16 @@ fn compiler2_scheduler_readiness_flip_wakes_parked_settled_waiters_and_no_comple
     complete(
         &mut scheduler,
         first_parked,
-        HashSet::new(),
-        HashSet::from([settled("fresh")]),
+        HashSet::default(),
+        HashSet::from_iter([settled("fresh")]),
         Vec::new(),
         Vec::new(),
     );
     let appeared = complete(
         &mut scheduler,
         first_producer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["fresh"],
         vec!["fresh"],
     );
@@ -2066,8 +2072,8 @@ fn compiler2_scheduler_content_movement_still_evaluates_only_content_readers() {
     complete(
         &mut scheduler,
         UPSTREAM,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["u"],
         vec!["u"],
     );
@@ -2075,8 +2081,8 @@ fn compiler2_scheduler_content_movement_still_evaluates_only_content_readers() {
     let moved = complete(
         &mut scheduler,
         JOB_A,
-        HashSet::from([current("u")]),
-        HashSet::new(),
+        HashSet::from_iter([current("u")]),
+        HashSet::default(),
         vec!["a"],
         vec!["a"],
     );
@@ -2090,8 +2096,8 @@ fn compiler2_scheduler_content_movement_still_evaluates_only_content_readers() {
     let moved = complete(
         &mut scheduler,
         JOB_B,
-        HashSet::from([current("a")]),
-        HashSet::new(),
+        HashSet::from_iter([current("a")]),
+        HashSet::default(),
         vec!["b"],
         vec!["b"],
     );
@@ -2101,8 +2107,8 @@ fn compiler2_scheduler_content_movement_still_evaluates_only_content_readers() {
     complete(
         &mut scheduler,
         JOB_C,
-        HashSet::from([current("b")]),
-        HashSet::new(),
+        HashSet::from_iter([current("b")]),
+        HashSet::default(),
         vec!["c"],
         vec!["c"],
     );
@@ -2127,16 +2133,16 @@ fn compiler2_scheduler_a_quiesced_cycle_needs_the_drain_arbiter_to_become_final(
     complete(
         &mut scheduler,
         JOB_A,
-        HashSet::from([current("cum_b")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_b")]),
+        HashSet::default(),
         vec!["cum_a"],
         vec!["cum_a"],
     );
     complete(
         &mut scheduler,
         JOB_B,
-        HashSet::from([current("cum_a")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_a")]),
+        HashSet::default(),
         vec!["cum_b"],
         vec!["cum_b"],
     );
@@ -2145,16 +2151,16 @@ fn compiler2_scheduler_a_quiesced_cycle_needs_the_drain_arbiter_to_become_final(
     complete(
         &mut scheduler,
         JOB_A,
-        HashSet::from([current("cum_b")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_b")]),
+        HashSet::default(),
         vec!["cum_a"],
         Vec::new(),
     );
     complete(
         &mut scheduler,
         waiter,
-        HashSet::new(),
-        HashSet::from([settled("cum_a")]),
+        HashSet::default(),
+        HashSet::from_iter([settled("cum_a")]),
         Vec::new(),
         Vec::new(),
     );
@@ -2203,8 +2209,8 @@ fn quiescing_one_answer_certifies_its_owning_jobs_cooutputs() {
         complete(
             &mut scheduler,
             1,
-            HashSet::from([current("cum_cycle")]),
-            HashSet::new(),
+            HashSet::from_iter([current("cum_cycle")]),
+            HashSet::default(),
             vec!["cum_cycle", "answer"],
             changed,
         );
@@ -2223,7 +2229,7 @@ fn quiescing_one_answer_certifies_its_owning_jobs_cooutputs() {
     );
     assert_eq!(
         step.changed.iter().map(|change| change.key).collect::<HashSet<_>>(),
-        HashSet::from(["answer", "cum_cycle"])
+        HashSet::from_iter(["answer", "cum_cycle"])
     );
     assert!(
         step.changed
@@ -2248,16 +2254,16 @@ fn cooutput_arbitration_preserves_other_publishers() {
     complete(
         &mut scheduler,
         20,
-        HashSet::new(),
-        HashSet::from([current("missing_ground")]),
+        HashSet::default(),
+        HashSet::from_iter([current("missing_ground")]),
         vec!["ground"],
         vec!["ground"],
     );
     complete(
         &mut scheduler,
         21,
-        HashSet::from([current("ground")]),
-        HashSet::new(),
+        HashSet::from_iter([current("ground")]),
+        HashSet::default(),
         vec!["shared"],
         vec!["shared"],
     );
@@ -2265,8 +2271,8 @@ fn cooutput_arbitration_preserves_other_publishers() {
         complete(
             &mut scheduler,
             22,
-            HashSet::from([current("cum_cycle")]),
-            HashSet::new(),
+            HashSet::from_iter([current("cum_cycle")]),
+            HashSet::default(),
             vec!["cum_cycle", "answer", "shared"],
             if changed {
                 vec!["cum_cycle", "answer", "shared"]
@@ -2277,16 +2283,16 @@ fn cooutput_arbitration_preserves_other_publishers() {
         complete(
             &mut scheduler,
             23,
-            HashSet::from([current("cum_other")]),
-            HashSet::new(),
+            HashSet::from_iter([current("cum_other")]),
+            HashSet::default(),
             vec!["cum_other", "other"],
             if changed { vec!["cum_other", "other"] } else { vec![] },
         );
         complete(
             &mut scheduler,
             24,
-            HashSet::new(),
-            HashSet::from([current("missing")]),
+            HashSet::default(),
+            HashSet::from_iter([current("missing")]),
             vec!["dirty"],
             if changed { vec!["dirty"] } else { vec![] },
         );
@@ -2302,7 +2308,7 @@ fn cooutput_arbitration_preserves_other_publishers() {
     }
     assert_eq!(
         step.changed.iter().map(|change| change.key).collect::<HashSet<_>>(),
-        HashSet::from(["answer", "cum_cycle"])
+        HashSet::from_iter(["answer", "cum_cycle"])
     );
 }
 
@@ -2319,8 +2325,8 @@ fn cooutput_finality_obeys_external_ground_and_later_readiness_movements() {
             &1,
             CompletionEffects::single(
                 1,
-                HashSet::from([current("cum_cycle"), current("product")]),
-                HashSet::new(),
+                HashSet::from_iter([current("cum_cycle"), current("product")]),
+                HashSet::default(),
                 vec!["cum_cycle", "answer"],
                 changed,
             ),
@@ -2346,7 +2352,13 @@ fn cooutput_finality_obeys_external_ground_and_later_readiness_movements() {
     assert!(scheduler.facts().is_settled(&"answer") && scheduler.facts().is_settled(&"cum_cycle"));
     scheduler.complete_ordered_with_external(
         &2,
-        CompletionEffects::single(2, HashSet::from([current("answer")]), HashSet::new(), vec![], vec![]),
+        CompletionEffects::single(
+            2,
+            HashSet::from_iter([current("answer")]),
+            HashSet::default(),
+            vec![],
+            vec![],
+        ),
         &product,
         &TestOrder,
     );
@@ -2399,8 +2411,8 @@ fn cooutput_finality_obeys_external_ground_and_later_readiness_movements() {
         &1,
         CompletionEffects::single(
             1,
-            HashSet::from([current("cum_cycle"), current("product")]),
-            HashSet::new(),
+            HashSet::from_iter([current("cum_cycle"), current("product")]),
+            HashSet::default(),
             vec!["cum_cycle", "answer"],
             vec![],
         ),
@@ -2434,8 +2446,8 @@ fn quiescent_read_accounting_distinguishes_old_ground_from_new_unquiet_edges() {
             &job,
             CompletionEffects::single(
                 job,
-                HashSet::from([current(input)]),
-                HashSet::new(),
+                HashSet::from_iter([current(input)]),
+                HashSet::default(),
                 vec![output],
                 vec![output],
             ),
@@ -2450,8 +2462,8 @@ fn quiescent_read_accounting_distinguishes_old_ground_from_new_unquiet_edges() {
         &10,
         CompletionEffects::single(
             10,
-            HashSet::from([current("ground_peer")]),
-            HashSet::new(),
+            HashSet::from_iter([current("ground_peer")]),
+            HashSet::default(),
             vec!["ground"],
             Vec::new(),
         ),
@@ -2463,8 +2475,8 @@ fn quiescent_read_accounting_distinguishes_old_ground_from_new_unquiet_edges() {
         &1,
         CompletionEffects::single(
             1,
-            HashSet::from([current("ground"), current("product")]),
-            HashSet::new(),
+            HashSet::from_iter([current("ground"), current("product")]),
+            HashSet::default(),
             vec!["answer", "coanswer"],
             vec!["answer", "coanswer"],
         ),
@@ -2483,7 +2495,7 @@ fn quiescent_read_accounting_distinguishes_old_ground_from_new_unquiet_edges() {
 
     scheduler.complete_ordered_with_external(
         &10,
-        CompletionEffects::single(10, HashSet::new(), HashSet::new(), vec!["ground"], vec![]),
+        CompletionEffects::single(10, HashSet::default(), HashSet::default(), vec!["ground"], vec![]),
         &product,
         &TestOrder,
     );
@@ -2510,16 +2522,16 @@ fn compiler2_scheduler_the_drain_arbiter_refuses_a_fact_over_a_dirty_publisher()
     complete(
         &mut scheduler,
         UPSTREAM,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["u"],
         vec!["u"],
     );
     complete(
         &mut scheduler,
         9,
-        HashSet::new(),
-        HashSet::from([settled("c")]),
+        HashSet::default(),
+        HashSet::from_iter([settled("c")]),
         Vec::new(),
         Vec::new(),
     );
@@ -2549,8 +2561,8 @@ fn compiler2_scheduler_the_drain_arbiter_does_nothing_while_work_is_queued() {
     complete(
         &mut scheduler,
         UPSTREAM,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["u"],
         vec!["u"],
     );
@@ -2576,8 +2588,8 @@ fn compiler2_scheduler_adding_a_read_updates_finality_incrementally() {
     complete(
         &mut scheduler,
         late,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["late"],
         vec!["late"],
     );
@@ -2588,8 +2600,8 @@ fn compiler2_scheduler_adding_a_read_updates_finality_incrementally() {
     complete(
         &mut scheduler,
         UPSTREAM,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["u"],
         vec!["u"],
     );
@@ -2600,8 +2612,8 @@ fn compiler2_scheduler_adding_a_read_updates_finality_incrementally() {
     let step = complete(
         &mut scheduler,
         late,
-        HashSet::from([current("b")]),
-        HashSet::new(),
+        HashSet::from_iter([current("b")]),
+        HashSet::default(),
         vec!["late"],
         Vec::new(),
     );
@@ -2625,8 +2637,8 @@ fn compiler2_scheduler_adding_a_read_updates_finality_incrementally() {
     complete(
         &mut scheduler,
         JOB_A,
-        HashSet::from([current("u")]),
-        HashSet::new(),
+        HashSet::from_iter([current("u")]),
+        HashSet::default(),
         vec!["a"],
         Vec::new(),
     );
@@ -2645,8 +2657,8 @@ fn compiler2_scheduler_retraction_reaches_the_fixed_point_without_stale_settled_
     let retracted = complete(
         &mut scheduler,
         JOB_A,
-        HashSet::from([current("u")]),
-        HashSet::new(),
+        HashSet::from_iter([current("u")]),
+        HashSet::default(),
         Vec::new(),
         vec!["a"],
     );
@@ -2665,8 +2677,8 @@ fn compiler2_scheduler_retraction_reaches_the_fixed_point_without_stale_settled_
     complete(
         &mut scheduler,
         JOB_B,
-        HashSet::from([current("a")]),
-        HashSet::new(),
+        HashSet::from_iter([current("a")]),
+        HashSet::default(),
         vec!["b"],
         Vec::new(),
     );
@@ -2691,24 +2703,24 @@ fn compiler2_scheduler_changed_read_unsettles_every_cooutput() {
     complete(
         &mut scheduler,
         ground_a,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["cum_a"],
         vec!["cum_a"],
     );
     complete(
         &mut scheduler,
         ground_b,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["cum_b"],
         vec!["cum_b"],
     );
     complete(
         &mut scheduler,
         publisher,
-        HashSet::from([current("cum_a"), current("cum_b")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_a"), current("cum_b")]),
+        HashSet::default(),
         vec!["x", "y"],
         vec!["x", "y"],
     );
@@ -2718,8 +2730,8 @@ fn compiler2_scheduler_changed_read_unsettles_every_cooutput() {
     complete(
         &mut scheduler,
         ground_a,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["cum_a"],
         vec!["cum_a"],
     );
@@ -2744,8 +2756,8 @@ fn compiler2_scheduler_current_waiter_on_a_cumulative_bottom_claim_is_woken() {
     complete(
         &mut scheduler,
         waiter,
-        HashSet::new(),
-        HashSet::from([current("cum_ret")]),
+        HashSet::default(),
+        HashSet::from_iter([current("cum_ret")]),
         Vec::new(),
         Vec::new(),
     );
@@ -2753,8 +2765,8 @@ fn compiler2_scheduler_current_waiter_on_a_cumulative_bottom_claim_is_woken() {
     let step = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["cum_ret"],
         Vec::new(),
     );
@@ -2788,16 +2800,16 @@ fn compiler2_scheduler_bottom_claim_retraction_is_not_a_shift() {
     complete(
         &mut scheduler,
         reader,
-        HashSet::from([current("cum_ret")]),
-        HashSet::new(),
+        HashSet::from_iter([current("cum_ret")]),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
     complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         vec!["cum_ret"],
         Vec::new(),
     );
@@ -2806,8 +2818,8 @@ fn compiler2_scheduler_bottom_claim_retraction_is_not_a_shift() {
     let step = complete(
         &mut scheduler,
         writer,
-        HashSet::new(),
-        HashSet::new(),
+        HashSet::default(),
+        HashSet::default(),
         Vec::new(),
         Vec::new(),
     );
@@ -2845,8 +2857,8 @@ fn compiler2_unresolved_renders_the_same_whatever_order_the_waits_arrived_in() {
         complete(
             &mut ascending,
             job as u32,
-            HashSet::new(),
-            HashSet::from([current(fact), settled(fact)]),
+            HashSet::default(),
+            HashSet::from_iter([current(fact), settled(fact)]),
             Vec::new(),
             Vec::new(),
         );
@@ -2857,8 +2869,8 @@ fn compiler2_unresolved_renders_the_same_whatever_order_the_waits_arrived_in() {
         complete(
             &mut descending,
             job as u32,
-            HashSet::new(),
-            HashSet::from([current(fact), settled(fact)]),
+            HashSet::default(),
+            HashSet::from_iter([current(fact), settled(fact)]),
             Vec::new(),
             Vec::new(),
         );

@@ -88,8 +88,8 @@
 //! a pair of ids — but they are real, and they are where this module cannot
 //! promise confluence across arenas.
 
+use crate::fast_hash::HashMap;
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::finite_set::FiniteSet;

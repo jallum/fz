@@ -670,7 +670,7 @@ fn spans_are_paired_and_nesting_only_references_known_spans() {
     // very first span this stream opens. It is never itself a `span_id` in
     // this stream because `["fz","compiler2","drive"]` is not public.
     let ambient_root = spans[0].parent_span_id;
-    let known_span_ids: std::collections::HashSet<u64> = spans.iter().map(|span| span.span_id).collect();
+    let known_span_ids: crate::fast_hash::HashSet<u64> = spans.iter().map(|span| span.span_id).collect();
     assert!(
         !known_span_ids.contains(&ambient_root),
         "the ambient root parent must not itself be a public span (drive is not in the allowlist)"
@@ -1065,8 +1065,8 @@ fn analyze_activation_job_spans_distinguish_two_activations_of_one_function() {
         "expected at least two AnalyzeActivation job spans with function_id/arrow metadata, got {analyze_activations:?}"
     );
 
-    let mut arrows_by_function: std::collections::HashMap<u64, std::collections::HashSet<u64>> =
-        std::collections::HashMap::new();
+    let mut arrows_by_function: crate::fast_hash::HashMap<u64, crate::fast_hash::HashSet<u64>> =
+        crate::fast_hash::HashMap::default();
     for (function_id, arrow) in &analyze_activations {
         arrows_by_function.entry(*function_id).or_default().insert(*arrow);
     }
@@ -1154,7 +1154,7 @@ fn public_settled_and_retained_cache_hit_events_keep_their_typed_payloads() {
     }
 
     // Independent positioned products each report their own settlement.
-    let transport_shape_keys: std::collections::HashSet<String> = settled
+    let transport_shape_keys: crate::fast_hash::HashSet<String> = settled
         .iter()
         .filter_map(|ev| ev.metadata_key("product"))
         .filter(|product| product.get("kind").and_then(|v| v.as_str()) == Some("transport_shape"))
@@ -3053,9 +3053,9 @@ const CONTRACT_CALLEE_SOURCE: &str = "defmodule M do\n  @spec helper(integer, [i
 /// The function-keyed facts a completion reports itself blocked on, as
 /// `"Kind(function_id)"` — kind plus `function_id` is the whole identity the
 /// public stream renders for `FunctionContract`/`Recursive`/`InputDemand`.
-fn blocked_function_facts(completion: &serde_json::Value) -> std::collections::HashSet<String> {
+fn blocked_function_facts(completion: &serde_json::Value) -> crate::fast_hash::HashSet<String> {
     let Some(blocked) = completion.get("blocked").and_then(|v| v.as_array()) else {
-        return std::collections::HashSet::new();
+        return crate::fast_hash::HashSet::default();
     };
     blocked
         .iter()
@@ -3104,7 +3104,7 @@ fn an_analysis_asks_for_a_callees_contract_and_keying_facts_in_one_block() {
     let prerequisites = ["FunctionContract", "Recursive", "InputDemand"]
         .into_iter()
         .map(|kind| format!("{kind}({helper})"))
-        .collect::<std::collections::HashSet<_>>();
+        .collect::<crate::fast_hash::HashSet<_>>();
 
     let blocks = trace
         .events_named(&["fz", "compiler2", "work_graph", "applied"])

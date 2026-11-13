@@ -1,6 +1,7 @@
 use super::receive::{declare_receive_dispatch, emit_receive_dispatch_body};
 use super::*;
 use crate::diag::Diagnostics;
+use crate::fast_hash::{HashMap, HashSet};
 use crate::fz_ir::{BlockId, FnId, Module, Prim, Term};
 use crate::telemetry::{RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt as _};
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types};
@@ -11,7 +12,7 @@ use cranelift_module::{DataId, FuncId, Linkage, Module as ClModule};
 use fz_runtime::any_value::ValueKind;
 use fz_runtime::heap::{Schema, SchemaRegistry};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 /// Walk every fn body collecting tuple arities used by MakeTuple /
@@ -43,7 +44,7 @@ fn collect_tuple_arities_and_register_schemas(
             }
         }
     }
-    let mut tuple_schema_ids: HashMap<usize, u32> = HashMap::new();
+    let mut tuple_schema_ids: HashMap<usize, u32> = HashMap::default();
     {
         let mut reg = user_schemas.borrow_mut();
         for &arity in &tuple_arities {
@@ -92,7 +93,7 @@ fn define_zero_capture_closures<M: cranelift_module::Module>(
     surface: &NativeCodegenSurface<'_>,
     callable_boundary_fn_ids: &HashMap<u32, FuncId>,
 ) -> Result<HashMap<u32, DataId>, CodegenError> {
-    let mut data_ids = HashMap::new();
+    let mut data_ids = HashMap::default();
     for (&boundary_id, boundary) in surface
         .callable_boundaries
         .iter()
@@ -131,7 +132,7 @@ fn declare_callable_boundary_fns<M: cranelift_module::Module>(
     m: &mut M,
     surface: &NativeCodegenSurface<'_>,
 ) -> Result<HashMap<u32, FuncId>, CodegenError> {
-    let mut callable_boundary_fn_ids = HashMap::new();
+    let mut callable_boundary_fn_ids = HashMap::default();
     for (&boundary_id, boundary) in &surface.callable_boundaries {
         let arg_count = boundary.arg_reprs.len();
         let sig = build_callable_boundary_signature(arg_count);
@@ -540,7 +541,7 @@ fn declare_spec_fns<M: cranelift_module::Module>(
     body_slots: &[Option<NativeCodegenBody<'_>>],
     fn_sigs: &[Signature],
 ) -> Result<HashMap<u32, FuncId>, CodegenError> {
-    let mut fn_ids: HashMap<u32, FuncId> = HashMap::new();
+    let mut fn_ids: HashMap<u32, FuncId> = HashMap::default();
     for (sid, body_slot) in body_slots.iter().enumerate() {
         if body_slot.is_none() {
             continue;
@@ -566,7 +567,7 @@ fn declare_receive_dispatch_fns<M: cranelift_module::Module>(
     m: &mut M,
     module: &Module,
 ) -> Result<(ReceiveDispatchFnIds, ReceiveMatchedSites), CodegenError> {
-    let mut dispatch_fn_ids: HashMap<(u32, u32), FuncId> = HashMap::new();
+    let mut dispatch_fn_ids: HashMap<(u32, u32), FuncId> = HashMap::default();
     let mut receive_matched_sites: Vec<(FnId, BlockId)> = Vec::new();
     for f in &module.fns {
         for blk in &f.blocks {
@@ -682,7 +683,7 @@ fn declare_mid_flight_conts<M: cranelift_module::Module>(
     m: &mut M,
     surface: &NativeCodegenSurface<'_>,
 ) -> Result<MidFlightContFnIds, CodegenError> {
-    let mut mid_flight_cont_tail_fn_ids: HashMap<(u32, Vec<MidFlightArgShape>), FuncId> = HashMap::new();
+    let mut mid_flight_cont_tail_fn_ids: HashMap<(u32, Vec<MidFlightArgShape>), FuncId> = HashMap::default();
     for key in &surface.mid_flight_cont_keys {
         let callee_sid = key.0;
         let cont_name = format!(
@@ -755,7 +756,7 @@ fn collect_codegen_mid_flight_cont_keys(
         .iter()
         .map(|body| (body.fn_id, body.entry_abi.clone()))
         .collect::<HashMap<_, _>>();
-    let mut keys = HashSet::new();
+    let mut keys = HashSet::default();
     for function in &program.module.fns {
         for block in &function.blocks {
             let Term::TailCall {
@@ -847,7 +848,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         .find(|body| body.fn_id == program.entry)
         .expect("the program entry must have a native body");
     let entry_name = &program.module.fn_by_id(entry_body.fn_id).name;
-    let fn_halt_kinds = HashMap::from([(
+    let fn_halt_kinds = HashMap::from_iter([(
         entry_body.fn_id.0,
         native_return_halt_repr(entry_body, entry_name, return_diverges[entry_body.fn_id.0 as usize])?.halt_kind(),
     )]);
@@ -894,7 +895,7 @@ pub(crate) fn compile_with_backend_surface<
     let user_schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     let (tuple_arities, tuple_schema_ids) = collect_tuple_arities_and_register_schemas(surface.module, &user_schemas);
     let named_schema_ids = {
-        let mut ids = HashMap::new();
+        let mut ids = HashMap::default();
         let mut reg = user_schemas.borrow_mut();
         for (name, fields) in &surface.module.struct_schemas {
             let id = reg.register(Schema::named_struct(name.clone(), fields.clone()));
@@ -915,7 +916,7 @@ pub(crate) fn compile_with_backend_surface<
         define_zero_capture_closures(backend.module_mut(), surface, &callable_boundary_fn_ids)?;
     let mid_flight_cont_tail_fn_ids = declare_mid_flight_conts(backend.module_mut(), surface)?;
 
-    let bs_const_data: RefCell<HashMap<Vec<u8>, BsConstSyms>> = RefCell::new(HashMap::new());
+    let bs_const_data: RefCell<HashMap<Vec<u8>, BsConstSyms>> = RefCell::new(HashMap::default());
     let (receive_dispatch_fn_ids, receive_matched_sites) = declare_receive_dispatch_fns(backend.module_mut(), module)?;
     let verifier_isa = host_isa();
     drop(declare_span);

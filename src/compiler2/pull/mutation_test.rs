@@ -330,7 +330,7 @@ fn mutation_wave_preserves_every_strength_and_pending_cycle_escalation() {
             memo.unblock(
                 ProductRequestId(NonZeroU64::MIN),
                 owner,
-                prospective_dependency(dependency), HashSet::new(),
+                prospective_dependency(dependency), HashSet::default(),
             );
         }
         captured.set(ProductValidation::default());

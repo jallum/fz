@@ -1,7 +1,7 @@
 //! Exact callable-input facts stay local across retained root requests.
 
+use crate::fast_hash::{HashMap, HashSet};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::telemetry::ConfiguredTelemetry;
@@ -30,7 +30,7 @@ struct Relations {
 #[test]
 fn recursive_callable_input_sources_settle_in_either_root_order() {
     let source = "def self_loop(f, 0), do: f.(2)\ndef self_loop(f, n), do: self_loop(f, n - 1)\ndef left(f, 0), do: f.(2)\ndef left(f, n), do: right(f, n - 1)\ndef right(f, 0), do: f.(2)\ndef right(f, n), do: left(f, n - 1)\ndef self_root(), do: self_loop(fn x -> x + 40 end, 3)\ndef mutual_root(), do: left(fn x -> x + 40 end, 3)\n";
-    let mut canonical = HashMap::new();
+    let mut canonical = HashMap::default();
     for order in [["self_root", "mutual_root"], ["mutual_root", "self_root"]] {
         let telemetry = ConfiguredTelemetry::new();
         let mut compiler = Compiler2::new(telemetry);

@@ -1,7 +1,8 @@
 //! Jobs that derive the stable facts used for activation keying.
 
 use crate::compiler2::{ValueMap, ValueSet};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use crate::fast_hash::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_path, demand_within_path};
 
@@ -1116,7 +1117,7 @@ fn recursion_supplied_positions(
     origins: &ValueMap<Vec<(usize, Vec<DemandPathStep>)>>,
     input_count: usize,
 ) -> HashSet<(usize, Vec<DemandPathStep>)> {
-    let mut rebuilt = HashSet::new();
+    let mut rebuilt = HashSet::default();
     let mut obligations: Vec<RebuildObligation> = Vec::new();
     let mut constructions: ValueMap<Vec<ValueId>> = ValueMap::new();
     for step in entries.iter().flat_map(|entry| entry.steps.iter()) {

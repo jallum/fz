@@ -9,10 +9,9 @@
 //! rebuilds `ModulePlan`, `PlannedProgram`, or `AbiFacts`.
 
 use crate::compiler2::ValueMap;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use crate::fast_hash::{HashMap, HashSet, IndexMap};
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
-
-use indexmap::IndexMap;
 
 use crate::ast::{BinOp, UnOp};
 use crate::dispatch_matrix::OutcomeId;
@@ -183,7 +182,7 @@ impl TransportLayouts {
 
 impl FromIterator<(TransportPosition, TransportLayout)> for TransportLayouts {
     fn from_iter<I: IntoIterator<Item = (TransportPosition, TransportLayout)>>(entries: I) -> Self {
-        let mut layouts = IndexMap::new();
+        let mut layouts = IndexMap::default();
         for (position, layout) in entries {
             let previous = layouts.insert(position, layout);
             assert!(
@@ -418,7 +417,7 @@ impl NativeProgram {
     #[cfg(test)]
     pub(crate) fn native_graph_fn_ids(&self, key: &ExecutableKey) -> HashSet<FnId> {
         let Some(index) = self.executable_entries.iter().position(|entry| &entry.key == key) else {
-            return HashSet::new();
+            return HashSet::default();
         };
         NativeGraphIndex::new(self).graphs[index]
             .bodies
@@ -564,9 +563,9 @@ struct NativeGraphIndex<'a> {
 
 impl<'a> NativeGraphIndex<'a> {
     fn new(program: &'a NativeProgram) -> Self {
-        let mut bodies = HashMap::new();
-        let mut clauses = HashMap::<ExecutableKey, BTreeMap<u32, FnId>>::new();
-        let mut continuations = HashMap::<FnId, Vec<FnId>>::new();
+        let mut bodies = HashMap::default();
+        let mut clauses = HashMap::<ExecutableKey, BTreeMap<u32, FnId>>::default();
+        let mut continuations = HashMap::<FnId, Vec<FnId>>::default();
         for body in &program.bodies {
             assert!(
                 bodies.insert(body.fn_id, body).is_none(),
@@ -607,9 +606,9 @@ impl<'a> NativeGraphIndex<'a> {
     }
 
     fn replacements(&self, groups: &[Vec<usize>], work: &mut NativeGraphSharingWork) -> HashMap<FnId, FnId> {
-        let mut replacements = HashMap::new();
+        let mut replacements = HashMap::default();
         for group in groups {
-            let mut compared_roots = HashSet::new();
+            let mut compared_roots = HashSet::default();
             for (offset, &left) in group.iter().enumerate() {
                 let left_root = self.program.executable_entries[left].fn_id;
                 if replacements.contains_key(&left_root) || !compared_roots.insert(left_root) {
@@ -690,7 +689,7 @@ impl NativeOwnedGraph {
             )
         }));
 
-        let mut owned = HashSet::new();
+        let mut owned = HashSet::default();
         let mut ownership_frontier = roots.iter().map(|(_, fn_id)| *fn_id).collect::<Vec<_>>();
         while let Some(fn_id) = ownership_frontier.pop() {
             if owned.insert(fn_id) {
@@ -699,7 +698,7 @@ impl NativeOwnedGraph {
         }
 
         let mut bodies = BTreeMap::new();
-        let mut reached = HashSet::new();
+        let mut reached = HashSet::default();
         let mut frontier = VecDeque::new();
         for (role, fn_id) in roots {
             assert!(
@@ -809,8 +808,8 @@ fn native_value_types_equal(left: &NativeBody, right: &NativeBody, left_ir: &IrF
 /// is already fixed by `block_param_reprs`; arguments, captures, and results
 /// remain ordinary typed uses and therefore disqualify it.
 pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
-    let mut candidates = HashSet::new();
-    let mut other_uses = HashSet::new();
+    let mut candidates = HashSet::default();
+    let mut other_uses = HashSet::default();
     for block in &function.blocks {
         for stmt in &block.stmts {
             stmt.prim().collect_used_vars(&mut other_uses);
@@ -1158,7 +1157,7 @@ impl BackendExecutable {
             struct_modules: Box::default(),
             body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
             extern_wire: None,
-            call_edges: HashMap::new(),
+            call_edges: HashMap::default(),
         });
         let abi = Rc::new(AbiReadyExecutable {
             materialized,
@@ -1177,7 +1176,7 @@ impl BackendExecutable {
             transport,
             value_layouts: ValueMap::new(),
             effects: EffectSummary::default(),
-            call_edges: HashMap::new(),
+            call_edges: HashMap::default(),
             callable_owners: Box::default(),
         });
         Self {
@@ -1216,7 +1215,7 @@ pub struct ExecutableDispatch {
 
 impl ExecutableDispatch {
     pub(crate) fn new(plan: Rc<PatternDispatchPlan<Ty>>, materialized_clause_ids: Vec<u32>) -> Self {
-        let mut clause_indexes = HashMap::new();
+        let mut clause_indexes = HashMap::default();
         for (index, body_id) in materialized_clause_ids.iter().copied().enumerate() {
             assert!(
                 clause_indexes.insert(body_id, index).is_none(),

@@ -1,4 +1,5 @@
-use std::collections::{BTreeSet, HashMap};
+use crate::fast_hash::HashMap;
+use std::collections::BTreeSet;
 
 use crate::diag::codes;
 use crate::modules::identity::ModuleName;
@@ -27,7 +28,7 @@ fn function_contract_application_refines_callable_params_from_outer_bindings() {
     let resolved = ResolvedSpecDecl {
         params: vec![t, types.arrow(&[t], nil)],
         result: types.resource(t),
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
@@ -82,7 +83,7 @@ fn function_contract_application_refines_reduce_style_callable_from_list_and_acc
     let resolved = ResolvedSpecDecl {
         params: vec![types.list(elem), acc, types.arrow(&[elem, acc], acc)],
         result: acc,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
@@ -157,7 +158,7 @@ fn function_contract_application_binds_tagged_halt_payload_separately_from_conti
     let resolved = ResolvedSpecDecl {
         params: vec![state],
         result,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
@@ -211,7 +212,7 @@ fn function_contract_application_binds_reduce_halt_payload_from_callable_return(
     let resolved = ResolvedSpecDecl {
         params: vec![types.list(elem), reducer_result, reducer],
         result,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
@@ -274,7 +275,7 @@ fn function_contract_application_keeps_reduce_halt_payload_free_until_callable_r
     let resolved = ResolvedSpecDecl {
         params: vec![types.list(elem), reducer_result, reducer],
         result,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
@@ -333,7 +334,7 @@ fn addressed_function_contract_keeps_reduce_halt_payload_free_until_callable_ret
     let contract = FunctionContract {
         arrows: vec![ContractArrow {
             arrow,
-            bounds: HashMap::new(),
+            bounds: HashMap::default(),
             protocol_domain_obligations: BTreeSet::new(),
             structural: None,
             variadic_tail: None,
@@ -396,7 +397,7 @@ fn function_contract_application_publishes_no_result_for_an_empty_list_seed() {
     let resolved = ResolvedSpecDecl {
         params: vec![types.list(elem), acc, types.arrow(&[elem, acc], acc)],
         result: acc,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
@@ -445,7 +446,7 @@ fn function_contract_application_does_not_publish_underconstrained_result_eviden
     let resolved = ResolvedSpecDecl {
         params: vec![types.arrow(&[t], t)],
         result: t,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
@@ -466,7 +467,7 @@ fn function_contract_application_does_not_recurse_through_concrete_any_inputs() 
     let resolved = ResolvedSpecDecl {
         params: vec![any],
         result: any,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
@@ -493,7 +494,7 @@ fn function_contract_application_reports_unsatisfied_when_no_arrow_accepts_obser
     let resolved = ResolvedSpecDecl {
         params: vec![float],
         result: float,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
@@ -522,12 +523,12 @@ fn function_contract_application_tracks_enforceable_arrows_separately_from_match
     let skipped = ResolvedSpecDecl {
         params: vec![int],
         result: int,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let enforced = ResolvedSpecDecl {
         params: vec![float],
         result: float,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_classified_arrows(
         &mut types,
@@ -561,7 +562,7 @@ fn function_contract_arrow_stores_direct_protocol_domain_obligations() {
     let resolved = ResolvedSpecDecl {
         params: vec![domain],
         result: int,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
@@ -590,12 +591,12 @@ fn function_contract_mixed_protocol_and_concrete_keeps_concrete_rejection_enforc
     let protocol_arrow = ResolvedSpecDecl {
         params: vec![domain],
         result: int,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let concrete_arrow = ResolvedSpecDecl {
         params: vec![float],
         result: float,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![protocol_arrow, concrete_arrow]);
 
@@ -618,7 +619,7 @@ fn function_contract_arrow_stores_protocol_domain_obligations_from_when_bounds()
     let param = types.type_var(var);
     let int = types.int();
     let domain = types.protocol_domain_of(enumerable_protocol());
-    let mut constraints = HashMap::new();
+    let mut constraints = HashMap::default();
     constraints.insert(var, domain);
     let resolved = ResolvedSpecDecl {
         params: vec![param],
@@ -648,7 +649,7 @@ fn function_contract_input_domains_instantiate_top_level_bounded_union() {
         vec![ResolvedSpecDecl {
             params: vec![param],
             result,
-            constraints: HashMap::from([(var, domain)]),
+            constraints: HashMap::from_iter([(var, domain)]),
         }],
     );
 
@@ -673,7 +674,7 @@ fn function_contract_input_domains_instantiate_nested_bounded_variable() {
         vec![ResolvedSpecDecl {
             params: vec![tuple],
             result,
-            constraints: HashMap::from([(var, domain)]),
+            constraints: HashMap::from_iter([(var, domain)]),
         }],
     );
 
@@ -699,7 +700,7 @@ fn function_contract_input_domains_close_dependent_bounds_without_grounding_unbo
         vec![ResolvedSpecDecl {
             params: vec![outer_ty],
             result,
-            constraints: HashMap::from([(outer, inner_ty), (inner, domain)]),
+            constraints: HashMap::from_iter([(outer, inner_ty), (inner, domain)]),
         }],
     );
     let unbounded = FunctionContract::from_resolved(
@@ -707,7 +708,7 @@ fn function_contract_input_domains_close_dependent_bounds_without_grounding_unbo
         vec![ResolvedSpecDecl {
             params: vec![outer_ty],
             result,
-            constraints: HashMap::new(),
+            constraints: HashMap::default(),
         }],
     );
     let expanding = types.tuple(&[inner_ty]);
@@ -716,7 +717,7 @@ fn function_contract_input_domains_close_dependent_bounds_without_grounding_unbo
         vec![ResolvedSpecDecl {
             params: vec![outer_ty],
             result,
-            constraints: HashMap::from([(outer, expanding), (inner, outer_ty)]),
+            constraints: HashMap::from_iter([(outer, expanding), (inner, outer_ty)]),
         }],
     );
 
@@ -740,7 +741,7 @@ fn dependent_contract_bounds_are_stable_across_fresh_type_worlds() {
         let a = types.atom_lit("a");
         let b = types.atom_lit("b");
         let domain = types.union(a, b);
-        let mut constraints = HashMap::new();
+        let mut constraints = HashMap::default();
         if reverse {
             constraints.insert(inner, domain);
             constraints.insert(outer, inner_ty);
@@ -782,7 +783,7 @@ fn function_contract_ignores_protocol_markers_inside_nested_complements() {
         .map(|param| ResolvedSpecDecl {
             params: vec![param],
             result: int,
-            constraints: HashMap::new(),
+            constraints: HashMap::default(),
         })
         .collect::<Vec<_>>();
 
@@ -864,12 +865,12 @@ fn ground_union_input_overlapping_each_clause_satisfies_the_contract() {
         ResolvedSpecDecl {
             params: vec![int, int],
             result: int,
-            constraints: HashMap::new(),
+            constraints: HashMap::default(),
         },
         ResolvedSpecDecl {
             params: vec![float, int],
             result: float,
-            constraints: HashMap::new(),
+            constraints: HashMap::default(),
         },
     ];
     let contract = FunctionContract::from_resolved(&mut types, arrows);
@@ -901,12 +902,12 @@ fn a_union_with_a_member_no_clause_accepts_is_answered_on_the_overlap() {
         ResolvedSpecDecl {
             params: vec![int, int],
             result: int,
-            constraints: HashMap::new(),
+            constraints: HashMap::default(),
         },
         ResolvedSpecDecl {
             params: vec![float, int],
             result: float,
-            constraints: HashMap::new(),
+            constraints: HashMap::default(),
         },
     ];
     let contract = FunctionContract::from_resolved(&mut types, arrows);
@@ -937,7 +938,7 @@ fn clause(
     ResolvedSpecDecl {
         params,
         result,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     }
 }
 
@@ -1321,7 +1322,7 @@ fn integer_contract(types: &mut Types) -> FunctionContract {
     let resolved = ResolvedSpecDecl {
         params: vec![int],
         result: int,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     FunctionContract::from_resolved(types, vec![resolved])
 }
@@ -1383,7 +1384,7 @@ fn make_resource_contract(types: &mut Types) -> FunctionContract {
     let resolved = ResolvedSpecDecl {
         params: vec![var, destructor],
         result,
-        constraints: HashMap::from([(t, bound)]),
+        constraints: HashMap::from_iter([(t, bound)]),
     };
     let wire = crate::compiler2::body::LoweredExtern {
         abi: crate::fz_ir::ExternAbi::C,
@@ -1472,7 +1473,7 @@ fn an_any_column_narrows_and_a_disjoint_sibling_column_still_rejects() {
     let resolved = ResolvedSpecDecl {
         params: vec![int, int],
         result: int,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
@@ -1496,7 +1497,7 @@ fn a_bare_inner_is_refused_at_a_brand_domain_even_when_a_sibling_member_fits() {
     let resolved = ResolvedSpecDecl {
         params: vec![utf8],
         result: int,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
@@ -1519,7 +1520,7 @@ fn a_bare_inner_is_refused_at_a_brand_inside_a_tuple_domain() {
     let resolved = ResolvedSpecDecl {
         params: vec![branded_pair],
         result: int,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
@@ -1541,7 +1542,7 @@ fn a_brand_is_accepted_at_its_own_brand_domain() {
     let resolved = ResolvedSpecDecl {
         params: vec![utf8],
         result: int,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
@@ -1562,12 +1563,12 @@ fn a_union_spanning_two_clauses_is_answered_by_each_clause_on_its_overlap() {
         ResolvedSpecDecl {
             params: vec![int, int],
             result: int,
-            constraints: HashMap::new(),
+            constraints: HashMap::default(),
         },
         ResolvedSpecDecl {
             params: vec![float, int],
             result: float,
-            constraints: HashMap::new(),
+            constraints: HashMap::default(),
         },
     ];
     let contract = FunctionContract::from_resolved(&mut types, arrows);
@@ -1674,7 +1675,7 @@ fn a_protocol_domain_parameter_refines_an_untyped_argument_as_any_and_keeps_its_
     let resolved = ResolvedSpecDecl {
         params: vec![domain],
         result: int,
-        constraints: HashMap::new(),
+        constraints: HashMap::default(),
     };
     let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 

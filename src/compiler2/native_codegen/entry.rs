@@ -1,11 +1,11 @@
 //! Entry-block harness: bind entry params and load closure captures.
 
 use super::*;
+use crate::fast_hash::HashMap;
 use crate::fz_ir::FnIr;
 use cranelift_codegen::ir;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module as ClModule;
-use std::collections::HashMap;
 
 pub(crate) struct EntryHarnessOut {
     pub(super) var_env: HashMap<u32, CodegenValue>,
@@ -24,7 +24,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
 ) -> EntryHarnessOut {
     let param_reprs = env.param_reprs;
     let entry_blk = f.blocks.iter().find(|blk| blk.id == f.entry).unwrap();
-    let mut var_env: HashMap<u32, CodegenValue> = HashMap::new();
+    let mut var_env: HashMap<u32, CodegenValue> = HashMap::default();
     let params: Vec<ir::Value> = body.b.block_params(entry_cl).to_vec();
     let my_param_reprs = &param_reprs[this_spec_id as usize];
     let cont_param = if is_cont_fn {

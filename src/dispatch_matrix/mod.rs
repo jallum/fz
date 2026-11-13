@@ -542,7 +542,7 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
     /// prove different arities.
     pub(crate) fn proven_input_arity(&self, ordinal: u32) -> Option<u32> {
         let mut proofs = std::collections::BTreeSet::new();
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = crate::fast_hash::HashSet::default();
         let mut pending = vec![(self.root, None)];
         while let Some((id, proven)) = pending.pop() {
             if !seen.insert((id, proven)) {

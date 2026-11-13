@@ -5,7 +5,8 @@
 //! types without calling the legacy whole-program pipeline.
 
 use crate::compiler2::ValueMap;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry};
+use crate::fast_hash::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, hash_map::Entry};
 
 use crate::ast::{BinOp, UnOp};
 use crate::diag::driver::emit_through;
@@ -342,8 +343,8 @@ pub(super) fn analyze_activation(
 
     analysis_calls = coalesce_call_emissions(world, analysis_calls)?;
 
-    let mut emitted_activations = HashSet::new();
-    let mut emitted_activation_inputs = HashSet::new();
+    let mut emitted_activations = HashSet::default();
+    let mut emitted_activation_inputs = HashSet::default();
     let mut activation_input_contributions = Vec::new();
     for call in &analysis_calls {
         // EVERY reached callsite publishes its edge, resolved or not: the
@@ -1407,7 +1408,7 @@ fn merge_value_types(world: &mut World, merged: &mut ValueTypes, observed: &Sema
 
 fn coalesce_call_emissions(world: &mut World, calls: Vec<CallEmission>) -> Result<Vec<CallEmission>, FatalError> {
     let mut order = Vec::new();
-    let mut grouped = HashMap::<CallSiteKey, CallEmission>::new();
+    let mut grouped = HashMap::<CallSiteKey, CallEmission>::default();
     for call in calls {
         match grouped.entry(call.key.clone()) {
             Entry::Vacant(entry) => {
@@ -2573,7 +2574,7 @@ fn lowered_unop_ty(world: &mut World, op: UnOp, input: Ty) -> Ty {
 /// facts appear in here decides the interleaving of the dependent jobs each
 /// one wakes.
 fn dedupe_facts(facts: Vec<FactKey>) -> Vec<FactKey> {
-    let mut seen = HashSet::with_capacity(facts.len());
+    let mut seen = HashSet::with_capacity_and_hasher(facts.len(), Default::default());
     facts.into_iter().filter(|fact| seen.insert(fact.clone())).collect()
 }
 
