@@ -6,14 +6,15 @@
   "blocks": [
     "fz-3sy.8"
   ],
+  "closed_at": "2026-11-13T15:44:54Z",
   "created": "2026-11-11T15:21:29Z",
   "description": "apply(m, :f, [a, b]) is the call m.f(a, b). Kernel.apply/3 is a macro in lib/kernel.fz: with the function written as an atom and the arguments written as a list it expands to the remote call on the module value, so a module known at compile time is a direct call and a module computed at run time is the call on an atom. Any other shape (a function or an argument list computed at run time) raises ArgumentError in the macro and is a lower/unsupported diagnostic at the call. No compiler change besides the span of a macro's raise. Fixtures 00870 (Elixir oracle, three paths) and 00871 (diagnostic).",
   "id": "fz-3sy.6",
   "labels": [],
   "parent": "fz-3sy",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "apply/3 with a literal argument list",
   "type": "feature",
-  "updated_at": "2026-11-13T15:44:28Z"
+  "updated_at": "2026-11-13T15:44:54Z"
 }
