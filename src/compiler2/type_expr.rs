@@ -135,7 +135,7 @@ struct TypeExprParser<'a> {
 }
 
 impl<'a> TypeExprParser<'a> {
-    fn peek(&self) -> &Tok {
+    fn peek(&self) -> &'a Tok {
         self.tokens.get(self.pos).map(|token| &token.tok).unwrap_or(&Tok::Eof)
     }
 
@@ -193,7 +193,7 @@ impl<'a> TypeExprParser<'a> {
     }
 
     fn parse_primary(&mut self) -> Result<TypeExpr, TypeExprError> {
-        match self.peek().clone() {
+        match self.peek() {
             Tok::LBrack => self.parse_list(),
             Tok::LBrace => self.parse_tuple(),
             Tok::LParen => self.parse_paren_or_arrow(),
@@ -205,11 +205,11 @@ impl<'a> TypeExprParser<'a> {
             }
             Tok::Atom(name) => {
                 self.bump();
-                Ok(TypeExpr::AtomLit(name))
+                Ok(TypeExpr::AtomLit(name.clone()))
             }
             Tok::Int(n) => {
                 self.bump();
-                Ok(TypeExpr::IntLit(n))
+                Ok(TypeExpr::IntLit(*n))
             }
             Tok::Float(f) => {
                 self.bump();
@@ -225,7 +225,7 @@ impl<'a> TypeExprParser<'a> {
             }
             Tok::Ident(name) | Tok::Upper(name) => {
                 self.bump();
-                self.parse_name(name)
+                self.parse_name(name.clone())
             }
             other => Err(self.err(format!("expected a type expression, got {}", other))),
         }
@@ -238,10 +238,10 @@ impl<'a> TypeExprParser<'a> {
         let mut path = vec![first];
         while matches!(self.peek(), Tok::Dot) {
             self.bump();
-            match self.peek().clone() {
+            match self.peek() {
                 Tok::Ident(segment) | Tok::Upper(segment) => {
                     self.bump();
-                    path.push(segment);
+                    path.push(segment.clone());
                 }
                 other => return Err(self.err(format!("expected a name segment after `.`, got {}", other))),
             }
@@ -361,18 +361,18 @@ impl<'a> TypeExprParser<'a> {
     }
 
     fn parse_map_pair(&mut self) -> Result<(TypeExpr, TypeExpr), TypeExprError> {
-        if let Tok::KwKey(name) = self.peek().clone() {
+        if let Tok::KwKey(name) = self.peek() {
             self.bump();
             let value = self.parse_union()?;
-            return Ok((TypeExpr::AtomLit(name), value));
+            return Ok((TypeExpr::AtomLit(name.clone()), value));
         }
-        if let Tok::Atom(name) | Tok::Ident(name) = self.peek().clone()
+        if let Tok::Atom(name) | Tok::Ident(name) = self.peek()
             && matches!(self.tokens.get(self.pos + 1).map(|token| &token.tok), Some(Tok::Colon))
         {
             self.bump();
             self.bump();
             let value = self.parse_union()?;
-            return Ok((TypeExpr::AtomLit(name), value));
+            return Ok((TypeExpr::AtomLit(name.clone()), value));
         }
         let key = self.parse_union()?;
         self.expect(&Tok::FatArrow, "`=>` after map key")?;
@@ -381,19 +381,19 @@ impl<'a> TypeExprParser<'a> {
     }
 
     fn parse_module_path(&mut self) -> Result<Vec<String>, TypeExprError> {
-        let mut segments = match self.peek().clone() {
+        let mut segments = match self.peek() {
             Tok::Upper(name) => {
                 self.bump();
-                vec![name]
+                vec![name.clone()]
             }
             other => return Err(self.err(format!("expected a module name, got {}", other))),
         };
         while matches!(self.peek(), Tok::Dot) {
             self.bump();
-            match self.peek().clone() {
+            match self.peek() {
                 Tok::Upper(segment) => {
                     self.bump();
-                    segments.push(segment);
+                    segments.push(segment.clone());
                 }
                 other => return Err(self.err(format!("expected a module segment after `.`, got {}", other))),
             }
@@ -405,15 +405,15 @@ impl<'a> TypeExprParser<'a> {
     /// `KwKey` that carries its own colon; a bare atom or ident keeps the
     /// colon as a separate token.
     fn parse_field_name(&mut self) -> Result<String, TypeExprError> {
-        match self.peek().clone() {
+        match self.peek() {
             Tok::KwKey(name) => {
                 self.bump();
-                Ok(name)
+                Ok(name.clone())
             }
             Tok::Atom(name) | Tok::Ident(name) => {
                 self.bump();
                 self.expect(&Tok::Colon, "`:` after struct field name")?;
-                Ok(name)
+                Ok(name.clone())
             }
             other => Err(self.err(format!("expected a struct field name, got {}", other))),
         }

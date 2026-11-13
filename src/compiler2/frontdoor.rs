@@ -54,11 +54,11 @@ pub fn parse_quoted_program<T: RawSpanTelemetry + ?Sized>(
     let tokens = Lexer::with_source_version_and_name(&source.bytes, source_version, source_name)
         .tokenize(tel)
         .map_err(|error| FrontDoorError::syntax(error.msg, error.span))?;
-    FrontDoorParser::new(tokens).parse_program()
+    FrontDoorParser::new(&tokens).parse_program()
 }
 
-struct FrontDoorParser {
-    toks: Vec<Token>,
+struct FrontDoorParser<'t> {
+    toks: &'t [Token],
     pos: usize,
     builder: QuotedSourceBuilder,
     allow_trailing_do: bool,
@@ -146,8 +146,8 @@ impl ParsedExpr {
     }
 }
 
-impl FrontDoorParser {
-    fn new(toks: Vec<Token>) -> Self {
+impl<'t> FrontDoorParser<'t> {
+    fn new(toks: &'t [Token]) -> Self {
         let heap = Rc::new(QuotedSourceHeap::new());
         let builder = heap.builder();
         Self {
@@ -235,7 +235,7 @@ impl FrontDoorParser {
         let (name, value) = match self.bump() {
             Tok::Ident(name) if name == "doc" || name == "moduledoc" => {
                 let value = match self.bump() {
-                    Tok::Binary(bytes) => self.builder.bitstring(&bytes, (bytes.len() * 8) as u64)?,
+                    Tok::Binary(bytes) => self.builder.bitstring(bytes, (bytes.len() * 8) as u64)?,
                     other => {
                         return Err(self.error(format!("expected string literal after `@{}`, got {:?}", name, other)));
                     }
@@ -253,11 +253,14 @@ impl FrontDoorParser {
                          keep the sigil as prose."
                     )));
                 }
-                (name, value)
+                (name.clone(), value)
             }
             Tok::Ident(name) if name == "spec" => {
                 let line = self.line_token_range()?;
-                (name, token_payload::encode_tokens(&self.builder, &self.toks[line])?)
+                (
+                    name.clone(),
+                    token_payload::encode_tokens(&self.builder, &self.toks[line])?,
+                )
             }
             Tok::Type => {
                 let line = self.line_token_range()?;
@@ -348,7 +351,7 @@ impl FrontDoorParser {
                 }
             };
             let filters = self.parse_arity_kw_list()?;
-            args.push(self.builder.list(&[self.builder.keyword(&kind, filters)?])?);
+            args.push(self.builder.list(&[self.builder.keyword(kind, filters)?])?);
         }
         self.builder.call(head, &meta, &args).map_err(FrontDoorError::from)
     }
@@ -381,7 +384,7 @@ impl FrontDoorParser {
         if !self.peek_is(&Tok::RBrack) {
             loop {
                 let field = match self.bump() {
-                    Tok::Atom(name) | Tok::Ident(name) | Tok::KwKey(name) => self.builder.atom(&name),
+                    Tok::Atom(name) | Tok::Ident(name) | Tok::KwKey(name) => self.builder.atom(name),
                     other => return Err(self.error(format!("expected struct field name, got {:?}", other))),
                 };
                 fields.push(field);
@@ -456,7 +459,8 @@ impl FrontDoorParser {
         let start = self.cur_span();
         self.expect(&Tok::Extern, "`extern`")?;
         let abi = match self.bump() {
-            Tok::Binary(bytes) => String::from_utf8(bytes)
+            Tok::Binary(bytes) => std::str::from_utf8(bytes)
+                .map(str::to_owned)
                 .map_err(|error| self.error(format!("extern ABI string must be valid UTF-8: {error}")))?,
             other => return Err(self.error(format!("expected ABI string after `extern`, got {:?}", other))),
         };
@@ -490,7 +494,7 @@ impl FrontDoorParser {
                 if param.is_empty() {
                     return self.err("expected extern parameter type");
                 }
-                params.push(token_payload::encode_tokens(&self.builder, &param)?);
+                params.push(token_payload::encode_tokens(&self.builder, param)?);
                 if !self.eat(&Tok::Comma) {
                     break;
                 }
@@ -511,7 +515,7 @@ impl FrontDoorParser {
         if ret.is_empty() {
             return self.err("expected extern return type after `::`");
         }
-        let ret = token_payload::encode_tokens(&self.builder, &ret)?;
+        let ret = token_payload::encode_tokens(&self.builder, ret)?;
         let raises = if self.eat(&Tok::Comma) {
             Some(self.parse_extern_raises()?)
         } else {
@@ -532,7 +536,7 @@ impl FrontDoorParser {
                 if ty.is_empty() {
                     return self.err(format!("expected constraint type expression after `{var}:`"));
                 }
-                constraints.push((var, token_payload::encode_tokens(&self.builder, &ty)?));
+                constraints.push((var, token_payload::encode_tokens(&self.builder, ty)?));
                 if !self.eat(&Tok::Comma) {
                     break;
                 }
@@ -577,7 +581,7 @@ impl FrontDoorParser {
             other => {
                 return Err(self.error(format!(
                     "expected `raises:` after the extern return type, got {}; `raises:` is the only extern option",
-                    describe_token(&other)
+                    describe_token(other)
                 )));
             }
         }
@@ -595,7 +599,7 @@ impl FrontDoorParser {
             other => {
                 return Err(self.error(format!(
                     "expected `message:` after `raises:`, got {}",
-                    describe_token(&other)
+                    describe_token(other)
                 )));
             }
         }
@@ -625,7 +629,7 @@ impl FrontDoorParser {
             other => {
                 return Err(self.error(format!(
                     "`message:` takes a literal string, got {}",
-                    describe_token(&other)
+                    describe_token(other)
                 )));
             }
         };
@@ -635,9 +639,9 @@ impl FrontDoorParser {
                  an exception message is fixed text in the declaration",
             ));
         }
-        let text = String::from_utf8(bytes)
+        let text = std::str::from_utf8(bytes)
             .map_err(|error| self.error(format!("extern failure message must be valid UTF-8: {error}")))?;
-        self.builder.utf8_binary(&text).map_err(FrontDoorError::from)
+        self.builder.utf8_binary(text).map_err(FrontDoorError::from)
     }
 
     /// A macro head is an ordinary expression, so `defmacro left || right`
@@ -800,7 +804,7 @@ impl FrontDoorParser {
                 if rhs_tokens.is_empty() {
                     return self.err("expected type expression after `::`");
                 }
-                let rhs = token_payload::encode_tokens(&self.builder, &rhs_tokens)?;
+                let rhs = token_payload::encode_tokens(&self.builder, rhs_tokens)?;
                 let span = lhs.span.merge(self.prev_span());
                 let meta = self.meta(span)?;
                 lhs = ParsedExpr::plain(self.builder.call("::", &meta, &[lhs.root, rhs])?, span);
@@ -825,22 +829,22 @@ impl FrontDoorParser {
     fn parse_prefix(&mut self, module_path: &[String], scope: &[String]) -> Result<ParsedExpr, FrontDoorError> {
         let start = self.cur_span();
         match self.bump() {
-            Tok::Int(value) => Ok(ParsedExpr::plain(self.builder.int(value), start)),
-            Tok::Float(value) => Ok(ParsedExpr::plain(self.builder.float(value), start)),
+            Tok::Int(value) => Ok(ParsedExpr::plain(self.builder.int(*value), start)),
+            Tok::Float(value) => Ok(ParsedExpr::plain(self.builder.float(*value), start)),
             Tok::Binary(bytes) => Ok(ParsedExpr::plain(
-                self.builder.bitstring(&bytes, (bytes.len() * 8) as u64)?,
+                self.builder.bitstring(bytes, (bytes.len() * 8) as u64)?,
                 start,
             )),
             Tok::True => Ok(ParsedExpr::plain(self.builder.bool(true), start)),
             Tok::False => Ok(ParsedExpr::plain(self.builder.bool(false), start)),
             Tok::Nil => Ok(ParsedExpr::plain(self.builder.nil(), start)),
-            Tok::Atom(name) => Ok(ParsedExpr::plain(self.builder.atom(&name), start)),
+            Tok::Atom(name) => Ok(ParsedExpr::plain(self.builder.atom(name), start)),
             Tok::Underscore => {
                 let meta = self.meta(start)?;
                 Ok(ParsedExpr::plain(self.builder.user_variable("_", &meta)?, start))
             }
             Tok::Ident(name) => {
-                let mut name = name;
+                let mut name = name.clone();
                 if self.allow_extern_symbol_folding
                     && self.peek_is(&Tok::ColonColon)
                     && self.prev_span().end == self.cur_span().start
@@ -859,7 +863,7 @@ impl FrontDoorParser {
                 let root = self.builder.user_variable(&name, &meta)?;
                 Ok(ParsedExpr::direct_name(root, start.merge(self.prev_span()), name))
             }
-            Tok::Upper(name) => self.parse_alias_expr(name, start),
+            Tok::Upper(name) => self.parse_alias_expr(name.clone(), start),
             Tok::LParen => {
                 let root = self.with_matched_do_boundary(|parser| {
                     parser.with_comma_unbound(|parser| {
@@ -965,8 +969,8 @@ impl FrontDoorParser {
         self.expect(&Tok::Dot, "`.`")?;
         self.skip_newlines();
         let field = match self.bump() {
-            Tok::Ident(name) | Tok::Upper(name) => name,
-            other => match self.operator_name(&other) {
+            Tok::Ident(name) | Tok::Upper(name) => name.clone(),
+            other => match self.operator_name(other) {
                 Some(operator) => operator.to_string(),
                 None => return Err(self.error(format!("expected name after `.`, got {:?}", other))),
             },
@@ -1013,7 +1017,7 @@ impl FrontDoorParser {
             self.advance();
             self.skip_newlines();
             match self.bump() {
-                Tok::Upper(name) => path.push(name),
+                Tok::Upper(name) => path.push(name.clone()),
                 _ => unreachable!("guarded by peek_non_newline_from"),
             }
         }
@@ -1279,7 +1283,7 @@ impl FrontDoorParser {
             && start.end == self.cur_span().start
         {
             let index = match self.bump() {
-                Tok::Int(index) => index,
+                Tok::Int(index) => *index,
                 _ => unreachable!("guarded by peek"),
             };
             let span = start.merge(self.prev_span());
@@ -1304,12 +1308,12 @@ impl FrontDoorParser {
     /// capture target the expression parser cannot read.
     fn parse_operator_capture(&mut self, start: Span) -> Result<ParsedExpr, FrontDoorError> {
         let op = self.bump();
-        let name = self.operator_name(&op).expect("checked operator token");
+        let name = self.operator_name(op).expect("checked operator token");
         let meta = self.meta(start)?;
         let target = self.builder.user_variable(name, &meta)?;
         self.expect(&Tok::Slash, "`/` in capture")?;
         let arity = match self.bump() {
-            Tok::Int(arity) if arity >= 0 => arity,
+            Tok::Int(arity) if *arity >= 0 => *arity,
             other => return Err(self.error(format!("expected capture arity after `&{name}/`, got {:?}", other))),
         };
         let span = start.merge(self.prev_span());
@@ -1744,9 +1748,9 @@ impl FrontDoorParser {
         if !self.peek_is(&Tok::RBrack) {
             loop {
                 let name = match self.bump() {
-                    Tok::KwKey(name) => name,
-                    other if self.operator_name(&other).is_some() => {
-                        let name = self.operator_name(&other).expect("checked operator token").to_string();
+                    Tok::KwKey(name) => name.clone(),
+                    other if self.operator_name(other).is_some() => {
+                        let name = self.operator_name(other).expect("checked operator token").to_string();
                         self.expect(&Tok::Colon, "`:` after operator name in import/require filter list")?;
                         name
                     }
@@ -1758,7 +1762,7 @@ impl FrontDoorParser {
                     }
                 };
                 let arity = match self.bump() {
-                    Tok::Int(arity) if arity >= 0 => arity,
+                    Tok::Int(arity) if *arity >= 0 => *arity,
                     other => {
                         return Err(self.error(format!(
                             "expected non-negative arity after `{}:`, got {:?}",
@@ -1859,10 +1863,10 @@ impl FrontDoorParser {
     }
 
     fn parse_map_entry(&mut self, module_path: &[String], scope: &[String]) -> Result<AnyValueRef, FrontDoorError> {
-        if let Tok::KwKey(name) = self.peek().clone() {
+        if let Tok::KwKey(name) = self.peek() {
             self.advance();
             let value = self.parse_expr(module_path, scope)?;
-            return self.builder.keyword(&name, value.root).map_err(FrontDoorError::from);
+            return self.builder.keyword(name, value.root).map_err(FrontDoorError::from);
         }
 
         let key = self.parse_expr(module_path, scope)?;
@@ -1915,7 +1919,7 @@ impl FrontDoorParser {
             other => return Err(self.error(format!("expected keyword entry, got {:?}", other))),
         };
         let value = self.parse_expr(module_path, scope)?;
-        self.builder.keyword(&name, value.root).map_err(FrontDoorError::from)
+        self.builder.keyword(name, value.root).map_err(FrontDoorError::from)
     }
 
     fn continue_keyword_entries(&mut self, terminator: &Tok, positional_msg: &str) -> Result<bool, FrontDoorError> {
@@ -1959,7 +1963,7 @@ impl FrontDoorParser {
     fn parse_upper_path(&mut self, context: &str) -> Result<Vec<String>, FrontDoorError> {
         let mut path = Vec::new();
         match self.bump() {
-            Tok::Upper(name) => path.push(name),
+            Tok::Upper(name) => path.push(name.clone()),
             other => {
                 return Err(self.error(format!("expected uppercase {context} path, got {:?}", other)));
             }
@@ -1968,7 +1972,7 @@ impl FrontDoorParser {
             self.advance();
             self.skip_newlines();
             match self.bump() {
-                Tok::Upper(name) => path.push(name),
+                Tok::Upper(name) => path.push(name.clone()),
                 other => {
                     return Err(self.error(format!(
                         "expected uppercase segment after `.` in {context} path, got {:?}",
@@ -1982,12 +1986,12 @@ impl FrontDoorParser {
 
     fn parse_extern_name(&mut self) -> Result<String, FrontDoorError> {
         let first = match self.bump() {
-            Tok::Ident(name) => name,
+            Tok::Ident(name) => name.clone(),
             other => return Err(self.error(format!("expected function name, got {:?}", other))),
         };
         if self.eat(&Tok::ColonColon) {
             let second = match self.bump() {
-                Tok::Ident(name) => name,
+                Tok::Ident(name) => name.as_str(),
                 other => {
                     return Err(self.error(format!(
                         "expected extern symbol name after `{}::`, got {:?}",
@@ -2001,7 +2005,7 @@ impl FrontDoorParser {
         }
     }
 
-    fn collect_balanced_tokens_until(&mut self, terminators: &[Tok]) -> Result<Vec<Token>, FrontDoorError> {
+    fn collect_balanced_tokens_until(&mut self, terminators: &[Tok]) -> Result<&'t [Token], FrontDoorError> {
         self.skip_newlines();
         let start = self.pos;
         let mut parens = 0_u32;
@@ -2009,12 +2013,12 @@ impl FrontDoorParser {
         let mut braces = 0_u32;
         let mut bitstrings = 0_u32;
         while !self.peek_is(&Tok::Eof) {
-            let tok = self.peek().clone();
+            let tok = self.peek();
             let at_top_level = parens == 0 && brackets == 0 && braces == 0 && bitstrings == 0;
             if at_top_level
                 && terminators
                     .iter()
-                    .any(|terminator| discriminant(terminator) == discriminant(&tok))
+                    .any(|terminator| discriminant(terminator) == discriminant(tok))
             {
                 break;
             }
@@ -2032,19 +2036,19 @@ impl FrontDoorParser {
             self.advance();
         }
         if self.pos == start {
-            return Ok(Vec::new());
+            return Ok(&[]);
         }
-        Ok(self.toks[start..self.pos].to_vec())
+        Ok(&self.toks[start..self.pos])
     }
 
-    fn collect_type_fragment_tokens(&mut self, min_bp: u8) -> Result<Vec<Token>, FrontDoorError> {
+    fn collect_type_fragment_tokens(&mut self, min_bp: u8) -> Result<&'t [Token], FrontDoorError> {
         let start = self.pos;
         let mut parens = 0_u32;
         let mut brackets = 0_u32;
         let mut braces = 0_u32;
         let mut bitstrings = 0_u32;
         while !self.peek_is(&Tok::Eof) {
-            let tok = self.peek().clone();
+            let tok = self.peek();
             let at_top_level = parens == 0 && brackets == 0 && braces == 0 && bitstrings == 0;
             if at_top_level {
                 if matches!(
@@ -2068,7 +2072,7 @@ impl FrontDoorParser {
                 if self.peek_is(&Tok::Not) && self.peek_is_at(1, &Tok::In) && 70 < min_bp {
                     break;
                 }
-                if let Some((lbp, _, _)) = self.infix_bp(&tok)
+                if let Some((lbp, _, _)) = self.infix_bp(tok)
                     && lbp < min_bp
                 {
                     break;
@@ -2087,7 +2091,7 @@ impl FrontDoorParser {
             }
             self.advance();
         }
-        Ok(self.toks[start..self.pos].to_vec())
+        Ok(&self.toks[start..self.pos])
     }
 
     fn meta(&self, span: Span) -> Result<QuotedSourceMetadata, FrontDoorError> {
@@ -2102,11 +2106,11 @@ impl FrontDoorParser {
         })
     }
 
-    fn peek(&self) -> &Tok {
+    fn peek(&self) -> &'t Tok {
         &self.toks[self.pos].tok
     }
 
-    fn peek_at(&self, off: usize) -> &Tok {
+    fn peek_at(&self, off: usize) -> &'t Tok {
         self.toks
             .get(self.pos + off)
             .map(|token| &token.tok)
@@ -2127,7 +2131,7 @@ impl FrontDoorParser {
     /// continues across a line break before committing to consume it. Alias
     /// paths look for an uppercase segment after `.`, while keyword lists
     /// consume trailing newlines only before their comma or closing delimiter.
-    fn peek_non_newline_from(&self, off: usize) -> &Tok {
+    fn peek_non_newline_from(&self, off: usize) -> &'t Tok {
         let mut i = self.pos + off;
         while let Some(token) = self.toks.get(i) {
             if !matches!(token.tok, Tok::Newline) {
@@ -2150,8 +2154,8 @@ impl FrontDoorParser {
         }
     }
 
-    fn bump(&mut self) -> Tok {
-        let tok = self.toks[self.pos].tok.clone();
+    fn bump(&mut self) -> &'t Tok {
+        let tok = &self.toks[self.pos].tok;
         self.advance();
         tok
     }
