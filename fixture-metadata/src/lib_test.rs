@@ -1,7 +1,7 @@
 use super::{
-    EdgeAssertion, FixtureCompilerMetadata, FixtureExpect, FixtureKind, FixtureMatrixMetadata, FixtureMatrixPath,
-    FixtureMetadata, FixtureRoot, MetricAssertion, PathDeferral, PathTimeout, fixture_matrix_paths_from_filename,
-    parse_fixture_metadata,
+    EdgeAssertion, FNV1A_OFFSET_BASIS, FixtureCompilerMetadata, FixtureExpect, FixtureKind, FixtureMatrixMetadata,
+    FixtureMatrixPath, FixtureMetadata, FixtureRoot, MetricAssertion, PathDeferral, PathTimeout,
+    fixture_matrix_paths_from_filename, fnv1a, oracle_stamp, parse_fixture_metadata,
 };
 use std::path::Path;
 
@@ -25,6 +25,7 @@ fn fixture_metadata_parser_reads_matrix_and_compiler_keys_together() {
 # defer: waiting on compiler2
 # defer.build: native tail delivery still red
 # oracle: closure.oracle.exs
+# oracle.stamp: 0123456789abcdef
 # args: -- "" "é ü" --flag=1
 # timeout.interp_secs: 15
 # root: main/0
@@ -51,6 +52,7 @@ def main(), do: 42
                     rationale: "native tail delivery still red".to_string(),
                 }],
                 oracle: Some("closure.oracle.exs".to_string()),
+                oracle_stamp: Some("0123456789abcdef".to_string()),
                 args: vec![
                     "--".to_string(),
                     String::new(),
@@ -258,5 +260,66 @@ fn fixture_metadata_args_reject_an_unterminated_quote_and_a_repeated_key() {
     assert!(err.to_string().contains("unterminated"), "{err}");
 
     let err = parse_fixture_metadata("#---\n# args: a\n# args: b\n#---\n").expect_err("repeated args");
+    assert!(err.to_string().contains("may only appear once"), "{err}");
+}
+
+#[test]
+fn fnv1a_matches_the_published_64_bit_test_vectors() {
+    assert_eq!(fnv1a(FNV1A_OFFSET_BASIS, b""), 0xcbf2_9ce4_8422_2325);
+    assert_eq!(fnv1a(FNV1A_OFFSET_BASIS, b"a"), 0xaf63_dc4c_8601_ec8c);
+    assert_eq!(fnv1a(FNV1A_OFFSET_BASIS, b"foobar"), 0x8594_4171_f739_67e8);
+}
+
+#[test]
+fn oracle_stamp_hashes_script_golden_and_each_arg_with_zero_separators() {
+    let args = ["--".to_string(), String::new(), "x y".to_string()];
+    assert_eq!(oracle_stamp(b"IO.puts(1)\n", b"1\n", &args), "9a6c9fb209c30ce5");
+}
+
+#[test]
+fn oracle_stamp_changes_with_the_script_the_golden_or_the_args() {
+    let base = oracle_stamp(b"a", b"b", &["c".to_string()]);
+    assert_eq!(base.len(), 16);
+    assert_ne!(base, oracle_stamp(b"A", b"b", &["c".to_string()]), "script");
+    assert_ne!(base, oracle_stamp(b"a", b"B", &["c".to_string()]), "golden");
+    assert_ne!(base, oracle_stamp(b"a", b"b", &["d".to_string()]), "args");
+    assert_ne!(base, oracle_stamp(b"a", b"b", &[]), "arg count");
+}
+
+#[test]
+fn oracle_stamp_keeps_field_boundaries_distinct() {
+    assert_ne!(oracle_stamp(b"ab", b"", &[]), oracle_stamp(b"a", b"b", &[]));
+    assert_ne!(
+        oracle_stamp(b"", b"", &["a".to_string(), "b".to_string()]),
+        oracle_stamp(b"", b"", &["ab".to_string()]),
+    );
+}
+
+#[test]
+fn oracle_stamp_header_key_parses_beside_oracle() {
+    let parsed = parse_fixture_metadata("#---\n# oracle: oracle.exs\n# oracle.stamp: 0123456789abcdef\n#---\n")
+        .expect("stamp beside oracle parses")
+        .expect("frontmatter present");
+    assert_eq!(parsed.matrix.oracle_stamp.as_deref(), Some("0123456789abcdef"));
+}
+
+#[test]
+fn oracle_stamp_header_key_rejects_malformed_values_and_a_missing_oracle() {
+    for bad in [
+        "0123456789ABCDEF",
+        "0123456789abcde",
+        "0123456789abcdef0",
+        "0123456789abcdeg",
+    ] {
+        let source = format!("#---\n# oracle: oracle.exs\n# oracle.stamp: {bad}\n#---\n");
+        let err = parse_fixture_metadata(&source).expect_err(bad);
+        assert!(err.to_string().contains("16 lowercase hex digits"), "{bad}: {err}");
+    }
+    let err = parse_fixture_metadata("#---\n# oracle.stamp: 0123456789abcdef\n#---\n").expect_err("no oracle");
+    assert!(err.to_string().contains("requires `oracle`"), "{err}");
+    let err = parse_fixture_metadata(
+        "#---\n# oracle: o.exs\n# oracle.stamp: 0123456789abcdef\n# oracle.stamp: 0123456789abcdef\n#---\n",
+    )
+    .expect_err("repeated");
     assert!(err.to_string().contains("may only appear once"), "{err}");
 }
