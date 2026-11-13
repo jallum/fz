@@ -17,12 +17,23 @@ pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>) -> bool {
     if c.pos.iter().any(|p| p.elems.len() != arity) {
         return true;
     }
-    let mut t: Vec<Descr> = c.pos[0].elems.iter().map(|ty| cx.descr(ty).clone()).collect();
-    for p in &c.pos[1..] {
-        for (i, e) in p.elems.iter().enumerate() {
-            t[i] = t[i].intersect(cx.descr(e));
-        }
-    }
+    let met: Vec<Descr> = match &c.pos[1..] {
+        [] => Vec::new(),
+        rest => rest.iter().fold(
+            c.pos[0].elems.iter().map(|ty| cx.descr(ty).clone()).collect(),
+            |met: Vec<Descr>, p| {
+                met.iter()
+                    .zip(&p.elems)
+                    .map(|(m, e)| m.intersect(cx.descr(e)))
+                    .collect()
+            },
+        ),
+    };
+    let t: Vec<&Descr> = if met.is_empty() {
+        c.pos[0].elems.iter().map(|ty| cx.descr(ty)).collect()
+    } else {
+        met.iter().collect()
+    };
     let negs: Vec<Vec<&Descr>> = c
         .neg
         .iter()
@@ -38,7 +49,7 @@ pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>) -> bool {
 /// caller can decide `∏t ⊆ ⋃∏n` for rectangles it built but never interned.
 /// Every entry of `n` must have the same arity as `t`; a mismatched arity
 /// subtracts nothing and belongs to the caller's filter.
-pub(super) fn phi_tuple(cx: TyCtx<'_>, t: &[Descr], n: &[Vec<&Descr>]) -> bool {
+pub(super) fn phi_tuple<'d>(cx: TyCtx<'_>, t: &[&Descr], n: &[impl AsRef<[&'d Descr]>]) -> bool {
     // One empty coordinate empties the whole product — no negation needed.
     // Checking at entry prunes every recursive branch whose diff/intersect
     // zeroed a coordinate; without this the recursion only discovers the
@@ -49,18 +60,21 @@ pub(super) fn phi_tuple(cx: TyCtx<'_>, t: &[Descr], n: &[Vec<&Descr>]) -> bool {
     let Some((head, rest)) = n.split_first() else {
         return false;
     };
+    let head = head.as_ref();
     // A negation disjoint from the product on any coordinate subtracts
     // nothing: drop it instead of splitting on it.
-    if head.iter().zip(t).any(|(h, ti)| ti.intersect(h).is_empty(cx)) {
+    if head.iter().zip(t).any(|(h, ti)| ti.is_disjoint(cx, h)) {
         return phi_tuple(cx, t, rest);
     }
     for i in 0..t.len() {
-        let mut t_split = t.to_vec();
-        for j in 0..i {
-            t_split[j] = t_split[j].intersect(head[j]);
-        }
-        t_split[i] = t_split[i].diff(head[i]);
-        if !phi_tuple(cx, &t_split, rest) {
+        // Coordinates before `i` are met with the negation, `i` is cut by it,
+        // and the rest are the product's own.
+        let changed: Vec<Descr> = (0..i)
+            .map(|j| t[j].intersect(head[j]))
+            .chain([t[i].diff(head[i])])
+            .collect();
+        let split: Vec<&Descr> = changed.iter().chain(t[i + 1..].iter().copied()).collect();
+        if !phi_tuple(cx, &split, rest) {
             return false;
         }
     }

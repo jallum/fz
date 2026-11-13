@@ -778,6 +778,25 @@ impl Descr {
                 && clauses_within(cx, &self.maps, &other.maps, map_clause_empty)
     }
 
+    /// `self.intersect(other).is_empty(cx)`, answered axis by axis on borrowed
+    /// clauses so no meet descriptor is built.
+    ///
+    /// The brand slot and the finite scalar axes meet exactly when their
+    /// members overlap; a structural axis is decided only where both sides
+    /// have clauses, because an axis one side lacks meets in nothing.
+    pub(super) fn is_disjoint(&self, cx: TyCtx<'_>, other: &Descr) -> bool {
+        !self.brands.overlaps(&other.brands)
+            || self.basic.intersect(other.basic).is_empty()
+                && !self.atoms.overlaps(&other.atoms)
+                && !self.opaques.overlaps(&other.opaques)
+                && !self.vars.overlaps(&other.vars)
+                && clauses_disjoint(cx, &self.tuples, &other.tuples, tuple_clause_empty)
+                && clauses_disjoint(cx, &self.lists, &other.lists, list_clause_empty)
+                && clauses_disjoint(cx, &self.resources, &other.resources, resource_clause_empty)
+                && clauses_disjoint(cx, &self.funcs, &other.funcs, func_clause_empty)
+                && clauses_disjoint(cx, &self.maps, &other.maps, map_clause_empty)
+    }
+
     pub(super) fn is_equiv(&self, cx: TyCtx<'_>, other: &Descr) -> bool {
         self == other || (self.is_subtype(cx, other) && other.is_subtype(cx, self))
     }
@@ -832,6 +851,17 @@ fn clauses_within<T: Clone + PartialEq>(
     dnf_intersect(ours, &dnf_neg(theirs))
         .iter()
         .all(|c| clause_empty(cx, c))
+}
+
+/// Whether `ours ∧ theirs` is empty on one structural axis. The product is
+/// built only where both sides have clauses.
+fn clauses_disjoint<T: Clone + PartialEq>(
+    cx: TyCtx<'_>,
+    ours: &[Conj<T>],
+    theirs: &[Conj<T>],
+    clause_empty: impl Fn(TyCtx<'_>, &Conj<T>) -> bool,
+) -> bool {
+    ours.is_empty() || theirs.is_empty() || dnf_intersect(ours, theirs).iter().all(|c| clause_empty(cx, c))
 }
 
 fn single_positive<T>(clauses: &[Conj<T>]) -> Option<&T> {

@@ -130,6 +130,8 @@
 //! nothing is safe there and reaches all five. This is the one statement of
 //! that exclusion; every other site points here.
 
+use std::collections::BTreeMap;
+
 use super::Ty;
 use super::TyCtx;
 use super::conj::Conj;
@@ -743,10 +745,10 @@ pub(super) enum Coord {
 }
 
 impl Coord {
-    fn descr(&self, cx: TyCtx<'_>) -> Descr {
+    fn descr<'a>(&'a self, cx: TyCtx<'a>) -> &'a Descr {
         match self {
-            Self::Interned(ty) => cx.descr(ty).clone(),
-            Self::Built(d) => (**d).clone(),
+            Self::Interned(ty) => cx.descr(ty),
+            Self::Built(d) => d,
         }
     }
 
@@ -801,7 +803,7 @@ pub(super) fn fuse_tuple_rects(cx: TyCtx<'_>, mut rects: Vec<Rect>) -> Vec<Rect>
 fn fuse_one_coordinate_unions(cx: TyCtx<'_>, rects: &mut Vec<Rect>) -> bool {
     let mut fused = false;
     while let Some((left, right, coord)) = next_fusible_pair(cx, rects) {
-        let grown = rects[left][coord].descr(cx).union(cx, &rects[right][coord].descr(cx));
+        let grown = rects[left][coord].descr(cx).union(cx, rects[right][coord].descr(cx));
         rects[left][coord] = Coord::Built(Box::new(grown));
         rects.remove(right);
         fused = true;
@@ -832,35 +834,48 @@ fn next_fusible_pair(cx: TyCtx<'_>, rects: &[Rect]) -> Option<(usize, usize, usi
 
 /// Grow coordinates to the axis union while the rectangle stays inside it.
 /// Reports whether anything grew.
+///
+/// A coordinate's union over its same-arity siblings is the same for every
+/// rectangle of that arity, and one step changes one coordinate of one
+/// rectangle, so each union is folded once and only the changed coordinate's
+/// is folded again.
 fn widen_to_axis_union(cx: TyCtx<'_>, rects: &mut [Rect]) -> bool {
+    let mut unions = SiblingUnions::new();
     let mut widened = false;
-    while let Some((index, coord, grown)) = next_widening(cx, rects) {
+    while let Some((index, coord, grown)) = next_widening(cx, rects, &mut unions) {
         rects[index][coord] = Coord::Built(Box::new(grown));
         widened = true;
     }
     widened
 }
 
-fn next_widening(cx: TyCtx<'_>, rects: &[Rect]) -> Option<(usize, usize, Descr)> {
-    let mats: Vec<Vec<Descr>> = rects
+/// The union of one coordinate over every rectangle of one arity, by
+/// `(arity, coordinate)`, for the coordinates asked about so far.
+type SiblingUnions = BTreeMap<(usize, usize), Descr>;
+
+/// The first rectangle and coordinate, in rectangle then coordinate order,
+/// whose union over its siblings is larger than it is and still lies inside
+/// the axis, with that union. The union is taken out of `unions`, because the
+/// step is about to change that coordinate.
+fn next_widening(cx: TyCtx<'_>, rects: &[Rect], unions: &mut SiblingUnions) -> Option<(usize, usize, Descr)> {
+    let rows: Vec<Vec<&Descr>> = rects
         .iter()
         .map(|rect| rect.iter().map(|coord| coord.descr(cx)).collect())
         .collect();
-    for (index, rect) in mats.iter().enumerate() {
-        let arity = rect.len();
-        let siblings: Vec<&Vec<Descr>> = mats.iter().filter(|other| other.len() == arity).collect();
+    for (index, row) in rows.iter().enumerate() {
+        let arity = row.len();
+        let same_arity = || rows.iter().filter(|other| other.len() == arity);
         for coord in 0..arity {
-            let candidate = siblings
-                .iter()
-                .fold(Descr::none(), |acc, sibling| acc.union(cx, &sibling[coord]));
-            if candidate == rect[coord] {
+            let candidate = unions
+                .entry((arity, coord))
+                .or_insert_with(|| same_arity().fold(Descr::none(), |acc, sibling| acc.union(cx, sibling[coord])));
+            if *candidate == *row[coord] {
                 continue;
             }
-            let mut trial = rect.clone();
-            trial[coord] = candidate.clone();
-            let cover: Vec<Vec<&Descr>> = siblings.iter().map(|sibling| sibling.iter().collect()).collect();
-            if emptiness::phi_tuple(cx, &trial, &cover) {
-                return Some((index, coord, candidate));
+            let mut trial = row.clone();
+            trial[coord] = candidate;
+            if emptiness::phi_tuple(cx, &trial, &same_arity().collect::<Vec<_>>()) {
+                return unions.remove(&(arity, coord)).map(|grown| (index, coord, grown));
             }
         }
     }
