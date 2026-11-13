@@ -152,7 +152,6 @@ pub(super) fn plan_entry_dispatch(
         .raising(LastResort::function_clause(&world.function_ref(function).elixir_name()));
     let namespace = source.namespace;
     let fn_span = surface.span;
-    let redundancy_check = (source_patterns.rows.len() > 1).then(|| source_patterns.clone());
     let mut resolver = super::super::dispatch::SourcePatternResolver {
         world,
         namespace,
@@ -162,11 +161,11 @@ pub(super) fn plan_entry_dispatch(
             Ok(Some(world.guard_callee(callee)))
         },
     };
-    let plan = match pattern_dispatch_from_source_with_resolver(source_patterns, &mut resolver) {
+    let plan = match pattern_dispatch_from_source_with_resolver(&source_patterns, &mut resolver) {
         Ok(plan) => plan,
         Err(error) => return Err(emit_entry_dispatch_error(tel, world, function, fn_span, error)),
     };
-    if let Some(source_patterns) = redundancy_check {
+    if source_patterns.rows.len() > 1 {
         let redundant_rows = crate::dispatch_matrix::pattern::source::find_redundant_rows_with_resolver(
             &source_patterns,
             &plan,

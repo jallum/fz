@@ -114,7 +114,7 @@ fn named_struct_field_constraints_refine_their_exact_root_and_reject_other_famil
         guard: |_world: &mut World, _callee: &crate::ast::Callee, _arity: usize| Ok(None),
     };
     let plan = pattern_dispatch_from_source_with_resolver(
-        SourcePatternRows::lexical(
+        &SourcePatternRows::lexical(
             1,
             vec![
                 row(

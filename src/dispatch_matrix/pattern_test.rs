@@ -147,7 +147,7 @@ impl Helpers {
     fn plan_of_row(&self, row: PatternRow<Ty>) -> Plan {
         let input_count = row.patterns.len();
         let rows = SourcePatternRows::lexical(input_count, vec![row]);
-        pattern_dispatch_from_source_with_resolver(rows, &mut self.resolver()).expect("the row compiles")
+        pattern_dispatch_from_source_with_resolver(&rows, &mut self.resolver()).expect("the row compiles")
     }
 }
 

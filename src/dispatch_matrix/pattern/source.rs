@@ -140,9 +140,12 @@ pub(crate) enum SourcePatternError {
 /// The names these rows reach for but do not bind: a `^name` pattern, or a
 /// guard variable no pattern in the same row binds. Each is resolved against
 /// the rows' prematch here, where the whole row set is in view.
-pub(crate) fn collect_pinned_names<TypeHandle>(patterns: &SourcePatternRows<TypeHandle>) -> Vec<PatternPinnedInput> {
+pub(crate) fn collect_pinned_names<'a, TypeHandle: 'a>(
+    prematch: &Prematch,
+    rows: impl Iterator<Item = &'a PatternRow<TypeHandle>>,
+) -> Vec<PatternPinnedInput> {
     let mut out = Vec::new();
-    for row in &patterns.rows {
+    for row in rows {
         let mut bound = BTreeSet::new();
         for pattern in &row.patterns {
             collect_pinned_names_in_pattern(pattern, &mut out);
@@ -153,7 +156,7 @@ pub(crate) fn collect_pinned_names<TypeHandle>(patterns: &SourcePatternRows<Type
         }
     }
     for pin in &mut out {
-        pin.input = patterns.prematch.input_for(&pin.name);
+        pin.input = prematch.input_for(&pin.name);
     }
     out
 }
@@ -342,16 +345,10 @@ fn earliest_row_that_already_matches<TypeHandle: Clone + PartialEq + Eq>(
         .position(|row| row.body_id == body_id)
         .expect("a reported body id names a row in these patterns");
     for prefix_end in 0..index {
-        let mut candidate_rows = patterns.rows[..=prefix_end].to_vec();
-        candidate_rows.push(patterns.rows[index].clone());
-        let candidate = SourcePatternRows {
-            input_count: patterns.input_count,
-            rows: candidate_rows,
-            prematch: patterns.prematch.clone(),
-            last_resort: None,
-        };
-        let plan = super::pattern_dispatch_from_source_with_resolver(candidate, resolver)
-            .expect("a prefix of already-compiled rows must still compile");
+        let candidate = patterns.rows[..=prefix_end].iter().chain([&patterns.rows[index]]);
+        let plan =
+            super::pattern_dispatch_from_rows(patterns.input_count, &patterns.prematch, None, candidate, resolver)
+                .expect("a prefix of already-compiled rows must still compile");
         let mut reached = BTreeSet::new();
         collect_reachable_bodies_from_graph(&plan, plan.graph.root, &mut reached);
         if !reached.contains(&body_id) {
