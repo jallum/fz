@@ -29,6 +29,7 @@
 //!     defer: rationale     # optional whole-fixture deferral
 //!     defer.build: rationale  # optional per-path deferral
 //!     oracle: oracle.exs   # Elixir twin: its stdout owns expected.txt
+//!     oracle.stamp: 0123456789abcdef  # written by ORACLE=regen; see below
 //!     args: -- "" "a b"    # program command line: after the source path for
 //!                          # run/interp, to the built binary and to `elixir`;
 //!                          # split on spaces, double quotes keep spaces
@@ -45,15 +46,21 @@
 //! `00001_ja-some_fixture.fz`; `j` means `run`, `i` means `interp`, and `a`
 //! means `build`.
 //!
-//! When `oracle:` is set, the `oracle_goldens_match_elixir` static test runs the
-//! named Elixir program under the real `elixir` binary and asserts its stdout
-//! equals `expected.txt` (and owns it under `ORACLE=regen`, which also records the
-//! header's `oracle.stamp`). A successful fixture's
-//! fz paths reproduce that golden, so `fz == Elixir` holds transitively. An
-//! `expect: abort` oracle can instead make a silent assertion that Elixir
-//! rejects the input; the fz paths prove their rejection through
-//! `expected.stderr`. Elixir owns the golden — per-path bless never rewrites
-//! `expected.txt` for an oracle fixture.
+//! When `oracle:` is set, the `oracle_goldens_match_elixir` static test checks
+//! the pair against the real `elixir` binary: the oracle's stdout must equal
+//! `expected.txt`. A successful fixture's fz paths reproduce that golden, so
+//! `fz == Elixir` holds transitively. An `expect: abort` oracle can instead make
+//! a silent assertion that Elixir rejects the input; the fz paths prove their
+//! rejection through `expected.stderr`. Elixir owns the golden -- per-path
+//! bless never rewrites `expected.txt` for an oracle fixture.
+//!
+//! The header's `oracle.stamp` is a hash of the oracle script, the golden and
+//! the args. When it equals the hash of what is on disk, Elixir has already
+//! confirmed the pair and is not started; otherwise the pair is run and
+//! compared, and a pair Elixir agrees with but whose stamp is stale or missing
+//! fails. `ORACLE=regen` rewrites goldens and stamps from Elixir's output,
+//! `ORACLE=check` runs Elixir for every pair ignoring stamps, and
+//! `ORACLE_FIXTURE=<stem>` narrows either to one fixture.
 //!
 //! `expect: success` (the default) requires exit 0 with matching stdout/diagnostics.
 //! `expect: abort` flips the contract: the program's main process fails, so it
@@ -332,6 +339,26 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         (
             "oracle_regen_rewrites_a_golden_that_differs",
             oracle_regen_rewrites_a_golden_that_differs,
+        ),
+        (
+            "oracle_unchanged_pair_does_not_start_elixir",
+            oracle_unchanged_pair_does_not_start_elixir,
+        ),
+        (
+            "oracle_pair_with_a_changed_script_golden_or_args_runs_elixir",
+            oracle_pair_with_a_changed_script_golden_or_args_runs_elixir,
+        ),
+        (
+            "oracle_agreeing_pair_with_a_stale_or_missing_stamp_fails_naming_regen",
+            oracle_agreeing_pair_with_a_stale_or_missing_stamp_fails_naming_regen,
+        ),
+        (
+            "oracle_check_mode_runs_elixir_despite_a_current_stamp",
+            oracle_check_mode_runs_elixir_despite_a_current_stamp,
+        ),
+        (
+            "oracle_stamps_in_the_tree_are_current_so_no_elixir_starts",
+            oracle_stamps_in_the_tree_are_current_so_no_elixir_starts,
         ),
         (
             "abort_stderr_goldens_are_in_oracle_output",
@@ -2382,10 +2409,16 @@ fn run_path_logged_to(
 /// `expect: abort` oracle can instead assert silently that Elixir rejects the
 /// input while each fz path pins rejection through `expected.stderr`.
 ///
+/// A pair whose header `oracle.stamp` equals the stamp of the script, golden
+/// and args on disk was confirmed by Elixir already, so Elixir is not run for
+/// it. A pair with a different or missing stamp is run and compared; when
+/// Elixir agrees but the stamp is stale or missing the trial fails and names
+/// the regen command, so the tree never carries a wrong stamp.
+///
 /// `ORACLE=regen` rewrites `expected.txt` and the header's `oracle.stamp` from
-/// the Elixir output; `ORACLE=check` runs Elixir for every pair and fails on
-/// any difference from the golden. `ORACLE_FIXTURE=<stem>` narrows either mode
-/// to one fixture. Requires the `elixir` binary on PATH (Elixir 1.19+); a spawn
+/// the Elixir output; `ORACLE=check` ignores stamps, runs Elixir for every pair
+/// and fails on any difference from the golden (the check after an Elixir
+/// upgrade). `ORACLE_FIXTURE=<stem>` narrows either mode to one fixture. Requires the `elixir` binary on PATH (Elixir 1.19+); a spawn
 /// failure fails loudly by design — the oracle is the signal, so a missing
 /// oracle is a hard error, not a skip.
 fn oracle_goldens_match_elixir() {
@@ -2406,11 +2439,7 @@ fn oracle_goldens_match_elixir() {
         };
         selected += 1;
         let oracle_path = fixture.oracle_path(oracle_rel);
-        let outcome = run_elixir_oracle(&fixture, &header, &oracle_path).and_then(|actual| match mode {
-            OracleMode::Verify | OracleMode::Check => compare_oracle_golden(&fixture, &actual),
-            OracleMode::Regen => regenerate_oracle_pair(&fixture, &header, &oracle_path, &actual),
-        });
-        if let Err(failure) = outcome {
+        if let Some(failure) = verify_oracle_pair(&fixture, &header, &oracle_path, mode).failure {
             failures.push(failure);
         }
     }
@@ -2425,12 +2454,75 @@ fn oracle_goldens_match_elixir() {
     );
 }
 
+/// What happened to one oracle pair: whether Elixir was started for it, and
+/// why the pair failed, if it did.
+#[derive(Debug)]
+struct OracleVerdict {
+    spawned_elixir: bool,
+    failure: Option<String>,
+}
+
+fn verify_oracle_pair(fixture: &FixtureCase, header: &Header, oracle_path: &Path, mode: OracleMode) -> OracleVerdict {
+    let script = match fs::read(oracle_path) {
+        Ok(script) => script,
+        Err(e) => {
+            return OracleVerdict {
+                spawned_elixir: false,
+                failure: Some(format!(
+                    "{}: oracle `{}` not readable: {e}",
+                    fixture.display_path().display(),
+                    oracle_path.display()
+                )),
+            };
+        }
+    };
+    let golden = fs::read(fixture.sidecar_path("expected.txt")).unwrap_or_default();
+    let stamp = oracle_stamp(&script, &golden, &header.args);
+    let current = header.oracle_stamp.as_deref() == Some(stamp.as_str());
+    if current && matches!(mode, OracleMode::Verify) {
+        return OracleVerdict {
+            spawned_elixir: false,
+            failure: None,
+        };
+    }
+    let outcome = run_elixir_oracle(fixture, header, oracle_path).and_then(|actual| match mode {
+        OracleMode::Verify => compare_oracle_golden(fixture, &actual).and_then(|()| {
+            if current {
+                Ok(())
+            } else {
+                Err(stale_stamp_failure(fixture, header))
+            }
+        }),
+        OracleMode::Check => compare_oracle_golden(fixture, &actual),
+        OracleMode::Regen => regenerate_oracle_pair(fixture, header, &script, &actual),
+    });
+    OracleVerdict {
+        spawned_elixir: true,
+        failure: outcome.err(),
+    }
+}
+
+fn stale_stamp_failure(fixture: &FixtureCase, header: &Header) -> String {
+    let state = if header.oracle_stamp.is_some() {
+        "stale"
+    } else {
+        "missing"
+    };
+    format!(
+        "{}: Elixir agrees with the golden but `oracle.stamp` is {state}; run \
+         `ORACLE=regen ORACLE_FIXTURE={} cargo test --test fixture_matrix oracle_goldens_match_elixir`",
+        fixture.display_path().display(),
+        fixture.name()
+    )
+}
+
 /// What `oracle_goldens_match_elixir` does with each oracle pair.
 #[derive(Clone, Copy)]
 enum OracleMode {
-    /// Run Elixir and compare with the golden.
+    /// Run Elixir for each pair whose stamp does not match, compare with the
+    /// golden, and require the stamp to be current.
     Verify,
-    /// Run Elixir for every pair and compare with the golden.
+    /// Run Elixir for every pair, ignoring stamps, and compare with the golden.
     Check,
     /// Run Elixir, rewrite the golden and record the pair's stamp.
     Regen,
@@ -2449,13 +2541,6 @@ impl OracleMode {
 
 /// Elixir's normalized stdout for one oracle fixture.
 fn run_elixir_oracle(fixture: &FixtureCase, header: &Header, oracle_path: &Path) -> Result<String, String> {
-    if !oracle_path.is_file() {
-        return Err(format!(
-            "{}: oracle `{}` not found",
-            fixture.display_path().display(),
-            oracle_path.display()
-        ));
-    }
     let label = format!("elixir {}", oracle_path.display());
     let out = fixture_command_output(
         Command::new("elixir").arg(oracle_path).args(&header.args),
@@ -2504,12 +2589,7 @@ fn compare_oracle_golden(fixture: &FixtureCase, actual: &str) -> Result<(), Stri
 /// resulting pair in the fixture header. A golden whose normalized text already
 /// equals Elixir's output stays byte for byte as it is, and the stamp covers
 /// the bytes on disk.
-fn regenerate_oracle_pair(
-    fixture: &FixtureCase,
-    header: &Header,
-    oracle_path: &Path,
-    actual: &str,
-) -> Result<(), String> {
+fn regenerate_oracle_pair(fixture: &FixtureCase, header: &Header, script: &[u8], actual: &str) -> Result<(), String> {
     let at = |step: &str, e: &dyn std::fmt::Display| format!("{}: {step}: {e}", fixture.display_path().display());
     let golden_path = fixture.sidecar_path("expected.txt");
     let on_disk = fs::read_to_string(&golden_path).unwrap_or_default();
@@ -2521,8 +2601,7 @@ fn regenerate_oracle_pair(
         }
     }
     let golden = fs::read(&golden_path).unwrap_or_default();
-    let script = fs::read(oracle_path).map_err(|e| at("read oracle", &e))?;
-    let stamp = oracle_stamp(&script, &golden, &header.args);
+    let stamp = oracle_stamp(script, &golden, &header.args);
     let source = fs::read_to_string(&fixture.path).map_err(|e| at("read fixture", &e))?;
     let stamped = with_oracle_stamp(&source, &stamp).map_err(|e| at("stamp header", &e))?;
     if stamped != source {
@@ -2530,6 +2609,8 @@ fn regenerate_oracle_pair(
     }
     Ok(())
 }
+
+const ORACLE_PROBE_SCRIPT: &str = "IO.write(\"x\")\n";
 
 fn oracle_regen_fixture(tag: &str, golden: Option<&str>) -> (PathBuf, FixtureCase, Header) {
     let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -2541,7 +2622,7 @@ fn oracle_regen_fixture(tag: &str, golden: Option<&str>) -> (PathBuf, FixtureCas
         "#---\n# purpose: regen probe\n# oracle: oracle.exs\n#---\ndef main(), do: 1\n",
     )
     .expect("write fixture");
-    fs::write(dir.join("regen.oracle.exs"), "IO.write(\"x\")\n").expect("write oracle");
+    fs::write(dir.join("regen.oracle.exs"), ORACLE_PROBE_SCRIPT).expect("write oracle");
     if let Some(golden) = golden {
         fs::write(dir.join("regen.expected.txt"), golden).expect("write golden");
     }
@@ -2554,11 +2635,10 @@ fn oracle_regen_leaves_a_golden_that_already_matches_untouched() {
     // Elixir printed "x"; the golden lacks the trailing newline that
     // normalization adds, so it already matches and must not be rewritten.
     let (dir, fixture, header) = oracle_regen_fixture("keep", Some("x"));
-    let oracle_path = fixture.oracle_path("oracle.exs");
-    regenerate_oracle_pair(&fixture, &header, &oracle_path, "x\n").expect("regen");
+    regenerate_oracle_pair(&fixture, &header, ORACLE_PROBE_SCRIPT.as_bytes(), "x\n").expect("regen");
     assert_eq!(fs::read(dir.join("regen.expected.txt")).expect("golden"), b"x");
     let stamped = parse_header(&fixture).expect("reparse").oracle_stamp;
-    let expected = oracle_stamp(b"IO.write(\"x\")\n", b"x", &[]);
+    let expected = oracle_stamp(ORACLE_PROBE_SCRIPT.as_bytes(), b"x", &[]);
     assert_eq!(
         stamped.as_deref(),
         Some(expected.as_str()),
@@ -2569,13 +2649,115 @@ fn oracle_regen_leaves_a_golden_that_already_matches_untouched() {
 
 fn oracle_regen_rewrites_a_golden_that_differs() {
     let (dir, fixture, header) = oracle_regen_fixture("rewrite", Some("old\n"));
-    let oracle_path = fixture.oracle_path("oracle.exs");
-    regenerate_oracle_pair(&fixture, &header, &oracle_path, "x\n").expect("regen");
+    regenerate_oracle_pair(&fixture, &header, ORACLE_PROBE_SCRIPT.as_bytes(), "x\n").expect("regen");
     assert_eq!(fs::read(dir.join("regen.expected.txt")).expect("golden"), b"x\n");
     let stamped = parse_header(&fixture).expect("reparse").oracle_stamp;
-    let expected = oracle_stamp(b"IO.write(\"x\")\n", b"x\n", &[]);
+    let expected = oracle_stamp(ORACLE_PROBE_SCRIPT.as_bytes(), b"x\n", &[]);
     assert_eq!(stamped.as_deref(), Some(expected.as_str()));
     let _ = fs::remove_dir_all(dir);
+}
+
+/// A stamped pair whose script prints `x` and whose golden is `x\n`.
+fn stamped_oracle_fixture(tag: &str) -> (PathBuf, FixtureCase, PathBuf) {
+    let (dir, fixture, header) = oracle_regen_fixture(tag, Some("x\n"));
+    regenerate_oracle_pair(&fixture, &header, ORACLE_PROBE_SCRIPT.as_bytes(), "x\n").expect("stamp");
+    let oracle_path = fixture.oracle_path("oracle.exs");
+    (dir, fixture, oracle_path)
+}
+
+fn verdict(fixture: &FixtureCase, oracle_path: &Path, mode: OracleMode) -> OracleVerdict {
+    let header = parse_header(fixture).expect("reparse header");
+    verify_oracle_pair(fixture, &header, oracle_path, mode)
+}
+
+fn oracle_unchanged_pair_does_not_start_elixir() {
+    let (dir, fixture, oracle_path) = stamped_oracle_fixture("unchanged");
+    let verdict = verdict(&fixture, &oracle_path, OracleMode::Verify);
+    assert!(
+        !verdict.spawned_elixir,
+        "a stamped, unchanged pair must not start Elixir"
+    );
+    assert_eq!(verdict.failure, None);
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn oracle_pair_with_a_changed_script_golden_or_args_runs_elixir() {
+    let (dir, fixture, oracle_path) = stamped_oracle_fixture("changed");
+    fs::write(&oracle_path, "IO.write(\"y\")\n").expect("change script");
+    let verdict_after_script = verdict(&fixture, &oracle_path, OracleMode::Verify);
+    assert!(verdict_after_script.spawned_elixir, "a changed script runs Elixir");
+    assert!(
+        verdict_after_script
+            .failure
+            .is_some_and(|f| f.contains("oracle mismatch"))
+    );
+
+    fs::write(&oracle_path, ORACLE_PROBE_SCRIPT).expect("restore script");
+    fs::write(fixture.sidecar_path("expected.txt"), "z\n").expect("change golden");
+    let verdict_after_golden = verdict(&fixture, &oracle_path, OracleMode::Verify);
+    assert!(verdict_after_golden.spawned_elixir, "a changed golden runs Elixir");
+    assert!(
+        verdict_after_golden
+            .failure
+            .is_some_and(|f| f.contains("oracle mismatch"))
+    );
+
+    fs::write(fixture.sidecar_path("expected.txt"), "x\n").expect("restore golden");
+    let source = fs::read_to_string(&fixture.path).expect("read fixture");
+    fs::write(
+        &fixture.path,
+        source.replace("# oracle: oracle.exs\n", "# oracle: oracle.exs\n# args: a\n"),
+    )
+    .expect("change args");
+    let verdict_after_args = verdict(&fixture, &oracle_path, OracleMode::Verify);
+    assert!(verdict_after_args.spawned_elixir, "changed args run Elixir");
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn oracle_agreeing_pair_with_a_stale_or_missing_stamp_fails_naming_regen() {
+    let (dir, fixture, oracle_path) = stamped_oracle_fixture("stale");
+    let stamp_line = format!(
+        "# oracle.stamp: {}\n",
+        parse_header(&fixture).expect("header").oracle_stamp.expect("stamp")
+    );
+    let source = fs::read_to_string(&fixture.path).expect("read fixture");
+    let stale = source.replace(&stamp_line, "# oracle.stamp: 0000000000000000\n");
+    let missing = source.replace(&stamp_line, "");
+    for (state, text) in [("stale", stale), ("missing", missing)] {
+        fs::write(&fixture.path, text).expect("write fixture");
+        let verdict = verdict(&fixture, &oracle_path, OracleMode::Verify);
+        assert!(verdict.spawned_elixir, "{state}: Elixir confirms the pair");
+        let failure = verdict.failure.unwrap_or_else(|| panic!("{state} stamp must fail"));
+        assert!(failure.contains(state), "{failure}");
+        assert!(failure.contains("ORACLE=regen ORACLE_FIXTURE=regen"), "{failure}");
+    }
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn oracle_check_mode_runs_elixir_despite_a_current_stamp() {
+    let (dir, fixture, oracle_path) = stamped_oracle_fixture("check");
+    let verdict = verdict(&fixture, &oracle_path, OracleMode::Check);
+    assert!(verdict.spawned_elixir, "check mode ignores stamps");
+    assert_eq!(verdict.failure, None);
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn oracle_stamps_in_the_tree_are_current_so_no_elixir_starts() {
+    let mut started: Vec<String> = Vec::new();
+    for fixture in discover() {
+        let Ok(header) = parse_header(&fixture) else { continue };
+        let Some(oracle_rel) = header.oracle.as_deref() else {
+            continue;
+        };
+        let oracle_path = fixture.oracle_path(oracle_rel);
+        if verify_oracle_pair(&fixture, &header, &oracle_path, OracleMode::Verify).spawned_elixir {
+            started.push(fixture.name());
+        }
+    }
+    assert!(
+        started.is_empty(),
+        "oracle pairs whose stamp is not current (regen them): {started:?}"
+    );
 }
 
 /// An `expect: abort` fixture with an oracle pins fz's failure line in
