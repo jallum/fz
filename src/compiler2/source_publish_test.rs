@@ -471,6 +471,51 @@ def main(), do: answer()
 }
 
 #[test]
+fn an_item_macros_block_publishes_each_of_its_statements_as_a_definition() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let code = world.submit_code(
+        Some("item-macro-block.fz".to_string()),
+        r#"
+defmacro make_three() do
+  inner = quote do
+    def a(), do: 1
+    def b(), do: 2
+  end
+  quote do
+    unquote(inner)
+    def c(), do: 3
+  end
+end
+
+make_three()
+
+def main(), do: a() + b() + c()
+"#
+        .to_string(),
+    );
+
+    assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");
+    assert!(
+        matches!(
+            super::super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
+        "a block returned at item level is its statements, each an item"
+    );
+
+    // The block holds a block: every statement of both is a definition of the
+    // scope the macro was called in.
+    for name in ["a", "b", "c"] {
+        let function = world.reference_function(ModuleId::GLOBAL, name, 0);
+        assert!(
+            world.function_source(function).is_some(),
+            "the block's `def {name}/0` should be published",
+        );
+    }
+}
+
+#[test]
 fn source_publication_defers_local_macro_expansion_until_function_demand() {
     let tel = ConfiguredTelemetry::new();
     let macro_expansions = MacroExpansionCapture::new();

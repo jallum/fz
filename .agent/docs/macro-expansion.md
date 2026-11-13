@@ -29,6 +29,11 @@ until the expansion result is known. `ScopeSession::apply_item_macro_call` in
 `src/compiler2/source_publish.rs` hands the quoted call to
 `QuotedExpansionCtx::expand_ast_call(...)`, reads the returned root as a source
 fragment, reserves any new local definitions, and applies them in source order.
+The fragment's items are the expansion's own shape, read by
+`item_macro_fragment_root` in `src/compiler2/quoted_expander.rs`: a list is its
+elements, a `__block__` is its statements, a block inside either is its
+statements in turn, and anything else is the one item. So a macro defines
+several functions with one `quote do ... end` holding several `def`s.
 A module body cannot invoke a macro the same module defines. The module is
 still being defined when its body runs, so its own macros do not exist to call
 yet, and `item_macro_invocation` refuses the call with

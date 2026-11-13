@@ -1015,10 +1015,11 @@ pub(crate) fn expand_item_macro_fragment<C: QuotedExpansionCtx>(
         });
     };
     let expanded = match result {
-        ExpandedValue::Complete(root) => item_macro_fragment_root(ctx.telemetry(), &owner.subroot(root))?,
+        ExpandedValue::Complete(root) => root,
         ExpandedValue::Blocked(effects) => return Ok(ExpandedScopeFragment::Blocked(effects)),
     };
     let source_map = ctx.world().source_map();
+    let expanded = item_macro_fragment_root(ctx.telemetry(), &owner.subroot(expanded), &source_map.borrow())?;
     let surface = read_compiler_fragment_root(
         ctx.telemetry(),
         &expanded,
@@ -1028,15 +1029,57 @@ pub(crate) fn expand_item_macro_fragment<C: QuotedExpansionCtx>(
     Ok(ExpandedScopeFragment::Complete(surface))
 }
 
+/// The items an item macro's expansion defines: a list is its elements, a
+/// block is its statements, and anything else is the one item.
 fn item_macro_fragment_root(
     tel: &impl crate::telemetry::Telemetry,
     root: &QuotedSourceRoot,
+    sources: &SourceMap,
 ) -> Result<QuotedSourceRoot, super::scheduler::FatalError> {
-    if root.root().tag() == ValueKind::LIST {
-        return Ok(root.clone());
+    expanded_items(root.cursor(), sources)
+        .and_then(|items| root.interned_list_subroot(&items))
+        .map_err(|error| emit_internal_surface_error(tel, format!("item macro fragment root read failed: {error}")))
+}
+
+fn expanded_items(expansion: QuotedSourceCursor, sources: &SourceMap) -> Result<Vec<AnyValueRef>, QuotedSourceError> {
+    let elements = if expansion.root().tag() == ValueKind::LIST {
+        expansion.list_items()?
+    } else {
+        vec![expansion]
+    };
+    let mut items = Vec::new();
+    elements
+        .into_iter()
+        .try_for_each(|element| collect_statements(element, sources, &mut items))?;
+    Ok(items)
+}
+
+fn collect_statements(
+    quoted: QuotedSourceCursor,
+    sources: &SourceMap,
+    items: &mut Vec<AnyValueRef>,
+) -> Result<(), QuotedSourceError> {
+    match block_statements(&quoted, sources)? {
+        Some(statements) => statements
+            .into_iter()
+            .try_for_each(|statement| collect_statements(statement, sources, items)),
+        None => {
+            items.push(quoted.root());
+            Ok(())
+        }
     }
-    root.interned_list_subroot(&[root.root()])
-        .map_err(|error| emit_internal_surface_error(tel, format!("item macro fragment root wrapping failed: {error}")))
+}
+
+fn block_statements(
+    quoted: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<Option<Vec<QuotedSourceCursor>>, QuotedSourceError> {
+    match quoted.ast_node(sources)? {
+        Some(node) if node.head.root().tag() == ValueKind::ATOM && node.head.atom_name()? == "__block__" => {
+            node.tail.list_items().map(Some)
+        }
+        _ => Ok(None),
+    }
 }
 
 struct ItemMacroInvocation {
