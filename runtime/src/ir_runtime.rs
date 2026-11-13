@@ -1511,19 +1511,17 @@ fn fz_bs_read_field_bits(
                 // The reader's own position is not consulted after this -- the
                 // caller advances by `needed_bits` -- so the aligned path does not
                 // have to walk it forward.
-                let sub_bytes: Vec<u8> = if pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) {
+                let heap = unsafe { &mut (*process).heap };
+                let new_bs = if pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) {
                     let start = pos / 8;
-                    bytes[start..start + needed_bits / 8].to_vec()
+                    heap.alloc_bitstring(&bytes[start..start + needed_bits / 8], needed_bits as u64)
                 } else {
                     let mut w = BitWriter::new();
                     for _ in 0..needed_bits {
                         w.append_bit(r.read_bit().unwrap());
                     }
-                    w.bytes
+                    heap.alloc_bitstring(&w.bytes, needed_bits as u64)
                 };
-                let new_bs = (unsafe { &mut *process })
-                    .heap
-                    .alloc_bitstring(&sub_bytes, needed_bits as u64);
                 (new_bs, needed_bits)
             }
         }
