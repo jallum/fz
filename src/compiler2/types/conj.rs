@@ -21,6 +21,28 @@ impl<T> Conj<T> {
     pub(crate) fn is_top(&self) -> bool {
         self.pos.is_empty() && self.neg.is_empty()
     }
+
+    /// How many signatures the clause holds, positive then negative.
+    pub(crate) fn sig_count(&self) -> usize {
+        self.pos.len() + self.neg.len()
+    }
+
+    /// The `i`th signature in the order `pos` then `neg`.
+    pub(crate) fn sig(&self, i: usize) -> &T {
+        match self.pos.get(i) {
+            Some(sig) => sig,
+            None => &self.neg[i - self.pos.len()],
+        }
+    }
+
+    pub(crate) fn sig_mut(&mut self, i: usize) -> &mut T {
+        let pos_len = self.pos.len();
+        if i < pos_len {
+            &mut self.pos[i]
+        } else {
+            &mut self.neg[i - pos_len]
+        }
+    }
 }
 impl<T: Clone> Conj<T> {
     pub(crate) fn pos_of(t: T) -> Self {

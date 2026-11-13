@@ -5,6 +5,7 @@ use super::AddrStep::{Elem, Field, Param, VarSlot, Variant};
 use super::*;
 use crate::compiler2::identity::{ActivationKey, FunctionId, RootId};
 use crate::compiler2::semantic::SemanticOrd;
+use crate::types::MapKey;
 
 fn var(t: &mut Types, id: u32) -> Ty {
     t.type_var(TypeVarId(id))
@@ -447,4 +448,297 @@ fn address_tag_is_transparent_to_interning() {
     assert_eq!(one, two, "alpha-equivalent arrows fold to one identity under tagging");
     let aa = t.address_arrow(&[x, x], int);
     assert_ne!(one, aa, "distinct params stay distinct under tagging");
+}
+
+/// The addressing algorithm as it stood when remapping cloned each descriptor
+/// it visited. It is the reference the in-place remap is held to.
+impl Types {
+    fn reference_address_inputs(&mut self, inputs: &[Ty]) -> Vec<Ty> {
+        let mut correlations = AddressCorrelations::default();
+        let mut path = Vec::new();
+        inputs
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| self.reference_remap(p, AddrStep::Param(i as u16), &mut path, &mut correlations))
+            .collect()
+    }
+
+    fn reference_address_arrow(&mut self, params: &[Ty], result: Ty) -> Ty {
+        let mut correlations = AddressCorrelations::default();
+        let mut path = Vec::new();
+        let params: Vec<Ty> = params
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| self.reference_remap(p, AddrStep::Param(i as u16), &mut path, &mut correlations))
+            .collect();
+        let result = self.reference_remap(result, AddrStep::Result, &mut path, &mut correlations);
+        self.arrow(&params, result)
+    }
+
+    fn reference_remap(
+        &mut self,
+        ty: Ty,
+        root: AddrStep,
+        path: &mut Vec<AddrStep>,
+        correlations: &mut AddressCorrelations,
+    ) -> Ty {
+        path.push(root);
+        let remapped = self.reference_remap_with(ty, path, correlations, AddressOwner::EmbeddedValue);
+        path.pop();
+        remapped
+    }
+
+    fn reference_remap_with(
+        &mut self,
+        ty: Ty,
+        path: &mut Vec<AddrStep>,
+        correlations: &mut AddressCorrelations,
+        owner: AddressOwner,
+    ) -> Ty {
+        if !self.has_vars(&ty) {
+            return ty;
+        }
+        let mut d = self.descr(&ty).clone();
+        if !d.vars.cofinite && !d.vars.values.is_empty() {
+            d.vars = self.reference_vars_at(&d.vars, path, correlations, owner);
+        }
+        self.reference_remap_children(&mut d, path, correlations, owner);
+        self.intern(d)
+    }
+
+    fn reference_vars_at(
+        &mut self,
+        vars: &FiniteSet<TypeVarId>,
+        path: &mut Vec<AddrStep>,
+        correlations: &mut AddressCorrelations,
+        owner: AddressOwner,
+    ) -> FiniteSet<TypeVarId> {
+        let single = vars.values.len() == 1;
+        let mut set = BTreeSet::new();
+        for (k, &original) in vars.values.iter().enumerate() {
+            let mapped = if owner == AddressOwner::CallableSurface {
+                let binder = correlations
+                    .binders
+                    .last_mut()
+                    .expect("callable surface has a correlation scope");
+                if let Some(&id) = binder.surface.get(&original) {
+                    id
+                } else {
+                    let id = if address_path(&self.address_paths, original).is_some() {
+                        original
+                    } else if let Some(&id) = correlations.values.get(&original) {
+                        id
+                    } else {
+                        let id = if single {
+                            self.address_id(path)
+                        } else {
+                            self.address_id_at_slot(path, k)
+                        };
+                        correlations.values.insert(original, id);
+                        id
+                    };
+                    binder.surface.insert(original, id);
+                    id
+                }
+            } else if owner == AddressOwner::CapturedValue
+                && let Some(id) = correlations
+                    .binders
+                    .iter()
+                    .rev()
+                    .find_map(|binder| binder.surface.get(&original).copied())
+            {
+                id
+            } else if owner == AddressOwner::CapturedValue
+                && let Some(id) = correlations
+                    .binders
+                    .last()
+                    .and_then(|binder| binder.captures.get(&original).copied())
+            {
+                id
+            } else if owner == AddressOwner::CapturedValue
+                && let Some(binder) = correlations.binders.last_mut()
+            {
+                let id = if single {
+                    self.address_id(path)
+                } else {
+                    self.address_id_at_slot(path, k)
+                };
+                binder.captures.insert(original, id);
+                id
+            } else if let Some(&id) = correlations.values.get(&original) {
+                id
+            } else {
+                let id = if single {
+                    self.address_id(path)
+                } else {
+                    self.address_id_at_slot(path, k)
+                };
+                correlations.values.insert(original, id);
+                id
+            };
+            set.insert(mapped);
+        }
+        FiniteSet {
+            values: set,
+            cofinite: false,
+        }
+    }
+
+    fn reference_remap_children(
+        &mut self,
+        d: &mut Descr,
+        path: &mut Vec<AddrStep>,
+        correlations: &mut AddressCorrelations,
+        owner: AddressOwner,
+    ) {
+        let tuple_alternatives = d
+            .tuples
+            .iter()
+            .map(|conj| conj.pos.len() + conj.neg.len())
+            .sum::<usize>();
+        let discriminate_tuple_alternatives = tuple_alternatives > 1;
+        let mut tuple_alternative = 0_u16;
+        for conj in &mut d.tuples {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                let alternative = tuple_alternative;
+                tuple_alternative = tuple_alternative.saturating_add(1);
+                let depth = path.len();
+                if discriminate_tuple_alternatives {
+                    path.push(AddrStep::Variant(alternative));
+                }
+                for (j, ty) in sig.elems.iter_mut().enumerate() {
+                    path.push(AddrStep::Field(j as u16));
+                    *ty = self.reference_remap_with(*ty, path, correlations, owner);
+                    path.pop();
+                }
+                path.truncate(depth);
+            }
+        }
+        for conj in &mut d.lists {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                if let Some(elem) = sig.elem {
+                    path.push(AddrStep::Elem);
+                    sig.elem = Some(self.reference_remap_with(elem, path, correlations, owner));
+                    path.pop();
+                }
+            }
+        }
+        for conj in &mut d.resources {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                path.push(AddrStep::Payload);
+                sig.payload = self.reference_remap_with(sig.payload, path, correlations, owner);
+                path.pop();
+            }
+        }
+        for conj in &mut d.funcs {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                correlations.binders.push(BinderCorrelations::default());
+                for (i, ty) in sig.args.iter_mut().enumerate() {
+                    path.push(AddrStep::Param(i as u16));
+                    *ty = self.reference_remap_with(*ty, path, correlations, AddressOwner::CallableSurface);
+                    path.pop();
+                }
+                path.push(AddrStep::Result);
+                sig.ret = self.reference_remap_with(sig.ret, path, correlations, AddressOwner::CallableSurface);
+                path.pop();
+                if let Some(lit) = &mut sig.lit {
+                    for (i, capture) in lit.captures.iter_mut().enumerate() {
+                        path.push(AddrStep::Capture(i as u16));
+                        *capture = self.reference_remap_with(*capture, path, correlations, AddressOwner::CapturedValue);
+                        path.pop();
+                    }
+                }
+                correlations.binders.pop().expect("callable correlation scope");
+            }
+        }
+        for conj in &mut d.maps {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                for (j, (_, ty)) in sig.fields.iter_mut().enumerate() {
+                    path.push(AddrStep::MapField(j as u16));
+                    *ty = self.reference_remap_with(*ty, path, correlations, owner);
+                    path.pop();
+                }
+            }
+        }
+    }
+}
+
+/// Types with and without variables: at the root, in tuples, lists, maps,
+/// resources, arrows and closure captures, in unions, and already addressed.
+fn address_pool(t: &mut Types) -> Vec<Ty> {
+    let int = t.int();
+    let atom = t.atom();
+    let (x, y, z) = (var(t, 100), var(t, 101), var(t, 102));
+    let a0 = t.param_alpha(0);
+    let a1 = t.param_alpha(1);
+    let mut pool = vec![int, atom, x, y, z, a0, a1];
+    let xy = t.union(x, y);
+    let xyz = t.union(xy, z);
+    let x_or_int = t.union(x, int);
+    pool.extend([xy, xyz, x_or_int]);
+    let leaves = pool.clone();
+    for &leaf in &leaves {
+        pool.push(t.tuple(&[leaf, int]));
+        pool.push(t.tuple(&[int, leaf, leaf]));
+        pool.push(t.list(leaf));
+        pool.push(t.resource(leaf));
+        pool.push(t.map(&[(MapKey::Atom("k".into()), leaf), (MapKey::Int(1), x)]));
+        pool.push(t.arrow(&[leaf], leaf));
+        pool.push(t.arrow(&[int, leaf], int));
+        pool.push(t.closure_lit(ClosureTarget(3), vec![leaf, x], 1));
+    }
+    let tuple_xy = t.tuple(&[x, y]);
+    let tuple_yint = t.tuple(&[y, int]);
+    let tuple_union = t.union(tuple_xy, tuple_yint);
+    let list_x = t.list(x);
+    let nested = t.tuple(&[list_x, tuple_xy]);
+    let arrow_in_tuple = t.arrow(&[x, y], x);
+    let wrapped = t.tuple(&[arrow_in_tuple, x]);
+    let mixed = t.union(tuple_xy, list_x);
+    pool.extend([tuple_union, nested, wrapped, mixed]);
+    pool
+}
+
+#[test]
+fn in_place_remap_is_the_remap_that_cloned_each_descriptor() {
+    // Remapping reads the descriptor it remaps; it must answer exactly what the
+    // copying algorithm answered, for every input vector, on a shared and on a
+    // fresh interner (so mint order of addresses is compared as well).
+    let mut shared = Types::new();
+    let pool = address_pool(&mut shared);
+    let mut reference = Types::new();
+    let reference_pool = address_pool(&mut reference);
+    assert_eq!(pool, reference_pool, "both interners mint the pool in one order");
+
+    for (i, &a) in pool.iter().enumerate() {
+        for &b in pool.iter().skip(i % 5).step_by(7) {
+            let inputs = [a, b, a];
+            assert_eq!(
+                shared.address_inputs(&inputs),
+                reference.reference_address_inputs(&inputs),
+                "address_inputs over {}, {}",
+                shared.display(&a),
+                shared.display(&b),
+            );
+            assert_eq!(
+                shared.address_arrow(&[a, b], a),
+                reference.reference_address_arrow(&[a, b], a),
+                "address_arrow over {}, {}",
+                shared.display(&a),
+                shared.display(&b),
+            );
+            assert_eq!(
+                shared.address_arrow(&[a], b),
+                reference.reference_address_arrow(&[a], b),
+                "address_arrow with a result over {}, {}",
+                shared.display(&a),
+                shared.display(&b),
+            );
+        }
+    }
+    assert_eq!(
+        shared.identity_inventory(),
+        reference.identity_inventory(),
+        "the in-place remap interns exactly the types the copying remap interned",
+    );
 }
