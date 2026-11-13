@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T22:59:19Z",
   "created": "2026-11-13T22:25:17Z",
   "description": "An AnyValueRef for an atom is the tag plus the atom id in the address field, as [] and null are already address-free. No atom is ever given a heap ScalarBox.\n\nWhy: an atom crossing an `any` boundary (extern argument, dbg, send, map key, raise) is given a 16-byte heap ScalarBox so the ref has a word to point at (Heap::box_any_value_ref, runtime/src/heap/imp.rs). Atom ids are u32 (AtomTable, runtime/src/process.rs); the ref address field is 56 bits on arm64 and 57 on x86_64. No document gives a reason for the box; scalars have no identity (fz-gl6.15); nothing compares refs by word. Native codegen never dereferences a scalar ref inline (unbox and box are runtime calls), so it needs no change for correctness.\n\nCensus (interp, 920 fixtures, run time only): 54,843 scalar boxes, 32,385 of them atoms (20,320 from failure::raise, 11,624 from the any-extern boundary across about 310 fixtures).\n\nSpike (abox/immediate-atom-ref.patch in the session scratch dir, 4 files, 87 lines, on 0a1d44728): cargo test --lib 2242 passed; fz-runtime --lib 498 passed; fixture_matrix 3208 passed, 7 failed, all falling allocation pins:\n- enum_list_allocations (run, interp, build): scalar_box 3, 48 -\u003e 2, 32\n- map_atom_order (run, interp, build): scalar_box 7, 112 -\u003e 1, 16; totals 41, 880 -\u003e 35, 784\n- a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown: third message gift_bytes/gift_blocks 16, 1 -\u003e 0, 0\n\nWhat changes: AnyValueRef::atom(id) and load_atom reading the address field; the Atom arm of box_any_value_ref; GC root forwarding, deep copy and CopyMeasure treat an atom ref as address-free; every from_scalar_slot(ATOM, ..) caller constructs the immediate directly (the spike kept a shim; the build removes it).\nWhat goes away: the atom case of copy_scalar_box_to_space and of deep-copy boxing; the literal re-marking of atom struct fields; NIL_ATOM_REF_SLOT and the literal-bit handling of nil_atom_ref; fz_box_atom_for_any as an allocating call (it becomes a pack, or native code packs inline).\nDocs: .agent/docs/any-value.md (the Idea table, \"Dynamic reads return refs into existing storage\", GC scalar-root paragraph), guides/memory.html.\n\nNot verified by the spike: the full six-target gate; x86_64 Linux packing (read, not run); JIT/AOT per-site census. Unexplained and to be explained in the build: `:z \u003c :a` boxes 6 on JIT/AOT and 2 on interp before the change and still boxes 2 non-atom values after it.\n\nBlocks fz-sc8.160: the stable sort makes one more atom comparison in map_atom_order, which raises its scalar-box pin unless atoms are immediate.",
   "id": "fz-sc8.165",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "An atom reference carries its atom id and allocates nothing",
   "type": "task",
-  "updated_at": "2026-11-13T22:25:17Z"
+  "updated_at": "2026-11-13T22:59:19Z"
 }
