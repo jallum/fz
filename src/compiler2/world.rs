@@ -6,11 +6,11 @@
 //! legitimate state absence like "this known function is still a placeholder"
 //! or "this known code has not been indexed yet".
 
+use crate::fast_hash::{HashMap, HashSet};
 use std::any::Any;
 #[cfg(test)]
 use std::cell::Cell;
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
 use crate::FunctionSurface;
@@ -334,26 +334,26 @@ impl World {
             activation_inputs: ActivationInputMap::new(),
             callsites: CallSiteMap::new(),
             callsite_targets: CallSiteTargetsMap::new(),
-            executable_facts: HashMap::new(),
-            callable_construction_targets: HashMap::new(),
-            runtime_demand_type_projections: HashMap::new(),
-            runtime_demands: HashMap::new(),
-            runtime_demand_inputs: HashMap::new(),
+            executable_facts: HashMap::default(),
+            callable_construction_targets: HashMap::default(),
+            runtime_demand_type_projections: HashMap::default(),
+            runtime_demands: HashMap::default(),
+            runtime_demand_inputs: HashMap::default(),
             runtime_demand_input_contributions: RuntimeDemandInputMap::new(),
             incoming_input_contributions: ContributionMap::new(),
             roots: RootMap::new(),
-            macro_roots: HashMap::new(),
-            macro_expansions: HashMap::new(),
+            macro_roots: HashMap::default(),
+            macro_expansions: HashMap::default(),
             namespaces: NamespaceStore::new(),
             types: Types::new(),
             transport: TransportStore::new(),
             runtime_prelude,
             extra_preludes: Vec::new(),
             runtime_modules,
-            reported_unresolved: HashSet::new(),
-            reported_warnings: HashSet::new(),
+            reported_unresolved: HashSet::default(),
+            reported_warnings: HashSet::default(),
             warning_diagnostics: Vec::new(),
-            widened_literal_slots: HashSet::new(),
+            widened_literal_slots: HashSet::default(),
             unreported_literal_slots: Vec::new(),
             quiescence_steps: Vec::new(),
             work_graph: WorkGraph::new(),
@@ -938,7 +938,7 @@ impl World {
         &mut self,
         contributions: Vec<(ActivationKey, Vec<Ty>)>,
     ) -> HashMap<ActivationKey, ActivationInputAlternatives> {
-        let mut next = HashMap::<ActivationKey, ActivationInputAlternatives>::new();
+        let mut next = HashMap::<ActivationKey, ActivationInputAlternatives>::default();
         for (activation, inputs) in contributions {
             // Canonicalize the input evidence the same whole-scope way the key is
             // built (fz-hwn.27.6, A): one shared addressing pass, so distinct
@@ -3030,7 +3030,7 @@ pub(super) fn dedupe_job_facts(mut facts: Vec<FactKey>) -> Vec<FactKey> {
 }
 
 fn first_occurrences(facts: &[FactKey]) -> Vec<bool> {
-    let mut seen = HashSet::with_capacity(facts.len());
+    let mut seen = HashSet::with_capacity_and_hasher(facts.len(), Default::default());
     facts.iter().map(|fact| seen.insert(fact)).collect()
 }
 
@@ -3168,7 +3168,7 @@ fn item_macro_call_match(
 /// A consumer's references are a set: the same type named twice (e.g. by both a
 /// spec and a parameter annotation) is one dependency. Order is preserved.
 fn dedup_type_names(refs: &mut Vec<TypeName>) {
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     refs.retain(|name| seen.insert(name.clone()));
 }
 
@@ -3176,7 +3176,7 @@ fn dedup_type_names(refs: &mut Vec<TypeName>) {
 /// twice in one `@type` body (e.g. two fields of the same struct type) is one
 /// wait, not two.
 fn dedup_module_ids(refs: &mut Vec<ModuleId>) {
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     refs.retain(|module| seen.insert(*module));
 }
 

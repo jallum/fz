@@ -24,6 +24,7 @@ use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{LastResort, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::dispatch_matrix::{Region, SubjectId};
 use crate::exec::runtime::{DbgCapture, ProcessExitCapture};
+use crate::fast_hash::{HashMap, HashSet};
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy, FnId, Prim as IrPrim, Stmt as IrStmt, Term as IrTerm};
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
@@ -34,7 +35,7 @@ use crate::telemetry::handler::{Event, EventKind};
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 #[test]
@@ -99,7 +100,7 @@ fn compiler2_inline_dispatch_plan_is_shared_from_lowering_to_backend() {
 
 #[test]
 fn compiler2_pinned_equality_does_not_define_or_merge_value_origins() {
-    use super::executable_facts::{collect_callsite_return_origins, collect_value_origins};
+    use super::executable_facts::collect_value_origins;
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -118,7 +119,7 @@ fn compiler2_pinned_equality_does_not_define_or_merge_value_origins() {
     assert_resolved(compiler.drive(), "pinned constraint body");
 
     let body = lowered_body(&bodies, function);
-    let origins = collect_value_origins(&body, &collect_callsite_return_origins(&body));
+    let origins = collect_value_origins(&body);
     let LoweredBody::Clauses { entries, .. } = &body;
 
     let (source, value) = entries
@@ -864,7 +865,7 @@ fn compiler2_inline_forwarding_preserves_input_return_demand() {
 #[test]
 fn compiler2_impossible_map_clause_has_no_runtime_requirement() {
     let tel = ConfiguredTelemetry::new();
-    let analyses = Rc::new(RefCell::new(HashMap::new()));
+    let analyses = Rc::new(RefCell::new(HashMap::default()));
     let sink = Rc::clone(&analyses);
     tel.attach_raw_event2::<World, ActivationKey, _>(
         &["fz", "compiler2", "activation_analysis", "defined"],
@@ -917,7 +918,7 @@ fn compiler2_impossible_map_clause_has_no_runtime_requirement() {
 #[test]
 fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
     use super::body::{SubjectOriginRoot, ValueRole};
-    use super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
+    use super::executable_facts::{TransportOrigin, collect_value_origins};
     use crate::dispatch_matrix::{BitstringFieldKind, ProjectionKind, SubjectSource};
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
@@ -943,7 +944,7 @@ fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
             .world()
             .executable_facts(&executable.key)
             .expect("executable facts");
-        let origins = collect_value_origins(facts.body(), &collect_callsite_return_origins(facts.body()));
+        let origins = collect_value_origins(facts.body());
         let LoweredBody::Clauses { entries, .. } = facts.body();
 
         for (owner, entry) in entries.iter().enumerate() {
@@ -1433,7 +1434,7 @@ fn executable_facts_are_one_world_owned_scheduler_fact_with_exact_semantic_reads
             move |_, _, _, key| observed_products.borrow_mut().push((leaf, key.kind().to_string())),
         );
     }
-    let demanded_executables = Rc::new(RefCell::new(HashSet::<ExecutableKey>::new()));
+    let demanded_executables = Rc::new(RefCell::new(HashSet::<ExecutableKey>::default()));
     let observed_demand = Rc::clone(&demanded_executables);
     tel.attach_raw_event1::<crate::compiler2::PullSession, _>(
         &["fz", "compiler2", "pull", "session", "finished"],
@@ -1510,7 +1511,7 @@ fn executable_facts_are_one_world_owned_scheduler_fact_with_exact_semantic_reads
         let facts = world
             .executable_facts(&executable)
             .expect("every materialized executable should have one World-owned fact value");
-        let mut expected_reads = HashSet::from([
+        let mut expected_reads = HashSet::from_iter([
             FactUse::settled(FactKey::ActivationAnalyzed(executable.activation.clone())),
             FactUse::settled(FactKey::EntryDispatch(executable.activation.function)),
         ]);
@@ -5680,7 +5681,7 @@ fn compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inven
         .map(|executable| executable.key.activation.function)
         .collect::<HashSet<_>>();
     assert!(
-        executable_functions.is_superset(&HashSet::from([user_reducer_id, bridge_reducer_id])),
+        executable_functions.is_superset(&HashSet::from_iter([user_reducer_id, bridge_reducer_id])),
         "the user reducer and bridge reducer should still survive in the backend executable inventory",
     );
 }
@@ -6275,7 +6276,7 @@ fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_invent
         })
         .collect::<HashSet<_>>();
     assert!(
-        executable_functions.is_superset(&HashSet::from([user_reducer_id, bridge_reducer_id])),
+        executable_functions.is_superset(&HashSet::from_iter([user_reducer_id, bridge_reducer_id])),
         "the user reducer and bridge reducer should still survive as native executable bodies",
     );
 }
@@ -6304,7 +6305,8 @@ fn compiler2_native_program_keeps_grounded_predicates_distinct_without_boxed_cap
     assert_resolved(compiler.drive(), "grounded predicate captures should lower directly");
 
     let make_reducer_id = function_id(&functions, "make_reducer", 1);
-    let predicate_functions = HashSet::from([function_id(&functions, "gt2", 1), function_id(&functions, "even", 1)]);
+    let predicate_functions =
+        HashSet::from_iter([function_id(&functions, "gt2", 1), function_id(&functions, "even", 1)]);
     let reducer_id = generated_functions_owned_by(&functions, make_reducer_id)
         .into_iter()
         .find(|record| record.arity == 2)
@@ -6341,7 +6343,7 @@ fn compiler2_native_program_keeps_grounded_predicates_distinct_without_boxed_cap
         .filter(|entry| predicate_functions.contains(&entry.key.activation.function))
         .map(|entry| entry.fn_id)
         .collect::<HashSet<_>>();
-    let mut called_predicates = HashSet::new();
+    let mut called_predicates = HashSet::default();
     for reducer in &reducers {
         let body = program
             .bodies
@@ -6353,7 +6355,7 @@ fn compiler2_native_program_keeps_grounded_predicates_distinct_without_boxed_cap
             vec![AbiValueRepr::RawInt, AbiValueRepr::RawInt],
             "entry and accumulator are the only runtime inputs; the predicate is grounded",
         );
-        let mut graph_predicates = HashSet::new();
+        let mut graph_predicates = HashSet::default();
         for fn_id in program.native_graph_fn_ids(&reducer.key) {
             for block in &program.module.fn_by_id(fn_id).blocks {
                 assert!(
@@ -6596,8 +6598,8 @@ fn measure_native_cps_sharing_corpus() {
         );
         let after_sharing = NativeProgramCapture::new();
         after_sharing.install(&tel);
-        let compiled_bytes = Rc::new(RefCell::new(HashMap::<FnId, usize>::new()));
-        let compiling_functions = Rc::new(RefCell::new(HashMap::<u64, FnId>::new()));
+        let compiled_bytes = Rc::new(RefCell::new(HashMap::<FnId, usize>::default()));
+        let compiling_functions = Rc::new(RefCell::new(HashMap::<u64, FnId>::default()));
         let compiling_functions_start = Rc::clone(&compiling_functions);
         let compiling_functions_stop = Rc::clone(&compiling_functions);
         let compiled_bytes_sink = Rc::clone(&compiled_bytes);
@@ -6737,7 +6739,7 @@ fn measure_native_cps_sharing_corpus() {
         totals.before_constructions += count_constructions(&before);
         totals.after_constructions += count_constructions(&after);
 
-        let mut siblings = HashMap::<FunctionId, Vec<&crate::compiler2::artifact::NativeExecutableEntry>>::new();
+        let mut siblings = HashMap::<FunctionId, Vec<&crate::compiler2::artifact::NativeExecutableEntry>>::default();
         for entry in &before.executable_entries {
             siblings.entry(entry.key.activation.function).or_default().push(entry);
         }
@@ -6927,7 +6929,7 @@ fn compiler2_opaque_callable_each_uses_a_boxed_return_boundary() {
         .map(|member| member.target.activation.function)
         .collect::<HashSet<_>>();
     assert_eq!(boundary_ids.len(), 2);
-    assert_eq!(member_functions, HashSet::from([each_a_id, each_b_id]));
+    assert_eq!(member_functions, HashSet::from_iter([each_a_id, each_b_id]));
     // `Enum.each` throws the mapper's result away, but these members are
     // reached through the boxed apply seam, whose wrapper always hands a value
     // back. The member's own return has to supply it, so it carries the one
@@ -7788,7 +7790,7 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
         .collect::<HashSet<_>>();
     assert_eq!(
         callable_targets,
-        HashSet::from([child_id]),
+        HashSet::from_iter([child_id]),
         "native closure values should resolve to the one closed callable boundary for child/0",
     );
 
@@ -9478,7 +9480,7 @@ fn compiler2_native_program_routes_post_receive_resumes_through_delivered_contin
         6,
         "each receive clause body callsite should get its own delivered-call lane adapter",
     );
-    let mut receive_body_resume_fns = HashSet::new();
+    let mut receive_body_resume_fns = HashSet::default();
     for adapter_fn in receive_body_adapter_fns {
         let body = program
             .bodies
@@ -13255,7 +13257,7 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
             .expect("the reactive demand graph should settle and run");
         let world = compiler.world();
         let runs = runs.borrow();
-        let mut construction_owners = HashSet::new();
+        let mut construction_owners = HashSet::default();
         for (executable, _) in runs.iter() {
             assert!(
                 world.fact_is_settled(&FactKey::RuntimeDemand(executable.clone())),
@@ -13270,7 +13272,7 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
             let facts = world
                 .executable_facts(executable)
                 .expect("an observed RuntimeDemand formula must retain its executable facts");
-            let mut expected_peers = HashSet::new();
+            let mut expected_peers = HashSet::default();
             for (callsite, summary) in facts.callsites() {
                 let need = facts
                     .callsite_needs()
@@ -14119,7 +14121,7 @@ fn rooted_reachable_frontier(
     entry_function: FunctionId,
 ) -> HashSet<ActivationKey> {
     let entry = ActivationKey::from_inputs(root, entry_function, &[], world.types_mut());
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut stack = vec![entry];
     while let Some(key) = stack.pop() {
         if !seen.insert(key.clone()) {
@@ -14296,7 +14298,7 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
         .collect::<HashSet<_>>();
     assert_eq!(
         functions_after,
-        HashSet::from([main_id, foo_id]),
+        HashSet::from_iter([main_id, foo_id]),
         "redefining main/0 should leave only main/0 and foo/0 in the rooted reachable frontier"
     );
     assert!(
@@ -17838,7 +17840,7 @@ fn entry_dispatch_settles_without_its_module_aggregate() {
     let effects = outputs.effects(Job::PlanEntryDispatch(main));
     assert_eq!(
         effects.reads.into_iter().collect::<HashSet<_>>(),
-        HashSet::from([FactUse::current(FactKey::FunctionDefined(main))]),
+        HashSet::from_iter([FactUse::current(FactKey::FunctionDefined(main))]),
         "main/0's entry plan should record exactly the function fact it consumed",
     );
     assert!(
@@ -17870,7 +17872,7 @@ fn entry_dispatch_settles_without_its_module_aggregate() {
         let effects = outputs.effects(Job::PlanEntryDispatch(function));
         assert_eq!(
             effects.reads.into_iter().collect::<HashSet<_>>(),
-            HashSet::from([FactUse::current(FactKey::FunctionDefined(function))]),
+            HashSet::from_iter([FactUse::current(FactKey::FunctionDefined(function))]),
             "{label}'s entry plan should record exactly the function fact it consumed",
         );
         assert!(
@@ -18001,12 +18003,12 @@ fn entry_dispatch_blocks_on_the_exact_struct_or_type_fact_its_heads_name() {
     };
     assert_eq!(
         first_waits(measure),
-        HashSet::from([FactUse::current(FactKey::TypeDefined(count))]),
+        HashSet::from_iter([FactUse::current(FactKey::TypeDefined(count))]),
         "a parameter annotation blocks entry planning on that type fact and nothing else",
     );
     assert_eq!(
         first_waits(unwrap),
-        HashSet::from([FactUse::current(FactKey::StructDefined(boxes))]),
+        HashSet::from_iter([FactUse::current(FactKey::StructDefined(boxes))]),
         "a struct pattern blocks entry planning on that struct fact and nothing else",
     );
 }
@@ -19483,13 +19485,13 @@ fn compiler2_tuple_return_ladder_revises_once_per_nesting_level() {
         &["fz", "compiler2", "return_type", "widened"],
         move |_, _, _, _, _| widened_sink.set(true),
     );
-    let revisions: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
+    let revisions: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::default()));
     let revision_sink = Rc::clone(&revisions);
     tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
         &["fz", "compiler2", "return_type", "defined"],
         move |_, _, _, _, activation| *revision_sink.borrow_mut().entry(activation.clone()).or_default() += 1,
     );
-    let analyses: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
+    let analyses: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::default()));
     let analysis_sink = Rc::clone(&analyses);
     tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
         &["fz", "compiler2", "activation_analysis", "defined"],
@@ -19892,7 +19894,7 @@ fn return_ladders_are_pinned_per_activation() {
 /// return was revised, sorted.
 fn measure_return_ascents(name: &str, text: &str) -> Vec<ActivationAscent> {
     let tel = ConfiguredTelemetry::new();
-    let widened: Rc<RefCell<HashSet<ActivationKey>>> = Rc::new(RefCell::new(HashSet::new()));
+    let widened: Rc<RefCell<HashSet<ActivationKey>>> = Rc::new(RefCell::new(HashSet::default()));
     let widened_sink = Rc::clone(&widened);
     tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
         &["fz", "compiler2", "return_type", "widened"],
@@ -19900,7 +19902,7 @@ fn measure_return_ascents(name: &str, text: &str) -> Vec<ActivationAscent> {
             widened_sink.borrow_mut().insert(activation.clone());
         },
     );
-    let revisions: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
+    let revisions: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::default()));
     let revision_sink = Rc::clone(&revisions);
     tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
         &["fz", "compiler2", "return_type", "defined"],
@@ -19937,7 +19939,7 @@ fn compiler2_quicksort_return_revisions_stay_bounded() {
     struct ReturnStats {
         define_calls: u64,
     }
-    let defines: Rc<RefCell<HashMap<(u64, u64), ReturnStats>>> = Rc::new(RefCell::new(HashMap::new()));
+    let defines: Rc<RefCell<HashMap<(u64, u64), ReturnStats>>> = Rc::new(RefCell::new(HashMap::default()));
     let sink = Rc::clone(&defines);
     tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
         &["fz", "compiler2", "return_type", "defined"],
@@ -20827,7 +20829,7 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
     );
 
     let program = backend.last(root_id).program;
-    let mut by_target: HashMap<&ExecutableKey, Vec<Vec<AbiValueRepr>>> = HashMap::new();
+    let mut by_target: HashMap<&ExecutableKey, Vec<Vec<AbiValueRepr>>> = HashMap::default();
     for member in program
         .construction_wrappers()
         .iter()
@@ -21048,8 +21050,8 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
             complete(
                 &mut scheduler,
                 job,
-                HashSet::from([FactUse::current(shared.clone())]),
-                HashSet::new(),
+                HashSet::from_iter([FactUse::current(shared.clone())]),
+                HashSet::default(),
                 Vec::new(),
                 Vec::new(),
             );
@@ -21057,8 +21059,8 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
         let step = complete(
             &mut scheduler,
             &writer,
-            HashSet::new(),
-            HashSet::new(),
+            HashSet::default(),
+            HashSet::default(),
             vec![shared.clone()],
             vec![shared.clone()],
         );
@@ -21078,8 +21080,8 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
             complete(
                 &mut scheduler,
                 job,
-                HashSet::new(),
-                HashSet::from([FactUse::current(shared.clone())]),
+                HashSet::default(),
+                HashSet::from_iter([FactUse::current(shared.clone())]),
                 Vec::new(),
                 Vec::new(),
             );
@@ -21088,8 +21090,8 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
         let step = complete(
             &mut scheduler,
             &writer,
-            HashSet::new(),
-            HashSet::new(),
+            HashSet::default(),
+            HashSet::default(),
             vec![shared.clone()],
             vec![shared.clone()],
         );
@@ -21160,7 +21162,7 @@ fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
         // the corpus census both read, so the gate reads what they read.
         let labels = |fn_id| crate::compiler2::canon::function_label(world, FunctionId::from_fn_id(fn_id));
         let mut canon = crate::compiler2::TyCanon::new(&labels);
-        let mut columns_by_function: HashMap<crate::compiler2::FunctionId, Vec<Vec<String>>> = HashMap::new();
+        let mut columns_by_function: HashMap<crate::compiler2::FunctionId, Vec<Vec<String>>> = HashMap::default();
         for executable in program.executables() {
             let activation = &executable.key.activation;
             let columns = activation

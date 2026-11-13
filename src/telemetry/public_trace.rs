@@ -163,7 +163,7 @@ impl PublicTrace {
     /// span's `span_start`.
     pub fn spans(&self) -> Vec<PublicSpan> {
         let mut spans: Vec<PublicSpan> = Vec::new();
-        let mut index_by_span_id = std::collections::HashMap::new();
+        let mut index_by_span_id = crate::fast_hash::HashMap::default();
         for event in &self.events {
             match event.kind {
                 EventKind::SpanStart => {

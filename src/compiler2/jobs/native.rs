@@ -10,7 +10,9 @@ use super::super::identity::{ExecutableKey, FunctionId};
 use super::super::transport::TransportPosition;
 use crate::compiler2::ValueMap;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use crate::fast_hash::{HashMap, HashSet};
+
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -101,7 +103,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         root_id: RootId,
         program: &'a BackendProgram,
     ) -> Result<Self, FatalError> {
-        let mut atom_ids = HashMap::new();
+        let mut atom_ids = HashMap::default();
         for (index, atom) in program.atom_names.iter().enumerate() {
             atom_ids.insert(atom.clone(), index as u32);
         }
@@ -124,7 +126,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .collect::<HashMap<_, _>>();
 
         let extern_marshals = collect_extern_marshals(world, telemetry, root_id, program)?;
-        let mut extern_ids = HashMap::new();
+        let mut extern_ids = HashMap::default();
         let mut extern_decls = Vec::new();
         for (index, executable) in program.executables().iter().enumerate() {
             let BackendBody::Extern { signature } = &executable.body else {
@@ -236,7 +238,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             extern_ids,
             extern_marshals,
             extern_decls,
-            guard_extern_ids: HashMap::new(),
+            guard_extern_ids: HashMap::default(),
             native_bodies: Vec::new(),
             return_continuation_count: 0,
         })
@@ -4550,7 +4552,7 @@ struct EntryFns {
 
 impl EntryFns {
     fn for_entries(entries: &[BackendEntry]) -> Self {
-        let mut incoming: HashMap<ControlEntryId, Vec<EntryTransfer>> = HashMap::new();
+        let mut incoming: HashMap<ControlEntryId, Vec<EntryTransfer>> = HashMap::default();
         for entry in entries {
             for (target, transfer) in entry.tail.transfers() {
                 incoming.entry(target).or_default().push(transfer);
@@ -4591,7 +4593,7 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
     // closing tail call would never be marked — a frame-flat loop that spends
     // no reductions. Closure callees have no static target at this level and
     // are conservatively absent; their continuations still contribute.
-    let mut graph: HashMap<FnId, HashSet<FnId>> = HashMap::new();
+    let mut graph: HashMap<FnId, HashSet<FnId>> = HashMap::default();
     for function in &module.fns {
         let entry = graph.entry(function.id).or_default();
         for block in &function.blocks {
@@ -4641,10 +4643,10 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
     let scc_of = {
         let mut index_counter = 0usize;
         let mut stack = Vec::new();
-        let mut on_stack = HashSet::new();
-        let mut index = HashMap::new();
-        let mut lowlink = HashMap::new();
-        let mut scc_of = HashMap::new();
+        let mut on_stack = HashSet::default();
+        let mut index = HashMap::default();
+        let mut lowlink = HashMap::default();
+        let mut scc_of = HashMap::default();
         let mut scc_count = 0usize;
 
         fn strongconnect(
@@ -4785,7 +4787,7 @@ fn native_block_param_reprs(
     fn_ir: &crate::fz_ir::FnIr,
     value_types: &HashMap<Var, Ty>,
 ) -> HashMap<Var, AbiValueRepr> {
-    let mut reprs = HashMap::new();
+    let mut reprs = HashMap::default();
     for block in &fn_ir.blocks {
         for param in &block.params {
             let ty = value_types
@@ -4847,7 +4849,7 @@ impl DispatchState {
             dispatch_inputs,
             forwarded_args,
             bindings,
-            values: HashMap::new(),
+            values: HashMap::default(),
         }
     }
 
@@ -4898,16 +4900,16 @@ impl NativeFnCtx {
             fn_id,
             builder,
             current_block: BlockId(0),
-            stmt_counts: HashMap::new(),
-            value_types: HashMap::new(),
-            extern_marshals: HashMap::new(),
+            stmt_counts: HashMap::default(),
+            value_types: HashMap::default(),
+            extern_marshals: HashMap::default(),
             origin,
             entry_abi,
             param_reprs,
             return_ty,
             return_reprs,
             effects,
-            entry_blocks: HashMap::new(),
+            entry_blocks: HashMap::default(),
             pending_entry_blocks: VecDeque::new(),
         }
     }
@@ -4980,7 +4982,7 @@ impl NativeFnCtx {
             param_reprs: self.param_reprs,
             return_ty: self.return_ty,
             return_reprs: self.return_reprs,
-            block_param_reprs: HashMap::new(),
+            block_param_reprs: HashMap::default(),
             value_types: self.value_types,
             extern_marshals: self.extern_marshals,
             effects: self.effects,
@@ -5054,7 +5056,7 @@ fn collect_extern_marshals(
     root_id: RootId,
     program: &BackendProgram,
 ) -> Result<HashMap<usize, Vec<ExternTy>>, FatalError> {
-    let mut out = HashMap::new();
+    let mut out = HashMap::default();
     for executable in program.executables() {
         if let BackendBody::Clauses { clauses, entries, .. } = &executable.body {
             for clause in clauses {

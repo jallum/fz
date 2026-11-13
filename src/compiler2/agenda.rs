@@ -1,4 +1,5 @@
-use std::collections::{HashSet, VecDeque};
+use crate::fast_hash::HashSet;
+use std::collections::VecDeque;
 use std::hash::Hash;
 
 #[derive(Debug)]
@@ -11,7 +12,7 @@ impl<J> Default for Agenda<J> {
     fn default() -> Self {
         Self {
             queue: VecDeque::new(),
-            queued: HashSet::new(),
+            queued: HashSet::default(),
         }
     }
 }

@@ -1,5 +1,6 @@
+use crate::fast_hash::{HashMap, HashSet};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use super::artifact::{AbiValueRepr, BackendTail};
@@ -5631,7 +5632,7 @@ fn callable_owners_for_test(
 fn positioned_owners(
     program: &super::BackendProgram,
 ) -> impl Iterator<Item = &super::artifact::PositionedCallableConstructionOwner> {
-    let mut seen = HashMap::new();
+    let mut seen = HashMap::default();
     program
         .executables()
         .iter()
@@ -5662,7 +5663,7 @@ fn retained_executable<'a>(
 }
 
 fn retained_layouts(program: &super::BackendProgram) -> impl Iterator<Item = (&TransportPosition, TransportLayout)> {
-    let mut seen = HashMap::new();
+    let mut seen = HashMap::default();
     program
         .executables()
         .iter()
@@ -6520,7 +6521,7 @@ fn callable_owner_positions_break_sibling_ties_on_canonical_inputs() {
         !wrappers.is_empty(),
         "the fixture must retain actual construction wrappers"
     );
-    let mut denotations = std::collections::HashSet::new();
+    let mut denotations = crate::fast_hash::HashSet::default();
     let mut shared_denotation = false;
     for wrapper in &wrappers {
         shared_denotation |= !denotations.insert(wrapper.denotation);

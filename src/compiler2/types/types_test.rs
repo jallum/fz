@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
+use crate::fast_hash::HashMap;
+use std::collections::BTreeMap;
 use std::mem;
 use std::slice;
 
@@ -379,9 +380,9 @@ fn unchanged_instantiation_returns_before_it_probes_or_normalizes() {
     let int = t.int();
     let list = t.list(int);
     let concrete = t.tuple(&[list, int]);
-    let unrelated = Sigma::from([(TypeVarId(99), int)]);
+    let unrelated = Sigma::from_iter([(TypeVarId(99), int)]);
     let template = t.type_var(TypeVarId(0));
-    let empty = Sigma::new();
+    let empty = Sigma::default();
     let before = t.interning_work_stats();
 
     assert_eq!(t.instantiate(&concrete, &unrelated), concrete);
@@ -402,7 +403,7 @@ fn unchanged_instantiation_returns_before_it_probes_or_normalizes() {
         template,
         "an unrelated substitution leaves a template semantically unchanged"
     );
-    let matching = Sigma::from([(TypeVarId(0), int)]);
+    let matching = Sigma::from_iter([(TypeVarId(0), int)]);
     assert_eq!(
         t.instantiate(&template, &matching),
         int,
@@ -1223,13 +1224,13 @@ fn substitution_descends_only_through_equal_record_tags() {
     let foo_witness = t.struct_map(ModuleId::for_test(1), module_name("Pkg.Foo"), &[(key.clone(), int)]);
     let other_witness = t.struct_map(ModuleId::for_test(2), module_name("Pkg.Bar"), &[(key, int)]);
 
-    let mut sigma = HashMap::new();
+    let mut sigma = HashMap::default();
     t.collect_instantiation_subst(&foo_pattern, &foo_witness, &mut sigma);
     assert_eq!(sigma.get(&TypeVarId(0)), Some(&int));
     let instantiated = t.instantiate(&foo_pattern, &sigma);
     assert!(t.is_equivalent(&instantiated, &foo_witness));
 
-    let mut mismatched = HashMap::new();
+    let mut mismatched = HashMap::default();
     t.collect_instantiation_subst(&foo_pattern, &other_witness, &mut mismatched);
     assert!(
         mismatched.is_empty(),
@@ -1466,7 +1467,7 @@ macro_rules! key_helper_conformance_tests {
             #[test]
             fn key_subsumes_with_binds_pure_vars() {
                 let mut t = $ctor;
-                let mut sigma = HashMap::new();
+                let mut sigma = HashMap::default();
                 let int = t.int();
                 let alpha = t.type_var(TypeVarId(0));
                 assert!(t.key_subsumes_with(&int, &alpha, &mut sigma));
@@ -1500,7 +1501,7 @@ macro_rules! key_helper_conformance_tests {
             #[test]
             fn key_subsumes_with_leaves_sigma_empty_for_non_pure_var_keys() {
                 let mut t = $ctor;
-                let mut sigma = HashMap::new();
+                let mut sigma = HashMap::default();
                 let int = t.int();
                 let alpha = t.type_var(TypeVarId(0));
                 let int_top = t.int();
@@ -1866,7 +1867,7 @@ macro_rules! semantic_helper_conformance_tests {
                 let mut t = $ctor;
                 let pattern = t.type_var(TypeVarId(0));
                 let witness = t.int();
-                let mut sigma = HashMap::new();
+                let mut sigma = HashMap::default();
                 t.collect_instantiation_subst(&pattern, &witness, &mut sigma);
                 assert_eq!(sigma.len(), 1);
                 assert!(t.is_equivalent(&sigma[&TypeVarId(0)], &witness));
@@ -1877,7 +1878,7 @@ macro_rules! semantic_helper_conformance_tests {
                 let mut t = $ctor;
                 let pattern = t.int();
                 let witness = t.int();
-                let mut sigma = HashMap::new();
+                let mut sigma = HashMap::default();
                 t.collect_instantiation_subst(&pattern, &witness, &mut sigma);
                 assert!(sigma.is_empty());
             }
@@ -1888,7 +1889,7 @@ macro_rules! semantic_helper_conformance_tests {
                 let pat_arg = t.type_var(TypeVarId(0));
                 let pat_ret = t.type_var(TypeVarId(0));
                 let witness = t.int();
-                let mut sigma = HashMap::new();
+                let mut sigma = HashMap::default();
                 t.collect_instantiation_subst(&pat_arg, &witness, &mut sigma);
                 let resolved_ret = t.instantiate(&pat_ret, &sigma);
                 assert!(t.is_equivalent(&resolved_ret, &witness));
@@ -1901,7 +1902,7 @@ macro_rules! semantic_helper_conformance_tests {
                 let beta = t.type_var(TypeVarId(1));
                 let int = t.int();
                 let bool_t = t.bool();
-                let mut sigma = HashMap::new();
+                let mut sigma = HashMap::default();
                 t.collect_instantiation_subst(&alpha, &int, &mut sigma);
                 t.collect_instantiation_subst(&beta, &bool_t, &mut sigma);
                 assert_eq!(sigma.len(), 2);
@@ -4123,7 +4124,7 @@ mod brand_lattice_law {
         let domain = t.arrow(&[var], nil);
         let expected = t.arrow(&[none], nil);
 
-        let read = t.clause_domain_envelope(domain, &HashMap::new());
+        let read = t.clause_domain_envelope(domain, &HashMap::default());
 
         assert_eq!(read, expected, "got {}", t.display(&read));
         let int_to_nil = t.arrow(&[int], nil);
@@ -4142,8 +4143,8 @@ mod brand_lattice_law {
         let pair = t.tuple(&[int, var]);
         let identity = t.arrow(&[var], var);
 
-        let pair_read = t.clause_domain_envelope(pair, &HashMap::new());
-        let identity_read = t.clause_domain_envelope(identity, &HashMap::new());
+        let pair_read = t.clause_domain_envelope(pair, &HashMap::default());
+        let identity_read = t.clause_domain_envelope(identity, &HashMap::default());
 
         assert_eq!(pair_read, t.tuple(&[int, any]));
         assert_eq!(identity_read, t.arrow(&[none], any));
@@ -4184,7 +4185,7 @@ mod brand_lattice_law {
         let param = t.tuple(&[int, var]);
         let arg = t.tuple(&[meters, int]);
 
-        let outcome = t.match_arrow(&[param], &var, &HashMap::new(), &[arg]);
+        let outcome = t.match_arrow(&[param], &var, &HashMap::default(), &[arg]);
         let ArrowMatch::Known { result, .. } = outcome else {
             panic!("expected Known for {{Meters, int}} at ({{int, a}}) :: a, got {outcome:?}");
         };
@@ -5526,7 +5527,7 @@ fn instantiating_a_list_of_variables_substitutes_through_nested_slots() {
         let inner = t.list(var);
         t.tuple(&[inner, atom])
     };
-    let mut sigma = Sigma::new();
+    let mut sigma = Sigma::default();
     sigma.insert(TypeVarId(0), int);
 
     let expected = {

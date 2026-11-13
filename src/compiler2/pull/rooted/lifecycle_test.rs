@@ -37,9 +37,9 @@ fn retained(memo: &ProductMemo) -> HashSet<ProductKey> {
 }
 
 fn assert_original_membership(memo: &ProductMemo) {
-    assert_eq!(memo.membership(&member(0)), Some(&HashSet::from([member(1)])));
-    assert_eq!(retained(memo), HashSet::from([member(0), member(1)]));
-    assert_eq!(memo.membership_readers[&member(1)], HashSet::from([member(0)]));
+    assert_eq!(memo.membership(&member(0)), Some(&HashSet::from_iter([member(1)])));
+    assert_eq!(retained(memo), HashSet::from_iter([member(0), member(1)]));
+    assert_eq!(memo.membership_readers[&member(1)], HashSet::from_iter([member(0)]));
     assert!(!memo.membership_readers.contains_key(&member(2)));
 }
 
@@ -66,7 +66,7 @@ fn only_a_successful_replacement_can_change_committed_root_membership() {
     assert_original_membership(&memo);
     assert_eq!(
         memo.pending_dependencies[&member(0)].membership,
-        HashSet::from([member(2)]),
+        HashSet::from_iter([member(2)]),
         "waiting retains the current attempt for group handoff without publishing it"
     );
 
@@ -84,11 +84,11 @@ fn only_a_successful_replacement_can_change_committed_root_membership() {
     assert_original_membership(&memo);
 
     let left = ProductDependencies {
-        products: IndexMap::from([(member(7), Some(1))]),
+        products: IndexMap::from_iter([(member(7), Some(1))]),
         ..ProductDependencies::default()
     };
     let right = ProductDependencies {
-        products: IndexMap::from([(member(7), Some(2))]),
+        products: IndexMap::from_iter([(member(7), Some(2))]),
         ..ProductDependencies::default()
     };
     assert!(
@@ -107,9 +107,9 @@ fn only_a_successful_replacement_can_change_committed_root_membership() {
     assert_original_membership(&memo);
 
     assert!(commit(&mut memo, member(0), membership(&[2])));
-    assert_eq!(retained(&memo), HashSet::from([member(0), member(2)]));
+    assert_eq!(retained(&memo), HashSet::from_iter([member(0), member(2)]));
     assert!(!memo.membership_readers.contains_key(&member(1)));
-    assert_eq!(memo.membership_readers[&member(2)], HashSet::from([member(0)]));
+    assert_eq!(memo.membership_readers[&member(2)], HashSet::from_iter([member(0)]));
 }
 
 struct EqualMemberProducers {
@@ -245,19 +245,19 @@ fn replacing_a_root_seed_removes_empty_reverse_subscriptions() {
         assert!(commit(&mut memo, member(node), membership(&children)));
     }
     memo.register_rooted(packaging(), member(0), &types);
-    assert_eq!(retained(&memo), HashSet::from([member(0), member(1), member(2)]));
+    assert_eq!(retained(&memo), HashSet::from_iter([member(0), member(1), member(2)]));
     memo.register_rooted(packaging(), member(3), &types);
-    assert_eq!(retained(&memo), HashSet::from([member(2), member(3)]));
+    assert_eq!(retained(&memo), HashSet::from_iter([member(2), member(3)]));
     assert!(!memo.rooted_readers.contains_key(&member(0)));
     assert!(!memo.rooted_readers.contains_key(&member(1)));
-    assert_eq!(memo.rooted_readers[&member(2)], HashSet::from([packaging()]));
-    assert_eq!(memo.rooted_readers[&member(3)], HashSet::from([packaging()]));
+    assert_eq!(memo.rooted_readers[&member(2)], HashSet::from_iter([packaging()]));
+    assert_eq!(memo.rooted_readers[&member(3)], HashSet::from_iter([packaging()]));
     assert!(memo.rooted_readers.values().all(|readers| !readers.is_empty()));
 
     memo.rooted.get_mut(&packaging()).unwrap().changes.clear();
     memo.rooted.get_mut(&packaging()).unwrap().dirty.clear();
     assert!(commit(&mut memo, member(0), membership(&[4])));
-    assert_eq!(retained(&memo), HashSet::from([member(2), member(3)]));
+    assert_eq!(retained(&memo), HashSet::from_iter([member(2), member(3)]));
     assert!(
         memo.rooted[&packaging()].changes.is_empty(),
         "a withdrawn seed must no longer mutate the root subscription"
@@ -400,7 +400,7 @@ fn an_independent_member_proof_does_not_clear_its_readers_stale_later_control() 
         assert!(commit(&mut memo, key, membership(&[])));
     }
     let dependencies = ProductDependencies {
-        products: IndexMap::from([(member(1), Some(1))]),
+        products: IndexMap::from_iter([(member(1), Some(1))]),
         ..ProductDependencies::default()
     };
     assert!(commit_with(&mut memo, packaging(), dependencies, membership(&[])));
@@ -450,7 +450,7 @@ fn a_mixed_membership_and_value_cycle_validates_equal_observations_together() {
     let mut memo = ProductMemo::default();
     assert!(commit(&mut memo, packaging(), membership(&[])));
     let dependency = ProductDependencies {
-        products: IndexMap::from([(packaging(), memo.generation(&packaging()))]),
+        products: IndexMap::from_iter([(packaging(), memo.generation(&packaging()))]),
         ..ProductDependencies::default()
     };
     assert!(commit_with(&mut memo, member(0), dependency, membership(&[])));
@@ -471,7 +471,7 @@ fn a_mixed_membership_and_value_cycle_validates_equal_observations_together() {
     assert_eq!(stale, None, "dirty state alone is not changed evidence");
     assert_eq!(
         visiting.checked,
-        HashSet::from([packaging(), member(0)]),
+        HashSet::from_iter([packaging(), member(0)]),
         "both sides of the cycle must be validated"
     );
     assert_eq!(memo.stale_dependency(&tel, &packaging(), &types, None), None);

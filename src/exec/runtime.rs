@@ -27,6 +27,7 @@
 //!   - Process needs Send (currently `Heap` holds Rc — will switch to
 //!     Arc when threading lands).
 
+use crate::fast_hash::HashMap;
 use crate::fz_ir::FnId;
 use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
@@ -48,7 +49,6 @@ use fz_runtime::telemetry::{
 use fz_runtime::timer::TimerId;
 #[cfg(test)]
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::ptr::null_mut;
 #[cfg(test)]
 use std::rc::Rc;
@@ -204,7 +204,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         );
         Self {
             compiled,
-            tasks: HashMap::new(),
+            tasks: HashMap::default(),
             core: SchedulingCore::new(),
             next_pid: 1,
             pool_outstanding_before_run: fz_runtime::heap::pool_outstanding_blocks(),

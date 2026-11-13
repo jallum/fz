@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::compiler2::NativeEntryAbi;
+use crate::fast_hash::HashMap;
 use crate::fz_ir::{
     self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, ReceiveAfter, ReceiveClause, Term, Var,
 };
@@ -18,7 +19,6 @@ use fz_runtime::ir_runtime::{
 use fz_runtime::process::YIELD_REASON_REDUCTIONS;
 use fz_runtime::process_abi::PROCESS_REDUCTIONS_REMAINING_OFFSET;
 use fz_runtime::scheduler_hooks::YIELD_PTR;
-use std::collections::HashMap;
 
 fn resolve_cont_sid(env: &CodegenEnv<'_>, blk: &fz_ir::Block) -> u32 {
     let cont_fn_id = match &blk.terminator {

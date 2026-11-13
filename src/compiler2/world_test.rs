@@ -76,7 +76,7 @@ fn completion_claims_belong_directly_to_the_job_that_read_their_ground() {
         },
     );
     assert_eq!(completion.job, job);
-    assert_eq!(world.job_reads(&job), std::collections::HashSet::from([read]));
+    assert_eq!(world.job_reads(&job), crate::fast_hash::HashSet::from_iter([read]));
     assert_eq!(world.job_outputs(&job), vec![fact.clone()]);
     assert_eq!(
         world

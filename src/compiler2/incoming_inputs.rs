@@ -1,6 +1,6 @@
 //! Exact, source-owned transport edges into one executable input.
 
-use std::collections::HashSet;
+use crate::fast_hash::HashSet;
 use std::rc::Rc;
 
 use super::body::ValueId;

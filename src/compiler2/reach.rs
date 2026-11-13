@@ -11,7 +11,7 @@
 //! successors' reaches rather than by walking, and nodes that reach each other
 //! settle together as one recursive group, all holding the same set.
 
-use std::collections::HashSet;
+use crate::fast_hash::HashSet;
 use std::rc::Rc;
 
 use super::drive::FactKey;
@@ -82,7 +82,7 @@ fn executable_successors(
     node: fn(ExecutableKey) -> ReachKey,
 ) -> Vec<ReachKey> {
     let facts = world.executable_facts(executable).expect("settled executable facts");
-    let mut successors = HashSet::new();
+    let mut successors = HashSet::default();
     for (callsite, summary) in facts.callsites() {
         if direct_only
             && matches!(

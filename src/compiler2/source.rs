@@ -1,5 +1,5 @@
+use crate::fast_hash::HashMap;
 use std::cell::{Ref, RefCell, RefMut};
-use std::collections::HashMap;
 use std::fmt;
 use std::ptr;
 use std::rc::Rc;
@@ -196,9 +196,9 @@ impl QuotedSourceHeap {
     pub fn new() -> Self {
         Self {
             process: RefCell::new(Some(Self::fresh_process())),
-            tuple_schemas: RefCell::new(HashMap::new()),
-            interned_lists: RefCell::new(HashMap::new()),
-            source_sugar_rewrites: RefCell::new(HashMap::new()),
+            tuple_schemas: RefCell::new(HashMap::default()),
+            interned_lists: RefCell::new(HashMap::default()),
+            source_sugar_rewrites: RefCell::new(HashMap::default()),
         }
     }
 

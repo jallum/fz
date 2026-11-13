@@ -17,9 +17,10 @@ mod format;
 mod order;
 mod sigs;
 
+use crate::fast_hash::RandomState;
+use crate::fast_hash::{HashMap, HashSet};
 use std::cell::RefCell;
-use std::collections::hash_map::RandomState;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::BuildHasher;
 use std::sync::Arc;
 
@@ -595,16 +596,16 @@ impl Types {
             core,
             comparisons: RefCell::default(),
             binary_type_operations: BinaryTypeOperationResults::default(),
-            value_lane_reprs: HashMap::new(),
-            structural_surfaces: HashMap::new(),
-            runtime_readings: HashMap::new(),
-            literal_widenings: HashMap::new(),
-            self_nested_closure_folds: HashMap::new(),
-            activation_key_arrows: HashMap::new(),
-            address_vars: HashMap::new(),
+            value_lane_reprs: HashMap::default(),
+            structural_surfaces: HashMap::default(),
+            runtime_readings: HashMap::default(),
+            literal_widenings: HashMap::default(),
+            self_nested_closure_folds: HashMap::default(),
+            activation_key_arrows: HashMap::default(),
+            address_vars: HashMap::default(),
             address_paths: Vec::new(),
             result_alpha: None,
-            callable_origins: order::CallableOrigins::new(),
+            callable_origins: order::CallableOrigins::default(),
             activation_input_collapses: 0,
         }
     }
@@ -914,7 +915,7 @@ impl Types {
 
     fn activation_reachable(&self, root: Ty, mut visit: impl FnMut(Ty)) -> HashSet<Ty> {
         let mut pending = vec![root];
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         while let Some(ty) = pending.pop() {
             if !seen.insert(ty) {
                 continue;
@@ -2394,7 +2395,7 @@ impl Types {
         bounds: &HashMap<TypeVarId, Ty>,
     ) -> BTreeSet<ProtocolDomainObligation> {
         let mut obligations = BTreeSet::new();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         for root in roots {
             self.collect_protocol_domain_obligations(root, &mut seen, &mut obligations);
         }
@@ -2411,7 +2412,7 @@ impl Types {
     /// a `Ty`, consults source reference graphs, or inventories World modules.
     pub(crate) fn struct_modules(&self, roots: impl IntoIterator<Item = Ty>) -> BTreeSet<super::identity::ModuleId> {
         let mut modules = BTreeSet::new();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         for root in roots {
             self.collect_struct_modules(root, &mut seen, &mut modules);
         }
@@ -2856,7 +2857,7 @@ impl Types {
     /// only in the nested arrow's signature absorb each other.
     pub fn lit_arrow_shapes(&self, a: &Ty) -> Vec<LitArrowShape> {
         let mut shapes = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         collect_lit_arrow_shapes(self.ctx(), a, &mut seen, &mut shapes);
         shapes.sort();
         shapes.dedup();
@@ -2960,7 +2961,7 @@ impl Types {
             ty,
             RuntimeEnvelopePolarity::Positive,
             RuntimeEnvelopePurpose::Projection,
-            &Sigma::new(),
+            &Sigma::default(),
         );
         self.intern(descr)
     }
@@ -3021,7 +3022,7 @@ impl Types {
             ty,
             RuntimeEnvelopePolarity::Positive,
             RuntimeEnvelopePurpose::Predicate,
-            &Sigma::new(),
+            &Sigma::default(),
         );
         self.intern(descr)
     }
@@ -3062,7 +3063,7 @@ impl Types {
     }
 
     pub fn grounded_callable_args(&mut self, template_args: &[Ty], surface_inputs: &[Ty]) -> Vec<Ty> {
-        let mut sigma = Sigma::new();
+        let mut sigma = Sigma::default();
         for (pattern, witness) in template_args.iter().zip(surface_inputs.iter()) {
             self.collect_instantiation_subst(pattern, witness, &mut sigma);
         }
@@ -4421,7 +4422,7 @@ fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec
                         *capture,
                         RuntimeEnvelopePolarity::Positive,
                         RuntimeEnvelopePurpose::Predicate,
-                        &Sigma::new(),
+                        &Sigma::default(),
                     )
                 })
                 .collect();

@@ -4,7 +4,7 @@
 //! backend-owned program consumed by the interpreter and native lowering.
 
 use crate::compiler2::ValueMap;
-use std::collections::{HashMap, HashSet};
+use crate::fast_hash::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::diag::Diagnostic;
@@ -216,7 +216,7 @@ pub(crate) fn produce_backend_executable_product(
     };
     let abi = Rc::clone(abi);
     let root = context.session().root().expect("executable products are root-scoped");
-    let mut dependencies = HashSet::new();
+    let mut dependencies = HashSet::default();
     for edge in abi.call_edges.values() {
         let flows = match edge.target() {
             CallEdge::Direct(edge) => vec![&edge.return_flow],
@@ -256,7 +256,7 @@ pub(crate) fn produce_backend_executable_product(
     dependencies.remove(executable);
     let mut dependencies = dependencies.into_iter().collect::<Vec<_>>();
     dependencies.sort_by(|left, right| left.semantic_cmp(right, world.types()));
-    let mut abis = HashMap::from([(executable.clone(), Rc::clone(&abi))]);
+    let mut abis = HashMap::from_iter([(executable.clone(), Rc::clone(&abi))]);
     let mut waits = Vec::new();
     for dependency in dependencies {
         let key = ProductKey::AbiExecutable(dependency.clone());
@@ -310,7 +310,7 @@ pub(crate) fn produce_backend_executable_product(
         boxed_apply_requirements,
     };
     let mut atoms = Vec::new();
-    collect_executable_atoms(world, &backend, &mut HashSet::new(), &mut atoms);
+    collect_executable_atoms(world, &backend, &mut HashSet::default(), &mut atoms);
     backend.atom_names = atoms.iter().map(|atom| AtomName::from(atom.as_str())).collect();
     for edge in backend.abi.call_edges.values() {
         for callee in symbolic_call_edge_callees(edge.target()) {

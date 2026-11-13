@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 
 use crate::compiler2::ValueMap;
 
@@ -71,7 +71,7 @@ fn formula_snapshot_takes_peer_input_vectors_without_copying_them() {
     };
     let inputs = vec![RuntimeDemand::whole()];
     let input_buffer = inputs.as_ptr();
-    let peer_inputs = HashMap::from([(peer.clone(), inputs)]);
+    let peer_inputs = HashMap::from_iter([(peer.clone(), inputs)]);
 
     let snapshot = RuntimeDemandFormulaSnapshot::new(
         member,
@@ -120,18 +120,17 @@ fn propagate_tuple_step_demand(
         body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
         extern_wire: None,
         entry_dispatch: None,
-        callsite_dispatch_demand: HashMap::new(),
-        callsites: HashMap::new(),
-        callsite_needs: HashMap::new(),
-        delivered_value_joins: HashMap::new(),
-        callsite_return_origins: HashMap::new(),
+        callsite_dispatch_demand: HashMap::default(),
+        callsites: HashMap::default(),
+        callsite_needs: HashMap::default(),
+        delivered_value_joins: HashMap::default(),
         value_origins: ValueMap::new(),
         callable_origins: ValueMap::new(),
         return_origins: Box::new([]),
         demand_types: RuntimeDemandTypeInputs::new(any),
         callable_activation_inputs: Vec::new(),
     };
-    let projections = HashMap::new();
+    let projections = HashMap::default();
     let facts = facts.runtime_demand_facts(&projections);
     let snapshot = RuntimeDemandFormulaSnapshot::new(
         member,
@@ -139,7 +138,7 @@ fn propagate_tuple_step_demand(
             return_demand: RuntimeDemand::ignore(),
             input_demands: Vec::new(),
         },
-        HashMap::new(),
+        HashMap::default(),
     );
 
     let mut live = ValueMap::from([(value, demand)]);
@@ -178,7 +177,7 @@ fn a_call_between_destinations_asks_for_exactly_the_arguments_its_choice_reads()
         return_ty: None,
     };
     let callsite = CallSiteId::from_u32(0);
-    let summaries = HashMap::from([(
+    let summaries = HashMap::from_iter([(
         callsite,
         CallSiteSummary {
             targets: vec![target(1, int), target(2, atom)],
@@ -204,7 +203,7 @@ fn a_call_between_destinations_asks_for_exactly_the_arguments_its_choice_reads()
             }),
         )
     };
-    let projections = HashMap::from([
+    let projections = HashMap::from_iter([
         projection(int, RuntimeDemand::ignore()),
         projection(atom, RuntimeDemand::ignore()),
         projection(float, RuntimeDemand::whole()),
@@ -228,9 +227,8 @@ fn a_call_between_destinations_asks_for_exactly_the_arguments_its_choice_reads()
         entry_dispatch: None,
         callsite_dispatch_demand: dispatch_demand,
         callsites: summaries,
-        callsite_needs: HashMap::new(),
-        delivered_value_joins: HashMap::new(),
-        callsite_return_origins: HashMap::new(),
+        callsite_needs: HashMap::default(),
+        delivered_value_joins: HashMap::default(),
         value_origins: ValueMap::new(),
         callable_origins: ValueMap::new(),
         return_origins: Box::new([]),
@@ -244,7 +242,7 @@ fn a_call_between_destinations_asks_for_exactly_the_arguments_its_choice_reads()
             return_demand: RuntimeDemand::ignore(),
             input_demands: Vec::new(),
         },
-        HashMap::new(),
+        HashMap::default(),
     );
 
     let demands = super::arg_demands_for_summary(
@@ -301,18 +299,17 @@ mod tests {
             body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()).with_value_count(2),
             extern_wire: None,
             entry_dispatch: None,
-            callsite_dispatch_demand: HashMap::new(),
-            callsites: HashMap::new(),
-            callsite_needs: HashMap::new(),
-            delivered_value_joins: HashMap::new(),
-            callsite_return_origins: HashMap::new(),
+            callsite_dispatch_demand: HashMap::default(),
+            callsites: HashMap::default(),
+            callsite_needs: HashMap::default(),
+            delivered_value_joins: HashMap::default(),
             value_origins: ValueMap::new(),
             callable_origins: ValueMap::new(),
             return_origins: Box::new([]),
             demand_types: RuntimeDemandTypeInputs::new(any),
             callable_activation_inputs: Vec::new(),
         };
-        let projections = HashMap::new();
+        let projections = HashMap::default();
         let facts = facts.runtime_demand_facts(&projections);
         let value = ValueId::from_u32(0);
         let capture = ValueId::from_u32(1);
@@ -322,8 +319,8 @@ mod tests {
                 return_demand: RuntimeDemand::ignore(),
                 input_demands: Vec::new(),
             },
-            target_inputs: HashMap::new(),
-            construction_targets: HashMap::from([
+            target_inputs: HashMap::default(),
+            construction_targets: HashMap::from_iter([
                 ((value, int_surface.clone()), int_target.clone()),
                 ((value, atom_surface.clone()), atom_target.clone()),
             ]),
@@ -412,8 +409,7 @@ mod tests {
             Vec::new(),
         );
 
-        let callsite_origins = collect_callsite_return_origins(&body);
-        let value_origins = collect_value_origins(&body, &callsite_origins);
+        let value_origins = collect_value_origins(&body);
 
         assert_eq!(
             value_origins.get(&direct_value),

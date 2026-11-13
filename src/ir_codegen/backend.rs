@@ -1,5 +1,6 @@
 use super::*;
 use crate::diag::Diagnostics;
+use crate::fast_hash::HashMap;
 use cranelift_codegen::ir::{AbiParam, types};
 use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::settings::{Configurable, Flags};
@@ -12,7 +13,6 @@ use fz_runtime::process::Node;
 use object::macho::PLATFORM_MACOS;
 #[cfg(target_os = "macos")]
 use object::write::MachOBuildVersion;
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -131,7 +131,7 @@ impl Backend for JitBackend {
         let JitBackend { mut jmod } = self;
         jmod.finalize_definitions()
             .map_err(|e| CodegenError::new(format!("finalize: {}", e)))?;
-        let mut fn_ptrs: HashMap<u32, *const u8> = HashMap::new();
+        let mut fn_ptrs: HashMap<u32, *const u8> = HashMap::default();
         for (fz_fn_id, func_id) in &meta.fn_ids {
             fn_ptrs.insert(*fz_fn_id, jmod.get_finalized_function(*func_id));
         }

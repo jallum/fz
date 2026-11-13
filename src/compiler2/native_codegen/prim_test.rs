@@ -73,7 +73,7 @@ fn read_var_as(
     let value = value(&mut b);
     let mut cache = CodegenCache::default();
     let mut body = CodegenFn::new(&mut b, &mut module, &mut cache);
-    read(&mut body, &HashMap::from([(0, value)]));
+    read(&mut body, &HashMap::from_iter([(0, value)]));
 }
 
 /// An integer read of a float-lane value refuses, and so does a float read of

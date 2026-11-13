@@ -443,10 +443,10 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
         .borrow()
         .iter()
         .map(|(key, _)| key.clone())
-        .collect::<std::collections::HashSet<_>>();
+        .collect::<crate::fast_hash::HashSet<_>>();
     assert_eq!(
         evaluated_keys,
-        std::collections::HashSet::from([native_key.clone()]),
+        crate::fast_hash::HashSet::from_iter([native_key.clone()]),
         "the interpreter already refreshed the backend; native evaluates only its recorded reader",
     );
     assert_eq!(
@@ -650,7 +650,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
                 .map(|executable| executable.key.clone())
                 .collect::<Vec<_>>()
         })
-        .collect::<std::collections::HashSet<_>>();
+        .collect::<crate::fast_hash::HashSet<_>>();
     assert_eq!(cold_leafs.len(), 2);
     for leaf in &cold_leafs {
         let demand = compiler.world().runtime_demand(leaf).expect("cold leaf demand");
@@ -681,8 +681,8 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         .borrow()
         .iter()
         .cloned()
-        .collect::<std::collections::HashSet<_>>();
-    let mut exact_woken_reader_counts = std::collections::HashMap::new();
+        .collect::<crate::fast_hash::HashSet<_>>();
+    let mut exact_woken_reader_counts = crate::fast_hash::HashMap::default();
     for (executable, _) in runtime_demand_wakes.borrow().iter() {
         *exact_woken_reader_counts.entry(executable.clone()).or_insert(0) += 1;
     }
@@ -696,7 +696,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
                 FactUse::Concluded(fact) => FactUse::concluded(DependencyKey::Fact(fact)),
                 FactUse::Settled(fact) => FactUse::settled(DependencyKey::Fact(fact)),
             })
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<crate::fast_hash::HashSet<_>>();
         let same_fact_after_presence = match cause {
             FactUse::Settled(fact) => final_reads.contains(&FactUse::current(fact.clone())),
             FactUse::Current(_) | FactUse::Concluded(_) => false,
@@ -709,13 +709,13 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     let reached_names = observed_runtime_demand_readers
         .iter()
         .map(|executable| compiler.world().function_ref(executable.activation.function).name())
-        .collect::<std::collections::HashSet<_>>();
+        .collect::<crate::fast_hash::HashSet<_>>();
     assert_eq!(
         reached_names,
-        std::collections::HashSet::from(["leaf", "main", "other"]),
+        crate::fast_hash::HashSet::from_iter(["leaf", "main", "other"]),
         "only the transitive exact reader closure should re-evaluate",
     );
-    let mut reached_counts = std::collections::HashMap::<String, usize>::new();
+    let mut reached_counts = crate::fast_hash::HashMap::<String, usize>::default();
     for executable in runtime_demand_runs.borrow().iter() {
         *reached_counts
             .entry(
@@ -727,17 +727,17 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
             )
             .or_default() += 1;
     }
-    let mut observed_runtime_demand_counts = std::collections::HashMap::new();
+    let mut observed_runtime_demand_counts = crate::fast_hash::HashMap::default();
     for executable in runtime_demand_runs.borrow().iter() {
         *observed_runtime_demand_counts.entry(executable.clone()).or_insert(0) += 1;
     }
     assert_eq!(
         observed_runtime_demand_counts
             .keys()
-            .collect::<std::collections::HashSet<_>>(),
+            .collect::<crate::fast_hash::HashSet<_>>(),
         exact_woken_reader_counts
             .keys()
-            .collect::<std::collections::HashSet<_>>(),
+            .collect::<crate::fast_hash::HashSet<_>>(),
         "a reached edit must evaluate only RuntimeDemand jobs reached through exact scheduler subscriptions",
     );
     assert!(
@@ -748,7 +748,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     );
     assert_eq!(
         reached_counts,
-        std::collections::HashMap::from([
+        crate::fast_hash::HashMap::from_iter([
             ("leaf".to_string(), 2),
             ("main".to_string(), 1),
             ("other".to_string(), 1),
@@ -849,7 +849,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     let names = inventory
         .iter()
         .map(|executable| compiler.world().function_ref(executable.activation.function).name())
-        .collect::<std::collections::HashSet<_>>();
+        .collect::<crate::fast_hash::HashSet<_>>();
     assert!(names.contains("main") && names.contains("replacement"));
     assert!(
         !names.contains("leaf"),
@@ -923,7 +923,7 @@ fn nested_retained_activations_partition_work_without_replaying_it_on_a_cache_hi
         .borrow()
         .iter()
         .filter_map(|(candidate, _, _)| candidate.filter(|candidate| *candidate != root))
-        .collect::<std::collections::HashSet<_>>();
+        .collect::<crate::fast_hash::HashSet<_>>();
     assert!(
         !macro_roots.is_empty(),
         "the fixture must open a retained macro-root session"
@@ -2117,8 +2117,8 @@ fn one_product_prerequisite_set_emits_one_quiescence_step_with_both_readiness_ch
             .changed
             .iter()
             .map(|change| change.key.clone())
-            .collect::<std::collections::HashSet<_>>(),
-        std::collections::HashSet::from([DependencyKey::Fact(left), DependencyKey::Fact(right)]),
+            .collect::<crate::fast_hash::HashSet<_>>(),
+        crate::fast_hash::HashSet::from_iter([DependencyKey::Fact(left), DependencyKey::Fact(right)]),
         "the atomic step must retain both typed readiness changes"
     );
 }
@@ -2475,7 +2475,7 @@ fn a_settled_prerequisites_readiness_flip_settles_its_dependent_fact_without_run
         .memo()
         .produced_keys()
         .map(|key| (key.clone(), driver.session().memo().generation(key)))
-        .collect::<std::collections::HashMap<_, _>>();
+        .collect::<crate::fast_hash::HashMap<_, _>>();
     let executable = generations
         .keys()
         .find_map(|key| match key {
@@ -2706,7 +2706,7 @@ fn each_executable_derives_its_facts_exactly_once() {
         .expect("the program should settle");
 
     let runs = runs.borrow();
-    let keys = runs.iter().collect::<std::collections::HashSet<_>>();
+    let keys = runs.iter().collect::<crate::fast_hash::HashSet<_>>();
     assert!(!keys.is_empty());
     assert_eq!(runs.len(), keys.len(), "every executable derives its facts once");
 }
@@ -2770,7 +2770,7 @@ fn a_callsite_movement_rederives_each_exact_executable_reader_and_leaves_other_r
             let fact = FactKey::ExecutableFacts(executable.clone());
             (executable.clone(), world.fact_revision(&fact).expect("fact revision"))
         })
-        .collect::<std::collections::HashMap<_, _>>();
+        .collect::<crate::fast_hash::HashMap<_, _>>();
     let unrelated_revisions = root_executables
         .iter()
         .filter(|executable| executable.activation != main.activation)
@@ -2782,7 +2782,7 @@ fn a_callsite_movement_rederives_each_exact_executable_reader_and_leaves_other_r
                 world.fact_revision(&fact).expect("unrelated fact revision"),
             )
         })
-        .collect::<std::collections::HashMap<_, _>>();
+        .collect::<crate::fast_hash::HashMap<_, _>>();
 
     let analysis = world
         .activation_analysis(&main.activation)
@@ -2821,7 +2821,7 @@ fn a_callsite_movement_rederives_each_exact_executable_reader_and_leaves_other_r
             Job::DeriveExecutableFacts(executable) => Some(executable.clone()),
             _ => None,
         })
-        .collect::<std::collections::HashSet<_>>();
+        .collect::<crate::fast_hash::HashSet<_>>();
     assert_eq!(moved_readers, exact_readers.into_iter().collect());
 
     assert!(

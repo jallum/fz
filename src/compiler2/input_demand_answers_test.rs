@@ -106,7 +106,7 @@ fn input_demand_work(source: &str) -> DemandWork {
             let standing = world
                 .work_graph
                 .reads(&completion.job)
-                .collect::<std::collections::HashSet<_>>();
+                .collect::<crate::fast_hash::HashSet<_>>();
             let read_count = standing.len();
             let mut reads = standing
                 .iter()

@@ -19,12 +19,13 @@
 
 use crate::ast::{BitType, Endian};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
+use crate::fast_hash::{HashMap, HashSet};
 use crate::modules::identity::{Mfa, ModuleName};
 use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::source::Span;
 use fz_runtime::heap::Schema;
 use fz_runtime::process::AtomName;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -960,7 +961,7 @@ impl FnIr {
     }
 
     pub fn dedup_physical_entry_params(&mut self) {
-        let mut entry_seen = HashSet::new();
+        let mut entry_seen = HashSet::default();
         self.physical_entry_params.retain(|param| entry_seen.insert(*param));
     }
 
@@ -1100,7 +1101,7 @@ impl FnBuilder {
             entry: None,
             category: FnCategory::User,
             owner_module: String::new(),
-            ignored_params: HashSet::new(),
+            ignored_params: HashSet::default(),
             physical_entry_params: Vec::new(),
         }
     }
@@ -1204,9 +1205,9 @@ impl ModuleBuilder {
             module_path: String::new(),
             next_fn: 0,
             fns: Vec::new(),
-            fn_idx: HashMap::new(),
+            fn_idx: HashMap::default(),
             schemas: Vec::new(),
-            protocol_call_targets: HashMap::new(),
+            protocol_call_targets: HashMap::default(),
         }
     }
 
@@ -1237,7 +1238,7 @@ impl ModuleBuilder {
             source: SourceInfo::default(),
             atom_names: Vec::new(),
             externs: Vec::new(),
-            extern_idx: HashMap::new(),
+            extern_idx: HashMap::default(),
             protocol_call_targets: self.protocol_call_targets,
             struct_schemas: Default::default(),
         }

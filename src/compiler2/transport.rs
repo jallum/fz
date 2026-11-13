@@ -4,7 +4,7 @@
 //! Position-owned products retain these descriptors in each executable's ABI.
 //! Positions may mention semantic body evidence, but descriptor keys must not.
 
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::Range;
@@ -736,7 +736,7 @@ impl<D, I> Default for Interner<D, I> {
     fn default() -> Self {
         Self {
             arena: Vec::new(),
-            index: HashMap::new(),
+            index: HashMap::default(),
             id: PhantomData,
         }
     }

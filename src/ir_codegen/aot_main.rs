@@ -2,6 +2,7 @@ use super::*;
 use crate::compiler2::native_codegen::runtime_call::{
     RuntimeCaller, RuntimeFn, declare_runtime_fn, runtime_call, runtime_fn_id,
 };
+use crate::fast_hash::HashMap;
 use cranelift_codegen::ir::{self, InstBuilder, Signature, types};
 use cranelift_codegen::settings;
 use cranelift_codegen::verifier::verify_function;
@@ -12,7 +13,6 @@ use fz_runtime::aot_shim::{
     fz_aot_set_drain_dtor_entry, fz_aot_set_resume_addr, fz_aot_setup,
 };
 use fz_runtime::procbin::{SHARED_BIN_BYTES, shared_bin_destructor_noop};
-use std::collections::HashMap;
 
 /// The C `main` body under construction: the module that declares a symbol
 /// and the builder that emits the call, together, so the startup calls reach
@@ -104,7 +104,7 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
         let mut main = AotMain {
             jmod,
             b: &mut b,
-            runtime_funcs: HashMap::new(),
+            runtime_funcs: HashMap::default(),
         };
 
         // Atom blob: symbol address + byte length.

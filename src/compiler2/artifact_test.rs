@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 
 use super::identity::{FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
 use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId, Types};
@@ -199,7 +199,7 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     });
     module.fn_idx.insert(entry_fn, 0);
 
-    let marshals = HashMap::from([(
+    let marshals = HashMap::from_iter([(
         ExternMarshalSite {
             block: BlockId(0),
             stmt_idx: 0,
@@ -221,8 +221,8 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             param_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
             return_reprs: vec![AbiValueRepr::RawInt],
-            block_param_reprs: HashMap::new(),
-            value_types: HashMap::from([(Var(0), int)]),
+            block_param_reprs: HashMap::default(),
+            value_types: HashMap::from_iter([(Var(0), int)]),
             extern_marshals: marshals.clone(),
             effects: EffectSummary::default(),
         }],
@@ -394,9 +394,9 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 param_reprs: vec![AbiValueRepr::RawInt],
                 return_ty: int,
                 return_reprs: vec![AbiValueRepr::RawInt],
-                block_param_reprs: HashMap::new(),
-                value_types: HashMap::from([(Var(0), int)]),
-                extern_marshals: HashMap::from([(extern_site, ExternTy::CString)]),
+                block_param_reprs: HashMap::default(),
+                value_types: HashMap::from_iter([(Var(0), int)]),
+                extern_marshals: HashMap::from_iter([(extern_site, ExternTy::CString)]),
                 effects: EffectSummary::default(),
             },
             NativeBody {
@@ -406,9 +406,9 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 param_reprs: vec![AbiValueRepr::ValueRef],
                 return_ty: int,
                 return_reprs: vec![AbiValueRepr::ValueRef],
-                block_param_reprs: HashMap::new(),
-                value_types: HashMap::from([(Var(1), int)]),
-                extern_marshals: HashMap::new(),
+                block_param_reprs: HashMap::default(),
+                value_types: HashMap::from_iter([(Var(1), int)]),
+                extern_marshals: HashMap::default(),
                 effects: EffectSummary::default(),
             },
         ],
@@ -565,9 +565,9 @@ fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authori
             param_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
             return_reprs: vec![AbiValueRepr::RawInt],
-            block_param_reprs: HashMap::new(),
-            value_types: HashMap::from([(Var(0), int)]),
-            extern_marshals: HashMap::from([(marshal_site, ExternTy::CString)]),
+            block_param_reprs: HashMap::default(),
+            value_types: HashMap::from_iter([(Var(0), int)]),
+            extern_marshals: HashMap::from_iter([(marshal_site, ExternTy::CString)]),
             effects: EffectSummary::default(),
         }],
         callable_boundaries: Vec::new(),

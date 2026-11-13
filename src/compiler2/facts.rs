@@ -1,5 +1,5 @@
 use super::ordered_set::OrderedSet;
-use std::collections::{HashMap, HashSet};
+use crate::fast_hash::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
 
@@ -254,9 +254,9 @@ struct FactSlot<P> {
 impl<P> Default for FactSlot<P> {
     fn default() -> Self {
         Self {
-            publishers: HashSet::new(),
-            dirty_publishers: HashSet::new(),
-            unfinal_publishers: HashSet::new(),
+            publishers: HashSet::default(),
+            dirty_publishers: HashSet::default(),
+            unfinal_publishers: HashSet::default(),
             revision: 0,
             unheard_by_concluded: None,
         }
@@ -305,7 +305,9 @@ pub struct FactTable<P, F> {
 
 impl<P, F> Default for FactTable<P, F> {
     fn default() -> Self {
-        Self { slots: HashMap::new() }
+        Self {
+            slots: HashMap::default(),
+        }
     }
 }
 
@@ -414,7 +416,7 @@ where
         for key in outputs {
             assert!(output_keys.insert(key), "job emitted duplicate fact output for one key");
         }
-        let mut changed_keys_set = HashSet::with_capacity(changed_keys.len());
+        let mut changed_keys_set = HashSet::with_capacity_and_hasher(changed_keys.len(), Default::default());
         for key in &changed_keys {
             assert!(
                 changed_keys_set.insert(key),
@@ -527,7 +529,7 @@ where
         for key in outputs {
             assert!(output_keys.insert(key), "job emitted duplicate fact output for one key");
         }
-        let mut changed_keys_set = HashSet::with_capacity(changed_keys.len());
+        let mut changed_keys_set = HashSet::with_capacity_and_hasher(changed_keys.len(), Default::default());
         for key in &changed_keys {
             assert!(
                 changed_keys_set.insert(key),

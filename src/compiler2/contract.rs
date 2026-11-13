@@ -16,7 +16,9 @@
 //! `Types::instantiate`, closing dependent bounds to a fixed point while leaving
 //! unbounded or cyclic variables polymorphic.
 
-use std::collections::{BTreeSet, HashMap};
+use crate::fast_hash::HashMap;
+
+use std::collections::BTreeSet;
 
 use crate::type_expr::ResolvedSpecDecl;
 

@@ -1,17 +1,18 @@
 use crate::compiler2::{ValueMap, ValueSet};
+use crate::fast_hash::{HashMap, HashSet};
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use super::super::body::{
     CallArg, CallInputMode, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DeliveredValueSource,
-    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId, callsite_call_args, callsite_input_modes,
+    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId,
 };
 use super::super::callsite_dispatch::dispatch_stress;
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, settled_uses};
 use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, RuntimeDemandFacts};
 #[cfg(test)]
-use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
+use super::super::executable_facts::{TransportOrigin, collect_value_origins};
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::super::incoming_inputs::{IncomingInputRole, IncomingInputSource, IncomingInputSources, InputSlot};
@@ -121,7 +122,7 @@ impl EntryDemandWalkTable {
     fn new(value_count: usize) -> Self {
         Self {
             value_count,
-            answers: HashMap::new(),
+            answers: HashMap::default(),
             parameters: ValueMap::with_capacity(value_count),
             entries_walked: 0,
         }
@@ -208,7 +209,7 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     let peer_keys = direct_local_targets(&facts);
     let mut ordered_peers = peer_keys.into_iter().collect::<Vec<_>>();
     ordered_peers.sort_by(|left, right| left.semantic_cmp(right, world.types()));
-    let mut peers = HashMap::new();
+    let mut peers = HashMap::default();
     for peer in ordered_peers.iter() {
         if let Some(demands) = answers.read(world, &mut uses, executable, peer) {
             peers.insert(peer.clone(), demands);
@@ -219,7 +220,7 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     let mut input =
         RuntimeDemandFormulaInput::new(executable, &facts, world.runtime_demand_type_projections(), own, peers);
     let mut loaded_target_demands = ordered_peers.into_iter().collect::<HashSet<_>>();
-    let mut callable_target_reads = HashSet::new();
+    let mut callable_target_reads = HashSet::default();
     let mut runtime_demand_evaluations = 0;
     let (mut derived, plans, unresolved_construction_targets) = loop {
         let derived = derive_up_before_down(
@@ -275,7 +276,7 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     };
     let returns_awaiting_answers = callsite_returns_reaching(&input.facts, &answers.unanswered);
     let return_contributions =
-        call_return_demand_contributions(&input.facts, &derived.call_return_demands, &HashSet::new());
+        call_return_demand_contributions(&input.facts, &derived.call_return_demands, &HashSet::default());
     let provisional_returns =
         call_return_demand_contributions(&input.facts, &derived.call_return_demands, &returns_awaiting_answers);
     #[cfg(test)]
@@ -347,7 +348,7 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
         "{executable:?} would conclude without an answer from {:?}",
         answers.unanswered
     );
-    let mut incoming = HashMap::new();
+    let mut incoming = HashMap::default();
     if has_owner {
         collect_callsite_input_sources(world, executable, &facts, &mut incoming);
         if !blocked {
@@ -540,22 +541,22 @@ fn result_consumers(facts: &RuntimeDemandFacts<'_>) -> HashMap<ExecutableKey, Re
             .into_iter()
             .flat_map(move |summary| local_call_targets(summary, need))
     };
-    let mut consumers = HashMap::<ExecutableKey, ResultConsumers>::new();
+    let mut consumers = HashMap::<ExecutableKey, ResultConsumers>::default();
     for callsite in facts.callsites.keys() {
         for callee in targets_of(callsite) {
             consumers
                 .entry(callee)
-                .or_insert_with(|| ResultConsumers::Named(HashSet::new()));
+                .or_insert_with(|| ResultConsumers::Named(HashSet::default()));
         }
     }
-    for (callsite, args) in callsite_call_args(facts.body) {
+    for (callsite, args) in facts.body.calls() {
         let names_consumers = targets_of(&callsite).next().is_some();
         for arg in args {
             for producer_site in callsite_returns_feeding(facts, arg.value) {
                 for producer in targets_of(&producer_site) {
                     let entry = consumers
                         .entry(producer)
-                        .or_insert_with(|| ResultConsumers::Named(HashSet::new()));
+                        .or_insert_with(|| ResultConsumers::Named(HashSet::default()));
                     match entry {
                         ResultConsumers::Named(named) if names_consumers => named.extend(targets_of(&callsite)),
                         _ => *entry = ResultConsumers::Unnamed,
@@ -574,7 +575,7 @@ fn consumers_behind(
     consumers: &HashMap<ExecutableKey, ResultConsumers>,
     callee: &ExecutableKey,
 ) -> Option<HashSet<ExecutableKey>> {
-    let mut behind = HashSet::new();
+    let mut behind = HashSet::default();
     let mut pending = vec![callee];
     while let Some(producer) = pending.pop() {
         match consumers.get(producer)? {
@@ -626,8 +627,7 @@ fn callsite_returns_reaching(
     facts: &RuntimeDemandFacts<'_>,
     unanswered: &HashSet<ExecutableKey>,
 ) -> HashSet<CallSiteId> {
-    let args = callsite_call_args(facts.body);
-    let mut awaiting = HashSet::new();
+    let mut awaiting = HashSet::default();
     for (callsite, summary) in facts.callsites {
         let need = facts
             .callsite_needs
@@ -637,7 +637,7 @@ fn callsite_returns_reaching(
         if !local_call_targets(summary, need).any(|target| unanswered.contains(&target)) {
             continue;
         }
-        for arg in args.get(callsite).copied().into_iter().flatten() {
+        for arg in facts.body.call_args(*callsite).into_iter().flatten() {
             awaiting.extend(callsite_returns_feeding(facts, arg.value));
         }
     }
@@ -652,7 +652,7 @@ fn target_return_demand_contributions(
     observed: impl IntoIterator<Item = (ExecutableKey, RuntimeDemand)>,
     retained: impl IntoIterator<Item = ExecutableKey>,
 ) -> HashMap<ExecutableKey, TargetDemandContribution> {
-    let mut contributions = HashMap::<ExecutableKey, TargetDemandContribution>::new();
+    let mut contributions = HashMap::<ExecutableKey, TargetDemandContribution>::default();
     let mut join = |target: ExecutableKey, demand: RuntimeDemand| {
         let contribution = contributions.entry(target).or_default();
         match &mut contribution.return_demand {
@@ -855,7 +855,7 @@ impl RuntimeDemandFormulaSnapshot {
             member,
             own,
             target_inputs,
-            construction_targets: HashMap::new(),
+            construction_targets: HashMap::default(),
         }
     }
 }
@@ -909,13 +909,11 @@ fn collect_callsite_input_sources(
     facts: &ExecutableFacts,
     contribution: &mut HashMap<InputSlot, HashSet<IncomingInputSource>>,
 ) {
-    let call_args = callsite_call_args(&facts.body);
-    let call_modes = callsite_input_modes(&facts.body);
     for (callsite, summary) in &facts.callsites {
-        let Some(args) = call_args.get(callsite) else {
+        let Some(args) = facts.body.call_args(*callsite) else {
             continue;
         };
-        let Some(mode) = call_modes.get(callsite).copied() else {
+        let Some(mode) = facts.body.call_input_mode(*callsite) else {
             continue;
         };
         let need = facts
@@ -982,7 +980,7 @@ fn collect_callable_capture_input_sources(
 }
 
 fn direct_local_targets(facts: &ExecutableFacts) -> HashSet<ExecutableKey> {
-    let mut targets = HashSet::new();
+    let mut targets = HashSet::default();
     for (callsite, summary) in &facts.callsites {
         let need = facts
             .callsite_needs
@@ -1070,8 +1068,8 @@ fn plan_callable_flows(
     let executable = input.member;
     let facts = &input.facts;
     let mut plans = Vec::new();
-    let mut requested = HashSet::new();
-    let mut unresolved = HashSet::new();
+    let mut requested = HashSet::default();
+    let mut unresolved = HashSet::default();
     for (value, producer) in facts.callable_origins() {
         let Some(value_demand) = demand.value_demands.get(&value) else {
             continue;
@@ -1246,7 +1244,7 @@ fn derive_executable_runtime_demand(
         value_demands: ValueMap::with_capacity(facts.body.value_count()),
         ..ExecutableRuntimeDemand::default()
     };
-    let mut call_return_demands = HashMap::new();
+    let mut call_return_demands = HashMap::default();
 
     if let Some(signature) = facts.extern_wire {
         out.input_demands = executable
@@ -1852,7 +1850,7 @@ fn value_depends_on_callsite_return(facts: &RuntimeDemandFacts<'_>, value: Value
 /// joins and the steps that build one value from others.
 fn callsite_returns_feeding(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> HashSet<CallSiteId> {
     let mut seen = ValueSet::for_values(facts.body.value_count());
-    let mut feeding = HashSet::new();
+    let mut feeding = HashSet::default();
     let mut pending = vec![value];
     while let Some(value) = pending.pop() {
         if !seen.mark(value) {

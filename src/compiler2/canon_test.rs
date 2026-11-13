@@ -5,7 +5,7 @@
 //! defect's regression guard: it does not fix it, it makes it impossible for a
 //! canonical rendering to start lying about it.
 
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 use std::sync::Arc;
 
 use super::super::Compiler2;
@@ -107,14 +107,14 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
         let mut canon = TyCanon::new(&labels);
 
         let arena = types.interned_tys();
-        let mut groups: HashMap<Arc<str>, Vec<Ty>> = HashMap::new();
+        let mut groups: HashMap<Arc<str>, Vec<Ty>> = HashMap::default();
         for ty in &arena {
             groups.entry(canon.fingerprint(types, *ty)).or_default().push(*ty);
         }
 
         let mut collapsed = 0_usize;
         for group in groups.values() {
-            let mut classes: HashMap<Arc<str>, Vec<Ty>> = HashMap::new();
+            let mut classes: HashMap<Arc<str>, Vec<Ty>> = HashMap::default();
             for ty in group {
                 classes.entry(canon.render(types, *ty)).or_default().push(*ty);
             }
@@ -210,7 +210,7 @@ fn canon_distinguishes_the_three_list_forms_display_conflates() {
         .collect();
     assert_eq!(
         rendered.len(),
-        rendered.iter().collect::<std::collections::HashSet<_>>().len(),
+        rendered.iter().collect::<crate::fast_hash::HashSet<_>>().len(),
         "canon must render empty, possibly-empty and non-empty lists distinctly: {rendered:?}"
     );
 }

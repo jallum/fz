@@ -36,6 +36,7 @@ use crate::dispatch_matrix::{
 use crate::fz_ir::{ExternReturn, ExternTy, Module, ReceiveClause, Var};
 
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, TypeTestAnswer, emit_runtime_type_test};
+use crate::fast_hash::HashMap;
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
     self, AbiParam, InstBuilder, MemFlags, Signature,
@@ -53,7 +54,6 @@ use fz_runtime::ir_runtime::{
     fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
-use std::collections::HashMap;
 
 use super::prim::c_pair_return_types;
 use super::repr::ExternLane;
@@ -109,7 +109,7 @@ impl<'a, 'fb, M: cranelift_module::Module> DispatchBody<'a, 'fb, M> {
         Self {
             b,
             module,
-            runtime_funcs: HashMap::new(),
+            runtime_funcs: HashMap::default(),
         }
     }
 }
@@ -163,7 +163,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
 
     let mut unique_bytes = Vec::new();
     collect_binary_literals_in_dispatch(dispatch, &mut unique_bytes);
-    let mut binary_data_ids: HashMap<Vec<u8>, DataId> = HashMap::new();
+    let mut binary_data_ids: HashMap<Vec<u8>, DataId> = HashMap::default();
     for (idx, bytes) in unique_bytes.into_iter().enumerate() {
         if binary_data_ids.contains_key(&bytes) {
             continue;

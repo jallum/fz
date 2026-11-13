@@ -5,7 +5,7 @@
 //! entry dispatch from clause heads, and keeps both facts keyed by
 //! `FunctionId`.
 
-use std::collections::{HashMap, HashSet};
+use crate::fast_hash::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -64,8 +64,8 @@ pub(super) fn reify_guard_dispatch(
     let fn_span = surface.span;
 
     let mut reads = Vec::new();
-    let mut waits = HashSet::new();
-    let mut seen = HashSet::new();
+    let mut waits = HashSet::default();
+    let mut seen = HashSet::default();
     let mut stack = Vec::new();
     collect_requirements(world, tel, function, &mut reads, &mut waits, &mut seen, &mut stack)?;
     if !waits.is_empty() {
@@ -76,7 +76,7 @@ pub(super) fn reify_guard_dispatch(
         });
     }
 
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut build_stack = Vec::new();
     let callee = build_guard_dispatch(world, function, &mut cache, &mut build_stack)
         .map_err(|err| emit_guard_dispatch_error(tel, world, function, fn_span, err))?;
@@ -113,7 +113,7 @@ pub(super) fn plan_entry_dispatch(
     let (source, surface) = world.function_definition(function);
     let (source, surface) = (Rc::clone(source), Rc::clone(surface));
     let mut reads = vec![FactKey::FunctionDefined(function)];
-    let mut waits = HashSet::new();
+    let mut waits = HashSet::default();
     collect_annotation_requirements(world, function, &mut reads, &mut waits);
     for clause in &surface.clauses {
         for pattern in &clause.params {

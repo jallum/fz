@@ -1,4 +1,5 @@
 use super::*;
+use crate::fast_hash::HashMap;
 use crate::fz_ir::{FnId, Module};
 use crate::runtime_type_predicate::RuntimeTypePredicate;
 use fz_runtime::any_value::debug::render_value;
@@ -9,7 +10,6 @@ use fz_runtime::any_value::{
 use fz_runtime::heap::Schema;
 use fz_runtime::ir_runtime::{fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_struct_get_field_ref};
 use fz_runtime::process::Process;
-use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug)]
 /// Interpreter/REPL convenience view only. Keep runtime ABI, heap storage,
@@ -222,7 +222,7 @@ pub(super) fn interp_runtime_type_predicate_schema_ids(
     // field list into the heap's registry, so it is only worth doing for a test
     // that actually reads the table. `RuntimeValueReader` consults it from two
     // places and both are guarded by the same question this asks.
-    let mut named_schema_ids = HashMap::new();
+    let mut named_schema_ids = HashMap::default();
     if predicate.reads_named_schemas() {
         for (name, fields) in &module.struct_schemas {
             let schema_id = unsafe { &mut *runtime.cur_proc() }

@@ -2,12 +2,12 @@
 
 use super::*;
 use crate::ast::{BitType, Endian};
+use crate::fast_hash::HashMap;
 use crate::fz_ir::Var;
 use crate::types::Types;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
 use cranelift_module::Module;
 use fz_runtime::any_value::{FALSE_BITS as FALSE_BITS_RAW, TRUE_BITS as TRUE_BITS_RAW, ValueKind};
-use std::collections::HashMap;
 
 pub(crate) const SLOT_BYTES: i32 = 8;
 

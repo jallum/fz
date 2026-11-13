@@ -18,8 +18,8 @@ fn dependency_identity_preserves_the_complete_nested_product_key() {
 #[test]
 fn construction_target_surfaces_use_the_trace_type_dictionary() {
     let canon = CanonTables {
-        types: HashMap::from([(7, "int".to_string()), (8, "atom".to_string())]),
-        functions: HashMap::new(),
+        types: HashMap::from_iter([(7, "int".to_string()), (8, "atom".to_string())]),
+        functions: HashMap::default(),
     };
     let raw = serde_json::json!({
         "kind": "DeriveCallableConstructionTarget",
@@ -90,8 +90,8 @@ fn raw_product_identity_removes_only_its_renderer_annotation() {
 #[test]
 fn canonical_product_identity_substitutes_ids_without_filtering_fields() {
     let canon = CanonTables {
-        types: HashMap::from([(7, "int".to_string())]),
-        functions: HashMap::from([(11, "module.function".to_string())]),
+        types: HashMap::from_iter([(7, "int".to_string())]),
+        functions: HashMap::from_iter([(11, "module.function".to_string())]),
     };
     let raw = serde_json::json!({
         "opaque_type": "renderer annotation",

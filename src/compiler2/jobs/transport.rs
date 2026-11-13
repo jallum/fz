@@ -1,13 +1,11 @@
+use crate::fast_hash::HashMap;
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use super::super::artifact::{AbiValueRepr, ClosureCallEdge};
-use super::super::body::{
-    CallSiteId, ControlDestination, ControlEntryId, LoweredBody, LoweredTail, ValueId, callsite_call_args,
-    callsite_input_modes,
-};
+use super::super::body::{CallSiteId, ControlDestination, ControlEntryId, LoweredBody, LoweredTail, ValueId};
 use super::super::drive::FactKey;
 use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, TransportOrigin as TransportSource};
 use super::super::facts::FactUse;
@@ -303,8 +301,8 @@ fn produce_generic_callable_owner(
         return PullOutcome::Produced(ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
             layout,
             construction: None,
-            callable_facts: HashMap::new(),
-            boundary_facts: HashMap::new(),
+            callable_facts: HashMap::default(),
+            boundary_facts: HashMap::default(),
         })));
     }
     if let Some(fact) = generic_owner_ty_fact(executable, position) {
@@ -364,8 +362,9 @@ fn produce_generic_callable_owner(
                 semantic_index,
                 ..
             } => {
-                if let Some(arg) = callsite_call_args(facts.body())
-                    .get(callsite)
+                if let Some(arg) = facts
+                    .body()
+                    .call_args(*callsite)
                     .and_then(|args| args.get(*semantic_index))
                 {
                     source_positions.push(TransportPosition::Value {
@@ -381,7 +380,7 @@ fn produce_generic_callable_owner(
                         executable,
                         position.executable(),
                         facts,
-                        origin,
+                        &origin,
                         &mut source_positions,
                     )
                 }) {
@@ -410,7 +409,7 @@ fn produce_generic_callable_owner(
                             executable,
                             position.executable(),
                             facts,
-                            origin,
+                            &origin,
                             &mut source_positions,
                         )
                     }) {
@@ -591,8 +590,9 @@ fn generic_owner_ty_and_demand<'a>(
             semantic_index,
             ..
         } => {
-            let arg_value = callsite_call_args(facts.body())
-                .get(callsite)
+            let arg_value = facts
+                .body()
+                .call_args(*callsite)
                 .and_then(|args| args.get(*semantic_index))
                 .map(|arg| arg.value);
             (
@@ -1834,8 +1834,9 @@ fn produce_named_transport_position(
             semantic_index,
             ..
         } => {
-            let arg_value = callsite_call_args(facts.body())
-                .get(callsite)
+            let arg_value = facts
+                .body()
+                .call_args(*callsite)
                 .and_then(|args| args.get(*semantic_index))
                 .map(|arg| arg.value);
             let Some(arg_value) = arg_value else {
@@ -1851,10 +1852,8 @@ fn produce_named_transport_position(
                     TransportShapeFact::Layout(layout),
                 )));
             };
-            let args_len = callsite_call_args(facts.body())
-                .get(callsite)
-                .map_or(0, |args| args.len());
-            let mode = callsite_input_modes(facts.body()).get(callsite).copied();
+            let args_len = facts.body().call_args(*callsite).map_or(0, <[_]>::len);
+            let mode = facts.body().call_input_mode(*callsite);
             let need = facts
                 .callsite_needs()
                 .get(callsite)
@@ -1910,7 +1909,7 @@ fn produce_named_transport_position(
                 world,
                 &symbol,
                 &facts,
-                facts
+                &facts
                     .callsite_return_origin(*callsite)
                     .expect("every return payload must have a normalized callsite origin"),
             );
@@ -1960,7 +1959,7 @@ fn produce_named_transport_position(
                     world,
                     &symbol,
                     &facts,
-                    facts
+                    &facts
                         .callsite_return_origin(*callsite)
                         .expect("every resume payload must have a normalized callsite origin"),
                 );

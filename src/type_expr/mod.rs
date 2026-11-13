@@ -4,7 +4,7 @@
 //! `compiler2/type_expr.rs` and `compiler2/resolve.rs`. This module only keeps
 //! the cross-module data shape still shared by backend artifacts.
 
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 
 use crate::types::TypeVarId;
 

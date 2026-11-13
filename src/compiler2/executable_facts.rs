@@ -5,7 +5,8 @@
 //! fact gathers its settled inputs; product producers only read this value.
 
 use crate::compiler2::ValueMap;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use crate::fast_hash::{HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use crate::dispatch_matrix::demand::DispatchDemand;
@@ -13,8 +14,7 @@ use crate::dispatch_matrix::demand::DispatchDemand;
 use super::artifact::ExecutableDispatch;
 use super::body::{
     CallSiteId, ControlDestination, ControlEntryId, DeliveredValueJoin, DeliveredValueSource, LoweredBody,
-    LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ValueId, callsite_call_args,
-    delivered_value_joins,
+    LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ValueId, delivered_value_joins,
 };
 use super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
@@ -41,7 +41,6 @@ pub(crate) struct ExecutableFacts {
     pub(super) callsites: HashMap<CallSiteId, CallSiteSummary>,
     pub(super) callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
     pub(super) delivered_value_joins: HashMap<ControlEntryId, DeliveredValueJoin>,
-    pub(super) callsite_return_origins: HashMap<CallSiteId, TransportOrigin>,
     pub(super) value_origins: ValueMap<TransportOrigin>,
     pub(super) callable_origins: ValueMap<LocalCallableProducer>,
     pub(super) return_origins: Box<[TransportOrigin]>,
@@ -133,8 +132,8 @@ impl ExecutableFacts {
             .unwrap_or_default()
     }
 
-    pub(crate) fn callsite_return_origin(&self, callsite: CallSiteId) -> Option<&TransportOrigin> {
-        self.callsite_return_origins.get(&callsite)
+    pub(crate) fn callsite_return_origin(&self, callsite: CallSiteId) -> Option<TransportOrigin> {
+        callsite_return_origin(&self.body, callsite)
     }
 
     pub(crate) fn value_origin(&self, value: ValueId) -> Option<&TransportOrigin> {
@@ -233,7 +232,7 @@ impl RuntimeDemandTypeBuilder {
     fn new(any: Ty) -> Self {
         Self {
             inputs: RuntimeDemandTypeInputs::new(any),
-            projections: HashMap::new(),
+            projections: HashMap::default(),
         }
     }
 
@@ -291,49 +290,40 @@ pub(crate) fn project_executable_facts(
     // about clauses and entries is empty by construction, rather than
     // derived from an `analysis.entry_reachability` that names clause ids a
     // body-less executable does not have.
-    let (
-        delivered_value_joins,
-        callsite_return_origins,
-        value_origins,
-        callable_origins,
-        return_origins,
-        callsite_needs,
-    ) = if extern_wire.is_some() {
-        (
-            HashMap::new(),
-            HashMap::new(),
-            ValueMap::new(),
-            ValueMap::new(),
-            Box::default(),
-            HashMap::new(),
-        )
-    } else {
-        let delivered_value_joins = delivered_value_joins(&body);
-        let callsite_return_origins = collect_callsite_return_origins(&body);
-        let value_origins = collect_value_origins(&body, &callsite_return_origins);
-        let callable_origins: ValueMap<LocalCallableProducer> = value_origins
-            .keys()
-            .filter_map(|value| {
-                local_callable_origin(&body, &value_origins, value, &[]).map(|producer| (value, producer.clone()))
-            })
-            .collect();
-        let return_origins = collect_return_origins(&body, &analysis);
-        let callsite_needs = executable_callsite_needs(
-            &body,
-            analysis.entry_reachability.clauses(),
-            executable.need,
-            tel,
-            activation.function,
-        );
-        (
-            delivered_value_joins,
-            callsite_return_origins,
-            value_origins,
-            callable_origins,
-            return_origins,
-            callsite_needs,
-        )
-    };
+    let (delivered_value_joins, value_origins, callable_origins, return_origins, callsite_needs) =
+        if extern_wire.is_some() {
+            (
+                HashMap::default(),
+                ValueMap::new(),
+                ValueMap::new(),
+                Box::default(),
+                HashMap::default(),
+            )
+        } else {
+            let delivered_value_joins = delivered_value_joins(&body);
+            let value_origins = collect_value_origins(&body);
+            let callable_origins: ValueMap<LocalCallableProducer> = value_origins
+                .keys()
+                .filter_map(|value| {
+                    local_callable_origin(&body, &value_origins, value, &[]).map(|producer| (value, producer.clone()))
+                })
+                .collect();
+            let return_origins = collect_return_origins(&body, &analysis);
+            let callsite_needs = executable_callsite_needs(
+                &body,
+                analysis.entry_reachability.clauses(),
+                executable.need,
+                tel,
+                activation.function,
+            );
+            (
+                delivered_value_joins,
+                value_origins,
+                callable_origins,
+                return_origins,
+                callsite_needs,
+            )
+        };
     let entry_dispatch = executable_dispatch(&analysis);
     let entry_dispatch_demand = entry_dispatch
         .as_ref()
@@ -376,7 +366,6 @@ pub(crate) fn project_executable_facts(
         callsites,
         callsite_needs,
         delivered_value_joins,
-        callsite_return_origins,
         value_origins,
         callable_origins,
         return_origins,
@@ -464,9 +453,8 @@ fn prepare_runtime_demand_type_inputs(
             .filter(|(_, demand)| demand.asks_anything())
             .filter_map(|(index, _)| activation_inputs.get(index).copied()),
     );
-    let call_args = callsite_call_args(body);
     for (callsite, demands) in callsite_dispatch_demand {
-        let args = call_args.get(callsite).copied().unwrap_or_default();
+        let args = body.call_args(*callsite).unwrap_or_default();
         tys.extend(
             args.iter()
                 .zip(demands.iter())
@@ -713,7 +701,7 @@ fn executable_callsite_needs(
     tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
 ) -> HashMap<CallSiteId, ExecutableNeed> {
-    let mut needs = HashMap::new();
+    let mut needs = HashMap::default();
     let LoweredBody::Clauses { clauses, entries, .. } = body;
     let mut walks = CallsiteNeedWalkTable::new();
     for clause_id in reachable_clauses {
@@ -898,21 +886,19 @@ fn record_callsite_need(out: &mut HashMap<CallSiteId, ExecutableNeed>, callsite:
     }
 }
 
-pub(crate) fn collect_callsite_return_origins(body: &LoweredBody) -> HashMap<CallSiteId, TransportOrigin> {
-    let mut origins = HashMap::new();
-    let LoweredBody::Clauses { entries, .. } = body;
-    for entry in entries {
-        match entry.tail {
-            LoweredTail::DirectCall { callsite, .. } => {
-                origins.insert(callsite, TransportOrigin::CallsiteReturn(callsite));
-            }
-            LoweredTail::ClosureCall { callsite, callee, .. } => {
-                origins.insert(callsite, TransportOrigin::ClosureCallReturn { callsite, callee });
-            }
-            _ => {}
+/// What a call's returned value is made of: the call itself.
+pub(crate) fn callsite_return_origin(body: &LoweredBody, callsite: CallSiteId) -> Option<TransportOrigin> {
+    call_return_origin(body.callsite_tail(callsite)?)
+}
+
+fn call_return_origin(tail: &LoweredTail) -> Option<TransportOrigin> {
+    match *tail {
+        LoweredTail::DirectCall { callsite, .. } => Some(TransportOrigin::CallsiteReturn(callsite)),
+        LoweredTail::ClosureCall { callsite, callee, .. } => {
+            Some(TransportOrigin::ClosureCallReturn { callsite, callee })
         }
+        _ => None,
     }
-    origins
 }
 
 fn local_callable_origin<'a>(
@@ -963,10 +949,7 @@ fn local_callable_origin_from<'a>(
     }
 }
 
-pub(crate) fn collect_value_origins(
-    body: &LoweredBody,
-    callsite_return_origins: &HashMap<CallSiteId, TransportOrigin>,
-) -> ValueMap<TransportOrigin> {
+pub(crate) fn collect_value_origins(body: &LoweredBody) -> ValueMap<TransportOrigin> {
     let mut origins = ValueMap::with_capacity(body.value_count());
     let LoweredBody::Clauses { clauses, entries, .. } = body;
     for clause in clauses {
@@ -996,31 +979,23 @@ pub(crate) fn collect_value_origins(
                 );
             }
         }
-        match entry.tail {
-            LoweredTail::DirectCall { value, callsite, .. } | LoweredTail::ClosureCall { value, callsite, .. } => {
-                origins.insert(
-                    value,
-                    callsite_return_origins
-                        .get(&callsite)
-                        .expect("every lowered callsite must have a normalized return origin")
-                        .clone(),
-                );
-            }
-            _ => {}
+        if let LoweredTail::DirectCall { value, .. } | LoweredTail::ClosureCall { value, .. } = entry.tail {
+            origins.insert(
+                value,
+                call_return_origin(&entry.tail).expect("a call tail has a return origin"),
+            );
         }
     }
     for join in delivered_value_joins(body).into_values() {
-        let mut sources = join
-            .sources
-            .into_iter()
-            .map(|source| match source {
-                DeliveredValueSource::LocalValue(value) => TransportOrigin::LocalValue(value),
-                DeliveredValueSource::CallsiteReturn(callsite) => callsite_return_origins
-                    .get(&callsite)
-                    .expect("every delivered callsite return must have a normalized origin")
-                    .clone(),
-            })
-            .collect::<Vec<_>>();
+        let mut sources =
+            join.sources
+                .into_iter()
+                .map(|source| match source {
+                    DeliveredValueSource::LocalValue(value) => TransportOrigin::LocalValue(value),
+                    DeliveredValueSource::CallsiteReturn(callsite) => callsite_return_origin(body, callsite)
+                        .expect("every delivered callsite return has a return origin"),
+                })
+                .collect::<Vec<_>>();
         sources.sort_by_key(|source| match source {
             TransportOrigin::LocalValue(value) => (0, value.as_u32()),
             TransportOrigin::CallsiteReturn(callsite) => (1, callsite.as_u32()),
@@ -1086,7 +1061,7 @@ fn step_transport_origins(step: &LoweredStep) -> Vec<(ValueId, TransportOrigin)>
 fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> Box<[TransportOrigin]> {
     let LoweredBody::Clauses { clauses, entries, .. } = body;
     let reachable = analysis.reachable_entries.iter().copied().collect::<HashSet<_>>();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut origins = Vec::new();
     let mut pending = analysis
         .entry_reachability

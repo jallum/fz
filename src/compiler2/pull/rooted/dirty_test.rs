@@ -10,7 +10,7 @@ fn visited(
     parents: &HashMap<ProductKey, Option<ProductKey>>,
 ) -> HashSet<ProductKey> {
     let mut cursor = index.first(seed).0;
-    let mut visited = HashSet::new();
+    let mut visited = HashSet::default();
     while let Some(key) = cursor {
         visited.insert(key.clone());
         cursor = index.next(&key, true, parents);
@@ -21,7 +21,7 @@ fn visited(
 #[test]
 fn a_new_dirty_sibling_remains_after_the_active_owner() {
     let [seed, first, added] = [0, 1, 2].map(key);
-    let parents = HashMap::from([
+    let parents = HashMap::from_iter([
         (seed.clone(), None),
         (first.clone(), Some(seed.clone())),
         (added.clone(), Some(seed.clone())),
@@ -39,7 +39,7 @@ fn a_new_dirty_sibling_remains_after_the_active_owner() {
 #[test]
 fn off_active_reparent_keeps_its_dirty_branch_reachable_without_rewinding() {
     let [seed, parent, first, other, alternative, moved] = [0, 1, 2, 3, 4, 5].map(key);
-    let mut parents = HashMap::from([
+    let mut parents = HashMap::from_iter([
         (seed.clone(), None),
         (parent.clone(), Some(seed.clone())),
         (first.clone(), Some(seed.clone())),
@@ -101,7 +101,7 @@ fn active_branch_reparent_keeps_its_unchanged_ancestor_prefix() {
 #[test]
 fn active_reparent_keeps_old_siblings_and_the_dirty_alternative_gate() {
     let [seed, old, alternative, moving, sibling] = [0, 1, 2, 3, 4].map(key);
-    let mut parents = HashMap::from([
+    let mut parents = HashMap::from_iter([
         (seed.clone(), None),
         (old.clone(), Some(seed.clone())),
         (alternative.clone(), Some(seed.clone())),
@@ -130,7 +130,7 @@ fn active_reparent_keeps_old_siblings_and_the_dirty_alternative_gate() {
 fn a_wide_dirty_frontier_advances_without_rescanning_siblings() {
     for size in [8_u32, 64, 256] {
         let seed = key(0);
-        let mut parents = HashMap::from([(seed.clone(), None)]);
+        let mut parents = HashMap::from_iter([(seed.clone(), None)]);
         let mut index = DirtyWitness::default();
         for id in 1..=size {
             let member = key(id);

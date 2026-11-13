@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 use std::collections::hash_map::Entry;
 
 use fz_runtime::any_value::AnyValueRef;
@@ -206,7 +206,7 @@ fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeS
     let mut attrs = Vec::new();
     let mut forms = Vec::new();
     let mut group_order: Vec<FunctionGroupKey> = Vec::new();
-    let mut groups: HashMap<FunctionGroupKey, PendingFunctionGroup> = HashMap::new();
+    let mut groups: HashMap<FunctionGroupKey, PendingFunctionGroup> = HashMap::default();
     let mut pending_function_attrs = Vec::new();
 
     for quoted_item in quoted_items {

@@ -1,7 +1,8 @@
 //! Jobs that derive the stable facts used for activation keying.
 
 use crate::compiler2::{ValueMap, ValueSet};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use crate::fast_hash::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_path, demand_within_path};
 
@@ -1116,7 +1117,7 @@ fn recursion_supplied_positions(
     origins: &ValueMap<Vec<(usize, Vec<DemandPathStep>)>>,
     input_count: usize,
 ) -> HashSet<(usize, Vec<DemandPathStep>)> {
-    let mut rebuilt = HashSet::new();
+    let mut rebuilt = HashSet::default();
     let mut obligations: Vec<RebuildObligation> = Vec::new();
     let mut constructions: ValueMap<Vec<ValueId>> = ValueMap::new();
     for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
@@ -1207,9 +1208,9 @@ fn collect_rebuild_obligations(
 /// one position -- `f(x, x)` binds one `ValueId` to two slots -- exactly as
 /// `forwarded_inputs` records.
 fn input_positions(body: &LoweredBody, input_count: usize) -> ValueMap<Vec<(usize, Vec<DemandPathStep>)>> {
-    use super::super::executable_facts::{collect_callsite_return_origins, collect_value_origins};
+    use super::super::executable_facts::collect_value_origins;
     let LoweredBody::Clauses { clauses, .. } = body;
-    let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
+    let origins = collect_value_origins(body);
     let mut positions = ValueMap::<Vec<(usize, Vec<DemandPathStep>)>>::with_capacity(body.value_count());
     for clause in clauses {
         for (slot, value) in clause.params.iter().copied().enumerate().take(input_count) {

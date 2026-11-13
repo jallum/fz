@@ -38,7 +38,9 @@
 //! Sorting happens only in that packaging step: `canonical_multiset` is the
 //! presentation boundary, and replay itself never orders anything.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use crate::fast_hash::{HashMap, HashSet};
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value as Json;
 
@@ -772,8 +774,8 @@ fn canonical_identities(
     HashMap<RawIdentity, String>,
     BTreeMap<String, u64>,
 ) {
-    let mut products = HashMap::new();
-    let mut facts = HashMap::new();
+    let mut products = HashMap::default();
+    let mut facts = HashMap::default();
     let mut remember_product = |product: &RawProductKey| {
         products
             .entry(product.clone())
@@ -931,9 +933,9 @@ impl SessionReplay {
     fn new(id: u64) -> Self {
         Self {
             id,
-            movements: HashMap::new(),
-            requests: HashMap::new(),
-            evaluations: HashMap::new(),
+            movements: HashMap::default(),
+            requests: HashMap::default(),
+            evaluations: HashMap::default(),
         }
     }
 }
@@ -970,20 +972,20 @@ impl Replay {
     fn new(events: &[PublicEvent]) -> Self {
         Self {
             canon: CanonTables::from_stream(events),
-            movements: HashMap::new(),
-            settled_wakes: HashMap::new(),
-            concluded_wakes: HashMap::new(),
-            named_facts: HashMap::new(),
-            history: HashMap::new(),
-            formula_work: HashMap::new(),
+            movements: HashMap::default(),
+            settled_wakes: HashMap::default(),
+            concluded_wakes: HashMap::default(),
+            named_facts: HashMap::default(),
+            history: HashMap::default(),
+            formula_work: HashMap::default(),
             sessions: Vec::new(),
-            product_requests: HashSet::new(),
+            product_requests: HashSet::default(),
             request_open: false,
             has_completed_request: false,
-            prior_request_products: HashSet::new(),
-            current_request_settlements: HashSet::new(),
-            defined_types: HashSet::new(),
-            defined_functions: HashSet::new(),
+            prior_request_products: HashSet::default(),
+            current_request_settlements: HashSet::default(),
+            defined_types: HashSet::default(),
+            defined_functions: HashSet::default(),
             report: CausalReport::default(),
         }
     }
@@ -1296,7 +1298,7 @@ impl Replay {
     /// The completion moved the fact from the first record's before-state to
     /// the last record's after-state.
     fn record_movements(&mut self, position: usize, completion: &Json) {
-        let mut spans: HashMap<RawIdentity, (&Json, &Json)> = HashMap::new();
+        let mut spans: HashMap<RawIdentity, (&Json, &Json)> = HashMap::default();
         for change in array(completion.get("changed")) {
             spans
                 .entry(RawIdentity::new(change))
@@ -1311,7 +1313,7 @@ impl Replay {
                 (key, (content, readiness))
             })
             .collect();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         for movement in array(completion.get("movements")) {
             let key = RawIdentity::new(movement);
             let (content, readiness) = classified.get(&key).copied().unwrap_or((false, false));

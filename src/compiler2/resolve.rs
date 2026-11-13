@@ -17,7 +17,7 @@
 //! resolves an `@spec` to a [`ResolvedSpec`] — hard types plus their structural
 //! shapes — for the contract and dispatch seams to consume.
 
-use std::collections::HashMap;
+use crate::fast_hash::HashMap;
 
 use crate::ast::{SpecDecl, TypeExprBody};
 use crate::diag::Diagnostic;
@@ -132,7 +132,7 @@ impl World {
     /// type's values, exactly like a refinement; only a `ProtocolDomain`
     /// marker publishes a pure nominal tag with no inner.
     pub(crate) fn resolve_type_def(&mut self, name: &TypeName, decl: &NotedTypeDecl) -> Result<TypeDef, TypeExprError> {
-        let mut vars: HashMap<String, TypeVarId> = HashMap::new();
+        let mut vars: HashMap<String, TypeVarId> = HashMap::default();
         let params: Vec<TypeVarId> = decl
             .params
             .iter()
@@ -169,7 +169,7 @@ impl World {
         namespace: Namespace,
         spec: &SpecDecl,
     ) -> Result<ResolvedSpec, TypeExprError> {
-        let mut vars: HashMap<String, TypeVarId> = HashMap::new();
+        let mut vars: HashMap<String, TypeVarId> = HashMap::default();
         let mut params = Vec::with_capacity(spec.param_body_tokens.len());
         for body in &spec.param_body_tokens {
             let expr = parse_type_expr(&body.0)?;
@@ -178,7 +178,7 @@ impl World {
         }
         let result_expr = parse_type_expr(&spec.result_body_tokens.0)?;
         let result = self.resolve_ty(namespace, &result_expr, &mut vars)?;
-        let mut constraints = HashMap::new();
+        let mut constraints = HashMap::default();
         for (var_name, body) in &spec.constraints {
             let Some(&id) = vars.get(var_name) else {
                 return Err(TypeExprError {
@@ -202,12 +202,12 @@ impl World {
             .types_mut()
             .arrow_result(&arrow)
             .expect("an addressed spec arrow has a result slot");
-        let mut sigma: HashMap<TypeVarId, Ty> = HashMap::with_capacity(env.len());
+        let mut sigma: HashMap<TypeVarId, Ty> = HashMap::with_capacity_and_hasher(env.len(), Default::default());
         for (&original, &address) in &env {
             let addressed_var = self.types_mut().type_var(address);
             sigma.insert(original, addressed_var);
         }
-        let mut addressed_constraints = HashMap::with_capacity(constraints.len());
+        let mut addressed_constraints = HashMap::with_capacity_and_hasher(constraints.len(), Default::default());
         for (var, bound) in constraints {
             let address = env.get(&var).copied().unwrap_or(var);
             let bound = self.types_mut().instantiate(&bound, &sigma);
@@ -230,7 +230,7 @@ impl World {
         body: &TypeExprBody,
     ) -> Result<Ty, TypeExprError> {
         let expr = parse_type_expr(&body.0)?;
-        let mut vars: HashMap<String, TypeVarId> = HashMap::new();
+        let mut vars: HashMap<String, TypeVarId> = HashMap::default();
         self.resolve_ty(namespace, &expr, &mut vars)
     }
 
