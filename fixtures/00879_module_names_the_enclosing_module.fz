@@ -1,0 +1,66 @@
+#---
+# purpose: "__MODULE__ is the atom of the module it stands in, and nil outside any module: as a value, as the struct name of a literal and of a pattern in a clause head and in a case, as the receiver of a call, and in code a macro quotes into the module that calls it"
+# oracle: 00879_module_names_the_enclosing_module.oracle.exs
+#---
+defmodule Stamp do
+  defmacro who() do
+    quote do
+      __MODULE__
+    end
+  end
+
+  defmacro define_fresh() do
+    quote do
+      def fresh(), do: %__MODULE__{}
+    end
+  end
+
+  def own(), do: __MODULE__
+end
+
+defmodule Outer do
+  defmodule Pt do
+    import Stamp
+    defstruct x: 0, y: 0
+    define_fresh()
+
+    def name(), do: __MODULE__
+    def via_macro(), do: who()
+    def origin(), do: %__MODULE__{}
+    def at(x), do: %__MODULE__{x: x}
+    def x(%__MODULE__{x: x}), do: x
+    def mine?(%__MODULE__{}), do: true
+    def mine?(_), do: false
+    def named(), do: {__MODULE__, :tag}
+    def same?(m), do: m == __MODULE__
+    def call(), do: __MODULE__.at(9)
+
+    def kind(v) do
+      case v do
+        %__MODULE__{x: 0} -> :origin
+        %__MODULE__{} -> :point
+        _ -> :other
+      end
+    end
+  end
+end
+
+def main() do
+  dbg(Outer.Pt.name())
+  dbg(Outer.Pt.via_macro())
+  dbg(Stamp.own())
+  dbg(Outer.Pt.origin())
+  dbg(Outer.Pt.fresh())
+  dbg(Outer.Pt.at(3))
+  dbg(Outer.Pt.x(Outer.Pt.at(4)))
+  dbg(Outer.Pt.mine?(Outer.Pt.origin()))
+  dbg(Outer.Pt.mine?(%{x: 1}))
+  dbg(Outer.Pt.named())
+  dbg(Outer.Pt.same?(Outer.Pt))
+  dbg(Outer.Pt.same?(Stamp))
+  dbg(Outer.Pt.call())
+  dbg(Outer.Pt.kind(Outer.Pt.origin()))
+  dbg(Outer.Pt.kind(Outer.Pt.at(2)))
+  dbg(Outer.Pt.kind(7))
+  dbg(__MODULE__)
+end

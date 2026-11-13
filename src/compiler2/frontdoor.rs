@@ -102,6 +102,11 @@ enum ClauseLine {
     Body(ParsedExpr),
 }
 
+enum StructName {
+    Path(Vec<String>),
+    EnclosingModule,
+}
+
 struct BlockEnd {
     body: AnyValueRef,
     /// Where the last body line ends.
@@ -1168,15 +1173,28 @@ impl<'t> FrontDoorParser<'t> {
         scope: &[String],
         start: Span,
     ) -> Result<ParsedExpr, FrontDoorError> {
-        let name_path = self.parse_upper_path("struct")?;
+        let name = self.parse_struct_name()?;
         self.expect(&Tok::LBrace, "`{`")?;
         let entries = self.parse_map_entries(module_path, scope, false)?;
         self.expect(&Tok::RBrace, "`}`")?;
         let span = start.merge(self.prev_span());
         let meta = self.meta(span)?;
-        let alias = self.builder.alias(&meta, &segments_ref(&name_path))?;
+        let alias = match name {
+            StructName::Path(path) => self.builder.alias(&meta, &segments_ref(&path))?,
+            StructName::EnclosingModule => self.builder.user_variable("__MODULE__", &meta)?,
+        };
         let map = self.builder.call("%{}", &meta, &entries)?;
         Ok(ParsedExpr::plain(self.builder.call("%", &meta, &[alias, map])?, span))
+    }
+
+    /// The struct a `%Name{}` names: a module path, or `__MODULE__` for the
+    /// module the expression stands in.
+    fn parse_struct_name(&mut self) -> Result<StructName, FrontDoorError> {
+        if matches!(self.peek(), Tok::Ident(name) if name == "__MODULE__") {
+            self.advance();
+            return Ok(StructName::EnclosingModule);
+        }
+        self.parse_upper_path("struct").map(StructName::Path)
     }
 
     fn parse_bitstring_literal(
