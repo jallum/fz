@@ -13,11 +13,15 @@
     {
       "text": "2026-11-13, base f04c56f8e (stack rebased onto develop e1e941f42). With the Stream flattening scratch change (fz-sc8.127 step 1) the distiller's 'did not settle waiting on transport_shape' is the 50,000-request product budget, not a stuck fact: the root session needs 63,457 requests (30,838 distinct product keys, steady ~3,300 new per 5,000 requests, no loop, max repeat 65). 514 functions; most activations: Enum.reduce/3#lambda@0/2 (354) and Stream.compose/2#lambda@0/2 (144), differing in captured reducer and accumulator/entry types; Enumerable.Stream.reduce/3 is activated with %Stream{enum: any, funs: list} from any-typed Enum.reduce sites. So the residue of this ticket after step 1 is ~27% over budget, from the any receiver reaching the Stream impl at every any-typed reduce. With the budget raised the compile finishes in 2.6 s and the next divergences appear: (a) Kernel.to_string/1 'missed an exhaustive dispatch' on a 132-line cut (also on head without the scratch change: sts2/w2.exs); (b) full distiller: 'function 93 (Distill.fmt_ms/1) entry 1 step evaluation failed: StructField: subject is not a map or Struct'. Without the scratch change, head still exhausts the fact-wait budget (62 s). Evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/sts2.",
       "timestamp": "2026-11-13T15:14:59Z"
+    },
+    {
+      "text": "2026-11-13 evening, develop 7faa29377 (.150 stream flattening and .151 evidence-row fold merged): OptionParser traced and spiked the remaining fz-sc8.127 defect (a caller reads the callee's whole joined callable-parameter demand; k127c/k127d reports) and it does NOT move the distiller: still 63,457 requests on base and spike. So the residue here is not .127. A fresh anatomy is running (scratch an146/): census by product kind, activations per function against call sites, cross product vs per-site growth on an N-site series.",
+      "timestamp": "2026-11-13T18:00:35Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "The distiller's compile finishes",
   "type": "bug",
-  "updated_at": "2026-11-13T15:14:59Z"
+  "updated_at": "2026-11-13T18:00:35Z"
 }
