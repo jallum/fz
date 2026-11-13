@@ -3852,7 +3852,7 @@ fn interp_has_struct_layout(
 
 fn matcher_map_get(runtime: &mut IrInterpRuntime, map: AnyValue, key: AnyValue) -> Result<AnyValue, String> {
     let map_slot = map.value(runtime.cur_proc())?;
-    if map_slot.kind() != ValueKind::MAP {
+    if !super::value::is_map_value(runtime.cur_proc(), map_slot) {
         return Err("MatcherMapGet expects a map".to_string());
     }
     let value = with_value_ref(runtime.cur_proc(), map, "MatcherMapGet map", |map_ref| {

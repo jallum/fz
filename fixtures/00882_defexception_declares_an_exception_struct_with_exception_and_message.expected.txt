@@ -1,0 +1,19 @@
+%Plain{message: "x"}
+%Plain{message: "y"}
+%Plain{message: nil}
+%Defaulted{message: "defaulted", code: 7}
+%Defaulted{message: "defaulted", code: 9}
+"defaulted"
+"no file /a"
+%Odd{message: "odd", n: 3}
+"odd"
+{:plain, "x"}
+true
+false
+false
+false
+false
+:exception
+:other
+true
+true

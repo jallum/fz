@@ -1713,10 +1713,12 @@ pub mod debug {
         }
 
         /// `%Name{field: value}`, the fields in the struct's declared order.
+        /// The `__exception__` field that marks an exception is not printed.
         fn named_struct(&mut self, module: &ModuleName, fields: Vec<(String, AnyValue)>) -> String {
             let open = format!("%{}{{", atom_literal(&module.atom_name()));
             let entries = fields
                 .into_iter()
+                .filter(|(name, _)| name != "__exception__")
                 .map(|(name, value)| (atom_key(&name), value))
                 .collect();
             self.keyword_container(&open, "}", entries)

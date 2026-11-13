@@ -299,6 +299,38 @@ A showing exception (a decision's miss that shows its value, above) is a map wit
 `term` beside `message`: the line prints the message, `e.term` is the value
 itself.
 
+## Declaring an exception
+
+`defexception fields` (`Kernel`, `lib/kernel.fz`) is a macro that declares the
+module's struct as `[__exception__: true] ++ fields` and defines, in the
+module:
+
+| function | does |
+|---|---|
+| `exception(fields)`, a list | `struct!(__MODULE__, fields)` |
+| `exception(message)`, a binary, when `fields` has `:message` | `exception(message: message)` |
+| `message(exception)`, when `fields` has `:message` | the `message` field |
+
+Both are marked `defoverridable`, so a `def` of the same name and arity
+further down the module replaces the default, and the replaced default is
+never compiled. `raise Mod, "text"` with a `Mod` that declares `:message`
+raises a map of that struct's module, so `rescue e in Mod` takes it and
+`e.message` reads it.
+
+`Exception.message/1` (`lib/exception.fz`) is `e.__struct__.message(e)`, a
+call on a module value. The modules it can reach are the ones `e`'s type
+names, so on an `e` bound by `rescue e in Mod` it is `Mod.message(e)`. A
+bare `rescue e` gives `e` every exception the body can raise, the library's
+among them; their modules are not declared, and the call is refused with
+`resolve/unknown-module`.
+
+`is_exception/1` (`Kernel`) is true for a map whose `__struct__` is an atom
+and whose `__exception__` is `true`. Its clauses are a map pattern and a
+catch-all, so it is a guard. `inspect` does not print the `__exception__`
+field of a struct.
+
+Fixture `00882` agrees with Elixir on interp, run and build.
+
 ## The library's exceptions
 
 Every library failure raises the exception, with the message, Elixir does.

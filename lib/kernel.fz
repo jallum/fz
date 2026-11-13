@@ -244,6 +244,75 @@ defmodule Kernel do
   end
 
   @doc """
+  Declares the module an exception. `fields` is a `defstruct` field list; the
+  struct also has `__exception__: true`.
+
+  The module gets `exception/1`, which builds the exception from a keyword
+  list of its fields. When `fields` has `:message`, `exception/1` also takes
+  the message as a binary, and the module gets `message/1`, which answers
+  that field. Both are overridable: a `def` of the same name and arity
+  further down the module replaces them.
+
+  ## Examples
+
+      defmodule NotFound do
+        defexception [:path]
+
+        def message(e), do: "no file " <> e.path
+      end
+
+      Exception.message(NotFound.exception(path: "/a"))
+      #=> "no file /a"
+
+  """
+  defmacro defexception(fields) do
+    fields = [__exception__: true] ++ fields
+
+    if declares_message?(fields) do
+      quote do
+        defstruct unquote(fields)
+
+        def message(exception), do: exception.message
+        defoverridable message: 1
+
+        def exception(message) when is_binary(message), do: exception(message: message)
+        def exception(fields) when is_list(fields), do: struct!(__MODULE__, fields)
+        defoverridable exception: 1
+      end
+    else
+      quote do
+        defstruct unquote(fields)
+
+        def exception(fields) when is_list(fields), do: struct!(__MODULE__, fields)
+        defoverridable exception: 1
+      end
+    end
+  end
+
+  @spec declares_message?(any) :: boolean
+  defp declares_message?([]), do: false
+  defp declares_message?([:message | _]), do: true
+  defp declares_message?([{:message, _} | _]), do: true
+  defp declares_message?([_ | rest]), do: declares_message?(rest)
+
+  @doc """
+  Answers `true` when `value` is an exception: a struct whose
+  `__exception__` field is `true`.
+
+  ## Examples
+
+      is_exception(%ArgumentError{message: "bad"})
+      #=> true
+
+      is_exception(%{__struct__: Point})
+      #=> false
+
+  """
+  @spec is_exception(any) :: boolean
+  def is_exception(%{__struct__: module, __exception__: true}) when is_atom(module), do: true
+  def is_exception(_), do: false
+
+  @doc """
   Answers the struct `base` names, each field at its default. `base` is a
   module that declares a struct, or a struct.
 

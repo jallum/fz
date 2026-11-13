@@ -5,6 +5,7 @@ alias Atom
 alias Collectable
 alias Enum
 alias Enumerable
+alias Exception
 alias File
 alias File.Stream
 alias Float
@@ -49,6 +50,7 @@ import Kernel, only: [
   assert: 1,
   assert: 2,
   dbg: 1,
+  defexception: 1,
   div: 2,
   exit: 1,
   floor: 1,
@@ -62,6 +64,7 @@ import Kernel, only: [
   is_atom: 1,
   is_binary: 1,
   is_boolean: 1,
+  is_exception: 1,
   is_float: 1,
   is_integer: 1,
   is_list: 1,
