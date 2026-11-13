@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T00:44:29Z",
+  "description": "Seven fixtures write a fixed, shared file name, and the matrix runs each fixture's interp, jit and build paths (and the Elixir oracle) at the same time, so the paths create and delete each other's file.\n\nEvidence:\n- CI on PR #343 (run 43337370433), an unrelated refactor: matrix::00775_taking_one_line_halts_the_file_stream::interp failed with `** (File.Error) could not remove file \"00775_take.tmp\": I/O error`; 2997 other cases passed.\n- A local gate on the fz-gfx.12 branch: matrix::file_runtime::run failed with 'expected success but the program exited nonzero' and passed alone. fixtures2/behavior/file_runtime.fz uses the absolute path /tmp/fz-file-runtime-direct, so it also collides across worktrees gating at once.\n\nFixtures with a fixed *.tmp name in the working directory: fixtures/00252, 00771, 00773, 00774, 00775, 00776, 00777. Plus fixtures2/behavior/file_runtime.fz (absolute /tmp path).\n\nSignal: the matrix run twice in parallel in two worktrees at once, green, with no fixture sharing a writable path between paths or runs.\nStrategy to weigh: the matrix gives each fixture invocation its own scratch working directory (it already makes per-invocation temp dirs for other purposes, tests/fixture_matrix.rs), so relative names stop colliding by construction; file_runtime takes its root from that directory rather than /tmp. The oracle run needs the same directory treatment so expected output still matches.",
+  "id": "fz-aqt",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "Fixtures that write files race with their own other paths",
+  "type": "bug",
+  "updated_at": "2026-11-13T00:44:29Z"
+}
