@@ -247,3 +247,24 @@ fn a_scalar_value_read_from_a_literal_struct_as_a_map_is_literal() {
     assert!(from_literal.is_literal(), "a field of a literal struct is literal data");
     assert_eq!(from_literal.load_int().unwrap(), 2);
 }
+
+/// A value the types call a `Pt` may be in either layout. Only a value in
+/// `Pt`'s struct layout has its fields in `Pt`'s slots; one that has grown a
+/// key, a plain map and another struct do not.
+#[test]
+fn only_a_struct_in_its_own_layout_has_that_structs_slots() {
+    let mut f = fixture();
+    let pt = ModuleName::from_segments(vec!["Pt".to_string()]);
+    let other = ModuleName::from_segments(vec!["Other".to_string()]);
+    let point = f.point(1, 2);
+    assert!(f.heap.has_struct_layout_of(point, &pt));
+    assert!(!f.heap.has_struct_layout_of(point, &other));
+
+    let layout = f.heap.expect_map_layout(point, "test");
+    let z = f.atom("z");
+    let grown = f.heap.map_view_put(layout, z, AnyValue::int(3));
+    assert!(!f.heap.has_struct_layout_of(grown, &pt));
+
+    let plain = f.plain(&[("x", 1), ("y", 2)]);
+    assert!(!f.heap.has_struct_layout_of(plain, &pt));
+}

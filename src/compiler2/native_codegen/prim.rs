@@ -551,19 +551,57 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             let value = binding_for_var(var_env, value.0);
             LowerOut::ValueRef(emit_map_destination_put(body, map_bits, key, value))
         }
-        Prim::StructWith { base, arity, fields } => {
+        Prim::StructWith {
+            base,
+            module,
+            arity,
+            stores,
+        } => {
             let base_ref = body.any_ref_for_var(var_env, base.0);
+            let slot_blk = body.b.create_block();
+            let keyed_blk = body.b.create_block();
+            let join_blk = body.b.create_block();
+            body.b.append_block_param(join_blk, types::I64);
+            let no_args: Vec<BlockArg> = Vec::new();
+            let in_struct_layout = body.has_struct_layout(base_ref, struct_schema_id(env, module)?);
+            body.b
+                .ins()
+                .brif(in_struct_layout, slot_blk, &no_args, keyed_blk, &no_args);
+
+            body.b.switch_to_block(slot_blk);
+            body.b.seal_block(slot_blk);
             let object = body.copy_struct(base_ref, *arity as usize);
-            for (slot, field) in fields {
-                let addressed_object = ty_is_addressed_object(t, value_types, *field);
+            for store in stores {
+                let addressed_object = ty_is_addressed_object(t, value_types, store.value);
                 body.store_field(
                     &object,
-                    *slot as usize,
-                    binding_for_var(var_env, field.0),
+                    store.slot as usize,
+                    binding_for_var(var_env, store.value.0),
                     addressed_object,
                 );
             }
-            LowerOut::ValueRef(object.reference)
+            body.b.ins().jump(join_blk, &[BlockArg::Value(object.reference)]);
+
+            body.b.switch_to_block(keyed_blk);
+            body.b.seal_block(keyed_blk);
+            body.b.set_cold_block(keyed_blk);
+            let process = body.process_arg();
+            let mut map = runtime_call1!(body, fz_map_dest_begin_update, [process, base_ref]);
+            for store in stores {
+                map = emit_map_destination_put(
+                    body,
+                    map,
+                    binding_for_var(var_env, store.key.0),
+                    binding_for_var(var_env, store.value.0),
+                );
+            }
+            let process = body.process_arg();
+            let updated = runtime_call1!(body, fz_map_dest_freeze, [process, map]);
+            body.b.ins().jump(join_blk, &[BlockArg::Value(updated)]);
+
+            body.b.switch_to_block(join_blk);
+            body.b.seal_block(join_blk);
+            LowerOut::ValueRef(body.b.block_params(join_blk)[0])
         }
         Prim::DestMapPublish(map) => {
             let map_bits = body.any_ref_for_var(var_env, map.0);
@@ -911,6 +949,23 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             let process = body.process_arg();
             runtime_call!(body, fz_try_pop, [process]);
             Ok(LowerOut::DeadUnit)
+        }
+        Prim::StructSlot {
+            base,
+            module,
+            slot,
+            field,
+        } => {
+            let read = if ty_is_float(t, value_types, dest_var) {
+                SlotRead::Float
+            } else if ty_is_int(t, value_types, dest_var) {
+                SlotRead::Int
+            } else if ty_is_atom(t, value_types, dest_var) {
+                SlotRead::Atom
+            } else {
+                SlotRead::Reference
+            };
+            lower_struct_slot(body, env, var_env, *base, module, *slot, field, read)
         }
         Prim::TupleField(object, slot) if ty_is_float(t, value_types, dest_var) => {
             let object_ref = body.tagged_var(var_env, object.0);
@@ -1953,6 +2008,97 @@ fn settled_callable_boundary_id(env: &CodegenEnv<'_>, fn_id: FnId) -> Result<u32
 /// Lower a `Prim::MakeFnRef`. Thin callable values carry no env, so codegen
 /// references the planned callable-boundary static closure directly instead of
 /// routing through closure allocation.
+fn struct_schema_id(env: &CodegenEnv<'_>, module: &fz_runtime::module_name::ModuleName) -> Result<u32, CodegenError> {
+    env.named_schema_ids
+        .get(module)
+        .copied()
+        .ok_or_else(|| CodegenError::new(format!("struct schema `{module}` is not registered for codegen")))
+}
+
+/// What a slot read answers: the raw word of a slot whose kind the types
+/// name, or a reference to whatever the slot holds.
+#[derive(Clone, Copy)]
+enum SlotRead {
+    Float,
+    Int,
+    Atom,
+    Reference,
+}
+
+/// Read field `field` of `base`, a map the types say is a `module` struct.
+/// The types do not say how it is laid out. In the struct layout the field
+/// is loaded from `slot`; a struct that has grown a key, or was built as a
+/// map, is in the entries layout and the field is found by name.
+#[allow(clippy::too_many_arguments)]
+fn lower_struct_slot<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    base: Var,
+    module: &fz_runtime::module_name::ModuleName,
+    slot: u32,
+    field: &str,
+    read: SlotRead,
+) -> Result<LowerOut, CodegenError> {
+    let schema_id = struct_schema_id(env, module)?;
+    let field_atom = env
+        .module
+        .atom_names
+        .iter()
+        .position(|name| name == field)
+        .ok_or_else(|| CodegenError::new(format!("field atom `{field}` not interned")))?;
+    let base_ref = body.tagged_var(var_env, base.0);
+    let lane = match read {
+        SlotRead::Float => types::F64,
+        SlotRead::Int | SlotRead::Atom | SlotRead::Reference => types::I64,
+    };
+    let slot_blk = body.b.create_block();
+    let named_blk = body.b.create_block();
+    let join_blk = body.b.create_block();
+    body.b.append_block_param(join_blk, lane);
+    let no_args: Vec<BlockArg> = Vec::new();
+    let in_struct_layout = body.has_struct_layout(base_ref, schema_id);
+    body.b
+        .ins()
+        .brif(in_struct_layout, slot_blk, &no_args, named_blk, &no_args);
+
+    body.b.switch_to_block(slot_blk);
+    body.b.seal_block(slot_blk);
+    let from_slot = match read {
+        SlotRead::Float | SlotRead::Int | SlotRead::Atom => body.load_slot(base_ref, slot, lane),
+        SlotRead::Reference => {
+            let field_offset = body.b.ins().iconst(types::I32, slot as i64 * SLOT_BYTES as i64);
+            let process = body.process_arg();
+            runtime_call1!(body, fz_struct_get_field_ref, [process, base_ref, field_offset])
+        }
+    };
+    body.b.ins().jump(join_blk, &[BlockArg::Value(from_slot)]);
+
+    body.b.switch_to_block(named_blk);
+    body.b.seal_block(named_blk);
+    body.b.set_cold_block(named_blk);
+    let atom = body.b.ins().iconst(types::I64, field_atom as i64);
+    let process = body.process_arg();
+    let found = runtime_call1!(body, fz_struct_get_named_field_ref, [process, base_ref, atom]);
+    let by_name = match read {
+        SlotRead::Float => runtime_call1!(body, fz_ref_load_float, [found]),
+        SlotRead::Int => runtime_call1!(body, fz_ref_load_int, [found]),
+        SlotRead::Atom => runtime_call1!(body, fz_ref_load_atom, [found]),
+        SlotRead::Reference => found,
+    };
+    body.b.ins().jump(join_blk, &[BlockArg::Value(by_name)]);
+
+    body.b.switch_to_block(join_blk);
+    body.b.seal_block(join_blk);
+    let value = body.b.block_params(join_blk)[0];
+    Ok(match read {
+        SlotRead::Float => LowerOut::RawF64(value),
+        SlotRead::Int => LowerOut::RawI64(value),
+        SlotRead::Atom => LowerOut::Strict(CodegenValue::RawAtom(value)),
+        SlotRead::Reference => LowerOut::ValueRefWord(value),
+    })
+}
+
 pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,

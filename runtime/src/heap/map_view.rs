@@ -16,13 +16,14 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::Heap;
+use super::schema::SchemaIdentity;
 use super::schema::StructKey;
 use crate::any_value::{
     AnyValue, AnyValueRef, SlotLayout, ValueKind, heap_object_word, map_addr_from_tagged, map_count, map_entry,
     struct_addr_from_tagged, struct_schema_id,
 };
 use crate::heap::map_entry_refs;
-use crate::module_name::STRUCT_MODULE_FIELD;
+use crate::module_name::{ModuleName, STRUCT_MODULE_FIELD};
 use crate::term::{NumericMode, TermComparator};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +63,15 @@ impl Heap {
             }
             _ => None,
         }
+    }
+
+    /// Whether `value` is in the struct layout of the struct named `module`.
+    pub fn has_struct_layout_of(&self, value: AnyValueRef, module: &ModuleName) -> bool {
+        let Ok(addr) = value.struct_addr() else {
+            return false;
+        };
+        let schema_id = unsafe { struct_schema_id(addr as *const u8) };
+        matches!(&self.schemas.borrow().get(schema_id).identity, SchemaIdentity::Named(name) if name == module)
     }
 
     /// `map_layout`, for a caller whose value the types promise is a map.

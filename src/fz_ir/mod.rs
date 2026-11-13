@@ -455,6 +455,15 @@ pub enum DestMapSeed {
     Update(Var),
 }
 
+/// One field a struct update replaces: the slot the field has in the struct
+/// layout, the key it has in the entries layout, and the new value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlotStore<V> {
+    pub slot: u32,
+    pub key: V,
+    pub value: V,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Prim {
     Const(Const),
@@ -478,6 +487,14 @@ pub enum Prim {
     TupleField(Var, u32),
     /// Project a named field from a schema-backed struct.
     StructField(Var, String),
+    /// Project a field of a map the types say is a `module` struct. In the
+    /// struct layout it is `slot`; in any other layout it is found as `field`.
+    StructSlot {
+        base: Var,
+        module: fz_runtime::module_name::ModuleName,
+        slot: u32,
+        field: String,
+    },
     /// Project the module atom a struct belongs to (`p.__struct__`).
     StructModule(Var),
     /// Build a list [v1, v2, ... | optional_tail]; tail defaults to Nil.
@@ -506,12 +523,15 @@ pub enum Prim {
     /// Publish a map destination whose entries were put in key order with no
     /// key repeated. Nothing is sorted or moved.
     DestMapPublish(Var),
-    /// A copy of the struct `base`, which has `arity` fields, with each of
-    /// `fields` stored in its slot.
+    /// `base`, which the types say is a `module` struct of `arity` fields,
+    /// with each of `stores` replacing a field. In the struct layout that is
+    /// a copy with each value stored in its slot; in the entries layout each
+    /// value is put under its key.
     StructWith {
         base: Var,
+        module: ModuleName,
         arity: u32,
-        fields: Vec<(u32, Var)>,
+        stores: Vec<SlotStore<Var>>,
     },
     /// `m[k]` — bracket access. Returns nil if key absent.
     MapGet(Var, Var),
@@ -602,7 +622,10 @@ impl Prim {
                     used.insert(*v);
                 }
             }
-            Prim::TupleField(a, _) | Prim::StructField(a, _) | Prim::StructModule(a) => {
+            Prim::TupleField(a, _)
+            | Prim::StructField(a, _)
+            | Prim::StructSlot { base: a, .. }
+            | Prim::StructModule(a) => {
                 used.insert(*a);
             }
             Prim::MakeList(els, tail, retention) => {
@@ -634,10 +657,11 @@ impl Prim {
             Prim::DestMapFreeze(map) | Prim::DestMapPublish(map) => {
                 used.insert(*map);
             }
-            Prim::StructWith { base, fields, .. } => {
+            Prim::StructWith { base, stores, .. } => {
                 used.insert(*base);
-                for (_, v) in fields {
-                    used.insert(*v);
+                for store in stores {
+                    used.insert(store.key);
+                    used.insert(store.value);
                 }
             }
             Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
@@ -1367,6 +1391,7 @@ impl fmt::Display for Prim {
             }
             Prim::TupleField(v, i) => write!(f, "tuple_field({}, {})", v, i),
             Prim::StructField(v, name) => write!(f, "struct_field({}, {})", v, name),
+            Prim::StructSlot { base, slot, field, .. } => write!(f, "struct_slot({}, {}, {})", base, slot, field),
             Prim::StructModule(v) => write!(f, "struct_module({})", v),
             Prim::MakeList(els, tail, retention) => {
                 match tail {
@@ -1387,10 +1412,10 @@ impl fmt::Display for Prim {
             Prim::DestMapPut { map, key, value } => write!(f, "dest_map_put({}, key={}, value={})", map, key, value),
             Prim::DestMapFreeze(map) => write!(f, "dest_map_freeze({})", map),
             Prim::DestMapPublish(map) => write!(f, "dest_map_publish({})", map),
-            Prim::StructWith { base, fields, .. } => {
+            Prim::StructWith { base, stores, .. } => {
                 write!(f, "struct_with({}", base)?;
-                for (slot, v) in fields {
-                    write!(f, ", {}={}", slot, v)?;
+                for store in stores {
+                    write!(f, ", {}={}", store.slot, store.value)?;
                 }
                 write!(f, ")")
             }

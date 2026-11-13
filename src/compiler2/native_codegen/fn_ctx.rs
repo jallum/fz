@@ -14,6 +14,7 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataId, FuncId, Module};
 use fz_runtime::any_value::{
     AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, TaggedRefArch, ValueKind,
+    struct_header_word,
 };
 use fz_runtime::ir_runtime::{
     fz_alloc_closure, fz_alloc_struct, fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any,
@@ -108,6 +109,27 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     fn object_address(&mut self, object_ref: ir::Value) -> ir::Value {
         let address_mask = AnyValueRefPacking::current().address_mask() as i64;
         self.b.ins().band_imm(object_ref, address_mask)
+    }
+
+    /// Whether `value_ref` names an object in the struct layout of schema
+    /// `schema_id`. A map of either layout has a first word to read, so the
+    /// header is loaded before the kind is known and the two tests are one
+    /// condition.
+    pub(crate) fn has_struct_layout(&mut self, value_ref: ir::Value, schema_id: u32) -> ir::Value {
+        let packing = AnyValueRefPacking::current();
+        let kind_bits = self.b.ins().band_imm(value_ref, !packing.literal_bit() as i64);
+        let kind = self.b.ins().ushr_imm(kind_bits, packing.tag_shift() as i64);
+        let is_struct = self
+            .b
+            .ins()
+            .icmp_imm(IntCC::Equal, kind, ValueKind::STRUCT.tag() as i64);
+        let object = self.object_address(value_ref);
+        let header = self.b.ins().load(types::I64, MemFlags::new(), object, 0);
+        let is_schema = self
+            .b
+            .ins()
+            .icmp_imm(IntCC::Equal, header, struct_header_word(schema_id) as i64);
+        self.b.ins().band(is_struct, is_schema)
     }
 
     /// The raw word in `slot` of the struct or tuple `object_ref` names,

@@ -3686,8 +3686,8 @@ fn an_update_of_a_known_struct_replaces_slots_and_any_other_update_finds_its_key
     let replaced: Vec<(u32, Vec<u32>)> = steps
         .iter()
         .filter_map(|step| match step {
-            BackendStep::StructUpdate { arity, slots, .. } => {
-                Some((*arity, slots.iter().map(|(slot, _)| *slot).collect()))
+            BackendStep::StructUpdate { arity, stores, .. } => {
+                Some((*arity, stores.iter().map(|store| store.slot).collect()))
             }
             _ => None,
         })
