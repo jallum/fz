@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:38:55Z",
+  "description": "ProductSessions install_reader_dependencies (pull.rs:1194/1201, from unblock :1133 and commit :1050): each wait-and-rerun cycle removes the reader from every dependency's reader set, dropping a set that empties (pull.rs:1213-1229), and the re-run installs the same edges into fresh HashSets. About 15k allocations, 8 MB. Also pull.rs:2308 and :2353: each position product's dependency maps grow from empty for the usual two to four reads (about 20k, 7 MB).\nShape: install only added edges and remove only dropped ones; reserve dependency maps from the previous run's count, which the memo stores.\nBefore building: tell the fz-53f session (pull.rs:980/1071 in the commit path are theirs, pending a data-model decision) and measure how often a re-run's dependency set repeats. Do not change what any table is keyed by (fz-xcu).\n\nCounts are sampling estimates at develop 742e688b5 (line numbers refer to /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src); re-measure on your base first. Signal: see the epic.",
+  "id": "fz-y11.13",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "A re-run keeps the reader edges it still has",
+  "type": "task",
+  "updated_at": "2026-11-13T03:38:55Z"
+}
