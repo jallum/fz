@@ -138,13 +138,16 @@ fn named_struct_field_constraints_refine_their_exact_root_and_reject_other_famil
     let named_hit = world.struct_value_ty(module, &fields, &[hit]);
     let named_miss = world.struct_value_ty(module, &fields, &[miss]);
     let wrong = world.struct_value_ty(other_module, &fields, &[hit]);
-    let plain = world.types_mut().map(&[(MapKey::Atom("value".into()), hit)]);
+    let plain = world.types_mut().map_literal(&[(MapKey::Atom("value".into()), hit)]);
+    // A map known only by its field may be the struct or any other map.
+    let any_map_with_the_field = world.types_mut().map(&[(MapKey::Atom("value".into()), hit)]);
     let types = world.types_mut();
     for (input, expected) in [
         (named_hit, vec![0]),
         (named_miss, vec![1]),
         (wrong, vec![1]),
         (plain, vec![1]),
+        (any_map_with_the_field, vec![0, 1]),
     ] {
         let input = types.tuple(&[input]);
         let reach = calculate_dispatch_reachability(types, &plan, &[input]);

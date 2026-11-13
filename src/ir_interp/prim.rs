@@ -1,7 +1,6 @@
 use super::value::{
     AnyValue, HeapRef, interp_is_list_cons, interp_nil_value, interp_value_from_ref_word, with_value_ref,
 };
-use fz_runtime::any_value::ValueKind;
 use fz_runtime::ir_runtime::{
     fz_list_head_ref, fz_list_tail_ref, fz_map_get_ref, fz_map_put_atom, fz_map_put_float, fz_map_put_int,
     fz_map_put_ref,
@@ -71,7 +70,7 @@ pub(super) fn interp_list_tail(proc: *mut Process, value: AnyValue) -> Result<An
 
 pub(super) fn interp_map_get(proc: *mut Process, map: AnyValue, key: AnyValue) -> Result<AnyValue, String> {
     let map_slot = map.value(proc)?;
-    if map_slot.kind() != ValueKind::STRUCT && !super::value::is_map_value(map_slot) {
+    if !super::value::is_map_value(proc, map_slot) {
         return Ok(interp_nil_value());
     }
     with_value_ref(proc, map, "MapGet map", |map_ref| {

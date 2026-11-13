@@ -1,5 +1,5 @@
 use super::*;
-use crate::heap::{Schema, SchemaRegistry};
+use crate::heap::{NamedSchema, Schema, SchemaRegistry};
 use crate::module_name::ModuleName;
 use crate::process::Node;
 use std::cell::RefCell;
@@ -267,4 +267,36 @@ fn only_a_struct_in_its_own_layout_has_that_structs_slots() {
 
     let plain = f.plain(&[("x", 1), ("y", 2)]);
     assert!(!f.heap.has_struct_layout_of(plain, &pt));
+}
+
+/// A protocol asks a map which module it names. A struct names its own in
+/// either layout; a map with no atom under `__struct__` names none; an atom
+/// no struct was declared for names a module with no schema.
+#[test]
+fn a_map_names_the_module_under_its_struct_key_in_either_layout() {
+    let mut f = fixture();
+    let point = f.point(1, 2);
+    assert_eq!(f.heap.named_schema(point), NamedSchema::Schema(f.point));
+
+    let layout = f.heap.expect_map_layout(point, "test");
+    let z = f.atom("z");
+    let grown = f.heap.map_view_put(layout, z, AnyValue::int(3));
+    assert_eq!(grown.tag(), ValueKind::MAP);
+    assert_eq!(f.heap.named_schema(grown), NamedSchema::Schema(f.point));
+
+    let plain = f.plain(&[("x", 1), ("y", 2)]);
+    assert_eq!(f.heap.named_schema(plain), NamedSchema::None);
+
+    let counted = f.plain(&[("__struct__", 7)]);
+    assert_eq!(
+        f.heap.named_schema(counted),
+        NamedSchema::None,
+        "only an atom names a module"
+    );
+
+    let undeclared = [(f.atom("__struct__"), f.atom("Elixir.Nowhere"))];
+    let bits = f.heap.alloc_map_slots(&undeclared);
+    let addr = map_addr_from_tagged(bits).expect("published map");
+    let undeclared = AnyValueRef::from_heap_object(ValueKind::MAP, addr).expect("map ref");
+    assert_eq!(f.heap.named_schema(undeclared), NamedSchema::Undeclared);
 }

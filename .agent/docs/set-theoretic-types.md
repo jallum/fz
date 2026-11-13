@@ -279,7 +279,8 @@ The split falls where it does because a clause carrying a NEGATIVE factor
 carves a set no signature comparison can read. A finite union of positive-only
 TUPLE clauses is never every tuple — a positive `TupleSig` fixes an arity, and
 arity is unbounded — and a finite union of positive-only MAP clauses is never
-every map, for the same reason about struct tags. But `{any, any} ∨ ¬{any, any}`
+every map, because a positive `MapSig` requires its keys and no finite union
+of key requirements covers the map holding none of them. But `{any, any} ∨ ¬{any, any}`
 IS every tuple and `%{k: any} ∨ ¬%{k: any}` is every map, so "those axes have no
 top to reach" would be false, and the two carvings would intern apart while the
 calculator called them equal. The LIST axis answers its positive-only case
@@ -594,10 +595,8 @@ brand; it is called once, where the name is defined (see
 no constructor for a bare tag with no inner: a refinement of nothing denotes
 nothing. A user `opaque` source definition publishes a brand, exactly like
 `refines` — only the compiler's own protocol-domain marker publishes a bare
-`opaques`-axis tag with no inner. Structs are not opaques: a `MapSig` carries a
-`StructTag` and its fields in one atomic record leaf. The tag's parsed
-`ModuleName` owns equality, hashing, and order; its `ModuleId` identifies the
-World dependency. Nominal protocol targets use the typed
+`opaques`-axis tag with no inner. Structs are not opaques: a struct is a map
+whose `__struct__` field is the module's atom. Nominal protocol targets use the typed
 `OpaqueTag::ProtocolTarget(ModuleName)` variant of the opaque set axis, distinct
 from the compiler's own `OpaqueTag::ProtocolDomain(ModuleName)` domain-marker
 variant — once user opaques mint brands, those two are the axis's only
@@ -681,20 +680,36 @@ and from nil when the field has none; the default is lowered where the literal
 stands, as the expression that writes it. A default that computes or names
 anything is the diagnostic `parse/struct-default` at the default.
 
-A struct value's hard type is one tagged map signature: typed `ModuleId`, stable
-qualified display name, and declared fields are conjunctive. Plain maps use the
-disjoint `MapTag::Plain`; therefore `%Range{first: integer}` cannot become
-`%{first: integer}` during overload carving. Record-axis top contains both
-families, while `map_top` contains only plain maps. Runtime test envelopes derive
-the observable schema-tag question by clearing positive field constraints;
-positional tuple storage is derived later from the settled schema, never unioned
-into the semantic type. Unknown or ambiguous field projection stays `any`.
+A `MapSig` is an open record: the keys it lists, each with a type, and any
+other keys besides. A struct type is the record whose `__struct__` field is the
+literal atom `Elixir.<Name>` beside the declared fields, so
+`%Range{first: integer}` is `%{__struct__: Range, first: integer}`
+(`Types::struct_map`). Nothing else marks a struct:
+
+- `%Pt{} <: map_top`, and `map_top` is every map.
+- Two structs are disjoint because their `__struct__` atoms are.
+- `Types::sole_struct` and `Types::struct_modules` read the module back from
+  that field.
+- Key widening (`widen_literals`, the convergence collapse of map values)
+  leaves the `__struct__` field alone, since widening its atom would change
+  which struct the type names.
+
+A plain map is a map that names no module: `Types::plain_map` is
+`map_top \ %{__struct__: atom}`. `Types::map_literal` intersects it into the
+type of every map literal that writes no `__struct__` key, so a literal map is
+known not to be a struct. A literal that writes the key is typed by the record
+alone.
+
+Runtime test envelopes derive the observable question by clearing positive
+field constraints other than `__struct__`; positional tuple storage is derived
+later from the settled schema, never unioned into the semantic type. Unknown or
+ambiguous field projection stays `any`.
 
 The two runtime envelopes preserve different evidence through the same
 polarity-aware structural walk. `runtime_envelope` prepares semantic projection:
-it retains tagged-record fields and recursively widens unresolved field types,
+it retains record fields and recursively widens unresolved field types,
 while preserving callable typing. `runtime_type_test_envelope` prepares an
-observable predicate: it keeps a struct's tag and a callable's construction
+observable predicate: it keeps a struct's module and a callable's construction
 identity, erasing positive struct fields and callable arrows. A shaped negative
 struct remains conservative on that predicate surface because a schema-only
 test cannot reject just the excluded field values.

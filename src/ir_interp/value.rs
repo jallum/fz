@@ -8,7 +8,10 @@ use fz_runtime::any_value::{
     closure_addr_from_tagged,
 };
 use fz_runtime::heap::Schema;
-use fz_runtime::ir_runtime::{fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_struct_get_field_ref};
+use fz_runtime::ir_runtime::{
+    fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_struct_get_field_ref,
+    fz_struct_get_named_field_ref,
+};
 use fz_runtime::process::Process;
 
 #[derive(Clone, Copy, Debug)]
@@ -325,6 +328,29 @@ pub(super) fn interp_value_from_extern_ref_word(ref_word: u64) -> Result<AnyValu
     interp_value_from_ref_word(ref_word, "extern any return")
 }
 
-pub(super) fn is_map_value(val: RuntimeAnyValue) -> bool {
-    val.kind() == ValueKind::MAP && val.heap_addr().is_some_and(|p| !p.is_null())
+/// Field `field` of a map in either layout, or the one field of a resource.
+pub(super) fn interp_named_field(
+    proc: *mut Process,
+    module: &Module,
+    value: AnyValue,
+    field: &str,
+) -> Result<AnyValue, String> {
+    let slot = value.value(proc)?;
+    if slot.kind() != ValueKind::RESOURCE && !is_map_value(proc, slot) {
+        return Err("StructField: subject is not a map or Struct".to_string());
+    }
+    let atom_id = module
+        .atom_names
+        .iter()
+        .position(|name| name == field)
+        .ok_or_else(|| format!("field atom `{field}` not interned"))?;
+    with_value_ref(proc, value, "named field", |subject| {
+        fz_struct_get_named_field_ref(proc, subject, atom_id as u64)
+    })
+    .and_then(|ref_word| interp_value_from_ref_word(ref_word, "named field"))
+}
+
+/// Whether `val` is a map, in either layout.
+pub(super) fn is_map_value(proc: *mut Process, val: RuntimeAnyValue) -> bool {
+    matches!(val, RuntimeAnyValue::HeapRef(value_ref) if unsafe { &*proc }.heap.map_layout(value_ref).is_some())
 }

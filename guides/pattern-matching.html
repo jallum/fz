@@ -114,7 +114,10 @@ materialize for it.</p>
 
 <p>With <code>%Box{value: 8}</code>, the second clause binds <code>x</code>
 to <code>8</code>. A plain map such as <code>%{value: 8}</code>, or a different
-struct with the same fields, reaches <code>:other</code>. Fields match by name,
+struct with the same fields, reaches <code>:other</code>. A struct is a map
+whose <code>__struct__</code> key holds its module, so a map pattern such as
+<code>%{value: x}</code> matches a <code>%Box{}</code> too, and
+<code>is_map/1</code> is true of it. Fields match by name,
 so their order in the pattern does not matter. Qualified and nested struct
 patterns follow the same rule, including in function heads and
 <code>receive</code>.</p>

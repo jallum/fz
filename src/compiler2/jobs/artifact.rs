@@ -6,7 +6,6 @@
 
 use crate::compiler2::ValueMap;
 use crate::fast_hash::{HashMap, HashSet};
-use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use crate::diag::Diagnostic;
@@ -30,7 +29,7 @@ use super::super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::super::drive::FactKey;
 use super::super::executable_facts::ExecutableFacts;
 use super::super::facts::FactUse;
-use super::super::identity::{ExecutableKey, ExecutableNeed, ModuleId, RootId};
+use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
 use super::super::pull::{
     ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, RecursiveProductRead, TransportLayout,
 };
@@ -147,8 +146,7 @@ pub(crate) fn produce_materialized_executable_product(
         .map(|(value, ty)| (value, *ty))
         .collect();
     let effects = local_effects(&body, extern_wire.as_ref(), &call_edges);
-    let struct_modules =
-        reachable_struct_modules(world.types(), executable, &body, return_ty, &value_types, &call_edges);
+    let struct_modules = reachable_struct_modules(world.types(), executable, return_ty, &value_types, &call_edges);
     let materialized = Rc::new(MaterializedExecutable {
         entry_dispatch: executable_facts.entry_dispatch().cloned(),
         return_ty,
@@ -168,25 +166,10 @@ pub(crate) fn produce_materialized_executable_product(
 fn reachable_struct_modules(
     types: &Types,
     executable: &ExecutableKey,
-    body: &LoweredBody,
     return_ty: Ty,
     value_types: &ValueMap<Ty>,
     call_edges: &HashMap<CallSiteId, MaterializedCallEdge>,
-) -> Box<[ModuleId]> {
-    let mut modules = BTreeSet::new();
-    let LoweredBody::Clauses { clauses, entries, .. } = body;
-    for steps in clauses
-        .iter()
-        .map(|clause| clause.projections.as_slice())
-        .chain(entries.iter().map(|entry| entry.steps.as_slice()))
-    {
-        for step in steps {
-            if let LoweredStep::Struct { module, .. } = step {
-                modules.insert(*module);
-            }
-        }
-    }
-
+) -> Box<[fz_runtime::module_name::ModuleName]> {
     let mut type_roots = Vec::with_capacity(2 + value_types.len() + call_edges.len() * 2);
     type_roots.extend([executable.activation.arrow, return_ty]);
     type_roots.extend(value_types.values().copied());
@@ -208,8 +191,7 @@ fn reachable_struct_modules(
             CallEdge::Indirect(_) => {}
         }
     }
-    modules.extend(types.struct_modules(type_roots));
-    modules.into_iter().collect()
+    types.struct_modules(type_roots).into_iter().collect()
 }
 
 pub(crate) fn produce_executable_effects_product<T: crate::telemetry::Telemetry>(

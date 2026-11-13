@@ -477,12 +477,10 @@ pub(super) const MAPS: AxisView<super::sigs::MapSig> = AxisView {
     clause_covers: |wider, narrower, sub| {
         factors_are_superset(wider, narrower)
             || match (plain_sig(narrower), plain_sig(wider)) {
-                (Some(a), Some(b)) => {
-                    a.tag == b.tag
-                        && b.fields
-                            .iter()
-                            .all(|(key, wide)| a.fields.get(key).is_some_and(|narrow| sub(narrow, wide)))
-                }
+                (Some(a), Some(b)) => b
+                    .fields
+                    .iter()
+                    .all(|(key, wide)| a.fields.get(key).is_some_and(|narrow| sub(narrow, wide))),
                 _ => false,
             }
     },
@@ -498,9 +496,8 @@ pub(super) const MAPS: AxisView<super::sigs::MapSig> = AxisView {
         let Some(theirs) = plain_sigs(siblings.iter().copied()) else {
             return Coverage::Unproven;
         };
-        let same_tag: Vec<_> = theirs.into_iter().filter(|sig| sig.tag == ours.tag).collect();
         for (key, ours) in &ours.fields {
-            let reachable = same_tag
+            let reachable = theirs
                 .iter()
                 .fold(Descr::none(), |acc, theirs| match theirs.fields.get(key) {
                     Some(theirs) => acc.union(cx, cx.descr(theirs)),
@@ -510,15 +507,20 @@ pub(super) const MAPS: AxisView<super::sigs::MapSig> = AxisView {
                 return Coverage::NotCovered;
             }
         }
-        if same_tag.len() == 1 {
+        if theirs.len() == 1 {
             return Coverage::NotCovered;
         }
         Coverage::Unproven
     },
-    // A positive `MapSig` fixes a tag, and struct tags are unbounded, so a
-    // union of positive-only clauses is never every map: a field-less PLAIN
-    // clause is every plain map and says nothing about `%Range{}`.
-    plain_top: |_, _| Coverage::NotCovered,
+    // A clause that names no field is every map. A clause that names a field
+    // requires it, so no union of such clauses reaches the empty map.
+    plain_top: |_, sigs| {
+        if sigs.iter().any(|sig| sig.fields.is_empty()) {
+            Coverage::Covered
+        } else {
+            Coverage::NotCovered
+        }
+    },
 };
 
 /// Whether a clause's child denotes every value, asked of the one

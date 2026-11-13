@@ -156,6 +156,30 @@ impl Schema {
 pub const BITSTRING_RESULT_SCHEMA: u32 = 0;
 pub const BITSTRING_READER_SCHEMA: u32 = 1;
 
+/// The struct schema of the module a map names under `__struct__`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamedSchema {
+    /// No atom is under `__struct__`, so the map names no module.
+    None,
+    Schema(u32),
+    /// The module declares no struct this program registered.
+    Undeclared,
+}
+
+impl NamedSchema {
+    /// The words generated code compares a schema id against.
+    pub const NONE_WORD: u32 = u32::MAX;
+    pub const UNDECLARED_WORD: u32 = u32::MAX - 1;
+
+    pub fn word(self) -> u32 {
+        match self {
+            Self::None => Self::NONE_WORD,
+            Self::Schema(id) => id,
+            Self::Undeclared => Self::UNDECLARED_WORD,
+        }
+    }
+}
+
 /// One key of a named struct read as a map: the module under `__struct__`,
 /// or the field at an index of the schema's fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,6 +242,14 @@ impl SchemaRegistry {
         self.map_keys.push(schema.map_keys());
         self.schemas.push(schema);
         id
+    }
+
+    /// The schema of the struct `module` declares.
+    pub fn named(&self, module: &ModuleName) -> Option<u32> {
+        self.schemas
+            .iter()
+            .position(|schema| matches!(&schema.identity, SchemaIdentity::Named(name) if name == module))
+            .map(|id| id as u32)
     }
 
     pub fn range(&mut self) -> u32 {

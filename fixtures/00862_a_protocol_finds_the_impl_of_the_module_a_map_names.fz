@@ -1,0 +1,52 @@
+#---
+# purpose: "a protocol call on a map answers with the impl of the module the map names under __struct__, in either layout and through an any-typed parameter, and with the Map impl only where the map names no module"
+# oracle: 00862_a_protocol_finds_the_impl_of_the_module_a_map_names.oracle.exs
+#---
+#
+# The Map impl is for the maps that name no module. A struct grown by a put
+# of a new key still names its module, and a put of another module under
+# `__struct__` names that one.
+defmodule Pt do
+  defstruct [:x, :y]
+end
+
+defmodule Size do
+  defstruct [:w]
+end
+
+defprotocol Describe do
+  def describe(value)
+end
+
+defimpl Describe, for: Map do
+  def describe(_map), do: :map
+end
+
+defimpl Describe, for: Pt do
+  def describe(p), do: {:pt, p.x}
+end
+
+defimpl Describe, for: Size do
+  def describe(_size), do: :size
+end
+
+def through(v :: any), do: Describe.describe(v)
+
+def main() do
+  p = %Pt{x: 1, y: 2}
+  dbg(Describe.describe(p))
+  dbg(Describe.describe(%Size{w: 3}))
+  dbg(Describe.describe(%{x: 1}))
+  dbg(Describe.describe(%{}))
+  dbg(through(p))
+  dbg(through(%{x: 1}))
+  dbg(through(Map.put(p, :z, 3)))
+  dbg(through(Map.put(%{x: 1}, :z, 3)))
+  dbg(through(%{__struct__: Pt, x: 5, y: 6}))
+  dbg(through(Map.put(p, :__struct__, Size)))
+  dbg(Describe.describe(Map.put(p, :z, 3)))
+  dbg(Describe.describe(Map.merge(p, %{x: 8})))
+  dbg(Enum.to_list(MapSet.new([3, 1, 2])))
+  dbg(Enum.to_list(%{a: 1}))
+  dbg(Enum.to_list(1..3))
+end

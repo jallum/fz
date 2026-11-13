@@ -21,7 +21,7 @@ use crate::fz_ir::Module;
 use crate::runtime_type_predicate::{
     RuntimeTypePredicate, RuntimeValueReader, TuplePositions, matches_runtime_type_predicate, surface_membership,
 };
-use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, AnyValueRef, TRUE_ATOM_ID, ValueKind, struct_schema_id};
+use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, TRUE_ATOM_ID, ValueKind, struct_schema_id};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_field_spec, fz_bs_finalize, fz_bs_read_field_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref,
     fz_list_head_ref, fz_list_tail_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref,
@@ -526,12 +526,7 @@ impl<'a> Dispatch<'a> {
                 }
                 ProjectionKind::StructField(field) => {
                     let parent = self.subject_word(projection.source)?;
-                    let parent = required(parent.as_ref_word(proc).ok())?;
-                    let parent = required(AnyValueRef::from_raw_word(parent).ok())?;
-                    let value = required(unsafe { &*proc }.heap.read_struct_named_field_ref(parent, field).ok())?;
-                    BackendBoundValue::Runtime(required(
-                        interp_value_from_ref_word(value.raw_word(), "dispatch struct field").ok(),
-                    )?)
+                    BackendBoundValue::Runtime(required(interp_named_field(proc, self.module, parent, field).ok())?)
                 }
                 ProjectionKind::ListHead => {
                     let parent = self.subject_word(projection.source)?;
@@ -625,7 +620,10 @@ impl<'a> Dispatch<'a> {
                 .is_some_and(|want| interp_value_eq(self.proc(), want, word).unwrap_or(false))),
             Region::List(ListRegion::Empty) => Ok(word.is_empty_list()),
             Region::List(ListRegion::Cons) => Ok(word.value(self.proc()).ok().is_some_and(interp_is_list_cons)),
-            Region::MapKind => Ok(word.value(self.proc()).ok().is_some_and(is_map_value)),
+            Region::MapKind => {
+                let proc = self.proc();
+                Ok(word.value(proc).ok().is_some_and(|value| is_map_value(proc, value)))
+            }
             Region::MapKeyPresent { key } => {
                 let Some(value) = self.map_lookup(word, key)? else {
                     return Ok(false);
@@ -787,7 +785,7 @@ impl<'a> Dispatch<'a> {
     /// map or holds no such key.
     fn map_lookup(&self, map: AnyValue, key: &GroundValue) -> Result<Option<AnyValue>, DispatchStop> {
         let proc = self.proc();
-        if !map.value(proc).ok().is_some_and(is_map_value) {
+        if !map.value(proc).ok().is_some_and(|value| is_map_value(proc, value)) {
             return Ok(None);
         }
         let Some(key) = self.const_key_value(key)? else {
@@ -1032,6 +1030,7 @@ impl TypeTest<'_> {
                 .ok()
                 .and_then(|value| value.value(proc).ok())
         };
+        let map_module = |value: RuntimeAnyValue| unsafe { &*proc }.heap.named_schema(value.ref_word());
         let reader = RuntimeValueReader {
             module,
             tuple_schema_ids: &tuple_schema_ids,
@@ -1040,6 +1039,7 @@ impl TypeTest<'_> {
             fields: &fields,
             list_head: &list_head,
             list_tail: &list_tail,
+            map_module: &map_module,
         };
         let matched = matches_runtime_type_predicate(predicate, &reader, runtime_value);
         if matched {

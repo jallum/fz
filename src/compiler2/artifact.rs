@@ -30,7 +30,7 @@ use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField,
     LoweredBitFieldSpec, LoweredBody, LoweredExtern, OutcomeEdge, ReceiveAfter, ValueId,
 };
-use super::identity::{ExecutableKey, FunctionId, ModuleId};
+use super::identity::{ExecutableKey, FunctionId};
 use super::semantic::ExecutableRuntimeDemand;
 use super::transport::{
     BoundaryId, CallableConstructionOwner, CallableId, ExecutableSymbol, ShapeId, TransportCarrier, TransportLayout,
@@ -206,7 +206,7 @@ pub struct MaterializedExecutable {
     pub effects: EffectSummary,
     /// Struct schemas this pruned executable can construct, test, or name in
     /// its type surface, kept as typed compiler identities until root packaging.
-    pub(crate) struct_modules: Box<[ModuleId]>,
+    pub(crate) struct_modules: Box<[fz_runtime::module_name::ModuleName]>,
     pub body: LoweredBody,
     /// The wire ABI this executable's function resolved on its contract,
     /// once it names an extern. `None` for an ordinary function, whose

@@ -4,7 +4,6 @@ use std::mem;
 use std::slice;
 
 use super::*;
-use crate::compiler2::ModuleId;
 use crate::compiler2::allocation_probe::allocations_during;
 use crate::compiler2::drive_harness::module_name;
 use crate::dispatch_matrix::demand::DispatchDemand;
@@ -246,8 +245,7 @@ fn impossible_struct_returns_before_the_type_boundary() {
 
     assert_eq!(
         t.struct_map(
-            ModuleId::for_test(1),
-            module_name("Pkg.Impossible"),
+            &module_name("Pkg.Impossible"),
             &[
                 (MapKey::Atom("left".to_string()), int),
                 (MapKey::Atom("missing".to_string()), none),
@@ -265,8 +263,7 @@ fn impossible_struct_returns_before_the_type_boundary() {
 
     let shadowed = MapKey::Atom("shadowed".to_string());
     let overwritten = t.struct_map(
-        ModuleId::for_test(2),
-        module_name("Pkg.Shadowed"),
+        &module_name("Pkg.Shadowed"),
         &[(shadowed.clone(), none), (shadowed.clone(), int)],
     );
     assert_ne!(
@@ -832,15 +829,9 @@ fn runtime_type_predicate_projects_named_structs_and_widens_unknown_opaques() {
 
 #[test]
 fn runtime_type_predicate_preserves_typed_struct_exclusions_without_narrowing_generic_opaques() {
-    use crate::compiler2::identity::ModuleId;
-
     let mut t = Types::new();
     let int = t.int();
-    let foo = t.struct_map(
-        ModuleId::GLOBAL,
-        module_name("Pkg.Foo"),
-        &[(MapKey::Atom("value".to_string()), int)],
-    );
+    let foo = t.struct_map(&module_name("Pkg.Foo"), &[(MapKey::Atom("value".to_string()), int)]);
     let foo_envelope = t.runtime_type_test_envelope(foo);
     let any = t.any();
     let not_foo = t.difference(any, foo_envelope);
@@ -851,7 +842,7 @@ fn runtime_type_predicate_preserves_typed_struct_exclusions_without_narrowing_ge
     );
     assert_eq!(
         t.struct_modules([not_foo]),
-        [ModuleId::GLOBAL].into_iter().collect(),
+        [module_name("Pkg.Foo")].into_iter().collect(),
         "schema extraction must retain the named exclusion as an exact dependency"
     );
 
@@ -903,48 +894,38 @@ fn runtime_type_predicate_preserves_plain_maps_in_real_struct_complements_and_un
         "subtracting one shaped plain-map region still admits other plain maps"
     );
 
-    let map = world.types_mut().map_top();
-    let foo_or_map = world.types_mut().union(foo_value, map);
-    let foo_or_map_predicate = world.types().runtime_type_predicate(&foo_or_map);
+    let plain_map = world.types_mut().plain_map();
+    let foo_or_plain = world.types_mut().union(foo_value, plain_map);
+    let foo_or_plain_predicate = world.types().runtime_type_predicate(&foo_or_plain);
     assert!(
-        foo_or_map_predicate.maps,
-        "an explicit struct-or-map union admits plain maps"
+        foo_or_plain_predicate.maps,
+        "a struct-or-plain-map union admits maps naming no module"
     );
     assert_eq!(
-        foo_or_map_predicate.named_structs,
+        foo_or_plain_predicate.named_structs,
         FiniteSet::lit(module_name("Pkg.Foo"))
     );
     assert!(
         !world.types().runtime_type_predicate(&foo_value).maps,
-        "a struct's tagged record must not classify as a plain map"
+        "a struct is not a map naming no module"
     );
 }
 
+/// A struct is a map whose `__struct__` field is its module's atom, so two
+/// structs differ exactly when those atoms do.
 #[test]
-fn typed_struct_identity_survives_the_type_algebra_even_when_display_names_match() {
-    use super::sigs::StructTag;
-    use crate::compiler2::identity::ModuleId;
-
+fn a_structs_identity_is_the_atom_under_its_struct_key() {
     let mut t = Types::new();
-    let left_module = ModuleId::for_test(1);
-    let right_module = ModuleId::for_test(2);
-    let left_name = ModuleName::from_segments(vec!["Pkg.Same".into()]);
-    let right_name = ModuleName::from_segments(vec!["Pkg".into(), "Same".into()]);
-    assert_eq!(left_name.dotted(), right_name.dotted());
-    let left = t.struct_map(left_module, left_name.clone(), &[]);
-    let right = t.struct_map(right_module, right_name.clone(), &[]);
-    assert_ne!(
-        left, right,
-        "distinct source paths must intern as distinct struct types"
-    );
-    assert!(t.is_disjoint(&left, &right));
-    let meet = t.intersect(left, right);
-    assert!(t.is_empty(&meet));
+    let left_name = module_name("Pkg.Left");
+    let right_name = module_name("Pkg.Right");
+    let left = t.struct_map(&left_name, &[]);
+    let right = t.struct_map(&right_name, &[]);
+    assert!(t.is_disjoint(&left, &right), "no map names two modules");
     let union = t.union(left, right);
     assert_eq!(
         t.struct_modules([union]),
-        [left_module, right_module].into_iter().collect(),
-        "union and recursive schema extraction must preserve both typed identities"
+        [left_name.clone(), right_name.clone()].into_iter().collect(),
+        "a union names both of its structs"
     );
     let difference = t.difference(left, right);
     assert!(t.is_equivalent(&difference, &left));
@@ -956,21 +937,17 @@ fn typed_struct_identity_survives_the_type_algebra_even_when_display_names_match
         t.runtime_type_predicate(&left).named_structs,
         FiniteSet::lit(left_name.clone())
     );
-    assert_eq!(
-        t.runtime_type_predicate(&right).named_structs,
-        FiniteSet::lit(right_name)
-    );
 
+    let module_atom = t.atom_lit(&left_name.atom_name());
+    let spelled = t.map(&[(MapKey::Atom("__struct__".to_string()), module_atom)]);
     assert_eq!(
-        StructTag {
-            module: left_module,
-            name: left_name.clone(),
-        },
-        StructTag {
-            module: right_module,
-            name: left_name,
-        },
-        "World-local interner coordinates do not define source identity"
+        spelled, left,
+        "a map written with the module under `__struct__` is the struct's own type"
+    );
+    let segmented = t.struct_map(&ModuleName::from_segments(vec!["Pkg".into(), "Left".into()]), &[]);
+    assert_eq!(
+        segmented, left,
+        "one atom names one struct, however the name was spelled"
     );
 }
 
@@ -978,33 +955,26 @@ fn typed_struct_identity_survives_the_type_algebra_even_when_display_names_match
 /// the struct's layout is then known where the read is compiled.
 #[test]
 fn a_type_names_its_one_struct_only_when_every_value_is_that_struct() {
-    use crate::compiler2::identity::ModuleId;
-
     let mut t = Types::new();
     let key = |name: &str| MapKey::Atom(name.to_string());
-    let point = ModuleId::for_test(1);
-    let size = ModuleId::for_test(2);
     let point_name = ModuleName::from_segments(vec!["Point".into()]);
     let size_name = ModuleName::from_segments(vec!["Size".into()]);
+    let point = Some(point_name.clone());
     let int = t.int();
     let float = t.float();
-    let int_point = t.struct_map(point, point_name.clone(), &[(key("x"), int)]);
-    let float_point = t.struct_map(point, point_name, &[(key("x"), float)]);
-    let a_size = t.struct_map(size, size_name, &[(key("w"), int)]);
+    let int_point = t.struct_map(&point_name, &[(key("x"), int)]);
+    let float_point = t.struct_map(&point_name, &[(key("x"), float)]);
+    let a_size = t.struct_map(&size_name, &[(key("w"), int)]);
 
-    assert_eq!(t.sole_struct(&int_point), Some(point));
+    assert_eq!(t.sole_struct(&int_point), point);
     let either_point = t.union(int_point, float_point);
     assert_eq!(
         t.sole_struct(&either_point),
-        Some(point),
+        point,
         "two field typings of one struct share its layout"
     );
     let narrowed = t.difference(either_point, float_point);
-    assert_eq!(
-        t.sole_struct(&narrowed),
-        Some(point),
-        "a narrowed Point is still a Point"
-    );
+    assert_eq!(t.sole_struct(&narrowed), point, "a narrowed Point is still a Point");
 
     let two_structs = t.union(int_point, a_size);
     assert_eq!(t.sole_struct(&two_structs), None, "either struct may be in hand");
@@ -1021,35 +991,33 @@ fn a_type_names_its_one_struct_only_when_every_value_is_that_struct() {
 }
 
 #[test]
-fn replacing_the_module_of_a_struct_leaves_a_plain_map() {
-    use crate::compiler2::identity::ModuleId;
-
+fn replacing_the_module_of_a_struct_names_the_new_module() {
     let mut t = Types::new();
     let key = |name: &str| MapKey::Atom(name.to_string());
-    let point = ModuleId::for_test(1);
+    let point = ModuleName::from_segments(vec!["Point".into()]);
+    let size = ModuleName::from_segments(vec!["Size".into()]);
     let int = t.int();
-    let a_point = t.struct_map(
-        point,
-        ModuleName::from_segments(vec!["Point".into()]),
-        &[(key("x"), int)],
-    );
+    let a_point = t.struct_map(&point, &[(key("x"), int)]);
 
     let moved = t.refine_map_field(&a_point, &key("x"), &int);
     assert_eq!(t.sole_struct(&moved), Some(point), "replacing a field keeps the struct");
 
-    let other = t.atom_lit("Elixir.Size");
+    let other = t.atom_lit(&size.atom_name());
     let renamed = t.refine_map_field(&a_point, &key("__struct__"), &other);
     assert_eq!(
         t.sole_struct(&renamed),
-        None,
-        "a map whose module was replaced is no longer known to be a Point"
-    );
-    assert_eq!(
-        t.field_lookup(&renamed, &key("__struct__")),
-        Some(other),
-        "it answers the module it was given"
+        Some(size),
+        "a map names whichever module its `__struct__` field holds"
     );
     assert_eq!(t.field_lookup(&renamed, &key("x")), Some(int), "and keeps its fields");
+
+    let atom = t.atom();
+    let unnamed = t.refine_map_field(&a_point, &key("__struct__"), &atom);
+    assert_eq!(
+        t.sole_struct(&unnamed),
+        None,
+        "a map whose module could be any atom names no one struct"
+    );
 }
 
 #[test]
@@ -1079,103 +1047,95 @@ fn nominal_protocol_targets_keep_typed_identity_through_the_opaque_algebra() {
     );
 }
 
+/// A protocol asks which module a map names. A struct names its own, a
+/// map literal names none, and a value known only to be a map may name any.
 #[test]
-fn runtime_type_predicate_keeps_named_struct_identity_out_of_plain_map_kind() {
-    use crate::compiler2::identity::ModuleId;
-
+fn a_runtime_test_tells_a_struct_from_a_map_naming_no_module() {
     let mut t = Types::new();
-    let first = t.atom_lit("first");
-    let last = t.atom_lit("last");
-    let step = t.atom_lit("step");
+    let int = t.int();
     let range_value = t.struct_map(
-        ModuleId::GLOBAL,
-        module_name("Range"),
+        &module_name("Range"),
         &[
-            (MapKey::Atom("first".to_string()), first),
-            (MapKey::Atom("last".to_string()), last),
-            (MapKey::Atom("step".to_string()), step),
+            (MapKey::Atom("first".to_string()), int),
+            (MapKey::Atom("last".to_string()), int),
+            (MapKey::Atom("step".to_string()), int),
         ],
     );
     let range_predicate = t.runtime_type_predicate(&range_value);
-    let map_top = t.map_top();
-    let map_predicate = t.runtime_type_predicate(&map_top);
+    assert_eq!(range_predicate.named_structs, FiniteSet::lit(module_name("Range")));
+    assert!(!range_predicate.maps, "a Range is not a map naming no module");
 
-    assert_eq!(
-        range_predicate.named_structs,
-        FiniteSet::lit(module_name("Range")),
-        "a struct value should keep its named runtime identity even though it also has structural field evidence",
-    );
+    let plain_map = t.plain_map();
+    let plain_predicate = t.runtime_type_predicate(&plain_map);
+    assert!(plain_predicate.maps);
+    assert_eq!(plain_predicate.named_structs, FiniteSet::none());
     assert!(
-        !range_predicate.maps,
-        "a tagged map is one nominal record leaf, not a union with a plain structural map",
+        !range_predicate.overlaps(&plain_predicate),
+        "the Map implementation is not chosen for a Range"
     );
-    assert!(
-        !range_predicate.overlaps(&map_predicate),
-        "protocol matching must not select the Map implementation for a Range struct value",
-    );
+
+    let map_top = t.map_top();
+    let every_map = t.runtime_type_predicate(&map_top);
+    assert!(every_map.maps);
+    assert_eq!(every_map.named_structs, FiniteSet::any());
+    assert!(range_predicate.overlaps(&every_map), "a Range is a map");
 }
 
 #[test]
-fn tagged_map_identity_and_fields_remain_atomic_through_the_algebra() {
-    use crate::compiler2::identity::ModuleId;
-
+fn a_struct_is_a_map_and_a_map_literal_is_not_a_struct() {
     let mut t = Types::new();
     let int = t.int();
     let key = MapKey::Atom("value".to_string());
-    let foo = t.struct_map(ModuleId::for_test(1), module_name("Pkg.Foo"), &[(key.clone(), int)]);
-    let plain = t.map(&[(key.clone(), int)]);
-    let joined = t.union(foo, plain);
+    let foo = t.struct_map(&module_name("Pkg.Foo"), &[(key.clone(), int)]);
+    let literal = t.map_literal(&[(key.clone(), int)]);
+    let has_value = t.map(&[(key.clone(), int)]);
+    let map_top = t.map_top();
+    let plain_map = t.plain_map();
 
-    assert!(t.is_disjoint(&foo, &plain));
-    let meet = t.intersect(foo, plain);
-    assert!(t.is_empty(&meet));
-    let without_plain = t.difference(joined, plain);
-    assert!(t.is_equivalent(&without_plain, &foo));
+    assert!(t.is_subtype(&foo, &has_value), "a Foo is a map with a `value`");
+    assert!(t.is_subtype(&foo, &map_top), "and a map");
+    assert!(t.is_subtype(&literal, &has_value));
+    assert!(t.is_subtype(&literal, &plain_map), "a literal names no module");
+    assert!(t.is_disjoint(&foo, &literal), "so no value is both");
+    assert!(t.is_disjoint(&foo, &plain_map));
+
+    let joined = t.union(foo, literal);
+    let without_literal = t.difference(joined, literal);
+    assert!(t.is_equivalent(&without_literal, &foo));
     assert_eq!(t.field_lookup(&foo, &key), Some(int));
+
     let extra = MapKey::Atom("extra".to_string());
     let refined = t.refine_map_field(&foo, &extra, &int);
     assert_eq!(t.field_lookup(&refined, &extra), Some(int));
     assert_eq!(
-        t.runtime_type_predicate(&refined).named_structs,
-        FiniteSet::lit(module_name("Pkg.Foo")),
-        "field refinement must preserve the record's nominal tag"
-    );
-    assert_eq!(
         t.struct_modules([refined]),
-        [ModuleId::for_test(1)].into_iter().collect(),
-        "schema extraction must read the same tag that field projection preserves"
+        [module_name("Pkg.Foo")].into_iter().collect(),
+        "a struct given another field is still that struct"
     );
-    assert_eq!(
-        t.max_tuple_arity(&foo),
-        0,
-        "tuple storage is a derived runtime view, not a type summand"
-    );
+    assert_eq!(t.max_tuple_arity(&foo), 0, "a struct is no tuple");
 
-    let map_top = t.map_top();
-    assert!(t.is_subtype(&plain, &map_top));
+    let grown = t.refine_map_field(&literal, &extra, &int);
     assert!(
-        t.is_disjoint(&foo, &map_top),
-        "plain-map top excludes every tagged struct family"
+        t.is_subtype(&grown, &plain_map),
+        "a literal given a field names no module"
     );
-    let any = t.any();
-    let non_plain = t.difference(any, map_top);
-    assert!(t.is_disjoint(&non_plain, &map_top));
-    assert!(
-        t.is_subtype(&foo, &non_plain),
-        "record-axis top still ranges over every tagged struct family"
+    let module = t.atom_lit(&module_name("Pkg.Foo").atom_name());
+    let named = t.refine_map_field(&literal, &MapKey::Atom("__struct__".to_string()), &module);
+    assert_eq!(
+        t.sole_struct(&named),
+        Some(module_name("Pkg.Foo")),
+        "a literal given a module names it"
     );
 }
 
 #[test]
 fn semantic_struct_envelopes_keep_projectable_fields_and_predicate_envelopes_keep_only_identity() {
-    use crate::compiler2::identity::ModuleId;
-
     let mut t = Types::new();
     let key = MapKey::Atom("value".to_string());
     let hit = t.atom_lit("hit");
     let var = t.type_var(TypeVarId(555));
     let fields = t.tuple(&[hit, var]);
-    let record = t.struct_map(ModuleId::for_test(1), module_name("Pkg.Box"), &[(key.clone(), fields)]);
+    let record = t.struct_map(&module_name("Pkg.Box"), &[(key.clone(), fields)]);
     let nested = t.tuple(&[record]);
     let semantic = t.runtime_envelope(nested);
     let semantic_record = t.tuple_field_type(&semantic, 0);
@@ -1201,7 +1161,7 @@ fn semantic_struct_envelopes_keep_projectable_fields_and_predicate_envelopes_kee
         t.is_subtype(&raw_not_record, &negative_semantic),
         "unresolved negative field evidence must not exclude additional values"
     );
-    let concrete = t.struct_map(ModuleId::for_test(1), module_name("Pkg.Box"), &[(key, hit)]);
+    let concrete = t.struct_map(&module_name("Pkg.Box"), &[(key, hit)]);
     let not_concrete = t.difference(any, concrete);
     let semantic_not_concrete = t.runtime_envelope(not_concrete);
     assert!(t.is_equivalent(&not_concrete, &semantic_not_concrete));
@@ -1214,15 +1174,13 @@ fn semantic_struct_envelopes_keep_projectable_fields_and_predicate_envelopes_kee
 
 #[test]
 fn substitution_descends_only_through_equal_record_tags() {
-    use crate::compiler2::identity::ModuleId;
-
     let mut t = Types::new();
     let key = MapKey::Atom("value".to_string());
     let alpha = t.type_var(TypeVarId(0));
     let int = t.int();
-    let foo_pattern = t.struct_map(ModuleId::for_test(1), module_name("Pkg.Foo"), &[(key.clone(), alpha)]);
-    let foo_witness = t.struct_map(ModuleId::for_test(1), module_name("Pkg.Foo"), &[(key.clone(), int)]);
-    let other_witness = t.struct_map(ModuleId::for_test(2), module_name("Pkg.Bar"), &[(key, int)]);
+    let foo_pattern = t.struct_map(&module_name("Pkg.Foo"), &[(key.clone(), alpha)]);
+    let foo_witness = t.struct_map(&module_name("Pkg.Foo"), &[(key.clone(), int)]);
+    let other_witness = t.struct_map(&module_name("Pkg.Bar"), &[(key, int)]);
 
     let mut sigma = HashMap::default();
     t.collect_instantiation_subst(&foo_pattern, &foo_witness, &mut sigma);
@@ -5001,7 +4959,7 @@ fn a_struct_type_answers_its_module_atom_for_the_struct_key() {
     let int = t.int();
     let key = MapKey::Atom("x".to_string());
     let module_key = MapKey::Atom("__struct__".to_string());
-    let point = t.struct_map(ModuleId::for_test(1), module_name("Geo.Pt"), &[(key.clone(), int)]);
+    let point = t.struct_map(&module_name("Geo.Pt"), &[(key.clone(), int)]);
     let plain = t.map(&[(key, int)]);
 
     let module_atom = t.atom_lit("Elixir.Geo.Pt");

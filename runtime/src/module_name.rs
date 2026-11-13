@@ -109,6 +109,15 @@ impl ModuleName {
     }
 }
 
+impl ModuleName {
+    /// The module an atom names in value position, the inverse of
+    /// `atom_name`: `Elixir.Foo.Bar` is `Foo.Bar`. Any other atom names none.
+    pub fn from_atom_name(atom_name: &str) -> Option<Self> {
+        let dotted = atom_name.strip_prefix(ALIAS_ATOM_ROOT)?.strip_prefix('.')?;
+        Self::parse_dotted(dotted).ok()
+    }
+}
+
 /// The field a struct answers with its own module: `p.__struct__`.
 pub const STRUCT_MODULE_FIELD: &str = "__struct__";
 

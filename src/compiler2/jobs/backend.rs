@@ -326,8 +326,11 @@ pub(crate) fn produce_backend_executable_product(
             context.include_product(ProductKey::BackendExecutable(target));
         }
     }
-    for module in &backend.abi.materialized.struct_modules {
-        context.include_product(ProductKey::StructSchema(*module));
+    for name in &backend.abi.materialized.struct_modules {
+        let module = world.reference_module(name.clone());
+        if context.read_fact(world, FactUse::settled(FactKey::StructDefined(module))) {
+            context.include_product(ProductKey::StructSchema(module));
+        }
     }
     let backend = Rc::new(backend);
     PullOutcome::Produced(ProductValue::BackendExecutable(backend))
@@ -1107,7 +1110,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
 
     /// The struct `value` is, when its type admits exactly one.
     fn known_struct(&self, value: ValueId) -> Option<ModuleId> {
-        self.world.types().sole_struct(self.value_types.get(&value)?)
+        let name = self.world.types().sole_struct(self.value_types.get(&value)?)?;
+        let module = self.world.module_named(&name)?;
+        self.world.struct_def(module).map(|_| module)
     }
 
     fn module_name(&self, module: ModuleId) -> &ModuleName {

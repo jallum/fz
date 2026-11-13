@@ -17,7 +17,7 @@ use std::rc::Rc;
 
 use super::Heap;
 use super::schema::SchemaIdentity;
-use super::schema::StructKey;
+use super::schema::{NamedSchema, StructKey};
 use crate::any_value::{
     AnyValue, AnyValueRef, SlotLayout, ValueKind, heap_object_word, map_addr_from_tagged, map_count, map_entry,
     struct_addr_from_tagged, struct_schema_id,
@@ -45,6 +45,9 @@ struct StructMap {
 #[derive(Default)]
 pub(crate) struct StructMaps {
     by_schema: RefCell<HashMap<u32, Rc<StructMap>>>,
+    /// The schema each module atom was found to name. A module with no
+    /// schema is asked again, since one may be registered later.
+    by_module_atom: RefCell<HashMap<u32, u32>>,
 }
 
 impl Heap {
@@ -72,6 +75,43 @@ impl Heap {
         };
         let schema_id = unsafe { struct_schema_id(addr as *const u8) };
         matches!(&self.schemas.borrow().get(schema_id).identity, SchemaIdentity::Named(name) if name == module)
+    }
+
+    /// The struct schema of the module `value` names. A struct names its
+    /// own; a map in the entries layout names the atom under `__struct__`.
+    pub fn named_schema(&self, value: AnyValueRef) -> NamedSchema {
+        match self.map_layout(value) {
+            Some(MapLayout::Struct { schema_id, .. }) => NamedSchema::Schema(schema_id),
+            Some(MapLayout::Entries(addr)) => self.entries_named_schema(addr),
+            None => NamedSchema::None,
+        }
+    }
+
+    fn entries_named_schema(&self, addr: *mut u8) -> NamedSchema {
+        let key = AnyValue::atom(self.node.intern_atom(STRUCT_MODULE_FIELD));
+        let Ok(index) = self.map_key_position(addr, key) else {
+            return NamedSchema::None;
+        };
+        let (_, module) = unsafe { map_entry(addr, index) };
+        if module.kind() != ValueKind::ATOM {
+            return NamedSchema::None;
+        }
+        let atom = module.raw() as u32;
+        if let Some(schema_id) = self.struct_maps.by_module_atom.borrow().get(&atom) {
+            return NamedSchema::Schema(*schema_id);
+        }
+        let declared = self
+            .node
+            .atom_name(atom)
+            .and_then(|name| ModuleName::from_atom_name(name.as_str()))
+            .and_then(|module| self.schemas.borrow().named(&module));
+        match declared {
+            Some(schema_id) => {
+                self.struct_maps.by_module_atom.borrow_mut().insert(atom, schema_id);
+                NamedSchema::Schema(schema_id)
+            }
+            None => NamedSchema::Undeclared,
+        }
     }
 
     /// `map_layout`, for a caller whose value the types promise is a map.
