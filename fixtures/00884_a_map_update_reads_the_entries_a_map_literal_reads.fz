@@ -1,0 +1,38 @@
+#---
+# purpose: "a map update takes `key => value` entries with any key expression, mixed with keyword entries, and a newline on either side of the bar"
+# oracle: 00884_a_map_update_reads_the_entries_a_map_literal_reads.oracle.exs
+#---
+defmodule Pt do
+  defstruct [:x, :y]
+end
+
+def put_all([], map), do: map
+def put_all([{key, value} | rest], map), do: put_all(rest, %{map | key => value})
+
+def missing(map) do
+  try do
+    put_all([z: 1], map)
+  rescue
+    e in KeyError -> e.message
+  end
+end
+
+def main() do
+  m = %{"b" => 2, c: 3}
+  dbg(%{m | :c => 10})
+  dbg(%{m | "b" => 20})
+  dbg(%{m | "b" => 20, c: 30})
+  key = :c
+  dbg(%{m | key => 300})
+  dbg(put_all([{"b", 7}, {:c, 9}], m))
+  dbg(put_all([x: 1, y: 2], %Pt{}))
+  dbg(%{
+    m
+    | c: 5
+  })
+  dbg(%{m |
+    "b" => 6,
+    c: 7
+  })
+  dbg(missing(m))
+end
