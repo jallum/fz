@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:54:08Z",
+  "description": "Readers on World return owned copies of whole sources so the caller can go on to mutate World.\nSites: src/compiler2/world.rs:2288, 2293 (module_scope clones a ModuleSource; jobs/source.rs:258 only tests is_some); world.rs:2271 (code_source clones a QuotedCodeSource; jobs/source.rs:107 holds it across \u0026mut world calls); src/compiler2/resolve.rs:374 (whole TypeDef) and :300 (fields.to_vec()); src/compiler2/source_publish.rs:1524 (callables.to_vec() of a module interface per wildcard import) and :1292-1299 (five session collections per Blocked result).\nShape: a presence question gets a presence answer; a reader returns a reference; where the caller must mutate World while reading, split the borrow by field or read the needed part first.\nLine numbers are at develop d0c3ae00c. Site-by-site ledger (class, what is copied, fix shape): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-jobs.md, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-core.md, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-rest.md.\nSignal: full gate green; no golden, census or pin moves; program output and canonical backend dump identical on the probe; allocation count before and after from /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/measure.sh in the commit.\nRemoves: each named copy, and any accessor left without callers.",
+  "id": "fz-gfx.26",
+  "labels": [],
+  "parent": "fz-gfx",
+  "priority": 2,
+  "status": "open",
+  "title": "World readers return borrows of module, code and type sources",
+  "type": "task",
+  "updated_at": "2026-11-13T03:54:08Z"
+}
