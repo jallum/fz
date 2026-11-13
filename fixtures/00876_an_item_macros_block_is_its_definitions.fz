@@ -1,0 +1,45 @@
+#---
+# purpose: "an item macro that returns a block defines each of the block's statements: two definitions in one quote, a block unquoted inside a block, and an empty block that defines nothing"
+# oracle: 00876_an_item_macros_block_is_its_definitions.oracle.exs
+#---
+defmodule Defaults do
+  defmacro pair() do
+    quote do
+      def a(), do: 1
+      def b(), do: 2
+    end
+  end
+
+  defmacro nested() do
+    inner =
+      quote do
+        def c(), do: 3
+        def d(), do: 4
+      end
+
+    quote do
+      unquote(inner)
+      def e(), do: c() + d()
+    end
+  end
+
+  defmacro nothing() do
+    quote do
+    end
+  end
+end
+
+defmodule Uses do
+  import Defaults
+  pair()
+  nested()
+  nothing()
+  def sum(), do: a() + b() + e()
+end
+
+def main() do
+  dbg(Uses.a())
+  dbg(Uses.b())
+  dbg(Uses.e())
+  dbg(Uses.sum())
+end
