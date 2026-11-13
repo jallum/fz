@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:54:11Z",
+  "description": "Sites: src/ir_interp/backend.rs:1402 (every decision input cloned out of env into a Vec read once, per step); :1157 (return value); :1245, :1354 (closure calls); src/ir_interp/dispatch_exec.rs:907-910 (a LoweredExtern with symbol String, params Vec and return type built per guard-extern evaluation and dropped).\nShape: pass borrowed bound values to dispatch_values; move a value out of env where it is its last use; store the extern wire at lowering.\nThree-path note: interp only; JIT and AOT output must be unchanged.\nLine numbers are at develop d0c3ae00c. Site-by-site ledger (class, what is copied, fix shape): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-jobs.md, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-core.md, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-rest.md.\nSignal: full gate green; no golden, census or pin moves; program output and canonical backend dump identical on the probe; allocation count before and after from /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/measure.sh in the commit.\nRemoves: each named copy, and any accessor left without callers.",
+  "id": "fz-gfx.32",
+  "labels": [],
+  "parent": "fz-gfx",
+  "priority": 2,
+  "status": "open",
+  "title": "The interpreter reads decision inputs from the environment",
+  "type": "task",
+  "updated_at": "2026-11-13T03:54:11Z"
+}
