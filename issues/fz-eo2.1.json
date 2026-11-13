@@ -4,14 +4,16 @@
   "blocks": [
     "fz-eo2.2"
   ],
+  "closed_at": "2026-11-13T22:10:34Z",
+  "close_reason": "committed; PR opened",
   "created": "2026-11-13T21:18:51Z",
   "description": "fixture-metadata parses oracle.stamp and exposes the hash (FNV-1a 64, no dependency) with unit tests.",
   "id": "fz-eo2.1",
   "labels": [],
   "parent": "fz-eo2",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "The fixture header carries an oracle stamp and the crate computes it",
   "type": "task",
-  "updated_at": "2026-11-13T21:19:17Z"
+  "updated_at": "2026-11-13T22:10:34Z"
 }
