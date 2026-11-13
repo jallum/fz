@@ -428,31 +428,33 @@ where
             );
         }
         // Emission order first, then whatever this job used to own and no longer
-        // does. Both halves are ordered, so `touched` is too — and `touched`
-        // becomes the wake order (fz-f98.19).
+        // does. Both halves are ordered, so `changed` is too, and `changed`
+        // becomes the wake order.
+        let withdrawn = previous_output_keys.iter().filter(|key| !output_keys.contains(*key));
         let touched = output_keys
             .iter()
-            .cloned()
-            .chain(previous_output_keys.iter().cloned())
-            .collect::<OrderedSet<_>>();
+            .map(|key| (key, true))
+            .chain(withdrawn.map(|key| (key, false)));
 
         let mut changed = Vec::new();
-        for key in &touched {
-            let key = key.clone();
-            let mut slot = self.slots.remove(&key).unwrap_or_default();
+        for (key, publishes) in touched {
+            if !self.slots.contains_key(key) {
+                self.slots.insert(key.clone(), FactSlot::default());
+            }
+            let slot = self.slots.get_mut(key).expect("slot was just ensured");
             let old_revision = slot.revision();
             let old_settled = slot.is_settled();
             let old_concluded = slot.is_locally_settled();
-            let withdrew_publisher = !output_keys.contains(&key) && slot.publishers.contains(publisher);
+            let withdrew_publisher = !publishes && slot.publishers.contains(publisher);
 
-            if output_keys.contains(&key) {
+            if publishes {
                 let was_absent = slot.publishers.is_empty();
-                let changed_listed = changed_keys_set.remove(&key);
+                let changed_listed = changed_keys_set.remove(key);
                 slot.publishers.insert(publisher.clone());
                 slot.dirty_publishers.remove(publisher);
                 set_membership(&mut slot.unfinal_publishers, publisher, publisher_unfinal);
                 if was_absent {
-                    slot.revision = appearance_revision(&key, changed_listed);
+                    slot.revision = appearance_revision(key, changed_listed);
                 } else if changed_listed {
                     slot.revision += 1;
                 }
@@ -460,7 +462,7 @@ where
                 slot.publishers.remove(publisher);
                 slot.dirty_publishers.remove(publisher);
                 slot.unfinal_publishers.remove(publisher);
-                if changed_keys_set.remove(&key) && !slot.publishers.is_empty() {
+                if changed_keys_set.remove(key) && !slot.publishers.is_empty() {
                     slot.revision += 1;
                 }
             }
@@ -468,10 +470,10 @@ where
             let new_revision = slot.revision();
             let new_settled = slot.is_settled();
             let new_concluded = slot.is_locally_settled();
-            let movement = content_movement(&key, old_revision, new_revision, publisher_rebased, withdrew_publisher);
+            let movement = content_movement(key, old_revision, new_revision, publisher_rebased, withdrew_publisher);
             let concluded_movement = slot.movement_for_concluded_readers(movement);
-            if !slot.publishers.is_empty() {
-                self.slots.insert(key.clone(), slot);
+            if slot.publishers.is_empty() {
+                self.slots.remove(key);
             }
 
             if old_revision != new_revision
@@ -482,7 +484,7 @@ where
                 changed.push(FactChange {
                     content_movement: movement,
                     concluded_movement,
-                    key,
+                    key: key.clone(),
                     old_revision,
                     new_revision,
                     old_settled,
@@ -535,7 +537,10 @@ where
 
         let mut changed = Vec::new();
         for key in &output_keys {
-            let mut slot = self.slots.remove(key).unwrap_or_default();
+            if !self.slots.contains_key(key) {
+                self.slots.insert(key.clone(), FactSlot::default());
+            }
+            let slot = self.slots.get_mut(key).expect("slot was just ensured");
             let old_revision = slot.revision();
             let old_settled = slot.is_settled();
             let old_concluded = slot.is_locally_settled();
@@ -556,7 +561,6 @@ where
             let new_concluded = slot.is_locally_settled();
             let movement = content_movement(key, old_revision, new_revision, publisher_rebased, false);
             let concluded_movement = slot.movement_for_concluded_readers(movement);
-            self.slots.insert(key.clone(), slot);
 
             if old_revision != new_revision
                 || old_settled != new_settled
