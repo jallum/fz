@@ -7,14 +7,15 @@
     "fz-sc8.140",
     "fz-sc8.19"
   ],
+  "closed_at": "2026-11-13T02:56:03Z",
   "created": "2026-11-12T22:39:34Z",
   "description": "Distill gate first divergence: 'compiler2 root 0 product path exceeded fact-wait budget' (51,226 jobs; 30,508 of 33,162 DeriveExecutableFacts runs re-run with every declared read at an unchanged revision). Cause: scheduler.rs dispatch_changes enqueues and dirties completed Settled subscribers on a readiness-only flip. Cure: a readiness-only flip calls wake_satisfied_waiters for the Settled use; content movements enqueue as before; a fact whose prerequisite re-settles at the same revision settles again without its producer running. Built on top of fz-sc8.138. Measured (release): u2 (Enum.count(Stream.map([1], fn x -\u003e x + 1 end))) DeriveExecutableFacts 59 -\u003e 33 runs over 33 keys, completions 496 -\u003e 470; d5 44,652 -\u003e 17,989; distiller passes the budget and ends at the runtime_demand.rs:1294 panic (fz-sc8.140). Pin: reached-edit ChangedRevisionWake 11 -\u003e 10 (product_drive_test.rs). The three public_trace reached_leaf_edit falls belong to fz-sc8.138, not this change. Docs: dispatch_changes doc comment and .agent/docs/fact-engine.md readiness paragraphs. Evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/b138/.",
   "id": "fz-sc8.137",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A settled flip at an unchanged revision re-runs nobody",
   "type": "bug",
-  "updated_at": "2026-11-13T01:36:16Z"
+  "updated_at": "2026-11-13T02:56:03Z"
 }
