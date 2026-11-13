@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T18:09:19Z",
+  "description": "lib/json.fz has a private type_name/1 (five clauses: Tuple, PID, Reference, Reference, Function) and two hand-built Protocol.UndefinedError messages (JSON.Encoder ~206, String.Chars for a key ~279). fz-sc8.149 added the runtime's one answer for a value's kind name (runtime/src/any_value.rs debug::kind_name, used by fz_raise_naming_kind). Fold: expose that name to fz (an extern returning the binary) and delete type_name/1. Not done in fz-sc8.149 because it needs a new runtime export callable from fz, JSON's encoder message carries extra hint text, and type_name's fallthrough names Function. Check that JSON's names for pid/ref stay right (kind_name says Integer for them until fz-xxd.16).",
+  "id": "fz-sc8.153",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "JSON's Protocol.UndefinedError messages name the value's kind through the runtime's one answer",
+  "type": "task",
+  "updated_at": "2026-11-13T18:09:19Z"
+}
