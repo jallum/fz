@@ -4,14 +4,15 @@
   "blocks": [
     "fz-348.2"
   ],
+  "closed_at": "2026-11-13T00:40:31Z",
   "created": "2026-11-12T20:15:48Z",
   "description": "Add Types::has_open_vars, key_has_open_vars and is_pure_callable; delete key_has_vars; ground_dispatch_surfaces (src/compiler2/semantic.rs) reads the open predicate.\n\nFails before, passes after: ground_dispatch_surfaces_publishes_a_closure_argument_as_a_ground_shape (semantic_test); a_closure_literals_own_arrow_variables_are_not_open, a_variable_a_closure_captures_is_open, a_callable_column_is_distinguished_from_a_container_of_callables (types_test); fixture 01081 (two callers over a closure list; base stops with the boxed-lane error), on interp, run and build against Elixir.\n\nGuards only (pass before and after): a_variable_a_closure_captures_is_open, a_callable_column_is_distinguished_from_a_container_of_callables.\n\nDocs: the type-specialization notes in .agent/docs that say how a template is told from a ground shape name the two predicates and the one-line meaning of each.\n\nRemoved: key_has_vars.\n\nAcceptance: full gate green; no pin, golden or census value changes. Source: remedy-R3.patch, split by site.",
   "id": "fz-348.1",
   "labels": [],
   "parent": "fz-348",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A closure's own arrow variables are not open evidence",
   "type": "task",
-  "updated_at": "2026-11-12T20:19:15Z"
+  "updated_at": "2026-11-13T00:40:31Z"
 }
