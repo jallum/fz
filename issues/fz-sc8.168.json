@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T23:16:01Z",
+  "description": "Left after fz-sc8.164, both outside that ticket's census.\n\n1. src/compiler2/types/types_test.rs, tuple_emptiness_under_many_overlapping_negations_is_tractable asserts start.elapsed() \u003c 5s. It guards phi_tuple against walking arity^negations (4^14) leaves without its two prunes. No counter sees that walk: measured on the fz-sc8.164 tree, the two is_subtype queries move comparison_cache_stats by 2 misses and 0 hits and interning by 1, so the existing counters would not move if the pruning were removed. Replacement: a test-only count of leaves visited on the Descr emptiness path, pinned to its measured value.\n\n2. tests/fixture_matrix.rs, the 'timed-out relative file writer' probe runs sh -c 'pwd \u003e file; sleep 2' under a 500 ms window and then reads the file. The read rests on the shell writing inside 500 ms. Replacement: have the probe announce after writing (the readiness boundary) so the window opens only once the file exists.\n\nDone when neither test asserts on or depends on elapsed time; the hang-guard deadlines stay.",
+  "id": "fz-sc8.168",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "Two tests still read a clock for their answer",
+  "type": "bug",
+  "updated_at": "2026-11-13T23:16:01Z"
+}
