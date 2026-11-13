@@ -141,7 +141,7 @@ impl<'a> LaterUses<'a> {
 pub(super) fn entries_reached_from(body: &LoweredBody, entry: usize) -> HashSet<u32> {
     let LoweredBody::Clauses { entries, .. } = body;
     let mut reached = HashSet::new();
-    let mut pending = child_entries(&entries[entry].tail);
+    let mut pending = child_entries(&entries[entry].tail).collect::<Vec<_>>();
     while let Some(block) = pending.pop() {
         if block.as_u32() as usize != entry && reached.insert(block.as_u32()) {
             pending.extend(child_entries(&entries[block.as_u32() as usize].tail));
@@ -185,7 +185,7 @@ impl Footprints {
         if let Some(origin) = origins.get(&value) {
             origin_reaches(body, origin, &mut reaches, &mut footprint);
         }
-        reaches.extend(construction_children(body, origins, value));
+        reaches.extend(construction_children(body, origins, value).iter());
         definition_reaches(body, origins, value, &mut reaches, &mut footprint);
         for reached in reaches {
             let reached = self.of(body, origins, reached);
