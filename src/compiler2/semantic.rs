@@ -1321,20 +1321,19 @@ where
         rebased: bool,
     ) -> ContributionReplace<K> {
         let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
-        let mut touched = previous_output_keys
-            .iter()
-            .cloned()
-            .chain(next_output_keys.iter().cloned())
-            .collect::<HashSet<_>>()
+        let mut touched = next
             .into_iter()
+            .map(|(key, value)| (key, SlotEntry::Upsert(value)))
             .collect::<Vec<_>>();
-        touched.sort_by(|left, right| left.semantic_cmp(right, &*ctx));
+        touched.extend(
+            previous_output_keys
+                .into_iter()
+                .filter(|key| !next_output_keys.contains(key))
+                .map(|key| (key, SlotEntry::Withdraw)),
+        );
+        touched.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
         let mut changed_keys = HashSet::new();
-        for key in touched {
-            let entry = match next.get(&key) {
-                Some(value) => SlotEntry::Upsert(value.clone()),
-                None => SlotEntry::Withdraw,
-            };
+        for (key, entry) in touched {
             if self.apply(ctx, &key, &publisher, entry, !rebased) {
                 changed_keys.insert(key);
             }
@@ -1411,18 +1410,20 @@ where
     /// publisher's retraction is reported too, though the fact table neutralizes
     /// it through the vanished publisher set.
     fn apply(&mut self, ctx: &mut V::Ctx, key: &K, publisher: &P, entry: SlotEntry<V>, join: bool) -> bool {
-        let mut slot = self.slots.remove(key).unwrap_or_else(|| ContributionSlot {
-            contributors: Vec::new(),
-            joined: V::bottom(),
-        });
+        if !self.slots.contains_key(key) {
+            let empty = ContributionSlot {
+                contributors: Vec::new(),
+                joined: V::bottom(),
+            };
+            self.slots.insert(key.clone(), empty);
+        }
+        let slot = self.slots.get_mut(key).expect("slot was just ensured");
         let old_joined = (!slot.contributors.is_empty()).then(|| slot.joined.clone());
         match entry {
             SlotEntry::Upsert(value) if V::EXACT && join => {
                 slot.joined.join_assign(&value, ctx);
                 upsert_contribution(ctx, &mut slot.contributors, publisher, value, true);
-                let moved = !old_joined.as_ref().is_some_and(|old| old.equivalent(&slot.joined, ctx));
-                self.slots.insert(key.clone(), slot);
-                return moved;
+                return !old_joined.as_ref().is_some_and(|old| old.equivalent(&slot.joined, ctx));
             }
             SlotEntry::Upsert(value) => upsert_contribution(ctx, &mut slot.contributors, publisher, value, join),
             SlotEntry::Withdraw => {
@@ -1440,11 +1441,10 @@ where
         // equal arrow differently.
         let joined = join_contributions(ctx, slot.contributors.iter().map(|(_, value)| value));
         let moved = !old_joined.as_ref().is_some_and(|old| old.equivalent(&joined, ctx));
-        if !slot.contributors.is_empty() {
-            if moved {
-                slot.joined = joined;
-            }
-            self.slots.insert(key.clone(), slot);
+        if slot.contributors.is_empty() {
+            self.slots.remove(key);
+        } else if moved {
+            slot.joined = joined;
         }
         moved
     }
