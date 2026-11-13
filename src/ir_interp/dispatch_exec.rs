@@ -5,12 +5,12 @@ use super::backend::{
     backend_callable_identity, decode_field, env_get, field_spans_for, materialize_transport_value,
     transport_field_view,
 };
-use super::extern_call::{ExternCallValue, call_lowered_extern};
+use super::extern_call::{ExternCallValue, call_fixed_extern};
 use super::*;
 use crate::compiler2::transport::TransportStore;
-use crate::compiler2::{BackendProgram, DispatchBindings, LoweredExtern, Ty, Types};
+use crate::compiler2::{BackendProgram, DispatchBindings, Ty, Types, ValueId};
 use crate::dispatch_matrix::pattern::{
-    GuardExtern, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp, PatternPinnedInput,
+    PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp, PatternPinnedInput,
 };
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
@@ -49,10 +49,42 @@ impl<'a> DispatchValues<'a> {
         transport: &'a TransportStore,
         inputs: &'a [Option<BackendBoundValue>],
     ) -> DispatchOperands<'a> {
+        self.over_inputs(transport, DispatchInputs::Values(inputs))
+    }
+
+    /// The same operands, with the inputs read from the values an environment
+    /// holds for the named ids.
+    pub(super) fn over_frame(
+        &'a self,
+        transport: &'a TransportStore,
+        env: &'a Frame,
+        ids: &'a [ValueId],
+    ) -> DispatchOperands<'a> {
+        self.over_inputs(transport, DispatchInputs::Frame { env, ids })
+    }
+
+    fn over_inputs(&'a self, transport: &'a TransportStore, inputs: DispatchInputs<'a>) -> DispatchOperands<'a> {
         DispatchOperands {
             transport,
             inputs,
             pinned: self,
+        }
+    }
+}
+
+/// Where the values a run is deciding about are held: delivered as a slice, or
+/// still in the environment that bound them.
+#[derive(Clone, Copy)]
+pub(super) enum DispatchInputs<'a> {
+    Values(&'a [Option<BackendBoundValue>]),
+    Frame { env: &'a Frame, ids: &'a [ValueId] },
+}
+
+impl<'a> DispatchInputs<'a> {
+    pub(super) fn get(self, ordinal: usize) -> Option<&'a BackendBoundValue> {
+        match self {
+            Self::Values(values) => values.get(ordinal).and_then(Option::as_ref),
+            Self::Frame { env, ids } => ids.get(ordinal).and_then(|id| env.get(*id)),
         }
     }
 }
@@ -182,7 +214,7 @@ fn required<T>(value: Option<T>) -> Result<T, DispatchStop> {
 /// never asks about.
 pub(super) struct DispatchOperands<'a> {
     pub(super) transport: &'a TransportStore,
-    pub(super) inputs: &'a [Option<BackendBoundValue>],
+    pub(super) inputs: DispatchInputs<'a>,
     pub(super) pinned: &'a DispatchValues<'a>,
 }
 
@@ -461,7 +493,7 @@ impl<'a> Dispatch<'a> {
         let transport = self.operands.transport;
         let subject_data = required(plan.graph.subjects.get(subject.0 as usize))?;
         let value = match &subject_data.source {
-            SubjectSource::Input { ordinal } => match self.operands.inputs.get(*ordinal as usize).cloned().flatten() {
+            SubjectSource::Input { ordinal } => match self.operands.inputs.get(*ordinal as usize).cloned() {
                 Some(value) => value,
                 None => {
                     return Err(DispatchStop::broken(format!(
@@ -737,9 +769,7 @@ impl<'a> Dispatch<'a> {
                 for arg in args {
                     values.push(self.eval_guard(arg)?);
                 }
-                match call_lowered_extern(self.runtime, &guard_extern_wire(extern_fn), None, &values)
-                    .map_err(DispatchStop::Broken)?
-                {
+                match call_fixed_extern(self.runtime, (&**extern_fn).into(), &values).map_err(DispatchStop::Broken)? {
                     ExternCallValue::Scalar(value) => value,
                     ExternCallValue::CheckedFailure(_) => return Err(DispatchStop::NoMatch),
                     ExternCallValue::ProcessFailed => {
@@ -897,17 +927,6 @@ impl<'a> Dispatch<'a> {
 
     fn proc(&self) -> *mut Process {
         self.runtime.cur_proc()
-    }
-}
-
-/// The wire a guard's extern call is made through.
-fn guard_extern_wire(extern_fn: &GuardExtern) -> LoweredExtern {
-    LoweredExtern {
-        abi: extern_fn.abi,
-        symbol: extern_fn.symbol.clone(),
-        params: extern_fn.params.clone(),
-        variadic: false,
-        ret: extern_fn.ret.clone(),
     }
 }
 

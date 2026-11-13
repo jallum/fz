@@ -1,7 +1,8 @@
+use std::borrow::Cow;
 use std::rc::Rc;
 
 use super::binop::{eval_binop, eval_unop, unpack_callable, unpack_closure};
-use super::dispatch_exec::{Dispatch, DispatchSource, dispatch_values};
+use super::dispatch_exec::{Dispatch, DispatchInputs, DispatchSource, dispatch_values};
 use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get, interp_map_put};
 use super::value::{
@@ -942,7 +943,7 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                                 transport,
                                 program,
                                 last_resort,
-                                &semantic_inputs,
+                                DispatchInputs::Values(&semantic_inputs),
                                 continuations,
                             );
                         }
@@ -1154,7 +1155,8 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         &mut 0,
                     )?
                 } else {
-                    env_get_value(&env, *value)?.clone()
+                    env.take(*value)
+                        .ok_or_else(|| format!("backend value {} is unbound", value.as_u32()))?
                 };
                 continue_backend_value(runtime, transport, program, result, continuations)
             }
@@ -1242,7 +1244,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             dest,
             ..
         } => {
-            let callee_value = env.get(*callee).cloned();
+            let callee_value = env.get(*callee);
             // The recorded call form carries the decision the artifact layer
             // made. A direct edge names its target and the capture count that
             // target declares, and the captures come out of the callee value's
@@ -1252,7 +1254,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 ClosureCallEdge::Direct { target, capture_count } => {
                     let callee_executable = backend_executable_ref(program, types, target)?;
                     let capture_inputs_end = *capture_count;
-                    let captures = match &callee_value {
+                    let captures = match callee_value {
                         Some(BackendBoundValue::Transport { shape, lanes })
                             if matches!(transport.interners().shape(*shape), ShapeDescr::Callable(_)) =>
                         {
@@ -1313,7 +1315,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                             callee.as_u32()
                         )
                     })?;
-                    let materialized = materialize_backend_value(transport, runtime.cur_proc(), &callee_value)?;
+                    let materialized = materialize_backend_value(transport, runtime.cur_proc(), callee_value)?;
                     let (fn_id, capture_lanes) = match materialized {
                         AnyValue::FnRef(fn_id, _, _) => (fn_id, Vec::new()),
                         other => unpack_closure(other.value(runtime.cur_proc())?).map_err(|error| {
@@ -1351,7 +1353,9 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         wrapper,
                         member,
                     }
-                    .encode(&capture_lanes, args, |arg| env_get_value(&env, arg.value).cloned())?;
+                    .encode(&capture_lanes, args, |arg| {
+                        env_get_value(&env, arg.value).map(Cow::Borrowed)
+                    })?;
                     (callee_executable, lanes)
                 }
             };
@@ -1399,14 +1403,13 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
         } => {
             // A decision reads an input in whatever form it is bound in, and an
             // input it never reads was never bound.
-            let input_values = inputs.iter().map(|input| env.get(*input).cloned()).collect::<Vec<_>>();
             let pinned_values = dispatch_values(
                 runtime.cur_proc(),
                 transport,
                 &dispatch.plan,
                 DispatchSource::Bound { env: &env, bindings },
             )?;
-            let operands = pinned_values.over(transport, &input_values);
+            let operands = pinned_values.over_frame(transport, &env, inputs);
             let run = Dispatch::new(runtime, types, program, module, &dispatch.plan, operands);
             let (target, params) = match run.run()? {
                 Some(mut decided) => {
@@ -1433,7 +1436,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                             transport,
                             program,
                             last_resort,
-                            &input_values,
+                            DispatchInputs::Frame { env: &env, ids: inputs },
                             continuations,
                         );
                     }
@@ -2226,9 +2229,14 @@ fn continue_after_extern(
 ) -> Result<BackendEvalTransition, String> {
     match result {
         ExternCallValue::ProcessFailed => after_panic(runtime, transport, program, continuations),
-        ExternCallValue::CheckedFailure(failure) => {
-            raise_last_resort(runtime, transport, program, &failure, &[], continuations)
-        }
+        ExternCallValue::CheckedFailure(failure) => raise_last_resort(
+            runtime,
+            transport,
+            program,
+            &failure,
+            DispatchInputs::Values(&[]),
+            continuations,
+        ),
         ExternCallValue::Scalar(value) => continue_backend_value(
             runtime,
             transport,
@@ -2250,14 +2258,13 @@ fn raise_last_resort(
     transport: &TransportStore,
     program: &BackendProgram,
     last_resort: &LastResort,
-    inputs: &[Option<BackendBoundValue>],
+    inputs: DispatchInputs<'_>,
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     let proc = runtime.cur_proc();
     let input = |index: usize| -> Result<_, String> {
         let input = inputs
             .get(index)
-            .and_then(Option::as_ref)
             .ok_or_else(|| format!("internal error: a last resort reads input {index}, which the plan lacks"))?;
         materialize_backend_value(transport, proc, input)?.value(proc)
     };
@@ -2758,7 +2765,7 @@ pub(super) fn construction_wrapper_invocation(
         wrapper,
         member,
     }
-    .encode(captures, args, |arg| Ok(BackendBoundValue::Runtime(*arg)))?;
+    .encode(captures, args, |arg| Ok(Cow::Owned(BackendBoundValue::Runtime(*arg))))?;
     Ok((target, lanes))
 }
 
@@ -2773,11 +2780,11 @@ struct ConstructionInputEncoder<'a> {
 }
 
 impl ConstructionInputEncoder<'_> {
-    fn encode<T>(
+    fn encode<'v, T>(
         self,
         captures: &[AnyValue],
         args: &[T],
-        mut resolve_arg: impl FnMut(&T) -> Result<BackendBoundValue, String>,
+        mut resolve_arg: impl FnMut(&T) -> Result<Cow<'v, BackendBoundValue>, String>,
     ) -> Result<Lanes, String> {
         // `target_inputs` is sparse: an input the target never reads publishes no
         // layout at all, which is why every entry carries its own
@@ -2853,7 +2860,7 @@ impl ConstructionInputEncoder<'_> {
                 continue;
             }
             let value = match semantic_values[binding.semantic_index] {
-                Some(value) => BackendBoundValue::Runtime(value),
+                Some(value) => Cow::Owned(BackendBoundValue::Runtime(value)),
                 None => {
                     let arg_index = explicit_values[binding.semantic_index].ok_or_else(|| {
                         format!(
