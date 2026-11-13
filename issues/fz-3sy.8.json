@@ -11,7 +11,7 @@
     "fz-3sy.9"
   ],
   "created": "2026-11-11T15:21:29Z",
-  "description": "Every exception the runtime and library raise is declared in lib/ with defexception and Elixir's fields; the runtime builds those structs; Kernel.raise is Elixir's macro (raise Mod, attrs -\u003e Mod.exception(attrs)). Own proposal page before building.",
+  "description": "Plan: /Users/j5n/Workspace/fz-3sy.8.html (approved 2026-11-13). After fz-3ul.4. lib/exception.fz declares with defexception every exception fz raises (MatchError, CaseClauseError, WithClauseError, TryClauseError, BadBooleanError, CondClauseError, FunctionClauseError, UndefinedFunctionError, ArgumentError, RuntimeError, ArithmeticError, ErlangError, Enum.EmptyError, KeyError, BadMapError, File.Error, File.CopyError, File.RenameError, File.LinkError, Protocol.UndefinedError, JSON.DecodeError) with Elixir's fields and Elixir's message/1. Kernel.raise/1,2 is Elixir's macro: raise Mod, attrs is the raise of Mod.exception(attrs); raise msg is RuntimeError; raise 42 is ArgumentError 'raise/1 and reraise/2 expect a module name, string or exception as the first argument, got: 42'. Library raises pass fields (raise KeyError, key: key, term: map). fz_raise and the functions raise/1 and raise/2 go. The seven runtime-built clause errors keep their ready-made message beside Elixir's fields until fz-3sy.9 removes it. Acceptance: hello world stays at 213 jobs; a program raising one KeyError compiles only KeyError of the declared exceptions; compile cost measured on hello world and the OptionParser distiller before building; oracle fixtures on three paths.",
   "id": "fz-3sy.8",
   "labels": [],
   "parent": "fz-3sy",
@@ -19,5 +19,5 @@
   "status": "open",
   "title": "Built-in exceptions are declared in lib with Elixir's fields, and raise is Elixir's macro",
   "type": "feature",
-  "updated_at": "2026-11-13T17:53:27Z"
+  "updated_at": "2026-11-13T17:53:28Z"
 }
