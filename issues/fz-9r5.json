@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T14:22:50Z",
+  "description": "Seen once on 2026-11-13 in a full parallel run of cargo test --test fixture_matrix (branch fz-sc8.131/generic-callable-is-carried; 3073 passed, 1 failed): fixture_readiness_drains_an_exited_child panicked at tests/fixture_matrix.rs:1580 with 'teardown exited readiness probe: kill process group 84779: Operation not permitted (os error 1); leader reaped as exit status: 0'. It passed twice alone and in the following --workspace --all-targets run (3074 passed). On macOS killpg on a group whose only members are zombies returns EPERM rather than ESRCH, so the teardown of a child that has already exited and been reaped treats a finished group as an error. Not caused by the change under test. Cause is inferred from the message, not probed. Related: fz-rgk (child-process limits measure the machine).",
+  "id": "fz-9r5",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "Tearing down an already-exited fixture child does not fail on EPERM from its process group",
+  "type": "bug",
+  "updated_at": "2026-11-13T14:22:50Z"
+}
