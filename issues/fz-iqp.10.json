@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T23:11:48Z",
+  "description": "Elixir strings accept backslash-x followed by one or two hex digits, and backslash-x with braces; fz rejects them as unknown escapes. Found by the fz-iqp.5 builder (not re-probed by me). Lexer::read_escape is the one reader. Signal: oracle fixture; diagnostic fixture for a malformed form.",
+  "id": "fz-iqp.10",
+  "labels": [],
+  "parent": "fz-iqp",
+  "priority": 3,
+  "status": "open",
+  "title": "Strings accept Elixir's hex escapes",
+  "type": "feature",
+  "updated_at": "2026-11-13T23:11:48Z"
+}
