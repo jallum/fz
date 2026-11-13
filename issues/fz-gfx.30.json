@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-13T03:54:10Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-gfx",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Runtime demand is read where it lives",
   "type": "task",
-  "updated_at": "2026-11-13T03:54:10Z"
+  "updated_at": "2026-11-13T05:43:59Z"
 }
