@@ -2225,3 +2225,48 @@ fn deduped_job_facts_keep_the_first_occurrence_in_emission_order() {
 
     assert_eq!(super::world::dedupe_job_facts(facts), vec![indexed, interface, defined]);
 }
+
+#[test]
+fn noting_interface_expectations_extends_the_stored_interface_and_ignores_repeats() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let module = world.submit_module_interface("Noted".to_string(), ModuleInterface::default());
+    let expectation = |name: &str, arity| super::module_interface::InterfaceExpectation {
+        name: name.to_string(),
+        arity,
+        kind: super::module_interface::InterfaceCallableKind::PublicFunction,
+        requester: None,
+    };
+
+    world.note_module_interface_expectation(module, expectation("add", 2));
+    world.note_module_interface_expectation(module, expectation("add", 2));
+    world.note_module_interface_expectation(module, expectation("sub", 2));
+
+    assert_eq!(
+        world.module_interface(module).expectations(),
+        &[expectation("add", 2), expectation("sub", 2)]
+    );
+}
+
+#[test]
+fn noting_an_interface_expectation_on_a_module_without_an_interface_creates_one() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let module = world.reference_module(crate::modules::identity::ModuleName::from_segments(vec![
+        "Unseen".into(),
+    ]));
+    assert!(world.module_interface_if_present(module).is_none());
+
+    world.note_module_interface_expectation(
+        module,
+        super::module_interface::InterfaceExpectation {
+            name: "go".to_string(),
+            arity: 0,
+            kind: super::module_interface::InterfaceCallableKind::Macro,
+            requester: None,
+        },
+    );
+
+    assert_eq!(world.module_interface(module).expectations().len(), 1);
+    assert!(world.module_interface(module).callables().is_empty());
+}

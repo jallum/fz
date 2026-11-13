@@ -1726,9 +1726,7 @@ impl World {
     }
 
     pub fn note_module_interface_expectation(&mut self, module: ModuleId, expectation: InterfaceExpectation) {
-        let mut interface = self.module_interface_if_present(module).cloned().unwrap_or_default();
-        interface.record_expectation(expectation);
-        self.define_module_interface(module, interface);
+        self.modules.record_interface_expectation(module, expectation);
     }
 
     /// Records that `module` was referenced from `requester` without naming

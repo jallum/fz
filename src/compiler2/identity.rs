@@ -7,7 +7,7 @@ use crate::source::Span;
 use crate::types::ClosureTarget;
 
 use super::code::SourceOwner;
-use super::module_interface::ModuleInterface;
+use super::module_interface::{InterfaceExpectation, ModuleInterface};
 use super::namespace::{Namespace, NamespaceSymbol};
 use super::quoted_surface::ScopeSurface;
 use super::source::{Horizon, QuotedSourceRoot};
@@ -201,6 +201,15 @@ impl ModuleState {
             ModuleState::Scoped { base, .. } => Some(*base),
             ModuleState::Defined { base, .. } => Some(*base),
             _ => None,
+        }
+    }
+
+    fn interface_or_default_mut(&mut self) -> &mut ModuleInterface {
+        match self {
+            ModuleState::Placeholder { interface }
+            | ModuleState::Indexed { interface, .. }
+            | ModuleState::Scoped { interface, .. } => interface.get_or_insert_default(),
+            ModuleState::Defined { interface, .. } => interface,
         }
     }
 
@@ -406,6 +415,12 @@ impl ModuleMap {
             },
         };
         update_if_changed(module, next)
+    }
+
+    pub fn record_interface_expectation(&mut self, id: ModuleId, expectation: InterfaceExpectation) {
+        self.slots[id.0 as usize]
+            .interface_or_default_mut()
+            .record_expectation(expectation);
     }
 
     pub fn scope(&mut self, id: ModuleId, base_namespace: Namespace) -> bool {
