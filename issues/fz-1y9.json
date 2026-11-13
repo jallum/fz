@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T21:18:25Z",
+  "description": "x1 = {x0, 1}; x2 = {x1, 2}; ... depth 60: 1.9 s run, 2.2 s interp on develop ff4a75ada (depth 30: 0.12 s). Independent of tuple lanes. Samples: jobs/body.rs value_may_retain_source, origin_source_path, LoweredBody::value_definition. Programs: scratchpad s297/chain*.fz.",
+  "id": "fz-1y9",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "A nested pair chain costs steeply more than its depth",
+  "type": "bug",
+  "updated_at": "2026-11-13T21:18:25Z"
+}
