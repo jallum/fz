@@ -971,7 +971,10 @@ enum RecipeLayout {
     /// of the alternatives that WERE readable -- for the owning position to
     /// settle on in `cut_transport_layout`.
     Cut(Vec<TransportLayout>),
-    Waiting(ProductKey),
+    /// Every child the evaluation needed and could not yet read. The owner
+    /// waits on all of them at once, so it is pulled once to name its waits
+    /// and once to resume.
+    Waiting(Vec<ProductKey>),
 }
 
 fn evaluate_transport_recipe(
@@ -1002,7 +1005,7 @@ fn evaluate_transport_recipe(
             let callee_layout = match context.read_product(tel, &callee_key, world.types()) {
                 Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => *layout,
                 Some(value) => panic!("closure callee shape produced unexpected value {value:?}"),
-                None => return RecipeLayout::Waiting(callee_key),
+                None => return RecipeLayout::Waiting(vec![callee_key]),
             };
             match grounded {
                 Some(grounded) if callee_supplies_target_captures(world, callee_layout, &grounded.target) => {
@@ -1025,11 +1028,12 @@ fn evaluate_transport_recipe(
             match context.read_product(tel, &key, world.types()) {
                 Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => RecipeLayout::Exact(*layout),
                 Some(value) => panic!("transport shape produced unexpected value {value:?}"),
-                None => RecipeLayout::Waiting(key),
+                None => RecipeLayout::Waiting(vec![key]),
             }
         }
         TransportRecipe::Alternatives(recipes) => {
             let mut layouts = Vec::new();
+            let mut waits = Vec::new();
             let mut cut = false;
             for recipe in recipes {
                 match evaluate_transport_recipe(world, tel, context, recipe, ty, demand, position) {
@@ -1038,10 +1042,12 @@ fn evaluate_transport_recipe(
                         cut = true;
                         layouts.extend(evidence);
                     }
-                    waiting @ RecipeLayout::Waiting(_) => return waiting,
+                    RecipeLayout::Waiting(keys) => extend_unique(&mut waits, &keys),
                 }
             }
-            if cut {
+            if !waits.is_empty() {
+                RecipeLayout::Waiting(waits)
+            } else if cut {
                 RecipeLayout::Cut(layouts)
             } else {
                 joined_transport_layout(
@@ -1055,14 +1061,27 @@ fn evaluate_transport_recipe(
         }
         TransportRecipe::Tuple(fields) => {
             let mut layouts = Vec::with_capacity(fields.len());
+            let mut waits = Vec::new();
             for field in fields {
                 match evaluate_transport_recipe(world, tel, context, field, ty, demand, position) {
                     RecipeLayout::Exact(layout) => layouts.push(layout),
-                    cut @ RecipeLayout::Cut(_) => return cut,
-                    waiting @ RecipeLayout::Waiting(_) => return waiting,
+                    RecipeLayout::Waiting(keys) => extend_unique(&mut waits, &keys),
+                    // The first cut ends the walk: fields beyond it are never
+                    // read, and unready fields before it are still waited on,
+                    // so the cut is reached only once they are ready.
+                    cut @ RecipeLayout::Cut(_) => {
+                        if waits.is_empty() {
+                            return cut;
+                        }
+                        return RecipeLayout::Waiting(waits);
+                    }
                 }
             }
-            RecipeLayout::Exact(tuple_layout(world, &layouts))
+            if waits.is_empty() {
+                RecipeLayout::Exact(tuple_layout(world, &layouts))
+            } else {
+                RecipeLayout::Waiting(waits)
+            }
         }
         TransportRecipe::Projection { source, kind } => {
             let crate::dispatch_matrix::ProjectionKind::TupleField(index) = kind else {
@@ -1263,6 +1282,7 @@ fn direct_callable_descr(
     };
     let executable = ExecutableSymbol::new(&executable);
     let mut capture_layouts = Vec::with_capacity(capture_count);
+    let mut waits = Vec::new();
     for semantic_index in 0..capture_count {
         let capture = TransportPosition::ExecutableInput {
             executable: executable.clone(),
@@ -1278,14 +1298,20 @@ fn direct_callable_descr(
             // them can reach back to it.
             let mut layout = derived_transport_layout(world, ty, demand, &[]);
             layout.carrier = TransportCarrier::ValueRef(value_lane(world, ty));
-            return DirectCallableDescr::Position(RecipeLayout::Cut(vec![layout]));
+            if waits.is_empty() {
+                return DirectCallableDescr::Position(RecipeLayout::Cut(vec![layout]));
+            }
+            break;
         }
         let key = ProductKey::TransportShape(capture);
         match context.read_product(tel, &key, world.types()) {
             Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => capture_layouts.push(*layout),
             Some(value) => panic!("transport shape produced unexpected value {value:?}"),
-            None => return DirectCallableDescr::Position(RecipeLayout::Waiting(key)),
+            None => waits.push(key),
         }
+    }
+    if !waits.is_empty() {
+        return DirectCallableDescr::Position(RecipeLayout::Waiting(waits));
     }
     DirectCallableDescr::Descr(CallableDescr {
         function: Some(target.activation.function),
@@ -1959,7 +1985,9 @@ fn produce_named_transport_position(
         && !demand.is_callable();
 
     let mut layout = match evaluate_transport_recipe(world, tel, context, &recipe, ty, &demand, position) {
-        RecipeLayout::Waiting(key) => return Some(PullOutcome::wait_on_product(key)),
+        RecipeLayout::Waiting(keys) => {
+            return Some(PullOutcome::Waiting(keys.into_iter().map(PullWait::Product).collect()));
+        }
         // A return whose recipe names an in-component DIRECT return publishes
         // the CONTRACT, however much
         // its own arms saw. The cut falls on one side of the cycle only, so the

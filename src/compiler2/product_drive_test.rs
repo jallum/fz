@@ -333,7 +333,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     assert_eq!(lowerings.get(), 1);
     assert_eq!(
         evaluations.borrow().len(),
-        54,
+        50,
         "main and its definition macro consume backend products directly, removing their four content-projection evaluations",
     );
     let materialized_roots = evaluations

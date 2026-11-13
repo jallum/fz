@@ -581,6 +581,13 @@ apart cost about a quarter of the runtime of a 30,000-element
 `Enum.split_while` (fz-kdt.97). Evaluation therefore reads no scheduler state
 and no product group, and the published layouts do not move under a re-ordered
 pull.
+Evaluating a recipe reports every unready child it can name in that round: a
+tuple or alternatives recipe collects all of its unready children into one
+wait list, and a direct callable collects all of its unready captures, so the
+owner is pulled once to discover its waits and once to resume. A tuple stops at its first cut, so a field beyond a cut is never read,
+while an unready field before it is waited on first. A closure-call return
+reads its callee's layout before it can name the target's recipe, so that
+callee stays a separate, earlier wait.
 `CallableConstruction(position)` uses the same position-owned
 layout and carries direct callable and boundary facts independently of wrapper
 authority. A direct-only local producer owns `construction: None`; a first-class
