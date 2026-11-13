@@ -687,6 +687,35 @@ fn compiler2_activation_key_from_inputs_results_in_addressed_result_alpha_not_no
     );
 }
 
+#[test]
+fn compiler2_activation_key_input_reads_the_slot_the_input_vector_holds() {
+    use super::super::ExecutableNeed;
+    use super::super::identity::{ActivationKey, FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
+    use super::super::types::Types;
+
+    let mut types = Types::new();
+    let int = types.int();
+    let float = types.float();
+    let mut functions = FunctionMap::new();
+    let function = functions.reference(ModuleId::GLOBAL, None, "main", 0);
+    let mut roots = RootMap::new();
+    let root = roots.define(RootEntry {
+        function,
+        input: vec![int, float],
+        need: ExecutableNeed::Value,
+        kind: RootKind::Runtime,
+    });
+
+    let key = ActivationKey::from_inputs(root, function, &[int, float], &mut types);
+
+    let row = key.inputs(&types);
+    assert_eq!(row, vec![int, float]);
+    assert_eq!(key.input_len(&types), row.len());
+    for (slot, expected) in row.iter().enumerate() {
+        assert_eq!(key.input(&types, slot), *expected);
+    }
+}
+
 /// A declared kind is what the source says now, not what it said first.
 ///
 /// One key is declared many times over a compile — reserving a scope's forms,
