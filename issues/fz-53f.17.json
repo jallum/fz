@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:33:10Z",
+  "description": "Why: in ProductMemo's commit path (src/compiler2/pull.rs, the prepare loop of the commit) two values exist only to fill a shape. (1) std::mem::take(\u0026mut dependencies.membership) moves the membership set onto the ProductEntry and leaves an always-empty membership field inside the Rc\u003cProductDependencies\u003e that the entry keeps: every stored ProductDependencies has a field that says nothing. (2) previous.map(|entry| entry.membership).unwrap_or_default() invents an empty set for a product that was never committed, so replace_membership_readers and committed_rooted_member (pull/rooted.rs) cannot tell 'never committed' from 'committed with no members'.\n\nWhat: ProductDependencies has no membership field; the computation returns membership beside the dependencies and the entry is its only home. The previous membership is passed as Option\u003c\u0026..\u003e; the two readers handle None directly.\n\nSignal: no behaviour change. Identity on the five probes (interp/run stdout, canonical backend dump, activation key and job counts); no pin movement; instructions within noise or lower. Neither value allocates today (an empty HashSet has no heap storage), so this is a data-model fix, not a speed claim.\n\nOrder: after fz-53f.2 (same engine files). Removes: the membership field of ProductDependencies, the mem::take, the unwrap_or_default.",
+  "id": "fz-53f.17",
+  "labels": [],
+  "parent": "fz-53f",
+  "priority": 3,
+  "status": "open",
+  "title": "A product's membership lives on its entry, and a first commit has no previous membership",
+  "type": "task",
+  "updated_at": "2026-11-13T03:33:10Z"
+}
