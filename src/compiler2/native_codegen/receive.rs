@@ -1825,7 +1825,7 @@ fn emit_list_cons_test<M: cranelift_module::Module>(
 ) -> Result<(), CodegenError> {
     let list_ref = emit_receive_value_ref(body, ctx, val)?;
     let ok = runtime_call1!(body, fz_list_is_cons, [list_ref]);
-    let zero = body.b.ins().iconst(types::I8, 0);
+    let zero = body.b.ins().iconst(types::I64, 0);
     let cmp = body.b.ins().icmp(IntCC::NotEqual, ok, zero);
     body.b.ins().brif(cmp, match_b, &[], next_b, &[]);
     Ok(())

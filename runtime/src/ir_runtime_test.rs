@@ -125,6 +125,48 @@ fn total_arithmetic_exports_return_initialized_result_and_canonical_status_at_bo
     assert_eq!(fz_op_neg_f(0.0).to_bits(), (-0.0f64).to_bits());
 }
 
+/// Intent: `abs` and the float-to-integer conversions report failure exactly
+/// where the answer does not fit a 64-bit integer, and answer as Elixir does
+/// everywhere else: half away from zero, and `-0.0` as zero.
+#[test]
+fn abs_and_float_conversions_fail_only_outside_the_integer_range() {
+    let ok = |result| FzIntegerArithmeticResult { result, failed: 0 };
+    let failed = FzIntegerArithmeticResult { result: 0, failed: 1 };
+    assert_eq!(fz_op_abs_i(-3), ok(3));
+    assert_eq!(fz_op_abs_i(i64::MAX), ok(i64::MAX));
+    assert_eq!(
+        fz_op_abs_i(i64::MIN),
+        FzIntegerArithmeticResult {
+            result: i64::MIN,
+            failed: 1
+        }
+    );
+    assert_eq!(fz_op_abs_f(-0.0).to_bits(), 0.0f64.to_bits());
+    assert_eq!(fz_op_abs_f(-2.5), 2.5);
+
+    assert_eq!(fz_op_round_f(2.5), ok(3));
+    assert_eq!(fz_op_round_f(-2.5), ok(-3));
+    assert_eq!(fz_op_round_f(0.5), ok(1));
+    assert_eq!(fz_op_round_f(-0.5), ok(-1));
+    assert_eq!(fz_op_round_f(-0.0), ok(0));
+    assert_eq!(fz_op_trunc_f(-2.7), ok(-2));
+    assert_eq!(fz_op_trunc_f(-0.5), ok(0));
+    assert_eq!(fz_op_floor_f(-2.5), ok(-3));
+    assert_eq!(fz_op_floor_f(2.5), ok(2));
+    assert_eq!(fz_op_ceil_f(-0.5), ok(0));
+    assert_eq!(fz_op_ceil_f(2.5), ok(3));
+
+    assert_eq!(fz_op_trunc_f(-9223372036854775808.0), ok(i64::MIN));
+    assert_eq!(fz_op_trunc_f(9223372036854774784.0), ok(9223372036854774784));
+    for outside in [9223372036854775808.0, -9223372036854777856.0, 1.0e300, -1.0e300] {
+        assert_eq!(fz_op_trunc_f(outside), failed, "{outside}");
+        assert_eq!(fz_op_round_f(outside), failed, "{outside}");
+        assert_eq!(fz_op_floor_f(outside), failed, "{outside}");
+        assert_eq!(fz_op_ceil_f(outside), failed, "{outside}");
+    }
+    assert_eq!(fz_op_round_f(9223372036854775807.5), failed);
+}
+
 fn map_int_value_by_atom_name(process: &Process, map_ref_word: u64, name: &str) -> i64 {
     let map_ref = AnyValueRef::from_raw_word(map_ref_word).expect("stats map ref");
     let map_addr = map_ref.map_addr().expect("stats map addr");

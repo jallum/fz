@@ -1,0 +1,75 @@
+#---
+# purpose: "abs, round, trunc, floor and ceil in a function-head guard and in a receive guard decide the clause as Elixir does, and an operand that is not a number leaves the clause unmatched"
+# oracle: oracle.exs
+#---
+#
+# In a guard a failure is the clause not matching, so the next clause answers.
+# `:a` means the guard held and `:b` means it did not.
+
+def entry_abs(n) when abs(n) > 2, do: :a
+def entry_abs(_), do: :b
+
+def receive_abs(m) do
+  send(self(), m)
+  receive do
+    n when abs(n) > 2 -> :a
+    _ -> :b
+  end
+end
+
+def entry_round(n) when round(n) == 3, do: :a
+def entry_round(_), do: :b
+
+def receive_round(m) do
+  send(self(), m)
+  receive do
+    n when round(n) == 3 -> :a
+    _ -> :b
+  end
+end
+
+def entry_trunc(n) when trunc(n) == -2, do: :a
+def entry_trunc(_), do: :b
+
+def receive_trunc(m) do
+  send(self(), m)
+  receive do
+    n when trunc(n) == -2 -> :a
+    _ -> :b
+  end
+end
+
+def entry_floor(n) when floor(n) == -3, do: :a
+def entry_floor(_), do: :b
+
+def receive_floor(m) do
+  send(self(), m)
+  receive do
+    n when floor(n) == -3 -> :a
+    _ -> :b
+  end
+end
+
+def entry_ceil(n) when ceil(n) == -2, do: :a
+def entry_ceil(_), do: :b
+
+def receive_ceil(m) do
+  send(self(), m)
+  receive do
+    n when ceil(n) == -2 -> :a
+    _ -> :b
+  end
+end
+
+def main() do
+  dbg([entry_abs(-3), entry_abs(2), entry_abs(-2.5), entry_abs(2.0), entry_abs(:x), entry_abs("s")])
+  dbg([receive_abs(-3), receive_abs(2), receive_abs(-2.5), receive_abs(2.0), receive_abs(:x), receive_abs("s")])
+  dbg([entry_round(2.5), entry_round(3), entry_round(2.4), entry_round(3.4999), entry_round(-2.5), entry_round(:x)])
+  dbg([receive_round(2.5), receive_round(3), receive_round(2.4), receive_round(3.4999), receive_round(-2.5), receive_round(:x)])
+  dbg([entry_trunc(-2.7), entry_trunc(-2), entry_trunc(-2.0), entry_trunc(-1.9), entry_trunc(-3.5), entry_trunc(:x)])
+  dbg([receive_trunc(-2.7), receive_trunc(-2), receive_trunc(-2.0), receive_trunc(-1.9), receive_trunc(-3.5), receive_trunc(:x)])
+  dbg([entry_floor(-2.5), entry_floor(-3), entry_floor(-2.9), entry_floor(-3.0), entry_floor(-2), entry_floor(:x)])
+  dbg([receive_floor(-2.5), receive_floor(-3), receive_floor(-2.9), receive_floor(-3.0), receive_floor(-2), receive_floor(:x)])
+  dbg([entry_ceil(-2.5), entry_ceil(-2), entry_ceil(-1.9), entry_ceil(-2.0), entry_ceil(-3), entry_ceil(:x)])
+  dbg([receive_ceil(-2.5), receive_ceil(-2), receive_ceil(-1.9), receive_ceil(-2.0), receive_ceil(-3), receive_ceil(:x)])
+end

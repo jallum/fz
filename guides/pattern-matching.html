@@ -160,7 +160,8 @@ helpers, and the Kernel guard functions (<code>is_integer</code>,
 <code>is_atom</code>, <code>is_float</code>, <code>is_boolean</code>,
 <code>is_nil</code>, <code>is_tuple</code>, <code>map_size</code>,
 <code>tuple_size</code>, <code>byte_size</code>, <code>length</code>,
-<code>elem</code>). No allocations, and no other function calls. A guard
+<code>elem</code>, <code>hd</code>, <code>tl</code>, <code>abs</code>,
+<code>round</code>, <code>trunc</code>, <code>floor</code>, <code>ceil</code>). No allocations, and no other function calls. A guard
 function that is given a value outside its domain makes the guard false,
 where the same call in a body raises. The same holds for arithmetic:
 <code>n + 1 &gt; 0</code> at the largest integer, <code>rem(n, 0) == 1</code>

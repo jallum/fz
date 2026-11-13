@@ -467,8 +467,16 @@ nothing, or an extern that aborts, makes the whole guard false however deeply it
 was called, so `not (map_size(x) == 0)` is false for a non-map. `and` and `or`
 evaluate their right side only when the left leaves it open, in all three
 evaluators. The Kernel functions a guard may call this way are `map_size/1`,
-`tuple_size/1`, `elem/2`, `length/1`, `byte_size/1` and the `is_*` type tests;
-`is_tuple/1` is a typed-head helper over `tuple`, like the other type tests.
+`tuple_size/1`, `elem/2`, `length/1`, `byte_size/1`, `hd/1`, `tl/1`, `abs/1`,
+`round/1`, `trunc/1`, `floor/1`, `ceil/1` and the `is_*` type tests; `is_tuple/1`
+is a typed-head helper over `tuple`, like the other type tests. `abs/1` and the
+float-to-integer conversions are typed heads over `Checked` externs
+(`fz_op_abs_i`, `fz_op_round_f` and its siblings), so a result outside the
+64-bit range fails the guard; their last clause raises `ArgumentError`, which is
+the guard's failure for a non-number. `hd/1` and `tl/1` test the cell with
+`fz_list_is_cons` in a clause guard and read it with `fz_list_head_ref` and
+`fz_list_tail_ref`; a cons pattern in a helper head is not used there because
+native entry-guard lowering does not carry one.
 Unsupported guard expressions (a list or tuple literal, say) are still refused as
 not dispatch-pure.
 

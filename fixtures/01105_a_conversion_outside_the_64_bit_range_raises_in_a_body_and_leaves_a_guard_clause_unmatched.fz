@@ -1,0 +1,39 @@
+#---
+# purpose: "abs of the minimum integer and a float conversion outside the 64-bit range raise ArithmeticError in a body and leave the clause unmatched in a guard"
+#---
+#
+# fz integers are 64 bits, so these answers are bignums in Elixir and an error
+# here; the fixture has no oracle. In a guard a failure is the clause not
+# matching: `:a` means the guard held and `:b` means it did not.
+
+def refused(f) do
+  try do
+    f.()
+  rescue
+    e in ArithmeticError -> e.message
+  end
+end
+
+def entry_trunc(n) when trunc(n) > 0, do: :a
+def entry_trunc(_), do: :b
+
+def entry_abs(n) when abs(n) >= 0, do: :a
+def entry_abs(_), do: :b
+
+def receive_floor(m) do
+  send(self(), m)
+  receive do
+    n when floor(n) < 0 -> :a
+    _ -> :b
+  end
+end
+
+def main() do
+  dbg(refused(fn -> abs(-9223372036854775807 - 1) end))
+  dbg(refused(fn -> round(JSON.decode!("1.0e19")) end))
+  dbg(refused(fn -> trunc(JSON.decode!("-1.0e19")) end))
+  dbg(refused(fn -> floor(JSON.decode!("9.3e18")) end))
+  dbg(refused(fn -> ceil(JSON.decode!("1.0e300")) end))
+  dbg([entry_trunc(1.0e19), entry_trunc(1.5), entry_abs(-9223372036854775807 - 1), entry_abs(-5)])
+  dbg([receive_floor(-1.0e19), receive_floor(-1.5)])
+end

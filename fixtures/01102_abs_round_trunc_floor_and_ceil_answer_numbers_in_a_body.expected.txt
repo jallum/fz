@@ -1,0 +1,12 @@
+[3, 3, 2.5, 0.0, 0.0, 9223372036854775807]
+[3, -3, 1, -1, 2, -3, 0, 7]
+[2, -2, 0, 0, 0, 7]
+[2, -3, 0, 2, -3, 7]
+[3, -2, 0, 2, -3, 7]
+[-9223372036854775808, -9223372036854775808]
+[9223372036854774784, 9223372036854774784]
+"errors were found at the given arguments:\n\n  * 1st argument: not a number\n"
+"errors were found at the given arguments:\n\n  * 1st argument: not a number\n"
+"errors were found at the given arguments:\n\n  * 1st argument: not a number\n"
+"errors were found at the given arguments:\n\n  * 1st argument: not a number\n"
+"errors were found at the given arguments:\n\n  * 1st argument: not a number\n"

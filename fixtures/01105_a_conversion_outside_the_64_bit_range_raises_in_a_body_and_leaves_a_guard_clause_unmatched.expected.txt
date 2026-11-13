@@ -1,0 +1,7 @@
+"bad argument in arithmetic expression"
+"bad argument in arithmetic expression"
+"bad argument in arithmetic expression"
+"bad argument in arithmetic expression"
+"bad argument in arithmetic expression"
+[:b, :a, :b, :a]
+[:b, :a]
