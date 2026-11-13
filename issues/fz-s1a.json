@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T04:49:50Z",
+  "description": "Finding the layout of one transport position scans every position of the executable. Two functions do the same linear scan over the same Vec\u003c(TransportPosition, TransportLayout)\u003e: MaterializedExecutableTransport::layout_at (src/compiler2/artifact.rs:160) and ArtifactTransportLookup::layout_at (src/compiler2/jobs/artifact.rs:471). Callers ask once per position (backend_entry_captures asks once per capture of every entry), so an executable with P positions costs P squared comparisons, each comparing an ExecutableSymbol.\n\nWhere it bites: a straight line of N calls has N continuation entries capturing up to N values each, so P is about N squared over 2 and the cost grows as N to the fourth (GH #296, and the fourth-power growth measured on nested pair chains in GH #297's comments).\n\nMeasured on develop d5071ecf5, debug opt-level 1, def make(n), do: {n + 0, ..., n + (N-1)} with PRODUCT_DRIVE_BUDGET raised so the program compiles: fz2 interp N=300 3.8 s, N=500 27.6 s, N=1000 250 s. A sample at N=500 has 2101 of 2151 samples in MaterializedExecutableTransport::layout_at. Spike (a hash index behind that one function): N=300 0.63 s, N=500 2.27 s, N=1000 8.28 s; the next top frame is then ArtifactTransportLookup::layout_at.\n\nOne concept: the positions-to-layouts relation is one keyed structure with one lookup, built once where the layouts are read; both scanning functions and the ArtifactTransportLookup wrapper go. TransportPosition already derives Hash and Eq. Whatever needs the positions in semantic order (canon, the per-kind position lists) keeps reading an ordered view; do not add a second copy of the data to serve both.\n\nThis does not make GH #296's program compile: the N squared over 2 product count still passes the fixed 50,000-step drive budget at N=308. That is a separate decision.\n\nFails before, passes after: a test at the unit level that observes lookups do not visit other positions (a count, or a structural test that no scan exists), and a timing-free work pin if an existing census covers it. A/B the three sizes above with the budget raised locally (not committed) and report the times.\n\nAcceptance: full gate green; canon output and every pin unchanged; no pin rises.",
+  "id": "fz-s1a",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "A transport position's layout is found without scanning every position",
+  "type": "bug",
+  "updated_at": "2026-11-13T04:49:50Z"
+}
