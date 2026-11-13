@@ -19,6 +19,7 @@ mod sigs;
 
 use crate::fast_hash::RandomState;
 use crate::fast_hash::{HashMap, HashSet};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::BuildHasher;
@@ -1547,11 +1548,14 @@ impl Types {
         if let Some(elem) = sole_list_element(self.descr(a)) {
             return elem;
         }
-        let d = {
+        let projected = {
             let cx = self.ctx();
             list_element_type(cx, cx.descr(a))
         };
-        self.intern(d)
+        match projected {
+            Some(d) => self.intern(d),
+            None => self.any(),
+        }
     }
 
     pub fn has_list_shape(&self, a: &Ty) -> bool {
@@ -1559,6 +1563,9 @@ impl Types {
     }
 
     pub fn resource_payload_type(&mut self, a: &Ty) -> Option<Ty> {
+        if self.descr(a).resources.iter().any(resource_clause_unconstrained) {
+            return Some(self.any());
+        }
         let d = {
             let cx = self.ctx();
             resource_payload_type(cx, cx.descr(a))?
@@ -1578,6 +1585,9 @@ impl Types {
     }
 
     pub fn tuple_field_type(&mut self, a: &Ty, index: usize) -> Ty {
+        if tuple_axis_unconstrained(self.descr(a)) {
+            return self.any();
+        }
         let d = {
             let cx = self.ctx();
             tuple_field_type(cx, cx.descr(a), index)
@@ -3746,9 +3756,19 @@ fn sole_tuple_elems(d: &Descr, arity: usize) -> Option<Vec<Ty>> {
     (sig.elems.len() == arity).then(|| sig.elems.clone())
 }
 
-fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Descr {
+/// The meet of descriptors read where they live: the one descriptor itself
+/// when there is a single one, an owned meet only when several are folded.
+/// `None` when there are no descriptors, which is no constraint at all.
+fn meet_of<'a>(mut descrs: impl Iterator<Item = &'a Descr>) -> Option<Cow<'a, Descr>> {
+    let first = descrs.next()?;
+    Some(descrs.fold(Cow::Borrowed(first), |met, d| Cow::Owned(met.intersect(d))))
+}
+
+/// The element type of a descriptor's list axis, or `None` when it has no list
+/// axis and the projection is every value.
+fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Option<Descr> {
     if d.lists.is_empty() {
-        return Descr::any();
+        return None;
     }
     let mut elem = Descr::none();
     for conj in &d.lists {
@@ -3757,19 +3777,23 @@ fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Descr {
         if conj.pos.iter().any(|sig| sig.elem.is_none()) {
             continue;
         }
-        let mut clause_elem: Option<Descr> = None;
-        for sig in &conj.pos {
-            let sig_elem = cx.descr(&sig.elem.expect("empty-list sigs were skipped above"));
-            clause_elem = Some(match clause_elem {
-                None => sig_elem.clone(),
-                Some(prev) => prev.intersect(sig_elem),
-            });
-        }
+        let clause_elem = meet_of(
+            conj.pos
+                .iter()
+                .map(|sig| cx.descr(&sig.elem.expect("empty-list sigs were skipped above"))),
+        );
         // No positive constraint at all (`Conj::top()`, as in `any`'s list
         // fragment) leaves the element unconstrained: `any`, never `none`.
-        elem = elem.union(cx, &clause_elem.unwrap_or_else(Descr::any));
+        let clause_elem = clause_elem.unwrap_or_else(|| Cow::Owned(Descr::any()));
+        elem = elem.union(cx, &clause_elem);
     }
-    elem
+    Some(elem)
+}
+
+/// Whether a resource clause constrains no payload: it has no positive
+/// resource, or it subtracts one.
+fn resource_clause_unconstrained(conj: &Conj<ResourceSig>) -> bool {
+    !conj.neg.is_empty() || conj.pos.is_empty()
 }
 
 fn resource_payload_type(cx: TyCtx<'_>, d: &Descr) -> Option<Descr> {
@@ -3778,41 +3802,38 @@ fn resource_payload_type(cx: TyCtx<'_>, d: &Descr) -> Option<Descr> {
     }
     let mut acc = Descr::none();
     for conj in &d.resources {
-        if !conj.neg.is_empty() || conj.pos.is_empty() {
+        if resource_clause_unconstrained(conj) {
             return Some(Descr::any());
         }
-        let mut payload: Option<Descr> = None;
-        for sig in &conj.pos {
-            let sig_payload = cx.descr(&sig.payload);
-            payload = Some(match payload {
-                Some(prev) => prev.intersect(sig_payload),
-                None => sig_payload.clone(),
-            });
-        }
-        acc = acc.union(cx, &payload.unwrap_or_else(Descr::any));
+        let payload = meet_of(conj.pos.iter().map(|sig| cx.descr(&sig.payload)))
+            .expect("a constrained resource clause has a positive");
+        acc = acc.union(cx, &payload);
     }
     Some(acc)
+}
+
+/// The coordinates of one tuple clause: the meet of its positive signatures of
+/// this arity, each coordinate read where it lives when one signature decides
+/// it. `None` when no positive has this arity.
+fn clause_coordinates<'a>(cx: TyCtx<'a>, sigs: impl Iterator<Item = &'a TupleSig>) -> Option<Vec<Cow<'a, Descr>>> {
+    sigs.fold(None, |coords: Option<Vec<Cow<'a, Descr>>>, sig| {
+        Some(match coords {
+            None => sig.elems.iter().map(|t| Cow::Borrowed(cx.descr(t))).collect(),
+            Some(prev) => prev
+                .iter()
+                .zip(&sig.elems)
+                .map(|(p, s)| Cow::Owned(p.intersect(cx.descr(s))))
+                .collect(),
+        })
+    })
 }
 
 fn tuple_projections(cx: TyCtx<'_>, d: &Descr, arity: usize) -> Vec<Descr> {
     let mut comps = vec![Descr::none(); arity];
     let mut found = false;
     for conj in &d.tuples {
-        let mut clause_comps: Option<Vec<Descr>> = None;
-        for sig in &conj.pos {
-            if sig.elems.len() != arity {
-                continue;
-            }
-            clause_comps = Some(match clause_comps {
-                None => sig.elems.iter().map(|t| cx.descr(t).clone()).collect(),
-                Some(prev) => prev
-                    .iter()
-                    .zip(sig.elems.iter())
-                    .map(|(p, s)| p.intersect(cx.descr(s)))
-                    .collect(),
-            });
-        }
-        if let Some(cs) = clause_comps {
+        let sigs = conj.pos.iter().filter(|sig| sig.elems.len() == arity);
+        if let Some(cs) = clause_coordinates(cx, sigs) {
             for i in 0..arity {
                 comps[i] = comps[i].union(cx, &cs[i]);
             }
@@ -3822,36 +3843,26 @@ fn tuple_projections(cx: TyCtx<'_>, d: &Descr, arity: usize) -> Vec<Descr> {
     if found { comps } else { vec![Descr::any(); arity] }
 }
 
+/// Whether some tuple clause has no positive signature, so every tuple lies
+/// in it and any field of a tuple is unconstrained.
+fn tuple_axis_unconstrained(d: &Descr) -> bool {
+    d.tuples.iter().any(|conj| conj.pos.is_empty())
+}
+
 fn tuple_field_type(cx: TyCtx<'_>, d: &Descr, index: usize) -> Descr {
+    if tuple_axis_unconstrained(d) {
+        return Descr::any();
+    }
     let mut out = Descr::none();
     let mut found = false;
     for conj in &d.tuples {
-        if conj.pos.is_empty() {
-            return Descr::any();
-        }
-
-        let mut arity = None;
-        let mut clause_fields: Option<Vec<Descr>> = None;
-        let mut feasible = true;
-        for sig in &conj.pos {
-            if index >= sig.elems.len() || arity.is_some_and(|arity| arity != sig.elems.len()) {
-                feasible = false;
-                break;
-            }
-            arity = Some(sig.elems.len());
-            clause_fields = Some(match clause_fields {
-                None => sig.elems.iter().map(|t| cx.descr(t).clone()).collect(),
-                Some(prev) => prev
-                    .iter()
-                    .zip(sig.elems.iter())
-                    .map(|(p, s)| p.intersect(cx.descr(s)))
-                    .collect(),
-            });
-        }
-        let Some(fields) = clause_fields else {
+        let arity = conj.pos[0].elems.len();
+        let feasible = arity > index && conj.pos.iter().all(|sig| sig.elems.len() == arity);
+        if !feasible {
             continue;
-        };
-        if !feasible || fields.iter().any(|field| field.is_empty(cx)) {
+        }
+        let fields = clause_coordinates(cx, conj.pos.iter()).expect("a tuple clause here has a positive");
+        if fields.iter().any(|field| field.is_empty(cx)) {
             continue;
         }
         out = out.union(cx, &fields[index]);
@@ -5140,3 +5151,7 @@ fn map_recursive_inputs_with(t: &mut Types, mut d: Descr, f: &mut impl FnMut(&mu
 
 #[cfg(test)]
 mod types_test;
+
+#[cfg(test)]
+#[path = "projection_test.rs"]
+mod projection_test;
