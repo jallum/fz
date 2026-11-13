@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T02:47:11Z",
   "created": "2026-11-13T02:09:54Z",
   "description": "Since arithmetic operators became Kernel calls, no program lowers + - * / rem as a binary op. direct_operator_name (src/compiler2/jobs/body.rs) routes Add, Sub, Mul, Div and Rem to Kernel functions in bodies; fz-rs7.4 did the same for guards (PatternGuardBinOp lost Add..Rem); lowered_binop_ty (jobs/semantic.rs) panics if one is lowered as a binary op. The code that lowers and runs them is reachable only from tests that construct the nodes by hand (for example fz_ir_test).\n\nCandidates, to be confirmed by renaming each with a leading underscore and letting cargo check list dependents:\n- IrBinOp::Add, Sub, Mul, Div, Mod and the Add..Rem arms of lower_binop (jobs/native.rs)\n- lower_arith_binop, try_typed_binop_fast_path, emit_float_rem (native_codegen/prim.rs); the doc comment above lower_neg in prim.rs describes try_typed_binop_fast_path and goes with it\n- as_known_numeric_f64 (native_codegen/value.rs) if nothing else reads it\n- the interpreter's int_arith arms\n- the tests that only construct those nodes\n\nComparison operators stay: guards still lower Eq, Neq, Lt, Le, Gt, Ge through lower_guard_binop.\n\nBefore deleting, prove unreachability with telemetry or a census rather than by reading: the full fixture matrix and guard matrix run with the arithmetic arms replaced by a loud panic and stay green.\n\nDone when grep finds no arithmetic IrBinOp variant and no function that existed only to lower one.\n\nAcceptance: full gate green; no pin rises.",
   "id": "fz-rs7.10",
   "labels": [],
   "parent": "fz-rs7",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The arithmetic binary-op lowering that no program reaches is deleted",
   "type": "task",
-  "updated_at": "2026-11-13T02:09:54Z"
+  "updated_at": "2026-11-13T02:47:11Z"
 }
