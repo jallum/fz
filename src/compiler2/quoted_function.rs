@@ -1820,18 +1820,19 @@ fn quoted_type_expr_body(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Re
 
 /// The name a `@spec name(...)` form opens with: an identifier or an operator
 /// token, followed by `(`.
-fn spec_prefix_name(parser: &FragmentCursor) -> Option<String> {
+fn spec_prefix_name(parser: &FragmentCursor<'_>) -> Option<String> {
     if !matches!(parser.peek_at(1), Some(Tok::LParen)) {
         return None;
     }
     match parser.peek() {
-        Tok::Ident(name) => Some(name),
-        tok => operator_token_name(&tok).map(str::to_string),
+        Tok::Ident(name) => Some(name.clone()),
+        tok => operator_token_name(tok).map(str::to_string),
     }
 }
 
 fn decode_spec_attribute(payload: &QuotedSourceCursor, sources: &SourceMap) -> Result<Attribute, QuotedSourceError> {
-    let mut parser = FragmentCursor::new(token_payload::decode_tokens(payload, sources)?);
+    let tokens = token_payload::decode_tokens(payload, sources)?;
+    let mut parser = FragmentCursor::new(&tokens);
     let (name, param_body_tokens) = if let Some(name) = spec_prefix_name(&parser) {
         parser.bump();
         parser.expect_lparen("`(` after @spec name")?;
@@ -1868,7 +1869,7 @@ fn decode_spec_attribute(payload: &QuotedSourceCursor, sources: &SourceMap) -> R
         let op_span = parser.current_span();
         let name = parser
             .bump()
-            .and_then(|tok| operator_token_name(&tok).map(str::to_string))
+            .and_then(|tok| operator_token_name(tok).map(str::to_string))
             .ok_or_else(|| {
                 QuotedSourceError::user(
                     crate::diag::codes::PARSE_EXPECTED_TOKEN,
@@ -1904,8 +1905,8 @@ fn decode_spec_attribute(payload: &QuotedSourceCursor, sources: &SourceMap) -> R
         loop {
             let var_span = parser.current_span();
             let (var, kw_colon) = match parser.bump() {
-                Some(Tok::Ident(name)) => (name, false),
-                Some(Tok::KwKey(name)) => (name, true),
+                Some(Tok::Ident(name)) => (name.clone(), false),
+                Some(Tok::KwKey(name)) => (name.clone(), true),
                 Some(other) => {
                     return Err(QuotedSourceError::user(
                         crate::diag::codes::PARSE_EXPECTED_TOKEN,
@@ -2162,13 +2163,13 @@ impl TypeTokenBoundary {
     }
 }
 
-struct FragmentCursor {
-    toks: Vec<Token>,
+struct FragmentCursor<'t> {
+    toks: &'t [Token],
     pos: usize,
 }
 
-impl FragmentCursor {
-    fn new(toks: Vec<Token>) -> Self {
+impl<'t> FragmentCursor<'t> {
+    fn new(toks: &'t [Token]) -> Self {
         Self { toks, pos: 0 }
     }
 
@@ -2183,16 +2184,16 @@ impl FragmentCursor {
             .unwrap_or(Span::DUMMY)
     }
 
-    fn peek(&self) -> Tok {
-        self.peek_at(0).cloned().unwrap_or(Tok::Eof)
+    fn peek(&self) -> &'t Tok {
+        self.peek_at(0).unwrap_or(&Tok::Eof)
     }
 
-    fn peek_at(&self, off: usize) -> Option<&Tok> {
+    fn peek_at(&self, off: usize) -> Option<&'t Tok> {
         self.toks.get(self.pos + off).map(|token| &token.tok)
     }
 
-    fn bump(&mut self) -> Option<Tok> {
-        let tok = self.toks.get(self.pos).map(|token| token.tok.clone());
+    fn bump(&mut self) -> Option<&'t Tok> {
+        let tok = self.peek_at(0);
         if tok.is_some() {
             self.pos += 1;
         }
@@ -2240,21 +2241,20 @@ impl FragmentCursor {
     }
 
     fn collect_type_tokens(&mut self, boundary: TypeTokenBoundary) -> Vec<Token> {
-        let mut out = Vec::new();
+        let start = self.pos;
         let mut depth = 0_i32;
-        while let Some(token) = self.toks.get(self.pos).cloned() {
-            if boundary.stops_before(&token.tok, depth) {
+        while let Some(tok) = self.peek_at(0) {
+            if boundary.stops_before(tok, depth) {
                 break;
             }
-            match token.tok {
+            match tok {
                 Tok::LParen | Tok::LBrack | Tok::LBrace => depth += 1,
                 Tok::RParen | Tok::RBrack | Tok::RBrace => depth -= 1,
                 _ => {}
             }
             self.pos += 1;
-            out.push(token);
         }
-        out
+        self.toks[start..self.pos].to_vec()
     }
 
     fn eat(&mut self, pred: impl FnOnce(&Tok) -> bool) -> bool {
@@ -2269,7 +2269,7 @@ impl FragmentCursor {
     fn expect(&mut self, pred: impl FnOnce(&Tok) -> bool, label: &str) -> Result<(), QuotedSourceError> {
         let span = self.current_span();
         match self.bump() {
-            Some(tok) if pred(&tok) => Ok(()),
+            Some(tok) if pred(tok) => Ok(()),
             Some(other) => Err(QuotedSourceError::user(
                 crate::diag::codes::PARSE_EXPECTED_TOKEN,
                 Some(span),
