@@ -13,7 +13,7 @@ use crate::telemetry::{ConfiguredTelemetry, JsonlBackend};
 
 use super::super::artifact::{
     CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, MaterializedCallEdge, MaterializedExecutable,
-    MaterializedExecutableTransport,
+    MaterializedExecutableTransport, TransportLayouts,
 };
 use super::super::body::{ControlEntryId, ControlEntryOrigin, LoweredClause, LoweredEntry, LoweredStep, LoweredTail};
 use super::super::facts::FactReadiness;
@@ -2257,7 +2257,7 @@ fn fake_effect_materialized(
         runtime_demand: Rc::new(ExecutableRuntimeDemand::default()),
         transport: MaterializedExecutableTransport {
             executable: executable.clone(),
-            position_layouts: Vec::new(),
+            position_layouts: TransportLayouts::default(),
             input_positions: Vec::new(),
             return_position,
             resume_positions: Vec::new(),
