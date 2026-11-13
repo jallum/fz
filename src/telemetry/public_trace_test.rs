@@ -1520,10 +1520,13 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // 00420 cold 629 -> 661. `dbg` is `IO.inspect`, whose
                 // cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`,
                 // `Binary.to_string`, `raise`, `==`) is walked.
+                // Executable facts are a pure function of their declared
+                // reads, so a reached leaf edit re-derives nothing it did not
+                // change and walks exactly the edited body.
                 // An activation key names only the literals a use can tell
                 // apart: 00567 cold 186 -> 182, 00571 cold 531 -> 515 and
                 // 00420 cold 661 -> 652.
-                [[178, 0, 0, 9, 4], [508, 0, 0, 64, 4], [648, 0, 0, 69, 4]][fixture_index][scenario],
+                [[178, 0, 0, 1, 4], [508, 0, 0, 1, 4], [648, 0, 0, 1, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
