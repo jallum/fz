@@ -80,7 +80,7 @@ defmodule FileResourceLifecycle do
 end
 
 def main() do
-  path = "/tmp/fz-file-resource-lifecycle"
+  path = "fz-file-resource-lifecycle"
   fd = libc::creat(path, 0o644)
   dbg(:opened)
   _h = FileResourceLifecycle.wrap_fd(fd)
