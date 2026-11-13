@@ -1,6 +1,7 @@
 #---
 # purpose: "an after block runs when the body raises, then the raise continues unchanged to the enclosing rescue"
 # oracle: 00833_an_after_runs_on_a_raise_and_the_outer_rescue_sees_the_original.oracle.exs
+# oracle.stamp: 6232c4f346327aea
 #---
 def main() do
   result = try do

@@ -1,6 +1,7 @@
 #---
 # purpose: "a literal prefix before <> in a case clause matches a binary that starts with it and binds the remainder, with a guard, nested in a tuple, or against a non-binary subject, as in Elixir"
 # oracle: 00662_a_prefix_in_a_case_clause_binds_the_rest.oracle.exs
+# oracle.stamp: eb6b1949312df9e4
 #---
 def option(s) do
   case s do

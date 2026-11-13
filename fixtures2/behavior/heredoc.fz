@@ -1,6 +1,7 @@
 #---
 # purpose: "heredoc strings, checked against Elixir"
 # oracle: oracle.exs
+# oracle.stamp: 40c8380b3fa191b5
 #---
 #
 # # heredoc

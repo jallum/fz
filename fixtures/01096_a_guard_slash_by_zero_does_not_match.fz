@@ -1,6 +1,7 @@
 #---
 # purpose: "a guard that divides by zero with / does not match its clause, in an entry guard and in a receive guard, and a division by a nonzero divisor still decides"
 # oracle: oracle.exs
+# oracle.stamp: b171daac4ee108b3
 #---
 #
 # `/` always answers a float. By zero it fails, and in a guard a failure is the

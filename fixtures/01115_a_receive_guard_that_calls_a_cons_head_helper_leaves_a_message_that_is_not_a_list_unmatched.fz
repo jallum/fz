@@ -1,6 +1,7 @@
 #---
 # purpose: "A receive guard that calls a helper whose only clause is a cons pattern takes a list with a matching head and leaves any other message unmatched, as Elixir's hd/1 does in a guard"
 # oracle: oracle.exs
+# oracle.stamp: 6eb24faf408c9713
 #---
 #
 # The atom `:no` and the empty list have no head, so the guard fails for them

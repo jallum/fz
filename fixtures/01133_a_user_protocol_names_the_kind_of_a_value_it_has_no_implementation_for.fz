@@ -1,6 +1,7 @@
 #---
 # purpose: "A user protocol with one implementation, called with a receiver that may be any of several kinds, raises Protocol.UndefinedError for each kind it does not take; the message names the kind, a struct by its module, and shows the value"
 # oracle: 01133_a_user_protocol_names_the_kind_of_a_value_it_has_no_implementation_for.oracle.exs
+# oracle.stamp: 5acbb206e4ddb504
 #---
 defprotocol Sizer do
   def size(value)

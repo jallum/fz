@@ -2,6 +2,7 @@
 # purpose: "= against a tuple of another size raises MatchError showing the value"
 # expect: abort
 # oracle: 00710_a_tuple_match_of_the_wrong_size_raises_match_error.oracle.exs
+# oracle.stamp: 57916d1f8e4d65a8
 #---
 defp pair(), do: {1, 2}
 

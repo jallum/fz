@@ -1,6 +1,7 @@
 #---
 # purpose: "catch :throw, value is the two-head spelling of the one-head catch, and a throw from a called function reaches it"
 # oracle: 00842_a_two_head_catch_names_the_throw_kind.oracle.exs
+# oracle.stamp: 210d87a98cd57520
 #---
 def find(items) do
   case items do

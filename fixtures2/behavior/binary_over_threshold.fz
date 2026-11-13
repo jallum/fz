@@ -1,6 +1,7 @@
 #---
 # purpose: "a binary matches a bitstring pattern the same way whichever storage it is held in"
 # oracle: oracle.exs
+# oracle.stamp: 6cc7907a63366630
 #---
 #
 # # binary_over_threshold

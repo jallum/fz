@@ -1,6 +1,7 @@
 #---
 # purpose: "map and filter keep working when the function they are given arrived through the mailbox"
 # oracle: oracle.exs
+# oracle.stamp: 3a93b8863246239d
 #---
 #
 # fz-kdt.152's companions. These two higher-order calls reach the mailbox

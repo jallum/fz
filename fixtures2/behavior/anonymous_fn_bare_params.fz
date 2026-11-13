@@ -1,6 +1,7 @@
 #---
 # purpose: "anonymous fn clause heads accept Elixir's bare parameter-list forms"
 # oracle: oracle.exs
+# oracle.stamp: e363c9815422657f
 #---
 def main() do
   needle = 7

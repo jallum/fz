@@ -1,6 +1,7 @@
 #---
 # purpose: "inspect/2 limit: shows that many keyword entries, a key costing nothing beyond its entry"
 # oracle: 01019_inspect_limit_counts_keyword_entries.oracle.exs
+# oracle.stamp: 7750371b545942cf
 #---
 def main() do
   dbg(inspect([a: 1, b: 2, c: 3], limit: 2))

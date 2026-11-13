@@ -1,6 +1,7 @@
 #---
 # purpose: "p.__struct__ answers the struct's module atom, with the base type known or through an any-typed parameter, and equals the alias"
 # oracle: oracle.exs
+# oracle.stamp: 4a454e4014db38a1
 #---
 #
 # A struct's module is a value: the same atom the alias spells in value

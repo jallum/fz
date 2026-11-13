@@ -1,6 +1,7 @@
 #---
 # purpose: "A type-test guard on a value inside a tuple, list, struct or case arm answers as Elixir does"
 # oracle: oracle.exs
+# oracle.stamp: b74e25b860ee3b06
 #---
 #
 # `is_integer(a)` over a name a pattern binds is a type question on that

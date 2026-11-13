@@ -1,6 +1,7 @@
 #---
 # purpose: "a non-tail recursion whose return type is a nesting ladder: {n, {n, ... :start}}"
 # oracle: oracle.exs
+# oracle.stamp: 6bd02e64358168b2
 #---
 #
 # The program itself is ordinary and correct on every door. What it pins is the

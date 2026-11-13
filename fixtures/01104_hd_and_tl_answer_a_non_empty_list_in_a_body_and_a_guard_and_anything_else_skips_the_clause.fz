@@ -1,6 +1,7 @@
 #---
 # purpose: "hd and tl answer the head and the tail of a non-empty list in a body, raising ArgumentError on an empty list or a non-list, and in a function-head guard and a receive guard the same failure leaves the clause unmatched"
 # oracle: oracle.exs
+# oracle.stamp: d6bbfb1fc921f03b
 #---
 #
 # In a guard a failure is the clause not

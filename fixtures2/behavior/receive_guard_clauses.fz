@@ -1,6 +1,7 @@
 #---
 # purpose: "a guard on a receive clause selects the message on every door"
 # oracle: oracle.exs
+# oracle.stamp: ba9c4dad56015d9b
 #---
 #
 # # receive_guard_clauses

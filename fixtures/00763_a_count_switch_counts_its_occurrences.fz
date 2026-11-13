@@ -1,6 +1,7 @@
 #---
 # purpose: "OptionParser.parse/2 counts the occurrences of a :count switch, takes no value from the next token, and refuses =value"
 # oracle: 00763_a_count_switch_counts_its_occurrences.oracle.exs
+# oracle.stamp: 73ff9ef25d9718c3
 # args: -v -v --verbose f
 #---
 def main() do

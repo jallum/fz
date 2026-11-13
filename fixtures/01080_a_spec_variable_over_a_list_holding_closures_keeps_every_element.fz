@@ -2,6 +2,7 @@
 # purpose: "A @spec with a type variable over a list of closures answers for every element, not only the first"
 # kind: run
 # oracle: 01080_a_spec_variable_over_a_list_holding_closures_keeps_every_element.oracle.exs
+# oracle.stamp: 1cdb72209fb168dc
 #---
 defmodule M do
   @spec count([a]) :: integer

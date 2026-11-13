@@ -2,6 +2,7 @@
 # purpose: "JSON.encode!/1 of a value outside JSON's domain aborts with Protocol.UndefinedError"
 # expect: abort
 # oracle: json_encode_unsupported_value.oracle.exs
+# oracle.stamp: abd6376cdb574d7f
 #---
 def main() do
   JSON.encode!({:not_json})

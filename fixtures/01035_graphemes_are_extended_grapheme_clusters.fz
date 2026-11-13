@@ -1,6 +1,7 @@
 #---
 # purpose: "String.graphemes keeps a combining accent, a joined family, a flag, a Hangul syllable and a conjunct whole"
 # oracle: 01035_graphemes_are_extended_grapheme_clusters.oracle.exs
+# oracle.stamp: d919a70638b2176e
 #---
 def main() do
   strings = ["abc", "é", "\r\n", "éx", "👨‍👩‍👧x", "🇫🇷🇫", "각x", "क्षx", "x́̂y"]

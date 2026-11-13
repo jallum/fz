@@ -2,5 +2,6 @@
 # purpose: "elem/2 with an index outside the tuple aborts with ArgumentError and Elixir's message"
 # expect: abort
 # oracle: 00619_elem_outside_a_tuple_aborts.oracle.exs
+# oracle.stamp: a086cc668cdcd8f9
 #---
 def main(), do: elem({1}, 9)

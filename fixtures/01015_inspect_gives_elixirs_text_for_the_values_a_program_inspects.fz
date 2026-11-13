@@ -1,6 +1,7 @@
 #---
 # purpose: "inspect/1 prints integers, floats, strings, nil, booleans, lists, string-keyed maps, tuples and nesting exactly as Elixir does"
 # oracle: 01015_inspect_gives_elixirs_text_for_the_values_a_program_inspects.oracle.exs
+# oracle.stamp: 64d3589bc31871aa
 #---
 def main() do
   dbg(inspect(1))

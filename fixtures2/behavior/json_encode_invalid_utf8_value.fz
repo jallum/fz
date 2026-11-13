@@ -2,6 +2,7 @@
 # purpose: "JSON.encode!/1 of an invalid UTF-8 string value aborts with Elixir's ErlangError"
 # expect: abort
 # oracle: json_encode_invalid_utf8_value.oracle.exs
+# oracle.stamp: 6a21d3c5a503a330
 #---
 def main() do
   JSON.encode!(<<255>>)

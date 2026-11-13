@@ -1,6 +1,7 @@
 #---
 # purpose: "%{m | k: v} with no k in m raises KeyError with Elixir's message, for a map and a struct, even when the result is unused"
 # oracle: 00852_an_update_naming_a_missing_key_raises_key_error.oracle.exs
+# oracle.stamp: d8a8350b6104ac2f
 #---
 #
 # An update may only replace keys the map already has. The update itself

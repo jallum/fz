@@ -1,6 +1,7 @@
 #---
 # purpose: "a lambda named where it is used drives Enum.each through a grounded call, not the boxed seam"
 # oracle: oracle.exs
+# oracle.stamp: bb3dc7181f0151e3
 #---
 #
 # fz-kdt.155's control. The same `Enum.each/2` shape as

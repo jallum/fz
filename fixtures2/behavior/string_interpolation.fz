@@ -1,6 +1,7 @@
 #---
 # purpose: "`#{...}` in a string literal evaluates and is rendered, instead of being copied through verbatim"
 # oracle: oracle.exs
+# oracle.stamp: 9bb2db53f4130a4b
 #---
 #
 # # string_interpolation

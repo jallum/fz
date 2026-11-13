@@ -1,6 +1,7 @@
 #---
 # purpose: "OptionParser.parse/2 gives a :float switch the float its whole value spells, including exponents and integers, and lists a partial or malformed value as invalid"
 # oracle: 00764_a_float_switch_reads_a_whole_float.oracle.exs
+# oracle.stamp: 9ce1c9ee61ec987e
 # args: --ratio 2.5
 #---
 def main() do

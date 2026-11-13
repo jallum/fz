@@ -1,6 +1,7 @@
 #---
 # purpose: "apply(m, :f, [a, b]) is the call m.f(a, b): on a module written out, on a module held in a variable, on an atom made at run time, with no arguments, and with arguments evaluated left to right after the module; a miss raises as the call does"
 # oracle: 00870_apply_calls_the_function_of_a_module_with_a_list_of_arguments.oracle.exs
+# oracle.stamp: 764c2d0dbe51aa37
 #---
 #
 # The function is an atom and the arguments are a list, both written out, so

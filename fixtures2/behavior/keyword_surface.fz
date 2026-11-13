@@ -1,6 +1,7 @@
 #---
 # purpose: "the Keyword module over a list of {atom, value} pairs, with duplicates behaving as Elixir's do"
 # oracle: oracle.exs
+# oracle.stamp: 5ddb93743857303d
 #---
 #
 # # keyword_surface

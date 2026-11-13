@@ -1,6 +1,7 @@
 #---
 # purpose: "a receive for a later message leaves the older one in the mailbox for the next receive"
 # oracle: 00685_a_selective_receive_skips_an_older_message_that_does_not_match.oracle.exs
+# oracle.stamp: b6bdb8375fb1b368
 #---
 def main() do
   me = self()

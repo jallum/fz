@@ -2,5 +2,6 @@
 # purpose: "div/2 of a string and an integer aborts with ArithmeticError"
 # expect: abort
 # oracle: 00745_div_of_a_non_number_raises_arithmetic_error.oracle.exs
+# oracle.stamp: 7d019e00c1ebfbc8
 #---
 def main(), do: div(JSON.decode!("\"s\""), 2)

@@ -1,6 +1,7 @@
 #---
 # purpose: "Tuple.to_list returns a tuple's elements in order, nested tuples stay whole, and a non-tuple raises ArgumentError"
 # oracle: 01064_tuple_to_list_reads_every_element.oracle.exs
+# oracle.stamp: cb52336d67fcda1a
 #---
 def main() do
   dbg(Tuple.to_list({}))

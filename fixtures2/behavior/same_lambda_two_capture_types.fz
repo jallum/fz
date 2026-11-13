@@ -1,6 +1,7 @@
 #---
 # purpose: "one lambda closed over an int and over a float are two constructions, and the forwarder routes each to the body its captures were stored for"
 # oracle: oracle.exs
+# oracle.stamp: d9af732dc47ffb72
 #---
 #
 # fz-kdt.127. `P.run/2` forwards its callable, so its activation key erases the

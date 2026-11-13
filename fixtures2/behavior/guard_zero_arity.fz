@@ -1,6 +1,7 @@
 #---
 # purpose: "a zero-arity clause may carry a guard, and the guard decides it"
 # oracle: oracle.exs
+# oracle.stamp: 45ac6072e2fe7437
 #---
 #
 # # guard_zero_arity

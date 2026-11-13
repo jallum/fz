@@ -1,6 +1,7 @@
 #---
 # purpose: "a receive timeout computed at runtime waits and then yields the after value"
 # oracle: 00689_a_receive_after_timeout_can_be_computed.oracle.exs
+# oracle.stamp: 3e0925b2bf7b9fbc
 #---
 def wait_for(ms) do
   receive do

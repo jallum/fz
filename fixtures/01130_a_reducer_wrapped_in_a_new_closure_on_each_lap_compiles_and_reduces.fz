@@ -2,6 +2,7 @@
 # purpose: "A user enumerable whose reduce wraps the reducer in a new closure on each lap compiles, and reducing a decoded map with it prints what Elixir prints"
 # kind: run
 # oracle: 01130_a_reducer_wrapped_in_a_new_closure_on_each_lap_compiles_and_reduces.oracle.exs
+# oracle.stamp: 91325c9b8dac4bff
 #---
 defmodule W do
   defstruct [:enum]

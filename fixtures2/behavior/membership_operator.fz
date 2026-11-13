@@ -1,6 +1,7 @@
 #---
 # purpose: "membership operators desugar to Enum.member?/2 and match Elixir over List, Range, and Map"
 # oracle: oracle.exs
+# oracle.stamp: 085e3a9d792136ee
 #---
 #
 # Pins the Elixir-facing `in` / `not in` surface. The parser keeps these as

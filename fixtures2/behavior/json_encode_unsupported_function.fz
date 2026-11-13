@@ -2,6 +2,7 @@
 # purpose: "JSON.encode!/1 of a function aborts with Protocol.UndefinedError naming its kind"
 # expect: abort
 # oracle: json_encode_unsupported_function.oracle.exs
+# oracle.stamp: 8cfcbcd7ca2de27f
 #---
 def main() do
   JSON.encode!(fn () -> 1 end)

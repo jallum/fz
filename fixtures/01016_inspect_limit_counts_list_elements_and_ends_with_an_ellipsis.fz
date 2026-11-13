@@ -1,6 +1,7 @@
 #---
 # purpose: "inspect/2 limit: shows that many list elements and then ..., a nested list spending from the same budget"
 # oracle: 01016_inspect_limit_counts_list_elements_and_ends_with_an_ellipsis.oracle.exs
+# oracle.stamp: 5d969bbab01b8e22
 #---
 def main() do
   dbg(inspect([1, 2, 3, 4, 5], limit: 3))

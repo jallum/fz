@@ -1,6 +1,7 @@
 #---
 # purpose: "A struct and a tuple built from computed values hold each field as it was given, whatever its kind, and still do after the heap has been collected many times over"
 # oracle: oracle.exs
+# oracle.stamp: 37e45c2f94dd047a
 #---
 #
 # Each field is stored where the object was allocated, by the kind the

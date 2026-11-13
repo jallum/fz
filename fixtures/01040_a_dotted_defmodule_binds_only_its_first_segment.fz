@@ -1,6 +1,7 @@
 #---
 # purpose: A root `defmodule Geo.Pt` binds no short name, so `Pt` still means the root `Pt`; a nested `defmodule H.T` binds only `H`, so `H.T.me()` reaches it inside its parent.
 # oracle: 01040_a_dotted_defmodule_binds_only_its_first_segment.oracle.exs
+# oracle.stamp: a403777c4aedb5f5
 #---
 defmodule Pt do
   defstruct [:x, :y]

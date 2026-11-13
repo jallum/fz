@@ -1,6 +1,7 @@
 #---
 # purpose: "the String module: byte operations, codepoints and search, checked against Elixir"
 # oracle: oracle.exs
+# oracle.stamp: e76501b29f4242b4
 #---
 #
 # # string_surface

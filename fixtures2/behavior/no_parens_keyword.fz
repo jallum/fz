@@ -1,6 +1,7 @@
 #---
 # purpose: "trailing/leading keyword lists in no-parens calls parse into one list arg; output matches Elixir"
 # oracle: oracle.exs
+# oracle.stamp: b2c02a75c00d8bf6
 #---
 #
 # # no_parens_keyword

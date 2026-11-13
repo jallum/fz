@@ -1,6 +1,7 @@
 #---
 # purpose: "MapSet new/0, new/1, put/2, delete/2, member?/2, size/1: duplicates collapse, deleting an absent member changes nothing"
 # oracle: 01031_mapset_holds_each_member_once.oracle.exs
+# oracle.stamp: c541fae37d360e3e
 #---
 def sorted(set), do: Enum.sort(MapSet.to_list(set))
 

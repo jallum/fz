@@ -1,6 +1,7 @@
 #---
 # purpose: "A typed extern returns its value when the argument is an integer, whether the argument is proven at the call or arrives as any"
 # oracle: 01113_a_typed_extern_called_with_a_matching_any_or_a_proven_integer_returns_its_value.oracle.exs
+# oracle.stamp: d12b3646bd0abd29
 #---
 extern "C" defp fz_op_add_ii(integer, integer) :: integer,
   raises: ArithmeticError,

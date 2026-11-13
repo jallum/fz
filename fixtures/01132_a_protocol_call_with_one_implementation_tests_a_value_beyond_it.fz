@@ -1,6 +1,7 @@
 #---
 # purpose: "Enum.join over integers and a tuple, and over a binary and a tuple, tests each element against the one implementation that overlaps its type, so the tuple raises Protocol.UndefinedError naming Tuple instead of entering code compiled for integers or binaries"
 # oracle: 01132_a_protocol_call_with_one_implementation_tests_a_value_beyond_it.oracle.exs
+# oracle.stamp: 71c0c3b427227092
 #---
 def join_ints_and_a_tuple() do
   try do

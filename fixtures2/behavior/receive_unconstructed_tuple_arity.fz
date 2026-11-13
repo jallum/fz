@@ -1,6 +1,7 @@
 #---
 # purpose: "a receive clause may name a tuple arity the module never constructs"
 # oracle: oracle.exs
+# oracle.stamp: d22114c427874463
 #---
 #
 # # receive_unconstructed_tuple_arity

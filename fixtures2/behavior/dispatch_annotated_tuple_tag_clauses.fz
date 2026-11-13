@@ -1,6 +1,7 @@
 #---
 # purpose: "Clauses annotated with different tuple tags dispatch on the tag, not on the arity"
 # oracle: oracle.exs
+# oracle.stamp: de4548078359824a
 #---
 #
 # fz-kdt.119. Two clauses annotated `{:cont, integer}` and `{:halt, integer}`,

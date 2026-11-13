@@ -1,6 +1,7 @@
 #---
 # purpose: "Map.update/4 applies the function to a present key's value, puts the default for an absent key without calling the function, and tallies with Enum.reduce"
 # oracle: 01067_map_update_puts_a_default_or_applies_the_function.oracle.exs
+# oracle.stamp: e692cb8e7a18e85c
 #---
 def sorted(map), do: Enum.sort(Map.to_list(map))
 

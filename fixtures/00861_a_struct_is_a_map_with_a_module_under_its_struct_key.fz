@@ -1,6 +1,7 @@
 #---
 # purpose: "a struct is a map: is_map, map_size, a map pattern and the Map functions answer for a struct what they answer for the map holding its fields and its module under __struct__"
 # oracle: 00861_a_struct_is_a_map_with_a_module_under_its_struct_key.oracle.exs
+# oracle.stamp: 94d76a40f3d822fd
 #---
 #
 # A struct's keys are its fields and `__struct__`, whose value is the module.

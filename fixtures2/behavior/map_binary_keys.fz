@@ -1,6 +1,7 @@
 #---
 # purpose: "a map's key order agrees with its key equality, so equal binary keys collide and iteration is content-ordered"
 # oracle: oracle.exs
+# oracle.stamp: 8c83e9a7a0711e71
 #---
 #
 # # map_binary_keys

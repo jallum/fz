@@ -2,6 +2,7 @@
 # purpose: "an if both of whose branches raise never reaches its join: the raise prints its line and the process exits 1"
 # expect: abort
 # oracle: 00828_a_join_every_branch_of_which_raises_is_never_reached.oracle.exs
+# oracle.stamp: 4559b6ddf88d6971
 #---
 def pick(x) do
   v = if x > 0 do

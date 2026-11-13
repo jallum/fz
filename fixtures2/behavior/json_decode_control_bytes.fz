@@ -1,6 +1,7 @@
 #---
 # purpose: "JSON.decode/1 rejects every raw C0 control byte in string values and object keys while accepting escaped controls"
 # oracle: json_decode_control_bytes.oracle.exs
+# oracle.stamp: 2ea9e4c86819a47d
 #---
 def main() do
   raw_values(0)

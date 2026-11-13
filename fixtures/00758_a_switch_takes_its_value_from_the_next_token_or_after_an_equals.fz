@@ -1,6 +1,7 @@
 #---
 # purpose: "OptionParser.parse/2 gives a strict integer switch its value from the next token (--top 5) or after the first = (--top=5), and keeps the positionals around it in order"
 # oracle: 00758_a_switch_takes_its_value_from_the_next_token_or_after_an_equals.oracle.exs
+# oracle.stamp: 5a789342eec2ebae
 # args: --top 5 f
 #---
 def main() do

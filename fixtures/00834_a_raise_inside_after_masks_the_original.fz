@@ -1,6 +1,7 @@
 #---
 # purpose: "an exception raised by an after block replaces the one that was in flight"
 # oracle: 00834_a_raise_inside_after_masks_the_original.oracle.exs
+# oracle.stamp: 7ba3288c3d3148de
 #---
 def main() do
   result = try do

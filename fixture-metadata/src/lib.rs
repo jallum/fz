@@ -330,6 +330,39 @@ pub fn oracle_stamp(oracle_source: &[u8], golden: &[u8], args: &[String]) -> Str
     format!("{hash:016x}")
 }
 
+/// Returns `source` with its frontmatter recording `stamp`: any existing
+/// `oracle.stamp` line is dropped and the new one is written directly after the
+/// `oracle` line. Every byte outside the frontmatter is untouched.
+pub fn with_oracle_stamp(source: &str, stamp: &str) -> Result<String, FixtureMetadataError> {
+    let frontmatter_len = fixture_frontmatter_prefix_bytes(source)?
+        .ok_or_else(|| FixtureMetadataError::new(1, "fixture has no frontmatter block"))?
+        as usize;
+    let (frontmatter, body) = source.split_at(frontmatter_len);
+    let mut out = String::with_capacity(source.len() + stamp.len() + 20);
+    let mut stamped = false;
+    for line in frontmatter.split_inclusive('\n') {
+        match frontmatter_key(line) {
+            Some("oracle.stamp") => {}
+            Some("oracle") => {
+                out.push_str(line);
+                out.push_str(&format!("# oracle.stamp: {stamp}\n"));
+                stamped = true;
+            }
+            _ => out.push_str(line),
+        }
+    }
+    if !stamped {
+        return Err(FixtureMetadataError::new(1, "`oracle.stamp` requires `oracle`"));
+    }
+    out.push_str(body);
+    Ok(out)
+}
+
+fn frontmatter_key(line: &str) -> Option<&str> {
+    let (key, _) = line.strip_prefix('#')?.split_once(':')?;
+    Some(key.trim())
+}
+
 fn parse_oracle_stamp(value: &str, line_no: usize) -> Result<String, FixtureMetadataError> {
     let is_stamp = value.len() == 16 && value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
     if !is_stamp {

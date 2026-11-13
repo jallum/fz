@@ -1,6 +1,7 @@
 #---
 # purpose: "two processes waiting on 80ms and 20ms timers wake in deadline order, not spawn order"
 # oracle: 00693_two_staggered_timeouts_fire_in_deadline_order.oracle.exs
+# oracle.stamp: 03ae864b0760ee3b
 #---
 def main() do
   parent = self()

@@ -1,6 +1,7 @@
 #---
 # purpose: "a receive clause whose binary prefix does not match leaves the message for the next clause"
 # oracle: 00677_a_receive_bitstring_clause_that_misses_falls_to_the_next.oracle.exs
+# oracle.stamp: 9c76a30bada481ad
 #---
 def main() do
   send(self(), "xyz")

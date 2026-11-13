@@ -2,6 +2,7 @@
 # purpose: "Enum.map over a list of closures and Enum.map over a list mixing tagged closures with tagged values each keep every element"
 # kind: run
 # oracle: 01083_enum_map_over_a_list_of_closures_next_to_one_of_tagged_closures_and_values.oracle.exs
+# oracle.stamp: b162415b554b4e54
 #---
 def main() do
   fs = [fn x -> x + 1 end]

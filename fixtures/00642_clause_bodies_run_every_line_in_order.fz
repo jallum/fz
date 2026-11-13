@@ -1,6 +1,7 @@
 #---
 # purpose: "a clause body of several lines runs each line in order and answers its last line, in fn, case, receive, cond and with-else, and a line that is not `head ->` never starts a clause"
 # oracle: 00642_clause_bodies_run_every_line_in_order.oracle.exs
+# oracle.stamp: 8d6621d52dc572de
 #---
 def main() do
   f =

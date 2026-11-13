@@ -1,6 +1,7 @@
 #---
 # purpose: "one program holds a receive that reads a binary prefix and a receive that matches a plain tuple"
 # oracle: 00679_a_receive_with_a_binary_pattern_and_a_receive_without_run_together.oracle.exs
+# oracle.stamp: 7adf2972481c0093
 #---
 def main() do
   send(self(), {:plain, 7})

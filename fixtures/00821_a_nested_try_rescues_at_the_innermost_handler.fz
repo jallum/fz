@@ -1,6 +1,7 @@
 #---
 # purpose: "a raise inside nested tries is caught by the innermost rescue that matches; the outer one never runs"
 # oracle: 00821_a_nested_try_rescues_at_the_innermost_handler.oracle.exs
+# oracle.stamp: da06bb6f13283c2d
 #---
 def main() do
   result = try do

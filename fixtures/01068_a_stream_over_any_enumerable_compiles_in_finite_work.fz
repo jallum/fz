@@ -1,6 +1,7 @@
 #---
 # purpose: "A stream and a Map.put result, whose spec says any, reach every Enumerable impl; the stream's own reducer wrapping stays finite and both lines print what Elixir prints"
 # oracle: 01068_a_stream_over_any_enumerable_compiles_in_finite_work.oracle.exs
+# oracle.stamp: 21dc6ae898d20860
 #---
 def main() do
   dbg(Enum.to_list(Stream.map([1], &(&1))))

@@ -2,5 +2,6 @@
 # purpose: "not of a non-boolean aborts with ArgumentError and Elixir's message"
 # expect: abort
 # oracle: 00639_not_of_a_non_boolean_aborts.oracle.exs
+# oracle.stamp: e0d64cd92c86881e
 #---
 def main(), do: Enum.each([3], fn v -> dbg(not v) end)

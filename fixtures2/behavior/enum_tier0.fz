@@ -1,6 +1,7 @@
 #---
 # purpose: "Enum tier-0 functions return Elixir-style public values across List, Range, and Map"
 # oracle: oracle.exs
+# oracle.stamp: 2847d9833fb38edb
 #---
 #
 # The shared 20s hang guard catches nontermination; telemetry owns performance

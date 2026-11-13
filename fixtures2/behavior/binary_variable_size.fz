@@ -1,6 +1,7 @@
 #---
 # purpose: "a binary segment's size can be a variable from the enclosing scope, not only one the pattern binds"
 # oracle: oracle.exs
+# oracle.stamp: fe25b79dea589882
 #---
 #
 # # binary_variable_size

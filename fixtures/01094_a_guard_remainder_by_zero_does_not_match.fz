@@ -1,6 +1,7 @@
 #---
 # purpose: "a guard that takes a remainder by zero does not match its clause, in an entry guard and in a receive guard, and a remainder by a nonzero divisor still decides"
 # oracle: oracle.exs
+# oracle.stamp: 2f8d8f0436136211
 #---
 #
 # `rem(n, 0)` fails in a body by raising. In a guard a failure is the clause

@@ -1,6 +1,7 @@
 #---
 # purpose: "a rescue head that is a bare variable catches every exception and binds it"
 # oracle: 00818_a_bare_rescue_variable_binds_any_exception.oracle.exs
+# oracle.stamp: bf21898f73c977fa
 #---
 def main() do
   result = try do

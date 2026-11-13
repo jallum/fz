@@ -1,6 +1,7 @@
 #---
 # purpose: "a float renders the way Elixir renders it, including where positional and scientific notation trade places"
 # oracle: oracle.exs
+# oracle.stamp: 477521226c17d204
 #---
 #
 # # float_rendering

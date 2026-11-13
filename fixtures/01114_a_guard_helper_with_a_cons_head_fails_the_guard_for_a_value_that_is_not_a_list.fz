@@ -1,6 +1,7 @@
 #---
 # purpose: "A function-head guard that calls a helper whose only clause is a cons pattern holds for a list with a positive head and fails for every value that is not a list, as Elixir's hd/1 does in a guard"
 # oracle: oracle.exs
+# oracle.stamp: 9ebfabef8521d5f1
 #---
 #
 # `:a` means the guard held and `:b` means it did not. The helper has no clause

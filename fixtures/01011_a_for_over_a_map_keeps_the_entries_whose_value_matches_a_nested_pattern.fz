@@ -1,6 +1,7 @@
 #---
 # purpose: "A tuple pattern holding a map pattern bound with = keeps the whole matching map and skips the other entries"
 # oracle: 01011_a_for_over_a_map_keeps_the_entries_whose_value_matches_a_nested_pattern.oracle.exs
+# oracle.stamp: 843ad83c7ec2b5c0
 #---
 def main() do
   spans = %{1 => %{name: "x", v: 1}, 2 => %{name: "y", v: 2}, 3 => %{name: "x", v: 3}}

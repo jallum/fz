@@ -1,6 +1,7 @@
 #---
 # purpose: "an after block uses what is in scope at the try, on the completing path and on the raising path"
 # oracle: 00805_an_after_reads_the_variables_of_its_function.oracle.exs
+# oracle.stamp: 348b5dd4f53d53cd
 #---
 def attempt(label, f) do
   try do

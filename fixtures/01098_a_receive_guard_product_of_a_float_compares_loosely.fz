@@ -1,6 +1,7 @@
 #---
 # purpose: "a guard whose product is an integer-valued float equals the integer, in an entry guard and in a receive guard, as Elixir does"
 # oracle: oracle.exs
+# oracle.stamp: 9641f8396cb18a67
 #---
 #
 # `1.5 * 2` is the float `3.0`, which `==` finds equal to the integer `3`. The

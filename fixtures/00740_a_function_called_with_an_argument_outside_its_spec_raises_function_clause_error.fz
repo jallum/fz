@@ -2,6 +2,7 @@
 # purpose: "A call whose argument is any reaches the callee's arm of last resort: a string meets no clause of a function specced for integer and float, and aborts with FunctionClauseError"
 # expect: abort
 # oracle: 00740_a_function_called_with_an_argument_outside_its_spec_raises_function_clause_error.oracle.exs
+# oracle.stamp: b5660757938d6892
 #---
 defmodule M do
   @spec f(integer) :: integer

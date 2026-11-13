@@ -1,6 +1,7 @@
 #---
 # purpose: "grounded predicate captures retain distinct semantics without boxed invocation"
 # oracle: oracle.exs
+# oracle.stamp: 4972d83850574f9e
 #---
 def reduce_plain([], acc, _reducer), do: acc
 def reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)

@@ -2,6 +2,7 @@
 # purpose: "= against a bitstring too short for its pattern raises MatchError showing the value"
 # expect: abort
 # oracle: 00712_a_bitstring_match_past_the_end_raises_match_error.oracle.exs
+# oracle.stamp: 6d91b4c91b2b414b
 #---
 def main() do
   dbg(:before)

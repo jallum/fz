@@ -1,6 +1,7 @@
 #---
 # purpose: A do/end block on a no-parens call becomes a trailing do: keyword arg.
 # oracle: oracle.exs
+# oracle.stamp: ac4477ec27396fc2
 #---
 #
 # A `do … end` block trailing a no-parens call collapses into the call's final

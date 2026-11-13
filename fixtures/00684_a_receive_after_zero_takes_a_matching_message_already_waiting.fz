@@ -1,6 +1,7 @@
 #---
 # purpose: "when a matching message is already in the mailbox a receive with after 0 runs the clause and not the after body"
 # oracle: 00684_a_receive_after_zero_takes_a_matching_message_already_waiting.oracle.exs
+# oracle.stamp: 76c8992636a99630
 #---
 def main() do
   send(self(), :here)

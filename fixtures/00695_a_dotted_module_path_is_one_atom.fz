@@ -1,6 +1,7 @@
 #---
 # purpose: "a dotted module path is one atom named for its whole path, equal to the same atom written out"
 # oracle: 00695_a_dotted_module_path_is_one_atom.oracle.exs
+# oracle.stamp: cc9fcde0388cbcfe
 #---
 def main() do
   dbg(Foo.Bar)

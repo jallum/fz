@@ -1,6 +1,7 @@
 #---
 # purpose: "a child's 20ms timeout fires before its parent's 80ms timeout and the parent outlives the child"
 # oracle: 00691_a_child_and_its_parent_both_time_out_in_order.oracle.exs
+# oracle.stamp: ba0f8b6a45ecd958
 #---
 def main() do
   parent = self()

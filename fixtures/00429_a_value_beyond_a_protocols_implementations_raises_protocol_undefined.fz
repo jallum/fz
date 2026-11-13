@@ -2,6 +2,7 @@
 # purpose: "A function that hands its argument to a protocol with one implementation, an integer's, is fine for an integer; for a float it raises Protocol.UndefinedError naming Float, exit 1, instead of passing the float to the integer implementation"
 # expect: abort
 # oracle: 00429_a_value_beyond_a_protocols_implementations_raises_protocol_undefined.oracle.exs
+# oracle.stamp: dc01394497a2243b
 #---
 defprotocol Sizer do
   def size(value)

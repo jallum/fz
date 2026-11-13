@@ -1,6 +1,7 @@
 #---
 # purpose: "a function whose clauses split on a boolean field asks only the questions its input types leave, a clause over a list head selects without asking when the list is known to have one, and both agree with Elixir"
 # oracle: 00653_a_function_clause_asks_only_the_questions_its_inputs_leave.oracle.exs
+# oracle.stamp: 1368473ba9baebe8
 #---
 def unwrap({v, false}), do: v
 def unwrap({v, true}), do: v + 1

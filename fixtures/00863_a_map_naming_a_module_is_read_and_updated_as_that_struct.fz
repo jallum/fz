@@ -1,6 +1,7 @@
 #---
 # purpose: "a map that names a module passes that struct's clause, reads its fields and takes its updates, whether it was built as the struct, grown from it by a put of a new key, or written as a map literal with the module under __struct__"
 # oracle: 00863_a_map_naming_a_module_is_read_and_updated_as_that_struct.oracle.exs
+# oracle.stamp: 5af7b418cab64366
 #---
 #
 # A clause for `%Pt{}` asks which module the value names, not how it is laid

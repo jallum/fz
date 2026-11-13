@@ -1,6 +1,7 @@
 #---
 # purpose: "IO.puts and IO.write return :ok, IO.inspect and dbg return their argument unchanged, so each can be printed again by the next call"
 # oracle: 00780_puts_write_and_inspect_return_what_elixir_returns.oracle.exs
+# oracle.stamp: 99f85c816d109f83
 #---
 def main() do
   IO.inspect(IO.puts("x"))

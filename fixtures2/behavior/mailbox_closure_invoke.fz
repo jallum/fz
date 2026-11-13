@@ -1,6 +1,7 @@
 #---
 # purpose: "a closure delivered by the mailbox is invoked, and the work after that call still runs"
 # oracle: oracle.exs
+# oracle.stamp: 4b8e17002b86dc5c
 #---
 #
 # fz-kdt.130. A lambda sent through the mailbox reaches the receiving process as

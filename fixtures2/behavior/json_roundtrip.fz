@@ -1,6 +1,7 @@
 #---
 # purpose: "the goal program: JSON.decode/1 and JSON.encode!/1 agree with Elixir's own JSON module, and round-trip"
 # oracle: oracle.exs
+# oracle.stamp: bf993343ec481d64
 #---
 #
 # # json_roundtrip

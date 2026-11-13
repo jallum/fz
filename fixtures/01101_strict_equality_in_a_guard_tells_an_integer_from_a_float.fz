@@ -1,6 +1,7 @@
 #---
 # purpose: "=== and !== in a function-head guard and in a receive guard answer as Elixir does over an integer, a float, an atom and a list, and a negative zero is not the same value as zero"
 # oracle: oracle.exs
+# oracle.stamp: 7387174ff21d96ce
 #---
 #
 # `===` is identity: `1 === 1.0` is false where `1 == 1.0` is true. `:a` means

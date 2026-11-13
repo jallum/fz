@@ -1,6 +1,7 @@
 #---
 # purpose: "String.slice/3 counts graphemes, reads a negative start from the end, clamps it, and raises FunctionClauseError for a negative length"
 # oracle: 01061_slice_counts_graphemes_from_either_end.oracle.exs
+# oracle.stamp: e86239fd3504495e
 #---
 def main() do
   s = "héllo"

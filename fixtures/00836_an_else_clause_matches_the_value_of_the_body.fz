@@ -1,6 +1,7 @@
 #---
 # purpose: "else clauses are a case over the body's value; the first clause that matches gives the try's value"
 # oracle: 00836_an_else_clause_matches_the_value_of_the_body.oracle.exs
+# oracle.stamp: 4a8ca2f20161c725
 #---
 def main() do
   a = try do

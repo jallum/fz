@@ -1,6 +1,7 @@
 #---
 # purpose: "an empty-string argument arrives as the empty binary, one element rather than none, as in Elixir"
 # oracle: 00658_an_empty_argument_is_an_empty_binary.oracle.exs
+# oracle.stamp: 71e7edf6be7e463c
 # args: ""
 #---
 def main() do

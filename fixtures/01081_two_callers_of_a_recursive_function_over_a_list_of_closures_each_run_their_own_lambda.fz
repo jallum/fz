@@ -2,6 +2,7 @@
 # purpose: "Two callers of one recursive function over a list of closures each call a different lambda on the closure element"
 # kind: run
 # oracle: 01081_two_callers_of_a_recursive_function_over_a_list_of_closures_each_run_their_own_lambda.oracle.exs
+# oracle.stamp: 29186c9354d3a03b
 #---
 defmodule M do
   def ml([], _), do: 0

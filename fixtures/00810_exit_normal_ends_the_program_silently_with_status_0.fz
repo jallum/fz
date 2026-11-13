@@ -1,6 +1,7 @@
 #---
 # purpose: "exit(:normal) from main ends the program at once, prints nothing, and exits 0: the code after it never runs"
 # oracle: 00810_exit_normal_ends_the_program_silently_with_status_0.oracle.exs
+# oracle.stamp: 016f0ffa80559d1f
 #---
 def main() do
   dbg(:before)

@@ -1,6 +1,7 @@
 #---
 # purpose: "a protocol call on a map answers with the impl of the module the map names under __struct__, in either layout and through an any-typed parameter, and with the Map impl only where the map names no module"
 # oracle: 00862_a_protocol_finds_the_impl_of_the_module_a_map_names.oracle.exs
+# oracle.stamp: d8923a6959b01a0c
 #---
 #
 # The Map impl is for the maps that name no module. A struct grown by a put

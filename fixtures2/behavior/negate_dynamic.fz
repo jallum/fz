@@ -1,6 +1,7 @@
 #---
 # purpose: "negating a value that may be an integer or a float works on every door, like every other operator"
 # oracle: oracle.exs
+# oracle.stamp: ddf01c63c5e1a586
 #---
 #
 # # negate_dynamic

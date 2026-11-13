@@ -1,6 +1,7 @@
 #---
 # purpose: "defoverridable marks a function a later definition may replace: with no later definition the first stands; with one the later stands, for callers written before it too; a defp may replace a def; a default a macro defines is replaced by the module that calls the macro"
 # oracle: 00872_a_definition_marked_overridable_is_replaced_by_a_later_one.oracle.exs
+# oracle.stamp: 8c0d153a677e9579
 #---
 defmodule Defaults do
   defmacro defaults() do

@@ -1,6 +1,7 @@
 #---
 # purpose: "Keyword.update/4 and update!/3 change the first entry for a key where it stands and drop its duplicates, and update/4 adds an absent key at the end, as in Elixir"
 # oracle: 00770_keyword_update_changes_the_entry_where_it_stands.oracle.exs
+# oracle.stamp: 471cc20bdae1f130
 #---
 def main() do
   dbg(Keyword.update([a: 1, b: 2], :a, 0, fn x -> x + 1 end))

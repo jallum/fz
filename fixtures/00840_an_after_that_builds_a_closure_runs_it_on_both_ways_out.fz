@@ -1,6 +1,7 @@
 #---
 # purpose: "an after block is lowered once per way out, so a closure inside it is built and called on the raising path and on the completing path"
 # oracle: 00840_an_after_that_builds_a_closure_runs_it_on_both_ways_out.oracle.exs
+# oracle.stamp: 8694a685bef3e68e
 #---
 def main() do
   result = try do

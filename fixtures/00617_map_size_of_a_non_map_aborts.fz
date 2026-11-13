@@ -2,5 +2,6 @@
 # purpose: "map_size/1 of a non-map aborts with BadMapError and Elixir's message"
 # expect: abort
 # oracle: 00617_map_size_of_a_non_map_aborts.oracle.exs
+# oracle.stamp: 73522f31e4aaf1a7
 #---
 def main(), do: map_size(:x)

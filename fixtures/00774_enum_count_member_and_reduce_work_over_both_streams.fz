@@ -1,6 +1,7 @@
 #---
 # purpose: "Enum.count, Enum.member? and Enum.reduce work over a %Stream{} and over a %File.Stream{}: neither answers count or member? itself, so each reduces"
 # oracle: 00774_enum_count_member_and_reduce_work_over_both_streams.oracle.exs
+# oracle.stamp: 0aeb0b0509e5a641
 #---
 def main() do
   mapped = Stream.map([1, 2, 3], fn x -> x * 2 end)

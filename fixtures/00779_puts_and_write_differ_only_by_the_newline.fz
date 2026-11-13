@@ -1,6 +1,7 @@
 #---
 # purpose: "IO.puts of an empty binary prints a bare newline, IO.puts of a text with an embedded newline prints two lines, and two IO.write calls join on one line because write appends nothing"
 # oracle: 00779_puts_and_write_differ_only_by_the_newline.oracle.exs
+# oracle.stamp: 3e537ccb2ea0e912
 #---
 def main() do
   IO.puts("")

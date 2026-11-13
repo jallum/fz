@@ -1,6 +1,7 @@
 #---
 # purpose: "an atom handed into a try body that dispatches on it keeps its own activation key, and one only compared there shares a key"
 # oracle: 01060_an_atom_read_inside_a_try_keeps_its_identity.oracle.exs
+# oracle.stamp: 8042f3891a8db978
 #---
 defp kind(:int), do: 1
 defp kind(:text), do: "one"

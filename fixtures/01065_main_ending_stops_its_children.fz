@@ -1,6 +1,7 @@
 #---
 # purpose: "A program ends when its main process ends: a child still waiting then never runs again"
 # oracle: 01065_main_ending_stops_its_children.oracle.exs
+# oracle.stamp: 926cab71e5953c27
 #---
 def main() do
   spawn(fn ->

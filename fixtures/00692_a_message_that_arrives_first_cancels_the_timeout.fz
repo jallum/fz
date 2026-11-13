@@ -1,6 +1,7 @@
 #---
 # purpose: "a matching message that arrives before the timer cancels it, so :timeout never prints"
 # oracle: 00692_a_message_that_arrives_first_cancels_the_timeout.oracle.exs
+# oracle.stamp: ea1f32ac95dfbf95
 #---
 def main() do
   parent = self()

@@ -1,6 +1,7 @@
 #---
 # purpose: "Float.parse/1 reads sign, digits, an optional fraction and an optional exponent, leaves a dangling '.' or 'e' in the rest, and rounds to the nearest float"
 # oracle: 00757_float_parse_reads_a_prefix_with_exponent_and_rounds_correctly.oracle.exs
+# oracle.stamp: 761cb6cd2680a3e5
 #---
 def main() do
   dbg(Float.parse("1e3"))

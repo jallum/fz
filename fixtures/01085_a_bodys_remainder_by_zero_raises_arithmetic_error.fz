@@ -2,6 +2,7 @@
 # purpose: "A function that calls rem/2 with a zero divisor raises ArithmeticError with Elixir's message"
 # expect: abort
 # oracle: 01085_a_bodys_remainder_by_zero_raises_arithmetic_error.oracle.exs
+# oracle.stamp: e03387c5b3be4cd1
 #---
 def r(x, y), do: rem(x, y)
 

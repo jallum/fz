@@ -1,6 +1,7 @@
 #---
 # purpose: "an empty String pattern matches at every grapheme boundary, checked against Elixir"
 # oracle: oracle.exs
+# oracle.stamp: cb285d56bfb88d2a
 #---
 #
 # # string_empty_pattern

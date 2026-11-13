@@ -1,6 +1,7 @@
 #---
 # purpose: "defstruct inside quote is the struct declaration of the module the macro is called in: a field list, a field list the macro computes and unquotes, and the bare keyword form with defaults"
 # oracle: 00877_a_macro_quotes_a_defstruct.oracle.exs
+# oracle.stamp: 06ab633bedc70270
 #---
 defmodule Shapes do
   defmacro point() do

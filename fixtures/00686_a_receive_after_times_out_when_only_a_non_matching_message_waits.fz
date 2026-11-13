@@ -1,6 +1,7 @@
 #---
 # purpose: "a receive whose only mail does not match times out after 10ms and the program continues"
 # oracle: 00686_a_receive_after_times_out_when_only_a_non_matching_message_waits.oracle.exs
+# oracle.stamp: fc88342f1f3bb3de
 #---
 def main() do
   send(self(), :other)

@@ -2,5 +2,6 @@
 # purpose: "String.to_integer/1 of text that is not an integer aborts with ArgumentError and Elixir's message"
 # expect: abort
 # oracle: 00728_string_to_integer_of_text_raises_argument_error.oracle.exs
+# oracle.stamp: 30c25dda9ef20a3f
 #---
 def main(), do: String.to_integer("x")

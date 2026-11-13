@@ -1,6 +1,7 @@
 #---
 # purpose: "a catch with no matching clause re-raises with the kind it was given: a throw stays a throw, an exit stays an exit, an error stays an error, through two enclosing tries"
 # oracle: 00847_a_catch_that_matches_nothing_passes_the_original_kind_on.oracle.exs
+# oracle.stamp: 19cb6df092380397
 #---
 def attempt(f) do
   try do

@@ -1,6 +1,7 @@
 #---
 # purpose: "a plain user function discarding f.(x) drives the same seam disagreement as Enum.each, with no Enum in sight"
 # oracle: oracle.exs
+# oracle.stamp: 67481b251b4639e8
 #---
 #
 # fz-kdt.155's second witness, and the one that says the bug is not about

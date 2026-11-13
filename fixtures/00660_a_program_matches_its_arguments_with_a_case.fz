@@ -1,6 +1,7 @@
 #---
 # purpose: "a program selects on the shape of System.argv() with a case, taking its one path argument or falling through, as in Elixir"
 # oracle: 00660_a_program_matches_its_arguments_with_a_case.oracle.exs
+# oracle.stamp: b91bea8516cd1b5e
 # args: trace.jsonl
 #---
 def describe(argv) do

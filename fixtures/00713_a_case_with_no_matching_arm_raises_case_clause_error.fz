@@ -2,6 +2,7 @@
 # purpose: "a case no arm matches raises CaseClauseError showing the value"
 # expect: abort
 # oracle: 00713_a_case_with_no_matching_arm_raises_case_clause_error.oracle.exs
+# oracle.stamp: 61f109c2b754e9ef
 #---
 defp fetch(), do: {:error, 2}
 

@@ -1,6 +1,7 @@
 #---
 # purpose: "reraise/2 inside a rescue raises the exception again, and the enclosing rescue receives the same exception"
 # oracle: 00807_reraise_in_a_rescue_reaches_the_outer_rescue_with_the_same_exception.oracle.exs
+# oracle.stamp: 40598cfcbb8d4ced
 #---
 def main() do
   result = try do

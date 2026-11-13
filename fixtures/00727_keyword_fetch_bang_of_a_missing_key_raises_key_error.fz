@@ -2,5 +2,6 @@
 # purpose: "Keyword.fetch!/2 of a missing key aborts with KeyError and Elixir's message"
 # expect: abort
 # oracle: 00727_keyword_fetch_bang_of_a_missing_key_raises_key_error.oracle.exs
+# oracle.stamp: 8b244e1ce346e90b
 #---
 def main(), do: Keyword.fetch!([], :b)

@@ -1,6 +1,7 @@
 #---
 # purpose: "Enum take/drop/split functions match Elixir, including negative counts and predicate stop points"
 # oracle: oracle.exs
+# oracle.stamp: c52549819a097ca0
 #---
 #
 # Exercises the `fz-g58.26` Enum take/drop/split layer:

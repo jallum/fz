@@ -1,6 +1,7 @@
 #---
 # purpose: "__MODULE__ is the atom of the module it stands in, and nil outside any module: as a value, as the struct name of a literal and of a pattern in a clause head and in a case, as the receiver of a call, and in code a macro quotes into the module that calls it"
 # oracle: 00879_module_names_the_enclosing_module.oracle.exs
+# oracle.stamp: a477a4da6fd9c51a
 #---
 defmodule Stamp do
   defmacro who() do

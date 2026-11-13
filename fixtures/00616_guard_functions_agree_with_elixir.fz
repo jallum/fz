@@ -1,6 +1,7 @@
 #---
 # purpose: "Elixir's guard functions work in entry, case and receive guards and in bodies, and a call outside a function's domain fails the guard"
 # oracle: oracle.exs
+# oracle.stamp: f9f42bf5aca4a80b
 #---
 #
 # `map_size/1`, `elem/2`, `length/1`, `tuple_size/1`, `byte_size/1` and the

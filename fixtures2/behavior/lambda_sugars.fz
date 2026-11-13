@@ -1,6 +1,7 @@
 #---
 # purpose: "capture shorthand and multi-clause anonymous fn desugar to ordinary lambda dispatch"
 # oracle: oracle.exs
+# oracle.stamp: 1a7628a9eedc3739
 #---
 #
 # # lambda_sugars

@@ -1,6 +1,7 @@
 #---
 # purpose: "two distinct closures delivered by the mailbox each apply twice, not once"
 # oracle: oracle.exs
+# oracle.stamp: 88a26a235ce5cbd1
 #---
 #
 # fz-kdt.130, the arity-of-application half. `apply_twice/2` is the fz-kdt.125

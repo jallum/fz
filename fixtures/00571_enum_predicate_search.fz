@@ -1,6 +1,7 @@
 #---
 # purpose: "Enum predicate and search functions match Elixir and halt as soon as the answer is known"
 # oracle: oracle.exs
+# oracle.stamp: f979d7eaabf8ed42
 #---
 #
 # Exercises the `fz-g58.25` Enum predicate/search layer:

@@ -1,6 +1,7 @@
 #---
 # purpose: "JSON.decode/1 rejects malformed UTF-8 at the offending source byte in string values and object keys"
 # oracle: json_decode_invalid_utf8.oracle.exs
+# oracle.stamp: fc4cefead29571d4
 #---
 def main() do
   dbg(JSON.decode(<<34, 255, 34>>))

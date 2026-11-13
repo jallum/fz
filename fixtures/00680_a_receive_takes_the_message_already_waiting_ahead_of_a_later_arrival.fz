@@ -1,6 +1,7 @@
 #---
 # purpose: "a receive finds the message sent to itself before a runnable child gets to send, even when the child's clause is listed first"
 # oracle: 00680_a_receive_takes_the_message_already_waiting_ahead_of_a_later_arrival.oracle.exs
+# oracle.stamp: 8aadf14afeb8132d
 #---
 def main() do
   me = self()

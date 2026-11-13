@@ -1,6 +1,7 @@
 #---
 # purpose: "a construction whose capture type is a union is admitted only by a test that CONTAINS it, never one it merely overlaps"
 # oracle: oracle.exs
+# oracle.stamp: 0d1e58cca4829411
 #---
 #
 # fz-kdt.167, the witness. `f` is chosen by a `case` on a value that came out

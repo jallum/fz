@@ -1,6 +1,7 @@
 #---
 # purpose: "m.f(a) on a value whose type lists no module raises at run time when the value reaches no function: UndefinedFunctionError for an atom naming no module, for nil and for a module that lacks the function, each worded as Elixir words it and carrying the module, function and arity; ArgumentError for a value that is no atom"
 # oracle: 00869_a_call_that_finds_no_function_raises_as_elixir_does.oracle.exs
+# oracle.stamp: 4df8842e57a94c3c
 #---
 #
 # A miss is one more target of the call: the receiver's type less the atoms

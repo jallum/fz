@@ -1,6 +1,7 @@
 #---
 # purpose: "A dispatch test reads a cons cell's first element, so lists of different element types are different questions"
 # oracle: oracle.exs
+# oracle.stamp: e69efe4ce1626d86
 #---
 #
 # fz-kdt.107 step 3. A list test used to see empty-or-cons and nothing else,

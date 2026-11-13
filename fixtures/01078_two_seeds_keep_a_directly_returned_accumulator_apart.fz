@@ -1,6 +1,7 @@
 #---
 # purpose: "Two callers seeding a directly returned accumulator with different element types each get back a list of their own element type"
 # oracle: 01078_two_seeds_keep_a_directly_returned_accumulator_apart.oracle.exs
+# oracle.stamp: 2dd49042aeba24b3
 #---
 def go([], a), do: a
 def go([x | rest], a), do: go(rest, [x | a])

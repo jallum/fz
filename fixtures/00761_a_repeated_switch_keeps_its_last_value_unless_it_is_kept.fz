@@ -1,6 +1,7 @@
 #---
 # purpose: "OptionParser.parse/2 keeps the last value of a repeated switch, moved to the end of the parsed list, unless its type includes :keep, which keeps every occurrence in the order met"
 # oracle: 00761_a_repeated_switch_keeps_its_last_value_unless_it_is_kept.oracle.exs
+# oracle.stamp: 9ca64ae797468d0c
 # args: --top 1 --top 2
 #---
 def main() do

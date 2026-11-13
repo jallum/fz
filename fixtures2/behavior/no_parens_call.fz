@@ -1,6 +1,7 @@
 #---
 # purpose: "no-parens calls (double 21; sum3 1, 2, 3) parse and run; output matches Elixir"
 # oracle: oracle.exs
+# oracle.stamp: 8923277015ffb9d2
 #---
 #
 # # no_parens_call
