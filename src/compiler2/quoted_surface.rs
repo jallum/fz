@@ -842,7 +842,7 @@ fn parse_struct_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<St
         return Err(QuotedSourceError::new("defstruct expects a field list"));
     };
     let mut fields = Vec::new();
-    let mut defaults = HashMap::new();
+    let mut defaults = HashMap::default();
     for field in declared.list_items()? {
         if let Ok(name) = field.atom_name() {
             fields.push(name.to_string());

@@ -2041,7 +2041,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             .and_then(|def| def.defaults.get(field))
             .map(|default| default.expr(span));
         match default {
-            Some(default) => self.lower_expr(&default, &mut HashMap::new(), steps),
+            Some(default) => self.lower_expr(&default, &mut HashMap::default(), steps),
             None => Ok(self.push_const(steps, GroundValue::Nil)),
         }
     }
