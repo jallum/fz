@@ -940,14 +940,14 @@ pub(crate) fn callsite_input_modes(body: &LoweredBody) -> HashMap<CallSiteId, Ca
 /// this rides the same flat scan over `entries` as `callsite_input_modes`
 /// (see that function's doc comment for the reachability invariant that
 /// makes the flat scan sound).
-pub(crate) fn callsite_call_args(body: &LoweredBody) -> HashMap<CallSiteId, Vec<CallArg>> {
+pub(crate) fn callsite_call_args(body: &LoweredBody) -> HashMap<CallSiteId, &[CallArg]> {
     let mut out = HashMap::new();
     let LoweredBody::Clauses { entries, .. } = body;
     for entry in entries {
         if let LoweredTail::DirectCall { callsite, args, .. } | LoweredTail::ClosureCall { callsite, args, .. } =
             &entry.tail
         {
-            out.insert(*callsite, args.clone());
+            out.insert(*callsite, args.as_slice());
         }
     }
     out

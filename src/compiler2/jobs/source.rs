@@ -259,7 +259,7 @@ pub(super) fn define_module_interface(
         return Ok(JobEffects::wait_on_current(FactKey::ModuleInterface(module_id)));
     }
 
-    let Some(interface) = world.module_interface_if_present(module_id) else {
+    let Some(interface) = world.module_interface_if_present(module_id).cloned() else {
         return Ok(JobEffects::wait_on_current(FactKey::ModuleIndexed(module_id)));
     };
     let interface = world.merge_module_interface_expectations(module_id, interface);

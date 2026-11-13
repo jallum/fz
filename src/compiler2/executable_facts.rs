@@ -466,7 +466,7 @@ fn prepare_runtime_demand_type_inputs(
     );
     let call_args = callsite_call_args(body);
     for (callsite, demands) in callsite_dispatch_demand {
-        let args = call_args.get(callsite).map(Vec::as_slice).unwrap_or_default();
+        let args = call_args.get(callsite).copied().unwrap_or_default();
         tys.extend(
             args.iter()
                 .zip(demands.iter())

@@ -345,7 +345,7 @@ fn compiler2_world_submitted_module_interface_is_available_without_module_defini
     let mut world = World::new();
     let module = world.submit_module_interface("IfaceOnly".to_string(), ModuleInterface::default());
 
-    assert_eq!(world.module_interface(module), ModuleInterface::default());
+    assert_eq!(world.module_interface(module), &ModuleInterface::default());
     assert!(world.module_defined_revision(module).is_none());
     assert!(world.module_interface_revision(module).is_none());
     assert!(
