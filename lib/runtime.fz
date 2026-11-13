@@ -27,6 +27,7 @@ alias Tuple
 alias Utf8
 
 import Kernel, only: [
+  +: 1,
   +: 2,
   -: 2,
   *: 2,

@@ -4,7 +4,7 @@ defmodule Kernel do
 
   `Kernel` supplies:
 
-    * the arithmetic operators `+`, `-`, `*`, `/`, `%` and unary minus
+    * the arithmetic operators `+`, `-`, `*`, `/`, `%`, unary plus and unary minus
     * the boolean operators `and`, `or` and `not`, which take booleans, and
       `&&`, `||` and `!`, which take any value and count `nil` and `false` as
       false; the three are macros, so a guard refuses them
@@ -483,6 +483,28 @@ defmodule Kernel do
     raises: ArithmeticError,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_neg_f(float) :: float
+
+  @doc """
+  Returns `x` unchanged.
+
+  Raises `ArithmeticError` when `x` is not a number.
+
+  This is what `+x` compiles to.
+
+  ## Examples
+
+      +5
+      #=> 5
+
+      +(-2.5)
+      #=> -2.5
+
+  """
+  @spec +(integer) :: integer
+  @spec +(float) :: float
+  def +(x :: integer), do: x
+  def +(x :: float), do: x
+  def +(_), do: arithmetic_error()
 
   @doc """
   Returns the sum of `left` and `right`.

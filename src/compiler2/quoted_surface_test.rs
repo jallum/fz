@@ -204,6 +204,24 @@ fn compiler2_quoted_surface_uses_lexer_authority_for_local_definition_names() {
 }
 
 #[test]
+fn compiler2_quoted_surface_admits_plus_as_a_unary_and_a_binary_operator_and_minus_only_as_binary() {
+    let tel = ConfiguredTelemetry::new();
+    let read = |name: &str, source: &str| {
+        let mut code = CodeMap::new();
+        let owner = code.define(Some(name.to_string()), source.to_string());
+        let root = parse_code(&code, owner, &tel);
+        let source_map = code.source_map();
+        let sources = source_map.borrow();
+        read_compiler_fragment_surface(&root, &sources).map(|_| ())
+    };
+
+    read("unary_plus.fz", "def +(x), do: x\n").expect("`+` is definable with one parameter");
+    read("binary_plus.fz", "def a + b, do: a\n").expect("`+` is definable with two parameters");
+    let error = read("unary_minus.fz", "def -(a), do: a\n").expect_err("`-` is definable only with two parameters");
+    assert!(error.to_string().contains("two parameters"), "{error}");
+}
+
+#[test]
 fn compiler2_quoted_surface_rejects_nested_when_definition_heads() {
     let tel = ConfiguredTelemetry::new();
     let source = "def valid(value) when value > 0, do: value\n";

@@ -935,11 +935,15 @@ fn parse_function_head_key_inner(
         return parse_function_head_key_inner(inner, allow_reserved_macro_name, false, sources);
     }
     let arity = function_head_args(&node.tail)?.len();
-    if let Some(operator_arity) = definable_operator_arity(&name) {
-        if arity != operator_arity {
+    if let Some(arities) = definable_operator_arities(&name) {
+        if !arities.contains(&arity) {
             return Err(QuotedSourceError::new(format!(
                 "operator function `{name}` must have {} parameters",
-                if operator_arity == 1 { "one" } else { "two" }
+                arities
+                    .iter()
+                    .map(|arity| arity_word(*arity))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
             )));
         }
         return Ok(FunctionGroupKey { name, arity });
@@ -952,13 +956,21 @@ fn parse_function_head_key_inner(
     )))
 }
 
-fn definable_operator_arity(name: &str) -> Option<usize> {
+/// The parameter counts an operator may be defined with. `+` is both the
+/// binary sum and the unary identity.
+fn definable_operator_arities(name: &str) -> Option<&'static [usize]> {
     match name {
-        "+" | "-" | "*" | "/" | "%" | "<>" | "==" | "!=" | "===" | "!==" | "<" | "<=" | ">" | ">=" | "|>" | "&&"
-        | "||" => Some(2),
-        "!" => Some(1),
+        "+" => Some(&[1, 2]),
+        "-" | "*" | "/" | "%" | "<>" | "==" | "!=" | "===" | "!==" | "<" | "<=" | ">" | ">=" | "|>" | "&&" | "||" => {
+            Some(&[2])
+        }
+        "!" => Some(&[1]),
         _ => None,
     }
+}
+
+fn arity_word(arity: usize) -> &'static str {
+    if arity == 1 { "one" } else { "two" }
 }
 
 fn is_local_function_name(name: &str, allow_reserved_macro_name: bool) -> bool {

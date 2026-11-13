@@ -1818,67 +1818,75 @@ fn quoted_type_expr_body(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Re
     Ok(TypeExprBody(token_payload::decode_tokens(cursor, sources)?))
 }
 
+/// The name a `@spec name(...)` form opens with: an identifier or an operator
+/// token, followed by `(`.
+fn spec_prefix_name(parser: &FragmentCursor) -> Option<String> {
+    if !matches!(parser.peek_at(1), Some(Tok::LParen)) {
+        return None;
+    }
+    match parser.peek() {
+        Tok::Ident(name) => Some(name),
+        tok => operator_token_name(&tok).map(str::to_string),
+    }
+}
+
 fn decode_spec_attribute(payload: &QuotedSourceCursor, sources: &SourceMap) -> Result<Attribute, QuotedSourceError> {
     let mut parser = FragmentCursor::new(token_payload::decode_tokens(payload, sources)?);
-    let (name, param_body_tokens) =
-        if matches!(parser.peek(), Tok::Ident(_)) && matches!(parser.peek_at(1), Some(Tok::LParen)) {
-            let name = match parser.bump() {
-                Some(Tok::Ident(name)) => name,
-                _ => unreachable!("guarded by peek"),
-            };
-            parser.expect_lparen("`(` after @spec name")?;
-            let mut params = Vec::new();
-            if !matches!(parser.peek(), Tok::RParen) {
-                loop {
-                    let span = parser.current_span();
-                    let tokens = parser.collect_type_tokens(TypeTokenBoundary::SpecParam);
-                    if tokens.is_empty() {
-                        return Err(QuotedSourceError::user(
-                            crate::diag::codes::PARSE_EXPECTED_TOKEN,
-                            Some(span),
-                            "expected type expression in @spec param list",
-                        ));
-                    }
-                    params.push(TypeExprBody(tokens));
-                    if !parser.eat_comma() {
-                        break;
-                    }
+    let (name, param_body_tokens) = if let Some(name) = spec_prefix_name(&parser) {
+        parser.bump();
+        parser.expect_lparen("`(` after @spec name")?;
+        let mut params = Vec::new();
+        if !matches!(parser.peek(), Tok::RParen) {
+            loop {
+                let span = parser.current_span();
+                let tokens = parser.collect_type_tokens(TypeTokenBoundary::SpecParam);
+                if tokens.is_empty() {
+                    return Err(QuotedSourceError::user(
+                        crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                        Some(span),
+                        "expected type expression in @spec param list",
+                    ));
+                }
+                params.push(TypeExprBody(tokens));
+                if !parser.eat_comma() {
+                    break;
                 }
             }
-            parser.expect_rparen("`)` after @spec param list")?;
-            (name, params)
-        } else {
-            let left_span = parser.current_span();
-            let left = parser.collect_type_tokens(TypeTokenBoundary::SpecInfixOperand);
-            if left.is_empty() {
-                return Err(QuotedSourceError::user(
+        }
+        parser.expect_rparen("`)` after @spec param list")?;
+        (name, params)
+    } else {
+        let left_span = parser.current_span();
+        let left = parser.collect_type_tokens(TypeTokenBoundary::SpecInfixOperand);
+        if left.is_empty() {
+            return Err(QuotedSourceError::user(
+                crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                Some(left_span),
+                "expected type expression before operator in @spec",
+            ));
+        }
+        let op_span = parser.current_span();
+        let name = parser
+            .bump()
+            .and_then(|tok| operator_token_name(&tok).map(str::to_string))
+            .ok_or_else(|| {
+                QuotedSourceError::user(
                     crate::diag::codes::PARSE_EXPECTED_TOKEN,
-                    Some(left_span),
-                    "expected type expression before operator in @spec",
-                ));
-            }
-            let op_span = parser.current_span();
-            let name = parser
-                .bump()
-                .and_then(|tok| operator_token_name(&tok).map(str::to_string))
-                .ok_or_else(|| {
-                    QuotedSourceError::user(
-                        crate::diag::codes::PARSE_EXPECTED_TOKEN,
-                        Some(op_span),
-                        "expected `@spec name(` or `@spec T1 <op> T2`",
-                    )
-                })?;
-            let right_span = parser.current_span();
-            let right = parser.collect_type_tokens(TypeTokenBoundary::SpecInfixOperand);
-            if right.is_empty() {
-                return Err(QuotedSourceError::user(
-                    crate::diag::codes::PARSE_EXPECTED_TOKEN,
-                    Some(right_span),
-                    "expected type expression after operator in @spec",
-                ));
-            }
-            (name, vec![TypeExprBody(left), TypeExprBody(right)])
-        };
+                    Some(op_span),
+                    "expected `@spec name(` or `@spec T1 <op> T2`",
+                )
+            })?;
+        let right_span = parser.current_span();
+        let right = parser.collect_type_tokens(TypeTokenBoundary::SpecInfixOperand);
+        if right.is_empty() {
+            return Err(QuotedSourceError::user(
+                crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                Some(right_span),
+                "expected type expression after operator in @spec",
+            ));
+        }
+        (name, vec![TypeExprBody(left), TypeExprBody(right)])
+    };
 
     parser.expect_colon_colon("`::` in @spec")?;
     let result_span = parser.current_span();

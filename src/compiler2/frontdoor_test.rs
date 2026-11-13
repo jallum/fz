@@ -1520,6 +1520,21 @@ fn compiler2_frontdoor_leading_operator_starts_a_new_expression() {
 }
 
 #[test]
+fn compiler2_frontdoor_prefix_plus_parses_as_a_one_argument_call() {
+    // Unary plus is the call `+(n)`, the way unary minus is `-(n)`; the binary
+    // `+` between two operands stays a two-argument call.
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program("prefix-plus.fz", "def main(n), do: +n\n", &tel).expect("prefix plus parse");
+    let body = macro_do_body(&root)
+        .trusted_ast_node()
+        .expect("body cursor")
+        .expect("body node");
+    assert_eq!(head_name(&body), "+", "prefix `+` parses as the operator call");
+    let operands = body.tail.list_items().expect("unary + args");
+    assert_eq!(operands.len(), 1, "unary `+` takes exactly one argument");
+}
+
+#[test]
 fn compiler2_frontdoor_leading_struct_literal_starts_a_new_expression() {
     // `%` is fz's OTHER dual prefix/infix token (like `-`): prefix it opens
     // a `%Foo{...}` struct literal, infix it is modulo. A `%` that LEADS a

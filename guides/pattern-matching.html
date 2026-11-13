@@ -164,7 +164,8 @@ helpers, and the Kernel guard functions (<code>is_integer</code>,
 function that is given a value outside its domain makes the guard false,
 where the same call in a body raises. The same holds for arithmetic:
 <code>n + 1 &gt; 0</code> at the largest integer, <code>rem(n, 0) == 1</code>
-and <code>n / 0 == 1</code> do not match their clause, and the operators are the
+and <code>n / 0 == 1</code> do not match their clause, as does <code>+n &gt; 0</code>
+when <code>n</code> is not a number, and the operators are the
 ones a body calls, so an imported <code>+</code> answers in a guard as it does in
 a body.</p>
 

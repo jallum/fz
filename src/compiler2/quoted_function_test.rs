@@ -210,6 +210,27 @@ def left + right, do: left + right
 }
 
 #[test]
+fn compiler2_quoted_function_surface_derives_a_unary_operator_spec_from_quoted_source() {
+    let source = r#"
+@spec +(integer) :: integer
+def +(x :: integer), do: x
+"#;
+    let (root, sources) = grouped_function_root("unary_plus.fz", source);
+    let surface = derive_function_surface(&root, &sources).expect("derive function surface");
+
+    assert_eq!(surface.name, "+");
+    let Attribute::Spec(spec) = &surface.attrs[0] else {
+        panic!("expected @spec attr");
+    };
+    assert_eq!(spec.name, "+");
+    assert_eq!(
+        spec.param_body_tokens.len(),
+        1,
+        "a unary operator spec declares one parameter"
+    );
+}
+
+#[test]
 fn compiler2_quoted_function_surface_derives_typed_operator_clause_annotations() {
     let source = r#"
 def (left :: integer) + (right :: float), do: left + right
