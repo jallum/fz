@@ -5,7 +5,8 @@
     "fz-rba.2"
   ],
   "blocks": [
-    "fz-rba.4"
+    "fz-rba.4",
+    "fz-rba.5"
   ],
   "created": "2026-11-13T21:18:47Z",
   "description": "Four sites in jobs/transport.rs build a tuple shape (layout_from_demand, TransportRecipe::Tuple/tuple_layout, joined_tuple_structural, combine_capture_requirements). All ask one function; the bound turns on here. Removes tuple_refined_demand and the repeated has_exact_tuple_arity / exact_tuple_field_tys reads. Signal: widest signature at 1,000 elements is a handful of parameters; wide5000 run time; pins may only fall.",
