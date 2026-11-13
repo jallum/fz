@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T04:52:20Z",
   "created": "2026-11-13T03:54:09Z",
   "description": "note_module_interface_expectation (src/compiler2/world.rs:1728) clones the whole ModuleInterface, records one expectation in the copy and writes the copy back, so recording n expectations copies the interface n times.\nShape: record through a mutable reference to the stored interface (default-inserting when absent), keeping whatever revision or change notice define_module_interface emits.\nLine numbers are at develop d0c3ae00c. Site-by-site ledger (class, what is copied, fix shape): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-jobs.md, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-core.md, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-rest.md.\nSignal: full gate green; no golden, census or pin moves; program output and canonical backend dump identical on the probe; allocation count before and after from /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/measure.sh in the commit.\nRemoves: each named copy, and any accessor left without callers.",
   "id": "fz-gfx.27",
   "labels": [],
   "parent": "fz-gfx",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "An interface expectation is recorded in place",
   "type": "task",
-  "updated_at": "2026-11-13T04:38:45Z"
+  "updated_at": "2026-11-13T04:52:20Z"
 }
