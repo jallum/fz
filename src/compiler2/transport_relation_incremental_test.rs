@@ -9,7 +9,7 @@ use crate::telemetry::ConfiguredTelemetry;
 use super::facts::FactUse;
 use super::incoming_inputs::{IncomingInputSource, InputSlot};
 use super::pull::{ProductKey, ProductRequestId, PullOutcome, PullSession, PullSessionId, PullWait};
-use super::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
+use super::transport::{ExecutableSymbol, TransportPosition};
 use super::{CodeSubmission, Compiler2, DependencyKey, ExecutableNeed, FactKey, Job, RootSubmission, World};
 
 #[derive(Default)]
@@ -324,14 +324,7 @@ fn apply_slot(compiler: &mut Compiler2<ConfiguredTelemetry>, relations: &Relatio
 
 fn owner(world: &World, slot: &InputSlot) -> ProductKey {
     ProductKey::CallableConstruction(TransportPosition::ExecutableInput {
-        executable: ExecutableSymbol {
-            activation: ActivationSymbol {
-                function: slot.executable.activation.function,
-                arrow: slot.executable.activation.arrow,
-                input: slot.executable.activation.inputs(world.types()).into_boxed_slice(),
-            },
-            need: slot.executable.need,
-        },
+        executable: ExecutableSymbol::new(&slot.executable, world.types()),
         semantic_index: slot.semantic_index,
     })
 }

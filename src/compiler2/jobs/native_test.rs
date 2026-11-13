@@ -29,8 +29,8 @@ fn empty_backend_program() -> BackendProgram {
     BackendProgram::empty_for_test()
 }
 
-fn test_executable(key: ExecutableKey, return_ty: Ty, nothing: ShapeId) -> BackendExecutable {
-    BackendExecutable::for_test(key, return_ty, nothing)
+fn test_executable(key: ExecutableKey, return_ty: Ty, nothing: ShapeId, world: &World) -> BackendExecutable {
+    BackendExecutable::for_test(key, return_ty, nothing, world.types())
 }
 
 fn encode_for_layout<T: crate::telemetry::Telemetry>(
@@ -111,7 +111,7 @@ fn nested_callable_adapter_preserves_the_source_lane_type_and_repr() {
         activation: ActivationKey::from_inputs(root, FunctionId::from_coordinate(0), &[], world.types_mut()),
         need: ExecutableNeed::Value,
     };
-    let executable = test_executable(key.clone(), int, nothing);
+    let executable = test_executable(key.clone(), int, nothing, &world);
     let program = empty_backend_program();
     let telemetry = NullTelemetry;
     let mut lowerer = NativeLowerer::new(&mut world, &telemetry, root, &program).expect("test native lowerer");
@@ -177,7 +177,7 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
         tys: Box::from([int]),
         reprs: Box::from([AbiValueRepr::ValueRef]),
     };
-    let mut executable = test_executable(key.clone(), int, nothing);
+    let mut executable = test_executable(key.clone(), int, nothing, &world);
     let abi = Rc::make_mut(&mut executable.abi);
     abi.param_reprs = vec![AbiValueRepr::ValueRef];
     abi.return_layout.layout = scalar_layout.clone();
@@ -342,7 +342,7 @@ fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
         activation,
         need: ExecutableNeed::Value,
     };
-    let executable = test_executable(key.clone(), int, nothing);
+    let executable = test_executable(key.clone(), int, nothing, &world);
     let program = empty_backend_program();
     let telemetry = NullTelemetry;
     let mut lowerer = NativeLowerer::new(&mut world, &telemetry, root, &program).expect("test native lowerer");

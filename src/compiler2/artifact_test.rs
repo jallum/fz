@@ -48,7 +48,7 @@ fn backend_program_rejects_duplicate_member_identities() {
         activation,
         need: ExecutableNeed::Value,
     };
-    let member = std::rc::Rc::new(BackendExecutable::for_test(key.clone(), int, shape));
+    let member = std::rc::Rc::new(BackendExecutable::for_test(key.clone(), int, shape, world.types()));
     BackendProgram::new(
         key,
         Vec::new(),
@@ -82,7 +82,7 @@ fn backend_program_rejects_duplicate_construction_owners() {
         activation,
         need: ExecutableNeed::Value,
     };
-    let member = std::rc::Rc::new(BackendExecutable::for_test(key.clone(), int, shape));
+    let member = std::rc::Rc::new(BackendExecutable::for_test(key.clone(), int, shape, world.types()));
     let wrapper = std::rc::Rc::new(super::artifact::BackendConstructionWrapper {
         denotation: key.activation.function.denotation(),
         source_origin: std::sync::Arc::new(fz_runtime::function_denotation::FunctionDenotation::named(

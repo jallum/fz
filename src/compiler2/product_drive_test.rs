@@ -2942,15 +2942,17 @@ mod wait_frame_tests {
         }
     }
 
-    fn positioned_key(arrow: crate::compiler2::Ty, id: u32) -> ProductKey {
+    /// An arrow wide enough that its parameter list is a heap allocation.
+    fn wide_arrow(types: &mut crate::compiler2::Types) -> crate::compiler2::Ty {
+        let any = types.any();
+        types.arrow(&[any; 32], any)
+    }
+
+    fn positioned_key(types: &crate::compiler2::Types, arrow: crate::compiler2::Ty, id: u32) -> ProductKey {
         use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
         ProductKey::TransportShape(TransportPosition::ExecutableReturn {
             executable: ExecutableSymbol {
-                activation: ActivationSymbol {
-                    function: crate::compiler2::FunctionId::from_coordinate(id),
-                    arrow,
-                    input: vec![arrow; 32].into_boxed_slice(),
-                },
+                activation: ActivationSymbol::new(crate::compiler2::FunctionId::from_coordinate(id), arrow, types),
                 need: crate::compiler2::identity::ExecutableNeed::Value,
             },
         })
@@ -2960,7 +2962,7 @@ mod wait_frame_tests {
         let ProductKey::TransportShape(position) = key else {
             panic!("expected a positioned product")
         };
-        position.executable().activation.input.as_ptr()
+        position.executable().activation.input().as_ptr()
     }
 
     #[test]
@@ -2970,9 +2972,9 @@ mod wait_frame_tests {
             let mut world = World::new();
             let root = RootId::for_test(91);
             let root_key = ProductKey::RootBackendProduct(root);
-            let arrow = world.types_mut().any();
+            let arrow = wide_arrow(world.types_mut());
             let mut waits = (100..100 + product_count)
-                .map(|id| PullWait::Product(positioned_key(arrow, id)))
+                .map(|id| PullWait::Product(positioned_key(world.types(), arrow, id)))
                 .collect::<Vec<_>>();
             sort_product_waits(world.types(), &mut waits);
             let buffer = waits.as_ptr();
@@ -3033,12 +3035,12 @@ mod wait_frame_tests {
             let code = world.submit_code(None, "def indexed_only() do\n 1\nend\n".to_owned());
             let root = RootId::for_test(95);
             let root_key = ProductKey::RootBackendProduct(root);
-            let arrow = world.types_mut().any();
-            let child = positioned_key(arrow, 100);
+            let arrow = wide_arrow(world.types_mut());
+            let child = positioned_key(world.types(), arrow, 100);
             let mut waits = vec![
-                PullWait::Product(positioned_key(arrow, 102)),
+                PullWait::Product(positioned_key(world.types(), arrow, 102)),
                 PullWait::Fact(FactUse::current(FactKey::CodeIndexed(code))),
-                PullWait::Product(positioned_key(arrow, 101)),
+                PullWait::Product(positioned_key(world.types(), arrow, 101)),
             ];
             sort_product_waits(world.types(), &mut waits);
             let buffer = waits.as_ptr();
@@ -3135,7 +3137,10 @@ mod wait_frame_tests {
         let mut world = World::new();
         let root = RootId::for_test(97);
         let root_key = ProductKey::RootBackendProduct(root);
-        let child = positioned_key(world.types_mut().any(), 100);
+        let child = {
+            let arrow = wide_arrow(world.types_mut());
+            positioned_key(world.types(), arrow, 100)
+        };
         let input = positioned_input(&child);
         let mut waits = Some(vec![PullWait::Product(child)]);
         let mut driver = ProductDriver::new(&tel, root);
@@ -3219,7 +3224,10 @@ mod wait_frame_tests {
         let mut world = World::new();
         let root = RootId::for_test(92);
         let root_key = ProductKey::RootBackendProduct(root);
-        let child = positioned_key(world.types_mut().any(), 101);
+        let child = {
+            let arrow = wide_arrow(world.types_mut());
+            positioned_key(world.types(), arrow, 101)
+        };
         let input = positioned_input(&child);
         let mut waits = Some(vec![PullWait::Product(child)]);
         let mut driver = ProductDriver::new(&tel, root);
@@ -3254,11 +3262,11 @@ mod wait_frame_tests {
     fn canceling_nested_frames_releases_batches_without_copying_the_resumed_owner() {
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new();
-        let arrow = world.types_mut().any();
+        let arrow = wide_arrow(world.types_mut());
         let root = RootId::for_test(93);
-        let owner = positioned_key(arrow, 100);
+        let owner = positioned_key(world.types(), arrow, 100);
         let owner_input = positioned_input(&owner);
-        let child = positioned_key(arrow, 101);
+        let child = positioned_key(world.types(), arrow, 101);
         let child_input = positioned_input(&child);
         let mut current = Some(SelectedProduct::Owned(owner));
         let first = ProductWaitFrame::take_selection(&mut current, None, vec![PullWait::Product(child)], 0);
@@ -3304,13 +3312,13 @@ mod wait_frame_tests {
     fn completed_owner_retry_moves_its_input_and_allocates_no_product_inventory_for_fact_only_waits() {
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new();
-        let arrow = world.types_mut().any();
+        let arrow = wide_arrow(world.types_mut());
         let root = RootId::for_test(94);
         for waits in [
             Vec::new(),
             vec![PullWait::Fact(FactUse::current(FactKey::RootEntry(root)))],
         ] {
-            let owner = positioned_key(arrow, 100);
+            let owner = positioned_key(world.types(), arrow, 100);
             let input = positioned_input(&owner);
             let mut current = Some(SelectedProduct::Owned(owner));
             let fact_count = waits.len();
@@ -3366,17 +3374,14 @@ mod wait_frame_tests {
     #[test]
     fn a_waiting_frame_takes_the_selected_positioned_key_without_copying_its_input() {
         use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
-        let arrow = crate::compiler2::Types::new().any();
-        let input = vec![arrow; 32].into_boxed_slice();
-        let storage = input.as_ptr();
+        let mut types = crate::compiler2::Types::new();
+        let arrow = wide_arrow(&mut types);
+        let symbol = ActivationSymbol::new(crate::compiler2::FunctionId::from_coordinate(91), arrow, &types);
+        let storage = symbol.input().as_ptr();
         let mut selected = Some(SelectedProduct::Owned(ProductKey::TransportShape(
             TransportPosition::ExecutableReturn {
                 executable: ExecutableSymbol {
-                    activation: ActivationSymbol {
-                        function: crate::compiler2::FunctionId::from_coordinate(91),
-                        arrow,
-                        input,
-                    },
+                    activation: symbol,
                     need: crate::compiler2::identity::ExecutableNeed::Value,
                 },
             },
@@ -3390,7 +3395,7 @@ mod wait_frame_tests {
             unreachable!()
         };
         assert_eq!(
-            position.executable().activation.input.as_ptr(),
+            position.executable().activation.input().as_ptr(),
             storage,
             "suspending a selected key moves its boxed input rather than allocating a duplicate"
         );

@@ -1103,15 +1103,8 @@ impl BackendExecutable {
     /// Hand-built test executables have no lowering to count their values, so they get room for every id a test names.
     pub(crate) const TEST_VALUE_COUNT: usize = 16;
 
-    pub(crate) fn for_test(key: ExecutableKey, return_ty: Ty, nothing: ShapeId) -> Self {
-        let symbol = ExecutableSymbol {
-            activation: super::transport::ActivationSymbol {
-                function: key.activation.function,
-                arrow: key.activation.arrow,
-                input: Box::default(),
-            },
-            need: key.need,
-        };
+    pub(crate) fn for_test(key: ExecutableKey, return_ty: Ty, nothing: ShapeId, types: &super::types::Types) -> Self {
+        let symbol = ExecutableSymbol::new(&key, types);
         let transport = MaterializedExecutableTransport {
             executable: symbol.clone(),
             position_layouts: Vec::new(),

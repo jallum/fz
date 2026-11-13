@@ -81,14 +81,7 @@ fn transport_consumers_share_one_typed_semantic_order() {
         activation: ActivationKey::from_inputs(root, function, &[input], &mut types),
         need: ExecutableNeed::Value,
     });
-    let symbols = keys.each_ref().map(|key| ExecutableSymbol {
-        activation: ActivationSymbol {
-            function: key.activation.function,
-            arrow: key.activation.arrow,
-            input: key.activation.inputs(&types).into_boxed_slice(),
-        },
-        need: key.need,
-    });
+    let symbols = keys.each_ref().map(|key| ExecutableSymbol::new(key, &types));
     let positions = symbols.each_ref().map(|executable| TransportPosition::ExecutableInput {
         executable: executable.clone(),
         semantic_index: 0,
@@ -243,12 +236,9 @@ fn transport_descriptors_share_across_root_positions() {
         class: TransportClass::Value,
     });
     let shape = interners.intern_shape(ShapeDescr::Lane(lane));
+    let add_arrow = types.arrow(&[int, int], int);
     let executable = ExecutableSymbol {
-        activation: ActivationSymbol {
-            function: add,
-            arrow: int,
-            input: vec![int, int].into_boxed_slice(),
-        },
+        activation: ActivationSymbol::new(add, add_arrow, &types),
         need: ExecutableNeed::Value,
     };
     let first_position = TransportPosition::ExecutableInput {
@@ -461,4 +451,48 @@ fn field_spans_read_tuple_fields_and_callable_captures_the_same_way() {
     assert!(interners.field_spans(one_lane.structural).is_none());
     assert!(interners.field_spans(nothing).is_none());
     assert_eq!(interners.field_layouts(nothing), None);
+}
+
+/// Feeds a hasher only the bytes a value writes, so two values hash alike
+/// exactly when they write the same bytes.
+#[derive(Default)]
+struct WrittenBytes(Vec<u8>);
+
+impl std::hash::Hasher for WrittenBytes {
+    fn finish(&self) -> u64 {
+        0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+}
+
+fn bytes_written_by(value: &impl std::hash::Hash) -> Vec<u8> {
+    let mut hasher = WrittenBytes::default();
+    value.hash(&mut hasher);
+    hasher.0
+}
+
+#[test]
+fn an_activation_symbol_is_identified_by_its_function_and_arrow_alone() {
+    let mut types = Types::new();
+    let int = types.int();
+    let arrow = types.arrow(&[int, int], int);
+    let mut functions = FunctionMap::new();
+    let add = functions.reference(ModuleId::GLOBAL, None, "add", 2);
+
+    let symbol = ActivationSymbol::new(add, arrow, &types);
+
+    assert_eq!(
+        symbol.input(),
+        types.arrow_params(&arrow),
+        "the input list is the arrow's parameter list, read from the arrow"
+    );
+    assert_eq!(
+        bytes_written_by(&symbol),
+        bytes_written_by(&(add, arrow)),
+        "hashing an activation symbol writes its function and arrow and nothing derived from them"
+    );
+    assert_eq!(symbol, ActivationSymbol::new(add, arrow, &types));
 }
