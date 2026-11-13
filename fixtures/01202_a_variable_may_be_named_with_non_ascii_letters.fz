@@ -1,0 +1,8 @@
+#---
+# purpose: a variable whose name holds a non-ASCII letter binds and reads like any other
+# oracle: 01202_a_variable_may_be_named_with_non_ascii_letters.oracle.exs
+#---
+def main() do
+  café = 1
+  dbg(café + 41)
+end

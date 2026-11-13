@@ -568,12 +568,123 @@ fn heredoc_refuses_content_on_its_opening_line() {
 
 #[test]
 fn an_unexpected_non_ascii_character_is_named_whole_and_spanned_exactly() {
-    let src = "café = 1";
+    let src = "caf€ = 1";
     let mut sources = SourceMap::new();
     let version = sources.add_code(Some("<test>"), src);
     let err = Lexer::with_source_version_and_name(src, version, "<test>")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect_err("`é` is not an identifier character");
-    assert_eq!(err.msg, "unexpected character 'é'");
-    assert_eq!(&src[err.span.start as usize..err.span.end as usize], "é");
+        .expect_err("`€` is not an identifier character");
+    assert_eq!(err.msg, "unexpected character '€'");
+    assert_eq!(&src[err.span.start as usize..err.span.end as usize], "€");
+}
+
+fn lex_kinds(src: &str) -> Result<Vec<Tok>, LexError> {
+    test_lexer(src)
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .map(|tokens| tokens.into_iter().map(|token| token.tok).collect())
+}
+
+/// A lowercase letter outside ASCII starts a variable, as it does in Elixir.
+#[test]
+fn a_variable_may_start_with_a_non_ascii_lowercase_letter() {
+    assert_eq!(lex_kinds("éa").unwrap(), vec![Tok::Ident("éa".to_string()), Tok::Eof]);
+}
+
+/// A letter with no case, such as a CJK ideograph, starts a variable.
+#[test]
+fn a_variable_may_start_with_a_caseless_letter() {
+    assert_eq!(
+        lex_kinds("日本").unwrap(),
+        vec![Tok::Ident("日本".to_string()), Tok::Eof]
+    );
+}
+
+/// Non-ASCII XID_Continue characters continue a name, and `?` and `!` still end it.
+#[test]
+fn a_name_continues_through_non_ascii_letters_and_ends_with_a_mark() {
+    assert_eq!(
+        lex_kinds("café? naïve!").unwrap(),
+        vec![
+            Tok::Ident("café?".to_string()),
+            Tok::Ident("naïve!".to_string()),
+            Tok::Eof
+        ]
+    );
+}
+
+/// An atom spells its name by the same classes as a variable.
+#[test]
+fn an_atom_may_hold_non_ascii_letters() {
+    assert_eq!(
+        lex_kinds(":café").unwrap(),
+        vec![Tok::Atom("café".to_string()), Tok::Eof]
+    );
+}
+
+/// An atom may start with an uppercase letter outside ASCII, as in Elixir's `:Élixir`.
+#[test]
+fn an_atom_may_start_with_a_non_ascii_uppercase_letter() {
+    assert_eq!(
+        lex_kinds(":Élixir").unwrap(),
+        vec![Tok::Atom("Élixir".to_string()), Tok::Eof]
+    );
+}
+
+/// A titlecase letter cannot start an atom, which Elixir rejects as well.
+#[test]
+fn an_atom_cannot_start_with_a_titlecase_letter() {
+    let error = lex_kinds(":ǅa").unwrap_err();
+    assert_eq!(error.msg, "unexpected character 'ǅ'");
+}
+
+/// A keyword key is a name followed by a colon, so it takes non-ASCII letters too.
+#[test]
+fn a_keyword_key_may_hold_non_ascii_letters() {
+    assert_eq!(lex_kinds("[café: 1]").unwrap()[1], Tok::KwKey("café".to_string()));
+}
+
+/// An uppercase letter outside ASCII cannot start a variable and is named whole.
+#[test]
+fn a_non_ascii_uppercase_letter_cannot_start_a_variable() {
+    let error = lex_kinds("Élan").unwrap_err();
+    assert_eq!(error.msg, "unexpected character 'É'");
+}
+
+/// A titlecase letter cannot start a variable either.
+#[test]
+fn a_titlecase_letter_cannot_start_a_variable() {
+    let error = lex_kinds("ǅa").unwrap_err();
+    assert_eq!(error.msg, "unexpected character 'ǅ'");
+}
+
+/// An alias is ASCII only; the first other character is named with its code point.
+#[test]
+fn an_alias_with_a_non_ascii_character_is_rejected() {
+    let error = lex_kinds("Abé").unwrap_err();
+    assert_eq!(
+        error.msg,
+        "invalid character 'é' (code point U+00E9) in alias (only ASCII characters are allowed): Abé"
+    );
+}
+
+/// A keyword key is not an alias, so `Abé: 1` lexes as a key.
+#[test]
+fn a_capitalised_keyword_key_may_hold_non_ascii_letters() {
+    assert_eq!(lex_kinds("[Abé: 1]").unwrap()[1], Tok::KwKey("Abé".to_string()));
+}
+
+/// The macro surface and the lexer answer "is this one source word" identically.
+#[test]
+fn source_word_classifies_non_ascii_names_as_the_lexer_does() {
+    assert!(matches!(source_word("café"), Some(SourceWord::Ident)));
+    assert!(source_word("Élan").is_none());
+    assert!(source_word("Abé").is_none());
+    assert!(matches!(source_word("Ab"), Some(SourceWord::Upper)));
+    assert!(source_word("a€").is_none());
+}
+
+/// A keyword key may start with an uppercase letter outside ASCII, which a variable may not.
+#[test]
+fn a_keyword_key_may_start_with_a_non_ascii_uppercase_letter() {
+    assert_eq!(lex_kinds("[Élan: 1]").unwrap()[1], Tok::KwKey("Élan".to_string()));
 }

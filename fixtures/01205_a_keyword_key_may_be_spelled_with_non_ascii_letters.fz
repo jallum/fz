@@ -1,0 +1,7 @@
+#---
+# purpose: a keyword key whose name holds a non-ASCII letter is an atom key
+# oracle: 01205_a_keyword_key_may_be_spelled_with_non_ascii_letters.oracle.exs
+#---
+def main() do
+  dbg([café: 1, Élan: 2])
+end

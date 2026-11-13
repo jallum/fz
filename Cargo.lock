@@ -485,6 +485,7 @@ dependencies = [
  "smallvec",
  "syn",
  "target-lexicon",
+ "unicode-ident",
 ]
 
 [[package]]
