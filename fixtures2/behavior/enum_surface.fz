@@ -1,6 +1,7 @@
 #---
 # purpose: "the Enum functions that fz-5xp.8, .12 and .15 unblocked, checked against Elixir"
 # oracle: oracle.exs
+# oracle.stamp: 860443b8313969dc
 #---
 #
 # # enum_surface

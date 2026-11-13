@@ -1,6 +1,7 @@
 #---
 # purpose: "a call that picks its destination by a closure keeps that closure, wherever the closure sits among the arguments"
 # oracle: 00631_a_call_chosen_by_a_closure_in_any_position_keeps_it.oracle.exs
+# oracle.stamp: f4ea2f15298792e1
 #---
 #
 # Each helper is called with two different closures, so its call to the

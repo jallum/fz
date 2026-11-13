@@ -1,6 +1,7 @@
 #---
 # purpose: "a closure chosen by a runtime branch reaches the forwarder as a union of two constructions, and the word it carries decides which body runs"
 # oracle: oracle.exs
+# oracle.stamp: 822b978885215fcd
 #---
 #
 # fz-kdt.127, the dynamic half. No key can pin which closure `f` is: the

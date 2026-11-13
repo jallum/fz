@@ -1,6 +1,7 @@
 #---
 # purpose: "A dispatch that splits on a tag still routes each call to the lambda it was handed"
 # oracle: oracle.exs
+# oracle.stamp: b767e92a03e311ab
 #---
 #
 # fz-kdt.126. `run/3` only FORWARDS its callable, so its arrow position

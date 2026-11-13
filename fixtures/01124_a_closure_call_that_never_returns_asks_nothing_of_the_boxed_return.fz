@@ -1,6 +1,7 @@
 #---
 # purpose: "A closure call that never returns reads nothing back from the boxed apply seam, so it cannot disagree with a returning wrapper of the same arity; the program prints what Elixir prints"
 # oracle: 01124_a_closure_call_that_never_returns_asks_nothing_of_the_boxed_return.oracle.exs
+# oracle.stamp: 1ec022ca262a9ce0
 #---
 defmodule M do
   def main(args) do

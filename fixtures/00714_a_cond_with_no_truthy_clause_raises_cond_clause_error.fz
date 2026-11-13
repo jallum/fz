@@ -2,6 +2,7 @@
 # purpose: "a cond none of whose conditions is truthy raises CondClauseError"
 # expect: abort
 # oracle: 00714_a_cond_with_no_truthy_clause_raises_cond_clause_error.oracle.exs
+# oracle.stamp: 83af032facbfa2f5
 #---
 defp two(), do: 2
 

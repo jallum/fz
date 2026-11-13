@@ -1,6 +1,7 @@
 #---
 # purpose: "defstruct takes a default per field, in a bracketed list or as bare keywords; a struct literal fills each field it omits from its default, a field with no default is nil, and a given field wins over its default"
 # oracle: 00859_a_struct_literal_fills_the_fields_it_omits_from_the_declared_defaults.oracle.exs
+# oracle.stamp: fd768286e49a07ce
 #---
 #
 # A default is a literal written in the declaration. Every literal that

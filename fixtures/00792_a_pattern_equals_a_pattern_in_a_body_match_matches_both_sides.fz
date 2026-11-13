@@ -1,6 +1,7 @@
 #---
 # purpose: "In a body match, p1 = p2 = expr binds the names of every side from the one value"
 # oracle: 00792_a_pattern_equals_a_pattern_in_a_body_match_matches_both_sides.oracle.exs
+# oracle.stamp: 5ac2945022d4d041
 #---
 def main() do
   %{} = m = %{a: 1}

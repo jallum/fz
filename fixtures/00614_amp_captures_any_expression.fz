@@ -1,6 +1,7 @@
 #---
 # purpose: "`&` captures any expression: the operand is an ordinary expression, and a name/arity operand is a function reference"
 # oracle: oracle.exs
+# oracle.stamp: 2932d09cab495c25
 #---
 #
 # `&` takes one operand expression. When the operand is `name/arity` or

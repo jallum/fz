@@ -1,6 +1,7 @@
 #---
 # purpose: "the ordering operators themselves across kinds, in body position and through a guard"
 # oracle: oracle.exs
+# oracle.stamp: adae2af81509318b
 #---
 #
 # # cross_kind_operators

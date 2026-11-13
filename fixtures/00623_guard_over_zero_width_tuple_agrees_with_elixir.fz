@@ -1,6 +1,7 @@
 #---
 # purpose: "A guard that reads only an empty tuple still receives it, so the clause is chosen as in Elixir"
 # oracle: oracle.exs
+# oracle.stamp: 7a70cffc219aa980
 #---
 #
 # `{}` and `{{}}` carry no data, yet a guard that tests them reads them, so

@@ -2,6 +2,7 @@
 # purpose: "Enum.map over a list of captures, a list of one capture repeated and a list of anonymous closures returns one result per element"
 # kind: run
 # oracle: 01082_enum_map_over_function_captures_and_anonymous_closures.oracle.exs
+# oracle.stamp: 1078222a210d6c23
 #---
 defmodule M do
   def id(x), do: x

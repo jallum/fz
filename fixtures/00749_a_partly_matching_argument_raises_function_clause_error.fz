@@ -2,6 +2,7 @@
 # purpose: "An integer-or-nil argument alongside an any one is keyed as the caller holds it, so the nil meets the callee's arm of last resort and aborts with FunctionClauseError"
 # expect: abort
 # oracle: 00749_a_partly_matching_argument_raises_function_clause_error.oracle.exs
+# oracle.stamp: ea61ff22d8a1f368
 #---
 defmodule M do
   @spec f(integer, integer) :: integer

@@ -1,6 +1,7 @@
 #---
 # purpose: "IO.puts writes an interpolated binary and then one newline, so a text that already ends in a newline leaves a blank line: the shape of the distiller's report line"
 # oracle: 00778_puts_prints_an_interpolated_line_whose_text_ends_in_a_newline.oracle.exs
+# oracle.stamp: dc7eb434d719b23b
 #---
 def fmt_ms(ms), do: Integer.to_string(div(ms, 1000))
 

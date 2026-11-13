@@ -1,6 +1,7 @@
 #---
 # purpose: "Two reduces over one value, a record field decoded through Stream.map and JSON.decode! whose type is any, one adding to an integer and one building a map, each reach their own result; the program prints what Elixir prints"
 # oracle: 01128_two_reduces_over_one_stream_decoded_value_each_reach_their_own_result.oracle.exs
+# oracle.stamp: 834c4727f2f9493c
 #---
 def main() do
   records = ["{\"metadata\": {\"session\": {\"work_starts\": [1, 2, 3]}}}"] |> Stream.map(&JSON.decode!/1) |> Enum.to_list()

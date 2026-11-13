@@ -1,6 +1,7 @@
 #---
 # purpose: "catch :exit, reason takes exit/1 and binds its reason; a one-head catch is for throws only, so an exit passes through it to the outer catch"
 # oracle: 00844_catch_exit_takes_an_exit_and_one_head_does_not.oracle.exs
+# oracle.stamp: 874057e1df63e8f3
 #---
 def main() do
   dbg(try do

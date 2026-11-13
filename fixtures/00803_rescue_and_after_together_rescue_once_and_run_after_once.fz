@@ -1,6 +1,7 @@
 #---
 # purpose: "a try with rescue and after: the rescue handles the raise, the after runs exactly once, on both the raising and the completing path"
 # oracle: 00803_rescue_and_after_together_rescue_once_and_run_after_once.oracle.exs
+# oracle.stamp: 3867cc402cf18014
 #---
 def attempt(f) do
   try do

@@ -1,6 +1,7 @@
 #---
 # purpose: "inspect/2 limit: 0 prints ... for any non-empty container and nothing else changes, and limit: :infinity prints every element"
 # oracle: 01022_inspect_limit_zero_and_infinity.oracle.exs
+# oracle.stamp: be2af45c1bd9e751
 #---
 def main() do
   dbg(inspect([1], limit: 0))

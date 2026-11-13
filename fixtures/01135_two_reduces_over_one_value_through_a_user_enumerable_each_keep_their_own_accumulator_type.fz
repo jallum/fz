@@ -2,6 +2,7 @@
 # purpose: "Two Enum.reduce calls over one decoded map, one counting and one collecting into a map, each reach their reducer through a user enumerable that composes it with a function, and print what Elixir prints"
 # kind: run
 # oracle: 01135_two_reduces_over_one_value_through_a_user_enumerable_each_keep_their_own_accumulator_type.oracle.exs
+# oracle.stamp: 37da40156350639c
 #---
 defmodule W do
   defstruct [:enum, :funs]

@@ -1,6 +1,7 @@
 #---
 # purpose: "A map whose keys are all non-alias atoms, and a list of such pairs, print as key: value, quoting the keys that need it"
 # oracle: 01023_atom_keys_print_in_keyword_style.oracle.exs
+# oracle.stamp: bca17a8c71f1fee4
 #---
 def main() do
   dbg(%{a: 1})

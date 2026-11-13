@@ -1,6 +1,7 @@
 #---
 # purpose: "defstruct-backed Range values print Elixir-style range literals"
 # oracle: oracle.exs
+# oracle.stamp: 09b5cb860dde6045
 #---
 #
 # Exercises `Range.new/3` and `Kernel.range/3`, both backed by the source

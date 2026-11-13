@@ -1,6 +1,7 @@
 #---
 # purpose: "A closure call that never returns, reached through records decoded by JSON.decode! whose elements are any, asks nothing of the boxed return convention; the program prints what Elixir prints"
 # oracle: 01125_a_never_returning_closure_call_over_decoded_records_asks_nothing_of_the_boxed_return.oracle.exs
+# oracle.stamp: 7d4cc629f0180b8c
 #---
 defmodule P do
   def main(lines) do

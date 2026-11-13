@@ -1,6 +1,7 @@
 #---
 # purpose: "a catch clause's guard sees the kind and the value; a clause whose guard fails falls to the next clause"
 # oracle: 00843_a_catch_guard_can_test_the_kind.oracle.exs
+# oracle.stamp: 04ae32f55e15b4d6
 #---
 def attempt(f) do
   try do

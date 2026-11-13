@@ -1,6 +1,7 @@
 #---
 # purpose: "operator desugaring rewrites ++, --, <>, .., and ..// to runtime-library calls"
 # oracle: oracle.exs
+# oracle.stamp: 3b3b110b374a21ca
 #---
 #
 # Exercises the user-facing operator spellings after compiler2 source-sugar

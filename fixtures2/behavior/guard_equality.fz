@@ -1,6 +1,7 @@
 #---
 # purpose: "`==` means the same thing in a guard as in an expression, and matching stays strict"
 # oracle: oracle.exs
+# oracle.stamp: d5ff4a8ba8b108dc
 #---
 #
 # # guard_equality

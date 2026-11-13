@@ -2,6 +2,7 @@
 # purpose: "once a try has completed its handler is gone: a later raise reaches no handler, prints its line, and exits 1"
 # expect: abort
 # oracle: 00822_an_uncaught_raise_after_a_completed_try_fails_the_process.oracle.exs
+# oracle.stamp: 881c9b905c964988
 #---
 def main() do
   result = try do

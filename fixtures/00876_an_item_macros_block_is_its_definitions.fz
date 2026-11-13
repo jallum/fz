@@ -1,6 +1,7 @@
 #---
 # purpose: "an item macro that returns a block defines each of the block's statements: two definitions in one quote, a block unquoted inside a block, and an empty block that defines nothing"
 # oracle: 00876_an_item_macros_block_is_its_definitions.oracle.exs
+# oracle.stamp: 973ce743807e73f3
 #---
 defmodule Defaults do
   defmacro pair() do

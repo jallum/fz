@@ -1,6 +1,7 @@
 #---
 # purpose: "A dispatch arm is never seated ahead of a sibling holding elements its own surface does not name"
 # oracle: oracle.exs
+# oracle.stamp: ea5e24354d2cc238
 #---
 #
 # fz-kdt.129 / fz-kdt.131. All three calls reach one

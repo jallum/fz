@@ -1,6 +1,7 @@
 #---
 # purpose: "Map.put of a new key and Map.delete answer plain maps that keep __struct__ as an ordinary key; deleting __struct__ leaves the fields"
 # oracle: 00853_a_put_of_a_new_key_or_a_delete_leaves_the_struct.oracle.exs
+# oracle.stamp: db5efe9a040f8882
 #---
 #
 # Adding or removing a key changes the key set, so the answer is no longer

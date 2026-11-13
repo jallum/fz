@@ -1,6 +1,7 @@
 #---
 # purpose: "a literal prefix before <> in a function head matches a binary that starts with it and binds the remainder, as in Elixir"
 # oracle: 00661_a_prefix_in_a_function_head_binds_the_rest.oracle.exs
+# oracle.stamp: 44b80d1a6a32c386
 #---
 def option("--" <> rest), do: {:long, rest}
 def option("-" <> rest), do: {:short, rest}

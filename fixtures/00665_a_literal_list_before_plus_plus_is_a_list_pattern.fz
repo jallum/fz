@@ -1,6 +1,7 @@
 #---
 # purpose: "a literal list before ++ in a pattern is the list pattern it stands for, in a head, a case, a fn, a match and a with, as in Elixir"
 # oracle: 00665_a_literal_list_before_plus_plus_is_a_list_pattern.oracle.exs
+# oracle.stamp: 9a64444c3b08f8dc
 #---
 def after_header([1, 2] ++ rest), do: {:body, rest}
 def after_header(_), do: :no

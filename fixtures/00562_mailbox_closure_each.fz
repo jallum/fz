@@ -1,6 +1,7 @@
 #---
 # purpose: "a closure delivered by the mailbox drives Enum.each, whose step throws the call's result away"
 # oracle: oracle.exs
+# oracle.stamp: a643aa64b2b9281c
 #---
 #
 # fz-kdt.155. `Enum.each/2` is the one Enum higher-order call that DISCARDS what

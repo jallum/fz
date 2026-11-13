@@ -1,6 +1,7 @@
 #---
 # purpose: "%{s | k: v} and Map.put of an existing field answer the same struct with that field replaced, with the base type known or through an any-typed parameter"
 # oracle: 00851_a_struct_update_keeps_the_struct.oracle.exs
+# oracle.stamp: 9dc0b82b92aaa27d
 #---
 #
 # A struct is a map whose keys are its fields and `__struct__`. Replacing a

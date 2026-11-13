@@ -1,6 +1,7 @@
 #---
 # purpose: "a module's own get/2 is called, and bracket access still indexes"
 # oracle: oracle.exs
+# oracle.stamp: 09beb6a73aefc916
 #---
 #
 # # module_get_is_not_index

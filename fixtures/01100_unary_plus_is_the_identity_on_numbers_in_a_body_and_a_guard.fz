@@ -1,6 +1,7 @@
 #---
 # purpose: "unary plus answers its number operand in a body, a function-head guard and a receive guard, raises ArithmeticError on an operand that is not a number in a body, and leaves the clause unmatched in a guard"
 # oracle: oracle.exs
+# oracle.stamp: c25c07fed6f35f23
 #---
 #
 # `+n` is the identity on an integer or a float. On anything else it fails: a

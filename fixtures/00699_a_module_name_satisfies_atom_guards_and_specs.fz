@@ -1,6 +1,7 @@
 #---
 # purpose: "a module name's type is its singleton atom, so an is_atom guard and an @spec taking atom accept it, and a guard can compare against one"
 # oracle: 00699_a_module_name_satisfies_atom_guards_and_specs.oracle.exs
+# oracle.stamp: 06021a5888749316
 #---
 defmodule Names do
   @spec name(atom) :: binary

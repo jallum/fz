@@ -2,6 +2,7 @@
 # purpose: "A top-level import brings a library module's export into scope for top-level code"
 # kind: run
 # oracle: 00077_top_level_import.oracle.exs
+# oracle.stamp: f7b99363dc3a5076
 #---
 import Enum, only: [sum: 1]
 

@@ -1,6 +1,7 @@
 #---
 # purpose: "a rescued decision exception carries the value that missed in term and Elixir's multi-line message"
 # oracle: 00850_a_rescued_decision_carries_its_term_and_elixirs_message.oracle.exs
+# oracle.stamp: 25cfda87a9ef02b0
 #---
 defp three(), do: 3
 defp pair(), do: {1, 2}

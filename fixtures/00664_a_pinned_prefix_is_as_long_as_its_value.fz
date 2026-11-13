@@ -1,6 +1,7 @@
 #---
 # purpose: "a pinned variable before <> matches a binary that starts with its value and binds the remainder; the same holds for a pinned unsized binary segment, as in Elixir"
 # oracle: 00664_a_pinned_prefix_is_as_long_as_its_value.oracle.exs
+# oracle.stamp: 505b406d8ab0700a
 #---
 def after_prefix(prefix, s) do
   case s do

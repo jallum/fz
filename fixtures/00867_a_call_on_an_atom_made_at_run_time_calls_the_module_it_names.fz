@@ -1,6 +1,7 @@
 #---
 # purpose: "m.f(a) on a value typed as any atom calls the function of the module the atom names at run time: an atom made from a binary, the __struct__ field of a value known only to be a map, and a module the program never writes as a value"
 # oracle: 00867_a_call_on_an_atom_made_at_run_time_calls_the_module_it_names.oracle.exs
+# oracle.stamp: a32d1790388b003c
 #---
 #
 # The receiver's type lists no module, so the call chooses among the modules

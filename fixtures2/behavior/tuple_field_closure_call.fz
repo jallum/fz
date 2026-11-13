@@ -1,6 +1,7 @@
 #---
 # purpose: "a closure projected out of a tuple field is called with the same convention on every door, and a named target is called directly"
 # oracle: oracle.exs
+# oracle.stamp: 887d0196ca31a8e6
 #---
 #
 # # tuple_field_closure_call

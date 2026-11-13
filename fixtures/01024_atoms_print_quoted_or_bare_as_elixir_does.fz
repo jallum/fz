@@ -1,6 +1,7 @@
 #---
 # purpose: "An atom prints bare when it is an identifier or an unquoted operator, as an alias when it names a module, and quoted otherwise"
 # oracle: 01024_atoms_print_quoted_or_bare_as_elixir_does.oracle.exs
+# oracle.stamp: 05e70265f0c71226
 #---
 def main() do
   dbg(:ok)

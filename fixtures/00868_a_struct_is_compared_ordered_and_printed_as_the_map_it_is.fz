@@ -1,6 +1,7 @@
 #---
 # purpose: "a struct is equal to, ordered with and found by any map holding the same module and fields, however either was built; it stands among the maps in the term order; and a map prints as a struct exactly when its keys are that struct's"
 # oracle: 00868_a_struct_is_compared_ordered_and_printed_as_the_map_it_is.oracle.exs
+# oracle.stamp: 66c9562cb85d1c78
 #---
 #
 # A struct built with %Pt{} and a map that reaches the same keys and values

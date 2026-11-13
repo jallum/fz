@@ -1,6 +1,7 @@
 #---
 # purpose: "abs, round, trunc, floor and ceil answer an integer or a float in a body as Elixir does: round halves away from zero, floor and ceil go toward the signs, negative zero rounds to zero, and an operand that is not a number raises ArgumentError"
 # oracle: oracle.exs
+# oracle.stamp: 4467d04eb1145089
 #---
 #
 # abs keeps the type of its operand. round, trunc, floor and ceil answer an

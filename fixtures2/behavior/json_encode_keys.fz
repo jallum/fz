@@ -1,6 +1,7 @@
 #---
 # purpose: "JSON.encode!/1 renders every supported object key as a JSON string"
 # oracle: oracle.exs
+# oracle.stamp: 638be6a95ed12a11
 #---
 def main() do
   dbg(JSON.encode!(%{a: 1}))

@@ -1,6 +1,7 @@
 #---
 # purpose: "One Enum HOF specialized at three distinct closures keeps its reducer's result type"
 # oracle: oracle.exs
+# oracle.stamp: 8068fc4797ae3b63
 #---
 #
 # Regression target for fz-f98.17. `Enum.drop_while/2` reaches the recursive

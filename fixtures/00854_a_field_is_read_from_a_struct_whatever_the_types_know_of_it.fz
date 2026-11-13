@@ -1,6 +1,7 @@
 #---
 # purpose: "A struct's field reads the same value whether the types name the one struct in hand, one of two structs, or nothing at all; scalar, heap and nested fields, from a built struct and from a literal one"
 # oracle: oracle.exs
+# oracle.stamp: 1b1b4cb4964f8c32
 #---
 #
 # Where the receiver is one known struct the field is read by its position;

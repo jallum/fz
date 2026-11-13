@@ -1,6 +1,7 @@
 #---
 # purpose: "every pair of values has an order, and it is Erlang's total term order"
 # oracle: oracle.exs
+# oracle.stamp: 6251815a3349ef98
 #---
 #
 # # term_ordering

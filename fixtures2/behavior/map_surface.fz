@@ -1,6 +1,7 @@
 #---
 # purpose: "the Map surface over a flat sorted array: size, keys, values, to_list, has_key?, delete"
 # oracle: oracle.exs
+# oracle.stamp: ce369b87d5284a6d
 #---
 #
 # # map_surface

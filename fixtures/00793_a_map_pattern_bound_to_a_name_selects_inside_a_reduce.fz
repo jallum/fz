@@ -1,6 +1,7 @@
 #---
 # purpose: "A map pattern bound to a name in a reduce clause filters the entries and keeps the whole map"
 # oracle: 00793_a_map_pattern_bound_to_a_name_selects_inside_a_reduce.oracle.exs
+# oracle.stamp: bc2f45838ecf0f33
 #---
 def main() do
   spans = %{1 => %{name: "a", v: 1}, 2 => %{name: "b", v: 2}, 3 => %{name: "a", v: 3}}

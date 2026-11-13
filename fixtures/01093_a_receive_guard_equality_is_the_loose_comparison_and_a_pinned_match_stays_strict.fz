@@ -1,6 +1,7 @@
 #---
 # purpose: "a receive guard's == and != equate an integer with the float of the same value, as a body does, while a pinned match and === keep telling them apart"
 # oracle: oracle.exs
+# oracle.stamp: 1f98ed76461fbb1d
 #---
 #
 # `==` is the loose comparison: `1 == 1.0` is true and `0.0 == -0.0` is true.

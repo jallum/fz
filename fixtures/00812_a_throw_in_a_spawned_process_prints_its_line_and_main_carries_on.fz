@@ -1,6 +1,7 @@
 #---
 # purpose: "a spawned process that throws with no catch prints the throw line and ends; main carries on and the program exits 0"
 # oracle: 00812_a_throw_in_a_spawned_process_prints_its_line_and_main_carries_on.oracle.exs
+# oracle.stamp: 6b78dd9120721674
 #---
 # Elixir reports the spawned throw through its logger as an ErlangError
 # wrapping {:nocatch, :child_ball}; fz prints the throw line, on stderr. The

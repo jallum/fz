@@ -1,6 +1,7 @@
 #---
 # purpose: "A spec variable shared across two parameters keeps what one position pins when the other observes []"
 # oracle: oracle.exs
+# oracle.stamp: 295cfdd87173ef9d
 #---
 #
 # Regression target for fz-f98.16. `List.reverse/2` is spec'd

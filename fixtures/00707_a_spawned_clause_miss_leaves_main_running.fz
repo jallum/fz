@@ -1,6 +1,7 @@
 #---
 # purpose: "a spawned process whose call matches no clause raises FunctionClauseError and ends; main carries on"
 # oracle: 00707_a_spawned_clause_miss_leaves_main_running.oracle.exs
+# oracle.stamp: f79209b65fad218d
 #---
 # The failure line names the function that missed. Elixir qualifies it with
 # its module; a top-level fz function has none. The oracle silences the

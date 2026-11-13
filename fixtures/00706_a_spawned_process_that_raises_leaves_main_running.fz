@@ -1,6 +1,7 @@
 #---
 # purpose: "a spawned process that raises prints its failure line and ends; main carries on and the program exits 0"
 # oracle: 00706_a_spawned_process_that_raises_leaves_main_running.oracle.exs
+# oracle.stamp: 07e9303ff8036b24
 #---
 # Elixir reports the same `** (RuntimeError) child boom` line through its
 # logger, wrapped in a timestamped `[error] Process ... raised an exception`

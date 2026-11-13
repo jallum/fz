@@ -1,6 +1,7 @@
 #---
 # purpose: "defexception declares the struct with exception/1 and message/1, a module replaces either, Exception.message/1 calls the module's message/1, and is_exception/1 tells an exception from another struct, as Elixir does"
 # oracle: 00882_defexception_declares_an_exception_struct_with_exception_and_message.oracle.exs
+# oracle.stamp: 809716f8f542871b
 #---
 defmodule Plain do
   defexception [:message]

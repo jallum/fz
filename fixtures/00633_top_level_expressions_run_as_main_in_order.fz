@@ -2,6 +2,7 @@
 # purpose: "A file's top-level expressions run as main/0 in order: bindings flow between them, they call modules and top-level defs defined anywhere in the file"
 # kind: run
 # oracle: 00633_top_level_expressions_run_as_main_in_order.oracle.exs
+# oracle.stamp: 5dfba0c0cc04860f
 #---
 defmodule Greeter do
   def greet(name), do: "hello " <> name

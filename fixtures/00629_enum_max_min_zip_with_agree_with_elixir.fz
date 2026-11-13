@@ -1,6 +1,7 @@
 #---
 # purpose: "Enum.max/2, Enum.min/2 and Enum.zip_with/2 return what Elixir returns, an empty input takes the fallback, and max/min/max_by/min_by agree on non-empty input"
 # oracle: 00629_enum_max_min_zip_with_agree_with_elixir.oracle.exs
+# oracle.stamp: dd4d9c6014fb517b
 #---
 def main() do
   dbg([Enum.max([3, 1, 2]), Enum.min([3, 1, 2])])

@@ -1,6 +1,7 @@
 #---
 # purpose: "a lambda head pins a value it closed over"
 # oracle: oracle.exs
+# oracle.stamp: b1756b71beede202
 #---
 #
 # # lambda_pins_capture

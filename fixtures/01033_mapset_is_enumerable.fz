@@ -1,6 +1,7 @@
 #---
 # purpose: "Enum.count, Enum.map and Enum.reduce walk the members of a MapSet"
 # oracle: 01033_mapset_is_enumerable.oracle.exs
+# oracle.stamp: 157f977662c09f2c
 #---
 def main() do
   set = MapSet.new([4, 2, 4, 6])

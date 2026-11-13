@@ -1,6 +1,7 @@
 #---
 # purpose: "OptionParser.parse/2 reads --max-top as :max_top, refuses --max_top, and expands one-letter aliases as -t 5, -t5, -t=5 and clusters such as -abc and -at 5"
 # oracle: 00765_names_are_kebab_case_and_aliases_expand_in_clusters.oracle.exs
+# oracle.stamp: 09f8d4bab3bf21a0
 # args: --max-top 3
 #---
 def main() do

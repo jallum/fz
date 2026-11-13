@@ -1,6 +1,7 @@
 #---
 # purpose: "MapSet is Collectable (Enum.into, for ... into:) and Enumerable's member? answers the in operator"
 # oracle: 01032_mapset_collects_and_answers_in.oracle.exs
+# oracle.stamp: c1cfdb34088a8a5a
 #---
 def sorted(set), do: Enum.sort(MapSet.to_list(set))
 

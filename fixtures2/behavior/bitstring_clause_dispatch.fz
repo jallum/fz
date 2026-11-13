@@ -1,6 +1,7 @@
 #---
 # purpose: "a bitstring pattern selects a clause on every door, in function heads and in case"
 # oracle: oracle.exs
+# oracle.stamp: 7ebf663b3e4bd0e9
 #---
 #
 # # bitstring_clause_dispatch

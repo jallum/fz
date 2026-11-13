@@ -1,6 +1,7 @@
 #---
 # purpose: "swapping the two Enum.reduce/3 statements does not move either published return"
 # oracle: oracle.exs
+# oracle.stamp: 5176b0676cd0b241
 #---
 #
 # The statement-order twin of `reduce_users_key_apart_by_element.fz`. Its

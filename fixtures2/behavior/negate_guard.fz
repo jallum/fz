@@ -1,6 +1,7 @@
 #---
 # purpose: "negation inside a guard works for floats as well as integers, on every door"
 # oracle: oracle.exs
+# oracle.stamp: cb75b23150eeac93
 #---
 #
 # # negate_guard

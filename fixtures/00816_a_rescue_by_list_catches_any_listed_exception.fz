@@ -1,6 +1,7 @@
 #---
 # purpose: "a rescue head listing several aliases catches a raise of any one of them"
 # oracle: 00816_a_rescue_by_list_catches_any_listed_exception.oracle.exs
+# oracle.stamp: aa1d69505acbbd7e
 #---
 def attempt(f) do
   try do

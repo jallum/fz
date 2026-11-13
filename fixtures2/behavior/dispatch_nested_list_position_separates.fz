@@ -1,6 +1,7 @@
 #---
 # purpose: "A tuple position that holds a list is a question too, so nested list shapes route the call"
 # oracle: oracle.exs
+# oracle.stamp: a6b52f13348b9f7c
 #---
 #
 # fz-kdt.138. The tuple test carries one sub-predicate per position

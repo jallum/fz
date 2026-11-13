@@ -1,6 +1,7 @@
 #---
 # purpose: "graphemes, length and next_grapheme_size treat an invalid byte as one grapheme and never join a cluster across it"
 # oracle: 01039_an_invalid_byte_is_its_own_grapheme.oracle.exs
+# oracle.stamp: 0207941be9c52e49
 #---
 def main() do
   bad = <<"a", 255, "e", 204, 129, 195>>

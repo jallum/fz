@@ -1,6 +1,7 @@
 #---
 # purpose: "a whole float keeps its .0 wherever it appears, not only at the top level"
 # oracle: oracle.exs
+# oracle.stamp: 35d99ede6d000f1b
 #---
 #
 # # float_in_containers

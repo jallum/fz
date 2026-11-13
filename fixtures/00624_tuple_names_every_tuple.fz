@@ -1,6 +1,7 @@
 #---
 # purpose: "`tuple` names the type of every tuple: a typed head accepts a tuple of any arity and rejects anything else, and is_tuple/1 agrees"
 # oracle: oracle.exs
+# oracle.stamp: 834a1b2c34e66aae
 #---
 #
 # `t :: tuple` is the type of {}, {1}, {1, 2, 3} and so on. A list, a map, a

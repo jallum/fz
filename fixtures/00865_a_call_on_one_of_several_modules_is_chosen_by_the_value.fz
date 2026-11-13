@@ -1,6 +1,7 @@
 #---
 # purpose: "m.f(a) on a value that may hold one of several modules calls the f of the module it holds at run time: a module chosen by a branch, modules in a list, a module captured by a closure, and a module passed back to itself through a recursive call; the arguments reach the chosen function unchanged"
 # oracle: 00865_a_call_on_one_of_several_modules_is_chosen_by_the_value.oracle.exs
+# oracle.stamp: a0fdfa36a9ab80ef
 #---
 #
 # The receiver's type lists the modules it can be. The call has one target per

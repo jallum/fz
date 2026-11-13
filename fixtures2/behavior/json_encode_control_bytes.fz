@@ -1,6 +1,7 @@
 #---
 # purpose: "JSON.encode!/1 escapes every C0 control byte in string values and object keys"
 # oracle: oracle.exs
+# oracle.stamp: 8374da9701f59f27
 #---
 def main() do
   # The suffix proves space, quote, backslash, and an ordinary byte keep their

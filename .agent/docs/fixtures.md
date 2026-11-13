@@ -282,9 +282,12 @@ that same golden, so `fz == Elixir` holds transitively. For an `expect: abort`
 fixture, the oracle instead makes a silent assertion that Elixir rejects the
 input; each fz path independently proves rejection through `expected.stderr`.
 That pins the shared boundary without claiming byte-identical exception text
-between the two runtimes. Elixir owns the golden: under `BLESS=1` the oracle
-trial regenerates `expected.txt`, and per-path bless never rewrites it for an
-oracle fixture. The oracle is a hard prerequisite, not an optional skip — a
+between the two runtimes. Elixir owns the golden: under `ORACLE=regen` the oracle
+trial rewrites `expected.txt` and the header's `oracle.stamp` from Elixir's
+output, and per-path bless never rewrites it for an oracle fixture.
+`ORACLE=check` runs Elixir for every pair and fails on any difference from the
+golden. `ORACLE_FIXTURE=<stem>` narrows either mode to one fixture, e.g.
+`ORACLE=regen ORACLE_FIXTURE=00863_name cargo test --test fixture_matrix oracle_goldens_match_elixir`. The oracle is a hard prerequisite, not an optional skip — a
 missing or failing `elixir` is a loud failure. CI installs Elixir (1.19)
 through `erlef/setup-beam`.
 

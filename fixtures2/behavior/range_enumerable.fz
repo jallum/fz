@@ -1,6 +1,7 @@
 #---
 # purpose: "Range implements Enumerable reduce/count/member?/slice callbacks"
 # oracle: oracle.exs
+# oracle.stamp: 7fc931d54048bff0
 #---
 #
 # Exercises the source `defimpl Enumerable, for: Range` callback surface through

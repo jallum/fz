@@ -1,6 +1,7 @@
 #---
 # purpose: "abs, round, trunc, floor and ceil in a function-head guard and in a receive guard decide the clause as Elixir does, and an operand that is not a number leaves the clause unmatched"
 # oracle: oracle.exs
+# oracle.stamp: 422d9d6b502740ac
 #---
 #
 # In a guard a failure is the clause not matching, so the next clause answers.

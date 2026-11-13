@@ -1,6 +1,7 @@
 #---
 # purpose: "inspect/2 limit: shows that many map entries, a key and its value both spending from the budget"
 # oracle: 01018_inspect_limit_counts_string_keyed_map_entries.oracle.exs
+# oracle.stamp: 97ecf23a8cc7f62b
 #---
 def main() do
   dbg(inspect(%{"a" => 1, "b" => 2, "c" => 3}, limit: 2))

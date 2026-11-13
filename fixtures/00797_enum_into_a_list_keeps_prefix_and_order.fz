@@ -1,6 +1,7 @@
 #---
 # purpose: "Enum.into a list keeps its prefix and the arrival order, from a list or a range"
 # oracle: 00797_enum_into_a_list_keeps_prefix_and_order.oracle.exs
+# oracle.stamp: 483cf8e28175df56
 #---
 def main() do
   dbg(Enum.into([3, 4, 5], [1, 2]))

@@ -1,6 +1,7 @@
 #---
 # purpose: "a literal prefix before <> binds the remainder in a fn clause, on the left of =, and in a with binding, as in Elixir"
 # oracle: 00663_a_prefix_in_a_fn_a_match_and_a_with.oracle.exs
+# oracle.stamp: 389c469f69c79ae7
 #---
 def strip(s) do
   f = fn

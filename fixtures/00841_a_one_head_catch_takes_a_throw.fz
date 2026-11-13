@@ -1,6 +1,7 @@
 #---
 # purpose: "a catch clause with one head matches a throw, binds the thrown value, and the try takes the clause's value"
 # oracle: 00841_a_one_head_catch_takes_a_throw.oracle.exs
+# oracle.stamp: 70620b60e3503693
 #---
 def main() do
   result = try do

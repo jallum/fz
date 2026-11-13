@@ -1,6 +1,7 @@
 #---
 # purpose: "&&, || and ! answer the value that decided, and, or and not take booleans and answer what Elixir answers; each right side runs only when the left does not decide; precedence and the distiller's m[\"k\"] || [] agree"
 # oracle: 00637_value_boolean_operators_agree_with_elixir.oracle.exs
+# oracle.stamp: 8515b11b8b8ef540
 #---
 def effect(tag), do: dbg(tag)
 

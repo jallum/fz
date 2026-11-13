@@ -1,6 +1,7 @@
 #---
 # purpose: "several binary literals over the shared-binary threshold can all be matched, and the program still exits cleanly"
 # oracle: oracle.exs
+# oracle.stamp: d4575c6ec3e67ca0
 #---
 #
 # # binary_literal_over_threshold

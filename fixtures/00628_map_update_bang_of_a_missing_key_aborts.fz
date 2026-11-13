@@ -2,5 +2,6 @@
 # purpose: "Map.update!/3 of a missing key aborts with KeyError and Elixir's message"
 # expect: abort
 # oracle: 00628_map_update_bang_of_a_missing_key_aborts.oracle.exs
+# oracle.stamp: c2fd3fc7365aabc5
 #---
 def main(), do: Map.update!(%{1 => :a}, 2, fn (v) -> v end)

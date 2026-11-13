@@ -1,6 +1,7 @@
 #---
 # purpose: "inspect/2 limit: shows that many bytes of a bitstring, trailing bits printing as n::size(k), strings ignoring the limit"
 # oracle: 01021_inspect_limit_counts_bitstring_bytes.oracle.exs
+# oracle.stamp: bafc676801a40c87
 #---
 def main() do
   dbg(inspect(<<1, 2, 3>>, limit: 2))

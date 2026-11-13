@@ -1,6 +1,7 @@
 #---
 # purpose: "a receive clause that reads a binary and carries a guard takes its body only when the guard holds"
 # oracle: 00678_a_receive_bitstring_clause_with_a_guard_runs.oracle.exs
+# oracle.stamp: 0b5e513226c41f2c
 #---
 def main() do
   send(self(), "ahi")

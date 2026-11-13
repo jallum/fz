@@ -1,6 +1,7 @@
 #---
 # purpose: "try is an expression: its value is passed straight to a call"
 # oracle: 00824_a_try_is_an_expression.oracle.exs
+# oracle.stamp: c0100cea9cc98bd5
 #---
 def main() do
   dbg(try do

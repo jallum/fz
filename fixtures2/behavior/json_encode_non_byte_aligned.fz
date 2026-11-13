@@ -2,6 +2,7 @@
 # purpose: "JSON.encode!/1 of a non-byte-aligned bitstring aborts with Elixir's FunctionClauseError"
 # expect: abort
 # oracle: json_encode_non_byte_aligned.oracle.exs
+# oracle.stamp: c44b2b5e310c1354
 #---
 def main() do
   JSON.encode!(<<1::4>>)

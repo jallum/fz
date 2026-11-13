@@ -2,5 +2,6 @@
 # purpose: "div/2 by zero aborts with ArithmeticError and Elixir's message"
 # expect: abort
 # oracle: 00719_integer_division_by_zero_raises_arithmetic_error.oracle.exs
+# oracle.stamp: d0b428261a87f3c0
 #---
 def main(), do: Enum.each([0], fn z -> dbg(div(1, z)) end)

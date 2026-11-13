@@ -1,6 +1,7 @@
 #---
 # purpose: "inspect/2 limit: shows that many tuple fields and then ..., nested tuples sharing one budget"
 # oracle: 01017_inspect_limit_counts_tuple_fields.oracle.exs
+# oracle.stamp: c9e78245976e96c4
 #---
 def main() do
   dbg(inspect({1, 2, 3}, limit: 2))

@@ -2,5 +2,6 @@
 # purpose: "+ of an integer and a string aborts with ArithmeticError"
 # expect: abort
 # oracle: 00748_a_sum_with_a_non_number_on_the_right_raises_arithmetic_error.oracle.exs
+# oracle.stamp: 9078c3a1f0afbda8
 #---
 def main(), do: 1 + JSON.decode!("\"s\"")

@@ -1,6 +1,7 @@
 #---
 # purpose: "a map literal whose keys are literal atoms written out of order, with a key repeated, holds the last value written for each key, evaluates every value once in source order, and equals the same map built key by key"
 # oracle: 00858_a_map_literal_holds_one_entry_per_key_and_evaluates_every_value.oracle.exs
+# oracle.stamp: 3a2612d971ebdca5
 #---
 #
 # The order keys are written in is not part of a map, and a repeated key

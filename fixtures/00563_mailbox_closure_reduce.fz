@@ -1,6 +1,7 @@
 #---
 # purpose: "a closure delivered by the mailbox reduces a list, whatever the accumulator turns out to be"
 # oracle: oracle.exs
+# oracle.stamp: 20feeef1011cf163
 #---
 #
 # fz-kdt.152. `Enum.reduce/3` threads the reducer through `List.reduce_cont/3`,

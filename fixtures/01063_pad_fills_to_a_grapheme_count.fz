@@ -1,6 +1,7 @@
 #---
 # purpose: "String.pad_leading and pad_trailing fill to a grapheme count with a cycled binary or list, never truncate, and raise FunctionClauseError for a negative count or empty padding"
 # oracle: 01063_pad_fills_to_a_grapheme_count.oracle.exs
+# oracle.stamp: 37a00bc37313037d
 #---
 def main() do
   dbg(String.pad_leading("abc", 6))

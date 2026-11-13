@@ -1,6 +1,7 @@
 #---
 # purpose: "In a case clause, p1 = p2 matches both sides against the scrutinee"
 # oracle: 00790_a_pattern_equals_a_pattern_in_a_case_clause_matches_both_sides.oracle.exs
+# oracle.stamp: 90eaf9de8ae4fa2c
 #---
 def classify(s) do
   case s do

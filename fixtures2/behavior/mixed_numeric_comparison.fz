@@ -1,6 +1,7 @@
 #---
 # purpose: "comparing an integer against a float compares their numeric values, on every door"
 # oracle: oracle.exs
+# oracle.stamp: 083387eb95c5a993
 #---
 #
 # # mixed_numeric_comparison

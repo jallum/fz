@@ -1,6 +1,7 @@
 #---
 # purpose: "OptionParser.parse/2 treats everything after -- as positional, drops the --, and treats a lone -, a '- x' token and a token starting with a digit after one - as positional"
 # oracle: 00760_a_double_dash_ends_the_switches_and_a_lone_dash_is_positional.oracle.exs
+# oracle.stamp: d76be04a9c52ea93
 # args: --top 5 -- --top 7
 #---
 def main() do

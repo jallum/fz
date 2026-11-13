@@ -2,6 +2,7 @@
 # purpose: "to_string of a map whose type is any reaches no String.Chars implementation: the call raises Protocol.UndefinedError naming Map and showing the map, and the process exits 1"
 # expect: abort
 # oracle: 01131_a_map_given_to_to_string_raises_protocol_undefined_naming_map.oracle.exs
+# oracle.stamp: 42c5de3a6983fbba
 #---
 def main() do
   IO.puts(to_string(Map.put(%{}, "a", 1)))

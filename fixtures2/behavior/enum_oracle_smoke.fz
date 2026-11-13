@@ -1,6 +1,7 @@
 #---
 # purpose: "Enum.sort/1 matches Elixir; expected.txt is owned by the oracle.exs twin"
 # oracle: oracle.exs
+# oracle.stamp: eb188124c4f331da
 #---
 #
 # # enum_oracle_smoke

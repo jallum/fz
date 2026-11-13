@@ -1,6 +1,7 @@
 #---
 # purpose: "an exception the library raises is rescued by the name Elixir gives it, and its message is Elixir's"
 # oracle: 00849_a_library_exception_is_rescued_by_its_elixir_name.oracle.exs
+# oracle.stamp: 591c04222f4c56ae
 #---
 defp zero(), do: 0
 defp empty(), do: []

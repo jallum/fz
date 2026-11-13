@@ -1,6 +1,7 @@
 #---
 # purpose: "a struct prints as %Name{field: value} in defstruct order, whether flat, nil-valued, nested, in a list, in a tuple or in a nested module"
 # oracle: oracle.exs
+# oracle.stamp: 08d9b0f08999d0cf
 #---
 #
 # dbg renders a struct the way Elixir's inspect does: the module alias, then

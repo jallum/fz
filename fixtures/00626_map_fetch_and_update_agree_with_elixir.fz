@@ -1,6 +1,7 @@
 #---
 # purpose: "Map.fetch/2, Map.fetch!/2, Map.update!/3 and Map.new/2 return what Elixir returns, and Map.get/3 agrees with Map.fetch/2"
 # oracle: 00626_map_fetch_and_update_agree_with_elixir.oracle.exs
+# oracle.stamp: 559656d7080eadfa
 #---
 #
 # Integer and binary keys, because atom-key order differs from Elixir.

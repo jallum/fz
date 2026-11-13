@@ -1,6 +1,7 @@
 #---
 # purpose: "do, rescue, else and after together: the body's value goes to else, a raise goes to rescue, and after runs last on both"
 # oracle: 00806_a_try_with_all_four_sections_runs_each_where_it_belongs.oracle.exs
+# oracle.stamp: d9195fc47c421a71
 #---
 def attempt(f) do
   try do

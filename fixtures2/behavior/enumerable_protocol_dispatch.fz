@@ -1,6 +1,7 @@
 #---
 # purpose: "Enumerable protocol dispatch covers List, Range, and Map receivers"
 # oracle: oracle.exs
+# oracle.stamp: b1eb58e481e273e4
 #---
 #
 # Exercises a closed-union `Enumerable.count/1` call whose receiver can be a

@@ -1,6 +1,7 @@
 #---
 # purpose: "A stream whose source is itself a stream, two and three deep, applies the inner stream's functions before the outer's for every element, whether reduced whole or halted early; the output prints what Elixir prints"
 # oracle: 01129_a_stream_wrapping_a_stream_applies_inner_funs_before_outer_funs.oracle.exs
+# oracle.stamp: c8857fad23658a24
 #---
 defmodule Trace do
   def say(label, x) do

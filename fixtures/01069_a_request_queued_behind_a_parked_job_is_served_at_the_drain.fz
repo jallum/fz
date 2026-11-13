@@ -1,6 +1,7 @@
 #---
 # purpose: "A product request queued while the only pending job parks on its gates is still served at the drain, so a String.slice cell table compiles and prints"
 # oracle: 01069_a_request_queued_behind_a_parked_job_is_served_at_the_drain.oracle.exs
+# oracle.stamp: 6a3c24f201b9a8fd
 #---
 def spans() do
   %{

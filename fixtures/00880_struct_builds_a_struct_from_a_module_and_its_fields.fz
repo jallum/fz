@@ -1,6 +1,7 @@
 #---
 # purpose: "struct/1, struct/2 and struct!/2 build a struct from a module or a struct and a keyword list or map, as Elixir does"
 # oracle: 00880_struct_builds_a_struct_from_a_module_and_its_fields.oracle.exs
+# oracle.stamp: 908d2345ce6b69f0
 #---
 #
 # A module that declares a struct answers it from `__struct__/0`, each field

@@ -1,6 +1,7 @@
 #---
 # purpose: "a map pattern selects a clause on every door, in function heads and in case"
 # oracle: oracle.exs
+# oracle.stamp: f2a3324203fa891c
 #---
 #
 # # map_clause_dispatch

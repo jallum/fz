@@ -1,6 +1,7 @@
 #---
 # purpose: "JSON.decode/1 joins valid Unicode surrogate pairs and rejects unpaired surrogates in values and keys"
 # oracle: json_decode_surrogates.oracle.exs
+# oracle.stamp: 77d0fb30297587c8
 #---
 def main() do
   # A representative pair plus both scalar-range boundaries made by pairs.

@@ -1,6 +1,7 @@
 #---
 # purpose: "public <> joins byte-aligned binaries across inline and ProcBin storage"
 # oracle: oracle.exs
+# oracle.stamp: 6b4f9100b6b202d0
 #---
 #
 # Exercises the public `<>` wrapper over the runtime binary-concat export. The small

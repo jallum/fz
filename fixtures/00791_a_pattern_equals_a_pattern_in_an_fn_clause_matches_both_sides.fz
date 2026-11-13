@@ -1,6 +1,7 @@
 #---
 # purpose: "In an fn clause, p1 = p2 matches both sides against the argument"
 # oracle: 00791_a_pattern_equals_a_pattern_in_an_fn_clause_matches_both_sides.oracle.exs
+# oracle.stamp: e93a5061a0f95002
 #---
 def main() do
   f = fn %{} = m -> map_size(m) end

@@ -1,6 +1,7 @@
 #---
 # purpose: "Integer.parse/1 reads an optional sign and decimal digits and returns the remaining text untouched, or :error when no digit leads"
 # oracle: 00754_integer_parse_reads_a_signed_prefix_and_returns_the_rest.oracle.exs
+# oracle.stamp: 1bd39472f87061af
 #---
 def main() do
   dbg(Integer.parse("5"))

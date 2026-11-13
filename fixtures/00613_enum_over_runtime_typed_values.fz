@@ -1,6 +1,7 @@
 #---
 # purpose: "Enum and a user protocol's spec'd function accept a value typed only at runtime (a decoded JSON list), the same as a concrete list"
 # oracle: oracle.exs
+# oracle.stamp: 075626d083047f7b
 #---
 #
 # `JSON.decode!` answers a value the compiler knows nothing about. Every

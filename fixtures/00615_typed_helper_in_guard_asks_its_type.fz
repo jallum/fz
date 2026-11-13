@@ -1,6 +1,7 @@
 #---
 # purpose: "A helper's typed head asks the same type question in a guard as in a direct call"
 # oracle: oracle.exs
+# oracle.stamp: 58e4e6f35f4c52a3
 #---
 #
 # `isint(_ :: integer)` answers false for a binary when called directly, and the

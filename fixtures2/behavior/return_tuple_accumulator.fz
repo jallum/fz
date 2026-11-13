@@ -2,6 +2,7 @@
 # purpose: "a tail recursion that grows a tuple accumulator: each rung is a new activation"
 # defer: "inferring build/2's return does not terminate: every rung is a fresh activation key with a fresh widening budget, so the ladder never reaches its own top"
 # oracle: oracle.exs
+# oracle.stamp: 465902b24fa5268a
 #---
 #
 # The accumulator variant of `return_tuple_ladder`. Here the nesting grows in an

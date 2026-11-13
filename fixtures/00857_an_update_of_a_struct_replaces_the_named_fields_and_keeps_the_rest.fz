@@ -1,6 +1,7 @@
 #---
 # purpose: "%{s | field: v, ...} of a struct answers a struct with those fields replaced and every other field kept, whatever kind of value a field holds, with the base type known or through an any-typed parameter, and leaves the base alone"
 # oracle: 00857_an_update_of_a_struct_replaces_the_named_fields_and_keeps_the_rest.oracle.exs
+# oracle.stamp: ed0f39ae4ede8437
 #---
 #
 # An update names fields the struct already has, so the answer is the same

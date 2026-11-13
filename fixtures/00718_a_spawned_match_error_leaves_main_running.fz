@@ -1,6 +1,7 @@
 #---
 # purpose: "a spawned process whose = matches nothing raises MatchError and ends; main carries on and the program exits 0"
 # oracle: 00718_a_spawned_match_error_leaves_main_running.oracle.exs
+# oracle.stamp: 2e5088ebecae9467
 #---
 # The oracle silences the logger, so only the program's own output is
 # compared; the failure line is pinned as this program's diagnostics.

@@ -1,6 +1,7 @@
 #---
 # purpose: "fz-kdt.198 — a branded value satisfies a spec position declared as its inner, and the runtime stays brand-blind"
 # oracle: oracle.exs
+# oracle.stamp: ef941668eba408f9
 #---
 #
 # # brand_refines_its_inner

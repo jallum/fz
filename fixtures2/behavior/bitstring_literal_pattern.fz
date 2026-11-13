@@ -1,6 +1,7 @@
 #---
 # purpose: "a string literal in a bitstring pattern matches the bytes it spells"
 # oracle: oracle.exs
+# oracle.stamp: 94c79942fc273b8a
 #---
 #
 # # bitstring_literal_pattern

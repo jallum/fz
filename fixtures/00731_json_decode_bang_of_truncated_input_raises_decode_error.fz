@@ -2,5 +2,6 @@
 # purpose: "JSON.decode!/1 of truncated input aborts with JSON.DecodeError and Elixir's message"
 # expect: abort
 # oracle: 00731_json_decode_bang_of_truncated_input_raises_decode_error.oracle.exs
+# oracle.stamp: d50e41a25125ae0a
 #---
 def main(), do: JSON.decode!("{")

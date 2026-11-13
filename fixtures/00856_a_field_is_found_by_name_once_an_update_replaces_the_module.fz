@@ -1,6 +1,7 @@
 #---
 # purpose: "After %{s | __struct__: m} a field read answers the field's value and __struct__ answers the new module, with the base a known struct or behind any"
 # oracle: 00856_a_field_is_found_by_name_once_an_update_replaces_the_module.oracle.exs
+# oracle.stamp: 5e1e20273c87ac53
 #---
 #
 # A struct's module is what places its fields. Once an update replaces the

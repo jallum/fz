@@ -1,6 +1,7 @@
 #---
 # purpose: "an alias in value position is the atom of the module it names, both for `alias X, as: Y` and for a plain `alias X.Y`"
 # oracle: 00696_an_alias_stands_for_the_full_module_name.oracle.exs
+# oracle.stamp: a740899424502532
 #---
 alias Foo.Bar, as: B
 alias Foo.Baz

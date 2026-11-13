@@ -1,6 +1,7 @@
 #---
 # purpose: "Map implements Enumerable reduce/count/member?/slice callbacks"
 # oracle: oracle.exs
+# oracle.stamp: ae1e5a5b60123051
 #---
 #
 # Exercises the source `defimpl Enumerable, for: Map` callback surface through

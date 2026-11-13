@@ -2,6 +2,7 @@
 # purpose: "A recursive call that returns a closure delivers it to its caller in the carrier the callee sent it in, so the caller can call it"
 # kind: run
 # oracle: 01126_a_closure_returned_through_recursion_is_called.oracle.exs
+# oracle.stamp: 38ceb3b4bd47e80d
 #---
 defmodule M do
   def h(0), do: fn x -> x end

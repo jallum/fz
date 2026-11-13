@@ -1,6 +1,7 @@
 #---
 # purpose: "to_string/1 dispatches through String.Chars and agrees with Elixir for atoms, binaries, integers and floats"
 # oracle: oracle.exs
+# oracle.stamp: f6e9615625c5dca9
 #---
 #
 # # to_string

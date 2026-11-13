@@ -1,6 +1,7 @@
 #---
 # purpose: "The function clause error a typed extern raises for an argument outside its parameter type is caught by rescue, on every path"
 # oracle: 01111_a_function_clause_error_from_a_typed_extern_can_be_rescued.oracle.exs
+# oracle.stamp: 8ca44a997f865d97
 #---
 #
 # The extern's own message names a private symbol, so the program prints only

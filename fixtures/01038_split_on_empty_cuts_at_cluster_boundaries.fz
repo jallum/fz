@@ -1,6 +1,7 @@
 #---
 # purpose: "String.split(s, "") cuts at grapheme boundaries and keeps an empty binary at each end"
 # oracle: 01038_split_on_empty_cuts_at_cluster_boundaries.oracle.exs
+# oracle.stamp: 62391e5aecee1bf8
 #---
 def main() do
   strings = ["abc", "é", "\r\n", "éx", "👨‍👩‍👧x", "🇫🇷🇫", "각x", "क्षx", "x́̂y"]

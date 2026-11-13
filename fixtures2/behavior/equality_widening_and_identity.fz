@@ -1,6 +1,7 @@
 #---
 # purpose: "`==` compares numbers by value; structural identity does not"
 # oracle: oracle.exs
+# oracle.stamp: 843e15d25963ac56
 #---
 #
 # # equality_widening_and_identity

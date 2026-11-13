@@ -1,6 +1,7 @@
 #---
 # purpose: "a decision that runs out of clauses raises its Elixir exception, and a rescue around it catches it like any raise and lets the program continue"
 # oracle: 00848_a_decision_that_runs_out_of_clauses_is_rescued.oracle.exs
+# oracle.stamp: 0ffc1463c6f7c477
 #---
 defmodule Shapes do
   def sides(:triangle), do: 3

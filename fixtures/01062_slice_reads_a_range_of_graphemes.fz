@@ -1,6 +1,7 @@
 #---
 # purpose: "String.slice/2 reads a range's negative ends from the end, keeps every step-th grapheme, gives an empty range nothing, and raises for a negative step"
 # oracle: 01062_slice_reads_a_range_of_graphemes.oracle.exs
+# oracle.stamp: b405a7787bc5f42e
 #---
 def main() do
   s = "héllo"

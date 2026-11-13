@@ -1,7 +1,7 @@
 use super::{
     EdgeAssertion, FNV1A_OFFSET_BASIS, FixtureCompilerMetadata, FixtureExpect, FixtureKind, FixtureMatrixMetadata,
     FixtureMatrixPath, FixtureMetadata, FixtureRoot, MetricAssertion, PathDeferral, PathTimeout,
-    fixture_matrix_paths_from_filename, fnv1a, oracle_stamp, parse_fixture_metadata,
+    fixture_matrix_paths_from_filename, fnv1a, oracle_stamp, parse_fixture_metadata, with_oracle_stamp,
 };
 use std::path::Path;
 
@@ -322,4 +322,33 @@ fn oracle_stamp_header_key_rejects_malformed_values_and_a_missing_oracle() {
     )
     .expect_err("repeated");
     assert!(err.to_string().contains("may only appear once"), "{err}");
+}
+
+const STAMPED_SOURCE: &str = "#---\n# purpose: p\n# oracle: oracle.exs\n# args: a\n#---\ndef main(), do: 1\n";
+
+#[test]
+fn with_oracle_stamp_inserts_the_line_after_oracle_and_changes_nothing_else() {
+    let stamped = with_oracle_stamp(STAMPED_SOURCE, "0123456789abcdef").expect("stamp");
+    assert_eq!(
+        stamped,
+        "#---\n# purpose: p\n# oracle: oracle.exs\n# oracle.stamp: 0123456789abcdef\n# args: a\n#---\ndef main(), do: 1\n"
+    );
+}
+
+#[test]
+fn with_oracle_stamp_replaces_an_existing_stamp_and_is_idempotent() {
+    let once = with_oracle_stamp(STAMPED_SOURCE, "0123456789abcdef").expect("stamp");
+    let twice = with_oracle_stamp(&once, "fedcba9876543210").expect("restamp");
+    assert_eq!(twice.matches("oracle.stamp").count(), 1, "{twice}");
+    assert!(twice.contains("# oracle.stamp: fedcba9876543210\n"), "{twice}");
+    assert_eq!(with_oracle_stamp(&twice, "fedcba9876543210").expect("same"), twice);
+    let parsed = parse_fixture_metadata(&twice).expect("parses").expect("frontmatter");
+    assert_eq!(parsed.matrix.oracle_stamp.as_deref(), Some("fedcba9876543210"));
+}
+
+#[test]
+fn with_oracle_stamp_refuses_a_fixture_without_an_oracle_line() {
+    let err = with_oracle_stamp("#---\n# purpose: p\n#---\n", "0123456789abcdef").expect_err("no oracle");
+    assert!(err.to_string().contains("requires `oracle`"), "{err}");
+    assert!(with_oracle_stamp("def main(), do: 1\n", "0123456789abcdef").is_err());
 }

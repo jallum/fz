@@ -1,6 +1,7 @@
 #---
 # purpose: "a module name is an ordinary value inside a list, as a map key and value, and captured by a closure"
 # oracle: 00697_a_module_name_travels_in_lists_maps_and_closures.oracle.exs
+# oracle.stamp: 02df3e695e1f029f
 #---
 def main() do
   dbg([RuntimeError, Foo.Bar])

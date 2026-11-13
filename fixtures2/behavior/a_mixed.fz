@@ -1,6 +1,7 @@
 #---
 # purpose: "one lambda driven by Enum.each both through a grounded call and through the boxed seam settles on one return convention"
 # oracle: oracle.exs
+# oracle.stamp: fe5532d1fd233fc4
 #---
 #
 # fz-kdt.155's two-sided witness. `double` is reached BOTH ways in one program:

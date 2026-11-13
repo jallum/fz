@@ -1,6 +1,7 @@
 #---
 # purpose: "a receive guard that orders a float, a mixed number pair or an atom answers as Elixir does, on every path"
 # oracle: oracle.exs
+# oracle.stamp: 2405f86e8633031c
 #---
 #
 # The receive matcher orders two integers as machine words and asks the
