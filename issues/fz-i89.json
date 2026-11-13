@@ -3,12 +3,12 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-13T21:18:23Z",
-  "description": "@spec f(integer) over an untyped clause, called with 1.5 through an any: interp prints 1.5; run and build panic in fz_ref_load_int (ExpectedTag). Probe: scratchpad txxd15/p2s.fz (session d1d265b3).",
+  "description": "Repro (scratch txxd15/p2s.fz): @spec f(integer) :: integer over def f(x), do: x; main receives 1.5 as an any and prints dbg(f(x)). Re-run on fz-rba.4 81dc420d4: interp prints 1.5; run panics 'fz_ref_load_int: ExpectedTag { expected: ValueKind(13), found: ValueKind(14) }' (runtime/src/ir_runtime.rs:237); build not re-run (earlier: same panic). Elixir prints 1.5 (specs are not enforced).\nWhat the docs promise (.agent/docs/specs.md, 'Admission, function'): a function tests its clauses at run time, so a value outside the domain meets the callee's arm of last resort (FunctionClauseError). That holds when the clause itself is typed. Here the clause is untyped, so it has no test, and it admits the float; the caller still reads the call's result as the spec's integer and loads it as a raw int. The three paths disagree because interp carries the value boxed.\nThe defect is that two readings of one spec are both live: the clause admits what the spec's domain excludes, and the caller trusts the spec's result. Two ways to make them one, and the choice is a language decision for the user:\n(a) the spec's parameter domain is a test on an untyped clause when the caller holds any: f(1.5) raises FunctionClauseError on all three paths (matches the specs doc, differs from Elixir);\n(b) a spec over an untyped clause does not narrow the result a caller reads for an any argument: f(1.5) is 1.5 on all three paths (matches Elixir, the spec becomes documentation at that call).\nNot investigated: where the result type is taken from the contract for an any-keyed callee, and whether a typed argument into the same function is affected.",
   "id": "fz-i89",
   "labels": [],
   "priority": 2,
   "status": "open",
   "title": "A @spec over an untyped clause is not enforced at run time",
   "type": "bug",
-  "updated_at": "2026-11-13T21:18:23Z"
+  "updated_at": "2026-11-13T23:59:45Z"
 }
