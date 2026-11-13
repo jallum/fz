@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T19:39:29Z",
   "created": "2026-11-13T19:11:23Z",
   "description": "dedupe_job_facts (src/compiler2/world.rs) builds a HashSet and a Vec\u003cbool\u003e per call, twice per job completion.\n\nMeasured on the OptionParser probe (5,100 calls): 253 empty lists, 2,806 of one fact, 651 of two, 90% at most eight, maximum 84; 504 calls contained a repeat.\n\nBuilt: a list shorter than two facts is returned untouched (3,059 of 5,100 calls). Longer lists are deduplicated as before. A scan of the kept prefix in place of the set was built and rejected: it is quadratic in list length and lists reach 84 facts on this probe alone.\n\nResult: 844,040 -\u003e 838,419 allocations on the probe; output and canon identical.",
   "id": "fz-y11.21",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A job fact list that cannot hold a repeat is returned as it is",
   "type": "task",
-  "updated_at": "2026-11-13T19:38:01Z"
+  "updated_at": "2026-11-13T19:39:29Z"
 }
