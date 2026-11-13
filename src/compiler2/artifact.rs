@@ -1444,15 +1444,17 @@ pub enum BackendStep {
         base: ValueId,
         entries: Vec<(ValueId, ValueId)>,
     },
-    /// `%{base | field: v, ...}` where `base` is one known struct of `arity`
-    /// fields and every key names one of them: a copy of `base` with each
-    /// slot of `slots` replaced. It cannot miss, so `ok` is true.
+    /// `%{base | field: v, ...}` where the types say `base` is the `module`
+    /// struct, of `arity` fields, and every key names one of them. In the
+    /// struct layout it is a copy of `base` with each slot replaced; in the
+    /// entries layout each key is replaced. It cannot miss, so `ok` is true.
     StructUpdate {
         value: ValueId,
         ok: ValueId,
         base: ValueId,
+        module: fz_runtime::module_name::ModuleName,
         arity: u32,
-        slots: Vec<(u32, ValueId)>,
+        stores: Vec<crate::fz_ir::SlotStore<ValueId>>,
     },
     Struct {
         value: ValueId,
@@ -1499,10 +1501,15 @@ pub enum BackendStep {
     },
     /// `base.field` where `base` is one known struct: the field is the
     /// struct's `slot`th.
+    /// Read a field of `base`, which the types say is a `module` struct.
+    /// The types say which map it is, not how it is laid out: in the struct
+    /// layout the field is `slot`, in any other it is found as `field`.
     StructSlot {
         value: ValueId,
         base: ValueId,
+        module: fz_runtime::module_name::ModuleName,
         slot: u32,
+        field: String,
     },
     RequireMapValue {
         value: ValueId,

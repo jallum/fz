@@ -367,21 +367,31 @@ that key (`Descr::refine_map_field`), so the result names no struct and its
 fields are found by name.
 
 `BackendLowerer::field_read` asks that of the receiver of every `base.field`.
-A known struct's declared field becomes `BackendStep::StructSlot { base, slot }`,
-with `slot` the field's position in its `defstruct`. Any other receiver (a
+A known struct's declared field becomes
+`BackendStep::StructSlot { base, module, slot, field }`, with `slot` the
+field's position in its `defstruct`. Any other receiver (a
 map, a resource, a union of two structs, `any`) keeps
 `BackendStep::FieldAccess`, which finds the field by name at run time. The
 step is part of the backend program, so the interpreter, the JIT and the
 native build all read by slot.
 
+The type says which struct a value is, not how it is laid out, so the step
+asks at run time. A value in the struct's own layout is read by slot. A value
+in the entries layout is read by name, as `FieldAccess` reads it. The
+interpreter asks `Heap::has_struct_layout_of`. Native code asks
+`CodegenFn::has_struct_layout`: the reference's kind is `STRUCT` and the
+object's first word is the struct's header word, both tested inline before
+one branch. The read by name is the cold block.
+
 The interpreter reads the slot with `fz_struct_get_field_ref`. Native code
-lowers the step to `Prim::TupleField`, the slot read tuples already use. When
+lowers the step to `Prim::StructSlot`. When
 the field's type is an integer, a float or an atom, `CodegenFn::load_slot`
 emits the read in place: the reference word masked to its address, then one
 load at `STRUCT_PAYLOAD_OFFSET + slot * 8`. The type says what the slot
 holds, so the kind byte is not consulted. A field of any other type keeps the
 runtime call, which reads the kind byte to build the field's reference. For
-example, `p.y` on a `%Point{x: integer, y: integer}` is a mask and a load.
+example, `p.y` on a `%Point{x: integer, y: integer}` in the struct layout is
+the layout test, a mask and a load.
 
 ### A struct or tuple is one allocation, stored in place
 
@@ -497,11 +507,14 @@ destination.
 
 Where the types say which struct the base is (`Types::sole_struct`) and every
 key is a literal atom naming one of its fields, the update needs no
-destination. It is `BackendStep::StructUpdate { base, arity, slots }`, which
-cannot miss: `fz_struct_copy` copies the object and `CodegenFn::store_field`
-stores each replaced slot in place, the same stores a construction uses. For
+destination when the base is in the struct's own layout. It is
+`BackendStep::StructUpdate { base, module, arity, stores }`, which cannot
+miss: `fz_struct_copy` copies the object and `CodegenFn::store_field` stores
+each replaced slot in place, the same stores a construction uses. For
 example, `%{p | y: 5}` with `p` a `Point` of fields `x` and `y` is one copy
-and one store at slot 1.
+and one store at slot 1. The step asks the layout question a slot read asks.
+A base in the entries layout takes the update destination, each store's key
+put with its value.
 
 Published language values are finite immutable DAGs. Low-level struct and closure
 writes are unsafe construction operations whose caller must own the unpublished

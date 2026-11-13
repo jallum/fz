@@ -12,6 +12,7 @@ use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{LastResort, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, ProjectionKind, Region, SubjectSource};
+use crate::fz_ir::SlotStore;
 use crate::ground_value::GroundValue;
 use crate::source::Span;
 use fz_runtime::module_name::{ModuleName, STRUCT_MODULE_FIELD};
@@ -1045,7 +1046,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
             .struct_def_fields(module)
             .and_then(|fields| slot_of(fields, field))
         {
-            Some(slot) => BackendStep::StructSlot { value, base, slot },
+            Some(slot) => BackendStep::StructSlot {
+                value,
+                base,
+                module: self.module_name(module).clone(),
+                slot,
+                field: field.to_string(),
+            },
             None => by_name(),
         }
     }
@@ -1055,12 +1062,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
     /// slots replaced; any other update finds each key at run time.
     fn update(&self, value: ValueId, ok: ValueId, base: ValueId, entries: &[(LoweredMapKey, ValueId)]) -> BackendStep {
         match self.updated_slots(base, entries) {
-            Some((arity, slots)) => BackendStep::StructUpdate {
+            Some((module, arity, stores)) => BackendStep::StructUpdate {
                 value,
                 ok,
                 base,
+                module: self.module_name(module).clone(),
                 arity,
-                slots,
+                stores,
             },
             None => BackendStep::MapUpdate {
                 value,
@@ -1071,21 +1079,30 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
         }
     }
 
-    /// How many fields the one struct `base` is has, and the slot each entry
-    /// replaces, when `base` is one known struct and every key is a literal
-    /// atom naming one of its fields.
-    fn updated_slots(&self, base: ValueId, entries: &[(LoweredMapKey, ValueId)]) -> Option<(u32, Vec<(u32, ValueId)>)> {
-        let fields = self.world.struct_def_fields(self.known_struct(base)?)?;
-        let slots = entries
+    /// The one struct `base` is, how many fields it has, and the slot each
+    /// entry replaces, when `base` is one known struct and every key is a
+    /// literal atom naming one of its fields.
+    fn updated_slots(
+        &self,
+        base: ValueId,
+        entries: &[(LoweredMapKey, ValueId)],
+    ) -> Option<(ModuleId, u32, Vec<SlotStore<ValueId>>)> {
+        let module = self.known_struct(base)?;
+        let fields = self.world.struct_def_fields(module)?;
+        let stores = entries
             .iter()
             .map(|(key, item)| {
                 let GroundValue::Atom(field) = key.literal.as_ref()? else {
                     return None;
                 };
-                Some((slot_of(fields, field)?, *item))
+                Some(SlotStore {
+                    slot: slot_of(fields, field)?,
+                    key: key.value,
+                    value: *item,
+                })
             })
             .collect::<Option<_>>()?;
-        Some((fields.len() as u32, slots))
+        Some((module, fields.len() as u32, stores))
     }
 
     /// The struct `value` is, when its type admits exactly one.
@@ -1243,7 +1260,7 @@ fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut Hash
             BackendStep::Const { literal, .. } => {
                 collect_literal_atoms(literal, seen, atoms);
             }
-            BackendStep::FieldAccess { field, .. } => {
+            BackendStep::FieldAccess { field, .. } | BackendStep::StructSlot { field, .. } => {
                 if seen.insert(field.clone()) {
                     atoms.push(field.clone());
                 }
@@ -1252,7 +1269,6 @@ fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut Hash
                 collect_literal_atoms(key, seen, atoms);
             }
             BackendStep::Omitted { .. }
-            | BackendStep::StructSlot { .. }
             | BackendStep::Tuple { .. }
             | BackendStep::List { .. }
             | BackendStep::Map { .. }

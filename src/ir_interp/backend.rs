@@ -1789,16 +1789,8 @@ fn eval_steps<T: Telemetry + ?Sized>(
             } => {
                 let proc = runtime.cur_proc();
                 let base = env_get(transport, proc, env, *base)?;
-                let dest = with_value_ref(proc, base, "backend map update base", |base_ref| {
-                    fz_map_dest_begin_update(proc, base_ref)
-                })?;
-                let mut dest = dest;
-                for (key, item) in entries {
-                    let key = env_get(transport, proc, env, *key)?;
-                    let item = publish_runtime_value(proc, env_get(transport, proc, env, *item)?)?;
-                    dest = interp_map_dest_put(proc, dest, key, item, "backend map update")?;
-                }
-                let updated = interp_value_from_ref_word(fz_map_dest_freeze(proc, dest), "backend map update")?;
+                let entries = entries.iter().map(|(key, item)| (*key, *item));
+                let updated = interp_map_update(transport, proc, env, base, entries)?;
                 env.insert(
                     *ok,
                     BackendBoundValue::Runtime(AnyValue::Atom(if matches!(updated, AnyValue::Null) {
@@ -1980,40 +1972,55 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 value,
                 ok,
                 base,
+                module: struct_module,
                 arity,
-                slots,
+                stores,
             } => {
                 let proc = runtime.cur_proc();
-                let layout = SlotLayout::of(*arity as usize);
                 let base = env_get(transport, proc, env, *base)?;
-                let copy = with_value_ref(proc, base, "backend struct update base", |base_ref| {
-                    fz_struct_copy(proc, base_ref, *arity)
-                })?;
-                for (slot, item) in slots {
-                    let slot = *slot as usize;
-                    let item = publish_runtime_value(proc, env_get(transport, proc, env, *item)?)?;
-                    with_value_ref(proc, item, "backend struct update value", |item_ref| {
-                        fz_struct_store_ref(
-                            proc,
-                            copy,
-                            SlotLayout::slot_offset(slot) as u32,
-                            layout.kind_offset(slot) as u32,
-                            item_ref,
-                        )
+                let updated = if interp_has_struct_layout(runtime, base, struct_module) {
+                    let layout = SlotLayout::of(*arity as usize);
+                    let copy = with_value_ref(proc, base, "backend struct update base", |base_ref| {
+                        fz_struct_copy(proc, base_ref, *arity)
                     })?;
-                }
+                    for store in stores {
+                        let slot = store.slot as usize;
+                        let item = publish_runtime_value(proc, env_get(transport, proc, env, store.value)?)?;
+                        with_value_ref(proc, item, "backend struct update value", |item_ref| {
+                            fz_struct_store_ref(
+                                proc,
+                                copy,
+                                SlotLayout::slot_offset(slot) as u32,
+                                layout.kind_offset(slot) as u32,
+                                item_ref,
+                            )
+                        })?;
+                    }
+                    interp_value_from_ref_word(copy, "backend struct update")?
+                } else {
+                    let entries = stores.iter().map(|store| (store.key, store.value));
+                    interp_map_update(transport, proc, env, base, entries)?
+                };
                 env.insert(
                     *ok,
                     BackendBoundValue::Runtime(AnyValue::Atom(fz_runtime::any_value::TRUE_ATOM_ID)),
                 );
-                env.insert(
-                    *value,
-                    BackendBoundValue::Runtime(interp_value_from_ref_word(copy, "backend struct update")?),
-                );
+                env.insert(*value, BackendBoundValue::Runtime(updated));
             }
-            ProgramStep::StructSlot { value, base, slot } => {
+            ProgramStep::StructSlot {
+                value,
+                base,
+                module: struct_module,
+                slot,
+                field,
+            } => {
                 let base = env_get(transport, runtime.cur_proc(), env, *base)?;
-                env.insert(*value, BackendBoundValue::Runtime(interp_slot(runtime, base, *slot)?));
+                let read = if interp_has_struct_layout(runtime, base, struct_module) {
+                    interp_slot(runtime, base, *slot)?
+                } else {
+                    interp_struct_field(runtime, module, base, field)?
+                };
+                env.insert(*value, BackendBoundValue::Runtime(read));
             }
             ProgramStep::RequireMapValue { value, source, key } => {
                 let key = literal_value(runtime, key)?;
@@ -3482,6 +3489,26 @@ fn encode_direct_callable_captures(
     Ok(())
 }
 
+/// `base` with each of `entries` replacing a key it has, or the miss when it
+/// lacks one.
+fn interp_map_update(
+    transport: &TransportStore,
+    proc: *mut Process,
+    env: &Frame,
+    base: AnyValue,
+    entries: impl Iterator<Item = (ValueId, ValueId)>,
+) -> Result<AnyValue, String> {
+    let mut dest = with_value_ref(proc, base, "backend map update base", |base_ref| {
+        fz_map_dest_begin_update(proc, base_ref)
+    })?;
+    for (key, item) in entries {
+        let key = env_get(transport, proc, env, key)?;
+        let item = publish_runtime_value(proc, env_get(transport, proc, env, item)?)?;
+        dest = interp_map_dest_put(proc, dest, key, item, "backend map update")?;
+    }
+    interp_value_from_ref_word(fz_map_dest_freeze(proc, dest), "backend map update")
+}
+
 /// Put one entry in the map destination `dest`; the answer is the
 /// destination the next put or the freeze takes.
 fn interp_map_dest_put(
@@ -3749,6 +3776,21 @@ fn interp_slot(runtime: &mut IrInterpRuntime, object: AnyValue, slot: u32) -> Re
         fz_struct_get_field_ref(runtime.cur_proc(), object_ref, slot * 8)
     })
     .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend slot"))
+}
+
+/// Whether `value` is in the struct layout of the struct named `module`.
+/// The types say a value is that struct, not how it is laid out.
+fn interp_has_struct_layout(
+    runtime: &mut IrInterpRuntime,
+    value: AnyValue,
+    module: &fz_runtime::module_name::ModuleName,
+) -> bool {
+    match value {
+        AnyValue::Ref(object) => unsafe { &*runtime.cur_proc() }
+            .heap
+            .has_struct_layout_of(object.raw(), module),
+        _ => false,
+    }
 }
 
 fn interp_struct_field(

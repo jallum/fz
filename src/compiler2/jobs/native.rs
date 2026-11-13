@@ -27,7 +27,7 @@ use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListReg
 use crate::fz_ir::{
     BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DestMapSeed, DirectCallTarget,
     ExternAbi, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FnBuilder, FnCategory, FnId,
-    ModuleBuilder, Prim, RaiseSubject, ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
+    ModuleBuilder, Prim, RaiseSubject, ReceiveAfter, ReceiveClause, SlotStore, Term, UnOp as IrUnOp, Var,
 };
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate, TuplePositions};
@@ -1272,18 +1272,24 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     value,
                     ok,
                     base,
+                    module,
                     arity,
-                    slots,
+                    stores,
                 } => {
                     let base = self.env_runtime_var(ctx, executable, env, *base);
-                    let fields = slots
+                    let stores = stores
                         .iter()
-                        .map(|(slot, item)| (*slot, self.env_runtime_var(ctx, executable, env, *item)))
+                        .map(|store| SlotStore {
+                            slot: store.slot,
+                            key: self.env_runtime_var(ctx, executable, env, store.key),
+                            value: self.env_runtime_var(ctx, executable, env, store.value),
+                        })
                         .collect();
                     let (var, _) = ctx.emit_let(Prim::StructWith {
                         base,
+                        module: module.clone(),
                         arity: *arity,
-                        fields,
+                        stores,
                     });
                     let (ok_var, _) = ctx.emit_let(Prim::Const(Const::True));
                     self.bind_runtime_value(ctx, executable, env, *ok, ok_var);
@@ -1447,9 +1453,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let (var, _) = ctx.emit_let(prim);
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
-                BackendStep::StructSlot { value, base, slot } => {
+                BackendStep::StructSlot {
+                    value,
+                    base,
+                    module,
+                    slot,
+                    field,
+                } => {
                     let base = self.env_runtime_var(ctx, executable, env, *base);
-                    let (var, _) = ctx.emit_let(Prim::TupleField(base, *slot));
+                    let (var, _) = ctx.emit_let(Prim::StructSlot {
+                        base,
+                        module: module.clone(),
+                        slot: *slot,
+                        field: field.clone(),
+                    });
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::RequireMapValue { value, source, key } => {
