@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T23:34:07Z",
+  "description": "Repro (0a1d44728): dbg(apply(fn a, b -\u003e a + b end, [1, 2])) -\u003e error[lower/unbound]: compiler2 lowering found unresolved direct runtime callee apply/2. Elixir prints 3. No apply/2 exists in lib/ or src/; apply/3 is a defmacro in lib/kernel.fz:238.\nDone when: an oracle fixture calls apply/2 with an anonymous function, a captured function (\u0026String.upcase/1) and a closure, with zero, one and several arguments, and matches Elixir on interp, run and build; a list whose length does not match the function's arity raises as Elixir does (BadArityError) or the ticket records why not.",
+  "id": "fz-sc8.169",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "apply/2 calls a function value with a list of arguments",
+  "type": "feature",
+  "updated_at": "2026-11-13T23:34:07Z"
+}
