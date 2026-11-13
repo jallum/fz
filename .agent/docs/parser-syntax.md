@@ -18,6 +18,17 @@ Keep this boundary crisp:
 - Do not revive `Parser::new`, `parse_program`, `parse_prelude`, or
   `parse_expr_eof`; old callers should move to compiler2 quoted source.
 
+## An atom is a colon and a name
+
+The lexer reads a colon that begins a token as an atom when what follows is an
+identifier (`:ok`), a quoted name (`:"a b"`) or an operator spelling Elixir
+accepts unquoted (`:+`, `:<>`, `:%{}`, `:..//`; the table is `OPERATOR_ATOMS`
+in `lexer.rs`). The longest spelling wins, so `:===` is one atom. A colon after
+an identifier never begins a token: `a: -1` is a keyword key, and `::` is
+always the double colon, so `x :: integer` and `<<x::8>>` do not read as atoms.
+A colon with none of those after it is the bare `Colon` token (`+: 2` in an
+import filter).
+
 ## A file's top level takes any expression
 
 `parse_program` reads a file with `parse_file_item`; a `defmodule` body, a
