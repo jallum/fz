@@ -37,6 +37,85 @@ fn joining_tuple_field_demands_of_different_length_keeps_every_field() {
     );
 }
 
+fn unnormalized_fields(fields: Vec<RuntimeDemand>) -> RuntimeDemand {
+    RuntimeDemand {
+        shape: ShapeDemand::TupleFields(fields),
+        callable: CallableDemand::default(),
+    }
+}
+
+/// The result of joining is the canonical demand however either side was
+/// written: trailing `ignore` fields say nothing, and a tuple that names
+/// nothing is `Ignore`. Both the value-returning and the in-place join must
+/// land on the same canonical value.
+#[test]
+fn joining_demands_yields_the_canonical_form_whichever_way_they_are_written() {
+    let ignore = RuntimeDemand::ignore;
+    let whole = RuntimeDemand::whole;
+    let cases = [
+        (
+            "trailing ignore on the left is trimmed",
+            unnormalized_fields(vec![whole(), ignore(), ignore()]),
+            RuntimeDemand::ignore(),
+            RuntimeDemand::tuple_fields(vec![whole()]),
+        ),
+        (
+            "trailing ignore on the right is trimmed",
+            RuntimeDemand::ignore(),
+            unnormalized_fields(vec![whole(), ignore()]),
+            RuntimeDemand::tuple_fields(vec![whole()]),
+        ),
+        (
+            "an all-ignore tuple joined with ignore is ignore",
+            unnormalized_fields(vec![ignore(), ignore()]),
+            RuntimeDemand::ignore(),
+            RuntimeDemand::ignore(),
+        ),
+        (
+            "two all-ignore tuples of different width join to ignore",
+            unnormalized_fields(vec![ignore()]),
+            unnormalized_fields(vec![ignore(), ignore(), ignore()]),
+            RuntimeDemand::ignore(),
+        ),
+        (
+            "an all-ignore tuple on the right leaves whole alone",
+            RuntimeDemand::whole(),
+            unnormalized_fields(vec![ignore()]),
+            RuntimeDemand::whole(),
+        ),
+        (
+            "whole absorbs a padded tuple",
+            unnormalized_fields(vec![whole(), ignore()]),
+            RuntimeDemand::whole(),
+            RuntimeDemand::whole(),
+        ),
+        (
+            "nested padding is trimmed on the side that is longer",
+            unnormalized_fields(vec![unnormalized_fields(vec![whole(), ignore()]), ignore(), whole()]),
+            unnormalized_fields(vec![ignore()]),
+            RuntimeDemand::tuple_fields(vec![RuntimeDemand::tuple_fields(vec![whole()]), ignore(), whole()]),
+        ),
+        (
+            "nested all-ignore fields collapse and trim away",
+            unnormalized_fields(vec![whole(), unnormalized_fields(vec![ignore()])]),
+            unnormalized_fields(vec![ignore(), unnormalized_fields(vec![ignore(), ignore()])]),
+            RuntimeDemand::tuple_fields(vec![whole()]),
+        ),
+        (
+            "fields join pointwise and the result is trimmed",
+            unnormalized_fields(vec![ignore(), whole(), ignore()]),
+            unnormalized_fields(vec![whole()]),
+            RuntimeDemand::tuple_fields(vec![whole(), whole()]),
+        ),
+    ];
+    for (intent, left, right, expected) in cases {
+        assert_eq!(left.join(&right), expected, "join: {intent}");
+        let mut in_place = left.clone();
+        in_place.join_assign(&right);
+        assert_eq!(in_place, expected, "join_assign: {intent}");
+    }
+}
+
 /// A provider boundary is somebody else's code: it publishes a call surface,
 /// not a compiler2 executable, so nothing downstream can emit a direct edge
 /// to it or ground a return against its executable fact. The activation field
