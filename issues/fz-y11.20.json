@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T19:11:22Z",
+  "description": "src/compiler2/types/addressed.rs: address_remap_with (line 294) clones the whole descriptor of every type that has variables (~7,400 allocations via 279/445/449/454/418), address_inputs (line 220) collects a Vec per call (~6,300) with a fresh path Vec (278, ~6,100).\n\nChange: remap from a borrowed descriptor, building only the axes that contain variables (the has_vars early return already skips variable-free types; extend the same idea per child so an untouched child is reused by id). address_inputs' result vector stays if callers keep it; the path buffer is reused across the inputs of one call (it is already one Vec per call: confirm where the per-step allocations come from before changing anything).\n\nEvidence: allocation census of the OptionParser probe at bf51f11c1 (develop ac3750d1e + hasher fix + fz-y11.15 spike; 857,327 calls). Ranked sites: /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/bf51f11c1_top.txt; call chains: python3 /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/chain.py /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/bf51f11c1.pkl \u003cfile:line\u003e \u003cdepth\u003e. Counts are 1-in-16 sampling estimates; line numbers are at that commit. Method and signal: see the epic (bw show fz-y11). Every site is a claim read from the census and the source, to be confirmed first.",
+  "id": "fz-y11.20",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "Address remapping reads the descriptor it remaps where it lives",
+  "type": "task",
+  "updated_at": "2026-11-13T19:11:22Z"
+}
