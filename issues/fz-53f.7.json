@@ -4,6 +4,7 @@
     "fz-53f.1",
     "fz-53f.10",
     "fz-53f.11",
+    "fz-53f.12",
     "fz-53f.2",
     "fz-53f.3",
     "fz-53f.4",
@@ -22,5 +23,5 @@
   "status": "open",
   "title": "The compiler's remaining tables hash with a fast, randomly seeded hasher",
   "type": "task",
-  "updated_at": "2026-11-13T02:01:35Z"
+  "updated_at": "2026-11-13T02:01:36Z"
 }

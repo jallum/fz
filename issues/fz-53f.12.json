@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-53f.7"
+  ],
   "created": "2026-11-13T02:01:34Z",
   "description": "DependencyIndex::replace_reads and replace_waits (deps.rs) clone the incoming set to iterate it and then store the original. Store it, then iterate the stored set. Spike: -0.99/-0.30/-0.43/-0.85/-1.12%, bytes allocated -2.8% on distinct1. Diff: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/small/cand_deps_replace_clone.diff. Neighbour: #359 (merged) changed scheduler.rs read accessors and passes output_keys by value into replace_outputs. Spike base 72c22569b, release instructions on distinct1/f761/f765/r6/lit16; the saving is within about twice the noise floor, so re-measure interleaved (base and change alternating, median of 9) before claiming it. Port by reading the spike diff, not by applying it; numbers in /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/small/results.md. Acceptance: stdout (interp and run), canonical dump, activation key counts and job counts identical to the base binary on the five probes (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/p/distinct1.fz, f761.fz --top 1 --top 2, f765.fz --max-top 3, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/m/r6.fz, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/l/lit16.fz); full gate; no pin, golden or census movement.",
   "id": "fz-53f.12",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Replacing a job's reads or waits stores the set without copying it",
   "type": "task",
-  "updated_at": "2026-11-13T02:01:34Z"
+  "updated_at": "2026-11-13T02:01:36Z"
 }
