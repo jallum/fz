@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T23:05:19Z",
   "created": "2026-11-13T21:40:20Z",
   "description": "The distill gate first divergence after fz-sc8.3 (PR #478). tools/distill-telemetry.exs compiles and exits 0 on interp, run and build; all three outputs are byte-identical to each other and differ from elixir only in the order of tied rows in two tables (job_census, line 135: Enum.sort_by(fn {_,_,_,excess,_} -\u003e -excess end), and the wake table).\n\nRepro (interp, run, build):\nIO.inspect(Enum.sort_by([{\"A\",1},{\"B\",1},{\"C\",1},{\"D\",1},{\"E\",1},{\"F\",1},{\"S\",3},{\"X\",1}], fn {_, n} -\u003e -n end))\nElixir: [{\"S\", 3}, {\"A\", 1}, {\"B\", 1}, {\"C\", 1}, {\"D\", 1}, {\"E\", 1}, {\"F\", 1}, {\"X\", 1}]\nfz:     [{\"S\", 3}, {\"A\", 1}, {\"E\", 1}, {\"C\", 1}, {\"B\", 1}, {\"F\", 1}, {\"D\", 1}, {\"X\", 1}]\n\nCause: lib/enum.fz split_sort_list deals elements alternately into two piles, so the merge sees interleaved halves; ties come out in pile order, not input order. Every sort entry point goes through sort_list (sort/1, sort/2, sort_by/2).\n\nDone when: an oracle fixture (fz-sc8 block, 01143) sorts lists with ties through Enum.sort/2 with a \u003c= sorter, Enum.sort/2 with a \u003c sorter, and Enum.sort_by/2, on lists of 2, 3, 5, 8 and 33 elements, and matches Elixir on interp, run and build; and the distiller output for tests/distill_telemetry/main_returns_one.jsonl matches elixir on three paths or its next divergence is recorded.",
   "id": "fz-sc8.160",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Enum.sort keeps equal elements in their original order",
   "type": "bug",
-  "updated_at": "2026-11-13T21:40:20Z"
+  "updated_at": "2026-11-13T23:05:19Z"
 }
