@@ -1,0 +1,5 @@
+#---
+# purpose: a diagnostic on a line that holds a non-ASCII string shows the line intact and underlines the right text
+# expect: diagnostic
+#---
+def main(), do: "héllo" <> missing

@@ -99,3 +99,12 @@ fn line_starts_cached_once() {
     let l2 = sm.locate(Span::new(f, 2, 3));
     assert_eq!(l1, l2);
 }
+
+#[test]
+fn locate_counts_columns_in_characters_not_bytes() {
+    // `é` is two bytes; the `=` after it is byte offset 6 but the fifth character.
+    let (sm, f) = sm_with("t", "café = 1");
+    let loc = sm.locate(Span::new(f, 6, 7));
+    assert_eq!(loc.col, 6);
+    assert_eq!(loc.line_end, 9);
+}

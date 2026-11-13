@@ -1,0 +1,6 @@
+error[lower/unbound]: compiler2 lowering found unresolved value `missing`
+  --> fixtures/01201_an_error_after_a_non_ascii_string_is_underlined_under_its_own_text.fz:1:28
+   |
+1 | def main(), do: "héllo" <> missing
+   |                            ^^^^^^^
+   |

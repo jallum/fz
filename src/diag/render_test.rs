@@ -111,3 +111,30 @@ fn color_off_produces_no_escapes() {
     let out = render(&d, &sm);
     assert!(!out.contains("\x1b["), "no ANSI escapes when color disabled");
 }
+
+#[test]
+fn a_non_ascii_line_renders_verbatim_with_the_underline_under_the_right_characters() {
+    let src = "x = \"héllo\" + oops\n";
+    let (sm, f) = rebuild(src);
+    let start = src.find("oops").unwrap() as u32;
+    let d = Diagnostic::error(TEST_ERROR, "unbound", Span::new(f, start, start + 4));
+    let expected = "\
+error[test/error]: unbound
+  --> input.fz:1:15
+   |
+ 1 | x = \"héllo\" + oops
+   |               ^^^^
+   |
+
+";
+    assert_eq!(render(&d, &sm), expected);
+}
+
+#[test]
+fn a_span_over_a_multi_byte_character_underlines_one_column() {
+    let src = "café = 1\n";
+    let (sm, f) = rebuild(src);
+    let d = Diagnostic::error(TEST_ERROR, "unexpected character 'é'", Span::new(f, 3, 5));
+    let out = render(&d, &sm);
+    assert!(out.contains(" 1 | café = 1\n   |    ^\n"), "{out}");
+}

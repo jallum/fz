@@ -1,0 +1,6 @@
+error[parse/expected-token]: unexpected character 'é'
+  --> fixtures/01200_a_non_ascii_character_in_a_name_is_named_whole_and_underlined.fz:1:4
+   |
+1 | café = 1
+   |    ^
+   |
