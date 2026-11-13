@@ -45,11 +45,15 @@
     {
       "text": "From fz-8c (not re-verified here): on develop ff4a75ada a tuple of 308 computed elements now compiles (GH #296 failed there before fz-sc8.155/.156 and #418); 400 elements exhausts the 50,000 budget. fz-8c's fz-75e (drive budget bounds repetition) will be planned against this ticket's anatomy before any build.",
       "timestamp": "2026-11-13T21:20:54Z"
+    },
+    {
+      "text": "From fz-8c's fz-75e measuring spike on develop ff4a75ada (their instrumented binary; not re-verified here): PRODUCT_DRIVE_BUDGET bounds one drive (one drive_root_product_with call), not a compile. A compile runs 1 to 47 drives across the 791 fixtures, which is why the distiller on fz-sc8.3 exits 0 with 51,170 pull.product.requested events. Healthy envelope on interp: 1.0 to 1.69 requests per distinct key per compile, at most 17 pulls of one key. Computed tuples: N=308 largest drive 49,548; N=400 82,622; N=1000 505,922; about 1.01 requests per key. Data: /private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/s75e/. The re-measure for this ticket should report the largest single drive, not only the event total.",
+      "timestamp": "2026-11-13T21:54:24Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "The distiller's compile finishes",
   "type": "bug",
-  "updated_at": "2026-11-13T21:20:54Z"
+  "updated_at": "2026-11-13T21:54:24Z"
 }
