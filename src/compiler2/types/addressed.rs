@@ -31,6 +31,7 @@ use crate::fast_hash::HashMap;
 
 use std::collections::BTreeSet;
 
+use super::conj::Conj;
 use super::descr::Descr;
 use super::{Ty, TypeVarId, Types};
 use crate::finite_set::FiniteSet;
@@ -275,15 +276,15 @@ impl Types {
         path: &mut Vec<AddrStep>,
         correlations: &mut AddressCorrelations,
     ) -> Ty {
-        path.push(root);
-        let remapped = self.address_remap_with(ty, path, correlations, AddressOwner::EmbeddedValue);
-        path.pop();
-        remapped
+        self.address_child(ty, root, path, correlations, AddressOwner::EmbeddedValue)
     }
 
-    fn address_remap_with(
+    /// The remap of the child of the current node reached by `step`. A child
+    /// with no variables is itself, and the path buffer is not touched for it.
+    fn address_child(
         &mut self,
         ty: Ty,
+        step: AddrStep,
         path: &mut Vec<AddrStep>,
         correlations: &mut AddressCorrelations,
         owner: AddressOwner,
@@ -291,27 +292,62 @@ impl Types {
         if !self.has_vars(&ty) {
             return ty;
         }
-        let mut d = self.descr(&ty).clone();
-        if !d.vars.cofinite && !d.vars.values.is_empty() {
-            d.vars = self.address_vars_at(&d.vars, path, correlations, owner);
-        }
-        self.address_remap_children(&mut d, path, correlations, owner);
-        self.intern(d)
+        path.push(step);
+        let remapped = self.address_remap_with(ty, path, correlations, owner);
+        path.pop();
+        remapped
     }
 
-    /// Map the finite variable set living at one node to address ids. A single
-    /// variable takes the node's address; a union of several takes `VarSlot(k)`
-    /// sub-addresses so distinct variables never collide.
-    fn address_vars_at(
+    /// Remap a type that has variables. The descriptor is read where it lives;
+    /// an owned copy is made only for the first part that changes, and a type
+    /// whose parts all map to themselves is returned as it is.
+    fn address_remap_with(
         &mut self,
-        vars: &FiniteSet<TypeVarId>,
+        ty: Ty,
         path: &mut Vec<AddrStep>,
         correlations: &mut AddressCorrelations,
         owner: AddressOwner,
-    ) -> FiniteSet<TypeVarId> {
-        let single = vars.values.len() == 1;
+    ) -> Ty {
+        let mut changed: Option<Descr> = None;
+        if let Some(vars) = self.address_vars_at(ty, path, correlations, owner) {
+            self.owned_copy(&mut changed, ty).vars = vars;
+        }
+        self.address_remap_tuples(ty, &mut changed, path, correlations, owner);
+        self.address_remap_lists(ty, &mut changed, path, correlations, owner);
+        self.address_remap_resources(ty, &mut changed, path, correlations, owner);
+        self.address_remap_funcs(ty, &mut changed, path, correlations);
+        self.address_remap_maps(ty, &mut changed, path, correlations, owner);
+        match changed {
+            Some(d) => self.intern(d),
+            None => ty,
+        }
+    }
+
+    fn owned_copy<'d>(&self, changed: &'d mut Option<Descr>, ty: Ty) -> &'d mut Descr {
+        changed.get_or_insert_with(|| self.descr(&ty).clone())
+    }
+
+    /// Map the finite variable set living at `ty`'s root to address ids, or
+    /// `None` when there is none or every variable already is its address. A
+    /// single variable takes the node's address; a union of several takes
+    /// `VarSlot(k)` sub-addresses so distinct variables never collide.
+    fn address_vars_at(
+        &mut self,
+        ty: Ty,
+        path: &mut Vec<AddrStep>,
+        correlations: &mut AddressCorrelations,
+        owner: AddressOwner,
+    ) -> Option<FiniteSet<TypeVarId>> {
+        let vars = &self.descr(&ty).vars;
+        if vars.cofinite || vars.values.is_empty() {
+            return None;
+        }
+        let count = vars.values.len();
+        let single = count == 1;
+        let mut changed = false;
         let mut set = BTreeSet::new();
-        for (k, &original) in vars.values.iter().enumerate() {
+        for k in 0..count {
+            let original = *self.descr(&ty).vars.values.iter().nth(k).expect("k is below the count");
             let mapped = if owner == AddressOwner::CallableSurface {
                 let binder = correlations
                     .binders
@@ -372,12 +408,15 @@ impl Types {
                 correlations.values.insert(original, id);
                 id
             };
-            set.insert(mapped);
+            changed |= mapped != original;
+            if !single || mapped != original {
+                set.insert(mapped);
+            }
         }
-        FiniteSet {
+        changed.then_some(FiniteSet {
             values: set,
             cofinite: false,
-        }
+        })
     }
 
     /// The address of the `k`th variable of a union at `path`.
@@ -388,82 +427,153 @@ impl Types {
         id
     }
 
-    /// Recurse into every nested shape of `d`, including a closure literal's
-    /// environment captures, extending the address path by the structural step
-    /// at each child (mirrors `map_recursive_inputs_with`, but path-aware).
-    fn address_remap_children(
+    /// Recurse into every tuple field, extending the address path by the
+    /// structural step at each child (mirrors `map_recursive_inputs_with`, but
+    /// path-aware). A tuple union's alternatives are told apart by `Variant`.
+    fn address_remap_tuples(
         &mut self,
-        d: &mut Descr,
+        ty: Ty,
+        changed: &mut Option<Descr>,
         path: &mut Vec<AddrStep>,
         correlations: &mut AddressCorrelations,
         owner: AddressOwner,
     ) {
-        let tuple_alternatives = d
-            .tuples
-            .iter()
-            .map(|conj| conj.pos.len() + conj.neg.len())
-            .sum::<usize>();
-        let discriminate_tuple_alternatives = tuple_alternatives > 1;
-        let mut tuple_alternative = 0_u16;
-        for conj in &mut d.tuples {
-            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                let alternative = tuple_alternative;
-                tuple_alternative = tuple_alternative.saturating_add(1);
+        let clauses = self.descr(&ty).tuples.len();
+        let alternatives = self.descr(&ty).tuples.iter().map(Conj::sig_count).sum::<usize>();
+        let mut next_alternative = 0_u16;
+        for ci in 0..clauses {
+            for si in 0..self.descr(&ty).tuples[ci].sig_count() {
+                let alternative = next_alternative;
+                next_alternative = next_alternative.saturating_add(1);
                 let depth = path.len();
-                if discriminate_tuple_alternatives {
+                if alternatives > 1 {
                     path.push(AddrStep::Variant(alternative));
                 }
-                for (j, ty) in sig.elems.iter_mut().enumerate() {
-                    path.push(AddrStep::Field(j as u16));
-                    *ty = self.address_remap_with(*ty, path, correlations, owner);
-                    path.pop();
+                for j in 0..self.descr(&ty).tuples[ci].sig(si).elems.len() {
+                    let child = self.descr(&ty).tuples[ci].sig(si).elems[j];
+                    let remapped = self.address_child(child, AddrStep::Field(j as u16), path, correlations, owner);
+                    if remapped != child {
+                        self.owned_copy(changed, ty).tuples[ci].sig_mut(si).elems[j] = remapped;
+                    }
                 }
                 path.truncate(depth);
             }
         }
-        for conj in &mut d.lists {
-            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                if let Some(elem) = sig.elem {
-                    path.push(AddrStep::Elem);
-                    sig.elem = Some(self.address_remap_with(elem, path, correlations, owner));
-                    path.pop();
+    }
+
+    fn address_remap_lists(
+        &mut self,
+        ty: Ty,
+        changed: &mut Option<Descr>,
+        path: &mut Vec<AddrStep>,
+        correlations: &mut AddressCorrelations,
+        owner: AddressOwner,
+    ) {
+        for ci in 0..self.descr(&ty).lists.len() {
+            for si in 0..self.descr(&ty).lists[ci].sig_count() {
+                let Some(child) = self.descr(&ty).lists[ci].sig(si).elem else {
+                    continue;
+                };
+                let remapped = self.address_child(child, AddrStep::Elem, path, correlations, owner);
+                if remapped != child {
+                    self.owned_copy(changed, ty).lists[ci].sig_mut(si).elem = Some(remapped);
                 }
             }
         }
-        for conj in &mut d.resources {
-            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                path.push(AddrStep::Payload);
-                sig.payload = self.address_remap_with(sig.payload, path, correlations, owner);
-                path.pop();
+    }
+
+    fn address_remap_resources(
+        &mut self,
+        ty: Ty,
+        changed: &mut Option<Descr>,
+        path: &mut Vec<AddrStep>,
+        correlations: &mut AddressCorrelations,
+        owner: AddressOwner,
+    ) {
+        for ci in 0..self.descr(&ty).resources.len() {
+            for si in 0..self.descr(&ty).resources[ci].sig_count() {
+                let child = self.descr(&ty).resources[ci].sig(si).payload;
+                let remapped = self.address_child(child, AddrStep::Payload, path, correlations, owner);
+                if remapped != child {
+                    self.owned_copy(changed, ty).resources[ci].sig_mut(si).payload = remapped;
+                }
             }
         }
-        for conj in &mut d.funcs {
-            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+    }
+
+    /// Each arrow clause is its own binder: its arguments and result are
+    /// addressed as a callable surface, its closure captures as captured values.
+    fn address_remap_funcs(
+        &mut self,
+        ty: Ty,
+        changed: &mut Option<Descr>,
+        path: &mut Vec<AddrStep>,
+        correlations: &mut AddressCorrelations,
+    ) {
+        for ci in 0..self.descr(&ty).funcs.len() {
+            for si in 0..self.descr(&ty).funcs[ci].sig_count() {
                 correlations.binders.push(BinderCorrelations::default());
-                for (i, ty) in sig.args.iter_mut().enumerate() {
-                    path.push(AddrStep::Param(i as u16));
-                    *ty = self.address_remap_with(*ty, path, correlations, AddressOwner::CallableSurface);
-                    path.pop();
+                for i in 0..self.descr(&ty).funcs[ci].sig(si).args.len() {
+                    let child = self.descr(&ty).funcs[ci].sig(si).args[i];
+                    let step = AddrStep::Param(i as u16);
+                    let remapped = self.address_child(child, step, path, correlations, AddressOwner::CallableSurface);
+                    if remapped != child {
+                        self.owned_copy(changed, ty).funcs[ci].sig_mut(si).args[i] = remapped;
+                    }
                 }
-                path.push(AddrStep::Result);
-                sig.ret = self.address_remap_with(sig.ret, path, correlations, AddressOwner::CallableSurface);
-                path.pop();
-                if let Some(lit) = &mut sig.lit {
-                    for (i, capture) in lit.captures.iter_mut().enumerate() {
-                        path.push(AddrStep::Capture(i as u16));
-                        *capture = self.address_remap_with(*capture, path, correlations, AddressOwner::CapturedValue);
-                        path.pop();
+                let ret = self.descr(&ty).funcs[ci].sig(si).ret;
+                let remapped =
+                    self.address_child(ret, AddrStep::Result, path, correlations, AddressOwner::CallableSurface);
+                if remapped != ret {
+                    self.owned_copy(changed, ty).funcs[ci].sig_mut(si).ret = remapped;
+                }
+                let captures = self.descr(&ty).funcs[ci]
+                    .sig(si)
+                    .lit
+                    .as_ref()
+                    .map_or(0, |lit| lit.captures.len());
+                for i in 0..captures {
+                    let child = self.descr(&ty).funcs[ci]
+                        .sig(si)
+                        .lit
+                        .as_ref()
+                        .expect("lit has captures")
+                        .captures[i];
+                    let step = AddrStep::Capture(i as u16);
+                    let remapped = self.address_child(child, step, path, correlations, AddressOwner::CapturedValue);
+                    if remapped != child {
+                        let sig = self.owned_copy(changed, ty).funcs[ci].sig_mut(si);
+                        sig.lit.as_mut().expect("lit has captures").captures[i] = remapped;
                     }
                 }
                 correlations.binders.pop().expect("callable correlation scope");
             }
         }
-        for conj in &mut d.maps {
-            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                for (j, (_, ty)) in sig.fields.iter_mut().enumerate() {
-                    path.push(AddrStep::MapField(j as u16));
-                    *ty = self.address_remap_with(*ty, path, correlations, owner);
-                    path.pop();
+    }
+
+    fn address_remap_maps(
+        &mut self,
+        ty: Ty,
+        changed: &mut Option<Descr>,
+        path: &mut Vec<AddrStep>,
+        correlations: &mut AddressCorrelations,
+        owner: AddressOwner,
+    ) {
+        for ci in 0..self.descr(&ty).maps.len() {
+            for si in 0..self.descr(&ty).maps[ci].sig_count() {
+                let children: Vec<Ty> = self.descr(&ty).maps[ci].sig(si).fields.values().copied().collect();
+                let remapped: Vec<Ty> = children
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &child)| {
+                        self.address_child(child, AddrStep::MapField(j as u16), path, correlations, owner)
+                    })
+                    .collect();
+                if remapped != children {
+                    let sig = self.owned_copy(changed, ty).maps[ci].sig_mut(si);
+                    for (field, remapped) in sig.fields.values_mut().zip(remapped) {
+                        *field = remapped;
+                    }
                 }
             }
         }
