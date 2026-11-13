@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:38:51Z",
+  "description": "Goal: no value is built during a compile only to be tested, counted, walked once or copied back to an id that already exists.\n\nEvidence: one compile of dbg(OptionParser.parse([\"--s1\",\"5\"], strict: [s1: :integer])) on develop 742e688b5 makes 1,561,029 heap allocations (counting allocator, 1 in 16 sampled with call stacks). Ranked sites and call chains: /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/d1_top120.txt, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/d1.pkl with /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/chain.py; source at the measured commit: /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src. The child tickets cover about 540k of those allocations. All counts are sampling estimates and the fz-53f epic is moving the same numbers, so every ticket re-measures.\n\nMethod per ticket:\n1. Re-measure the named sites on the ticket's base with the counting build (see Signal).\n2. Find the line that asks for the allocation (the census site is the innermost frame; the request is up the chain).\n3. Remove the request: answer the question without building the value, read through a borrow, build once outside the loop, or return the id that already exists. Prefer removing a copy or a concept over adding a cache.\n4. Delete what the change makes unused.\n\nSignal per ticket: full gate green; no golden, census or pin moves; program output and canonical backend dump identical on the probe; total allocation count on the probe before and after reported in the commit (counting build: apply /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/../census/alloc-fz2.rs.txt recipe in the epic notes: build with CARGO_PROFILE_DEV_DEBUG=1 and frame pointers, run with FZ_TSTATS=\u003cprefix\u003e, read \u003cprefix\u003e.alloc).\n\nNot in scope (owned by fz-53f / fz-xcu): OrderedSet internals, emptiness Memo.in_flight, interner double storage, ActivationSymbol identity, callsite_call_args family, atom_names per macro run, the hasher, re-keying fact/product/dependency tables.",
+  "id": "fz-y11",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "A compile allocates only what it keeps",
+  "type": "epic",
+  "updated_at": "2026-11-13T03:38:51Z"
+}
