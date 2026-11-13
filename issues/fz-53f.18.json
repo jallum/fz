@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T13:27:59Z",
   "created": "2026-11-13T03:39:46Z",
   "description": "Why: every emptiness decision threads an InFlight path (a parent-linked chain of Frames, src/compiler2/types/emptiness.rs) through tuple, list, resource, function and map clauses, and asks at each step whether the descriptor is already being decided higher up. A descriptor names only descriptors interned before it, so a decision strictly descends and the question is never answered yes. The path is a concept with no job.\n\nWhat: first prove it. Replace the 'already in flight' answer with a panic and run the whole gate (workspace tests, doc tests, fixture matrix) plus the five OptionParser probes; if it fires anywhere, stop and report the descriptor and the program: the guard has a job and this ticket is rewritten. If it never fires, delete InFlight, Frame, the open parameter on every clause function and their callers, and the branch that reads it.\n\nSignal: identity on the five probes (interp/run stdout, canonical backend dump, activation key and job counts); no pin movement; instructions equal or lower; allocation calls equal or lower.\n\nRemoves: InFlight, Frame, the open parameter, the in-flight branch, tests that pin only the guard. Guidepost: .agent/docs on types must state the invariant the deletion rests on (a descriptor names only earlier descriptors) so a future recursive descriptor design knows emptiness needs a path again.",
   "id": "fz-53f.18",
   "labels": [],
   "parent": "fz-53f",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Deciding emptiness carries no in-flight path",
   "type": "task",
-  "updated_at": "2026-11-13T03:39:46Z"
+  "updated_at": "2026-11-13T13:27:59Z"
 }
