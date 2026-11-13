@@ -27,7 +27,7 @@ def relay() do
   receive do
     value -> value
   after
-    1000 -> 0
+    0 -> 0
   end
 end
 

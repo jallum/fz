@@ -88,7 +88,7 @@ use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio, id};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread::sleep;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const FZ2_BIN: &str = env!("CARGO_BIN_EXE_fz2");
@@ -285,8 +285,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_built_binary_reports_the_same_probes_collections_and_destructors_as_run,
         ),
         (
-            "a_built_binary_sleeps_the_scheduler_once_for_a_receive_that_times_out",
-            a_built_binary_sleeps_the_scheduler_once_for_a_receive_that_times_out,
+            "a_receive_timer_is_armed_then_fired_or_cancelled_and_fires_in_deadline_order_on_every_path",
+            a_receive_timer_is_armed_then_fired_or_cancelled_and_fires_in_deadline_order_on_every_path,
         ),
         ("fixture_hang_guard_policy", fixture_hang_guard_policy),
         (
@@ -1279,7 +1279,7 @@ fn guarded_fixture_command(
 }
 
 fn wait_fixture_command(
-    mut process: FixtureProcess,
+    process: FixtureProcess,
     mut ready_read_fd: Option<OwnedFd>,
     label: &str,
     boundary: ExecutionBoundary,
@@ -1289,13 +1289,18 @@ fn wait_fixture_command(
     let spawned_at = Instant::now();
     let mut execution_started = execution_start(boundary, spawned_at);
     let mut execution_ready_count = 0;
+    let mut process = WatchedProcess::start(process, label)?;
     loop {
+        let deadline = match execution_started {
+            Some(started) => started + execution_timeout,
+            None => spawned_at + setup_timeout,
+        };
+        // The one wait: until the child exits, a readiness byte arrives, or the
+        // hang guard's deadline passes.
+        let exited = process.wait_for_activity(ready_read_fd.as_ref(), deadline);
         // Observe exit before draining: an exited child's final ready byte is
         // already in the pipe, even if it arrived after the previous drain.
-        let status = match process.child.try_wait() {
-            Ok(status) => status,
-            Err(error) => return Err(process.fail(label, format!("wait {label}: {error}"))),
-        };
+        let status = if exited { Some(process.exit_status()) } else { None };
         while let Some(read_fd) = ready_read_fd.as_ref() {
             match read_execution_ready(read_fd) {
                 Ok(ExecutionReady::Ready) => {
@@ -1351,32 +1356,113 @@ fn wait_fixture_command(
                     ),
                 });
             }
-            FixtureCommandState::Running => sleep(Duration::from_millis(10)),
+            FixtureCommandState::Running => {}
         }
     }
 }
 
+/// The command a fixture check spawned, with its capture, as the caller hands
+/// it to `wait_fixture_command`.
 struct FixtureProcess {
     child: Child,
     capture: CommandCapture,
 }
 
-impl FixtureProcess {
+/// A spawned command whose exit is delivered by a waiter thread that owns the
+/// `Child`: the thread blocks in `wait()`, sends the status, then writes one
+/// byte to `exit_wake`, so the caller can sleep in `poll(2)` on the exit and on
+/// the readiness pipe together.
+struct WatchedProcess {
+    pid: libc::pid_t,
+    exit_receiver: mpsc::Receiver<ExitStatus>,
+    exit_wake: OwnedFd,
+    exited: Option<ExitStatus>,
+    capture: CommandCapture,
+}
+
+impl WatchedProcess {
+    fn start(process: FixtureProcess, label: &str) -> Result<Self, String> {
+        let FixtureProcess { mut child, capture } = process;
+        let pid = child.id() as libc::pid_t;
+        let mut fds = [0; 2];
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            let error = format!("pipe exit wake for {label}: {}", Error::last_os_error());
+            return Err(FixtureProcess { child, capture }.abandon(label, error));
+        }
+        let wake_read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+        let wake_write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+        let (sender, exit_receiver) = mpsc::channel();
+        let waiter_label = label.to_string();
+        std::thread::spawn(move || {
+            let status = wait_child(&mut child, &waiter_label);
+            let _ = sender.send(status);
+            let byte = [1_u8];
+            unsafe { libc::write(wake_write.as_raw_fd(), byte.as_ptr().cast(), byte.len()) };
+        });
+        Ok(Self {
+            pid,
+            exit_receiver,
+            exit_wake: wake_read,
+            exited: None,
+            capture,
+        })
+    }
+
+    /// Blocks until the child has exited, a readiness byte can be read, or
+    /// `deadline` passes, and says whether the child has exited.
+    fn wait_for_activity(&self, ready: Option<&OwnedFd>, deadline: Instant) -> bool {
+        let mut fds = vec![libc::pollfd {
+            fd: self.exit_wake.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        if let Some(ready) = ready {
+            fds.push(libc::pollfd {
+                fd: ready.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let millis = remaining.as_millis().saturating_add(1).min(i32::MAX as u128) as i32;
+        unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, millis) };
+        fds[0].revents & libc::POLLIN != 0
+    }
+
+    /// The status of the child, which has exited.
+    fn exit_status(&mut self) -> ExitStatus {
+        *self.exited.get_or_insert_with(|| {
+            self.exit_receiver
+                .recv()
+                .expect("the waiter thread delivers the exit status")
+        })
+    }
+
+    /// Whether the waiter thread has already delivered the exit status.
+    fn has_exited(&mut self) -> bool {
+        if self.exited.is_none() {
+            self.exited = self.exit_receiver.try_recv().ok();
+        }
+        self.exited.is_some()
+    }
+
     fn finish(mut self, label: &str) -> Result<Output, String> {
-        let group_error = kill_process_group(&self.child).err();
+        let already_reaped = self.has_exited();
+        let group_error = if already_reaped {
+            None
+        } else {
+            kill_process_group(self.pid).err()
+        };
         if group_error.is_some()
-            && let Err(direct_error) = kill_child(&mut self.child)
+            && let Err(direct_error) = kill_pid(self.pid)
+            && direct_error.raw_os_error() != Some(libc::ESRCH)
         {
             // This is our direct child and the harness does not change credentials.
-            // If it is still live after both SIGKILL attempts fail, returning would
-            // silently detach a process the harness owns.
-            match self.child.try_wait() {
-                Ok(Some(_)) => {}
-                Ok(None) => panic!("owned child stayed live after group and direct kill failed: {direct_error}"),
-                Err(error) => panic!("cannot prove owned child reaped after kill failures: {error}"),
-            }
+            // If it is still live after both SIGKILL attempts fail, waiting would
+            // hang and returning would silently detach a process the harness owns.
+            panic!("owned child stayed live after group and direct kill failed: {direct_error}");
         }
-        let status = wait_child(&mut self.child, label);
+        let status = self.exit_status();
         if let Some(error) = group_error {
             return Err(format!("teardown {label}: {error}; leader reaped as {status}"));
         }
@@ -1388,6 +1474,16 @@ impl FixtureProcess {
             Ok(_) => message,
             Err(error) => format!("{message}; {error}"),
         }
+    }
+}
+
+impl FixtureProcess {
+    /// Kill and reap a command that never reached a waiter.
+    fn abandon(mut self, label: &str, message: String) -> String {
+        let _ = kill_process_group(self.child.id() as libc::pid_t);
+        let _ = self.child.kill();
+        wait_child(&mut self.child, label);
+        message
     }
 }
 
@@ -1405,17 +1501,20 @@ fn wait_child(child: &mut Child, label: &str) -> ExitStatus {
     }
 }
 
-fn kill_child(child: &mut Child) -> std::io::Result<()> {
+fn kill_pid(pid: libc::pid_t) -> std::io::Result<()> {
     loop {
-        match child.kill() {
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            result => return result,
+        if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
+            return Ok(());
+        }
+        let error = Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EINTR) {
+            return Err(error);
         }
     }
 }
 
-fn kill_process_group(child: &Child) -> Result<(), String> {
-    let process_group = -(child.id() as libc::pid_t);
+fn kill_process_group(leader: libc::pid_t) -> Result<(), String> {
+    let process_group = -leader;
     loop {
         if unsafe { libc::kill(process_group, libc::SIGKILL) } == 0 {
             return Ok(());
@@ -1424,7 +1523,7 @@ fn kill_process_group(child: &Child) -> Result<(), String> {
         match error.raw_os_error() {
             Some(libc::EINTR) => continue,
             Some(libc::ESRCH) => return Ok(()),
-            _ => return Err(format!("kill process group {}: {}", child.id(), error)),
+            _ => return Err(format!("kill process group {leader}: {error}")),
         }
     }
 }
@@ -1665,14 +1764,11 @@ fn assert_missing_readiness_observation_order(exit_first: bool) {
         .write_all(b"exit\n")
         .unwrap();
     assert!(child.wait().expect("observe child exit").success());
-    let diagnostic_deadline = Instant::now() + Duration::from_secs(1);
-    while capture.stderr.metadata().expect("inspect captured diagnostics").len() == 0 {
-        assert!(
-            Instant::now() < diagnostic_deadline,
-            "readiness observation probe did not write its diagnostic"
-        );
-        sleep(Duration::from_millis(10));
-    }
+    assert_ne!(
+        capture.stderr.metadata().expect("inspect captured diagnostics").len(),
+        0,
+        "the probe writes its diagnostic before it exits, and its exit has been observed"
+    );
     assert_eq!(
         fixture_command_state(
             ExecutionBoundary::Announced,
@@ -3835,15 +3931,193 @@ fn a_built_binary_reports_the_same_probes_collections_and_destructors_as_run() {
     }
 }
 
-/// A receive that times out with nothing else runnable sleeps the scheduler
-/// once on a built binary. The wait itself is a clock reading and is not pinned.
-fn a_built_binary_sleeps_the_scheduler_once_for_a_receive_that_times_out() {
-    let fixture = FixtureCase::new("fixtures/00687_a_receive_after_times_out_with_an_empty_mailbox.fz");
-    let slept = telemetry_log_for_fixture(&fixture, FixtureMatrixPath::Build, "build")
+/// One receive-after timer event as the jsonl log renders it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimerEvent {
+    Armed {
+        timer: usize,
+        pid: usize,
+        armed_ns: usize,
+        deadline_ns: usize,
+    },
+    Fired {
+        timer: usize,
+        pid: usize,
+    },
+    Cancelled {
+        timer: usize,
+        pid: usize,
+    },
+}
+
+fn timer_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> Vec<TimerEvent> {
+    telemetry_log_for_fixture(fixture, path, label)
         .lines()
-        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"scheduler_slept\"]"))
-        .count();
-    assert_eq!(slept, 1, "build: the 10ms timeout puts the scheduler to sleep once");
+        .filter_map(|line| {
+            let timer = || required_json_u64_field(line, "timer", "timer event");
+            let pid = || required_json_u64_field(line, "pid", "timer event");
+            if line.contains("\"name\":[\"fz\",\"runtime\",\"timer\",\"armed\"]") {
+                let armed_ns = required_json_u64_field(line, "armed_ns", "timer armed event");
+                let deadline_ns = required_json_u64_field(line, "deadline_ns", "timer armed event");
+                Some(TimerEvent::Armed {
+                    timer: timer(),
+                    pid: pid(),
+                    armed_ns,
+                    deadline_ns,
+                })
+            } else if line.contains("\"name\":[\"fz\",\"runtime\",\"timer\",\"fired\"]") {
+                Some(TimerEvent::Fired {
+                    timer: timer(),
+                    pid: pid(),
+                })
+            } else if line.contains("\"name\":[\"fz\",\"runtime\",\"timer\",\"cancelled\"]") {
+                Some(TimerEvent::Cancelled {
+                    timer: timer(),
+                    pid: pid(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn armed_timers(events: &[TimerEvent]) -> Vec<(usize, usize, usize)> {
+    events
+        .iter()
+        .filter_map(|event| match *event {
+            TimerEvent::Armed {
+                timer,
+                pid,
+                deadline_ns,
+                ..
+            } => Some((timer, pid, deadline_ns)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn fired_timers(events: &[TimerEvent]) -> Vec<usize> {
+    events
+        .iter()
+        .filter_map(|event| match *event {
+            TimerEvent::Fired { timer, .. } => Some(timer),
+            _ => None,
+        })
+        .collect()
+}
+
+fn cancelled_timers(events: &[TimerEvent]) -> Vec<usize> {
+    events
+        .iter()
+        .filter_map(|event| match *event {
+            TimerEvent::Cancelled { timer, .. } => Some(timer),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The one timer armed was armed for exactly `requested_ns`: its deadline is
+/// its arm time plus the timeout the receive asked for.
+fn assert_armed_for_exactly(events: &[TimerEvent], requested_ns: usize, label: &str) {
+    let [
+        TimerEvent::Armed {
+            armed_ns, deadline_ns, ..
+        },
+        ..,
+    ] = events[..]
+    else {
+        panic!("{label}: the first timer event is an arming: {events:?}");
+    };
+    assert_eq!(
+        deadline_ns - armed_ns,
+        requested_ns,
+        "{label}: the timer is armed with its full deadline: {events:?}"
+    );
+}
+
+/// Every armed timer fires, and in the order of the deadlines the runtime
+/// reported when it armed them. The deadlines are the runtime's own, so the
+/// claim holds however long the machine stalled between the two arms.
+fn assert_timers_fire_in_deadline_order(events: &[TimerEvent], expected_timers: usize, label: &str) {
+    let mut by_deadline = armed_timers(events);
+    assert_eq!(by_deadline.len(), expected_timers, "{label}: timers armed: {events:?}");
+    by_deadline.sort_by_key(|&(timer, _, deadline_ns)| (deadline_ns, timer));
+    assert_eq!(
+        fired_timers(events),
+        by_deadline.iter().map(|&(timer, _, _)| timer).collect::<Vec<_>>(),
+        "{label}: timers fire nearest deadline first: {events:?}"
+    );
+    assert!(
+        cancelled_timers(events).is_empty(),
+        "{label}: no timer is cancelled: {events:?}"
+    );
+}
+
+/// A receive-after timer is armed with a deadline and then either fires or is
+/// cancelled by the message that wakes its process; when several are pending,
+/// they fire nearest deadline first. Read from the event stream of each path,
+/// so no assertion waits on, or races, a clock.
+fn a_receive_timer_is_armed_then_fired_or_cancelled_and_fires_in_deadline_order_on_every_path() {
+    let fixture = |name| FixtureCase::new(name);
+    let lone = fixture("fixtures/00687_a_receive_after_times_out_with_an_empty_mailbox.fz");
+    let cancelled = fixture("fixtures/00692_a_message_that_arrives_first_cancels_the_timeout.fz");
+    let late = fixture("fixtures/00690_a_late_message_beats_a_long_timeout.fz");
+    let staggered = fixture("fixtures/00693_two_staggered_timeouts_each_wake_their_own_process.fz");
+    let nested = fixture("fixtures/00691_a_child_and_its_parent_both_time_out_in_order.fz");
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
+        let events = timer_events_for_fixture(&lone, path, label);
+        assert!(
+            matches!(
+                events[..],
+                [TimerEvent::Armed { timer: armed, pid: 1, .. }, TimerEvent::Fired { timer: fired, pid: 1 }] if armed == fired
+            ),
+            "{label}: the lone timeout is armed by main and then fires: {events:?}"
+        );
+
+        assert_armed_for_exactly(&events, 1_000_000, label);
+
+        let events = timer_events_for_fixture(&cancelled, path, label);
+        assert!(
+            matches!(
+                events[..],
+                [TimerEvent::Armed { timer: armed, pid: 1, .. }, TimerEvent::Cancelled { timer: gone, pid: 1 }] if armed == gone
+            ),
+            "{label}: the message that arrives first cancels main's timer and nothing fires: {events:?}"
+        );
+        assert_armed_for_exactly(&events, 60_000_000_000, label);
+
+        let events = timer_events_for_fixture(&late, path, label);
+        let armed = armed_timers(&events);
+        assert_eq!(
+            armed.len(),
+            2,
+            "{label}: main's long timer and the child's short one: {events:?}"
+        );
+        let (parent_timer, _, parent_deadline) =
+            *armed.iter().find(|&&(_, pid, _)| pid == 1).expect("main armed a timer");
+        let (child_timer, _, child_deadline) = *armed
+            .iter()
+            .find(|&&(_, pid, _)| pid != 1)
+            .expect("child armed a timer");
+        assert!(
+            child_deadline < parent_deadline,
+            "{label}: the child's timer is the nearer: {events:?}"
+        );
+        assert_eq!(
+            fired_timers(&events),
+            vec![child_timer],
+            "{label}: only the child's timer fires: {events:?}"
+        );
+        assert_eq!(
+            cancelled_timers(&events),
+            vec![parent_timer],
+            "{label}: the late message cancels main's: {events:?}"
+        );
+
+        assert_timers_fire_in_deadline_order(&timer_events_for_fixture(&staggered, path, label), 2, label);
+        assert_timers_fire_in_deadline_order(&timer_events_for_fixture(&nested, path, label), 2, label);
+    }
 }
 
 /// `(pid, dtors_dispatched)` of every exit, in emission order.

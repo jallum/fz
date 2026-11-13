@@ -20,29 +20,40 @@
 //! status, and [`next_runnable`] hands out nothing after it.
 
 use crate::any_value::{AnyValueRef, ValueKind};
+use crate::clock::Clock;
 use crate::heap::GcStats;
 use crate::process::{Collection, CollectionBoundary, Disposition, PidId, Process, ProcessState};
 use crate::scheduler_hooks::{HaltHook, TimerCancelHook, TimerScheduleHook};
-use crate::telemetry::RuntimeEvent;
+use crate::telemetry::{RuntimeEvent, TimerArmed, TimerCancelled, TimerFired};
 use crate::timer::{TimerId, TimerWheel};
 use std::collections::VecDeque;
-use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 /// The pid of the process a program starts with. Its end is the program's end.
 pub const MAIN_PID: PidId = 1;
 
-/// The run queue, the timer wheel and the recorded end of one scheduler.
+/// The run queue, the timer wheel, the clock the timers are read against and
+/// the recorded end of one scheduler.
 #[derive(Default)]
 pub struct SchedulingCore {
     run_queue: VecDeque<PidId>,
     timers: TimerWheel,
+    clock: Clock,
     halted: Option<i32>,
 }
 
 impl SchedulingCore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A core that reads and waits on `clock` instead of the system clock.
+    #[cfg(test)]
+    pub fn with_clock(clock: Clock) -> Self {
+        Self {
+            clock,
+            ..Self::default()
+        }
     }
 
     /// Make `pid` runnable and record that in `state`. A process that is New,
@@ -85,14 +96,33 @@ impl SchedulingCore {
         &self.run_queue
     }
 
-    /// Schedule a wake-up for `pid` after `after`. The returned id cancels it.
-    pub fn schedule_timer(&mut self, pid: PidId, after: Duration) -> TimerId {
-        self.timers.schedule(pid, after)
+    /// Schedule a wake-up for `pid` after `after`. The returned record's
+    /// `timer` cancels it.
+    pub fn schedule_timer(&mut self, pid: PidId, after: Duration) -> TimerArmed {
+        let now = self.clock.now();
+        let entry = self.timers.schedule(pid, now + after);
+        TimerArmed {
+            timer: entry.id,
+            pid,
+            armed: self.clock.since_epoch(now),
+            deadline: self.clock.since_epoch(entry.deadline),
+        }
     }
 
-    /// Cancel a timer. No-op when it already fired or never existed.
-    pub fn cancel_timer(&mut self, id: TimerId) {
-        self.timers.cancel(id);
+    /// Cancel a timer, returning what was cancelled. `None` when it already
+    /// fired or never existed.
+    pub fn cancel_timer(&mut self, id: TimerId) -> Option<TimerCancelled> {
+        let entry = self.timers.cancel(id)?;
+        Some(TimerCancelled {
+            timer: entry.id,
+            pid: entry.pid,
+        })
+    }
+
+    /// The core's clock, for a test that lets time pass without a wait.
+    #[cfg(test)]
+    pub fn clock_mut_for_test(&mut self) -> &mut Clock {
+        &mut self.clock
     }
 
     /// The earliest pending timer deadline.
@@ -197,17 +227,22 @@ pub fn next_runnable<S: Scheduler + ?Sized>(scheduler: &mut S) -> Option<PidId> 
         if scheduler.core().halted.is_some() {
             return None;
         }
-        let expired = scheduler.core().timers.drain_expired(Instant::now());
+        let now = scheduler.core().clock.now();
+        let expired = scheduler.core().timers.drain_expired(now);
         for entry in expired {
+            scheduler.observe(RuntimeEvent::TimerFired(TimerFired {
+                timer: entry.id,
+                pid: entry.pid,
+            }));
             scheduler.wake_expired(entry.pid, entry.id);
         }
         if let Some(pid) = scheduler.core().run_queue.pop_front() {
             return Some(pid);
         }
         let deadline = scheduler.core().timers.next_deadline()?;
-        let wait = deadline.saturating_duration_since(Instant::now());
+        let wait = deadline.saturating_duration_since(scheduler.core().clock.now());
         scheduler.observe(RuntimeEvent::SchedulerSlept(wait));
-        sleep(wait);
+        scheduler.core().clock.wait(wait);
     }
 }
 
@@ -236,7 +271,9 @@ pub fn timer_cancel_hook<S: Scheduler>() -> TimerCancelHook {
 
 extern "C" fn schedule_timer_on<S: Scheduler>(scheduler: *mut (), pid: u32, after_ms: u64) -> u64 {
     let scheduler = unsafe { &mut *(scheduler as *mut S) };
-    scheduler.core().schedule_timer(pid, Duration::from_millis(after_ms))
+    let armed = scheduler.core().schedule_timer(pid, Duration::from_millis(after_ms));
+    scheduler.observe(RuntimeEvent::TimerArmed(armed));
+    armed.timer
 }
 
 extern "C" fn cancel_timer_on<S: Scheduler>(scheduler: *mut (), timer_id: u64) {
@@ -244,7 +281,9 @@ extern "C" fn cancel_timer_on<S: Scheduler>(scheduler: *mut (), timer_id: u64) {
         return;
     }
     let scheduler = unsafe { &mut *(scheduler as *mut S) };
-    scheduler.core().cancel_timer(timer_id);
+    if let Some(cancelled) = scheduler.core().cancel_timer(timer_id) {
+        scheduler.observe(RuntimeEvent::TimerCancelled(cancelled));
+    }
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@
 pub mod any_value;
 pub mod aot_shim;
 pub mod bitstr;
+pub mod clock;
 pub mod delivery;
 pub mod exec_ctx;
 pub mod extern_binary;

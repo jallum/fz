@@ -8,7 +8,7 @@ defmodule Oracle do
   end
 
   def run() do
-    IO.inspect(wait_for(2 * 5))
+    IO.inspect(wait_for(2 - 1))
     IO.inspect(:end)
   end
 end

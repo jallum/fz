@@ -30,15 +30,16 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
-use std::time::Instant;
 
 use super::bus::ConfiguredTelemetry;
+use super::clock::Clock;
 use super::event::{Measurements, Metadata};
 use super::handler::{Event, EventKind, Handler};
 use super::value::Value;
 use crate::compiler2::SemanticOrd;
 use fz_runtime::telemetry::{
     EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, Raise, RunEnded, RuntimeEvent, SCHEDULER_SLEPT, SEND_PROBE,
+    TIMER_ARMED, TIMER_CANCELLED, TIMER_FIRED, TimerArmed, TimerCancelled, TimerFired,
     write_line as write_runtime_line,
 };
 
@@ -148,7 +149,7 @@ const DEFAULT_FLUSH_THRESHOLD: usize = 64 * 1024;
 pub struct JsonlBackend {
     writer: RefCell<Box<dyn Write>>,
     buffer: RefCell<Vec<u8>>,
-    start: Instant,
+    clock: Clock,
     public_compiler2_trace: bool,
     buffered: bool,
     flush_threshold: usize,
@@ -262,7 +263,7 @@ impl JsonlBackend {
         Ok(Self {
             writer: RefCell::new(Box::new(f)),
             buffer: RefCell::new(Vec::with_capacity(DEFAULT_FLUSH_THRESHOLD)),
-            start: Instant::now(),
+            clock: Clock::system(),
             public_compiler2_trace: false,
             buffered: false,
             flush_threshold: DEFAULT_FLUSH_THRESHOLD,
@@ -759,6 +760,18 @@ impl JsonlBackend {
         telemetry.attach_raw_event1::<std::time::Duration, _>(&SCHEDULER_SLEPT, move |_, _, _, wait| {
             slept_backend.append_runtime_event(&RuntimeEvent::SchedulerSlept(*wait));
         });
+        let armed_backend = Rc::clone(backend);
+        telemetry.attach_raw_event1::<TimerArmed, _>(&TIMER_ARMED, move |_, _, _, armed| {
+            armed_backend.append_runtime_event(&RuntimeEvent::TimerArmed(*armed));
+        });
+        let fired_backend = Rc::clone(backend);
+        telemetry.attach_raw_event1::<TimerFired, _>(&TIMER_FIRED, move |_, _, _, fired| {
+            fired_backend.append_runtime_event(&RuntimeEvent::TimerFired(*fired));
+        });
+        let cancelled_backend = Rc::clone(backend);
+        telemetry.attach_raw_event1::<TimerCancelled, _>(&TIMER_CANCELLED, move |_, _, _, cancelled| {
+            cancelled_backend.append_runtime_event(&RuntimeEvent::TimerCancelled(*cancelled));
+        });
         let ended_backend = Rc::clone(backend);
         telemetry.attach_raw_event1::<RunEnded, _>(&RUN_ENDED, move |_, _, _, ended| {
             ended_backend.append_runtime_event(&RuntimeEvent::RunEnded(*ended));
@@ -1072,12 +1085,20 @@ impl JsonlBackend {
         Self {
             writer: RefCell::new(Box::new(w)),
             buffer: RefCell::new(Vec::with_capacity(DEFAULT_FLUSH_THRESHOLD)),
-            start: Instant::now(),
+            clock: Clock::system(),
             public_compiler2_trace: false,
             buffered: false,
             flush_threshold: DEFAULT_FLUSH_THRESHOLD,
             canon: RefCell::new(CanonStream::default()),
         }
+    }
+
+    /// A writer whose `time_ns` is read from `clock`.
+    #[cfg(test)]
+    pub fn new_writer_with_clock(w: impl Write + 'static, clock: Clock) -> Self {
+        let mut backend = Self::new_writer(w);
+        backend.clock = clock;
+        backend
     }
 
     #[cfg(test)]
@@ -1107,7 +1128,7 @@ impl Handler for JsonlBackend {
         if self.public_compiler2_trace && !is_public_compiler2_trace_event(ev) {
             return;
         }
-        let time_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let time_ns = self.clock.now_ns();
         let mut line = String::with_capacity(128);
         if !self.public_compiler2_trace {
             write_event(&mut line, ev, time_ns);
@@ -1163,7 +1184,7 @@ impl JsonlBackend {
     /// Writes one runtime event as a line through `fz_runtime`'s writer. A
     /// runtime event names no ids and carries no world.
     fn append_runtime_event(&self, event: &RuntimeEvent<'_>) {
-        let time_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let time_ns = self.clock.now_ns();
         let mut line = String::with_capacity(128);
         write_runtime_line(&mut line, time_ns, 0, 0, event);
         line.push('\n');

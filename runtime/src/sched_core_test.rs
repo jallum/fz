@@ -3,12 +3,21 @@ use crate::any_value::{
     AnyValue, ClosureDenotationId, EMPTY_LIST, closure_addr_from_tagged, closure_capture_set, closure_capture_value,
     list_addr_from_tagged,
 };
+use crate::clock::Clock;
 use crate::heap::{Heap, SchemaRegistry};
 use crate::process::{Collection, CollectionBoundary, Disposition, ProcessState};
 use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+
+/// A timer event as the scheduler observed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimerEvent {
+    Armed(TimerArmed),
+    Fired(TimerFired),
+    Cancelled(TimerCancelled),
+}
 
 /// A scheduler whose only behaviour is to record what the shared loop asks of
 /// it. It keeps a state word per pid so the core has something to transition.
@@ -18,6 +27,7 @@ struct Recording {
     wakes_process: bool,
     woken: Vec<(PidId, TimerId)>,
     slept: Vec<Duration>,
+    timer_events: Vec<TimerEvent>,
     collections: Vec<Collection>,
     /// The pid and `dtors_dispatched` of each process at the moment its exit
     /// was observed.
@@ -28,11 +38,12 @@ struct Recording {
 impl Recording {
     fn new() -> Self {
         Self {
-            core: SchedulingCore::new(),
+            core: SchedulingCore::with_clock(Clock::manual()),
             states: HashMap::new(),
             wakes_process: true,
             woken: Vec::new(),
             slept: Vec::new(),
+            timer_events: Vec::new(),
             collections: Vec::new(),
             exits: Vec::new(),
             destructors: Vec::new(),
@@ -68,6 +79,9 @@ impl Scheduler for Recording {
             RuntimeEvent::SchedulerSlept(wait) => self.slept.push(wait),
             RuntimeEvent::Gc(collection) => self.collections.push(*collection),
             RuntimeEvent::ProcessExited(process) => self.exits.push((process.pid, process.dtors_dispatched)),
+            RuntimeEvent::TimerArmed(armed) => self.timer_events.push(TimerEvent::Armed(armed)),
+            RuntimeEvent::TimerFired(fired) => self.timer_events.push(TimerEvent::Fired(fired)),
+            RuntimeEvent::TimerCancelled(cancelled) => self.timer_events.push(TimerEvent::Cancelled(cancelled)),
             RuntimeEvent::ExecutionReady
             | RuntimeEvent::SendProbe(_)
             | RuntimeEvent::Raise(_)
@@ -182,8 +196,7 @@ fn runnable_processes_come_out_in_queue_order_and_then_idle() {
 fn a_pending_timer_keeps_the_core_from_idling_until_it_fires() {
     let mut s = Recording::new();
     s.states.insert(7, ProcessState::Blocked);
-    let timer = s.core.schedule_timer(7, ms(20));
-    let started = Instant::now();
+    let timer = s.core.schedule_timer(7, ms(20)).timer;
 
     assert_eq!(
         next_runnable(&mut s),
@@ -191,11 +204,10 @@ fn a_pending_timer_keeps_the_core_from_idling_until_it_fires() {
         "the timer's process runs once it expires"
     );
 
-    assert!(started.elapsed() >= ms(20), "the core slept out the whole deadline");
     assert_eq!(s.woken, vec![(7, timer)]);
     assert_eq!(s.state(7), ProcessState::Ready, "the wake went through the core");
     assert_eq!(s.slept.len(), 1, "one sleep is reported for one timer wait");
-    assert!(s.slept[0] <= ms(20) && s.slept[0] > Duration::ZERO);
+    assert_eq!(s.slept, vec![ms(20)], "the core waited out the whole deadline, once");
     assert_eq!(next_runnable(&mut s), None, "idle once the timer is spent");
 }
 
@@ -219,7 +231,7 @@ fn a_timer_firing_for_a_process_a_message_already_queued_does_not_queue_it_twice
 #[test]
 fn a_cancelled_timer_does_not_hold_the_core_open() {
     let mut s = Recording::new();
-    let timer = s.core.schedule_timer(7, ms(10_000));
+    let timer = s.core.schedule_timer(7, ms(10_000)).timer;
     s.core.cancel_timer(timer);
 
     assert_eq!(next_runnable(&mut s), None);
@@ -260,6 +272,152 @@ fn staggered_timers_wake_in_deadline_order() {
     assert_eq!(next_runnable(&mut s), Some(1));
     assert_eq!(next_runnable(&mut s), None);
     assert_eq!(s.slept.len(), 2);
+}
+
+/// The scheduler blocks once, until the timer's deadline, instead of spinning:
+/// the lone timeout is one clock wait of exactly its length, one firing, and
+/// nothing else observed. Every door (JIT `Runtime`, interpreter adapter, AOT
+/// `AotScheduler`) reaches the clock only through `next_runnable`, so this
+/// is the assertion for all three.
+#[test]
+fn a_lone_timeout_waits_once_until_exactly_its_deadline_and_does_not_spin() {
+    let mut s = Recording::new();
+    s.states.insert(7, ProcessState::Blocked);
+    let armed = s.core.schedule_timer(7, ms(20));
+    let armed_at = s.core.clock_mut_for_test().now();
+
+    assert_eq!(next_runnable(&mut s), Some(7));
+
+    assert_eq!(s.slept, vec![ms(20)], "one wait, as long as the timeout");
+    assert_eq!(
+        s.core.clock_mut_for_test().now(),
+        armed_at + ms(20),
+        "the clock stopped at the deadline, not before and not after"
+    );
+    assert_eq!(
+        s.timer_events,
+        vec![TimerEvent::Fired(TimerFired {
+            timer: armed.timer,
+            pid: 7
+        })],
+        "one firing and no other wake between arm and fire"
+    );
+    assert_eq!(s.woken.len(), 1, "the process is woken once");
+}
+
+#[test]
+fn a_message_that_cancels_the_timer_means_the_core_never_waits() {
+    let mut s = Recording::new();
+    s.states.insert(7, ProcessState::Blocked);
+    let handle = &mut s as *mut Recording as *mut ();
+    let timer = timer_schedule_hook::<Recording>()(handle, 7, 60_000);
+    let armed_at = s.core.clock_mut_for_test().now();
+    s.make_runnable(7);
+    timer_cancel_hook::<Recording>()(handle, timer);
+
+    assert_eq!(next_runnable(&mut s), Some(7));
+    assert_eq!(next_runnable(&mut s), None, "nothing pends once the timer is cancelled");
+
+    assert!(s.slept.is_empty(), "no wait for a cancelled timer");
+    assert_eq!(s.core.clock_mut_for_test().now(), armed_at, "no time passed");
+    assert!(s.woken.is_empty(), "the timer never fired");
+}
+
+#[test]
+fn a_timer_is_reported_armed_with_its_deadline_then_fired_when_it_expires() {
+    let mut s = Recording::new();
+    s.states.insert(7, ProcessState::Blocked);
+    let armed = s.core.schedule_timer(7, ms(20));
+    assert_eq!(
+        armed.deadline,
+        ms(20),
+        "the deadline is measured from the clock's start"
+    );
+
+    assert_eq!(next_runnable(&mut s), Some(7));
+
+    assert_eq!(
+        s.timer_events,
+        vec![TimerEvent::Fired(TimerFired {
+            timer: armed.timer,
+            pid: 7
+        })],
+        "the core reports the firing; the hook reports the arming"
+    );
+}
+
+#[test]
+fn timers_fire_in_the_order_of_their_deadlines_not_of_their_arming() {
+    let mut s = Recording::new();
+    let slow = s.core.schedule_timer(1, ms(80));
+    let fast = s.core.schedule_timer(2, ms(20));
+    assert!(fast.deadline < slow.deadline);
+
+    assert_eq!(next_runnable(&mut s), Some(2));
+    assert_eq!(next_runnable(&mut s), Some(1));
+
+    let fired: Vec<TimerId> = s
+        .timer_events
+        .iter()
+        .filter_map(|event| match event {
+            TimerEvent::Fired(fired) => Some(fired.timer),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fired, vec![fast.timer, slow.timer]);
+}
+
+#[test]
+fn two_timers_that_expire_while_the_core_waits_fire_nearest_deadline_first() {
+    let mut s = Recording::new();
+    let slow = s.core.schedule_timer(1, ms(80));
+    let fast = s.core.schedule_timer(2, ms(20));
+    s.core.clock_mut_for_test().wait(ms(100));
+
+    assert_eq!(
+        next_runnable(&mut s),
+        Some(2),
+        "both are overdue; the nearer wakes first"
+    );
+    assert_eq!(next_runnable(&mut s), Some(1));
+    assert!(s.slept.is_empty(), "overdue timers need no sleep");
+    assert_eq!(
+        s.timer_events,
+        vec![
+            TimerEvent::Fired(TimerFired {
+                timer: fast.timer,
+                pid: 2
+            }),
+            TimerEvent::Fired(TimerFired {
+                timer: slow.timer,
+                pid: 1
+            }),
+        ]
+    );
+}
+
+#[test]
+fn the_timer_hooks_report_arming_and_a_real_cancellation_only() {
+    let mut s = Recording::new();
+    let handle = &mut s as *mut Recording as *mut ();
+
+    let id = timer_schedule_hook::<Recording>()(handle, 4, 10_000);
+    timer_cancel_hook::<Recording>()(handle, id);
+    timer_cancel_hook::<Recording>()(handle, id);
+
+    assert_eq!(
+        s.timer_events,
+        vec![
+            TimerEvent::Armed(TimerArmed {
+                timer: id,
+                pid: 4,
+                armed: Duration::ZERO,
+                deadline: ms(10_000)
+            }),
+            TimerEvent::Cancelled(TimerCancelled { timer: id, pid: 4 }),
+        ],
+        "the second cancel finds nothing and reports nothing"
+    );
 }
 
 #[test]

@@ -17,7 +17,7 @@
 # | Receiver-side scan **hit** | Main's second `receive` (on ref_a) walks the mailbox at entry, finds the ref_a reply already there, matches without parking. |
 # | Pinned variables | `^ref_a`, `^ref_b`. |
 # | `make_ref` | Both refs. |
-# | `after` clause | 500 ms timeout on the first receive (does not fire in a healthy run; presence exercises the parse + park-record + timer paths). |
+# | `after` clause | 60000 ms timeout on the first receive (does not fire in a healthy run; presence exercises the parse + park-record + timer paths). |
 #
 # ## Expected output
 #
@@ -66,7 +66,7 @@ def main() do
   val_b = receive do
     {:reply, ^ref_b, v} -> v
   after
-    500 -> :timeout
+    60000 -> :timeout
   end
 
   # ref_a's reply has been sitting in the mailbox the whole time.

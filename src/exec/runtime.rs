@@ -45,6 +45,7 @@ use fz_runtime::sched_core::{
 };
 use fz_runtime::telemetry::{
     EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, Raise, RunEnded, RuntimeEvent, SCHEDULER_SLEPT, SEND_PROBE,
+    TIMER_ARMED, TIMER_CANCELLED, TIMER_FIRED,
 };
 use fz_runtime::timer::TimerId;
 #[cfg(test)]
@@ -94,6 +95,9 @@ pub fn emit_runtime_event<T: Telemetry + ?Sized>(tel: &T, event: RuntimeEvent<'_
         RuntimeEvent::ExecutionReady => tel.raw_event0(&EXECUTION_READY),
         RuntimeEvent::ProcessExited(process) => tel.raw_event2(&PROCESS_EXITED, &process.pid, process),
         RuntimeEvent::SchedulerSlept(wait) => tel.raw_event1(&SCHEDULER_SLEPT, &wait),
+        RuntimeEvent::TimerArmed(armed) => tel.raw_event1(&TIMER_ARMED, &armed),
+        RuntimeEvent::TimerFired(fired) => tel.raw_event1(&TIMER_FIRED, &fired),
+        RuntimeEvent::TimerCancelled(cancelled) => tel.raw_event1(&TIMER_CANCELLED, &cancelled),
         RuntimeEvent::SendProbe(probe) => tel.raw_event1(&SEND_PROBE, probe),
         RuntimeEvent::Raise(raise) => tel.raw_event1(&RAISE, raise),
         RuntimeEvent::Gc(collection) => tel.raw_event1(&GC, collection),

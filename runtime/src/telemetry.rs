@@ -7,8 +7,9 @@
 //! that writes the line calls the same function.
 
 use crate::heap::{pool_outstanding_blocks, pool_total_cached_blocks};
-use crate::process::{Collection, Process};
+use crate::process::{Collection, PidId, Process};
 use crate::sched::{ProbeOutcome, SendProbe};
+use crate::timer::TimerId;
 use std::fmt::Write as _;
 use std::time::Duration;
 
@@ -19,6 +20,12 @@ pub const PROCESS_EXITED: [&str; 3] = ["fz", "runtime", "process_exited"];
 /// One each time the scheduling core sleeps for a pending timer; carries the
 /// `Duration` it is about to wait.
 pub const SCHEDULER_SLEPT: [&str; 3] = ["fz", "runtime", "scheduler_slept"];
+/// One per receive-after timer a scheduler arms; carries the `TimerArmed`.
+pub const TIMER_ARMED: [&str; 4] = ["fz", "runtime", "timer", "armed"];
+/// One per timer whose deadline passed; carries the `TimerFired`.
+pub const TIMER_FIRED: [&str; 4] = ["fz", "runtime", "timer", "fired"];
+/// One per timer cancelled before its deadline; carries the `TimerCancelled`.
+pub const TIMER_CANCELLED: [&str; 4] = ["fz", "runtime", "timer", "cancelled"];
 /// One per cross-process send; carries the `SendProbe` the sender's probe made.
 pub const SEND_PROBE: [&str; 4] = ["fz", "runtime", "send", "probe"];
 /// One per heap collection a scheduler boundary performs; carries the
@@ -66,6 +73,32 @@ impl Raise {
     }
 }
 
+/// A timer a scheduler armed for `pid`. `armed` and `deadline` are how long
+/// after the scheduler's clock began the timer was armed and expires, so the
+/// timers of one run compare with each other whatever the load on the machine,
+/// and `deadline - armed` is the timeout the receive asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimerArmed {
+    pub timer: TimerId,
+    pub pid: PidId,
+    pub armed: Duration,
+    pub deadline: Duration,
+}
+
+/// A timer whose deadline passed, reported just before its process is woken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimerFired {
+    pub timer: TimerId,
+    pub pid: PidId,
+}
+
+/// A timer removed before its deadline, because a message woke its process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimerCancelled {
+    pub timer: TimerId,
+    pub pid: PidId,
+}
+
 /// What the block pool holds once a run has torn down every process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunEnded {
@@ -95,6 +128,9 @@ pub enum RuntimeEvent<'a> {
     ExecutionReady,
     ProcessExited(&'a Process),
     SchedulerSlept(Duration),
+    TimerArmed(TimerArmed),
+    TimerFired(TimerFired),
+    TimerCancelled(TimerCancelled),
     SendProbe(&'a SendProbe),
     Raise(&'a Raise),
     Gc(&'a Collection),
@@ -107,6 +143,9 @@ impl RuntimeEvent<'_> {
             RuntimeEvent::ExecutionReady => &EXECUTION_READY,
             RuntimeEvent::ProcessExited(_) => &PROCESS_EXITED,
             RuntimeEvent::SchedulerSlept(_) => &SCHEDULER_SLEPT,
+            RuntimeEvent::TimerArmed(_) => &TIMER_ARMED,
+            RuntimeEvent::TimerFired(_) => &TIMER_FIRED,
+            RuntimeEvent::TimerCancelled(_) => &TIMER_CANCELLED,
             RuntimeEvent::SendProbe(_) => &SEND_PROBE,
             RuntimeEvent::Raise(_) => &RAISE,
             RuntimeEvent::Gc(_) => &GC,
@@ -141,6 +180,20 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
         RuntimeEvent::SchedulerSlept(wait) => {
             let wait_ns = wait.as_nanos().min(u64::MAX as u128);
             write!(out, "\"wait_ns\":{wait_ns}").unwrap();
+        }
+        RuntimeEvent::TimerArmed(armed) => {
+            let armed_ns = armed.armed.as_nanos().min(u64::MAX as u128);
+            let deadline_ns = armed.deadline.as_nanos().min(u64::MAX as u128);
+            write!(
+                out,
+                "\"timer\":{},\"pid\":{},\"armed_ns\":{armed_ns},\"deadline_ns\":{deadline_ns}",
+                armed.timer, armed.pid
+            )
+            .unwrap();
+        }
+        RuntimeEvent::TimerFired(fired) => write!(out, "\"timer\":{},\"pid\":{}", fired.timer, fired.pid).unwrap(),
+        RuntimeEvent::TimerCancelled(cancelled) => {
+            write!(out, "\"timer\":{},\"pid\":{}", cancelled.timer, cancelled.pid).unwrap()
         }
         RuntimeEvent::SendProbe(probe) => {
             let outcome = match probe.outcome {

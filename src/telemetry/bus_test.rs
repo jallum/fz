@@ -1,11 +1,10 @@
 use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
-use std::thread::sleep;
-use std::time::Duration;
 
 use super::*;
 use crate::telemetry::capture::Capture;
+use crate::telemetry::clock::Clock;
 use crate::telemetry::sink::{RawSpanStop1 as _, TelemetryExt};
 use crate::telemetry::value::Value;
 use crate::{measurements, metadata};
@@ -199,7 +198,7 @@ fn raw_span_future_signature_controls_state_before_timing() {
 
 #[test]
 fn raw_span_handlers_match_both_signatures_and_borrow_both_phases() {
-    let t = ConfiguredTelemetry::new();
+    let t = ConfiguredTelemetry::with_clock(Clock::ticking());
     let start_pointer = Rc::new(Cell::new(std::ptr::null::<String>()));
     let stop_pointer = Rc::new(Cell::new(std::ptr::null::<Vec<u8>>()));
     let wrong_calls = Rc::new(Cell::new(0));
@@ -218,7 +217,7 @@ fn raw_span_handlers_match_both_signatures_and_borrow_both_phases() {
         &["fz", "raw", "span"],
         move |_, _, _, value| start_sink.set(value),
         move |_, _, _, elapsed_ns, value| {
-            assert!(elapsed_ns > 0);
+            assert_eq!(elapsed_ns, 1, "one clock reading at the start, the next at the stop");
             stop_sink.set(value);
         },
         |_, _, _, _| panic!("unexpected exception"),
@@ -227,7 +226,6 @@ fn raw_span_handlers_match_both_signatures_and_borrow_both_phases() {
     let stop = vec![1_u8, 2];
 
     let span = t.raw_span1_1::<String, Vec<u8>>(&["fz", "raw", "span"], &start);
-    sleep(Duration::from_micros(50));
     span.stop1(&stop);
 
     assert_eq!(start_pointer.get(), &start);
@@ -238,7 +236,7 @@ fn raw_span_handlers_match_both_signatures_and_borrow_both_phases() {
 
 #[test]
 fn dropping_payload_span_invokes_payloadless_exception() {
-    let t = ConfiguredTelemetry::new();
+    let t = ConfiguredTelemetry::with_clock(Clock::ticking());
     let exceptions = Rc::new(Cell::new(0));
     let sink = Rc::clone(&exceptions);
     t.attach_raw_span0_1::<u64, _, _, _>(
@@ -246,13 +244,12 @@ fn dropping_payload_span_invokes_payloadless_exception() {
         |_, _, _| {},
         |_, _, _, _, _| panic!("unexpected stop"),
         move |_, _, _, elapsed_ns| {
-            assert!(elapsed_ns > 0);
+            assert_eq!(elapsed_ns, 1, "one clock reading at the start, the next at the stop");
             sink.set(sink.get() + 1);
         },
     );
 
     let span = t.raw_span0_1::<u64>(&["fz", "raw", "span"]);
-    sleep(Duration::from_micros(50));
     drop(span);
 
     assert_eq!(exceptions.get(), 1);
@@ -420,12 +417,11 @@ fn nested_spans_set_parent_span_id() {
 
 #[test]
 fn span_stop_event_carries_elapsed_ns() {
-    let t = ConfiguredTelemetry::new();
+    let t = ConfiguredTelemetry::with_clock(Clock::ticking());
     let cap = Capture::new();
     t.attach(&[], cap.handler());
     {
         let _s = t.span_lazy(&["fz", "x"], Metadata::new);
-        sleep(Duration::from_micros(50));
     }
     let evs = cap.events();
     let stop = evs
@@ -436,7 +432,7 @@ fn span_stop_event_carries_elapsed_ns() {
         Some(Value::U64(n)) => *n,
         other => panic!("expected elapsed_ns U64, got {:?}", other),
     };
-    assert!(ns > 0);
+    assert_eq!(ns, 1, "one clock reading at the start, the next at the stop");
 }
 
 #[test]

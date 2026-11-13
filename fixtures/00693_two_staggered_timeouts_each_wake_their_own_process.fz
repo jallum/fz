@@ -1,0 +1,28 @@
+#---
+# purpose: "two processes waiting on 2ms and 1ms timers both wake from their own timers; the parent asks for :fast and then :slow, so the output is the same whichever wakes first"
+# oracle: 00693_two_staggered_timeouts_each_wake_their_own_process.oracle.exs
+# oracle.stamp: f9ff69cda9b2da7a
+#---
+def main() do
+  parent = self()
+  spawn(fn () ->
+    receive do
+      :never -> :ok
+    after
+      2 -> send(parent, :slow)
+    end
+  end)
+  spawn(fn () ->
+    receive do
+      :never -> :ok
+    after
+      1 -> send(parent, :fast)
+    end
+  end)
+  receive do
+    :fast -> dbg(:fast)
+  end
+  receive do
+    :slow -> dbg(:slow)
+  end
+end
