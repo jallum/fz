@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:38:54Z",
+  "description": "jobs/artifact.rs:80 clones the whole LoweredBody (executable_facts.body().clone()) to pass it by value to prune_lowered_body (:1389), which destructures it and clones each clause and entry it keeps. :76 clones the analysis into a let mut binding that is only read (:76-100). executable_facts.rs:268 clones the body ((*world.lowered_body(function)).clone()) to call adopt_trimmed_plans.\nShape: prune_lowered_body takes \u0026LoweredBody and copies only what it keeps; the analysis is borrowed. For executable_facts.rs:268, report what it would take; do not add an Rc without saying so.\nBefore building: list every caller of prune_lowered_body and measure body.rs:347 and its siblings on your base to size this.\n\nCounts are sampling estimates at develop 742e688b5 (line numbers refer to /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src); re-measure on your base first. Signal: see the epic.",
+  "id": "fz-y11.11",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "Pruning a lowered body reads the body it prunes",
+  "type": "task",
+  "updated_at": "2026-11-13T03:38:54Z"
+}
