@@ -41,11 +41,15 @@
     {
       "text": "Gate on the combined stack (fz-sc8.127 7764bbe51 + fz-sc8.155 aa4886c9e + fz-sc8.156 8b3c07eca, scratch gate/fz2_all, DEFAULT budget): the distiller's compile finishes on interp, run and build. 50,249 requests summed over all sessions. All three paths then fail at run time at Distill.fmt_ms/1 (:erlang.float_to_binary): interp 'StructField: subject is not a map or Struct'; run and the built binary panic 'fz_map_get scalar key: ExpectedTag'. That is fz-sc8.3. PRs: #469 (.127), #473 (.155, stacked on #469), #474 (.156, on develop). This ticket closes when all three are merged and the distiller compile is re-measured on develop.",
       "timestamp": "2026-11-13T20:09:57Z"
+    },
+    {
+      "text": "From fz-8c (not re-verified here): on develop ff4a75ada a tuple of 308 computed elements now compiles (GH #296 failed there before fz-sc8.155/.156 and #418); 400 elements exhausts the 50,000 budget. fz-8c's fz-75e (drive budget bounds repetition) will be planned against this ticket's anatomy before any build.",
+      "timestamp": "2026-11-13T21:20:54Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "The distiller's compile finishes",
   "type": "bug",
-  "updated_at": "2026-11-13T20:09:57Z"
+  "updated_at": "2026-11-13T21:20:54Z"
 }
