@@ -753,10 +753,13 @@ impl QuotedSourceCursor {
     }
 
     pub fn list_atom_names(&self) -> Result<Vec<String>, QuotedSourceError> {
-        self.list_items()?
-            .into_iter()
-            .map(|item| item.atom_name().map(|name| name.to_string()))
-            .collect::<Result<Vec<_>, _>>()
+        self.list_iter()
+            .map(|item| item?.atom_name().map(|name| name.to_string()))
+            .collect()
+    }
+
+    pub fn list_len(&self) -> Result<usize, QuotedSourceError> {
+        self.list_iter().try_fold(0, |count, item| item.map(|_| count + 1))
     }
 
     pub fn tuple_items(&self) -> Result<Vec<Self>, QuotedSourceError> {

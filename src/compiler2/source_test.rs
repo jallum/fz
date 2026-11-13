@@ -670,6 +670,10 @@ fn list_and_tuple_iterators_read_the_items_the_vec_accessors_collect() {
         ints(tuple.cursor().tuple_items().expect("tuple_items"))
     );
     assert_eq!(tuple.cursor().tuple_arity().expect("arity"), 5);
+    assert_eq!(
+        list.cursor().list_len().expect("list_len"),
+        list.cursor().list_items().expect("list_items").len()
+    );
 }
 
 #[test]

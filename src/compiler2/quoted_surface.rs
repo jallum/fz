@@ -212,14 +212,14 @@ fn canonicalize_definitions(
 }
 
 fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeSurface, QuotedSourceError> {
-    let quoted_items = source.cursor().list_items()?;
     let mut attrs = Vec::new();
     let mut forms = Vec::new();
     let mut group_order: Vec<FunctionGroupKey> = Vec::new();
     let mut groups: HashMap<FunctionGroupKey, PendingFunctionGroup> = HashMap::default();
     let mut pending_function_attrs = Vec::new();
 
-    for quoted_item in quoted_items {
+    for quoted_item in source.cursor().list_iter() {
+        let quoted_item = quoted_item?;
         let Some(node) = quoted_item.ast_node(sources)? else {
             flush_function_groups(source, &mut forms, &mut group_order, &mut groups, sources)?;
             reject_dangling_function_attrs(source, &pending_function_attrs, sources)?;
@@ -498,8 +498,7 @@ fn matches_alias(
 fn parse_scope_attr(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Attribute, QuotedSourceError> {
     let node = expect_ast_cursor_node(cursor, "scope attribute", sources)?;
     let head = node.head.atom_name()?;
-    let args = node.tail.list_items()?;
-    let Some(value) = args.first() else {
+    let Some(value) = node.tail.list_iter().next().transpose()? else {
         return Err(QuotedSourceError::new(format!(
             "quoted scope attribute `{head}` is missing its payload"
         )));
@@ -507,7 +506,7 @@ fn parse_scope_attr(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<
     let span = node.span.unwrap_or(Span::DUMMY);
     match head.as_str() {
         "@moduledoc" => Ok(Attribute::ModuleDoc(value.utf8_binary_text()?)),
-        "@type" => decode_type_alias_attr(value, span, sources),
+        "@type" => decode_type_alias_attr(&value, span, sources),
         other => Err(QuotedSourceError::new(format!(
             "unsupported quoted scope attribute `{other}`"
         ))),
@@ -598,13 +597,13 @@ fn decode_type_alias_attr(
 fn parse_alias_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<AliasForm, QuotedSourceError> {
     let node = expect_surface_node(&source, sources)?;
     let span = node.span.unwrap_or(Span::DUMMY);
-    let args = node.tail.list_items()?;
-    if args.is_empty() {
+    let mut args = node.tail.list_iter();
+    let Some(target) = args.next().transpose()? else {
         return Err(QuotedSourceError::new("alias expects a target path"));
-    }
-    let path = parse_alias_segments(&args[0], sources)?;
-    let as_name = if let Some(kwargs) = args.get(1) {
-        parse_alias_keyword_args(kwargs, sources)?
+    };
+    let path = parse_alias_segments(&target, sources)?;
+    let as_name = if let Some(kwargs) = args.next().transpose()? {
+        parse_alias_keyword_args(&kwargs, sources)?
     } else {
         None
     }
@@ -615,15 +614,15 @@ fn parse_alias_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<Ali
 fn parse_import_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<ImportForm, QuotedSourceError> {
     let node = expect_surface_node(&source, sources)?;
     let span = node.span.unwrap_or(Span::DUMMY);
-    let args = node.tail.list_items()?;
-    if args.is_empty() {
+    let mut args = node.tail.list_iter();
+    let Some(target) = args.next().transpose()? else {
         return Err(QuotedSourceError::new("import/require expects a target path"));
-    }
-    let path = parse_alias_segments(&args[0], sources)?;
+    };
+    let path = parse_alias_segments(&target, sources)?;
     let mut only = None;
     let mut except = None;
-    if let Some(kwargs) = args.get(1) {
-        for (kind, entries) in parse_import_keyword_args(kwargs)? {
+    if let Some(kwargs) = args.next().transpose()? {
+        for (kind, entries) in parse_import_keyword_args(&kwargs)? {
             match kind.as_str() {
                 "only" => only = Some(entries),
                 "except" => except = Some(entries),
@@ -661,8 +660,7 @@ fn parse_function_form(
         let arity = details
             .map_value("params")?
             .ok_or_else(|| QuotedSourceError::new("quoted extern is missing `params`"))?
-            .list_items()?
-            .len();
+            .list_len()?;
         let variadic = decode_bool(
             &details
                 .map_value("variadic")?
@@ -701,57 +699,65 @@ fn validate_function_clauses(
     context: FunctionFormContext,
     sources: &SourceMap,
 ) -> Result<FunctionGroupKey, QuotedSourceError> {
-    let items = if source.cursor().ast_node(sources)?.is_some() {
-        vec![source.cursor()]
-    } else {
-        source.cursor().list_items()?
-    };
     let mut group_key = None;
-    for item in items {
-        let Some(node) = item.ast_node(sources)? else {
-            return Err(QuotedSourceError::new("expected quoted function clause AST node"));
-        };
-        let head = node.head.atom_name()?;
-        if head.starts_with('@') {
-            continue;
-        }
-        let clause_span = node.span.unwrap_or(Span::DUMMY);
-        let args = node.tail.list_items()?;
-        let key = match context {
-            FunctionFormContext::Definition if args.len() != 2 || !is_single_do_keyword(&args[1]) => Err(
-                QuotedSourceError::new(format!("`{head}` function clause must have exactly one `do` body")),
-            ),
-            FunctionFormContext::Definition => parse_function_head_key(&args[0], head == "defmacro", sources)
-                .map_err(|error| QuotedSourceError::new(format!("invalid `{head}` function head: {error}"))),
-            FunctionFormContext::ProtocolCallback => {
-                validate_protocol_callback_clause(&node, sources).map(|(name, arity)| FunctionGroupKey { name, arity })
-            }
-        }
-        .map_err(|error| {
-            QuotedSourceError::user(
-                crate::diag::codes::PARSE_INVALID_FUNCTION_DEFINITION,
-                Some(clause_span),
-                error.to_string(),
-            )
-        })?;
-        if group_key.is_none() {
-            group_key = Some(key);
+    if source.cursor().ast_node(sources)?.is_some() {
+        group_key = clause_group_key(&source.cursor(), context, sources)?;
+    } else {
+        for item in source.cursor().list_iter() {
+            let key = clause_group_key(&item?, context, sources)?;
+            group_key = group_key.or(key);
         }
     }
     group_key.ok_or_else(|| QuotedSourceError::new("grouped quoted function source has no clauses"))
 }
 
+/// The group key of one clause; an attribute carries none.
+fn clause_group_key(
+    item: &QuotedSourceCursor,
+    context: FunctionFormContext,
+    sources: &SourceMap,
+) -> Result<Option<FunctionGroupKey>, QuotedSourceError> {
+    let Some(node) = item.ast_node(sources)? else {
+        return Err(QuotedSourceError::new("expected quoted function clause AST node"));
+    };
+    let head = node.head.atom_name()?;
+    if head.starts_with('@') {
+        return Ok(None);
+    }
+    let clause_span = node.span.unwrap_or(Span::DUMMY);
+    let args = node.tail.list_items()?;
+    let key = match context {
+        FunctionFormContext::Definition if args.len() != 2 || !is_single_do_keyword(&args[1]) => Err(
+            QuotedSourceError::new(format!("`{head}` function clause must have exactly one `do` body")),
+        ),
+        FunctionFormContext::Definition => parse_function_head_key(&args[0], head == "defmacro", sources)
+            .map_err(|error| QuotedSourceError::new(format!("invalid `{head}` function head: {error}"))),
+        FunctionFormContext::ProtocolCallback => {
+            validate_protocol_callback_clause(&node, sources).map(|(name, arity)| FunctionGroupKey { name, arity })
+        }
+    }
+    .map_err(|error| {
+        QuotedSourceError::user(
+            crate::diag::codes::PARSE_INVALID_FUNCTION_DEFINITION,
+            Some(clause_span),
+            error.to_string(),
+        )
+    })?;
+    Ok(Some(key))
+}
+
 fn is_single_do_keyword(cursor: &QuotedSourceCursor) -> bool {
-    let Ok(entries) = cursor.list_items() else {
+    let mut entries = cursor.list_iter();
+    let (Some(Ok(entry)), None) = (entries.next(), entries.next()) else {
         return false;
     };
-    let [entry] = entries.as_slice() else {
+    let Ok(mut fields) = entry.tuple_iter() else {
         return false;
     };
-    let Ok(tuple) = entry.tuple_items() else {
+    let (Some(Ok(key)), Some(Ok(_)), None) = (fields.next(), fields.next(), fields.next()) else {
         return false;
     };
-    matches!(tuple.as_slice(), [key, _] if key.atom_name().as_deref() == Ok("do"))
+    key.atom_name().as_deref() == Ok("do")
 }
 
 pub(crate) fn validate_protocol_callback_clause(
@@ -764,12 +770,13 @@ pub(crate) fn validate_protocol_callback_clause(
             "protocol callback must use `def`, got `{definition_head}`"
         )));
     }
-    let args = node.tail.list_items()?;
-    let [head] = args.as_slice() else {
+    let mut args = node.tail.list_iter();
+    let (Some(head), None) = (args.next(), args.next()) else {
         return Err(QuotedSourceError::new(format!(
             "protocol callback `{definition_head}` cannot have a body"
         )));
     };
+    let head = head?;
     let callback = head
         .ast_node(sources)?
         .ok_or_else(|| QuotedSourceError::new("protocol callback expected a function head"))?;
@@ -778,7 +785,7 @@ pub(crate) fn validate_protocol_callback_clause(
             "protocol callback `{definition_head}` cannot have a guard"
         )));
     }
-    let key = parse_function_head_key(head, false, sources)?;
+    let key = parse_function_head_key(&head, false, sources)?;
     if key.arity == 0 {
         return Err(QuotedSourceError::new(format!(
             "protocol callback `{definition_head}` must have at least one parameter"
@@ -790,22 +797,20 @@ pub(crate) fn validate_protocol_callback_clause(
 fn parse_module_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<ModuleForm, QuotedSourceError> {
     let node = expect_surface_node(&source, sources)?;
     let span = node.span.unwrap_or(Span::DUMMY);
-    let args = node.tail.list_items()?;
-    if args.is_empty() {
+    let Some(name) = node.tail.list_iter().next().transpose()? else {
         return Err(QuotedSourceError::new("defmodule expects a module alias"));
-    }
-    let name = ModuleName::from_segments(parse_alias_segments(&args[0], sources)?);
+    };
+    let name = ModuleName::from_segments(parse_alias_segments(&name, sources)?);
     Ok(ModuleForm { source, name, span })
 }
 
 fn parse_protocol_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<ProtocolForm, QuotedSourceError> {
     let node = expect_surface_node(&source, sources)?;
     let span = node.span.unwrap_or(Span::DUMMY);
-    let args = node.tail.list_items()?;
-    if args.is_empty() {
+    let Some(name) = node.tail.list_iter().next().transpose()? else {
         return Err(QuotedSourceError::new("defprotocol expects a protocol alias"));
-    }
-    let name = ModuleName::from_segments(parse_alias_segments(&args[0], sources)?);
+    };
+    let name = ModuleName::from_segments(parse_alias_segments(&name, sources)?);
     Ok(ProtocolForm { source, name, span })
 }
 
@@ -822,17 +827,20 @@ fn parse_protocol_impl_form(
         ));
     }
     let protocol = ModuleName::from_segments(parse_alias_segments(&args[0], sources)?);
-    let kwargs = args[1].list_items()?;
     let mut target = None;
-    for entry in kwargs {
-        let tuple = entry.tuple_items()?;
-        if tuple.len() != 2
-            || tuple[0].root().tag() != fz_runtime::any_value::ValueKind::ATOM
-            || tuple[0].atom_name()? != "for"
-        {
+    for entry in args[1].list_iter() {
+        let entry = entry?;
+        if entry.tuple_arity()? != 2 {
             continue;
         }
-        target = Some(ModuleName::from_segments(parse_alias_segments(&tuple[1], sources)?));
+        let key = entry.tuple_item(0)?;
+        if key.root().tag() != fz_runtime::any_value::ValueKind::ATOM || key.atom_name()? != "for" {
+            continue;
+        }
+        target = Some(ModuleName::from_segments(parse_alias_segments(
+            &entry.tuple_item(1)?,
+            sources,
+        )?));
         break;
     }
     let target = target.ok_or_else(|| QuotedSourceError::new("defimpl is missing `for:` target"))?;
@@ -847,21 +855,20 @@ fn parse_protocol_impl_form(
 fn parse_struct_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<StructForm, QuotedSourceError> {
     let node = expect_surface_node(&source, sources)?;
     let span = node.span.unwrap_or(Span::DUMMY);
-    let args = node.tail.list_items()?;
-    let Some(declared) = args.first() else {
+    let Some(declared) = node.tail.list_iter().next().transpose()? else {
         return Err(QuotedSourceError::new("defstruct expects a field list"));
     };
     let mut fields = Vec::new();
     let mut defaults = HashMap::default();
-    let declared = declared.list_items().map_err(|_| {
-        QuotedSourceError::user(
-            crate::diag::codes::PARSE_STRUCT_FIELDS,
-            Some(span),
-            "defstruct takes a list of fields, each an atom or a `name: default` entry; \
-             a list a macro computes is spliced in whole, as `defstruct unquote(fields)`",
-        )
-    })?;
-    for field in declared {
+    for field in declared.list_iter() {
+        let field = field.map_err(|_| {
+            QuotedSourceError::user(
+                crate::diag::codes::PARSE_STRUCT_FIELDS,
+                Some(span),
+                "defstruct takes a list of fields, each an atom or a `name: default` entry; \
+                 a list a macro computes is spliced in whole, as `defstruct unquote(fields)`",
+            )
+        })?;
         if let Ok(name) = field.atom_name() {
             fields.push(name.to_string());
             continue;
@@ -884,14 +891,13 @@ fn parse_struct_field_default(
     span: Span,
     sources: &SourceMap,
 ) -> Result<(String, LiteralTerm), QuotedSourceError> {
-    let entry = field.tuple_items()?;
-    let [name, default] = entry.as_slice() else {
+    if field.tuple_arity()? != 2 {
         return Err(QuotedSourceError::new(
             "a defstruct field is an atom or a `name: default` entry",
         ));
-    };
-    let name = name.atom_name()?.to_string();
-    let default = decode_standalone_expr(default, Some(span), sources)?;
+    }
+    let name = field.tuple_item(0)?.atom_name()?.to_string();
+    let default = decode_standalone_expr(&field.tuple_item(1)?, Some(span), sources)?;
     let term = LiteralTerm::of(&default.node).ok_or_else(|| {
         QuotedSourceError::user(
             crate::diag::codes::PARSE_STRUCT_DEFAULT,
@@ -930,14 +936,16 @@ fn parse_overridable_form(source: QuotedSourceRoot, sources: &SourceMap) -> Resu
 /// The `name: arity` pairs of a keyword list.
 fn name_arity_pairs(cursor: &QuotedSourceCursor) -> Result<Vec<(String, usize)>, QuotedSourceError> {
     cursor
-        .list_items()?
-        .into_iter()
+        .list_iter()
         .map(|pair| {
-            let pair = pair.tuple_items()?;
-            let [name, arity] = pair.as_slice() else {
+            let pair = pair?;
+            if pair.tuple_arity()? != 2 {
                 return Err(QuotedSourceError::new("expected a `name: arity` pair"));
-            };
-            Ok((name.atom_name()?.to_string(), arity.int_value()? as usize))
+            }
+            Ok((
+                pair.tuple_item(0)?.atom_name()?.to_string(),
+                pair.tuple_item(1)?.int_value()? as usize,
+            ))
         })
         .collect()
 }
@@ -948,13 +956,12 @@ fn parse_function_group_key(
 ) -> Result<FunctionGroupKey, QuotedSourceError> {
     let node = first_non_attr_node(root, sources)?;
     let definition_head = node.head.atom_name()?;
-    let args = node.tail.list_items()?;
-    let Some(head) = args.first() else {
+    let Some(head) = node.tail.list_iter().next().transpose()? else {
         return Err(QuotedSourceError::new(
             "quoted function clause is missing its head expression",
         ));
     };
-    parse_function_head_key(head, definition_head == "defmacro", sources)
+    parse_function_head_key(&head, definition_head == "defmacro", sources)
 }
 
 /// Whether `source` is a `def`, `defp` or `defmacro`: a form
@@ -981,21 +988,19 @@ pub(crate) fn reserved_source_definition(
         }
         "defmodule" => {
             let node = expect_surface_node(source, sources)?;
-            let args = node.tail.list_items()?;
-            let Some(name) = args.first() else {
+            let Some(name) = node.tail.list_iter().next().transpose()? else {
                 return Err(QuotedSourceError::new("defmodule expects a module alias"));
             };
-            let name = ModuleName::from_segments(parse_alias_segments(name, sources)?);
+            let name = ModuleName::from_segments(parse_alias_segments(&name, sources)?);
             Some(ReservedSourceDefinition::Module { name })
         }
         "defprotocol" => {
             let node = expect_surface_node(source, sources)?;
-            let args = node.tail.list_items()?;
-            let Some(name) = args.first() else {
+            let Some(name) = node.tail.list_iter().next().transpose()? else {
                 return Err(QuotedSourceError::new("defprotocol expects a protocol alias"));
             };
             Some(ReservedSourceDefinition::Protocol {
-                name: ModuleName::from_segments(parse_alias_segments(name, sources)?),
+                name: ModuleName::from_segments(parse_alias_segments(&name, sources)?),
             })
         }
         "defimpl" => {
@@ -1003,8 +1008,7 @@ pub(crate) fn reserved_source_definition(
             // and target into the implementation's typed owner pair. Validate
             // just the arity here.
             let node = expect_surface_node(source, sources)?;
-            let args = node.tail.list_items()?;
-            if args.len() != 2 {
+            if node.tail.list_len()? != 2 {
                 return Err(QuotedSourceError::new(
                     "defimpl expects a protocol alias and keyword args",
                 ));
@@ -1039,13 +1043,13 @@ fn parse_function_head_key_inner(
                 "quoted function head cannot contain nested `when` guards",
             ));
         }
-        let args = node.tail.list_items()?;
-        let [inner, _guard] = args.as_slice() else {
+        let mut args = node.tail.list_iter();
+        let (Some(inner), Some(_guard), None) = (args.next(), args.next(), args.next()) else {
             return Err(QuotedSourceError::new(
                 "quoted `when` function head expects head and guard",
             ));
         };
-        return parse_function_head_key_inner(inner, allow_reserved_macro_name, false, sources);
+        return parse_function_head_key_inner(&inner?, allow_reserved_macro_name, false, sources);
     }
     let arity = function_head_arity(&node.tail)?;
     if let Some(arities) = definable_operator_arities(&name) {
@@ -1117,11 +1121,7 @@ fn is_local_function_name(name: &str, allow_reserved_macro_name: bool) -> bool {
 /// its tail carries — the same "variable or call?" question `decode_expr`
 /// answers with `is_list_like`.
 pub(crate) fn function_head_arity(tail: &QuotedSourceCursor) -> Result<usize, QuotedSourceError> {
-    if tail.is_list_like() {
-        tail.list_iter().try_fold(0, |count, item| item.map(|_| count + 1))
-    } else {
-        Ok(0)
-    }
+    if tail.is_list_like() { tail.list_len() } else { Ok(0) }
 }
 
 pub(crate) fn function_head_args(tail: &QuotedSourceCursor) -> Result<Vec<QuotedSourceCursor>, QuotedSourceError> {
@@ -1144,13 +1144,13 @@ fn parse_alias_segments(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Res
 
 fn parse_import_keyword_args(cursor: &QuotedSourceCursor) -> Result<ImportKeywordArgs, QuotedSourceError> {
     let mut out = Vec::new();
-    for entry in cursor.list_items()? {
-        let tuple = entry.tuple_items()?;
-        if tuple.len() != 2 {
+    for entry in cursor.list_iter() {
+        let entry = entry?;
+        if entry.tuple_arity()? != 2 {
             return Err(QuotedSourceError::new("expected keyword tuple"));
         }
-        let kind = tuple[0].atom_name()?.to_string();
-        let values = name_arity_pairs(&tuple[1])?;
+        let kind = entry.tuple_item(0)?.atom_name()?.to_string();
+        let values = name_arity_pairs(&entry.tuple_item(1)?)?;
         out.push((kind, values));
     }
     Ok(out)
@@ -1160,13 +1160,13 @@ fn parse_alias_keyword_args(
     cursor: &QuotedSourceCursor,
     sources: &SourceMap,
 ) -> Result<Option<String>, QuotedSourceError> {
-    for entry in cursor.list_items()? {
-        let tuple = entry.tuple_items()?;
-        if tuple.len() != 2 {
+    for entry in cursor.list_iter() {
+        let entry = entry?;
+        if entry.tuple_arity()? != 2 {
             return Err(QuotedSourceError::new("expected alias keyword tuple"));
         }
-        if tuple[0].atom_name()? == "as" {
-            let path = parse_alias_segments(&tuple[1], sources)?;
+        if entry.tuple_item(0)?.atom_name()? == "as" {
+            let path = parse_alias_segments(&entry.tuple_item(1)?, sources)?;
             return path
                 .last()
                 .cloned()
@@ -1192,17 +1192,16 @@ fn extract_do_body_list_root(
     let Some(node) = root.cursor().ast_node(sources)? else {
         return Err(QuotedSourceError::new("expected quoted call node with a do body"));
     };
-    let args = node.tail.list_items()?;
-    let Some(kwargs) = args.get(1) else {
+    let Some(kwargs) = node.tail.list_iter().nth(1).transpose()? else {
         return Err(QuotedSourceError::new("expected quoted call keyword args"));
     };
-    for entry in kwargs.list_items()? {
-        let tuple = entry.tuple_items()?;
-        if tuple.len() != 2 {
+    for entry in kwargs.list_iter() {
+        let entry = entry?;
+        if entry.tuple_arity()? != 2 {
             return Err(QuotedSourceError::new("expected keyword tuple in quoted do body"));
         }
-        if tuple[0].atom_name()? == "do" {
-            return Ok(root.subroot(tuple[1].root()));
+        if entry.tuple_item(0)?.atom_name()? == "do" {
+            return Ok(root.subroot(entry.tuple_item(1)?.root()));
         }
     }
     Err(QuotedSourceError::new("expected quoted do-body keyword"))
@@ -1253,8 +1252,8 @@ fn surface_span(root: &QuotedSourceRoot, sources: &SourceMap) -> Result<Span, Qu
         return Ok(node.span.unwrap_or(Span::DUMMY));
     }
     let mut merged: Option<Span> = None;
-    for item in root.cursor().list_items()? {
-        let Some(node) = item.ast_node(sources)? else {
+    for item in root.cursor().list_iter() {
+        let Some(node) = item?.ast_node(sources)? else {
             return Err(QuotedSourceError::new("expected grouped quoted surface item AST node"));
         };
         let span = node.span.unwrap_or(Span::DUMMY);
