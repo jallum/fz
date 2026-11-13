@@ -1,7 +1,7 @@
 use super::super::World;
 use super::super::identity::{ActivationKey, RootId};
 use super::super::semantic::{
-    CallSiteSummary, CallTargetSummary, CallableDemand, RuntimeDemand, SelectedCallee, ShapeDemand,
+    CallSiteSummary, CallTargetSummary, CallableDemand, RuntimeDemand, SelectedCallee, ShapeDemand, TUPLE_LANE_BUDGET,
 };
 
 /// A consumer states a tuple demand field by field, and two consumers of
@@ -35,6 +35,53 @@ fn joining_tuple_field_demands_of_different_length_keeps_every_field() {
         joined,
         "the join does not depend on which consumer is seen first"
     );
+}
+
+/// A field reading tells every producer of the tuple which fields it may
+/// leave out. Past the lane budget the tuple is built whole, and a built tuple
+/// needs every field, so the demand itself becomes `Whole`: no producer is
+/// told to leave out a field the box will need.
+#[test]
+fn a_field_demand_past_the_lane_budget_is_a_demand_for_the_whole_value() {
+    let at_budget = RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(); TUPLE_LANE_BUDGET]);
+    let past_budget = RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(); TUPLE_LANE_BUDGET + 1]);
+
+    assert!(
+        matches!(&at_budget.shape, ShapeDemand::TupleFields(fields) if fields.len() == TUPLE_LANE_BUDGET),
+        "a reading inside the budget stays a field reading"
+    );
+    assert_eq!(past_budget.shape, ShapeDemand::Whole);
+}
+
+/// The budget counts lanes, not fields: a field nobody reads asks for no lane,
+/// and a field read as a nested tuple asks for as many as its own fields do.
+#[test]
+fn the_lane_budget_counts_the_lanes_a_demand_asks_for() {
+    let mut sparse = vec![RuntimeDemand::ignore(); TUPLE_LANE_BUDGET * 4];
+    sparse[0] = RuntimeDemand::whole();
+    sparse[TUPLE_LANE_BUDGET * 4 - 1] = RuntimeDemand::whole();
+    let sparse = RuntimeDemand::tuple_fields(sparse);
+    assert!(
+        matches!(sparse.shape, ShapeDemand::TupleFields(_)),
+        "two fields read out of many is two lanes"
+    );
+
+    let pair = RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(), RuntimeDemand::whole()]);
+    let pairs_past_budget = RuntimeDemand::tuple_fields(vec![pair; TUPLE_LANE_BUDGET / 2 + 1]);
+    assert_eq!(pairs_past_budget.shape, ShapeDemand::Whole);
+}
+
+/// Two consumers that each read a few fields can together read more than the
+/// budget holds. Their join is then the whole value, whichever is seen first.
+#[test]
+fn field_demands_that_join_past_the_lane_budget_join_to_the_whole_value() {
+    let front = RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(); TUPLE_LANE_BUDGET]);
+    let mut back = vec![RuntimeDemand::ignore(); TUPLE_LANE_BUDGET];
+    back.push(RuntimeDemand::whole());
+    let back = RuntimeDemand::tuple_fields(back);
+
+    assert_eq!(front.join(&back).shape, ShapeDemand::Whole);
+    assert_eq!(back.join(&front).shape, ShapeDemand::Whole);
 }
 
 fn unnormalized_fields(fields: Vec<RuntimeDemand>) -> RuntimeDemand {

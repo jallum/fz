@@ -1,0 +1,21 @@
+#---
+# purpose: "An expression tree of tagged tuples whose literal has more fields in all than a tuple travels in is evaluated by clauses that match on the tags"
+# oracle: oracle.exs
+# oracle.stamp: 46f604345e90b180
+#---
+#
+# Each clause of `eval/1` reads the tag to choose itself and never asks for it
+# again. The tree is built in `main/0` with every tag in place, because the
+# value handed to `eval/1` is the whole tuple.
+def eval({:num, n}), do: n
+def eval({:add, a, b}), do: eval(a) + eval(b)
+def eval({:mul, a, b}), do: eval(a) * eval(b)
+def eval({:neg, a}), do: 0 - eval(a)
+
+def main() do
+  dbg(eval({:num, 42}))
+  dbg(eval({:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}))
+  tree = {:mul, {:add, {:num, 1}, {:neg, {:num, 2}}}, {:add, {:mul, {:num, 3}, {:num, 4}}, {:neg, {:add, {:num, 5}, {:num, 6}}}}}
+  dbg(eval(tree))
+  dbg(elem(tree, 1))
+end
