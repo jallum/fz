@@ -15,6 +15,7 @@ use crate::dispatch_matrix::{ComparisonValue, DispatchNode, ProjectionKind, Regi
 use crate::ground_value::GroundValue;
 use crate::source::Span;
 use fz_runtime::module_name::{ModuleName, STRUCT_MODULE_FIELD};
+use fz_runtime::process::AtomName;
 
 use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
@@ -308,7 +309,7 @@ pub(crate) fn produce_backend_executable_product(
     };
     let mut atoms = Vec::new();
     collect_executable_atoms(world, &backend, &mut HashSet::new(), &mut atoms);
-    backend.atom_names = atoms.into_iter().map(Rc::new).collect();
+    backend.atom_names = atoms.iter().map(|atom| AtomName::from(atom.as_str())).collect();
     for edge in backend.abi.call_edges.values() {
         for callee in symbolic_call_edge_callees(edge.target()) {
             context.include_product(ProductKey::BackendExecutable(callee.clone()));

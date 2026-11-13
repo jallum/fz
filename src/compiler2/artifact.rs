@@ -23,6 +23,7 @@ use crate::fz_ir::{
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::CallableShape;
 use crate::source::Span;
+use fz_runtime::process::AtomName;
 
 use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField,
@@ -1094,7 +1095,7 @@ pub struct BackendExecutable {
     /// The frame size an interpreter needs: one past the largest value id the lowering allocated.
     pub value_count: usize,
     pub construction_wrappers: Box<[Rc<BackendConstructionWrapper>]>,
-    pub(crate) atom_names: Box<[Rc<String>]>,
+    pub(crate) atom_names: Box<[AtomName]>,
     pub(crate) boxed_apply_requirements: Box<[super::backend_program::boxed_contract::BoxedApplyRequirement]>,
 }
 

@@ -52,6 +52,7 @@ use fz_runtime::ir_runtime::{
     fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_value_cmp_ref,
     fz_value_eq_ref, fz_value_eq_widening_ref,
 };
+use fz_runtime::process::AtomName;
 use std::collections::HashMap;
 
 use super::prim::c_pair_return_types;
@@ -464,7 +465,7 @@ fn resolve_dispatch_subject<M: cranelift_module::Module>(
                     .fz_module
                     .atom_names
                     .iter()
-                    .position(|name| name == field)
+                    .position(|name| name == field.as_str())
                     .ok_or_else(|| CodegenError::new(format!("field atom `{field}` not interned")))?;
                 let parent = emit_receive_value_ref(body, ctx, parent)?;
                 let atom = body.b.ins().iconst(types::I64, atom_id as i64);
@@ -685,7 +686,7 @@ impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmit
         self.body.b
     }
 
-    fn atom_names(&self) -> &[String] {
+    fn atom_names(&self) -> &[AtomName] {
         &self.ctx.fz_module.atom_names
     }
 

@@ -23,6 +23,7 @@ use crate::modules::identity::{Mfa, ModuleName};
 use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::source::Span;
 use fz_runtime::heap::Schema;
+use fz_runtime::process::AtomName;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -1023,7 +1024,7 @@ pub struct Module {
     /// its per-module AtomTable. Every runtime path (JIT, interp, AOT)
     /// hands this to its Process so `any_value::debug::render` can print
     /// `:ok` instead of `:atom_1`. Closed by fz-ul4.25.
-    pub atom_names: Vec<String>,
+    pub atom_names: Vec<AtomName>,
     /// O(1) index from FnId to position in `fns`. Kept in sync by
     /// `ModuleBuilder::add_fn`; never mutated after `build()`.
     pub fn_idx: HashMap<FnId, usize>,

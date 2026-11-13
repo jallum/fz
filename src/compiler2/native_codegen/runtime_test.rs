@@ -38,6 +38,7 @@ use std::collections::HashMap;
 use cranelift_codegen::ir::{self, BlockArg, InstBuilder, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 use fz_runtime::any_value::ValueKind;
+use fz_runtime::process::AtomName;
 
 use crate::finite_set::FiniteSet;
 use crate::runtime_type_predicate::{
@@ -69,7 +70,7 @@ pub(super) trait RuntimeTestEmitter<'f> {
     type Value: Copy;
 
     fn builder(&mut self) -> &mut FunctionBuilder<'f>;
-    fn atom_names(&self) -> &[String];
+    fn atom_names(&self) -> &[AtomName];
     fn tuple_schema_ids(&self) -> &HashMap<usize, u32>;
     fn named_schema_ids(&self) -> &HashMap<fz_runtime::module_name::ModuleName, u32>;
 

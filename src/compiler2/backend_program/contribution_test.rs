@@ -14,11 +14,15 @@ fn key(world: &mut World, name: &str) -> ExecutableKey {
 fn backend(world: &mut World, key: &ExecutableKey, atoms: &[&str]) -> Rc<BackendExecutable> {
     let nothing = world.intern_shape(ShapeDescr::Nothing);
     let mut backend = BackendExecutable::for_test(key.clone(), world.types_mut().none(), nothing, world.types());
-    backend.atom_names = atoms.iter().map(|atom| Rc::new((*atom).to_string())).collect();
+    backend.atom_names = atoms.iter().map(|atom| AtomName::from(*atom)).collect();
     Rc::new(backend)
 }
 
-fn atom(program: &BackendProgram, name: &str) -> Rc<String> {
+fn same_allocation(left: &AtomName, right: &AtomName) -> bool {
+    left.as_str().as_ptr() == right.as_str().as_ptr()
+}
+
+fn atom(program: &BackendProgram, name: &str) -> AtomName {
     program
         .atom_names
         .iter()
@@ -73,10 +77,10 @@ fn replacing_one_executable_retains_its_equal_atom_and_wrapper_contributions() {
     let retained_atom = atom(&before, "retained");
     let retained_wrapper = before.construction_wrappers().first().unwrap().clone();
     let next = with_wrapper(&backend(&mut world, &owner, &["retained", "added"]));
-    assert!(!Rc::ptr_eq(&initial.atom_names[0], &next.atom_names[0]));
+    assert!(!same_allocation(&initial.atom_names[0], &next.atom_names[0]));
     assert!(!Rc::ptr_eq(&retained_wrapper, &next.construction_wrappers[0]));
     program.reconcile_executables(vec![(owner.clone(), Some(next.clone()))], world.types());
-    assert!(Rc::ptr_eq(&retained_atom, &atom(&program, "retained")));
+    assert!(same_allocation(&retained_atom, &atom(&program, "retained")));
     assert!(Rc::ptr_eq(
         &retained_wrapper,
         program.construction_wrappers().first().unwrap()
@@ -102,10 +106,10 @@ fn inserting_and_withdrawing_an_earlier_atom_owner_preserves_the_published_alloc
     program.reconcile_executables(vec![(early.clone(), Some(early_body))], world.types());
     let both = program.clone();
     assert_eq!(atom_order(&both), ["prefix", "shared"]);
-    assert!(Rc::ptr_eq(&canonical, &atom(&both, "shared")));
+    assert!(same_allocation(&canonical, &atom(&both, "shared")));
     program.reconcile_executables(vec![(early, None)], world.types());
     assert_eq!(atom_order(&program), ["shared"]);
-    assert!(Rc::ptr_eq(&canonical, &atom(&program, "shared")));
+    assert!(same_allocation(&canonical, &atom(&program, "shared")));
     assert_eq!(atom_order(&before), ["shared"]);
     assert_eq!(atom_order(&both), ["prefix", "shared"]);
 }
@@ -123,8 +127,8 @@ fn swapping_local_atom_occurrences_keeps_the_root_canonical_allocations() {
     let swapped = backend(&mut world, &owner, &["right", "left"]);
     program.reconcile_executables(vec![(owner, Some(swapped))], world.types());
     assert_eq!(atom_order(&program), ["right", "left"]);
-    assert!(Rc::ptr_eq(&left, &atom(&program, "left")));
-    assert!(Rc::ptr_eq(&right, &atom(&program, "right")));
+    assert!(same_allocation(&left, &atom(&program, "left")));
+    assert!(same_allocation(&right, &atom(&program, "right")));
     assert_eq!(atom_order(&before), ["left", "right"]);
 }
 
@@ -138,16 +142,16 @@ fn swapping_occurrences_uses_the_root_atom_allocation_not_the_replaced_body_allo
     program.reconcile_executables(vec![(early.clone(), Some(first))], world.types());
     let canonical = program.clone();
     let late_body = backend(&mut world, &late, &["left", "right"]);
-    assert!(!Rc::ptr_eq(&atom(&canonical, "left"), &late_body.atom_names[0]));
+    assert!(!same_allocation(&atom(&canonical, "left"), &late_body.atom_names[0]));
     program.reconcile_executables(vec![(late.clone(), Some(late_body))], world.types());
     program.reconcile_executables(vec![(early, None)], world.types());
     let before_swap = program.clone();
     let swapped = backend(&mut world, &late, &["right", "left"]);
     program.reconcile_executables(vec![(late, Some(swapped))], world.types());
     for name in ["left", "right"] {
-        assert!(Rc::ptr_eq(&atom(&canonical, name), &atom(&before_swap, name)));
+        assert!(same_allocation(&atom(&canonical, name), &atom(&before_swap, name)));
         assert!(
-            Rc::ptr_eq(&atom(&canonical, name), &atom(&program, name)),
+            same_allocation(&atom(&canonical, name), &atom(&program, name)),
             "an occurrence move must preserve the root's canonical {name} allocation"
         );
     }
@@ -171,7 +175,7 @@ fn transferring_an_atom_between_executables_in_one_transaction_preserves_its_all
         vec![(old_owner.clone(), None), (new_owner.clone(), Some(new_body))],
         world.types(),
     );
-    assert!(Rc::ptr_eq(&canonical, &atom(&program, "transferred")));
+    assert!(same_allocation(&canonical, &atom(&program, "transferred")));
     assert!(program.executable(&old_owner, world.types()).is_none());
     assert!(program.executable(&new_owner, world.types()).is_some());
     assert!(before.executable(&old_owner, world.types()).is_some());
@@ -221,7 +225,7 @@ fn a_real_same_body_edit_retains_its_equal_atom_and_callable_wrapper() {
     assert_eq!(compiler.run_root_interp(root), Ok(2));
     let after = compiler.retained_backend_program(root);
     assert!(!Rc::ptr_eq(&before, &after));
-    assert!(Rc::ptr_eq(&retained_atom, &atom(&after, "retained")));
+    assert!(same_allocation(&retained_atom, &atom(&after, "retained")));
     let retained_wrapper = after
         .construction_wrappers()
         .iter()
@@ -229,7 +233,7 @@ fn a_real_same_body_edit_retains_its_equal_atom_and_callable_wrapper() {
         .expect("the same function-reference position remains reached");
     assert_eq!(wrapper.as_ref(), retained_wrapper.as_ref());
     assert!(Rc::ptr_eq(&wrapper, retained_wrapper));
-    assert!(Rc::ptr_eq(&retained_atom, &atom(&before, "retained")));
+    assert!(same_allocation(&retained_atom, &atom(&before, "retained")));
 }
 
 fn schema_allocations(

@@ -129,7 +129,7 @@ pub(crate) use world::JobCompletion;
 pub use world::World;
 
 #[cfg(test)]
-mod allocation_probe;
+pub(crate) mod allocation_probe;
 #[cfg(test)]
 mod artifact_test;
 #[cfg(test)]

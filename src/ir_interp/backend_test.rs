@@ -128,15 +128,8 @@ fn a_panic_during_macro_expansion_becomes_the_expansion_error() {
         })
         .expect("real lowered fz_panic declaration");
 
-    let names = program
-        .atom_names
-        .iter()
-        .map(|name| name.as_ref().clone())
-        .collect::<Vec<_>>();
-    let module = Module {
-        atom_names: names.clone(),
-        ..Module::default()
-    };
+    let names = program.atom_names.iter().cloned().collect::<Vec<_>>();
+    let module = Module::default();
     let transport = TransportStore::new();
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let mut runtime = IrInterpRuntime::fresh_with_atoms(names);
@@ -225,15 +218,8 @@ fn generic_spawn_dispatch_returns_adapter_error_before_pid_sentinel() {
     assert_eq!(signature.params, [crate::fz_ir::ExternTy::Any]);
     assert_eq!(signature.ret, crate::fz_ir::ExternTy::I64);
 
-    let names = program
-        .atom_names
-        .iter()
-        .map(|name| name.as_ref().clone())
-        .collect::<Vec<_>>();
-    let module = Module {
-        atom_names: names.clone(),
-        ..Module::default()
-    };
+    let names = program.atom_names.iter().cloned().collect::<Vec<_>>();
+    let module = Module::default();
     let transport = TransportStore::new();
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let mut runtime = IrInterpRuntime::fresh_with_atoms(names);
@@ -286,15 +272,8 @@ fn scheduler_adapter_copies_spawn_inputs_and_dead_send_is_observation_free() {
     compiler.run_root_interp(root).expect("compile ownership witness");
     let program = compiler.retained_backend_program(root);
     let executable = backend_executable_ref(&program, compiler.world().types(), program.entry()).unwrap();
-    let names = program
-        .atom_names
-        .iter()
-        .map(|name| name.as_ref().clone())
-        .collect::<Vec<_>>();
-    let module = Module {
-        atom_names: names.clone(),
-        ..Module::default()
-    };
+    let names = program.atom_names.iter().cloned().collect::<Vec<_>>();
+    let module = Module::default();
     let mut runtime = IrInterpRuntime::fresh_with_atoms(names);
     let sender = runtime.process_ptr(1).unwrap();
     runtime.current_proc = sender;
@@ -390,15 +369,8 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
             _ => None,
         })
         .expect("physical exact source operand");
-    let names = program
-        .atom_names
-        .iter()
-        .map(|name| name.as_ref().clone())
-        .collect::<Vec<_>>();
-    let module = Module {
-        atom_names: names.clone(),
-        ..Module::default()
-    };
+    let names = program.atom_names.iter().cloned().collect::<Vec<_>>();
+    let module = Module::default();
     let mut runtime = IrInterpRuntime::fresh_with_atoms(names);
     let sender = runtime.process_ptr(1).unwrap();
     runtime.current_proc = sender;
@@ -1573,4 +1545,57 @@ fn building_and_counting_a_list_runs_eighteen_entries_per_element() {
     assert_eq!(large.entries - small.entries, 18 * 100, "control entries per element");
     assert_eq!(large.frames - small.frames, 11 * 100, "frames started per element");
     assert_eq!(large.calls - small.calls, 11 * 100, "executables called per element");
+}
+
+/// A macro run borrows the process's atom table as it stands: the number of
+/// atoms the node already holds does not change how many allocations the run
+/// makes.
+#[test]
+fn a_macro_run_makes_no_allocation_per_atom_the_node_holds() {
+    use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
+    use fz_runtime::process::{AtomName, Process};
+
+    const NODE_ATOMS: usize = 2000;
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("macro_run_atoms.fz".into()),
+        text: "def zeta(), do: 1\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "zeta".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.drive_root_backend_work_starts(root).unwrap();
+    let program = compiler.retained_backend_program(root);
+    let mut run_on = |atoms: Vec<AtomName>| -> usize {
+        let process: Process = IrInterpRuntime::fresh_with_atoms(atoms).take_process(1).unwrap();
+        let (types, transport) = compiler.world_mut().types_mut_and_transport();
+        let ((_process, result), allocations) = crate::compiler2::allocation_probe::allocations_during(|| {
+            run_backend_entry_on_process(
+                types,
+                transport,
+                &tel,
+                &fz_runtime::output::STDOUT_OUTPUT,
+                &program,
+                process,
+                Vec::new(),
+            )
+        });
+        result.expect("the entry returns its value");
+        allocations
+    };
+    run_on(Vec::new());
+    let bare = run_on(Vec::new());
+    let crowded = run_on(
+        (0..NODE_ATOMS)
+            .map(|index| AtomName::from(format!("crowd_{index}").as_str()))
+            .collect(),
+    );
+    assert!(
+        crowded < bare + NODE_ATOMS / 10,
+        "a node holding {NODE_ATOMS} atoms made {crowded} allocations against {bare} for an empty one"
+    );
 }

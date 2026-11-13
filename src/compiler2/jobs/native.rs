@@ -32,6 +32,7 @@ use crate::source::Span;
 use crate::telemetry::TelemetryExt as _;
 use fz_runtime::any_value::ValueKind;
 use fz_runtime::module_name::STRUCT_MODULE_FIELD;
+use fz_runtime::process::AtomName;
 
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryCapture, BackendEntryOrigin, BackendExecutable,
@@ -79,7 +80,7 @@ struct NativeLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
     root_id: RootId,
     program: &'a BackendProgram,
     module: ModuleBuilder,
-    atom_ids: HashMap<String, u32>,
+    atom_ids: HashMap<AtomName, u32>,
     executable_fns: Vec<FnId>,
     construction_identity_fns: HashMap<TransportPosition, FnId>,
     callable_boundaries: Vec<NativeCallableBoundary>,
@@ -102,7 +103,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<Self, FatalError> {
         let mut atom_ids = HashMap::new();
         for (index, atom) in program.atom_names.iter().enumerate() {
-            atom_ids.insert(atom.as_ref().clone(), index as u32);
+            atom_ids.insert(atom.clone(), index as u32);
         }
         let mut module = ModuleBuilder::new();
         let executable_fns = program
@@ -3979,7 +3980,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             super::super::source::META_SPAN_VERSION_KEY,
         ] {
             if !self.atom_ids.contains_key(atom) {
-                self.atom_ids.insert(atom.to_string(), self.atom_ids.len() as u32);
+                self.atom_ids.insert(AtomName::from(atom), self.atom_ids.len() as u32);
             }
         }
     }
@@ -5193,7 +5194,7 @@ fn collect_extern_marshals_for_call_target(
 /// those fast paths recognize it.
 fn lower_backend_literal(
     ctx: &mut NativeFnCtx,
-    atom_ids: &HashMap<String, u32>,
+    atom_ids: &HashMap<AtomName, u32>,
     types: &mut Types,
     literal: &GroundValue,
 ) -> Result<Var, FatalError> {
@@ -5240,7 +5241,7 @@ fn lower_backend_literal(
 /// `{:halt, acc}` tag on every `Enum.reduce` step.
 fn lower_dispatch_const(
     ctx: &mut NativeFnCtx,
-    atom_ids: &HashMap<String, u32>,
+    atom_ids: &HashMap<AtomName, u32>,
     types: &mut Types,
     value: &GroundValue,
 ) -> Result<Var, FatalError> {
@@ -5306,8 +5307,8 @@ fn lower_unop(op: crate::ast::UnOp) -> IrUnOp {
     }
 }
 
-fn atom_names(atom_ids: &HashMap<String, u32>) -> Vec<String> {
-    let mut out = vec![String::new(); atom_ids.len()];
+fn atom_names(atom_ids: &HashMap<AtomName, u32>) -> Vec<AtomName> {
+    let mut out = vec![AtomName::from(""); atom_ids.len()];
     for (name, id) in atom_ids {
         out[*id as usize] = name.clone();
     }

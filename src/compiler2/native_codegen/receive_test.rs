@@ -36,7 +36,7 @@ fn a_body_declares_each_runtime_helper_once() {
 #[test]
 fn dispatch_const_value_materializes_only_receive_scalar_consts() {
     let module = Module {
-        atom_names: vec!["ok".to_string()],
+        atom_names: vec!["ok".into()],
         ..Module::default()
     };
 

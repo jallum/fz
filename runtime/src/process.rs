@@ -287,17 +287,23 @@ pub struct Raised {
 /// and `by_name` for text→id so interning is a hash lookup, not a scan. The
 /// BEAM shape (index array + interning hash table), scaled to one node.
 pub struct AtomTable {
-    by_id: Vec<Arc<str>>,
-    by_name: HashMap<Arc<str>, u32>,
+    by_id: Vec<AtomName>,
+    by_name: HashMap<AtomName, u32>,
 }
 
-/// An atom's text, shared with the table that interned it: reading a name
-/// copies nothing, and holds no borrow of the table.
-#[derive(Clone, PartialEq, Eq, Hash)]
+/// An atom's text, shared by every owner of the name: a module's atom list,
+/// the node's table and a reader holding it all point at one allocation.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AtomName(Arc<str>);
 
 impl AtomName {
     pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::borrow::Borrow<str> for AtomName {
+    fn borrow(&self) -> &str {
         &self.0
     }
 }
@@ -340,44 +346,48 @@ impl std::fmt::Debug for AtomName {
 }
 
 impl AtomTable {
-    pub fn new(names: Vec<String>) -> Self {
-        let mut table = Self {
-            by_id: Vec::new(),
-            by_name: HashMap::new(),
-        };
-        table.reset_from(&names);
-        table
+    pub fn new(names: Vec<AtomName>) -> Self {
+        let by_name = names
+            .iter()
+            .enumerate()
+            .map(|(id, name)| (name.clone(), id as u32))
+            .collect();
+        Self { by_id: names, by_name }
     }
 
     /// Return the atom's id, allocating a fresh one (the next dense index) if
     /// the name is new. O(1).
     pub fn intern(&mut self, name: &str) -> u32 {
-        if let Some(&id) = self.by_name.get(name) {
-            return id;
+        match self.id_of(name) {
+            Some(id) => id,
+            None => self.append(AtomName::from(name)),
         }
+    }
+
+    /// Like `intern`, for a name already shared with another owner: a new name
+    /// is appended as that same allocation.
+    pub fn intern_shared(&mut self, name: &AtomName) -> u32 {
+        match self.id_of(name) {
+            Some(id) => id,
+            None => self.append(name.clone()),
+        }
+    }
+
+    fn append(&mut self, name: AtomName) -> u32 {
         let id = self.by_id.len() as u32;
-        let name: Arc<str> = Arc::from(name);
-        self.by_id.push(Arc::clone(&name));
+        self.by_id.push(name.clone());
         self.by_name.insert(name, id);
         id
     }
 
-    /// The atom's text, or `None` if `id` is out of range. O(1).
-    pub fn name(&self, id: u32) -> Option<&Arc<str>> {
-        self.by_id.get(id as usize)
+    /// The atom's id, or `None` if the name was never interned. O(1).
+    fn id_of(&self, name: &str) -> Option<u32> {
+        self.by_name.get(name).copied()
     }
 
-    /// Replace the whole table with `names` (ids 0..len). Used by the
-    /// interpreter when a REPL chunk's code image carries a new cumulative
-    /// atom set.
-    pub fn reset_from(&mut self, names: &[String]) {
-        self.by_id = names.iter().map(|name| Arc::from(name.as_str())).collect();
-        self.by_name = self
-            .by_id
-            .iter()
-            .enumerate()
-            .map(|(id, name)| (Arc::clone(name), id as u32))
-            .collect();
+    /// The atom's text, or `None` if `id` is out of range. O(1).
+    pub fn name(&self, id: u32) -> Option<&AtomName> {
+        self.by_id.get(id as usize)
     }
 }
 
@@ -392,14 +402,14 @@ pub struct Node {
     /// The node-global atom table. Shared and append-only across the context's
     /// processes, so a runtime-interned atom has the same id in every process —
     /// the BEAM's node-global atom table, scaled to one execution context.
-    /// Reached through `intern_atom` / `atom_name` / `reset_atoms`, never
+    /// Reached through `intern_atom` / `atom_name`, never
     /// directly, so the interior mutability stays an implementation detail.
     atoms: RefCell<AtomTable>,
     closure_denotations: RefCell<HashMap<ClosureDenotationId, Arc<FunctionDenotation>>>,
 }
 
 impl Node {
-    pub fn new(atoms: Vec<String>) -> Self {
+    pub fn new(atoms: Vec<AtomName>) -> Self {
         Self {
             atoms: RefCell::new(AtomTable::new(atoms)),
             closure_denotations: RefCell::new(HashMap::new()),
@@ -460,7 +470,18 @@ impl Node {
 
     /// The atom's text, or `None` if `id` is unknown.
     pub fn atom_name(&self, id: u32) -> Option<AtomName> {
-        self.atoms.borrow().name(id).cloned().map(AtomName)
+        self.atoms.borrow().name(id).cloned()
+    }
+
+    /// Intern a name its caller already shares: a new atom keeps that
+    /// allocation instead of copying the text.
+    pub fn intern_shared_atom(&self, name: &AtomName) -> u32 {
+        self.atoms.borrow_mut().intern_shared(name)
+    }
+
+    /// Every atom's name in id order, shared with the table.
+    pub fn atom_names(&self) -> Vec<AtomName> {
+        self.atoms.borrow().by_id.clone()
     }
 
     /// Compare atom ids by their node-global names without cloning either
@@ -470,15 +491,6 @@ impl Node {
         let left = atoms.name(left_id).expect("published atom must be registered");
         let right = atoms.name(right_id).expect("published atom must be registered");
         left.cmp(right)
-    }
-
-    pub fn atom_names(&self) -> Vec<String> {
-        self.atoms.borrow().by_id.iter().map(|name| name.to_string()).collect()
-    }
-
-    /// Replace the atom table (interpreter REPL code-image refresh).
-    pub fn reset_atoms(&self, names: &[String]) {
-        self.atoms.borrow_mut().reset_from(names);
     }
 }
 

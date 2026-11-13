@@ -7,7 +7,7 @@ use std::rc::Rc;
 use crate::compiler2::transport::BoundValue;
 use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::heap::{Schema, SchemaRegistry};
-use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
+use fz_runtime::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
 use fz_runtime::sched_core::SchedulingCore;
 use fz_runtime::timer::TimerId;
 
@@ -180,7 +180,7 @@ impl IrInterpRuntime {
         }
     }
 
-    pub(crate) fn fresh_with_atoms(atom_names: Vec<String>) -> Self {
+    pub(crate) fn fresh_with_atoms(atom_names: Vec<AtomName>) -> Self {
         let mut runtime = Self::fresh();
         runtime.node = Rc::new(Node::new(atom_names));
         let user_schemas = runtime.schemas();
@@ -194,9 +194,9 @@ impl IrInterpRuntime {
         runtime
     }
 
-    pub(crate) fn with_process(mut process: Process, atom_names: &[String]) -> Self {
+    pub(crate) fn with_process<'a>(mut process: Process, atom_names: impl Iterator<Item = &'a AtomName>) -> Self {
         for atom in atom_names {
-            process.node.intern_atom(atom);
+            process.node.intern_shared_atom(atom);
         }
         let mut runtime = Self::fresh();
         runtime.node = Rc::clone(&process.node);

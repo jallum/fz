@@ -28,6 +28,7 @@ use fz_runtime::ir_runtime::{
     fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref, fz_try_pop, fz_value_cmp_raw_const,
     fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
+use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
 use std::collections::HashMap;
 use target_lexicon::{Architecture, OperatingSystem, Triple};
@@ -353,7 +354,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 .module
                 .atom_names
                 .iter()
-                .position(|name| name == field)
+                .position(|name| name == field.as_str())
                 .ok_or_else(|| CodegenError::new(format!("field atom `{}` not interned", field)))?;
             let struct_ref = body.tagged_var(var_env, c.0);
             let process = body.process_arg();
@@ -1025,7 +1026,7 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
         self.body.b
     }
 
-    fn atom_names(&self) -> &[String] {
+    fn atom_names(&self) -> &[AtomName] {
         &self.env.module.atom_names
     }
 
