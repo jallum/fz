@@ -4,14 +4,16 @@
     "fz-eo2.2"
   ],
   "blocks": [],
+  "closed_at": "2026-11-13T22:10:34Z",
+  "close_reason": "committed; PR opened",
   "created": "2026-11-13T21:18:52Z",
   "description": "Signal: an unchanged tree spawns zero elixir children (counted); editing an .exs, a golden or an args line runs exactly that fixture. CI runs the check-only mode when the pinned Elixir version changes. Docs: .agent/docs/fixtures.md oracle section. Note on fz-rgk: oracle half of its evidence goes away.",
   "id": "fz-eo2.3",
   "labels": [],
   "parent": "fz-eo2",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The oracle test boots Elixir only for a pair whose stamp does not match",
   "type": "task",
-  "updated_at": "2026-11-13T21:18:52Z"
+  "updated_at": "2026-11-13T22:10:34Z"
 }
