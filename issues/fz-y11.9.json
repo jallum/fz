@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:38:53Z",
+  "description": "ValueMap::slot (value_map.rs:115) grows from Vec::new() by resize_with as ids arrive: about 17k allocations, 15.6 MB. Requesters: jobs/runtime_demand.rs:2910 join_map_demand (5.3k); jobs/keying.rs:788 collect_demands seen (1.9k); jobs/body.rs:4447 values_overlap_inner visited (1.7k); executable_facts.rs:981/985 collect_value_origins (1.9k); jobs/keying.rs:1212/1249 (1.4k); jobs/semantic.rs (1.3k).\nbody_flows (jobs/keying.rs:740) builds a fresh ValueMap and asks/calls/active vectors for every input position inside its loop. values_overlap (jobs/body.rs:4432) builds a fresh ValueMap\u003cValueSet\u003e per call and its first statement inserts a bitset sized to the whole body, even when it returns on the next line; it is called for every ordered pair of arguments (jobs/body.rs:4535-4567).\nShape: ValueMap::with_capacity(body value count) where the body is at hand; hoist and clear the per-position scratch in body_flows; values_overlap_inner's visited becomes a set of (ValueId, ValueId) pairs that is empty, and unallocated, until it recurses.\nCare: join_map_demand's targets cross function boundaries, so the count must reach them.\n\nCounts are sampling estimates at develop 742e688b5 (line numbers refer to /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src); re-measure on your base first. Signal: see the epic.",
+  "id": "fz-y11.9",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "A value table is sized to its body, and an overlap test allocates only when it recurses",
+  "type": "task",
+  "updated_at": "2026-11-13T03:38:53Z"
+}
