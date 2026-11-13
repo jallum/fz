@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:30:08Z",
+  "description": "The Build freeze of a map destination (Heap::map_destination_freeze) copies the entries through a temporary Vec to sort them and drop repeated keys, then writes them back. A literal whose keys are all literal atoms skips this (it is written in key order and published where it stands), so the cost falls on literals with a run-time key.\n\nSort and dedupe in place in the destination, then publish with the same in-place publish the key-ordered literal and the update freeze use.\n\nMeasured at the commit that introduced the key-ordered publish, instructions per literal, dev profile: a run-time-key literal 2422 on run, 3645 on interp. Moving the interpreter's run-time-key literals onto destinations cost 27% there because of this freeze, so the interpreter kept its own put chain for them (ir_interp/backend.rs, the Map arm with in_key_order false).\n\nDone when: the run-time-key literal falls on run and on interp, measured on base and change binaries; the interpreter's second literal path is deleted and every literal builds through the destination; no pin rises. Sits at the end of the epic; does not block fz-3ul.4.",
+  "id": "fz-3sy.15",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 3,
+  "status": "open",
+  "title": "A map built at run time is sorted where it stands",
+  "type": "task",
+  "updated_at": "2026-11-13T03:30:08Z"
+}
