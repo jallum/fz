@@ -7,7 +7,7 @@
     "fz-3sy.8"
   ],
   "created": "2026-11-11T15:21:28Z",
-  "description": "%Pt{x: 1, y: 2} == %{__struct__: Pt, x: 1, y: 2} is true; compare_values (ir_runtime.rs:2700) and the map hash read through the layout-blind view. A value prints as %Name{...} exactly when its __struct__ names a struct whose schema the runtime holds and its keys are exactly that schema's fields; otherwise it prints as a map (Elixir oracle confirmed). Oracle fixtures on all three paths.",
+  "description": "%Pt{x: 1, y: 2} == %{__struct__: Pt, x: 1, y: 2} is true. TermComparator (runtime/src/term.rs) sorts a value into a Category of the term order; a named struct is in the map category, after every tuple. Maps compare by size, then keys, then values in key order through MapTerm, which reads either layout; two structs of one schema skip to their fields. There is no map hash: key lookup, uniq, MapSet, in and pins all go through the comparator. A value prints as %Name{...} exactly when its __struct__ names a struct whose schema the runtime holds and its keys are exactly that schema's fields (Heap::entries_spelling_a_struct); otherwise it prints as a map. Removed struct_cmp and SchemaIdentity::semantic_cmp. Fixture 00868 on all three paths. Not covered by the oracle: the key order of a printed map that names a module but is not its struct, where Elixir prints in VM atom order and fz in term order (the standing difference recorded in .agent/docs/any-value.md).",
   "id": "fz-3sy.3",
   "labels": [],
   "parent": "fz-3sy",
@@ -15,5 +15,5 @@
   "status": "in_progress",
   "title": "Equality, ordering and printing of a struct are layout-blind",
   "type": "task",
-  "updated_at": "2026-11-13T14:18:29Z"
+  "updated_at": "2026-11-13T14:37:17Z"
 }
