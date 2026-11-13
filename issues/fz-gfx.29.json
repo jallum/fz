@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T05:08:33Z",
   "created": "2026-11-13T03:54:10Z",
   "description": "src/compiler2/jobs/body.rs:2938 clones every clause's pattern and guard AST (source.clone()) whenever a match has two or more rows, to keep them for the redundancy check; body.rs:2663 has the same cause. src/dispatch_matrix/pattern/source.rs:345, 346, 350 copies rows per prefix on the diagnostics path.\nShape: the redundancy check borrows the rows the dispatch was built from.\nLine numbers are at develop d0c3ae00c. Site-by-site ledger (class, what is copied, fix shape): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-jobs.md, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-core.md, /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/audit-rest.md.\nSignal: full gate green; no golden, census or pin moves; program output and canonical backend dump identical on the probe; allocation count before and after from /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/measure.sh in the commit.\nRemoves: each named copy, and any accessor left without callers.",
   "id": "fz-gfx.29",
   "labels": [],
   "parent": "fz-gfx",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A match dispatch checks redundancy without copying its rows",
   "type": "task",
-  "updated_at": "2026-11-13T04:52:33Z"
+  "updated_at": "2026-11-13T05:08:33Z"
 }
