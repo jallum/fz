@@ -17,7 +17,7 @@ use crate::dispatch_matrix::{
     EdgeEvidence, GraphNodeId, GroundValue, ListRegion, OutcomeId, PinnedValueId, PreparedKeyId, ProjectionKind,
     Region, SubjectId, SubjectSource,
 };
-use crate::fz_ir::{ExternReturn, Module};
+use crate::fz_ir::Module;
 use crate::runtime_type_predicate::{
     RuntimeTypePredicate, RuntimeValueReader, TuplePositions, matches_runtime_type_predicate, surface_membership,
 };
@@ -663,11 +663,6 @@ impl<'a> Dispatch<'a> {
                 let v = self.eval_guard(expr)?;
                 match op {
                     PatternGuardUnaryOp::Not => interp_bool_value(!guard_boolean(v)?),
-                    // The same negation an EXPRESSION gets. Forcing the operand
-                    // to an integer here made `when -x > 0.0` silently fail its
-                    // guard for a float and fall to the next clause, so `interp`
-                    // answered a different clause than `run` and `build`.
-                    PatternGuardUnaryOp::Neg => required(super::binop::eval_unop(crate::fz_ir::UnOp::Neg, v).ok())?,
                 }
             }
             PatternGuardExpr::Binary { op, lhs, rhs } => {
@@ -683,11 +678,6 @@ impl<'a> Dispatch<'a> {
                 let r = self.eval_guard(rhs)?;
                 let proc = self.proc();
                 match op {
-                    PatternGuardBinOp::Add => AnyValue::Int(required(guard_int(l))? + required(guard_int(r))?),
-                    PatternGuardBinOp::Sub => AnyValue::Int(required(guard_int(l))? - required(guard_int(r))?),
-                    PatternGuardBinOp::Mul => AnyValue::Int(required(guard_int(l))? * required(guard_int(r))?),
-                    PatternGuardBinOp::Div => AnyValue::Int(required(guard_int(l))? / required(guard_int(r))?),
-                    PatternGuardBinOp::Rem => AnyValue::Int(required(guard_int(l))? % required(guard_int(r))?),
                     // A guard's `==` is the `==` OPERATOR, so it widens: `when a
                     // == b` with a = 1 and b = 1.0 is true. Pattern MATCHING
                     // stays strict; the IR names the two questions separately,
@@ -751,9 +741,10 @@ impl<'a> Dispatch<'a> {
                     .map_err(DispatchStop::Broken)?
                 {
                     ExternCallValue::Scalar(value) => value,
-                    ExternCallValue::Pair(_) | ExternCallValue::CheckedFailure(_) => {
+                    ExternCallValue::CheckedFailure(_) => return Err(DispatchStop::NoMatch),
+                    ExternCallValue::Pair(_) => {
                         return Err(DispatchStop::broken(format!(
-                            "guard extern `{}` returned a pair or a failure, which no guard evaluator carries",
+                            "guard extern `{}` returned a pair, which no guard evaluator carries",
                             extern_fn.symbol
                         )));
                     }
@@ -922,7 +913,7 @@ fn guard_extern_wire(extern_fn: &GuardExtern) -> LoweredExtern {
         symbol: extern_fn.symbol.clone(),
         params: extern_fn.params.clone(),
         variadic: false,
-        ret: ExternReturn::Scalar(extern_fn.ret),
+        ret: extern_fn.ret.clone(),
     }
 }
 

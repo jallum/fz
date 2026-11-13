@@ -410,17 +410,45 @@ An extern call lowers to `PatternGuardExpr::Extern { extern_fn, args }`. Every
 extern is guard-callable. `Job::ReifyGuardDispatch` publishes the same
 `GuardDispatch(function)` fact for an extern, holding a `GuardExtern` built from
 the extern's settled wire, so a guard waits on the extern's `FunctionContract`.
-`GuardExtern::new` admits only parameters of class `I64` or `Any` and a return of
-`I64`, `Any` or `Never`; any other class (a float, a binary, a pair, a variadic
-extern) is refused with `GuardExternClass` where the node is made, so no
-evaluator is handed a call it cannot carry. The three evaluators each handle the
+`GuardExtern::new` admits parameters of class `I64`, `F64` or `Any` and a return
+of `I64`, `F64`, `Any` or `Never`, either plain or `Checked` (an extern that
+declares `raises:`); any other class (a binary, a pair, a variadic extern) is
+refused with `GuardExternClass` where the node is made, so no evaluator is handed
+a call it cannot carry. A `Checked` extern's failure is the guard's failure: the
+clause does not match and nothing is raised. The three evaluators each handle the
 node once:
 
-- the interpreter's `eval_guard` calls `call_lowered_extern`;
-- native entry and case lowering (`lower_guard_extern`) emits `Prim::Extern`
-  and declares the extern the first time a guard names it;
-- the receive matcher (`emit_guard_extern`) carries exactly two classes: an
-  integer, and a reference word (`emit_receive_value_ref`).
+- the interpreter's `eval_guard` calls `call_lowered_extern`, and
+  `ExternCallValue::CheckedFailure` ends the guard with `DispatchStop::NoMatch`;
+- native entry and case lowering (`lower_guard_extern`) emits `Prim::Extern`,
+  declares the extern the first time a guard names it, and branches a `Checked`
+  return's `failed` lane to the guard's failure block;
+- the receive matcher (`emit_guard_extern`) carries an integer, a float and a
+  reference word (`emit_receive_value_ref`), and `emit_checked_return` branches
+  the `failed` lane to the guard's failure block.
+
+The arithmetic operators in a guard (`+ - * / %` and unary minus) are calls, not
+guard operators: `guard_expr_from_ast` resolves them through `guard_call_expr`
+to the same Kernel functions a body calls (`BinOp::arithmetic_function`,
+`CallableName::negation`), so a program that imports its own `+` is answered by
+that `+` in a guard as in a body, and a failed operation (overflow, `rem` or
+`/` by zero) leaves the clause unmatched. `PatternGuardBinOp` keeps comparison
+and boolean operators; `PatternGuardUnaryOp` is `Not`.
+
+A helper's dispatch graph tests the clauses of every operand type, so a value
+held unboxed in one scalar lane meets tests of other lanes. A test the lane
+decides is answered without a branch: `emit_runtime_type_test` returns a
+`TypeTestAnswer` (`Always`, `Never` or a flag), `RuntimeTypePredicate::
+settled_for_scalar_lane` supplies the answer, entry dispatch
+(`lower_dispatch_test`, through `scalar_lane_answer`) and the receive matcher
+(`emit_test_edges`) lower only the live successor, and the readers of a wrong
+lane (`as_raw_i64`, `as_raw_f64`, `receive_value_int`, `receive_value_float`)
+refuse rather than reinterpret.
+
+`tests/guard_matrix_test.rs` runs 296 generated mixed-lane guard programs
+(`tests/guard_matrix/programs.json`, with Elixir's answers recorded in it) on the
+interpreter, the JIT and AOT; `tests/guard_matrix/generate.py` regenerates the
+table, and the test's doc gives the command.
 
 An extern whose return is `never` fails the guard and is not called. That is
 decided by the declared return, not by a name: `Kernel.raise/2` reaches

@@ -162,7 +162,11 @@ helpers, and the Kernel guard functions (<code>is_integer</code>,
 <code>tuple_size</code>, <code>byte_size</code>, <code>length</code>,
 <code>elem</code>). No allocations, and no other function calls. A guard
 function that is given a value outside its domain makes the guard false,
-where the same call in a body raises.</p>
+where the same call in a body raises. The same holds for arithmetic:
+<code>n + 1 &gt; 0</code> at the largest integer, <code>rem(n, 0) == 1</code>
+and <code>n / 0 == 1</code> do not match their clause, and the operators are the
+ones a body calls, so an imported <code>+</code> answers in a guard as it does in
+a body.</p>
 
 <p>A guard is a predicate on a <code>Test</code> node, like the structural
 questions in section 2. On <code>true</code>, the matcher proceeds to the

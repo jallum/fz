@@ -18,7 +18,7 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
-    GuardExtern, LastResort, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr,
+    GuardExtern, LastResort, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp,
 };
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
@@ -30,6 +30,7 @@ use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate, TuplePositions};
 use crate::source::Span;
 use crate::telemetry::TelemetryExt as _;
+use fz_runtime::any_value::ValueKind;
 use fz_runtime::module_name::STRUCT_MODULE_FIELD;
 
 use super::super::artifact::{
@@ -3185,6 +3186,21 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }
     }
 
+    /// The answer a variable's scalar type gives a predicate, when the
+    /// predicate admits all of that scalar kind or none of it. A variable of
+    /// type `int` is an integer wherever it is held, so the question needs no
+    /// test and the successor it rules out is never lowered.
+    fn scalar_lane_answer(&mut self, ctx: &NativeFnCtx, var: Var, predicate: &RuntimeTypePredicate) -> Option<bool> {
+        let ty = ctx.value_types.get(&var).copied()?;
+        let kind = match AbiValueRepr::for_ty(self.world, ty) {
+            AbiValueRepr::RawInt => ValueKind::INT,
+            AbiValueRepr::RawF64 => ValueKind::FLOAT,
+            AbiValueRepr::RawAtom => ValueKind::ATOM,
+            AbiValueRepr::ValueRef => return None,
+        };
+        predicate.settled_for_scalar_lane(kind)
+    }
+
     /// Ask a type test of a value in whatever form it is held.
     ///
     /// A whole value answers with one `RuntimeTypeTest`. A tuple held as lanes
@@ -3203,6 +3219,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<DispatchAnswer, FatalError> {
         let (shape, lanes) = match value {
             NativeBoundValue::Runtime(var) => {
+                if let Some(admitted) = self.scalar_lane_answer(ctx, *var, predicate) {
+                    return Ok(DispatchAnswer::Static(admitted));
+                }
                 let (flag, _) = ctx.emit_let(Prim::RuntimeTypeTest(*var, Box::new(predicate.clone())));
                 return Ok(DispatchAnswer::Runtime(flag));
             }
@@ -3361,23 +3380,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         Ok(match expr {
             PatternGuardExpr::Const(value) => lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), value)?,
             PatternGuardExpr::Subject(subject) => self.dispatch_subject_var(ctx, plan, state, *subject)?,
-            PatternGuardExpr::Unary { op, expr } => {
-                let input = match op {
-                    crate::dispatch_matrix::pattern::PatternGuardUnaryOp::Not => {
-                        self.lower_guard_boolean(ctx, plan, state, expr, fail)?
-                    }
-                    crate::dispatch_matrix::pattern::PatternGuardUnaryOp::Neg => {
-                        self.lower_guard_expr(ctx, plan, state, expr, fail)?
-                    }
-                };
-                let (var, _) = ctx.emit_let(Prim::UnOp(
-                    match op {
-                        crate::dispatch_matrix::pattern::PatternGuardUnaryOp::Not => IrUnOp::Not,
-                        crate::dispatch_matrix::pattern::PatternGuardUnaryOp::Neg => IrUnOp::Neg,
-                    },
-                    input,
-                ));
-                var
+            PatternGuardExpr::Unary {
+                op: PatternGuardUnaryOp::Not,
+                expr,
+            } => {
+                let input = self.lower_guard_boolean(ctx, plan, state, expr, fail)?;
+                ctx.emit_let(Prim::UnOp(IrUnOp::Not, input)).0
             }
             PatternGuardExpr::Binary {
                 op: op @ (PatternGuardBinOp::And | PatternGuardBinOp::Or),
@@ -3505,10 +3513,34 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }
         let extern_id = self.guard_extern_id(extern_fn);
         let callsite = ctx.fresh_callsite();
-        let (var, _) = ctx.emit_let(Prim::Extern(callsite, extern_id, extern_args));
-        if extern_fn.ret == ExternTy::I64 {
-            let int = self.world.types_mut().int();
-            ctx.value_types.insert(var, int);
+        let prim = Prim::Extern(callsite, extern_id, extern_args);
+        let (var, lane) = match &extern_fn.ret {
+            ExternReturn::Checked(lane, _) => {
+                let (values, _) = ctx.emit_let_many(2, prim);
+                let ok_b = ctx.builder.block(vec![]);
+                let fail_b = *fail.get_or_insert_with(|| ctx.builder.block(vec![]));
+                ctx.set_term(Term::If {
+                    cond: values[1],
+                    then_b: fail_b,
+                    else_b: ok_b,
+                    origin: BranchOrigin::ClauseDispatch,
+                });
+                ctx.current_block = ok_b;
+                (values[0], *lane)
+            }
+            ExternReturn::Scalar(lane) => (ctx.emit_let(prim).0, *lane),
+            ExternReturn::Pair(_) => unreachable!("a guard extern is never a pair"),
+        };
+        match lane {
+            ExternTy::I64 => {
+                let int = self.world.types_mut().int();
+                ctx.value_types.insert(var, int);
+            }
+            ExternTy::F64 => {
+                let float = self.world.types_mut().float();
+                ctx.value_types.insert(var, float);
+            }
+            _ => {}
         }
         Ok(var)
     }
@@ -3533,7 +3565,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             symbol: extern_fn.symbol.clone(),
             params: extern_fn.params.clone(),
             variadic: false,
-            ret: ExternReturn::Scalar(extern_fn.ret),
+            ret: extern_fn.ret.clone(),
             abi: extern_fn.abi,
         });
         self.guard_extern_ids.insert(key, id);
@@ -5315,11 +5347,6 @@ fn lower_binop(op: crate::ast::BinOp) -> IrBinOp {
 
 fn lower_guard_binop(op: crate::dispatch_matrix::pattern::PatternGuardBinOp) -> IrBinOp {
     match op {
-        crate::dispatch_matrix::pattern::PatternGuardBinOp::Add => IrBinOp::Add,
-        crate::dispatch_matrix::pattern::PatternGuardBinOp::Sub => IrBinOp::Sub,
-        crate::dispatch_matrix::pattern::PatternGuardBinOp::Mul => IrBinOp::Mul,
-        crate::dispatch_matrix::pattern::PatternGuardBinOp::Div => IrBinOp::Div,
-        crate::dispatch_matrix::pattern::PatternGuardBinOp::Rem => IrBinOp::Mod,
         crate::dispatch_matrix::pattern::PatternGuardBinOp::Eq => IrBinOp::Eq,
         crate::dispatch_matrix::pattern::PatternGuardBinOp::Neq => IrBinOp::Neq,
         crate::dispatch_matrix::pattern::PatternGuardBinOp::Lt => IrBinOp::Lt,

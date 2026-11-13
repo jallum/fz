@@ -309,10 +309,6 @@ pub(super) fn interp_is_list_cons(value: RuntimeAnyValue) -> bool {
     interp_list_ptr(value).is_some()
 }
 
-pub(super) fn guard_int(v: AnyValue) -> Option<i64> {
-    v.as_i64()
-}
-
 pub(super) fn interp_bool_value(b: bool) -> AnyValue {
     AnyValue::Atom(if b { TRUE_ATOM_ID } else { FALSE_ATOM_ID })
 }

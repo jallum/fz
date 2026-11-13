@@ -5226,11 +5226,11 @@ fn direct_callee(expr: &Spanned<Expr>, arity: usize, env: &HashMap<Var, ValueId>
 
 fn direct_operator_name(op: crate::ast::BinOp) -> Option<&'static str> {
     match op {
-        crate::ast::BinOp::Add => Some("+"),
-        crate::ast::BinOp::Sub => Some("-"),
-        crate::ast::BinOp::Mul => Some("*"),
-        crate::ast::BinOp::Div => Some("/"),
-        crate::ast::BinOp::Rem => Some("%"),
+        crate::ast::BinOp::Add
+        | crate::ast::BinOp::Sub
+        | crate::ast::BinOp::Mul
+        | crate::ast::BinOp::Div
+        | crate::ast::BinOp::Rem => op.arithmetic_function(),
         crate::ast::BinOp::Eq => Some("=="),
         crate::ast::BinOp::Neq => Some("!="),
         crate::ast::BinOp::Lt => Some("<"),

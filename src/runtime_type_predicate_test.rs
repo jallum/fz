@@ -50,6 +50,30 @@ fn a_whole_tuple_of_a_nested_arity_is_never_refused_on_its_shape() {
     assert!(matches!(predicate.tuple_positions(3), TuplePositions::AnyOf(_)));
 }
 
+/// A value held unboxed in a scalar lane reaches one axis, so a test that
+/// admits all of that axis or none of it has the same answer for every value
+/// in the lane, and a test that names some atoms has to look at the value.
+#[test]
+fn a_scalar_lane_is_settled_when_its_axis_admits_all_or_none() {
+    let mut predicate = RuntimeTypePredicate::none();
+    predicate.ints = FiniteSet::any();
+    assert_eq!(predicate.settled_for_scalar_lane(ValueKind::INT), Some(true));
+    assert_eq!(predicate.settled_for_scalar_lane(ValueKind::FLOAT), Some(false));
+    assert_eq!(predicate.settled_for_scalar_lane(ValueKind::ATOM), Some(false));
+
+    predicate.atoms = FiniteSet::lit("ok".to_string());
+    assert_eq!(
+        predicate.settled_for_scalar_lane(ValueKind::ATOM),
+        None,
+        "naming some atoms is a membership check on the value"
+    );
+    assert_eq!(
+        predicate.settled_for_scalar_lane(ValueKind::MAP),
+        None,
+        "no scalar lane holds a map"
+    );
+}
+
 #[cfg(test)]
 mod value_membership_tests {
     use super::super::surface_membership::SurfaceMembershipCensus;

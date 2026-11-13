@@ -62,6 +62,16 @@ impl CallableName {
         }
     }
 
+    /// `Kernel.negate`, the function unary minus is.
+    pub fn negation() -> Self {
+        Self {
+            module: Some(ModuleTarget::Unresolved(ModuleName::from_segments(vec![
+                "Kernel".to_string(),
+            ]))),
+            name: "negate".to_string(),
+        }
+    }
+
     pub fn from_expr(expr: &Expr) -> Option<Self> {
         let mut path = Vec::new();
         let mut current = expr;
@@ -366,6 +376,21 @@ pub enum BinOp {
     RangeStep,    // //   (a..b)//step — valid only with a Range on the left
     In,           // in   membership (desugars to Enum.member?)
     NotIn,        // not in
+}
+
+impl BinOp {
+    /// The Kernel function an arithmetic operator is, so a body and a guard
+    /// both resolve the operator through the namespace.
+    pub fn arithmetic_function(self) -> Option<&'static str> {
+        match self {
+            Self::Add => Some("+"),
+            Self::Sub => Some("-"),
+            Self::Mul => Some("*"),
+            Self::Div => Some("/"),
+            Self::Rem => Some("%"),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,0 +1,26 @@
+#---
+# purpose: "a guard resolves an arithmetic operator through the program's namespace as a body does, so a program that replaces + with its own function is called in the guard"
+#---
+#
+# The program drops Kernel's `+` and defines its own, which subtracts. A body
+# and a guard both call it: `n + 1 == 3` holds for 4 and not for 2. Elixir
+# rejects a program that redefines an operator this way, so this fixture has no
+# Elixir twin.
+import Kernel, except: [+: 2]
+
+def a + b, do: Kernel.-(a, b)
+
+def entry(n) when n + 1 == 3, do: :a
+def entry(_), do: :b
+
+def receive_sum(m) do
+  send(self(), m)
+  receive do
+    n when n + 1 == 3 -> :a
+    _ -> :b
+  end
+end
+
+def main() do
+  dbg([entry(4), entry(2), receive_sum(4), receive_sum(2), 4 + 1])
+end

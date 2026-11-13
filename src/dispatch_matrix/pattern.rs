@@ -280,15 +280,17 @@ impl<TypeHandle> GuardCallee<TypeHandle> {
     }
 }
 
-/// An extern a guard calls. Every parameter and the return are one of the two
-/// classes all three guard evaluators can carry: an integer, or a reference
-/// word. A return of `never` is the call that fails the guard.
+/// An extern a guard calls. Every parameter and the return are one of the
+/// classes all three guard evaluators can carry: an integer, a float, or a
+/// reference word. A return of `never` is the call that fails the guard, and
+/// so is the failure a checked return declares: either way the clause does not
+/// match.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GuardExtern {
     pub(crate) abi: ExternAbi,
     pub(crate) symbol: String,
     pub(crate) params: Vec<ExternTy>,
-    pub(crate) ret: ExternTy,
+    pub(crate) ret: ExternReturn,
 }
 
 impl GuardExtern {
@@ -309,19 +311,23 @@ impl GuardExtern {
         if variadic {
             return Err(refuse("a variadic extern has no fixed argument classes".to_string()));
         }
-        if let Some(param) = params.iter().find(|ty| !matches!(ty, ExternTy::I64 | ExternTy::Any)) {
+        if let Some(param) = params
+            .iter()
+            .find(|ty| !matches!(ty, ExternTy::I64 | ExternTy::F64 | ExternTy::Any))
+        {
             return Err(refuse(format!(
-                "parameter class {param:?} is neither an integer nor a reference word"
+                "parameter class {param:?} is neither a number nor a reference word"
             )));
         }
-        let ExternReturn::Scalar(ret) = ret else {
-            return Err(refuse(
-                "a pair return or a declared failure is neither an integer nor a reference word".to_string(),
-            ));
+        let carried = match &ret {
+            ExternReturn::Scalar(lane) | ExternReturn::Checked(lane, _) => {
+                matches!(lane, ExternTy::I64 | ExternTy::F64 | ExternTy::Any | ExternTy::Never)
+            }
+            ExternReturn::Pair(_) => false,
         };
-        if !matches!(ret, ExternTy::I64 | ExternTy::Any | ExternTy::Never) {
+        if !carried {
             return Err(refuse(format!(
-                "return class {ret:?} is neither an integer nor a reference word"
+                "return {ret:?} is neither a number nor a reference word"
             )));
         }
         Ok(Self {
@@ -508,16 +514,10 @@ impl<TypeHandle> PatternGuardDispatch<TypeHandle> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PatternGuardUnaryOp {
     Not,
-    Neg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PatternGuardBinOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Rem,
     Eq,
     Neq,
     Lt,
@@ -668,23 +668,26 @@ where
                 resolver,
             )?),
         },
-        Expr::UnOp(crate::ast::UnOp::Neg, arg) => PatternGuardExpr::Unary {
-            op: PatternGuardUnaryOp::Neg,
-            expr: Box::new(guard_expr_from_ast(
-                &arg.node,
-                bindings,
-                pinned_by_name,
-                prepared_keys,
-                resolver,
-            )?),
-        },
+        Expr::UnOp(crate::ast::UnOp::Neg, arg) => guard_call_expr(
+            crate::ast::Callee::Name(crate::ast::CallableName::negation()),
+            [&arg.node].into_iter(),
+            bindings,
+            pinned_by_name,
+            prepared_keys,
+            resolver,
+        )?,
+        Expr::BinOp(op, lhs, rhs) if op.arithmetic_function().is_some() => guard_call_expr(
+            crate::ast::Callee::Name(crate::ast::CallableName::source(
+                op.arithmetic_function().expect("matched by the guard above"),
+            )),
+            [&lhs.node, &rhs.node].into_iter(),
+            bindings,
+            pinned_by_name,
+            prepared_keys,
+            resolver,
+        )?,
         Expr::BinOp(op, lhs, rhs) => PatternGuardExpr::Binary {
             op: match op {
-                crate::ast::BinOp::Add => PatternGuardBinOp::Add,
-                crate::ast::BinOp::Sub => PatternGuardBinOp::Sub,
-                crate::ast::BinOp::Mul => PatternGuardBinOp::Mul,
-                crate::ast::BinOp::Div => PatternGuardBinOp::Div,
-                crate::ast::BinOp::Rem => PatternGuardBinOp::Rem,
                 crate::ast::BinOp::Eq => PatternGuardBinOp::Eq,
                 crate::ast::BinOp::Neq => PatternGuardBinOp::Neq,
                 crate::ast::BinOp::Lt => PatternGuardBinOp::Lt,
@@ -693,6 +696,11 @@ where
                 crate::ast::BinOp::GtEq => PatternGuardBinOp::GtEq,
                 crate::ast::BinOp::And => PatternGuardBinOp::And,
                 crate::ast::BinOp::Or => PatternGuardBinOp::Or,
+                crate::ast::BinOp::Add
+                | crate::ast::BinOp::Sub
+                | crate::ast::BinOp::Mul
+                | crate::ast::BinOp::Div
+                | crate::ast::BinOp::Rem => unreachable!("an arithmetic operator is a call"),
                 crate::ast::BinOp::Pipe
                 | crate::ast::BinOp::Cons
                 | crate::ast::BinOp::ListConcat
@@ -719,38 +727,60 @@ where
             )?),
         },
         Expr::Call(target, args) => {
-            let arity = args.len();
-            let Some(callee) = crate::ast::Callee::for_call(&target.node, arity) else {
+            let Some(callee) = crate::ast::Callee::for_call(&target.node, args.len()) else {
                 return Err(SourcePatternError::UnsupportedGuardExpr);
             };
-            let callee = resolver
-                .guard_call(&callee, arity)?
-                .ok_or(SourcePatternError::UnsupportedGuardExpr)?;
-            if callee.always_fails() {
-                return Ok(PatternGuardExpr::Fails);
-            }
-            let args = args
-                .iter()
-                .map(|arg| guard_expr_from_ast(&arg.node, bindings, pinned_by_name, prepared_keys, resolver))
-                .collect::<Result<Vec<_>, _>>()?;
-            match callee {
-                GuardCallee::Helper(dispatch) => {
-                    let prepared = dispatch
-                        .plan
-                        .prepared_keys
-                        .iter()
-                        .map(|key| intern_prepared_key(prepared_keys, key))
-                        .collect();
-                    PatternGuardExpr::Dispatch {
-                        inputs: args,
-                        prepared,
-                        dispatch,
-                    }
-                }
-                GuardCallee::Extern(extern_fn) => PatternGuardExpr::Extern { extern_fn, args },
-            }
+            guard_call_expr(
+                callee,
+                args.iter().map(|arg| &arg.node),
+                bindings,
+                pinned_by_name,
+                prepared_keys,
+                resolver,
+            )?
         }
         _ => return Err(SourcePatternError::UnsupportedGuardExpr),
+    })
+}
+
+/// A guard's call: an operator or a named function, resolved through the same
+/// namespace a body's call is.
+fn guard_call_expr<'e, F, TypeHandle>(
+    callee: crate::ast::Callee,
+    args: impl ExactSizeIterator<Item = &'e Expr>,
+    bindings: &HashMap<Var, SubjectId>,
+    pinned_by_name: &HashMap<Var, PinnedValueId>,
+    prepared_keys: &mut Vec<GroundValue>,
+    resolver: &mut F,
+) -> Result<PatternGuardExpr<TypeHandle>, SourcePatternError>
+where
+    F: PatternResolver<TypeHandle>,
+{
+    let arity = args.len();
+    let callee = resolver
+        .guard_call(&callee, arity)?
+        .ok_or(SourcePatternError::UnsupportedGuardExpr)?;
+    if callee.always_fails() {
+        return Ok(PatternGuardExpr::Fails);
+    }
+    let args = args
+        .map(|arg| guard_expr_from_ast(arg, bindings, pinned_by_name, prepared_keys, resolver))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(match callee {
+        GuardCallee::Helper(dispatch) => {
+            let prepared = dispatch
+                .plan
+                .prepared_keys
+                .iter()
+                .map(|key| intern_prepared_key(prepared_keys, key))
+                .collect();
+            PatternGuardExpr::Dispatch {
+                inputs: args,
+                prepared,
+                dispatch,
+            }
+        }
+        GuardCallee::Extern(extern_fn) => PatternGuardExpr::Extern { extern_fn, args },
     })
 }
 

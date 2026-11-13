@@ -71,3 +71,32 @@ fn dispatch_const_value_materializes_only_receive_scalar_consts() {
         }
     }
 }
+
+/// A receive value held in one scalar lane is read only as that scalar. A
+/// reader asked for another lane refuses rather than reinterpreting the bits,
+/// so a successor that no value can reach is never lowered by accident.
+#[test]
+fn a_receive_value_is_refused_by_a_reader_of_another_lane() {
+    let isa = host_isa_with(true);
+    let object =
+        ObjectBuilder::new(isa, "receive_lane_test", default_libcall_names()).expect("an object builder for the host");
+    let mut module = ObjectModule::new(object);
+    let mut ctx = module.make_context();
+    ctx.func.signature = receive_dispatch_signature(&mut module);
+    let mut fbctx = FunctionBuilderContext::new();
+    let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+    let entry = b.create_block();
+    b.append_block_params_for_function_params(entry);
+    b.switch_to_block(entry);
+    b.seal_block(entry);
+    let int = b.ins().iconst(types::I64, 1);
+    let float = b.ins().f64const(1.5);
+    let mut body = DispatchBody::new(&mut b, &mut module);
+
+    assert!(receive_value_int(&mut body, ReceiveValue::Int(int)).is_ok());
+    assert!(receive_value_float(&mut body, ReceiveValue::Float(float)).is_ok());
+    assert!(receive_value_int(&mut body, ReceiveValue::Float(float)).is_err());
+    assert!(receive_value_int(&mut body, ReceiveValue::Atom(int)).is_err());
+    assert!(receive_value_float(&mut body, ReceiveValue::Int(int)).is_err());
+    assert!(receive_value_float(&mut body, ReceiveValue::Atom(int)).is_err());
+}

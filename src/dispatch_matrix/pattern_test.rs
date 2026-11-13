@@ -94,16 +94,18 @@ fn predicate_helper(arity: usize, annotated: &[(u32, Ty)]) -> PatternGuardDispat
     guard_dispatch_from_rows(&surface, rows, &mut no_calls()).expect("a predicate-shaped helper reifies")
 }
 
-/// `def opaque(_), do: true`: a helper that answers no type question.
-fn opaque_helper() -> PatternGuardDispatch<Ty> {
-    let surface = Surface(vec![clause(1, None, Expr::Bool(true))]);
-    guard_dispatch_from_rows(&surface, vec![row(1, &[], 0)], &mut no_calls()).expect("opaque helper reifies")
+/// `def opaque(_, ..), do: true`: a helper that answers no type question.
+fn opaque_helper(arity: usize) -> PatternGuardDispatch<Ty> {
+    let surface = Surface(vec![clause(arity, None, Expr::Bool(true))]);
+    guard_dispatch_from_rows(&surface, vec![row(arity, &[], 0)], &mut no_calls()).expect("opaque helper reifies")
 }
 
 struct Helpers {
     is_int: Arc<PatternGuardDispatch<Ty>>,
     is_float: Arc<PatternGuardDispatch<Ty>>,
     opaque: Arc<PatternGuardDispatch<Ty>>,
+    /// What the operator `+` resolves to in a guard: a call like any other.
+    plus: Arc<PatternGuardDispatch<Ty>>,
 }
 
 impl Helpers {
@@ -114,7 +116,8 @@ impl Helpers {
         Self {
             is_int: Arc::new(predicate_helper(1, &[(0, int)])),
             is_float: Arc::new(predicate_helper(1, &[(0, float)])),
-            opaque: Arc::new(opaque_helper()),
+            opaque: Arc::new(opaque_helper(1)),
+            plus: Arc::new(opaque_helper(2)),
         }
     }
 
@@ -125,6 +128,7 @@ impl Helpers {
                 "is_int" => Some(GuardCallee::Helper(Arc::clone(&self.is_int))),
                 "is_float" => Some(GuardCallee::Helper(Arc::clone(&self.is_float))),
                 "opaque" => Some(GuardCallee::Helper(Arc::clone(&self.opaque))),
+                "+" => Some(GuardCallee::Helper(Arc::clone(&self.plus))),
                 _ => None,
             })
         }

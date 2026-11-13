@@ -33,9 +33,9 @@ use crate::dispatch_matrix::{
     EdgeEvidence, GraphNodeId, GroundValue, ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId,
     SubjectSource,
 };
-use crate::fz_ir::{ExternTy, Module, ReceiveClause, Var};
+use crate::fz_ir::{ExternReturn, ExternTy, Module, ReceiveClause, Var};
 
-use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
+use super::runtime_test::{KindEvidence, RuntimeTestEmitter, TypeTestAnswer, emit_runtime_type_test};
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
     self, AbiParam, InstBuilder, MemFlags, Signature,
@@ -54,6 +54,8 @@ use fz_runtime::ir_runtime::{
 };
 use std::collections::HashMap;
 
+use super::prim::c_pair_return_types;
+use super::repr::ExternLane;
 use super::runtime_call::{RuntimeCaller, RuntimeFn, declare_runtime_fn, runtime_call, runtime_call1};
 use super::{CodegenError, SLOT_BYTES, emit_fn_body};
 
@@ -416,29 +418,18 @@ fn emit_dispatch_node<M: cranelift_module::Module>(
             predicate,
             on_match,
             on_miss,
-        } => {
-            let true_b = body.b.create_block();
-            let false_b = body.b.create_block();
-            let true_values = emit_region_test(
-                body,
-                ctx,
-                predicate.subject,
-                &predicate.region,
-                &on_match.evidence,
-                true_b,
-                false_b,
-                state,
-            )?;
-            body.b.switch_to_block(true_b);
-            body.b.seal_block(true_b);
-            let mut true_state = state.clone();
-            true_state.values.extend(true_values);
-            apply_edge_evidence_to_receive_state(body, ctx, &on_match.evidence, &mut true_state)?;
-            emit_dispatch_node(body, ctx, on_match.target, miss, &mut true_state)?;
-            body.b.switch_to_block(false_b);
-            body.b.seal_block(false_b);
-            emit_dispatch_node(body, ctx, on_miss.target, miss, state)
-        }
+        } => match emit_test_edges(body, ctx, predicate, on_match, state)? {
+            TestEdges::Settled(Successor::Miss) => emit_dispatch_node(body, ctx, on_miss.target, miss, state),
+            TestEdges::Settled(Successor::Match(mut matched)) => {
+                emit_dispatch_node(body, ctx, on_match.target, miss, &mut matched)
+            }
+            TestEdges::Branched { mut matched, miss_b } => {
+                emit_dispatch_node(body, ctx, on_match.target, miss, &mut matched)?;
+                body.b.switch_to_block(miss_b);
+                body.b.seal_block(miss_b);
+                emit_dispatch_node(body, ctx, on_miss.target, miss, state)
+            }
+        },
     }
 }
 
@@ -525,12 +516,13 @@ fn emit_region_test<M: cranelift_module::Module>(
     true_b: ir::Block,
     false_b: ir::Block,
     state: &mut DispatchEmitState,
-) -> Result<Vec<(SubjectId, ReceiveValue)>, CodegenError> {
+) -> Result<RegionTest, CodegenError> {
     let mut true_values = Vec::new();
+    let mut settled = None;
     match region {
         Region::Type(predicate) => {
             let val = resolve_dispatch_subject(body, ctx, subject, state)?;
-            emit_runtime_type_predicate_region_test(body, ctx, val, predicate, true_b, false_b)?;
+            settled = emit_runtime_type_predicate_region_test(body, ctx, val, predicate, true_b, false_b)?;
         }
         Region::Equal(ComparisonValue::Const(value)) => {
             let val = resolve_dispatch_subject(body, ctx, subject, state)?;
@@ -544,7 +536,7 @@ fn emit_region_test<M: cranelift_module::Module>(
         Region::TupleArity(arity) => {
             let val = resolve_dispatch_subject(body, ctx, subject, state)?;
             let predicate = RuntimeTypePredicate::tuple_arity(*arity as usize);
-            emit_runtime_type_predicate_region_test(body, ctx, val, &predicate, true_b, false_b)?;
+            settled = emit_runtime_type_predicate_region_test(body, ctx, val, &predicate, true_b, false_b)?;
         }
         Region::List(ListRegion::Empty) => {
             let val = resolve_dispatch_subject(body, ctx, subject, state)?;
@@ -586,10 +578,78 @@ fn emit_region_test<M: cranelift_module::Module>(
             body.b.ins().brif(truthy, true_b, &[], false_b, &[]);
         }
     }
-    Ok(true_values)
+    Ok(RegionTest { true_values, settled })
+}
+
+/// What a region test left to the walker: the subjects it projected on the
+/// match edge, and which edge is the only live one when the value's lane
+/// decided the question without a branch.
+struct RegionTest {
+    true_values: Vec<(SubjectId, ReceiveValue)>,
+    settled: Option<bool>,
+}
+
+/// The successors a test node leaves to lower.
+enum TestEdges {
+    /// The value's lane settled the question: only this successor is
+    /// reachable, and it is lowered into the current block.
+    Settled(Successor),
+    /// The test branched. The match successor is lowered first, in its own
+    /// state, then the miss successor into `miss_b`.
+    Branched {
+        matched: DispatchEmitState,
+        miss_b: ir::Block,
+    },
+}
+
+enum Successor {
+    Match(DispatchEmitState),
+    Miss,
+}
+
+/// Emit one test node's question, leaving its successors to the walker. A
+/// test the value's lane settles emits no branch and names the one successor
+/// that can be reached.
+fn emit_test_edges<M: cranelift_module::Module>(
+    body: &mut DispatchBody<'_, '_, M>,
+    ctx: &DispatchCtx<'_>,
+    predicate: &crate::dispatch_matrix::RegionPredicate<RuntimeTypePredicate>,
+    on_match: &crate::dispatch_matrix::DispatchEdge<RuntimeTypePredicate>,
+    state: &mut DispatchEmitState,
+) -> Result<TestEdges, CodegenError> {
+    let true_b = body.b.create_block();
+    let false_b = body.b.create_block();
+    let tested = emit_region_test(
+        body,
+        ctx,
+        predicate.subject,
+        &predicate.region,
+        &on_match.evidence,
+        true_b,
+        false_b,
+        state,
+    )?;
+    if tested.settled == Some(false) {
+        return Ok(TestEdges::Settled(Successor::Miss));
+    }
+    if tested.settled.is_none() {
+        body.b.switch_to_block(true_b);
+        body.b.seal_block(true_b);
+    }
+    let mut matched = state.clone();
+    matched.values.extend(tested.true_values);
+    apply_edge_evidence_to_receive_state(body, ctx, &on_match.evidence, &mut matched)?;
+    Ok(match tested.settled {
+        Some(_) => TestEdges::Settled(Successor::Match(matched)),
+        None => TestEdges::Branched {
+            matched,
+            miss_b: false_b,
+        },
+    })
 }
 
 /// A receive plan's runtime type test, asked through the one shared emitter.
+/// A question the value's lane settles emits no branch.
 fn emit_runtime_type_predicate_region_test<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
@@ -597,13 +657,19 @@ fn emit_runtime_type_predicate_region_test<M: cranelift_module::Module>(
     predicate: &RuntimeTypePredicate,
     match_b: ir::Block,
     next_b: ir::Block,
-) -> Result<(), CodegenError> {
-    let flag = {
+) -> Result<Option<bool>, CodegenError> {
+    let answer = {
         let mut emitter = ReceiveTestEmitter { body: &mut *body, ctx };
         emit_runtime_type_test(&mut emitter, value, predicate)?
     };
-    body.b.ins().brif(flag, match_b, &[], next_b, &[]);
-    Ok(())
+    match answer {
+        TypeTestAnswer::Always => Ok(Some(true)),
+        TypeTestAnswer::Never => Ok(Some(false)),
+        TypeTestAnswer::Flag(flag) => {
+            body.b.ins().brif(flag, match_b, &[], next_b, &[]);
+            Ok(None)
+        }
+    }
 }
 
 /// The receive-plan door onto the shared runtime-test emitter.
@@ -1158,20 +1224,13 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
         }
         PatternGuardExpr::Subject(subject) => resolve_dispatch_subject(body, ctx, *subject, state)?,
         PatternGuardExpr::Pinned(pinned) => load_pinned_dispatch_value(ctx, *pinned)?,
-        PatternGuardExpr::Unary { op, expr } => {
+        PatternGuardExpr::Unary {
+            op: PatternGuardUnaryOp::Not,
+            expr,
+        } => {
             let v = emit_dispatch_guard_expr(body, ctx, expr, fail, state)?;
-            match op {
-                PatternGuardUnaryOp::Not => {
-                    let is_true = emit_guard_boolean(body, ctx, v, fail)?;
-                    emit_bool_value_from_truthy(body.b, is_true, true)
-                }
-                PatternGuardUnaryOp::Neg => {
-                    let z = body.b.ins().iconst(types::I64, 0);
-                    let raw = receive_value_int(body, v)?;
-                    let neg = body.b.ins().isub(z, raw);
-                    int_value(body.b, neg)
-                }
-            }
+            let is_true = emit_guard_boolean(body, ctx, v, fail)?;
+            emit_bool_value_from_truthy(body.b, is_true, true)
         }
         PatternGuardExpr::Binary { op, lhs, rhs } => {
             if matches!(op, PatternGuardBinOp::And | PatternGuardBinOp::Or) {
@@ -1180,36 +1239,6 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
             let l = emit_dispatch_guard_expr(body, ctx, lhs, fail, state)?;
             let r = emit_dispatch_guard_expr(body, ctx, rhs, fail, state)?;
             match op {
-                PatternGuardBinOp::Add => {
-                    let l = receive_value_int(body, l)?;
-                    let r = receive_value_int(body, r)?;
-                    let sum = body.b.ins().iadd(l, r);
-                    int_value(body.b, sum)
-                }
-                PatternGuardBinOp::Sub => {
-                    let l = receive_value_int(body, l)?;
-                    let r = receive_value_int(body, r)?;
-                    let diff = body.b.ins().isub(l, r);
-                    int_value(body.b, diff)
-                }
-                PatternGuardBinOp::Mul => {
-                    let l = receive_value_int(body, l)?;
-                    let r = receive_value_int(body, r)?;
-                    let prod = body.b.ins().imul(l, r);
-                    int_value(body.b, prod)
-                }
-                PatternGuardBinOp::Div => {
-                    let l = receive_value_int(body, l)?;
-                    let r = receive_value_int(body, r)?;
-                    let quot = body.b.ins().sdiv(l, r);
-                    int_value(body.b, quot)
-                }
-                PatternGuardBinOp::Rem => {
-                    let l = receive_value_int(body, l)?;
-                    let r = receive_value_int(body, r)?;
-                    let rem = body.b.ins().srem(l, r);
-                    int_value(body.b, rem)
-                }
                 PatternGuardBinOp::Eq => {
                     let cmp = emit_typed_eq_cmp(body, ctx, Equality::Loose, l, r)?;
                     emit_bool_value(body.b, cmp)
@@ -1248,7 +1277,7 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
                 .iter()
                 .map(|arg| emit_dispatch_guard_expr(body, ctx, arg, fail, state))
                 .collect::<Result<Vec<_>, _>>()?;
-            emit_guard_extern(body, ctx, extern_fn, values)?
+            emit_guard_extern(body, ctx, extern_fn, values, fail)?
         }
     })
 }
@@ -1265,15 +1294,17 @@ fn fail_guard<M: cranelift_module::Module>(body: &mut DispatchBody<'_, '_, M>, f
 
 /// A call to an extern, made from the receive matcher.
 ///
-/// The matcher holds its values as refs or raw words, so the call carries
-/// exactly two classes: an integer, and a reference word. The guard's extern
-/// was admitted on that rule where the node was made, so no other class
-/// reaches here.
+/// The matcher holds its values as refs or raw words, so the call carries three
+/// classes: an integer, a float, and a reference word. The guard's extern was
+/// admitted on that rule where the node was made, so no other class reaches
+/// here. A checked return's failure leaves through `fail`: the clause does not
+/// match.
 fn emit_guard_extern<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
     extern_fn: &GuardExtern,
     values: Vec<ReceiveValue>,
+    fail: ir::Block,
 ) -> Result<ReceiveValue, CodegenError> {
     let mut sig = body.module.make_signature();
     let mut call_args = Vec::with_capacity(values.len() + 1);
@@ -1282,33 +1313,78 @@ fn emit_guard_extern<M: cranelift_module::Module>(
         call_args.push(ctx.process);
     }
     for (value, ty) in values.into_iter().zip(&extern_fn.params) {
-        sig.params.push(ir::AbiParam::new(types::I64));
-        call_args.push(match ty {
-            ExternTy::I64 => receive_value_int(body, value)?,
-            ExternTy::Any => emit_receive_value_ref(body, ctx, value)?,
+        let (class, word) = match ty {
+            ExternTy::I64 => (types::I64, receive_value_int(body, value)?),
+            ExternTy::F64 => (types::F64, receive_value_float(body, value)?),
+            ExternTy::Any => (types::I64, emit_receive_value_ref(body, ctx, value)?),
             other => {
                 return Err(CodegenError::new(format!(
                     "guard extern `{}` has a {other:?} parameter, which the receive matcher does not carry",
                     extern_fn.symbol
                 )));
             }
-        });
+        };
+        sig.params.push(ir::AbiParam::new(class));
+        call_args.push(word);
     }
-    sig.returns.push(ir::AbiParam::new(types::I64));
+    let checked_types;
+    let scalar_type;
+    let (lane, physical): (ExternTy, &[ir::Type]) = match &extern_fn.ret {
+        ExternReturn::Checked(lane, _) => {
+            checked_types = c_pair_return_types(body.module.isa().triple(), [*lane, ExternTy::Bool])?;
+            (*lane, &checked_types)
+        }
+        ExternReturn::Scalar(lane) => {
+            scalar_type = [lane.lane().unwrap_or(types::I64)];
+            (*lane, &scalar_type)
+        }
+        ExternReturn::Pair(_) => unreachable!("a guard extern is never a pair"),
+    };
+    sig.returns.extend(physical.iter().copied().map(ir::AbiParam::new));
     let func_id = body
         .module
         .declare_function(&extern_fn.symbol, Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare guard extern `{}`: {e}", extern_fn.symbol)))?;
     let callee = body.module.declare_func_in_func(func_id, body.b.func);
     let call = body.b.ins().call(callee, &call_args);
-    let raw = body.b.inst_results(call)[0];
-    match extern_fn.ret {
+    let (raw, failed) = {
+        let results = body.b.inst_results(call);
+        (results[0], results.get(1).copied())
+    };
+    let raw = match failed {
+        Some(failed) => emit_checked_return(body, raw, failed, physical[0], lane, fail),
+        None => raw,
+    };
+    match lane {
         ExternTy::I64 => Ok(ReceiveValue::Int(raw)),
+        ExternTy::F64 => Ok(ReceiveValue::Float(raw)),
         ExternTy::Any => Ok(ReceiveValue::AnyRef(raw)),
         other => Err(CodegenError::new(format!(
             "guard extern `{}` returns {other:?}, which the receive matcher does not carry",
             extern_fn.symbol
         ))),
+    }
+}
+
+/// Leaves through `fail` when the checked return's flag word is set, and
+/// answers the value in its own lane otherwise.
+fn emit_checked_return<M: cranelift_module::Module>(
+    body: &mut DispatchBody<'_, '_, M>,
+    value: ir::Value,
+    failed: ir::Value,
+    physical: ir::Type,
+    lane: ExternTy,
+    fail: ir::Block,
+) -> ir::Value {
+    let failed = body.b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
+    let ok = body.b.create_block();
+    body.b.ins().brif(failed, fail, &[], ok, &[]);
+    body.b.switch_to_block(ok);
+    body.b.seal_block(ok);
+    if lane == ExternTy::F64 && physical == types::I64 {
+        body.b.ins().bitcast(types::F64, MemFlags::new(), value)
+    } else {
+        value
     }
 }
 
@@ -1398,29 +1474,20 @@ fn emit_guard_dispatch_node<M: cranelift_module::Module>(
             predicate,
             on_match,
             on_miss,
-        } => {
-            let true_b = body.b.create_block();
-            let false_b = body.b.create_block();
-            let true_values = emit_region_test(
-                body,
-                ctx,
-                predicate.subject,
-                &predicate.region,
-                &on_match.evidence,
-                true_b,
-                false_b,
-                state,
-            )?;
-            body.b.switch_to_block(true_b);
-            body.b.seal_block(true_b);
-            let mut true_state = state.clone();
-            true_state.values.extend(true_values);
-            apply_edge_evidence_to_receive_state(body, ctx, &on_match.evidence, &mut true_state)?;
-            emit_guard_dispatch_node(body, ctx, bodies, on_match.target, done, fail, &mut true_state)?;
-            body.b.switch_to_block(false_b);
-            body.b.seal_block(false_b);
-            emit_guard_dispatch_node(body, ctx, bodies, on_miss.target, done, fail, state)
-        }
+        } => match emit_test_edges(body, ctx, predicate, on_match, state)? {
+            TestEdges::Settled(Successor::Miss) => {
+                emit_guard_dispatch_node(body, ctx, bodies, on_miss.target, done, fail, state)
+            }
+            TestEdges::Settled(Successor::Match(mut matched)) => {
+                emit_guard_dispatch_node(body, ctx, bodies, on_match.target, done, fail, &mut matched)
+            }
+            TestEdges::Branched { mut matched, miss_b } => {
+                emit_guard_dispatch_node(body, ctx, bodies, on_match.target, done, fail, &mut matched)?;
+                body.b.switch_to_block(miss_b);
+                body.b.seal_block(miss_b);
+                emit_guard_dispatch_node(body, ctx, bodies, on_miss.target, done, fail, state)
+            }
+        },
     }
 }
 
@@ -1467,10 +1534,6 @@ fn emit_short_circuit_guard<M: cranelift_module::Module>(
     body.b.switch_to_block(done_b);
     body.b.seal_block(done_b);
     Ok(ReceiveValue::AnyRef(body.b.block_params(done_b)[0]))
-}
-
-fn int_value(_b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ReceiveValue {
-    ReceiveValue::Int(raw)
 }
 
 fn bool_const_value(b: &mut FunctionBuilder<'_>, value: bool) -> ReceiveValue {
