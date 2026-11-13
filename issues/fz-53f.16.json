@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:27:36Z",
+  "description": "Module.atom_names is copied when a macro runs: about 96k allocation calls per OptionParser.parse compile at the macro-run atom table copy in backend.rs. The runtime atom table already holds Arc\u003cstr\u003e (fz-53f.10). Sharing it means Vec\u003cArc\u003cstr\u003e\u003e through the Rc\u003cString\u003e atom lists in artifact.rs and backend_program.rs and their readers in native codegen and runtime_type_predicate.rs, about six files. Found by the OptionParser session.",
+  "id": "fz-53f.16",
+  "labels": [],
+  "parent": "fz-53f",
+  "priority": 3,
+  "status": "open",
+  "title": "A macro run shares the module's atom names",
+  "type": "task",
+  "updated_at": "2026-11-13T03:27:36Z"
+}
