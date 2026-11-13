@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T01:33:48Z",
+  "description": "Seven functions Elixir allows in guards have no definition in lib/kernel.fz: abs/1, round/1, trunc/1, floor/1, ceil/1, hd/1, tl/1. They fail the same way in a body and in a guard, because the name does not exist:\n\n- body: dbg(abs(-3)) -\u003e error[lower/unbound]: compiler2 lowering found unresolved direct runtime callee abs/1\n- guard: def f(n) when abs(n) \u003e 2 -\u003e error[lower/unbound]: compiler2 guard call abs/1 is unresolved in this namespace\n(same for hd/1; probed on fz-rs7.4, PR #358)\n\nThey are pure: no allocation, no side effect. Since fz-rs7.4 a guard operator resolves as a call to the Kernel function a body calls, and a guard may call an extern that returns an integer or float or declares raises:. So each is defined once in Kernel and serves both places.\n\nShape:\n- abs/1: integer and float clauses over C externs. abs of the minimum 64-bit integer declares raises: ArithmeticError.\n- round/1, trunc/1, floor/1, ceil/1: float -\u003e integer externs declaring raises: ArithmeticError for a float outside the 64-bit range; the integer clause is the identity.\n- hd/1, tl/1: a non-empty list answers; anything else raises ArgumentError in a body and fails the clause in a guard. If a guard cannot yet call a Kernel function whose failure is a Fz raise rather than a declared extern failure, that is found here and reported before building.\n\nFails before, passes after, three paths, with Elixir oracles: each function in a body and in a guard (function head and receive), including the failing argument in a guard choosing the next clause.\n\nAlso absent from Kernel and not part of this ticket: max/2, min/2 (not guard functions), bit_size/1, binary_part/3, is_map_key/2.\n\nAcceptance: full gate green.",
+  "id": "fz-rs7.7",
+  "labels": [],
+  "parent": "fz-rs7",
+  "priority": 3,
+  "status": "open",
+  "title": "Kernel has abs, round, trunc, floor, ceil, hd and tl, in bodies and guards",
+  "type": "feature",
+  "updated_at": "2026-11-13T01:33:48Z"
+}
