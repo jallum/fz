@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-07T22:33:57Z",
-  "description": "Found while building fz-sc8.72. `%{m | :a =\u003e 3}` does not parse: \"expected keyword entry\". Elixir accepts any key expression with =\u003e in a map update, and keyword syntax (a: 3) is sugar for atom keys. The update parser (src/parser) accepts only the keyword form; map literals already accept both. Fold the two so the update reads the same entry grammar as the literal. Oracle fixture with an atom key via =\u003e, a string key, and a mixed update. Deviation from Elixir; not needed by the distiller.",
+  "description": "Found while building fz-sc8.72. `%{m | :a =\u003e 3}` does not parse: \"expected keyword entry\". Elixir accepts any key expression with =\u003e in a map update, and keyword syntax (a: 3) is sugar for atom keys. The update parser (src/parser) accepts only the keyword form; map literals already accept both. Fold the two so the update reads the same entry grammar as the literal. Oracle fixture with an atom key via =\u003e, a string key, and a mixed update. Deviation from Elixir; not needed by the distiller.\n\nAlso found while building fz-3sy.12: an update does not parse with a newline on either side of the bar. A newline before it (`%{\\n  b\\n  | x: 1\\n}`, the layout mix format gives a long update) fails with \"expected `=\u003e`, got Newline\"; a newline after it (`%{b |\\n  x: 1\\n}`) fails with \"expected keyword entry, got Newline\". Newlines after each comma are accepted. The same fold fixes it: the entries after the bar are the literal's entries. Add both layouts to the oracle fixture.",
   "id": "fz-sc8.78",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 3,
   "status": "open",
-  "title": "Map update accepts =\u003e keys: %{m | :a =\u003e 3}",
+  "title": "Map update reads the literal's entry grammar: =\u003e keys and newlines around |",
   "type": "bug",
-  "updated_at": "2026-11-07T22:33:57Z"
+  "updated_at": "2026-11-13T01:32:55Z"
 }
