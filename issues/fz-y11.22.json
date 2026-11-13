@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-13T19:11:23Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Dispatch reachability copies a state only when it is new",
   "type": "task",
-  "updated_at": "2026-11-13T19:11:23Z"
+  "updated_at": "2026-11-13T19:11:33Z"
 }
