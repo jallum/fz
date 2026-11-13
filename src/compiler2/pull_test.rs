@@ -2123,6 +2123,21 @@ fn fake_executable_in(types: &mut super::super::Types, root: RootId, function: u
     }
 }
 
+fn fake_executable_with_inputs(
+    types: &mut super::super::Types,
+    root: RootId,
+    function: u32,
+    arity: usize,
+) -> ExecutableKey {
+    let function = super::super::FunctionId::from_coordinate(function);
+    let any = types.any();
+    let activation = super::super::ActivationKey::from_inputs(root, function, &vec![any; arity], types);
+    ExecutableKey {
+        activation,
+        need: super::super::ExecutableNeed::Value,
+    }
+}
+
 fn fake_types() -> super::super::Types {
     let mut types = super::super::Types::new();
     let _ = super::super::ActivationKey::from_inputs(
@@ -2323,15 +2338,10 @@ fn effect_test_ty() -> super::super::Ty {
     types.none()
 }
 
+/// The arrow of a fake key is minted by `fake_types`' first activation, so it
+/// resolves there.
 fn executable_symbol_for_test(executable: &ExecutableKey) -> super::super::transport::ExecutableSymbol {
-    super::super::transport::ExecutableSymbol {
-        activation: super::super::transport::ActivationSymbol {
-            function: executable.activation.function,
-            arrow: executable.activation.arrow,
-            input: Box::default(),
-        },
-        need: executable.need,
-    }
+    super::super::transport::ExecutableSymbol::new(executable, &fake_types())
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -2580,7 +2590,7 @@ fn owner_symbol_key(symbol: &ExecutableSymbol) -> OwnerSymbolKey {
     (
         symbol.activation.function.as_u32(),
         symbol.activation.arrow,
-        symbol.activation.input.to_vec(),
+        symbol.activation.input().to_vec(),
         need.0,
         need.1,
     )
@@ -3012,11 +3022,11 @@ fn group_settle_emits_one_settled_event_per_member_with_shared_generation_and_gr
 #[test]
 fn publication_moves_observation_and_membership_storage_into_the_entry() {
     let tel = ConfiguredTelemetry::new();
-    let types = fake_types();
+    let mut types = fake_types();
     let root = RootId::for_test(61);
     let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 610));
-    let mut executable = executable_symbol_for_test(&fake_executable_with_function(root, 612));
-    executable.activation.input = vec![executable.activation.arrow; 32].into_boxed_slice();
+    let wide = fake_executable_with_inputs(&mut types, root, 612, 32);
+    let executable = super::super::transport::ExecutableSymbol::new(&wide, &types);
     let external = ProductKey::TransportShape(TransportPosition::ExecutableReturn { executable });
     let dependencies = ProductDependencies {
         rooted_read: None,
@@ -3029,7 +3039,7 @@ fn publication_moves_observation_and_membership_storage_into_the_entry() {
     let ProductKey::TransportShape(position) = dependencies.products.get_index(0).unwrap().0 else {
         unreachable!()
     };
-    let input_storage = position.executable().activation.input.as_ptr();
+    let input_storage = position.executable().activation.input().as_ptr();
     let membership_storage = dependencies.membership.get(&external).unwrap() as *const ProductKey;
     assert!(memo.begin(left.clone()));
     assert!(finish_test_entry(
@@ -3048,7 +3058,7 @@ fn publication_moves_observation_and_membership_storage_into_the_entry() {
     let ProductKey::TransportShape(position) = entry.dependencies.products.get_index(0).unwrap().0 else {
         unreachable!()
     };
-    assert_eq!(position.executable().activation.input.as_ptr(), input_storage);
+    assert_eq!(position.executable().activation.input().as_ptr(), input_storage);
     assert_eq!(
         entry.membership.get(&external).unwrap() as *const ProductKey,
         membership_storage

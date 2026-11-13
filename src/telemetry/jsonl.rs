@@ -2151,7 +2151,7 @@ fn write_activation_symbol(out: &mut String, symbol: &crate::compiler2::transpor
     write_str_lit(out, "input");
     out.push(':');
     out.push('[');
-    for (index, ty) in symbol.input.iter().enumerate() {
+    for (index, ty) in symbol.input().iter().enumerate() {
         if index > 0 {
             out.push(',');
         }

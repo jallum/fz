@@ -22,7 +22,7 @@ use super::super::semantic::{
     ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, SemanticOrd, ShapeDemand,
 };
 use super::super::transport::{
-    ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableConstructionCapture, CallableConstructionFact,
+    BoundaryDescr, BoundaryFacts, BoundaryId, CallableConstructionCapture, CallableConstructionFact,
     CallableConstructionMember, CallableConstructionOwner, CallableDescr, CallableDirectEdge, CallableFacts,
     CallableId, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass, TransportPosition,
 };
@@ -319,7 +319,7 @@ fn produce_generic_callable_owner(
                     .incoming_input_sources(&slot)
                     .expect("settled input slot has an authoritative answer");
                 source_positions.extend(sources.iter().map(|source| TransportPosition::Value {
-                    executable: executable_symbol(&source.producer, world.types()),
+                    executable: ExecutableSymbol::new(&source.producer, world.types()),
                     value: source.value,
                 }));
             }
@@ -1262,7 +1262,7 @@ fn direct_callable_descr(
         activation: target.activation.clone(),
         need: target.need,
     };
-    let executable = executable_symbol(&executable, world.types());
+    let executable = ExecutableSymbol::new(&executable, world.types());
     let mut capture_layouts = Vec::with_capacity(capture_count);
     for semantic_index in 0..capture_count {
         let capture = TransportPosition::ExecutableInput {
@@ -1352,7 +1352,7 @@ fn origin_transport_recipe(
                     .map(|target| match (&target.callee, &target.activation) {
                         (SelectedCallee::Function(_), Some(activation)) => {
                             TransportRecipe::Alias(TransportPosition::ExecutableReturn {
-                                executable: executable_symbol(
+                                executable: ExecutableSymbol::new(
                                     &ExecutableKey {
                                         activation: activation.clone(),
                                         need,
@@ -1382,7 +1382,7 @@ fn origin_transport_recipe(
                 },
                 grounded: singleton_closure_call_target(facts, callsite).map(|(activation, need)| {
                     let recipe = TransportRecipe::Alias(TransportPosition::ExecutableReturn {
-                        executable: executable_symbol(
+                        executable: ExecutableSymbol::new(
                             &ExecutableKey {
                                 activation: activation.clone(),
                                 need,
@@ -1500,7 +1500,7 @@ fn produce_local_callable_construction(
             capture.join_assign(input);
         }
     }
-    let symbol = executable_symbol(executable, world.types());
+    let symbol = ExecutableSymbol::new(executable, world.types());
     let mut capture_layouts = Vec::with_capacity(producer.captures.len());
     for (index, capture) in producer.captures.iter().copied().enumerate() {
         let key = ProductKey::TransportShape(TransportPosition::Value {
@@ -1553,7 +1553,7 @@ fn produce_local_callable_construction(
         callable,
         flow.resolutions
             .iter()
-            .map(|resolution| executable_symbol(resolution, world.types()))
+            .map(|resolution| ExecutableSymbol::new(resolution, world.types()))
             .collect(),
         direct_surfaces,
         direct_edges,
@@ -1583,7 +1583,7 @@ fn produce_local_callable_construction(
                 .zip(capture_tys)
                 .map(|((value, layout), ty)| CallableConstructionCapture {
                     source: TransportPosition::Value {
-                        executable: executable_symbol(executable, world.types()),
+                        executable: ExecutableSymbol::new(executable, world.types()),
                         value,
                     },
                     layout,
@@ -1846,7 +1846,7 @@ fn produce_named_transport_position(
                         continue;
                     };
                     let target = TransportRecipe::Alias(TransportPosition::ExecutableInput {
-                        executable: executable_symbol(
+                        executable: ExecutableSymbol::new(
                             &ExecutableKey {
                                 activation: activation.clone(),
                                 need,
@@ -2300,7 +2300,7 @@ fn append_origin_children(
                     (SelectedCallee::ProviderBoundary(_), _) | (_, None) => return false,
                     (SelectedCallee::Function(_), Some(activation)) => {
                         children.push(TransportPosition::ExecutableReturn {
-                            executable: executable_symbol(
+                            executable: ExecutableSymbol::new(
                                 &ExecutableKey {
                                     activation: activation.clone(),
                                     need,
@@ -2323,7 +2323,7 @@ fn append_origin_children(
             });
             if let Some((activation, need)) = singleton_closure_call_target(facts, callsite) {
                 children.push(TransportPosition::ExecutableReturn {
-                    executable: executable_symbol(&ExecutableKey { activation, need }, world.types()),
+                    executable: ExecutableSymbol::new(&ExecutableKey { activation, need }, world.types()),
                 });
             }
         }
@@ -2495,17 +2495,6 @@ fn executable_key_for_transport_position(root: RootId, position: &TransportPosit
     }
 }
 
-fn executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSymbol {
-    ExecutableSymbol {
-        activation: ActivationSymbol {
-            function: executable.activation.function,
-            arrow: executable.activation.arrow,
-            input: executable.activation.inputs(types).into_boxed_slice(),
-        },
-        need: executable.need,
-    }
-}
-
 /// A direct edge orders by the SURFACE it is reached through, then by the
 /// resolution it names — both canonically (fz-kdt.101), so the edge list a
 /// construction wrapper publishes is a function of what the edges say.
@@ -2569,7 +2558,7 @@ fn callable_direct_edges(
         .map(|edge| CallableDirectEdge {
             surface_inputs: edge.surface.inputs.clone().into_boxed_slice(),
             surface_arg_shapes: surface_shape(world, &edge.surface),
-            resolution: executable_symbol(&edge.resolution, world.types()),
+            resolution: ExecutableSymbol::new(&edge.resolution, world.types()),
             capture_semantic_inputs: edge.capture_semantic_inputs.clone(),
             surface_semantic_inputs: edge.surface_semantic_inputs.clone(),
         })
@@ -2735,7 +2724,7 @@ fn boundary_resolution_symbols_for_flow_surfaces(
             flow.first_class_edges
                 .iter()
                 .filter(|edge| &edge.surface == surface)
-                .map(|edge| executable_symbol(&edge.resolution, types))
+                .map(|edge| ExecutableSymbol::new(&edge.resolution, types))
                 .collect::<Vec<_>>()
         })
         .collect()

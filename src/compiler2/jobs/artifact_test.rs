@@ -2,7 +2,7 @@ use super::*;
 use crate::compiler2::semantic::{
     CallSiteResolution, CallSiteSummary, CallTargetSummary, EntryReachability, SelectedCallee,
 };
-use crate::compiler2::transport::{LaneId, TransportCarrier};
+use crate::compiler2::transport::{ActivationSymbol, LaneId, TransportCarrier};
 use crate::compiler2::{ActivationKey, FunctionId};
 use crate::fz_ir::{ExternAbi, ExternTy};
 use crate::telemetry::ConfiguredTelemetry;
@@ -84,12 +84,9 @@ fn sort_transport_positions_orders_one_partition_by_structural_discriminants() {
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
     let function = world.root_entry(root).function;
     let int = world.types_mut().int();
+    let arrow = world.types_mut().arrow(&[int], int);
     let symbol = ExecutableSymbol {
-        activation: ActivationSymbol {
-            function,
-            arrow: int,
-            input: vec![int].into_boxed_slice(),
-        },
+        activation: ActivationSymbol::new(function, arrow, world.types()),
         need: ExecutableNeed::Value,
     };
     let call_arg = |callsite: u32, semantic_index: usize| TransportPosition::CallArg {
@@ -122,8 +119,8 @@ fn return_payload_is_owned_only_by_its_caller() {
     let mut world = World::new();
     let caller = fake_call_executable(&mut world, 10, 11, &[]);
     let callee = fake_call_executable(&mut world, 10, 12, &[]);
-    let caller_symbol = transport_executable_symbol(&caller, world.types());
-    let callee_symbol = transport_executable_symbol(&callee, world.types());
+    let caller_symbol = ExecutableSymbol::new(&caller, world.types());
+    let callee_symbol = ExecutableSymbol::new(&callee, world.types());
     let callsite = CallSiteId::from_u32(7);
 
     let positions = return_flow_transport_positions(
@@ -157,7 +154,7 @@ fn local_no_return_flow_carries_exact_return_endpoint() {
         flow,
         CallReturnFlow::NoReturn {
             local_source: Some(TransportPosition::ExecutableReturn {
-                executable: transport_executable_symbol(&callee, world.types()),
+                executable: ExecutableSymbol::new(&callee, world.types()),
             }),
         }
     );
@@ -233,7 +230,7 @@ fn try_materialize_closure_edge(
         value_types: call_returns.then_some((result_value, int)).into_iter().collect(),
     };
     let positions = if call_returns {
-        let caller_symbol = transport_executable_symbol(&caller, world.types());
+        let caller_symbol = ExecutableSymbol::new(&caller, world.types());
         let caller_return = TransportPosition::ExecutableReturn {
             executable: caller_symbol.clone(),
         };

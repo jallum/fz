@@ -288,7 +288,7 @@ impl BoxedContracts {
 pub(super) mod tests {
     use super::*;
     use crate::compiler2::artifact::BackendCallableReturn;
-    use crate::compiler2::transport::{ActivationSymbol, CallableId, ExecutableSymbol};
+    use crate::compiler2::transport::{CallableId, ExecutableSymbol};
     use crate::compiler2::{ActivationKey, ExecutableNeed, ModuleId, World};
 
     pub(crate) fn caller(world: &mut World, name: &str) -> ExecutableKey {
@@ -303,6 +303,7 @@ pub(super) mod tests {
         key: &ExecutableKey,
         arity: usize,
         return_form: BackendCallableReturn,
+        types: &Types,
     ) -> BackendConstructionWrapper {
         BackendConstructionWrapper {
             denotation: key.activation.function.denotation(),
@@ -312,14 +313,7 @@ pub(super) mod tests {
                 0,
             )),
             identity: TransportPosition::ExecutableReturn {
-                executable: ExecutableSymbol {
-                    activation: ActivationSymbol {
-                        function: key.activation.function,
-                        arrow: key.activation.arrow,
-                        input: Box::default(),
-                    },
-                    need: key.need,
-                },
+                executable: ExecutableSymbol::new(key, types),
             },
             callable: CallableId::for_test(0),
             captures: Box::default(),

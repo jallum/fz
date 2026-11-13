@@ -5,13 +5,13 @@
 //! Positions may mention semantic body evidence, but descriptor keys must not.
 
 use std::collections::HashMap;
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::Range;
 use std::rc::Rc;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
-use super::identity::{ExecutableNeed, FunctionId};
+use super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::semantic::SemanticOrd;
 use super::types::{Ty, Types};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
@@ -200,11 +200,44 @@ pub struct LaneDescr {
     pub class: TransportClass,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// An activation named by its function and arrow. The input list is the arrow's
+/// parameter list, read once at construction and kept for readers that want
+/// the slice; nothing else can set it, so it is a function of `arrow` and takes
+/// no part in identity.
+#[derive(Debug, Clone)]
 pub struct ActivationSymbol {
     pub function: FunctionId,
     pub arrow: Ty,
-    pub input: Box<[Ty]>,
+    input: Box<[Ty]>,
+}
+
+impl ActivationSymbol {
+    pub fn new(function: FunctionId, arrow: Ty, types: &Types) -> Self {
+        Self {
+            function,
+            arrow,
+            input: types.arrow_params(&arrow).into_boxed_slice(),
+        }
+    }
+
+    pub fn input(&self) -> &[Ty] {
+        &self.input
+    }
+}
+
+impl PartialEq for ActivationSymbol {
+    fn eq(&self, other: &Self) -> bool {
+        self.function == other.function && self.arrow == other.arrow
+    }
+}
+
+impl Eq for ActivationSymbol {}
+
+impl Hash for ActivationSymbol {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.function.hash(state);
+        self.arrow.hash(state);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -213,13 +246,21 @@ pub struct ExecutableSymbol {
     pub need: ExecutableNeed,
 }
 
+impl ExecutableSymbol {
+    pub fn new(key: &ExecutableKey, types: &Types) -> Self {
+        Self {
+            activation: ActivationSymbol::new(key.activation.function, key.activation.arrow, types),
+            need: key.need,
+        }
+    }
+}
+
 impl SemanticOrd<Types> for ExecutableSymbol {
     fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
         self.activation
             .function
             .cmp(&other.activation.function)
             .then_with(|| types.cmp_activation_ty(self.activation.arrow, other.activation.arrow))
-            .then_with(|| types.cmp_activation_tys(&self.activation.input, &other.activation.input))
             .then_with(|| self.need.cmp(&other.need))
     }
 }

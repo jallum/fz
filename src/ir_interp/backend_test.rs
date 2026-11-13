@@ -516,7 +516,7 @@ fn zero_lane_inputs_preserve_tuple_structure_without_inventing_absence() {
         ),
         need: crate::compiler2::ExecutableNeed::Value,
     };
-    let mut executable = BackendExecutable::for_test(key, ty, nothing);
+    let mut executable = BackendExecutable::for_test(key, ty, nothing, world.types());
     let empty_layout = executable.abi.return_layout.layout.clone();
     Rc::make_mut(&mut executable.abi).semantic_inputs = [nothing, callable, tuple]
         .into_iter()
@@ -652,7 +652,7 @@ fn entry_dispatch_does_not_materialize_unneeded_structural_inputs() {
     let mut transport = TransportStore::new();
     let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
     let tuple = tuple_shape(&mut transport, &[nothing]);
-    let mut executable = BackendExecutable::for_test(key, ty, nothing);
+    let mut executable = BackendExecutable::for_test(key, ty, nothing, world.types());
     let abi = Rc::make_mut(&mut executable.abi);
     let mut layout = abi.return_layout.layout.clone();
     layout.structural = tuple;
@@ -758,7 +758,7 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
     let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
     let scalar = transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
     let tuple = tuple_shape(&mut transport, &[nothing, scalar]);
-    let mut executable = BackendExecutable::for_test(key, ty, nothing);
+    let mut executable = BackendExecutable::for_test(key, ty, nothing, world.types());
     let abi = Rc::make_mut(&mut executable.abi);
     let mut layout = abi.return_layout.layout.clone();
     layout.structural = tuple;
@@ -866,7 +866,7 @@ fn continuations_and_local_resumes_execute_the_retained_body_without_inventory_l
     };
     let nothing = world.intern_shape(ShapeDescr::Nothing);
     let return_ty = world.types_mut().int();
-    let mut executable = BackendExecutable::for_test(key.clone(), return_ty, nothing);
+    let mut executable = BackendExecutable::for_test(key.clone(), return_ty, nothing, world.types());
     let value = ValueId::from_u32(0);
     let first = crate::compiler2::ControlEntryId::from_u32(0);
     let last = crate::compiler2::ControlEntryId::from_u32(1);
@@ -1295,7 +1295,7 @@ impl DirectClosureEdge {
             need: ExecutableNeed::Value,
         };
         let nothing = world.intern_shape(ShapeDescr::Nothing);
-        let mut executable = BackendExecutable::for_test(key.clone(), int, nothing);
+        let mut executable = BackendExecutable::for_test(key.clone(), int, nothing, world.types());
         Rc::make_mut(&mut executable.abi).semantic_inputs = capture_tys
             .iter()
             .enumerate()
@@ -1393,7 +1393,7 @@ fn a_value_cannot_be_delivered_to_a_handler_frame() {
     };
     let nothing = world.intern_shape(ShapeDescr::Nothing);
     let return_ty = world.types_mut().int();
-    let mut executable = BackendExecutable::for_test(key.clone(), return_ty, nothing);
+    let mut executable = BackendExecutable::for_test(key.clone(), return_ty, nothing, world.types());
     let value = ValueId::from_u32(0);
     let handler = crate::compiler2::ControlEntryId::from_u32(0);
     executable.body = BackendBody::Clauses {
