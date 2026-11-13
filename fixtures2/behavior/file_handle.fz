@@ -40,7 +40,7 @@ defmodule FileHandle do
 end
 
 def main() do
-  path = "/tmp/fz-x5m"
+  path = "fz-x5m"
   fd = libc::creat(path, 0o644)
   dbg(:opened)
   n = libc::write(fd, "hi\n", 3)

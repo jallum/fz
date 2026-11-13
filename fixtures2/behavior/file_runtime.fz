@@ -2,7 +2,7 @@
 # purpose: "The built-in File library interprets direct libc status values in fz source and claims an opaque stream exactly once on close."
 #---
 def main() do
-  root = "/tmp/fz-file-runtime-direct"
+  root = "fz-file-runtime-direct"
   path = root <> "/entry"
   renamed = root <> "/renamed"
   copied = root <> "/copied"
@@ -35,7 +35,7 @@ def main() do
   assert(File.ln(copied, linked) == :ok, "ln creates a hard link")
   assert(File.ln_s(copied, symlinked) == :ok, "ln_s creates a symbolic link")
   assert(File.chmod(copied, 0o600) == :ok, "chmod changes file permissions")
-  assert(File.read("/tmp/fz-file-runtime-direct-missing") == {:error, :io}, "read normalizes a C failure")
+  assert(File.read("fz-file-runtime-direct-missing") == {:error, :io}, "read normalizes a C failure")
 
   assert(File.rm(renamed) == :ok, "rm removes the renamed source")
   assert(File.rm(copied) == :ok, "rm removes the copied file")

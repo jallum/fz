@@ -35,6 +35,11 @@
 //!     timeout.interp_secs: 30  # path-specific hang-guard override
 //!     #---
 //!
+//! Every program invocation -- each `fz2` command, each built binary, each
+//! Elixir oracle -- starts in its own empty working directory that the harness
+//! creates and removes, so a fixture that writes a relative file name never
+//! shares it with another path or run. Paths handed to programs are absolute.
+//!
 //! Behavioural routes default to `run`, `interp`, and `build`. A fixture may
 //! narrow that set with a filename prefix such as `a-resource_dtor.fz` or
 //! `00001_ja-some_fixture.fz`; `j` means `run`, `i` means `interp`, and `a`
@@ -180,6 +185,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         (
             "fixture_telemetry_cleans_failed_invocations",
             fixture_telemetry_cleans_failed_invocations,
+        ),
+        (
+            "fixture_invocations_own_their_working_directory",
+            fixture_invocations_own_their_working_directory,
         ),
         (
             "fixture_telemetry_concurrent_spec_violations",
@@ -622,6 +631,10 @@ impl Header {
     }
 }
 
+fn absolute(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|error| panic!("absolute {}: {error}", path.display()))
+}
+
 #[derive(Debug, Clone)]
 struct FixtureCase {
     path: PathBuf,
@@ -640,8 +653,10 @@ impl FixtureCase {
         self.path.as_path()
     }
 
+    /// Absolute, because every program invocation starts in its own working
+    /// directory rather than the repository root.
     fn source_path(&self) -> PathBuf {
-        self.path.clone()
+        absolute(&self.path)
     }
 
     fn source_dir(&self) -> PathBuf {
@@ -659,9 +674,9 @@ impl FixtureCase {
 
     fn oracle_path(&self, rel: &str) -> PathBuf {
         if rel == "oracle.exs" {
-            return self.sidecar_path(rel);
+            return absolute(&self.sidecar_path(rel));
         }
-        self.source_dir().join(rel)
+        absolute(&self.source_dir().join(rel))
     }
 
     fn canonical_source_name(&self) -> String {
@@ -669,7 +684,10 @@ impl FixtureCase {
     }
 
     fn normalize_expected_diagnostics(&self, text: &str) -> String {
-        let text = text.replace(self.path.to_string_lossy().as_ref(), &self.canonical_source_name());
+        let text = text.replace(
+            self.source_path().to_string_lossy().as_ref(),
+            &self.canonical_source_name(),
+        );
         text.split_inclusive('\n')
             .map(|line| self.normalize_gutter_padding(line))
             .collect()
@@ -1055,6 +1073,28 @@ impl Drop for FixtureTempFile {
     }
 }
 
+/// The working directory of one program invocation: empty when the program
+/// starts, removed when the invocation ends however it ends. A relative file
+/// name therefore means a file no other run can see.
+struct FixtureWorkingDir {
+    path: PathBuf,
+}
+
+impl FixtureWorkingDir {
+    fn new() -> Result<Self, String> {
+        let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = temp_dir().join(format!("fz_fixture_{}_{}_cwd", id(), nonce));
+        fs::create_dir(&path).map_err(|error| format!("create working directory {}: {error}", path.display()))?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for FixtureWorkingDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 fn anonymous_capture(stream: &str) -> Result<File, String> {
     FixtureTempFile::new(stream)?.unlink()
 }
@@ -1181,6 +1221,8 @@ fn guarded_fixture_command(
         cmd.env(FZ_EXEC_READY_FD_ENV, write_fd.as_raw_fd().to_string());
         configure_ready_writer(cmd, write_fd.as_raw_fd(), ready_writer_action);
     }
+    let working_dir = FixtureWorkingDir::new()?;
+    cmd.current_dir(&working_dir.path);
     let capture = CommandCapture::new()?;
     let (stdout, stderr) = capture.stdio()?;
     cmd.process_group(0);
@@ -1688,11 +1730,11 @@ fn assert_execution_ready_count(command: &mut Command, label: &str, expected: us
 /// trial never flips green to red on better hardware -- it only loses
 /// discrimination. The compile itself stays under the usual setup guard.
 fn execution_guard_covers_the_program_not_the_compile() {
-    let fixture = Path::new("fixtures2/behavior/json_roundtrip.fz");
+    let fixture = absolute(Path::new("fixtures2/behavior/json_roundtrip.fz"));
     for door in ["run", "interp"] {
         let label = format!("fz2 {door}");
         let finished = guarded_fixture_command(
-            Command::new(FZ2_BIN).arg(door).arg(fixture),
+            Command::new(FZ2_BIN).arg(door).arg(&fixture),
             &label,
             ExecutionBoundary::Announced,
             DEFAULT_FIXTURE_HANG_TIMEOUT,
@@ -2469,6 +2511,58 @@ fn fixture_telemetry_reserves_its_path() {
     );
     drop(telemetry);
     assert!(!path.exists(), "only dropping the owner removes its reservation");
+}
+
+/// A program that writes a relative file name writes into a directory that
+/// belongs to that one invocation, so two runs of the same program never see
+/// each other's file, and the directory is gone once the invocation ends --
+/// whether it exited, failed or timed out.
+fn fixture_invocations_own_their_working_directory() {
+    let write_then_read_back = || {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "test ! -e shared.tmp && echo mine > shared.tmp && cat shared.tmp && pwd",
+        ]);
+        let output = fixture_command_output(
+            &mut command,
+            "relative file writer",
+            ExecutionBoundary::Spawn,
+            DEFAULT_FIXTURE_HANG_TIMEOUT,
+        )
+        .expect("a fresh working directory holds no earlier run's file");
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).expect("utf8 output");
+        let (content, dir) = text.split_once('\n').expect("file content then directory");
+        assert_eq!(content, "mine");
+        PathBuf::from(dir.trim_end())
+    };
+    let first = write_then_read_back();
+    let second = write_then_read_back();
+    assert_ne!(first, second, "every invocation gets its own directory");
+    for dir in [&first, &second] {
+        assert!(!dir.exists(), "working directory leaked: {}", dir.display());
+    }
+
+    let dir_file = temp_build_output_path("scratch_dir_name");
+    let error = fixture_command_output(
+        Command::new("sh")
+            .env("FZ_SCRATCH_DIR_PATH", &dir_file)
+            .args(["-c", "pwd > \"$FZ_SCRATCH_DIR_PATH\"; sleep 2"]),
+        "timed-out relative file writer",
+        ExecutionBoundary::Spawn,
+        Duration::from_millis(500),
+    )
+    .expect_err("the probe outlives its window");
+    assert!(error.contains("exceeded"), "{error}");
+    let recorded = fs::read_to_string(&dir_file).expect("probe recorded its directory");
+    let timed_out_dir = PathBuf::from(recorded.trim_end());
+    let _ = fs::remove_file(dir_file);
+    assert!(
+        !timed_out_dir.exists(),
+        "a timed-out invocation releases its directory: {}",
+        timed_out_dir.display()
+    );
 }
 
 fn fixture_telemetry_cleans_failed_invocations() {
