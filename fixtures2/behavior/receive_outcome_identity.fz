@@ -5,7 +5,7 @@ def rebuild() do
   receive do
     [head | tail] -> [head | tail]
   after
-    1000 -> []
+    0 -> []
   end
 end
 
@@ -15,7 +15,7 @@ def receive_fields(offset) do
     {offset, [head | tail]} -> {offset, [head | tail]}
     <<len, payload::binary-size(len), rest::binary>> -> {len, payload, rest}
   after
-    1000 -> :timeout
+    0 -> :timeout
   end
 end
 
@@ -38,7 +38,7 @@ def receive_parked() do
       {value, count_after - before}
     end
   after
-    1000 -> :timeout
+    60000 -> :timeout
   end
 end
 

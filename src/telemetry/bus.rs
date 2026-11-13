@@ -12,6 +12,7 @@ use std::convert::Infallible;
 
 use crate::measurements;
 
+use super::clock::Clock;
 use super::event::{Measurements, Metadata};
 use super::handler::{Event, EventKind, Handler, HandlerId};
 use super::interest::Interest;
@@ -293,6 +294,8 @@ pub struct ConfiguredTelemetry {
     /// Stack of open span ids — used to populate `span_id` and
     /// `parent_span_id` on every event emitted while spans are open.
     span_stack: RefCell<Vec<u64>>,
+    /// The readings spans measure their elapsed time against.
+    clock: Clock,
     /// Raw event and lifecycle listener entries examined by dispatch.
     #[cfg(test)]
     entry_visits: Cell<u64>,
@@ -309,9 +312,16 @@ impl ConfiguredTelemetry {
             next_handler_id: Cell::new(1),
             next_span_id: Cell::new(1),
             span_stack: RefCell::new(Vec::new()),
+            clock: Clock::system(),
             #[cfg(test)]
             entry_visits: Cell::new(0),
         }
+    }
+
+    /// A bus whose spans measure time on `clock`.
+    #[cfg(test)]
+    pub fn with_clock(clock: Clock) -> Self {
+        Self { clock, ..Self::new() }
     }
 
     #[cfg(test)]
@@ -542,6 +552,10 @@ impl Default for ConfiguredTelemetry {
 }
 
 impl Telemetry for ConfiguredTelemetry {
+    fn now_ns(&self) -> u64 {
+        self.clock.now_ns()
+    }
+
     fn is_enabled(&self, name: &[&'static str]) -> bool {
         self.handlers
             .borrow()

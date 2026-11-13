@@ -1,7 +1,7 @@
 #---
 # purpose: "a receive timeout computed at runtime waits and then yields the after value"
 # oracle: 00689_a_receive_after_timeout_can_be_computed.oracle.exs
-# oracle.stamp: 3e0925b2bf7b9fbc
+# oracle.stamp: c2a88d340de4cb5d
 #---
 def wait_for(ms) do
   receive do
@@ -12,6 +12,6 @@ def wait_for(ms) do
 end
 
 def main() do
-  dbg(wait_for(2 * 5))
+  dbg(wait_for(2 - 1))
   dbg(:end)
 end

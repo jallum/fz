@@ -1,7 +1,5 @@
 use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::thread::sleep;
-use std::time::Duration;
 
 use super::*;
 use crate::metadata;
@@ -318,12 +316,18 @@ fn nested_spans_get_distinct_ids_and_drop_lifo() {
 }
 
 #[test]
-fn span_drop_reports_nonzero_elapsed_ns() {
-    // Capture elapsed via a custom mock that grabs the duration.
+fn span_drop_reports_the_clock_time_between_start_and_stop() {
+    // Capture elapsed via a custom mock that grabs the duration, on a clock
+    // that moves one nanosecond per reading.
     struct Capture {
         elapsed: Cell<u64>,
+        readings: Cell<u64>,
     }
     impl Telemetry for Capture {
+        fn now_ns(&self) -> u64 {
+            self.readings.set(self.readings.get() + 1);
+            self.readings.get()
+        }
         fn dispatch(&self, _: &[&'static str], _: &Measurements, _: &Metadata) {}
         fn span_start(&self, _: &[&'static str], _: &Metadata) -> u64 {
             42
@@ -334,13 +338,14 @@ fn span_drop_reports_nonzero_elapsed_ns() {
         fn span_exception(&self, _: &[&'static str], _: u64, _: u64, _: &Measurements, _: &Metadata) {}
     }
 
-    let c = Capture { elapsed: 0.into() };
+    let c = Capture {
+        elapsed: 0.into(),
+        readings: 0.into(),
+    };
     {
         let _s = c.span_lazy(&["fz", "x"], Metadata::new);
-        // Burn a small but reliable amount of time so elapsed > 0.
-        sleep(Duration::from_micros(50));
     }
-    assert!(c.elapsed.get() > 0, "expected nonzero elapsed_ns");
+    assert_eq!(c.elapsed.get(), 1, "one reading at the start, the next at the stop");
 }
 
 #[test]

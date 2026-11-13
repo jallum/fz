@@ -4,7 +4,6 @@ use std::fs::{read_to_string, remove_file};
 use std::io::Write;
 use std::process::id as process_id;
 use std::rc::Rc;
-use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::telemetry::capture::vec_writer;
@@ -287,12 +286,10 @@ fn time_ns_is_present_and_numeric() {
 #[test]
 fn time_ns_increases_across_events() {
     let (buf, w) = vec_writer();
-    let backend = JsonlBackend::new_writer(w);
+    let backend = JsonlBackend::new_writer_with_clock(w, Clock::ticking());
     let (m, md) = (Measurements::new(), Metadata::new());
     let ev = make_event(&["x"], EventKind::Event, &m, &md);
     backend.handle(&ev);
-    // Burn a small but reliable amount of time.
-    sleep(Duration::from_micros(50));
     backend.handle(&ev);
     backend.flush();
     let output = String::from_utf8(buf.borrow().clone()).unwrap();
@@ -309,12 +306,7 @@ fn time_ns_increases_across_events() {
         })
         .collect();
     assert_eq!(times.len(), 2);
-    assert!(
-        times[1] > times[0],
-        "second time_ns {} not > first {}",
-        times[1],
-        times[0]
-    );
+    assert_eq!(times, vec![1, 2], "each line is stamped with the clock's next reading");
 }
 
 #[test]

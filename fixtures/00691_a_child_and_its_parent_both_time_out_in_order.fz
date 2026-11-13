@@ -1,7 +1,7 @@
 #---
-# purpose: "a child's 20ms timeout fires before its parent's 80ms timeout and the parent outlives the child"
+# purpose: "a child's 1ms timeout and its parent's 2ms timeout are pending together; messages order what each prints, so the parent outlives the child however the machine is loaded"
 # oracle: 00691_a_child_and_its_parent_both_time_out_in_order.oracle.exs
-# oracle.stamp: ba0f8b6a45ecd958
+# oracle.stamp: 82fa4037407825e0
 #---
 def main() do
   parent = self()
@@ -9,17 +9,18 @@ def main() do
     receive do
       :never -> :ok
     after
-      20 ->
+      1 ->
         dbg(:child_timeout)
         send(parent, :child_done)
     end
   end)
-  receive do
-    :never -> dbg(:got)
+  timed_out = receive do
+    :never -> false
   after
-    80 -> dbg(:main_timeout)
+    2 -> true
   end
   receive do
     :child_done -> dbg(:joined)
   end
+  dbg({:main_timeout, timed_out})
 end

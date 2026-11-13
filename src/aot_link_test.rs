@@ -145,8 +145,7 @@ fn the_clean_runtime_rebuild_does_not_trust_an_inherited_cargo_that_names_nothin
 #[test]
 fn runtime_staticlib_selection_ignores_decoy_newer_mtime_archive() {
     use std::fs::{create_dir_all, write as fs_write};
-    use std::thread::sleep;
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     let dir = std::env::temp_dir().join(format!(
         "fz_aot_link_test_{}_{}",
@@ -158,15 +157,24 @@ fn runtime_staticlib_selection_ignores_decoy_newer_mtime_archive() {
     ));
     create_dir_all(&dir).expect("create temp dir");
 
+    let set_mtime = |path: &std::path::Path, seconds: u64| {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .and_then(|file| file.set_modified(UNIX_EPOCH + Duration::from_secs(seconds)))
+            .expect("set mtime")
+    };
+
     let authoritative = dir.join("libfz_runtime-19d6c6c451fa0f44.a");
     fs_write(&authoritative, b"real archive").expect("write authoritative archive");
+    set_mtime(&authoritative, 1_000);
 
     // Give the decoy a strictly newer mtime than the authoritative archive,
     // as would happen when a concurrent, unrelated build refreshes a stale
     // hashed archive mid-run.
-    sleep(Duration::from_millis(10));
     let decoy = dir.join("libfz_runtime-deadbeefcafefeed.a");
     fs_write(&decoy, b"stale archive with a newer mtime").expect("write decoy archive");
+    set_mtime(&decoy, 2_000);
 
     let authoritative_mtime = authoritative.metadata().unwrap().modified().unwrap();
     let decoy_mtime = decoy.metadata().unwrap().modified().unwrap();

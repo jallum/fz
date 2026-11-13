@@ -255,10 +255,10 @@ hands it to the core.
 
 ```text
 loop:
-  wake every process whose timer expired (each scheduler makes the woken
-                                          ones runnable through its core)
+  wake every process whose timer expired (observe(TimerFired) for each, then each
+                                          scheduler makes the woken one runnable through its core)
   if a process is runnable: return it
-  if a timer is pending:   observe(SchedulerSlept(wait)); sleep until its deadline
+  if a timer is pending:   observe(SchedulerSlept(wait)); wait on the clock until its deadline
   else:                    return None   # idle
 ```
 

@@ -12,7 +12,7 @@
 //! support.
 
 use crate::process::PidId;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub type TimerId = u64;
 
@@ -46,32 +46,26 @@ impl TimerWheel {
         }
     }
 
-    /// Schedule a wake-up for `pid` after `after` elapses. Returns the
-    /// fresh TimerId; the caller must hold onto it for cancellation.
-    pub fn schedule(&mut self, pid: PidId, after: Duration) -> TimerId {
+    /// Schedule a wake-up for `pid` at `deadline`. Returns the entry, whose
+    /// fresh id the caller must hold onto for cancellation.
+    pub fn schedule(&mut self, pid: PidId, deadline: Instant) -> TimerEntry {
         let id = self.next_id;
         self.next_id += 1;
-        let entry = TimerEntry {
-            id,
-            deadline: Instant::now() + after,
-            pid,
-        };
+        let entry = TimerEntry { id, deadline, pid };
         let pos = self
             .entries
             .binary_search_by(|e| e.deadline.cmp(&entry.deadline).then(e.id.cmp(&entry.id)))
             .unwrap_or_else(|i| i);
         self.entries.insert(pos, entry);
-        id
+        entry
     }
 
-    /// Cancel a previously scheduled timer. No-op if `id` is unknown
-    /// (already fired, already cancelled, or never existed). The pattern
-    /// matches BEAM's `erlang:cancel_timer/1` for an absent id; callers
-    /// should not need to distinguish.
-    pub fn cancel(&mut self, id: TimerId) {
-        if let Some(pos) = self.entries.iter().position(|e| e.id == id) {
-            self.entries.remove(pos);
-        }
+    /// Cancel a previously scheduled timer, returning its entry. `None` if
+    /// `id` is unknown (already fired, already cancelled, or never existed),
+    /// as BEAM's `erlang:cancel_timer/1` is for an absent id.
+    pub fn cancel(&mut self, id: TimerId) -> Option<TimerEntry> {
+        let pos = self.entries.iter().position(|e| e.id == id)?;
+        Some(self.entries.remove(pos))
     }
 
     /// Drain every entry whose deadline is at or before `now` in

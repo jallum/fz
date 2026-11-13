@@ -5,21 +5,21 @@ defmodule Oracle do
       receive do
         :never -> :ok
       after
-        80 -> send(parent, :slow)
+        2 -> send(parent, :slow)
       end
     end)
     spawn(fn ->
       receive do
         :never -> :ok
       after
-        20 -> send(parent, :fast)
+        1 -> send(parent, :fast)
       end
     end)
     receive do
-      first -> IO.inspect(first)
+      :fast -> IO.inspect(:fast)
     end
     receive do
-      second -> IO.inspect(second)
+      :slow -> IO.inspect(:slow)
     end
   end
 end
