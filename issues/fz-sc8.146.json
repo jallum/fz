@@ -25,11 +25,15 @@
     {
       "text": "Measuring spike (scratch sp146/, patches counterfactual_keying.patch, trace.patch; nothing landed). Mechanism confirmed by trace: the sharing is in activation keys, not at the broadcast. call_return_demand_contributions (runtime_demand.rs ~1029) faithfully sends one shared activation's joined surfaces to every target; the activations are shared because (1) tail_value_uses for a ClosureCall asks nothing of the callee value, so a recursive body (List.reduce_cont/3) collapses the reducer to a free variable, and (2) derive_activation_key_arrow / erase_closure_identity erase closure brands in non-consuming forwarders (Enumerable.List/Map/Range.reduce/3). Counterfactual keeping closure identity in both places (the forwarder half is a '.reduce' label probe, not a design): two.fz site-a lambda 12 -\u003e 5 activations, all its own; sharedL_8 becomes identical to splitL_8 (224/162 -\u003e 46/42 lambda activations, 30,364 -\u003e 27,046 requests); splitL_8 rises 23,825 -\u003e 27,090; distiller activations fall (181 -\u003e 100, 121 -\u003e 51) and wall 2.96 s -\u003e 1.69 s but requests RISE 63,457 -\u003e 68,746 (distinct keys 40,784 -\u003e 46,458). fixture_matrix: 3118 passed, 1 failed (many_senders_into_one_guarded_receive...: interp park count 0 -\u003e 48, reproducible, undiagnosed). Conclusion: de-mixing by forking forwarder keys does not bring the distiller under 50,000; the request count is dominated by per-key product cost, not by the mixed activations. Not tried: per-target narrowing at the broadcast; the principled forwarding-edge form; whether the counterfactual fixes the typed err.fz rejection.",
       "timestamp": "2026-11-13T18:35:29Z"
+    },
+    {
+      "text": "Probe: with sp146/counterfactual_keying.patch applied, fz2 interp on OptionParser's typed err.fz prints {[6, 3, 1], [{3, 6}, {2, 6}, {1, 6}]} (Elixir's output) instead of the spec/violation. So keeping closure identity in the keys fixes the wrong rejection; it does not fix the request budget.",
+      "timestamp": "2026-11-13T18:36:22Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "The distiller's compile finishes",
   "type": "bug",
-  "updated_at": "2026-11-13T18:35:29Z"
+  "updated_at": "2026-11-13T18:36:22Z"
 }
