@@ -530,7 +530,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             CodegenValue::RawF64(value) => value,
             CodegenValue::Known { payload, .. } => self.b.ins().bitcast(types::F64, MemFlags::new(), payload),
             CodegenValue::AnyRef(value_ref) => self.unbox_float(value_ref),
-            other => tagged_to_raw_f64_unsupported(self.b, other.value()),
+            _ => panic!("cannot read raw f64 from non-float value"),
         }
     }
 

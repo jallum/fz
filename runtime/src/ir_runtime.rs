@@ -308,11 +308,6 @@ pub extern "C" fn fz_io_write(process: *mut Process, binary_ref: u64) -> u64 {
     0
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_dynamic_float_arith_unsupported() -> u64 {
-    panic!("dynamic float arithmetic needs a typed float result carrier")
-}
-
 /// Typed halt for narrow-int seams. The cont chain
 /// carries a raw i64 all the way to halt-cont's RawInt body; no
 /// unboxing — value is already a machine int.

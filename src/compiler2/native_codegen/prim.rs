@@ -22,14 +22,13 @@ use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::{
     fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_alloc_struct, fz_bs_begin, fz_bs_field_spec,
-    fz_bs_finalize, fz_bs_read_field_ref, fz_bs_reader_done_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref,
-    fz_dynamic_float_arith_unsupported, fz_fmod, fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom,
-    fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze,
-    fz_map_dest_put_parts, fz_map_dest_put_ref, fz_map_get_atom_key_ref, fz_map_get_float_key_ref,
-    fz_map_get_int_key_ref, fz_map_get_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
-    fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module,
-    fz_struct_schema_id_ref, fz_try_pop, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const,
-    fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_bs_finalize, fz_bs_read_field_ref, fz_bs_reader_done_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref, fz_fmod,
+    fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
+    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_put_parts, fz_map_dest_put_ref, fz_map_get_atom_key_ref,
+    fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_matcher_map_get_ref,
+    fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref,
+    fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref, fz_try_pop, fz_value_cmp_raw_const,
+    fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
 use std::collections::HashMap;
@@ -1250,14 +1249,9 @@ where
     None
 }
 
-/// Lower a `Prim::BinOp` arithmetic op (Add/Sub/Mul/Div/Mod).
-/// Three code paths: float coercion (int+float mix), typed fast path
-/// (same-kind int or float), and tagged dispatch fallback that splits
-/// on runtime tag tests.
 /// Float `%`. Cranelift has no `frem`, so where `+ - * /` are one instruction
 /// this is a call into the runtime. Mod belongs on the float paths with them:
-/// the float lane is where `7.5 % 2.0` is answered, and a Mod that misses it
-/// reaches `fz_dynamic_float_arith_unsupported` instead.
+/// the float lane is where `7.5 % 2.0` is answered.
 fn emit_float_rem<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     left: ir::Value,
@@ -1266,6 +1260,9 @@ fn emit_float_rem<M: cranelift_module::Module>(
     runtime_call1!(body, fz_fmod, [left, right])
 }
 
+/// Lower a `Prim::BinOp` arithmetic op (Add/Sub/Mul/Div/Mod). Two code paths:
+/// float coercion (int and float mix) and the typed fast path (same-kind int or
+/// float).
 fn lower_arith_binop<M, T>(
     body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
@@ -1334,42 +1331,9 @@ where
     ) {
         return Ok(out);
     }
-    let av = *var_env.get(&a.0).expect("arith lhs");
-    let bv_value = *var_env.get(&bv.0).expect("arith rhs");
-    let a_is_int = body.value_is_tag(av, ValueKind::INT);
-    let b_is_int = body.value_is_tag(bv_value, ValueKind::INT);
-    let both_int = body.b.ins().band(a_is_int, b_is_int);
-    let fast_blk = body.b.create_block();
-    let slow_blk = body.b.create_block();
-    let join_blk = body.b.create_block();
-    body.b.append_block_param(join_blk, types::I64);
-    let no_args: Vec<BlockArg> = Vec::new();
-    body.b.ins().brif(both_int, fast_blk, &no_args, slow_blk, &no_args);
-
-    body.b.switch_to_block(fast_blk);
-    body.b.seal_block(fast_blk);
-    let ai = body.value_raw_int_for_checked_branch(av);
-    let bi = body.value_raw_int_for_checked_branch(bv_value);
-    {
-        let raw = match mop {
-            BinOp::Add => body.b.ins().iadd(ai, bi),
-            BinOp::Sub => body.b.ins().isub(ai, bi),
-            BinOp::Mul => body.b.ins().imul(ai, bi),
-            BinOp::Div => body.b.ins().sdiv(ai, bi),
-            BinOp::Mod => body.b.ins().srem(ai, bi),
-            _ => unreachable!(),
-        };
-        body.b.ins().jump(join_blk, &[BlockArg::Value(raw)]);
-    }
-
-    body.b.switch_to_block(slow_blk);
-    body.b.seal_block(slow_blk);
-    let slow_raw = runtime_call1!(body, fz_dynamic_float_arith_unsupported, []);
-    body.b.ins().jump(join_blk, &[BlockArg::Value(slow_raw)]);
-
-    body.b.switch_to_block(join_blk);
-    body.b.seal_block(join_blk);
-    Ok(LowerOut::RawI64(body.b.block_params(join_blk)[0]))
+    Err(CodegenError::new(format!(
+        "{op:?} lowers only operands of one raw lane; Kernel's operator calls carry every other operand"
+    )))
 }
 
 /// If `raw_side` is natively unboxed (`RawInt`/`RawAtom`, or a `Known`

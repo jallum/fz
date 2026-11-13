@@ -743,44 +743,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let marshal_plan = self.extern_marshals.get(&index).map_or(&[][..], Vec::as_slice);
         let callsite = ctx.fresh_callsite();
         let prim = Prim::Extern(callsite, extern_id, extern_args);
-        if let ExternReturn::Pair(fields) = signature.ret {
-            let (values, stmt_idx) = ctx.emit_let_many(2, prim);
-            let field_tys = self
-                .world
-                .types_mut()
-                .tuple_projections(&executable.abi.materialized.return_ty, 2);
-            for (value, ty) in values.iter().copied().zip(field_tys) {
-                ctx.value_types.insert(value, ty);
-            }
-            register_extern_marshals(&mut ctx, stmt_idx, marshal_plan);
-            let shape = executable.abi.return_layout.layout.structural;
-            let ShapeDescr::Tuple(field_layouts) = self.world.shape(shape).clone() else {
-                return Err(incomplete_native_program(
-                    self.telemetry,
-                    self.root_id,
-                    format!("C extern pair {fields:?} has non-tuple return transport shape {shape:?}"),
-                ));
-            };
-            let lanes = values
-                .iter()
-                .copied()
-                .zip(field_layouts.iter().copied())
-                .filter_map(|(value, layout)| (self.world.layout_width(layout) != 0).then_some(value))
-                .collect::<Vec<_>>();
-            let value = NativeBoundValue::Transport { shape, lanes };
-            let mut return_lanes = Vec::new();
-            self.encode_runtime_value_for_layout(
-                &mut ctx,
-                executable,
-                None,
-                &value,
-                &executable.abi.return_layout.layout,
-                &mut return_lanes,
-            )?;
-            ctx.set_term(Term::ReturnLanes(return_lanes));
-            self.finish_native_fn(ctx);
-            return Ok(());
-        }
         if let ExternReturn::Checked(_, failure) = &signature.ret {
             let (values, stmt_idx) = ctx.emit_let_many(2, prim);
             register_extern_marshals(&mut ctx, stmt_idx, marshal_plan);
@@ -3529,7 +3491,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 (values[0], *lane)
             }
             ExternReturn::Scalar(lane) => (ctx.emit_let(prim).0, *lane),
-            ExternReturn::Pair(_) => unreachable!("a guard extern is never a pair"),
         };
         match lane {
             ExternTy::I64 => {

@@ -264,8 +264,3 @@ pub(crate) fn static_closure_ref<M: Module>(
         .ok_or_else(|| CodegenError::new(format!("no static closure object for callable boundary {spec_id}")))?;
     Ok(body.static_object_ref(data_id, ValueKind::CLOSURE))
 }
-
-pub(crate) fn tagged_to_raw_f64_unsupported(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
-    let _ = (b, v);
-    panic!("tagged float decoding has been retired")
-}

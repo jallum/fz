@@ -301,33 +301,21 @@ makes each door narrow and widen it:
   hands back. An argument still travels as a 64-bit word: SysV and AAPCS64
   both have the callee read an `int` parameter out of the low 32 bits.
 
-A pair return field rides a whole return register, so `c_int` is not one of
-the three wire types a fixed scalar-pair result is built from; writing it
-there is the misplaced-spelling refusal above.
+A field of a tuple has no register of its own, so writing `c_int` inside one is
+the misplaced-spelling refusal above.
 
 `behavior/c_int_negative_return` pins both signs on all three doors, and
 `compiler2_native_lowering_narrows_c_int_arguments_and_sign_extends_c_int_results`
 pins the reduce and the sign extension in the lowered CLIF, which is what the
 declaration means on every host rather than on this one.
 
-### Fixed C scalar-pair results
+### One scalar result
 
-An `extern "C"` result written as a fixed two-field tuple of `integer`,
-`float`, and/or `boolean` is a `#[repr(C)]`/C struct returned by value. The
-fields stay in their existing tuple transport lanes: the boundary does not
-first allocate an fz tuple or turn either field into `Any`. All nine semantic
-pairs are supported. The interpreter selects one of four concrete carriers
-(word/word, word/float, float/word, float/float) through its existing
-argument-shape dispatcher and decodes a boolean field as false for zero and
-true for any nonzero word. Source boolean arguments remain canonical 0 or 1.
-
-The full declared pair determines the physical signature even when a caller
-ignores a field. x86-64 uses each field's natural integer/SSE return bank. On
-Linux and Darwin AArch64 only `{float, float}` uses `[F64, F64]`; every other
-pair uses `[I64, I64]`, with float bitcasts at the adapter. The target module's
-default call convention is authoritative. Larger/nested aggregates and
-aggregate arguments are rejected at the shared extern boundary, as is a field
-that is not one of those three wire types.
+An extern result is one scalar. A tuple result, `:: {integer, boolean}` for
+instance, is refused where the contract is derived (`extern_return_wire`,
+`src/compiler2/jobs/contract.rs`) with `lower/unsupported`, and the message names
+`raises:` and `message:`, which declare a failure the operation can report.
+Aggregate arguments are refused at the same boundary.
 
 ### A declared failure
 
@@ -342,7 +330,7 @@ extern "C" defp fz_op_rem_ii(integer, integer) :: integer,
 
 The declared result is the plain `integer` or `float`. The C function returns
 the `{value, failed}` scalar pair, `failed` being a canonical 0 or 1 word, and
-the pair is physical only: no fz tuple is built.
+the pair is physical only: no fz tuple is built, and no declaration spells it.
 
 - `parse_extern_raises` (`src/compiler2/frontdoor.rs`) reads the tail. `message:`
   is required, because an exception carries no default message, and it is a
@@ -412,7 +400,7 @@ What follows from the invariant:
   value-carrying type is one integer-width word, `Unit` and `Never` have no
   lane at all. It is an extension trait rather than a method on `ExternTy`
   because `fz_ir` is free of cranelift. Every native signature — fixed params,
-  scalar return, pair fields — reads the bank from it.
+  scalar return, the value and flag of a checked return — reads the bank from it.
 - `lower_extern_generic` gives `F64` its own `LowerOut::RawF64` lane, and the
   return match is exhaustive on purpose. A wildcard there is what let `F64`
   default into the `ValueRef` arm in the first place.

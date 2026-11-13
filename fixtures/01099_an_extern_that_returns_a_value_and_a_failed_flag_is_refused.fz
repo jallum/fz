@@ -1,0 +1,8 @@
+#---
+# purpose: "An extern return is one scalar; a failure is declared with raises:, not returned as a {value, failed} tuple"
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+extern "C" defp fz_take(integer) :: {integer, boolean}
+
+def main(), do: dbg(fz_take(1))

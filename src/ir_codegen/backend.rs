@@ -102,13 +102,6 @@ impl JitBackend {
 #[cfg(test)]
 fn register_test_symbols(builder: &mut JITBuilder) {
     builder.symbol("_resource_test_dtor", crate::ir_interp::tests_support_test_dtor_addr());
-    builder.symbol(
-        "_test_integer_boolean_pair",
-        crate::ir_interp::tests_support_integer_boolean_pair_addr(),
-    );
-    for (name, address) in crate::ir_interp::tests_support_scalar_pair_symbols() {
-        builder.symbol(name, address);
-    }
 }
 
 impl Backend for JitBackend {

@@ -208,11 +208,6 @@ fn a_guard_extern_of_any_other_class_is_refused_where_the_node_is_made() {
         guard_extern(&[ExternTy::Binary], ExternReturn::Scalar(ExternTy::I64), false),
         guard_extern(&[ExternTy::Any], ExternReturn::Scalar(ExternTy::Bool), false),
         guard_extern(&[ExternTy::Any], ExternReturn::Scalar(ExternTy::Unit), false),
-        guard_extern(
-            &[ExternTy::Any],
-            ExternReturn::Pair([ExternTy::I64, ExternTy::I64]),
-            false,
-        ),
         guard_extern(&[ExternTy::Any], ExternReturn::Scalar(ExternTy::I64), true),
     ];
     for result in refused {

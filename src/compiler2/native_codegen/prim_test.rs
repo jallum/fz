@@ -90,7 +90,7 @@ fn a_float_lane_value_is_refused_by_the_integer_reader() {
 }
 
 #[test]
-#[should_panic(expected = "tagged float decoding has been retired")]
+#[should_panic(expected = "cannot read raw f64 from non-float value")]
 fn an_integer_lane_value_is_refused_by_the_float_reader() {
     read_var_as(
         |b| CodegenValue::RawInt(b.ins().iconst(types::I64, 1)),

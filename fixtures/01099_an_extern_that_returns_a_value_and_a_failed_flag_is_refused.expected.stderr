@@ -1,0 +1,1 @@
+`fz_take`: an extern returns one scalar, not a `{value, failed}` tuple; declare the failure with `raises:` and `message:`

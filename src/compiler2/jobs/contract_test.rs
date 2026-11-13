@@ -30,7 +30,6 @@ fn a_declared_failure_refuses_every_result_that_is_not_an_integer_or_a_float() {
         ExternReturn::Scalar(ExternTy::I32),
         ExternReturn::Scalar(ExternTy::Any),
         ExternReturn::Scalar(ExternTy::Binary),
-        ExternReturn::Pair([ExternTy::I64, ExternTy::Bool]),
     ] {
         let refusal = checked_return(wire.clone(), ExternAbi::C, failure())
             .expect_err("only an integer or a float can be the value of a checked return");
