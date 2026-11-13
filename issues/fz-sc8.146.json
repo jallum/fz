@@ -29,11 +29,15 @@
     {
       "text": "Probe: with sp146/counterfactual_keying.patch applied, fz2 interp on OptionParser's typed err.fz prints {[6, 3, 1], [{3, 6}, {2, 6}, {1, 6}]} (Elixir's output) instead of the spec/violation. So keeping closure identity in the keys fixes the wrong rejection; it does not fix the request budget.",
       "timestamp": "2026-11-13T18:36:22Z"
+    },
+    {
+      "text": "Request anatomy on baseline B = develop + OptionParser's fz-sc8.127 spike (scratch ts146/; measuring only). A = 63,457 requests / 40,784 keys; B = 53,684 / 34,327. A request is one ProductDriver::pull (pull.rs ~2641); a waiting key costs two pulls (discover, resume) and memo hits count. Findings on A: (1) transport_shape 29,147 keys sit on 11,118 (function, local position) pairs and only 426 distinct answers; in 10,270 pairs every executable gives the same answer (9,045 redundant keys). Enum.reduce/3#lambda (177 executables) and Stream.compose/2#lambda (119) hold 15% of transport keys. (2) 5,739 of 6,855 waiting transport keys wait on exactly one child and 5,097 return that child's answer (alias hops); predicted ~10k requests if read through, unmeasured. (3) Repeats: transport 8,700 = its waiting evaluations exactly; wait lists are single-element because evaluate_transport_recipe returns the first Waiting (jobs/transport.rs ~1062, ~1083). Re-runs never re-request a current product. (4) One recursive group of 102 reach keys takes 3,391 requests (~64 each for 76 keys) against ~204 ideal; 17,789 of 22,373 listed waits repeat the previous round; predicted ~-3,190, unmeasured. (5) Fixed cost: JSON decode alone is 6,248 requests; one any-typed reduce adds 2,242. Counterfactual C (transport recipes return all waiting children, ~25 lines in jobs/transport.rs, patch ts146/cfT_transport_rs.patch): B 53,684 -\u003e 52,352, keys and jobs unchanged, outputs identical, fixture_matrix 3119 passed 0 failed. Still 2,352 over. Prediction: C + the reach group fix lands near 49,100.",
+      "timestamp": "2026-11-13T19:08:37Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "The distiller's compile finishes",
   "type": "bug",
-  "updated_at": "2026-11-13T18:36:22Z"
+  "updated_at": "2026-11-13T19:08:37Z"
 }
