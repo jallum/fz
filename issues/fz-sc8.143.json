@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:27:37Z",
+  "description": "Measured by the OptionParser session: per-literal keying of returned arguments costs about +6.5% compile work per additional distinct call of the same function. Evidence path to be added by that session. Concordant with fz-y6w (accumulator fanout) and fz-sc8.127 (a protocol callback's non-receiver arguments are keyed only where an implementation returns them): check whether one rule covers all three before building.",
+  "id": "fz-sc8.143",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A returned argument is keyed by its type, not by each literal",
+  "type": "task",
+  "updated_at": "2026-11-13T03:27:37Z"
+}
