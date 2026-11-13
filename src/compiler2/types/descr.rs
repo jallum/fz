@@ -763,8 +763,28 @@ impl Descr {
                 && self.maps.iter().all(|c| map_clause_empty(cx, c, open))
     }
 
+    /// `self.diff(other).is_empty(cx)`, answered axis by axis on borrowed
+    /// clauses so no difference descriptor is built.
+    ///
+    /// When `other`'s brand slot covers ours the difference is the structural
+    /// subtraction under our own slot, so emptiness is an empty slot or every
+    /// axis of ours lying inside `other`'s. In the other two cases of
+    /// [`diff`](Self::diff) our slot is inhabited and the difference keeps
+    /// every kind axis of `self`, so it is empty exactly when `self` is.
     pub(super) fn is_subtype(&self, cx: TyCtx<'_>, other: &Descr) -> bool {
-        self.diff(other).is_empty(cx)
+        if !other.brands.contains_all(&self.brands) {
+            return self.is_empty(cx);
+        }
+        self.brands.is_none()
+            || other.basic.contains_all(self.basic)
+                && other.atoms.contains_all(&self.atoms)
+                && other.opaques.contains_all(&self.opaques)
+                && other.vars.contains_all(&self.vars)
+                && clauses_within(cx, &self.tuples, &other.tuples, tuple_clause_empty)
+                && clauses_within(cx, &self.lists, &other.lists, list_clause_empty)
+                && clauses_within(cx, &self.resources, &other.resources, resource_clause_empty)
+                && clauses_within(cx, &self.funcs, &other.funcs, func_clause_empty)
+                && clauses_within(cx, &self.maps, &other.maps, map_clause_empty)
     }
 
     pub(super) fn is_equiv(&self, cx: TyCtx<'_>, other: &Descr) -> bool {
@@ -798,6 +818,29 @@ impl Descr {
         }
         d
     }
+}
+
+/// Whether `ours ∧ ¬theirs` is empty on one structural axis. A product is
+/// built only where both sides have clauses: no clause of `theirs` leaves
+/// each clause of `ours` as it is, and no clause of `ours` leaves nothing to
+/// test.
+fn clauses_within<T: Clone + PartialEq>(
+    cx: TyCtx<'_>,
+    ours: &[Conj<T>],
+    theirs: &[Conj<T>],
+    clause_empty: impl Fn(TyCtx<'_>, &Conj<T>, InFlight<'_>) -> bool,
+) -> bool {
+    if ours.is_empty() {
+        return true;
+    }
+    if theirs.is_empty() {
+        return ours
+            .iter()
+            .all(|c| c.pos.iter().any(|p| c.neg.contains(p)) || clause_empty(cx, c, InFlight::default()));
+    }
+    dnf_intersect(ours, &dnf_neg(theirs))
+        .iter()
+        .all(|c| clause_empty(cx, c, InFlight::default()))
 }
 
 fn single_positive<T>(clauses: &[Conj<T>]) -> Option<&T> {
