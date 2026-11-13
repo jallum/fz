@@ -1,0 +1,44 @@
+#---
+# purpose: "a map that names a module passes that struct's clause, reads its fields and takes its updates, whether it was built as the struct, grown from it by a put of a new key, or written as a map literal with the module under __struct__"
+# oracle: 00863_a_map_naming_a_module_is_read_and_updated_as_that_struct.oracle.exs
+#---
+#
+# A clause for `%Pt{}` asks which module the value names, not how it is laid
+# out. A map that names no module does not pass, whatever keys it holds.
+defmodule Pt do
+  defstruct [:x, :y]
+end
+
+def x_of(p :: %Pt{}), do: p.x
+def x_of(_), do: :not_a_pt
+
+def moved(p :: %Pt{}), do: %{p | x: p.x + 10}
+def moved(_), do: :not_a_pt
+
+def main() do
+  p = %Pt{x: 1, y: 2}
+  grown = Map.put(p, :z, 3)
+  dbg(x_of(grown))
+  dbg(moved(grown).x)
+  dbg(moved(grown).z)
+  dbg(Map.get(moved(grown), :y))
+  built = %{__struct__: Pt, x: 4, y: 5}
+  dbg(built.x)
+  dbg(x_of(built))
+  dbg(moved(built).x)
+  dbg(%{built | y: 50}.y)
+  dbg(x_of(%{x: 1, y: 2}))
+  dbg(moved(%{x: 1, y: 2}))
+  dbg(x_of(p))
+  dbg(moved(p))
+  send(self(), grown)
+  receive do
+    %Pt{x: x} -> dbg({:pt, x})
+    _ -> dbg(:other)
+  end
+  send(self(), %{x: 1, y: 2})
+  receive do
+    %Pt{x: x} -> dbg({:pt, x})
+    _ -> dbg(:other)
+  end
+end

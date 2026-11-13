@@ -2499,7 +2499,7 @@ fn map_ty(world: &mut World, values: &SemanticValues, entries: &[(LoweredMapKey,
         };
         fields.insert(key, value_ty(values, *value)?);
     }
-    Some(world.types_mut().map(&fields.into_iter().collect::<Vec<_>>()))
+    Some(world.types_mut().map_literal(&fields.into_iter().collect::<Vec<_>>()))
 }
 
 /// The map key at a lowered key position. Outer `None` = no evidence yet for

@@ -6,7 +6,7 @@ use super::TyCtx;
 use super::bits::BASIC_NAMES;
 use super::conj::Conj;
 use super::descr::Descr;
-use super::sigs::{ArrowSig, ListSig, MapSig, MapTag, ResourceSig, TupleSig};
+use super::sigs::{ArrowSig, ListSig, MapSig, ResourceSig, TupleSig};
 use crate::finite_set::FiniteSet;
 
 pub(crate) fn display(cx: TyCtx<'_>, d: &Descr) -> String {
@@ -147,14 +147,16 @@ fn format_closure_lit_suffix(cx: TyCtx<'_>, base: &str, lit: &super::sigs::Closu
 
 fn format_map_clause(cx: TyCtx<'_>, c: &Conj<MapSig>) -> String {
     format_conj(c, "map", |sig| {
+        let module = super::sig_struct(cx, sig);
         let fields: Vec<String> = sig
             .fields
             .iter()
+            .filter(|(k, _)| module.is_none() || !super::is_struct_module_key(k))
             .map(|(k, v)| format!("{}: {}", format_map_key(k), display(cx, cx.descr(v))))
             .collect();
-        match &sig.tag {
-            MapTag::Plain => format!("%{{{}}}", fields.join(", ")),
-            MapTag::Struct(tag) => format!("%{}{{{}}}", tag.name, fields.join(", ")),
+        match &module {
+            None => format!("%{{{}}}", fields.join(", ")),
+            Some(name) => format!("%{}{{{}}}", name, fields.join(", ")),
         }
     })
 }

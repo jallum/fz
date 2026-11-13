@@ -28,11 +28,6 @@ impl ModuleId {
     pub fn is_global(self) -> bool {
         self == Self::GLOBAL
     }
-
-    #[cfg(test)]
-    pub(crate) fn for_test(raw: u32) -> Self {
-        Self(raw)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -379,6 +374,11 @@ impl ModuleMap {
             denotations: vec![None],
             by_denotation: HashMap::default(),
         }
+    }
+
+    /// The module already known by `name`, if any is.
+    pub fn named(&self, name: &ModuleName) -> Option<ModuleId> {
+        self.by_denotation.get(&ModuleDenotation::Named(name.clone())).copied()
     }
 
     pub fn reference_named(&mut self, name: ModuleName) -> ModuleId {

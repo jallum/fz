@@ -48,10 +48,10 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
 use fz_runtime::ir_runtime::{
     fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_bs_field_spec, fz_bs_read_field_ref,
-    fz_bs_reader_init_ref, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_matcher_eq_bytes,
-    fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref, fz_struct_get_named_field_ref,
-    fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_value_cmp_ref,
-    fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_bs_reader_init_ref, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_map_named_schema_ref,
+    fz_matcher_eq_bytes, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref,
+    fz_struct_get_named_field_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float,
+    fz_unbox_int, fz_value_cmp_ref, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 
@@ -735,6 +735,12 @@ impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmit
     fn schema_id(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
         let struct_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
         let raw = runtime_call1!(self.body, fz_struct_schema_id_ref, [struct_ref]);
+        Ok(self.body.b.ins().uextend(types::I64, raw))
+    }
+
+    fn map_named_schema(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+        let map_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
+        let raw = runtime_call1!(self.body, fz_map_named_schema_ref, [self.ctx.process, map_ref]);
         Ok(self.body.b.ins().uextend(types::I64, raw))
     }
 
@@ -1710,7 +1716,7 @@ fn emit_map_kind_test<M: cranelift_module::Module>(
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
     let map_ref = emit_receive_value_ref(body, ctx, val)?;
-    let ok = runtime_call1!(body, fz_map_is_map, [map_ref]);
+    let ok = runtime_call1!(body, fz_map_is_map, [ctx.process, map_ref]);
     let zero = body.b.ins().iconst(types::I8, 0);
     let cmp = body.b.ins().icmp(IntCC::NotEqual, ok, zero);
     body.b.ins().brif(cmp, match_b, &[], next_b, &[]);

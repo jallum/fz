@@ -1,0 +1,50 @@
+#---
+# purpose: "a struct is a map: is_map, map_size, a map pattern and the Map functions answer for a struct what they answer for the map holding its fields and its module under __struct__"
+# oracle: 00861_a_struct_is_a_map_with_a_module_under_its_struct_key.oracle.exs
+#---
+#
+# A struct's keys are its fields and `__struct__`, whose value is the module.
+# Nothing that asks for a map tells a struct from any other map, and a tuple
+# is no map although it shares the struct's layout.
+defmodule Pt do
+  defstruct [:x, :y]
+end
+
+def kind(v) when is_map(v), do: :map
+def kind(_), do: :other
+
+def x_of(v) do
+  case v do
+    %{x: x} -> x
+    _ -> :none
+  end
+end
+
+def main() do
+  p = %Pt{x: 1, y: 2}
+  dbg(is_map(p))
+  dbg(kind(p))
+  dbg(kind({1, 2}))
+  dbg(map_size(p))
+  dbg(x_of(p))
+  dbg(x_of(%{x: 7}))
+  dbg(x_of(%{y: 7}))
+  dbg(x_of({1, 2}))
+  dbg(Map.get(p, :__struct__))
+  dbg(p.__struct__)
+  dbg(Map.get(p, :x))
+  dbg(Map.get(p, :x, :none))
+  dbg(Map.get(p, :z, :none))
+  dbg(Map.get(%Pt{x: :left, y: 2}, :x))
+  dbg(Map.get(%{x: :left}, :x))
+  dbg(Map.has_key?(p, :x))
+  dbg(Map.has_key?(p, :z))
+  dbg(Map.has_key?(p, :__struct__))
+  dbg(Map.merge(p, %{x: 9}).x)
+  dbg(Map.put(p, :y, 5))
+  dbg(Map.fetch(p, :y))
+  send(self(), p)
+  receive do
+    %{y: y} -> dbg({:map, y})
+  end
+end

@@ -2005,8 +2005,9 @@ pub extern "C" fn fz_map_get_atom(process: *mut Process, map_ref_word: u64, key_
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_is_map(map_ref_word: u64) -> u8 {
-    (any_value_ref_from_word(map_ref_word, "fz_map_is_map").tag() == ValueKind::MAP) as u8
+pub extern "C" fn fz_map_is_map(process: *mut Process, map_ref_word: u64) -> u8 {
+    let value = any_value_ref_from_word(map_ref_word, "fz_map_is_map");
+    unsafe { &*process }.heap.map_layout(value).is_some() as u8
 }
 
 // ===== Alloc cluster =====
@@ -2241,6 +2242,13 @@ pub extern "C" fn fz_struct_get_named_field_ref(process: *mut Process, value_ref
 pub extern "C" fn fz_struct_module(process: *mut Process, value_ref_word: u64) -> u64 {
     let key = unsafe { &*process }.node.intern_atom(STRUCT_MODULE_FIELD);
     fz_map_get_atom_key_ref(process, value_ref_word, key as u64)
+}
+
+/// The struct schema of the module a map names, as a `NamedSchema` word.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_named_schema_ref(process: *mut Process, map_ref_word: u64) -> u32 {
+    let map = any_value_ref_from_word(map_ref_word, "fz_map_named_schema_ref");
+    unsafe { &*process }.heap.named_schema(map).word()
 }
 
 #[unsafe(no_mangle)]

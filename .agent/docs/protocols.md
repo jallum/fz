@@ -108,17 +108,19 @@ are exact top-level source names and map to their concrete value family:
 
 ```text
 List -> list(any)   Integer -> int   Float -> float   Atom -> atom
-Binary -> str       Map -> map_top
+Binary -> str       Map -> plain_map
 ```
+
+`plain_map` is the maps that name no module (`map_top \ %{__struct__: atom}`),
+so the `Map` impl takes no struct and a struct's own impl is found first.
 
 A qualified name such as `X.List` is a nominal target unless its own
 `StructDefined` fact supplies a struct; sharing a final segment with a builtin
 does not classify it as that builtin.
 
-A named source struct (e.g. `Range`) maps to one tagged record carrying its
-parsed `ModuleName` and declared fields together. The tag keeps it disjoint
-from a plain map with identical fields; its `ModuleId` records the World
-dependency, while the typed source name owns equality and ordering. A target
+A named source struct (e.g. `Range`) maps to the record whose `__struct__`
+field is the module's atom beside its declared fields. That field keeps it
+disjoint from a plain map with identical fields and from every other struct. A target
 with no `StructDefined` fact remains `OpaqueTag::ProtocolTarget(ModuleName)`
 in the existing opaque set algebra. Ordinary named opaque spellings cannot
 manufacture protocol targets. Runtime predicates project the typed target
@@ -160,8 +162,11 @@ answers it for the interpreter and compiled code alike. A callsite with an empty
 remainder carries no last resort.
 
 The runtime-predicate check is what keeps runtime identity authoritative. A
-named struct is a tagged record, not a plain map; the `Enumerable` impl for `Range` therefore
-does not overlap the `Map` impl just because the two record shapes have fields.
+named struct is a map that names its module and a plain map names none; the
+`Enumerable` impl for `Range` therefore does not overlap the `Map` impl just
+because the two record shapes have fields. A receiver typed `any` is tested at
+run time by the module it names, in either layout, so a struct grown by
+`Map.put` still reaches its struct's impl.
 
 Selection is lazy about impl code, and there is a single discovery path: the
 **provider index** (`ProtocolImplProviders(protocol)`). Scope time records every

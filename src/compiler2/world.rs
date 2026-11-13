@@ -1115,6 +1115,11 @@ impl World {
             .count()
     }
 
+    /// The module already known by `name`, if any is.
+    pub fn module_named(&self, name: &ModuleName) -> Option<ModuleId> {
+        self.modules.named(name)
+    }
+
     pub fn reference_module(&mut self, name: ModuleName) -> ModuleId {
         self.modules.reference_named(name)
     }
@@ -3235,7 +3240,7 @@ impl BuiltinValueFamily {
     }
 }
 
-fn builtin_value_family_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, family: BuiltinValueFamily) -> Ty {
+fn builtin_value_family_ty(t: &mut Types, family: BuiltinValueFamily) -> Ty {
     match family {
         BuiltinValueFamily::List => {
             let any = t.any();
@@ -3245,7 +3250,7 @@ fn builtin_value_family_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, family: B
         BuiltinValueFamily::Float => t.float(),
         BuiltinValueFamily::Atom => t.atom(),
         BuiltinValueFamily::Binary => t.str_t(),
-        BuiltinValueFamily::Map => t.map_top(),
+        BuiltinValueFamily::Map => t.plain_map(),
     }
 }
 
@@ -4222,5 +4227,5 @@ fn struct_value_ty(
         .zip(field_tys.iter().copied())
         .map(|(name, ty)| (MapKey::Atom(name.clone()), ty))
         .collect::<Vec<_>>();
-    types.struct_map(module, module_name, &map_fields)
+    types.struct_map(&module_name, &map_fields)
 }

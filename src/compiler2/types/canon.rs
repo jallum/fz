@@ -39,7 +39,7 @@ use super::conj::Conj;
 use super::descr::Descr;
 use super::emptiness::{self, NonEmptyLists};
 use super::format::brand_refinement;
-use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, TupleSig};
+use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::{CallableValueKind, MapKey, Ty, TyCtx, TypeVarId, Types};
 
 /// Renders types in their canonical external form, memoized by `Ty`.
@@ -328,14 +328,16 @@ impl<'a> TyCanon<'a> {
     }
 
     fn map_sig(&mut self, cx: TyCtx<'_>, sig: &MapSig) -> String {
+        let module = super::sig_struct(cx, sig);
         let fields: Vec<String> = sig
             .fields
             .iter()
+            .filter(|(key, _)| module.is_none() || !super::is_struct_module_key(key))
             .map(|(key, value)| format!("{} => {}", map_key(key), self.body(cx, *value)))
             .collect();
-        match &sig.tag {
-            MapTag::Plain => format!("%{{{}}}", fields.join(", ")),
-            MapTag::Struct(tag) => format!("%{}{{{}}}", tag.name, fields.join(", ")),
+        match &module {
+            None => format!("%{{{}}}", fields.join(", ")),
+            Some(name) => format!("%{}{{{}}}", name, fields.join(", ")),
         }
     }
 

@@ -24,10 +24,10 @@ use fz_runtime::ir_runtime::{
     fz_bs_read_field_ref, fz_bs_reader_done_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref, fz_int_float_cmp,
     fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
     fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_dest_put_ref,
-    fz_map_get_atom_key_ref, fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_matcher_map_get_ref,
-    fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref,
-    fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref, fz_try_pop, fz_value_cmp_raw_const,
-    fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_map_get_atom_key_ref, fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_map_named_schema_ref,
+    fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int,
+    fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref, fz_try_pop,
+    fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
@@ -990,7 +990,8 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         }
         Prim::MapGet(m, k) if ty_is_atom(t, value_types, dest_var) => {
             let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k);
-            Ok(LowerOut::RawI64(runtime_call1!(body, fz_ref_load_atom, [value_ref])))
+            let atom = runtime_call1!(body, fz_ref_load_atom, [value_ref]);
+            Ok(LowerOut::Strict(CodegenValue::RawAtom(atom)))
         }
         Prim::ListHead(c) if list_projection_is_safe(t, value_types, *c) && ty_is_int(t, value_types, dest_var) => {
             let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
@@ -1140,6 +1141,13 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
     fn schema_id(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         let struct_ref = self.body.value_as_any_ref(value);
         let raw = runtime_call1!(self.body, fz_struct_schema_id_ref, [struct_ref]);
+        Ok(self.body.b.ins().uextend(types::I64, raw))
+    }
+
+    fn map_named_schema(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
+        let map_ref = self.body.value_as_any_ref(value);
+        let process = self.body.process_arg();
+        let raw = runtime_call1!(self.body, fz_map_named_schema_ref, [process, map_ref]);
         Ok(self.body.b.ins().uextend(types::I64, raw))
     }
 

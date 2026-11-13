@@ -2,66 +2,11 @@
 //! the `ClosureLit` tag, and the `MergeSig` trait + per-sig impls.
 
 use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 
 use crate::fz_ir::FnId;
 
-use crate::compiler2::identity::ModuleId;
-use crate::modules::identity::ModuleName;
-
 use super::{CallableValueKind, MapKey, Sigma, Ty, Types};
-
-/// Runtime identity of one record-family value. Plain maps and named structs
-/// share the record-field type algebra, but their tags are disjoint and travel
-/// with the fields through every map-axis operation. Runtime storage is derived
-/// separately from the lowered operation and settled schema.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(test, derive(Debug))]
-pub(super) enum MapTag {
-    Plain,
-    Struct(StructTag),
-}
-
-/// Typed nominal identity for a runtime struct schema. `World` interns a
-/// qualified source path to one `ModuleId`. The parsed name owns semantic
-/// equality and order; the local id identifies the World dependency.
-#[derive(Clone)]
-pub(super) struct StructTag {
-    pub(super) module: ModuleId,
-    pub(super) name: ModuleName,
-}
-
-impl PartialEq for StructTag {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-    }
-}
-
-impl Eq for StructTag {}
-
-impl Hash for StructTag {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
-    }
-}
-
-impl std::fmt::Debug for StructTag {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("StructTag").field(&self.name).finish()
-    }
-}
-
-impl PartialOrd for StructTag {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for StructTag {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.name.cmp(&other.name)
-    }
-}
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(test, derive(Debug))]
@@ -170,7 +115,6 @@ pub(crate) struct ArrowSig {
 #[derive(Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(test, derive(Debug))]
 pub(crate) struct MapSig {
-    pub(super) tag: MapTag,
     pub fields: BTreeMap<MapKey, Ty>,
 }
 
@@ -355,9 +299,6 @@ impl MergeSig for MapSig {
     // provably-empty clauses). Re-measure before adding this if map-heavy
     // evidence-join traffic starts to matter.
     fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
-        if a.tag != b.tag {
-            return PosMeet::Empty;
-        }
         let mut fields = a.fields.clone();
         for (key, value) in &b.fields {
             fields
@@ -365,9 +306,6 @@ impl MergeSig for MapSig {
                 .and_modify(|current| *current = types.intersect(*current, *value))
                 .or_insert(*value);
         }
-        PosMeet::Merged(MapSig {
-            tag: a.tag.clone(),
-            fields,
-        })
+        PosMeet::Merged(MapSig { fields })
     }
 }

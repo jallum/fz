@@ -346,14 +346,37 @@ registry keeps no second copy. Three reads of that identity exist:
   struct and a map carrying that key answer alike. It is a read of the
   identity, not a stored field; `ProjectionKind::StructField` in patterns never
   names it.
-- `Types::field_lookup` answers `__struct__` on a struct-tagged map signature
-  with the singleton atom of that module.
+- `Heap::named_schema` answers the struct schema of the module a map names.
+  A value in the struct layout names its own schema. A map in the entries
+  layout names the atom under its `__struct__` key: `NamedSchema::Schema` where
+  a struct is registered for that module, `NamedSchema::Undeclared` where none
+  is, and `NamedSchema::None` where the key is absent or holds no atom.
 - The inspect renderer's `struct_value` prints by identity: a Range as its
   literal (`1..10`, `1..10//2`), a named struct as `%Name{field: value}` in
   schema order (a nested module as `%Outer.Inner{...}`), a tuple as `{a, b}`.
   A struct's fields are keyword entries: each name is spelled by the same
   keyword-key rule as a map's or a list's (`"foo bar": 1`), and each field
   spends one from the `limit:` budget (`%Pt{x: 1, ...}`).
+
+### A run-time type test reads the module in either layout
+
+A `RuntimeTypePredicate` carries two answers about maps. `maps` admits the
+maps that name no module. `named_structs` is the set of modules a map may
+name. The test for every map (`RuntimeTypePredicate::map_kind`) sets `maps`
+and admits every module.
+
+A value of kind `STRUCT` is asked by its schema id. A value of kind `MAP` is
+asked by `Heap::named_schema`: it passes the `maps` axis where it names no
+module and the `named_structs` axis where the module it names is admitted, so
+a struct grown by a put of a new key still passes its struct's test. The
+interpreter reads through `RuntimeValueReader::map_module`; native code calls
+`fz_map_named_schema_ref` under a `MAP` kind guard and compares the word
+against the admitted schema ids. Where a test admits every map or no map the
+kind alone answers and nothing is read.
+
+A tuple is a `STRUCT` with an unnamed schema, so it is no map:
+`Heap::map_layout` answers `None` for it, and `is_map`, a map pattern and
+`fz_map_is_map` all ask `map_layout`.
 
 ### A field of a known struct is a slot
 
@@ -362,9 +385,10 @@ is exactly one: the type admits only maps, and each of its clauses names the
 same struct. Two field typings of one struct, or a struct with some values
 subtracted, still name it.
 
-An update that replaces `__struct__` types its result as a plain map holding
-that key (`Descr::refine_map_field`), so the result names no struct and its
-fields are found by name.
+An update that replaces `__struct__` types its result as the record holding
+the new value under that key (`Descr::refine_map_field`), so the result names
+the new module, or none where the value is not one atom, and its fields are
+found by name.
 
 `BackendLowerer::field_read` asks that of the receiver of every `base.field`.
 A known struct's declared field becomes

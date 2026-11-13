@@ -233,7 +233,7 @@ fn compiler2_forward_referenced_struct_impl_target_reclassifies_when_structdefin
     // struct definition. This guards the atomic tag+fields representation while
     // typed schema extraction below observes reclassification.
     let any = world.types_mut().any();
-    let map_probe = world.types_mut().map(&[(MapKey::Atom("val".to_string()), any)]);
+    let map_probe = world.types_mut().map_literal(&[(MapKey::Atom("val".to_string()), any)]);
 
     // Unit 1: the protocol, its impl for a not-yet-defined `Boxy`, and a caller
     // that dispatches on its own `any` parameter — nothing here defines `Boxy`.
@@ -302,12 +302,11 @@ def probe(), do: Boxy.ident(1)
     let drive2_map_overlap = world.types_mut().intersect(drive2_return, map_probe);
     assert!(
         world.types().is_empty(&drive2_map_overlap),
-        "a named struct must stay disjoint from a same-shaped plain map"
+        "a struct is no map that names no module, whatever fields the two share"
     );
-    let boxy = world.reference_module(module_name("Boxy"));
     assert_eq!(
         world.types().struct_modules([drive2_return]),
-        [boxy].into_iter().collect(),
+        [module_name("Boxy")].into_iter().collect(),
         "drive 2: the standing StructDefined(Boxy) subscription must have re-woken main's analysis, \
          reclassifying the impl target from an opaque nominal to the typed tagged-record identity",
     );

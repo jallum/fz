@@ -219,6 +219,7 @@ mod value_membership_tests {
             fields: &fields,
             list_head: &list_head,
             list_tail: &list_tail,
+            map_module: &|_| NamedSchema::None,
         };
         let census = SurfaceMembershipCensus::install();
         if matches_runtime_type_predicate(predicate, &reader, value) {
@@ -442,6 +443,7 @@ mod value_membership_tests {
             fields: &fields,
             list_head: &list_head,
             list_tail: &list_tail,
+            map_module: &|_| NamedSchema::None,
         };
         assert!(matches_runtime_type_predicate(&foo_predicate, &reader, struct_value));
         assert!(!matches_runtime_type_predicate(&foo_predicate, &reader, map));
@@ -465,6 +467,76 @@ mod value_membership_tests {
             struct_value
         ));
         assert!(matches_runtime_type_predicate(&foo_or_map_predicate, &reader, map));
+    }
+
+    /// A map in the entries layout is the struct whose module it names: a
+    /// struct's test admits it, the plain-map test refuses it, and the test
+    /// for every map admits it either way.
+    #[test]
+    fn a_map_in_the_entries_layout_is_tested_by_the_module_it_names() {
+        let mut world = World::new();
+        let foo_name = ModuleName::from_segments(vec!["Pkg".into(), "Foo".into()]);
+        let foo = world.reference_module(foo_name.clone());
+        let int = world.types_mut().int();
+        let foo_value = world.struct_value_ty(foo, &["value".to_string()], &[int]);
+        let foo_envelope = world.types_mut().runtime_type_test_envelope(foo_value);
+        let map_top = world.types_mut().map_top();
+        let not_foo_map = world.types_mut().difference(map_top, foo_envelope);
+        let plain_map = world.types_mut().plain_map();
+        let is_foo = world.types().runtime_type_predicate(&foo_value);
+        let is_plain = world.types().runtime_type_predicate(&plain_map);
+        let is_map = world.types().runtime_type_predicate(&map_top);
+        let is_other_map = world.types().runtime_type_predicate(&not_foo_map);
+
+        let mut heap = FakeHeap::new(&[]);
+        heap.module
+            .struct_schemas
+            .insert(foo_name.clone(), vec!["value".to_string()]);
+        let map_at = |addr: usize| {
+            RuntimeAnyValue::HeapRef(
+                AnyValueRef::from_heap_object(ValueKind::MAP, addr as *const u8).expect("a map ref"),
+            )
+        };
+        let (naming_none, naming_foo, naming_undeclared) = (map_at(0x1000), map_at(0x2000), map_at(0x3000));
+        let map_module = |value: RuntimeAnyValue| match value {
+            value if value == naming_foo => NamedSchema::Schema(7),
+            value if value == naming_undeclared => NamedSchema::Undeclared,
+            _ => NamedSchema::None,
+        };
+        let tuple_schema_ids = HashMap::default();
+        let named_schema_ids = HashMap::from_iter([(foo_name, 7)]);
+        let callables = |_: u64| None;
+        let fields = |_: RuntimeAnyValue, _: usize| None;
+        let list_head = |_: RuntimeAnyValue| None;
+        let list_tail = |_: RuntimeAnyValue| None;
+        let reader = RuntimeValueReader {
+            module: &heap.module,
+            tuple_schema_ids: &tuple_schema_ids,
+            named_schema_ids: &named_schema_ids,
+            callables: &callables,
+            fields: &fields,
+            list_head: &list_head,
+            list_tail: &list_tail,
+            map_module: &map_module,
+        };
+        let admits =
+            |predicate: &RuntimeTypePredicate, value| matches_runtime_type_predicate(predicate, &reader, value);
+
+        assert!(admits(&is_foo, naming_foo));
+        assert!(!admits(&is_foo, naming_none));
+        assert!(!admits(&is_foo, naming_undeclared));
+
+        assert!(admits(&is_plain, naming_none));
+        assert!(!admits(&is_plain, naming_foo));
+        assert!(!admits(&is_plain, naming_undeclared));
+
+        for value in [naming_none, naming_foo, naming_undeclared] {
+            assert!(admits(&is_map, value));
+        }
+
+        assert!(admits(&is_other_map, naming_none));
+        assert!(admits(&is_other_map, naming_undeclared));
+        assert!(!admits(&is_other_map, naming_foo));
     }
 
     /// An IMPROPER list's tail is not an element: the walk stops there rather
@@ -530,6 +602,7 @@ mod value_membership_tests {
             fields: &fields,
             list_head: &list_head,
             list_tail: &list_tail,
+            map_module: &|_| NamedSchema::None,
         };
         let predicate = list_test(any_shape(), vec![element]);
         let census = SurfaceMembershipCensus::install();
@@ -658,6 +731,7 @@ mod value_membership_tests {
             fields: &fields,
             list_head: &list_head,
             list_tail: &list_tail,
+            map_module: &|_| NamedSchema::None,
         };
         let census = SurfaceMembershipCensus::install();
         assert!(matches_runtime_type_predicate(&predicate, &reader, value));
@@ -979,7 +1053,7 @@ mod tests {
     fn axes_for_tag(kind: ValueKind) -> &'static [RuntimeTestAxis] {
         match kind {
             ValueKind::LIST => &[RuntimeTestAxis::Lists],
-            ValueKind::MAP => &[RuntimeTestAxis::Maps],
+            ValueKind::MAP => &[RuntimeTestAxis::Maps, RuntimeTestAxis::NamedStructs],
             ValueKind::BITSTRING => &[RuntimeTestAxis::Binaries],
             ValueKind::CLOSURE => &[RuntimeTestAxis::Callables],
             ValueKind::RESOURCE => &[RuntimeTestAxis::Resources],

@@ -6,11 +6,10 @@ use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top};
 use super::emptiness::{
     func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
-use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, StructTag, TupleSig};
+use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::{BuiltinOpaque, MapKey, Ty, TyCtx, TypeVarId};
 use crate::finite_set::FiniteSet;
 use crate::modules::identity::ModuleName;
-use fz_runtime::module_name::STRUCT_MODULE_FIELD;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -63,6 +62,13 @@ pub(super) struct Descr {
     pub(super) maps: Vec<Conj<MapSig>>,
 }
 
+/// One record and the map signatures it excludes.
+#[derive(Clone, Copy)]
+pub(super) struct Record<'a> {
+    pub(super) sig: &'a MapSig,
+    pub(super) excluded: &'a [MapSig],
+}
+
 impl Descr {
     pub(super) fn any() -> Self {
         Self {
@@ -109,24 +115,6 @@ impl Descr {
     pub(super) fn builtin_opaque(builtin: BuiltinOpaque) -> Self {
         let mut d = Self::unbranded();
         d.opaques = FiniteSet::lit(OpaqueTag::Builtin(builtin));
-        d
-    }
-
-    pub(super) fn struct_map(tag: StructTag, fields: BTreeMap<MapKey, Ty>) -> Self {
-        let mut d = Self::unbranded();
-        d.maps.push(Conj::pos_of(MapSig {
-            tag: MapTag::Struct(tag),
-            fields,
-        }));
-        d
-    }
-
-    pub(super) fn record(tag: MapTag, fields: impl IntoIterator<Item = (MapKey, Ty)>) -> Self {
-        let mut d = Self::unbranded();
-        d.maps.push(Conj::pos_of(MapSig {
-            tag,
-            fields: fields.into_iter().collect(),
-        }));
         d
     }
 
@@ -247,15 +235,14 @@ impl Descr {
     }
 
     pub(super) fn map_top() -> Self {
-        Self::record(MapTag::Plain, [])
+        let mut d = Self::unbranded();
+        d.maps.push(Conj::top());
+        d
     }
 
     pub(super) fn map_of(fields: BTreeMap<MapKey, Ty>) -> Self {
         let mut d = Self::unbranded();
-        d.maps.push(Conj::pos_of(MapSig {
-            tag: MapTag::Plain,
-            fields,
-        }));
+        d.maps.push(Conj::pos_of(MapSig { fields }));
         d
     }
 
@@ -336,32 +323,28 @@ impl Descr {
             .unwrap_or(0)
     }
 
-    /// A struct's module is what makes it that struct, so a map given a new
-    /// `__struct__` is a plain map holding that key: nothing promises it is
-    /// still laid out as the struct it was.
-    ///
     /// Replacing a map field with the very same interned type changes no
     /// descriptor. Returning `None` keeps that proof at the structural owner,
     /// so callers can retain their existing `Ty` without rebuilding and
     /// re-interning this descriptor.
+    ///
+    /// What a clause excludes about `key` described the value the key held
+    /// before, so an exclusion naming the key goes; one naming only other
+    /// keys still holds of the map that results.
     pub(super) fn refine_map_field(&self, key: &MapKey, vt: Ty) -> Option<Descr> {
-        let changed = self
-            .maps
-            .iter()
-            .flat_map(|clause| clause.pos.iter())
-            .any(|sig| sig.fields.get(key) != Some(&vt));
+        let changed = self.maps.iter().any(|clause| {
+            clause.pos.iter().any(|sig| sig.fields.get(key) != Some(&vt))
+                || clause.neg.iter().any(|sig| sig.fields.contains_key(key))
+        });
         if !changed {
             return None;
         }
-        let replaces_module = matches!(key, MapKey::Atom(name) if name == STRUCT_MODULE_FIELD);
         let mut out = self.clone();
         for clause in &mut out.maps {
             for sig in &mut clause.pos {
-                if replaces_module {
-                    sig.tag = MapTag::Plain;
-                }
                 sig.fields.insert(key.clone(), vt);
             }
+            clause.neg.retain(|sig| !sig.fields.contains_key(key));
         }
         Some(out)
     }
@@ -504,13 +487,33 @@ impl Descr {
             && self.maps.is_empty()
     }
 
-    pub(super) fn pure_record(&self) -> Option<&MapSig> {
-        self.axis_free()
-            .then_some(())
-            .and_then(|_| single_positive(&self.maps))
-            .filter(|_| {
-                self.tuples.is_empty() && self.lists.is_empty() && self.resources.is_empty() && self.funcs.is_empty()
-            })
+    /// The one record this type is, with whatever it excludes: a map literal
+    /// is its fields less the maps that name a module.
+    pub(super) fn sole_record(&self) -> Option<Record<'_>> {
+        let maps_only = self.axis_free()
+            && self.tuples.is_empty()
+            && self.lists.is_empty()
+            && self.resources.is_empty()
+            && self.funcs.is_empty();
+        let [clause] = self.maps.as_slice() else {
+            return None;
+        };
+        let [sig] = clause.pos.as_slice() else {
+            return None;
+        };
+        maps_only.then_some(Record {
+            sig,
+            excluded: &clause.neg,
+        })
+    }
+
+    pub(super) fn record_excluding(fields: BTreeMap<MapKey, Ty>, excluded: Vec<MapSig>) -> Self {
+        let mut d = Self::unbranded();
+        d.maps.push(Conj {
+            pos: vec![MapSig { fields }],
+            neg: excluded,
+        });
+        d
     }
 
     fn axis_free(&self) -> bool {

@@ -6,7 +6,7 @@ use super::dispatch_exec::{Dispatch, DispatchInputs, DispatchSource, dispatch_va
 use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get, interp_map_put};
 use super::value::{
-    AnyValue, HeapRef, interp_bool_value, interp_empty_list_value, interp_nil_value,
+    AnyValue, HeapRef, interp_bool_value, interp_empty_list_value, interp_named_field, interp_nil_value,
     interp_struct_field_from_tagged_bits, interp_value_from_ref_word, with_value_ref,
 };
 use super::*;
@@ -34,8 +34,8 @@ use fz_runtime::heap::{GcStats, Schema};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_dest_begin,
     fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_empty,
-    fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_copy,
-    fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module, fz_struct_store_ref,
+    fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_copy, fz_struct_get_field_ref, fz_struct_module,
+    fz_struct_store_ref,
 };
 use fz_runtime::module_name::STRUCT_MODULE_FIELD;
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
@@ -1964,7 +1964,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 let result = if field == STRUCT_MODULE_FIELD {
                     interp_struct_module(runtime, base)?
                 } else {
-                    interp_struct_field(runtime, module, base, field)?
+                    interp_named_field(runtime.cur_proc(), module, base, field)?
                 };
                 env.insert(*value, BackendBoundValue::Runtime(result));
             }
@@ -2018,7 +2018,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 let read = if interp_has_struct_layout(runtime, base, struct_module) {
                     interp_slot(runtime, base, *slot)?
                 } else {
-                    interp_struct_field(runtime, module, base, field)?
+                    interp_named_field(runtime.cur_proc(), module, base, field)?
                 };
                 env.insert(*value, BackendBoundValue::Runtime(read));
             }
@@ -3791,50 +3791,6 @@ fn interp_has_struct_layout(
             .has_struct_layout_of(object.raw(), module),
         _ => false,
     }
-}
-
-fn interp_struct_field(
-    runtime: &mut IrInterpRuntime,
-    module: &Module,
-    value: AnyValue,
-    field: &str,
-) -> Result<AnyValue, String> {
-    let slot = value.value(runtime.cur_proc())?;
-    if slot.kind() == ValueKind::MAP {
-        let atom_id = module
-            .atom_names
-            .iter()
-            .position(|name| name == field)
-            .ok_or_else(|| format!("field atom `{field}` not interned"))?;
-        let map = value.as_ref_word(runtime.cur_proc())?;
-        return interp_value_from_ref_word(
-            fz_map_get_atom_key_ref(runtime.cur_proc(), map, atom_id as u64),
-            "backend field access",
-        );
-    }
-    if slot.kind() == ValueKind::RESOURCE && field == "value" {
-        let atom_id = module
-            .atom_names
-            .iter()
-            .position(|name| name == field)
-            .ok_or_else(|| format!("field atom `{field}` not interned"))?;
-        return with_value_ref(runtime.cur_proc(), value, "backend resource field", |resource_ref| {
-            fz_struct_get_named_field_ref(runtime.cur_proc(), resource_ref, atom_id as u64)
-        })
-        .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend resource field"));
-    }
-    if slot.kind() != ValueKind::STRUCT {
-        return Err("StructField: subject is not a map or Struct".to_string());
-    }
-    with_value_ref(runtime.cur_proc(), value, "backend struct field", |struct_ref_word| {
-        let struct_ref = AnyValueRef::from_raw_word(struct_ref_word).expect("backend struct ref");
-        unsafe { &*runtime.cur_proc() }
-            .heap
-            .read_struct_named_field_ref(struct_ref, field)
-            .map(|value| value.raw_word())
-            .map_err(|err| format!("{err:?}"))
-    })?
-    .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend struct field"))
 }
 
 fn matcher_map_get(runtime: &mut IrInterpRuntime, map: AnyValue, key: AnyValue) -> Result<AnyValue, String> {

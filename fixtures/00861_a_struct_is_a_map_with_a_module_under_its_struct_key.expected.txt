@@ -1,0 +1,22 @@
+true
+:map
+:other
+3
+1
+7
+:none
+:none
+Pt
+Pt
+1
+1
+:none
+:left
+:left
+true
+false
+true
+9
+%Pt{x: 1, y: 5}
+{:ok, 2}
+{:map, 2}

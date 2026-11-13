@@ -10,6 +10,7 @@ use crate::fz_ir::Module;
 use crate::modules::identity::ModuleName;
 use crate::types::ClosureTarget;
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, closure_fn_ptr, struct_schema_id};
+use fz_runtime::heap::NamedSchema;
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -152,9 +153,9 @@ impl RuntimeTestAxis {
     /// The axes a runtime value can be admitted by.
     ///
     /// A value's kind chooses its axes, which is why the axes are independent
-    /// and a test is their OR. Only a struct reaches more than one: a heap
-    /// struct is a tuple, a named struct, or neither, and its schema id is
-    /// what says which.
+    /// and a test is their OR. A heap struct is a tuple, a named struct, or
+    /// neither, and its schema id is what says which. A map in the entries
+    /// layout is a named struct where it names a module, and a map otherwise.
     fn of_value(value: RuntimeAnyValue) -> &'static [Self] {
         match value {
             RuntimeAnyValue::Null => &[],
@@ -164,7 +165,7 @@ impl RuntimeTestAxis {
             RuntimeAnyValue::Atom(_) => &[Self::Atoms],
             RuntimeAnyValue::HeapRef(value_ref) => match value_ref.tag() {
                 ValueKind::LIST => &[Self::Lists],
-                ValueKind::MAP => &[Self::Maps],
+                ValueKind::MAP => &[Self::Maps, Self::NamedStructs],
                 kind if kind.is_binary_repr() => &[Self::Binaries],
                 ValueKind::CLOSURE => &[Self::Callables],
                 ValueKind::RESOURCE => &[Self::Resources],
@@ -243,9 +244,11 @@ impl RuntimeTypePredicate {
         predicate
     }
 
+    /// The test every map passes, whether or not it names a module.
     pub(crate) fn map_kind() -> Self {
         let mut predicate = Self::none();
         predicate.maps = true;
+        predicate.named_structs = FiniteSet::any();
         predicate
     }
 
@@ -1153,6 +1156,12 @@ pub(crate) type ListHeadReader<'a> = dyn Fn(RuntimeAnyValue) -> Option<RuntimeAn
 /// what the representation declines to show, this layer does not judge.
 pub(crate) type ListTailReader<'a> = dyn Fn(RuntimeAnyValue) -> Option<RuntimeAnyValue> + 'a;
 
+/// The struct schema of the module a map in the entries layout names.
+///
+/// The heap owns both the map's entries and the schema registry, so it is the
+/// side that answers.
+pub(crate) type MapModuleReader<'a> = dyn Fn(RuntimeAnyValue) -> NamedSchema + 'a;
+
 /// Everything the interpreter's matcher needs to read a value back.
 ///
 /// The schema maps are the runtime's own numbering, so they are handed in
@@ -1166,6 +1175,7 @@ pub(crate) struct RuntimeValueReader<'a> {
     pub(crate) fields: &'a TupleFieldReader<'a>,
     pub(crate) list_head: &'a ListHeadReader<'a>,
     pub(crate) list_tail: &'a ListTailReader<'a>,
+    pub(crate) map_module: &'a MapModuleReader<'a>,
 }
 
 impl RuntimeValueReader<'_> {
@@ -1253,7 +1263,9 @@ fn axis_admits(
             }
             None => false,
         },
-        RuntimeTestAxis::Maps => predicate.maps && has_kind(value, ValueKind::MAP),
+        RuntimeTestAxis::Maps => {
+            predicate.maps && has_kind(value, ValueKind::MAP) && (reader.map_module)(value) == NamedSchema::None
+        }
         RuntimeTestAxis::Binaries => predicate.binaries && is_binary_value(value),
         RuntimeTestAxis::Resources => predicate.resources && has_kind(value, ValueKind::RESOURCE),
         RuntimeTestAxis::Callables => {
@@ -1506,24 +1518,33 @@ fn matches_named_struct_axis(
     reader: &RuntimeValueReader<'_>,
     value: RuntimeAnyValue,
 ) -> bool {
-    if predicate.named_structs.is_none() {
+    let names = &predicate.named_structs;
+    if names.is_none() {
         return false;
     }
-    let Some(actual) = struct_schema_of(value) else {
-        return false;
-    };
-    if predicate.named_structs.is_any() {
-        return reader.is_named_schema(actual);
+    match named_schema_of(reader, value) {
+        NamedSchema::None => false,
+        NamedSchema::Undeclared => names.cofinite,
+        NamedSchema::Schema(actual) => {
+            let listed = names
+                .values
+                .iter()
+                .any(|name| reader.named_schema_ids.get(name) == Some(&actual));
+            listed != names.cofinite
+        }
     }
-    let relevant = predicate
-        .named_structs
-        .values
-        .iter()
-        .any(|name| reader.named_schema_ids.get(name) == Some(&actual));
-    if predicate.named_structs.cofinite {
-        reader.is_named_schema(actual) && !relevant
-    } else {
-        relevant
+}
+
+/// The struct schema of the module `value` names: a struct's own where the
+/// module declares it, and for a map in the entries layout the one the atom
+/// under its `__struct__` key names.
+fn named_schema_of(reader: &RuntimeValueReader<'_>, value: RuntimeAnyValue) -> NamedSchema {
+    if has_kind(value, ValueKind::MAP) {
+        return (reader.map_module)(value);
+    }
+    match struct_schema_of(value) {
+        Some(schema) if reader.is_named_schema(schema) => NamedSchema::Schema(schema),
+        _ => NamedSchema::None,
     }
 }
 

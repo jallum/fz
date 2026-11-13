@@ -26,6 +26,11 @@
 //! every arity a test asks about AT EVERY DEPTH while naming is a top-level
 //! reading.
 //!
+//! A map in the entries layout names a module where an atom is under its
+//! `__struct__` key, and it is then a value of that struct's type. The maps
+//! axis and the named-structs axis share that one read: the first admits the
+//! maps naming no module, the second the maps naming an admitted one.
+//!
 //! A named struct and a tuple are both `ValueKind::STRUCT` at runtime, and only
 //! their schema ids tell them apart, so the named-struct and arity readings
 //! stay separate functions. Folding them into one schema-id question would lose
@@ -38,6 +43,7 @@ use crate::fast_hash::HashMap;
 use cranelift_codegen::ir::{self, BlockArg, InstBuilder, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 use fz_runtime::any_value::ValueKind;
+use fz_runtime::heap::NamedSchema;
 use fz_runtime::process::AtomName;
 
 use crate::finite_set::FiniteSet;
@@ -87,6 +93,9 @@ pub(super) trait RuntimeTestEmitter<'f> {
     /// The value's schema id, widened to `I64`. Only asked under a STRUCT
     /// guard.
     fn schema_id(&mut self, value: Self::Value) -> Result<ir::Value, CodegenError>;
+    /// The `NamedSchema` word of the module a map names, widened to `I64`.
+    /// Only asked under a MAP guard.
+    fn map_named_schema(&mut self, value: Self::Value) -> Result<ir::Value, CodegenError>;
     /// Field `index` of a struct value. Only asked under a guard that has
     /// established the value's arity, so the read is in bounds.
     fn tuple_field(&mut self, value: Self::Value, index: usize) -> Result<Self::Value, CodegenError>;
@@ -156,27 +165,54 @@ pub(super) fn emit_runtime_type_test<'f, E: RuntimeTestEmitter<'f>>(
         });
     }
     let mut flag: Option<ir::Value> = None;
-    // The three struct axes share one schema read, so whichever comes first
-    // emits all three and the others fold into it.
-    let mut structs_emitted = false;
+    let mut asked = SharedReads::default();
     for axis in predicate.axes() {
-        let is_struct_axis = matches!(
-            axis,
-            RuntimeTestAxis::Tuples | RuntimeTestAxis::NamedStructs | RuntimeTestAxis::OtherStructs
-        );
-        if is_struct_axis {
-            if structs_emitted {
-                continue;
-            }
-            structs_emitted = true;
-        }
-        let next = emit_axis(e, value, predicate, axis)?;
+        let Some(next) = emit_axis(e, value, predicate, axis, &mut asked)? else {
+            continue;
+        };
         flag = Some(match flag {
             None => next,
             Some(prev) => e.builder().ins().bor(prev, next),
         });
     }
     Ok(flag.map_or(TypeTestAnswer::Never, TypeTestAnswer::Flag))
+}
+
+/// The reads several axes share, each emitted once per test.
+///
+/// The three struct axes read one schema id off a struct. The maps axis and
+/// the named-structs axis read one module off a map in the entries layout,
+/// because such a map is a struct exactly when it names one.
+#[derive(Default)]
+struct SharedReads {
+    structs: bool,
+    entries_maps: bool,
+}
+
+impl SharedReads {
+    fn structs_once<'f, E: RuntimeTestEmitter<'f>>(
+        &mut self,
+        e: &mut E,
+        value: E::Value,
+        predicate: &RuntimeTypePredicate,
+    ) -> Result<Option<ir::Value>, CodegenError> {
+        if std::mem::replace(&mut self.structs, true) {
+            return Ok(None);
+        }
+        emit_struct_axes(e, value, predicate).map(Some)
+    }
+
+    fn entries_maps_once<'f, E: RuntimeTestEmitter<'f>>(
+        &mut self,
+        e: &mut E,
+        value: E::Value,
+        predicate: &RuntimeTypePredicate,
+    ) -> Result<Option<ir::Value>, CodegenError> {
+        if std::mem::replace(&mut self.entries_maps, true) {
+            return Ok(None);
+        }
+        emit_entries_map_axes(e, value, predicate).map(Some)
+    }
 }
 
 /// One axis' answer.
@@ -189,8 +225,9 @@ fn emit_axis<'f, E: RuntimeTestEmitter<'f>>(
     value: E::Value,
     predicate: &RuntimeTypePredicate,
     axis: RuntimeTestAxis,
-) -> Result<ir::Value, CodegenError> {
-    match axis {
+    asked: &mut SharedReads,
+) -> Result<Option<ir::Value>, CodegenError> {
+    let answer = match axis {
         RuntimeTestAxis::Ints => {
             let ints = predicate.ints.clone();
             kind_guarded(e, value, ValueKind::INT, move |e, value| {
@@ -213,7 +250,7 @@ fn emit_axis<'f, E: RuntimeTestEmitter<'f>>(
             })
         }
         RuntimeTestAxis::Lists => emit_list_axis(e, value, &predicate.lists),
-        RuntimeTestAxis::Maps => e.kind_flag(value, ValueKind::MAP),
+        RuntimeTestAxis::Maps => return asked.entries_maps_once(e, value, predicate),
         RuntimeTestAxis::Binaries => {
             // Every representation a binary is held in, so a shared-buffer
             // binary answers the same as an inline one.
@@ -229,10 +266,17 @@ fn emit_axis<'f, E: RuntimeTestEmitter<'f>>(
         }
         RuntimeTestAxis::Resources => e.kind_flag(value, ValueKind::RESOURCE),
         RuntimeTestAxis::Callables => emit_callable_axis(e, value, &predicate.callables),
-        RuntimeTestAxis::Tuples | RuntimeTestAxis::NamedStructs | RuntimeTestAxis::OtherStructs => {
-            emit_struct_axes(e, value, predicate)
+        RuntimeTestAxis::Tuples | RuntimeTestAxis::OtherStructs => return asked.structs_once(e, value, predicate),
+        RuntimeTestAxis::NamedStructs => {
+            let of_struct = asked.structs_once(e, value, predicate)?;
+            let of_map = asked.entries_maps_once(e, value, predicate)?;
+            return Ok(match (of_struct, of_map) {
+                (Some(of_struct), Some(of_map)) => Some(e.builder().ins().bor(of_struct, of_map)),
+                (of_struct, of_map) => of_struct.or(of_map),
+            });
         }
-    }
+    };
+    answer.map(Some)
 }
 
 /// Run `build` only where the value is of `kind`, and answer no elsewhere.
@@ -403,6 +447,46 @@ fn emit_struct_axes<'f, E: RuntimeTestEmitter<'f>>(
         let b = e.builder();
         let tuple_or_named = b.ins().bor(tuple_flag, named_flag);
         Ok(b.ins().bor(tuple_or_named, other_flag))
+    })
+}
+
+/// A map in the entries layout: the maps axis admits it where it names no
+/// module, and the named-structs axis where the module it names is admitted.
+fn emit_entries_map_axes<'f, E: RuntimeTestEmitter<'f>>(
+    e: &mut E,
+    value: E::Value,
+    predicate: &RuntimeTypePredicate,
+) -> Result<ir::Value, CodegenError> {
+    let (plain, names) = (predicate.maps, &predicate.named_structs);
+    if plain && names.is_any() {
+        return e.kind_flag(value, ValueKind::MAP);
+    }
+    if !plain && names.is_none() {
+        return Ok(e.builder().ins().iconst(types::I8, 0));
+    }
+    let listed: Vec<u32> = names
+        .values
+        .iter()
+        .filter_map(|name| e.named_schema_ids().get(name).copied())
+        .collect();
+    let names_cofinite = names.cofinite;
+    kind_guarded(e, value, ValueKind::MAP, move |e, value| {
+        let named = e.map_named_schema(value)?;
+        let b = e.builder();
+        let names_none = b.ins().icmp_imm(IntCC::Equal, named, i64::from(NamedSchema::NONE_WORD));
+        let is_listed = emit_any_schema_id_match(b, named, listed);
+        let module_admitted = if names_cofinite {
+            let unlisted = b.ins().bxor_imm(is_listed, 1);
+            let names_some = b.ins().bxor_imm(names_none, 1);
+            b.ins().band(names_some, unlisted)
+        } else {
+            is_listed
+        };
+        Ok(if plain {
+            b.ins().bor(names_none, module_admitted)
+        } else {
+            module_admitted
+        })
     })
 }
 
