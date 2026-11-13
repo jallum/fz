@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T17:53:25Z",
+  "description": "After defoverridable f: n and a later def f/n, super(args) in the override calls the replaced definition (Elixir). Today super/n is lower/unbound, an unresolved callee. The way in: the replaced source is kept under a private name and super resolves to it. Blocks nothing; defexception does not need it. Oracle fixture on interp, run and build. Plan: /Users/j5n/Workspace/fz-3sy.7.html.",
+  "id": "fz-3sy.19",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 3,
+  "status": "open",
+  "title": "super calls the definition an override replaced",
+  "type": "feature",
+  "updated_at": "2026-11-13T17:53:25Z"
+}
