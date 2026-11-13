@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T19:30:17Z",
+  "description": "Found by the fz-da session while spiking fz-3sy.21 (its struct!/2 helper); reduced here. Verified on develop ac3750d1e + #454, interp path. OptionParser's fz-sc8.127 spike (targets are the call authority) does not fix it.\n\nRepro (scratch cf/n1.fz in the fz-xxd13-build session):\n\ndefmodule S do\n  def a(fields), do: build(%{x: 0}, fields, false)\n  def b(fields), do: build(%{x: 0}, fields, true)\n\n  defp build(base, fields, flag) do\n    Enum.reduce(fields, base, fn key, acc -\u003e missing(key, acc, flag) end)\n  end\n\n  defp missing(_key, acc, false), do: acc\n  defp missing(key, acc, true), do: Map.put(acc, key, 0)\nend\n\ndef main() do\n  IO.inspect(S.a([:x]))\n  IO.inspect(S.b([:y]))\nend\n\nElixir prints %{x: 0} then %{x: 0, y: 0}. fz2 interp fails at run time: \"backend dispatch callsite in executable ExecutableKey { ... } missed an exhaustive dispatch\". fz-da reports the run path exits 132 on its fuller program.\n\nWhat the variants show:\n- Passes when both callers pass the same element type (S.a([:y]) and S.b([:y])).\n- Passes with one caller only (either one).\n- Fails with a list accumulator instead of a map (n2.fz), and with Map.put(acc, :x, 0) (n4.fz), so the map is not the cause.\n- An integer version (elements [1, 2] at both callers, pick/3 with false/true clauses) passes.\nSo the ingredients are: one closure construction, a captured flag that is false at one caller and true at the other, and element types that differ between the callers (:x vs :y).\n\nMechanism not established. The dispatch on the captured flag inside missing/3 (or the closure's own dispatch) is built as exhaustive for fewer (flag, element) pairings than run time delivers.\n\nDone when: the repro prints Elixir's output on interp, run and build, as a fixture (fz-sc8 block, 01140 onward).",
+  "id": "fz-sc8.154",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "Two callers of a helper whose reducer captures a flag run without a missed dispatch",
+  "type": "bug",
+  "updated_at": "2026-11-13T19:30:17Z"
+}
