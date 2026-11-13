@@ -321,6 +321,25 @@ pub(crate) fn publish_protocol_impl_surface(
     Ok(session.complete())
 }
 
+/// Publishes that `module` is indexed. A module with source is one a value
+/// can name, so the set of those is published beside it.
+fn publish_module_indexed(
+    world: &mut World,
+    module: ModuleId,
+    revision: bool,
+    outputs: &mut Outputs,
+    changed: &mut Changed,
+) {
+    outputs.push(FactKey::ModuleIndexed(module));
+    if revision {
+        changed.push(FactKey::ModuleIndexed(module));
+    }
+    outputs.push(FactKey::NameableModules);
+    if world.note_nameable_module(module) {
+        changed.push(FactKey::NameableModules);
+    }
+}
+
 pub(crate) fn discover_modules(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -344,10 +363,7 @@ pub(crate) fn discover_modules(
                     module.source.clone(),
                     nested.clone(),
                 );
-                outputs.push(FactKey::ModuleIndexed(module_id));
-                if revision {
-                    changed.push(FactKey::ModuleIndexed(module_id));
-                }
+                publish_module_indexed(world, module_id, revision, outputs, changed);
                 discover_modules(world, tel, source_owner, module_id, &nested, outputs, changed)?;
             }
             ScopeForm::Protocol(protocol) => {
@@ -362,10 +378,7 @@ pub(crate) fn discover_modules(
                     protocol.source.clone(),
                     protocol_surface,
                 );
-                outputs.push(FactKey::ModuleIndexed(module_id));
-                if revision {
-                    changed.push(FactKey::ModuleIndexed(module_id));
-                }
+                publish_module_indexed(world, module_id, revision, outputs, changed);
             }
             ScopeForm::MacroCall(macro_call) => {
                 let source_map = world.source_map();
@@ -396,10 +409,7 @@ pub(crate) fn discover_modules(
                             module.source.clone(),
                             nested.clone(),
                         );
-                        outputs.push(FactKey::ModuleIndexed(module_id));
-                        if revision {
-                            changed.push(FactKey::ModuleIndexed(module_id));
-                        }
+                        publish_module_indexed(world, module_id, revision, outputs, changed);
                         discover_modules(world, tel, source_owner, module_id, &nested, outputs, changed)?;
                     }
                     (ReservedSourceDefinition::Protocol { .. }, ScopeForm::Protocol(protocol)) => {
@@ -415,10 +425,7 @@ pub(crate) fn discover_modules(
                             protocol.source.clone(),
                             protocol_surface,
                         );
-                        outputs.push(FactKey::ModuleIndexed(module_id));
-                        if revision {
-                            changed.push(FactKey::ModuleIndexed(module_id));
-                        }
+                        publish_module_indexed(world, module_id, revision, outputs, changed);
                     }
                     _ => {}
                 }
@@ -1629,10 +1636,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             },
         );
         self.world.scope_module(impl_module, self.namespace);
-        self.outputs.push(FactKey::ModuleIndexed(impl_module));
-        if revision {
-            self.changed.push(FactKey::ModuleIndexed(impl_module));
-        }
+        publish_module_indexed(self.world, impl_module, revision, &mut self.outputs, &mut self.changed);
         let grew = self
             .world
             .register_protocol_impl_provider(protocol, target, impl_module);

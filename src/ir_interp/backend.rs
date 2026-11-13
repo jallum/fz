@@ -15,7 +15,7 @@ use crate::compiler2::transport::{ShapeDescr, ShapeId, TransportLayout, Transpor
 use crate::compiler2::{
     BackendBody, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendExecutable,
     BackendProgram, BackendReceive, BackendStep as ProgramStep, BackendTail, CallEdge, CallTarget, ClosureCallEdge,
-    ControlDestination, ExecutableDispatch, ValueId,
+    ControlDestination, ExecutableDispatch, UndefinedFunction, ValueId,
 };
 use crate::compiler2::{ExecutableKey, FunctionId, RunFailure};
 use crate::dispatch_matrix::pattern::{LastResort, MessageSubject};
@@ -1292,6 +1292,17 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     ));
                 }
             };
+            if let CallTarget::Undefined(undefined) = callee {
+                return raise_undefined_function(
+                    runtime,
+                    transport,
+                    program,
+                    undefined,
+                    *selector,
+                    &env,
+                    continuations,
+                );
+            }
             eval_backend_direct_call_edge(
                 runtime,
                 types,
@@ -2251,6 +2262,44 @@ fn eval_backend_direct_call_edge(
             "unresolved provider-boundary backend call to function {}",
             function.as_u32()
         )),
+        CallTarget::Undefined(undefined) => Err(format!(
+            "internal error: a call that finds no `{}/{}` raises; it has no target to enter",
+            undefined.function, undefined.arity
+        )),
+    }
+}
+
+/// A call on the module value `selector` that found no function: raise what
+/// compiled code raises at the same point, and carry on as after any raise.
+fn raise_undefined_function(
+    runtime: &mut IrInterpRuntime,
+    transport: &TransportStore,
+    program: &BackendProgram,
+    undefined: &UndefinedFunction,
+    selector: Option<ValueId>,
+    env: &Frame,
+    continuations: Vec<BackendContinuation>,
+) -> Result<BackendEvalTransition, String> {
+    let selector = selector.ok_or_else(|| {
+        format!(
+            "internal error: a call that finds no `{}/{}` has no module value to show",
+            undefined.function, undefined.arity
+        )
+    })?;
+    let proc = runtime.cur_proc();
+    let receiver = env_get(transport, proc, env, selector)?.value(proc)?;
+    let atom = |name: &str| fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(name));
+    let module_is_defined = undefined.modules_without.iter().any(|module| atom(module) == receiver);
+    fz_runtime::failure::raise_undefined_function(
+        proc,
+        receiver,
+        atom(&undefined.function),
+        undefined.arity as i64,
+        module_is_defined,
+    );
+    match runtime.take_callback_error() {
+        Some(error) => Err(error),
+        None => after_panic(runtime, transport, program, continuations),
     }
 }
 

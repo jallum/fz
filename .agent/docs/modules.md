@@ -142,20 +142,67 @@ before the arguments, and the name `f`. The module is not one of the call's
 arguments.
 
 Semantic analysis resolves the call from the type of `m`
-(`jobs::semantic::resolve_module_value_call`). The type has to be a finite set
-of atoms. Each atom names a module absolutely through
-`ModuleName::from_atom_name` and `World::reference_module`, and
-`World::module_public_function` answers that module's public `f/n`; a
-qualified callee in source asks the same method. Each function is then
-resolved as any direct call is, and its targets carry the atom that selects
-them in `CallTargetSummary.selector`.
+(`jobs::semantic::resolve_module_value_call`, `module_value_receiver`). The
+atoms in the type say which modules the value can be.
+
+When the type lists its atoms, they are the modules. Each atom names a module
+absolutely through `ModuleName::from_atom_name` and `World::reference_module`,
+and `World::module_public_function` answers that module's public `f/n`; a
+qualified callee in source asks the same method.
+
+When the type holds atoms it does not list (`atom`, `any`), the value can be
+any module a value can name. `World::nameable_modules` is that set: every
+module whose source the compile has indexed (`source_publish::
+publish_module_indexed`) and every module a lowered body writes as a value, in
+an alias or a struct (`Lowerer::name_module_as_value`). The set is the
+fact `FactKey::NameableModules`, which the call reads whether or not it holds
+anything yet. `nameable_module_callees` waits for each of those modules to be
+defined, reads its `ModuleInterface`, and keeps the ones that have a public
+`f/n`. It asks for no function body, so a module that lacks `f/n` is defined
+for the call and none of its functions is compiled for it.
+
+Each function is then resolved as any direct call is, and its targets carry
+the atom that selects them in `CallTargetSummary.selector`.
+
+The values no module claims are the receiver's type less the selectors. When
+that is not empty the call has one more target, the miss:
+`SelectedCallee::Undefined(UndefinedFunction)`, selected by that remainder,
+with no activation and the return type `none`. It carries the function, the
+arity and the atoms of the nameable modules that lack the function. The miss
+goes through `call_destinations` as any target does and materializes as
+`CallTarget::Undefined`.
 
 | type of `m` | the call |
 | --- | --- |
 | one atom | one target: `CallDestinations::Direct`, and no read of `m` at run time |
 | several atoms | one target per atom: `CallDestinations::Dispatch`, whose plan reads `m` as its first input |
-| `atom`, or a type holding anything besides atoms | compile error `type/module-value-call` |
-| an atom outside the `Elixir.` namespace | compile error `type/module-value-call` |
+| `atom`, `any`, or a listed atom joined with something that is no atom | a target per nameable module that has `f/n`, and the miss |
+| a type holding no atom | compile error `type/module-value-call` |
+| a listed atom outside the `Elixir.` namespace | compile error `type/module-value-call` |
+| a listed atom naming no module, or a module without `f/n` | the compile error a qualified call to it gets |
+
+Both executors lower the miss as a raise that shows the value of `m`. Native
+lowering (`NativeLowerer::raise_undefined_function`) ends the block in
+`Term::RaiseUndefined`, whose codegen calls `fz_raise_undefined_function`; the
+interpreter (`ir_interp::backend::raise_undefined_function`) calls
+`failure::raise_undefined_function`. The runtime words the exception as Elixir
+does:
+
+| value of `m` | raises |
+| --- | --- |
+| an atom naming a module that lacks the function | `UndefinedFunctionError`, `function M.f/n is undefined or private` |
+| any other atom | `UndefinedFunctionError`, `function :a.f/n is undefined (module :a is not available)` |
+| `nil` | `UndefinedFunctionError`, `function nil.f/n is undefined` |
+| a value that is no atom, `n > 0` | `ArgumentError`, `you attempted to apply a function on V. Modules (the first argument of apply) must always be an atom` |
+| a value that is no atom, `n == 0` | `ArgumentError`, `you attempted to apply a function named :f on V. ...` |
+
+An `UndefinedFunctionError` carries `module`, `function`, `arity`, `reason`
+(`nil`) and `message`.
+
+A module in a library file the compile never indexed is not nameable, so a
+call that reaches it by a computed atom raises "is not available". With no
+arguments and parentheses, `m.f()` on a map raises `ArgumentError`; Elixir
+reads the field and warns.
 
 A dispatch plan's inputs are the selector and then the arguments
 (`CallSiteSummary::arity`). `BackendTail::DirectCall.selector` holds the value
@@ -167,8 +214,9 @@ different modules keep different keys and each key's call has one target.
 `e.__struct__.message(e)` is this call: the `__struct__` field of a struct
 type is one atom.
 
-Fixtures `00864` (one module) and `00865` (several) agree with Elixir on
-interp, run and build; `00866` and `00867` are the two refusals.
+Fixtures `00864` (one module), `00865` (several), `00867` (an atom made at
+run time) and `00869` (every miss) agree with Elixir on interp, run and build;
+`00866` is the refusal.
 
 ## Scoping a body
 

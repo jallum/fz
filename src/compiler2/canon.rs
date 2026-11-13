@@ -1409,6 +1409,12 @@ impl ProgramCanon<'_> {
             CallTarget::ProviderBoundary(function) => {
                 format!("provider:{}", function_label(self.world, *function))
             }
+            CallTarget::Undefined(undefined) => format!(
+                "undefined:{}/{} without [{}]",
+                undefined.function,
+                undefined.arity,
+                undefined.modules_without.join(", ")
+            ),
         }
     }
 

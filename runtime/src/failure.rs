@@ -32,6 +32,7 @@
 use crate::any_value::debug::{kind_name, render_value};
 use crate::any_value::{AnyValue, AnyValueRef, ValueKind, map_addr_from_tagged};
 use crate::exec_ctx::ExecCtx;
+use crate::heap::{list_head_ref, list_tail_ref};
 use crate::ir_runtime::{bitstring_like_word, fz_tuple_elem, fz_tuple_size};
 use crate::park::materialize_outcome_closure;
 use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
@@ -369,6 +370,76 @@ pub fn raise_exception_naming_kind(process: *mut Process, name: AnyValue, lead: 
     raise_exception_showing(process, name, &lead, term);
 }
 
+/// Raise what Elixir raises when `receiver.function(..)` with `arity`
+/// arguments finds nothing to call. A receiver that is no atom is an
+/// `ArgumentError`. An atom is an `UndefinedFunctionError` carrying the module,
+/// the function and the arity; `module_is_defined` says whether the atom names
+/// a module that lacks the function or names no module at all.
+pub fn raise_undefined_function(
+    process: *mut Process,
+    receiver: AnyValue,
+    function: AnyValue,
+    arity: i64,
+    module_is_defined: bool,
+) {
+    let shown = render_value(process, receiver);
+    if !matches!(receiver, AnyValue::Atom(_)) {
+        let message = not_a_module_message(&shown, &render_value(process, function), arity);
+        return raise_exception(process, atom(process, "Elixir.ArgumentError"), &message);
+    }
+    let called = format!("{shown}.{}/{arity}", atom_text(process, function));
+    let message = if module_is_defined {
+        format!("function {called} is undefined or private")
+    } else if atom_named(process, receiver, "nil") {
+        format!("function {called} is undefined")
+    } else {
+        format!("function {called} is undefined (module {shown} is not available)")
+    };
+    let message = text(process, &message);
+    let exception = exception(
+        process,
+        atom(process, "Elixir.UndefinedFunctionError"),
+        &[
+            ("module", receiver),
+            ("function", function),
+            ("arity", AnyValue::Int(arity)),
+            ("reason", atom(process, "nil")),
+            ("message", message),
+        ],
+    );
+    raise(process, RaiseKind::Error, exception);
+}
+
+fn not_a_module_message(receiver: &str, function: &str, arity: i64) -> String {
+    if arity == 0 {
+        format!(
+            "you attempted to apply a function named {function} on {receiver}. If you are using Kernel.apply/3, \
+             make sure the module is an atom. If you are using the dot syntax, such as module.function(), make \
+             sure the left-hand side of the dot is an atom representing a module"
+        )
+    } else {
+        format!(
+            "you attempted to apply a function on {receiver}. Modules (the first argument of apply) must always \
+             be an atom"
+        )
+    }
+}
+
+fn atom(process: *mut Process, name: &str) -> AnyValue {
+    AnyValue::atom(unsafe { &*process }.node.intern_atom(name))
+}
+
+fn atom_text(process: *mut Process, value: AnyValue) -> String {
+    let AnyValue::Atom(id) = value else {
+        panic!("a function name is an atom, not {value:?}")
+    };
+    unsafe { &*process }
+        .node
+        .atom_name(id)
+        .unwrap_or_else(|| panic!("atom {id} has no name"))
+        .to_string()
+}
+
 fn text(process: *mut Process, text: &str) -> AnyValue {
     let process = unsafe { &mut *process };
     process.heap.alloc_bitstring(text.as_bytes(), 8 * text.len() as u64)
@@ -427,6 +498,29 @@ pub extern "C" fn fz_raise_naming_kind(process: *mut Process, name_ref: u64, lea
         .expect("fz_raise_naming_kind: a binary lead");
     let term = value_from_word(term_ref, "fz_raise_naming_kind term");
     raise_exception_naming_kind(process, name, &lead, term);
+}
+
+/// Raise for a call `receiver.function(..)` that reached no function.
+/// `modules_ref` lists the atoms naming a module that lacks the function.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_raise_undefined_function(
+    process: *mut Process,
+    receiver_ref: u64,
+    function_ref: u64,
+    arity: i64,
+    modules_ref: u64,
+) {
+    let receiver = value_from_word(receiver_ref, "fz_raise_undefined_function receiver");
+    let function = value_from_word(function_ref, "fz_raise_undefined_function function");
+    let mut modules = AnyValueRef::from_raw_word(modules_ref).expect("fz_raise_undefined_function: a list ref");
+    let mut module_is_defined = false;
+    while !module_is_defined && !modules.is_empty_list() {
+        let head = list_head_ref(modules).and_then(AnyValue::from_ref);
+        module_is_defined = head.expect("fz_raise_undefined_function: a list of atoms") == receiver;
+        modules = list_tail_ref(modules).expect("fz_raise_undefined_function: a list tail");
+    }
+    raise_undefined_function(process, receiver, function, arity, module_is_defined);
 }
 
 #[cfg(test)]

@@ -11190,11 +11190,9 @@ end
         .summary
         .targets
         .iter()
-        .map(|target| match target.callee {
-            SelectedCallee::Function(function) => function,
-            SelectedCallee::ProviderBoundary(function) => {
-                panic!("expected local protocol target, got provider-boundary function {function:?}")
-            }
+        .map(|target| match &target.callee {
+            SelectedCallee::Function(function) => *function,
+            other => panic!("expected local protocol target, got {other:?}"),
         })
         .collect::<HashSet<_>>();
     assert_eq!(
@@ -18914,13 +18912,10 @@ fn summary_is_single_callee(summary: &CallSiteSummary, callee: SelectedCallee) -
     matches!(summary.single_target(), Some(target) if target.callee == callee)
 }
 
-fn local_call_target<T>(target: &CallTarget<T>) -> &T {
-    match target {
-        CallTarget::Local(target) => target,
-        CallTarget::ProviderBoundary(function) => {
-            panic!("expected local call target, got provider-boundary function {function:?}")
-        }
-    }
+fn local_call_target<T: std::fmt::Debug>(target: &CallTarget<T>) -> &T {
+    target
+        .local()
+        .unwrap_or_else(|| panic!("expected local call target, got {target:?}"))
 }
 
 fn backend_direct_call(executable: &crate::compiler2::BackendExecutable, callee: FunctionId) -> &BackendTail {
@@ -21549,6 +21544,57 @@ fn a_call_on_one_of_two_modules_dispatches_on_the_module_and_passes_only_the_arg
     assert_eq!(dispatch.arms.len(), 2, "one target per module the value can be");
     assert!(dispatch.plan.required_input(0), "the dispatch reads the module");
     assert_eq!(args.len(), 1, "the module is not an argument of exception/1");
+}
+
+/// `sides_of(name)` is `String.to_atom(name).sides()`. The receiver's type
+/// lists no module, so the call chooses among the modules a value can name:
+/// one target for each that has `sides/0`, `Bank.Frozen` among them though no
+/// body writes it as a value, and one more that raises for every other value.
+/// The raise is told which modules lack the function. Fixture 00867.
+#[test]
+fn a_call_on_any_atom_dispatches_over_the_modules_that_have_the_function_and_keeps_a_miss() {
+    let settled = Drive::fixture(867).dump_stage(super::dump::DumpStage::Backend);
+    let calls = call_tails_of(&settled.backend_program(), settled.world(), "sides_of/1");
+    let on_a_module = calls
+        .iter()
+        .filter(|call| matches!(call, BackendTail::DirectCall { selector: Some(_), .. }))
+        .collect::<Vec<_>>();
+    let [
+        BackendTail::DirectCall {
+            target: target @ CallEdge::Dispatch(dispatch),
+            args,
+            ..
+        },
+    ] = on_a_module.as_slice()
+    else {
+        panic!("sides_of/1 makes one call on a module value, and it dispatches: {calls:#?}");
+    };
+    assert!(dispatch.plan.required_input(0), "the dispatch reads the module");
+    assert!(args.is_empty(), "the module is not an argument of sides/0");
+    assert_eq!(
+        target.local_callees().len(),
+        3,
+        "Circle, Square and Bank.Frozen each have sides/0: {target:#?}"
+    );
+    let misses = target
+        .callees()
+        .filter_map(|callee| match callee {
+            CallTarget::Undefined(undefined) => Some(undefined),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [miss] = misses.as_slice() else {
+        panic!("every value that reaches no function shares one miss: {misses:#?}");
+    };
+    assert_eq!((miss.function.as_str(), miss.arity), ("sides", 0));
+    assert!(
+        miss.modules_without.iter().any(|module| module == "Elixir.String"),
+        "String is a module the program has, and it lacks sides/0: {miss:#?}"
+    );
+    assert!(
+        !miss.modules_without.iter().any(|module| module == "Elixir.Square"),
+        "a module that has the function is a target, not a miss: {miss:#?}"
+    );
 }
 
 fn moved_keying_laws(laws: &[(&str, &str, &str, usize)]) -> Vec<String> {

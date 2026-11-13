@@ -112,7 +112,7 @@ pub(crate) use semantic::RETURN_WIDENING_BUDGET;
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteResolution, CallSiteSummary,
     CallTargetSummary, CallableDemand, CallableFlowFact, CallableSurface, ContributionMap, ContributionReplace,
-    EntryReachability, ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, ShapeDemand,
+    EntryReachability, ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, ShapeDemand, UndefinedFunction,
 };
 pub(crate) use semantic::{CallableConstructionTargetKey, SemanticOrd};
 pub use source::{

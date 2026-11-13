@@ -31,24 +31,26 @@ use super::body::{
     LoweredBitFieldSpec, LoweredBody, LoweredExtern, OutcomeEdge, ReceiveAfter, ValueId,
 };
 use super::identity::{ExecutableKey, FunctionId};
-use super::semantic::ExecutableRuntimeDemand;
+use super::semantic::{ExecutableRuntimeDemand, UndefinedFunction};
 use super::transport::{
     BoundaryId, CallableConstructionOwner, CallableId, ExecutableSymbol, ShapeId, TransportCarrier, TransportLayout,
     TransportPosition,
 };
 use super::types::Ty;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallTarget<T> {
     Local(T),
     ProviderBoundary(FunctionId),
+    /// No function: the call raises, showing the module value it was made on.
+    Undefined(std::rc::Rc<UndefinedFunction>),
 }
 
 impl<T> CallTarget<T> {
     pub fn local(&self) -> Option<&T> {
         match self {
             Self::Local(value) => Some(value),
-            Self::ProviderBoundary(_) => None,
+            Self::ProviderBoundary(_) | Self::Undefined(_) => None,
         }
     }
 }
@@ -291,11 +293,18 @@ impl<T, F> CallEdge<T, F> {
     /// dispatch arms. Product formulas use this one projection to name their
     /// exact callee dependencies.
     pub fn local_callees(&self) -> Vec<&T> {
-        match self {
-            Self::Direct(direct) => direct.callee.local().into_iter().collect(),
-            Self::Dispatch(dispatch) => dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect(),
-            Self::Indirect(_) => Vec::new(),
-        }
+        self.callees().filter_map(CallTarget::local).collect()
+    }
+
+    /// Every target the edge can reach: the direct target, or all dispatch
+    /// arms. A closure edge names none.
+    pub fn callees(&self) -> impl Iterator<Item = &CallTarget<T>> {
+        let (direct, arms) = match self {
+            Self::Direct(direct) => (Some(&direct.callee), &[][..]),
+            Self::Dispatch(dispatch) => (None, dispatch.arms.as_slice()),
+            Self::Indirect(_) => (None, &[][..]),
+        };
+        direct.into_iter().chain(arms.iter().map(|arm| &arm.callee))
     }
 }
 
@@ -769,6 +778,7 @@ pub(super) fn ir_control_fn_ids(function: &IrFn) -> Vec<FnId> {
             | IrTerm::ReturnLanes(_)
             | IrTerm::Raise { .. }
             | IrTerm::Reraise { .. }
+            | IrTerm::RaiseUndefined { .. }
             | IrTerm::Unreachable => {}
         }
     }
@@ -854,6 +864,12 @@ pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
                 other_uses.insert(*kind);
                 other_uses.insert(*value);
             }
+            IrTerm::RaiseUndefined {
+                receiver,
+                function,
+                modules_without,
+                arity: _,
+            } => other_uses.extend([*receiver, *function, *modules_without]),
             IrTerm::Unreachable => {}
             IrTerm::ReturnLanes(vars) => other_uses.extend(vars.iter().copied()),
             IrTerm::ReceiveMatched {
@@ -913,6 +929,7 @@ fn visit_ir_control_fn_ids(function: &mut IrFn, mut visit: impl FnMut(&mut FnId)
             | IrTerm::ReturnLanes(_)
             | IrTerm::Raise { .. }
             | IrTerm::Reraise { .. }
+            | IrTerm::RaiseUndefined { .. }
             | IrTerm::Unreachable => {}
         }
     }
@@ -1781,6 +1798,7 @@ fn native_terms_equal(left: &IrTerm, right: &IrTerm) -> bool {
         (IrTerm::Return(left_var), IrTerm::Return(right_var)) => left_var == right_var,
         (left @ IrTerm::Raise { .. }, right @ IrTerm::Raise { .. }) => left == right,
         (left @ IrTerm::Reraise { .. }, right @ IrTerm::Reraise { .. }) => left == right,
+        (left @ IrTerm::RaiseUndefined { .. }, right @ IrTerm::RaiseUndefined { .. }) => left == right,
         (IrTerm::Unreachable, IrTerm::Unreachable) => true,
         (IrTerm::ReturnLanes(left_lanes), IrTerm::ReturnLanes(right_lanes)) => left_lanes == right_lanes,
         (

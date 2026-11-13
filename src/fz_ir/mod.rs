@@ -841,6 +841,16 @@ pub enum Term {
         kind: Var,
         value: Var,
     },
+    /// The process raises what a call `receiver.function(..)` of `arity`
+    /// arguments raises when it finds nothing to call. `modules_without` is
+    /// the list of atoms naming a module that lacks the function. The process
+    /// ends here, as at `Raise`.
+    RaiseUndefined {
+        receiver: Var,
+        function: Var,
+        arity: usize,
+        modules_without: Var,
+    },
     /// Control analysis proved no execution reaches. Reaching it anyway is a
     /// compiler fault, and the code traps.
     Unreachable,
@@ -1504,6 +1514,15 @@ impl fmt::Display for Term {
                 subject: None,
             } => write!(f, "raise {exception} {message}"),
             Term::Reraise { kind, value } => write!(f, "reraise {kind} {value}"),
+            Term::RaiseUndefined {
+                receiver,
+                function,
+                arity,
+                modules_without,
+            } => write!(
+                f,
+                "raise_undefined {receiver}.{function}/{arity} without {modules_without}"
+            ),
             Term::Unreachable => write!(f, "unreachable"),
             Term::Try {
                 handler,

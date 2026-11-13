@@ -1,0 +1,72 @@
+#---
+# purpose: "m.f(a) on a value whose type lists no module raises at run time when the value reaches no function: UndefinedFunctionError for an atom naming no module, for nil and for a module that lacks the function, each worded as Elixir words it and carrying the module, function and arity; ArgumentError for a value that is no atom"
+# oracle: 00869_a_call_that_finds_no_function_raises_as_elixir_does.oracle.exs
+#---
+#
+# A miss is one more target of the call: the receiver's type less the atoms
+# of the modules that have the function. Reaching it raises, and the raise is
+# rescued like any other.
+defmodule Square do
+  defstruct [:s]
+
+  def area(s), do: s.s * s.s
+end
+
+defmodule Circle do
+  def name(), do: "circle"
+end
+
+def try_area(m) do
+  try do
+    m.area(%Square{s: 3})
+  rescue
+    e -> {e.__struct__, e.message}
+  end
+end
+
+def try_name(m) do
+  try do
+    m.name()
+  rescue
+    e -> {e.__struct__, e.message}
+  end
+end
+
+def missed(m) do
+  try do
+    m.area(1)
+  rescue
+    e in UndefinedFunctionError -> {e.module, e.function, e.arity, e.reason}
+  end
+end
+
+# The name and the message go out on lines of their own, so no line is long
+# enough to be wrapped.
+def show({name, message}) do
+  dbg(name)
+  IO.puts(message)
+end
+
+def show(value), do: dbg(value)
+
+# The first element of a list that also holds an atom the types cannot name:
+# its type is the argument's joined with atom.
+def opaque(x), do: Enum.at([x, String.to_atom("a")], 0)
+
+def main() do
+  show(try_area(String.to_atom("Elixir.Square")))
+  show(try_area(String.to_atom("nowhere")))
+  show(try_area(String.to_atom("Elixir.Nowhere.Deep")))
+  show(try_area(String.to_atom("Elixir.Circle")))
+  show(try_area(opaque(nil)))
+  show(try_area(opaque(true)))
+  show(try_area(opaque(1)))
+  show(try_area(opaque("str")))
+  show(try_area(opaque({Square, 1})))
+  show(try_area(opaque([Square])))
+  show(try_name(String.to_atom("Elixir.Circle")))
+  show(try_name(String.to_atom("Elixir.Square")))
+  show(try_name(opaque(1)))
+  dbg(missed(String.to_atom("nowhere")))
+  dbg(missed(String.to_atom("Elixir.Circle")))
+end

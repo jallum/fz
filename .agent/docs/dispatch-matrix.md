@@ -107,6 +107,9 @@ per module `m` can be, and each target's `selector` is the atom of its module.
 The plan's first input is then the selector and the arguments follow it. The
 selector only chooses: `callsite_dispatch_demands` reports what the plan reads
 of it apart from what it reads of the arguments, and no target receives it.
+A receiver whose type lists no module adds the miss, a target selected by
+every value no module claims; it is a row of the plan like the others, and
+reaching it raises (see `modules.md`, "A call on a module value").
 
 ### Which inputs the plan asks, and in what order
 

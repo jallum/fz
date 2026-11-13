@@ -376,6 +376,11 @@ its `term` field, as Elixir's `CaseClauseError`, `MatchError`, `WithClauseError`
 A `with` whose binding fails without an `else`, and a `receive`, have no last
 resort: the first yields the value, the second waits for another message.
 
+A call on a module value that reaches no function raises
+`UndefinedFunctionError`, or `ArgumentError` when the value is no atom
+(`failure::raise_undefined_function`). It is a target of the call and not a
+last resort; `modules.md` has the wording for each case.
+
 A fail that no plan can reach is not a raise. An entry with no clause to run, a
 call dispatch with no matching callee, and a construction-selection miss end in
 `Term::Unreachable` in native code, which traps, and in an `internal error`
@@ -478,8 +483,9 @@ the raise. `Process::ended_in_failure` and
 - `runtime/src/failure.rs` — `RaiseKind`, `failure_line`, `exit_status`,
   `fz_panic`, `fz_throw`, `fz_exit`, `reraise`, `fz_reraise`,
   `raise_exception`, `raise_exception_showing`,
-  `raise_exception_naming_kind`, `fz_raise`, `fz_raise_showing`,
-  `fz_raise_naming_kind`, `STDERR_FAULT_HOOK`.
+  `raise_exception_naming_kind`, `raise_undefined_function`, `fz_raise`,
+  `fz_raise_showing`, `fz_raise_naming_kind`, `fz_raise_undefined_function`,
+  `STDERR_FAULT_HOOK`.
 - `src/dispatch_matrix/pattern/last_resort.rs` — `LastResort`.
 - `runtime/src/process.rs` — `Handler`, `Raised`, `handlers`, `raised`,
   `delivered`, `raises_delivered`, `exit_status`, `push_handler`, `pop_handler`,
@@ -497,8 +503,9 @@ the raise. `Process::ended_in_failure` and
   `catch`).
 - `src/compiler2/source_sugar.rs` — the `in` rewrite and its operator stamp.
 - `src/compiler2/jobs/body.rs` — `lower_try`, `lower_handled`, `handler_arms`, `rescue_arms`, `reraise_block`, `push_try_else`.
-- `src/compiler2/jobs/native.rs` — `raise_last_resort` (emits `Term::Raise` and `Term::Reraise`).
-- `src/compiler2/native_codegen/terminator.rs` — `emit_try`, `emit_raise`.
+- `src/compiler2/jobs/native.rs` — `raise_last_resort` (emits `Term::Raise` and `Term::Reraise`),
+  `raise_undefined_function` (emits `Term::RaiseUndefined`).
+- `src/compiler2/native_codegen/terminator.rs` — `emit_try`, `emit_raise`, `emit_raise_undefined`.
 - `src/compiler2/native_codegen/prim.rs` — `continue_after_raise`,
   `Prim::PopHandler`.
 - `src/ir_interp/backend.rs` — `after_panic`, `raise_last_resort`,
