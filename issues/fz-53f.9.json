@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-53f.10"
+    "fz-53f.10",
+    "fz-53f.7"
   ],
   "created": "2026-11-13T02:01:13Z",
   "description": "Reading a quoted-source map value builds a Vec of every entry to find one (map_value), and reading an AST node's three parts clones the schema and collects a Vec (ast node parts; tuple_items is the same copy and is superseded). Scan the map in place and return on the first match; read the three node fields directly. Spike (base 72c22569b, each alone, release instructions on distinct1/f761/f765/r6/lit16): map_value -4.89/-2.36/-2.20/-8.96/-6.41%, allocation calls -8.9% on distinct1; ast_node_parts_inplace -2.48/-1.13/-1.27/-4.30/-3.29%, allocation calls -5.0%. One behaviour note to pin with a test or refute: map_value no longer reads a malformed entry that follows the match. Spike diffs (port by reading, not by applying): /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/small/cand_map_value.diff, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/small/cand_ast_node_parts_inplace.diff; numbers in /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/small/results.md. Acceptance: stdout (interp and run), canonical dump, activation key counts and job counts identical to the base binary on /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/p/distinct1.fz, f761.fz (--top 1 --top 2), f765.fz (--max-top 3), /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/m/r6.fz, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/l/lit16.fz; release instructions retired and allocation calls re-measured on base and change binaries built the same way; full gate; no pin, golden or census movement.",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "The macro front end reads quoted source where it lives",
   "type": "task",
-  "updated_at": "2026-11-13T02:01:34Z"
+  "updated_at": "2026-11-13T02:01:35Z"
 }

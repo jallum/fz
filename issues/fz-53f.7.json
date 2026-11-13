@@ -7,7 +7,8 @@
     "fz-53f.4",
     "fz-53f.5",
     "fz-53f.6",
-    "fz-53f.8"
+    "fz-53f.8",
+    "fz-53f.9"
   ],
   "blocks": [],
   "created": "2026-11-12T22:34:14Z",
@@ -19,5 +20,5 @@
   "status": "open",
   "title": "The compiler's remaining tables hash with a fast, randomly seeded hasher",
   "type": "task",
-  "updated_at": "2026-11-13T00:09:15Z"
+  "updated_at": "2026-11-13T02:01:35Z"
 }
