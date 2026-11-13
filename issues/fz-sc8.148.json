@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T15:14:58Z",
+  "description": "The product drive stops after PRODUCT_DRIVE_BUDGET (50,000, src/compiler2/product_drive.rs:30) requests and reports 'compiler2 root 0 product backend did not settle waiting on \u003ckind\u003e, with N pending wait' (did_not_settle, src/compiler2/compiler.rs:676). The named wait is only the request that happened to be number 50,000, not a stuck fact. Verified 2026-11-13 on f04c56f8e with the Stream flattening scratch change: the distiller's failing session ends at request_id 50000 (transport_shape); with the budget raised to 5,000,000 the same session settles at request 63,457; deleting single lines of the program changes the named kind (callable_construction, abi_executable, materialized_executable, backend_executable). The wording sent an investigation looking for a producer that never answers. Wanted: the message states that the request budget was exhausted and gives the count; the last wait may stay as secondary detail. Evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/sts2 (min2.exs, budget_5M.patch, fz2.big).",
+  "id": "fz-sc8.148",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A product drive that runs out of requests says so",
+  "type": "bug",
+  "updated_at": "2026-11-13T15:14:58Z"
+}
