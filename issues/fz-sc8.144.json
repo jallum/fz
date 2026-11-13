@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:30:08Z",
+  "description": "defstruct takes a default per field, but only a literal term: a number, atom, string, boolean, nil, or a list, tuple or map of those. A default that computes or names something is refused with the diagnostic parse/struct-default at the default:\n\n    defmodule Tally do\n      defstruct [:name, count: Enum.count([1]), seen: MapSet.new()]\n    end\n\nElixir accepts any expression, evaluates it once when the module is defined, in the defining module (its aliases and imports), and every %Tally{} that omits the field starts from that value. That is the oracle.\n\nCause of the restriction: a default is carried on StructDef as a LiteralTerm and lowered where the struct literal stands, as the expression that writes it (Lowerer::lower_omitted_struct_field). A call or an alias lowered there would resolve in the using module, not the defining one. A literal names nothing, so it reads the same everywhere.\n\nDone when: a default that is a call, an alias or any other expression is resolved in the defining module and gives Elixir's value on interp, run and build against oracle fixtures; fixture 00860 (the refusal) and the parse/struct-default code go, or stay only for what Elixir also refuses; LiteralTerm goes if the general carrier replaces it. Proposal page first: the choice is between evaluating at definition and carrying a value, or carrying the expression with its defining scope. Does not block fz-sc8.19 or fz-3ul.4: every default they need is a literal.",
+  "id": "fz-sc8.144",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A defstruct default is any expression, evaluated in the defining module",
+  "type": "feature",
+  "updated_at": "2026-11-13T03:30:08Z"
+}
