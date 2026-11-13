@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [
     "fz-3sy.1",
+    "fz-3sy.17",
     "fz-sc8.99"
   ],
   "blocks": [
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "A struct is a map type: MapTag goes",
   "type": "task",
-  "updated_at": "2026-11-11T18:28:34Z"
+  "updated_at": "2026-11-13T04:01:56Z"
 }
