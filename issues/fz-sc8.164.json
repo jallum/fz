@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T22:08:56Z",
+  "description": "Seen once on 2026-11-13 during a workspace gate run while another build was using the machine: the oracle check ran real elixir on fixtures/00691_a_child_and_its_parent_both_time_out_in_order.oracle.exs and elixir itself printed :main_timeout before :child_timeout, so the golden mismatched. fz was not involved; three re-runs alone passed.\nCause: the child times out after 20 ms and the parent after 80 ms; the order rests on the child being scheduled, started and printing within the 60 ms gap, which a loaded machine does not guarantee (BEAM start plus spawn can exceed it).\nDone when: the fixture still shows a child and its parent both timing out, with the order fixed by a message between them and no dependence on a wall-clock margin; expected.txt regenerated from elixir; matches on interp, run and build.",
+  "id": "fz-sc8.164",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "Fixture 00691 orders its two timeouts by a message, not by a 60 ms margin",
+  "type": "bug",
+  "updated_at": "2026-11-13T22:08:56Z"
+}
