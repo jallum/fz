@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T03:38:52Z",
+  "description": "stamp_hygiene and stamp_span_fallback (quoted_expander.rs:791/806, :872-920) run over every macro expansion (from run_macro_invocation, :631). Per list they call cursor.list_items() (source.rs:706: Vec::new + push) and per tuple cursor.tuple_items() (source.rs:723: collect), walk the Vec once, and build a parallel out Vec (quoted_expander.rs:793/808) that is used only if some item changed; most output is unchanged. About 80k allocations across source.rs:706 (47k, all callers), :723 (18.7k), quoted_expander.rs:793 (7.6k), :808 (6.8k).\nOther callers that only count or peek: quoted_surface.rs:938 function_head_args(..).len() (6.4k); quoted_surface.rs:1100 first_non_attr_node; token_payload.rs:130 decode_token collecting a fixed six-field tuple per token (4.6k) and :20 collecting the token list.\nShape: a cursor iterator over list cells and tuple_item(i) for tuples (it exists); out starts at the first changed item, seeded from the items already passed; list_len for the counter.\nCare: list_items holds heap.process() for the walk; a lazy walk must not hold that Ref across recursive calls that take process_mut (re-borrow per step, as tuple_item does). Leave the Vec-returning methods for callers that keep the Vec, delete them if none remain.\n\nCounts are sampling estimates at develop 742e688b5 (line numbers refer to /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src); re-measure on your base first. Signal: see the epic.",
+  "id": "fz-y11.4",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "A macro's output is walked without copying its lists and tuples",
+  "type": "task",
+  "updated_at": "2026-11-13T03:38:52Z"
+}
