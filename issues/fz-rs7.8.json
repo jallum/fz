@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T01:33:48Z",
+  "description": "A guard using === or !== does not compile (probed on fz-rs7.4, PR #358, interp and run):\n\ndef f(n) when n === 1, do: :a\ndef f(_), do: :b\n\nerror[lower/unsupported]: compiler2 guards cannot call extern fz_op_identical_ii: return Scalar(Bool) is neither a number nor a reference word (runtime:Kernel.fz:1253)\n\n!== fails the same way on fz_op_not_identical_ii (Kernel.fz:1281). Elixir allows both in guards: f(1) is :a and f(1.0) is :b.\n\nCause: GuardExtern::new (src/dispatch_matrix/pattern.rs) admits integer, float, reference-word and Checked returns; a boolean return is refused. The strict-equality externs return a boolean.\n\nChange: a guard extern may return a boolean, read as the guard's truth value. The receive matcher already has a strict comparison (emit_typed_eq_cmp with Equality::Strict); check whether === in a guard can be that one implementation rather than a second.\n\nFails before, passes after, three paths, with an Elixir oracle: === and !== in a function-head guard and a receive guard over 1, 1.0, an atom and a list.\n\nAcceptance: full gate green; the 85-probe guard census rows for === and !== match Elixir.",
+  "id": "fz-rs7.8",
+  "labels": [],
+  "parent": "fz-rs7",
+  "priority": 3,
+  "status": "open",
+  "title": "=== and !== are allowed in a guard",
+  "type": "bug",
+  "updated_at": "2026-11-13T01:33:48Z"
+}
