@@ -400,6 +400,14 @@ impl BodyTables {
         self.entries[entry.as_u32() as usize].used_from(first_step)
     }
 
+    /// The entry and step that define `value`, when an entry step does.
+    pub(crate) fn entry_definition_site(&self, value: ValueId) -> Option<(ControlEntryId, u32)> {
+        match self.definitions.get(&value)? {
+            StepSite::Entry { entry, index } => Some((*entry, *index)),
+            StepSite::Projection { .. } => None,
+        }
+    }
+
     /// Every `(step, value)` operand position of this entry, tail included.
     pub(crate) fn entry_use_sites(&self, entry: ControlEntryId) -> &[(u32, ValueId)] {
         &self.entries[entry.as_u32() as usize].used

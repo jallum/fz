@@ -6,6 +6,13 @@
 //! literals. Two values whose storage roots are disjoint cannot overlap, so
 //! the index records each value's roots once and lets an item meet only the
 //! values that share one.
+//!
+//! Of those, only the values that already exist at the tuple's step compete.
+//! A value defined after it is built from operands, each operand is a later
+//! use of a value that either existed at the step or was itself built the same
+//! way, and whatever the new value shares with the item it shares through one
+//! of them. A chain of pairs that each hold the one before shares one root
+//! throughout, and this is what keeps its cost in step with its depth.
 
 use crate::compiler2::{ValueMap, ValueSet};
 use crate::fast_hash::{HashMap, HashSet};
@@ -31,6 +38,7 @@ type Origins = ValueMap<TransportOrigin>;
 pub(super) struct StorageRootIndex {
     footprints: ValueMap<Rc<Footprint>>,
     sites: ValueMap<Vec<(u32, u32)>>,
+    defined: ValueMap<(u32, u32)>,
     users: HashMap<SubjectOriginRoot, Vec<ValueId>>,
     open_users: Vec<ValueId>,
 }
@@ -42,6 +50,12 @@ impl StorageRootIndex {
         for entry in 0..entries.len() as u32 {
             for (step, value) in tables.entry_use_sites(ControlEntryId::from_u32(entry)) {
                 sites.entry(*value).or_default().push((entry, *step));
+            }
+        }
+        let mut defined = ValueMap::new();
+        for value in sites.keys() {
+            if let Some((entry, step)) = tables.entry_definition_site(value) {
+                defined.insert(value, (entry.as_u32(), step));
             }
         }
         let mut footprints = Footprints::new(body.value_count());
@@ -59,6 +73,7 @@ impl StorageRootIndex {
         Self {
             footprints: footprints.known,
             sites,
+            defined,
             users,
             open_users,
         }
@@ -79,9 +94,17 @@ impl StorageRootIndex {
         Some(
             candidates
                 .into_iter()
-                .filter(|value| self.used_after(*value, later))
+                .filter(|value| self.used_after(*value, later) && !self.defined_after(*value, later))
                 .collect(),
         )
+    }
+
+    /// A value defined after the step is built from values that are used
+    /// after it, and those uses already compete.
+    fn defined_after(&self, value: ValueId, later: &LaterUses<'_>) -> bool {
+        self.defined
+            .get(&value)
+            .is_some_and(|&(entry, step)| later.contains(entry, step))
     }
 
     fn used_after(&self, value: ValueId, later: &LaterUses<'_>) -> bool {
