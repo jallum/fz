@@ -689,6 +689,123 @@ fn runtime_type_predicate_projects_tuple_positions_and_list_heads() {
     );
 }
 
+/// The exact tuple arity is read from the type's axes, and it is the arity the
+/// runtime predicate names when that predicate admits tuples of one arity and
+/// nothing else.
+#[test]
+fn exact_tuple_arity_agrees_with_the_runtime_predicate() {
+    fn through_the_predicate(t: &Types, ty: &Ty) -> Option<usize> {
+        let predicate = t.runtime_type_predicate(ty);
+        let mut arities = predicate.tuples.arities().finite_elems()?;
+        let arity = arities.next()?;
+        (arities.next().is_none()
+            && predicate.ints.is_none()
+            && predicate.floats.is_none()
+            && predicate.atoms.is_none()
+            && predicate.lists.shapes().is_none()
+            && predicate.named_structs.is_none()
+            && !predicate.allow_other_structs
+            && !predicate.maps
+            && !predicate.binaries
+            && predicate.callables.is_none()
+            && !predicate.resources)
+            .then_some(arity)
+    }
+
+    let mut t = Types::new();
+    let any = t.any();
+    let none = t.none();
+    let int = t.int();
+    let float = t.float();
+    let atom = t.atom();
+    let ok = t.atom_lit("ok");
+    let binary = t.str_t();
+    let nil = t.nil();
+    let empty_list = t.empty_list();
+    let int_list = t.list(int);
+    let non_empty = t.non_empty_list(int);
+    let map_top = t.map_top();
+    let resource = t.resource(int);
+    let closure = t.closure_lit(ClosureTarget(7), vec![int], 1);
+    let arrow = t.arrow(&[int], int);
+    let unit = t.tuple(&[]);
+    let one = t.tuple(&[int]);
+    let pair = t.tuple(&[int, atom]);
+    let other_pair = t.tuple(&[ok, binary]);
+    let nested = t.tuple(&[pair, int_list]);
+    let triple = t.tuple(&[int, int, int]);
+    let capturing = t.tuple(&[closure, int]);
+    let pairs = t.union(pair, other_pair);
+    let one_or_pair = t.union(one, pair);
+    let not_pair = t.difference(any, pair);
+    let pair_without_other = t.difference(pair, other_pair);
+    let pair_and_triple = t.intersect(pair, triple);
+    let any_pair = t.tuple(&[any, any]);
+    let any_pair_without_pair = t.difference(any_pair, pair);
+
+    let mut samples = vec![
+        any,
+        none,
+        int,
+        float,
+        atom,
+        ok,
+        binary,
+        nil,
+        empty_list,
+        int_list,
+        non_empty,
+        map_top,
+        resource,
+        closure,
+        arrow,
+        unit,
+        one,
+        pair,
+        other_pair,
+        nested,
+        triple,
+        capturing,
+        pairs,
+        one_or_pair,
+        not_pair,
+        pair_without_other,
+        pair_and_triple,
+        any_pair,
+        any_pair_without_pair,
+    ];
+    for kind in [
+        int, float, atom, binary, empty_list, int_list, map_top, resource, closure, nil,
+    ] {
+        for tuple in [pair, nested, triple] {
+            samples.push(t.union(tuple, kind));
+        }
+    }
+
+    for ty in samples {
+        assert_eq!(
+            t.exact_tuple_arity(&ty),
+            through_the_predicate(&t, &ty),
+            "exact tuple arity of {}",
+            t.display(&ty),
+        );
+        let arities = t.runtime_type_predicate(&ty).tuples.arities().clone();
+        let expected = arities.finite_elems().and_then(|mut it| {
+            let arity = it.next()?;
+            it.next().is_none().then_some(arity)
+        });
+        assert_eq!(
+            t.single_tuple_arity(&ty),
+            expected,
+            "single tuple arity of {}",
+            t.display(&ty)
+        );
+    }
+    assert_eq!(t.exact_tuple_arity(&pair), Some(2));
+    assert_eq!(t.exact_tuple_arity(&pairs), Some(2));
+    assert_eq!(t.exact_tuple_arity(&one_or_pair), None);
+}
+
 #[test]
 fn runtime_type_predicate_projects_named_structs_and_widens_unknown_opaques() {
     let mut t = Types::new();

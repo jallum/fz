@@ -2580,6 +2580,38 @@ impl Types {
         }
     }
 
+    /// The one arity every tuple of `a` has, when the tuple axis of its
+    /// runtime predicate names exactly one. Other axes are not consulted.
+    pub(crate) fn single_tuple_arity(&self, a: &Ty) -> Option<usize> {
+        let descr = self.descr(a);
+        if runtime_type_predicate_widens_non_structs(descr) {
+            return None;
+        }
+        let arities = runtime_type_predicate_tuple_arities(descr);
+        let mut arities = arities.finite_elems()?;
+        let arity = arities.next()?;
+        arities.next().is_none().then_some(arity)
+    }
+
+    /// The arity of `a` when every value of `a` is a tuple of that one arity
+    /// and nothing else, read from the same axes `runtime_type_predicate`
+    /// projects without projecting the positions, heads and captures.
+    pub(crate) fn exact_tuple_arity(&self, a: &Ty) -> Option<usize> {
+        let arity = self.single_tuple_arity(a)?;
+        let descr = self.descr(a);
+        let (plain_maps, tagged_structs) = runtime_type_predicate_map_tags(descr);
+        let only_tuples = !descr.basic.contains_all(BasicBits::INT)
+            && !descr.basic.contains_all(BasicBits::FLOAT)
+            && !descr.basic.contains_all(BasicBits::BINARY)
+            && descr.atoms.is_none()
+            && runtime_type_predicate_list_shapes(descr).is_none()
+            && runtime_type_predicate_named_structs(descr, tagged_structs).is_none()
+            && !plain_maps
+            && descr.funcs.is_empty()
+            && descr.resources.is_empty();
+        only_tuples.then_some(arity)
+    }
+
     /// The list axis a runtime test can put to a value.
     ///
     /// One head question per list CLAUSE that admits a cons cell, because a
