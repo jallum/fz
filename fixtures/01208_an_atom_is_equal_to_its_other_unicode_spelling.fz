@@ -1,0 +1,7 @@
+#---
+# purpose: an unquoted atom spelled with a combining accent equals the atom spelled with the composed letter, while the quoted atoms stay distinct
+# oracle: 01208_an_atom_is_equal_to_its_other_unicode_spelling.oracle.exs
+#---
+def main() do
+  dbg({:café == :café, :"café" == :"café"})
+end

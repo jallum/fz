@@ -46,6 +46,13 @@ ASCII only: its first other character is reported as `invalid character`.
 `source_word` applies the same classes to a quoted name, so the macro surface
 and the lexer agree on what one source word is.
 
+Unquoted names, atoms and keyword keys are spelled in NFC
+(`unicode-normalization`), so `cafe` plus U+0301 and the single character `é`
+are one variable and one atom. `read_ident` is the one place that normalizes;
+spans keep the source text as written. Quoted atoms (`:"café"`) and strings keep
+the spelling they were written with. `source_word` accepts only a name that is
+already NFC, because source text cannot produce a word token spelled otherwise.
+
 ## Newline continuation is grammar-owned, not a parser lookahead
 
 Physical newlines are first-class `Tok::Newline` tokens. Whether a newline
