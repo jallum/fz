@@ -46,7 +46,7 @@ fn successful_source_sugar_rewrites_are_stable_within_the_quoted_heap() {
 mod tests {
     use std::rc::Rc;
 
-    use fz_runtime::any_value::{AnyValueRef, ValueKind};
+    use fz_runtime::any_value::AnyValueRef;
 
     use super::super::{capture_arg_index, lambda_source_sugar_shape, range_parts};
     use crate::compiler2::{QuotedSourceHeap, QuotedSourceMetadata};
@@ -56,12 +56,10 @@ mod tests {
     fn sugar_shape_probes_propagate_invalid_atom_payloads() {
         let heap = Rc::new(QuotedSourceHeap::new());
         let builder = heap.builder();
-        let unknown_atom_id = u64::MAX;
-        let unknown_atom = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &unknown_atom_id)
-            .expect("stack scalar is a valid temporary atom carrier");
+        let unknown_atom = AnyValueRef::atom(u32::MAX);
         let node = builder
             .ast_node(unknown_atom, &QuotedSourceMetadata::default(), builder.empty_list())
-            .expect("builder copies the scalar into its owned heap");
+            .expect("builder copies the atom into its owned heap");
         let root = builder.root(node).expect("quoted source root");
         let cursor = root.cursor();
         let sources = SourceMap::new();

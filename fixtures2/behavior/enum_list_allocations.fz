@@ -36,10 +36,12 @@
 # - no map objects are needed before the stats snapshot;
 # - `list_cons_allocs = 5`;
 # - `list_cons_bytes = 80`;
-# - every path allocates `scalar_box_allocs = 3`, one per `dbg`'d result
-#   scalar. `Enum.member?/2` compares integers with `===`, whose typed
-#   integer/integer clause calls a raw C `fz_op_*` export, so the compared
-#   operands cross that door unboxed and allocate nothing;
+# - every path allocates `scalar_box_allocs = 2`, one per `dbg`'d integer
+#   result. The `true` that `Enum.member?/2` answers is an atom ref, which
+#   carries its id and allocates nothing. `Enum.member?/2` compares integers
+#   with `===`, whose typed integer/integer clause calls a raw C `fz_op_*`
+#   export, so the compared operands cross that door unboxed and allocate
+#   nothing;
 # - final list/struct/map heap headline is `80`.
 #
 # This fixture deliberately excludes `Enum.sort/1`. The current runtime sort is

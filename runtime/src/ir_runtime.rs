@@ -53,8 +53,6 @@ use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicU64, Ordering};
 use unicode_segmentation::GraphemeCursor;
 
-static NIL_ATOM_REF_SLOT: u64 = NIL_ATOM_ID as u64;
-
 fn any_value_from_heap_object_word(bits: u64) -> AnyValue {
     AnyValue::decode_tagged_heap_bits(bits)
         .unwrap_or_else(|| panic!("expected strict tagged heap value, got {bits:#x}"))
@@ -302,11 +300,6 @@ pub extern "C" fn fz_box_int_for_any(process: *mut Process, raw: i64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_box_float_for_any(process: *mut Process, raw: f64) -> u64 {
     box_scalar_for_any(process, raw.to_bits(), ValueKind::FLOAT)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_box_atom_for_any(process: *mut Process, raw: u64) -> u64 {
-    box_scalar_for_any(process, raw, ValueKind::ATOM)
 }
 
 // ===== Halt + print cluster =====
@@ -1803,12 +1796,8 @@ fn resource_payload_ref(resource: AnyValueRef) -> AnyValueRef {
     AnyValueRef::from_scalar_slot(ValueKind::INT, stub.payload_slot()).expect("resource integer payload ref")
 }
 
-/// A ref to the one immutable nil payload word, marked as a literal because it
-/// lies outside every heap.
 fn nil_atom_ref() -> AnyValueRef {
-    AnyValueRef::from_scalar_slot(ValueKind::ATOM, &NIL_ATOM_REF_SLOT)
-        .expect("static nil atom ref")
-        .literal()
+    AnyValueRef::atom(NIL_ATOM_ID)
 }
 
 #[unsafe(no_mangle)]
@@ -2640,10 +2629,10 @@ fn compare_values(process: *mut Process, a: AnyValue, b: AnyValue, mode: Numeric
 /// allocation on either side — the ordering counterpart to
 /// [`fz_value_eq_raw_const`].
 ///
-/// An `AnyValueRef` for an integer, float or atom is a POINTER to a heap
-/// scalar box, so handing an unboxed operand to a ref-taking function forces
-/// an allocation. Comparison never needs a value's identity, only its kind and
-/// payload, so codegen passes those directly. `swap` says the unboxed side was
+/// An `AnyValueRef` for an integer or float is a POINTER to a heap scalar box,
+/// so handing an unboxed operand to a ref-taking function forces an allocation.
+/// Comparison never needs a value's identity, only its kind and payload, so
+/// codegen passes those directly. `swap` says the unboxed side was
 /// the right-hand operand, so the caller does not have to negate the result.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_value_cmp_raw_const(
