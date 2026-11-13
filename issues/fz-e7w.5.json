@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T00:57:40Z",
+  "description": "In the interpreter, entering a try builds the handler's frame by cloning the whole body frame and then trimming the clone to the handler entry's captures: retain_continuation_captures(transport, entries, *handler, env.clone()) in src/ir_interp/backend.rs (the Try arm; lands with fz-e7w.1, PR #325). The fork has an owner (the handler keeps its frame while the body keeps running), so it is not a copy made to satisfy the borrow checker, but it copies every slot of the frame to keep the few the handler captures.\n\nChange: build the handler's frame by reading only the captured slots out of the body's frame (a borrowing form of retain_continuation_captures that takes \u0026Frame and clones just the captures), leaving the two by-value callers as they are.\n\nThis is also an instance of .agent/strategies/ownership-shape.md (copy only what is kept); it lives here because the frame is this epic's subject.\n\nFails before, passes after: a unit test in ir_interp/backend_test.rs that enters a try from a frame holding values the handler does not capture and observes that the handler's frame was built without copying them (a counted clone on a test value, or the frame-construction count).\n\nAcceptance: full gate green; fixtures that use try/rescue unchanged on three paths.",
+  "id": "fz-e7w.5",
+  "labels": [],
+  "parent": "fz-e7w",
+  "priority": 3,
+  "status": "open",
+  "title": "A try handler's frame is built from the handler's captures, not copied from the body's frame",
+  "type": "task",
+  "updated_at": "2026-11-13T00:57:40Z"
+}
