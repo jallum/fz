@@ -53,6 +53,17 @@ spans keep the source text as written. Quoted atoms (`:"café"`) and strings kee
 the spelling they were written with. `source_word` accepts only a name that is
 already NFC, because source text cannot produce a word token spelled otherwise.
 
+A name draws its letters and digits from one script, as Elixir checks it
+(`invalid mixed-script identifier found: aа`). The check runs on the NFC
+spelling, on each `_`-separated chunk alone, so `hello_мир` is accepted and
+`aа` (Latin plus Cyrillic) is not. Script sets are the UTS 39 augmented script
+sets (`unicode-security`): Han, Hiragana and Katakana together are Japanese,
+Han and Hangul together are Korean, and ASCII digits and `_` belong to every
+script, while a non-ASCII digit belongs to its own script. Greek small mu
+(`μ`) belongs to every script, and so does a character that UTS 39 restricts
+from identifiers when NFC composition produces one. Quoted atoms and strings
+are not checked. `read_ident` and `source_word` share `is_single_script`.
+
 ## Newline continuation is grammar-owned, not a parser lookahead
 
 Physical newlines are first-class `Tok::Newline` tokens. Whether a newline

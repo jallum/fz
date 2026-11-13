@@ -750,3 +750,92 @@ fn source_word_accepts_only_the_normalized_spelling() {
     assert!(matches!(source_word("caf\u{e9}"), Some(SourceWord::Ident)));
     assert!(source_word("cafe\u{301}").is_none());
 }
+
+/// A name mixing Latin and Cyrillic letters is rejected with Elixir's headline.
+#[test]
+fn a_name_mixing_latin_and_cyrillic_is_rejected() {
+    let error = lex_kinds("a\u{430} = 1").unwrap_err();
+    assert_eq!(error.msg, "invalid mixed-script identifier found: a\u{430}");
+    assert_eq!((error.span.start, error.span.end), (0, 3));
+}
+
+/// The rule applies to atoms, keyword keys and the sigil name as to variables.
+#[test]
+fn an_atom_and_a_keyword_key_mixing_scripts_are_rejected() {
+    assert!(
+        lex_kinds(":a\u{430}")
+            .unwrap_err()
+            .msg
+            .starts_with("invalid mixed-script")
+    );
+    assert!(
+        lex_kinds("[a\u{430}: 1]")
+            .unwrap_err()
+            .msg
+            .starts_with("invalid mixed-script")
+    );
+}
+
+/// A quoted atom and a string may mix scripts: only names are checked.
+#[test]
+fn quoted_atoms_and_strings_may_mix_scripts() {
+    assert!(lex_kinds(":\"a\u{430}\"").is_ok());
+    assert!(lex_kinds("\"a\u{430}\"").is_ok());
+}
+
+/// A name wholly in one script, with digits and underscores, is accepted.
+#[test]
+fn a_single_script_name_with_digits_and_underscores_is_accepted() {
+    assert!(lex_kinds("\u{43f}\u{440}\u{438}\u{432}\u{435}\u{442}_1").is_ok());
+    assert!(lex_kinds("_\u{430}").is_ok());
+    assert!(lex_kinds("a1_b").is_ok());
+}
+
+/// Han, Hiragana and Katakana together are one writing system (Japanese).
+#[test]
+fn han_hiragana_and_katakana_may_share_a_name() {
+    assert!(lex_kinds("\u{65e5}\u{3042}\u{30a2}").is_ok());
+    assert!(lex_kinds("\u{65e5}\u{ac00}").is_ok());
+}
+
+/// Han with Latin is mixed, as in Elixir.
+#[test]
+fn han_with_latin_is_rejected() {
+    assert!(lex_kinds("\u{65e5}a").is_err());
+}
+
+/// Each underscore-separated chunk is checked alone, so scripts may be
+/// separated by an underscore.
+#[test]
+fn scripts_separated_by_an_underscore_are_accepted() {
+    assert!(lex_kinds("a_\u{430}").is_ok());
+    assert!(lex_kinds("\u{430}_a_\u{3b1}").is_ok());
+}
+
+/// Non-ASCII digits belong to a script and do not mix with Latin letters.
+#[test]
+fn a_non_ascii_digit_belongs_to_its_script() {
+    assert!(lex_kinds("a\u{661}").is_err());
+    assert!(lex_kinds("\u{430}\u{661}").is_err());
+}
+
+/// The check follows normalization: a decomposed name is judged in its NFC spelling.
+#[test]
+fn the_script_check_sees_the_normalized_name() {
+    assert!(lex_kinds("cafe\u{301}").is_ok());
+}
+
+/// The macro surface rejects a mixed-script word as the lexer does.
+#[test]
+fn source_word_rejects_a_mixed_script_name() {
+    assert!(source_word("a\u{430}").is_none());
+    assert!(matches!(source_word("\u{43f}\u{440}"), Some(SourceWord::Ident)));
+}
+
+/// Greek small mu mixes with any script, as Elixir allows because it folds `µ` into it.
+#[test]
+fn greek_small_mu_mixes_with_any_script() {
+    assert!(lex_kinds("a\u{3bc}").is_ok());
+    assert!(lex_kinds("\u{3bc}\u{65e5}").is_ok());
+    assert!(lex_kinds("\u{3b1}\u{3bc}a").is_err());
+}

@@ -1,0 +1,7 @@
+error[parse/expected-token]: invalid mixed-script identifier found: aа
+  --> fixtures/01209_a_name_mixing_scripts_is_rejected.fz:1:1
+   |
+1 | aа = 1
+   | ^^
+   |
+

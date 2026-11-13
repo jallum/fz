@@ -43,6 +43,7 @@ hashbrown = { version = "0.17.1", default-features = false }
 rustyline = { version = "18.0.0", default-features = false }
 serde_json = "1"
 unicode-normalization = "0.1.26"
+unicode-security = "0.1.3"
 
 [dev-dependencies]
 fz-fixture-metadata = { path = "fixture-metadata" }

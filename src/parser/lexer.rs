@@ -4,6 +4,8 @@ use std::rc::Rc;
 use std::str::from_utf8;
 
 use unicode_normalization::{UnicodeNormalization, is_nfc};
+use unicode_security::GeneralSecurityProfile;
+use unicode_security::mixed_script::AugmentedScriptSet;
 
 use crate::source::{SourceVersion, Span};
 use crate::telemetry::{RawSpanTelemetry, Telemetry};
@@ -238,7 +240,7 @@ fn classify_source_word(name: &str) -> SourceWord {
 /// word token with this spelling.
 pub(crate) fn source_word(name: &str) -> Option<SourceWord> {
     let mut chars = name.chars();
-    if !is_variable_start(chars.next()?) || !chars.all(is_word_continue) || !is_nfc(name) {
+    if !is_variable_start(chars.next()?) || !chars.all(is_word_continue) || !is_nfc(name) || !is_single_script(name) {
         return None;
     }
     let word = classify_source_word(name);
@@ -276,6 +278,33 @@ fn is_word_continue(c: char) -> bool {
     } else {
         unicode_ident::is_xid_continue(c)
     }
+}
+
+/// Every underscore-separated chunk of a name draws its letters and digits
+/// from one script (UTS 39 augmented script sets, as Elixir checks them), so
+/// scripts mix only across an underscore.
+fn is_single_script(name: &str) -> bool {
+    name.split('_').all(|chunk| !resolved_script_set(chunk).is_empty())
+}
+
+/// The scripts every constraining character of the chunk can be written in.
+fn resolved_script_set(chunk: &str) -> AugmentedScriptSet {
+    chunk
+        .chars()
+        .filter(|c| constrains_script(*c))
+        .fold(AugmentedScriptSet::default(), |mut set, c| {
+            set.intersect_with(c.into());
+            set
+        })
+}
+
+/// Greek small mu is exempt because Elixir folds `µ` (U+00B5) into it and
+/// lets both stand with any script. A non-ASCII character that UTS 39
+/// restricts from identifiers can only reach a name by NFC composition, and
+/// Elixir gives such a composed character no script either.
+fn constrains_script(c: char) -> bool {
+    const GREEK_SMALL_MU: char = '\u{3bc}';
+    c.is_ascii() || (c != GREEK_SMALL_MU && c.identifier_allowed())
 }
 
 /// The first non-ASCII character of a word that is spelled as an alias.
@@ -357,8 +386,9 @@ impl<'a> Lexer<'a> {
     }
 
     /// The name at the cursor in its NFC spelling, which is how Elixir spells
-    /// every unquoted name. Spans keep the source text as written.
-    fn read_ident(&mut self) -> String {
+    /// every unquoted name. Spans keep the source text as written. A name
+    /// mixing scripts is rejected.
+    fn read_ident(&mut self) -> Result<String, LexError> {
         let start = self.pos;
         let first = self
             .char_at(start)
@@ -367,7 +397,14 @@ impl<'a> Lexer<'a> {
         while let Some(c) = self.char_at(self.pos).filter(|c| is_word_continue(*c)) {
             self.pos += c.len_utf8();
         }
-        self.text[start..self.pos].nfc().collect()
+        let name: String = self.text[start..self.pos].nfc().collect();
+        if !is_single_script(&name) {
+            return Err(LexError {
+                msg: format!("invalid mixed-script identifier found: {name}"),
+                span: self.span_from(start),
+            });
+        }
+        Ok(name)
     }
 
     /// A word that is not a keyword-list key: a keyword, variable, function
@@ -934,7 +971,7 @@ impl<'a> Lexer<'a> {
 
             b'~' if self.peek(1).is_some_and(|c| c.is_ascii_lowercase()) => {
                 self.bump(); // ~
-                let name = self.read_ident();
+                let name = self.read_ident()?;
                 Tok::Sigil(name)
             }
 
@@ -1100,7 +1137,7 @@ impl<'a> Lexer<'a> {
                 }
                 _ if self.char_at(self.pos + 1).is_some_and(is_name_start) => {
                     self.bump(); // consume :
-                    let name = self.read_ident();
+                    let name = self.read_ident()?;
                     Tok::Atom(name)
                 }
                 Some(b'"') => {
@@ -1150,7 +1187,7 @@ impl<'a> Lexer<'a> {
             }
             c if c.is_ascii_digit() => self.read_number()?,
             _ if self.char_at(self.pos).is_some_and(is_name_start) => {
-                let name = self.read_ident();
+                let name = self.read_ident()?;
                 // `name:` (but not `::`) is a keyword-list key like `do:`.
                 if self.peek(0) == Some(b':') && self.peek(1) != Some(b':') {
                     self.bump();
