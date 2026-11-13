@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T01:00:21Z",
   "created": "2026-11-12T23:55:10Z",
   "description": "delivered_env (src/ir_interp/backend.rs:1999, clones at :2056/:2059) and capture_backend_continuation_env (:2304, clones at :2323/:2332) take \u0026HashMap and clone each capture into a fresh env; nearly every caller owns the old env and drops it right after.\nCallers passing a dying env: :315, :459, :861, :1138, :1359, :1420, :1448, :1462, :2246; capture_backend_continuation_env at :1334, :2124. eval_direct_call (:2102) takes env by value and only borrows it.\nNot removable: Try at :1487/:1494, where handler frame and body both read the same env; that caller keeps a visible clone.\nBefore building: establish whether a ValueId can appear in both captures and physical_captures of one entry. If it can, the move must account for it.\nShape: the helpers take the env by value and remove each capture.\nHeat: once per entry transition in the interpreter main loop (run_backend_resume, :747), at program run time.\n\nMethod: .agent/strategies/ownership-shape.md. Change the signature and let cargo check enumerate dependents; resolve interleavings by compute-then-commit or a split borrow; stop and report if an Rc is the only move.\nSignal: pure refactor. Full gate green; no golden, census or pin moves. Report the clone/to_vec count of each touched file before and after.\nSites were read at develop 8bf8775ae and not compiled; confirm each with cargo check before relying on it.",
   "id": "fz-gfx.13",
   "labels": [],
   "parent": "fz-gfx",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A control transition moves captures out of the env it is leaving",
   "type": "task",
-  "updated_at": "2026-11-13T00:41:40Z"
+  "updated_at": "2026-11-13T01:00:21Z"
 }
