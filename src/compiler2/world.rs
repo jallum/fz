@@ -2342,11 +2342,14 @@ impl World {
         inputs: &[Ty],
     ) -> Option<super::identity::ActivationKey> {
         let key = super::identity::ActivationKey::from_inputs(root, function, inputs, &mut self.types);
-        let row = key.inputs(&self.types);
-        row.iter()
-            .enumerate()
-            .all(|(slot, ty)| self.types.probe_keys_as_itself(ty, slot))
-            .then_some(key)
+        self.key_probes_as_itself(&key).then_some(key)
+    }
+
+    fn key_probes_as_itself(&mut self, key: &super::identity::ActivationKey) -> bool {
+        (0..key.input_len(&self.types)).all(|slot| {
+            let input = key.input(&self.types, slot);
+            self.types.probe_keys_as_itself(&input, slot)
+        })
     }
 
     pub(crate) fn canonical_activation_key(
@@ -2355,17 +2358,17 @@ impl World {
         function: FunctionId,
         inputs: &[Ty],
     ) -> super::identity::ActivationKey {
-        if let Some(key) = self.self_keyed_activation(root, function, inputs) {
+        let key = super::identity::ActivationKey::from_inputs(root, function, inputs, &mut self.types);
+        if self.key_probes_as_itself(&key) {
             return key;
         }
-        self.canonical_activation_key_inner(root, function, inputs)
+        self.canonical_activation_key_inner(function, key)
     }
 
     fn canonical_activation_key_inner(
         &mut self,
-        root: RootId,
         function: FunctionId,
-        inputs: &[Ty],
+        key: super::identity::ActivationKey,
     ) -> super::identity::ActivationKey {
         let demand = self
             .input_demands
@@ -2374,10 +2377,9 @@ impl World {
         let keying = self
             .body_keying(function)
             .expect("activation keying should wait for recursive facts before activation");
-        // The arrow is the PRECISE evidence: address the whole input vector in one
-        // pass (fz-hwn.27.6), so two distinct inference vars `[Ty27,Ty28]` address
-        // to distinct `[a0,a1]` and never collapse to the phantom `[a0,a0]`.
-        let key = super::identity::ActivationKey::from_inputs(root, function, inputs, &mut self.types);
+        // The key's arrow is the PRECISE evidence: the whole input vector is
+        // addressed in one pass, so two distinct inference vars `[Ty27,Ty28]`
+        // address to distinct `[a0,a1]` and never collapse to the phantom `[a0,a0]`.
         // Key != evidence is intentional: the dispatch key erases what no use can
         // tell apart (see `Types::activation_key_arrow`), and the precise arrow
         // stays in `ActivationInputs`.

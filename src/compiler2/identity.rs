@@ -129,6 +129,11 @@ impl ActivationKey {
         types.arrow_params(&self.arrow)
     }
 
+    /// The input at `slot`, read without cloning the param vector.
+    pub fn input(&self, types: &super::types::Types, slot: usize) -> Ty {
+        types.arrow_param(&self.arrow, slot)
+    }
+
     /// Input arity without cloning the param vector.
     pub fn input_len(&self, types: &super::types::Types) -> usize {
         types.arrow_arity(&self.arrow)

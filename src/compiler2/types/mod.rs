@@ -151,6 +151,8 @@ pub struct Types {
     /// by the id's dense slot (its tag bit masked off). Lets display render an
     /// address structurally (`a1_0`, `r0`) instead of as a bare `αN`.
     address_paths: Vec<Vec<addressed::AddrStep>>,
+    /// The interned `r0`, set the first time a key asks for it.
+    result_alpha: Option<Ty>,
     /// The stable label of every callable a closure literal can name. A raw
     /// `FnId` is a mint-order index, so it cannot decide canonical clause order
     /// (`order`); the owner names each callable as it mints the id.
@@ -601,6 +603,7 @@ impl Types {
             activation_key_arrows: HashMap::new(),
             address_vars: HashMap::new(),
             address_paths: Vec::new(),
+            result_alpha: None,
             callable_origins: order::CallableOrigins::new(),
             activation_input_collapses: 0,
         }
@@ -1384,6 +1387,14 @@ impl Types {
             .pure_arrow()
             .map(|sig| sig.args.clone())
             .unwrap_or_default()
+    }
+
+    /// The parameter at `slot` of a pure arrow; `slot` must be below its arity.
+    pub fn arrow_param(&self, arrow: &Ty, slot: usize) -> Ty {
+        self.descr(arrow)
+            .pure_arrow()
+            .expect("arrow_param reads a pure arrow")
+            .args[slot]
     }
 
     /// Arity of an arrow's parameter side without cloning — the read path for
