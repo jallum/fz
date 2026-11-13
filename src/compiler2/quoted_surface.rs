@@ -1,11 +1,12 @@
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::process::AtomName;
 
 use crate::ast::{Attribute, TypeAliasDecl, TypeExprBody};
 use crate::modules::identity::ModuleName;
-use crate::parser::lexer::Tok;
+use crate::parser::lexer::{SourceWord, Tok};
 use crate::source::{SourceMap, Span};
 
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
@@ -244,24 +245,31 @@ fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeS
                         format!("invalid `{head_name}` function head: {error}"),
                     )
                 })?;
-                let order_key = key.clone();
-                let entry = groups.entry(key.clone()).or_insert_with(|| {
-                    group_order.push(order_key);
-                    PendingFunctionGroup {
-                        item_roots: Vec::new(),
-                        kind: head_name.to_string(),
+                let entry = match groups.entry(key) {
+                    Entry::Occupied(group) => {
+                        if group.get().kind != head_name.as_str() {
+                            return Err(QuotedSourceError::user(
+                                crate::diag::codes::PARSE_MIXED_FUNCTION_VISIBILITY,
+                                node.span,
+                                format!(
+                                    "quoted function group `{}/{}` mixes `{}` and `{}` heads",
+                                    group.key().name,
+                                    group.key().arity,
+                                    group.get().kind,
+                                    head_name
+                                ),
+                            ));
+                        }
+                        group.into_mut()
                     }
-                });
-                if entry.kind != head_name.as_str() {
-                    return Err(QuotedSourceError::user(
-                        crate::diag::codes::PARSE_MIXED_FUNCTION_VISIBILITY,
-                        node.span,
-                        format!(
-                            "quoted function group `{}/{}` mixes `{}` and `{}` heads",
-                            key.name, key.arity, entry.kind, head_name
-                        ),
-                    ));
-                }
+                    Entry::Vacant(slot) => {
+                        group_order.push(slot.key().clone());
+                        slot.insert(PendingFunctionGroup {
+                            item_roots: Vec::new(),
+                            kind: head_name.to_string(),
+                        })
+                    }
+                };
                 entry.item_roots.append(&mut pending_function_attrs);
                 entry.item_roots.push(quoted_item.root());
             }
@@ -981,9 +989,9 @@ fn arity_word(arity: usize) -> &'static str {
 }
 
 fn is_local_function_name(name: &str, allow_reserved_macro_name: bool) -> bool {
-    match crate::parser::lexer::source_word_token(name) {
-        Some(Tok::Ident(_)) => true,
-        Some(
+    match crate::parser::lexer::source_word(name) {
+        Some(SourceWord::Ident) => true,
+        Some(SourceWord::Keyword(
             Tok::Defmacro
             | Tok::Defmodule
             | Tok::Defprotocol
@@ -993,7 +1001,7 @@ fn is_local_function_name(name: &str, allow_reserved_macro_name: bool) -> bool {
             | Tok::Import
             | Tok::Require
             | Tok::Extern,
-        ) => allow_reserved_macro_name,
+        )) => allow_reserved_macro_name,
         _ => false,
     }
 }
