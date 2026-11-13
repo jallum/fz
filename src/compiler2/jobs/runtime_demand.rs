@@ -1552,6 +1552,7 @@ fn collect_entry_live_demands(
             tail_call_return = Some((*callsite, *value));
             merge_live_demands(&mut live, external_demands);
             let callee_callable = closure_callee_demand(
+                types,
                 facts,
                 args.as_slice(),
                 facts.callsites.get(callsite),
@@ -2800,6 +2801,7 @@ fn record_first_class_boundary_demand(
 }
 
 fn closure_callee_demand(
+    types: &Types,
     facts: &RuntimeDemandFacts<'_>,
     args: &[CallArg],
     summary: Option<&CallSiteSummary>,
@@ -2815,6 +2817,9 @@ fn closure_callee_demand(
                 .unwrap_or(facts.demand_types.any)
         })
         .collect();
+    if types.has_empty_argument(&actual_inputs) {
+        return CallableDemand::default();
+    }
     let Some(summary) = summary else {
         let mut demand = CallableDemand {
             resolved: Default::default(),

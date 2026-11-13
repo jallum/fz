@@ -1,0 +1,6 @@
+#---
+# purpose: "Map.update!/3 of a non-map aborts with BadMapError even though its callback can never be called"
+# expect: abort
+# oracle: 01123_map_update_bang_of_a_non_map_aborts.oracle.exs
+#---
+def main(), do: Map.update!(:first, 1, fn v -> v end)

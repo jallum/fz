@@ -2233,6 +2233,12 @@ impl Types {
         *a == self.core.none
     }
 
+    /// A call with an argument no value inhabits cannot happen: the call site
+    /// is dead, answers the empty type and asks its callee for nothing.
+    pub fn has_empty_argument(&self, args: &[Ty]) -> bool {
+        args.iter().any(|arg| self.is_empty(arg))
+    }
+
     #[cfg(test)]
     pub fn is_top(&self, a: &Ty) -> bool {
         let cx = self.ctx();

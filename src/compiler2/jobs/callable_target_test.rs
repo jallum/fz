@@ -9,6 +9,9 @@ use super::super::super::facts::FactUse;
 use super::super::super::scheduler::DriveOutcome;
 use crate::telemetry::ConfiguredTelemetry;
 
+use super::super::super::drive_harness::Drive;
+use super::super::super::dump::DumpStage;
+
 use super::*;
 
 #[test]
@@ -344,5 +347,33 @@ fn late_independent_surface_waits_for_only_its_exact_construction_prerequisites(
     assert!(
         world.callable_construction_target(&existing).is_some(),
         "adding an independent surface must not retract the existing target",
+    );
+}
+
+#[test]
+fn a_closure_call_with_an_uninhabited_argument_mints_no_activation() {
+    // Map.update!/3 on an atom feeds its callback `fetch!(map, key)`, which has
+    // type `none`: the call cannot happen, so it asks no callee for a surface.
+    let drive = Drive::fixture(1123);
+    let requested = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&requested);
+    drive.telemetry().attach_raw_event2::<World, JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            if let Job::DeriveCallableConstructionTarget(key) = &completion.job {
+                sink.borrow_mut().push(key.clone());
+            }
+        },
+    );
+    let settled = drive.dump_stage(DumpStage::Backend);
+    let types = settled.world().types();
+    let uninhabited = requested
+        .borrow()
+        .iter()
+        .filter(|key| key.surface.inputs.iter().any(|ty| types.is_empty(ty)))
+        .count();
+    assert_eq!(
+        uninhabited, 0,
+        "a callback that cannot be called has no construction target"
     );
 }

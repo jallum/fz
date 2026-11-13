@@ -491,7 +491,9 @@ fn prepare_runtime_demand_type_inputs(
                 .map(|arg| analysis.value_types.get(&arg.value).copied().unwrap_or(any))
                 .collect::<Vec<_>>();
             tys.extend(actual_inputs.iter().copied());
-            prepare_surface(world, &mut builder, &actual_inputs);
+            if !world.types().has_empty_argument(&actual_inputs) {
+                prepare_surface(world, &mut builder, &actual_inputs);
+            }
         }
     }
     for ty in tys {

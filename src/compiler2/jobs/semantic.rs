@@ -1359,7 +1359,7 @@ fn resolve_direct_call(
     // upstream call already short-circuited the path.) A call that never
     // happens is no edge, so it publishes nothing: that is the one thing the
     // fact's absence still says (fz-kdt.69.2).
-    if arg_types.iter().any(|arg| world.types().is_empty(arg)) {
+    if world.types().has_empty_argument(&arg_types) {
         return Ok((None, CallReturn::Known(none_ty(world))));
     }
 
@@ -1807,7 +1807,7 @@ fn resolve_closure_call(
         activation: caller.clone(),
         callsite,
     };
-    if callee_has_no_inhabitants(world.types(), callee_ty) || arg_types.iter().any(|arg| world.types().is_empty(arg)) {
+    if callee_has_no_inhabitants(world.types(), callee_ty) || world.types().has_empty_argument(&arg_types) {
         // Uninhabitable callee or proven-empty argument: the call site is dead.
         // This is evidence (the empty type), not absence — absence
         // short-circuits upstream before any argument reaches a call. A call
