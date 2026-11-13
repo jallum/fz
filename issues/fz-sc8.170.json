@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T23:44:40Z",
+  "description": "Repro (0a1d44728 and with the fz-sc8.163 spike): dbg(Kernel.if(true, do: 1, else: 2)) -\u003e error[resolve/unknown-import]: module Kernel does not export if/2. Elixir prints 1. In fz if is a special form, not a Kernel macro (no defmacro if in lib/), so the qualified name finds nothing. Not yet enumerated: which other Elixir Kernel macros are special forms in fz (unless, and, or, in, |\u003e ...). Done when: the list is enumerated in this ticket, and an oracle fixture calls each by qualified name and matches Elixir on interp, run and build. Not on the distiller path.",
+  "id": "fz-sc8.170",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "Kernel.if and the other special forms are callable by their qualified name",
+  "type": "bug",
+  "updated_at": "2026-11-13T23:44:40Z"
+}
