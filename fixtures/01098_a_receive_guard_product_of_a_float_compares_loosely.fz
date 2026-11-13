@@ -1,0 +1,21 @@
+#---
+# purpose: "a guard whose product is an integer-valued float equals the integer, in an entry guard and in a receive guard, as Elixir does"
+# oracle: oracle.exs
+#---
+#
+# `1.5 * 2` is the float `3.0`, which `==` finds equal to the integer `3`. The
+# message reaches the receive guard as a float and the clause body is `:a`.
+def entry(n) when n * 2 == 3, do: :a
+def entry(_), do: :b
+
+def receive_product(m) do
+  send(self(), m)
+  receive do
+    n when n * 2 == 3 -> :a
+    _ -> :b
+  end
+end
+
+def main() do
+  dbg([entry(1.5), entry(2), receive_product(1.5), receive_product(2)])
+end

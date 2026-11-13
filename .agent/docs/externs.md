@@ -366,7 +366,8 @@ the pair is physical only: no fz tuple is built.
 - The interpreter reads the same pair and answers `ExternCallValue::CheckedFailure`,
   which `continue_after_extern` hands to `raise_last_resort`, the function a
   decision's failure calls.
-- A guard cannot call such an extern: `GuardExtern::new` refuses the return.
+- A guard may call such an extern: the failure makes the clause not match, and
+  nothing is raised (see [`pattern-matching`](pattern-matching.md#guards)).
 
 Kernel's arithmetic externs (`+ - * / % div rem`, `negate`, over integer and
 float operands) are declared this way, so a failed operation, an overflow or a
@@ -696,12 +697,14 @@ code before they own it.
 
 Every extern is callable from a guard; the guard-expression node is
 `PatternGuardExpr::Extern`. `GuardExtern::new` (dispatch_matrix/pattern.rs)
-admits only parameters of class `I64` or `Any` and returns of `I64`, `Any` or
-`never`; any other class is `SourcePatternError::GuardExternClass`, a compile
-error on every path. The receive matcher's shim (`emit_guard_extern`) therefore
-marshals two classes: an integer (`receive_value_int`) and a reference word
-(`emit_receive_value_ref`). An extern returning `never` fails the guard without
-being called. The interpreter calls the extern through `call_lowered_extern`;
+admits parameters of class `I64`, `F64` or `Any` and returns of `I64`, `F64`,
+`Any` or `never`, plain or `Checked`; any other class is
+`SourcePatternError::GuardExternClass`, a compile error on every path. The
+receive matcher's shim (`emit_guard_extern`) therefore marshals three classes:
+an integer (`receive_value_int`), a float (`receive_value_float`) and a
+reference word (`emit_receive_value_ref`). An extern returning `never` fails the
+guard without being called, and a `Checked` extern that reports failure fails it
+too. The interpreter calls the extern through `call_lowered_extern`;
 native lowering emits `Prim::Extern`. Domain checks live in the Kernel heads
 that wrap the primitive (see [`pattern-matching`](pattern-matching.md)).
 

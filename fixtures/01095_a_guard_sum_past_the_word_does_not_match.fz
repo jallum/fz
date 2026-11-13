@@ -1,0 +1,23 @@
+#---
+# purpose: "a guard whose sum leaves the 64-bit integer does not match its clause, in an entry guard and in a receive guard, where a body raises"
+#---
+#
+# Integers are 64 bits wide, so `n + 1` at the largest integer fails the way
+# the same sum in a body does. In a guard that failure is the clause not
+# matching. Elixir has unbounded integers and answers `:a` for the largest
+# integer, so this fixture has no Elixir twin.
+def entry(n) when n + 1 > 0, do: :a
+def entry(_), do: :b
+
+def receive_sum(m) do
+  send(self(), m)
+  receive do
+    n when n + 1 > 0 -> :a
+    _ -> :b
+  end
+end
+
+def main() do
+  largest = 9223372036854775807
+  dbg([entry(largest), entry(1), receive_sum(largest), receive_sum(1)])
+end

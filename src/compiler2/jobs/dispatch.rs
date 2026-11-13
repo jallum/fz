@@ -15,7 +15,7 @@ use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
-use crate::ast::{Callee, Expr, Pattern, Spanned, Var, VarContext};
+use crate::ast::{CallableName, Callee, Expr, Pattern, Spanned, UnOp, Var, VarContext};
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
@@ -468,10 +468,28 @@ pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<Gu
         | Expr::Nil
         | Expr::Var(_) => Ok(()),
         Expr::Ascribe(inner, _) => collect_guard_calls_in_expr(inner, out),
-        Expr::UnOp(_, inner) => collect_guard_calls_in_expr(inner, out),
-        Expr::BinOp(_, left, right) => {
+        Expr::UnOp(op, inner) => {
+            collect_guard_calls_in_expr(inner, out)?;
+            if matches!(op, UnOp::Neg) {
+                out.push(GuardCall {
+                    callee: Callee::Name(CallableName::negation()),
+                    arity: 1,
+                    span: expr.span,
+                });
+            }
+            Ok(())
+        }
+        Expr::BinOp(op, left, right) => {
             collect_guard_calls_in_expr(left, out)?;
-            collect_guard_calls_in_expr(right, out)
+            collect_guard_calls_in_expr(right, out)?;
+            if let Some(name) = op.arithmetic_function() {
+                out.push(GuardCall {
+                    callee: Callee::Name(CallableName::source(name)),
+                    arity: 2,
+                    span: expr.span,
+                });
+            }
+            Ok(())
         }
         Expr::Call(target, args) => {
             let Some(callee) = Callee::for_call(&target.node, args.len()) else {

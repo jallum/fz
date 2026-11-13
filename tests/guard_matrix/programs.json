@@ -1,0 +1,1482 @@
+[
+ {
+  "name": "add_int_lit_int_entry",
+  "source": "def f(a :: integer) when a + 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_int_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_integer(a) and a + 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_int_lit_float_entry",
+  "source": "def f(a :: integer) when a + 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_int_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_integer(a) and a + 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_int_int_entry",
+  "source": "def f(a :: integer, b :: integer) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_int_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and is_integer(b) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_int_float_entry",
+  "source": "def f(a :: integer, b :: float) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_int_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and is_float(b) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_int_union_entry",
+  "source": "def f(a :: integer, b :: integer | float) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_int_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and (is_integer(b) or is_float(b)) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_int_any_entry",
+  "source": "def f(a :: integer, b) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_int_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_float_lit_int_entry",
+  "source": "def f(a :: float) when a + 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_float_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_float(a) and a + 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_float_lit_float_entry",
+  "source": "def f(a :: float) when a + 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_float_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_float(a) and a + 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_float_int_entry",
+  "source": "def f(a :: float, b :: integer) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_float_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and is_integer(b) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_float_float_entry",
+  "source": "def f(a :: float, b :: float) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_float_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and is_float(b) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7.0})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "add_float_union_entry",
+  "source": "def f(a :: float, b :: integer | float) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_float_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and (is_integer(b) or is_float(b)) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_float_any_entry",
+  "source": "def f(a :: float, b) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_float_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_union_lit_int_entry",
+  "source": "def f(a :: integer | float) when a + 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_union_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when (is_integer(a) or is_float(a)) and a + 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_union_lit_float_entry",
+  "source": "def f(a :: integer | float) when a + 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_union_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when (is_integer(a) or is_float(a)) and a + 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_union_int_entry",
+  "source": "def f(a :: integer | float, b :: integer) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7.0, 7)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_union_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and is_integer(b) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7.0, 7})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_union_float_entry",
+  "source": "def f(a :: integer | float, b :: float) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_union_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and is_float(b) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_union_union_entry",
+  "source": "def f(a :: integer | float, b :: integer | float) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "add_union_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and (is_integer(b) or is_float(b)) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "add_union_any_entry",
+  "source": "def f(a :: integer | float, b) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "add_union_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "add_any_lit_int_entry",
+  "source": "def f(a) when a + 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_any_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when a + 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_any_lit_float_entry",
+  "source": "def f(a) when a + 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_any_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when a + 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_any_int_entry",
+  "source": "def f(a, b :: integer) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7.0, 7)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_any_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(b) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7.0, 7})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_any_float_entry",
+  "source": "def f(a, b :: float) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_any_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(b) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "add_any_union_entry",
+  "source": "def f(a, b :: integer | float) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "add_any_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(b) or is_float(b)) and a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "add_any_any_entry",
+  "source": "def f(a, b) when a + b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "add_any_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when a + b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "sub_int_lit_int_entry",
+  "source": "def f(a :: integer) when a - 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_int_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_integer(a) and a - 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_int_lit_float_entry",
+  "source": "def f(a :: integer) when a - 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_int_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_integer(a) and a - 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_int_int_entry",
+  "source": "def f(a :: integer, b :: integer) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_int_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and is_integer(b) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_int_float_entry",
+  "source": "def f(a :: integer, b :: float) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_int_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and is_float(b) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_int_union_entry",
+  "source": "def f(a :: integer, b :: integer | float) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_int_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and (is_integer(b) or is_float(b)) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_int_any_entry",
+  "source": "def f(a :: integer, b) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_int_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_float_lit_int_entry",
+  "source": "def f(a :: float) when a - 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_float_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_float(a) and a - 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_float_lit_float_entry",
+  "source": "def f(a :: float) when a - 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_float_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_float(a) and a - 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_float_int_entry",
+  "source": "def f(a :: float, b :: integer) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_float_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and is_integer(b) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_float_float_entry",
+  "source": "def f(a :: float, b :: float) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_float_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and is_float(b) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7.0})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "sub_float_union_entry",
+  "source": "def f(a :: float, b :: integer | float) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_float_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and (is_integer(b) or is_float(b)) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_float_any_entry",
+  "source": "def f(a :: float, b) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_float_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_union_lit_int_entry",
+  "source": "def f(a :: integer | float) when a - 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_union_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when (is_integer(a) or is_float(a)) and a - 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_union_lit_float_entry",
+  "source": "def f(a :: integer | float) when a - 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_union_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when (is_integer(a) or is_float(a)) and a - 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_union_int_entry",
+  "source": "def f(a :: integer | float, b :: integer) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7.0, 7)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_union_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and is_integer(b) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7.0, 7})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_union_float_entry",
+  "source": "def f(a :: integer | float, b :: float) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_union_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and is_float(b) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_union_union_entry",
+  "source": "def f(a :: integer | float, b :: integer | float) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "sub_union_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and (is_integer(b) or is_float(b)) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "sub_union_any_entry",
+  "source": "def f(a :: integer | float, b) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "sub_union_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "sub_any_lit_int_entry",
+  "source": "def f(a) when a - 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_any_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when a - 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_any_lit_float_entry",
+  "source": "def f(a) when a - 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_any_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when a - 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_any_int_entry",
+  "source": "def f(a, b :: integer) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7.0, 7)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_any_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(b) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7.0, 7})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_any_float_entry",
+  "source": "def f(a, b :: float) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_any_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(b) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "sub_any_union_entry",
+  "source": "def f(a, b :: integer | float) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "sub_any_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(b) or is_float(b)) and a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "sub_any_any_entry",
+  "source": "def f(a, b) when a - b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "sub_any_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when a - b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "mul_int_lit_int_entry",
+  "source": "def f(a :: integer) when a * 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_int_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_integer(a) and a * 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_int_lit_float_entry",
+  "source": "def f(a :: integer) when a * 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_int_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_integer(a) and a * 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_int_int_entry",
+  "source": "def f(a :: integer, b :: integer) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_int_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and is_integer(b) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_int_float_entry",
+  "source": "def f(a :: integer, b :: float) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_int_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and is_float(b) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_int_union_entry",
+  "source": "def f(a :: integer, b :: integer | float) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_int_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and (is_integer(b) or is_float(b)) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_int_any_entry",
+  "source": "def f(a :: integer, b) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_int_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_float_lit_int_entry",
+  "source": "def f(a :: float) when a * 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_float_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_float(a) and a * 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_float_lit_float_entry",
+  "source": "def f(a :: float) when a * 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_float_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_float(a) and a * 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_float_int_entry",
+  "source": "def f(a :: float, b :: integer) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_float_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and is_integer(b) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_float_float_entry",
+  "source": "def f(a :: float, b :: float) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_float_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and is_float(b) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7.0})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "mul_float_union_entry",
+  "source": "def f(a :: float, b :: integer | float) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_float_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and (is_integer(b) or is_float(b)) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_float_any_entry",
+  "source": "def f(a :: float, b) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_float_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_union_lit_int_entry",
+  "source": "def f(a :: integer | float) when a * 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_union_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when (is_integer(a) or is_float(a)) and a * 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_union_lit_float_entry",
+  "source": "def f(a :: integer | float) when a * 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_union_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when (is_integer(a) or is_float(a)) and a * 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_union_int_entry",
+  "source": "def f(a :: integer | float, b :: integer) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7.0, 7)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_union_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and is_integer(b) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7.0, 7})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_union_float_entry",
+  "source": "def f(a :: integer | float, b :: float) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_union_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and is_float(b) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_union_union_entry",
+  "source": "def f(a :: integer | float, b :: integer | float) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "mul_union_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and (is_integer(b) or is_float(b)) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "mul_union_any_entry",
+  "source": "def f(a :: integer | float, b) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "mul_union_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "mul_any_lit_int_entry",
+  "source": "def f(a) when a * 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_any_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when a * 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_any_lit_float_entry",
+  "source": "def f(a) when a * 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_any_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when a * 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_any_int_entry",
+  "source": "def f(a, b :: integer) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7.0, 7)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_any_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(b) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7.0, 7})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_any_float_entry",
+  "source": "def f(a, b :: float) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_any_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(b) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "mul_any_union_entry",
+  "source": "def f(a, b :: integer | float) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "mul_any_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(b) or is_float(b)) and a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "mul_any_any_entry",
+  "source": "def f(a, b) when a * b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "mul_any_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when a * b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "fdiv_int_lit_int_entry",
+  "source": "def f(a :: integer) when a / 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_int_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_integer(a) and a / 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_int_lit_float_entry",
+  "source": "def f(a :: integer) when a / 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_int_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_integer(a) and a / 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_int_int_entry",
+  "source": "def f(a :: integer, b :: integer) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_int_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and is_integer(b) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_int_float_entry",
+  "source": "def f(a :: integer, b :: float) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_int_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and is_float(b) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_int_union_entry",
+  "source": "def f(a :: integer, b :: integer | float) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_int_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and (is_integer(b) or is_float(b)) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_int_any_entry",
+  "source": "def f(a :: integer, b) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_int_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_float_lit_int_entry",
+  "source": "def f(a :: float) when a / 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_float_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_float(a) and a / 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_float_lit_float_entry",
+  "source": "def f(a :: float) when a / 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_float_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_float(a) and a / 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_float_int_entry",
+  "source": "def f(a :: float, b :: integer) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_float_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and is_integer(b) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_float_float_entry",
+  "source": "def f(a :: float, b :: float) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_float_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and is_float(b) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7.0})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "fdiv_float_union_entry",
+  "source": "def f(a :: float, b :: integer | float) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_float_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and (is_integer(b) or is_float(b)) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_float_any_entry",
+  "source": "def f(a :: float, b) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_float_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_union_lit_int_entry",
+  "source": "def f(a :: integer | float) when a / 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_union_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when (is_integer(a) or is_float(a)) and a / 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_union_lit_float_entry",
+  "source": "def f(a :: integer | float) when a / 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_union_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when (is_integer(a) or is_float(a)) and a / 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_union_int_entry",
+  "source": "def f(a :: integer | float, b :: integer) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7.0, 7)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_union_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and is_integer(b) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7.0, 7})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_union_float_entry",
+  "source": "def f(a :: integer | float, b :: float) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_union_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and is_float(b) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_union_union_entry",
+  "source": "def f(a :: integer | float, b :: integer | float) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "fdiv_union_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and (is_integer(b) or is_float(b)) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "fdiv_union_any_entry",
+  "source": "def f(a :: integer | float, b) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "fdiv_union_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "fdiv_any_lit_int_entry",
+  "source": "def f(a) when a / 2 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_any_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when a / 2 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_any_lit_float_entry",
+  "source": "def f(a) when a / 2.0 >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_any_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when a / 2.0 >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_any_int_entry",
+  "source": "def f(a, b :: integer) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7.0, 7)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_any_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(b) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7.0, 7})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_any_float_entry",
+  "source": "def f(a, b :: float) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_any_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(b) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "fdiv_any_union_entry",
+  "source": "def f(a, b :: integer | float) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "fdiv_any_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(b) or is_float(b)) and a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "fdiv_any_any_entry",
+  "source": "def f(a, b) when a / b >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "fdiv_any_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when a / b >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :a, :a, :a]"
+ },
+ {
+  "name": "div_int_lit_int_entry",
+  "source": "def f(a :: integer) when div(a, 2) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "div_int_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_integer(a) and div(a, 2) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "div_int_lit_float_entry",
+  "source": "def f(a :: integer) when div(a, 2.0) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "div_int_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_integer(a) and div(a, 2.0) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "div_int_int_entry",
+  "source": "def f(a :: integer, b :: integer) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "div_int_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and is_integer(b) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "div_int_float_entry",
+  "source": "def f(a :: integer, b :: float) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "div_int_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and is_float(b) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0})])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "div_int_union_entry",
+  "source": "def f(a :: integer, b :: integer | float) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "div_int_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and (is_integer(b) or is_float(b)) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0})])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "div_int_any_entry",
+  "source": "def f(a :: integer, b) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "div_int_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0})])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "div_float_lit_int_entry",
+  "source": "def f(a :: float) when div(a, 2) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7.0)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "div_float_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_float(a) and div(a, 2) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7.0)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "div_float_lit_float_entry",
+  "source": "def f(a :: float) when div(a, 2.0) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7.0)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "div_float_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_float(a) and div(a, 2.0) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7.0)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "div_float_int_entry",
+  "source": "def f(a :: float, b :: integer) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "div_float_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and is_integer(b) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7})])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "div_float_float_entry",
+  "source": "def f(a :: float, b :: float) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7.0)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "div_float_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and is_float(b) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7.0})])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "div_float_union_entry",
+  "source": "def f(a :: float, b :: integer | float) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "div_float_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and (is_integer(b) or is_float(b)) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "div_float_any_entry",
+  "source": "def f(a :: float, b) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "div_float_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "div_union_lit_int_entry",
+  "source": "def f(a :: integer | float) when div(a, 2) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "div_union_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when (is_integer(a) or is_float(a)) and div(a, 2) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "div_union_lit_float_entry",
+  "source": "def f(a :: integer | float) when div(a, 2.0) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "div_union_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when (is_integer(a) or is_float(a)) and div(a, 2.0) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "div_union_int_entry",
+  "source": "def f(a :: integer | float, b :: integer) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7.0, 7)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "div_union_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and is_integer(b) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7.0, 7})])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "div_union_float_entry",
+  "source": "def f(a :: integer | float, b :: float) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0), f(7.0, 7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "div_union_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and is_float(b) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "div_union_union_entry",
+  "source": "def f(a :: integer | float, b :: integer | float) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "div_union_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and (is_integer(b) or is_float(b)) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "div_union_any_entry",
+  "source": "def f(a :: integer | float, b) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "div_union_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "div_any_lit_int_entry",
+  "source": "def f(a) when div(a, 2) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "div_any_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when div(a, 2) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "div_any_lit_float_entry",
+  "source": "def f(a) when div(a, 2.0) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "div_any_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when div(a, 2.0) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "div_any_int_entry",
+  "source": "def f(a, b :: integer) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7.0, 7)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "div_any_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(b) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7.0, 7})])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "div_any_float_entry",
+  "source": "def f(a, b :: float) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0), f(7.0, 7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "div_any_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(b) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "div_any_union_entry",
+  "source": "def f(a, b :: integer | float) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "div_any_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(b) or is_float(b)) and div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "div_any_any_entry",
+  "source": "def f(a, b) when div(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "div_any_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when div(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "rem_int_lit_int_entry",
+  "source": "def f(a :: integer) when rem(a, 2) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "rem_int_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_integer(a) and rem(a, 2) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "rem_int_lit_float_entry",
+  "source": "def f(a :: integer) when rem(a, 2.0) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "rem_int_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_integer(a) and rem(a, 2.0) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "rem_int_int_entry",
+  "source": "def f(a :: integer, b :: integer) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "rem_int_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and is_integer(b) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7})])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "rem_int_float_entry",
+  "source": "def f(a :: integer, b :: float) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "rem_int_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and is_float(b) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0})])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "rem_int_union_entry",
+  "source": "def f(a :: integer, b :: integer | float) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "rem_int_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and (is_integer(b) or is_float(b)) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0})])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "rem_int_any_entry",
+  "source": "def f(a :: integer, b) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "rem_int_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(a) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0})])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "rem_float_lit_int_entry",
+  "source": "def f(a :: float) when rem(a, 2) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7.0)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "rem_float_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_float(a) and rem(a, 2) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7.0)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "rem_float_lit_float_entry",
+  "source": "def f(a :: float) when rem(a, 2.0) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7.0)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "rem_float_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_float(a) and rem(a, 2.0) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7.0)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "rem_float_int_entry",
+  "source": "def f(a :: float, b :: integer) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "rem_float_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and is_integer(b) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7})])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "rem_float_float_entry",
+  "source": "def f(a :: float, b :: float) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7.0)])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "rem_float_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and is_float(b) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7.0})])\nend\n",
+  "expected": "[:b]"
+ },
+ {
+  "name": "rem_float_union_entry",
+  "source": "def f(a :: float, b :: integer | float) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "rem_float_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and (is_integer(b) or is_float(b)) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "rem_float_any_entry",
+  "source": "def f(a :: float, b) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "rem_float_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(a) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "rem_union_lit_int_entry",
+  "source": "def f(a :: integer | float) when rem(a, 2) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "rem_union_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when (is_integer(a) or is_float(a)) and rem(a, 2) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "rem_union_lit_float_entry",
+  "source": "def f(a :: integer | float) when rem(a, 2.0) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "rem_union_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when (is_integer(a) or is_float(a)) and rem(a, 2.0) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "rem_union_int_entry",
+  "source": "def f(a :: integer | float, b :: integer) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7.0, 7)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "rem_union_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and is_integer(b) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7.0, 7})])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "rem_union_float_entry",
+  "source": "def f(a :: integer | float, b :: float) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0), f(7.0, 7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "rem_union_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and is_float(b) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "rem_union_union_entry",
+  "source": "def f(a :: integer | float, b :: integer | float) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "rem_union_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and (is_integer(b) or is_float(b)) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "rem_union_any_entry",
+  "source": "def f(a :: integer | float, b) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "rem_union_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(a) or is_float(a)) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "rem_any_lit_int_entry",
+  "source": "def f(a) when rem(a, 2) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "rem_any_lit_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when rem(a, 2) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "rem_any_lit_float_entry",
+  "source": "def f(a) when rem(a, 2.0) >= 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "rem_any_lit_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when rem(a, 2.0) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "rem_any_int_entry",
+  "source": "def f(a, b :: integer) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7.0, 7)])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "rem_any_int_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_integer(b) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7.0, 7})])\nend\n",
+  "expected": "[:a, :b]"
+ },
+ {
+  "name": "rem_any_float_entry",
+  "source": "def f(a, b :: float) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7.0), f(7.0, 7.0)])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "rem_any_float_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when is_float(b) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7.0}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:b, :b]"
+ },
+ {
+  "name": "rem_any_union_entry",
+  "source": "def f(a, b :: integer | float) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "rem_any_union_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when (is_integer(b) or is_float(b)) and rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "rem_any_any_entry",
+  "source": "def f(a, b) when rem(a, b) >= 0, do: :a\ndef f(_, _), do: :b\ndef main() do\n  dbg([f(7, 7), f(7, 7.0), f(7.0, 7), f(7.0, 7.0)])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "rem_any_any_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    {a, b} when rem(a, b) >= 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g({7, 7}), g({7, 7.0}), g({7.0, 7}), g({7.0, 7.0})])\nend\n",
+  "expected": "[:a, :b, :b, :b]"
+ },
+ {
+  "name": "neg_int_-_entry",
+  "source": "def f(a :: integer) when -a < 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "neg_int_-_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_integer(a) and -a < 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "neg_float_-_entry",
+  "source": "def f(a :: float) when -a < 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "neg_float_-_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when is_float(a) and -a < 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7.0)])\nend\n",
+  "expected": "[:a]"
+ },
+ {
+  "name": "neg_union_-_entry",
+  "source": "def f(a :: integer | float) when -a < 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "neg_union_-_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when (is_integer(a) or is_float(a)) and -a < 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "neg_any_-_entry",
+  "source": "def f(a) when -a < 0, do: :a\ndef f(_), do: :b\ndef main() do\n  dbg([f(7), f(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ },
+ {
+  "name": "neg_any_-_recv",
+  "source": "def g(m) do\n  send(self(), m)\n  receive do\n    a when -a < 0 -> :a\n    _ -> :b\n  end\nend\ndef main() do\n  dbg([g(7), g(7.0)])\nend\n",
+  "expected": "[:a, :a]"
+ }
+]

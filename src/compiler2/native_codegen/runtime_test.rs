@@ -103,12 +103,57 @@ pub(super) trait RuntimeTestEmitter<'f> {
     fn callable_addresses(&mut self, callables: &CallableShapes) -> Result<Vec<ir::Value>, CodegenError>;
 }
 
-/// Ask `predicate` of `value`: an `I8` flag, 1 where it is admitted.
-pub(super) fn emit_runtime_type_test<'f, E: RuntimeTestEmitter<'f>>(
+/// `predicate` asked of `value` as an `I8` flag, for a question nested inside
+/// another test's own flag.
+fn emit_runtime_type_flag<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     value: E::Value,
     predicate: &RuntimeTypePredicate,
 ) -> Result<ir::Value, CodegenError> {
+    let answer = emit_runtime_type_test(e, value, predicate)?;
+    Ok(answer.into_flag(e.builder()))
+}
+
+/// What asking a predicate of a value comes to.
+///
+/// A value held unboxed in a scalar lane is of one kind, so a predicate that
+/// admits all of that kind or none of it is answered without emitting a test.
+/// A caller that branches on the answer then lowers only the successor that
+/// can be reached.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum TypeTestAnswer {
+    Always,
+    Never,
+    /// An `I8` flag, 1 where the predicate admits the value.
+    Flag(ir::Value),
+}
+
+impl TypeTestAnswer {
+    /// The answer as an `I8` flag, for a caller that wants a value.
+    pub(super) fn into_flag(self, b: &mut FunctionBuilder<'_>) -> ir::Value {
+        match self {
+            Self::Always => b.ins().iconst(types::I8, 1),
+            Self::Never => b.ins().iconst(types::I8, 0),
+            Self::Flag(flag) => flag,
+        }
+    }
+}
+
+/// Ask `predicate` of `value`.
+pub(super) fn emit_runtime_type_test<'f, E: RuntimeTestEmitter<'f>>(
+    e: &mut E,
+    value: E::Value,
+    predicate: &RuntimeTypePredicate,
+) -> Result<TypeTestAnswer, CodegenError> {
+    if let KindEvidence::Unboxed(kind) = e.kind_evidence(value)
+        && let Some(admitted) = predicate.settled_for_scalar_lane(kind)
+    {
+        return Ok(if admitted {
+            TypeTestAnswer::Always
+        } else {
+            TypeTestAnswer::Never
+        });
+    }
     let mut flag: Option<ir::Value> = None;
     // The three struct axes share one schema read, so whichever comes first
     // emits all three and the others fold into it.
@@ -130,10 +175,7 @@ pub(super) fn emit_runtime_type_test<'f, E: RuntimeTestEmitter<'f>>(
             Some(prev) => e.builder().ins().bor(prev, next),
         });
     }
-    Ok(match flag {
-        Some(flag) => flag,
-        None => e.builder().ins().iconst(types::I8, 0),
-    })
+    Ok(flag.map_or(TypeTestAnswer::Never, TypeTestAnswer::Flag))
 }
 
 /// One axis' answer.
@@ -296,7 +338,7 @@ fn emit_list_axis<'f, E: RuntimeTestEmitter<'f>>(
         let head = e.list_head(value)?;
         let mut flag = e.builder().ins().iconst(types::I8, 0);
         for question in &heads {
-            let next = emit_runtime_type_test(e, head, question)?;
+            let next = emit_runtime_type_flag(e, head, question)?;
             flag = e.builder().ins().bor(flag, next);
         }
         Ok(flag)
@@ -428,7 +470,7 @@ fn emit_shapes_of_arity<'f, E: RuntimeTestEmitter<'f>>(
                     field
                 }
             };
-            let flag = emit_runtime_type_test(e, field, position)?;
+            let flag = emit_runtime_type_flag(e, field, position)?;
             matched = Some(match matched {
                 None => flag,
                 Some(prev) => e.builder().ins().band(prev, flag),

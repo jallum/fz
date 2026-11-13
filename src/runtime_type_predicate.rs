@@ -404,6 +404,21 @@ impl RuntimeTypePredicate {
         }
     }
 
+    /// What this test answers for every value held unboxed in the scalar lane
+    /// `kind`, when that is the same answer for all of them: `Some(true)` where
+    /// the axis the lane reaches admits every value, `Some(false)` where it
+    /// admits none. `None` where only a membership check on the value can say,
+    /// and for a kind no scalar lane holds.
+    pub(crate) fn settled_for_scalar_lane(&self, kind: ValueKind) -> Option<bool> {
+        let (is_any, is_none) = match kind {
+            ValueKind::INT => (self.ints.is_any(), self.ints.is_none()),
+            ValueKind::FLOAT => (self.floats.is_any(), self.floats.is_none()),
+            ValueKind::ATOM => (self.atoms.is_any(), self.atoms.is_none()),
+            _ => return None,
+        };
+        (is_any || is_none).then_some(is_any)
+    }
+
     /// The axes this test says anything at all on, in table order.
     ///
     /// The native emitters walk this: an axis a predicate is silent on emits

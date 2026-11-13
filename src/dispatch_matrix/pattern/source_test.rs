@@ -205,9 +205,7 @@ fn a_guard_extern_returning_never_fails_the_guard() {
 fn a_guard_extern_of_any_other_class_is_refused_where_the_node_is_made() {
     use crate::fz_ir::{ExternReturn, ExternTy};
     let refused = [
-        guard_extern(&[ExternTy::F64], ExternReturn::Scalar(ExternTy::I64), false),
         guard_extern(&[ExternTy::Binary], ExternReturn::Scalar(ExternTy::I64), false),
-        guard_extern(&[ExternTy::Any], ExternReturn::Scalar(ExternTy::F64), false),
         guard_extern(&[ExternTy::Any], ExternReturn::Scalar(ExternTy::Bool), false),
         guard_extern(&[ExternTy::Any], ExternReturn::Scalar(ExternTy::Unit), false),
         guard_extern(
@@ -222,6 +220,39 @@ fn a_guard_extern_of_any_other_class_is_refused_where_the_node_is_made() {
             matches!(result, Err(SourcePatternError::GuardExternClass { .. })),
             "expected a class refusal, got {result:?}"
         );
+    }
+}
+
+/// Intent: a guard function may take and return numbers, and may declare a
+/// failure, because a guard calls the same Kernel operators a body does.
+#[test]
+fn a_guard_extern_may_carry_floats_and_declare_a_checked_failure() {
+    use crate::dispatch_matrix::pattern::LastResort;
+    use crate::fz_ir::{ExternReturn, ExternTy};
+    let overflow = || LastResort::Exception {
+        exception: "Elixir.ArithmeticError".into(),
+        message: "bad argument in arithmetic expression".to_string(),
+        shows_subject: false,
+    };
+    let admitted = [
+        guard_extern(
+            &[ExternTy::F64, ExternTy::F64],
+            ExternReturn::Scalar(ExternTy::F64),
+            false,
+        ),
+        guard_extern(
+            &[ExternTy::I64, ExternTy::I64],
+            ExternReturn::Checked(ExternTy::I64, overflow()),
+            false,
+        ),
+        guard_extern(
+            &[ExternTy::I64, ExternTy::I64],
+            ExternReturn::Checked(ExternTy::F64, overflow()),
+            false,
+        ),
+    ];
+    for result in admitted {
+        assert!(result.is_ok(), "expected the extern to be admitted, got {result:?}");
     }
 }
 

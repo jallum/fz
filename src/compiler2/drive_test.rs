@@ -17383,7 +17383,7 @@ fn compiler2_guard_dispatch_threads_call_arguments_and_destructuring() {
         "destructuring helper reification should preserve inner bound names"
     );
     assert!(
-        guard_dispatch_has_binary_nested_input(&wanted_dispatch),
+        guard_dispatch_has_computed_nested_input(&wanted_dispatch),
         "nested helper calls should thread computed call arguments into the nested dispatch"
     );
 }
@@ -19448,24 +19448,26 @@ fn expr_has_nested_dispatch(expr: &PatternGuardExpr<Ty>) -> bool {
     }
 }
 
-fn guard_dispatch_has_binary_nested_input(dispatch: &PatternGuardDispatch<Ty>) -> bool {
-    dispatch.bodies.iter().any(expr_has_binary_nested_input)
+fn guard_dispatch_has_computed_nested_input(dispatch: &PatternGuardDispatch<Ty>) -> bool {
+    dispatch.bodies.iter().any(expr_has_computed_nested_input)
 }
 
-fn expr_has_binary_nested_input(expr: &PatternGuardExpr<Ty>) -> bool {
+fn expr_has_computed_nested_input(expr: &PatternGuardExpr<Ty>) -> bool {
     match expr {
         PatternGuardExpr::Dispatch { inputs, dispatch, .. } => {
-            inputs
-                .iter()
-                .any(|input| matches!(input, PatternGuardExpr::Binary { .. }))
-                || dispatch.bodies.iter().any(expr_has_binary_nested_input)
-                || dispatch.plan.guards.iter().any(expr_has_binary_nested_input)
+            inputs.iter().any(|input| {
+                !matches!(
+                    input,
+                    PatternGuardExpr::Subject(_) | PatternGuardExpr::Const(_) | PatternGuardExpr::Pinned(_)
+                )
+            }) || dispatch.bodies.iter().any(expr_has_computed_nested_input)
+                || dispatch.plan.guards.iter().any(expr_has_computed_nested_input)
         }
-        PatternGuardExpr::Unary { expr, .. } => expr_has_binary_nested_input(expr),
+        PatternGuardExpr::Unary { expr, .. } => expr_has_computed_nested_input(expr),
         PatternGuardExpr::Binary { lhs, rhs, .. } => {
-            expr_has_binary_nested_input(lhs) || expr_has_binary_nested_input(rhs)
+            expr_has_computed_nested_input(lhs) || expr_has_computed_nested_input(rhs)
         }
-        PatternGuardExpr::Extern { args, .. } => args.iter().any(expr_has_binary_nested_input),
+        PatternGuardExpr::Extern { args, .. } => args.iter().any(expr_has_computed_nested_input),
         PatternGuardExpr::Const(_)
         | PatternGuardExpr::Subject(_)
         | PatternGuardExpr::Pinned(_)

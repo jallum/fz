@@ -980,7 +980,8 @@ fn lower_runtime_type_predicate<M: cranelift_module::Module>(
 ) -> Result<LowerOut, CodegenError> {
     let value = *var_env.get(&v.0).expect("type-test subject");
     let mut emitter = PrimTestEmitter { body, env };
-    let flag = emit_runtime_type_test(&mut emitter, value, predicate)?;
+    let answer = emit_runtime_type_test(&mut emitter, value, predicate)?;
+    let flag = answer.into_flag(body.b);
     if body.cache.if_only_conds.contains(&dest_var.0) {
         return Ok(LowerOut::Condition(flag));
     }
@@ -1958,7 +1959,7 @@ fn lower_extern_pair_call<M: cranelift_module::Module>(
         .collect()
 }
 
-fn c_pair_return_types(triple: &Triple, fields: [ExternTy; 2]) -> Result<[ir::Type; 2], CodegenError> {
+pub(super) fn c_pair_return_types(triple: &Triple, fields: [ExternTy; 2]) -> Result<[ir::Type; 2], CodegenError> {
     // A pair field rides a whole return register. The shared front end builds
     // a pair only out of the three wire types that do, and naming them here
     // keeps a narrower lane from being mapped into one of those registers.
