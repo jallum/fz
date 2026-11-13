@@ -1,53 +1,29 @@
-use super::*;
-use crate::compiler2::allocation_probe::allocations_during;
 use crate::compiler2::types::Types;
 
+/// Deciding emptiness carries no path of descriptors under decision, which is
+/// sound only while every descriptor names descriptors interned before it.
 #[test]
-fn a_descriptor_already_open_on_the_path_is_assumed_empty_wherever_it_re_enters() {
+fn a_descriptor_names_only_types_interned_before_it() {
     let mut t = Types::new();
     let int = t.int();
     let atom = t.atom_lit("a");
     let list = t.list(int);
-    let reentered = t.descr(&list).clone();
-    let unrelated = t.descr(&atom).clone();
     let pair = t.tuple(&[int, list]);
-    let pair = t.descr(&pair).clone();
-    let cx = t.ctx();
-    assert!(!pair.is_empty(cx), "the pair is inhabited when nothing is assumed");
+    let nested = t.tuple(&[pair, list]);
+    let resource = t.resource(nested);
+    let arrow = t.arrow(&[nested, atom], resource);
+    let either = t.union(pair, atom);
+    let meet = t.intersect(either, pair);
+    let rest = t.difference(nested, pair);
+    let spread = t.union(arrow, rest);
+    let _ = (meet, spread);
 
-    let outer = Frame::open(&unrelated, InFlight::default());
-    let inner = Frame::open(&reentered, InFlight::within(&outer));
-    let open = InFlight::within(&inner);
-    assert!(
-        pair.is_empty_in(cx, open),
-        "a coordinate that re-enters a descriptor in flight is assumed empty, so the product is empty"
-    );
-    assert!(
-        open.contains(&reentered) && open.contains(&unrelated) && !open.contains(&pair),
-        "a decision opens its own frame below the caller's path and leaves the caller's path as it was"
-    );
-
-    assert!(
-        !pair.is_empty(cx),
-        "the assumption belonged to the path that carried it and decided nothing beyond it"
-    );
-}
-
-#[test]
-fn an_emptiness_query_makes_no_copy_of_a_descriptor_to_remember_it_is_in_flight() {
-    let mut t = Types::new();
-    let int = t.int();
-    let list = t.list(int);
-    let inner = t.tuple(&[int, list]);
-    let outer = t.tuple(&[inner, list]);
-    let outer = t.descr(&outer).clone();
-    let cx = t.ctx();
-
-    let (empty, allocations) = allocations_during(|| outer.is_empty(cx));
-
-    assert!(!empty);
-    assert_eq!(
-        allocations, 11,
-        "only the descriptor arithmetic allocates; tracking the path in flight allocates nothing"
-    );
+    for ty in t.interned_tys() {
+        let reachable = t.activation_reachable(ty, |_| {});
+        assert!(
+            reachable.iter().all(|named| named.as_u32() <= ty.as_u32()),
+            "type {} names a type interned after it, so deciding its emptiness would not descend",
+            ty.as_u32()
+        );
+    }
 }

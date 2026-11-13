@@ -87,10 +87,13 @@ trait surface.
 A value belongs to a type if it belongs to the axis for its kind AND its brand is
 one the slot admits. `any()` is every axis at top, `none()` every axis at bottom,
 and a descriptor is empty when its brand slot is empty (`Meters and Feet`) or every
-kind axis is (structural clauses checked recursively, with a coinductive assumption for
-recursive shapes: the path is a chain of call-stack frames borrowing the callers' own
-descriptors, compared structurally in place, so a query copies, hashes and allocates
-nothing to track it). `Descr::none()` alone carries the empty slot; every value
+kind axis is (structural clauses checked recursively; the recursion carries no path of
+descriptors in flight, because a descriptor names only `Ty`s interned before it, so every
+step descends to strictly earlier descriptors and ends: `Ty` has one constructor,
+`TypeInterner::intern`, which runs after the descriptor it numbers is built. A descriptor
+design that lets a descriptor name itself or a later id, a recursive type, makes emptiness a
+greatest fixpoint again and needs a path of descriptors under decision, with a re-entered
+one assumed empty). `Descr::none()` alone carries the empty slot; every value
 constructor starts from `Descr::unbranded()`, whose slot is top. Because a bottom
 therefore has more than one shape, `union` asks `looks_empty()` before it joins
 anything, so a bottom is the identity however it was reached — a pointwise hull
@@ -376,7 +379,7 @@ by `Descr::none()` before an id is assigned, so the empty set has exactly one
 that id. It asks `Descr::looks_empty()`, which the empty-clause drop above
 makes exact; reading the descriptor structurally also means it never descends
 through interned children, so it can neither mint the id it is about to reject
-nor inherit the emptiness recursion's coinductive assumption about a cycle.
+nor recurse.
 
 The whole pass runs only when the descriptor is not already in the index
 (`TypeInterner::lookup`). The invariant that makes the shortcut sound is that

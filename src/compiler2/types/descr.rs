@@ -4,7 +4,7 @@ use super::bits::BasicBits;
 use super::conj::Conj;
 use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top};
 use super::emptiness::{
-    Frame, InFlight, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
+    func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, StructTag, TupleSig};
 use super::{BuiltinOpaque, MapKey, Ty, TyCtx, TypeVarId};
@@ -742,25 +742,16 @@ impl Descr {
     }
 
     pub(super) fn is_empty(&self, cx: TyCtx<'_>) -> bool {
-        self.is_empty_in(cx, InFlight::default())
-    }
-
-    pub(super) fn is_empty_in(&self, cx: TyCtx<'_>, open: InFlight<'_>) -> bool {
-        if open.contains(self) {
-            return true;
-        }
-        let frame = Frame::open(self, open);
-        let open = InFlight::within(&frame);
         self.brands.is_none()
             || self.basic.is_empty()
                 && self.atoms.is_none()
                 && self.opaques.is_none()
                 && self.vars.is_none()
-                && self.tuples.iter().all(|c| tuple_clause_empty(cx, c, open))
-                && self.lists.iter().all(|c| list_clause_empty(cx, c, open))
-                && self.resources.iter().all(|c| resource_clause_empty(cx, c, open))
-                && self.funcs.iter().all(|c| func_clause_empty(cx, c, open))
-                && self.maps.iter().all(|c| map_clause_empty(cx, c, open))
+                && self.tuples.iter().all(|c| tuple_clause_empty(cx, c))
+                && self.lists.iter().all(|c| list_clause_empty(cx, c))
+                && self.resources.iter().all(|c| resource_clause_empty(cx, c))
+                && self.funcs.iter().all(|c| func_clause_empty(cx, c))
+                && self.maps.iter().all(|c| map_clause_empty(cx, c))
     }
 
     pub(super) fn is_subtype(&self, cx: TyCtx<'_>, other: &Descr) -> bool {
