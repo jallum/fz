@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T21:18:49Z",
+  "description": "As Elixir: unquoted identifiers and atoms normalize; quoted atoms do not. New dependency unicode-normalization. Signal: oracle fixture binding one spelling and reading the other.",
+  "id": "fz-iqp.3",
+  "labels": [],
+  "parent": "fz-iqp",
+  "priority": 2,
+  "status": "open",
+  "title": "Unquoted identifiers and atoms are normalized to NFC",
+  "type": "task",
+  "updated_at": "2026-11-13T21:18:49Z"
+}
