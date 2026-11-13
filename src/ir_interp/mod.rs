@@ -46,7 +46,6 @@ pub(crate) type Lanes = smallvec::SmallVec<[AnyValue; 4]>;
 /// The values a running executable holds, one slot per value id. The slot
 /// count is the lowering's value count for the executable, so every id its
 /// body names is in range; an insert outside the frame panics.
-#[derive(Clone)]
 pub(crate) struct Frame {
     slots: Vec<Option<BackendBoundValue>>,
 }
@@ -56,6 +55,11 @@ impl Frame {
         let mut slots = Vec::with_capacity(count);
         slots.resize_with(count, || None);
         Self { slots }
+    }
+
+    /// A frame of the same size with every slot empty.
+    pub(crate) fn empty_like(&self) -> Self {
+        Self::sized(self.slots.len())
     }
 
     pub(crate) fn get(&self, id: crate::compiler2::ValueId) -> Option<&BackendBoundValue> {

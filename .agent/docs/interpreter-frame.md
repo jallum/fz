@@ -38,8 +38,9 @@ of the frame, clears every other slot, and puts the captures back. A capture
 the frame does not hold is an error naming the value.
 
 A `try` parks a handler frame the same way, but its body keeps running in the
-current frame, so the handler frame is built from a copy of it trimmed to the
-handler entry's captures. A raise pops continuations down to the handler frame
+current frame, so `handler_frame_from_captures` builds the handler frame as a
+new, empty frame of the same size and clones into it only the handler entry's
+captures. `Frame` is not `Clone`; no path copies a whole frame. A raise pops continuations down to the handler frame
 and enters the handler entry in that frame with the raise's kind, value and
 exception name as its parameters.
 

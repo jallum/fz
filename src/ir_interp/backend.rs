@@ -1516,12 +1516,10 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
         }
         BackendTail::Try { body, handler } => {
             let mut continuations = continuations;
-            // The body keeps running in this frame, so the handler frame takes
-            // its captures from a copy.
             continuations.push(BackendContinuation {
                 executable: executable.clone(),
                 entry: *handler,
-                env: retain_continuation_captures(transport, entries, *handler, env.clone())?,
+                env: handler_frame_from_captures(transport, entries, *handler, &env)?,
                 handler: true,
             });
             unsafe { &mut *runtime.cur_proc() }.push_handler(Handler::Interpreter);
@@ -2340,6 +2338,40 @@ fn after_panic(
     }))
 }
 
+/// The values entry `target` reads from its frame: its logical captures that
+/// carry something, then its physical captures. A physical capture that is also
+/// a logical one is listed once.
+fn continuation_capture_ids(
+    transport: &TransportStore,
+    entries: &[BackendEntry],
+    target: crate::compiler2::ControlEntryId,
+) -> Result<smallvec::SmallVec<[ValueId; 8]>, String> {
+    let entry = entries
+        .get(target.as_u32() as usize)
+        .ok_or_else(|| format!("backend entry {} is out of bounds", target.as_u32()))?;
+    let mut ids: smallvec::SmallVec<[ValueId; 8]> = smallvec::SmallVec::new();
+    for capture in &entry.captures {
+        let absent = transport
+            .interners()
+            .shape(capture.layout.structural)
+            .is_semantically_absent()
+            && matches!(capture.layout.carrier, TransportCarrier::Absent);
+        if !absent {
+            ids.push(capture.value);
+        }
+    }
+    for capture in &entry.physical_captures {
+        if !ids.contains(capture) {
+            ids.push(*capture);
+        }
+    }
+    Ok(ids)
+}
+
+fn unavailable_capture(id: ValueId) -> String {
+    format!("backend continuation capture value {} is unavailable", id.as_u32())
+}
+
 /// A continuation resumes at `target`, which reads only its captures; every
 /// other value the frame holds is dead, so it is dropped here and a parked
 /// process never roots it.
@@ -2349,45 +2381,33 @@ fn retain_continuation_captures(
     target: crate::compiler2::ControlEntryId,
     mut env: Frame,
 ) -> Result<Frame, String> {
-    let entry = entries
-        .get(target.as_u32() as usize)
-        .ok_or_else(|| format!("backend entry {} is out of bounds", target.as_u32()))?;
     let mut kept: smallvec::SmallVec<[(ValueId, BackendBoundValue); 8]> = smallvec::SmallVec::new();
-    for capture in &entry.captures {
-        if transport
-            .interners()
-            .shape(capture.layout.structural)
-            .is_semantically_absent()
-            && matches!(capture.layout.carrier, TransportCarrier::Absent)
-        {
-            continue;
-        }
-        let value = env.take(capture.value).ok_or_else(|| {
-            format!(
-                "backend continuation capture value {} is unavailable",
-                capture.value.as_u32(),
-            )
-        })?;
-        kept.push((capture.value, value));
-    }
-    for capture in &entry.physical_captures {
-        match env.take(*capture) {
-            Some(value) => kept.push((*capture, value)),
-            // A physical capture that is also a logical one was taken above.
-            None if kept.iter().any(|(id, _)| id == capture) => {}
-            None => {
-                return Err(format!(
-                    "backend continuation capture value {} is unavailable",
-                    capture.as_u32()
-                ));
-            }
-        }
+    for id in continuation_capture_ids(transport, entries, target)? {
+        let value = env.take(id).ok_or_else(|| unavailable_capture(id))?;
+        kept.push((id, value));
     }
     env.clear();
     for (id, value) in kept {
         env.insert(id, value);
     }
     Ok(env)
+}
+
+/// The frame a `try` handler resumes in. The body keeps running in `body`, so
+/// the handler's frame is a new one that holds a copy of each capture and
+/// nothing else.
+fn handler_frame_from_captures(
+    transport: &TransportStore,
+    entries: &[BackendEntry],
+    handler: crate::compiler2::ControlEntryId,
+    body: &Frame,
+) -> Result<Frame, String> {
+    let mut frame = body.empty_like();
+    for id in continuation_capture_ids(transport, entries, handler)? {
+        let value = body.get(id).ok_or_else(|| unavailable_capture(id))?;
+        frame.insert(id, value.clone());
+    }
+    Ok(frame)
 }
 
 fn publish_backend_capture(proc: *mut Process, value: &BackendBoundValue) -> Result<BackendBoundValue, String> {
