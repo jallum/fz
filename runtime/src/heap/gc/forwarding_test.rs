@@ -112,13 +112,7 @@ fn live_headers_of_every_kind_have_a_clear_low_nibble() {
         assert_eq!(map_header_word(count) & LOW_NIBBLE, 0, "map of {count}");
     }
     for (capacity, filled) in [(0usize, 0usize), (1, 1), (8, 8), (15, 3), (4096, 4095)] {
-        for kind in [
-            MapDestinationKind::Build,
-            MapDestinationKind::Update {
-                missed: true,
-                struct_base: true,
-            },
-        ] {
+        for kind in [MapDestinationKind::Build, MapDestinationKind::Update] {
             assert_eq!(
                 map_destination_header_word(capacity, filled, kind) & LOW_NIBBLE,
                 0,

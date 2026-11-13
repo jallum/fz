@@ -2910,3 +2910,37 @@ fn an_unwritten_struct_reads_back_exactly_what_was_stored() {
         "the store shared the list the struct now holds"
     );
 }
+
+/// A copy is the same struct in a new object: every slot and kind byte comes
+/// across, a list it holds is shared with the original, and writing the copy
+/// leaves the original alone.
+#[test]
+fn a_struct_copy_holds_every_field_and_leaves_the_original_alone() {
+    let reg = fresh_registry();
+    let schema = reg.borrow_mut().register(Schema::tuple_of_arity(3));
+    let mut h = Heap::new(SIZE_TABLE[0], reg);
+    let list = alloc_int_list_cons(&mut h, 7, EMPTY_LIST_BITS);
+    let held = AnyValue::from_ref(list_ref_from_bits(list)).unwrap();
+    let original = h.alloc_struct(schema);
+    unsafe {
+        h.write_field_slot(original, 0, AnyValue::int(41));
+        h.write_field_slot(original, 8, held);
+        h.write_field_slot(original, 16, AnyValue::EmptyList);
+    }
+
+    let copy = unsafe { h.copy_struct(original, SlotLayout::of(3)) };
+    assert_ne!(copy, original);
+    assert_eq!(unsafe { struct_schema_id(copy) }, schema);
+    assert_eq!(h.read_field_slot(copy, 0), AnyValue::int(41));
+    assert_eq!(h.read_field_slot(copy, 8), held);
+    assert_eq!(h.read_field_slot(copy, 16), AnyValue::EmptyList);
+    assert_eq!(
+        h.share_list_spine(list_ref_from_bits(list)).unwrap(),
+        0,
+        "the copy shared the list both structs now hold"
+    );
+
+    unsafe { h.write_field_slot(copy, 0, AnyValue::atom(3)) };
+    assert_eq!(h.read_field_slot(copy, 0), AnyValue::atom(3));
+    assert_eq!(h.read_field_slot(original, 0), AnyValue::int(41));
+}

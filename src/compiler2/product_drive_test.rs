@@ -3573,6 +3573,72 @@ fn an_update_that_cannot_miss_compiles_no_key_error_path() {
     );
 }
 
+/// Where the type says which struct is being updated and every key names one
+/// of its fields, the compiler writes the slots to replace into the backend
+/// program: the update copies the struct and stores them, and cannot miss. A
+/// value that may be something else finds each key at run time.
+#[test]
+fn an_update_of_a_known_struct_replaces_slots_and_any_other_update_finds_its_keys() {
+    use crate::compiler2::{BackendBody, BackendStep};
+
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("struct_update.fz".to_string()),
+        text: concat!(
+            "defmodule Point do\n  defstruct [:x, :y, :z]\nend\n",
+            "def pick(0), do: %{x: 1, y: 2, z: 3}\n",
+            "def pick(n), do: %Point{x: n, y: 2, z: 3}\n",
+            "def moved(p, n), do: %{p | z: n, x: 7}\n",
+            "def raised(m), do: %{m | y: 9}\n",
+            "def main() do\n",
+            "  p = moved(%Point{x: 1, y: 40, z: 3}, 20)\n",
+            "  p.x + p.y + p.z + raised(pick(1)).y + raised(pick(0)).y\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let main = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(main), Ok(85));
+
+    let program = compiler.retained_backend_program(main);
+    let steps: Vec<&BackendStep> = program
+        .executables()
+        .into_iter()
+        .filter_map(|executable| match &executable.body {
+            BackendBody::Clauses { entries, .. } => Some(entries.iter().flat_map(|entry| &entry.steps)),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let replaced: Vec<(u32, Vec<u32>)> = steps
+        .iter()
+        .filter_map(|step| match step {
+            BackendStep::StructUpdate { arity, slots, .. } => {
+                Some((*arity, slots.iter().map(|(slot, _)| *slot).collect()))
+            }
+            _ => None,
+        })
+        .collect();
+    let found_by_key = steps
+        .iter()
+        .filter(|step| matches!(step, BackendStep::MapUpdate { .. }))
+        .count();
+    assert_eq!(
+        replaced,
+        [(3, vec![2, 0])],
+        "moved is given a Point, whose z and x are its third and first fields"
+    );
+    assert_eq!(
+        found_by_key, 1,
+        "pick answers a map or a Point, so raised finds y at run time"
+    );
+}
+
 /// Where the type says which struct is in hand, the compiler knows the
 /// field's slot and writes it into the backend program, so no path searches
 /// for the field by name at run time. A value that may be something else

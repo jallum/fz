@@ -1027,6 +1027,19 @@ impl ProgramCanon<'_> {
                 let base = self.names.value(*base);
                 format!("{name}, {ok} = map_update {base} {}", self.value_pairs(entries))
             }
+            BackendStep::StructUpdate {
+                value, ok, base, slots, ..
+            } => {
+                let name = self.names.value(*value);
+                let ok = self.names.value(*ok);
+                let base = self.names.value(*base);
+                let slots = slots
+                    .iter()
+                    .map(|(slot, item)| format!("{slot}: {}", self.names.value(*item)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{name}, {ok} = struct_update {base} {{{slots}}}")
+            }
             BackendStep::Struct {
                 value,
                 module_name,

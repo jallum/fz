@@ -228,14 +228,6 @@ impl SchemaRegistry {
         &self.schemas[id as usize]
     }
 
-    /// The named struct whose module is the atom spelled `atom_name`.
-    pub fn named_by_atom_name(&self, atom_name: &str) -> Option<u32> {
-        self.schemas
-            .iter()
-            .position(|schema| matches!(&schema.identity, SchemaIdentity::Named(name) if name.atom_name() == atom_name))
-            .map(|id| id as u32)
-    }
-
     /// The keys of schema `id`'s values read as maps, in map key order; `None`
     /// when they are not maps.
     pub fn map_keys(&self, id: u32) -> Option<&[StructKey]> {

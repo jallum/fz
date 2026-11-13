@@ -23,8 +23,8 @@ use super::super::artifact::{
     BackendStep, BackendTail, CallEdge, CallReturnFlow, DirectCallEdge, DispatchCallArm,
 };
 use super::super::body::{
-    CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry, LoweredStep, LoweredTail,
-    ValueId,
+    CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep,
+    LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job};
 use super::super::facts::FactUse;
@@ -907,12 +907,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 ok,
                 base,
                 entries,
-            } => BackendStep::MapUpdate {
-                value: *value,
-                ok: *ok,
-                base: *base,
-                entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
-            },
+            } => self.update(*value, *ok, *base, entries),
             LoweredStep::Struct { value, module, fields } => self.step_or_omitted_when_absent(
                 *value,
                 BackendStep::Struct {
@@ -1042,6 +1037,44 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
             Some(slot) => BackendStep::StructSlot { value, base, slot },
             None => by_name(),
         }
+    }
+
+    /// `%{base | k: v, ...}` answered from what the types know of `base`. One
+    /// known struct whose fields the keys all name is copied and has those
+    /// slots replaced; any other update finds each key at run time.
+    fn update(&self, value: ValueId, ok: ValueId, base: ValueId, entries: &[(LoweredMapKey, ValueId)]) -> BackendStep {
+        match self.updated_slots(base, entries) {
+            Some((arity, slots)) => BackendStep::StructUpdate {
+                value,
+                ok,
+                base,
+                arity,
+                slots,
+            },
+            None => BackendStep::MapUpdate {
+                value,
+                ok,
+                base,
+                entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
+            },
+        }
+    }
+
+    /// How many fields the one struct `base` is has, and the slot each entry
+    /// replaces, when `base` is one known struct and every key is a literal
+    /// atom naming one of its fields.
+    fn updated_slots(&self, base: ValueId, entries: &[(LoweredMapKey, ValueId)]) -> Option<(u32, Vec<(u32, ValueId)>)> {
+        let fields = self.world.struct_def_fields(self.known_struct(base)?)?;
+        let slots = entries
+            .iter()
+            .map(|(key, item)| {
+                let GroundValue::Atom(field) = key.literal.as_ref()? else {
+                    return None;
+                };
+                Some((slot_of(fields, field)?, *item))
+            })
+            .collect::<Option<_>>()?;
+        Some((fields.len() as u32, slots))
     }
 
     /// The struct `value` is, when its type admits exactly one.
@@ -1199,6 +1232,7 @@ fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut Hash
             | BackendStep::List { .. }
             | BackendStep::Map { .. }
             | BackendStep::MapUpdate { .. }
+            | BackendStep::StructUpdate { .. }
             | BackendStep::Struct { .. }
             | BackendStep::Bitstring { .. }
             | BackendStep::FunctionRef { .. }

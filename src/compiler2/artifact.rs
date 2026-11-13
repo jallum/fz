@@ -1416,6 +1416,16 @@ pub enum BackendStep {
         base: ValueId,
         entries: Vec<(ValueId, ValueId)>,
     },
+    /// `%{base | field: v, ...}` where `base` is one known struct of `arity`
+    /// fields and every key names one of them: a copy of `base` with each
+    /// slot of `slots` replaced. It cannot miss, so `ok` is true.
+    StructUpdate {
+        value: ValueId,
+        ok: ValueId,
+        base: ValueId,
+        arity: u32,
+        slots: Vec<(u32, ValueId)>,
+    },
     Struct {
         value: ValueId,
         module_name: fz_runtime::module_name::ModuleName,

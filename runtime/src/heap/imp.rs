@@ -5,6 +5,7 @@ use super::gc::{
     CopiedObject, FromSpace, cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
     cheney_trace_struct, forward_any_value_ref_root, forward_heap_value,
 };
+use super::map_view::destination_layout;
 use super::ref_io::{
     any_value_ref_from_storage, list_tail_bits_from_ref, ptr_in_ranges, reject_scalar_ref_write,
     write_any_value_to_storage,
@@ -14,12 +15,13 @@ use super::stats::GcStats;
 use super::{Heap, HeapAllocKind, HeapAllocStats, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MapDestinationKind,
-    STRUCT_PAYLOAD_OFFSET, ValueKind, bitstring_header_word, bitstring_size_for_bit_len, closure_addr_from_tagged,
-    closure_capture_kind_slot, closure_capture_raw_slot, closure_capture_set, closure_capture_value,
-    closure_header_word, closure_header_write, closure_size_for_count, heap_object_word, list_addr_from_tagged,
-    map_addr_from_tagged, map_count, map_destination_header_word, map_destination_state, map_entry, map_header_word,
-    map_keys_ptr, map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_values_ptr,
-    struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id, struct_size_for_payload,
+    STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, bitstring_header_word, bitstring_size_for_bit_len,
+    closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot, closure_capture_set,
+    closure_capture_value, closure_header_word, closure_header_write, closure_size_for_count, heap_object_word,
+    list_addr_from_tagged, map_addr_from_tagged, map_count, map_destination_header_word, map_destination_state,
+    map_entry, map_header_word, map_keys_ptr, map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr,
+    map_values_ptr, struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id,
+    struct_size_for_payload,
 };
 use crate::procbin::{
     DeadResource, SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep, mso_unreached_closures,
@@ -257,6 +259,29 @@ impl Heap {
         p
     }
 
+    /// An unpublished copy of the struct at `object`, whose fields `layout`
+    /// places. A list the struct holds becomes shared, since the copy holds
+    /// it too.
+    ///
+    /// # Safety
+    /// `object` must be a published struct of `layout`'s field count.
+    pub unsafe fn copy_struct(&mut self, object: *const u8, layout: SlotLayout) -> *mut u8 {
+        let copy = self.alloc_struct_unwritten(unsafe { struct_schema_id(object) }, layout.size());
+        unsafe {
+            copy_nonoverlapping(
+                object.add(STRUCT_PAYLOAD_OFFSET),
+                copy.add(STRUCT_PAYLOAD_OFFSET),
+                layout.payload_size(),
+            );
+        }
+        for index in 0..layout.fields() {
+            let raw = unsafe { read(object.add(SlotLayout::slot_offset(index)).cast::<u64>()) };
+            let kind = unsafe { read(object.add(layout.kind_offset(index))) };
+            self.publish_contained_parts(raw, ValueKind::new(kind).expect("struct field kind"));
+        }
+        copy
+    }
+
     pub fn range_fields(&self, range: AnyValueRef) -> Result<(i64, i64, i64), AnyValueRefError> {
         let p = range.struct_addr()?;
         let schema_id = unsafe { struct_schema_id(p.cast_const()) };
@@ -469,81 +494,88 @@ impl Heap {
         heap_object_word(p, ValueKind::MAP)
     }
 
-    /// An unpublished destination holding `base`'s entries, in either of its
-    /// layouts, whose puts may only replace them.
+    /// An unpublished destination holding `base`'s entries, whose puts may
+    /// only replace them. A struct's destination is a copy of the struct, so
+    /// replacing its fields keeps it that struct.
     pub fn alloc_map_update(&mut self, base: AnyValueRef) -> u64 {
-        let layout = self.expect_map_layout(base, "map update base");
-        let count = self.map_view_count(layout);
+        match self.expect_map_layout(base, "map update base") {
+            MapLayout::Struct { object, schema_id } => self.alloc_struct_update(object, schema_id),
+            entries => self.alloc_entries_update(entries),
+        }
+    }
+
+    /// An unpublished entries destination holding the entries of `base`, in
+    /// either of its layouts.
+    pub(super) fn alloc_entries_update(&mut self, base: MapLayout) -> u64 {
+        let count = self.map_view_count(base);
         let p = self.alloc_kind(HeapAllocKind::Map, map_size_for_count(count));
-        let struct_base = match layout {
-            MapLayout::Entries(base) => {
-                unsafe { copy_map_slots(base, p, count) };
-                false
-            }
+        match base {
+            MapLayout::Entries(base) => unsafe { copy_map_slots(base, p, count) },
             MapLayout::Struct { .. } => {
-                let entries = self.map_view_entries(layout);
+                let entries = self.map_view_entries(base);
                 self.write_ordered_map_entries(p, count, entries.into_iter());
-                true
             }
-        };
-        let kind = MapDestinationKind::Update {
-            missed: false,
-            struct_base,
-        };
-        unsafe { write(p as *mut u64, map_destination_header_word(count, count, kind)) };
+        }
+        let header = map_destination_header_word(count, count, MapDestinationKind::Update);
+        unsafe { write(p as *mut u64, header) };
         heap_object_word(p, ValueKind::MAP)
     }
 
     /// Store `key` and `value` in an exclusively owned, unpublished map
-    /// destination. A build destination appends; an update destination
-    /// replaces the value under `key`, and when it has no such key it stores
-    /// nothing and remembers the miss for its freeze.
+    /// destination, and answer the destination the next put or the freeze
+    /// continues with. A build destination appends. An update destination
+    /// replaces the value under `key`; when it has no such key the update has
+    /// missed and there is no destination to continue with, which is `0`.
     ///
     /// # Safety
     /// `key` and `value` must be finite immutable terms. Neither may reach this
     /// or any other unfinished destination. Freezing publishes the stored fields.
-    pub unsafe fn map_destination_put(&mut self, dest_bits: u64, key: AnyValue, value: AnyValue) {
-        let dest = map_addr_from_tagged(dest_bits).expect("map_destination_put dest");
-        let (count, filled, kind) = unsafe { map_destination_state(dest) };
+    pub unsafe fn map_destination_put(&mut self, dest_bits: u64, key: AnyValue, value: AnyValue) -> u64 {
         assert_ne!(key.kind(), ValueKind::NULL, "unpublished map key");
+        match destination_layout(dest_bits) {
+            None => 0,
+            Some(MapLayout::Struct { object, schema_id }) => self.struct_update_put(object, schema_id, key, value),
+            Some(MapLayout::Entries(dest)) if unsafe { self.entries_destination_put(dest, key, value) } => dest_bits,
+            Some(MapLayout::Entries(_)) => 0,
+        }
+    }
+
+    /// Store one entry in the entries destination at `dest`: a build takes
+    /// its next free slot, an update the slot already holding `key`. False
+    /// when an update has no such key, and nothing is stored.
+    unsafe fn entries_destination_put(&mut self, dest: *mut u8, key: AnyValue, value: AnyValue) -> bool {
+        let (count, filled, kind) = unsafe { map_destination_state(dest) };
         let slot = match kind {
             MapDestinationKind::Build => {
                 assert!(filled < count, "map destination has no free entry slot");
                 filled
             }
-            MapDestinationKind::Update { struct_base, .. } => match self.map_key_position(dest, key) {
+            MapDestinationKind::Update => match self.map_key_position(dest, key) {
                 Ok(index) => index,
-                Err(_) => {
-                    let missed = MapDestinationKind::Update {
-                        missed: true,
-                        struct_base,
-                    };
-                    unsafe { write(dest as *mut u64, map_destination_header_word(count, filled, missed)) };
-                    return;
-                }
+                Err(_) => return false,
             },
         };
         unsafe {
-            let tag_p = map_tag_ptr(dest);
-            let keys = map_keys_ptr(dest, count);
-            let values = map_values_ptr(dest, count);
-            write(tag_p.add(slot), map_pack_tag(key.kind(), value.kind()));
-            write_any_value_to_storage(keys.add(slot), None, key);
-            write_any_value_to_storage(values.add(slot), None, value);
+            write(map_tag_ptr(dest).add(slot), map_pack_tag(key.kind(), value.kind()));
+            write_any_value_to_storage(map_keys_ptr(dest, count).add(slot), None, key);
+            write_any_value_to_storage(map_values_ptr(dest, count).add(slot), None, value);
             if kind == MapDestinationKind::Build {
                 write(dest as *mut u64, map_destination_header_word(count, filled + 1, kind));
             }
         }
+        true
     }
 
-    /// Publish a destination. An update that missed a key answers `None`:
-    /// `%{map | k: v}` with no `k` in `map` makes no map, and its caller
-    /// raises `KeyError`. An update's puts only replace, so its entries are
-    /// already in order and it publishes in place; one whose base was a struct
-    /// comes out as the struct its keys name, so updating a struct keeps it
-    /// one.
+    /// Publish a destination. An update that missed a key has no destination
+    /// left and answers `None`: `%{map | k: v}` with no `k` in `map` makes no
+    /// map, and its caller raises `KeyError`. An update's puts only replace,
+    /// so its entries are already in order and it publishes in place; a
+    /// struct's destination is the finished struct.
     pub fn map_destination_freeze(&mut self, dest_bits: u64) -> Option<AnyValueRef> {
-        let dest = map_addr_from_tagged(dest_bits).expect("map destination");
+        let dest = match destination_layout(dest_bits)? {
+            MapLayout::Struct { object, .. } => return Some(object),
+            MapLayout::Entries(dest) => dest,
+        };
         let (_, filled, kind) = unsafe { map_destination_state(dest) };
         match kind {
             MapDestinationKind::Build => {
@@ -551,7 +583,7 @@ impl Heap {
                 self.normalize_map_entries(&mut entries);
                 self.write_ordered_map_entries(dest, entries.len(), entries.into_iter());
             }
-            MapDestinationKind::Update { .. } => {
+            MapDestinationKind::Update => {
                 for i in 0..filled {
                     let (key, value) = unsafe { map_entry(dest, i) };
                     self.publish_contained_parts(key.raw(), key.kind());
@@ -560,13 +592,7 @@ impl Heap {
                 unsafe { write(dest as *mut u64, map_header_word(filled)) };
             }
         }
-        match kind {
-            MapDestinationKind::Update { missed: true, .. } => None,
-            MapDestinationKind::Update { struct_base: true, .. } => {
-                Some(self.struct_of_entries(dest).unwrap_or_else(|| entries_map_ref(dest)))
-            }
-            _ => Some(entries_map_ref(dest)),
-        }
+        Some(entries_map_ref(dest))
     }
 
     pub fn alloc_map_refs(&mut self, entries: &[(AnyValueRef, AnyValueRef)]) -> Result<AnyValueRef, AnyValueRefError> {

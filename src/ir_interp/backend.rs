@@ -23,7 +23,9 @@ use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::CallableShape;
 use crate::telemetry::{Telemetry, TelemetryExt};
 use crate::types::ClosureTarget;
-use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged};
+use fz_runtime::any_value::{
+    AnyValue as RuntimeAnyValue, AnyValueRef, SlotLayout, ValueKind, closure_addr_from_tagged,
+};
 use fz_runtime::delivery::Delivery;
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule};
 use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
@@ -31,7 +33,8 @@ use fz_runtime::heap::{GcStats, Schema};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_dest_begin_update,
     fz_map_dest_freeze, fz_map_dest_put_ref, fz_map_empty, fz_map_get_atom_key_ref, fz_mark_published_ref_aliased,
-    fz_matcher_map_get_ref, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module,
+    fz_matcher_map_get_ref, fz_struct_copy, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module,
+    fz_struct_store_ref,
 };
 use fz_runtime::module_name::STRUCT_MODULE_FIELD;
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
@@ -1703,10 +1706,11 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 let dest = with_value_ref(proc, base, "backend map update base", |base_ref| {
                     fz_map_dest_begin_update(proc, base_ref)
                 })?;
+                let mut dest = dest;
                 for (key, item) in entries {
                     let key = env_get(transport, proc, env, *key)?;
                     let item = publish_runtime_value(proc, env_get(transport, proc, env, *item)?)?;
-                    with_value_ref(proc, key, "backend map update key", |key_ref| {
+                    dest = with_value_ref(proc, key, "backend map update key", |key_ref| {
                         with_value_ref(proc, item, "backend map update value", |item_ref| {
                             fz_map_dest_put_ref(proc, dest, key_ref, item_ref)
                         })
@@ -1889,6 +1893,41 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     interp_struct_field(runtime, module, base, field)?
                 };
                 env.insert(*value, BackendBoundValue::Runtime(result));
+            }
+            ProgramStep::StructUpdate {
+                value,
+                ok,
+                base,
+                arity,
+                slots,
+            } => {
+                let proc = runtime.cur_proc();
+                let layout = SlotLayout::of(*arity as usize);
+                let base = env_get(transport, proc, env, *base)?;
+                let copy = with_value_ref(proc, base, "backend struct update base", |base_ref| {
+                    fz_struct_copy(proc, base_ref, *arity)
+                })?;
+                for (slot, item) in slots {
+                    let slot = *slot as usize;
+                    let item = publish_runtime_value(proc, env_get(transport, proc, env, *item)?)?;
+                    with_value_ref(proc, item, "backend struct update value", |item_ref| {
+                        fz_struct_store_ref(
+                            proc,
+                            copy,
+                            SlotLayout::slot_offset(slot) as u32,
+                            layout.kind_offset(slot) as u32,
+                            item_ref,
+                        )
+                    })?;
+                }
+                env.insert(
+                    *ok,
+                    BackendBoundValue::Runtime(AnyValue::Atom(fz_runtime::any_value::TRUE_ATOM_ID)),
+                );
+                env.insert(
+                    *value,
+                    BackendBoundValue::Runtime(interp_value_from_ref_word(copy, "backend struct update")?),
+                );
             }
             ProgramStep::StructSlot { value, base, slot } => {
                 let base = env_get(transport, runtime.cur_proc(), env, *base)?;

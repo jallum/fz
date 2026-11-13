@@ -21,7 +21,8 @@ use fz_runtime::ir_runtime::{
     fz_closure_set_capture_i64, fz_closure_set_capture_ref, fz_halt_implicit_atom, fz_halt_implicit_f64,
     fz_halt_implicit_i64, fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref, fz_list_head_ref,
     fz_list_reuse_or_cons_parts, fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_mark_published_ref_aliased,
-    fz_materialize_cont, fz_struct_store_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
+    fz_materialize_cont, fz_struct_copy, fz_struct_store_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float,
+    fz_unbox_int,
 };
 use std::collections::HashMap;
 
@@ -132,6 +133,20 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             reference,
             address: self.object_address(reference),
             layout,
+        }
+    }
+
+    /// An unpublished copy of the struct `base_ref` names, which has `fields`
+    /// fields. `store_field` may follow for the fields an update replaces,
+    /// before any other code runs.
+    pub(crate) fn copy_struct(&mut self, base_ref: ir::Value, fields: usize) -> NewStruct {
+        let count = self.b.ins().iconst(types::I32, fields as i64);
+        let process = self.process_arg();
+        let reference = runtime_call1!(self, fz_struct_copy, [process, base_ref, count]);
+        NewStruct {
+            reference,
+            address: self.object_address(reference),
+            layout: SlotLayout::of(fields),
         }
     }
 
