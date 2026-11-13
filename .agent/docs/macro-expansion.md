@@ -395,6 +395,11 @@ It:
 The returned root is therefore still rooted in the same quoted-source heap as
 the input carrier root.
 
+A macro that raises while it runs fails the compile. The failure line is the
+diagnostic's message, its code is `lower/unsupported`, and its span is the
+macro call's (`run_macro_invocation`). `Kernel.apply/3` refuses a call it
+cannot rewrite this way.
+
 One subtle but important lifetime rule lives here:
 
 - `run_backend_entry_on_process(...)` is borrowing the quoted-source process,

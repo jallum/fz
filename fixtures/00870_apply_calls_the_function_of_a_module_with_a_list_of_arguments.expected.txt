@@ -1,0 +1,12 @@
+{:overdrawn, []}
+42
+:overdrawn
+:frozen
+:frozen
+Overdrawn
+1
+2
+3
+"ABC"
+{Frozen, :short_by, 2}
+{:nowhere, :short_by, 2}

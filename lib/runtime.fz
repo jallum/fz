@@ -45,6 +45,7 @@ import Kernel, only: [
   ||: 2,
   !: 1,
   abs: 1,
+  apply: 3,
   assert: 1,
   assert: 2,
   dbg: 1,

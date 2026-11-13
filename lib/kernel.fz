@@ -220,6 +220,30 @@ defmodule Kernel do
   end
 
   @doc """
+  Calls `function` of `module` with the arguments in `args`.
+
+  `apply(m, :f, [a, b])` is the call `m.f(a, b)`. The function is written as
+  an atom and the arguments as a list, so the call is known when the program
+  is compiled; `module` is any expression.
+
+  ## Examples
+
+      apply(String, :upcase, ["a"])
+      #=> "A"
+
+      apply(Enum, :at, [[1, 2, 3], 1])
+      #=> 2
+
+  """
+  defmacro apply(module, function, args) when is_atom(function) and is_list(args) do
+    {{:".", %{}, [module, function]}, %{}, args}
+  end
+
+  defmacro apply(_module, _function, _args) do
+    raise ArgumentError, "apply/3 takes the function as an atom and the arguments as a list, both written out"
+  end
+
+  @doc """
   Answers `true` when `value` is `nil` or `false`, and `false` otherwise.
 
   ## Examples
