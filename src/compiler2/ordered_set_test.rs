@@ -48,3 +48,29 @@ fn consuming_a_set_yields_insertion_order_like_iter() {
     );
     assert_eq!(owned, borrowed, "owned and borrowed iteration agree");
 }
+
+/// Membership needs only equality: the set is its order vector, so a member
+/// type that cannot be hashed is still a member type.
+#[derive(Debug, PartialEq, Eq)]
+struct Unhashable(&'static str);
+
+#[test]
+fn members_need_equality_only() {
+    let mut set = OrderedSet::default();
+
+    assert!(set.insert(Unhashable("a")), "a new member is reported as inserted");
+    assert!(set.contains(&Unhashable("a")), "membership is by equality");
+    assert!(!set.contains(&Unhashable("b")));
+}
+
+/// Inserting a member that is already present changes nothing and says so, so
+/// callers can use the answer to decide whether anything new happened.
+#[test]
+fn inserting_a_present_member_reports_false_and_changes_nothing() {
+    let mut set: OrderedSet<&str> = ["c", "a"].into_iter().collect();
+
+    assert!(!set.insert("c"), "a present member is not inserted again");
+    assert!(set.insert("b"), "an absent member is inserted");
+
+    assert_eq!(set.iter().copied().collect::<Vec<_>>(), vec!["c", "a", "b"]);
+}
