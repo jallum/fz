@@ -1527,6 +1527,9 @@ impl Types {
     }
 
     pub fn list_element_type(&mut self, a: &Ty) -> Ty {
+        if let Some(elem) = sole_list_element(self.descr(a)) {
+            return elem;
+        }
         let d = {
             let cx = self.ctx();
             list_element_type(cx, cx.descr(a))
@@ -1547,6 +1550,9 @@ impl Types {
     }
 
     pub fn tuple_projections(&mut self, a: &Ty, arity: usize) -> Vec<Ty> {
+        if let Some(elems) = sole_tuple_elems(self.descr(a), arity) {
+            return elems;
+        }
         let ds = {
             let cx = self.ctx();
             tuple_projections(cx, cx.descr(a), arity)
@@ -1684,8 +1690,7 @@ impl Types {
             let mut child = path.to_vec();
             child.push(AddrStep::Elem);
             let elem = if keep_elements {
-                let elem_descr = list_element_type(self.ctx(), descr);
-                let elem = self.intern(elem_descr);
+                let elem = self.list_element_type(a);
                 self.convergence_class_at(&elem, &child, true)
             } else {
                 self.address_var(&child)
@@ -2104,8 +2109,7 @@ impl Types {
         let mut child = path.to_vec();
         child.push(AddrStep::Elem);
         if collapse == KeyCollapse::Structure {
-            let elem_descr = list_element_type(self.ctx(), &d);
-            let elem = self.intern(elem_descr);
+            let elem = self.list_element_type(&ty);
             // Demand reached this list's SHAPE, so the element is meaning, not
             // freight -- at every depth, because nothing here can say how far
             // down the forwarding chain that reads it looks (fz-kdt.183). An
@@ -3684,6 +3688,31 @@ fn returned_values(returned: &DispatchDemand) -> Option<&DispatchDemand> {
     }
 }
 
+/// The element type of a descriptor whose list axis is one clause with one
+/// positive signature and an element: that element, already an id. Negatives
+/// do not narrow a list projection.
+fn sole_list_element(d: &Descr) -> Option<Ty> {
+    let [conj] = d.lists.as_slice() else {
+        return None;
+    };
+    let [sig] = conj.pos.as_slice() else {
+        return None;
+    };
+    sig.elem
+}
+
+/// The coordinates of a descriptor whose tuple axis is one clause with one
+/// positive signature of this arity: exactly that signature's elements.
+fn sole_tuple_elems(d: &Descr, arity: usize) -> Option<Vec<Ty>> {
+    let [conj] = d.tuples.as_slice() else {
+        return None;
+    };
+    let [sig] = conj.pos.as_slice() else {
+        return None;
+    };
+    (sig.elems.len() == arity).then(|| sig.elems.clone())
+}
+
 fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Descr {
     if d.lists.is_empty() {
         return Descr::any();
@@ -4887,10 +4916,7 @@ fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
         }
         base.vars = FiniteSet::finite(new_set);
     }
-    let walked = map_recursive_inputs_with(t, base, &mut |t, nested| {
-        let d = instantiate(t, nested, sigma);
-        t.intern(d)
-    });
+    let walked = map_recursive_inputs_with(t, base, &mut |t, nested| t.instantiate(&nested, sigma));
     walked.union(t.ctx(), &substituted)
 }
 

@@ -5479,3 +5479,59 @@ mod subtype_without_a_difference {
         }
     }
 }
+
+#[test]
+fn a_projection_that_names_an_existing_type_returns_it_without_interning() {
+    let mut t = Types::new();
+    let int = t.int();
+    let atom = t.atom();
+    let list = t.list(int);
+    let tuple = t.tuple(&[int, atom]);
+
+    let before = t.interning_work_stats();
+    assert_eq!(t.list_element_type(&list), int);
+    assert_eq!(t.tuple_projections(&tuple, 2), vec![int, atom]);
+    assert_eq!(
+        t.interning_work_stats(),
+        before,
+        "a one-clause projection is an id inside the input; it must not build or probe a descriptor"
+    );
+}
+
+#[test]
+fn a_multi_clause_projection_is_the_union_of_its_clauses() {
+    let mut t = Types::new();
+    let int = t.int();
+    let atom = t.atom();
+    let lists = {
+        let (a, b) = (t.list(int), t.list(atom));
+        t.union(a, b)
+    };
+    let int_atom = t.tuple(&[int, atom]);
+    let atom_int = t.tuple(&[atom, int]);
+    let tuples = t.union(int_atom, atom_int);
+    let int_or_atom = t.union(int, atom);
+
+    assert_eq!(t.list_element_type(&lists), int_or_atom);
+    assert_eq!(t.tuple_projections(&tuples, 2), vec![int_or_atom, int_or_atom]);
+}
+
+#[test]
+fn instantiating_a_list_of_variables_substitutes_through_nested_slots() {
+    let mut t = Types::new();
+    let int = t.int();
+    let atom = t.atom();
+    let var = t.type_var(TypeVarId(0));
+    let nested = {
+        let inner = t.list(var);
+        t.tuple(&[inner, atom])
+    };
+    let mut sigma = Sigma::new();
+    sigma.insert(TypeVarId(0), int);
+
+    let expected = {
+        let inner = t.list(int);
+        t.tuple(&[inner, atom])
+    };
+    assert_eq!(t.instantiate(&nested, &sigma), expected);
+}
