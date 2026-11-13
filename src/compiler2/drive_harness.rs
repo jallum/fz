@@ -914,7 +914,7 @@ impl ActivationInputCapture {
                     };
                     defs.borrow_mut().push(ActivationInputRecord {
                         activation: activation.clone(),
-                        inputs,
+                        inputs: inputs.to_vec(),
                     });
                 }
             },

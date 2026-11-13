@@ -17,7 +17,6 @@ use crate::FunctionSurface;
 use crate::diag::diagnostic::Severity;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
-use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::dispatch_matrix::pattern::{GuardCallee, PatternDispatchPlan};
 use crate::modules::identity::{Mfa, ModuleDenotation, ModuleName};
 use crate::modules::runtime_library;
@@ -869,9 +868,9 @@ impl World {
     /// The column-wise joined projection of the activation's input rows —
     /// correlation-blind by construction. Only for consumers whose question is
     /// genuinely per-column (transport lane typing), after semantic decisions.
-    pub(crate) fn activation_inputs_joined(&self, key: &ActivationKey) -> Option<Vec<Ty>> {
+    pub(crate) fn activation_inputs_joined(&self, key: &ActivationKey) -> Option<&[Ty]> {
         self.fact_revision(&FactKey::ActivationInputs(key.clone()))?;
-        Some(self.activation_inputs.get(key)?.joined().to_vec())
+        Some(self.activation_inputs.get(key)?.joined())
     }
 
     pub fn activation_analysis(&self, key: &ActivationKey) -> Option<&ActivationAnalysis> {
@@ -953,10 +952,10 @@ impl World {
                 // The evidence collapse mirrors the KEY collapse, so it reads
                 // the same half of the demand fact the key does.
                 let mask = self
-                    .input_demand(activation.function)
-                    .map(|demand| demand.forwarded_dispatch.clone())
-                    .unwrap_or_else(|| vec![DispatchDemand::Whole; normalized.len()]);
-                self.types.convergence_collapse_evidence_inputs(&normalized, &mask)
+                    .input_demands
+                    .get(activation.function)
+                    .map_or(&[][..], |demand| &demand.forwarded_dispatch);
+                self.types.convergence_collapse_evidence_inputs(&normalized, mask)
             } else {
                 normalized
             };

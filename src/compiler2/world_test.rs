@@ -764,7 +764,7 @@ fn compiler2_activation_input_join_is_quiet_for_absorbed_list_evidence() {
 
     assert_eq!(
         world.activation_inputs_joined(&key),
-        Some(vec![list_int]),
+        Some(&[list_int][..]),
         "absorbed list evidence must retain the existing interned allocation",
     );
     let revision = world
@@ -862,7 +862,7 @@ fn compiler2_activation_analysis_preserves_prior_input_frontier() {
 
     assert_eq!(
         world.activation_inputs_joined(&callee_key),
-        Some(vec![int]),
+        Some(&[int][..]),
         "semantic analysis should not retract prior activation-input evidence when a callsite temporarily disappears",
     );
     assert_eq!(
@@ -970,7 +970,7 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
     );
     assert_eq!(
         world.activation_inputs_joined(&key),
-        Some(vec![input_b]),
+        Some(&[input_b][..]),
         "the surviving publisher's input should remain as the body evidence after the stale contribution retracts",
     );
     let wakes = step
@@ -1057,7 +1057,8 @@ fn compiler2_correlated_activation_input_rows_stay_alternatives() {
 
     let joined = world
         .activation_inputs_joined(&key)
-        .expect("the joined projection should exist alongside the rows");
+        .expect("the joined projection should exist alongside the rows")
+        .to_vec();
     let expected_joined = vec![
         world.types_mut().union(atom_list, int_list),
         world.types_mut().union(atom, int),
@@ -1213,7 +1214,7 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
     );
     assert_eq!(
         world.activation_inputs_joined(&key),
-        Some(vec![input]),
+        Some(&[input][..]),
         "a waiting completion must not withdraw the publisher's standing contributions",
     );
 }

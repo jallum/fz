@@ -271,7 +271,7 @@ pub(crate) fn produce_backend_executable_product(
     }
     let return_endpoints = abis
         .values()
-        .flat_map(|abi| abi.return_endpoints.iter().cloned())
+        .flat_map(|abi| abi.return_endpoints.iter().map(|(position, layout)| (position, layout)))
         .collect();
     let construction_wrappers = package_backend_construction_wrappers(world, tel, root, &abis, &abi)
         .expect("local construction prerequisites must provide complete wrappers");
@@ -370,9 +370,12 @@ pub(crate) fn executable_key_for_symbol(root: RootId, symbol: &ExecutableSymbol)
     }
 }
 
+/// Where each ABI in a lowering's dependency set says a call returns.
+type ReturnEndpoints<'a> = HashMap<&'a TransportPosition, &'a BackendReturnLayout>;
+
 fn backend_call_edge(
     target: &CallEdge<ExecutableKey>,
-    endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
+    endpoints: &ReturnEndpoints<'_>,
 ) -> Result<CallEdge<ExecutableKey, BackendReturnFlow>, FatalError> {
     Ok(match target {
         CallEdge::Direct(direct) => CallEdge::Direct(DirectCallEdge {
@@ -458,9 +461,9 @@ fn backend_entry_captures(
 
 fn resolve_return_flow(
     flow: &super::super::artifact::CallReturnFlow,
-    endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
+    endpoints: &ReturnEndpoints<'_>,
 ) -> Result<BackendReturnFlow, FatalError> {
-    let layout = |position: &TransportPosition| endpoints.get(position).ok_or(FatalError);
+    let layout = |position: &TransportPosition| endpoints.get(position).copied().ok_or(FatalError);
     Ok(match flow {
         CallReturnFlow::NoReturn { local_source } => {
             if let Some(local_source) = local_source
@@ -803,7 +806,7 @@ struct BackendLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
     root_id: RootId,
     value_layouts: &'a ValueMap<super::super::artifact::BackendValueLayout>,
     value_types: &'a ValueMap<Ty>,
-    return_endpoints: HashMap<TransportPosition, BackendReturnLayout>,
+    return_endpoints: ReturnEndpoints<'a>,
     constructions: ValueMap<TransportPosition>,
 }
 
@@ -814,7 +817,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
         root_id: RootId,
         value_layouts: &'a ValueMap<super::super::artifact::BackendValueLayout>,
         value_types: &'a ValueMap<Ty>,
-        return_endpoints: HashMap<TransportPosition, BackendReturnLayout>,
+        return_endpoints: ReturnEndpoints<'a>,
         constructions: ValueMap<TransportPosition>,
     ) -> Self {
         Self {

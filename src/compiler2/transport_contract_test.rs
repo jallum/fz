@@ -1585,6 +1585,7 @@ end
         .map(|executable| {
             world
                 .activation_inputs_joined(&executable.activation)
+                .map(<[_]>::to_vec)
                 .unwrap_or_else(|| executable.activation.inputs(world.types()))
         })
         .collect::<Vec<_>>();
