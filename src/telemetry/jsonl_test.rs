@@ -434,6 +434,26 @@ fn product_validation_work_survives_the_public_trace_boundary() {
 }
 
 #[test]
+fn drive_spend_survives_the_public_trace_boundary() {
+    let (buf, writer) = vec_writer();
+    let telemetry = ConfiguredTelemetry::new();
+    JsonlBackend::new_public_writer(writer).install(&telemetry);
+    let product = crate::compiler2::pull::ProductKey::RootBackendProduct(crate::compiler2::RootId::for_test(9));
+    let report = crate::compiler2::pull::ProductDriveReport {
+        requests: 49_760,
+        budget: 50_000,
+    };
+    telemetry.raw_event2(&["fz", "compiler2", "pull", "drive", "finished"], &product, &report);
+    drop(telemetry);
+    let output = String::from_utf8(buf.borrow().clone()).unwrap();
+    assert_eq!(output.lines().count(), 1);
+    let event: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(event["metadata"]["requests"], 49_760);
+    assert_eq!(event["metadata"]["budget"], 50_000);
+    assert_eq!(event["metadata"]["product"]["kind"], "root_backend_product");
+}
+
+#[test]
 fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
     use crate::compiler2::DependencyKey;
     use crate::compiler2::SemanticOrd as _;

@@ -495,6 +495,23 @@ impl JsonlBackend {
                     crate::metadata! { product: crate::telemetry::opaque(product), work: crate::telemetry::opaque(work) });
             },
         );
+        let drive_backend = Rc::clone(&backend);
+        telemetry
+            .attach_raw_event2::<crate::compiler2::pull::ProductKey, crate::compiler2::pull::ProductDriveReport, _>(
+                &["fz", "compiler2", "pull", "drive", "finished"],
+                move |name, span_id, parent_span_id, product, report| {
+                    drive_backend.handle_raw_event(
+                        name,
+                        span_id,
+                        parent_span_id,
+                        crate::metadata! {
+                            product: crate::telemetry::opaque(product),
+                            requests: report.requests,
+                            budget: report.budget,
+                        },
+                    );
+                },
+            );
         telemetry.attach_raw_event3::<
             crate::compiler2::pull::ProductKey,
             crate::compiler2::pull::ProductKey,
@@ -1214,6 +1231,7 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "pull", "product", "requested"]
             | ["fz", "compiler2", "pull", "product", "evaluated"]
             | ["fz", "compiler2", "pull", "product", "validation"]
+            | ["fz", "compiler2", "pull", "drive", "finished"]
             | ["fz", "compiler2", "pull", "product", "copublished"]
             | ["fz", "compiler2", "pull", "recursive_group", "published"]
             | ["fz", "compiler2", "backend_request", ..]
