@@ -6,14 +6,15 @@
   "blocks": [
     "fz-3sy.6"
   ],
+  "closed_at": "2026-11-13T15:27:29Z",
   "created": "2026-11-11T15:21:28Z",
   "description": "Receiver typed atom (or any): the call dispatches over the modules a value can name that define f/n; a miss raises UndefinedFunctionError (rescuable), a non-atom raises ArgumentError with Elixir's text.\n\nSettled design (probed before building):\n\n- Candidate set. World::nameable_modules is one monotone set: every module whose source the compile has indexed, and every module a lowered body writes as a value (alias, struct). It is the unit fact FactKey::NameableModules, read by the call whether or not it holds anything yet. 'Every library module' was rejected by measurement: requiring all 24 top-level lib modules takes hello world from 213 jobs to 342.\n- Filter. nameable_module_callees waits on ModuleDefined for each candidate and reads its ModuleInterface. DefineModule is a scope walk and compiles no body, so the filter demands DefineModule and never DefineFunction.\n- Miss. The miss is one more target of the callsite: SelectedCallee::Undefined(UndefinedFunction), selected by the receiver's type less the candidates' atoms, with no activation and return type none. It flows through call_destinations unchanged and materializes as CallTarget::Undefined. Native ends the arm in Term::RaiseUndefined (fz_raise_undefined_function); the interpreter calls failure::raise_undefined_function.\n- A receiver that is never an atom (fixture 00866) stays the compile refusal type/module-value-call. A receiver whose type lists its atoms resolves each at compile time as before; anything else in the type goes to the miss.\n\nTrace: hello world stays at 213 jobs (5 IndexCode, 14 DefineModule).\n\nFixtures: 00867 (an atom made at run time calls the module it names; replaces the refusal of that number), 00869 (every miss, worded as Elixir words it). 00866 stays.\n\nKnown differences from Elixir, documented in .agent/docs/modules.md: a module in a library file the compile never indexed and no body names is 'not available' to a computed atom; m.f() with no arguments on a map raises ArgumentError where Elixir reads the field and warns.",
   "id": "fz-3sy.5",
   "labels": [],
   "parent": "fz-3sy",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A call on a plain-atom receiver dispatches over the modules the program can name",
   "type": "feature",
-  "updated_at": "2026-11-13T15:11:21Z"
+  "updated_at": "2026-11-13T15:27:29Z"
 }
