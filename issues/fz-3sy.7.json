@@ -6,7 +6,7 @@
     "fz-3ul.4"
   ],
   "created": "2026-11-11T15:21:29Z",
-  "description": "Elixir's defoverridable: after defoverridable f: n, a later def f/n replaces the earlier clauses instead of adding to them (today a duplicate def gives a redundant-clause warning and the first clause wins). Needed by defexception's default exception/1 and message/1. Own proposal page before building.",
+  "description": "Plan: /Users/j5n/Workspace/fz-3sy.7.html (approved 2026-11-13). Today a second def f/n that is not adjacent to the first (any other form stands between them) silently replaces it; adjacent clauses are one form. Build: the scope walk's local_callables entry carries the function's state (not defined, defined, overridable) and the count of its reserved, unapplied definitions. def on not-defined defines; defoverridable on defined marks; def on overridable replaces and spends the mark; def on defined is refused with resolve/duplicate-function; defoverridable on not-defined or already-overridable, and a def/defmacro kind change, are refused with resolve/overridable. A definition with another still to come is recorded and not published, so a replaced default's source is never noted. defoverridable is ScopeForm::Overridable, read by build_form. A defp override takes the function out of the interface. Stricter than Elixir: clauses split by another form are refused, not joined; defoverridable Behaviour is refused; super is fz-3sy's separate ticket. Fixtures (Elixir oracle, three paths): default stands; default replaced; macro-made default replaced by the module; caller written before the override; defp override. Diagnostic fixtures: second definition unmarked; defoverridable of an undefined function; override by a macro. Drive test on telemetry: one 'function source noted' per function. Docs: modules.md scope walk, guides/modules.html.",
   "id": "fz-3sy.7",
   "labels": [],
   "parent": "fz-3sy",
@@ -14,5 +14,5 @@
   "status": "open",
   "title": "defoverridable: a later def of the same name and arity replaces an overridable one",
   "type": "feature",
-  "updated_at": "2026-11-13T17:53:27Z"
+  "updated_at": "2026-11-13T17:53:28Z"
 }
