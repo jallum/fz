@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T21:18:47Z",
+  "description": "Spike: a 17-closure tuple destructured and called panics in closure_call_form (jobs/transport.rs ~913) when collapsed. Fix upstream in runtime_demand: past the lane budget the demand is Whole, so the closures escape first-class. After fz-sc8.127 code that needs every called surface reads CallableDemand::surfaces(). Signal: fixture with a tuple of closures wider than the budget, called after destructuring, three paths.",
+  "id": "fz-rba.2",
+  "labels": [],
+  "parent": "fz-rba",
+  "priority": 2,
+  "status": "open",
+  "title": "A wide tuple of closures has its demand coarsened to the whole value",
+  "type": "bug",
+  "updated_at": "2026-11-13T21:18:47Z"
+}
