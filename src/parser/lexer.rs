@@ -3,6 +3,8 @@ use std::fmt;
 use std::rc::Rc;
 use std::str::from_utf8;
 
+use unicode_normalization::{UnicodeNormalization, is_nfc};
+
 use crate::source::{SourceVersion, Span};
 use crate::telemetry::{RawSpanTelemetry, Telemetry};
 
@@ -236,7 +238,7 @@ fn classify_source_word(name: &str) -> SourceWord {
 /// word token with this spelling.
 pub(crate) fn source_word(name: &str) -> Option<SourceWord> {
     let mut chars = name.chars();
-    if !is_variable_start(chars.next()?) || !chars.all(is_word_continue) {
+    if !is_variable_start(chars.next()?) || !chars.all(is_word_continue) || !is_nfc(name) {
         return None;
     }
     let word = classify_source_word(name);
@@ -354,6 +356,8 @@ impl<'a> Lexer<'a> {
         self.text.get(at..)?.chars().next()
     }
 
+    /// The name at the cursor in its NFC spelling, which is how Elixir spells
+    /// every unquoted name. Spans keep the source text as written.
     fn read_ident(&mut self) -> String {
         let start = self.pos;
         let first = self
@@ -363,7 +367,7 @@ impl<'a> Lexer<'a> {
         while let Some(c) = self.char_at(self.pos).filter(|c| is_word_continue(*c)) {
             self.pos += c.len_utf8();
         }
-        self.text[start..self.pos].to_string()
+        self.text[start..self.pos].nfc().collect()
     }
 
     /// A word that is not a keyword-list key: a keyword, variable, function

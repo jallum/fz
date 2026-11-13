@@ -688,3 +688,65 @@ fn source_word_classifies_non_ascii_names_as_the_lexer_does() {
 fn a_keyword_key_may_start_with_a_non_ascii_uppercase_letter() {
     assert_eq!(lex_kinds("[Élan: 1]").unwrap()[1], Tok::KwKey("Élan".to_string()));
 }
+
+/// An unquoted name spelled with a combining accent lexes to the composed (NFC) spelling.
+#[test]
+fn an_unquoted_name_is_normalized_to_nfc() {
+    assert_eq!(
+        lex_kinds("cafe\u{301}").unwrap(),
+        vec![Tok::Ident("caf\u{e9}".to_string()), Tok::Eof]
+    );
+}
+
+/// An unquoted atom is normalized, so both spellings are one atom.
+#[test]
+fn an_unquoted_atom_is_normalized_to_nfc() {
+    assert_eq!(
+        lex_kinds(":cafe\u{301}").unwrap(),
+        vec![Tok::Atom("caf\u{e9}".to_string()), Tok::Eof]
+    );
+}
+
+/// A keyword key is normalized like any other unquoted name.
+#[test]
+fn a_keyword_key_is_normalized_to_nfc() {
+    assert_eq!(
+        lex_kinds("[cafe\u{301}: 1]").unwrap()[1],
+        Tok::KwKey("caf\u{e9}".to_string())
+    );
+}
+
+/// A quoted atom keeps the spelling it was written with, as in Elixir.
+#[test]
+fn a_quoted_atom_is_not_normalized() {
+    assert_eq!(
+        lex_kinds(":\"cafe\u{301}\"").unwrap(),
+        vec![Tok::Atom("cafe\u{301}".to_string()), Tok::Eof]
+    );
+}
+
+/// A string literal keeps its bytes; only names are normalized.
+#[test]
+fn a_string_is_not_normalized() {
+    assert_eq!(
+        lex_kinds("\"cafe\u{301}\"").unwrap(),
+        vec![Tok::Binary("cafe\u{301}".as_bytes().to_vec()), Tok::Eof]
+    );
+}
+
+/// A diagnostic span names the source as written, so normalization does not move it.
+#[test]
+fn a_normalized_name_keeps_the_span_of_its_source_text() {
+    let tokens = test_lexer("cafe\u{301} = 1")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .unwrap();
+    assert_eq!((tokens[0].span.start, tokens[0].span.end), (0, 6));
+}
+
+/// The macro surface rejects a spelling the lexer would have normalized,
+/// because source text cannot produce a word token with that spelling.
+#[test]
+fn source_word_accepts_only_the_normalized_spelling() {
+    assert!(matches!(source_word("caf\u{e9}"), Some(SourceWord::Ident)));
+    assert!(source_word("cafe\u{301}").is_none());
+}
