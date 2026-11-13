@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T22:13:40Z",
+  "description": "Repro (scratch s75e/seq1000.fz, spike binary with FZ_SPIKE_BUDGET raised, base develop ff4a75ada): def f(x), do: x + 1; main binds a1 = f(1) ... a1000 = f(1000) and prints their sum. interp prints 501500. fz2 run panics: cranelift-jit-0.131.3 src/compiled_blob.rs:225 'called Result::unwrap() on an Err value: TryFromIntError(NegOverflow)' (a relocation whose displacement does not fit). Not investigated: which relocation kind, and whether code size or the distance between blobs is the cause. build not tried. Without the raised budget the compile stops earlier at the 50,000-request product budget (the drive needs 1,009,384 requests), so this is reachable only once fz-75e moves the limit. Same program family as fz-d7w (one resume function per call, captures growing by one each step).",
+  "id": "fz-2un",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz2 run panics in the JIT's relocation on a body of 1,000 sequential calls",
+  "type": "bug",
+  "updated_at": "2026-11-13T22:13:40Z"
+}
