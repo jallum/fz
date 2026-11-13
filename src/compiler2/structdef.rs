@@ -28,19 +28,85 @@
 
 use std::collections::HashMap;
 
+use crate::ast::{Expr, Spanned};
+use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 use super::identity::ModuleId;
 use super::module_interface::InterfaceRequester;
 
 /// A `defstruct` declaration resolved for its owning module: the field names
-/// in declaration order (the only shape `defstruct` itself carries — field
-/// *types* live in the module's conventional `@type t`, read separately) plus
-/// the declaration's span for provenance.
+/// in declaration order, the default of each field that declares one, and
+/// the declaration's span for provenance. Field *types* live in the module's
+/// conventional `@type t`, read separately.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StructDef {
     pub(crate) fields: Vec<String>,
+    pub(crate) defaults: HashMap<String, LiteralTerm>,
     pub(crate) span: Span,
+}
+
+/// A value written out in full: a scalar, or a list, tuple or map of such
+/// values. It names nothing, so it means the same wherever it is read. A
+/// field default is one, which is why a struct literal in any module can
+/// start from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LiteralTerm {
+    Ground(GroundValue),
+    List(Vec<LiteralTerm>),
+    Tuple(Vec<LiteralTerm>),
+    Map(Vec<(LiteralTerm, LiteralTerm)>),
+}
+
+impl LiteralTerm {
+    /// `expr` as a literal term, or `None` when it computes or names anything.
+    pub(crate) fn of(expr: &Expr) -> Option<Self> {
+        let all = |items: &[Spanned<Expr>]| {
+            items
+                .iter()
+                .map(|item| Self::of(&item.node))
+                .collect::<Option<Vec<_>>>()
+        };
+        Some(match expr {
+            Expr::Int(value) => Self::Ground(GroundValue::Int(*value)),
+            Expr::Float(value) => Self::Ground(GroundValue::from_f64(*value)),
+            Expr::Binary(bytes) => Self::Ground(GroundValue::Binary(bytes.clone())),
+            Expr::Atom(name) => Self::Ground(GroundValue::Atom(name.clone())),
+            Expr::Bool(value) => Self::Ground(GroundValue::Bool(*value)),
+            Expr::Nil => Self::Ground(GroundValue::Nil),
+            Expr::List(items, None) => Self::List(all(items)?),
+            Expr::Tuple(items) => Self::Tuple(all(items)?),
+            Expr::Map(entries) => Self::Map(
+                entries
+                    .iter()
+                    .map(|(key, value)| Some((Self::of(&key.node)?, Self::of(&value.node)?)))
+                    .collect::<Option<_>>()?,
+            ),
+            _ => return None,
+        })
+    }
+
+    /// The expression that writes this term, placed at `span`.
+    pub(crate) fn expr(&self, span: Span) -> Spanned<Expr> {
+        let all = |items: &[LiteralTerm]| items.iter().map(|item| item.expr(span)).collect();
+        let node = match self {
+            Self::Ground(GroundValue::Int(value)) => Expr::Int(*value),
+            Self::Ground(GroundValue::Float(bits)) => Expr::Float(f64::from_bits(*bits)),
+            Self::Ground(GroundValue::Binary(bytes) | GroundValue::Utf8Binary(bytes)) => Expr::Binary(bytes.clone()),
+            Self::Ground(GroundValue::Atom(name)) => Expr::Atom(name.clone()),
+            Self::Ground(GroundValue::Bool(value)) => Expr::Bool(*value),
+            Self::Ground(GroundValue::Nil) => Expr::Nil,
+            Self::List(items) => Expr::List(all(items), None),
+            Self::Tuple(items) => Expr::Tuple(all(items)),
+            Self::Map(entries) => Expr::Map(
+                entries
+                    .iter()
+                    .map(|(key, value)| (key.expr(span), value.expr(span)))
+                    .collect(),
+            ),
+        };
+        Spanned::new(node, span)
+    }
 }
 
 /// Module → resolved `defstruct`, keyed by [`ModuleId`] so each struct-owning
@@ -130,3 +196,7 @@ impl StructExpectationMap {
         self.fields.get(&module).map(Vec::as_slice).unwrap_or(&[])
     }
 }
+
+#[cfg(test)]
+#[path = "structdef_test.rs"]
+mod structdef_test;

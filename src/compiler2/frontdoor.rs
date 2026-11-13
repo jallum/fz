@@ -216,7 +216,7 @@ impl<'t> FrontDoorParser<'t> {
             Tok::Import => self.parse_import_like("import", Tok::Import),
             Tok::Require => self.parse_import_like("require", Tok::Require),
             Tok::Defmodule => self.parse_module(module_path),
-            Tok::Defstruct => self.parse_struct_item(),
+            Tok::Defstruct => self.parse_struct_item(module_path),
             Tok::Defprotocol => self.parse_protocol_item(module_path),
             Tok::Defimpl => self.parse_protocol_impl_item(module_path),
             Tok::Extern => self.parse_extern_item(),
@@ -375,32 +375,54 @@ impl<'t> FrontDoorParser<'t> {
             .map_err(FrontDoorError::from)
     }
 
-    fn parse_struct_item(&mut self) -> Result<AnyValueRef, FrontDoorError> {
+    /// `defstruct [:a, b: 1]` or the bare keyword form `defstruct a: nil, b: 1`.
+    /// A field is an atom, or a keyword entry whose value is its default.
+    fn parse_struct_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         let start = self.cur_span();
         self.expect(&Tok::Defstruct, "`defstruct`")?;
-        self.expect(&Tok::LBrack, "`[`")?;
-        let mut fields = Vec::new();
-        self.skip_newlines();
-        if !self.peek_is(&Tok::RBrack) {
-            loop {
-                let field = match self.bump() {
-                    Tok::Atom(name) | Tok::Ident(name) | Tok::KwKey(name) => self.builder.atom(name),
-                    other => return Err(self.error(format!("expected struct field name, got {:?}", other))),
-                };
-                fields.push(field);
-                self.skip_newlines();
-                if !self.eat(&Tok::Comma) {
-                    break;
-                }
-                self.skip_newlines();
-            }
-        }
-        self.expect(&Tok::RBrack, "`]`")?;
+        let fields = if self.eat(&Tok::LBrack) {
+            self.skip_newlines();
+            let fields = self.parse_struct_fields(module_path, &Tok::RBrack)?;
+            self.expect(&Tok::RBrack, "`]`")?;
+            fields
+        } else {
+            self.parse_struct_fields(module_path, &Tok::Newline)?
+        };
         let span = start.merge(self.prev_span());
         let meta = self.meta(span)?;
         self.builder
             .call("defstruct", &meta, &[self.builder.list(&fields)?])
             .map_err(FrontDoorError::from)
+    }
+
+    fn parse_struct_fields(
+        &mut self,
+        module_path: &[String],
+        terminator: &Tok,
+    ) -> Result<Vec<AnyValueRef>, FrontDoorError> {
+        let mut fields = Vec::new();
+        while !self.peek_is(terminator) {
+            fields.push(self.parse_struct_field(module_path)?);
+            if terminator == &Tok::RBrack {
+                self.skip_newlines();
+            }
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+            self.skip_newlines();
+        }
+        Ok(fields)
+    }
+
+    fn parse_struct_field(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
+        match self.bump() {
+            Tok::Atom(name) | Tok::Ident(name) => Ok(self.builder.atom(name)),
+            Tok::KwKey(name) => {
+                let default = self.parse_expr(module_path, &[])?;
+                self.builder.keyword(name, default.root).map_err(FrontDoorError::from)
+            }
+            other => Err(self.error(format!("expected struct field name, got {:?}", other))),
+        }
     }
 
     fn parse_protocol_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {

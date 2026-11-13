@@ -9,7 +9,9 @@ use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{SourceWord, Tok};
 use crate::source::{SourceMap, Span};
 
+use super::quoted_function::decode_standalone_expr;
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
+use super::structdef::{LiteralTerm, StructDef};
 use super::token_payload;
 
 #[derive(Debug, Clone)]
@@ -114,8 +116,7 @@ pub struct ProtocolImplForm {
 #[derive(Debug, Clone)]
 pub struct StructForm {
     pub source: QuotedSourceRoot,
-    pub fields: Vec<String>,
-    pub span: Span,
+    pub(crate) def: StructDef,
 }
 
 #[derive(Debug, Clone)]
@@ -837,11 +838,57 @@ fn parse_struct_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<St
     let node = expect_surface_node(&source, sources)?;
     let span = node.span.unwrap_or(Span::DUMMY);
     let args = node.tail.list_items()?;
-    let Some(fields) = args.first() else {
+    let Some(declared) = args.first() else {
         return Err(QuotedSourceError::new("defstruct expects a field list"));
     };
-    let fields = fields.list_atom_names()?;
-    Ok(StructForm { source, fields, span })
+    let mut fields = Vec::new();
+    let mut defaults = HashMap::new();
+    for field in declared.list_items()? {
+        if let Ok(name) = field.atom_name() {
+            fields.push(name.to_string());
+            continue;
+        }
+        let (name, default) = parse_struct_field_default(&field, span, sources)?;
+        defaults.insert(name.clone(), default);
+        fields.push(name);
+    }
+    Ok(StructForm {
+        source,
+        def: StructDef { fields, defaults, span },
+    })
+}
+
+/// A `name: default` entry of a `defstruct`. The default is a literal term:
+/// it is written once and read by every literal that omits the field, in
+/// whatever module that literal stands.
+fn parse_struct_field_default(
+    field: &QuotedSourceCursor,
+    span: Span,
+    sources: &SourceMap,
+) -> Result<(String, LiteralTerm), QuotedSourceError> {
+    let entry = field.tuple_items()?;
+    let [name, default] = entry.as_slice() else {
+        return Err(QuotedSourceError::new(
+            "a defstruct field is an atom or a `name: default` entry",
+        ));
+    };
+    let name = name.atom_name()?.to_string();
+    let default = decode_standalone_expr(default, Some(span), sources)?;
+    let term = LiteralTerm::of(&default.node).ok_or_else(|| {
+        QuotedSourceError::user(
+            crate::diag::codes::PARSE_STRUCT_DEFAULT,
+            Some(if default.span == Span::DUMMY {
+                span
+            } else {
+                default.span
+            }),
+            format!(
+                "the default of struct field `{name}` must be a literal: \
+                 a number, atom, string, or a list, tuple or map of literals"
+            ),
+        )
+    })?;
+    Ok((name, term))
 }
 
 fn parse_function_group_key(

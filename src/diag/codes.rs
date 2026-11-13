@@ -20,6 +20,8 @@ pub const PARSE_CONCAT_PATTERN_OPERAND: DiagCode = DiagCode("parse/concat-patter
 pub const PARSE_COMPREHENSION: DiagCode = DiagCode("parse/comprehension");
 /// A `try` whose sections or rescue heads Elixir would reject, with Elixir's text.
 pub const PARSE_INVALID_TRY: DiagCode = DiagCode("parse/invalid-try");
+/// A `defstruct` field default that is not a literal.
+pub const PARSE_STRUCT_DEFAULT: DiagCode = DiagCode("parse/struct-default");
 
 // ----- resolver -----
 

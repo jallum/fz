@@ -1,0 +1,12 @@
+#---
+# purpose: "a defstruct field default that computes or names something is refused at the default, saying a default is a literal"
+# expect: diagnostic
+# diagnostic.code: parse/struct-default
+#---
+defmodule Tally do
+  defstruct [:name, count: Enum.count([1])]
+end
+
+def main() do
+  dbg(%Tally{})
+end

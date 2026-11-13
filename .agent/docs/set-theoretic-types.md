@@ -671,6 +671,16 @@ defstruct [:first, :last, :step]              # field order
 @type t :: %Range{first: integer, ...}        # field types
 ```
 
+A field may also declare a default, as a keyword entry in the list or in the
+bare keyword form: `defstruct [:name, rank: 1]`, `defstruct path: nil, modes:
+[:raw]`. A default is a literal term (`LiteralTerm`): a number, atom, string,
+boolean or nil, or a list, tuple or map of literal terms. It names nothing, so
+it reads the same in every module. `StructDef::defaults` holds them by field
+name. A struct literal lowers each field it omits from that field's default,
+and from nil when the field has none; the default is lowered where the literal
+stands, as the expression that writes it. A default that computes or names
+anything is the diagnostic `parse/struct-default` at the default.
+
 A struct value's hard type is one tagged map signature: typed `ModuleId`, stable
 qualified display name, and declared fields are conjunctive. Plain maps use the
 disjoint `MapTag::Plain`; therefore `%Range{first: integer}` cannot become

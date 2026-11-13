@@ -1,0 +1,38 @@
+#---
+# purpose: "defstruct takes a default per field, in a bracketed list or as bare keywords; a struct literal fills each field it omits from its default, a field with no default is nil, and a given field wins over its default"
+# oracle: 00859_a_struct_literal_fills_the_fields_it_omits_from_the_declared_defaults.oracle.exs
+#---
+#
+# A default is a literal written in the declaration. Every literal that
+# omits the field starts from that value.
+defmodule Card do
+  defstruct [:name, suit: :spades, rank: 1, ratio: 0.5, tags: [:a, :b]]
+end
+
+defmodule Conf do
+  defstruct path: nil, modes: [:raw, :binary], label: "none", pair: {:ok, 1}
+end
+
+defmodule Nest do
+  defstruct meta: %{k: [1, 2]}, flag: true, none: nil, empty: []
+end
+
+def suit(%Card{suit: suit}), do: suit
+
+def main() do
+  dbg(%Card{})
+  dbg(%Card{name: "ace", rank: 14})
+  dbg(%Card{tags: [], suit: :hearts})
+  dbg(suit(%Card{}))
+  c = %Card{name: "two"}
+  dbg(%{c | ratio: 2.5})
+  dbg(c.tags)
+  dbg(%Conf{})
+  dbg(%Conf{path: "p", modes: []})
+  dbg(%Conf{}.label)
+  dbg(%Conf{}.pair)
+  dbg(%Nest{})
+  dbg(%Nest{meta: %{}})
+  dbg(%Nest{}.meta.k)
+  dbg(%Nest{} == %Nest{flag: true})
+end
