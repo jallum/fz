@@ -636,14 +636,14 @@ impl RuntimeDemandTypeInputs {
 /// shape, every template is an inference artifact, so only ground dispatch
 /// shapes are published. A callable with no ground surface in that flow is a
 /// genuinely polymorphic escape, so its templates are kept verbatim.
-pub(crate) fn ground_dispatch_surfaces(
+pub(crate) fn ground_dispatch_surfaces<'a>(
     types: &Types,
-    surfaces: &BTreeSet<CallableSurface>,
-    ground_source: &BTreeSet<CallableSurface>,
+    surfaces: &'a BTreeSet<CallableSurface>,
+    ground_source: impl IntoIterator<Item = &'a CallableSurface>,
 ) -> BTreeSet<CallableSurface> {
     let ground_candidates = surfaces
         .iter()
-        .chain(ground_source.iter())
+        .chain(ground_source)
         .filter(|surface| !types.key_has_open_vars(&surface.inputs))
         .cloned()
         .collect::<BTreeSet<_>>();
