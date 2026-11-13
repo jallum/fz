@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T22:03:59Z",
+  "description": "Found by the fz-sc8.158 builder; reproduced on 2053b04a5.\nRepro: IO.inspect(Kernel.apply(Kernel, :abs, [-2]))\nfz: error[resolve/unknown-import]: module `Kernel` does not export `apply/3`. Elixir prints 2. The unqualified apply(Kernel, :abs, [-2]) works in fz and prints 2. (With :+ as the function the builder saw error[macro/not-required]: remote macro `Kernel.apply/3` requires `require Kernel`; not re-run here.)\nDone when: an oracle fixture calls Kernel.apply/2 and Kernel.apply/3 qualified and unqualified, including an operator function (:+), and matches Elixir on interp, run and build.",
+  "id": "fz-sc8.163",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "Kernel.apply/2 and Kernel.apply/3 are callable by their qualified name",
+  "type": "bug",
+  "updated_at": "2026-11-13T22:03:59Z"
+}
