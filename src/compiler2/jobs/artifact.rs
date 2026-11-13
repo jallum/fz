@@ -101,7 +101,6 @@ pub(crate) fn produce_materialized_executable_product(
     };
     let pruned = prune_lowered_body(lowered, &dispatch_outcomes, &retained_entries);
     let body = pruned.body;
-    let callsite_args = super::super::body::callsite_call_args(&body);
     let mut transport_positions = vec![TransportPosition::ExecutableReturn {
         executable: ExecutableSymbol::new(executable, world.types()),
     }];
@@ -110,7 +109,6 @@ pub(crate) fn produce_materialized_executable_product(
         executable,
         &executable_facts,
         &body,
-        &callsite_args,
     ));
     let position_layouts = match read_transport_layouts(tel, context, world.types(), transport_positions) {
         Ok(position_layouts) => position_layouts,
@@ -137,7 +135,6 @@ pub(crate) fn produce_materialized_executable_product(
         executable_facts.callsite_needs(),
         &body,
         &pruned.original_entry_ids,
-        &callsite_args,
     ) else {
         return PullOutcome::Failed;
     };
@@ -725,7 +722,6 @@ fn required_call_edge_transport_positions(
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
     body: &LoweredBody,
-    callsite_args: &HashMap<CallSiteId, &[CallArg]>,
 ) -> Vec<TransportPosition> {
     let LoweredBody::Clauses { entries, .. } = body;
     let caller_symbol = ExecutableSymbol::new(executable, world.types());
@@ -757,7 +753,7 @@ fn required_call_edge_transport_positions(
                     executable: caller_symbol.clone(),
                     value: *callee,
                 });
-                for (semantic_index, _) in callsite_args.get(callsite).copied().into_iter().flatten().enumerate() {
+                for (semantic_index, _) in body.call_args(*callsite).into_iter().flatten().enumerate() {
                     positions.insert(TransportPosition::CallArg {
                         executable: caller_symbol.clone(),
                         callsite: *callsite,
@@ -846,7 +842,6 @@ fn materialize_call_edges(
     callsite_needs: &HashMap<CallSiteId, ExecutableNeed>,
     body: &LoweredBody,
     original_entry_ids: &[ControlEntryId],
-    callsite_args: &HashMap<CallSiteId, &[CallArg]>,
 ) -> Result<Option<HashMap<CallSiteId, MaterializedCallEdge>>, FatalError> {
     let mut call_edges = HashMap::new();
     let LoweredBody::Clauses { entries, .. } = body;
@@ -867,7 +862,7 @@ fn materialize_call_edges(
                     *callsite,
                     dest,
                     original_entry_ids,
-                    callsite_args,
+                    body,
                 )?
                 else {
                     return Err(call_reaches_no_target(world, tel, *callee));
@@ -900,7 +895,7 @@ fn materialize_call_edges(
                     *value,
                     dest,
                     original_entry_ids,
-                    callsite_args,
+                    body,
                 )?;
                 call_edges.insert(*callsite, edge);
             }
@@ -927,7 +922,7 @@ fn materialize_direct_call_edge(
     callsite: CallSiteId,
     dest: &ControlDestination,
     original_entry_ids: &[ControlEntryId],
-    callsite_args: &HashMap<CallSiteId, &[CallArg]>,
+    body: &LoweredBody,
 ) -> Result<Option<MaterializedCallEdge>, FatalError> {
     // One door: a callsite that named no targets -- never reached, proven
     // dead, or reached and still unresolved -- materializes no edge.
@@ -967,7 +962,7 @@ fn materialize_direct_call_edge(
                 callsite,
                 dest,
                 original_entry_ids,
-                callsite_args,
+                body,
                 target,
             )?;
             return Ok(Some(MaterializedCallEdge::Named {
@@ -1000,7 +995,7 @@ fn materialize_direct_call_edge(
             callsite,
             dest,
             original_entry_ids,
-            callsite_args,
+            body,
             target,
         )?;
         arms.push(DispatchCallArm {
@@ -1030,7 +1025,7 @@ fn materialize_closure_call_edge(
     result_value: ValueId,
     dest: &ControlDestination,
     original_entry_ids: &[ControlEntryId],
-    callsite_args: &HashMap<CallSiteId, &[CallArg]>,
+    body: &LoweredBody,
 ) -> Result<MaterializedCallEdge, FatalError> {
     let summary = summaries.get(&callsite);
     // One question decides the call, and `closure_call_form` is where it is
@@ -1099,7 +1094,7 @@ fn materialize_closure_call_edge(
                 callsite,
                 dest,
                 original_entry_ids,
-                callsite_args,
+                body,
                 target,
             )?;
             Ok(MaterializedCallEdge::Closure {
@@ -1162,7 +1157,7 @@ fn lower_materialized_call_target(
     callsite: CallSiteId,
     dest: &ControlDestination,
     original_entry_ids: &[ControlEntryId],
-    callsite_args: &HashMap<CallSiteId, &[CallArg]>,
+    body: &LoweredBody,
     target: CallTargetSummary,
 ) -> Result<(DirectCallEdge<ExecutableKey>, Ty), FatalError> {
     let (callee, extern_marshals) = match target.callee {
@@ -1180,7 +1175,7 @@ fn lower_materialized_call_target(
             })?;
             let callee = ExecutableKey { activation, need };
             let extern_marshals = if let Some(signature) = world.extern_wire(function) {
-                let Some(args) = callsite_args.get(&callsite) else {
+                let Some(args) = body.call_args(callsite) else {
                     return Err(incomplete_semantic_plan(
                         tel,
                         root_id,

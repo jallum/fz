@@ -99,7 +99,7 @@ fn compiler2_inline_dispatch_plan_is_shared_from_lowering_to_backend() {
 
 #[test]
 fn compiler2_pinned_equality_does_not_define_or_merge_value_origins() {
-    use super::executable_facts::{collect_callsite_return_origins, collect_value_origins};
+    use super::executable_facts::collect_value_origins;
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -118,7 +118,7 @@ fn compiler2_pinned_equality_does_not_define_or_merge_value_origins() {
     assert_resolved(compiler.drive(), "pinned constraint body");
 
     let body = lowered_body(&bodies, function);
-    let origins = collect_value_origins(&body, &collect_callsite_return_origins(&body));
+    let origins = collect_value_origins(&body);
     let LoweredBody::Clauses { entries, .. } = &body;
 
     let (source, value) = entries
@@ -917,7 +917,7 @@ fn compiler2_impossible_map_clause_has_no_runtime_requirement() {
 #[test]
 fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
     use super::body::{SubjectOriginRoot, ValueRole};
-    use super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
+    use super::executable_facts::{TransportOrigin, collect_value_origins};
     use crate::dispatch_matrix::{BitstringFieldKind, ProjectionKind, SubjectSource};
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
@@ -943,7 +943,7 @@ fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
             .world()
             .executable_facts(&executable.key)
             .expect("executable facts");
-        let origins = collect_value_origins(facts.body(), &collect_callsite_return_origins(facts.body()));
+        let origins = collect_value_origins(facts.body());
         let LoweredBody::Clauses { entries, .. } = facts.body();
 
         for (owner, entry) in entries.iter().enumerate() {

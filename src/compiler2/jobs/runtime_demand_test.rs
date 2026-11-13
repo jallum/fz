@@ -124,7 +124,6 @@ fn propagate_tuple_step_demand(
         callsites: HashMap::new(),
         callsite_needs: HashMap::new(),
         delivered_value_joins: HashMap::new(),
-        callsite_return_origins: HashMap::new(),
         value_origins: ValueMap::new(),
         callable_origins: ValueMap::new(),
         return_origins: Box::new([]),
@@ -230,7 +229,6 @@ fn a_call_between_destinations_asks_for_exactly_the_arguments_its_choice_reads()
         callsites: summaries,
         callsite_needs: HashMap::new(),
         delivered_value_joins: HashMap::new(),
-        callsite_return_origins: HashMap::new(),
         value_origins: ValueMap::new(),
         callable_origins: ValueMap::new(),
         return_origins: Box::new([]),
@@ -305,7 +303,6 @@ mod tests {
             callsites: HashMap::new(),
             callsite_needs: HashMap::new(),
             delivered_value_joins: HashMap::new(),
-            callsite_return_origins: HashMap::new(),
             value_origins: ValueMap::new(),
             callable_origins: ValueMap::new(),
             return_origins: Box::new([]),
@@ -412,8 +409,7 @@ mod tests {
             Vec::new(),
         );
 
-        let callsite_origins = collect_callsite_return_origins(&body);
-        let value_origins = collect_value_origins(&body, &callsite_origins);
+        let value_origins = collect_value_origins(&body);
 
         assert_eq!(
             value_origins.get(&direct_value),

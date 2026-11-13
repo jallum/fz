@@ -3187,11 +3187,11 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     }
 
     fn construct_entry_captures(&mut self, body: &mut LoweredBody) {
-        use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
+        use super::super::executable_facts::{TransportOrigin, collect_value_origins};
         use crate::fz_ir::ListRewritePermission;
         let scanned = Cell::new(0);
         let compared = Cell::new(0);
-        let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
+        let origins = collect_value_origins(body);
         let LoweredBody::Clauses { entries, .. } = &*body;
         let sources = scan_steps(entries, &scanned)
             .filter_map(|(entry, step, instruction)| {
@@ -3293,7 +3293,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             entry.physical_captures = retained.into_iter().filter(|value| !captures.contains(value)).collect();
             entry.captures = captures;
         }
-        let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
+        let origins = collect_value_origins(body);
         construct_call_ownership(body, &origins);
         construct_tuple_ownership(body, &origins, &scanned, &compared);
         for (entry, step, _, _) in sources {

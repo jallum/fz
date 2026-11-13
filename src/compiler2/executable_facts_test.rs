@@ -78,7 +78,7 @@ end
 
     let before = value_id_hashes::so_far();
     let rebuilt = LoweredBody::clauses(clauses.clone(), entries.clone(), generated.clone());
-    let origins = collect_value_origins(&rebuilt, &collect_callsite_return_origins(&rebuilt));
+    let origins = collect_value_origins(&rebuilt);
     let hashed = value_id_hashes::so_far() - before;
 
     assert!(
@@ -104,4 +104,57 @@ fn preparing_a_callable_type_twice_yields_equal_inputs() {
     prepare_type_projection(&mut world, &mut warm, callable);
 
     assert_eq!(cold.inputs, warm.inputs);
+}
+
+/// A call's returned value is made of the call itself, in the form its tail
+/// makes: a direct call returns its call site, a closure call also names the
+/// closure it called. A call site the body does not make has no return origin.
+#[test]
+fn a_calls_return_origin_is_derived_from_its_tail() {
+    use crate::compiler2::body::{ControlDestination, ControlEntryOrigin};
+    use crate::source::Span;
+    let entry = |tail| LoweredEntry {
+        span: Span::DUMMY,
+        origin: ControlEntryOrigin::Clause,
+        params: Vec::new(),
+        captures: Vec::new(),
+        physical_captures: Vec::new(),
+        physical_params: Vec::new(),
+        steps: Vec::new(),
+        tail,
+    };
+    let (direct, closure) = (CallSiteId::from_u32(0), CallSiteId::from_u32(1));
+    let body = LoweredBody::clauses(
+        Vec::new(),
+        vec![
+            entry(LoweredTail::DirectCall {
+                value: ValueId::from_u32(0),
+                callsite: direct,
+                callee: FunctionId::from_coordinate(0),
+                args: Vec::new(),
+                dest: ControlDestination::Return,
+            }),
+            entry(LoweredTail::ClosureCall {
+                value: ValueId::from_u32(1),
+                callsite: closure,
+                callee: ValueId::from_u32(2),
+                args: Vec::new(),
+                dest: ControlDestination::Return,
+            }),
+        ],
+        Vec::new(),
+    );
+
+    assert_eq!(
+        callsite_return_origin(&body, direct),
+        Some(TransportOrigin::CallsiteReturn(direct))
+    );
+    assert_eq!(
+        callsite_return_origin(&body, closure),
+        Some(TransportOrigin::ClosureCallReturn {
+            callsite: closure,
+            callee: ValueId::from_u32(2),
+        })
+    );
+    assert_eq!(callsite_return_origin(&body, CallSiteId::from_u32(5)), None);
 }

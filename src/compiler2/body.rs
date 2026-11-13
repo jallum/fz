@@ -347,6 +347,7 @@ pub struct BodyTables {
     definitions: ValueMap<StepSite>,
     projections: Vec<StepUses>,
     entries: Vec<StepUses>,
+    callsite_entries: Vec<Option<ControlEntryId>>,
 }
 
 impl PartialEq for BodyTables {
@@ -386,6 +387,7 @@ impl BodyTables {
             definitions,
             projections,
             entries: entry_uses,
+            callsite_entries: callsite_entries(entries),
         }
     }
 
@@ -427,6 +429,28 @@ impl BodyTables {
     }
 }
 
+/// The entry whose `DirectCall` or `ClosureCall` tail makes each call, indexed
+/// by call-site number.
+///
+/// No call site is named by two entries: lowering mints each call site once,
+/// and pruning only drops entries. Lowering numbers a function's call sites
+/// densely, and pruning leaves holes, so the index is as long as the largest
+/// number kept and a hole answers `None`.
+fn callsite_entries(entries: &[LoweredEntry]) -> Vec<Option<ControlEntryId>> {
+    let mut table = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if let LoweredTail::DirectCall { callsite, .. } | LoweredTail::ClosureCall { callsite, .. } = &entry.tail {
+            let slot = callsite.as_u32() as usize;
+            if table.len() <= slot {
+                table.resize(slot + 1, None);
+            }
+            assert!(table[slot].is_none(), "call site {slot} is named by two entries");
+            table[slot] = Some(ControlEntryId::from_u32(index as u32));
+        }
+    }
+    table
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoweredBody {
     Clauses {
@@ -463,6 +487,42 @@ impl LoweredBody {
             tables,
             value_count: 0,
         }
+    }
+
+    /// The tail of the entry that makes the call at `callsite`.
+    pub(crate) fn callsite_tail(&self, callsite: CallSiteId) -> Option<&LoweredTail> {
+        let Self::Clauses { entries, tables, .. } = self;
+        let entry = (*tables.callsite_entries.get(callsite.as_u32() as usize)?)?;
+        Some(&entries[entry.as_u32() as usize].tail)
+    }
+
+    /// How the call at `callsite` maps its args onto the callee's inputs.
+    pub(crate) fn call_input_mode(&self, callsite: CallSiteId) -> Option<CallInputMode> {
+        match self.callsite_tail(callsite)? {
+            LoweredTail::DirectCall { .. } => Some(CallInputMode::Direct),
+            LoweredTail::ClosureCall { .. } => Some(CallInputMode::Closure),
+            _ => None,
+        }
+    }
+
+    /// The positional args of the call at `callsite`, or `None` when no entry
+    /// of this body makes that call.
+    pub(crate) fn call_args(&self, callsite: CallSiteId) -> Option<&[CallArg]> {
+        match self.callsite_tail(callsite)? {
+            LoweredTail::DirectCall { args, .. } | LoweredTail::ClosureCall { args, .. } => Some(args),
+            _ => None,
+        }
+    }
+
+    /// Every call in the body with its positional args.
+    pub(crate) fn calls(&self) -> impl Iterator<Item = (CallSiteId, &[CallArg])> {
+        let Self::Clauses { entries, .. } = self;
+        entries.iter().filter_map(|entry| match &entry.tail {
+            LoweredTail::DirectCall { callsite, args, .. } | LoweredTail::ClosureCall { callsite, args, .. } => {
+                Some((*callsite, args.as_slice()))
+            }
+            _ => None,
+        })
     }
 
     pub(crate) fn with_value_count(mut self, count: usize) -> Self {
@@ -894,65 +954,6 @@ impl CallInputMode {
     }
 }
 
-/// The `CallInputMode` of every callsite in `body`, keyed by `CallSiteId`.
-///
-/// A `LoweredBody`'s `entries` arena holds exactly the control-flow nodes
-/// reachable from its clauses' entries: lowering only ever pushes an entry
-/// while planning a `Deliver` resume, an `If` branch, a `Dispatch` arm/miss,
-/// or a `Receive` clause/after (see `jobs::body::plan_block` and its call
-/// sites). So a flat scan of `entries` visits exactly the same callsites, in
-/// the same modes, that a recursive walk following those same
-/// `ControlDestination`/branch links from the clause entries would visit —
-/// and does it without recursion or having to hand-enumerate every tail
-/// variant's destinations.
-///
-/// This "`entries` == the set reachable from the clause entries" invariant is
-/// what makes the flat scan sound, and it has TWO producers that must both
-/// preserve it: `jobs::body::plan_block` (the original lowering) and
-/// `jobs::artifact::prune_lowered_body` (the pruned/reindexed body `transport`
-/// substitutes for a materialized executable). A future change to either that
-/// left a dangling or orphaned entry would silently break this scan.
-pub(crate) fn callsite_input_modes(body: &LoweredBody) -> HashMap<CallSiteId, CallInputMode> {
-    let mut out = HashMap::new();
-    let LoweredBody::Clauses { entries, .. } = body;
-    for entry in entries {
-        match &entry.tail {
-            LoweredTail::DirectCall { callsite, .. } => {
-                out.insert(*callsite, CallInputMode::Direct);
-            }
-            LoweredTail::ClosureCall { callsite, .. } => {
-                out.insert(*callsite, CallInputMode::Closure);
-            }
-            LoweredTail::Value { .. }
-            | LoweredTail::If { .. }
-            | LoweredTail::Dispatch { .. }
-            | LoweredTail::Receive(_)
-            | LoweredTail::Try { .. }
-            | LoweredTail::Unreachable => {}
-        }
-    }
-    out
-}
-
-/// The positional call args of every callsite in `body`, keyed by
-/// `CallSiteId`. A callsite's args are a direct field of the `DirectCall`/
-/// `ClosureCall` tail that names it -- never accumulated along a walk -- so
-/// this rides the same flat scan over `entries` as `callsite_input_modes`
-/// (see that function's doc comment for the reachability invariant that
-/// makes the flat scan sound).
-pub(crate) fn callsite_call_args(body: &LoweredBody) -> HashMap<CallSiteId, &[CallArg]> {
-    let mut out = HashMap::new();
-    let LoweredBody::Clauses { entries, .. } = body;
-    for entry in entries {
-        if let LoweredTail::DirectCall { callsite, args, .. } | LoweredTail::ClosureCall { callsite, args, .. } =
-            &entry.tail
-        {
-            out.insert(*callsite, args.as_slice());
-        }
-    }
-    out
-}
-
 /// A lowered map key position: the runtime value, plus the compile-time
 /// constant when the source wrote a literal. Map keys are VALUES — the
 /// carried literal is what lets analysis type the field precisely without
@@ -1109,3 +1110,7 @@ impl BodyState {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "body_test.rs"]
+mod body_test;

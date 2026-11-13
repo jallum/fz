@@ -5,13 +5,13 @@ use std::rc::Rc;
 
 use super::super::body::{
     CallArg, CallInputMode, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DeliveredValueSource,
-    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId, callsite_call_args, callsite_input_modes,
+    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId,
 };
 use super::super::callsite_dispatch::dispatch_stress;
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, settled_uses};
 use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, RuntimeDemandFacts};
 #[cfg(test)]
-use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
+use super::super::executable_facts::{TransportOrigin, collect_value_origins};
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::super::incoming_inputs::{IncomingInputRole, IncomingInputSource, IncomingInputSources, InputSlot};
@@ -548,7 +548,7 @@ fn result_consumers(facts: &RuntimeDemandFacts<'_>) -> HashMap<ExecutableKey, Re
                 .or_insert_with(|| ResultConsumers::Named(HashSet::new()));
         }
     }
-    for (callsite, args) in callsite_call_args(facts.body) {
+    for (callsite, args) in facts.body.calls() {
         let names_consumers = targets_of(&callsite).next().is_some();
         for arg in args {
             for producer_site in callsite_returns_feeding(facts, arg.value) {
@@ -626,7 +626,6 @@ fn callsite_returns_reaching(
     facts: &RuntimeDemandFacts<'_>,
     unanswered: &HashSet<ExecutableKey>,
 ) -> HashSet<CallSiteId> {
-    let args = callsite_call_args(facts.body);
     let mut awaiting = HashSet::new();
     for (callsite, summary) in facts.callsites {
         let need = facts
@@ -637,7 +636,7 @@ fn callsite_returns_reaching(
         if !local_call_targets(summary, need).any(|target| unanswered.contains(&target)) {
             continue;
         }
-        for arg in args.get(callsite).copied().into_iter().flatten() {
+        for arg in facts.body.call_args(*callsite).into_iter().flatten() {
             awaiting.extend(callsite_returns_feeding(facts, arg.value));
         }
     }
@@ -909,13 +908,11 @@ fn collect_callsite_input_sources(
     facts: &ExecutableFacts,
     contribution: &mut HashMap<InputSlot, HashSet<IncomingInputSource>>,
 ) {
-    let call_args = callsite_call_args(&facts.body);
-    let call_modes = callsite_input_modes(&facts.body);
     for (callsite, summary) in &facts.callsites {
-        let Some(args) = call_args.get(callsite) else {
+        let Some(args) = facts.body.call_args(*callsite) else {
             continue;
         };
-        let Some(mode) = call_modes.get(callsite).copied() else {
+        let Some(mode) = facts.body.call_input_mode(*callsite) else {
             continue;
         };
         let need = facts

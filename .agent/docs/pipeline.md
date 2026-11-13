@@ -372,7 +372,8 @@ Compiler2 lowers one function body as:
 - `LoweredTail`: the only place control can branch, call, or return
 - `ControlDestination`: either `Return` or `Deliver(next_entry)`
 - `BodyTables`: which step defines each value, which values each step and tail
-  name as operands, and which list steps retain a source
+  name as operands, which list steps retain a source, and which entry makes
+  each call
 
 That makes local control explicit instead of positional.
 
@@ -387,6 +388,12 @@ rewrite permission, never the values it defines or names; a list retention is
 the one edit that adds a use, and `LoweredBody::retain_list_source` writes the
 step and the table together. The tables are a function of the steps, so body
 identity ignores them and an equal reproduction stays equal.
+
+A call site's arguments (`LoweredBody::call_args`), input mode
+(`call_input_mode`) and return origin (`callsite_return_origin`) are read from
+the entry the call table names, and `calls` lists every call. Building the table
+refuses a body in which two entries name one call site. The table is indexed by
+call-site number, so a call site that pruning dropped answers `None`.
 
 - `ControlEntryOrigin::Clause` is a clause body entry.
 - `ControlEntryOrigin::Branch` is a compiler-made join/arm entry.
