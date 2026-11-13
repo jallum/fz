@@ -204,11 +204,7 @@ impl QuotedSourceHeap {
 
     fn fresh_process() -> Process {
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-        let node = Rc::new(Node::new(vec![
-            NIL_ATOM.to_string(),
-            TRUE_ATOM.to_string(),
-            FALSE_ATOM.to_string(),
-        ]));
+        let node = Rc::new(Node::new(well_known_atom_names().to_vec()));
         Process::with_node(node, schemas, 0, DEFAULT_REDUCTIONS_PER_QUANTUM)
     }
 

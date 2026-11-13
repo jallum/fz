@@ -98,7 +98,10 @@ mod value_membership_tests {
     impl FakeHeap {
         fn new(atoms: &[&str]) -> Self {
             let module = Module {
-                atom_names: atoms.iter().map(|name| (*name).to_string()).collect(),
+                atom_names: atoms
+                    .iter()
+                    .map(|name| fz_runtime::process::AtomName::from(*name))
+                    .collect(),
                 ..Module::default()
             };
             Self {

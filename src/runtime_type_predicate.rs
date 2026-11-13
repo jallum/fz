@@ -1236,7 +1236,7 @@ fn axis_admits(
                     .module
                     .atom_names
                     .iter()
-                    .position(|candidate| candidate == name)
+                    .position(|candidate| candidate == name.as_str())
                     .map(|idx| idx as u32)
             }),
             _ => false,

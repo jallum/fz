@@ -30,7 +30,7 @@ use crate::function_denotation::decode_closure_denotations;
 use crate::heap::{AddressMap, Schema, SchemaRegistry, deep_copy_any_value_ref, pool_outstanding_blocks};
 use crate::output::{OutputSink as _, STDOUT_OUTPUT};
 use crate::pinned_abi::{call1, call2};
-use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Node, Process, ProcessState};
+use crate::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Node, Process, ProcessState};
 use crate::sched::{
     ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
 };
@@ -192,7 +192,7 @@ unsafe fn command_line(argc: i32, argv: *const *const c_char) -> Argv {
 /// and `Atom.to_string` of any of them aborted the process. The renderer has
 /// always known empty names exist (`any_value::debug::Renderer::atom`); the
 /// encoding was the one place that assumed they do not.
-fn parse_atom_blob(blob: *const u8, len: u32) -> Vec<String> {
+fn parse_atom_blob(blob: *const u8, len: u32) -> Vec<AtomName> {
     let mut out = Vec::new();
     if blob.is_null() || len == 0 {
         return out;
@@ -206,7 +206,7 @@ fn parse_atom_blob(blob: *const u8, len: u32) -> Vec<String> {
         if name.as_ptr_range().end == names.as_ptr_range().end && name.is_empty() && !names.is_empty() {
             break;
         }
-        out.push(from_utf8(name).map(str::to_string).unwrap_or_default());
+        out.push(AtomName::from(from_utf8(name).unwrap_or_default()));
     }
     out
 }

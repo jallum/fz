@@ -277,7 +277,7 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
         .and_then(|dispatch| dispatch.plan().last_resort.as_ref())
         .and_then(crate::dispatch_matrix::pattern::LastResort::exception)
         .expect("the clause head raises when nothing matches");
-    executable.atom_names = Box::from([Rc::new(raised.to_string())]);
+    executable.atom_names = Box::from([AtomName::from(raised)]);
     let executable = Rc::new(executable);
     let mut program = BackendProgram::empty(key);
     program.add_executable(executable.clone(), world.types());

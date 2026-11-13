@@ -8,6 +8,8 @@ mod contribution_test;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use fz_runtime::process::AtomName;
+
 use super::artifact::{BackendConstructionWrapper, BackendExecutable};
 use super::identity::{ExecutableKey, ModuleId};
 use super::semantic::SemanticOrd;
@@ -41,7 +43,7 @@ impl SemanticOrd<Types> for AtomOccurrence {
     }
 }
 
-type AtomOwners = SharedOrder<AtomOccurrence, Rc<String>>;
+type AtomOwners = SharedOrder<AtomOccurrence, AtomName>;
 type WrapperOwners = SharedOrder<ExecutableKey, ()>;
 
 type WrapperChange = (
@@ -86,11 +88,11 @@ fn changed_wrappers(
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendProgram {
     entry: ExecutableKey,
-    pub atom_names: SharedOrder<AtomOccurrence, Rc<String>>,
+    pub atom_names: SharedOrder<AtomOccurrence, AtomName>,
     pub struct_schemas: SharedOrder<Rc<fz_runtime::module_name::ModuleName>, Rc<Vec<String>>>,
     executables: SharedOrder<ExecutableKey, Rc<BackendExecutable>>,
     construction_wrappers: SharedOrder<Rc<TransportPosition>, Rc<BackendConstructionWrapper>>,
-    atom_owners: SharedOrder<Rc<String>, AtomOwners>,
+    atom_owners: SharedOrder<AtomName, AtomOwners>,
     wrapper_owners: SharedOrder<Rc<TransportPosition>, WrapperOwners>,
     schemas: SharedOrder<ModuleId, Rc<BackendSchema>>,
     boxed_contract: boxed_contract::BoxedContracts,
@@ -156,12 +158,16 @@ impl BackendProgram {
 
     pub(crate) fn add_builtins(&mut self, types: &Types) {
         for (index, atom) in ["nil", "true", "false"].into_iter().enumerate() {
-            self.add_atom(Rc::new(atom.to_string()), AtomOccurrence::Builtin(index), types);
+            self.add_atom(AtomName::from(atom), AtomOccurrence::Builtin(index), types);
         }
     }
 
-    fn add_atom(&mut self, atom: Rc<String>, occurrence: AtomOccurrence, types: &Types) {
-        let mut owners = self.atom_owners.lookup(&atom, &Rc::cmp).cloned().unwrap_or_default();
+    fn add_atom(&mut self, atom: AtomName, occurrence: AtomOccurrence, types: &Types) {
+        let mut owners = self
+            .atom_owners
+            .lookup(&atom, &AtomName::cmp)
+            .cloned()
+            .unwrap_or_default();
         let previous = owners.entries().next().map(|(key, _)| key.clone());
         let atom = previous
             .as_ref()
@@ -171,37 +177,35 @@ impl BackendProgram {
             })
             .cloned()
             .unwrap_or(atom);
-        owners.insert(occurrence, Rc::clone(&atom), &|left, right| {
-            left.semantic_cmp(right, types)
-        });
+        owners.insert(occurrence, atom.clone(), &|left, right| left.semantic_cmp(right, types));
         let (first, name) = owners.entries().next().expect("an added atom has an owner");
         if previous.as_ref() != Some(first) {
             if let Some(previous) = previous {
                 self.atom_names
                     .remove(&previous, &|left, right| left.semantic_cmp(right, types));
             }
-            self.atom_names.insert(first.clone(), Rc::clone(name), &|left, right| {
+            self.atom_names.insert(first.clone(), name.clone(), &|left, right| {
                 left.semantic_cmp(right, types)
             });
         }
-        self.atom_owners.insert(atom, owners, &Rc::cmp);
+        self.atom_owners.insert(atom, owners, &AtomName::cmp);
     }
 
-    fn remove_atom(&mut self, atom: &Rc<String>, occurrence: &AtomOccurrence, types: &Types) {
+    fn remove_atom(&mut self, atom: &AtomName, occurrence: &AtomOccurrence, types: &Types) {
         let mut owners = self
             .atom_owners
-            .lookup(atom, &Rc::cmp)
+            .lookup(atom, &AtomName::cmp)
             .expect("registered atom contribution")
             .clone();
         let previous = owners.entries().next().expect("registered atom owner").0.clone();
-        let retained_name = Rc::clone(
-            self.atom_names
-                .lookup(&previous, &|left, right| left.semantic_cmp(right, types))
-                .expect("published atom"),
-        );
+        let retained_name = self
+            .atom_names
+            .lookup(&previous, &|left, right| left.semantic_cmp(right, types))
+            .expect("published atom")
+            .clone();
         owners.remove(occurrence, &|left, right| left.semantic_cmp(right, types));
         if owners.is_empty() {
-            self.atom_owners.remove(atom, &Rc::cmp);
+            self.atom_owners.remove(atom, &AtomName::cmp);
             self.atom_names
                 .remove(&previous, &|left, right| left.semantic_cmp(right, types));
         } else {
@@ -213,7 +217,7 @@ impl BackendProgram {
                     left.semantic_cmp(right, types)
                 });
             }
-            self.atom_owners.insert(Rc::clone(atom), owners, &Rc::cmp);
+            self.atom_owners.insert(atom.clone(), owners, &AtomName::cmp);
         }
     }
 
@@ -242,13 +246,13 @@ impl BackendProgram {
                         }
                         let published = self
                             .atom_owners
-                            .lookup(atom, &Rc::cmp)
+                            .lookup(atom, &AtomName::cmp)
                             .and_then(|owners| owners.entries().next())
                             .and_then(|(occurrence, _)| {
                                 self.atom_names
                                     .lookup(occurrence, &|left, right| left.semantic_cmp(right, types))
                             });
-                        Some(Rc::clone(published.unwrap_or(atom)))
+                        Some(published.unwrap_or(atom).clone())
                     })
                     .collect::<Vec<_>>();
                 (key, previous, next, wrappers, atoms)
@@ -290,7 +294,7 @@ impl BackendProgram {
             };
             for (index, atom) in atoms.iter().enumerate() {
                 if let Some(atom) = atom {
-                    self.add_atom(Rc::clone(atom), AtomOccurrence::Executable(key.clone(), index), types);
+                    self.add_atom(atom.clone(), AtomOccurrence::Executable(key.clone(), index), types);
                 }
             }
             for (_, wrapper) in wrappers {
@@ -392,7 +396,7 @@ impl BackendProgram {
     ) -> Self {
         let mut program = Self::empty(entry);
         for (index, atom) in atoms.into_iter().enumerate() {
-            program.add_atom(Rc::new(atom), AtomOccurrence::Builtin(index), types);
+            program.add_atom(AtomName::from(atom.as_str()), AtomOccurrence::Builtin(index), types);
         }
         for (name, fields) in schemas {
             program.struct_schemas.insert(Rc::new(name), Rc::new(fields), &Rc::cmp);

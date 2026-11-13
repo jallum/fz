@@ -6,7 +6,7 @@ use cranelift_jit::JITModule;
 use cranelift_module::FuncId;
 use fz_runtime::heap::SchemaRegistry;
 use fz_runtime::pinned_abi::call1;
-use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
+use fz_runtime::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr::null_mut;
@@ -115,7 +115,7 @@ pub struct CompiledMetadata {
     )>,
     pub fn_ids: HashMap<u32, FuncId>,
     pub user_schemas: Rc<RefCell<SchemaRegistry>>,
-    pub atom_names: Vec<String>,
+    pub atom_names: Vec<AtomName>,
     pub tuple_arities: Vec<u32>,
     pub named_schemas: Vec<(fz_runtime::module_name::ModuleName, Vec<String>)>,
     pub diagnostics: Diagnostics,

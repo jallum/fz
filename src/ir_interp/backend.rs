@@ -97,12 +97,8 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
     argv: &Argv,
     program: &BackendProgram,
 ) -> Result<i64, RunFailure> {
-    let atom_names = program
-        .atom_names
-        .iter()
-        .map(|name| name.as_ref().clone())
-        .collect::<Vec<_>>();
     let pool_outstanding_before_run = fz_runtime::heap::pool_outstanding_blocks();
+    let atom_names = program.atom_names.iter().cloned().collect::<Vec<_>>();
     let mut runtime = IrInterpRuntime::fresh_with_atoms(atom_names.clone());
     let module = Module {
         atom_names,
@@ -153,12 +149,7 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
     process: Process,
     args: Vec<AnyValue>,
 ) -> (Process, Result<AnyValue, String>) {
-    let names = program
-        .atom_names
-        .iter()
-        .map(|name| name.as_ref().clone())
-        .collect::<Vec<_>>();
-    let mut runtime = IrInterpRuntime::with_process(process, &names);
+    let mut runtime = IrInterpRuntime::with_process(process, program.atom_names.iter());
     let atom_names = runtime
         .process_ref(MAIN_PID)
         .expect("macro runtime should own pid 1")
