@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt::{self, Display, Formatter};
 use std::mem::discriminant;
 use std::rc::Rc;
@@ -97,9 +98,9 @@ struct ClauseHead {
     span: Span,
 }
 
-enum ClauseLine {
+enum ClauseLine<'t> {
     Head(ClauseHead),
-    Body(ParsedExpr),
+    Body(ParsedExpr<'t>),
 }
 
 enum StructName {
@@ -115,14 +116,14 @@ struct BlockEnd {
 }
 
 #[derive(Clone)]
-struct ParsedExpr {
+struct ParsedExpr<'t> {
     root: AnyValueRef,
     span: Span,
-    call_head: Option<String>,
+    call_head: Option<Cow<'t, str>>,
     callable_head: bool,
 }
 
-impl ParsedExpr {
+impl<'t> ParsedExpr<'t> {
     fn plain(root: AnyValueRef, span: Span) -> Self {
         Self {
             root,
@@ -132,7 +133,7 @@ impl ParsedExpr {
         }
     }
 
-    fn direct_name(root: AnyValueRef, span: Span, name: String) -> Self {
+    fn direct_name(root: AnyValueRef, span: Span, name: Cow<'t, str>) -> Self {
         Self {
             root,
             span,
@@ -682,7 +683,7 @@ impl<'t> FrontDoorParser<'t> {
                 self.advance();
                 let meta = self.meta(start)?;
                 let root = self.builder.user_variable(name, &meta)?;
-                ParsedExpr::direct_name(root, start, name.to_string())
+                ParsedExpr::direct_name(root, start, Cow::Borrowed(name))
             }
             None => self.parse_prefix(module_path, &[])?,
         };
@@ -719,12 +720,17 @@ impl<'t> FrontDoorParser<'t> {
         Ok(body)
     }
 
-    fn parse_expr(&mut self, module_path: &[String], scope: &[String]) -> Result<ParsedExpr, FrontDoorError> {
+    fn parse_expr(&mut self, module_path: &[String], scope: &[String]) -> Result<ParsedExpr<'t>, FrontDoorError> {
         self.skip_newlines();
         self.parse_bp(0, module_path, scope)
     }
 
-    fn parse_bp(&mut self, min_bp: u8, module_path: &[String], scope: &[String]) -> Result<ParsedExpr, FrontDoorError> {
+    fn parse_bp(
+        &mut self,
+        min_bp: u8,
+        module_path: &[String],
+        scope: &[String],
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
         self.saw_no_parens_call = false;
         let lhs = self.parse_prefix(module_path, scope)?;
         self.parse_bp_tail(lhs, min_bp, module_path, scope)
@@ -732,11 +738,11 @@ impl<'t> FrontDoorParser<'t> {
 
     fn parse_bp_tail(
         &mut self,
-        mut lhs: ParsedExpr,
+        mut lhs: ParsedExpr<'t>,
         min_bp: u8,
         module_path: &[String],
         scope: &[String],
-    ) -> Result<ParsedExpr, FrontDoorError> {
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
         loop {
             // No newline-continuation lookahead here by construction: the
             // lexer has already swallowed any newline that precedes a
@@ -853,7 +859,7 @@ impl<'t> FrontDoorParser<'t> {
         Ok(lhs)
     }
 
-    fn parse_prefix(&mut self, module_path: &[String], scope: &[String]) -> Result<ParsedExpr, FrontDoorError> {
+    fn parse_prefix(&mut self, module_path: &[String], scope: &[String]) -> Result<ParsedExpr<'t>, FrontDoorError> {
         let start = self.cur_span();
         match self.bump() {
             Tok::Int(value) => Ok(ParsedExpr::plain(self.builder.int(*value), start)),
@@ -871,7 +877,7 @@ impl<'t> FrontDoorParser<'t> {
                 Ok(ParsedExpr::plain(self.builder.user_variable("_", &meta)?, start))
             }
             Tok::Ident(name) => {
-                let mut name = name.clone();
+                let mut name = Cow::Borrowed(name.as_str());
                 if self.allow_extern_symbol_folding
                     && self.peek_is(&Tok::ColonColon)
                     && self.prev_span().end == self.cur_span().start
@@ -879,7 +885,7 @@ impl<'t> FrontDoorParser<'t> {
                     self.advance();
                     match self.bump() {
                         Tok::Ident(second) => {
-                            name = format!("{name}::{second}");
+                            name = Cow::Owned(format!("{name}::{second}"));
                         }
                         other => {
                             return self.err(format!("expected name after `{}::`, got {:?}", name, other));
@@ -890,7 +896,7 @@ impl<'t> FrontDoorParser<'t> {
                 let root = self.builder.user_variable(&name, &meta)?;
                 Ok(ParsedExpr::direct_name(root, start.merge(self.prev_span()), name))
             }
-            Tok::Upper(name) => self.parse_alias_expr(name.clone(), start),
+            Tok::Upper(name) => self.parse_alias_expr(name, start),
             Tok::LParen => {
                 let root = self.with_matched_do_boundary(|parser| {
                     parser.with_comma_unbound(|parser| {
@@ -934,7 +940,7 @@ impl<'t> FrontDoorParser<'t> {
             Tok::Defstruct => {
                 let meta = self.meta(start)?;
                 let root = self.builder.user_variable("defstruct", &meta)?;
-                Ok(ParsedExpr::direct_name(root, start, "defstruct".to_string()))
+                Ok(ParsedExpr::direct_name(root, start, Cow::Borrowed("defstruct")))
             }
             other => Err(FrontDoorError::syntax(
                 format!("unsupported expression prefix in compiler2 front door: {:?}", other),
@@ -949,7 +955,7 @@ impl<'t> FrontDoorParser<'t> {
         start: Span,
         module_path: &[String],
         scope: &[String],
-    ) -> Result<ParsedExpr, FrontDoorError> {
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
         let inner = self.parse_bp(120, module_path, scope)?;
         let span = start.merge(inner.span);
         let meta = self.meta(span)?;
@@ -958,10 +964,10 @@ impl<'t> FrontDoorParser<'t> {
 
     fn finish_call(
         &mut self,
-        lhs: ParsedExpr,
+        lhs: ParsedExpr<'t>,
         module_path: &[String],
         scope: &[String],
-    ) -> Result<ParsedExpr, FrontDoorError> {
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
         self.expect(&Tok::LParen, "`(`")?;
         let mut args =
             self.with_matched_do_boundary(|parser| parser.parse_paren_call_args(&Tok::RParen, module_path, scope))?;
@@ -979,10 +985,10 @@ impl<'t> FrontDoorParser<'t> {
 
     fn finish_closure_call(
         &mut self,
-        lhs: ParsedExpr,
+        lhs: ParsedExpr<'t>,
         module_path: &[String],
         scope: &[String],
-    ) -> Result<ParsedExpr, FrontDoorError> {
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
         self.expect(&Tok::Dot, "`.`")?;
         self.skip_newlines();
         self.expect(&Tok::LParen, "`(`")?;
@@ -1000,7 +1006,7 @@ impl<'t> FrontDoorParser<'t> {
         Ok(ParsedExpr::plain(root, dot_span))
     }
 
-    fn finish_remote_target(&mut self, lhs: ParsedExpr) -> Result<ParsedExpr, FrontDoorError> {
+    fn finish_remote_target(&mut self, lhs: ParsedExpr<'t>) -> Result<ParsedExpr<'t>, FrontDoorError> {
         self.expect(&Tok::Dot, "`.`")?;
         self.skip_newlines();
         let field = match self.bump() {
@@ -1019,10 +1025,10 @@ impl<'t> FrontDoorParser<'t> {
 
     fn finish_bracket_access(
         &mut self,
-        lhs: ParsedExpr,
+        lhs: ParsedExpr<'t>,
         module_path: &[String],
         scope: &[String],
-    ) -> Result<ParsedExpr, FrontDoorError> {
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
         self.expect(&Tok::LBrack, "`[`")?;
         let key = self.with_matched_do_boundary(|parser| parser.parse_expr(module_path, scope))?;
         self.expect(&Tok::RBrack, "`]`")?;
@@ -1046,22 +1052,19 @@ impl<'t> FrontDoorParser<'t> {
         Ok(ParsedExpr::plain(root, span))
     }
 
-    fn parse_alias_expr(&mut self, first: String, start: Span) -> Result<ParsedExpr, FrontDoorError> {
+    fn parse_alias_expr(&mut self, first: &'t str, start: Span) -> Result<ParsedExpr<'t>, FrontDoorError> {
         let mut path = vec![first];
         while self.peek_is(&Tok::Dot) && matches!(self.peek_non_newline_from(1), Tok::Upper(_)) {
             self.advance();
             self.skip_newlines();
             match self.bump() {
-                Tok::Upper(name) => path.push(name.clone()),
+                Tok::Upper(name) => path.push(name.as_str()),
                 _ => unreachable!("guarded by peek_non_newline_from"),
             }
         }
         let span = start.merge(self.prev_span());
         let meta = self.meta(span)?;
-        Ok(ParsedExpr::plain(
-            self.builder.alias(&meta, &segments_ref(&path))?,
-            span,
-        ))
+        Ok(ParsedExpr::plain(self.builder.alias(&meta, &path)?, span))
     }
 
     fn parse_list_literal(
@@ -1069,7 +1072,7 @@ impl<'t> FrontDoorParser<'t> {
         module_path: &[String],
         scope: &[String],
         start: Span,
-    ) -> Result<ParsedExpr, FrontDoorError> {
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
         let mut items = Vec::new();
         self.skip_newlines();
         if self.peek_is(&Tok::RBrack) {
@@ -1120,7 +1123,7 @@ impl<'t> FrontDoorParser<'t> {
         module_path: &[String],
         scope: &[String],
         start: Span,
-    ) -> Result<ParsedExpr, FrontDoorError> {
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
         let mut items = Vec::new();
         self.skip_newlines();
         if !self.peek_is(&Tok::RBrace) {
@@ -1159,7 +1162,7 @@ impl<'t> FrontDoorParser<'t> {
         module_path: &[String],
         scope: &[String],
         start: Span,
-    ) -> Result<ParsedExpr, FrontDoorError> {
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
         let entries = self.parse_map_entries(module_path, scope, true)?;
         self.expect(&Tok::RBrace, "`}`")?;
         let span = start.merge(self.prev_span());
@@ -1172,7 +1175,7 @@ impl<'t> FrontDoorParser<'t> {
         module_path: &[String],
         scope: &[String],
         start: Span,
-    ) -> Result<ParsedExpr, FrontDoorError> {
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
         let name = self.parse_struct_name()?;
         self.expect(&Tok::LBrace, "`{`")?;
         let entries = self.parse_map_entries(module_path, scope, false)?;
@@ -1202,7 +1205,7 @@ impl<'t> FrontDoorParser<'t> {
         module_path: &[String],
         scope: &[String],
         start: Span,
-    ) -> Result<ParsedExpr, FrontDoorError> {
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
         let segments = self.with_extern_symbol_folding_suppressed(|parser| {
             parser.with_type_payloads_suppressed(|parser| {
                 let mut segments = Vec::new();
@@ -1239,7 +1242,7 @@ impl<'t> FrontDoorParser<'t> {
         module_path: &[String],
         scope: &[String],
         start: Span,
-    ) -> Result<ParsedExpr, FrontDoorError> {
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
         self.skip_newlines();
         let clauses = if matches!(self.peek(), Tok::End | Tok::Eof) {
             Vec::new()
@@ -1259,7 +1262,7 @@ impl<'t> FrontDoorParser<'t> {
     /// already read.
     fn parse_param_head(
         &mut self,
-        first: Option<ParsedExpr>,
+        first: Option<ParsedExpr<'t>>,
         module_path: &[String],
         scope: &[String],
     ) -> Result<ClauseHead, FrontDoorError> {
@@ -1292,7 +1295,7 @@ impl<'t> FrontDoorParser<'t> {
 
     fn parse_bare_lambda_params(
         &mut self,
-        first: Option<ParsedExpr>,
+        first: Option<ParsedExpr<'t>>,
         module_path: &[String],
         scope: &[String],
     ) -> Result<Vec<AnyValueRef>, FrontDoorError> {
@@ -1325,7 +1328,7 @@ impl<'t> FrontDoorParser<'t> {
         module_path: &[String],
         scope: &[String],
         start: Span,
-    ) -> Result<ParsedExpr, FrontDoorError> {
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
         if let Tok::Int(index) = self.peek()
             && *index >= 1
             && start.end == self.cur_span().start
@@ -1354,7 +1357,7 @@ impl<'t> FrontDoorParser<'t> {
 
     /// `&+/2`: the operator is a name, not an expression, so it is the one
     /// capture target the expression parser cannot read.
-    fn parse_operator_capture(&mut self, start: Span) -> Result<ParsedExpr, FrontDoorError> {
+    fn parse_operator_capture(&mut self, start: Span) -> Result<ParsedExpr<'t>, FrontDoorError> {
         let op = self.bump();
         let name = self.operator_name(op).expect("checked operator token");
         let meta = self.meta(start)?;
@@ -1375,7 +1378,7 @@ impl<'t> FrontDoorParser<'t> {
         module_path: &[String],
         scope: &[String],
         start: Span,
-    ) -> Result<ParsedExpr, FrontDoorError> {
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
         let inner = self.parse_bp(120, module_path, scope)?;
         let span = start.merge(inner.span);
         let meta = self.meta(span)?;
@@ -1512,7 +1515,7 @@ impl<'t> FrontDoorParser<'t> {
     /// back in `next_head`.
     fn parse_block_lines(
         &mut self,
-        first: Option<ParsedExpr>,
+        first: Option<ParsedExpr<'t>>,
         terminators: &[Tok],
         missing_separator: &str,
         clause_kind: Option<ClauseKind>,
@@ -1671,7 +1674,7 @@ impl<'t> FrontDoorParser<'t> {
     fn finish_clause_list(
         &mut self,
         kind: ClauseKind,
-        first_pattern: ParsedExpr,
+        first_pattern: ParsedExpr<'t>,
         terminators: &[Tok],
         module_path: &[String],
         scope: &[String],
@@ -1681,7 +1684,7 @@ impl<'t> FrontDoorParser<'t> {
         self.builder.list(&clauses).map_err(FrontDoorError::from)
     }
 
-    fn pattern_head(&mut self, pattern: ParsedExpr) -> Result<ClauseHead, FrontDoorError> {
+    fn pattern_head(&mut self, pattern: ParsedExpr<'t>) -> Result<ClauseHead, FrontDoorError> {
         Ok(ClauseHead {
             patterns: self.builder.list(&[pattern.root])?,
             span: pattern.span,
@@ -1738,7 +1741,7 @@ impl<'t> FrontDoorParser<'t> {
         kind: ClauseKind,
         module_path: &[String],
         scope: &[String],
-    ) -> Result<ClauseLine, FrontDoorError> {
+    ) -> Result<ClauseLine<'t>, FrontDoorError> {
         self.with_comma_unbound(|parser| match kind {
             ClauseKind::Pattern => {
                 let line = parser.parse_expr(module_path, scope)?;
