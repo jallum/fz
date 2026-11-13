@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-13T22:03:59Z",
+  "description": "Found by the fz-sc8.160 and fz-sc8.158 builders; reproduced on 2053b04a5.\nRepro: IO.inspect(Enum.to_list(1..40))\nElixir prints two lines, breaking after \"22,\" and indenting the second by one space. fz prints one 148-column line. Elixir IO.inspect and inspect/1 format through Inspect.Algebra with the default width 80; fz writes every value on one line.\nOracle fixtures currently dodge it by keeping printed collections under 80 columns (01143 prints through Enum.map_join, 01144 splits its lists). The distiller output on tests/distill_telemetry/main_returns_one.jsonl does not hit it. Related: fz-9un (Inspect options, including width: and pretty:); the default-width break is the part every program sees.\nDone when: an oracle fixture inspects a list, a tuple, a map and a nested mix that each exceed 80 columns and matches Elixir on interp, run and build.",
+  "id": "fz-sc8.162",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "IO.inspect breaks a long collection across lines at 80 columns",
+  "type": "bug",
+  "updated_at": "2026-11-13T22:03:59Z"
+}
