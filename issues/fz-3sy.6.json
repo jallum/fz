@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-3sy.5"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-3sy",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "apply/3 with a literal argument list",
   "type": "feature",
-  "updated_at": "2026-11-11T15:21:30Z"
+  "updated_at": "2026-11-13T15:27:39Z"
 }
