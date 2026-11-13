@@ -787,10 +787,10 @@ pub(crate) struct CompiledDispatchGraph<TypeHandle> {
     pub(crate) stats: DispatchCompileStats,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ArmCompileState<'a, TypeHandle> {
     arm: &'a DispatchArm<TypeHandle>,
-    questions: Vec<RegionQuestion<TypeHandle>>,
+    questions: &'a [RegionQuestion<TypeHandle>],
 }
 
 /// Everything a question's demand is resolved against besides the matrix it is
@@ -854,7 +854,7 @@ fn compile_ordered_arms<TypeHandle: Clone + Eq>(
         .iter()
         .map(|arm| ArmCompileState {
             arm,
-            questions: arm.questions.clone(),
+            questions: &arm.questions,
         })
         .collect::<Vec<_>>();
     let root = compile_arm_sequence(&states, fallback, &mut builder, &mut stats);
@@ -894,7 +894,7 @@ fn compile_arm_sequence<TypeHandle: Clone + Eq>(
             .iter()
             .map(|arm| ArmCompileState {
                 arm: arm.arm,
-                questions: arm.questions[1..].to_vec(),
+                questions: &arm.questions[1..],
             })
             .collect::<Vec<_>>();
         let on_match = compile_arm_sequence(&stripped, after_shared, builder, stats);
