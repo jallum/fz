@@ -397,38 +397,38 @@ impl ShapeDemand {
     /// a trailing `ignore` says exactly what saying nothing says, so trimming
     /// them is what makes one demand one value: two consumers that ask for the
     /// same fields compare, hash and key alike however far either wrote out.
-    fn normalized(self) -> Self {
-        match self {
-            Self::TupleFields(fields) => {
-                let mut normalized = fields.into_iter().map(RuntimeDemand::normalized).collect::<Vec<_>>();
-                while normalized.last().is_some_and(RuntimeDemand::is_ignore) {
-                    normalized.pop();
-                }
-                if normalized.is_empty() {
-                    Self::Ignore
-                } else {
-                    Self::TupleFields(normalized)
-                }
-            }
-            other => other,
+    fn normalize(&mut self) {
+        let Self::TupleFields(fields) = self else {
+            return;
+        };
+        for field in fields.iter_mut() {
+            field.shape.normalize();
+        }
+        while fields.last().is_some_and(RuntimeDemand::is_ignore) {
+            fields.pop();
+        }
+        if fields.is_empty() {
+            *self = Self::Ignore;
         }
     }
 
-    fn join(self, other: Self) -> Self {
-        match (self.normalized(), other.normalized()) {
-            (Self::Ignore, other) | (other, Self::Ignore) => other,
-            (Self::Whole, _) | (_, Self::Whole) => Self::Whole,
-            (Self::TupleFields(mut left), Self::TupleFields(mut right)) => {
-                let width = left.len().max(right.len());
-                left.resize_with(width, RuntimeDemand::ignore);
-                right.resize_with(width, RuntimeDemand::ignore);
-                Self::TupleFields(
-                    left.into_iter()
-                        .zip(right)
-                        .map(|(left, right)| left.join(&right))
-                        .collect(),
-                )
-                .normalized()
+    fn normalized(mut self) -> Self {
+        self.normalize();
+        self
+    }
+
+    fn join_assign(&mut self, other: &Self) {
+        match (&mut *self, other) {
+            (_, Self::Ignore) => self.normalize(),
+            (Self::Whole, _) => {}
+            (Self::Ignore, _) => *self = other.clone().normalized(),
+            (_, Self::Whole) => *self = Self::Whole,
+            (Self::TupleFields(left), Self::TupleFields(right)) => {
+                left.resize_with(left.len().max(right.len()), RuntimeDemand::ignore);
+                for (left, right) in left.iter_mut().zip(right) {
+                    left.join_assign(right);
+                }
+                self.normalize();
             }
         }
     }
@@ -503,19 +503,14 @@ impl RuntimeDemand {
     }
 
     pub fn join(&self, other: &Self) -> Self {
-        Self {
-            shape: self.shape.clone().join(other.shape.clone()),
-            callable: self.callable.join(&other.callable),
-        }
+        let mut joined = self.clone();
+        joined.join_assign(other);
+        joined
     }
 
     pub fn join_assign(&mut self, other: &Self) {
-        *self = self.join(other);
-    }
-
-    fn normalized(mut self) -> Self {
-        self.shape = self.shape.normalized();
-        self
+        self.shape.join_assign(&other.shape);
+        self.callable.join_assign(&other.callable);
     }
 
     /// Ground this demand's callable dispatch surfaces (and those of any tuple
