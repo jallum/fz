@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T00:41:13Z",
   "created": "2026-11-12T23:55:10Z",
   "description": "env_get_value (src/ir_interp/backend.rs:2389) returns env.get(..).cloned(). Every operand read of every interpreted step pays a BoundValue clone (a Vec\u003cAnyValue\u003e for Transport values) and the callers only borrow the result.\nSites: env_get (:2385, 43 callers funnel through it), :2521 and :3408 encode_transport_layout(\u0026bound), :2918 encode_runtime_input_binding(\u0026value), :1870/:1874 ProgramStep::TupleField (clones, then builds every field view to take one), :1370 BackendTail::Dispatch (inputs cloned into a Vec passed as a slice to DispatchOperands.inputs, dispatch_exec.rs:186).\nShape: return Result\u003c\u0026BackendBoundValue, String\u003e; env is a separate \u0026HashMap from everything mutated. TupleField reads one field. The Dispatch inputs change reaches dispatch_exec.rs; if it does not fall out cleanly, report it rather than force it.\nHeat: per operand, per step, per transition, at program run time.\n\nMethod: .agent/strategies/ownership-shape.md. Change the signature and let cargo check enumerate dependents; resolve interleavings by compute-then-commit or a split borrow; stop and report if an Rc is the only move.\nSignal: pure refactor. Full gate green; no golden, census or pin moves. Report the clone/to_vec count of each touched file before and after.\nSites were read at develop 8bf8775ae and not compiled; confirm each with cargo check before relying on it.",
   "id": "fz-gfx.12",
   "labels": [],
   "parent": "fz-gfx",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "The interpreter reads an operand without copying it",
   "type": "task",
-  "updated_at": "2026-11-12T23:55:26Z"
+  "updated_at": "2026-11-13T00:41:13Z"
 }
