@@ -4,14 +4,15 @@
     "fz-sc8.147"
   ],
   "blocks": [],
+  "closed_at": "2026-11-13T14:22:53Z",
   "created": "2026-11-12T20:18:05Z",
   "description": "Minimal program (scratchpad s131b/min.fz; elixir prints 1):\n    defmodule M do\n      def h(0), do: fn x -\u003e x end\n      def h(n), do: h(n - 1).(1)\n    end\n    IO.inspect(M.h(1))\nAlso: s131/min.fz (prints 1), handoff/closure_elem.fz (Enum.to_list(Stream.map([fn x -\u003e x end], fn f -\u003e f.(1) end)), prints [1]), s131/min_stream.fz (prints [5]).\n\nOn a04a618c7 (with fz-sc8.147) each compiles and then fails:\n- interp: backend continuation delivery ... backend return layout decoded 0 lane(s), got 1\n- run/build: native cannot project captures out of a callable that names no function in Continuation { owner: FnId(N) }\nNeeded: a recursive call whose return is a union holding a closure, which the caller then calls. The list, the Stream and the free-arrow-variable specialization are not involved.\n\nCause (verified by probes): both ends of the self-recursive return are produced in produce_named_transport_position (src/compiler2/jobs/transport.rs). The recursion edge is cut (cut_in_component_returns), so each end derives its layout from its own type and runtime demand through contract_transport_layout -\u003e callable_layout_from_demand. Both read the same type, int | closure. With no exact direct layout the fallback is the generic callable (function None), carried in a ValueRef lane only when demand.callable.is_first_class(). The callee's return demand has escape: true (ValueRef, one lane); the continuation's resume-payload demand has escape: false (Absent, zero lanes). A generic callable names no function, so zero lanes cannot hold it.\n\nThree producers answer \"what layout does this return arrive in\" (ExecutableReturn, ReturnPayload, ResumePayload arms), each from its own demand.\n\nSpike (s131b/spike.patch, one line): the fallback also carries the callable when the demand names targets. All four programs match elixir on interp, run and build; lib 2169 passed, 1 pin falls (01068 whole-program activations 207 -\u003e 206).\n\nFix shape: the generic callable's carrier does not depend on which end of the edge asks. Preferred: a callable that names no function is always carried (the conditional goes away); fall back to the spike's rule only if that raises a pin. Fixtures with elixir oracles on three paths; full gate.",
   "id": "fz-sc8.131",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A callable returned across a recursion edge arrives in the layout it was sent in",
   "type": "bug",
-  "updated_at": "2026-11-13T14:00:16Z"
+  "updated_at": "2026-11-13T14:22:53Z"
 }
