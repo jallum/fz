@@ -2275,6 +2275,29 @@ fn deduped_job_facts_keep_the_first_occurrence_in_emission_order() {
 }
 
 #[test]
+fn deduped_job_facts_keep_later_new_facts_after_a_dropped_repeat() {
+    let defined = FactKey::ModuleDefined(ModuleId::GLOBAL);
+    let interface = FactKey::ModuleInterface(ModuleId::GLOBAL);
+    let indexed = FactKey::CodeIndexed(super::SourceOwner::for_test(0));
+
+    let facts = vec![
+        defined.clone(),
+        defined.clone(),
+        defined.clone(),
+        interface.clone(),
+        defined.clone(),
+        indexed.clone(),
+    ];
+
+    assert!(super::world::dedupe_job_facts(Vec::new()).is_empty());
+    assert_eq!(
+        super::world::dedupe_job_facts(vec![defined.clone()]),
+        vec![defined.clone()]
+    );
+    assert_eq!(super::world::dedupe_job_facts(facts), vec![defined, interface, indexed]);
+}
+
+#[test]
 fn noting_interface_expectations_extends_the_stored_interface_and_ignores_repeats() {
     let _tel = ConfiguredTelemetry::new();
     let mut world = World::new();
