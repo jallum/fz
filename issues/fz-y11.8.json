@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-13T04:38:32Z",
   "created": "2026-11-13T03:38:53Z",
   "description": "local_call_targets (jobs/runtime_demand.rs:1198) collects a Vec\u003cExecutableKey\u003e per call site; all four callers iterate once (:522, :1017, :979, :621), and result_consumers asks again per feeding site. About 5.9k allocations. Return an iterator.\nWorld::waits_reach (drive.rs:920/923, from answer_use :948) allocates pending and a seen HashSet before the walk; the usual from has no standing waits. About 8k. Return false first when waits_for(from) is empty.\nWorld::reference_function (world.rs:1189) clones the module denotation on every call; functions.reference (identity.rs:550) looks the key up first and discards the clone on a hit. About 4k. Pass Option\u003c\u0026ModuleDenotation\u003e (modules and functions are separate fields) and clone on insert.\napply_proofs (dispatch_reachability.rs:160) clones ReachabilityState per edge even when proofs is empty or changes nothing; :217 copies roots per alternative. About 10k small allocations. Return the incoming state when nothing changes.\nEach site is its own claim; land the ones that come out simpler.\n\nCounts are sampling estimates at develop 742e688b5 (line numbers refer to /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src); re-measure on your base first. Signal: see the epic.",
   "id": "fz-y11.8",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Analysis helpers answer without collecting what the caller reads once",
   "type": "task",
-  "updated_at": "2026-11-13T04:17:54Z"
+  "updated_at": "2026-11-13T04:38:32Z"
 }
