@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-ep5.1"
+    "fz-ep5.1",
+    "fz-ep5.5"
   ],
   "blocks": [],
   "created": "2026-11-14T01:53:57Z",
@@ -12,5 +13,5 @@
   "status": "open",
   "title": "A type annotation inside a pattern is a spanned diagnostic or is supported",
   "type": "bug",
-  "updated_at": "2026-11-14T03:26:52Z"
+  "updated_at": "2026-11-14T04:40:02Z"
 }
