@@ -291,7 +291,7 @@ defmodule JSON do
   defp val(<<"true", r :: binary>>), do: {:ok, true, r}
   defp val(<<"false", r :: binary>>), do: {:ok, false, r}
   defp val(<<"null", r :: binary>>), do: {:ok, nil, r}
-  defp val(<<"\"", r :: binary>>), do: string(r, "")
+  defp val(<<"\"", r :: binary>>), do: string(r, r, "")
   defp val(<<"[", r :: binary>>), do: array(skip_ws(r), [])
   defp val(<<"{", r :: binary>>), do: object(skip_ws(r), %{})
   defp val(<<"-", r :: binary>>), do: negate(number(r))
@@ -365,34 +365,61 @@ defmodule JSON do
   defp pow10(0, acc), do: acc
   defp pow10(e, acc), do: pow10(e - 1, acc * 10.0)
 
-  # A byte at a time rather than scan-then-slice. Every `<<c, r :: binary>>`
-  # step copies the remainder, so the traversal is already quadratic, and a
-  # second pass to measure a run costs more than the appends it saves: both
-  # shapes measured 435 allocations. Scanning first becomes worthwhile once a
-  # sub-binary is a view onto its source rather than a copy.
-  @spec string(binary, binary) :: any
-  defp string(<<"\"", r :: binary>>, acc), do: {:ok, acc, r}
-  defp string(b = <<"\\", r :: binary>>, acc), do: escaped(r, acc, b)
-  defp string(b = <<c, _r :: binary>>, _acc) when c < 32, do: {:error, b}
-  defp string(<<c, r :: binary>>, acc) when c < 128, do: string(r, acc <> <<c>>)
-  defp string(b, acc), do: string_utf8(Utf8.next(b), acc)
+  # `string(start, rest, acc)` scans plain bytes (printable ASCII other than
+  # `"` and `\`): `start` is where the current run began and `rest` what is
+  # left of it. A byte that is not plain ends the run, which is taken with one
+  # slice, so a string costs one append per run, not one per byte; the first
+  # run is the slice itself.
+  @spec string(binary, binary, binary) :: any
+  defp string(s, b = <<"\"", r :: binary>>, acc), do: {:ok, run_join(s, b, acc), r}
+  defp string(s, b = <<"\\", r :: binary>>, acc), do: escaped(r, run_join(s, b, acc), b)
+  defp string(_s, b = <<c, _r :: binary>>, _acc) when c < 32, do: {:error, b}
+  defp string(s, <<c, r :: binary>>, acc) when c < 128, do: string(s, r, acc)
+  defp string(s, b, acc) do
+    case Utf8.next(b) do
+      {:ok, codepoint, rest} ->
+        joined = run_join(s, b, acc) <> Utf8.to_bytes(codepoint)
+        string(rest, rest, joined)
 
-  @spec string_utf8({:ok, utf8, binary} | {:error, binary} | nil, binary) :: any
-  defp string_utf8({:ok, codepoint, rest}, acc), do: string(rest, acc <> Utf8.to_bytes(codepoint))
-  defp string_utf8({:error, rest}, _acc), do: {:error, rest}
-  defp string_utf8(nil, _acc), do: {:error, ""}
+      {:error, rest} ->
+        {:error, rest}
+
+      nil ->
+        {:error, ""}
+    end
+  end
+
+  @spec run_join(binary, binary, binary) :: binary
+  defp run_join(s, b, acc) do
+    n = byte_size(s) - byte_size(b)
+    <<run :: binary-size(n), _ :: binary>> = s
+
+    case acc do
+      <<>> -> run
+      _ -> acc <> run
+    end
+  end
 
   @spec escaped(binary, binary, binary) :: any
-  defp escaped(<<"\"", r :: binary>>, acc, _at), do: string(r, acc <> "\"")
-  defp escaped(<<"\\", r :: binary>>, acc, _at), do: string(r, acc <> "\\")
-  defp escaped(<<"/", r :: binary>>, acc, _at), do: string(r, acc <> "/")
-  defp escaped(<<"n", r :: binary>>, acc, _at), do: string(r, acc <> "\n")
-  defp escaped(<<"t", r :: binary>>, acc, _at), do: string(r, acc <> "\t")
-  defp escaped(<<"r", r :: binary>>, acc, _at), do: string(r, acc <> "\r")
-  defp escaped(<<"b", r :: binary>>, acc, _at), do: string(r, acc <> <<8>>)
-  defp escaped(<<"f", r :: binary>>, acc, _at), do: string(r, acc <> <<12>>)
   defp escaped(<<"u", a, b, c, d, r :: binary>>, acc, at), do: unicode(r, acc, hex4(a, b, c, d), at)
+  defp escaped(b = <<c, r :: binary>>, acc, _at) do
+    case simple_escape(c) do
+      nil -> {:error, b}
+      byte -> string(r, r, acc <> <<byte>>)
+    end
+  end
   defp escaped(b, _acc, _at), do: {:error, b}
+
+  @spec simple_escape(integer) :: integer | nil
+  defp simple_escape(34), do: 34
+  defp simple_escape(92), do: 92
+  defp simple_escape(?/), do: 47
+  defp simple_escape(?n), do: 10
+  defp simple_escape(?t), do: 9
+  defp simple_escape(?r), do: 13
+  defp simple_escape(?b), do: 8
+  defp simple_escape(?f), do: 12
+  defp simple_escape(_c), do: nil
 
   # A bad `\uXXXX` is an unexpected_sequence, reported at the backslash's
   # offset with the six- or twelve-byte sequence, so it is the one failure that
@@ -419,7 +446,7 @@ defmodule JSON do
   defp unicode_low(_r, _acc, _high, _low, at), do: {:error, {:sequence, at, 12}}
 
   @spec unicode_scalar(binary, binary, {:ok, utf8} | {:error, :invalid_codepoint}, binary, integer) :: any
-  defp unicode_scalar(r, acc, {:ok, scalar}, _at, _size), do: string(r, acc <> Utf8.to_bytes(scalar))
+  defp unicode_scalar(r, acc, {:ok, scalar}, _at, _size), do: string(r, r, acc <> Utf8.to_bytes(scalar))
   defp unicode_scalar(_r, _acc, {:error, :invalid_codepoint}, at, size), do: {:error, {:sequence, at, size}}
 
   @spec hex4(integer, integer, integer, integer) :: integer | :error
@@ -462,7 +489,7 @@ defmodule JSON do
   defp object(b, acc), do: object_entry(b, acc)
 
   @spec object_entry(binary, any) :: any
-  defp object_entry(<<"\"", r :: binary>>, acc), do: object_key(string(r, ""), acc)
+  defp object_entry(<<"\"", r :: binary>>, acc), do: object_key(string(r, r, ""), acc)
   defp object_entry(b, _acc), do: {:error, b}
 
   @spec object_key(any, any) :: any
