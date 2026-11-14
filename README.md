@@ -415,7 +415,7 @@ the abstraction boundary is no longer where optimization stops.
 The OS lives in C. fz doesn't try to hide that — it declares it:
 
 ```elixir
-extern "C" def libc::creat(path :: c_string, mode :: integer) :: c_int
+extern "C" def libc::creat(c_string, integer) :: c_int
 extern "C" def libc::write(c_int, binary, integer) :: integer
 extern "C" def libc::close(c_int) :: c_int
 

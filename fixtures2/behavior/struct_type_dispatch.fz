@@ -6,7 +6,7 @@ defmodule Foo do
   @type t :: %Foo{value: integer}
 end
 
-def pick(x :: Foo.t), do: 1
+def pick(%Foo{} = x), do: 1
 def pick(x), do: 2
 
 def main() do

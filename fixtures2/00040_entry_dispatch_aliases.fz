@@ -1,10 +1,8 @@
 
 defmodule Sample do
-  @type count :: integer
-
   def positive(n), do: n > 0
 
-  def wanted(n :: count) when positive(n), do: {:pos, n}
+  def wanted(n) when is_integer(n) and positive(n), do: {:pos, n}
   def wanted(0), do: :zero
   def wanted(_), do: :fallback
 end

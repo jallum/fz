@@ -12429,7 +12429,7 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// A self call keeps its caller's key at a slot the recursion supplies, so one
 /// fewer `entry` plan exists: 153 -> 152 plans, 140 -> 139 unreadable.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 16, 16), ("entry", 133, 120), ("receive", 2, 0)];
+    &[("case", 16, 16), ("entry", 133, 122), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,

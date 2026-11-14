@@ -31,7 +31,7 @@ defmodule Oracle do
     end
   end
 
-  def doubled(n) when is_integer(n) and is_integer(n), do: {:int, n}
+  def doubled(n) when is_integer(n), do: {:int, n}
   def doubled(_), do: :other
 
   def partial(m) when is_map(m) and map_size(m) == 0, do: :empty

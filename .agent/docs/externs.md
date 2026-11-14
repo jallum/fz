@@ -282,7 +282,7 @@ integer  float  boolean  atom  any  binary  cstring  c_int  unit  nil  never
 one — and 32 bits physically. The width is what the declaration is for:
 
 ```fz
-extern "C" defp libc::open(path :: cstring, flags :: c_int, ...) :: c_int
+extern "C" defp libc::open(c_string, c_int, ...) :: c_int
 ```
 
 A C function returning `int` writes only the low half of the integer return
