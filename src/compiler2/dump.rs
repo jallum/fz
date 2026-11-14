@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 
 use super::canon::{canon_backend_program, function_label};
 use super::identity::{ActivationKey, RootId};
-use super::semantic::SemanticOrd;
 use super::world::World;
 use super::{BackendProgram, NativeProgram};
+use fz_engine::SemanticOrd;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DumpKind {

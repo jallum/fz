@@ -5,13 +5,13 @@
 use super::body::ValueId;
 use super::identity::{FunctionMap, ModuleId};
 use super::pull::ProductKey;
-use super::semantic::SemanticOrd;
 use super::transport::{
     ActivationSymbol, BoundaryDescr, CallableDescr, ExecutableSymbol, LaneDescr, PhysicalLaneSource, ShapeDescr,
     TransportCarrier, TransportClass, TransportInterners, TransportLayout, TransportPosition, TransportStore,
 };
 use super::types::Types;
 use super::{ActivationKey, ExecutableKey, ExecutableNeed, RootId};
+use fz_engine::SemanticOrd;
 
 const ORDERING_METHODS: [&str; 9] = [
     ".sort(",
@@ -104,8 +104,8 @@ fn production_activation_order_has_one_typed_nontextual_authority() {
     let transport = include_str!("transport.rs");
     let production_order_owners = [
         include_str!("drive.rs"),
-        include_str!("deps.rs"),
-        include_str!("scheduler.rs"),
+        include_str!("../../crates/fz-engine/src/deps.rs"),
+        include_str!("../../crates/fz-engine/src/scheduler.rs"),
         include_str!("pull.rs"),
         include_str!("product_drive.rs"),
         include_str!("semantic.rs"),

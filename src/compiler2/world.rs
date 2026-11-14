@@ -28,11 +28,9 @@ use super::artifact::BackendProgram;
 use super::body::{LoweredBody, LoweredBodyMap, LoweredExtern};
 use super::code::{CodeMap, CodeState, QuotedCodeSource};
 use super::contract::{FunctionContract, FunctionContractMap};
-use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{DependencyKey, fact_dependency};
 use super::drive::{ExecutionContext, FactKey, Job, JobEffects, UseCollector, WorkGraph};
-use super::facts::FactUse;
 use super::identity::{
     ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
     FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NameableModules,
@@ -45,7 +43,6 @@ use super::module_interface::{
     ModuleReferenceExpectationMap,
 };
 use super::namespace::{CallableQualifier, Namespace, NamespaceStore, NamespaceSymbol};
-use super::ordered_set::OrderedSet;
 use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
     ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap,
@@ -53,8 +50,6 @@ use super::protocol::{
 use super::quoted_expander::surface_read_diagnostic;
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, ScopeSurface, reserved_source_definition};
 use super::runtime::{self, RuntimeModuleCode};
-use super::scheduler::ExternalDependencyStates;
-use super::scheduler::{CompletionEffects, FatalError, WorkStartReason, WorkStartTally};
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap,
@@ -73,6 +68,11 @@ use super::transport::{
 use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, KeyDemand, MapKey, Ty, Types};
 use crate::ir_interp::AnyValue as RuntimeValue;
+use fz_engine::ExternalDependencyStates;
+use fz_engine::FactUse;
+use fz_engine::OrderedSet;
+use fz_engine::UnresolvedWait;
+use fz_engine::{CompletionEffects, FatalError, WorkStartReason, WorkStartTally};
 use fz_runtime::any_value::AnyValueRef;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -199,7 +199,7 @@ pub struct World {
     /// context observes it — the same split `warning_diagnostics` uses, and
     /// what lets a settled question be arbitrated from a `World` method that
     /// holds no telemetry handle.
-    quiescence_steps: Vec<super::AppliedStep<Job, DependencyKey>>,
+    quiescence_steps: Vec<fz_engine::AppliedStep<Job, DependencyKey>>,
     pub(crate) work_graph: WorkGraph,
     #[cfg(test)]
     telemetry_query_count: Cell<u64>,
@@ -208,13 +208,13 @@ pub struct World {
 pub(crate) struct JobCompletion {
     pub(crate) runtime_demand_evaluations: u64,
     pub(crate) job: Job,
-    pub(crate) step: super::AppliedStep<Job, DependencyKey>,
+    pub(crate) step: fz_engine::AppliedStep<Job, DependencyKey>,
     pub(crate) activation_input_changed: HashSet<ActivationKey>,
     pub(crate) rebased: bool,
 }
 
 impl std::ops::Deref for JobCompletion {
-    type Target = super::AppliedStep<Job, DependencyKey>;
+    type Target = fz_engine::AppliedStep<Job, DependencyKey>;
 
     fn deref(&self) -> &Self::Target {
         &self.step
@@ -554,7 +554,7 @@ impl World {
     }
 
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> JobCompletion {
-        self.complete_job_with_external(job, effects, &super::scheduler::NoExternalDependencyStates)
+        self.complete_job_with_external(job, effects, &fz_engine::NoExternalDependencyStates)
     }
 
     pub(crate) fn complete_job_with_external(
@@ -570,7 +570,7 @@ impl World {
         let reached = effects
             .derivations
             .into_iter()
-            .map(|derivation| super::scheduler::DerivationEffects {
+            .map(|derivation| fz_engine::DerivationEffects {
                 publisher: super::drive::Derivation::of(job.clone(), derivation.key),
                 reads: derivation
                     .reads
@@ -742,7 +742,7 @@ impl World {
                 derivations: reached
                     .into_iter()
                     .chain(contribution_derivations)
-                    .chain([super::scheduler::DerivationEffects {
+                    .chain([fz_engine::DerivationEffects {
                         publisher: super::drive::Derivation::of(job.clone(), super::drive::DerivationKey::Job),
                         reads,
                         outputs: outputs.into_iter().map(DependencyKey::Fact).collect(),
@@ -774,10 +774,7 @@ impl World {
     /// from amnesia (measured, fz-kdt.69.1's review). Re-listing both keeps
     /// every claim published at its own revision under the subscriptions that
     /// derived it: nothing moves, nobody rebases, nothing settles early.
-    pub(crate) fn standing_claims_and_reads(
-        &self,
-        job: &Job,
-    ) -> (Vec<FactKey>, HashSet<super::facts::FactUse<FactKey>>) {
+    pub(crate) fn standing_claims_and_reads(&self, job: &Job) -> (Vec<FactKey>, HashSet<fz_engine::FactUse<FactKey>>) {
         let claims = self
             .work_graph
             .output_keys(job)
@@ -3068,11 +3065,11 @@ fn runtime_demand_contribution_derivations(
     sends_changed: &HashSet<ExecutableKey>,
     slots: impl IntoIterator<Item = InputSlot>,
     slots_changed: &HashSet<InputSlot>,
-) -> Vec<super::scheduler::DerivationEffects<super::drive::Derivation, DependencyKey>> {
+) -> Vec<fz_engine::DerivationEffects<super::drive::Derivation, DependencyKey>> {
     let derivation = |key: super::drive::DerivationKey,
                       reads: HashSet<FactUse<DependencyKey>>,
                       fact: FactKey,
-                      changed: bool| super::scheduler::DerivationEffects {
+                      changed: bool| fz_engine::DerivationEffects {
         publisher: super::drive::Derivation::of(job.clone(), key),
         reads,
         outputs: vec![DependencyKey::Fact(fact.clone())],
@@ -3403,13 +3400,13 @@ impl World {
 
     /// Records one drain-arbiter step for the execution context to emit.
     /// A step that moved nothing is not news and is dropped here.
-    pub(crate) fn note_quiescence_step(&mut self, step: super::AppliedStep<Job, DependencyKey>) {
+    pub(crate) fn note_quiescence_step(&mut self, step: fz_engine::AppliedStep<Job, DependencyKey>) {
         if !step.changed.is_empty() {
             self.quiescence_steps.push(step);
         }
     }
 
-    pub(crate) fn take_quiescence_steps(&mut self) -> Vec<super::AppliedStep<Job, DependencyKey>> {
+    pub(crate) fn take_quiescence_steps(&mut self) -> Vec<fz_engine::AppliedStep<Job, DependencyKey>> {
         std::mem::take(&mut self.quiescence_steps)
     }
 

@@ -564,4 +564,6 @@ filled from `from_iter`, since a table with a non-std hasher has no `new`,
 `with_capacity` or `from`. `clippy.toml` disallows `std::collections::HashMap`,
 `HashSet`, `std::hash::RandomState` and `indexmap::IndexMap`; `fast_hash.rs`
 is the one module that allows them. The runtime crate has its own
-`clippy.toml` and stays on std.
+`clippy.toml` and stays on std. The `fz-engine` crate keeps its own private
+`fast_hash` module (foldhash, same per-table seed) and its own `clippy.toml`;
+the compiler does not import its hasher from the engine.

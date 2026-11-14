@@ -5,9 +5,9 @@ use crate::source::Span;
 
 use super::super::drive::{FactKey, Job, JobEffects, UseCollector, settled_uses};
 use super::super::identity::{ActivationKey, ExecutableKey, RootId, RootKind};
-use super::super::scheduler::FatalError;
 use super::super::semantic::{RuntimeDemand, TargetDemandContribution};
 use super::super::world::World;
+use fz_engine::FatalError;
 
 /// The facts `seed_root` cannot conclude without: the entry function's
 /// definition, then the two facts `activation_key` reads to mint the entry

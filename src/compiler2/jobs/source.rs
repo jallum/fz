@@ -9,12 +9,12 @@ use super::super::quoted_expander::{
     emit_surface_read_error,
 };
 use super::super::quoted_surface::{is_function_definition_head, read_compiler_fragment_surface, read_scope_surface};
-use super::super::scheduler::FatalError;
 use super::super::scope::ScopeSnapshot;
 use super::super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceRoot};
 use super::super::source_publish::{self, ScopePublication};
 use super::super::world::World;
 use super::super::{QuotedCodeSource, parse_quoted_program};
+use fz_engine::FatalError;
 
 /// Parses a code submission and records the parts other jobs can ask for later.
 ///

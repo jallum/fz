@@ -8,7 +8,6 @@ use super::super::artifact::{AbiValueRepr, ClosureCallEdge};
 use super::super::body::{CallSiteId, ControlDestination, ControlEntryId, LoweredBody, LoweredTail, ValueId};
 use super::super::drive::FactKey;
 use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, TransportOrigin as TransportSource};
-use super::super::facts::FactUse;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootId};
 use super::super::incoming_inputs::InputSlot;
 use super::super::pull::{
@@ -18,7 +17,7 @@ use super::super::pull::{
 use super::super::reach::ReachKey;
 use super::super::semantic::{
     CallSiteSummary, CallTargetSummary, CallableDemand, CallableFlowFact, CallableSurface, CallableTarget,
-    ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, SemanticOrd, ShapeDemand, TUPLE_LANE_BUDGET,
+    ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, ShapeDemand, TUPLE_LANE_BUDGET,
 };
 use super::super::transport::{
     BoundaryDescr, BoundaryFacts, BoundaryId, CallableConstructionCapture, CallableConstructionFact,
@@ -27,6 +26,8 @@ use super::super::transport::{
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
+use fz_engine::FactUse;
+use fz_engine::SemanticOrd;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CallableFactsDraft {

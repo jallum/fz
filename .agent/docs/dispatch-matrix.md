@@ -1149,7 +1149,7 @@ the census is unchanged at three.
 
 **The schedule sweep recipe.** The perturbation above permutes ARM order; the
 agenda's own order is a second axis, and it is measured by rebuilding with
-`Agenda::pop` flipped from `pop_front` to `pop_back` (`compiler2/agenda.rs`) and
+`Agenda::pop` flipped from `pop_front` to `pop_back` (`crates/fz-engine/src/agenda.rs`) and
 comparing the two builds' canon dumps over the corpus (`fz2-fifo` is the
 unpatched binary, `fz2-lifo` the one built with `pop_back`):
 

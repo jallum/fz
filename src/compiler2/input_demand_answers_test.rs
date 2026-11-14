@@ -27,11 +27,11 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use super::drive::DependencyKey;
-use super::facts::FactUse;
 use super::identity::FunctionId;
 use super::world::{JobCompletion, World};
 use super::{CodeSubmission, ExecutableNeed, FactKey, Job, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
+use fz_engine::FactUse;
 
 /// One `DeriveInputDemand` completion: whose demand it derived, how many facts
 /// its job stands on after the run, and the function-scoped ones by name.

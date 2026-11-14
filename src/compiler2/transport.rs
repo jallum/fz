@@ -12,9 +12,9 @@ use std::rc::Rc;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
-use super::semantic::SemanticOrd;
 use super::types::{Ty, Types};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
+use fz_engine::SemanticOrd;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ShapeId(u32);

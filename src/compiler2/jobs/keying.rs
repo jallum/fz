@@ -15,9 +15,9 @@ use super::super::identity::{FunctionId, ModuleId};
 use super::super::keying::{BodyKeying, InputDemand};
 use super::super::pull::{ProductKey, ProductSessions, ProductValue};
 use super::super::reach::ReachKey;
-use super::super::scheduler::FatalError;
 use super::super::world::{BodyShape, World};
 use crate::telemetry::TelemetryExt as _;
+use fz_engine::FatalError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StaticEdge {

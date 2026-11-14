@@ -14,9 +14,10 @@ use crate::source::Span;
 
 use super::body::{CallSiteId, LoweredBody, LoweredTail};
 use super::identity::{ActivationKey, FunctionId, RootId};
-use super::semantic::{CallSiteSummary, SelectedCallee, SemanticOrd};
+use super::semantic::{CallSiteSummary, SelectedCallee};
 use super::types::{ClosureSurfacePos, TypeVarId, decode_closure_surface_var};
 use super::world::World;
+use fz_engine::SemanticOrd;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CanonicalCallEdgeFact {

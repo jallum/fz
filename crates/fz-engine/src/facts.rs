@@ -1,5 +1,6 @@
-use super::ordered_set::OrderedSet;
 use crate::fast_hash::{HashMap, HashSet};
+use crate::ordered_set::OrderedSet;
+use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::hash::Hash;
 
@@ -97,7 +98,7 @@ pub(crate) enum ContentMovement {
 }
 
 impl<F> FactChange<F> {
-    pub(crate) fn replacing(
+    pub fn replacing(
         key: F,
         old_revision: Option<u64>,
         new_revision: Option<u64>,
@@ -334,7 +335,7 @@ where
         self.movements
     }
 
-    pub(crate) fn publishers(&self, key: &F) -> impl Iterator<Item = &P> {
+    pub fn publishers(&self, key: &F) -> impl Iterator<Item = &P> {
         self.slots.get(key).into_iter().flat_map(|slot| &slot.publishers)
     }
 
@@ -716,3 +717,30 @@ fn set_membership<P: Clone + Eq + Hash>(set: &mut HashSet<P>, publisher: &P, mem
         set.remove(publisher);
     }
 }
+
+/// A total, owner-aware semantic order for identities that cannot derive
+/// `Ord`: activation arrows contain World-local intern handles, so only the
+/// owning `Types` can compare what they mean.
+pub trait SemanticOrd<Ctx> {
+    fn semantic_cmp(&self, other: &Self, ctx: &Ctx) -> Ordering;
+}
+
+impl<Ctx, F> SemanticOrd<Ctx> for FactUse<F>
+where
+    F: SemanticOrd<Ctx>,
+{
+    fn semantic_cmp(&self, other: &Self, ctx: &Ctx) -> Ordering {
+        let readiness_rank = |fact: &FactUse<F>| match fact {
+            FactUse::Current(_) => 0,
+            FactUse::Concluded(_) => 1,
+            FactUse::Settled(_) => 2,
+        };
+        self.fact()
+            .semantic_cmp(other.fact(), ctx)
+            .then_with(|| readiness_rank(self).cmp(&readiness_rank(other)))
+    }
+}
+
+#[cfg(test)]
+#[path = "facts_test.rs"]
+mod facts_test;

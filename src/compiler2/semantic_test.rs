@@ -215,6 +215,7 @@ mod tests {
     use crate::compiler2::{ExecutableNeed, FactKey, Job, RootId, World};
     use crate::telemetry::ConfiguredTelemetry;
     use crate::types::{ClosureTarget, Sigma};
+    use fz_engine::FactUse;
 
     fn test_key(world: &mut World, _tel: &ConfiguredTelemetry) -> ActivationKey {
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);

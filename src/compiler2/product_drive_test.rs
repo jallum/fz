@@ -43,17 +43,17 @@ use super::super::drive::Job;
 use super::super::drive::{DependencyKey, FactKey};
 use super::super::drive_harness::module_name;
 use super::super::dump::DumpStage;
-use super::super::facts::FactUse;
 use super::super::identity::{ExecutableNeed, RootId};
 use super::super::product_drive::ProductDriveError;
 use super::super::pull::{
     ProductKey, ProductProducers, ProductScope, ProductSettlement, ProductValue, PullOutcome, PullSession, PullWait,
     WorldProductProducers,
 };
-use super::super::scheduler::{DriveOutcome, FatalError, WorkStartReason};
 use super::super::{CodeSubmission, Compiler2, RootSubmission, RunFailure};
 use crate::diag::codes;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
+use fz_engine::FactUse;
+use fz_engine::{DriveOutcome, FatalError, WorkStartReason};
 
 fn drive_retained_backend_fatal(
     world: &mut World,
@@ -74,7 +74,7 @@ fn drive_retained_backend_fatal(
 
 fn apply_world_fact_movements(
     driver: &mut super::super::pull::ProductDriver<'_, ConfiguredTelemetry>,
-    movements: &[super::super::FactMovement<DependencyKey>],
+    movements: &[fz_engine::FactMovement<DependencyKey>],
 ) {
     let facts = movements
         .iter()
@@ -82,7 +82,7 @@ fn apply_world_fact_movements(
             let DependencyKey::Fact(key) = &movement.key else {
                 panic!("this semantic completion must move only World facts");
             };
-            super::super::FactMovement {
+            fz_engine::FactMovement {
                 key: key.clone(),
                 state: movement.state,
             }
@@ -291,7 +291,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let cold_work = compiler.world().work_start_tally().delta_since(before_cold_work);
     assert_eq!(
         cold_work,
-        super::super::WorkStartTally::of(&[
+        fz_engine::WorkStartTally::of(&[
             // A job's missing gates are demanded the moment it is recorded --
             // at `World::submit_root` (the root's own gate) and at each
             // completion that records a new wait or publishes an activation
@@ -395,7 +395,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let unreachable_work = compiler.world().work_start_tally().delta_since(before_unreachable_work);
     assert_eq!(
         unreachable_work,
-        super::super::WorkStartTally::of(&[(WorkStartReason::Ignition, 2)]),
+        fz_engine::WorkStartTally::of(&[(WorkStartReason::Ignition, 2)]),
         "an unreachable edit starts only its two source-ingestion jobs",
     );
     assert!(evaluations.borrow().is_empty());
@@ -414,7 +414,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
         .delta_since(before_reached_backend_work);
     assert_eq!(
         reached_backend_work,
-        super::super::WorkStartTally::of(&[
+        fz_engine::WorkStartTally::of(&[
             (WorkStartReason::Ignition, 2),
             // The re-scope publishes the replaced source itself, so the edit no
             // longer wakes a separate copy job on its way to the body.
@@ -596,7 +596,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     );
     assert_eq!(
         compiler.world().work_start_tally().delta_since(work_after_cold_main),
-        super::super::WorkStartTally::default(),
+        fz_engine::WorkStartTally::default(),
         "an unchanged retained request must start no job of any kind"
     );
 
@@ -628,7 +628,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         // `Ignition` the moment they are popped to run -- the submission
         // that enqueued them is real, external work, it is only attributed
         // here, at the run, rather than at the earlier `submit_code` call.
-        super::super::WorkStartTally::of(&[(WorkStartReason::Ignition, 2)]),
+        fz_engine::WorkStartTally::of(&[(WorkStartReason::Ignition, 2)]),
         "re-running an unaffected retained request starts only the queued edit's own ingestion"
     );
 
@@ -942,7 +942,7 @@ fn nested_retained_activations_partition_work_without_replaying_it_on_a_cache_hi
             .all(|key| !matches!(key, ProductKey::NativeProgram(native_root) if macro_roots.contains(native_root))),
         "typed product telemetry must show that macro roots never evaluate NativeProgram",
     );
-    let mut cold_work = super::super::WorkStartTally::default();
+    let mut cold_work = fz_engine::WorkStartTally::default();
     for (_, _, work) in finished.borrow().iter().copied() {
         cold_work.add(work);
     }
@@ -955,7 +955,7 @@ fn nested_retained_activations_partition_work_without_replaying_it_on_a_cache_hi
     assert!(
         unchanged
             .iter()
-            .all(|(_, pokes, work)| { *pokes == 0 && *work == super::super::WorkStartTally::default() })
+            .all(|(_, pokes, work)| { *pokes == 0 && *work == fz_engine::WorkStartTally::default() })
     );
 }
 
@@ -990,14 +990,14 @@ fn standalone_drive_work_is_not_charged_to_the_next_retained_request() {
     });
     assert!(matches!(compiler.drive(), DriveOutcome::Resolved));
     let bare_drive_delta = compiler.world().work_start_tally().delta_since(before_drive);
-    assert_ne!(bare_drive_delta, super::super::WorkStartTally::default());
+    assert_ne!(bare_drive_delta, fz_engine::WorkStartTally::default());
     assert_eq!(finished.borrow().len(), cold_events);
 
     assert_eq!(compiler.run_root_interp(root), Ok(7));
     assert_eq!(finished.borrow().len(), cold_events + 1);
     assert_eq!(
         finished.borrow()[cold_events],
-        super::super::WorkStartTally::default(),
+        fz_engine::WorkStartTally::default(),
         "a retained cache hit must not inherit work consumed by a standalone drive"
     );
 }
@@ -1040,16 +1040,16 @@ fn standalone_drive_owns_the_prefix_before_a_nested_root_product_session() {
         nested_events > cold_events,
         "the item macro must enter a nested retained product session"
     );
-    let mut nested_work = super::super::WorkStartTally::default();
+    let mut nested_work = fz_engine::WorkStartTally::default();
     for (nested_root, work) in &finished.borrow()[cold_events..] {
         assert_ne!(*nested_root, Some(root), "the unrelated runtime root must stay cold");
         nested_work.add(*work);
     }
     let total_work = compiler.world().work_start_tally().delta_since(before_drive);
-    assert_ne!(nested_work, super::super::WorkStartTally::default());
+    assert_ne!(nested_work, fz_engine::WorkStartTally::default());
     assert_ne!(
         total_work.delta_since(nested_work),
-        super::super::WorkStartTally::default(),
+        fz_engine::WorkStartTally::default(),
         "standalone source work before macro demand must remain outside nested session attribution"
     );
 
@@ -1057,7 +1057,7 @@ fn standalone_drive_owns_the_prefix_before_a_nested_root_product_session() {
     assert_eq!(finished.borrow().len(), nested_events + 1);
     assert_eq!(
         finished.borrow()[nested_events],
-        (Some(root), super::super::WorkStartTally::default()),
+        (Some(root), fz_engine::WorkStartTally::default()),
         "the next direct cache hit must not inherit completed standalone work"
     );
 }
@@ -1105,7 +1105,7 @@ fn reconciliation_failure_retries_pending_work_attributed_to_each_request_alone(
     let after_failure_events = finished.borrow().len();
     assert_eq!(after_failure_events, cold_events + 1);
     assert_eq!(finished.borrow()[cold_events], (Some(root), 0, failed_delta));
-    assert_ne!(failed_delta, super::super::WorkStartTally::default());
+    assert_ne!(failed_delta, fz_engine::WorkStartTally::default());
 
     // `main`'s own job is still queued, parked on its still-missing gate: the
     // third request pops it again, finds the gate unmet exactly as before,
@@ -1138,7 +1138,7 @@ fn reconciliation_failure_retries_pending_work_attributed_to_each_request_alone(
         (
             Some(root),
             0,
-            super::super::WorkStartTally::of(&[(WorkStartReason::GateExpansion, 1)])
+            fz_engine::WorkStartTally::of(&[(WorkStartReason::GateExpansion, 1)])
         ),
         "the third request's only fresh demand is re-parking main's job on its still-missing gate"
     );
@@ -1187,7 +1187,7 @@ fn zero_timeout_is_a_balanced_retained_activation_and_does_not_leak_work() {
     // A reason is charged when `pop_runnable` commits a job to run, not when
     // the edit's own jobs are enqueued, so a zero-duration budget -- spent
     // before the drive pops anything -- charges nothing at all.
-    assert_eq!(failed_delta, super::super::WorkStartTally::default());
+    assert_eq!(failed_delta, fz_engine::WorkStartTally::default());
 
     compiler.set_drive_timeout(std::time::Duration::from_secs(30));
     assert_eq!(compiler.run_root_interp(root), Ok(8));
@@ -1767,7 +1767,7 @@ fn compiling_the_same_root_twice_publishes_byte_identical_backend_programs() {
 
 #[test]
 fn live_executable_order_distinguishes_noninjective_display_pairs() {
-    use super::super::semantic::SemanticOrd;
+    use fz_engine::SemanticOrd;
     use std::collections::BTreeMap;
 
     let tel = ConfiguredTelemetry::new();
@@ -2050,7 +2050,7 @@ fn one_product_prerequisite_set_emits_one_quiescence_step_with_both_readiness_ch
     let tel = ConfiguredTelemetry::new();
     let steps = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let observed = std::rc::Rc::clone(&steps);
-    tel.attach_raw_event2::<super::super::AppliedStep<Job, DependencyKey>, usize, _>(
+    tel.attach_raw_event2::<fz_engine::AppliedStep<Job, DependencyKey>, usize, _>(
         &["fz", "compiler2", "work_graph", "quiesced"],
         move |_, _, _, step, _| observed.borrow_mut().push(step.clone()),
     );
@@ -2286,7 +2286,7 @@ fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
         )),
         "the String path should report the RootEntry fact-wait's SeedRoot job failure, got: {error}"
     );
-    let mut finished_work = super::super::WorkStartTally::default();
+    let mut finished_work = fz_engine::WorkStartTally::default();
     for work in finished.borrow().iter().copied() {
         finished_work.add(work);
     }
@@ -2492,8 +2492,8 @@ fn a_settled_prerequisites_readiness_flip_settles_its_dependent_fact_without_run
     let tel = ConfiguredTelemetry::new();
     let executable_fact_trace = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(
         Job,
-        Vec<super::super::FactChange<DependencyKey>>,
-        Vec<super::super::FactMovement<DependencyKey>>,
+        Vec<fz_engine::FactChange<DependencyKey>>,
+        Vec<fz_engine::FactMovement<DependencyKey>>,
     )>::new()));
     let observed_trace = std::rc::Rc::clone(&executable_fact_trace);
     tel.attach_raw_event2::<World, super::super::JobCompletion, _>(
@@ -2581,7 +2581,7 @@ fn a_settled_prerequisites_readiness_flip_settles_its_dependent_fact_without_run
         });
     assert_eq!(
         executable_fact_dirtied.state,
-        super::super::facts::FactState {
+        fz_engine::FactState {
             revision: Some(revision),
             settled: false,
         },
@@ -3832,7 +3832,7 @@ fn a_field_of_a_known_struct_is_read_by_slot_and_any_other_field_by_name() {
 /// pass that moved nothing is quiescence, not a do-nothing job to wait for.
 #[test]
 fn a_producer_demanded_again_that_changes_nothing_moves_no_fact() {
-    use super::super::WorkStartReason;
+    use fz_engine::WorkStartReason;
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     let code = super::super::SourceOwner::for_test(0);

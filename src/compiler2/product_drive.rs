@@ -11,18 +11,18 @@
 use std::rc::Rc;
 
 use super::drive::{Drained, ExecutionContext, FactKey, ProductAddress};
-use super::facts::{FactReadiness, FactUse};
 use super::identity::RootId;
-use super::ordered_worklist::OrderedWorklist;
 use super::pull::{
     ProductDeferral, ProductDriveReport, ProductDriver, ProductKey, ProductRequestId, ProductScope, ProductSessions,
     ProductValidation, ProductValue, PullOutcome, PullWait, WorldProductProducers,
 };
-use super::scheduler::{DriveOutcome, FatalError, WorkStartReason};
-use super::semantic::SemanticOrd;
 use super::world::World;
 use super::{BackendProgram, Job};
 use crate::telemetry::RawSpanGuard as _;
+use fz_engine::OrderedWorklist;
+use fz_engine::SemanticOrd;
+use fz_engine::{DriveOutcome, FatalError, WorkStartReason};
+use fz_engine::{FactReadiness, FactUse};
 
 /// A retry-budgeted stack expansion of this size backs both the outer product
 /// pull and the inner fact-wait job drive, matching the pre-unification
@@ -116,12 +116,12 @@ impl<T: crate::telemetry::RawSpanTelemetry> ExecutionContext<'_, T> {
 }
 
 fn delivered_facts(
-    movements: &[super::facts::FactMovement<super::drive::DependencyKey>],
-) -> Vec<super::facts::FactMovement<FactKey>> {
+    movements: &[fz_engine::FactMovement<super::drive::DependencyKey>],
+) -> Vec<fz_engine::FactMovement<FactKey>> {
     movements
         .iter()
         .filter_map(|movement| {
-            movement.key.fact().map(|fact| super::facts::FactMovement {
+            movement.key.fact().map(|fact| fz_engine::FactMovement {
                 key: fact.clone(),
                 state: movement.state,
             })
@@ -994,7 +994,7 @@ fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTe
     let awaited = facts.clone();
     let settled_facts = facts
         .clone()
-        .filter(|fact| fact.readiness() == super::facts::FactReadiness::Settled)
+        .filter(|fact| fact.readiness() == fz_engine::FactReadiness::Settled)
         .map(|fact| fact.fact().clone())
         .collect::<Vec<_>>();
     for fact in facts {

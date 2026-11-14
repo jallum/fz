@@ -3,9 +3,9 @@
 use super::super::drive::{FactKey, JobEffects, settled_uses};
 use super::super::executable_facts::project_executable_facts;
 use super::super::identity::ExecutableKey;
-use super::super::scheduler::FatalError;
 use super::super::semantic::CallSiteKey;
 use super::super::world::World;
+use fz_engine::FatalError;
 
 pub(super) fn derive_executable_facts_gates(world: &World, executable: &ExecutableKey) -> Vec<FactKey> {
     let analyzed = FactKey::ActivationAnalyzed(executable.activation.clone());

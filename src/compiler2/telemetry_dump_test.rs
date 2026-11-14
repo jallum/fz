@@ -7,7 +7,8 @@ use crate::telemetry::capture::vec_writer;
 use crate::telemetry::{ConfiguredTelemetry, JsonlBackend};
 
 use super::dump::{DumpKind, DumpSpec, FileRequestedOutput, NullRequestedOutput, RequestedOutputSink};
-use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, RootSubmission};
+use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+use fz_engine::DriveOutcome;
 
 #[test]
 fn null_requested_output_is_inert() {

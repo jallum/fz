@@ -1,4 +1,4 @@
-use super::{CodeSubmission, Compiler2, DriveOutcome, Job, ModuleInterface, SourceOwner, World};
+use super::{CodeSubmission, Compiler2, Job, ModuleInterface, SourceOwner, World};
 use crate::exec::runtime::{DbgCapture, ProcessExitCapture};
 use crate::fast_hash::{HashMap, HashSet};
 use crate::ir_interp::{
@@ -6,6 +6,7 @@ use crate::ir_interp::{
 };
 use crate::source::{SourceMap, SourceVersion};
 use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind};
+use fz_engine::DriveOutcome;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;

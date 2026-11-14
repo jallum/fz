@@ -12,10 +12,10 @@ use fz_runtime::process::AtomName;
 
 use super::artifact::{BackendConstructionWrapper, BackendExecutable};
 use super::identity::{ExecutableKey, ModuleId};
-use super::semantic::SemanticOrd;
 use super::shared_order::SharedOrder;
 use super::transport::TransportPosition;
 use super::types::Types;
+use fz_engine::SemanticOrd;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendSchema {
@@ -152,7 +152,7 @@ impl BackendProgram {
         &self,
         tel: &impl crate::telemetry::Telemetry,
         root: super::RootId,
-    ) -> Result<(), super::scheduler::FatalError> {
+    ) -> Result<(), fz_engine::FatalError> {
         self.boxed_contract.validate(tel, root)
     }
 

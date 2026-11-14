@@ -5,9 +5,9 @@ use std::rc::Rc;
 use super::super::super::ExecutableNeed;
 use super::super::super::JobCompletion;
 use super::super::super::drive::ExecutionContext;
-use super::super::super::facts::FactUse;
-use super::super::super::scheduler::DriveOutcome;
 use crate::telemetry::ConfiguredTelemetry;
+use fz_engine::DriveOutcome;
+use fz_engine::FactUse;
 
 use super::super::super::drive_harness::Drive;
 use super::super::super::dump::DumpStage;

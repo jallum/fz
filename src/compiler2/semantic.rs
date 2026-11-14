@@ -14,9 +14,9 @@ use crate::dispatch_matrix::pattern::{LastResort, PatternDispatchPlan};
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::dispatch_reachability::ReachedEdges;
-use super::facts::FactUse;
 use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId};
 use super::types::{Ty, Types};
+use fz_engine::SemanticOrd;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CallSiteKey {
@@ -918,29 +918,6 @@ pub struct ReturnDefine {
 #[derive(Debug, Default)]
 pub struct ActivationMap {
     slots: HashMap<ActivationKey, ActivationSlot>,
-}
-
-/// A total, owner-aware semantic order for identities that cannot derive
-/// `Ord`: activation arrows contain World-local intern handles, so only the
-/// owning `Types` can compare what they mean.
-pub trait SemanticOrd<Ctx> {
-    fn semantic_cmp(&self, other: &Self, ctx: &Ctx) -> Ordering;
-}
-
-impl<Ctx, F> SemanticOrd<Ctx> for FactUse<F>
-where
-    F: SemanticOrd<Ctx>,
-{
-    fn semantic_cmp(&self, other: &Self, ctx: &Ctx) -> Ordering {
-        let readiness_rank = |fact: &FactUse<F>| match fact {
-            FactUse::Current(_) => 0,
-            FactUse::Concluded(_) => 1,
-            FactUse::Settled(_) => 2,
-        };
-        self.fact()
-            .semantic_cmp(other.fact(), ctx)
-            .then_with(|| readiness_rank(self).cmp(&readiness_rank(other)))
-    }
 }
 
 impl SemanticOrd<Types> for ActivationKey {

@@ -1,0 +1,13 @@
+[package]
+name = "fz-engine"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "fz_engine"
+
+[lints]
+workspace = true
+
+[dependencies]
+foldhash = "0.2"

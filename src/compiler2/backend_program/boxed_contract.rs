@@ -8,8 +8,6 @@ use crate::compiler2::artifact::{
     ClosureCallEdge,
 };
 use crate::compiler2::identity::{ExecutableKey, RootId};
-use crate::compiler2::scheduler::FatalError;
-use crate::compiler2::semantic::SemanticOrd;
 use crate::compiler2::shared_order::SharedOrder;
 use crate::compiler2::transport::TransportPosition;
 use crate::compiler2::types::Types;
@@ -17,6 +15,8 @@ use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::source::Span;
 use crate::telemetry::Telemetry;
+use fz_engine::FatalError;
+use fz_engine::SemanticOrd;
 
 /// What one boxed closure call in a body reads back from the apply seam: the
 /// arity it calls with, and the lanes its destination expects.

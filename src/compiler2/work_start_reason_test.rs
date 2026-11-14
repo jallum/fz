@@ -1,6 +1,6 @@
 //! The running pull-only guard: every job entering the agenda on a
 //! production-driven path must be attributable to a sanctioned
-//! `WorkStartReason` (see `scheduler.rs`), and no producer may discover work
+//! `WorkStartReason` (see `crates/fz-engine/src/scheduler.rs`), and no producer may discover work
 //! by scanning the whole fact table (`Scheduler::fact_keys`).
 //!
 //! Each case drives one fixture through the real front door (`submit_code` +
@@ -37,8 +37,9 @@
 use crate::fast_hash::HashSet;
 
 use super::drive::Job;
-use super::{CodeSubmission, Compiler2, ExecutableNeed, FactKey, FactUse, RootSubmission, WorkStartReason};
+use super::{CodeSubmission, Compiler2, ExecutableNeed, FactKey, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
+use fz_engine::{FactUse, WorkStartReason};
 
 /// `submit_code`'s own `IndexCode` is the only external ignition for a
 /// single-file, single-root fixture. `ScopeCode` is only enqueued by
@@ -166,25 +167,25 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
                 _ => {}
             }
             for wake in &completion.wakes {
-                if wake.disposition == super::WakeDisposition::Enqueued
+                if wake.disposition == fz_engine::WakeDisposition::Enqueued
                     && let super::DependencyKey::Fact(FactKey::FunctionDefined(function)) = wake.cause.fact()
                     && world.function_definition(*function).1.is_macro
                 {
                     observed_macro_consumers.borrow_mut().insert(wake.job.clone());
                 }
-                if wake.disposition == super::WakeDisposition::Enqueued
+                if wake.disposition == fz_engine::WakeDisposition::Enqueued
                     && matches!(wake.job, Job::DeriveRuntimeDemand(_))
                 {
                     demand_work.1 += 1;
                     let cause = match &wake.cause {
-                        super::FactUse::Current(super::DependencyKey::Fact(FactKey::CallableConstructionTarget(_))) => {
+                        fz_engine::FactUse::Current(super::DependencyKey::Fact(FactKey::CallableConstructionTarget(_))) => {
                             0
                         }
-                        super::FactUse::Settled(super::DependencyKey::Fact(FactKey::ExecutableFacts(_))) => 1,
-                        super::FactUse::Current(super::DependencyKey::Fact(FactKey::RuntimeDemandInput(_))) => 2,
-                        super::FactUse::Current(super::DependencyKey::Fact(FactKey::RuntimeDemandInputs(_)))
-                        | super::FactUse::Concluded(super::DependencyKey::Fact(FactKey::RuntimeDemandInputs(_))) => 3,
-                        super::FactUse::Current(super::DependencyKey::Fact(FactKey::ExecutableFacts(_))) => 4,
+                        fz_engine::FactUse::Settled(super::DependencyKey::Fact(FactKey::ExecutableFacts(_))) => 1,
+                        fz_engine::FactUse::Current(super::DependencyKey::Fact(FactKey::RuntimeDemandInput(_))) => 2,
+                        fz_engine::FactUse::Current(super::DependencyKey::Fact(FactKey::RuntimeDemandInputs(_)))
+                        | fz_engine::FactUse::Concluded(super::DependencyKey::Fact(FactKey::RuntimeDemandInputs(_))) => 3,
+                        fz_engine::FactUse::Current(super::DependencyKey::Fact(FactKey::ExecutableFacts(_))) => 4,
                         cause => panic!("unexpected RuntimeDemand wake prerequisite: {cause:?}"),
                     };
                     observed_demand_wake_causes.borrow_mut()[cause] += 1;
@@ -194,11 +195,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     );
     let macro_product_consumers = std::rc::Rc::new(std::cell::RefCell::new(HashSet::<Job>::default()));
     let observed_product_consumers = std::rc::Rc::clone(&macro_product_consumers);
-    telemetry.attach_raw_event1::<super::AppliedStep<Job, super::DependencyKey>, _>(
+    telemetry.attach_raw_event1::<fz_engine::AppliedStep<Job, super::DependencyKey>, _>(
         &["fz", "compiler2", "work_graph", "dependencies_moved"],
         move |_, _, _, step| {
             for wake in &step.wakes {
-                if wake.disposition == super::WakeDisposition::Enqueued
+                if wake.disposition == fz_engine::WakeDisposition::Enqueued
                     && let super::DependencyKey::Product(address) = wake.cause.fact()
                     && matches!(address.key, super::ProductKey::RootBackendProduct(_))
                 {

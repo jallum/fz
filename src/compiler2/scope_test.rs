@@ -108,7 +108,7 @@ fn compiler2_module_scope_returns_a_scope_snapshot_not_just_a_namespace() {
     );
     assert!(matches!(
         super::drive::ExecutionContext::new(&mut world, &tel).drive(),
-        super::DriveOutcome::Resolved
+        fz_engine::DriveOutcome::Resolved
     ));
 
     let module = world.reference_module(crate::modules::identity::ModuleName::parse_dotted("Scoped").unwrap());
@@ -143,7 +143,7 @@ fn compiler2_source_scoping_threads_function_scope_through_module_definition() {
     assert!(
         matches!(
             super::drive::ExecutionContext::new(&mut world, &tel).drive(),
-            super::DriveOutcome::Resolved
+            fz_engine::DriveOutcome::Resolved
         ),
         "indexing should resolve before scoping"
     );
@@ -151,7 +151,7 @@ fn compiler2_source_scoping_threads_function_scope_through_module_definition() {
     assert!(
         matches!(
             super::drive::ExecutionContext::new(&mut world, &tel).drive(),
-            super::DriveOutcome::Resolved
+            fz_engine::DriveOutcome::Resolved
         ),
         "top-level scope should resolve"
     );
@@ -164,7 +164,7 @@ fn compiler2_source_scoping_threads_function_scope_through_module_definition() {
     assert!(
         matches!(
             super::drive::ExecutionContext::new(&mut world, &tel).drive(),
-            super::DriveOutcome::Resolved
+            fz_engine::DriveOutcome::Resolved
         ),
         "module definition should resolve"
     );

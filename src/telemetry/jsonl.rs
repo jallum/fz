@@ -36,7 +36,7 @@ use super::clock::Clock;
 use super::event::{Measurements, Metadata};
 use super::handler::{Event, EventKind, Handler};
 use super::value::Value;
-use crate::compiler2::SemanticOrd;
+use fz_engine::SemanticOrd;
 use fz_runtime::telemetry::{
     EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, Raise, RunEnded, RuntimeEvent, SCHEDULER_SLEPT, SEND_PROBE,
     TIMER_ARMED, TIMER_CANCELLED, TIMER_FIRED, TimerArmed, TimerCancelled, TimerFired,
@@ -631,7 +631,7 @@ impl JsonlBackend {
         let drive_start = Rc::clone(backend);
         let drive_stop = Rc::clone(backend);
         let drive_exception = Rc::clone(backend);
-        telemetry.attach_raw_span0_1::<crate::compiler2::DriveOutcome<crate::compiler2::Job, crate::compiler2::DependencyKey>, _, _, _>(
+        telemetry.attach_raw_span0_1::<fz_engine::DriveOutcome<crate::compiler2::Job, crate::compiler2::DependencyKey>, _, _, _>(
             &["fz", "compiler2", "drive"],
             move |name, span_id, parent_span_id| {
                 drive_start.handle_raw_span(
@@ -706,7 +706,7 @@ impl JsonlBackend {
         Self::install_raw_value::<crate::diag::Diagnostic>(telemetry, backend, &["fz", "diag"], "diagnostic");
         // Readiness and externally owned product movements have no job
         // completion. Each carries its one causal graph step directly.
-        Self::install_raw_value::<crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>>(
+        Self::install_raw_value::<fz_engine::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>>(
             telemetry,
             backend,
             &["fz", "compiler2", "work_graph", "dependencies_moved"],
@@ -714,7 +714,7 @@ impl JsonlBackend {
         );
         let quiesced_backend = Rc::clone(backend);
         telemetry.attach_raw_event2::<
-            crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>,
+            fz_engine::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>,
             usize,
             _,
         >(
@@ -1644,21 +1644,21 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, job_kind(job));
         write_job_identity(out, job);
     } else if let Some(outcome) =
-        opaque.downcast_ref::<crate::compiler2::DriveOutcome<crate::compiler2::Job, crate::compiler2::DependencyKey>>()
+        opaque.downcast_ref::<fz_engine::DriveOutcome<crate::compiler2::Job, crate::compiler2::DependencyKey>>()
     {
         out.push(',');
         write_str_lit(out, "status");
         out.push(':');
         match outcome {
-            crate::compiler2::DriveOutcome::Resolved => write_str_lit(out, "resolved"),
-            crate::compiler2::DriveOutcome::Unresolved { waits } => {
+            fz_engine::DriveOutcome::Resolved => write_str_lit(out, "resolved"),
+            fz_engine::DriveOutcome::Unresolved { waits } => {
                 write_str_lit(out, "unresolved");
                 out.push(',');
                 write_str_lit(out, "wait_count");
                 out.push(':');
                 push_u64(out, waits.len() as u64);
             }
-            crate::compiler2::DriveOutcome::Fatal { job } => {
+            fz_engine::DriveOutcome::Fatal { job } => {
                 write_str_lit(out, "fatal");
                 out.push(',');
                 write_str_lit(out, "job_kind");
@@ -1666,13 +1666,13 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
                 write_str_lit(out, job_kind(job));
                 write_job_identity(out, job);
             }
-            crate::compiler2::DriveOutcome::DependencyFailed { dependency } => {
+            fz_engine::DriveOutcome::DependencyFailed { dependency } => {
                 write_str_lit(out, "dependency_failed");
                 out.push_str(",\"dependency\":{\"kind\":");
                 write_dependency_identity(out, dependency);
                 out.push('}');
             }
-            crate::compiler2::DriveOutcome::TimedOut { jobs_ran, pending_jobs } => {
+            fz_engine::DriveOutcome::TimedOut { jobs_ran, pending_jobs } => {
                 write_str_lit(out, "timed_out");
                 out.push(',');
                 write_str_lit(out, "jobs_ran");
@@ -1764,7 +1764,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         out.push(',');
         write_str_lit(out, "work_starts");
         out.push_str(":{");
-        for (position, reason) in crate::compiler2::WorkStartReason::ALL.into_iter().enumerate() {
+        for (position, reason) in fz_engine::WorkStartReason::ALL.into_iter().enumerate() {
             if position > 0 {
                 out.push(',');
             }
@@ -1801,7 +1801,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         out.push(':');
         push_u64(out, tokens.len() as u64);
     } else if let Some(step) =
-        opaque.downcast_ref::<crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>>()
+        opaque.downcast_ref::<fz_engine::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>>()
     {
         write_applied_step_body(out, step);
     } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::ActivationKey>() {
@@ -2388,7 +2388,7 @@ fn write_dependency_identity(out: &mut String, dependency: &crate::compiler2::De
     }
 }
 
-fn write_blocked(out: &mut String, blocked: &[crate::compiler2::FactUse<crate::compiler2::DependencyKey>]) {
+fn write_blocked(out: &mut String, blocked: &[fz_engine::FactUse<crate::compiler2::DependencyKey>]) {
     out.push_str(",\"blocked\":[");
     for (index, wait) in blocked.iter().enumerate() {
         if index > 0 {
@@ -2403,8 +2403,8 @@ fn write_blocked(out: &mut String, blocked: &[crate::compiler2::FactUse<crate::c
 
 /// The use-marker for a `FactUse`, shared by every renderer that needs to
 /// distinguish which subscription a fact identity is standing in for.
-fn fact_use_marker<F>(fact_use: &crate::compiler2::FactUse<F>) -> &'static str {
-    use crate::compiler2::FactUse;
+fn fact_use_marker<F>(fact_use: &fz_engine::FactUse<F>) -> &'static str {
+    use fz_engine::FactUse;
     match fact_use {
         FactUse::Current(_) => "current",
         FactUse::Concluded(_) => "concluded",
@@ -2416,7 +2416,7 @@ fn fact_use_marker<F>(fact_use: &crate::compiler2::FactUse<F>) -> &'static str {
 /// underlying fact's own identity (`"kind"` + ids), as one self-contained
 /// object. Shared by `wakes[].cause` and `semantic.reads[]` — both project a
 /// fact subscription, not a bare fact.
-fn write_fact_use_identity(out: &mut String, fact_use: &crate::compiler2::FactUse<crate::compiler2::FactKey>) {
+fn write_fact_use_identity(out: &mut String, fact_use: &fz_engine::FactUse<crate::compiler2::FactKey>) {
     out.push_str("{\"use\":");
     write_str_lit(out, fact_use_marker(fact_use));
     out.push_str(",\"kind\":");
@@ -2425,10 +2425,7 @@ fn write_fact_use_identity(out: &mut String, fact_use: &crate::compiler2::FactUs
     out.push('}');
 }
 
-fn write_dependency_use_identity(
-    out: &mut String,
-    dependency: &crate::compiler2::FactUse<crate::compiler2::DependencyKey>,
-) {
+fn write_dependency_use_identity(out: &mut String, dependency: &fz_engine::FactUse<crate::compiler2::DependencyKey>) {
     out.push_str("{\"use\":");
     write_str_lit(out, fact_use_marker(dependency));
     out.push_str(",\"kind\":");
@@ -2443,10 +2440,7 @@ fn write_optional_u64(out: &mut String, value: Option<u64>) {
     }
 }
 
-fn write_fact_change_identity(
-    out: &mut String,
-    change: &crate::compiler2::FactChange<crate::compiler2::DependencyKey>,
-) {
+fn write_fact_change_identity(out: &mut String, change: &fz_engine::FactChange<crate::compiler2::DependencyKey>) {
     out.push_str("{\"kind\":");
     write_dependency_identity(out, &change.key);
     out.push_str(",\"old_revision\":");
@@ -2463,8 +2457,8 @@ fn write_fact_change_identity(
 /// One dependency wake: the cause use, the woken job's identity,
 /// its disposition (new work start vs. already-pending), and the
 /// ground-shift classification `complete` computed for the cause.
-fn write_wake(out: &mut String, wake: &crate::compiler2::Wake<crate::compiler2::Job, crate::compiler2::DependencyKey>) {
-    use crate::compiler2::WakeDisposition;
+fn write_wake(out: &mut String, wake: &fz_engine::Wake<crate::compiler2::Job, crate::compiler2::DependencyKey>) {
+    use fz_engine::WakeDisposition;
 
     out.push_str("{\"cause\":");
     write_dependency_use_identity(out, &wake.cause);
@@ -2485,7 +2479,7 @@ fn write_wake(out: &mut String, wake: &crate::compiler2::Wake<crate::compiler2::
     out.push('}');
 }
 
-fn write_movement(out: &mut String, movement: &crate::compiler2::FactMovement<crate::compiler2::DependencyKey>) {
+fn write_movement(out: &mut String, movement: &fz_engine::FactMovement<crate::compiler2::DependencyKey>) {
     out.push_str("{\"kind\":");
     write_dependency_identity(out, &movement.key);
     out.push_str(",\"revision\":");
@@ -2502,7 +2496,7 @@ fn write_movement(out: &mut String, movement: &crate::compiler2::FactMovement<cr
 /// drift apart.
 fn write_applied_step_body(
     out: &mut String,
-    step: &crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>,
+    step: &fz_engine::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>,
 ) {
     out.push_str(",\"changed\":[");
     for (index, change) in step.changed.iter().enumerate() {

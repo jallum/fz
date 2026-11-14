@@ -6,17 +6,17 @@
 
 use std::cmp::Ordering;
 
-pub(super) struct OrderedWorklist<T> {
+pub struct OrderedWorklist<T> {
     values: Vec<T>,
 }
 
 impl<T> OrderedWorklist<T> {
     /// An ascending vector already satisfies the min-heap invariant.
-    pub(super) fn from_sorted(values: Vec<T>) -> Self {
+    pub fn from_sorted(values: Vec<T>) -> Self {
         Self { values }
     }
 
-    pub(super) fn push(&mut self, value: T, mut compare: impl FnMut(&T, &T) -> Ordering) {
+    pub fn push(&mut self, value: T, mut compare: impl FnMut(&T, &T) -> Ordering) {
         let mut child = self.values.len();
         self.values.push(value);
         while child > 0 {
@@ -29,7 +29,7 @@ impl<T> OrderedWorklist<T> {
         }
     }
 
-    pub(super) fn pop(&mut self, mut compare: impl FnMut(&T, &T) -> Ordering) -> Option<T> {
+    pub fn pop(&mut self, mut compare: impl FnMut(&T, &T) -> Ordering) -> Option<T> {
         if self.values.is_empty() {
             return None;
         }
@@ -56,7 +56,7 @@ impl<T> OrderedWorklist<T> {
         Some(value)
     }
 
-    pub(super) fn into_values(self) -> Vec<T> {
+    pub fn into_values(self) -> Vec<T> {
         self.values
     }
 }

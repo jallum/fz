@@ -5,12 +5,11 @@ use std::rc::Rc;
 
 use super::artifact::{AbiValueRepr, BackendTail};
 use super::body::{DeliveredValueSource, delivered_value_joins};
-use super::facts::FactUse;
 use super::pull::{
     ProductDriver, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, TransportCarrier, TransportLayout,
     TransportShapeFact, WorldProductProducers,
 };
-use super::semantic::{CallableFlowFact, CallableSurface, SemanticOrd as _};
+use super::semantic::{CallableFlowFact, CallableSurface};
 use super::transport::ExecutableSymbol;
 use super::transport::{BoundaryDescr, LaneId, ShapeDescr, ShapeId, TransportPosition};
 use super::types::Ty;
@@ -20,6 +19,8 @@ use super::{
 };
 use crate::exec::runtime::DbgCapture;
 use crate::telemetry::ConfiguredTelemetry;
+use fz_engine::FactUse;
+use fz_engine::SemanticOrd as _;
 
 const EVENT_NAME: &[&str] = &["fz", "compiler2", "transport_flow", "defined"];
 
@@ -4527,7 +4528,7 @@ fn owner_position_label(world: &World, position: &TransportPosition) -> String {
 ///
 /// Order-invariance itself is not a production path -- perturbing the schedule
 /// is a source edit -- so the manual recipe stays here as the sibling gate
-/// (precedent: fz-kdt.93). Flip `Agenda::pop` in `src/compiler2/agenda.rs` from
+/// (precedent: fz-kdt.93). Flip `Agenda::pop` in `crates/fz-engine/src/agenda.rs` from
 /// `pop_front` to `pop_back` for a full-LIFO drive, or reverse `pending` in
 /// `collect_return_origins` (`src/compiler2/jobs/runtime_demand.rs`), rebuild,
 /// and diff `fz2 interp --dump backend=...` against the unperturbed dump.
@@ -5772,7 +5773,7 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
         _world: &World,
         _tel: &T,
         address: super::drive::ProductAddress,
-        source: super::scheduler::FatalError,
+        source: fz_engine::FatalError,
     ) -> Self {
         panic!("product dependency {address:?} failed: {source:?}");
     }
@@ -5792,7 +5793,7 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
         scope: super::pull::ProductScope,
         fact: &FactUse<FactKey>,
         job: &Job,
-        source: super::scheduler::FatalError,
+        source: fz_engine::FatalError,
     ) -> Self {
         panic!("{scope} job {job:?} failed producing {fact:?}: {source:?}");
     }
@@ -6401,7 +6402,7 @@ fn assert_materialized_executable_fact_authority(world: &World, session: &PullSe
     let producer_pokes = session.producer_pokes();
     let starts = world.work_start_tally();
     assert!(
-        starts[crate::compiler2::WorkStartReason::BlockedWaiterExpansion] >= producer_pokes,
+        starts[fz_engine::WorkStartReason::BlockedWaiterExpansion] >= producer_pokes,
         "each product-triggered fact producer poke must be attributed to BlockedWaiterExpansion: {starts:?}",
     );
     assert_eq!(
@@ -6508,7 +6509,7 @@ fn all_contract_strings() -> Vec<&'static str> {
 /// interner ids that tiebreak is interning order, which the agenda decides.
 ///
 /// Measured red on `enum_take_drop_split` (fz-kdt.101): flip `Agenda::pop` to
-/// `pop_back` (src/compiler2/agenda.rs:36 — build, dump, revert) and two
+/// `pop_back` (crates/fz-engine/src/agenda.rs:36 — build, dump, revert) and two
 /// byte-identical `Enum.reduce/3#lambda@439-517/2` wrappers trade indices,
 /// `w10` <-> `w11`, moving four lines of a dump whose content did not change.
 ///

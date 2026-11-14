@@ -9,13 +9,13 @@ use super::artifact::BackendProgram;
 use super::code::SourceOwner;
 use super::drive::ExecutionContext;
 use super::dump::DumpStage;
-use super::facts::FactUse;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
 use super::pull::{ProductKey, ProductSessions, PullWait};
-use super::scheduler::DriveOutcome;
 use super::world::World;
 use super::{ExecutableNeed, ModuleId, ModuleInterface};
 use super::{FactKey, Job};
+use fz_engine::DriveOutcome;
+use fz_engine::FactUse;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BackendRequestEvent {
@@ -315,7 +315,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     /// must be zero, and `ignition` must equal the true external front-door
     /// count (one `submit_code` + one `submit_root`).
     #[cfg(test)]
-    pub(crate) fn drive_root_backend_work_starts(&mut self, root: RootId) -> Result<super::WorkStartTally, String> {
+    pub(crate) fn drive_root_backend_work_starts(&mut self, root: RootId) -> Result<fz_engine::WorkStartTally, String> {
         self.drive_root_backend_product(root)?;
         Ok(self.world.work_start_tally())
     }
@@ -532,7 +532,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         while self.world.function_defined_revision(function).is_none() {
             let demanded = self.world.demand_fact_producer(
                 &FactKey::FunctionDefined(function),
-                super::scheduler::WorkStartReason::BlockedWaiterExpansion,
+                fz_engine::WorkStartReason::BlockedWaiterExpansion,
             );
             let outcome = self.drive();
             let still_undefined = self.world.function_defined_revision(function).is_none();
@@ -616,7 +616,7 @@ impl super::product_drive::ProductDriveError for String {
         _world: &World,
         _tel: &T,
         address: super::drive::ProductAddress,
-        _source: super::scheduler::FatalError,
+        _source: fz_engine::FatalError,
     ) -> Self {
         format!("compiler2 product dependency {address:?} failed")
     }
@@ -635,7 +635,7 @@ impl super::product_drive::ProductDriveError for String {
         scope: super::pull::ProductScope,
         fact: &FactUse<FactKey>,
         job: &Job,
-        _source: super::scheduler::FatalError,
+        _source: fz_engine::FatalError,
     ) -> Self {
         format!(
             "compiler2 {scope} product path failed while producing {:?}: {:?}",

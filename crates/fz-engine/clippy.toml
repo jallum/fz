@@ -1,0 +1,5 @@
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "use crate::fast_hash::HashMap, which hashes quickly with a per-table random seed" },
+    { path = "std::collections::HashSet", reason = "use crate::fast_hash::HashSet, which hashes quickly with a per-table random seed" },
+    { path = "std::hash::RandomState", reason = "use crate::fast_hash::RandomState" },
+]

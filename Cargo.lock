@@ -472,6 +472,7 @@ dependencies = [
  "cranelift-native",
  "cranelift-object",
  "foldhash",
+ "fz-engine",
  "fz-fixture-metadata",
  "fz-runtime",
  "hashbrown 0.17.1",
@@ -488,6 +489,13 @@ dependencies = [
  "unicode-ident",
  "unicode-normalization",
  "unicode-security",
+]
+
+[[package]]
+name = "fz-engine"
+version = "0.1.0"
+dependencies = [
+ "foldhash",
 ]
 
 [[package]]
