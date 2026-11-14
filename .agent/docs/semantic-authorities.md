@@ -162,10 +162,14 @@ the existing named-field accessors.
 but quoted source represents an unsuffixed string field as the raw binary value:
 there is no `:: binary` node downstream can consult. The decoder therefore
 reifies that one source shape as `BitType::Binary`. Construction leaves its
-size absent so the writer consumes the whole source binary; matching adds the
-literal's byte length so a following field has a boundary. Backend lowering and
-the three runtime doors consume that spec and never reinterpret a value's
-carrier from the surrounding fields.
+size absent so the writer consumes the whole source binary; matching gives the
+literal's byte length as its size, and `bitstring_pattern` then replaces a
+literal of exactly that size with big-endian unsigned integer fields, one per
+run of up to seven bytes, for both `<<...>>` and `<>` patterns. A literal is
+therefore tested as integers, the same way an integer-literal segment is, and
+allocates nothing. A literal whose field has an authored size of another
+length keeps the `Pattern::Binary` equality test. Backend lowering and the three runtime doors consume that spec and never
+reinterpret a value's carrier from the surrounding fields.
 
 Bitstring matching carries the reader as a bit position (a raw int). The
 bounds check is emitted arithmetic (`BitFieldFits`, `BitFieldNext`), and

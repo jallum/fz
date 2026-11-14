@@ -1547,6 +1547,51 @@ pub(super) fn sized_for_known_binary(value: &Pattern, mut spec: BitFieldSpec) ->
     }
 }
 
+/// The bitstring pattern over `fields`, built once for every source form that
+/// makes one (`<<...>>` and `<>`). A literal binary segment is the integer
+/// fields its bytes spell: the pattern tests `<<"ab">>` exactly as it tests
+/// `<<0x6162 :: 16>>`, so everything downstream sees only integer and binary
+/// fields.
+pub(super) fn bitstring_pattern(fields: Vec<BitField<Spanned<Pattern>>>, span: Span) -> Spanned<Pattern> {
+    let fields = fields.into_iter().flat_map(literal_as_integer_fields).collect();
+    Spanned::new(Pattern::Bitstring(fields), span)
+}
+
+/// The most bytes one integer field of a literal holds. Seven bytes is the
+/// widest big-endian unsigned value that is always a small integer.
+const LITERAL_FIELD_BYTES: usize = 7;
+
+/// The integer fields of a `binary` field whose value is a literal exactly as
+/// long as the field's size, one big-endian unsigned field per run of up to
+/// `LITERAL_FIELD_BYTES` bytes; any other field is returned as it is.
+fn literal_as_integer_fields(field: BitField<Spanned<Pattern>>) -> Vec<BitField<Spanned<Pattern>>> {
+    let Pattern::Binary(bytes) = &field.value.node else {
+        return vec![field];
+    };
+    let spec = &field.spec;
+    let whole_literal = spec.ty == BitType::Binary
+        && spec.unit.is_none()
+        && matches!(spec.size, Some(BitSize::Literal(len)) if len as usize == bytes.len());
+    if !whole_literal {
+        return vec![field];
+    }
+    let span = field.value.span;
+    bytes
+        .chunks(LITERAL_FIELD_BYTES)
+        .map(|run| BitField {
+            value: Spanned::new(Pattern::Int(big_endian_unsigned(run)), span),
+            spec: BitFieldSpec {
+                size: Some(BitSize::Literal(8 * run.len() as u32)),
+                ..BitFieldSpec::default()
+            },
+        })
+        .collect()
+}
+
+fn big_endian_unsigned(bytes: &[u8]) -> i64 {
+    bytes.iter().fold(0, |value, &byte| (value << 8) | i64::from(byte))
+}
+
 pub(super) fn decode_bitstring_pattern(
     args: &[QuotedSourceCursor],
     span: Span,
@@ -1573,7 +1618,7 @@ pub(super) fn decode_bitstring_pattern(
         let spec = sized_for_known_binary(&value.node, BitFieldSpec::default());
         fields.push(BitField { value, spec });
     }
-    Ok(Spanned::new(Pattern::Bitstring(fields), span))
+    Ok(bitstring_pattern(fields, span))
 }
 
 fn decode_negative_pattern(

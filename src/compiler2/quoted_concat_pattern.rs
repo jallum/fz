@@ -11,7 +11,7 @@
 
 use fz_runtime::any_value::ValueKind;
 
-use super::quoted_function::{decode_bitstring_pattern, decode_pattern, sized_for_known_binary};
+use super::quoted_function::{bitstring_pattern, decode_bitstring_pattern, decode_pattern, sized_for_known_binary};
 use super::source::{META_FROM_OPERATOR_KEY, QuotedAstNode, QuotedSourceCursor, QuotedSourceError};
 use crate::ast::{BitField, BitFieldSpec, BitType, Pattern, Spanned};
 use crate::diag::codes::PARSE_CONCAT_PATTERN_OPERAND;
@@ -139,7 +139,7 @@ fn decode_binary_concat(
     let mut fields = Vec::new();
     push_binary_operand(&operands.left, false, span, sources, &mut fields)?;
     push_binary_operand(&operands.right, true, span, sources, &mut fields)?;
-    Ok(Spanned::new(Pattern::Bitstring(fields), span))
+    Ok(bitstring_pattern(fields, span))
 }
 
 /// One operand of `<>` as the bitstring segments it contributes. Only the last
