@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-xcu"
+  ],
   "blocks": [],
   "created": "2026-11-14T04:26:08Z",
   "description": "From the ids2 spike (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/dist/ids2/report.md): readers_of, settle_quiescent_fact publishers, moved_keys and the external-change sort switch to id order with all lib tests green. FactChangeQueue, subscribers and waiters move scheduling pins slightly (e.g. work-start census 983-\u003e985): each rise goes to the user with a per-subject diff. derivation.outputs and changed stay semantic (completion_outputs_movements_and_wakes_use_semantic_order_across_seeds). Re-measure after fz-xcu since keys change.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The scheduler's sorts use id order wherever order is not semantic",
   "type": "task",
-  "updated_at": "2026-11-14T04:26:08Z"
+  "updated_at": "2026-11-14T04:26:36Z"
 }
