@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:20:23Z",
+  "description": "ContractArrow::narrowed_row returned a fresh Vec per clause. Site: contract.rs:352 (2,736). Change: narrow_row writes into one buffer FunctionContract::apply owns, beside the params buffer. Spike: 703,455 -\u003e 702,431, output and canonical dump identical.",
+  "id": "fz-y11.42",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "A contract's clauses narrow into one row",
+  "type": "task",
+  "updated_at": "2026-11-14T04:20:23Z"
+}
