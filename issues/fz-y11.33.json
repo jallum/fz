@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:55:35Z",
+  "description": "phi_tuple (types/emptiness.rs:60-85) builds, for each coordinate i of each negation, a Vec\u003cDescr\u003e of intersections for coordinates before i and a difference for i, then a Vec\u003c\u0026Descr\u003e for the split. Chains through descr.rs:653-661 (Descr::intersect / diff) from emptiness.rs:75-77: dnf.rs:61 about 4,200, finite_set about 1,600, plus conj/descr clones.\n\nChange, each proven to give the same answer over the existing emptiness tests before it replaces anything: the meets for coordinates before i are built incrementally (coordinate j's meet is the same for every i \u003e j, so it is computed once per negation, not once per i); a coordinate whose meet or cut is empty answers without the recursive call. Interning is not involved (these are descriptors, not ids), but the tuple_emptiness_steps counter is pinned at 17 in types_test: a fall is lowered and listed, a rise is a stop.\n\nEvidence: census of the OptionParser probe at c0e52fbaf (tip of #518; 734,597 allocations): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/c0e52fbaf_top.txt; call chains: cd /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census \u0026\u0026 python3 chain.py c0e52fbaf.pkl \u003cfile:line\u003e \u003cdepth\u003e \"\" \u003cn\u003e; line numbers are exact at commit c0e52fbaf.\n\nSignal: full gate green; no golden or pin moves except a falling pin, which is lowered and listed; program output and canonical backend dump identical on the probe; allocation count before and after in the commit.",
+  "id": "fz-y11.33",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "Tuple emptiness cuts one coordinate without rebuilding the product",
+  "type": "task",
+  "updated_at": "2026-11-14T01:55:35Z"
+}
