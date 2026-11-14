@@ -6,14 +6,15 @@
   "blocks": [
     "fz-afu.15"
   ],
+  "closed_at": "2026-11-14T13:01:46Z",
   "created": "2026-11-14T04:26:06Z",
   "description": "The engine owns the wait graph. Each standing wait names the job that answers it, resolved by the client once when the wait is recorded (completion, park_on_gates, pop_runnable), so the engine answers waits_reach over its own edges and World::waits_reach is deleted. revive_blocked_chain reads the stored producers instead of re-resolving each fact. This is the substrate fz-afu.15's engine-owned cycle groups form over (a group forms from the wait path at partner detection).\n\nProven (spike, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_2b/report.md): every answer_use Partner/Concluded/Wait decision identical to base on the distiller (57,369 calls), even_odd, even_odd_list, three; a temporary assertion (engine answer == old walk, stored producer == current fact_producer) held across the workspace test run; distiller instructions neutral (+0.04%, inside run-to-run range); no pin moved. No memo: only 979 of 56,562 calls walk.\n\nHistory: first written as 'the engine knows which cycle group a waiting derivation is in' (union-find over waits replacing waits_reach). Refuted by the reader (scratchpad t93_2/report.md): the wait graph is always a DAG (0 nontrivial SCCs in 11,555 checks); partner is transient reachability producer -\u003e* reader asked before the reader's closing Current read exists; the real cycle group (waits + partner reads) is fz-afu.15's semantic change. waits_reach stays as the reachability question.",
   "id": "fz-t93.2",
   "labels": [],
   "parent": "fz-t93",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The engine stores which job waits on which",
   "type": "task",
-  "updated_at": "2026-11-14T11:52:51Z"
+  "updated_at": "2026-11-14T13:01:46Z"
 }
