@@ -1,8 +1,8 @@
 #---
-# purpose: parameter type annotations partition dispatch; neither clause is redundant
+# purpose: type-test guards partition dispatch; neither clause is redundant
 #---
-def f(x :: integer), do: :int
-def f(x :: atom), do: :atom
+def f(x) when is_integer(x), do: :int
+def f(x) when is_atom(x), do: :atom
 def main() do
   assert(f(1) == :int, "an integer argument routes to the integer clause")
   assert(f(:a) == :atom, "an atom argument routes to the atom clause")

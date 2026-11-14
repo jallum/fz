@@ -1,4 +1,4 @@
 
-def check(x :: integer), do: 10
+def check(x) when is_integer(x), do: 10
 def check(_), do: 2
 def main(), do: check(42) + check(:foo)

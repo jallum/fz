@@ -4,7 +4,7 @@
 def greater?(left, right) when left > right, do: true
 def greater?(_, _), do: false
 
-def check(integer :: integer, float :: float) do
+def check(integer, float) when is_integer(integer) and is_float(float) do
   assert(integer != float, "a rounded float is not the adjacent integer")
   assert(integer > float, "mixed expression order retains the integer's low bit")
   assert(float < integer, "reverse mixed expression order agrees")

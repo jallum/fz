@@ -6,10 +6,10 @@
 #
 # `{}` and `{{}}` carry no data, yet a guard that tests them reads them, so
 # the argument reaches the guard instead of being dropped from the function.
-def mine(_ :: {}), do: true
+def mine({}), do: true
 def mine(_), do: false
 
-def mine_nested(_ :: {{}}), do: true
+def mine_nested({{}}), do: true
 def mine_nested(_), do: false
 
 def typed(t) when mine(t), do: :yes

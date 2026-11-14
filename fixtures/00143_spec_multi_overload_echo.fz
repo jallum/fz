@@ -4,8 +4,8 @@
 defmodule M do
   @spec echo(integer) :: integer
   @spec echo(float) :: float
-  def echo(x :: integer), do: x
-  def echo(x :: float), do: x
+  def echo(x) when is_integer(x), do: x
+  def echo(x) when is_float(x), do: x
 end
 def main() do
   dbg(M.echo(1))

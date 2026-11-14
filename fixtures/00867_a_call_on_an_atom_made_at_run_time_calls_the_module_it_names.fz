@@ -27,7 +27,7 @@ end
 
 def sides_of(name), do: String.to_atom(name).sides()
 
-def area_of(shape :: map), do: shape.__struct__.area(shape)
+def area_of(shape) when is_map(shape), do: shape.__struct__.area(shape)
 
 def main() do
   dbg(sides_of("Elixir.Square"))

@@ -10,7 +10,7 @@ defmodule Pt do
   defstruct [:x, :y]
 end
 
-def bump(v :: any), do: %{v | x: 10}
+def bump(v), do: %{v | x: 10}
 
 def main() do
   p = %Pt{x: 1, y: 2}

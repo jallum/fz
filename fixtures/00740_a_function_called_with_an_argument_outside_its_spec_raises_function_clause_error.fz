@@ -7,8 +7,8 @@
 defmodule M do
   @spec f(integer) :: integer
   @spec f(float) :: integer
-  def f(x :: integer), do: x + 1
-  def f(x :: float), do: 0
+  def f(x) when is_integer(x), do: x + 1
+  def f(x) when is_float(x), do: 0
 end
 
 def main(), do: M.f(JSON.decode!("\"s\""))

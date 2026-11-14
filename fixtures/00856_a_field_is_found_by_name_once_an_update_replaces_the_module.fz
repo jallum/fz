@@ -15,7 +15,7 @@ defmodule Far do
   defstruct [:y, :x]
 end
 
-def rename(v :: any, m :: any), do: %{v | __struct__: m}
+def rename(v, m), do: %{v | __struct__: m}
 
 def main() do
   p = %Near{x: 1, y: 2}

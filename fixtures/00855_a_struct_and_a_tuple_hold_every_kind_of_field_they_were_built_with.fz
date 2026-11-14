@@ -16,7 +16,7 @@ defmodule Inner do
   defstruct [:depth]
 end
 
-def opaque(v :: any), do: v
+def opaque(v), do: v
 
 def sample(n) do
   %Sample{

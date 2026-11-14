@@ -31,7 +31,7 @@ defimpl Describe, for: Size do
   def describe(_size), do: :size
 end
 
-def through(v :: any), do: Describe.describe(v)
+def through(v), do: Describe.describe(v)
 
 def main() do
   p = %Pt{x: 1, y: 2}

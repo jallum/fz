@@ -20,7 +20,7 @@ defmodule Other do
 end
 
 def count_of(r), do: r.count
-def label_of(v :: any), do: v.label
+def label_of(v), do: v.label
 def pick(0), do: %Other{label: "other", count: 7}
 def pick(n), do: %Reading{count: n, ratio: 0.5, unit: :cm, label: "picked", tags: [], inner: nil}
 
