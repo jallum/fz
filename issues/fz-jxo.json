@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T11:22:12Z",
+  "description": "GH #296 family on develop f822f0f84 (debug, opt-level 1), scratch scratchpad/m296 (gen.py, measure.sh, analyze.py, out/). A main body of N computed tuple elements or N sequential calls: product requests are linear (largest drive about 7N + 432 for tuples, 12.2N for seq), but interp wall time grows with exponent 1.9 to 2.0 (tuple 400 -\u003e 1000: 1.86, 1000 -\u003e 2000: 1.97; seq 1000 -\u003e 2000: 1.99).\nWhere (work_graph.applied completions, each charged the gap since the previous event; an attribution, not a profile), jobs on main's one body:\n  DeriveRuntimeDemand   tuple400 40 ms, tuple1000 238 ms, tuple2000 918 ms\n  LowerFunction         28 ms, 167 ms, 673 ms\n  AnalyzeActivation     18 ms, 99 ms, 367 ms\nDoubling N multiplies each by about 3.9. One callsite.defined event takes up to 197 ms; the ten slowest are 969 of the 977 ms charged to that name. The 3-request reach drive takes about 500 ms at N=1000 and 2.0 s at N=2000. pull.product.evaluated is cheap (63 ms for 7.5k, 226 ms for 14.5k).\nNot investigated: the loop inside each job. Known per-step suspects from earlier work: callsite_returns_feeding scans every callsite per return (runtime_demand.rs), per-entry capture demand publication. A sample of interp on tuple2000 names the frames.\nFails before, passes after: a telemetry test pins that each of the three jobs' work on a body of N calls grows linearly (a count of steps visited, not time).\nAcceptance: full gate green; no pin rises unexplained.",
+  "id": "fz-jxo",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "The per-body jobs on one long body cost time linear in its length",
+  "type": "bug",
+  "updated_at": "2026-11-14T11:22:12Z"
+}
