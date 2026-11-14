@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:16:15Z",
+  "description": "Step 1 of /Users/j5n/Workspace/fz-sc8.183.html. Prim::BitReadField returns the extracted value or the private miss marker and takes the source binary and a bit position; the next position is arithmetic on the field spec. BitReaderInit, BITSTRING_READER_SCHEMA, BITSTRING_RESULT_SCHEMA and the TupleField(result, 0|1|2) unpacking go away at both emit sites (dispatch node and body steps in src/compiler2/jobs/native.rs), in native codegen, in the interpreter and in runtime/src/ir_runtime.rs. Signal: Process.heap_alloc_stats() around a 10,000-byte walk with \u003c\u003c_c, r :: binary\u003e\u003e: 12 allocations per step before, 2 after, pinned on interp, run and build.",
+  "id": "fz-sc8.183.1",
+  "labels": [],
+  "parent": "fz-sc8.183",
+  "priority": 1,
+  "status": "open",
+  "title": "A binary match's reader is a position, not a heap struct",
+  "type": "task",
+  "updated_at": "2026-11-14T04:16:15Z"
+}
