@@ -1,0 +1,24 @@
+#---
+# purpose: "a closure that arrives already boxed can be called for its effect, its result discarded, and called again"
+# oracle: 01170_a_discarded_call_through_a_boxed_closure_makes_room_for_its_result.oracle.exs
+# oracle.stamp: 4e42edf5353c7f37
+#---
+def make(map) do
+  {map, fn acc, cmd ->
+    case cmd do
+      :done -> acc
+      :halt -> :ok
+    end
+  end}
+end
+
+def run(map) do
+  {initial, collector} = make(map)
+  collector.(initial, :halt)
+  collector.(initial, :done)
+end
+
+def main() do
+  dbg(run(%{}))
+  dbg(run(%{a: 1}))
+end

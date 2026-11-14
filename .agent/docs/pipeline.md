@@ -729,12 +729,20 @@ follow, and they are two halves of one convention:
   demand, and retracts with its owning construction. This is the one place
   the seam's existence is a local fact, and it stops a grounded sibling
   callsite from erasing data the wrapper still hands back.
-- A callsite whose callee travels in the boxed `ValueRef` carrier demands its
-  result **whole**. Whether a call goes through the seam is a property of the
-  callee VALUE, not of the callsite: a callsite that names an exact target is
-  still a boxed call when the same lambda is handed out of the function two
-  lines later, and `closure_call_form` mints a `Direct` edge only while the
-  caller can still supply that target's captures.
+- A call through the seam reads back one boxed word, whatever the caller does
+  with the result. The call's return position carries the recipe
+  `ClosureCallReturn`, and when the caller cannot supply the target's captures
+  that recipe resolves to the public callable return
+  (`public_callable_return_layout`): the result's own layout when it has one,
+  and one whole boxed word when the result is discarded. Whether a call goes
+  through the seam is a property of the callee VALUE as transport sees it, not
+  of the callsite and not of this body's demand: a callsite that names an
+  exact target is still a boxed call when the same lambda is handed out of the
+  function two lines later, a closure taken out of a tuple another function
+  returned arrives already boxed, and `closure_call_form` mints a `Direct`
+  edge only while the caller can still supply that target's captures. Runtime
+  demand is not consulted for this: a discarded result keeps its `ignore`
+  demand, and the room for the word is made where the call form is decided.
 
 A callee the caller can supply needs no rule at all: its result
 aliases the named target executable's own return fact, so caller and callee

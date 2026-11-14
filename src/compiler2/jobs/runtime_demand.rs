@@ -1306,66 +1306,12 @@ fn derive_executable_runtime_demand(
         contributed_input_demands,
         activation_inputs,
     );
-    widen_boxed_closure_call_results(facts, &mut out);
     emit_runtime_demand_walk(tel, executable.activation.function, walks.entries_walked);
 
     DerivedExecutableDemand {
         demand: out,
         call_return_demands,
         callable_flows,
-    }
-}
-
-/// The consumer half of the boxed apply seam's one return convention
-/// (fz-kdt.155). Its producer half is the construction owner's exact
-/// executable-need contribution to every first-class member; here every
-/// callsite that reaches a wrapper is made to expect the lane the wrapper
-/// hands back.
-///
-/// The question "does this call go through the seam?" is a property of the
-/// CALLEE VALUE, not of the callsite: `closure_call_form` mints a direct edge
-/// to a named target only while the callee travels in its exact carrier, and that carrier is `ValueRef` the moment the value's own joined
-/// demand is first-class -- which a use somewhere else in this body can decide
-/// on its own. A callsite that names an exact target is still a boxed call if
-/// the lambda it calls is also handed out of the function two lines later. So
-/// this runs once the whole body is walked and asks the joined value demand,
-/// the same authority transport asks.
-///
-/// A callsite past the seam names none of the members behind the wrapper -- a
-/// mailbox callable names none at all -- so its `ignore` never reaches them and
-/// the value arrives whatever the caller wanted. Publishing zero lanes for it
-/// left the two halves of one calling convention on different lane counts: the
-/// wrapper wrote the delivered value into the continuation's first slot, which
-/// the continuation reads as its own closure pointer, and the run aborted in
-/// `fz_closure_get_capture_atom`. Every RICHER demand already crosses the seam
-/// as that one boxed lane, so only the zero widens.
-///
-/// A callee that stays in its exact carrier is untouched: its result aliases
-/// the named target executable's own return fact
-/// (`TransportRecipe::ClosureCallReturn`'s grounded arm), so caller and callee
-/// read one shape whatever it settles to -- zero when no seam boxes the
-/// callable (fz-f98.14.11), non-empty when a construction owner contributes
-/// the member's return contract.
-fn widen_boxed_closure_call_results(facts: &RuntimeDemandFacts<'_>, out: &mut ExecutableRuntimeDemand) {
-    let LoweredBody::Clauses { entries, .. } = &facts.body;
-    for entry in entries {
-        let LoweredTail::ClosureCall { value, callee, .. } = &entry.tail else {
-            continue;
-        };
-        if !out
-            .value_demands
-            .get(callee)
-            .is_some_and(|demand| demand.callable.is_first_class())
-        {
-            continue;
-        }
-        // Only the ZERO delivered value widens. The callsite's observed target
-        // demand stays exact; the construction owner contributes the member's
-        // executable-need contract independently.
-        if !out.value_demands.get(value).is_none_or(RuntimeDemand::is_ignore) {
-            continue;
-        }
-        join_map_demand(&mut out.value_demands, *value, RuntimeDemand::whole());
     }
 }
 
