@@ -23483,3 +23483,35 @@ fn a_sum_and_a_remainder_each_compile_to_one_native_function() {
         );
     }
 }
+
+/// The bare drive is a frame on the drive stack. A product drive its serve loop
+/// starts has the bare drive beneath it, which can still serve queued requests,
+/// so that drive defers instead of arbitrating and the bare drain arbitrates
+/// once, at depth one. `defexception`'s compile has three such drives; each
+/// sits at depth two.
+#[test]
+fn a_product_drive_served_by_the_bare_drive_defers_to_the_bare_drain() {
+    let drive = Drive::fixture(882);
+    let deferred = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&deferred);
+    drive
+        .telemetry()
+        .attach_raw_event2::<ProductKey, crate::compiler2::pull::ProductDeferral, _>(
+            &["fz", "compiler2", "pull", "drive", "deferred"],
+            move |_, _, _, _, deferral| observed.borrow_mut().push(deferral.depth),
+        );
+    let arbitrated = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&arbitrated);
+    drive
+        .telemetry()
+        .attach_raw_event2::<crate::compiler2::AppliedStep<Job, DependencyKey>, usize, _>(
+            &["fz", "compiler2", "work_graph", "quiesced"],
+            move |_, _, _, _, depth| observed.borrow_mut().push(*depth),
+        );
+
+    let (_settled, outcome) = drive.drive();
+
+    assert!(matches!(outcome, DriveOutcome::Resolved));
+    assert_eq!(*deferred.borrow(), vec![2, 2, 2]);
+    assert_eq!(*arbitrated.borrow(), vec![1, 1], "only the bare drain arbitrates");
+}
