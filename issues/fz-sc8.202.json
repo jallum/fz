@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T16:49:33Z",
   "created": "2026-11-14T16:40:17Z",
   "description": "On develop 13d4783d0 this prints :three on interp and 3 on run and build. Elixir prints :three.\n\n  def pick(3), do: :three\n  def pick(n), do: n\n  def call([fun | _], entry), do: fun.(entry)\n  def main(), do: dbg(call([\u0026pick/1], 3))\n\nThe same miss shows through Stream.map (its mappers sit in a list): Enum.to_list(Stream.map([1, 2, 3], \u0026pick/1)) gives [1, 2, 3], and a clause that raises is skipped silently. A function passed as a plain parameter or inside a tuple is right, and so is a guard (when n == 3).\n\nMechanism (proven by a unit test that fails before the fix): a function called out of a list is compiled once for a type variable (pick/1[a0]). Native codegen folds a matching equality to false when Types::is_value_disjoint says the two operand types share no value (lower_eq_binop). Descr::erase_nominal left a type variable as it was, so `a0` and `int` intersected in nothing and the literal test became a constant miss. The interpreter does not fold, so it was right. The backend dump is identical on interp and run.\n\nFix: a type variable erases to any in the value-disjointness question, as an opaque does. It stands for whatever value arrives in its place.\n\nAcceptance: the unit test; the program above with the case, atom, Stream and raising variants as an oracle fixture on interp, run and build; the full suite passes.\n\nFound while writing the fixture for fz-sc8.102. Probes: /Users/j5n/Workspace/fz-sc8.102-probes/lp_*.fz and sm_*.fz.",
   "id": "fz-sc8.202",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A literal pattern matches in code compiled for a type variable",
   "type": "bug",
-  "updated_at": "2026-11-14T16:47:39Z"
+  "updated_at": "2026-11-14T16:49:33Z"
 }
