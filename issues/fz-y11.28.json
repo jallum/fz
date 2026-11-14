@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:05:29Z",
+  "description": "DispatchGraph::reachable (dispatch_matrix/mod.rs:506) allocates seen, order and pending on every call: about 8,580 allocations. Chains: mod.rs:604 via pattern.rs:126 and dispatch_reachability.rs:131 (1,232 per vector), mod.rs:526 test_count via semantic.rs:880 (832), mod.rs:534 can_fail via pattern.rs:104 and semantic.rs:881 (about 990).\n\nChange: if a graph is immutable once built, the answers are computed when it is built and read as fields; otherwise the walk is one visitor that the askers fold over without collecting the order. Visiting order stays exactly as it is.\n\nEvidence: census of the OptionParser probe at develop 01e69178a (771,812 allocations): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/01e69178a_top.txt; call chains: cd /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census \u0026\u0026 python3 chain.py 01e69178a.pkl \u003cfile:line\u003e \u003cdepth\u003e \"\" \u003cn\u003e; line numbers are exact in /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src (read only).\n\nSignal: full gate green; no golden or pin moves except a falling pin, which is lowered and listed; program output and canonical backend dump identical on the probe; allocation count before and after in the commit.",
+  "id": "fz-y11.28",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "A dispatch graph answers its test count and whether it can fail without three vectors per ask",
+  "type": "task",
+  "updated_at": "2026-11-14T01:05:29Z"
+}
