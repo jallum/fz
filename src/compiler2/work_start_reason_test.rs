@@ -354,7 +354,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // (2513, 11, 28, 246) -> (2529, 11, 28, 246): the operators' guards name
         // `is_integer`, `is_float` and `is_binary`, so those helpers are defined
         // and reified so the guards can be folded.
-        (2529, 11, 28, 246),
+        // (2529, 11, 28, 246) -> (2653, 11, 28, 262): a returned callable keeps its brand in
+        // its function's key, and a protocol callback counts every input but the receiver as
+        // returned, so `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer
+        // lambda; 16 more executables, 76 more AnalyzeActivation runs.
+        (2653, 11, 28, 262),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -449,7 +453,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 985 -> 995: the operators' guards name `is_integer`, `is_float` and
         // `is_binary`, so those helpers are defined and reified so the guards
         // can be folded.
-        995,
+        // 995 -> 1055: a returned callable keeps its brand in its function's key, and a
+        // protocol callback counts every input but the receiver as returned, so
+        // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
+        1055,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -516,7 +523,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 420 -> 423: one blocked-waiter start for each of the three Kernel type
         // predicates (`is_integer`, `is_float`, `is_binary`) defined so the
         // operators' guards can be folded.
-        423,
+        // 423 -> 439: a returned callable keeps its brand in its function's key, and a protocol
+        // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
+        // and its Enum wrappers are keyed once per reducer lambda.
+        439,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -576,7 +586,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.8: (573, 575, [24, 236, 82, 233, 0]) -> (605, 607, [24, 252, 82, 249, 0]). `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // Literal-argument calls are no longer self-keyed: (605, 607,
         // [24, 252, 82, 249, 0]) -> (596, 598, [24, 248, 82, 244, 0]).
-        (592, 594, [24, 246, 82, 242, 0]),
+        // (592, 594, [24, 246, 82, 242, 0]) -> (624, 626, [24, 262, 82, 258, 0]): a returned
+        // callable keeps its brand in its function's key, and a protocol callback counts every
+        // input but the receiver as returned, so `Enum.reduce_while/3` and its Enum wrappers
+        // are keyed once per reducer lambda; each new activation's runtime demand is derived
+        // once.
+        (624, 626, [24, 262, 82, 258, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
@@ -591,7 +606,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.8: 308 -> 324. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart:
         // 324 -> 320.
-        318,
+        // 318 -> 334: a returned callable keeps its brand in its function's key, and a protocol
+        // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
+        // and its Enum wrappers are keyed once per reducer lambda.
+        334,
         "the demand frontier retains every ordinary generic helper key",
     );
     assert_eq!(
@@ -715,7 +733,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fewer: `raise/2`'s contract concludes after its callers' first
         // runs.
         // fz-sc8.8: 624 -> 669. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        666,
+        // 666 -> 742: a returned callable keeps its brand in its function's key, and a protocol
+        // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
+        // and its Enum wrappers are keyed once per reducer lambda.
+        742,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();
@@ -736,7 +757,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.8: 236 -> 252. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart:
         // 252 -> 248.
-        246,
+        // 246 -> 262: a returned callable keeps its brand in its function's key, and a protocol
+        // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
+        // and its Enum wrappers are keyed once per reducer lambda.
+        262,
         "the demand frontier's distinct activations, deduplicated across repeats",
     );
 

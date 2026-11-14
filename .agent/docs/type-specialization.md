@@ -243,8 +243,11 @@ The two axes never join into one mask, because they ask for two collapses. On
 the dispatch axis `Whole` means a question reads the value itself and the key
 keeps it VERBATIM. On the returned axis it means the value is the answer, and
 the key keeps its addressed convergence CLASS: list families normalise to
-`list(elem)` with the element kept at every depth, and closure brands still
-erase -- the same bounded collapse fz-kdt.183 gives a demanded list. The depth
+`list(elem)` with the element kept at every depth -- the same bounded collapse
+fz-kdt.183 gives a demanded list -- and a pure callable is kept with its brand,
+its literals widened (`ClassReach::Returned`). The return carries that callable
+out, so a key that dropped its identity would publish, to every caller, one
+return holding every callable that reached it. The depth
 cap applies to LIST families only: `Types::convergence_class_at` checks
 `ADDRESS_COLLAPSE_DEPTH` inside its `is_pure_list_family` branch, so a tuple,
 map or resource nest at a returned position recurses uncapped and is bounded
@@ -299,7 +302,9 @@ from the receiver's type, so its published demand is on the receiver and
 `Ignore` elsewhere, with no forwards. Its returned axis is `Whole` on every
 slot but the receiver: the implementation may hand an accumulator back, and
 the callback does not consult implementations to say otherwise, so a landing
-implementation never revises the answer. The receiver is `Class` when no
+implementation never revises the answer. A returned callable keeps its
+brand, so a reducer handed to `Enumerable.reduce_while/3` keys its caller
+once per lambda, though no implementation returns the reducer. The receiver is `Class` when no
 implementation's target can tell one literal from another -- the receiver's
 literals then pick no implementation -- and `Whole` otherwise; the job reads
 `ProtocolImplProviders` and each target's `StructDefined`, so an implementation
@@ -329,13 +334,17 @@ of `uses` -- is what closure-brand erasure reads
 (fz-6gb), because "does a clause of THIS body test this slot" is a different
 question from "does anything downstream read it", and a forwarder that only
 transports a callable must still key one activation for two same-shape lambdas.
+A slot the returned axis keeps is the one exception: its brands survive on both
+key paths (`reads_closure_identity`), because the forwarder hands that callable
+back and each caller must get back its own.
 
 Three limits are known and stated rather than argued away. A `Whole` slot has NO
 collapse, and forwarding can hand a `Whole` up from a callee that tests a
 literal -- or from a closure call, a branch or a capture that reads the value
 whole -- so fz-y6w's termination argument does not cover such a slot.
-The returned axis does not widen that exposure: it never produces a verbatim
-slot, only an addressed class. And the
+The returned axis widens it only for a pure callable, which it keeps with its
+brand. Every input is folded before the key is derived (`fold_arrow_params`),
+so a kept callable cannot nest inside itself without bound. And the
 recursion-supplied rule reads SELF calls only: a mutually recursive pair
 rebuilds across the cycle rather than inside one body, and a recursion routed
 through a generated lambda (`00032_lambda_recursion`) is not local either, so
