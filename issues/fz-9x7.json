@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T19:25:21Z",
+  "description": "A continuation is a heap object built by inline code (bump allocation, inline header/code/capture stores), read by inline loads, never written after it is built, and popped off the heap at resume when its frame ends at the bump pointer. Replaces stack descriptors (TAG_LAZY_CONT), fz_materialize_cont, and the call;return delivery. Supersedes PR #543's remembered set (write-once frames need none).\nMeasured (distiller, debug runtime): 32k trace 2.85-2.87 s / 239 MB vs stack form 3.04-3.07 s / 242 MB; full 222k-line trace 16.5 s / 1.2 GB where the stack form segfaults. Pop: 83.8% of frames popped, 3.3% pinned. Poison over the full fixture matrix (positive control aborts) found no use after resume.\nProposal (approved 2026-11-14): https://claude.ai/artifact/94aN2YPxunzwVEzct26nz2 (local /Users/j5n/Workspace/fz-d7w.html). Spike evidence: worktree ../fz-hc, branch exp/heap-cont-reads (uncommitted, FZ_SPIKE_* switches).",
+  "id": "fz-9x7",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "Continuations live on the heap, are written once, and give their memory back when they resume",
+  "type": "epic",
+  "updated_at": "2026-11-14T19:25:21Z"
+}
