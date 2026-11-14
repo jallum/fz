@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T12:34:40Z",
+  "description": "JSON.string appends one byte at a time (acc \u003c\u003e \u003c\u003cc\u003e\u003e): 35% of decode time on 16,000 log lines. Change lib/json.fz only: count plain bytes up to the next quote or backslash, take the run with \u003c\u003crun :: binary-size(n), r :: binary\u003e\u003e, append once; escapes, control characters and UTF-8 handling unchanged. Spiked: decode 1.64 s -\u003e 1.32 s (-19%), output identical; one 100-character string 406 -\u003e 109 allocations, off-heap bytes 2,970 -\u003e 200; json_decode_cost goldens fall (89 -\u003e 70, 173 -\u003e 114; interp 88 -\u003e 69, 172 -\u003e 113); all JSON fixtures pass on three paths. Patch: scratchpad b183-6/scan_slice.patch. Signal: a fixture pinning off-heap bytes for a long string; goldens lowered. Remove the comment that defers scan-then-slice. Evidence and predictions: proposal page fz-sc8.183.5.html (workspace root); spike files in scratchpad b183-5 and b183-6.",
+  "id": "fz-sc8.183.6",
+  "labels": [],
+  "parent": "fz-sc8.183",
+  "priority": 1,
+  "status": "open",
+  "title": "The JSON decoder scans a run of plain bytes and slices it once",
+  "type": "task",
+  "updated_at": "2026-11-14T12:34:40Z"
+}
