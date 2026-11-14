@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-3sy.8"
-  ],
+  "blocks": [],
   "created": "2026-11-14T01:55:40Z",
   "description": "Kernel.panic/1 and its extern fz_panic/1 get one activation per exception type raised: 12 activations and about 115 jobs on the OptionParser distiller (tools/distill-telemetry.exs over tests/distill_telemetry/main_returns_one.jsonl, interp). Neither body reads the value. Declaring the parameter any, or ascribing any at the call, leaves the count unchanged (measured). Wanted: one activation of each, whatever is raised. Nearest existing ticket: fz-sc8.143.",
   "id": "fz-sc8.176",
@@ -13,5 +11,5 @@
   "status": "open",
   "title": "panic/1 is analysed once, not once per exception type",
   "type": "bug",
-  "updated_at": "2026-11-14T04:18:32Z"
+  "updated_at": "2026-11-14T12:16:17Z"
 }
