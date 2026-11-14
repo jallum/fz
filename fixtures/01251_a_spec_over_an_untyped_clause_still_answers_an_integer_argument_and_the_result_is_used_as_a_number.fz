@@ -1,0 +1,20 @@
+#---
+# purpose: "An integer passed to a spec'd untyped clause answers an integer, and a float held as any answers a float, each usable in arithmetic by the caller"
+# oracle: oracle.exs
+# oracle.stamp: f16963733fe568a1
+#---
+#
+# `f/1` is specified over integers but its clause has no test. A statically
+# known integer argument is inside the spec's domain; an `any` argument is not
+# known to be, and its result is whatever the clause returns.
+@spec f(integer) :: integer
+def f(x), do: x
+
+def main() do
+  dbg(f(3) + 1)
+  send(self(), 1.5)
+
+  receive do
+    x -> dbg(f(x) + 1)
+  end
+end

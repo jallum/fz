@@ -99,6 +99,21 @@ Compiler2 owns the active contract path:
     the instantiated parameter: `witness ∩ runtime_reading(param) ⊆ param`, where
     `Types::runtime_reading` erases brands at any depth. `binary` into `utf8` is
     refused; `utf8` into `utf8` fits.
+  - A clause with no parameter type has no test, so it admits whatever arrives,
+    and the spec over it is documentation, as in Elixir. The spec's result
+    applies to a call only when the argument row is proven inside the matched
+    clauses' domains (`witness ⊆` the union of the matched clauses' instantiated
+    rows; a witness or parameter still carrying variables passes). An argument
+    the caller holds as `any` is not proven, so the call reads what the callee's
+    clauses return: with `@spec f(integer) :: integer` over `def f(x), do: x`,
+    `f(3)` is `integer` and `f(x)` for an `any` `x` holding `1.5` is `1.5` on
+    interp, run and build (`fixtures/01250_*`, `fixtures/01251_*`). A typed
+    clause (`def f(x :: integer)`) keeps its test: the same call raises
+    `FunctionClauseError`. An extern has no clause tests and keeps its spec
+    result (below). A library function therefore proves its own argument
+    facts with typed parameters or guards (`def decode(input :: binary)`,
+    `when is_list(inner)`), because a spec result is not read for an unproven
+    argument.
   - Admission, extern: an extern is a raw machine call with no clause tests
     (`FunctionContract::extern_wire` is set), so a column other than `any` must
     fit its instantiated parameter whole: `witness ⊆ param`. The judgement is on

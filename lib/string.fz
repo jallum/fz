@@ -98,7 +98,7 @@ defmodule String do
 
   """
   @spec length(binary) :: integer
-  def length(s), do: grapheme_count(s, 0)
+  def length(s :: binary), do: grapheme_count(s, 0)
 
   @spec grapheme_count(binary, integer) :: integer
   defp grapheme_count(s, acc), do: grapheme_count_step(next_grapheme(s), acc)

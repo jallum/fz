@@ -196,6 +196,7 @@ impl FunctionContract {
 
     pub fn apply(&self, types: &mut Types, arg_tys: &[Ty]) -> AppliedFunctionContract {
         let mut matched_arrows = Vec::new();
+        let mut matched_rows: Vec<Vec<Ty>> = Vec::new();
         let mut result = None;
         let mut params: Vec<Ty> = Vec::new();
         let mut matched_any = false;
@@ -227,7 +228,8 @@ impl FunctionContract {
                     None => matched,
                 });
             }
-            matched_arrows.push(clause.structural_params(types, matched_params, &row));
+            matched_arrows.push(clause.structural_params(types, &matched_params, &row));
+            matched_rows.push(matched_params);
             matched_any = true;
             enforceable_matched |= clause_enforceable;
         }
@@ -236,6 +238,9 @@ impl FunctionContract {
         if types.has_empty_argument(arg_tys) {
             matched_any = true;
             enforceable_matched = true;
+        }
+        if self.extern_wire.is_none() && !Self::row_is_proven_inside(types, arg_tys, &matched_rows) {
+            result = None;
         }
         AppliedFunctionContract {
             matched_arrows,
@@ -284,9 +289,9 @@ impl ContractArrow {
     /// The parameters a matched call refines its inputs by: the declared
     /// `params` the call matched, re-matched against the structural surface
     /// when the clause declares protocol-domain markers.
-    fn structural_params(&self, types: &mut Types, declared: Vec<Ty>, arg_tys: &[Ty]) -> Vec<Ty> {
+    fn structural_params(&self, types: &mut Types, declared: &[Ty], arg_tys: &[Ty]) -> Vec<Ty> {
         let Some(surface) = &self.structural else {
-            return declared;
+            return declared.to_vec();
         };
         let params = self
             .widened_to_row(types.arrow_params(&surface.arrow), arg_tys.len())
@@ -363,6 +368,27 @@ impl ContractArrow {
 }
 
 impl FunctionContract {
+    /// Whether the call's argument row is proven to lie inside the domains the
+    /// matched clauses answered. A function's clause with no test of its own
+    /// admits any value, so a spec's result describes a call only when its
+    /// arguments are known to be inside the spec; an argument the caller holds
+    /// as `any` is not, and that call reads what the callee's clauses return.
+    /// A witness or parameter still carrying variables is evidence in flight
+    /// and passes.
+    fn row_is_proven_inside(types: &mut Types, arg_tys: &[Ty], matched_rows: &[Vec<Ty>]) -> bool {
+        let in_flight = |types: &Types, row: &[Ty]| row.iter().any(|ty| types.has_vars(ty));
+        if in_flight(types, arg_tys) || matched_rows.iter().any(|row| in_flight(types, row)) {
+            return true;
+        }
+        let witness = types.tuple(arg_tys);
+        let mut domain = types.none();
+        for row in matched_rows {
+            let clause = types.tuple(row);
+            domain = types.union(domain, clause);
+        }
+        types.is_subtype(&witness, &domain)
+    }
+
     /// Whether a value outside the instantiated clause could slip past
     /// unnoticed. `params` are the clause's parameters after the walk bound
     /// its variables, so the judgement is on the clause the call actually

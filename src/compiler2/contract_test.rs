@@ -891,10 +891,12 @@ fn ground_union_input_overlapping_each_clause_satisfies_the_contract() {
 }
 
 #[test]
-fn a_union_with_a_member_no_clause_accepts_is_answered_on_the_overlap() {
+fn a_union_with_a_member_no_clause_accepts_is_not_refused_and_reads_no_spec_result() {
     // (:bad | int, int): the :bad member fits no clause, so at run time it meets
     // Kernel arithmetic's default clause (fixture 00753); the int member
-    // overlaps the (int, int) clause and is answered there.
+    // overlaps the (int, int) clause, so the call is not refused. The row is
+    // not inside the spec's domain, so the spec's result is not read: the
+    // callee's own clauses answer it.
     let mut types = Types::new();
     let int = types.int();
     let float = types.float();
@@ -919,7 +921,37 @@ fn a_union_with_a_member_no_clause_accepts_is_answered_on_the_overlap() {
         applied.enforceable_satisfied,
         "the int member overlaps the (int, int) clause, so the call is not proven to fail"
     );
-    let result = applied.result.expect("the overlap answers the clause's result");
+    assert!(
+        applied.result.is_none(),
+        "a row not proven inside the spec's domain reads no spec result, got {:?}",
+        applied.result.map(|result| types.display(&result))
+    );
+}
+
+#[test]
+fn an_int_row_inside_the_clause_domains_reads_the_joined_spec_result() {
+    let mut types = Types::new();
+    let int = types.int();
+    let float = types.float();
+    let arrows = vec![
+        ResolvedSpecDecl {
+            params: vec![int, int],
+            result: int,
+            constraints: HashMap::default(),
+        },
+        ResolvedSpecDecl {
+            params: vec![float, int],
+            result: float,
+            constraints: HashMap::default(),
+        },
+    ];
+    let contract = FunctionContract::from_resolved(&mut types, arrows);
+
+    let applied = contract.apply(&mut types, &[int, int]);
+
+    let result = applied
+        .result
+        .expect("a row proven inside the (int, int) clause reads its result");
     assert!(types.is_equivalent(&result, &int), "got {}", types.display(&result));
 }
 
@@ -1338,7 +1370,7 @@ fn one_integer_wire() -> crate::compiler2::body::LoweredExtern {
 }
 
 #[test]
-fn a_union_overlapping_an_integer_function_domain_is_answered_on_the_overlap() {
+fn a_union_overlapping_an_integer_function_domain_is_not_refused_and_reads_no_spec_result() {
     let mut types = Types::new();
     let int = types.int();
     let contract = integer_contract(&mut types);
@@ -1349,9 +1381,26 @@ fn a_union_overlapping_an_integer_function_domain_is_answered_on_the_overlap() {
 
     assert!(
         applied.enforceable_satisfied,
-        "integer | :weird overlaps the integer domain: a function tests its clauses at run time, so only the integer reaches the body"
+        "integer | :weird overlaps the integer domain, so the call is not refused: a typed clause tests its parameter at run time (fixtures 00740, 00749)"
     );
-    let result = applied.result.expect("the overlap answers the clause's result");
+    assert!(
+        applied.result.is_none(),
+        "integer | :weird is not proven inside the integer domain, so the spec's result is not read, got {:?}",
+        applied.result.map(|result| types.display(&result))
+    );
+}
+
+#[test]
+fn an_integer_row_inside_an_integer_function_domain_reads_the_spec_result() {
+    let mut types = Types::new();
+    let int = types.int();
+    let contract = integer_contract(&mut types);
+
+    let applied = contract.apply(&mut types, &[int]);
+
+    let result = applied
+        .result
+        .expect("an integer row inside the domain reads the spec's result");
     assert!(types.is_equivalent(&result, &int), "got {}", types.display(&result));
 }
 

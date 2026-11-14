@@ -1,0 +1,19 @@
+#---
+# purpose: "A spec over an untyped clause is documentation at a call whose argument is not known to be in its domain: a float held as any comes back as that float"
+# oracle: oracle.exs
+# oracle.stamp: f111859363b73a1b
+#---
+#
+# `f/1` is specified over integers but its clause has no test, so it admits a
+# float. The caller holds the argument as `any`, so the call's result is read
+# from what the clause returns, not from the spec.
+@spec f(integer) :: integer
+def f(x), do: x
+
+def main() do
+  send(self(), 1.5)
+
+  receive do
+    x -> dbg(f(x))
+  end
+end

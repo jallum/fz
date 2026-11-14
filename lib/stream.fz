@@ -44,14 +44,14 @@ end
 defimpl Enumerable, for: Stream do
   def reduce(%Stream{enum: enum, funs: funs}, acc, reducer) do
     case enum do
-      %Stream{enum: source, funs: inner} -> reduce(%Stream{enum: source, funs: funs ++ inner}, acc, reducer)
+      %Stream{enum: source, funs: inner} when is_list(inner) -> reduce(%Stream{enum: source, funs: funs ++ inner}, acc, reducer)
       source -> Enumerable.reduce(source, acc, Stream.compose(funs, reducer))
     end
   end
 
   def reduce_while(%Stream{enum: enum, funs: funs}, acc, reducer) do
     case enum do
-      %Stream{enum: source, funs: inner} -> reduce_while(%Stream{enum: source, funs: funs ++ inner}, acc, reducer)
+      %Stream{enum: source, funs: inner} when is_list(inner) -> reduce_while(%Stream{enum: source, funs: funs ++ inner}, acc, reducer)
       source -> Enumerable.reduce_while(source, acc, Stream.compose(funs, reducer))
     end
   end

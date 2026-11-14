@@ -190,7 +190,7 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
     let measured = (spend.largest_drive(), spend.requests, spend.drives.len());
     assert_eq!(
         measured,
-        (47_910, 49_346, 28),
+        (47_658, 49_094, 28),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

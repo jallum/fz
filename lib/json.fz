@@ -98,7 +98,7 @@ defmodule JSON do
 
   """
   @spec decode(binary) :: {:ok, any} | {:error, any}
-  def decode(input), do: decode_done(value(input), input)
+  def decode(input :: binary), do: decode_done(value(input), input)
 
   @spec decode_done({:ok, any, binary} | {:error, any}, binary) :: {:ok, any} | {:error, any}
   defp decode_done({:ok, v, rest}, input), do: decode_trailing(rest, skip_ws(rest), v, input)
@@ -126,7 +126,7 @@ defmodule JSON do
 
   """
   @spec decode!(binary) :: any
-  def decode!(input), do: decode_result(decode(input))
+  def decode!(input :: binary), do: decode_result(decode(input))
 
   @spec decode_result({:ok, any} | {:error, any}) :: any
   defp decode_result({:ok, v}), do: v
