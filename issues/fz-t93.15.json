@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-t93",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Every request to queue a job is counted as started, already pending, or parked again",
   "type": "task",
-  "updated_at": "2026-11-14T13:13:32Z"
+  "updated_at": "2026-11-14T15:32:01Z"
 }
