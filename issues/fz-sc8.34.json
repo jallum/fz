@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-ep5.5",
     "fz-sc8.36"
   ],
   "created": "2026-10-22T21:46:10Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "is_function/1 and is_function/2, in bodies and guards",
   "type": "feature",
-  "updated_at": "2026-10-22T21:46:11Z"
+  "updated_at": "2026-11-14T04:40:02Z"
 }
