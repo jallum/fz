@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.184.2"
+  ],
   "blocks": [],
   "created": "2026-11-14T12:06:59Z",
   "description": "Step 3 of /Users/j5n/Workspace/fz-sc8.184.html. Only young blocks are from-space; survivors go to a new old block; old blocks stay in place. The off-heap chain splits into young and old; a minor sweep walks the young one (as OTP's sweep_off_heap(p, 0)); old resources' destructors run at the next major. A major collection (today's full copy) runs when old bytes pass a multiple of the last major's result. Gifts graft as old. Signal: the gc event says minor or major; a test retains a growing structure across many collections and pins bytes copied near bytes retained; distiller 32,000-line run: copied 6,352 MB -\u003e under 400 MB predicted, collection share 28% -\u003e under 5%, peak RSS 3.3 GB -\u003e under 400 MB. Pins that move: fixture_matrix copied_bytes for 00901/00910/00911, heap_test.rs block-shape assertions (falls listed; a rise goes to the user).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A minor collection copies only what was allocated since the last one",
   "type": "task",
-  "updated_at": "2026-11-14T12:06:59Z"
+  "updated_at": "2026-11-14T12:07:13Z"
 }

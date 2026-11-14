@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.184.3"
+  ],
   "created": "2026-11-14T12:06:58Z",
   "description": "Step 2 of /Users/j5n/Workspace/fz-sc8.184.html. ListCons::rewrite_if_unaliased is the one way an old object can gain a pointer to a young one. The collector sets the existing alias bit on each cons cell it copies, so the existing one-bit check refuses the rewrite; no new test on the rewrite path. Blocks carry an age and the collector can classify a pointer as young or old (range test over the few young blocks, collector only). Collections still copy everything. Spike (cons.tenure() in cheney_trace_list): 6,315 tests pass, no pin moves. Signal: runtime test that a cell which survived a collection refuses an in-place rewrite. Fix guides/memory.html section 12's no-write-barrier claim.",
   "id": "fz-sc8.184.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The collector marks every list cell it keeps as shared",
   "type": "task",
-  "updated_at": "2026-11-14T12:06:58Z"
+  "updated_at": "2026-11-14T12:07:13Z"
 }
