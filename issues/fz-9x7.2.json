@@ -4,7 +4,6 @@
     "fz-9x7.1"
   ],
   "blocks": [
-    "fz-9x7.4",
     "fz-9x7.5"
   ],
   "created": "2026-11-14T19:25:22Z",
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "A continuation gives its frame back when it resumes as the newest object",
   "type": "task",
-  "updated_at": "2026-11-14T19:25:24Z"
+  "updated_at": "2026-11-14T20:09:32Z"
 }
