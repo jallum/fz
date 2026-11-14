@@ -487,6 +487,20 @@ impl Descr {
             && self.maps.is_empty()
     }
 
+    /// True when some value of this type is known to be something other than
+    /// a callable: it has a basic, atom, opaque, tuple, list, resource or map
+    /// part. A type variable says nothing either way, so a variable alone
+    /// does not count.
+    pub(super) fn admits_non_callable(&self) -> bool {
+        !self.basic.is_empty()
+            || !self.atoms.is_none()
+            || !self.opaques.is_none()
+            || !self.tuples.is_empty()
+            || !self.lists.is_empty()
+            || !self.resources.is_empty()
+            || !self.maps.is_empty()
+    }
+
     /// The one record this type is, with whatever it excludes: a map literal
     /// is its fields less the maps that name a module.
     pub(super) fn sole_record(&self) -> Option<Record<'_>> {

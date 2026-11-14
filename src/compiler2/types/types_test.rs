@@ -5291,6 +5291,26 @@ fn a_callable_column_is_distinguished_from_a_container_of_callables() {
 }
 
 #[test]
+fn only_a_known_non_callable_part_makes_a_position_mixed() {
+    let mut t = Types::new();
+    let closure = t.closure_lit(ClosureTarget(7), vec![], 1);
+    let int = t.int();
+    let closure_or_int = t.union(closure, int);
+    let var = t.type_var(TypeVarId(0));
+    let closure_or_var = t.union(closure, var);
+    let any = t.any();
+
+    assert!(t.admits_non_callable(&closure_or_int));
+    assert!(t.admits_non_callable(&any));
+    assert!(!t.admits_non_callable(&closure));
+    assert!(
+        !t.admits_non_callable(&var),
+        "a variable is not known to be anything, so it is not a non-callable"
+    );
+    assert!(!t.admits_non_callable(&closure_or_var));
+}
+
+#[test]
 fn a_kept_key_leaf_holding_a_closure_stays_the_ground_type() {
     let mut t = Types::new();
     let int = t.int();

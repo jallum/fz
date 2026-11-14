@@ -20,7 +20,7 @@ use super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableActivationInput, CallableDemand, CallableSurface,
-    RuntimeDemand, RuntimeDemandTypeInputs, RuntimeDemandTypeProjection, TUPLE_LANE_BUDGET,
+    RuntimeDemand, RuntimeDemandTypeInputs, RuntimeDemandTypeProjection, ShapeDemand, TUPLE_LANE_BUDGET,
 };
 use super::types::{Ty, Types};
 use super::world::World;
@@ -180,10 +180,7 @@ impl RuntimeDemandFacts<'_> {
     }
 
     fn projection(&self, ty: Ty) -> &RuntimeDemandTypeProjection {
-        self.type_projections
-            .get(&ty)
-            .map(Rc::as_ref)
-            .unwrap_or_else(|| panic!("World omitted runtime-demand projection for {ty:?}"))
+        projection_of(self.type_projections, ty)
     }
 
     #[cfg(test)]
@@ -213,8 +210,8 @@ impl RuntimeDemandFacts<'_> {
             .is_some_and(DispatchDemand::asks_anything)
     }
 
-    /// The type a callsite argument carries, as the analysis settled it.
-    pub(crate) fn argument_type(&self, value: ValueId) -> Ty {
+    /// The type a value carries, as the analysis settled it.
+    pub(crate) fn value_type(&self, value: ValueId) -> Ty {
         argument_type(self.value_types, self.demand_types.any, value)
     }
 
@@ -227,8 +224,41 @@ impl RuntimeDemandFacts<'_> {
         (!unnamed.is_empty()).then_some(unnamed)
     }
 
+    /// Marks escaped every callable this demand asks for at a position whose
+    /// type also admits a value that is not a callable.
+    pub(crate) fn escape_mixed_callables(&self, demand: &mut RuntimeDemand, ty: Ty) {
+        escape_mixed_callables(self.type_projections, demand, ty);
+    }
+
     pub(crate) fn callable_value_demand(&self, ty: Ty) -> Option<RuntimeDemand> {
         self.projection(ty).callable_value_demand.clone()
+    }
+}
+
+fn projection_of(projections: &HashMap<Ty, Rc<RuntimeDemandTypeProjection>>, ty: Ty) -> &RuntimeDemandTypeProjection {
+    projections
+        .get(&ty)
+        .map(Rc::as_ref)
+        .unwrap_or_else(|| panic!("World omitted runtime-demand projection for {ty:?}"))
+}
+
+/// Marks escaped every callable `demand` asks for at a position whose type
+/// also admits a value that is not a callable, field by field through a
+/// tuple. A reader of such a position tells the callable from the rest by its
+/// tag, and only a boxed callable carries one.
+fn escape_mixed_callables(
+    projections: &HashMap<Ty, Rc<RuntimeDemandTypeProjection>>,
+    demand: &mut RuntimeDemand,
+    ty: Ty,
+) {
+    let projection = projection_of(projections, ty);
+    if demand.is_callable() && projection.admits_non_callable {
+        demand.callable.escape = true;
+    }
+    if let ShapeDemand::TupleFields(fields) = &mut demand.shape {
+        for (field, &field_ty) in fields.iter_mut().zip(&projection.field_tys) {
+            escape_mixed_callables(projections, field, field_ty);
+        }
     }
 }
 
@@ -334,18 +364,12 @@ pub(crate) fn project_executable_facts(
             )
         };
     let entry_dispatch = executable_dispatch(&analysis);
-    let entry_dispatch_demand = entry_dispatch
-        .as_ref()
-        .map(|dispatch| dispatch.plan().input_demand())
-        .unwrap_or_default();
     let callsite_dispatch_demand = callsite_dispatch_demands(world.types_mut(), &callsites);
     let mut demand_builder = prepare_runtime_demand_type_inputs(
         world,
         executable,
         &analysis,
         &body,
-        extern_wire.as_ref(),
-        entry_dispatch_demand,
         &callsite_dispatch_demand,
         &callsites,
     );
@@ -468,22 +492,14 @@ fn prepare_runtime_demand_type_inputs(
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     body: &LoweredBody,
-    extern_wire: Option<&LoweredExtern>,
-    entry_dispatch_demand: &[DispatchDemand],
     callsite_dispatch_demand: &HashMap<CallSiteId, CallsiteDispatchDemand>,
     callsites: &HashMap<CallSiteId, CallSiteSummary>,
 ) -> RuntimeDemandTypeBuilder {
     let any = world.types_mut().any();
     let mut builder = RuntimeDemandTypeBuilder::new(any);
     let mut tys = analysis.value_types.values().copied().collect::<HashSet<_>>();
-    let activation_inputs = executable.activation.inputs(world.types());
-    tys.extend(
-        entry_dispatch_demand
-            .iter()
-            .enumerate()
-            .filter(|(_, demand)| demand.asks_anything())
-            .filter_map(|(index, _)| activation_inputs.get(index).copied()),
-    );
+    tys.insert(any);
+    tys.extend(executable.activation.inputs(world.types()).iter().copied());
     for (callsite, demands) in callsite_dispatch_demand {
         let args = body.call_args(*callsite).unwrap_or_default();
         let read_args = args
@@ -502,9 +518,6 @@ fn prepare_runtime_demand_type_inputs(
                 .chain(read_args)
                 .map(|value| argument_type(&analysis.value_types, any, value)),
         );
-    }
-    if let Some(signature) = extern_wire {
-        tys.extend(activation_inputs.iter().skip(signature.params.len()).copied());
     }
     for summary in callsites.values() {
         for target in &summary.targets {
@@ -581,10 +594,13 @@ fn prepare_type_projection(world: &mut World, builder: &mut RuntimeDemandTypeBui
             boundary: RuntimeDemand::whole(),
             dispatch: RuntimeDemand::whole(),
             callable_value_demand: None,
+            admits_non_callable: true,
+            field_tys: Vec::new(),
         }),
     );
-    let boundary = prepare_runtime_demand_for_type(world, builder, ty, true);
-    let dispatch = prepare_runtime_demand_for_type(world, builder, ty, false);
+    let field_tys = prepare_tuple_field_types(world, builder, ty);
+    let boundary = prepare_runtime_demand_for_type(world, builder, ty, &field_tys, true);
+    let dispatch = prepare_runtime_demand_for_type(world, builder, ty, &field_tys, false);
     let callable_value_demand = world.types_mut().callable_value_clauses(&ty).and_then(|clauses| {
         let unnamed = clauses
             .into_iter()
@@ -601,6 +617,8 @@ fn prepare_type_projection(world: &mut World, builder: &mut RuntimeDemandTypeBui
         boundary,
         dispatch,
         callable_value_demand,
+        admits_non_callable: world.types().admits_non_callable(&ty),
+        field_tys,
     };
     let projection = world.memoize_runtime_demand_type_projection(ty, projection);
     builder.projections.insert(ty, projection);
@@ -612,28 +630,24 @@ fn prepare_runtime_demand_for_type(
     world: &mut World,
     builder: &mut RuntimeDemandTypeBuilder,
     ty: Ty,
+    field_tys: &[Ty],
     escape: bool,
 ) -> RuntimeDemand {
     let Some(clauses) = world.types_mut().callable_clauses(&ty) else {
-        if let Some(arity) = world.types().single_tuple_arity(&ty) {
-            let any = builder.inputs.any;
-            let mut fields = world.types_mut().tuple_projections(&ty, arity);
-            fields.resize(arity, any);
-            fields.truncate(arity);
-            let demands = fields
-                .into_iter()
-                .map(|field| {
-                    prepare_type_projection(world, builder, field);
-                    if escape {
-                        builder.boundary_demand(field)
-                    } else {
-                        builder.dispatch_demand(field)
-                    }
-                })
-                .collect();
-            return read_tuple_demand(demands);
+        if field_tys.is_empty() {
+            return RuntimeDemand::whole();
         }
-        return RuntimeDemand::whole();
+        let demands = field_tys
+            .iter()
+            .map(|&field| {
+                if escape {
+                    builder.boundary_demand(field)
+                } else {
+                    builder.dispatch_demand(field)
+                }
+            })
+            .collect();
+        return read_tuple_demand(demands);
     };
     if !escape {
         return RuntimeDemand::whole();
@@ -648,6 +662,20 @@ fn prepare_runtime_demand_for_type(
         opaque: false,
         escape: true,
     })
+}
+
+/// The field types of a tuple type of one arity, each with its projection
+/// prepared; empty for every other type, the empty tuple included.
+fn prepare_tuple_field_types(world: &mut World, builder: &mut RuntimeDemandTypeBuilder, ty: Ty) -> Vec<Ty> {
+    let Some(arity) = world.types().single_tuple_arity(&ty) else {
+        return Vec::new();
+    };
+    let mut fields = world.types_mut().tuple_projections(&ty, arity);
+    fields.resize(arity, builder.inputs.any);
+    for &field in &fields {
+        prepare_type_projection(world, builder, field);
+    }
+    fields
 }
 
 /// A tuple whose fields are all ignored is still a value that was read, so it

@@ -695,6 +695,24 @@ value — inputs, executable returns, delivered resumes, and closure captures al
 draw their shape from the same demand-derived recursive layout family, so a
 return can never collapse to a narrower vocabulary than an input.
 
+A callable travels direct only where every reader knows it is a callable. A
+position whose type also admits something else (a closure or an integer, say)
+has a reader that must tell the two apart, and only a boxed callable carries
+the tag it reads. So a callable demand at such a position is escaped, field by
+field through a tuple (`escape_mixed_callables`). "Admits something else" is
+`Types::admits_non_callable`: the type has a part known not to be a callable.
+A type variable is not known to be anything, so a variable does not make a
+position mixed, and a value with no recorded type is left alone. The rule reads the type of
+the position the demand is recorded at, and it is applied in two places,
+because two kinds of position exist. A value's demand is read against the
+value's own type as the backward walk records it (`note_live_demand`), which
+also carries the escape back to the callable's construction. An executable
+input's demand is read against the activation's input type once callers'
+contributions are joined (`settle_input_demands`): a clause narrows its
+parameter value, so the input is the only place the input's whole type is
+seen. Every value type, every activation input type and `any` therefore has a
+runtime-demand type projection.
+
 Demand narrows a value only where the narrowing reaches whatever produces it,
 and the **boxed apply seam** is where that rule has to be applied from both
 sides at once. A callable whose members are reached first-class mints a
