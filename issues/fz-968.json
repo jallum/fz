@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ep5.2"
+  ],
   "created": "2026-11-14T04:56:04Z",
   "description": "Two clauses that split on a guard over the head of a list nested inside two tuple levels fail on every path.\n\nProgram (scratchpad/ep5/probe/nested_list_head_guard.fz, stack base 62d660974):\n  def deep({:a, {:b, [h | _]}}) when is_integer(h), do: 1\n  def deep({:a, {:b, [h | _]}}) when is_atom(h), do: 2\n  called as deep(pick_deep(n)), where pick_deep returns {:a, {:b, [n, n]}} or {:a, {:b, [:ok, :err]}}.\n\ninterp: 'backend executable ... function 77 clause 0 failed before entry 0: backend value was absent and cannot be materialized'.\nrun/build: 'error[artifact/incomplete-semantic-plan] ... native executable lowering failed', and the build path says 'native attempted to materialize absent value as runtime value with ty None'.\n\nThe same clauses one tuple level deep ({:a, [h | _]}) print 1 and 2 on interp and run. The guard can be is_atom(h) or h == :ok or h == :err; both fail.\n\nFound by fz-ep5.2: fixture dispatch_nested_list_position_separates (functions deep and peed) passed while the head carried '::'. With the head moved to a guard it fails, so this blocks fz-ep5.2.\n\nNot investigated: which job leaves the value absent, and whether a struct field or a list head under one tuple and one list behaves the same.\n\nFails before, passes after: the program above prints 1 then 2 on interp, run and build; dispatch_nested_list_position_separates passes with guards.\nAcceptance: full gate green; no pin rises unexplained.",
   "id": "fz-968",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "A guard on a list head two tuples deep compiles",
   "type": "bug",
-  "updated_at": "2026-11-14T04:56:04Z"
+  "updated_at": "2026-11-14T04:56:06Z"
 }
