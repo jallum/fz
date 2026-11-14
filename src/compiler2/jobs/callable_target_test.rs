@@ -14,6 +14,9 @@ use super::super::super::dump::DumpStage;
 
 use super::*;
 
+/// A lambda that returns its capture, so the capture is part of its key.
+const PAIR_SOURCE: &str = "def main() do\n  tag = [1]\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n";
+
 #[test]
 fn construction_target_is_exact_memoized_and_read_without_formula_minting() {
     let tel = ConfiguredTelemetry::new();
@@ -30,7 +33,7 @@ fn construction_target_is_exact_memoized_and_read_without_formula_minting() {
     let mut world = World::new();
     world.submit_code(
         Some("construction_target_exact.fz".to_string()),
-        "def main() do\n  tag = [1]\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
+        PAIR_SOURCE.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let mut sessions = crate::compiler2::pull::ProductSessions::default();
@@ -100,6 +103,13 @@ fn construction_target_is_exact_memoized_and_read_without_formula_minting() {
             .is_empty()
     );
 
+    // The owner reappears with the code it was derived from, so the lambda's
+    // input demand, and with it the target's key, is what it was.
+    world.submit_code(Some("construction_target_removal.fz".to_string()), String::new());
+    world.submit_code(
+        Some("construction_target_exact.fz".to_string()),
+        PAIR_SOURCE.to_string(),
+    );
     assert!(world.define_executable_facts(key.owner.clone(), owner_facts));
     let owner_fact = FactKey::ExecutableFacts(key.owner.clone());
     world.complete_job(
@@ -248,7 +258,7 @@ fn late_independent_surface_waits_for_only_its_exact_construction_prerequisites(
     let mut world = World::new();
     world.submit_code(
         Some("construction_target_late_surface.fz".to_string()),
-        "def main() do\n  tag = [1]\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
+        PAIR_SOURCE.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let mut sessions = crate::compiler2::pull::ProductSessions::default();

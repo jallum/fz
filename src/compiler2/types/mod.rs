@@ -84,11 +84,16 @@ enum KeyCollapse {
     /// what carries variables widens.
     Evidence,
     /// A recursive body's key: undemanded structure widens to its convergence
-    /// class so the ascent settles, and undemanded literals widen to their kind.
-    Structure,
-    /// A non-recursive body's key: undemanded literals widen to their kind and
-    /// the structure stays exactly as the evidence stated it.
-    Literals,
+    /// class, undemanded literals widen to their kind, and every collapse is
+    /// bounded so the ascent settles: a callable becomes its addressed surface
+    /// and a returned position its class.
+    Recursive,
+    /// A non-recursive body's key: undemanded structure widens to its
+    /// convergence class and undemanded literals to their kind, as in a
+    /// recursive key. With no ascent to settle, nothing needs bounding: a
+    /// callable keeps its shape and a returned position stays as the evidence
+    /// stated it.
+    NonRecursive,
 }
 
 /// The three masks an activation key is read off, and the one body fact that
@@ -1690,8 +1695,8 @@ impl Types {
     pub(crate) fn probe_keys_as_itself(&mut self, a: &Ty, slot: usize) -> bool {
         let path = [AddrStep::Param(slot as u16)];
         !self.has_vars(a)
-            && self.convergence_class_at(a, &path, ClassReach::Freight) == *a
-            && self.convergence_class_at(a, &path, ClassReach::Demanded) == *a
+            && self.convergence_class_at(a, &path, ClassReach::Freight, KeyCollapse::Recursive) == *a
+            && self.convergence_class_at(a, &path, ClassReach::Demanded, KeyCollapse::Recursive) == *a
             && self.erase_closure_identity(a) == *a
             && self.widen_literals(a) == *a
     }
@@ -1745,7 +1750,13 @@ impl Types {
     /// callable is kept too, literals widened: the return carries that
     /// callable out, so a key that dropped its identity would publish one
     /// return for every callable that reached it.
-    fn convergence_class_at(&mut self, a: &Ty, path: &[AddrStep], reach: ClassReach) -> Ty {
+    ///
+    /// A non-recursive key keeps every callable that way. The address var
+    /// bounds a recursive ascent, and a non-recursive body has none; there it
+    /// would only join the evidence of every caller sharing the key, so a
+    /// callable captured into a closure the body builds would be typed by
+    /// every caller's arguments at once.
+    fn convergence_class_at(&mut self, a: &Ty, path: &[AddrStep], reach: ClassReach, collapse: KeyCollapse) -> Ty {
         const ADDRESS_COLLAPSE_DEPTH: usize = 8;
         let descr = self.descr(a);
         if descr.is_pure_list_family() {
@@ -1757,12 +1768,12 @@ impl Types {
             child.push(AddrStep::Elem);
             let elem = if reach > ClassReach::Freight {
                 let elem = self.list_element_type(a);
-                self.convergence_class_at(&elem, &child, reach)
+                self.convergence_class_at(&elem, &child, reach, collapse)
             } else {
                 self.address_var(&child)
             };
             self.list(elem)
-        } else if descr.is_pure_callable() && reach == ClassReach::Returned {
+        } else if descr.is_pure_callable() && (reach == ClassReach::Returned || collapse == KeyCollapse::NonRecursive) {
             self.widen_literals(a)
         } else if descr.is_pure_callable() {
             // A clause-less `fun_top` is the unresolvable fallback; the address
@@ -1774,14 +1785,14 @@ impl Types {
             for (j, elem) in elems.iter_mut().enumerate() {
                 let mut child = path.to_vec();
                 child.push(AddrStep::Field(j as u16));
-                *elem = self.convergence_class_at(elem, &child, reach);
+                *elem = self.convergence_class_at(elem, &child, reach, collapse);
             }
             self.tuple(&elems)
         } else if let Some(resource) = descr.pure_resource(self.core.any) {
             let payload = resource.payload;
             let mut child = path.to_vec();
             child.push(AddrStep::Payload);
-            let payload = self.convergence_class_at(&payload, &child, reach);
+            let payload = self.convergence_class_at(&payload, &child, reach, collapse);
             self.resource(payload)
         } else if let Some(record) = descr.sole_record() {
             let mut fields = record.sig.fields.clone();
@@ -1789,7 +1800,7 @@ impl Types {
             for (j, value) in fields.values_mut().enumerate() {
                 let mut child = path.to_vec();
                 child.push(AddrStep::MapField(j as u16));
-                *value = self.convergence_class_at(value, &child, reach);
+                *value = self.convergence_class_at(value, &child, reach, collapse);
             }
             self.intern(Descr::record_excluding(fields, excluded))
         } else if reach > ClassReach::Freight && self.has_open_vars(a) {
@@ -1861,10 +1872,11 @@ impl Types {
     /// every identity no use can tell apart erased, by ONE per-slot function
     /// on both paths.
     ///
-    /// A recursive body takes the whole structural collapse (fz-y6w): slots
-    /// nothing demands widen to their convergence class so the ascent settles.
-    /// A non-recursive body has no ascent to settle, so its structure is left
-    /// exactly as the evidence stated it and only identity is erased.
+    /// Either body takes the structural collapse: slots nothing demands widen
+    /// to their convergence class. A recursive body's collapse is bounded
+    /// everywhere so the ascent settles (fz-y6w). A non-recursive body has no
+    /// ascent, so it keeps what only the bound would erase: a callable's shape
+    /// and a returned position as the evidence stated it.
     ///
     /// Identity comes in two kinds, and each is read from the mask that asks
     /// its question:
@@ -1916,14 +1928,14 @@ impl Types {
         // called is read whole, and still must not nest without bound.
         let arrow = self.fold_arrow_params(arrow);
         if recursive {
-            return self.collapse_arrow(arrow, demand.forwarded, demand.returned, KeyCollapse::Structure);
+            return self.collapse_arrow(arrow, demand.forwarded, demand.returned, KeyCollapse::Recursive);
         }
-        let literals = self.collapse_arrow(arrow, demand.forwarded, demand.returned, KeyCollapse::Literals);
+        let collapsed = self.collapse_arrow(arrow, demand.forwarded, demand.returned, KeyCollapse::NonRecursive);
         if demand.consumes_callable_identity {
-            return literals;
+            return collapsed;
         }
-        let Some(sig) = self.descr(&literals).pure_arrow() else {
-            return literals;
+        let Some(sig) = self.descr(&collapsed).pure_arrow() else {
+            return collapsed;
         };
         let params = sig.args.clone();
         let ret = sig.ret;
@@ -1939,7 +1951,7 @@ impl Types {
             })
             .collect::<Vec<_>>();
         if erased == params {
-            return literals;
+            return collapsed;
         }
         self.arrow(&erased, ret)
     }
@@ -2005,9 +2017,9 @@ impl Types {
         }
         match demand {
             DispatchDemand::Ignore => {
-                // KEY path (`Structure`) collapses an ignored slot to its
-                // ADDRESSED convergence class: a pure list becomes
-                // `list(<P_e var>)` and a pure callable an addressed surface var,
+                // A KEY path collapses an ignored slot to its ADDRESSED
+                // convergence class: a pure list becomes `list(<P_e var>)` and,
+                // in a recursive key, a pure callable an addressed surface var,
                 // so the slot stays RESOLVABLE at its structural address instead of
                 // bottoming out at `any`/`fun_top` (fz-f98.14.10.2). Breadth is
                 // still var-bounded (one address per position) so fz-y6w
@@ -2025,7 +2037,7 @@ impl Types {
             // is the precise record, so it keeps them.
             DispatchDemand::Class => match collapse {
                 KeyCollapse::Evidence => ty,
-                KeyCollapse::Structure | KeyCollapse::Literals => self.widen_literals(&ty),
+                KeyCollapse::Recursive | KeyCollapse::NonRecursive => self.widen_literals(&ty),
             },
             DispatchDemand::Whole => ty,
             DispatchDemand::TupleFields(fields) => {
@@ -2060,8 +2072,8 @@ impl Types {
     /// union of a tuple and a list, one axis reading each -- the class keeps
     /// both, which is the same bounded answer and never the verbatim type.
     ///
-    /// A key that collapses no structure (`Literals`) keeps a returned position
-    /// verbatim: there is no ascent for the class to settle.
+    /// A non-recursive key keeps a returned position verbatim: there is no
+    /// ascent for the class to settle.
     fn convergence_collapse_returned(
         &mut self,
         ty: Ty,
@@ -2071,9 +2083,9 @@ impl Types {
         collapse: KeyCollapse,
     ) -> Option<Ty> {
         let keep_returned = |types: &mut Self| match collapse {
-            KeyCollapse::Literals => ty,
-            KeyCollapse::Structure | KeyCollapse::Evidence => {
-                types.convergence_class_at(&ty, path, ClassReach::Returned)
+            KeyCollapse::NonRecursive => ty,
+            KeyCollapse::Recursive | KeyCollapse::Evidence => {
+                types.convergence_class_at(&ty, path, ClassReach::Returned, collapse)
             }
         };
         match (demand, returned) {
@@ -2194,7 +2206,7 @@ impl Types {
         }
         let mut child = path.to_vec();
         child.push(AddrStep::Elem);
-        if collapse == KeyCollapse::Structure {
+        if collapse != KeyCollapse::Evidence {
             let elem = self.list_element_type(&ty);
             // Demand reached this list's SHAPE, so the element is meaning, not
             // freight -- at every depth, because nothing here can say how far
@@ -2206,7 +2218,7 @@ impl Types {
             let returned_elem = returned_elem.unwrap_or(&DispatchDemand::Ignore);
             let elem =
                 if matches!(elem_demand, DispatchDemand::Ignore) && matches!(returned_elem, DispatchDemand::Ignore) {
-                    let kept = self.convergence_class_at(&elem, &child, ClassReach::Demanded);
+                    let kept = self.convergence_class_at(&elem, &child, ClassReach::Demanded, collapse);
                     self.widen_literals(&kept)
                 } else {
                     self.convergence_collapse_ty(elem, elem_demand, returned_elem, &child, collapse)
@@ -2235,11 +2247,10 @@ impl Types {
     /// nothing read.
     fn convergence_collapse_ignored_leaf(&mut self, ty: &Ty, path: &[AddrStep], collapse: KeyCollapse) -> Ty {
         match collapse {
-            KeyCollapse::Structure => {
-                let class = self.convergence_class_at(ty, path, ClassReach::Freight);
+            KeyCollapse::Recursive | KeyCollapse::NonRecursive => {
+                let class = self.convergence_class_at(ty, path, ClassReach::Freight, collapse);
                 self.widen_literals(&class)
             }
-            KeyCollapse::Literals => self.widen_literals(ty),
             KeyCollapse::Evidence => self.convergence_class(ty),
         }
     }

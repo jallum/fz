@@ -2178,11 +2178,24 @@ impl World {
         ])
     }
 
-    /// The two facts `canonical_activation_key` reads: the body-shape keying
+    /// The facts `canonical_activation_key` reads for `function` at `inputs`:
+    /// none when the inputs key as themselves, else the body-shape keying
     /// answer (`Recursive`) and the input demand that shapes the collapse and
-    /// the brand erasure (`InputDemand`). Both are named in ONE ask so a caller
-    /// spends one block on a callee's keying prerequisites, never a ladder
-    /// (fz-kdt.86; waits are AND-satisfied).
+    /// the brand erasure (`InputDemand`).
+    pub(crate) fn activation_key_prerequisites(
+        &mut self,
+        root: RootId,
+        function: FunctionId,
+        inputs: &[Ty],
+    ) -> Option<[FactKey; 2]> {
+        self.self_keyed_activation(root, function, inputs)
+            .is_none()
+            .then_some([FactKey::Recursive(function), FactKey::InputDemand(function)])
+    }
+
+    /// Reads or waits on every fact the key of `function` at `inputs` reads,
+    /// in ONE ask so a caller spends one block on a callee's keying
+    /// prerequisites, never a ladder (fz-kdt.86; waits are AND-satisfied).
     pub(crate) fn require_activation_key_facts(
         &mut self,
         root: RootId,
@@ -2190,26 +2203,20 @@ impl World {
         inputs: &[Ty],
         uses: &mut UseCollector,
     ) -> bool {
-        if self.self_keyed_activation(root, function, inputs).is_some() {
-            return true;
+        let mut ready = true;
+        for fact in self
+            .activation_key_prerequisites(root, function, inputs)
+            .into_iter()
+            .flatten()
+        {
+            if self.has_fact(&fact) {
+                uses.read(fact);
+            } else {
+                ready = false;
+                uses.wait(fact);
+            }
         }
-        let recursive = FactKey::Recursive(function);
-        let recursive_ready = self.has_fact(&recursive);
-        if recursive_ready {
-            uses.read(recursive);
-        } else {
-            uses.wait(recursive);
-        }
-
-        let input_demand = FactKey::InputDemand(function);
-        let input_demand_ready = self.has_fact(&input_demand);
-        if input_demand_ready {
-            uses.read(input_demand);
-        } else {
-            uses.wait(input_demand);
-        }
-
-        recursive_ready && input_demand_ready
+        ready
     }
 
     pub(crate) fn lookup_callable_namespace(
@@ -2473,7 +2480,7 @@ impl World {
         Some(self.reference_module(parent))
     }
 
-    pub(crate) fn self_keyed_activation(
+    fn self_keyed_activation(
         &mut self,
         root: RootId,
         function: FunctionId,
