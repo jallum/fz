@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Prints `changed` when .github/workflows/ci.yml differs from the given base
+# commit in a pinned otp-version or elixir-version line, `unchanged` otherwise.
+# Oracle stamps do not hash the Elixir version, so a changed pin is the signal
+# that every golden must be checked against Elixir again.
+set -euo pipefail
+
+base="${1:?usage: beam-pins <base-commit>}"
+diff="$(git diff "$base" -- .github/workflows/ci.yml)"
+if grep -qE '^[-+][[:space:]]*(otp|elixir)-version:' <<<"$diff"; then
+  echo changed
+else
+  echo unchanged
+fi

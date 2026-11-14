@@ -59,7 +59,8 @@
 //! confirmed the pair and is not started; otherwise the pair is run and
 //! compared, and a pair Elixir agrees with but whose stamp is stale or missing
 //! fails. `ORACLE=regen` rewrites goldens and stamps from Elixir's output,
-//! `ORACLE=check` runs Elixir for every pair ignoring stamps, and
+//! `ORACLE=check` runs Elixir for every pair ignoring stamps (CI runs it when a
+//! pull request changes the pinned Elixir or OTP version), and
 //! `ORACLE_FIXTURE=<stem>` narrows either to one fixture.
 //!
 //! `expect: success` (the default) requires exit 0 with matching stdout/diagnostics.
@@ -2514,7 +2515,8 @@ fn run_path_logged_to(
 /// `ORACLE=regen` rewrites `expected.txt` and the header's `oracle.stamp` from
 /// the Elixir output; `ORACLE=check` ignores stamps, runs Elixir for every pair
 /// and fails on any difference from the golden (the check after an Elixir
-/// upgrade). `ORACLE_FIXTURE=<stem>` narrows either mode to one fixture. Requires the `elixir` binary on PATH (Elixir 1.19+); a spawn
+/// upgrade; CI runs it on a pull request that changes the pinned Elixir or OTP
+/// version). `ORACLE_FIXTURE=<stem>` narrows either mode to one fixture. Requires the `elixir` binary on PATH (Elixir 1.19+); a spawn
 /// failure fails loudly by design — the oracle is the signal, so a missing
 /// oracle is a hard error, not a skip.
 fn oracle_goldens_match_elixir() {
