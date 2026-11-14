@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-14T11:46:21Z",
-  "description": "After fz-sc8.183.1-.3 a step of \u003c\u003cc, r :: binary\u003e\u003e still calls the runtime for the bit length (fz_bs_bit_len_ref), for the byte (fz_bs_read_int_ref) and for a view of the rest (fz_bs_read_binary_ref, 1 allocation). Release, 20.6 MB / 32,000 log lines: read + JSON.decode! keeping nothing takes 3.7 s (measured with integer patterns, before .183.2); Elixir 0.12 s. BEAM keeps a match context (base, offset, end) in registers and reuses it across the self-call, so a step is a load, a compare and an add. Goal: field reads are inline loads against a base pointer and bit length resolved once per function, and a self-recursive walk passes the position instead of building the rest. Needs a spike with predictions and a proposal page before building.",
+  "description": "A step of \u003c\u003cc, r :: binary\u003e\u003e calls the runtime for the bit length (fz_bs_bit_len_ref) and for each integer field (fz_bs_read_int_ref): 2.2 and 3.3 calls per input byte decoding JSON, each resolving the binary through five nested decodes. Goal: at the top of a match the compiled code resolves the binary once to an address and a bit length (branching on inline bitstring vs ProcBin), shared by the clauses of the dispatch; a byte-aligned unsigned integer field of 1 to 7 bytes is a load and a byte swap; other fields keep the runtime call. Native only; interpreter unchanged. Safe because a collection happens only at a quantum boundary and compiled code ends a quantum only at a back edge, so the address is never held across a call. Spiked (un-hoisted, 8-bit only): walk -34%, decode -18.5%, output identical; patch scratchpad b183-5/e2_inline_view_and_byte_read.patch. Signal: a test over the generated code for a walk (no call to the length or integer-read functions); walk and decode re-timed. Position passing is split out as its own parked ticket. Evidence and predictions: proposal page fz-sc8.183.5.html (workspace root); spike files in scratchpad b183-5 and b183-6.",
   "id": "fz-sc8.183.5",
   "labels": [],
   "parent": "fz-sc8.183",
   "priority": 1,
   "status": "open",
-  "title": "A binary walk reads bytes inline and passes its position",
+  "title": "A whole-byte integer field of a binary match is read with a load",
   "type": "task",
-  "updated_at": "2026-11-14T11:46:21Z"
+  "updated_at": "2026-11-14T12:34:44Z"
 }
