@@ -23480,7 +23480,7 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
 
     let types = compiler.world_mut().types_mut();
     for key in activations.values().flatten() {
-        for input in key.inputs(types) {
+        for input in key.inputs(types).to_vec() {
             assert_eq!(
                 types.fold_self_nested_closures(&input),
                 input,

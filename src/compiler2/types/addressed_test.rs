@@ -134,7 +134,7 @@ fn tagged_union_payload_variables_are_addressed_per_variant() {
     };
     let cont_or_halt = t.union(cont, halt);
     let state = t.union(cont_or_halt, suspend);
-    let addressed = t.address_inputs(&[state])[0];
+    let addressed = addressed_inputs(&mut t, &[state])[0];
 
     let b_addr = t.address_var(&[Param(0), Variant(0), Field(1)]);
     let c_addr = t.address_var(&[Param(0), Variant(1), Field(1)]);
@@ -167,8 +167,8 @@ fn address_inputs_is_idempotent_for_existing_element_addresses() {
     let head = t.union(head_a, head_b);
     let list = t.non_empty_list(head);
     let scalar = t.param_alpha(0);
-    let once = t.address_inputs(&[scalar, list]);
-    let twice = t.address_inputs(&once);
+    let once = addressed_inputs(&mut t, &[scalar, list]);
+    let twice = addressed_inputs(&mut t, &once);
 
     assert_eq!(
         twice, once,
@@ -199,7 +199,7 @@ fn captured_values_and_nested_callable_binders_keep_scoped_correlations() {
     let root = RootId::for_test(1);
     let function = FunctionId::from_coordinate(2);
     let key = ActivationKey::from_inputs(root, function, &[closure], &mut t);
-    let once = key.inputs(&t);
+    let once = key.inputs(&t).to_vec();
     let outer_captures = t
         .closure_lit_parts(&once[0])
         .expect("addressed closure literal")
@@ -284,7 +284,7 @@ fn capture_only_generic_is_reowned_beneath_its_literal() {
     let target = ClosureTarget(18);
     let closure = t.closure_lit(target, vec![shared], 1);
 
-    let addressed = t.address_inputs(&[shared, closure]);
+    let addressed = addressed_inputs(&mut t, &[shared, closure]);
     let capture = t
         .closure_lit_parts(&addressed[1])
         .expect("addressed closure literal")
@@ -297,7 +297,7 @@ fn capture_only_generic_is_reowned_beneath_its_literal() {
         "a capture may share an arrow binder only through that binder's args or result"
     );
     assert_eq!(
-        t.address_inputs(&addressed),
+        addressed_inputs(&mut t, &addressed),
         addressed,
         "capture re-ownership must remain idempotent"
     );
@@ -361,7 +361,7 @@ fn sibling_and_nested_callable_binders_push_and_pop_independently() {
         ..Descr::unbranded()
     });
 
-    let addressed = t.address_inputs(&[siblings])[0];
+    let addressed = addressed_inputs(&mut t, &[siblings])[0];
     let first = literal_sig(&t, addressed, first_target);
     let second = literal_sig(&t, addressed, second_target);
     let first_lit = first.lit.as_ref().expect("first literal");
@@ -391,7 +391,7 @@ fn sibling_and_nested_callable_binders_push_and_pop_independently() {
         "popping the nested binder must restore sibling isolation"
     );
 
-    let repeated = t.address_inputs(&[addressed])[0];
+    let repeated = addressed_inputs(&mut t, &[addressed])[0];
     assert_eq!(repeated, addressed, "scoped addressing must be idempotent");
 }
 
@@ -448,6 +448,12 @@ fn address_tag_is_transparent_to_interning() {
     assert_eq!(one, two, "alpha-equivalent arrows fold to one identity under tagging");
     let aa = t.address_arrow(&[x, x], int);
     assert_ne!(one, aa, "distinct params stay distinct under tagging");
+}
+
+fn addressed_inputs(t: &mut Types, inputs: &[Ty]) -> Vec<Ty> {
+    let mut addressed = inputs.to_vec();
+    t.address_inputs(&mut addressed);
+    addressed
 }
 
 /// The addressing algorithm as it stood when remapping cloned each descriptor
@@ -714,7 +720,7 @@ fn in_place_remap_is_the_remap_that_cloned_each_descriptor() {
         for &b in pool.iter().skip(i % 5).step_by(7) {
             let inputs = [a, b, a];
             assert_eq!(
-                shared.address_inputs(&inputs),
+                addressed_inputs(&mut shared, &inputs),
                 reference.reference_address_inputs(&inputs),
                 "address_inputs over {}, {}",
                 shared.display(&a),
@@ -741,4 +747,21 @@ fn in_place_remap_is_the_remap_that_cloned_each_descriptor() {
         reference.identity_inventory(),
         "the in-place remap interns exactly the types the copying remap interned",
     );
+}
+
+#[test]
+fn an_address_asked_for_again_is_the_variable_interned_for_its_id() {
+    // The type of an address is remembered per address. Each ask, first or
+    // repeated, is the interned variable of that address's id, and the
+    // result slot is the address `[Result]` like any other.
+    let mut t = Types::new();
+    let paths: [&[AddrStep]; 4] = [&[Param(0)], &[Param(1)], &[Param(1), Elem], &[AddrStep::Result]];
+    for path in paths {
+        let first = t.address_var(path);
+        let id = t.address_id(path);
+        assert_eq!(first, t.type_var(id), "{path:?} is its id's variable");
+        assert_eq!(first, t.address_var(path), "{path:?} asked again");
+    }
+    assert_eq!(t.result_alpha(), t.address_var(&[AddrStep::Result]));
+    assert_ne!(t.param_alpha(0), t.param_alpha(1));
 }

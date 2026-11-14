@@ -1,0 +1,6 @@
+#---
+# purpose: a character literal does not take a hex escape, since the escape names a byte and not a character
+# expect: diagnostic
+#---
+x = ?\x41
+def main(), do: 1

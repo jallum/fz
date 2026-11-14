@@ -182,15 +182,8 @@ fn binary_literal_rejects_unknown_escape() {
     assert!(err.msg.contains("unknown escape"), "msg={}", err.msg);
 }
 
-// Note: `read_string_utf8`'s err path is defensive — the lexer
-// input is `&str`, so the bytes between `"…"` are always valid
-// UTF-8 today. Future escape forms (e.g. `\xff`) will be the first
-// way to surface that diagnostic.
-
-/// fz-axu.25 (M4) — guards the UTF-8 invariant L3 lowering relies on:
-/// every Tok::Binary payload produced by the lexer must be valid UTF-8.
-/// If `\x`-style byte escapes are added later, this test should fail
-/// and force a re-evaluation of where validation lives.
+/// A string written with characters and character escapes lexes to valid
+/// UTF-8; `\xHH` is the one escape that can store a byte that is not.
 // DROP: Tok::Binary UTF-8 invariant, lexer infrastructure
 #[test]
 fn str_tokens_are_invariantly_utf8() {
@@ -943,6 +936,105 @@ fn a_non_character_code_point_is_accepted() {
     assert_eq!(string_bytes(r#""\uFFFF""#), "\u{FFFF}".as_bytes());
     assert_eq!(string_bytes(r#""\uD7FF""#), "\u{D7FF}".as_bytes());
     assert_eq!(string_bytes(r#""\uE000""#), "\u{E000}".as_bytes());
+}
+
+const HEX_MALFORMED: &str = "invalid hex escape character, expected \\xHH where H is a hexadecimal digit";
+
+/// `\xHH` is one raw byte, so a byte above 0x7F stays a single byte instead of becoming a character.
+#[test]
+fn a_hex_escape_is_one_raw_byte() {
+    assert_eq!(string_bytes(r#""\xFF""#), [255]);
+    assert_eq!(string_bytes(r#""\xe9""#), [233]);
+    assert_eq!(string_bytes(r#""\x41""#), [65]);
+    assert_eq!(string_bytes(r#""A\xFFB""#), [65, 255, 66]);
+    assert_eq!(string_bytes(r#""\x00""#), [0]);
+}
+
+/// Exactly two digits are read, so a third is an ordinary character; a lone digit is the byte it spells.
+#[test]
+fn a_hex_escape_reads_at_most_two_digits() {
+    assert_eq!(string_bytes(r#""\x414""#), [65, 52]);
+    assert_eq!(string_bytes(r#""\x4""#), [4]);
+    assert_eq!(string_bytes(r#""\x4g""#), [4, b'g']);
+}
+
+/// `\x{H...}` is a code point stored as its UTF-8 encoding, as `\u{H...}` is.
+#[test]
+fn a_braced_hex_escape_is_a_code_point() {
+    assert_eq!(string_bytes(r#""\x{e9}""#), [195, 169]);
+    assert_eq!(string_bytes(r#""\x{FF}""#), [195, 191]);
+    assert_eq!(string_bytes(r#""\x{1F600}""#), "\u{1F600}".as_bytes());
+}
+
+/// A heredoc reads the same escapes as a string.
+#[test]
+fn a_heredoc_reads_hex_escapes() {
+    assert_eq!(
+        string_bytes("\"\"\"\n\\xFF \\x{e9}\n\"\"\"\n"),
+        [255, b' ', 195, 169, b'\n']
+    );
+}
+
+/// A malformed `\x` escape is one error, whatever is wrong with it.
+#[test]
+fn a_malformed_hex_escape_is_rejected() {
+    for src in [
+        r#""\x""#,
+        r#""\xg1""#,
+        r#""\x{}""#,
+        r#""\x{ }""#,
+        r#""\x{41""#,
+        r#""\x{4g}""#,
+        r#""\x{0000041}""#,
+    ] {
+        assert_eq!(escape_error(src), HEX_MALFORMED, "{src}");
+    }
+}
+
+/// A braced hex escape names a code point, so a surrogate or a value above U+10FFFF is rejected.
+#[test]
+fn a_braced_hex_escape_must_be_a_code_point() {
+    assert_eq!(
+        escape_error(r#""\x{D800}""#),
+        "invalid or reserved Unicode code point \\x{D800}"
+    );
+    assert_eq!(
+        escape_error(r#""\x{110000}""#),
+        "invalid or reserved Unicode code point \\x{110000}"
+    );
+}
+
+/// A name is text: a byte that breaks UTF-8 is an error in a quoted atom and in a keyword key.
+#[test]
+fn a_hex_escape_that_breaks_utf8_is_rejected_in_a_name() {
+    let atom = "invalid encoding in atom: invalid encoding starting at <<255, 98>>";
+    assert_eq!(escape_error(r#":"a\xFFb""#), atom);
+    assert_eq!(
+        escape_error(r#"[a: 1, "a\xFF": 2]"#),
+        "invalid encoding in atom: invalid encoding starting at <<255>>"
+    );
+}
+
+/// Bytes that together spell UTF-8 are a valid name, and an ASCII byte always is.
+#[test]
+fn hex_escapes_that_spell_utf8_are_accepted_in_a_name() {
+    assert_eq!(
+        lex_kinds(r#":"caf\xc3\xa9""#).unwrap(),
+        vec![Tok::Atom("caf\u{e9}".to_string()), Tok::Eof]
+    );
+    assert_eq!(
+        lex_kinds(r#":"\x41""#).unwrap(),
+        vec![Tok::Atom("A".to_string()), Tok::Eof]
+    );
+}
+
+/// `?\x41` is an error: a character literal names a character, and `\x` names a byte.
+#[test]
+fn a_hex_escape_in_a_character_literal_is_rejected() {
+    assert_eq!(
+        escape_error(r#"?\x41"#),
+        "`?\\x` is not an escape in a character literal; write the character itself"
+    );
 }
 
 fn char_literal(src: &str) -> Tok {

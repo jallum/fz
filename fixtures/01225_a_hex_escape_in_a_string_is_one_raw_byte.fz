@@ -1,0 +1,19 @@
+#---
+# purpose: backslash-x with two hex digits in a string or heredoc is one raw byte, so a string may hold bytes that are not UTF-8, and the braced form is a code point
+# oracle: 01225_a_hex_escape_in_a_string_is_one_raw_byte.oracle.exs
+# oracle.stamp: 8923d58f23e24a1c
+#---
+def main() do
+  high = "\xFF"
+  dbg({high, high == <<255>>, byte_size(high), String.valid?(high)})
+  dbg({"\xe9" == <<233>>, "caf\xc3\xa9" == "café", "A\xFFB" == <<65, 255, 66>>})
+  dbg({"\x414" == <<65, 52>>, "\x4" == <<4>>, "\x4g" == <<4, 103>>})
+  dbg({"\x{e9}" == <<195, 169>>, "\x{FF}" == <<195, 191>>, "\x{1F600}" == "\u{1F600}"})
+  dbg("""
+  \xFF-\x41
+  """ == <<255, 45, 65, 10>>)
+  case "A\xFFB" do
+    <<65, byte, 66>> -> dbg(byte)
+  end
+  dbg("A\xFFB" <> "!" == <<65, 255, 66, 33>>)
+end

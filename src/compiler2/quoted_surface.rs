@@ -150,7 +150,7 @@ enum FunctionFormContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FunctionGroupKey {
-    name: String,
+    name: AtomName,
     arity: usize,
 }
 
@@ -451,14 +451,13 @@ fn parse_compiler_service_form(
     if callee.head.atom_name()? != "." {
         return Ok(None);
     }
-    let callee_parts = callee.tail.list_items()?;
-    if callee_parts.len() != 2 {
+    let Some((module, function)) = callee.tail.list_pair()? else {
+        return Ok(None);
+    };
+    if !matches_alias(&module, &["Fz", "Compiler"], sources)? {
         return Ok(None);
     }
-    if !matches_alias(&callee_parts[0], &["Fz", "Compiler"], sources)? {
-        return Ok(None);
-    }
-    let service = match callee_parts[1].atom_name()?.as_str() {
+    let service = match function.atom_name()?.as_str() {
         "define" => CompilerService::Define,
         other => {
             return Err(QuotedSourceError::new(format!(
@@ -466,16 +465,15 @@ fn parse_compiler_service_form(
             )));
         }
     };
-    let args = node.tail.list_items()?;
-    if args.len() != 2 {
+    let Some((service_source, env)) = node.tail.list_pair()? else {
         return Err(QuotedSourceError::new(
             "Fz.Compiler.define expects source root and __ENV__ arguments",
         ));
-    }
+    };
     Ok(Some(CompilerServiceForm {
         service,
-        source: source.subroot(args[0].root()),
-        env: source.subroot(args[1].root()),
+        source: source.subroot(service_source.root()),
+        env: source.subroot(env.root()),
         span: node.span.unwrap_or(Span::DUMMY),
     }))
 }
@@ -648,11 +646,10 @@ fn parse_function_form(
         .ok_or_else(|| QuotedSourceError::new("expected atom-headed function form"))?;
     if head == "extern" {
         let node = first_non_attr_node(&source, sources)?;
-        let args = node.tail.list_items()?;
-        if args.len() != 2 {
+        let Some((_, details)) = node.tail.list_pair()? else {
             return Err(QuotedSourceError::new("quoted extern expects ABI and detail map"));
-        }
-        let details = &args[1];
+        };
+        let details = &details;
         let name = details
             .map_value("name")?
             .ok_or_else(|| QuotedSourceError::new("quoted extern is missing `name`"))?
@@ -685,7 +682,7 @@ fn parse_function_form(
     let FunctionGroupKey { name, arity } = validate_function_clauses(&source, context, sources)?;
     Ok(FunctionForm {
         source,
-        name,
+        name: name.to_string(),
         arity,
         is_macro: head == "defmacro",
         is_private: head == "defp",
@@ -725,13 +722,16 @@ fn clause_group_key(
         return Ok(None);
     }
     let clause_span = node.span.unwrap_or(Span::DUMMY);
-    let args = node.tail.list_items()?;
     let key = match context {
-        FunctionFormContext::Definition if args.len() != 2 || !is_single_do_keyword(&args[1]) => Err(
-            QuotedSourceError::new(format!("`{head}` function clause must have exactly one `do` body")),
-        ),
-        FunctionFormContext::Definition => parse_function_head_key(&args[0], head == "defmacro", sources)
-            .map_err(|error| QuotedSourceError::new(format!("invalid `{head}` function head: {error}"))),
+        FunctionFormContext::Definition => match node.tail.list_pair()? {
+            Some((function_head, body)) if is_single_do_keyword(&body) => {
+                parse_function_head_key(&function_head, head == "defmacro", sources)
+                    .map_err(|error| QuotedSourceError::new(format!("invalid `{head}` function head: {error}")))
+            }
+            _ => Err(QuotedSourceError::new(format!(
+                "`{head}` function clause must have exactly one `do` body"
+            ))),
+        },
         FunctionFormContext::ProtocolCallback => {
             validate_protocol_callback_clause(&node, sources).map(|(name, arity)| FunctionGroupKey { name, arity })
         }
@@ -763,7 +763,7 @@ fn is_single_do_keyword(cursor: &QuotedSourceCursor) -> bool {
 pub(crate) fn validate_protocol_callback_clause(
     node: &QuotedAstNode,
     sources: &SourceMap,
-) -> Result<(String, usize), QuotedSourceError> {
+) -> Result<(AtomName, usize), QuotedSourceError> {
     let definition_head = node.head.atom_name()?;
     if definition_head != "def" {
         return Err(QuotedSourceError::new(format!(
@@ -820,15 +820,14 @@ fn parse_protocol_impl_form(
 ) -> Result<ProtocolImplForm, QuotedSourceError> {
     let node = expect_surface_node(&source, sources)?;
     let span = node.span.unwrap_or(Span::DUMMY);
-    let args = node.tail.list_items()?;
-    if args.len() != 2 {
+    let Some((protocol, options)) = node.tail.list_pair()? else {
         return Err(QuotedSourceError::new(
             "defimpl expects a protocol alias and keyword args",
         ));
-    }
-    let protocol = ModuleName::from_segments(parse_alias_segments(&args[0], sources)?);
+    };
+    let protocol = ModuleName::from_segments(parse_alias_segments(&protocol, sources)?);
     let mut target = None;
-    for entry in args[1].list_iter() {
+    for entry in options.list_iter() {
         let entry = entry?;
         if entry.tuple_arity()? != 2 {
             continue;
@@ -925,11 +924,11 @@ fn parse_overridable_form(source: QuotedSourceRoot, sources: &SourceMap) -> Resu
             "defoverridable takes the functions to mark as `name: arity` pairs",
         )
     };
-    let args = node.tail.list_items()?;
-    let [functions] = args.as_slice() else {
+    let mut args = node.tail.list_iter();
+    let (Some(functions), None) = (args.next().transpose()?, args.next()) else {
         return Err(not_a_list());
     };
-    let functions = name_arity_pairs(functions).map_err(|_| not_a_list())?;
+    let functions = name_arity_pairs(&functions).map_err(|_| not_a_list())?;
     Ok(OverridableForm { functions, span })
 }
 
@@ -981,7 +980,7 @@ pub(crate) fn reserved_source_definition(
         head if is_function_definition_head(head) => {
             let FunctionGroupKey { name, arity } = parse_function_group_key(source, sources)?;
             Some(ReservedSourceDefinition::Function {
-                name,
+                name: name.to_string(),
                 arity,
                 is_macro: head == "defmacro",
             })
@@ -1063,16 +1062,10 @@ fn parse_function_head_key_inner(
                     .join(" or ")
             )));
         }
-        return Ok(FunctionGroupKey {
-            name: name.to_string(),
-            arity,
-        });
+        return Ok(FunctionGroupKey { name, arity });
     }
     if is_local_function_name(&name, allow_reserved_macro_name) {
-        return Ok(FunctionGroupKey {
-            name: name.to_string(),
-            arity,
-        });
+        return Ok(FunctionGroupKey { name, arity });
     }
     Err(QuotedSourceError::new(format!(
         "`{name}` is not a definable function name"
@@ -1122,14 +1115,6 @@ fn is_local_function_name(name: &str, allow_reserved_macro_name: bool) -> bool {
 /// answers with `is_list_like`.
 pub(crate) fn function_head_arity(tail: &QuotedSourceCursor) -> Result<usize, QuotedSourceError> {
     if tail.is_list_like() { tail.list_len() } else { Ok(0) }
-}
-
-pub(crate) fn function_head_args(tail: &QuotedSourceCursor) -> Result<Vec<QuotedSourceCursor>, QuotedSourceError> {
-    if tail.is_list_like() {
-        tail.list_items()
-    } else {
-        Ok(Vec::new())
-    }
 }
 
 /// The name a `defmodule` gives: an alias path, or a bare atom, which is the

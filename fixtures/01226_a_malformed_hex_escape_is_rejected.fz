@@ -1,0 +1,6 @@
+#---
+# purpose: a hex escape with no digits is rejected with the accepted shape named
+# expect: diagnostic
+#---
+x = "a\xg"
+def main(), do: 1

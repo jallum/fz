@@ -1725,7 +1725,7 @@ fn resume_payload_ty(types: &Types, executable: &ExecutableKey, facts: &Executab
         // gives it the empty type, so the value has a type and this arm never
         // fires (fz-f98.18). Defaulting to `any` here is the defect fz-f98.17
         // removed.
-        if types.key_is_value_template(&executable.activation.inputs(types)) {
+        if types.key_is_value_template(executable.activation.inputs(types)) {
             panic!(
                 "transport invariant failed: resume payload value {:?} in executable {:?} has no \
                  analyzed type because the activation is a value template — a value-template \

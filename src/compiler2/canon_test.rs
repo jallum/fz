@@ -66,7 +66,7 @@ fn equivalent_executable_keys(
             if left_inputs.len() == right_inputs.len()
                 && left_inputs
                     .iter()
-                    .zip(right_inputs)
+                    .zip(right_inputs.iter())
                     .all(|(left, right)| equivalent(types, *left, *right))
             {
                 duplicates.push(((*left_key).clone(), (*right_key).clone()));
@@ -703,8 +703,8 @@ fn sibling_specializations_are_ordered_by_canonical_inputs_not_interning_order()
             .filter(|(_, pair)| {
                 types
                     .cmp_activation_tys(
-                        &pair[0].key.activation.inputs(types),
-                        &pair[1].key.activation.inputs(types),
+                        pair[0].key.activation.inputs(types),
+                        pair[1].key.activation.inputs(types),
                     )
                     .is_gt()
             })

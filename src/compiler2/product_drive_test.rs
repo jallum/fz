@@ -2050,9 +2050,9 @@ fn one_product_prerequisite_set_emits_one_quiescence_step_with_both_readiness_ch
     let tel = ConfiguredTelemetry::new();
     let steps = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let observed = std::rc::Rc::clone(&steps);
-    tel.attach_raw_event1::<super::super::AppliedStep<Job, DependencyKey>, _>(
+    tel.attach_raw_event2::<super::super::AppliedStep<Job, DependencyKey>, usize, _>(
         &["fz", "compiler2", "work_graph", "quiesced"],
-        move |_, _, _, step| observed.borrow_mut().push(step.clone()),
+        move |_, _, _, step, _| observed.borrow_mut().push(step.clone()),
     );
     let mut world = World::new();
     let root = RootId::for_test(88);
@@ -3821,4 +3821,95 @@ fn a_field_of_a_known_struct_is_read_by_slot_and_any_other_field_by_name() {
         ["x", "y"],
         "pick answers a map or a Point, so its fields are found by name; a known Point's module is not read at all"
     );
+}
+
+/// A producer that is demanded again and runs again without changing anything
+/// moves no fact. The counter behind a serve pass's progress verdict is
+/// `World::fact_movements`; a re-demand of a settled producer starts nothing,
+/// a re-run that republishes the same answer reports nothing, and a producer
+/// that concludes blocked on the same missing fact twice flips its claims
+/// dirty once. Movement follows only ground that really shifted, so a serve
+/// pass that moved nothing is quiescence, not a do-nothing job to wait for.
+#[test]
+fn a_producer_demanded_again_that_changes_nothing_moves_no_fact() {
+    use super::super::WorkStartReason;
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let code = super::super::SourceOwner::for_test(0);
+    let left = FactKey::CodeIndexed(code);
+    let right = FactKey::CodeScoped(code);
+    let missing = FactKey::CodeIndexed(super::super::SourceOwner::for_test(1));
+    let left_job = Job::IndexCode(code);
+    let right_job = Job::ScopeCode(code);
+
+    let complete = |world: &mut World, job: &Job, reads, waits, outputs, changed| {
+        super::super::drive::ExecutionContext::new(world, &tel).complete_job(
+            job.clone(),
+            super::super::drive::JobEffects {
+                reads,
+                waits,
+                outputs,
+                changed,
+                ..super::super::drive::JobEffects::default()
+            },
+        )
+    };
+    let publish_left = |world: &mut World, changed: Vec<FactKey>| {
+        complete(world, &left_job, vec![], vec![], vec![left.clone()], changed)
+    };
+    let publish_right = |world: &mut World| {
+        complete(
+            world,
+            &right_job,
+            vec![FactUse::current(left.clone())],
+            vec![],
+            vec![right.clone()],
+            vec![],
+        )
+    };
+
+    publish_left(&mut world, vec![left.clone()]);
+    publish_right(&mut world);
+    while world.work_graph.pop().is_some() {}
+    let concluded = world.fact_movements();
+
+    let pokes = world.demand_fact_producer(&right, WorkStartReason::BlockedWaiterExpansion);
+    assert_eq!(pokes, 0, "a settled producer is not started again");
+    assert!(world.pop_runnable().is_none());
+    assert_eq!(
+        world.fact_movements(),
+        concluded,
+        "re-demanding a settled producer moves nothing"
+    );
+
+    publish_left(&mut world, vec![]);
+    publish_right(&mut world);
+    assert_eq!(
+        world.fact_movements(),
+        concluded,
+        "producers that republish the same answers move nothing"
+    );
+
+    let blocked = |world: &mut World| {
+        complete(
+            world,
+            &right_job,
+            vec![],
+            vec![FactUse::current(missing.clone())],
+            vec![],
+            vec![],
+        )
+    };
+    blocked(&mut world);
+    let first_block = world.fact_movements();
+    assert_eq!(first_block, concluded + 1, "concluding blocked reopens the claim once");
+    blocked(&mut world);
+    assert_eq!(
+        world.fact_movements(),
+        first_block,
+        "concluding blocked on the same missing fact again moves nothing"
+    );
+
+    publish_left(&mut world, vec![left.clone()]);
+    assert!(world.fact_movements() > first_block, "a content movement is counted");
 }

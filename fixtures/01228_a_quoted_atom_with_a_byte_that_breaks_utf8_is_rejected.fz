@@ -1,0 +1,6 @@
+#---
+# purpose: a hex escape in a quoted atom that breaks UTF-8 is an invalid encoding error
+# expect: diagnostic
+#---
+x = :"a\xFFb"
+def main(), do: 1

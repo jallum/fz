@@ -157,13 +157,20 @@ impl Types {
         let id = TypeVarId(ADDRESS_TAG | index);
         self.address_vars.insert(path.to_vec(), id);
         self.address_paths.push(path.to_vec());
+        self.address_tys.push(None);
         id
     }
 
     /// The interned type variable living at a structural address.
     pub fn address_var(&mut self, path: &[AddrStep]) -> Ty {
         let id = self.address_id(path);
-        self.type_var(id)
+        let slot = (id.0 & !ADDRESS_TAG) as usize;
+        if let Some(ty) = self.address_tys[slot] {
+            return ty;
+        }
+        let ty = self.type_var(id);
+        self.address_tys[slot] = Some(ty);
+        ty
     }
 
     /// `a{i}` — the variable at parameter slot `i`.
@@ -180,12 +187,7 @@ impl Types {
 
     /// `r0` — the variable at the result slot.
     pub fn result_alpha(&mut self) -> Ty {
-        if let Some(alpha) = self.result_alpha {
-            return alpha;
-        }
-        let alpha = self.address_var(&[AddrStep::Result]);
-        self.result_alpha = Some(alpha);
-        alpha
+        self.address_var(&[AddrStep::Result])
     }
 
     /// The `TypeVarId` of `r0` — the result slot's address key.
@@ -211,14 +213,12 @@ impl Types {
     /// interner folds two same-shape vectors to one identity — no separate
     /// normalization pass exists. The key's `r0` result is appended by the
     /// caller and cannot collide with an input address.
-    pub fn address_inputs(&mut self, inputs: &[Ty]) -> Vec<Ty> {
+    pub fn address_inputs(&mut self, inputs: &mut [Ty]) {
         let mut correlations = AddressCorrelations::default();
         let mut path = Vec::new();
-        inputs
-            .iter()
-            .enumerate()
-            .map(|(i, &p)| self.address_remap(p, AddrStep::Param(i as u16), &mut path, &mut correlations))
-            .collect()
+        for (i, input) in inputs.iter_mut().enumerate() {
+            *input = self.address_remap(*input, AddrStep::Param(i as u16), &mut path, &mut correlations);
+        }
     }
 
     /// The OWN-SURFACE of a closure activation arrow: its parameter slots past
@@ -230,7 +230,9 @@ impl Types {
     /// share a body but differ in captures yield one own-surface, comparable to a
     /// standalone `CallableSurface`. Idempotent when `captures_len` is 0.
     pub fn own_surface(&mut self, activation_inputs: &[Ty], captures_len: usize) -> Vec<Ty> {
-        self.address_inputs(&activation_inputs[captures_len..])
+        let mut surface = activation_inputs[captures_len..].to_vec();
+        self.address_inputs(&mut surface);
+        surface
     }
 
     /// The own-surface of a closure activation that carries `addressed_captures`
@@ -261,7 +263,7 @@ impl Types {
             .map(|(i, &p)| self.address_remap(p, AddrStep::Param(i as u16), &mut path, &mut correlations))
             .collect();
         let result = self.address_remap(result, AddrStep::Result, &mut path, &mut correlations);
-        let arrow = self.arrow(&params, result);
+        let arrow = self.arrow_owned(params, result);
         (arrow, correlations.values)
     }
 

@@ -18,6 +18,7 @@
 
 use crate::fast_hash::HashMap;
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use crate::type_expr::ResolvedSpecDecl;
@@ -196,13 +197,15 @@ impl FunctionContract {
     pub fn apply(&self, types: &mut Types, arg_tys: &[Ty]) -> AppliedFunctionContract {
         let mut matched_arrows = Vec::new();
         let mut result = None;
+        let mut params: Vec<Ty> = Vec::new();
         let mut matched_any = false;
         let mut enforceable = false;
         let mut enforceable_matched = false;
         for clause in &self.arrows {
             let clause_enforceable = clause.protocol_domain_obligations.is_empty();
             enforceable |= clause_enforceable;
-            let params = clause.matched_params(types, arg_tys.len());
+            params.clear();
+            params.extend_from_slice(&clause.matched_params(types, arg_tys.len()));
             let Some(row) = clause.narrowed_row(types, &params, arg_tys) else {
                 continue;
             };
@@ -261,20 +264,21 @@ impl ContractArrow {
     /// repeats past the declared parameters until the lists are the same
     /// length. A row no longer than the parameters is untouched, so
     /// `match_arrow`'s own arity check still refuses one that is too short.
-    fn matched_params(&self, types: &Types, row_len: usize) -> Vec<Ty> {
+    fn matched_params<'t>(&self, types: &'t Types, row_len: usize) -> Cow<'t, [Ty]> {
         self.widened_to_row(types.arrow_params(&self.arrow), row_len)
     }
 
-    fn widened_to_row(&self, params: Vec<Ty>, row_len: usize) -> Vec<Ty> {
-        let Some(tail) = self.variadic_tail else {
-            return params;
-        };
-        if row_len <= params.len() {
-            return params;
+    /// `params` itself unless a variadic tail widens it, which is the only
+    /// case that builds a new row.
+    fn widened_to_row<'p>(&self, params: &'p [Ty], row_len: usize) -> Cow<'p, [Ty]> {
+        match self.variadic_tail {
+            Some(tail) if row_len > params.len() => {
+                let mut widened = params.to_vec();
+                widened.resize(row_len, tail);
+                Cow::Owned(widened)
+            }
+            _ => Cow::Borrowed(params),
         }
-        let mut widened = params;
-        widened.resize(row_len, tail);
-        widened
     }
 
     /// The parameters a matched call refines its inputs by: the declared
@@ -284,7 +288,9 @@ impl ContractArrow {
         let Some(surface) = &self.structural else {
             return declared;
         };
-        let params = self.widened_to_row(types.arrow_params(&surface.arrow), arg_tys.len());
+        let params = self
+            .widened_to_row(types.arrow_params(&surface.arrow), arg_tys.len())
+            .into_owned();
         let result = types
             .arrow_result(&surface.arrow)
             .expect("a contract clause is an arrow with a result slot");
@@ -298,7 +304,7 @@ impl ContractArrow {
 
     #[cfg(test)]
     pub(crate) fn input_domain_row(&self, types: &mut Types) -> Vec<Ty> {
-        let params = types.arrow_params(&self.arrow);
+        let params = types.arrow_params(&self.arrow).to_vec();
         types.clause_domain_row(&params, &self.bounds)
     }
 
@@ -306,7 +312,7 @@ impl ContractArrow {
     /// parameter: a variable with a bound reads as that bound and an unbounded
     /// one as `any`. An extern's entry dispatch tests exactly this.
     pub(crate) fn entry_domain(&self, types: &mut Types) -> Vec<Ty> {
-        let params = types.arrow_params(&self.arrow);
+        let params = types.arrow_params(&self.arrow).to_vec();
         types.clause_domain_at_every_instantiation(&params, &self.bounds)
     }
 
@@ -317,7 +323,7 @@ impl ContractArrow {
     /// repeated).
     fn matched_domain_display(&self, types: &mut Types, row_len: usize) -> String {
         let fixed_len = types.arrow_params(&self.arrow).len();
-        let widened = self.matched_params(types, row_len);
+        let widened = self.matched_params(types, row_len).into_owned();
         let tail = widened.get(fixed_len).copied();
         let mut parts: Vec<String> = widened[..fixed_len.min(widened.len())]
             .iter()
@@ -342,9 +348,10 @@ impl ContractArrow {
         if params.len() != arg_tys.len() {
             return None;
         }
-        let domain = types.clause_domain_at_every_instantiation(params, &self.bounds);
+        let closed = types.close_bounds(&self.bounds, &HashMap::default());
         let mut row = Vec::with_capacity(arg_tys.len());
-        for (witness, domain) in arg_tys.iter().zip(domain) {
+        for (witness, pattern) in arg_tys.iter().zip(params) {
+            let domain = types.clause_domain_envelope(*pattern, &closed);
             let narrowed = types.narrow_to_clause_domain(*witness, domain);
             if types.is_empty(&narrowed) {
                 return None;

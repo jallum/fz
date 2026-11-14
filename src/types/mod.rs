@@ -287,8 +287,8 @@ pub trait Types {
 
     /// Project the parameter side of a single-clause callable type. The dual of
     /// `arrow_join_return`: returns the positive clause's argument types, or an
-    /// empty vector when `a` is not a pure single-clause arrow.
-    fn arrow_params(&self, a: &Self::Ty) -> Vec<Self::Ty>;
+    /// empty slice when `a` is not a pure single-clause arrow.
+    fn arrow_params(&self, a: &Self::Ty) -> &[Self::Ty];
 
     // ---- substitution --------------------------------------------------
 

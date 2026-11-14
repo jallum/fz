@@ -278,10 +278,9 @@ impl CallableSurface {
     /// A surface is canonical by construction: its inputs are addressed
     /// whole-scope the moment it is built, so two same-shape surfaces intern to
     /// one identity and no separate normalization pass exists (fz-hwn.27.6, A).
-    pub fn new(inputs: Vec<Ty>, types: &mut Types) -> Self {
-        Self {
-            inputs: types.address_inputs(&inputs),
-        }
+    pub fn new(mut inputs: Vec<Ty>, types: &mut Types) -> Self {
+        types.address_inputs(&mut inputs);
+        Self { inputs }
     }
 }
 

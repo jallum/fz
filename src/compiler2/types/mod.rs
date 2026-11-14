@@ -150,8 +150,9 @@ pub struct Types {
     /// by the id's dense slot (its tag bit masked off). Lets display render an
     /// address structurally (`a1_0`, `r0`) instead of as a bare `αN`.
     address_paths: Vec<Vec<addressed::AddrStep>>,
-    /// The interned `r0`, set the first time a key asks for it.
-    result_alpha: Option<Ty>,
+    /// The interned variable of each address, indexed like `address_paths`
+    /// and set the first time the address is asked for as a type.
+    address_tys: Vec<Option<Ty>>,
     /// The stable label of every callable a closure literal can name. A raw
     /// `FnId` is a mint-order index, so it cannot decide canonical clause order
     /// (`order`); the owner names each callable as it mints the id.
@@ -615,7 +616,7 @@ impl Types {
             activation_key_arrows: HashMap::default(),
             address_vars: HashMap::default(),
             address_paths: Vec::new(),
-            result_alpha: None,
+            address_tys: Vec::new(),
             callable_origins: order::CallableOrigins::default(),
             activation_input_collapses: 0,
         }
@@ -1390,18 +1391,21 @@ impl Types {
     }
 
     pub fn arrow(&mut self, args: &[Ty], ret: Ty) -> Ty {
-        self.intern(Descr::arrow(args.iter().copied(), ret))
+        self.arrow_owned(args.to_vec(), ret)
+    }
+
+    /// As [`arrow`](Self::arrow), for a caller that owns the parameter vector:
+    /// it becomes the arrow's args without a second copy.
+    pub fn arrow_owned(&mut self, args: Vec<Ty>, ret: Ty) -> Ty {
+        self.intern(Descr::arrow(args, ret))
     }
 
     /// Project the parameter (input) side of an arrow type immutably. This is
     /// the read path for `ActivationKey::inputs`: the key stores its canonical
     /// inputs as the params of an interned arrow, and consumers recover them
     /// here without needing `&mut` on the interner.
-    pub fn arrow_params(&self, arrow: &Ty) -> Vec<Ty> {
-        self.descr(arrow)
-            .pure_arrow()
-            .map(|sig| sig.args.clone())
-            .unwrap_or_default()
+    pub fn arrow_params(&self, arrow: &Ty) -> &[Ty] {
+        self.descr(arrow).pure_arrow().map_or(&[], |sig| &sig.args)
     }
 
     /// The parameter at `slot` of a pure arrow; `slot` must be below its arity.
@@ -3573,7 +3577,7 @@ impl SharedTypes for Types {
         Types::arrow_join_return(self, a)
     }
 
-    fn arrow_params(&self, a: &Self::Ty) -> Vec<Self::Ty> {
+    fn arrow_params(&self, a: &Self::Ty) -> &[Self::Ty] {
         Types::arrow_params(self, a)
     }
 

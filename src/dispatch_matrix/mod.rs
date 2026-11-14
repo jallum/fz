@@ -492,6 +492,34 @@ pub(crate) struct DispatchGraph<TypeHandle> {
     /// What the graph's questions ask of each declared input, one slot per
     /// input, folded as the nodes were added.
     pub(crate) input_demand: Vec<DispatchDemand>,
+    /// How many questions a decision can ask, counted when the graph is built.
+    test_count: usize,
+    /// Whether some decision ends with no outcome, found when the graph is built.
+    can_fail: bool,
+}
+
+/// Visits the nodes a decision can pass through, root first, each once; a
+/// test's match child is visited before its miss child.
+fn visit_reachable<TypeHandle>(
+    nodes: &[DispatchNode<TypeHandle>],
+    root: GraphNodeId,
+    mut visit: impl FnMut(GraphNodeId, &DispatchNode<TypeHandle>),
+) {
+    let mut seen = vec![false; nodes.len()];
+    let mut pending = vec![root];
+    while let Some(id) = pending.pop() {
+        if std::mem::replace(&mut seen[id.0 as usize], true) {
+            continue;
+        }
+        let Some(node) = nodes.get(id.0 as usize) else {
+            continue;
+        };
+        visit(id, node);
+        if let DispatchNode::Test { on_match, on_miss, .. } = node {
+            pending.push(on_miss.target);
+            pending.push(on_match.target);
+        }
+    }
 }
 
 impl<TypeHandle> DispatchGraph<TypeHandle> {
@@ -504,36 +532,21 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
     }
 
     /// The nodes a decision can pass through, root first, each once.
+    #[cfg(test)]
     pub(crate) fn reachable(&self) -> Vec<GraphNodeId> {
-        let mut seen = vec![false; self.nodes.len()];
         let mut order = Vec::new();
-        let mut pending = vec![self.root];
-        while let Some(id) = pending.pop() {
-            if std::mem::replace(&mut seen[id.0 as usize], true) {
-                continue;
-            }
-            order.push(id);
-            if let Some(DispatchNode::Test { on_match, on_miss, .. }) = self.node(id) {
-                pending.push(on_miss.target);
-                pending.push(on_match.target);
-            }
-        }
+        visit_reachable(&self.nodes, self.root, |id, _| order.push(id));
         order
     }
 
     /// How many questions a decision can ask.
     pub(crate) fn test_count(&self) -> usize {
-        self.reachable()
-            .into_iter()
-            .filter(|id| matches!(self.node(*id), Some(DispatchNode::Test { .. })))
-            .count()
+        self.test_count
     }
 
     /// Whether some decision ends with no outcome.
     pub(crate) fn can_fail(&self) -> bool {
-        self.reachable()
-            .into_iter()
-            .any(|id| matches!(self.node(id), Some(DispatchNode::Fail)))
+        self.can_fail
     }
 
     /// The tuple arity every winning decision proves input `ordinal` to have:
@@ -600,10 +613,10 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
     where
         TypeHandle: Clone + Eq,
     {
-        let narrows = self
-            .reachable()
-            .into_iter()
-            .any(|id| matches!(self.node(id), Some(DispatchNode::Test { .. })) && live(id) != LiveEdges::Both);
+        let mut narrows = false;
+        visit_reachable(&self.nodes, self.root, |id, node| {
+            narrows |= matches!(node, DispatchNode::Test { .. }) && live(id) != LiveEdges::Both;
+        });
         if !narrows {
             return None;
         }
@@ -631,6 +644,8 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
             nodes: self.nodes.iter().map(|node| node.map_type_handle(map)).collect(),
             root: self.root,
             input_demand: self.input_demand.clone(),
+            test_count: self.test_count,
+            can_fail: self.can_fail,
         }
     }
 }
@@ -1114,11 +1129,20 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
                 self.ensure_node(on_miss.target)?;
             }
         }
+        let mut test_count = 0;
+        let mut can_fail = false;
+        visit_reachable(&self.nodes, root, |_, node| match node {
+            DispatchNode::Test { .. } => test_count += 1,
+            DispatchNode::Fail => can_fail = true,
+            DispatchNode::Outcome { .. } => {}
+        });
         Ok(DispatchGraph {
             subjects: self.subjects,
             nodes: self.nodes,
             root,
             input_demand: self.input_demand,
+            test_count,
+            can_fail,
         })
     }
 

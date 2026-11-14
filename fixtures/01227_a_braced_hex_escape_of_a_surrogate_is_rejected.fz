@@ -1,0 +1,6 @@
+#---
+# purpose: a braced hex escape of a surrogate is rejected because it is not a code point
+# expect: diagnostic
+#---
+x = "a\x{D800}b"
+def main(), do: 1

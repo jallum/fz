@@ -12,7 +12,7 @@ use crate::telemetry::{RawSpanGuard, RawSpanStop0, RawSpanStop1 as _, RawSpanTel
 use super::code::SourceOwner;
 use super::facts::{ClaimShape, FactUse, Publisher};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
-use super::pull::{ProductKey, ProductScope};
+use super::pull::{ProductKey, ProductScope, ProductSessions};
 use super::scheduler::{DriveOutcome, FatalError, Scheduler, WorkStartReason};
 use super::semantic::{CallSiteKey, CallableConstructionTargetKey, SemanticOrd};
 use super::types::Types;
@@ -1207,17 +1207,6 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
         self.drive_until(deadline, timeout, false)
     }
 
-    /// Nothing is runnable: serves the product requests completions queued.
-    /// Every drain starts here, because a request queued behind a job that
-    /// parked on its gates is only observable once the agenda is empty.
-    pub(crate) fn serve_requests(&mut self) -> Result<Drained, (ProductAddress, FatalError)> {
-        Ok(if self.drive_product_requests()? {
-            Drained::Served
-        } else {
-            Drained::Silent
-        })
-    }
-
     /// Nothing is runnable. First serves any product request a completion
     /// queued, then arbitrates the settled questions standing over quiesced
     /// ground (the blocked waiters' own, plus `also_settled`) and publishes
@@ -1226,14 +1215,24 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
     /// `park_on_gates`), never when the agenda happens to run dry, so a
     /// drain starts nothing itself. Both job loops (the bare drive and the
     /// product fact-wait pump) answer "what work is left?" through this.
+    ///
+    /// Quiescence is a property of the whole drive stack: a drive with another
+    /// drive beneath it can still be moved by that frame. So only the drain of
+    /// the outermost drive arbitrates; any other settles nothing and returns
+    /// `Deferred`.
     pub(crate) fn drain(&mut self, also_settled: &[FactKey]) -> Result<Drained, (ProductAddress, FatalError)> {
         if let Drained::Served = self.serve_requests()? {
             return Ok(Drained::Served);
         }
+        let depth = self.product_sessions.as_deref().map_or(0, ProductSessions::drive_depth);
+        if depth > 1 {
+            return Ok(Drained::Deferred);
+        }
+        let questions = self.arbitration_questions(also_settled);
         self.world.settle_quiescent_waits(self.product_sessions.as_deref());
         self.world
-            .settle_quiescent_with_sessions(also_settled, self.product_sessions.as_deref());
-        let steps = flush_quiescence(self.world, self.telemetry);
+            .settle_quiescent_with_sessions(&questions, self.product_sessions.as_deref());
+        let steps = flush_quiescence(self.world, self.telemetry, depth);
         for step in &steps {
             self.publish_dependency_movements(&step.movements);
         }
@@ -1242,6 +1241,23 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
         } else {
             Drained::Moved
         })
+    }
+
+    /// The settled questions the arbiter answers beyond the blocked waiters'
+    /// own. Drives that deferred recorded the facts they wait on, and the
+    /// innermost of those come first: an outer question is only asked of
+    /// ground the inner answers have finished moving. With none recorded the
+    /// caller's own set stands.
+    fn arbitration_questions(&self, also_settled: &[FactKey]) -> Vec<FactKey> {
+        let inner = self
+            .product_sessions
+            .as_deref()
+            .into_iter()
+            .flat_map(ProductSessions::innermost_deferred_waits)
+            .filter(|fact| fact.readiness() == super::facts::FactReadiness::Settled)
+            .map(|fact| fact.fact().clone())
+            .collect::<Vec<_>>();
+        if inner.is_empty() { also_settled.to_vec() } else { inner }
     }
 
     /// Runs queued jobs until the work graph has no ready work.
@@ -1326,6 +1342,11 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                     context.serve_requests()
                 };
                 match drained {
+                    Ok(Drained::Deferred) => {
+                        unreachable!(
+                            "only a drain beneath another drive defers, and the bare drive has none beneath it"
+                        )
+                    }
                     Ok(Drained::Served | Drained::Moved) => continue 'drive,
                     Ok(Drained::Silent) if !settle_quiescent_on_drain => {
                         world.clear_unresolved_diagnostics();
@@ -1364,6 +1385,10 @@ pub(crate) enum Drained {
     Moved,
     /// Neither: the drain changed nothing.
     Silent,
+    /// The drain is not the outermost drive's. It arbitrated nothing: the
+    /// drive must end, its request still standing, and leave quiescence to the
+    /// frame beneath it.
+    Deferred,
 }
 
 /// Emits every drain-arbiter step `World` stashed, and hands them back.
@@ -1374,10 +1399,11 @@ pub(crate) enum Drained {
 pub(super) fn flush_quiescence<T: RawSpanTelemetry>(
     world: &mut World,
     tel: &T,
+    depth: usize,
 ) -> Vec<super::AppliedStep<Job, DependencyKey>> {
     let steps = world.take_quiescence_steps();
     for step in &steps {
-        tel.raw_event1(&["fz", "compiler2", "work_graph", "quiesced"], step);
+        tel.raw_event2(&["fz", "compiler2", "work_graph", "quiesced"], step, &depth);
     }
     steps
 }
