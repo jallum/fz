@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.183.7"
+  ],
   "blocks": [],
   "created": "2026-11-14T11:46:21Z",
   "description": "A step of \u003c\u003cc, r :: binary\u003e\u003e calls the runtime for the bit length (fz_bs_bit_len_ref) and for each integer field (fz_bs_read_int_ref): 2.2 and 3.3 calls per input byte decoding JSON, each resolving the binary through five nested decodes. Goal: at the top of a match the compiled code resolves the binary once to an address and a bit length (branching on inline bitstring vs ProcBin), shared by the clauses of the dispatch; a byte-aligned unsigned integer field of 1 to 7 bytes is a load and a byte swap; other fields keep the runtime call. Native only; interpreter unchanged. Safe because a collection happens only at a quantum boundary and compiled code ends a quantum only at a back edge, so the address is never held across a call. Spiked (un-hoisted, 8-bit only): walk -34%, decode -18.5%, output identical; patch scratchpad b183-5/e2_inline_view_and_byte_read.patch. Signal: a test over the generated code for a walk (no call to the length or integer-read functions); walk and decode re-timed. Position passing is split out as its own parked ticket. Evidence and predictions: proposal page fz-sc8.183.5.html (workspace root); spike files in scratchpad b183-5 and b183-6.",
