@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T02:20:22Z",
   "created": "2026-11-14T01:55:36Z",
   "description": "ast::Var { name: String, context } is cloned wherever a binding is copied: ast/mod.rs:146 (4,208), mostly through PatternDispatchBinding clones (dispatch_matrix/pattern.rs:215) and ast/mod.rs:474.\n\nChange: first read why the bindings are cloned and remove those clones where the binding can be borrowed or moved. If clones must stay, Var.name becomes shared text (Rc\u003cstr\u003e or the existing atom/name type) so a clone copies no characters. The second option touches many files mechanically; take it only if the first leaves most of the count.\n\nEvidence: census of the OptionParser probe at c0e52fbaf (tip of #518; 734,597 allocations): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/c0e52fbaf_top.txt; call chains: cd /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census \u0026\u0026 python3 chain.py c0e52fbaf.pkl \u003cfile:line\u003e \u003cdepth\u003e \"\" \u003cn\u003e; line numbers are exact at commit c0e52fbaf.\n\nSignal: full gate green; no golden or pin moves except a falling pin, which is lowered and listed; program output and canonical backend dump identical on the probe; allocation count before and after in the commit.",
   "id": "fz-y11.37",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Narrowed dispatch plans share their outcomes",
   "type": "task",
-  "updated_at": "2026-11-14T02:19:30Z"
+  "updated_at": "2026-11-14T02:20:22Z"
 }
