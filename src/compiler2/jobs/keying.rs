@@ -599,8 +599,10 @@ impl<'w> ForwardingWalk<'w> {
         // across the bodies a value is forwarded to.
         let world = &*self.world;
         let local = world.entry_dispatch(function).input_demand().to_vec();
-        let local_result = return_flow_mask(world, function, local.len());
-        let BodyFlows { uses, forwards } = body_flows(world, function, local.len());
+        let body = world.lowered_body(function);
+        let positions = input_positions(&body, local.len());
+        let local_result = return_flow_mask(&body, &positions, local.len());
+        let BodyFlows { uses, forwards } = body_flows(world, &body, &positions, local.len());
         self.visit_node(
             function,
             DemandNode {
@@ -728,10 +730,8 @@ enum ValueUse {
 /// a direct call's argument        what the callee asks, lifted back
 /// a construction                  what its holder asks, taken inside it
 /// ```
-fn body_flows(world: &World, function: FunctionId, input_count: usize) -> BodyFlows {
-    let body = world.lowered_body(function);
-    let positions = input_positions(&body, input_count);
-    let uses_of = value_uses(world, &body);
+fn body_flows(world: &World, body: &LoweredBody, positions: &InputPositions, input_count: usize) -> BodyFlows {
+    let uses_of = value_uses(world, body);
     let mut flows = BodyFlows {
         uses: vec![DispatchDemand::Ignore; input_count],
         forwards: Vec::new(),
@@ -739,7 +739,7 @@ fn body_flows(world: &World, function: FunctionId, input_count: usize) -> BodyFl
     let mut seen = ValueMap::with_capacity(body.value_count());
     let mut asks = Vec::new();
     let mut calls = Vec::new();
-    for (value, held_at) in &positions {
+    for (value, held_at) in positions {
         seen.clear();
         asks.clear();
         calls.clear();
@@ -1049,12 +1049,10 @@ fn tail_value_uses(
 /// that both publish the join. A PROJECTED argument is not one either, so a
 /// protocol callback handed `acc` rather than a whole parameter stays
 /// uncured.
-fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> Vec<DispatchDemand> {
+fn return_flow_mask(body: &LoweredBody, origins: &InputPositions, input_count: usize) -> Vec<DispatchDemand> {
     let mut mask = vec![DispatchDemand::Ignore; input_count];
-    let body = world.lowered_body(function);
-    let LoweredBody::Clauses { clauses, entries, .. } = &*body;
-    let origins = input_positions(&body, input_count);
-    for (slot, path) in returned_values(&body, clauses, entries)
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
+    for (slot, path) in returned_values(body, clauses, entries)
         .iter()
         .filter_map(|value| origins.get(&value))
         .flatten()
@@ -1132,7 +1130,7 @@ pub(super) fn supplied_whole_slots(
 fn recursion_supplied_positions(
     function: FunctionId,
     entries: &[super::super::body::LoweredEntry],
-    origins: &ValueMap<Vec<(usize, Vec<DemandPathStep>)>>,
+    origins: &InputPositions,
     input_count: usize,
 ) -> HashSet<(usize, Vec<DemandPathStep>)> {
     let mut rebuilt = HashSet::default();
@@ -1196,7 +1194,7 @@ fn collect_rebuild_obligations(
     value: ValueId,
     slot: usize,
     path: &mut Vec<DemandPathStep>,
-    origins: &ValueMap<Vec<(usize, Vec<DemandPathStep>)>>,
+    origins: &InputPositions,
     constructions: &ValueMap<Vec<ValueId>>,
     obligations: &mut Vec<RebuildObligation>,
 ) {
@@ -1219,17 +1217,19 @@ fn collect_rebuild_obligations(
     }
 }
 
+type InputPositions = ValueMap<Vec<(usize, Vec<DemandPathStep>)>>;
+
 /// Every value that names an input position, and which position(s) it names.
 ///
 /// A clause parameter names its own slot at the empty path; a projection step
 /// names its source's position one step deeper. One value can name more than
 /// one position -- `f(x, x)` binds one `ValueId` to two slots -- exactly as
 /// `forwarded_inputs` records.
-fn input_positions(body: &LoweredBody, input_count: usize) -> ValueMap<Vec<(usize, Vec<DemandPathStep>)>> {
+fn input_positions(body: &LoweredBody, input_count: usize) -> InputPositions {
     use super::super::executable_facts::collect_value_origins;
     let LoweredBody::Clauses { clauses, .. } = body;
     let origins = collect_value_origins(body);
-    let mut positions = ValueMap::<Vec<(usize, Vec<DemandPathStep>)>>::with_capacity(body.value_count());
+    let mut positions = InputPositions::with_capacity(body.value_count());
     for clause in clauses {
         for (slot, value) in clause.params.iter().copied().enumerate().take(input_count) {
             let known = positions.entry(value).or_default();
@@ -1239,14 +1239,9 @@ fn input_positions(body: &LoweredBody, input_count: usize) -> ValueMap<Vec<(usiz
             }
         }
     }
+    let mut visiting = ValueSet::for_values(body.value_count());
     for value in origins.keys() {
-        resolve_input_positions(
-            body,
-            value,
-            &origins,
-            &mut positions,
-            &mut ValueSet::for_values(body.value_count()),
-        );
+        resolve_input_positions(body, value, &origins, &mut positions, &mut visiting);
     }
     positions
 }
@@ -1255,29 +1250,25 @@ fn resolve_input_positions(
     body: &LoweredBody,
     value: ValueId,
     origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
-    positions: &mut ValueMap<Vec<(usize, Vec<DemandPathStep>)>>,
+    positions: &mut InputPositions,
     visiting: &mut ValueSet,
-) -> Vec<(usize, Vec<DemandPathStep>)> {
-    if let Some(known) = positions.get(&value) {
-        return known.clone();
-    }
-    if !visiting.mark(value) {
-        return Vec::new();
+) {
+    if positions.get(&value).is_some() || !visiting.mark(value) {
+        return;
     }
     let found = origins
         .get(&value)
         .map(|origin| input_origin_positions(body, origin, origins, positions, visiting))
         .unwrap_or_default();
     visiting.unmark(value);
-    positions.insert(value, found.clone());
-    found
+    positions.insert(value, found);
 }
 
 fn input_origin_positions(
     body: &LoweredBody,
     origin: &super::super::executable_facts::TransportOrigin,
     origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
-    positions: &mut ValueMap<Vec<(usize, Vec<DemandPathStep>)>>,
+    positions: &mut InputPositions,
     visiting: &mut ValueSet,
 ) -> Vec<(usize, Vec<DemandPathStep>)> {
     use super::super::executable_facts::TransportOrigin;
@@ -1302,7 +1293,8 @@ fn input_origin_positions(
         }
         _ => return Vec::new(),
     };
-    let mut found = resolve_input_positions(body, source, origins, positions, visiting);
+    resolve_input_positions(body, source, origins, positions, visiting);
+    let mut found = positions.get(&source).cloned().unwrap_or_default();
     for (_, steps) in &mut found {
         steps.extend(path.iter().copied().map(DemandPathStep::from));
     }
