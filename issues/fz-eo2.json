@@ -2,13 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T00:20:03Z",
+  "close_reason": "All three children merged to develop (PRs #483-#485).",
   "created": "2026-11-13T21:18:23Z",
   "description": "GH #166. Page: /Users/j5n/Workspace/gh-165-166-295.html. oracle_goldens_match_elixir boots elixir once per oracle fixture, sequentially: 362 fixtures. Header gains 'oracle.stamp': a 64-bit FNV-1a over the .oracle.exs bytes, the .expected.txt bytes and the header args. Equal: Elixir does not run. Different or missing: run and compare; a match with a stale stamp fails asking for regen. An Elixir upgrade is caught by a check-only run that ignores stamps.",
   "id": "fz-eo2",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "An oracle pair that has not changed does not boot Elixir",
   "type": "epic",
-  "updated_at": "2026-11-13T21:18:23Z"
+  "updated_at": "2026-11-14T00:20:03Z"
 }
