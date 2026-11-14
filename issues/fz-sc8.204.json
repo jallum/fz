@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T17:34:54Z",
+  "description": "Split from fz-sc8.176 (item 2).\n\nA record's convergence class keeps every field (Types::convergence_class and convergence_class_at, the sole_record branch), so two structs passed where no use reads them still get separate keys, in recursive and non-recursive bodies alike. No reason is recorded for keeping the fields.\n\nThe original symptom (Kernel.panic/1 and fz_panic/1 keyed once per exception type on the distiller) is gone at base: as of fz-sc8.176 the distiller activates neither, under interp or build. Find a current fixture where an unasked struct splits a key before changing anything.\n\nOpen, each answered by an experiment:\n- What the class is: keep __struct__ and drop the fields, or the map class.\n- Whether two structs merged under one key change their runtime lane (value_lane_repr types maps exactly). Check against the transport code and a native run.\n\nAcceptance: suite census (scratchpad census tooling: applied jobs, shift wakes, withdrawals) shows no rise in withdrawals and a net fall; matrix passes on all three paths; every pin move attributed.",
+  "id": "fz-sc8.204",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A record nothing asks about keys by its class, not by every field",
+  "type": "bug",
+  "updated_at": "2026-11-14T17:34:54Z"
+}
