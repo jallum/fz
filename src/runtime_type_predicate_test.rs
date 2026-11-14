@@ -402,6 +402,56 @@ mod value_membership_tests {
         assert_eq!(escapes(&heap, &list_test(any_shape(), vec![element]), value, &[]), 0);
     }
 
+    /// Intent: a test for `pid` or `ref` is exact on the value's kind. A word
+    /// that is an integer, a float, an atom or the other opaque kind fails it,
+    /// and the type that is `any` still admits both.
+    #[test]
+    fn a_pid_test_and_a_reference_test_each_admit_only_their_own_kind() {
+        let mut world = World::new();
+        let pid = world.types_mut().pid();
+        let reference = world.types_mut().reference();
+        let any = world.types_mut().any();
+        let int = world.types_mut().int();
+        let pid_or_reference = world.types_mut().union(pid, reference);
+        let heap = FakeHeap::new(&["ok"]);
+        let tuple_schema_ids = HashMap::default();
+        let named_schema_ids = HashMap::default();
+        let callables = |_: u64| None;
+        let fields = |_: RuntimeAnyValue, _: usize| None;
+        let list_head = |_: RuntimeAnyValue| None;
+        let list_tail = |_: RuntimeAnyValue| None;
+        let reader = RuntimeValueReader {
+            module: &heap.module,
+            tuple_schema_ids: &tuple_schema_ids,
+            named_schema_ids: &named_schema_ids,
+            callables: &callables,
+            fields: &fields,
+            list_head: &list_head,
+            list_tail: &list_tail,
+            map_module: &|_| NamedSchema::None,
+        };
+        let a_pid = RuntimeAnyValue::Opaque(ValueKind::PID, 5);
+        let a_reference = RuntimeAnyValue::Opaque(ValueKind::REF, 5);
+        let others = [RuntimeAnyValue::Int(5), RuntimeAnyValue::Float(5), heap.atom("ok")];
+        let admits =
+            |ty, value| matches_runtime_type_predicate(&world.types().runtime_type_predicate(&ty), &reader, value);
+
+        assert!(admits(pid, a_pid));
+        assert!(!admits(pid, a_reference), "a reference is not a pid");
+        assert!(admits(reference, a_reference));
+        assert!(!admits(reference, a_pid), "a pid is not a reference");
+        assert!(admits(pid_or_reference, a_pid) && admits(pid_or_reference, a_reference));
+        assert!(admits(any, a_pid) && admits(any, a_reference));
+        for other in others {
+            assert!(!admits(pid, other), "{other:?} is not a pid");
+            assert!(!admits(reference, other), "{other:?} is not a reference");
+        }
+        assert!(
+            !admits(int, a_pid) && !admits(int, a_reference),
+            "a pid word is not an integer"
+        );
+    }
+
     #[test]
     fn real_struct_predicates_distinguish_foo_alone_from_plain_map_unions_and_complements() {
         let mut world = World::new();
@@ -816,6 +866,7 @@ mod tests {
             RuntimeTestAxis::Binaries => predicate.binaries = true,
             RuntimeTestAxis::Callables => predicate.callables = CallableShapes::any(),
             RuntimeTestAxis::Resources => predicate.resources = true,
+            RuntimeTestAxis::Opaques => predicate.opaques = FiniteSet::any(),
         }
     }
 
@@ -1042,6 +1093,16 @@ mod tests {
         reached.extend(RuntimeTestAxis::of_value(RuntimeAnyValue::Int(0)).iter().copied());
         reached.extend(RuntimeTestAxis::of_value(RuntimeAnyValue::Float(0)).iter().copied());
         reached.extend(RuntimeTestAxis::of_value(RuntimeAnyValue::Atom(0)).iter().copied());
+        reached.extend(
+            RuntimeTestAxis::of_value(RuntimeAnyValue::Opaque(ValueKind::PID, 0))
+                .iter()
+                .copied(),
+        );
+        reached.extend(
+            RuntimeTestAxis::of_value(RuntimeAnyValue::Opaque(ValueKind::REF, 0))
+                .iter()
+                .copied(),
+        );
         reached.extend(RuntimeTestAxis::of_value(RuntimeAnyValue::EmptyList).iter().copied());
         assert_eq!(
             reached,

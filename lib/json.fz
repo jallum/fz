@@ -221,7 +221,6 @@ defmodule JSON do
   defp type_name(_v :: pid), do: "PID"
   defp type_name(_v :: ref), do: "Reference"
   defp type_name(_v :: resource), do: "Reference"
-  # A pattern can name tuple, pid, ref and resource and nothing else JSON cannot encode, so a function is what remains.
   defp type_name(_v), do: "Function"
 
   @spec encode_binary!(binary, {:ok, utf8} | {:error, :invalid_utf8}) :: binary

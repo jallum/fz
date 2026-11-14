@@ -306,3 +306,17 @@ fn the_same_question_twice_on_one_subject_compiles_to_one_reachable_row() {
 
     assert!(redundant_rows(&patterns).is_empty());
 }
+
+/// Intent: a guard function may take and return a pid or a reference, which
+/// the guard evaluators carry in their own kind.
+#[test]
+fn a_guard_extern_may_carry_a_pid_and_a_reference() {
+    use crate::fz_ir::{ExternReturn, ExternTy};
+    use fz_runtime::any_value::ValueKind;
+    let admitted = guard_extern(
+        &[ExternTy::Opaque(ValueKind::PID), ExternTy::Opaque(ValueKind::REF)],
+        ExternReturn::Scalar(ExternTy::Opaque(ValueKind::PID)),
+        false,
+    );
+    assert!(admitted.is_ok(), "expected the extern to be admitted, got {admitted:?}");
+}

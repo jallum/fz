@@ -1,0 +1,38 @@
+defmodule Oracle do
+  def shape(text, prefix) do
+    true = String.starts_with?(text, prefix) and String.ends_with?(text, ">")
+    inner = text |> String.replace_prefix(prefix, "") |> String.replace_suffix(">", "")
+    parts = String.split(inner, ".")
+    {length(parts), Enum.all?(parts, fn part -> Integer.to_string(String.to_integer(part)) == part end)}
+  end
+
+  def raises(not_a_pid) do
+    try do
+      send(not_a_pid, :m)
+    rescue
+      e in ArgumentError -> IO.inspect(e.__struct__)
+    end
+  end
+
+  def main() do
+    me = self()
+    r = make_ref()
+    IO.inspect({shape(inspect(me), "#PID<"), shape(inspect(r), "#Reference<")})
+    IO.inspect({String.starts_with?(inspect({me}), "{#PID<"), String.ends_with?(inspect({me}), ">}")})
+    IO.inspect({String.starts_with?(inspect([r]), "[#Reference<"), String.ends_with?(inspect([r]), ">]")})
+    IO.inspect(String.starts_with?(inspect(%{me => r}), "%{#PID<"))
+    IO.inspect(String.contains?(inspect(%{me => r}), "=> #Reference<"))
+    IO.inspect(inspect(me) == inspect(me))
+    IO.inspect(inspect(r) == inspect(make_ref()))
+    send(me, 1.5)
+    send(me, 1)
+    receive do
+      x -> raises(x)
+    end
+    receive do
+      y -> raises(y)
+    end
+  end
+end
+
+Oracle.main()

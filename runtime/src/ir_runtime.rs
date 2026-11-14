@@ -293,6 +293,19 @@ fn box_scalar_for_any(process: *mut Process, raw: u64, tag: ValueKind) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_box_opaque_for_any(process: *mut Process, raw: u64, kind: u64) -> u64 {
+    box_scalar_for_any(process, raw, ValueKind::new(kind as u8).expect("opaque word kind"))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_unbox_opaque(ref_word: u64, kind: u64) -> u64 {
+    let kind = ValueKind::new(kind as u8).expect("opaque word kind");
+    any_value_ref_from_word(ref_word, "fz_unbox_opaque")
+        .load_opaque_word(kind)
+        .unwrap_or_else(|err| panic!("fz_unbox_opaque: {err:?}"))
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_box_int_for_any(process: *mut Process, raw: i64) -> u64 {
     box_scalar_for_any(process, raw as u64, ValueKind::INT)
 }
@@ -1950,6 +1963,23 @@ pub extern "C" fn fz_map_put_int(process: *mut Process, map_ref_word: u64, key_r
         map_ref_word,
         AnyValue::from_ref(key).expect("fz_map_put_int key"),
         AnyValue::int(value),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_put_opaque(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+    word: u64,
+    kind: u64,
+) -> u64 {
+    let key = any_value_ref_from_word(key_ref_word, "fz_map_put_opaque key");
+    map_put_slot_value(
+        process,
+        map_ref_word,
+        AnyValue::from_ref(key).expect("fz_map_put_opaque key"),
+        AnyValue::Opaque(ValueKind::new(kind as u8).expect("opaque word kind"), word),
     )
 }
 

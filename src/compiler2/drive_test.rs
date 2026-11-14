@@ -16877,9 +16877,19 @@ fn compiler2_kernel_self_and_make_ref_are_typed_private_externs_on_native_and_in
     let backend_program = backend.last(native_root).program;
     backend_direct_call(backend_executable(&backend_program, self_wrapper).1, self_extern);
     backend_direct_call(backend_executable(&backend_program, ref_wrapper).1, ref_extern);
-    for (function, symbol, abi) in [
-        (self_extern, "fz_self", ExternAbi::Fz),
-        (ref_extern, "fz_make_ref", ExternAbi::C),
+    for (function, symbol, abi, ret) in [
+        (
+            self_extern,
+            "fz_self",
+            ExternAbi::Fz,
+            ExternTy::Opaque(fz_runtime::any_value::ValueKind::PID),
+        ),
+        (
+            ref_extern,
+            "fz_make_ref",
+            ExternAbi::C,
+            ExternTy::Opaque(fz_runtime::any_value::ValueKind::REF),
+        ),
     ] {
         let BackendBody::Extern { signature } = &backend_executable(&backend_program, function).1.body else {
             panic!("{symbol}/0 must lower as an ordinary extern executable")
@@ -16887,7 +16897,7 @@ fn compiler2_kernel_self_and_make_ref_are_typed_private_externs_on_native_and_in
         assert_eq!(signature.symbol, symbol);
         assert_eq!(signature.abi, abi);
         assert!(signature.params.is_empty());
-        assert_eq!(signature.ret, ExternTy::I64);
+        assert_eq!(signature.ret, ret);
     }
     assert_eq!(
         crate::ir_interp::tests_support_resolved_symbol_addr("fz_self").unwrap(),
@@ -16898,7 +16908,18 @@ fn compiler2_kernel_self_and_make_ref_are_typed_private_externs_on_native_and_in
         fz_runtime::ir_runtime::fz_make_ref as *const (),
     );
     let native_program = native.last(native_root).program;
-    for (symbol, abi) in [("fz_self", ExternAbi::Fz), ("fz_make_ref", ExternAbi::C)] {
+    for (symbol, abi, ret) in [
+        (
+            "fz_self",
+            ExternAbi::Fz,
+            ExternTy::Opaque(fz_runtime::any_value::ValueKind::PID),
+        ),
+        (
+            "fz_make_ref",
+            ExternAbi::C,
+            ExternTy::Opaque(fz_runtime::any_value::ValueKind::REF),
+        ),
+    ] {
         let decl = native_program
             .module
             .externs
@@ -16907,7 +16928,7 @@ fn compiler2_kernel_self_and_make_ref_are_typed_private_externs_on_native_and_in
             .unwrap_or_else(|| panic!("native module extern {symbol}"));
         assert_eq!(decl.abi, abi);
         assert!(decl.params.is_empty());
-        assert_eq!(decl.ret, ExternTy::I64);
+        assert_eq!(decl.ret, ret);
     }
     let compiled = jit_compile_native_program(&mut native_compiler, &native_program);
     assert_eq!(
@@ -17140,11 +17161,16 @@ fn compiler2_kernel_spawn_and_send_are_typed_private_fz_externs() {
     backend_direct_call(backend_executable(&backend_program, spawn_wrapper).1, spawn_extern);
     backend_direct_call(backend_executable(&backend_program, send_wrapper).1, send_extern);
     for (function, symbol, params, ret) in [
-        (spawn_extern, "fz_spawn", vec![ExternTy::Any], ExternTy::I64),
+        (
+            spawn_extern,
+            "fz_spawn",
+            vec![ExternTy::Any],
+            ExternTy::Opaque(fz_runtime::any_value::ValueKind::PID),
+        ),
         (
             send_extern,
             "fz_send",
-            vec![ExternTy::I64, ExternTy::Any],
+            vec![ExternTy::Opaque(fz_runtime::any_value::ValueKind::PID), ExternTy::Any],
             ExternTy::Any,
         ),
     ] {
@@ -17169,8 +17195,16 @@ fn compiler2_kernel_spawn_and_send_are_typed_private_fz_externs() {
 
     let native_program = native.last(root).program;
     for (symbol, params, ret) in [
-        ("fz_spawn", vec![ExternTy::Any], ExternTy::I64),
-        ("fz_send", vec![ExternTy::I64, ExternTy::Any], ExternTy::Any),
+        (
+            "fz_spawn",
+            vec![ExternTy::Any],
+            ExternTy::Opaque(fz_runtime::any_value::ValueKind::PID),
+        ),
+        (
+            "fz_send",
+            vec![ExternTy::Opaque(fz_runtime::any_value::ValueKind::PID), ExternTy::Any],
+            ExternTy::Any,
+        ),
     ] {
         let decl = native_program
             .module

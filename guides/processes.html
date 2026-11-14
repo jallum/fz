@@ -70,7 +70,8 @@ state to race over.
 
 <p><code>spawn(f)</code> takes a zero-argument function value, starts a new
 process running it, and returns the new process's <strong>pid</strong> —
-an integer that identifies it.</p>
+a value of its own kind that identifies it, as in Elixir: <code>is_pid/1</code>
+is true for it and <code>is_integer/1</code> is not.</p>
 
 <pre><span class="kw">def</span> <span class="fn">child</span>() <span class="kw">do</span>
   <span class="fn">dbg</span>(<span class="atm">:hello</span>)
@@ -83,8 +84,8 @@ an integer that identifies it.</p>
 
 <p>Two processes run concurrently here: <code>main</code> and the new
 process executing <code>child</code>. <code>child</code> prints
-<code>:hello</code>, <code>main</code> prints the pid (an integer like
-<code>2</code>). The order isn't fixed — fz's scheduler decides who gets
+<code>:hello</code>, <code>main</code> prints the pid
+(<code>#PID&lt;0.2.0&gt;</code>). The order isn't fixed — fz's scheduler decides who gets
 to run next.</p>
 
 <h3>Lambdas with captures</h3>
@@ -93,7 +94,8 @@ to run next.</p>
 variables from its surrounding scope, so:</p>
 
 <pre><span class="kw">def</span> <span class="fn">parent</span>(tag) <span class="kw">do</span>
-  <span class="fn">spawn</span>(<span class="kw">fn</span> () -&gt; <span class="fn">send</span>(<span class="num">1</span>, tag) <span class="kw">end</span>)
+  home = <span class="fn">self</span>()
+  <span class="fn">spawn</span>(<span class="kw">fn</span> () -&gt; <span class="fn">send</span>(home, tag) <span class="kw">end</span>)
   <span class="fn">receive</span> <span class="kw">do</span> msg -&gt; msg <span class="kw">end</span>
 <span class="kw">end</span>
 
@@ -138,13 +140,17 @@ pid via <code>self()</code>:</p>
 
 <pre><span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
   me = <span class="fn">self</span>()
-  <span class="fn">dbg</span>(me)        <span class="com"># prints 1 (the first process)</span>
+  <span class="fn">dbg</span>(me)        <span class="com"># prints #PID&lt;0.1.0&gt; (the first process)</span>
 <span class="kw">end</span></pre>
 
 <p>The very first process (the one that runs <code>main</code>) gets
-pid <code>1</code>. Each subsequent <code>spawn</code> gives out the
-next integer: <code>2</code>, <code>3</code>, and so on. Pids are not
-recycled within one run.</p>
+pid <code>#PID&lt;0.1.0&gt;</code>. Each subsequent <code>spawn</code> gives
+out the next number: <code>#PID&lt;0.2.0&gt;</code>, <code>#PID&lt;0.3.0&gt;</code>,
+and so on. Pids are not recycled within one run. A pid is not an integer:
+<code>self() == 1</code> is false, <code>send/2</code> raises
+<code>ArgumentError</code> for a destination that is not a pid, and a
+reference from <code>make_ref/0</code> is a kind of its own in the same way
+(<code>#Reference&lt;0.0.0.1&gt;</code>).</p>
 
 <h3>Why pids matter</h3>
 
@@ -518,8 +524,8 @@ A "server" without a <code>receive</code> loop is a one-shot fire-and-forget.
       holds when it exits has its destructor run as part of the exit. A
       process left parked when the program ends is torn down without running
       destructors.</li>
-  <li><strong>Pids can outlive their processes.</strong> A pid is just
-      an integer. If you hold one for a process that has exited,
+  <li><strong>Pids can outlive their processes.</strong> A pid is an
+      identifier that carries no liveness. If you hold one for a process that has exited,
       <code>send</code>ing to it is silently a no-op — the message goes
       nowhere. Don't treat pid liveness as ambient truth; design
       protocols around explicit acks.</li>

@@ -358,6 +358,13 @@ impl Heap {
                 }
                 AnyValueRef::from_scalar_slot(ValueKind::INT, slot as *const u64).expect("int ref")
             }
+            AnyValue::Opaque(kind, word) => {
+                let slot = self.alloc_kind(HeapAllocKind::ScalarBox, size_of::<u64>()) as *mut u64;
+                unsafe {
+                    write(slot, word);
+                }
+                AnyValueRef::from_scalar_slot(kind, slot as *const u64).expect("opaque word ref")
+            }
             AnyValue::Float(bits) => {
                 let bits = AnyValue::float(f64::from_bits(bits)).raw();
                 let slot = self.alloc_kind(HeapAllocKind::ScalarBox, size_of::<u64>()) as *mut u64;
@@ -1060,7 +1067,12 @@ impl Heap {
         // is its stored address and an atom field's ref is its id; each already
         // says what it names.
         Ok(
-            if obj.is_literal() && matches!(field.tag(), ValueKind::INT | ValueKind::FLOAT) {
+            if obj.is_literal()
+                && matches!(
+                    field.tag(),
+                    ValueKind::INT | ValueKind::FLOAT | ValueKind::PID | ValueKind::REF
+                )
+            {
                 field.literal()
             } else {
                 field

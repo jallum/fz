@@ -1,0 +1,9 @@
+#---
+# purpose: "An extern that declares raises: and returns a pid is refused, because a failure travels in a value-and-flag pair whose value is an integer or a float"
+# expect: diagnostic
+#---
+extern "C" defp fz_take(integer) :: pid,
+  raises: ArithmeticError,
+  message: "bad argument in arithmetic expression"
+
+def main(), do: dbg(fz_take(1))

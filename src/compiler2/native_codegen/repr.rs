@@ -75,7 +75,12 @@ impl ExternLane for ExternTy {
         match self {
             ExternTy::F64 => Some(types::F64),
             ExternTy::I32 => Some(types::I32),
-            ExternTy::I64 | ExternTy::Bool | ExternTy::Any | ExternTy::Binary | ExternTy::CString => Some(types::I64),
+            ExternTy::I64
+            | ExternTy::Opaque(_)
+            | ExternTy::Bool
+            | ExternTy::Any
+            | ExternTy::Binary
+            | ExternTy::CString => Some(types::I64),
             ExternTy::Unit | ExternTy::Never => None,
         }
     }

@@ -265,6 +265,24 @@ fn emit_axis<'f, E: RuntimeTestEmitter<'f>>(
             Ok(flag.expect("BINARY_REPRS is never empty"))
         }
         RuntimeTestAxis::Resources => e.kind_flag(value, ValueKind::RESOURCE),
+        RuntimeTestAxis::Opaques => {
+            let mut flag: Option<ir::Value> = None;
+            for opaque in [crate::types::BuiltinOpaque::Pid, crate::types::BuiltinOpaque::Ref] {
+                if !predicate.opaques.contains(&opaque) {
+                    continue;
+                }
+                let kind = crate::runtime_type_predicate::kind_of_opaque(opaque).expect("a pid or reference kind");
+                let next = e.kind_flag(value, kind)?;
+                flag = Some(match flag {
+                    None => next,
+                    Some(prev) => e.builder().ins().bor(prev, next),
+                });
+            }
+            match flag {
+                Some(flag) => Ok(flag),
+                None => return Ok(None),
+            }
+        }
         RuntimeTestAxis::Callables => emit_callable_axis(e, value, &predicate.callables),
         RuntimeTestAxis::Tuples | RuntimeTestAxis::OtherStructs => return asked.structs_once(e, value, predicate),
         RuntimeTestAxis::NamedStructs => {

@@ -295,6 +295,7 @@ fn value_to_halt(proc: *mut Process, v: AnyValue) -> i64 {
     match v {
         AnyValue::Null => 0,
         AnyValue::Int(i) => i,
+        AnyValue::Opaque(_, word) => word as i64,
         AnyValue::Float(f) => f.to_bits() as i64,
         AnyValue::Atom(v) => v as i64,
         AnyValue::EmptyList => 0,

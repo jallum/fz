@@ -47,11 +47,11 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
 use fz_runtime::ir_runtime::{
-    fz_box_float_for_any, fz_box_int_for_any, fz_bs_field_spec, fz_bs_read_field_ref, fz_bs_reader_init_ref,
-    fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_map_named_schema_ref, fz_matcher_eq_bytes,
-    fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref, fz_struct_get_named_field_ref,
-    fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_value_cmp_ref,
-    fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any, fz_bs_field_spec, fz_bs_read_field_ref,
+    fz_bs_reader_init_ref, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_map_named_schema_ref,
+    fz_matcher_eq_bytes, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref,
+    fz_struct_get_named_field_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float,
+    fz_unbox_int, fz_unbox_opaque, fz_value_cmp_ref, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 
@@ -1329,6 +1329,11 @@ fn emit_guard_extern<M: cranelift_module::Module>(
     for (value, ty) in values.into_iter().zip(&extern_fn.params) {
         let (class, word) = match ty {
             ExternTy::I64 => (types::I64, receive_value_int(body, value)?),
+            ExternTy::Opaque(kind) => {
+                let value_ref = emit_receive_value_ref(body, ctx, value)?;
+                let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
+                (types::I64, runtime_call1!(body, fz_unbox_opaque, [value_ref, kind]))
+            }
             ExternTy::F64 => (types::F64, receive_value_float(body, value)?),
             ExternTy::Any => (types::I64, emit_receive_value_ref(body, ctx, value)?),
             other => {
@@ -1370,6 +1375,14 @@ fn emit_guard_extern<M: cranelift_module::Module>(
     };
     match lane {
         ExternTy::I64 => Ok(ReceiveValue::Int(raw)),
+        ExternTy::Opaque(kind) => {
+            let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
+            Ok(ReceiveValue::AnyRef(runtime_call1!(
+                body,
+                fz_box_opaque_for_any,
+                [ctx.process, raw, kind]
+            )))
+        }
         ExternTy::F64 => Ok(ReceiveValue::Float(raw)),
         ExternTy::Any => Ok(ReceiveValue::AnyRef(raw)),
         ExternTy::Bool => {

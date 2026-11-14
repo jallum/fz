@@ -20,6 +20,8 @@ use fz_runtime::process::Process;
 pub(crate) enum AnyValue {
     Null,
     Int(i64),
+    /// A pid or a reference: its kind and its word.
+    Opaque(ValueKind, u64),
     Float(f64),
     Atom(u32),
     EmptyList,
@@ -91,6 +93,7 @@ impl AnyValue {
         Ok(match self {
             AnyValue::Null => RuntimeAnyValue::null(),
             AnyValue::Int(value) => RuntimeAnyValue::int(value),
+            AnyValue::Opaque(kind, word) => RuntimeAnyValue::Opaque(kind, word),
             AnyValue::Float(value) => RuntimeAnyValue::float(value),
             AnyValue::Atom(value) => RuntimeAnyValue::atom(value),
             AnyValue::EmptyList => RuntimeAnyValue::empty_list(),
@@ -118,6 +121,11 @@ impl AnyValue {
         match self {
             AnyValue::Null => Ok(AnyValueRef::null().raw_word()),
             AnyValue::Int(value) => Ok(fz_box_int_for_any(proc, value)),
+            AnyValue::Opaque(kind, word) => Ok(fz_runtime::ir_runtime::fz_box_opaque_for_any(
+                proc,
+                word,
+                kind.tag() as u64,
+            )),
             AnyValue::Float(value) => Ok(fz_box_float_for_any(proc, value)),
             AnyValue::Atom(value) => Ok(AnyValueRef::atom(value).raw_word()),
             AnyValue::EmptyList => Ok(AnyValueRef::empty_list().raw_word()),
@@ -138,7 +146,7 @@ impl AnyValue {
             AnyValue::Null => Ok(AnyValueRef::null()),
             AnyValue::EmptyList => Ok(AnyValueRef::empty_list()),
             AnyValue::Ref(value) => Ok(value.raw()),
-            AnyValue::Int(_) | AnyValue::Float(_) | AnyValue::Atom(_) | AnyValue::FnRef(..) => {
+            AnyValue::Int(_) | AnyValue::Opaque(..) | AnyValue::Float(_) | AnyValue::Atom(_) | AnyValue::FnRef(..) => {
                 let ref_word = self.as_ref_word(proc)?;
                 AnyValueRef::from_raw_word(ref_word)
                     .map_err(|err| format!("interpreter value ref word {ref_word:#x}: {err:?}"))
@@ -188,6 +196,7 @@ impl AnyValue {
         match self {
             AnyValue::Null => "null".to_string(),
             AnyValue::Int(value) => value.to_string(),
+            AnyValue::Opaque(kind, word) => fz_runtime::any_value::debug::render_opaque_word(kind, word),
             AnyValue::Float(value) => value.to_string(),
             AnyValue::Atom(value) => render_value(proc, RuntimeAnyValue::atom(value)),
             AnyValue::EmptyList => render_value(proc, RuntimeAnyValue::empty_list()),
@@ -262,6 +271,12 @@ pub(super) fn interp_value_from_ref(value: AnyValueRef, context: &str) -> Result
             value
                 .load_int()
                 .map_err(|err| format!("{context}: invalid int ref {:#x}: {err:?}", value.raw_word()))?,
+        ),
+        kind if kind.is_opaque_word() => AnyValue::Opaque(
+            kind,
+            value
+                .load_opaque_word(kind)
+                .map_err(|err| format!("{context}: invalid opaque word ref {:#x}: {err:?}", value.raw_word()))?,
         ),
         ValueKind::FLOAT => AnyValue::Float(
             value

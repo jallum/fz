@@ -30,6 +30,10 @@ pub const TAG_RESOURCE: u64 = 0x7;
 /// Ref-word tag of a stack-resident lazy continuation. It is a code in the
 /// ref word's tag field only; no heap object and no `ValueKind` carries it.
 pub const TAG_LAZY_CONT: u64 = 0x8;
+/// Side-band immediate tag for raw process-id slots.
+pub const TAG_KIND_PID: u64 = 0x9;
+/// Side-band immediate tag for raw reference-counter slots.
+pub const TAG_KIND_REF: u64 = 0xA;
 /// Side-band immediate tag for raw i64 slots.
 pub const TAG_KIND_INT: u64 = 0xD;
 /// Side-band immediate tag for raw f64::to_bits slots.
@@ -77,6 +81,8 @@ impl ValueKind {
     pub const BITSTRING: Self = Self(TAG_BITSTRING as u8);
     pub const PROCBIN: Self = Self(TAG_PROCBIN as u8);
     pub const RESOURCE: Self = Self(TAG_RESOURCE as u8);
+    pub const PID: Self = Self(TAG_KIND_PID as u8);
+    pub const REF: Self = Self(TAG_KIND_REF as u8);
     pub const INT: Self = Self(TAG_KIND_INT as u8);
     pub const FLOAT: Self = Self(TAG_KIND_FLOAT as u8);
     pub const ATOM: Self = Self(TAG_KIND_ATOM as u8);
@@ -84,7 +90,7 @@ impl ValueKind {
     pub const fn new(tag: u8) -> Option<Self> {
         match tag as u64 {
             TAG_NULL | TAG_LIST | TAG_MAP | TAG_STRUCT | TAG_CLOSURE | TAG_BITSTRING | TAG_PROCBIN | TAG_RESOURCE
-            | TAG_KIND_INT | TAG_KIND_FLOAT | TAG_KIND_ATOM => Some(Self(tag)),
+            | TAG_KIND_PID | TAG_KIND_REF | TAG_KIND_INT | TAG_KIND_FLOAT | TAG_KIND_ATOM => Some(Self(tag)),
             _ => None,
         }
     }
@@ -98,7 +104,12 @@ impl ValueKind {
     }
 
     pub const fn is_scalar(self) -> bool {
-        matches!(self, Self::INT | Self::FLOAT | Self::ATOM)
+        matches!(self, Self::INT | Self::FLOAT | Self::ATOM | Self::PID | Self::REF)
+    }
+
+    /// A pid or a reference: one opaque word held in a slot, as an integer is.
+    pub const fn is_opaque_word(self) -> bool {
+        matches!(self, Self::PID | Self::REF)
     }
 
     /// The kinds a binary is held in. A binary is one language value with
@@ -320,6 +331,7 @@ impl AnyValueRef {
             ValueKind::INT => self.load_int()? as u64,
             ValueKind::FLOAT => self.load_float()?.to_bits(),
             ValueKind::ATOM => self.load_atom()?,
+            tag if tag.is_opaque_word() => self.load_opaque_word(tag)?,
             tag if tag.is_heap() => self.word & AnyValueRefPacking::current().payload_mask(),
             _ => unreachable!("AnyValueRef tag set is exhaustive"),
         })
@@ -344,6 +356,11 @@ impl AnyValueRef {
     pub fn load_int(self) -> Result<i64, AnyValueRefError> {
         self.expect_tag(ValueKind::INT)?;
         Ok(unsafe { ptr::read(self.cleared_addr() as *const i64) })
+    }
+
+    pub fn load_opaque_word(self, kind: ValueKind) -> Result<u64, AnyValueRefError> {
+        self.expect_tag(kind)?;
+        Ok(unsafe { ptr::read(self.cleared_addr() as *const u64) })
     }
 
     pub fn load_float(self) -> Result<f64, AnyValueRefError> {
@@ -407,6 +424,8 @@ pub enum AnyValue {
     Null,
     EmptyList,
     Int(i64),
+    /// A pid or a reference: its kind and its word.
+    Opaque(ValueKind, u64),
     Float(u64),
     Atom(u32),
     HeapRef(AnyValueRef),
@@ -460,6 +479,7 @@ impl AnyValue {
         Ok(match value.tag() {
             ValueKind::NULL => Self::Null,
             ValueKind::INT => Self::Int(value.load_int()?),
+            tag if tag.is_opaque_word() => Self::Opaque(tag, value.load_opaque_word(tag)?),
             ValueKind::FLOAT => Self::float(value.load_float()?),
             ValueKind::ATOM => Self::Atom(value.load_atom()? as u32),
             tag if tag.is_heap() => Self::HeapRef(value),
@@ -472,6 +492,7 @@ impl AnyValue {
         Some(match kind {
             ValueKind::NULL => Self::Null,
             ValueKind::INT => Self::Int(raw as i64),
+            kind if kind.is_opaque_word() => Self::Opaque(kind, raw),
             ValueKind::FLOAT => Self::float(f64::from_bits(raw)),
             ValueKind::ATOM => Self::Atom(raw as u32),
             ValueKind::LIST if raw == 0 => Self::EmptyList,
@@ -495,6 +516,7 @@ impl AnyValue {
         match self {
             Self::Null | Self::EmptyList => 0,
             Self::Int(value) => value as u64,
+            Self::Opaque(_, word) => word,
             Self::Float(bits) => bits,
             Self::Atom(atom_id) => atom_id as u64,
             Self::HeapRef(value) => value.storage_raw().expect("heap ref raw"),
@@ -506,6 +528,7 @@ impl AnyValue {
             Self::Null => ValueKind::NULL,
             Self::EmptyList => ValueKind::LIST,
             Self::Int(_) => ValueKind::INT,
+            Self::Opaque(kind, _) => kind,
             Self::Float(_) => ValueKind::FLOAT,
             Self::Atom(_) => ValueKind::ATOM,
             Self::HeapRef(value) => value.tag(),
@@ -533,7 +556,7 @@ impl AnyValue {
             Self::EmptyList => AnyValueRef::empty_list(),
             Self::HeapRef(value) => value,
             Self::Atom(atom_id) => AnyValueRef::atom(atom_id),
-            Self::Int(_) | Self::Float(_) => {
+            Self::Int(_) | Self::Float(_) | Self::Opaque(..) => {
                 panic!("int or float AnyValue needs object-local storage before it can become a ref")
             }
         }
@@ -774,9 +797,11 @@ pub unsafe fn closure_capture_ref_word(addr: *const u8, idx: usize) -> u64 {
         ValueKind::NULL => AnyValueRef::null().raw_word(),
         ValueKind::LIST if raw == 0 => AnyValueRef::empty_list().raw_word(),
         ValueKind::ATOM => AnyValueRef::atom(raw as u32).raw_word(),
-        ValueKind::INT | ValueKind::FLOAT => AnyValueRef::from_scalar_slot(kind, raw_slot as *const u64)
-            .expect("closure scalar capture ref")
-            .raw_word(),
+        ValueKind::INT | ValueKind::FLOAT | ValueKind::PID | ValueKind::REF => {
+            AnyValueRef::from_scalar_slot(kind, raw_slot as *const u64)
+                .expect("closure scalar capture ref")
+                .raw_word()
+        }
         kind if kind.is_heap() => heap_object_word(raw as *const u8, kind),
         _ => unreachable!("unknown closure capture kind"),
     }
@@ -1557,12 +1582,13 @@ pub mod debug {
 
     /// The name Elixir's `Protocol.UndefinedError` gives a value's kind:
     /// `Integer`, `Float`, `Atom`, `List`, `Map`, `Tuple`, `BitString`,
-    /// `Function`, `Reference` for a resource, and `Name (a struct)` for a named
-    /// struct. A pid and a reference are integers at runtime and are named as
-    /// one.
+    /// `Function`, `PID`, `Reference` for a reference or a resource, and
+    /// `Name (a struct)` for a named struct.
     pub fn kind_name(proc: *mut Process, value: AnyValue) -> String {
         match value.kind() {
             ValueKind::INT => "Integer".to_string(),
+            ValueKind::PID => "PID".to_string(),
+            ValueKind::REF => "Reference".to_string(),
             ValueKind::FLOAT => "Float".to_string(),
             ValueKind::ATOM => "Atom".to_string(),
             ValueKind::LIST => "List".to_string(),
@@ -1604,6 +1630,7 @@ pub mod debug {
         fn value(&mut self, value: AnyValue) -> String {
             match value.kind() {
                 ValueKind::INT => (value.raw() as i64).to_string(),
+                kind if kind.is_opaque_word() => render_opaque_word(kind, value.raw()),
                 ValueKind::FLOAT => render_float(f64::from_bits(value.raw())),
                 ValueKind::ATOM => self.atom(value.raw() as u32),
                 ValueKind::LIST if value.raw() == 0 => "[]".to_string(),
@@ -1870,6 +1897,7 @@ pub mod debug {
         fn cons_head(&mut self, cons: &ListCons) -> String {
             match cons.head_kind() {
                 ValueKind::INT => (cons.head as i64).to_string(),
+                kind if kind.is_opaque_word() => render_opaque_word(kind, cons.head),
                 // `render_float`, not Rust's `to_string`: a whole float has to
                 // keep its `.0` wherever it appears, or `JSON.encode` would
                 // encode `[1.0]` as `[1]`.
@@ -1933,6 +1961,18 @@ pub mod debug {
     fn charlist(cells: &[&ListCons]) -> String {
         let text: String = cells.iter().map(|cell| cell.head as u8 as char).collect();
         format!("~c\"{}\"", escape_for_display(&text))
+    }
+
+    /// A pid or a reference, rendered the way Elixir's `inspect/1` renders one:
+    /// `#PID<0.N.S>` and `#Reference<0.A.B.C>`. A pid's word is split into the
+    /// 15-bit number and the serial Erlang prints; a reference's counter fills
+    /// the last two of its three words.
+    pub fn render_opaque_word(kind: ValueKind, word: u64) -> String {
+        match kind {
+            ValueKind::PID => format!("#PID<0.{}.{}>", word & 0x7fff, word >> 15),
+            ValueKind::REF => format!("#Reference<0.0.{}.{}>", word >> 32, word & 0xffff_ffff),
+            _ => panic!("a value of kind {kind:?} is not a pid or a reference"),
+        }
     }
 
     /// A float, rendered the way Elixir's `inspect/1` renders it -- which is

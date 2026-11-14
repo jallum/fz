@@ -242,6 +242,9 @@ pub struct ExternMarshalSite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternTy {
     I64,
+    /// A pid or a reference: one word in an integer-bank register, held as
+    /// a value of its own kind.
+    Opaque(fz_runtime::any_value::ValueKind),
     /// C `int`: a 32-bit value in an integer-bank register. A C function
     /// returning one leaves the upper half of the return register alone, so
     /// the answer is only the low 32 bits, read as signed.

@@ -2655,6 +2655,19 @@ impl Types {
                 self.runtime_type_predicate_callables(descr)
             },
             resources: widen_non_structs || !descr.resources.is_empty(),
+            opaques: if widen_non_structs {
+                FiniteSet::any()
+            } else {
+                descr
+                    .opaques
+                    .values
+                    .iter()
+                    .filter_map(|tag| match tag {
+                        OpaqueTag::Builtin(builtin) => Some(*builtin),
+                        _ => None,
+                    })
+                    .fold(FiniteSet::none(), |set, builtin| set.union(&FiniteSet::lit(builtin)))
+            },
         }
     }
 
@@ -4022,7 +4035,7 @@ fn runtime_type_predicate_widens_non_structs(descr: &Descr) -> bool {
             .opaques
             .values
             .iter()
-            .any(|tag| matches!(tag, OpaqueTag::Builtin(_)))
+            .any(|tag| matches!(tag, OpaqueTag::Builtin(BuiltinOpaque::CPointer)))
         || carries_protocol_domain(descr)
         || descr.vars.cofinite
         || !descr.vars.values.is_empty()

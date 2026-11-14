@@ -1,0 +1,33 @@
+#---
+# purpose: "A pid and a reference each match only their own typed clause: a received pid is not an integer or a reference, a received reference is not an integer or a pid, and no other value matches either; self() is not 1"
+# oracle: 01260_a_pid_and_a_reference_are_told_from_integers_and_from_each_other.oracle.exs
+# oracle.stamp: bca7b1c4293c3bcd
+#---
+#
+# Every value reaches the clauses through the mailbox, so nothing is known
+# about it at compile time.
+def kind(_x :: integer), do: :integer
+def kind(_x :: pid), do: :pid
+def kind(_x), do: :other
+def isp(_p :: pid), do: :matched
+def isp(_p), do: :refused
+def isr(_r :: ref), do: :matched
+def isr(_r), do: :refused
+def main() do
+  me = self()
+  send(me, me)
+  send(me, make_ref())
+  send(me, 1.5)
+  send(me, :an_atom)
+  send(me, "bin")
+  send(me, [1])
+  send(me, 7)
+  receive do p -> IO.inspect({:pid_as, kind(p), isp(p), isr(p), is_pid(p), is_reference(p)}) end
+  receive do r -> IO.inspect({:ref_as, kind(r), isp(r), isr(r), is_pid(r), is_reference(r)}) end
+  receive do f -> IO.inspect({:float_as, isp(f), isr(f), is_pid(f), is_reference(f)}) end
+  receive do a -> IO.inspect({:atom_as, isp(a), isr(a), is_pid(a), is_reference(a)}) end
+  receive do b -> IO.inspect({:binary_as, isp(b), isr(b), is_pid(b), is_reference(b)}) end
+  receive do l -> IO.inspect({:list_as, isp(l), isr(l), is_pid(l), is_reference(l)}) end
+  receive do i -> IO.inspect({:int_as, isp(i), isr(i), is_pid(i), is_reference(i)}) end
+  IO.inspect({self() == 1, make_ref() == 1, self() == make_ref(), self() == self()})
+end

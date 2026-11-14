@@ -1,0 +1,8 @@
+{:pid_as, :pid, :matched, :refused, true, false}
+{:ref_as, :other, :refused, :matched, false, true}
+{:float_as, :refused, :refused, false, false}
+{:atom_as, :refused, :refused, false, false}
+{:binary_as, :refused, :refused, false, false}
+{:list_as, :refused, :refused, false, false}
+{:int_as, :refused, :refused, false, false}
+{false, false, false, true}

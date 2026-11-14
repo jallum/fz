@@ -3567,6 +3567,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let boolean = self.world.types_mut().bool();
                 ctx.value_types.insert(var, boolean);
             }
+            ExternTy::Opaque(kind) => {
+                let opaque = match kind {
+                    ValueKind::PID => self.world.types_mut().pid(),
+                    ValueKind::REF => self.world.types_mut().reference(),
+                    other => unreachable!("an opaque extern lane is a pid or a reference, not {other:?}"),
+                };
+                ctx.value_types.insert(var, opaque);
+            }
             _ => {}
         }
         Ok(var)

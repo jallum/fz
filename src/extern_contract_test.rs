@@ -2,18 +2,28 @@
 mod builtin_opaque_wire_test {
     use super::super::{ExternTy, ty_to_extern_ty};
     use crate::compiler2::Types;
+    use fz_runtime::any_value::ValueKind;
 
     #[test]
-    fn only_builtin_opaque_word_types_use_the_integer_abi_lane() {
+    fn a_pid_and_a_reference_have_lanes_of_their_own_and_a_c_pointer_the_integer_lane() {
         let mut types = Types::new();
         let pid = types.pid();
         let reference = types.reference();
         let c_pointer = types.c_pointer();
-        let builtin_union = types.union(pid, reference);
-        let builtin_union = types.union(builtin_union, c_pointer);
-
-        for builtin in [pid, reference, c_pointer, builtin_union] {
-            assert_eq!(ty_to_extern_ty(&mut types, &builtin), ExternTy::I64);
+        assert_eq!(ty_to_extern_ty(&mut types, &pid), ExternTy::Opaque(ValueKind::PID));
+        assert_eq!(
+            ty_to_extern_ty(&mut types, &reference),
+            ExternTy::Opaque(ValueKind::REF)
+        );
+        assert_eq!(ty_to_extern_ty(&mut types, &c_pointer), ExternTy::I64);
+        let pid_or_reference = types.union(pid, reference);
+        let pid_or_c_pointer = types.union(pid, c_pointer);
+        for mixed in [pid_or_reference, pid_or_c_pointer] {
+            assert_eq!(
+                ty_to_extern_ty(&mut types, &mixed),
+                ExternTy::Any,
+                "a union of kinds is held as a tagged value"
+            );
         }
         for spelling in ["pid", "ref", "c_pointer"] {
             let int = types.int();
