@@ -2,13 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T00:58:16Z",
+  "close_reason": "All five children merged to develop (#480, #482).",
   "created": "2026-11-13T21:18:21Z",
   "description": "GH #297. Page: /Users/j5n/Workspace/gh-296-297.html (Proposal A). An exact tuple travels as one lane per field with no bound; 5,000 elements make 5,001-parameter functions and regalloc2 takes 86% of samples. One authority answers how a tuple travels: as fields while total physical lanes (after demand pruning, nested included) fit a budget, otherwise as one value lane. Spike patch (bound 16, base d5071ecf5): scratchpad s297/spike-lane-bound.patch; run N=5000 1.81s to 0.11s. Re-measured on develop ff4a75ada: wide5000 run 2.26s.",
   "id": "fz-rba",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A wide tuple travels as one reference",
   "type": "epic",
-  "updated_at": "2026-11-13T21:18:21Z"
+  "updated_at": "2026-11-14T00:58:16Z"
 }
