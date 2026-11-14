@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-9x7.1",
     "fz-9x7.2"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "A captured scalar stays raw in its frame",
   "type": "task",
-  "updated_at": "2026-11-14T19:25:23Z"
+  "updated_at": "2026-11-14T20:09:31Z"
 }
