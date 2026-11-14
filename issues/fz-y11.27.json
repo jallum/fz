@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T01:45:18Z",
   "created": "2026-11-14T01:05:28Z",
   "description": "QuotedSourceCursor::list_items (source.rs:742) still collects about 10,590 vectors. Chains: quoted_surface.rs:728 (1,664), quoted_expander.rs:1429 (768), :650 (736), :1170 (640), :233 (816), source.rs:874 (608), source_sugar.rs:31 (352), and smaller callers in quoted_function.rs.\n\nChange: each caller that reads the list once, counts it, or takes fixed positions uses list_iter / list_len / tuple_arity + tuple_item. A caller that indexes at random or reads the list more than once keeps its vector and is named in the report.\n\nEvidence: census of the OptionParser probe at develop 01e69178a (771,812 allocations): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/01e69178a_top.txt; call chains: cd /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census \u0026\u0026 python3 chain.py 01e69178a.pkl \u003cfile:line\u003e \u003cdepth\u003e \"\" \u003cn\u003e; line numbers are exact in /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src (read only).\n\nSignal: full gate green; no golden or pin moves except a falling pin, which is lowered and listed; program output and canonical backend dump identical on the probe; allocation count before and after in the commit.",
   "id": "fz-y11.27",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "The quoted lists the expander reads once are walked",
   "type": "task",
-  "updated_at": "2026-11-14T01:05:39Z"
+  "updated_at": "2026-11-14T01:45:18Z"
 }
