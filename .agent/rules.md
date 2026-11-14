@@ -35,6 +35,7 @@
 - Have descriptions that explain in eli5 _style_ (no need to _say it) why we're making the change, what we've changed, and how it works -- with examples.
 
 ## Best Practices
+- Chase down open questions with the scientific method: well designed experiments around hypotheses and let data guide our decisions.
 - Comments should be timeless information, and only included when it's not possible to push that information into the code with better names, breaking things into functions, etc.
 - Local correctness does not guarantee global architectural alignment.
 - Data-model -> up, so that the problem is correct-by-construction.
