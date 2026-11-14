@@ -50,15 +50,20 @@ pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>) -> bool {
 /// Every entry of `n` must have the same arity as `t`; a mismatched arity
 /// subtracts nothing and belongs to the caller's filter.
 pub(super) fn phi_tuple<'d>(cx: TyCtx<'_>, t: &[&Descr], n: &[impl AsRef<[&'d Descr]>]) -> bool {
+    // One empty coordinate empties the whole product — no negation needed.
+    t.iter().any(|d| d.is_empty(cx)) || phi_inhabited_tuple(cx, t, n)
+}
+
+/// [`phi_tuple`] for a product whose every coordinate is inhabited.
+///
+/// Each split below keeps that true by construction: a meet is inhabited
+/// because the negation is not disjoint from the product on any coordinate,
+/// the untouched coordinates are the product's own, and a cut that leaves
+/// nothing is answered where it is made. So no coordinate is tested for
+/// emptiness twice, and a branch whose cut is empty costs no step.
+fn phi_inhabited_tuple<'d>(cx: TyCtx<'_>, t: &[&Descr], n: &[impl AsRef<[&'d Descr]>]) -> bool {
     #[cfg(test)]
     cx.count_tuple_emptiness_step();
-    // One empty coordinate empties the whole product — no negation needed.
-    // Checking at entry prunes every recursive branch whose diff/intersect
-    // zeroed a coordinate; without this the recursion only discovers the
-    // emptiness at the leaves, after fanning out arity^|negs| branches.
-    if t.iter().any(|d| d.is_empty(cx)) {
-        return true;
-    }
     let Some((head, rest)) = n.split_first() else {
         return false;
     };
@@ -66,7 +71,7 @@ pub(super) fn phi_tuple<'d>(cx: TyCtx<'_>, t: &[&Descr], n: &[impl AsRef<[&'d De
     // A negation disjoint from the product on any coordinate subtracts
     // nothing: drop it instead of splitting on it.
     if head.iter().zip(t).any(|(h, ti)| ti.is_disjoint(cx, h)) {
-        return phi_tuple(cx, t, rest);
+        return phi_inhabited_tuple(cx, t, rest);
     }
     // Coordinates before `i` are met with the negation, `i` is cut by it, and
     // the rest are the product's own. Each coordinate's meet is the same for
@@ -74,9 +79,11 @@ pub(super) fn phi_tuple<'d>(cx: TyCtx<'_>, t: &[&Descr], n: &[impl AsRef<[&'d De
     let mut met: Vec<Descr> = Vec::with_capacity(t.len());
     for i in 0..t.len() {
         let cut = t[i].diff(head[i]);
-        let split: Vec<&Descr> = met.iter().chain([&cut]).chain(t[i + 1..].iter().copied()).collect();
-        if !phi_tuple(cx, &split, rest) {
-            return false;
+        if !cut.is_empty(cx) {
+            let split: Vec<&Descr> = met.iter().chain([&cut]).chain(t[i + 1..].iter().copied()).collect();
+            if !phi_inhabited_tuple(cx, &split, rest) {
+                return false;
+            }
         }
         if i + 1 < t.len() {
             met.push(t[i].intersect(head[i]));
