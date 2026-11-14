@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9x7.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9x7.4"
+  ],
   "created": "2026-11-14T19:25:22Z",
   "description": "At continuation entry, read captures and the outer continuation into registers, then if the frame ends at bump_top and no ValueRef capture is scalar-kinded (pinned), set bump_top to the frame start. Write the resumed-once rule down where the continuation kinds are defined (collections only at quantum end; runnable and park record are taken on resume; a try handler captures the outer K and is popped before K resumes).\nMeasured: tail loop 1M iterations 4M frames popped, collections 1000-\u003e52; distiller 32k minor collections 752-\u003e290, peak 303-\u003e239 MB.\nAcceptance: a poison mode becomes a test over the native paths of the matrix, with the late-read positive control proving it catches a use after resume; pop hits/misses/pinned reported as heap statistics.\nProposal (approved 2026-11-14): https://claude.ai/artifact/94aN2YPxunzwVEzct26nz2 (local /Users/j5n/Workspace/fz-d7w.html). Spike evidence: worktree ../fz-hc, branch exp/heap-cont-reads (uncommitted, FZ_SPIKE_* switches).",
   "id": "fz-9x7.2",
