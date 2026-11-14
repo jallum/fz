@@ -748,3 +748,20 @@ fn in_place_remap_is_the_remap_that_cloned_each_descriptor() {
         "the in-place remap interns exactly the types the copying remap interned",
     );
 }
+
+#[test]
+fn an_address_asked_for_again_is_the_variable_interned_for_its_id() {
+    // The type of an address is remembered per address. Each ask, first or
+    // repeated, is the interned variable of that address's id, and the
+    // result slot is the address `[Result]` like any other.
+    let mut t = Types::new();
+    let paths: [&[AddrStep]; 4] = [&[Param(0)], &[Param(1)], &[Param(1), Elem], &[AddrStep::Result]];
+    for path in paths {
+        let first = t.address_var(path);
+        let id = t.address_id(path);
+        assert_eq!(first, t.type_var(id), "{path:?} is its id's variable");
+        assert_eq!(first, t.address_var(path), "{path:?} asked again");
+    }
+    assert_eq!(t.result_alpha(), t.address_var(&[AddrStep::Result]));
+    assert_ne!(t.param_alpha(0), t.param_alpha(1));
+}
