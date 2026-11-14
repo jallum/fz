@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:53:57Z",
+  "description": "With 'when is_list(funs)' (alone or joined with 'and is_list(inner)') on the %Stream{} clause of Enumerable.Stream.reduce in lib/stream.fz, the distiller fails on interp and run: 'artifact/incomplete-semantic-plan: compiler2 materialization for root 0: public closure callsite 0 settled return `any` disagrees with its semantic result type `{:cont, any}`', located at \u003cgenerated\u003e. A guard on inner alone compiles. Reproduces with develop's src/compiler2/contract.rs (so it is not caused by fz-i89).\nSmallest program found: 74 lines, scratchpad/i89/g/min2.exs (File.stream! |\u003e Stream.map(\u0026JSON.decode!/1) |\u003e Enum.to_list, OptionParser.parse, Enum.group_by |\u003e Enum.map with Enum.frequencies_by |\u003e Map.values); its message is '... disagrees with its semantic result type `{:cont, not(%{:__struct__: atom})}`'. A standalone struct with the same guard (scratchpad/i89/g/g1.fz) passes, as do plain stream programs.\nNot investigated: why the settled return of the closure callsite stays any while the semantic result is narrower; which ingredient of min2 is necessary.\nFails before, passes after: min2 reduced to a fixture runs on all three paths with the guard on funs in lib/stream.fz.\nAcceptance: full gate green; no pin rises unexplained.",
+  "id": "fz-w0l",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "A list guard on a Stream's funs field compiles the distiller",
+  "type": "bug",
+  "updated_at": "2026-11-14T01:53:57Z"
+}
