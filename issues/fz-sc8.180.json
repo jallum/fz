@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:55:42Z",
+  "description": "def f(x), do: x + 1 then f = 5; f(1) fails at run time: call_closure on non-closure value Int(5). Elixir calls f/1 and answers 2; a variable is called only as f.(1).",
+  "id": "fz-sc8.180",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A name called with arguments is the function, though a variable of that name is bound",
+  "type": "bug",
+  "updated_at": "2026-11-14T01:55:42Z"
+}
