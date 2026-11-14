@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:29:20Z",
+  "description": "String.trim_leading(\"xxa\", \"x\") is \"a\" in Elixir; likewise trim_trailing/2 and trim/2 with a string to remove. fz2: 'module String does not export trim_leading/2' (and trim_trailing/2, trim/2). Reported by fz-8c; reproduced on develop e515ae314.",
+  "id": "fz-sc8.190",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "String.trim/2, trim_leading/2 and trim_trailing/2",
+  "type": "feature",
+  "updated_at": "2026-11-14T04:29:20Z"
+}
