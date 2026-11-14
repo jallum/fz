@@ -1,0 +1,7 @@
+error[parse/expected-token]: invalid hex escape character, expected \xHH where H is a hexadecimal digit
+  --> fixtures/01226_a_malformed_hex_escape_is_rejected.fz:1:7
+   |
+1 | x = "a\xg"
+   |       ^^
+   |
+

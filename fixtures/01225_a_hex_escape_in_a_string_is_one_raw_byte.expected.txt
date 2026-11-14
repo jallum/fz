@@ -1,0 +1,7 @@
+{<<255>>, true, 1, false}
+{true, true, true}
+{true, true, true}
+{true, true, true}
+true
+255
+true

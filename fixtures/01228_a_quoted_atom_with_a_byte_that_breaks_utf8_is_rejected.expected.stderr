@@ -1,0 +1,7 @@
+error[parse/expected-token]: invalid encoding in atom: invalid encoding starting at <<255, 98>>
+  --> fixtures/01228_a_quoted_atom_with_a_byte_that_breaks_utf8_is_rejected.fz:1:13
+   |
+1 | x = :"a\xFFb"
+   |             ^
+   |
+
