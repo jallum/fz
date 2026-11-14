@@ -30,15 +30,18 @@ and every loop still crosses a tail call.
   `Process::collect` is the one place a process's roots are assembled (see
   "Accounting at the boundary").
 - **`Heap`** (`runtime/src/heap`) owns allocation, block growth, and
-  `should_gc`, a pure function of the heap's state: the bytes allocated since
-  the heap was last all live (`bytes_used - live_baseline`) against the larger
-  of `live_baseline` and half the smallest tip. A collection sets
-  `live_baseline` to its survivors and `graft` raises it by the gift's fill;
-  allocation leaves it alone. Exhausting the current block parks it in `blocks` for the next
-  Cheney pass and installs a tip one capacity step up; an object larger than
-  that step is parked in a block of its own and the tip is left as it was. Blocks grafted from
-  another heap's gift segment (`Heap::graft`) join `blocks`, are from-space for
-  the next pass, and count by fill like any other parked block.
+  `should_gc`, a pure function of the heap's state: the young bytes, those
+  allocated since the last collection (`young_bytes`), against
+  `live_baseline`, the bytes in old blocks, held between half the smallest tip
+  and the largest pooled block (`young_budget`). A
+  collection sets `live_baseline` to the old bytes it leaves and `graft` raises
+  it by the gift's fill; allocation leaves it alone. Exhausting the current
+  block parks it in `young_blocks` for the next Cheney pass and installs a tip
+  one capacity step up; an object larger than that step is parked in a block of
+  its own and the tip is left as it was. The tip and `young_blocks` are the
+  young blocks; blocks a collection filled with survivors and blocks grafted
+  from another heap's gift segment (`Heap::graft`) are old (`old_blocks`) and
+  count by fill like any other block.
 - **The schedulers** (JIT `src/exec/runtime.rs` with `CompiledModule::run_quantum`
   in `src/ir_codegen/compiled.rs`, AOT `runtime/src/aot_shim.rs`, interpreter
   `src/ir_interp`) own dispatch: install a fresh budget and run the process.
@@ -87,9 +90,9 @@ back edge         reductions_remaining -= 1
 allocation        bump_top += size
                   if bump_top would cross block_end:
                     allocate a larger block
-                    move old current block to blocks
+                    move old current block to young_blocks
 
-boundary          if heap.should_gc():   (bytes_used - live_baseline >= max(live_baseline, SIZE_TABLE[0] / 2))
+boundary          if heap.should_gc():   (young_bytes >= max(live_baseline, SIZE_TABLE[0] / 2))
                     Process::collect
                   clear yield_reasons
 ```
@@ -143,16 +146,30 @@ collection asserts that no window is open. Cross-process send is the window's us
 message, or a match's bound values, and copies it inside one, and the segment travels to the
 receiver on its `in_queue` (see [scheduler](scheduler-zero-arg-closures.md)).
 
-Grafted blocks are parked blocks like any other, so a gift's fill is part of
-`bytes_used`; it is also part of `live_baseline`, because a gift arrives packed
-and fully live, the state of a heap after a collection. A gift therefore never
-makes a collection due: only the receiver's own allocation does, once it
-reaches the baseline. A collection installs a fresh tip whose capacity is a guess, the live
-baseline (the smallest tip when the baseline is empty), and copies through the
-ordinary bump path: a copy that fills the tip parks it and the next capacity up
-is installed, and an object above the next step parks alone. A wrong guess
-costs a block. The heap after a collection is the new tip plus the parked
-to-space blocks, and the live baseline is the bytes copied.
+A grafted block is old: its fill is part of `bytes_used` and of
+`live_baseline`, because a gift arrives packed and fully live, the state of a
+heap after a collection, and references only itself and literals. A gift
+therefore never makes a collection due: only the receiver's own allocation
+does, once it reaches the baseline. Its list cells are shared from birth
+(`link_list_tail` marks each cell copied inside a window), so no cell of an old
+block is rewritten in place to point at a younger value. A minor collection
+leaves the gift where it is and only a major collection copies the live data
+out of it; the gift's MSO prefix splices onto the old chain (`mso_old_head`).
+
+A collection is minor or major (`Heap::next_generation`). A minor collection's
+from-space is the young blocks, so old blocks stay where they are and a
+pointer into one is left as it is. A major collection's from-space is every
+block, and it runs once `live_baseline` exceeds `MAJOR_GROWTH_FACTOR` (2) times
+the larger of the old bytes the last major collection left and half the smallest
+tip; a heap with nothing old is always minor. Either way the survivors are
+copied through the ordinary bump path into a fresh tip whose capacity is a guess
+(the old bytes for a major collection, the bytes the last collection copied for
+a minor one, at least the smallest tip): a copy that fills the tip parks it and
+the next capacity up is installed, and an object above the next step parks
+alone. A wrong guess costs a block. The blocks the copy filled become old, the
+from-space is released, and allocation continues in a fresh tip sized to the
+old bytes. After a minor collection `live_baseline` is the old bytes it had plus
+the bytes copied; after a major collection it is the bytes copied.
 
 Compiled yield telemetry still samples the slow path that materializes a
 continuation closure:

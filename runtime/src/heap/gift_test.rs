@@ -41,10 +41,10 @@ fn procbin_word(pb: &ProcBin) -> u64 {
     heap_object_word(pb.as_raw() as *const u8, ValueKind::PROCBIN)
 }
 
-/// The heap's mso chain as tagged words, head first.
-fn mso_chain(h: &Heap) -> Vec<u64> {
+/// The mso chain from `head` as tagged words, head first.
+fn chain_from(head: u64) -> Vec<u64> {
     let mut out = Vec::new();
-    let mut cur_bits = h.mso_head;
+    let mut cur_bits = head;
     while cur_bits != 0 {
         let addr = heap_word_addr(cur_bits);
         let next = match heap_kind_from_tagged(cur_bits) {
@@ -56,6 +56,16 @@ fn mso_chain(h: &Heap) -> Vec<u64> {
         cur_bits = next;
     }
     out
+}
+
+/// The heap's young mso chain: the stubs allocated since its last collection.
+fn mso_chain(h: &Heap) -> Vec<u64> {
+    chain_from(h.mso_head)
+}
+
+/// The heap's old mso chain: the stubs a collection kept and gifts brought.
+fn mso_old_chain(h: &Heap) -> Vec<u64> {
+    chain_from(h.mso_old_head)
 }
 
 /// The last table entry: anything larger is outside the pool.
@@ -123,7 +133,7 @@ fn end_gift_restores_the_senders_tip_and_leaves_its_earlier_allocations_untouche
     let _ = sender.alloc(1008);
     let _ = sender.alloc(64);
     assert!(
-        sender.blocks.is_empty(),
+        sender.young_blocks.is_empty(),
         "the measured bytes fit; the window never overflows"
     );
     let segment = sender.end_gift();
@@ -134,7 +144,7 @@ fn end_gift_restores_the_senders_tip_and_leaves_its_earlier_allocations_untouche
         (sender.block_start, sender.bump_top, sender.block_size),
         (start, top, capacity)
     );
-    assert!(sender.blocks.is_empty(), "the sender's own chain is as it was");
+    assert!(sender.young_blocks.is_empty(), "the sender's own chain is as it was");
     assert_eq!(sender.bytes_used(), bytes_used);
     assert_eq!(
         sender.live_count(),
@@ -167,24 +177,30 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
     assert_eq!(shared_refs(&witness), 2, "the segment holds the heap-owned reference");
 
     receiver.graft(segment);
-    assert_eq!(mso_chain(&receiver), vec![gifted]);
+    assert_eq!(mso_old_chain(&receiver), vec![gifted]);
+    assert_eq!(mso_chain(&receiver), Vec::<u64>::new());
     let mut root = gifted as *mut u8;
     assert_eq!(pool_total_cached_blocks(), 0);
-    receiver.collect_tagged(&mut root);
+    let stats = receiver.collect_tagged(&mut root);
 
-    let moved = procbin_addr_from_tagged(root as u64).expect("procbin root");
-    assert_ne!(moved, pb.as_raw(), "the stub was copied out of the adopted block");
+    assert_eq!(stats.generation, Generation::Minor);
+    let kept = procbin_addr_from_tagged(root as u64).expect("procbin root");
     assert_eq!(
-        mso_chain(&receiver),
-        vec![heap_object_word(moved as *const u8, ValueKind::PROCBIN)],
-        "the chain now names the to-space copy"
+        kept,
+        pb.as_raw(),
+        "a gift is old: a minor collection leaves its stub in place"
     );
-    assert_eq!(unsafe { ProcBin::from_raw(moved) }.shared_raw(), witness.as_raw());
-    assert_eq!(shared_refs(&witness), 2, "the refcount is unchanged by the move");
+    assert_eq!(
+        mso_old_chain(&receiver),
+        vec![gifted],
+        "the chain still names the stub in the adopted block"
+    );
+    assert_eq!(unsafe { ProcBin::from_raw(kept) }.shared_raw(), witness.as_raw());
+    assert_eq!(shared_refs(&witness), 2, "the refcount is unchanged by the collection");
     assert_eq!(
         pool_total_cached_blocks(),
         1,
-        "the receiver's old tip is back in the pool; the exact gift block went to the system allocator"
+        "the receiver's old tip is back in the pool; the exact gift block is still the receiver's"
     );
     drop(receiver);
     assert_eq!(
@@ -197,7 +213,7 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
 }
 
 #[test]
-fn graft_splices_the_gifts_mso_prefix_ahead_of_the_receivers_chain() {
+fn graft_splices_each_gifts_mso_prefix_ahead_of_the_receivers_old_chain() {
     let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32);
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
@@ -209,6 +225,9 @@ fn graft_splices_the_gifts_mso_prefix_ahead_of_the_receivers_chain() {
     let older = procbin_word(&alloc_procbin(&mut sender, witness.clone(), 1));
     let newer = procbin_word(&alloc_procbin(&mut sender, witness.clone(), 2));
     let segment = sender.end_gift();
+    sender.begin_gift(PROCBIN_BYTES);
+    let latest = procbin_word(&alloc_procbin(&mut sender, witness.clone(), 3));
+    let later_segment = sender.end_gift();
 
     assert_eq!(
         mso_chain(&sender),
@@ -216,17 +235,23 @@ fn graft_splices_the_gifts_mso_prefix_ahead_of_the_receivers_chain() {
         "the sender keeps only its own stub"
     );
     receiver.graft(segment);
+    receiver.graft(later_segment);
+    assert_eq!(
+        mso_old_chain(&receiver),
+        vec![latest, newer, older],
+        "each gift's stubs join the old chain ahead of the last gift's, newest to oldest"
+    );
     assert_eq!(
         mso_chain(&receiver),
-        vec![newer, older, receiver_own],
-        "the gift's stubs come first, newest to oldest, then the receiver's own"
+        vec![receiver_own],
+        "the receiver's own stub is young and stays on the young chain"
     );
-    assert_eq!(shared_refs(&witness), 5);
+    assert_eq!(shared_refs(&witness), 6);
     drop(receiver);
     assert_eq!(
         shared_refs(&witness),
         2,
-        "the receiver released its own stub and both adopted ones"
+        "the receiver released its own stub and every adopted one"
     );
     drop(sender);
     assert_eq!(shared_refs(&witness), 1);
@@ -321,10 +346,11 @@ fn thousands_of_small_unread_gifts_do_not_grow_the_receivers_tip_after_gc() {
     let mut roots = [heap_ref(list)];
     let stats = receiver.collect(&mut roots);
 
+    assert_eq!(stats.generation, Generation::Major, "the gifts outgrew the old bytes");
     assert_eq!(
         receiver.block_size,
-        pick_block_capacity(adopted_fill),
-        "the fresh tip is fitted to the baseline the gifts raised"
+        pick_block_capacity(own_live),
+        "the fresh tip is fitted to the bytes the collection kept"
     );
     assert!(
         receiver.block_size <= capacity_before,
@@ -336,7 +362,7 @@ fn thousands_of_small_unread_gifts_do_not_grow_the_receivers_tip_after_gc() {
         "only the 32000 own live bytes remain of the 128000 in use; the gifts are dead"
     );
     assert_eq!(stats.live_bytes, own_live as u64, "none of the gifts was reachable");
-    assert!(receiver.blocks.is_empty());
+    assert!(receiver.young_blocks.is_empty());
     assert_eq!(
         pool_total_cached_blocks(),
         1,
@@ -378,7 +404,7 @@ fn an_empty_segment_grafts_as_a_no_op_and_never_touches_the_pool() {
     let mut receiver = Heap::new(SIZE_TABLE[0], fresh_registry());
     let _ = alloc_int_list_cons(&mut receiver, 1, EMPTY_LIST);
     let bytes_before = receiver.bytes_used();
-    let adopted_before = receiver.blocks.len();
+    let adopted_before = receiver.young_blocks.len();
     let cached_before = pool_total_cached_blocks();
 
     let segment = GiftSegment::empty();
@@ -387,7 +413,7 @@ fn an_empty_segment_grafts_as_a_no_op_and_never_touches_the_pool() {
     receiver.graft(segment);
 
     assert_eq!(receiver.bytes_used(), bytes_before, "nothing was adopted");
-    assert_eq!(receiver.blocks.len(), adopted_before);
+    assert_eq!(receiver.young_blocks.len(), adopted_before);
     assert_eq!(
         pool_total_cached_blocks(),
         cached_before,
@@ -444,10 +470,11 @@ fn a_grafted_list_is_readable_and_survives_the_receivers_gc() {
     receiver.graft(segment);
     assert!(receiver.contains_heap_addr(list_addr_from_tagged(bits).expect("addr")));
     let mut roots = [heap_ref(bits)];
-    receiver.collect(&mut roots);
-    let moved = roots[0].heap_object_word().expect("moved list");
-    assert_ne!(moved, bits, "the cell moved into the receiver's to-space");
-    let head = receiver.read_list_head_ref(list_ref_from_bits(moved)).expect("head");
+    let stats = receiver.collect(&mut roots);
+    let kept = roots[0].heap_object_word().expect("kept list");
+    assert_eq!(stats.generation, Generation::Minor);
+    assert_eq!(kept, bits, "a gift is old: a minor collection leaves the cell in place");
+    let head = receiver.read_list_head_ref(list_ref_from_bits(kept)).expect("head");
     assert_eq!(head.load_int().expect("int"), 7);
 }
 

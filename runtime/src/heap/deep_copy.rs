@@ -385,6 +385,7 @@ fn deep_copy_list(
         } else {
             let next = copy_list_cell(cur, src_heap, dst_heap, forwarding);
             link_list_tail(
+                dst_heap,
                 prev.0,
                 prev.1,
                 AnyValue::heap_ptr(next.0, ValueKind::LIST)
@@ -395,7 +396,7 @@ fn deep_copy_list(
             cur = unsafe { &*(cur as *const ListCons) }.tail_addr() as *mut u8;
             continue;
         };
-        link_list_tail(prev.0, prev.1, tail_bits);
+        link_list_tail(dst_heap, prev.0, prev.1, tail_bits);
         return AnyValue::heap_ptr(first.0, ValueKind::LIST);
     }
 }
@@ -431,9 +432,16 @@ fn copy_list_cell(
     (dp, new_head)
 }
 
-fn link_list_tail(dp: *mut u8, head: AnyValue, tail_bits: u64) {
+/// Write the finished cell at `dp`. A cell copied into a gift window is shared
+/// from birth: the receiver grafts the gift as old data, and an old cell is
+/// never rewritten in place.
+fn link_list_tail(dst_heap: &Heap, dp: *mut u8, head: AnyValue, tail_bits: u64) {
+    let mut cons = ListCons::new(head.raw(), head.kind(), tail_bits);
+    if dst_heap.gift_window_is_open() {
+        cons.keep_across_collection();
+    }
     unsafe {
-        write(dp as *mut ListCons, ListCons::new(head.raw(), head.kind(), tail_bits));
+        write(dp as *mut ListCons, cons);
     }
 }
 

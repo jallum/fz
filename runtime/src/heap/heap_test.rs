@@ -1,3 +1,4 @@
+use super::imp::MAJOR_GROWTH_FACTOR;
 use super::*;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, EMPTY_LIST_BITS, ListCons, STRUCT_PAYLOAD_OFFSET, SlotLayout,
@@ -778,7 +779,7 @@ fn alloc_grows_to_next_capacity_on_overflow() {
     assert_ne!(h.block_start, initial_block, "grow must move block_start");
     assert!(h.block_size > initial_capacity, "grow must raise the capacity");
     assert_eq!(h.block_size, next_block_capacity(initial_capacity));
-    assert!(!h.blocks.is_empty());
+    assert!(!h.young_blocks.is_empty());
     assert_eq!(h.live_count(), 80);
 }
 
@@ -1590,32 +1591,86 @@ fn next_block_capacity_climbs_the_table_then_grows_by_a_fifth() {
     assert!(next_block_capacity(past) > past, "it never stops climbing");
 }
 
-/// Under increasing load, the blocks a collection leaves hold exactly the
-/// live bytes: build progressively longer rooted chains and collect each.
-/// Early rounds outgrow the guessed tip (the last live bytes), so the copy
-/// parks to-space blocks; the heap is the tip plus those blocks either way.
+/// Under increasing load, each round's list replaces the last. A major
+/// collection leaves exactly the live bytes. A minor collection leaves the live
+/// bytes plus old data that has died since, and that is bounded: old data
+/// reaching `MAJOR_GROWTH_FACTOR` times what the last major collection left
+/// makes the next collection major.
 #[test]
-fn the_heaps_blocks_hold_the_live_bytes_as_load_grows() {
+fn the_heaps_blocks_hold_the_live_bytes_and_a_bounded_amount_of_dead_old_data() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut seen = Vec::new();
     for power in 6..=12 {
         let len = 1usize << power; // 64, 128, ..., 4096 cells
         let mut tail = EMPTY_LIST;
         for i in 0..len {
             tail = alloc_int_list_cons(&mut h, i as i64, tail);
         }
+        let old_before = h.live_baseline;
+        let dead_old_allowed = MAJOR_GROWTH_FACTOR * h.old_after_last_major.max(SIZE_TABLE[0] / 2);
         let mut roots = [heap_ref(tail)];
         let stats = h.collect(&mut roots);
         let live_bytes = len * 16;
-        assert_eq!(h.bytes_used(), live_bytes, "the heap's blocks hold every live byte");
-        assert_eq!(h.live_baseline, live_bytes);
-        assert_eq!(stats.live_bytes, live_bytes as u64);
-        assert_eq!(stats.blocks_after, 1 + h.blocks.len() as u64);
-        let capacity = h.block_size + h.blocks.iter().map(|block| block.capacity).sum::<usize>();
-        assert!(
-            capacity >= live_bytes,
-            "capacity {capacity} holds live bytes {live_bytes}"
+        match stats.generation {
+            Generation::Major => {
+                assert_eq!(
+                    h.bytes_used(),
+                    live_bytes,
+                    "a major collection leaves exactly the live bytes"
+                );
+            }
+            Generation::Minor => {
+                assert_eq!(
+                    h.bytes_used(),
+                    old_before + live_bytes,
+                    "a minor collection adds its survivors"
+                );
+                assert!(
+                    old_before <= dead_old_allowed,
+                    "dead old data {old_before} is within the bound {dead_old_allowed}"
+                );
+            }
+        }
+        assert_eq!(
+            h.live_baseline,
+            h.bytes_used(),
+            "everything held after a collection is old"
         );
+        assert_eq!(stats.live_bytes, h.live_baseline as u64);
+        assert_eq!(stats.blocks_after, h.old_blocks.len() as u64);
+        let capacity: usize = h.old_blocks.iter().map(|block| block.capacity).sum();
+        assert!(
+            capacity >= h.bytes_used(),
+            "capacity {capacity} holds the bytes kept {}",
+            h.bytes_used()
+        );
+        seen.push(stats.generation);
     }
+    assert!(seen.contains(&Generation::Minor) && seen.contains(&Generation::Major));
+}
+
+/// A heap holding more than the largest pooled block still allocates its
+/// young data in a pooled block and collects after filling one, so a large
+/// live set does not make each collection obtain and return a large block.
+#[test]
+fn a_large_heaps_young_generation_is_one_pooled_block() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut tail = EMPTY_LIST;
+    for i in 0..(TABLE_CEILING / 16 * 2) {
+        tail = alloc_int_list_cons(&mut h, i as i64, tail);
+    }
+    let mut roots = [heap_ref(tail)];
+    h.collect(&mut roots);
+    assert!(h.live_baseline > TABLE_CEILING);
+    assert_eq!(h.block_size, TABLE_CEILING, "the fresh tip is the largest pooled block");
+    assert!(!h.should_gc());
+    for i in 0..(TABLE_CEILING / 16) {
+        alloc_int_list_cons(&mut h, i as i64, EMPTY_LIST);
+    }
+    assert!(
+        h.should_gc(),
+        "a collection is due once the pooled block's worth is allocated"
+    );
 }
 
 /// To-space starts as a tip sized by a guess, the last live bytes. When the
@@ -1634,8 +1689,8 @@ fn a_copy_larger_than_the_guessed_tip_parks_to_space_blocks() {
 
     let stats = h.collect(&mut roots);
 
-    assert!(!h.blocks.is_empty(), "the copy overflowed its guessed tip");
-    assert_eq!(stats.blocks_after, 1 + h.blocks.len() as u64);
+    assert!(h.old_blocks.len() > 1, "the copy overflowed its guessed tip");
+    assert_eq!(stats.blocks_after, h.old_blocks.len() as u64);
     assert_eq!(stats.live_bytes, (len * 16) as u64);
     assert_eq!(
         h.bytes_used(),
@@ -1669,7 +1724,7 @@ fn a_steady_live_set_collects_into_one_block() {
     h.collect(&mut roots);
     let stats = h.collect(&mut roots);
     assert_eq!(stats.blocks_after, 1, "the guess now holds the live bytes");
-    assert!(h.blocks.is_empty());
+    assert!(h.young_blocks.is_empty());
 }
 
 /// live_baseline is the bytes the collection copied.
@@ -2105,7 +2160,7 @@ fn gc_keeps_arena_bounded_across_many_cycles() {
         h.collect(&mut roots);
         // Post-gc invariants.
         assert_eq!(h.live_count(), 3, "rooted chain survives");
-        assert_eq!(h.blocks.len(), 0, "abandoned blocks reclaimed");
+        assert_eq!(h.young_blocks.len(), 0, "abandoned blocks reclaimed");
     }
     // After the working-set-fits-in-block point, block_size stays put.
     // Generous upper bound: 32× initial guards against runaway growth.
@@ -2157,11 +2212,11 @@ fn shared_refs(handle: &SharedBinHandle) -> usize {
     unsafe { (*handle.as_raw()).refcount.load(Ordering::Relaxed) }
 }
 
-/// Walk the heap's MSO chain and return the contained tagged pointers
+/// Walk an MSO chain from `head` and return the contained tagged pointers
 /// in chain order (head → tail).
-fn mso_chain(h: &Heap) -> Vec<u64> {
+fn chain_from(head: u64) -> Vec<u64> {
     let mut out = Vec::new();
-    let mut cur_bits = h.mso_head;
+    let mut cur_bits = head;
     while cur_bits != 0 {
         let addr = heap_word_addr(cur_bits);
         let next = match heap_kind_from_tagged(cur_bits) {
@@ -2173,6 +2228,16 @@ fn mso_chain(h: &Heap) -> Vec<u64> {
         cur_bits = next;
     }
     out
+}
+
+/// The young stubs: those allocated since the last collection.
+fn mso_chain(h: &Heap) -> Vec<u64> {
+    chain_from(h.mso_head)
+}
+
+/// The old stubs: those a collection kept and those gifts brought.
+fn mso_old_chain(h: &Heap) -> Vec<u64> {
+    chain_from(h.mso_old_head)
 }
 
 /// `alloc_procbin` writes a strict `PROCBIN_BYTES` ProcBin and pushes onto the chain.
@@ -2204,10 +2269,11 @@ fn procbin_survives_gc_via_mso_rewrite() {
     h.collect_tagged(&mut root);
     let new_pb = procbin_addr_from_tagged(root as u64).unwrap();
     assert_ne!(new_pb, from_pb, "ProcBin should have moved to to-space");
+    assert_eq!(mso_chain(&h), vec![], "the young chain is empty");
     assert_eq!(
-        mso_chain(&h),
+        mso_old_chain(&h),
         vec![heap_object_word(new_pb as *const u8, ValueKind::PROCBIN)],
-        "chain rewritten"
+        "chain rewritten onto the old chain"
     );
     assert_eq!(shared_refs(&witness), 2, "GC preserves the same heap-owned edge");
     let pb_to = unsafe { ProcBin::from_raw(new_pb) };
@@ -2249,7 +2315,7 @@ fn procbin_mso_chain_intact_through_gc_partial_survival() {
     let live_to = procbin_addr_from_tagged(root as u64).unwrap();
     assert_ne!(live_to, live_from);
     assert_eq!(
-        mso_chain(&h),
+        mso_old_chain(&h),
         vec![heap_object_word(live_to as *const u8, ValueKind::PROCBIN)]
     );
     assert_eq!(unsafe { ProcBin::from_raw(live_to).shared_raw() }, live_shared);
@@ -2429,7 +2495,7 @@ fn shared_heap_acceptance_spawn_and_share() {
         let mut root_u8 = *root_ptr as *mut u8;
         r.collect_tagged(&mut root_u8);
         *root_ptr = root_u8 as u64;
-        let chain = mso_chain(r);
+        let chain = mso_old_chain(r);
         assert_eq!(chain.len(), 1);
         assert_eq!(chain[0], *root_ptr);
     }
@@ -2494,7 +2560,7 @@ fn an_object_above_the_table_allocates_into_an_exact_unpooled_block() {
     assert!(!p.is_null());
     assert_eq!(h.block_size, SIZE_TABLE[0], "the tip did not move");
     assert_eq!(h.bytes_remaining_in_block(), SIZE_TABLE[0]);
-    let parked = h.blocks.last().expect("the huge object's block is parked");
+    let parked = h.young_blocks.last().expect("the huge object's block is parked");
     assert_eq!(parked.start, p);
     assert_eq!(
         parked.capacity,
@@ -2506,7 +2572,7 @@ fn an_object_above_the_table_allocates_into_an_exact_unpooled_block() {
         TABLE_CEILING + 16,
         "the block holds the object and nothing else"
     );
-    assert_eq!(h.blocks.len(), 1);
+    assert_eq!(h.young_blocks.len(), 1);
     assert_eq!(
         pool_outstanding_blocks(),
         pooled_before,
@@ -2530,9 +2596,9 @@ fn a_huge_object_parks_and_the_next_small_allocation_lands_in_the_unmoved_tip() 
     assert_eq!(h.block_start, tip_start);
     assert_eq!(small, tip_start, "the small object is the tip's first");
     assert_eq!(h.bump_top, unsafe { tip_start.add(16) });
-    assert_eq!(h.blocks.len(), 1);
-    assert_eq!(h.blocks[0].start, big);
-    assert_eq!(h.blocks[0].capacity, pick_block_capacity(huge));
+    assert_eq!(h.young_blocks.len(), 1);
+    assert_eq!(h.young_blocks[0].start, big);
+    assert_eq!(h.young_blocks[0].capacity, pick_block_capacity(huge));
     assert_eq!(h.live_count(), 2);
 }
 
@@ -2549,9 +2615,9 @@ fn an_allocation_within_one_step_of_the_tip_still_climbs_the_tip() {
 
     assert_eq!(h.block_size, step, "the tip climbed one step");
     assert_eq!(h.block_start, p);
-    assert_eq!(h.blocks.len(), 1);
-    assert_eq!(h.blocks[0].start, tip_start, "the old tip is what was parked");
-    assert_eq!(h.blocks[0].capacity, tip_capacity);
+    assert_eq!(h.young_blocks.len(), 1);
+    assert_eq!(h.young_blocks[0].start, tip_start, "the old tip is what was parked");
+    assert_eq!(h.young_blocks[0].capacity, tip_capacity);
 }
 
 /// A live huge object parked beside the tip is copied by a collection and its
@@ -2562,7 +2628,7 @@ fn a_collection_copies_a_parked_huge_object_and_releases_its_block() {
     let id = above_table_schema(&reg);
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let big = h.alloc_struct(id);
-    assert_eq!(h.blocks.len(), 1, "the huge object is parked");
+    assert_eq!(h.young_blocks.len(), 1, "the huge object is parked");
     let mut root = struct_root(big);
 
     let stats = h.collect_tagged(&mut root);
@@ -2571,9 +2637,9 @@ fn a_collection_copies_a_parked_huge_object_and_releases_its_block() {
     assert_ne!(moved, big);
     assert!(h.contains_heap_addr(moved));
     assert!(!h.contains_heap_addr(big), "the parked exact block was released");
-    assert_eq!(h.blocks.len(), 1, "the copy is parked alone in a block of its own");
+    assert_eq!(h.old_blocks.len(), 1, "the copy is parked alone in a block of its own");
     assert_eq!(stats.copied_objects, 1);
-    assert_eq!(stats.blocks_after, 2, "the fresh tip and the copy's block");
+    assert_eq!(stats.blocks_after, 1, "the copy's block");
     assert_eq!(stats.blocks_released, 2, "the tip and the parked block");
 }
 
@@ -2626,7 +2692,7 @@ fn an_unrooted_object_above_the_table_is_freed_by_a_collection() {
     let stats = h.collect_tagged(&mut root);
 
     assert!(!h.contains_heap_addr(p), "the exact block was released");
-    assert!(h.blocks.is_empty());
+    assert!(h.young_blocks.is_empty());
     assert_eq!(stats.live_bytes, 0);
     assert_eq!(stats.live_objects, 0);
     assert_eq!(

@@ -306,12 +306,12 @@ impl ProcBin {
 
 // ===== Allocation on a per-process heap =====================================
 
-use crate::heap::{Heap, HeapAllocKind};
+use crate::heap::{Generation, Heap, HeapAllocKind};
 
 /// Allocate a ProcBin stub on `heap` viewing `handle`'s bytes from
 /// `byte_offset` to the end, taking ownership of the SharedBin reference
-/// encapsulated in `handle`. The new ProcBin is pushed onto `heap.mso_head`
-/// as the new chain head.
+/// encapsulated in `handle`. The new ProcBin is pushed onto `heap.mso_head`,
+/// the young chain, as the new chain head.
 ///
 /// Pass `0` for the whole binary. The length is derived, not passed: see
 /// the `ProcBin` layout note for why only suffixes are constructible.
@@ -360,106 +360,128 @@ pub struct DeadResource {
     pub payload: u64,
 }
 
+/// The head of each chain a collection of `generation` examines: the young
+/// chain, and for a major collection the old chain too. A stub on the other
+/// chain is not examined: a minor collection does not look at an old stub.
+fn examined_chain_heads(heap: &Heap, generation: Generation) -> impl Iterator<Item = u64> {
+    let old_head = (generation == Generation::Major).then_some(heap.mso_old_head);
+    std::iter::once(heap.mso_head).chain(old_head)
+}
+
 /// The destructor closures of the resource stubs a collection's trace has not
 /// reached, keyed by stub address. Those closures are about to be orphaned
 /// with the from-space, so the collector forwards them before the sweep
 /// decides the stubs. Claimed resources are skipped: their owner cleans up
-/// deterministically and no closure will run.
-pub(crate) fn mso_unreached_closures(heap: &Heap) -> Vec<(usize, AnyValue)> {
+/// deterministically and no closure will run. Only the stubs `generation`
+/// examines are considered.
+pub(crate) fn mso_unreached_closures(heap: &Heap, generation: Generation) -> Vec<(usize, AnyValue)> {
     use crate::resource::ResourceStub;
     let mut unreached = Vec::new();
-    let mut cur_bits = heap.mso_head;
-    while cur_bits != 0 {
-        let (kind, cur) = mso_stub(cur_bits);
-        let survived = forwarded_target(cur, kind).is_some();
-        cur_bits = match kind {
-            ValueKind::PROCBIN => unsafe { ProcBin::from_raw(cur).mso_next() },
-            ValueKind::RESOURCE => {
-                let rs = unsafe { ResourceStub::from_raw(cur) };
-                if !survived && !rs.is_claimed() {
-                    unreached.push((cur as usize, rs.closure_value()));
+    for head in examined_chain_heads(heap, generation) {
+        let mut cur_bits = head;
+        while cur_bits != 0 {
+            let (kind, cur) = mso_stub(cur_bits);
+            let survived = forwarded_target(cur, kind).is_some();
+            cur_bits = match kind {
+                ValueKind::PROCBIN => unsafe { ProcBin::from_raw(cur).mso_next() },
+                ValueKind::RESOURCE => {
+                    let rs = unsafe { ResourceStub::from_raw(cur) };
+                    if !survived && !rs.is_claimed() {
+                        unreached.push((cur as usize, rs.closure_value()));
+                    }
+                    rs.mso_next()
                 }
-                rs.mso_next()
-            }
-            _ => panic!("mso_unreached_closures: invalid MSO kind {kind:?}"),
-        };
+                _ => panic!("mso_unreached_closures: invalid MSO kind {kind:?}"),
+            };
+        }
     }
     unreached
 }
 
-/// Decide every stub on `heap.mso_head`'s chain. This is the one place a dead
-/// resource is handled, after a collection's trace and when a process exits
-/// (a process exit is the same walk with nothing live).
+/// Decide every stub on the chains `generation` examines: the young chain, and
+/// for a major collection the old chain too. This is the one place a dead
+/// resource is handled, after a collection's trace and when a process exits (a
+/// process exit is a major sweep with nothing live).
 ///
 /// A stub carrying a forwarding marker survived: it is relinked to its
-/// to-space copy. Any other stub is dead and drops its off-heap reference. A
-/// dead ProcBin releases its SharedBin synchronously. A dead Resource whose
-/// last reference this was returns a `DeadResource`, unless it was claimed;
-/// its destructor is fz code and runs at the scheduler boundary, never inside
-/// the sweep. `closure_of` yields the destructor closure of a dead stub as a
-/// value that is valid once the sweep returns: the forwarded closure after a
-/// collection, the closure as it stands at exit.
+/// to-space copy, on the old chain, which a minor sweep leaves otherwise
+/// untouched and a major sweep rebuilds. Any other stub is dead and drops its
+/// off-heap reference. A dead ProcBin releases its SharedBin synchronously. A
+/// dead Resource whose last reference this was returns a `DeadResource`,
+/// unless it was claimed; its destructor is fz code and runs at the scheduler
+/// boundary, never inside the sweep. `closure_of` yields the destructor closure
+/// of a dead stub as a value that is valid once the sweep returns: the
+/// forwarded closure after a collection, the closure as it stands at exit.
 ///
 /// A survivor's from-space word 0 holds a forwarding marker, so its off-heap
 /// pointer is read from the to-space copy. Must run before the
 /// from-space is released, since dead stubs live there.
 pub fn mso_sweep(
     heap: &mut Heap,
+    generation: Generation,
     mut closure_of: impl FnMut(&crate::resource::ResourceStub) -> AnyValue,
 ) -> Vec<DeadResource> {
     use crate::resource::{ResourceStub, fz_resource_release_deferred};
     let mut dead = Vec::new();
-    let mut new_head = 0_u64;
-    let mut cur_bits = heap.mso_head;
-    while cur_bits != 0 {
-        let (kind, cur) = mso_stub(cur_bits);
-        if let Some(to_p) = forwarded_target(cur, kind) {
-            let next = match kind {
-                ValueKind::PROCBIN => unsafe { ProcBin::from_raw(cur).mso_next() },
-                ValueKind::RESOURCE => unsafe { ResourceStub::from_raw(cur).mso_next() },
-                _ => panic!("mso_sweep: invalid MSO kind {kind:?}"),
-            };
-            let new_bits = heap_object_word(to_p, kind);
-            if kind == ValueKind::RESOURCE {
-                unsafe { ResourceStub::from_raw(to_p).mso_next_set(new_head) };
-            } else {
-                unsafe { ProcBin::from_raw(to_p).mso_next_set(new_head) };
-            }
-            new_head = new_bits;
-            cur_bits = next;
-            continue;
-        }
-
-        match kind {
-            ValueKind::PROCBIN => {
-                let pb = unsafe { ProcBin::from_raw(cur) };
-                let next = pb.mso_next();
-                unsafe { shared_bin_release(pb.shared_raw()) };
-                cur_bits = next;
-            }
-            ValueKind::RESOURCE => {
-                let rs = unsafe { ResourceStub::from_raw(cur) };
-                let next = rs.mso_next();
-                if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
-                    dead.push(DeadResource {
-                        closure: closure_of(&rs).ref_word().raw_word(),
-                        payload,
-                    });
+    let mut new_old_head = match generation {
+        Generation::Minor => heap.mso_old_head,
+        Generation::Major => 0,
+    };
+    for head in examined_chain_heads(heap, generation).collect::<Vec<_>>() {
+        let mut cur_bits = head;
+        while cur_bits != 0 {
+            let (kind, cur) = mso_stub(cur_bits);
+            if let Some(to_p) = forwarded_target(cur, kind) {
+                let next = match kind {
+                    ValueKind::PROCBIN => unsafe { ProcBin::from_raw(cur).mso_next() },
+                    ValueKind::RESOURCE => unsafe { ResourceStub::from_raw(cur).mso_next() },
+                    _ => panic!("mso_sweep: invalid MSO kind {kind:?}"),
+                };
+                let new_bits = heap_object_word(to_p, kind);
+                if kind == ValueKind::RESOURCE {
+                    unsafe { ResourceStub::from_raw(to_p).mso_next_set(new_old_head) };
+                } else {
+                    unsafe { ProcBin::from_raw(to_p).mso_next_set(new_old_head) };
                 }
+                new_old_head = new_bits;
                 cur_bits = next;
+                continue;
             }
-            _ => panic!("mso_sweep: invalid MSO kind {kind:?}"),
+
+            match kind {
+                ValueKind::PROCBIN => {
+                    let pb = unsafe { ProcBin::from_raw(cur) };
+                    let next = pb.mso_next();
+                    unsafe { shared_bin_release(pb.shared_raw()) };
+                    cur_bits = next;
+                }
+                ValueKind::RESOURCE => {
+                    let rs = unsafe { ResourceStub::from_raw(cur) };
+                    let next = rs.mso_next();
+                    if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
+                        dead.push(DeadResource {
+                            closure: closure_of(&rs).ref_word().raw_word(),
+                            payload,
+                        });
+                    }
+                    cur_bits = next;
+                }
+                _ => panic!("mso_sweep: invalid MSO kind {kind:?}"),
+            }
         }
     }
-    heap.mso_head = new_head;
+    heap.mso_head = 0;
+    heap.mso_old_head = new_old_head;
     dead
 }
 
-/// Drop every ProcBin in `heap.mso_head`'s chain, releasing each
-/// SharedBin reference. Called from `Heap::drop` before pool reclaim.
+/// Drop every stub on the young and old chains, releasing each off-heap
+/// reference. Called from `Heap::drop` before pool reclaim.
 pub fn mso_drop_all(heap: &mut Heap) {
     mso_release_chain(heap.mso_head);
+    mso_release_chain(heap.mso_old_head);
     heap.mso_head = 0;
+    heap.mso_old_head = 0;
 }
 
 /// Release every stub on the chain that starts at `head_bits`: each ProcBin

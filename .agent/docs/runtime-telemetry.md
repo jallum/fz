@@ -100,7 +100,11 @@ freed the resource at a yield or park or the exit swept it (see
 `write_line` renders it on `process_exited` as a number beside
 `list_retention_hits`. There is no separate destructor event; a destructor
 dispatched mid-life is visible on the exit record of the process that ran it,
-and the `fz.runtime.gc` event of the collection that freed it precedes it.
+and the `fz.runtime.gc` event of the collection that freed it precedes it. A
+minor collection examines only the young MSO chain, so a resource stub that
+became old is found dead by the next major collection, whose event has
+`generation` `"major"`; a resource that dies young is found by the next
+collection of either kind.
 `tests/fixture_matrix.rs`
 (`a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path`)
 pins it on the `run`, `interp` and `build` paths: 1 for fixture 00906 and 3 for 00907.
@@ -282,15 +286,25 @@ signature:    (&Collection)
 
 `Collection` is `{ pid, boundary: CollectionBoundary, stats: GcStats }`; a halting
 process is not collected, so the boundary of a collection is `Yield` or `Park`.
-`write_line` renders `pid` and the `boundary` as `"yield"` or `"park"`, then these `GcStats` fields as numbers:
+`write_line` renders `pid`, the `boundary` as `"yield"` or `"park"` and the
+`generation` as `"minor"` or `"major"`, then these `GcStats` fields as numbers.
+A minor collection's from-space is the young blocks (the tip and the blocks
+allocation parked since the last collection) and leaves old blocks in place; a
+major collection's from-space is every block (`Heap::next_generation`):
 
-- `copied_bytes`: bytes the pass copied;
-- `live_bytes`: bytes in use once the pass finished (the bytes copied);
-- `from_space_capacity_bytes`: capacity of every block the pass collected (the
-  tip, a gift's saved tip and every parked block);
+- `copied_bytes`: bytes the pass copied, the survivors of its from-space; a minor
+  pass copies only young survivors, a major pass every live object;
+- `live_bytes`: bytes the heap holds once the pass finished: what earlier
+  collections kept and gifts brought (old bytes a minor pass left) plus what this
+  pass copied, so after a major pass it equals `copied_bytes`; dead old data a
+  minor pass cannot see is included until a major pass reclaims it;
+- `from_space_capacity_bytes`: capacity of every block the pass collected: the
+  young blocks (the tip and every young parked block) for a minor pass, every
+  block for a major pass;
 - `blocks_released`: from-space blocks the pass released;
-- `blocks_after`: blocks the heap holds once the pass finished (the new tip and every
-  to-space block it parked).
+- `blocks_after`: old blocks the heap holds once the pass finished, every block
+  holding data a collection kept or a gift brought; the fresh empty tip is not
+  counted.
 
 `GcStats` carries more (object counts, root and per-container edge
 counts); `Heap::collect` and `Process::collect` return all of it to their
@@ -299,14 +313,15 @@ callers and the heap's unit tests read it there. Every scheduler's
 `tests/fixture_matrix.rs`
 (`a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run`)
 pins fixture 00901: 8 collections on `run` (seven child yields, one parent
-park) copying 2005344 bytes in all, and 1 on `interp` (the parent's park)
-copying 592, since the interpreter charges no reductions and
+park) copying 1222368 bytes in all, and 1 on `interp` (the parent's park)
+copying 560, since the interpreter charges no reductions and
 never yields mid-run. Neither parent collects after its graft: the gifts raised
 its baseline to its fill.
 The same file pins fixture 00910 (`interp`: the parent's park at 48 bytes;
 `run`: its park at 288 bytes) and fixture 00911 (`interp`:
 the parent's park at 0 bytes; `run`: six parent yields copying 12992, 38592,
-76992, 153792, 307392 and 320128 bytes while it builds the list). The
+38464, 76864, 307392 and 304096 bytes while it builds the list, the second and
+fifth of them major). The
 run-ended equality is pinned for both fixtures on `run`, `interp` and `build`.
 `sched_core_test.rs` pins the `Collection` that `end_quantum` observes, that a
 halting process is not collected, and the exit it observes and the destructors it dispatches.

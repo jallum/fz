@@ -28,8 +28,7 @@ pub fn forward_any_value_ref_root(
         tag if tag.is_scalar() => {
             stats.root_scalar_slots += 1;
             let p = value.storage_addr();
-            from_space.assert_classified(heap, p, value.is_literal());
-            if value.is_literal() {
+            if !from_space.moves(heap, p, value.is_literal()) {
                 return;
             }
             let dst = copy_scalar_box_to_space(p, heap, stats);
@@ -38,8 +37,7 @@ pub fn forward_any_value_ref_root(
         tag if tag.is_heap() => {
             stats.root_heap_edges += 1;
             let p = value.storage_addr();
-            from_space.assert_classified(heap, p, value.is_literal());
-            if value.is_literal() {
+            if !from_space.moves(heap, p, value.is_literal()) {
                 return;
             }
             let new_p = cheney_forward_object(tag, p, heap, schemas, copied_objects, stats);
@@ -103,8 +101,7 @@ pub fn forward_heap_value(
     if p.is_null() {
         return value;
     }
-    from_space.assert_classified(heap, p, value_ref.is_literal());
-    if value_ref.is_literal() {
+    if !from_space.moves(heap, p, value_ref.is_literal()) {
         return value;
     }
     let new = cheney_forward_object(kind, p, heap, schemas, copied_objects, stats);
