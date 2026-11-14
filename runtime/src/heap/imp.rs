@@ -19,9 +19,9 @@ use crate::any_value::{
     closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot, closure_capture_set,
     closure_capture_value, closure_header_word, closure_header_write, closure_size_for_count, heap_object_word,
     list_addr_from_tagged, map_addr_from_tagged, map_count, map_destination_header_word, map_destination_state,
-    map_entry, map_header_word, map_keys_ptr, map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr,
-    map_values_ptr, struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id,
-    struct_size_for_payload,
+    map_entry, map_header_word, map_key, map_key_in_arrays, map_keys_ptr, map_pack_tag, map_size_for_count,
+    map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot, struct_field_raw_slot, struct_header_word,
+    struct_schema_id, struct_size_for_payload,
 };
 use crate::procbin::{
     DeadResource, SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep, mso_unreached_closures,
@@ -476,10 +476,7 @@ impl Heap {
         entries.sort_by(|a, b| comparator.compare(a.0, b.0, NumericMode::Strict));
         let mut kept = 0;
         for index in 1..entries.len() {
-            if comparator
-                .compare(entries[index].0, entries[kept].0, NumericMode::Strict)
-                .is_eq()
-            {
+            if comparator.equal(entries[index].0, entries[kept].0, NumericMode::Strict) {
                 entries[kept].1 = entries[index].1;
             } else {
                 kept += 1;
@@ -661,7 +658,7 @@ impl Heap {
         let schemas = self.schemas.borrow();
         let comparator = TermComparator::new(&self.node, &schemas);
         (1..filled).all(|i| {
-            let (earlier, later) = unsafe { (map_entry(dest, i - 1).0, map_entry(dest, i).0) };
+            let (earlier, later) = unsafe { (map_key(dest, i - 1), map_key(dest, i)) };
             comparator.compare(earlier, later, NumericMode::Strict).is_lt()
         })
     }
@@ -762,10 +759,12 @@ impl Heap {
     pub(super) fn map_key_position(&self, addr: *mut u8, key: AnyValue) -> Result<usize, usize> {
         let schemas = self.schemas.borrow();
         let comparator = TermComparator::new(&self.node, &schemas);
-        let (mut low, mut high) = (0, unsafe { map_count(addr) });
+        let count = unsafe { map_count(addr) };
+        let (keys, kinds) = unsafe { (map_keys_ptr(addr, count), map_tag_ptr(addr)) };
+        let (mut low, mut high) = (0, count);
         while low < high {
             let middle = low + (high - low) / 2;
-            let entry_key = unsafe { map_entry(addr, middle).0 };
+            let entry_key = unsafe { map_key_in_arrays(keys, kinds, middle) };
             match comparator.compare(entry_key, key, NumericMode::Strict) {
                 std::cmp::Ordering::Less => low = middle + 1,
                 std::cmp::Ordering::Greater => high = middle,

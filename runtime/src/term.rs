@@ -5,7 +5,7 @@
 
 use crate::any_value::{
     AnyValue, ListCons, MAP_DESTINATION_FLAG, ValueKind, closure_capture_value, closure_captured_count,
-    closure_denotation, map_count, map_entry, struct_schema_id,
+    closure_denotation, map_count, map_entry, map_key, struct_schema_id,
 };
 use crate::heap::{Schema, SchemaIdentity, SchemaRegistry, StructKey};
 use crate::module_name::STRUCT_MODULE_FIELD;
@@ -58,6 +58,9 @@ impl<'a> TermComparator<'a> {
                 );
             }
         }
+        if let Some(order) = same_simple_kind_cmp(a, b) {
+            return order;
+        }
         let category = self.category(a);
         let order = category.cmp(&self.category(b));
         if order != Ordering::Equal {
@@ -70,10 +73,7 @@ impl<'a> TermComparator<'a> {
             Category::Tuple => self.tuple_cmp(address(a), address(b), mode),
             Category::Closure => self.closure_cmp(address(a), address(b)),
             _ if a == b => Ordering::Equal,
-            Category::Bitstring => bitstring_cmp(
-                a.heap_object_word().expect("bitstring"),
-                b.heap_object_word().expect("bitstring"),
-            ),
+            Category::Bitstring => bitstring_cmp(word_of_bitstring(a), word_of_bitstring(b)),
             Category::Map => self.map_cmp(self.map_term(a), self.map_term(b), mode),
             Category::List => self.list_cmp(address(a), address(b), mode),
             Category::Resource => {
@@ -82,6 +82,18 @@ impl<'a> TermComparator<'a> {
                 a.id().cmp(&b.id())
             }
         }
+    }
+
+    /// Whether `a` and `b` are equal under `mode`: exactly `compare(..) ==
+    /// Equal`, settled without an ordering wherever the kinds allow.
+    pub fn equal(&self, a: AnyValue, b: AnyValue, mode: NumericMode) -> bool {
+        if let Some(answer) = same_simple_kind_equal(a, b) {
+            return answer;
+        }
+        if a.kind() != ValueKind::NULL && b.kind() != ValueKind::NULL && self.category(a) != self.category(b) {
+            return false;
+        }
+        self.compare(a, b, mode) == Ordering::Equal
     }
 
     /// Where a value stands among the kinds of term. A struct stands with the
@@ -204,7 +216,7 @@ impl<'a> TermComparator<'a> {
 
     fn map_key(&self, map: MapTerm<'a>, index: usize) -> AnyValue {
         match map {
-            MapTerm::Entries(addr) => unsafe { map_entry(addr, index).0 },
+            MapTerm::Entries(addr) => unsafe { map_key(addr, index) },
             MapTerm::Struct { schema, keys, .. } => match keys[index] {
                 StructKey::Module => self.atom(STRUCT_MODULE_FIELD),
                 StructKey::Field(field) => self.atom(
@@ -355,6 +367,65 @@ pub fn compare_int_float(integer: i64, float: f64) -> Ordering {
     integer
         .cmp(&(float as i64))
         .then_with(|| float_cmp(integer as f64, float, NumericMode::Widening))
+}
+
+fn is_bitstring(value: AnyValue) -> bool {
+    matches!(value.kind(), ValueKind::BITSTRING | ValueKind::PROCBIN)
+}
+
+/// The order of two values of one simple kind, which needs neither the
+/// category lookup nor the mode: two integers, two atoms of one id, two
+/// bitstrings. A float is excluded because the mode decides how it orders.
+fn same_simple_kind_cmp(a: AnyValue, b: AnyValue) -> Option<Ordering> {
+    match (a, b) {
+        (AnyValue::Int(x), AnyValue::Int(y)) => Some(x.cmp(&y)),
+        (AnyValue::Atom(x), AnyValue::Atom(y)) if x == y => Some(Ordering::Equal),
+        (AnyValue::HeapRef(_), AnyValue::HeapRef(_)) if is_bitstring(a) && is_bitstring(b) => {
+            Some(bitstring_cmp(word_of_bitstring(a), word_of_bitstring(b)))
+        }
+        _ => None,
+    }
+}
+
+/// Whether two values of one simple kind are equal, when their kinds settle
+/// it: integers and atoms by word, bitstrings by bits, identical float bits,
+/// pids and references by kind and word.
+fn same_simple_kind_equal(a: AnyValue, b: AnyValue) -> Option<bool> {
+    match (a, b) {
+        (AnyValue::Int(x), AnyValue::Int(y)) => Some(x == y),
+        (AnyValue::Atom(x), AnyValue::Atom(y)) => Some(x == y),
+        (AnyValue::Float(x), AnyValue::Float(y)) if x == y => Some(true),
+        (AnyValue::Opaque(x_kind, x), AnyValue::Opaque(y_kind, y)) => Some(x_kind == y_kind && x == y),
+        (AnyValue::HeapRef(_), AnyValue::HeapRef(_)) if is_bitstring(a) && is_bitstring(b) => {
+            Some(bitstring_equal(word_of_bitstring(a), word_of_bitstring(b)))
+        }
+        _ => None,
+    }
+}
+
+fn word_of_bitstring(value: AnyValue) -> u64 {
+    value.heap_object_word().expect("bitstring")
+}
+
+/// Equal bit length, equal whole bytes, and equal leading bits of a partial
+/// last byte: the padding past the last bit is not part of the value.
+fn bitstring_equal(a: u64, b: u64) -> bool {
+    let bits = unsafe { bitstring_bit_len(a) } as usize;
+    if bits != unsafe { bitstring_bit_len(b) } as usize {
+        return false;
+    }
+    let whole = bits / 8;
+    let (a_bytes, b_bytes) = unsafe {
+        (
+            from_raw_parts(bitstring_byte_ptr(a), bits.div_ceil(8)),
+            from_raw_parts(bitstring_byte_ptr(b), bits.div_ceil(8)),
+        )
+    };
+    a_bytes[..whole] == b_bytes[..whole]
+        && (bits.is_multiple_of(8) || {
+            let kept = u8::MAX << (8 - bits % 8);
+            a_bytes[whole] & kept == b_bytes[whole] & kept
+        })
 }
 
 fn bitstring_cmp(a: u64, b: u64) -> Ordering {

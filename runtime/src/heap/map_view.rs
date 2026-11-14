@@ -244,7 +244,7 @@ impl Heap {
             let comparator = TermComparator::new(&self.node, &schemas);
             self.map_view_entries(layout)
                 .into_iter()
-                .filter(|(entry_key, _)| !comparator.compare(*entry_key, key, NumericMode::Strict).is_eq())
+                .filter(|(entry_key, _)| !comparator.equal(*entry_key, key, NumericMode::Strict))
                 .collect()
         };
         entries_ref(self.alloc_ordered_map_entries(entries.into_iter()))
