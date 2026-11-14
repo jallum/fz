@@ -2,7 +2,7 @@
 
 use super::bits::BasicBits;
 use super::conj::Conj;
-use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top};
+use super::dnf::{dnf_diff, dnf_intersect, dnf_union, is_dnf_top};
 use super::emptiness::{
     func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
@@ -662,8 +662,8 @@ impl Descr {
         }
     }
 
-    /// The complement of the STRUCTURAL union alone, with the brand slot left
-    /// unconstrained — the factor [`diff`](Self::diff) subtracts on its own.
+    /// Our structure minus `other`'s, axis by axis, keeping our brand slot —
+    /// the structural factor [`diff`](Self::diff) subtracts on its own.
     ///
     /// There is deliberately no whole-descriptor `neg`: the complement of a
     /// refinement is `¬structure` OR `structure with another brand`, two
@@ -671,18 +671,18 @@ impl Descr {
     /// widen to `any` — a "negation" that forgets the brand entirely. `diff`
     /// subtracts the two factors separately instead and stays exact, so
     /// difference, not complement, is the primitive callers get.
-    fn neg_structure(&self) -> Descr {
+    fn diff_structure(&self, other: &Descr) -> Descr {
         Descr {
-            brands: FiniteSet::any(),
-            basic: self.basic.neg(),
-            atoms: self.atoms.neg(),
-            opaques: self.opaques.neg(),
-            vars: self.vars.neg(),
-            tuples: dnf_neg(&self.tuples),
-            lists: dnf_neg(&self.lists),
-            resources: dnf_neg(&self.resources),
-            funcs: dnf_neg(&self.funcs),
-            maps: dnf_neg(&self.maps),
+            brands: self.brands.clone(),
+            basic: self.basic.intersect(other.basic.neg()),
+            atoms: self.atoms.diff(&other.atoms),
+            opaques: self.opaques.diff(&other.opaques),
+            vars: self.vars.diff(&other.vars),
+            tuples: dnf_diff(&self.tuples, &other.tuples),
+            lists: dnf_diff(&self.lists, &other.lists),
+            resources: dnf_diff(&self.resources, &other.resources),
+            funcs: dnf_diff(&self.funcs, &other.funcs),
+            maps: dnf_diff(&self.maps, &other.maps),
         }
     }
 
@@ -708,9 +708,7 @@ impl Descr {
     /// answer `is_subtype = false`.
     pub(super) fn diff(&self, other: &Descr) -> Descr {
         if other.brands.contains_all(&self.brands) {
-            let mut d = self.intersect(&other.neg_structure());
-            d.brands = self.brands.clone();
-            return d;
+            return self.diff_structure(other);
         }
         if !self.brands.overlaps(&other.brands) {
             return self.clone();
@@ -851,9 +849,7 @@ fn clauses_within<T: Clone + PartialEq>(
             .iter()
             .all(|c| c.pos.iter().any(|p| c.neg.contains(p)) || clause_empty(cx, c));
     }
-    dnf_intersect(ours, &dnf_neg(theirs))
-        .iter()
-        .all(|c| clause_empty(cx, c))
+    dnf_diff(ours, theirs).iter().all(|c| clause_empty(cx, c))
 }
 
 /// Whether `ours ∧ theirs` is empty on one structural axis. The product is

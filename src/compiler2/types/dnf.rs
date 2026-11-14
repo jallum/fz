@@ -58,6 +58,9 @@ pub(crate) fn dnf_intersect_with<T: Clone + PartialEq>(
     b: &[Conj<T>],
     mut merge: impl FnMut(&Conj<T>, &Conj<T>) -> Option<Conj<T>>,
 ) -> Vec<Conj<T>> {
+    if a.is_empty() || b.is_empty() {
+        return Vec::new();
+    }
     let mut out = Vec::with_capacity(a.len().max(b.len()));
     for c1 in a {
         for c2 in b {
@@ -92,6 +95,15 @@ pub(crate) fn dnf_neg<T: Clone + PartialEq>(d: &[Conj<T>]) -> Vec<Conj<T>> {
         acc = dnf_intersect(&acc, &neg_c);
     }
     acc
+}
+
+/// `a ∧ ¬b`. An empty `a` has nothing to subtract from, so `b` is not negated
+/// for it.
+pub(crate) fn dnf_diff<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {
+    if a.is_empty() {
+        return Vec::new();
+    }
+    dnf_intersect(a, &dnf_neg(b))
 }
 
 pub(crate) fn merge_clauses<T: Clone + PartialEq>(a: &Conj<T>, b: &Conj<T>) -> Conj<T> {
@@ -131,3 +143,7 @@ pub(crate) fn neg_clause<T: Clone>(c: &Conj<T>) -> Vec<Conj<T>> {
 pub(crate) fn is_dnf_top<T>(d: &[Conj<T>]) -> bool {
     d.len() == 1 && d[0].is_top()
 }
+
+#[cfg(test)]
+#[path = "dnf_test.rs"]
+mod dnf_test;
