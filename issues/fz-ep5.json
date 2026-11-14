@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T03:26:51Z",
+  "description": "DECIDED 2026-11-13 by the user: remove 'name :: type' from patterns everywhere (fixtures, guides, tests, lib, compiler, docs). Three ways of stating a function's types existed: @spec, '::' on a parameter, and guards. '::' is fz-only (Elixir rejects it as 'misplaced operator ::/2'), duplicates a guard when it picks a clause and the @spec when it declares a domain, and keeps 28 fixture files from being oracle-checked. Measured on develop aa85cc3d9: lib has 61 typed parameters (bitstring segment specs '\u003c\u003cx :: binary\u003e\u003e' are a different construct and stay); 60 have an @spec just above; 51 pick a clause among several (become guards), 1 is a declaration only (File.close, kept by its @spec), 9 are Kernel's is_* type predicates themselves, which need a primitive underneath once '::' is gone (open design question). Outside lib: fixtures 53 files, fixtures2 29, guides 2, tests 2. Order: .1 rewrite fixtures/guides/tests while '::' still parses; then lib; then the is_* primitive; then delete the parser support, FnClause::param_annotations and its readers, SourcePatternError::ParamAnnotation, docs; '::' in any pattern becomes a spanned error (absorbs fz-4i4).",
+  "id": "fz-ep5",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Patterns carry no type annotations: clause choice is guards, declarations are @spec",
+  "type": "epic",
+  "updated_at": "2026-11-14T03:26:51Z"
+}
