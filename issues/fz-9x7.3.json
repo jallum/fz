@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T19:25:22Z",
+  "description": "Fixture 01253 (1,000 sequential calls): heap+pop compiles 26.1 s to 84 MB; d7w (ddf2c18e6) 4.3 s / 3.1 MB. Copying every live value per continuation is quadratic. First run the experiment: (a) copy-on-old: a write into a frame first checks it is young, else copies it to the tip; (b) linked write-once frames: each step builds a frame of only its new values plus a parent pointer. Measure both on 01253 (compile, binary, run) and the distiller. Prediction: both within 2x of d7w's compile time and size, distiller unchanged within noise. Fallback if both miss: d7w as built plus a remembered set. Build the winner.\nThen: PR #543 closes unmerged; fz-d7w's description is updated to point here.\nAcceptance: 01253 compiles within 2x of 4.3 s and 3.1 MB on run and build; no assert_written_object_is_young trips.\nProposal (approved 2026-11-14): https://claude.ai/artifact/94aN2YPxunzwVEzct26nz2 (local /Users/j5n/Workspace/fz-d7w.html). Spike evidence: worktree ../fz-hc, branch exp/heap-cont-reads (uncommitted, FZ_SPIKE_* switches).",
+  "id": "fz-9x7.3",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 1,
+  "status": "open",
+  "title": "A long body keeps one frame without writing into a kept object",
+  "type": "task",
+  "updated_at": "2026-11-14T19:25:22Z"
+}
