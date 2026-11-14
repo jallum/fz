@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:03:29Z",
+  "description": "Measured on develop e515ae314 (AOT), distiller over the first 16,000 lines of its own compile log: 1,214 collections copy 8.0 GB in total while live data peaks at 25 MB; peak RSS 1.7 GB. Heap::collect is a full Cheney copy each time, so every decoded record is recopied on every collection, and procbin::mso_unreached_closures / mso_sweep walk the chain of every live ProcBin each collection (the hottest single function in a 32,000-line profile). BEAM is generational and does neither.\n\nGoal: survivors are not recopied by every collection, and the off-heap chain walk is proportional to what the collection examined. Needs a proposal page. Data: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/slow (rt*.jsonl, samp.txt).",
+  "id": "fz-sc8.184",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "A collection copies only what is new, and walks no chain of every live binary",
+  "type": "bug",
+  "updated_at": "2026-11-14T04:03:29Z"
+}
