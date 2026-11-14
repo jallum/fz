@@ -1568,3 +1568,26 @@ mod callsite_resolution_tests {
         );
     }
 }
+
+/// Joining a callable demand adds the surfaces the other side has and this
+/// side lacks, and the borrowed view of a demand's surfaces names exactly the
+/// surfaces the owned one holds.
+#[test]
+fn joined_callable_demands_union_their_surfaces_and_the_borrowed_view_agrees() {
+    let mut world = World::new();
+    let int = world.types_mut().int();
+    let float = world.types_mut().float();
+    let mut left = CallableDemand::unnamed(vec![int], world.types_mut());
+    let right = CallableDemand::unnamed(vec![int, float], world.types_mut());
+    let both = left.join(&right);
+
+    left.join_assign(&right);
+    left.join_assign(&right);
+
+    assert_eq!(left, both);
+    assert_eq!(left.surfaces().len(), 2);
+    assert_eq!(
+        left.surface_refs().into_iter().cloned().collect::<Vec<_>>(),
+        left.surfaces().into_iter().collect::<Vec<_>>()
+    );
+}

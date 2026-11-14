@@ -676,7 +676,7 @@ fn project_generic_owner_node(
                     projected.record_boundary(*boundary, publication.clone());
                 }
             }
-            for (index, surface) in demand.callable.surfaces().iter().enumerate() {
+            for (index, surface) in demand.callable.surface_refs().into_iter().enumerate() {
                 let Some(&boundary) = projected
                     .callables
                     .get(&callable)
