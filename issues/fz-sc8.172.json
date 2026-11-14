@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:04:56Z",
+  "description": "fz-sc8.159 makes quiescence a whole-stack decision: a nested drive that runs dry defers (settles nothing, unwinds, is served again), and only the outermost drain arbitrates. That rule exists because drives nest: a drain inside one drive can start another drive beneath it.\n\nThis ticket removes the nesting. When no drain starts a drive beneath an active one, there is no stack to be quiescent about, and the mechanism fz-sc8.159 adds goes away: Driven\u003cT\u003e { Finished, Deferred }, Drained::Deferred, the recorded waits of suspended drives on ProductSessions, the deferred-drive telemetry event and its pins.\n\nNot spiked. It changes how requests are served (drive.rs, product_drive.rs, pull.rs), so it needs a spike and a proposal page first: measure request counts on the eighteen programs fz-sc8.159 measured, the distiller spend pin, and both stall shapes (stall 1: Program held across a root; stall 2: a root held across a Program drive).\n\nAlso decide here whether parking a request on its own active scope (next_request) can go; removing it alone panics fixture 00882 (\"one product session cannot be driven recursively\").\n\nBlocks the epic so the added mechanism is not forgotten.",
+  "id": "fz-sc8.172",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A drain starts no drive beneath an active one",
+  "type": "task",
+  "updated_at": "2026-11-14T01:04:56Z"
+}
