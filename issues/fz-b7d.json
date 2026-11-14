@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T23:35:53Z",
+  "description": "Found 2026-11-14 while building fz-3sy.9 (fixture 00529 defined its own List); reproduced on develop 135b67da3.\n\n    defmodule List do\n      def first([h | _]), do: h\n    end\n    dbg(String.split(\"a,b\", \"\"))\n\nfails to compile at runtime:String.fz:768, `[\"\"] ++ graphemes(s) ++ [\"\"]`: module `List` does not export `concat/2`. The library operator ++ resolves List to the program module, not the library one. Decide what a program that defines List, Map, Enum... means (Elixir replaces the module, with a warning) and make the outcome deliberate: either library code keeps reaching the library module, or the redefinition is reported where it is written. Fixture 00529 was changed to name its module ListReduce to stay clear of this.",
+  "id": "fz-b7d",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "A program module named like a library module does not break library code",
+  "type": "bug",
+  "updated_at": "2026-11-14T23:35:53Z"
+}
