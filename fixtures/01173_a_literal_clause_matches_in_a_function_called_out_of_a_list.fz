@@ -1,0 +1,33 @@
+#---
+# purpose: "a function taken out of a list, or run by a stream, matches its literal clauses against the value it is called with"
+# oracle: 01173_a_literal_clause_matches_in_a_function_called_out_of_a_list.oracle.exs
+# oracle.stamp: bb13d43897b353a7
+#---
+def pick(3), do: :three
+def pick(:c), do: :see
+def pick(n), do: n
+
+def explode(3), do: raise(ArgumentError, "three")
+def explode(n), do: n
+
+def call([fun | _], entry), do: fun.(entry)
+
+def main() do
+  dbg(call([&pick/1], 3))
+  dbg(call([&pick/1], 4))
+  dbg(call([&pick/1], :c))
+  dbg(call([fn x ->
+    case x do
+      3 -> :three
+      n -> n
+    end
+  end], 3))
+  dbg(Enum.to_list(Stream.map([1, 2, 3], &pick/1)))
+  dbg(Enum.take(Stream.map([:a, :b, :c], &pick/1), 3))
+  raised = try do
+    Enum.to_list(Stream.map([1, 2, 3], &explode/1))
+  rescue
+    e in ArgumentError -> {:rescued, e.message}
+  end
+  dbg(raised)
+end

@@ -837,8 +837,10 @@ impl Descr {
         // said. `utf8` erases to `binary`, and `binary` erases to itself.
         d.brands = FiniteSet::any();
         let opaques = std::mem::replace(&mut d.opaques, FiniteSet::none());
-        // Nominals carry no embedded inner; erase conservatively.
-        if !opaques.is_none() {
+        let vars = std::mem::replace(&mut d.vars, FiniteSet::none());
+        // A nominal carries no embedded inner, and a type variable stands for
+        // whatever value arrives in its place. Either can hold any value.
+        if !opaques.is_none() || !vars.is_none() {
             d = d.union(cx, &Descr::any());
         }
         d
