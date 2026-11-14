@@ -180,16 +180,16 @@ impl<'a> TypeExprParser<'a> {
     }
 
     fn parse_union(&mut self) -> Result<TypeExpr, TypeExprError> {
-        let mut elems = vec![self.parse_primary()?];
+        let first = self.parse_primary()?;
+        if !matches!(self.peek(), Tok::Bar) {
+            return Ok(first);
+        }
+        let mut elems = vec![first];
         while matches!(self.peek(), Tok::Bar) {
             self.bump();
             elems.push(self.parse_primary()?);
         }
-        if elems.len() == 1 {
-            Ok(elems.pop().unwrap())
-        } else {
-            Ok(TypeExpr::Union(elems))
-        }
+        Ok(TypeExpr::Union(elems))
     }
 
     fn parse_primary(&mut self) -> Result<TypeExpr, TypeExprError> {
