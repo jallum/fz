@@ -368,10 +368,15 @@ impl CallableDemand {
     /// names, and the surface of each target. A set, because consumers pair
     /// its canonical order with per-surface layouts.
     pub fn surfaces(&self) -> BTreeSet<CallableSurface> {
+        self.surface_refs().into_iter().cloned().collect()
+    }
+
+    /// [`Self::surfaces`] read through borrows, for a consumer that only walks
+    /// them.
+    pub fn surface_refs(&self) -> BTreeSet<&CallableSurface> {
         self.unnamed
             .iter()
             .chain(self.targets.iter().map(|target| &target.surface))
-            .cloned()
             .collect()
     }
 
@@ -382,10 +387,19 @@ impl CallableDemand {
     }
 
     pub fn join_assign(&mut self, other: &Self) {
-        self.unnamed.extend(other.unnamed.iter().cloned());
-        self.targets.extend(other.targets.iter().cloned());
+        extend_missing(&mut self.unnamed, &other.unnamed);
+        extend_missing(&mut self.targets, &other.targets);
         self.opaque |= other.opaque;
         self.escape |= other.escape;
+    }
+}
+
+/// Adds what `other` has and `set` lacks, copying only those elements.
+fn extend_missing<T: Ord + Clone>(set: &mut BTreeSet<T>, other: &BTreeSet<T>) {
+    for element in other {
+        if !set.contains(element) {
+            set.insert(element.clone());
+        }
     }
 }
 
@@ -708,8 +722,7 @@ pub(crate) fn ground_dispatch_surfaces<'a>(
         .iter()
         .chain(ground_source)
         .filter(|surface| !types.key_has_open_vars(&surface.inputs))
-        .cloned()
-        .collect::<BTreeSet<_>>();
+        .collect::<BTreeSet<&CallableSurface>>();
     let mut grounded = BTreeSet::new();
     for surface in surfaces {
         if !types.key_has_open_vars(&surface.inputs) {
@@ -720,7 +733,7 @@ pub(crate) fn ground_dispatch_surfaces<'a>(
             ground_candidates
                 .iter()
                 .filter(|candidate| types.key_list_subsumes(&candidate.inputs, &surface.inputs))
-                .cloned(),
+                .map(|candidate| (*candidate).clone()),
         );
     }
     if grounded.is_empty() {

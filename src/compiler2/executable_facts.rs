@@ -543,10 +543,12 @@ fn prepare_surface<'a>(
 ) -> &'a CallableSurface {
     let surface = resolve_surface(world, builder, surface_inputs);
     let surfaces = &mut builder.inputs.surfaces;
-    surfaces
-        .entry(surface.inputs.clone())
-        .or_insert_with(|| surface.clone());
-    surfaces.insert(surface_inputs.to_vec(), surface);
+    if surface.inputs != surface_inputs && !surfaces.contains_key(&surface.inputs) {
+        surfaces.insert(surface.inputs.clone(), surface.clone());
+    }
+    if !surfaces.contains_key(surface_inputs) {
+        surfaces.insert(surface_inputs.to_vec(), surface);
+    }
     &surfaces[surface_inputs]
 }
 
