@@ -9,7 +9,7 @@
   "parent": "fz-3sy",
   "priority": 2,
   "status": "open",
-  "title": "Calling a closure read from a map or struct field panics the compiler",
-  "type": "A closure read from a map or struct field is called, and a fixture keeps it so",
-  "updated_at": "2026-11-14T23:20:18Z"
+  "title": "A closure read from a map or struct field is called, and a fixture keeps it so",
+  "type": "task",
+  "updated_at": "2026-11-14T23:20:23Z"
 }
