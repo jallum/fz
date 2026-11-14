@@ -1850,56 +1850,42 @@ impl<'t> FrontDoorParser<'t> {
 
         if allow_update && !matches!(self.peek(), Tok::KwKey(_)) {
             let base = self.parse_expr(module_path, scope)?;
+            if matches!(self.peek_non_newline_from(0), Tok::Bar) {
+                self.skip_newlines();
+            }
             if self.eat(&Tok::Bar) {
-                let updates = self.parse_keyword_entries(
-                    module_path,
-                    scope,
-                    &Tok::RBrace,
-                    "unexpected expression after keyword list",
-                )?;
+                self.skip_newlines();
+                let updates = self.parse_map_entry_list(module_path, scope)?;
                 let span = base.span.merge(self.prev_span());
                 let meta = self.meta(span)?;
-                let kw_list = self.builder.list(&updates)?;
-                entries.push(self.builder.call("|", &meta, &[base.root, kw_list])?);
+                let updates = self.builder.list(&updates)?;
+                entries.push(self.builder.call("|", &meta, &[base.root, updates])?);
                 return Ok(entries);
             }
             self.expect(&Tok::FatArrow, "`=>`")?;
             let value = self.parse_expr(module_path, scope)?;
             entries.push(self.builder.tuple(&[base.root, value.root])?);
             self.skip_newlines();
-            while self.eat(&Tok::Comma) {
+            if self.eat(&Tok::Comma) {
                 self.skip_newlines();
-                if matches!(self.peek(), Tok::KwKey(_)) {
-                    entries.extend(self.parse_keyword_entries(
-                        module_path,
-                        scope,
-                        &Tok::RBrace,
-                        "unexpected expression after keyword list",
-                    )?);
-                    return Ok(entries);
-                }
-                entries.push(self.parse_map_entry(module_path, scope)?);
-                self.skip_newlines();
+                entries.extend(self.parse_map_entry_list(module_path, scope)?);
             }
             return Ok(entries);
         }
 
-        if matches!(self.peek(), Tok::KwKey(_)) {
-            return self.parse_keyword_entries(
-                module_path,
-                scope,
-                &Tok::RBrace,
-                "unexpected expression after keyword list",
-            );
-        }
+        self.parse_map_entry_list(module_path, scope)
+    }
 
+    /// The entries of a map up to its closing brace: `key => value` entries,
+    /// then any keyword entries. A map literal and the part of an update
+    /// after its bar read the same entries.
+    fn parse_map_entry_list(
+        &mut self,
+        module_path: &[String],
+        scope: &[String],
+    ) -> Result<Vec<AnyValueRef>, FrontDoorError> {
+        let mut entries = Vec::new();
         loop {
-            entries.push(self.parse_map_entry(module_path, scope)?);
-            self.skip_newlines();
-            if !self.eat(&Tok::Comma) {
-                break;
-            }
-            self.skip_newlines();
             if matches!(self.peek(), Tok::KwKey(_)) {
                 entries.extend(self.parse_keyword_entries(
                     module_path,
@@ -1909,6 +1895,12 @@ impl<'t> FrontDoorParser<'t> {
                 )?);
                 break;
             }
+            entries.push(self.parse_map_entry(module_path, scope)?);
+            self.skip_newlines();
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+            self.skip_newlines();
         }
         Ok(entries)
     }
