@@ -1,0 +1,12 @@
+{97, :bits, 2}
+{122, :bits, 100}
+{:miss, :bits, :miss}
+{1, :bits, :miss}
+{:miss, :miss, :miss}
+{:miss, :miss, :miss}
+{:miss, :miss, :miss}
+{:miss, :miss, :miss}
+{:miss, :miss, :miss}
+{:miss, :miss, :miss}
+{:miss, :miss, :miss}
+{:miss, :miss, :miss}

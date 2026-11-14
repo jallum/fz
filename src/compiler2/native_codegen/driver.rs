@@ -972,7 +972,8 @@ pub(crate) fn compile_with_backend_surface<
         // spans; its stop payload carries the emitted code size.
         let define_span = tel.raw_span1_1(&["fz", "codegen", "define_function"], &body_slot.fn_id);
         if output.wants_clif() {
-            output.clif(module, body_slot.fn_id, &ctx.func);
+            let text = crate::compiler2::dump::clif_text(&ctx.func, backend.module_mut().declarations());
+            output.clif(module, body_slot.fn_id, &text);
         }
         cranelift_codegen::verifier::verify_function(&ctx.func, verifier_isa.as_ref()).map_err(|e| {
             CodegenError::new(format!(

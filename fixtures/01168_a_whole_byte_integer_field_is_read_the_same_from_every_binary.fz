@@ -1,0 +1,74 @@
+#---
+# purpose: a byte-aligned unsigned big-endian integer field reads the same from an inline binary, a ProcBin and a view with an offset, and every other field kind still reads right
+# kind: run
+#---
+#
+# Native code resolves the matched binary to an address once and loads a
+# whole-byte field from it; each other field is read by the runtime. Every
+# function below runs on a short inline binary, on a binary large enough to be
+# a ProcBin, and on a ProcBin view that starts partway into its bytes.
+defmodule P do
+  def one(<<a, _r :: binary>>), do: a
+  def one(_other), do: :miss
+  def two(<<a :: 16, _r :: binary>>), do: a
+  def two(_other), do: :miss
+  def three(<<a :: 24, _r :: binary>>), do: a
+  def three(_other), do: :miss
+  def four(<<a :: 32, _r :: binary>>), do: a
+  def four(_other), do: :miss
+  def seven(<<a :: 56, _r :: binary>>), do: a
+  def seven(_other), do: :miss
+
+  # A field after a skipped one, and fields after a wider one.
+  def skip(<<_skipped, a :: 16, _r :: binary>>), do: a
+  def skip(_other), do: :miss
+  def chain(<<_x :: 16, a :: 24, b, _r :: binary>>), do: {a, b}
+  def chain(_other), do: :miss
+
+  # The field is read by the dispatch, not the body.
+  def guarded(<<a :: 16, _r :: binary>>) when a > 51_000, do: :high
+  def guarded(<<_a :: 16, _r :: binary>>), do: :low
+  def guarded(_other), do: :miss
+
+  def literal(<<200, a :: 24, _r :: binary>>), do: {:tagged, a}
+  def literal(<<_b, _r :: binary>>), do: :untagged
+  def literal(_other), do: :miss
+
+  # A field that does not start on a byte, a size known only at run time, and a
+  # field that is not an unsigned big-endian integer.
+  def unaligned(<<_flag :: 3, a, _r :: bitstring>>), do: a
+  def unaligned(_other), do: :miss
+  def after_dynamic(<<n, _p :: binary-size(n), a :: 16, _r :: binary>>), do: {n, a}
+  def after_dynamic(_other), do: :miss
+  def little(<<a :: little-16, _r :: binary>>), do: a
+  def little(_other), do: :miss
+  def signed(<<a :: signed-16, _r :: binary>>), do: a
+  def signed(_other), do: :miss
+  def wide(<<a :: 64, _r :: binary>>), do: a
+  def wide(_other), do: :miss
+
+  def sum(<<c, r :: binary>>, acc), do: sum(r, acc + c)
+  def sum(<<>>, acc), do: acc
+  def sum(_other, _acc), do: :miss
+
+  def fields(b) do
+    {{one(b), two(b), three(b), four(b), seven(b)}, {skip(b), chain(b)}, {guarded(b), literal(b)},
+     {unaligned(b), after_dynamic(b), little(b), signed(b), wide(b)}}
+  end
+end
+
+# The first byte is 200 and the third and fourth are 3 and 4, so the high bit is
+# set where it matters and `after_dynamic` skips 200 bytes of nothing.
+head = <<200, 1, 2, 3, 4, 5, 6, 7, 8, 9>>
+large = head <> String.duplicate("z", 100)
+<<_dropped :: binary-size(3), view :: binary>> = large
+dbg(P.fields(head))
+dbg(P.fields(large))
+dbg(P.fields(view))
+dbg(P.fields(<<255, 254>>))
+dbg(P.fields(<<>>))
+dbg(P.fields(:atom))
+dbg(P.fields(12))
+dbg(P.sum(head, 0))
+dbg(P.sum(large, 0))
+dbg(P.sum(view, 0))

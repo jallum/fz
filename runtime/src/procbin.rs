@@ -61,6 +61,15 @@ const _: () = {
     assert!(align_of::<SharedBin>() == 16);
 };
 
+/// Where a ProcBin stub keeps its `SharedBin` pointer, in bytes from the stub.
+pub const PROCBIN_SHARED_OFFSET: usize = 0;
+/// Where a ProcBin stub keeps the byte offset of its view, in bytes from the stub.
+pub const PROCBIN_BYTE_OFFSET_OFFSET: usize = 16;
+/// Where a `SharedBin` keeps its bit length.
+pub const SHARED_BIN_BIT_LEN_OFFSET: usize = std::mem::offset_of!(SharedBin, bit_len);
+/// Where a `SharedBin` keeps the address of its bytes.
+pub const SHARED_BIN_BYTES_PTR_OFFSET: usize = std::mem::offset_of!(SharedBin, bytes_ptr);
+
 // Safety: refcount is atomic; the byte buffer is either an owned Box<[u8]>
 // (heap destructor reclaims) or a static `.rodata` payload (noop dtor).
 unsafe impl Send for SharedBin {}
@@ -261,12 +270,12 @@ impl ProcBin {
     }
 
     pub fn shared_raw(&self) -> *mut SharedBin {
-        unsafe { read(self.as_raw() as *const *mut SharedBin) }
+        unsafe { read(self.as_raw().add(PROCBIN_SHARED_OFFSET) as *const *mut SharedBin) }
     }
 
     fn shared_raw_set(&self, p: *mut SharedBin) {
         unsafe {
-            write(self.as_raw() as *mut *mut SharedBin, p);
+            write(self.as_raw().add(PROCBIN_SHARED_OFFSET) as *mut *mut SharedBin, p);
         }
     }
 
@@ -282,12 +291,12 @@ impl ProcBin {
 
     /// First byte of this stub's view into the shared buffer.
     pub fn byte_offset(&self) -> u64 {
-        unsafe { read(self.as_raw().add(16) as *const u64) }
+        unsafe { read(self.as_raw().add(PROCBIN_BYTE_OFFSET_OFFSET) as *const u64) }
     }
 
     fn byte_offset_set(&self, offset: u64) {
         unsafe {
-            write(self.as_raw().add(16) as *mut u64, offset);
+            write(self.as_raw().add(PROCBIN_BYTE_OFFSET_OFFSET) as *mut u64, offset);
         }
     }
 

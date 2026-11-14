@@ -115,6 +115,15 @@ pub struct BitFieldIr {
     pub unit: Option<u32>,
 }
 
+/// Default bitstring unit per source type.
+pub(crate) fn default_unit_for(ty: BitType) -> u32 {
+    match ty {
+        BitType::Integer | BitType::Float | BitType::Bits => 1,
+        BitType::Binary => 8,
+        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => 1,
+    }
+}
+
 /// One field of a bitstring pattern, as a match reads it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BitMatchField {
@@ -129,6 +138,40 @@ pub struct BitMatchField {
 }
 
 impl BitMatchField {
+    /// The bits the field spans when that is known without running the
+    /// program: the size is a literal, or absent where the type has a default.
+    /// `None` for a size read at run time, for the rest of a binary and for a
+    /// utf field.
+    pub fn static_bits(&self) -> Option<u64> {
+        let unit = u64::from(self.unit.unwrap_or(default_unit_for(self.ty)));
+        let size = |default: u64| match &self.size {
+            None => Some(default),
+            Some(BitSizeIr::Literal(n)) => Some(u64::from(*n)),
+            Some(_) => None,
+        };
+        match self.ty {
+            BitType::Integer => Some(size(8)? * unit),
+            BitType::Float => Some(size(64)? * unit),
+            BitType::Binary | BitType::Bits => Some(u64::from(self.literal_size()?) * unit),
+            BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => None,
+        }
+    }
+
+    /// The width in bytes of an unsigned big-endian integer field whose extent
+    /// is a whole number of bytes from one to seven: the fields a load reads.
+    pub fn whole_byte_integer_width(&self) -> Option<u8> {
+        let plain = self.ty == BitType::Integer && !self.signed && self.endian == Endian::Big;
+        let bits = self.static_bits().filter(|_| plain)?;
+        (bits % 8 == 0 && (8..=56).contains(&bits)).then_some((bits / 8) as u8)
+    }
+
+    fn literal_size(&self) -> Option<u32> {
+        match self.size {
+            Some(BitSizeIr::Literal(n)) => Some(n),
+            _ => None,
+        }
+    }
+
     fn size_var(&self) -> Option<Var> {
         self.size.as_ref().and_then(BitSizeIr::var)
     }
@@ -571,8 +614,20 @@ pub enum Prim {
     /// emits a single allocation call.
     ConstBitstring(Vec<u8>, u64),
     /// The bit length of a binary or bitstring: what a match's position is
-    /// compared against.
+    /// compared against. A value that is not a binary answers a negative word,
+    /// which `IsNotBinary` recognizes, so one read of the value's kind both
+    /// tests it and resolves its length.
     BitstringBitLen(Var),
+    /// True when a `BitstringBitLen` result says its value is not a binary.
+    IsNotBinary(Var),
+    /// The address of the first byte of a binary's bits, a raw integer.
+    ///
+    /// Native code only. The address names bytes the process's heap may move,
+    /// and the heap moves only when the process ends a quantum, which compiled
+    /// code does at a call or a back edge. So the address is good for the
+    /// straight-line run of prims that follows it, and a reader of it must not
+    /// be reached through a call or a back edge.
+    BitstringBase(Var),
     /// True when `field`, starting at bit `pos`, lies within the `bit_len` bits
     /// of the binary it is matched against. A `binary` or `bits` field without a
     /// size is the rest and fits only as the last field; an integer is at most
@@ -596,6 +651,14 @@ pub enum Prim {
         source: Var,
         pos: Var,
         field: BitMatchField,
+    },
+    /// The unsigned big-endian integer of `bytes` bytes that starts
+    /// `byte_offset` bytes past `base`, a `BitstringBase`. The field is known to
+    /// fit.
+    BitReadByteInt {
+        base: Var,
+        byte_offset: u32,
+        bytes: u8,
     },
     /// The `try` body completed: pop the process's innermost handler.
     PopHandler,
@@ -708,6 +771,12 @@ impl Prim {
             }
             Prim::BitstringBitLen(a) => {
                 used.insert(*a);
+            }
+            Prim::BitstringBase(a) | Prim::IsNotBinary(a) => {
+                used.insert(*a);
+            }
+            Prim::BitReadByteInt { base, .. } => {
+                used.insert(*base);
             }
             Prim::BitFieldFits { pos, bit_len, field } => {
                 used.insert(*pos);
@@ -1478,6 +1547,13 @@ impl fmt::Display for Prim {
                 write!(f, "const_bitstring(byte_len={}, bit_len={})", bytes.len(), bit_len)
             }
             Prim::BitstringBitLen(v) => write!(f, "bitstring_bit_len({})", v),
+            Prim::BitstringBase(v) => write!(f, "bitstring_base({})", v),
+            Prim::IsNotBinary(v) => write!(f, "is_not_binary({})", v),
+            Prim::BitReadByteInt {
+                base,
+                byte_offset,
+                bytes,
+            } => write!(f, "bit_read_byte_int({}, {}, {})", base, byte_offset, bytes),
             Prim::BitFieldFits { pos, bit_len, .. } => write!(f, "bit_field_fits({}, {})", pos, bit_len),
             Prim::BitFieldNext { pos, .. } => write!(f, "bit_field_next({})", pos),
             Prim::BitReadField { source, pos, .. } => write!(f, "bit_read_field({}, {})", source, pos),

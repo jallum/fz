@@ -1127,7 +1127,12 @@ fn compiler2_inline_bitstring_outcomes_reuse_typed_dispatch_reads() {
         .iter()
         .flat_map(|function| &function.blocks)
         .flat_map(|block| &block.stmts)
-        .filter(|stmt| matches!(stmt, IrStmt::Let(_, IrPrim::BitReadField { .. })))
+        .filter(|stmt| {
+            matches!(
+                stmt,
+                IrStmt::Let(_, IrPrim::BitReadField { .. } | IrPrim::BitReadByteInt { .. })
+            )
+        })
         .count();
     assert_eq!(
         reads, 3,
@@ -8317,8 +8322,8 @@ fn lowered_clif_text(source: &str) -> String {
             true
         }
 
-        fn clif(&mut self, _: &crate::fz_ir::Module, _: FnId, function: &cranelift_codegen::ir::Function) {
-            self.0.borrow_mut().push(function.display().to_string());
+        fn clif(&mut self, _: &crate::fz_ir::Module, _: FnId, text: &str) {
+            self.0.borrow_mut().push(text.to_string());
         }
     }
 
@@ -8377,6 +8382,75 @@ fn compiler2_native_lowering_narrows_c_int_arguments_and_sign_extends_c_int_resu
     assert!(
         variadic_c_int.contains("sextend.i64"),
         "a variadic call's c_int result is sign extended to the fz integer:\n{variadic_c_int}"
+    );
+}
+
+/// A walk over a binary one byte at a time resolves the binary inline and
+/// loads each byte: the generated code never asks the runtime for the bit
+/// length or reads an integer field through it.
+#[test]
+fn a_byte_walk_resolves_its_binary_inline_and_loads_each_byte() {
+    let clif = lowered_clif_text(concat!(
+        "defmodule P do\n",
+        "  def go(b), do: walk(b, 0)\n",
+        "  defp walk(<<c, r :: binary>>, n), do: walk(r, n + c)\n",
+        "  defp walk(_b, n), do: n\n",
+        "end\n",
+        "def main(), do: P.go(\"abc\")\n",
+    ));
+    for runtime_call in ["fz_bs_bit_len_ref", "fz_bs_read_int_ref"] {
+        assert!(
+            !clif.contains(runtime_call),
+            "a whole-byte field is a load, not a call to {runtime_call}:\n{clif}"
+        );
+    }
+    assert!(
+        clif.contains("uload8"),
+        "the byte is loaded from the resolved address:\n{clif}"
+    );
+}
+
+/// Whether a step is a binary, and which of its two forms, is read from the
+/// reference's own kind bits, and the answer feeds the branch as a condition:
+/// the generated code asks the runtime neither for the type nor for the truth
+/// of a boxed answer.
+#[test]
+fn a_byte_walk_tests_its_binary_inline_and_branches_on_a_raw_condition() {
+    let clif = lowered_clif_text(concat!(
+        "defmodule P do\n",
+        "  def go(b), do: walk(b, 0)\n",
+        "  defp walk(<<_c, r :: binary>>, n), do: walk(r, n + 1)\n",
+        "  defp walk(_b, n), do: n\n",
+        "end\n",
+        "def main(), do: P.go(\"abc\")\n",
+    ));
+    for runtime_call in ["fz_type_of", "fz_truthy_ref"] {
+        assert!(
+            !clif.contains(runtime_call),
+            "a binary match step does not call {runtime_call}:\n{clif}"
+        );
+    }
+}
+
+/// A field that does not start on a byte is still read by the runtime, which
+/// the byte load cannot do.
+#[test]
+fn an_integer_field_off_a_byte_boundary_is_still_read_by_the_runtime() {
+    let clif = lowered_clif_text(concat!(
+        "defmodule P do\n",
+        "  def go(b), do: field(b)\n",
+        "  defp field(<<_flag :: 3, c, _r :: bitstring>>), do: c\n",
+        "  defp field(_b), do: 0\n",
+        "end\n",
+        "def main(), do: P.go(\"abc\")\n",
+    ));
+    assert!(
+        clif.contains("fz_bs_read_int_ref"),
+        "a field at bit 3 is read through the runtime:\n{clif}"
+    );
+    assert!(
+        !clif.contains("fz_bs_bit_len_ref"),
+        "the length of the binary is still read inline:\n{clif}"
     );
 }
 
