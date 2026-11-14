@@ -1,0 +1,37 @@
+#---
+# purpose: decoding a JSON string takes each run of plain bytes with one slice, so a long string without escapes allocates a handful of objects, not one per byte
+# kind: run
+#---
+#
+# The long string is 1,000 plain ASCII bytes. The decoder counts the run up to
+# the closing quote and slices it once; the program prints the decoded length,
+# then the allocations and the off-heap bytes the decode made. A string that
+# is a single run needs no append, so the decoded value is the slice itself.
+#
+# The remaining cases pin what the decoder does at each kind of stop: an
+# escape between runs, an escape first and last, an empty string, multi-byte
+# UTF-8 between runs, a control character after a run, a string cut off after
+# a run, and an invalid UTF-8 byte after a run. The decoded values are what
+# Elixir's JSON decoder returns.
+defmodule P do
+  def decode_cost(doc) do
+    a = Process.heap_alloc_stats()
+    {:ok, v} = JSON.decode(doc)
+    b = Process.heap_alloc_stats()
+    {String.length(v), b[:allocs] - a[:allocs], b[:shared_bin_bytes] - a[:shared_bin_bytes]}
+  end
+end
+
+long = "\"" <> String.duplicate("a", 1000) <> "\""
+dbg(P.decode_cost(long))
+
+dbg(JSON.decode("\"plain\""))
+dbg(JSON.decode("\"\""))
+dbg(JSON.decode("\"ab\\ncd\\\"ef\\\\gh\""))
+dbg(JSON.decode("\"\\tab\\u0041\""))
+dbg(JSON.decode("\"abc\\u00e9def\\ud83d\\ude00ghi\""))
+dbg(JSON.decode("\"café 世界 ok \u{1F600}!\""))
+dbg(JSON.decode("\"abc\ndef\""))
+dbg(JSON.decode("\"abc"))
+dbg(JSON.decode(<<34, 97, 98, 99, 255, 100, 34>>))
+dbg(JSON.decode("[\"ab\", \"cd\\n\", \"é\"]"))

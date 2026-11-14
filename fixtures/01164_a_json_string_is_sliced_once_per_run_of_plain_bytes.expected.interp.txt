@@ -1,0 +1,11 @@
+{1000, 1006, 1000}
+{:ok, "plain"}
+{:ok, ""}
+{:ok, "ab\ncd\"ef\\gh"}
+{:ok, "\tabA"}
+{:ok, "abcédef😀ghi"}
+{:ok, "café 世界 ok 😀!"}
+{:error, {:invalid_byte, 4, 10}}
+{:error, {:unexpected_end, 4}}
+{:error, {:invalid_byte, 4, 255}}
+{:ok, ["ab", "cd\n", "é"]}

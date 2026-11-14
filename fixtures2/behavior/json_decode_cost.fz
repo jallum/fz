@@ -24,7 +24,7 @@
 #   :bitstring_allocs  -- on-heap bitstring objects. It grows, and it should:
 #                         the strings and numbers in the document are really
 #                         built. It grows SLOWER than the document (2.6x the
-#                         input, about 2.5x the allocations), because the part
+#                         input, about 1.5x the allocations), because the part
 #                         that scales with length is now shared and what is
 #                         left scales with the number of values.
 #
