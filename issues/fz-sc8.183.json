@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:03:29Z",
+  "description": "Measured on develop e515ae314 (AOT): JSON.decode! allocates about 1.1 KB of heap per input byte, constant in line length (synthetic lines of one 200..1600-byte string: 1175..1073 B/byte, time 0.97 us/byte). A profile puts the mutator's allocation in fz_bs_reader_init (alloc_struct BITSTRING_READER_SCHEMA), fz_bs_read_field_ref (alloc_struct BITSTRING_RESULT_SCHEMA per read), alloc_bitstring_suffix for the rest, and fz_binary_concat for acc \u003c\u003e \u003c\u003cc\u003e\u003e. On the real 143 MB compile log the built distiller spends 87% of its time collecting this garbage: 8,000 lines take 4.2 s (Elixir 0.38 s), 16,000 take 13 s.\n\nGoal: matching \u003c\u003cc, r :: binary\u003e\u003e keeps reader position in the frame and yields scalars without a heap struct per read, on interp, run and build. Needs a proposal page. Probes (read.fz, dec.fz, m.py, syn*.jsonl): /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/slow",
+  "id": "fz-sc8.183",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "A binary pattern match allocates nothing per field read",
+  "type": "bug",
+  "updated_at": "2026-11-14T04:03:29Z"
+}
