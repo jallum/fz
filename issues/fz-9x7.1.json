@@ -11,9 +11,15 @@
   "id": "fz-9x7.1",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "2026-11-14 decisions (user): (1) heap_alloc_stats reports continuations as their own row (continuation allocs/bytes); closure rows count only closures the program makes, so closure pins keep their meaning. Builder trace: every new closure allocation was a continuation (quicksort 140/140 sites, enum_sort 260/260, map_atom_order 230/230, tuple_field_closure_call 223/223). (2) fz-9x7.2 (pop at resume) folds into this ticket: one commit. Collection rises (00901 gc 8-\u003e53 at unchanged reduction_yields 112; 00911 many 12,864-byte minors) come from unpopped frames making the heap due more often (Heap::should_gc), which the pop removes. Re-measure all pins on the combined change.",
+      "timestamp": "2026-11-14T20:09:25Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A continuation is a heap object built and read by inline code",
   "type": "task",
-  "updated_at": "2026-11-14T19:25:24Z"
+  "updated_at": "2026-11-14T20:09:25Z"
 }
