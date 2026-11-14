@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:29:19Z",
+  "description": "then(3, fn x -\u003e x + 1 end) is 4 in Elixir. fz2: 'compiler2 lowering found unresolved direct runtime callee then/2'. Reported by fz-8c; reproduced on develop e515ae314.",
+  "id": "fz-sc8.188",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "Kernel.then/2",
+  "type": "feature",
+  "updated_at": "2026-11-14T04:29:19Z"
+}
