@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T14:20:31Z",
+  "description": "GH issue #566. Measured (spike, release, arm64): TermComparator::compare costs 5.0 ns for two small integers (a raw compare is 0.8), 7.1 ns for two atoms with the same id, 14 ns for two 7-byte binaries. fz_op_identical / == run the full ordering comparison (8 to 20 ns) where equality needs none. A map key search decodes key and value of every probed entry (3.7 ns per probe). In the distiller profile: compare 10%, fz_op_identical 9.6%, map_entry 7%.\n\nGoal, each proven in the spike tree (worktree fz-maps-spike, files runtime/src/term.rs, ir_runtime.rs, heap/map_tree.rs):\n1. compare returns early for two integers, two atoms with equal ids, and two bitstrings.\n2. TermComparator::equal with early exits (same word; different categories; immediates by word; binaries by bit length then bytes; else compare), used by the equality and identity exports.\n3. A map key search reads keys from the key array and decodes only the key.\nAtoms with equal ids are equal without looking up their names: an id missing from the atom table no longer panics when compared with itself (approved by the user 2026-11-14). The per-call asserts stay (removing them measured as noise).\n\nSpike results: int compare 5.0 to 3.3 ns; binary compare 14 to 9 ns; == on ints 8.2 to 4.4 ns, on unequal-length binaries 16 to 4.7 ns; 32-key leaf search with int keys 49.5 to 28.3 ns, 40-byte binary keys 85 to 58 ns.\n\nSignal: a property test that equal agrees with compare == Equal over mixed random terms in both numeric modes; micro timings before and after; the distiller re-timed and re-profiled.",
+  "id": "fz-sc8.199",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "Comparing two terms of one simple kind does not pay for the general comparison",
+  "type": "task",
+  "updated_at": "2026-11-14T14:20:31Z"
+}
