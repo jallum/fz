@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T01:45:19Z",
   "created": "2026-11-14T01:05:29Z",
   "description": "Types::clause_domain_at_every_instantiation (types/arrow_match.rs:255) collects a domain vector that ContractArrow::narrowed_row (contract.rs:340) zips over once and drops: about 3,120 allocations (contract.rs:345 via contract.rs:206).\n\nChange: the domain is produced as it is consumed (an iterator, or a per-column call with the bounds closed once), so no intermediate vector exists. The other caller (contract.rs:310) keeps the same answer.\n\nEvidence: census of the OptionParser probe at develop 01e69178a (771,812 allocations): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/01e69178a_top.txt; call chains: cd /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census \u0026\u0026 python3 chain.py 01e69178a.pkl \u003cfile:line\u003e \u003cdepth\u003e \"\" \u003cn\u003e; line numbers are exact in /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src (read only).\n\nSignal: full gate green; no golden or pin moves except a falling pin, which is lowered and listed; program output and canonical backend dump identical on the probe; allocation count before and after in the commit.",
   "id": "fz-y11.29",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A clause's row is narrowed column by column as its domain is computed",
   "type": "task",
-  "updated_at": "2026-11-14T01:05:39Z"
+  "updated_at": "2026-11-14T01:45:19Z"
 }
