@@ -143,9 +143,10 @@ is by kind, whatever it holds).
   `failure::raise_exception_showing` with the subject, and continues in
   `after_panic`. `after_panic` (`ir_interp/backend.rs`) takes `Process::raised`, pops the
   continuation frames above the handler frame, and runs the handler entry with
-  the three values as its params. With no raise waiting, the step becomes
-  `BackendRunStep::Failed` and the drive loop exits the process through
-  `exit_backend_process` with `ProcessExit::Failed`. A value reaching a handler
+  the three values as its params. With no raise waiting, the raise route has
+  already failed the process: the step becomes `BackendRunStep::Failed`, and
+  the drive loop's `end_quantum` (`runtime/src/sched_core.rs`) reads that off
+  the process and exits it. A value reaching a handler
   frame is a contract violation: the try body pops its frame first.
 
 ## What `try` lowers to
@@ -271,6 +272,39 @@ A `try` with only a `do` block is `missing :catch/:rescue/:after option in
 "try"`; a repeated section is `duplicate "rescue" clauses given for "try"`; a
 `rescue` section that is not clauses is `invalid "rescue" block in "try", it
 expects "pattern -> expr" clauses`.
+
+## `__STACKTRACE__`
+
+`__STACKTRACE__` is a variable a rescue or catch clause binds. fz carries no
+stacktraces, so the clause binds it to the empty list, where Elixir's holds the
+frames of the raise. `lower_handler_arm` (`src/compiler2/jobs/body.rs`) binds
+it in the clause's environment through `bind_stacktrace_where_read`, and only
+when the clause body reads the name, so a clause that does not read it lowers
+to the steps it had without it. Because it is a binding, everything inside the
+clause reads it the way it reads any variable: a closure captures it, and a
+nested `try` body inside the clause sees it.
+
+It is a special form and not a hygienic variable. `decode_expr`
+(`src/compiler2/quoted_function.rs`) gives the name the user context wherever
+it is written, so a macro whose quote holds `__STACKTRACE__` reads the clause
+the macro expands in.
+
+Read anywhere else, the body of the `try` itself included, it is Elixir's
+diagnostic (`lower/unbound`):
+
+```text
+__STACKTRACE__ is available only inside catch and rescue clauses of try expressions
+```
+
+No pattern can bind it, so nothing outside a clause can make the name
+readable. `decode_pattern` refuses it (`parse/stacktrace-pattern`):
+
+```text
+invalid pattern in match, __STACKTRACE__ is not allowed in matches
+```
+
+`reraise(exception, __STACKTRACE__)` is Elixir's idiom and compiles; `reraise/2`
+ignores its second argument.
 
 ## The line
 
@@ -529,20 +563,21 @@ the raise. `Process::ended_in_failure` and
 - `lib/kernel.fz` — `panic/1`, `raise/1`, `raise/2`, `inspect/1`, `throw/1`,
   `exit/1`, `reraise/2`; `lib/runtime.fz` lists the raise
   functions for auto-import.
-- `src/ast/mod.rs` — `Expr::Try`, `RescueClause`, `CatchClause`.
+- `src/ast/mod.rs` — `Expr::Try`, `RescueClause`, `CatchClause`, `STACKTRACE`.
 - `src/compiler2/quoted_function.rs` — `decode_try`, `decode_rescue_head`,
-  `decode_catch_clauses`.
+  `decode_catch_clauses`; `decode_expr` and `decode_pattern` for
+  `__STACKTRACE__`.
 - `src/compiler2/frontdoor.rs` — `parse_do_section` (`ClauseKind::Params` for
   `catch`).
 - `src/compiler2/source_sugar.rs` — the `in` rewrite and its operator stamp.
-- `src/compiler2/jobs/body.rs` — `lower_try`, `lower_handled`, `handler_arms`, `rescue_arms`, `reraise_block`, `push_try_else`.
+- `src/compiler2/jobs/body.rs` — `lower_try`, `lower_handled`, `handler_arms`, `rescue_arms`, `lower_handler_arm`, `bind_stacktrace_where_read`, `push_try_else`.
 - `src/compiler2/jobs/native.rs` — `raise_last_resort` (emits `Term::Raise` and `Term::Reraise`),
   `raise_undefined_function` (emits `Term::RaiseUndefined`).
 - `src/compiler2/native_codegen/terminator.rs` — `emit_try`, `emit_raise`, `emit_raise_undefined`.
 - `src/compiler2/native_codegen/prim.rs` — `continue_after_raise`,
   `Prim::PopHandler`.
 - `src/ir_interp/backend.rs` — `after_panic`, `raise_last_resort`,
-  `exit_backend_process`, `BackendRun`, `macro_fault_hook`.
+  `BackendRunStep`, `BackendRun`, `macro_fault_hook`.
 - `src/compiler2/compiler.rs` — `RunFailure`.
 - `fixtures/00815` through `fixtures/00831` — the rescue shapes, nesting,
   re-raise, the uncaught raise, a try in a spawned process, the raising loop,
@@ -552,5 +587,8 @@ the raise. `Process::ended_in_failure` and
 - `fixtures/00841` through `fixtures/00847` and
   `fixtures/00807` through `fixtures/00814` — `throw`, `exit`, `catch`,
   `reraise/2`, the uncaught lines and statuses, and the refused `catch` forms.
+- `fixtures/00885` through `fixtures/00889` — `__STACKTRACE__`: read in a
+  rescue clause, a catch clause and a closure, passed to `reraise/2`, its value,
+  the two refusals, and a macro that quotes it.
 - `fixtures/00848` and `fixtures/00850` — a rescued decision's exception name,
   `term` and message.

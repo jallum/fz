@@ -1,0 +1,23 @@
+#---
+# purpose: "__STACKTRACE__ is a special form and not a hygienic variable: quoted by a macro, it reads the rescue clause the macro expands in"
+# oracle: 00889_stacktrace_a_macro_quotes_reads_the_clause_that_expands_it.oracle.exs
+# oracle.stamp: 6a0f5fb5498fb58c
+#---
+defmodule Trace do
+  defmacro is_a_list() do
+    quote do: is_list(__STACKTRACE__)
+  end
+end
+defmodule User do
+  require Trace
+  def run() do
+    try do
+      raise ArgumentError, "boom"
+    rescue
+      _ -> Trace.is_a_list()
+    end
+  end
+end
+def main() do
+  dbg(User.run())
+end

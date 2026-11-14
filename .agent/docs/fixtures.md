@@ -104,7 +104,7 @@ their block. A new epic claims the next free block and adds a row here.
 | Block         | Owner                             | State                  |
 | ------------- | --------------------------------- | ---------------------- |
 | `00600-00799` | fz-sc8                            | full                   |
-| `00800-00899` | fz-3ul                            | in use through `00884` |
+| `00800-00899` | fz-3ul                            | in use through `00889` |
 | `00900-00999` | fz-a9y                            | reserved               |
 | `01000-01039` | fz-sc8 (stack #274)               | in use through `01039` |
 | `01040-01059` | fz-sc8 (session fz-38: .77, .105) | in use through `01042` |
@@ -514,6 +514,14 @@ oracle silences). `00813` and `00814` are `expect: diagnostic`
 that is not clauses. The statuses the matrix cannot pin, such as
 `exit({:shutdown, 7})`, are pinned in `exec/runtime_test.rs` and
 `tests/fz2_cli.rs`. See [exceptions](exceptions.md).
+
+Fixtures `00885` through `00889` are `__STACKTRACE__`. Elixir's value holds
+frames and fz's is the empty list, so the oracle fixtures read only what both
+agree on: `00885` asks `is_list/1` of it in a rescue clause, a catch clause and
+a closure inside a clause, and passes it to `reraise/2`; `00889` reads it
+through a macro's quote. `00886` has no oracle and pins the empty list. `00887`
+(`lower/unbound`, read in a `try` body) and `00888` (`parse/stacktrace-pattern`,
+written as a pattern) are `expect: diagnostic` with Elixir's text.
 
 ## Relationship to the runtime library
 

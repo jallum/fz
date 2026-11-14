@@ -341,9 +341,14 @@ fn decode_expr(
             return Ok(Spanned::new(Expr::Module(module), span));
         }
         if !node.tail.is_list_like() {
-            let var = Var {
-                name: node.head.atom_name()?.to_string(),
-                context: decode_var_context(&node)?,
+            let name = node.head.atom_name()?.to_string();
+            let var = if name == crate::ast::STACKTRACE {
+                Var::user(name)
+            } else {
+                Var {
+                    name,
+                    context: decode_var_context(&node)?,
+                }
             };
             return Ok(Spanned::new(Expr::Var(var), span));
         }
@@ -547,6 +552,13 @@ pub(super) fn decode_pattern(
         let span = node.span.unwrap_or(Span::DUMMY);
         if !node.tail.is_list_like() {
             let name = node.head.atom_name()?;
+            if name == crate::ast::STACKTRACE {
+                return Err(QuotedSourceError::user(
+                    crate::diag::codes::PARSE_STACKTRACE_PATTERN,
+                    Some(span),
+                    "invalid pattern in match, __STACKTRACE__ is not allowed in matches",
+                ));
+            }
             return Ok(Spanned::new(
                 if name == "_" {
                     Pattern::Wildcard

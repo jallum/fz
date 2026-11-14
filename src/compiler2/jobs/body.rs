@@ -173,6 +173,8 @@ struct TrySections<'a> {
 
 const ERROR_KIND: &str = "error";
 const ERLANG_ERROR: &str = "Elixir.ErlangError";
+const STACKTRACE_OUTSIDE_A_HANDLER_CLAUSE: &str =
+    "__STACKTRACE__ is available only inside catch and rescue clauses of try expressions";
 
 #[derive(Debug)]
 enum ExprStep {
@@ -1370,6 +1372,12 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             Expr::Var(name) => {
                 if let Some(value) = env.get(name) {
                     return Ok(*value);
+                }
+                if name.name == crate::ast::STACKTRACE {
+                    return Err(emit_job_diagnostic(
+                        self.telemetry,
+                        Diagnostic::error(codes::LOWER_UNBOUND, STACKTRACE_OUTSIDE_A_HANDLER_CLAUSE, expr.span),
+                    ));
                 }
                 if let VarContext::Macro(function, _) = name.context {
                     let macro_name = self.world.function_ref(function).display_name();
@@ -2831,6 +2839,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             }
             HandlerClause::Catch { clause } => &catch[clause].body,
         };
+        self.bind_stacktrace_where_read(body, &mut env, &mut steps);
         let result = self.lower_expr(body, &mut env, &mut steps)?;
         Ok(ExprOutcome {
             arguments,
@@ -2868,6 +2877,31 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             quoted_span: None,
         });
         value
+    }
+
+    /// `__STACKTRACE__` is a variable a rescue or catch clause binds. fz keeps
+    /// no stacktraces, so the clause binds it to the empty list, and only when
+    /// its body reads the name. A closure inside the clause captures it as it
+    /// captures any other variable.
+    fn bind_stacktrace_where_read(
+        &mut self,
+        body: &Spanned<Expr>,
+        env: &mut HashMap<Var, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) {
+        let stacktrace = Var::user(crate::ast::STACKTRACE);
+        let mut free = HashSet::default();
+        collect_expr_free_names(&body.node, &mut HashSet::default(), &mut free);
+        if !free.contains(&stacktrace) {
+            return;
+        }
+        let value = self.fresh_value();
+        steps.push(ExprStep::List {
+            value,
+            items: Vec::new(),
+            tail: None,
+        });
+        env.insert(stacktrace, value);
     }
 
     fn capture_values(&mut self, free: HashSet<Var>, env: &HashMap<Var, ValueId>) -> Vec<ValueId> {
