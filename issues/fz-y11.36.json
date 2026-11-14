@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:55:36Z",
+  "description": "The function table's intern path (identity.rs:575-595) turns the name into a String and clones it into a FunctionKey before asking whether the function exists: identity.rs:582 (2,224) via world.rs:1200.\n\nChange: the lookup borrows the name; a String is made only when a new function is inserted.\n\nEvidence: census of the OptionParser probe at c0e52fbaf (tip of #518; 734,597 allocations): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/c0e52fbaf_top.txt; call chains: cd /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census \u0026\u0026 python3 chain.py c0e52fbaf.pkl \u003cfile:line\u003e \u003cdepth\u003e \"\" \u003cn\u003e; line numbers are exact at commit c0e52fbaf.\n\nSignal: full gate green; no golden or pin moves except a falling pin, which is lowered and listed; program output and canonical backend dump identical on the probe; allocation count before and after in the commit.",
+  "id": "fz-y11.36",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "A function is looked up by its name without copying the name",
+  "type": "task",
+  "updated_at": "2026-11-14T01:55:36Z"
+}
