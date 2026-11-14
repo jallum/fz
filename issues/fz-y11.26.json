@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T01:45:17Z",
   "created": "2026-11-14T01:05:28Z",
   "description": "Types::type_var, atom_lit and arrow build a whole Descr (a set node, a name String, or three vectors) and hand it to the interner, which on a hit drops it. Sites: finite_set.rs:42 via descr.rs:123 var (3,088 from addressed.rs:166), descr.rs:155 atom_lit (about 2,500, plus the name String), descr.rs:209/210 and conj.rs:50 via types/mod.rs:1393 arrow (about 3,900 calls, three allocations each).\n\nSpike first: count hits against misses, then find the cheapest lookup that answers a hit before the descriptor is built. A lookup table per kind is a new concept; it lands only if the spike shows it removes more than it adds. Otherwise close with the finding.\n\nEvidence: census of the OptionParser probe at develop 01e69178a (771,812 allocations): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/01e69178a_top.txt; call chains: cd /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census \u0026\u0026 python3 chain.py 01e69178a.pkl \u003cfile:line\u003e \u003cdepth\u003e \"\" \u003cn\u003e; line numbers are exact in /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src (read only).\n\nSignal: full gate green; no golden or pin moves except a falling pin, which is lowered and listed; program output and canonical backend dump identical on the probe; allocation count before and after in the commit.",
   "id": "fz-y11.26",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A type variable, atom literal or arrow that exists is found without building its descriptor",
   "type": "task",
-  "updated_at": "2026-11-14T01:05:41Z"
+  "updated_at": "2026-11-14T01:45:17Z"
 }
