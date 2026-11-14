@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T13:11:15Z",
+  "description": "Step 3 of fz-sc8.192. %{m | k: v} on a tree updates a path instead of copying all slots (alloc_entries_update). src/compiler2/source.rs reads maps through MapLayout instead of raw layout pointers (map_count, map_keys_ptr, map_tag_ptr, map_values_ptr). Signal: existing fixtures; a pinned allocation count for an update of a large map.",
+  "id": "fz-sc8.192.3",
+  "labels": [],
+  "parent": "fz-sc8.192",
+  "priority": 2,
+  "status": "open",
+  "title": "A map update on a large map updates a path, and the source reader reads maps through the view",
+  "type": "task",
+  "updated_at": "2026-11-14T13:11:15Z"
+}
