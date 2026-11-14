@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-14T04:03:29Z",
-  "description": "Over the first 8,000 lines of a real compile log the fz output differs from Elixir's in the 'cause of every wake' table. Cause (verified by diffing with padding removed): cause_table in tools/distill-telemetry.exs does Enum.frequencies |\u003e Enum.sort_by(fn {_, n} -\u003e -n end) |\u003e Enum.take(top). Rows with equal counts keep the map's iteration order, and the map has more than 32 keys, so Elixir's order is its hash order and fz's is its own; take(top) then keeps different tied rows (4 rows differ, 2 swap places), which also changes a column width. Not a miscompile. Two ways out: the script sorts by a total key ({-n, key}), which makes both runtimes agree whatever the map order; or fz reproduces Elixir's order for maps past 32 keys (the open map-order question). The pinned 112 KB trace does not reach this. Repro: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/slow/h8000.jsonl, out8000.txt (fz), ex8000.txt (elixir).",
+  "description": "Over larger traces the fz distiller and Elixir printed different rows in several tables. Cause (verified): the tables sort map-derived rows by a figure alone (count, self time, inclusive time, excess) and then Enum.take(top); rows that tie keep the map's iteration order, which Elixir leaves unspecified (hash order past 32 keys) and fz does not reproduce, so the cut keeps different rows. Seen in cause_table (8,000 lines of a compile log, default top) and in by_subject (a 597-line trace at --top 32). Not a miscompile. Fix: every sort in tools/distill-telemetry.exs breaks ties by the row's label, so both runtimes agree whatever the map order. Pinned by tests/distill_telemetry/tied_rows.jsonl at --top 32.",
   "id": "fz-sc8.185",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
   "status": "open",
-  "title": "Map iteration order decides which tied rows the distiller's wake table keeps",
+  "title": "The rows a distiller table keeps do not depend on map order",
   "type": "bug",
-  "updated_at": "2026-11-14T04:06:33Z"
+  "updated_at": "2026-11-14T04:28:08Z"
 }
