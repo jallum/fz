@@ -9,7 +9,7 @@
   "parent": "fz-y11",
   "priority": 2,
   "status": "in_progress",
-  "title": "A pattern binding shares its variable's name",
+  "title": "Narrowed dispatch plans share their outcomes",
   "type": "task",
-  "updated_at": "2026-11-14T01:55:43Z"
+  "updated_at": "2026-11-14T02:19:30Z"
 }
