@@ -925,7 +925,7 @@ fn a_union_with_a_member_no_clause_accepts_is_answered_on_the_overlap() {
 
 // ---------------------------------------------------------------------------
 // PINNED VERDICTS at the CONTRACT level. Whether a clause fits a call is
-// decided by `ContractArrow::narrowed_row` and
+// decided by `ContractArrow::narrow_row` and
 // `FunctionContract::admits_instantiated_clause`; whether the CALL is legal is
 // decided by `FunctionContract::apply` over the clause SET. These record what
 // apply() does with a witness that is the argument.
