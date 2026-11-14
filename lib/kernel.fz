@@ -399,7 +399,7 @@ defmodule Kernel do
 
   """
   @spec struct(any, any) :: any
-  def struct(module :: atom, fields), do: struct(module.__struct__(), fields)
+  def struct(module, fields) when is_atom(module), do: struct(module.__struct__(), fields)
   def struct(base, fields), do: Enum.reduce(fields, base, &replace_field/2)
 
   @spec replace_field({any, any}, any) :: any
@@ -420,7 +420,7 @@ defmodule Kernel do
 
   """
   @spec struct!(any, any) :: any
-  def struct!(module :: atom, fields), do: Enum.reduce(fields, module.__struct__(), &put_declared_field!/2)
+  def struct!(module, fields) when is_atom(module), do: Enum.reduce(fields, module.__struct__(), &put_declared_field!/2)
   def struct!(base, fields), do: Enum.reduce(fields, base, &replace_field!/2)
 
   @spec put_declared_field!({any, any}, any) :: any
@@ -577,7 +577,7 @@ defmodule Kernel do
 
   """
   @spec send(pid, t) :: t when t: any
-  def send(pid :: pid, msg), do: fz_send(pid, msg)
+  def send(pid, msg) when is_pid(pid), do: fz_send(pid, msg)
   def send(_pid, _msg), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: invalid destination\n")
 
   extern "fz" defp fz_send(pid, t) :: t when t: any
@@ -664,7 +664,7 @@ defmodule Kernel do
 
   """
   @spec binary <> binary :: binary
-  def (left :: binary) <> (right :: binary), do: fz_binary_concat(left, right)
+  def left <> right when is_binary(left) and is_binary(right), do: fz_binary_concat(left, right)
 
   extern "fz" defp fz_binary_concat(binary, binary) :: binary
 
@@ -695,8 +695,8 @@ defmodule Kernel do
   """
   @spec negate(integer) :: integer
   @spec negate(float) :: float
-  def negate(x :: integer), do: fz_op_neg_i(x)
-  def negate(x :: float), do: fz_op_neg_f(x)
+  def negate(x) when is_integer(x), do: fz_op_neg_i(x)
+  def negate(x) when is_float(x), do: fz_op_neg_f(x)
   def negate(_), do: arithmetic_error()
 
   extern "C" defp fz_op_neg_i(integer) :: integer,
@@ -721,8 +721,8 @@ defmodule Kernel do
   """
   @spec abs(integer) :: integer
   @spec abs(float) :: float
-  def abs(x :: integer), do: fz_op_abs_i(x)
-  def abs(x :: float), do: fz_op_abs_f(x)
+  def abs(x) when is_integer(x), do: fz_op_abs_i(x)
+  def abs(x) when is_float(x), do: fz_op_abs_f(x)
   def abs(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
 
   extern "C" defp fz_op_abs_i(integer) :: integer,
@@ -747,8 +747,8 @@ defmodule Kernel do
   """
   @spec round(integer) :: integer
   @spec round(float) :: integer
-  def round(x :: integer), do: x
-  def round(x :: float), do: fz_op_round_f(x)
+  def round(x) when is_integer(x), do: x
+  def round(x) when is_float(x), do: fz_op_round_f(x)
   def round(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
 
   extern "C" defp fz_op_round_f(float) :: integer,
@@ -769,8 +769,8 @@ defmodule Kernel do
   """
   @spec trunc(integer) :: integer
   @spec trunc(float) :: integer
-  def trunc(x :: integer), do: x
-  def trunc(x :: float), do: fz_op_trunc_f(x)
+  def trunc(x) when is_integer(x), do: x
+  def trunc(x) when is_float(x), do: fz_op_trunc_f(x)
   def trunc(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
 
   extern "C" defp fz_op_trunc_f(float) :: integer,
@@ -791,8 +791,8 @@ defmodule Kernel do
   """
   @spec floor(integer) :: integer
   @spec floor(float) :: integer
-  def floor(x :: integer), do: x
-  def floor(x :: float), do: fz_op_floor_f(x)
+  def floor(x) when is_integer(x), do: x
+  def floor(x) when is_float(x), do: fz_op_floor_f(x)
   def floor(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
 
   extern "C" defp fz_op_floor_f(float) :: integer,
@@ -813,8 +813,8 @@ defmodule Kernel do
   """
   @spec ceil(integer) :: integer
   @spec ceil(float) :: integer
-  def ceil(x :: integer), do: x
-  def ceil(x :: float), do: fz_op_ceil_f(x)
+  def ceil(x) when is_integer(x), do: x
+  def ceil(x) when is_float(x), do: fz_op_ceil_f(x)
   def ceil(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
 
   extern "C" defp fz_op_ceil_f(float) :: integer,
@@ -834,7 +834,7 @@ defmodule Kernel do
 
   """
   @spec hd(any) :: any
-  def hd(list :: list) when fz_list_is_cons(list), do: fz_list_head_ref(list)
+  def hd(list) when is_list(list) and fz_list_is_cons(list), do: fz_list_head_ref(list)
   def hd(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a nonempty list\n")
 
   @doc """
@@ -850,7 +850,7 @@ defmodule Kernel do
 
   """
   @spec tl(any) :: any
-  def tl(list :: list) when fz_list_is_cons(list), do: fz_list_tail_ref(list)
+  def tl(list) when is_list(list) and fz_list_is_cons(list), do: fz_list_tail_ref(list)
   def tl(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a nonempty list\n")
 
   extern "C" defp fz_list_is_cons(any) :: boolean
@@ -875,8 +875,8 @@ defmodule Kernel do
   """
   @spec +(integer) :: integer
   @spec +(float) :: float
-  def +(x :: integer), do: x
-  def +(x :: float), do: x
+  def +(x) when is_integer(x), do: x
+  def +(x) when is_float(x), do: x
   def +(_), do: arithmetic_error()
 
   @doc """
@@ -899,10 +899,10 @@ defmodule Kernel do
   @spec float + float :: float
   @spec integer + float :: float
   @spec float + integer :: float
-  def (left :: integer) + (right :: integer), do: fz_op_add_ii(left, right)
-  def (left :: integer) + (right :: float), do: fz_op_add_if(left, right)
-  def (left :: float) + (right :: integer), do: fz_op_add_if(right, left)
-  def (left :: float) + (right :: float), do: fz_op_add_ff(left, right)
+  def left + right when is_integer(left) and is_integer(right), do: fz_op_add_ii(left, right)
+  def left + right when is_integer(left) and is_float(right), do: fz_op_add_if(left, right)
+  def left + right when is_float(left) and is_integer(right), do: fz_op_add_if(right, left)
+  def left + right when is_float(left) and is_float(right), do: fz_op_add_ff(left, right)
   def _left + _right, do: arithmetic_error()
 
   extern "C" defp fz_op_add_ii(integer, integer) :: integer,
@@ -935,10 +935,10 @@ defmodule Kernel do
   @spec float - float :: float
   @spec integer - float :: float
   @spec float - integer :: float
-  def (left :: integer) - (right :: integer), do: fz_op_sub_ii(left, right)
-  def (left :: integer) - (right :: float), do: fz_op_sub_if(left, right)
-  def (left :: float) - (right :: integer), do: fz_op_sub_fi(left, right)
-  def (left :: float) - (right :: float), do: fz_op_sub_ff(left, right)
+  def left - right when is_integer(left) and is_integer(right), do: fz_op_sub_ii(left, right)
+  def left - right when is_integer(left) and is_float(right), do: fz_op_sub_if(left, right)
+  def left - right when is_float(left) and is_integer(right), do: fz_op_sub_fi(left, right)
+  def left - right when is_float(left) and is_float(right), do: fz_op_sub_ff(left, right)
   def _left - _right, do: arithmetic_error()
 
   extern "C" defp fz_op_sub_ii(integer, integer) :: integer,
@@ -974,10 +974,10 @@ defmodule Kernel do
   @spec float * float :: float
   @spec integer * float :: float
   @spec float * integer :: float
-  def (left :: integer) * (right :: integer), do: fz_op_mul_ii(left, right)
-  def (left :: integer) * (right :: float), do: fz_op_mul_if(left, right)
-  def (left :: float) * (right :: integer), do: fz_op_mul_if(right, left)
-  def (left :: float) * (right :: float), do: fz_op_mul_ff(left, right)
+  def left * right when is_integer(left) and is_integer(right), do: fz_op_mul_ii(left, right)
+  def left * right when is_integer(left) and is_float(right), do: fz_op_mul_if(left, right)
+  def left * right when is_float(left) and is_integer(right), do: fz_op_mul_if(right, left)
+  def left * right when is_float(left) and is_float(right), do: fz_op_mul_ff(left, right)
   def _left * _right, do: arithmetic_error()
 
   extern "C" defp fz_op_mul_ii(integer, integer) :: integer,
@@ -1014,10 +1014,10 @@ defmodule Kernel do
   @spec float / float :: float
   @spec integer / float :: float
   @spec float / integer :: float
-  def (left :: integer) / (right :: integer), do: fz_op_div_ii_to_float(left, right)
-  def (left :: integer) / (right :: float), do: fz_op_div_if(left, right)
-  def (left :: float) / (right :: integer), do: fz_op_div_fi(left, right)
-  def (left :: float) / (right :: float), do: fz_op_div_ff(left, right)
+  def left / right when is_integer(left) and is_integer(right), do: fz_op_div_ii_to_float(left, right)
+  def left / right when is_integer(left) and is_float(right), do: fz_op_div_if(left, right)
+  def left / right when is_float(left) and is_integer(right), do: fz_op_div_fi(left, right)
+  def left / right when is_float(left) and is_float(right), do: fz_op_div_ff(left, right)
   def _left / _right, do: arithmetic_error()
 
   extern "C" defp fz_op_div_ii_to_float(integer, integer) :: float,
@@ -1047,7 +1047,7 @@ defmodule Kernel do
 
   """
   @spec div(integer, integer) :: integer
-  def div(left :: integer, right :: integer), do: fz_op_div_ii(left, right)
+  def div(left, right) when is_integer(left) and is_integer(right), do: fz_op_div_ii(left, right)
   def div(_, _), do: arithmetic_error()
 
   extern "C" defp fz_op_div_ii(integer, integer) :: integer,
@@ -1070,7 +1070,7 @@ defmodule Kernel do
 
   """
   @spec rem(integer, integer) :: integer
-  def rem(left :: integer, right :: integer), do: fz_op_rem_ii(left, right)
+  def rem(left, right) when is_integer(left) and is_integer(right), do: fz_op_rem_ii(left, right)
   def rem(_, _), do: arithmetic_error()
 
   @doc """
@@ -1092,10 +1092,10 @@ defmodule Kernel do
   @spec float % float :: float
   @spec integer % float :: float
   @spec float % integer :: float
-  def (left :: integer) % (right :: integer), do: fz_op_rem_ii(left, right)
-  def (left :: integer) % (right :: float), do: fz_op_rem_if(left, right)
-  def (left :: float) % (right :: integer), do: fz_op_rem_fi(left, right)
-  def (left :: float) % (right :: float), do: fz_op_rem_ff(left, right)
+  def left % right when is_integer(left) and is_integer(right), do: fz_op_rem_ii(left, right)
+  def left % right when is_integer(left) and is_float(right), do: fz_op_rem_if(left, right)
+  def left % right when is_float(left) and is_integer(right), do: fz_op_rem_fi(left, right)
+  def left % right when is_float(left) and is_float(right), do: fz_op_rem_ff(left, right)
   def _left % _right, do: arithmetic_error()
 
   extern "C" defp fz_op_rem_ii(integer, integer) :: integer,
@@ -1165,10 +1165,10 @@ defmodule Kernel do
   @spec float < integer :: boolean
   # @spec binary < binary :: boolean
   @spec any < any :: boolean
-  def (left :: integer) < (right :: integer), do: fz_op_lt_ii(left, right)
-  def (left :: float) < (right :: float), do: fz_op_lt_ff(left, right)
-  def (left :: integer) < (right :: float), do: fz_op_lt_if(left, right)
-  def (left :: float) < (right :: integer), do: fz_op_lt_fi(left, right)
+  def left < right when is_integer(left) and is_integer(right), do: fz_op_lt_ii(left, right)
+  def left < right when is_float(left) and is_float(right), do: fz_op_lt_ff(left, right)
+  def left < right when is_integer(left) and is_float(right), do: fz_op_lt_if(left, right)
+  def left < right when is_float(left) and is_integer(right), do: fz_op_lt_fi(left, right)
   # def (left :: binary) < (right :: binary), do: fz_op_lt_bb(left, right)
   def left < right, do: compare(left, right) < 0
 
@@ -1198,10 +1198,10 @@ defmodule Kernel do
   @spec float <= integer :: boolean
   # @spec binary <= binary :: boolean
   @spec any <= any :: boolean
-  def (left :: integer) <= (right :: integer), do: fz_op_lte_ii(left, right)
-  def (left :: float) <= (right :: float), do: fz_op_lte_ff(left, right)
-  def (left :: integer) <= (right :: float), do: fz_op_lte_if(left, right)
-  def (left :: float) <= (right :: integer), do: fz_op_lte_fi(left, right)
+  def left <= right when is_integer(left) and is_integer(right), do: fz_op_lte_ii(left, right)
+  def left <= right when is_float(left) and is_float(right), do: fz_op_lte_ff(left, right)
+  def left <= right when is_integer(left) and is_float(right), do: fz_op_lte_if(left, right)
+  def left <= right when is_float(left) and is_integer(right), do: fz_op_lte_fi(left, right)
   # def (left :: binary) <= (right :: binary), do: fz_op_lte_bb(left, right)
   def left <= right, do: compare(left, right) <= 0
 
@@ -1234,10 +1234,10 @@ defmodule Kernel do
   @spec float > integer :: boolean
   # @spec binary > binary :: boolean
   @spec any > any :: boolean
-  def (left :: integer) > (right :: integer), do: fz_op_gt_ii(left, right)
-  def (left :: float) > (right :: float), do: fz_op_gt_ff(left, right)
-  def (left :: integer) > (right :: float), do: fz_op_gt_if(left, right)
-  def (left :: float) > (right :: integer), do: fz_op_gt_fi(left, right)
+  def left > right when is_integer(left) and is_integer(right), do: fz_op_gt_ii(left, right)
+  def left > right when is_float(left) and is_float(right), do: fz_op_gt_ff(left, right)
+  def left > right when is_integer(left) and is_float(right), do: fz_op_gt_if(left, right)
+  def left > right when is_float(left) and is_integer(right), do: fz_op_gt_fi(left, right)
   # def (left :: binary) > (right :: binary), do: fz_op_gt_bb(left, right)
   def left > right, do: compare(left, right) > 0
 
@@ -1267,10 +1267,10 @@ defmodule Kernel do
   @spec float >= integer :: boolean
   # @spec binary >= binary :: boolean
   @spec any >= any :: boolean
-  def (left :: integer) >= (right :: integer), do: fz_op_gte_ii(left, right)
-  def (left :: float) >= (right :: float), do: fz_op_gte_ff(left, right)
-  def (left :: integer) >= (right :: float), do: fz_op_gte_if(left, right)
-  def (left :: float) >= (right :: integer), do: fz_op_gte_fi(left, right)
+  def left >= right when is_integer(left) and is_integer(right), do: fz_op_gte_ii(left, right)
+  def left >= right when is_float(left) and is_float(right), do: fz_op_gte_ff(left, right)
+  def left >= right when is_integer(left) and is_float(right), do: fz_op_gte_if(left, right)
+  def left >= right when is_float(left) and is_integer(right), do: fz_op_gte_fi(left, right)
   # def (left :: binary) >= (right :: binary), do: fz_op_gte_bb(left, right)
   def left >= right, do: compare(left, right) >= 0
 
@@ -1295,7 +1295,7 @@ defmodule Kernel do
 
   """
   @spec byte_size(any) :: integer
-  def byte_size(bytes :: binary), do: fz_bitstring_byte_size(bytes)
+  def byte_size(bytes) when is_binary(bytes), do: fz_bitstring_byte_size(bytes)
   def byte_size(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a bitstring\n")
 
   extern "C" defp fz_bitstring_byte_size(any) :: integer
@@ -1316,7 +1316,7 @@ defmodule Kernel do
 
   """
   @spec map_size(any) :: integer
-  def map_size(map :: map), do: fz_map_count(map)
+  def map_size(map) when is_map(map), do: fz_map_count(map)
   def map_size(map), do: raise(BadMapError, "expected a map, got:\n\n    " <> inspect(map) <> "\n")
 
   extern "fz" defp fz_map_count(any) :: integer
@@ -1337,7 +1337,7 @@ defmodule Kernel do
 
   """
   @spec tuple_size(any) :: integer
-  def tuple_size(tuple :: tuple), do: fz_tuple_size(tuple)
+  def tuple_size(tuple) when is_tuple(tuple), do: fz_tuple_size(tuple)
   def tuple_size(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a tuple\n")
 
   extern "fz" defp fz_tuple_size(any) :: integer
@@ -1356,10 +1356,10 @@ defmodule Kernel do
 
   """
   @spec elem(any, any) :: any
-  def elem(tuple :: tuple, index) when is_integer(index) and index >= 0 and index < tuple_size(tuple),
+  def elem(tuple, index) when is_tuple(tuple) and is_integer(index) and index >= 0 and index < tuple_size(tuple),
     do: fz_tuple_elem(tuple, index)
 
-  def elem(tuple :: tuple, index) when is_integer(index), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: out of range\n")
+  def elem(tuple, index) when is_tuple(tuple) and is_integer(index), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: out of range\n")
   def elem(_, index) when is_integer(index), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 2nd argument: not a tuple\n")
   def elem(_, _), do: arithmetic_error()
 
@@ -1381,7 +1381,7 @@ defmodule Kernel do
 
   """
   @spec length(any) :: integer
-  def length(list :: list), do: proper_length(fz_list_length(list))
+  def length(list) when is_list(list), do: proper_length(fz_list_length(list))
   def length(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a list\n")
 
   @spec proper_length(integer) :: integer
@@ -1613,10 +1613,10 @@ defmodule Kernel do
   @spec integer == float :: boolean
   @spec float == integer :: boolean
   @spec any == any :: boolean
-  def (left :: integer) == (right :: integer), do: fz_op_eq_ii(left, right)
-  def (left :: float) == (right :: float), do: fz_op_eq_ff(left, right)
-  def (left :: integer) == (right :: float), do: fz_op_eq_if(left, right)
-  def (left :: float) == (right :: integer), do: fz_op_eq_fi(left, right)
+  def left == right when is_integer(left) and is_integer(right), do: fz_op_eq_ii(left, right)
+  def left == right when is_float(left) and is_float(right), do: fz_op_eq_ff(left, right)
+  def left == right when is_integer(left) and is_float(right), do: fz_op_eq_if(left, right)
+  def left == right when is_float(left) and is_integer(right), do: fz_op_eq_fi(left, right)
   def left == right, do: fz_op_eq(left, right)
 
   extern "C" defp fz_op_eq_ii(integer, integer) :: boolean
@@ -1642,10 +1642,10 @@ defmodule Kernel do
   @spec integer != float :: boolean
   @spec float != integer :: boolean
   @spec any != any :: boolean
-  def (left :: integer) != (right :: integer), do: fz_op_neq_ii(left, right)
-  def (left :: float) != (right :: float), do: fz_op_neq_ff(left, right)
-  def (left :: integer) != (right :: float), do: fz_op_neq_if(left, right)
-  def (left :: float) != (right :: integer), do: fz_op_neq_fi(left, right)
+  def left != right when is_integer(left) and is_integer(right), do: fz_op_neq_ii(left, right)
+  def left != right when is_float(left) and is_float(right), do: fz_op_neq_ff(left, right)
+  def left != right when is_integer(left) and is_float(right), do: fz_op_neq_if(left, right)
+  def left != right when is_float(left) and is_integer(right), do: fz_op_neq_fi(left, right)
   def left != right, do: fz_op_neq(left, right)
 
   extern "C" defp fz_op_neq_ii(integer, integer) :: boolean
@@ -1677,10 +1677,10 @@ defmodule Kernel do
   @spec integer === float :: boolean
   @spec float === integer :: boolean
   @spec any === any :: boolean
-  def (left :: integer) === (right :: integer), do: fz_op_identical_ii(left, right)
-  def (left :: float) === (right :: float), do: fz_op_identical_ff(left, right)
-  def (_left :: integer) === (_right :: float), do: false
-  def (_left :: float) === (_right :: integer), do: false
+  def left === right when is_integer(left) and is_integer(right), do: fz_op_identical_ii(left, right)
+  def left === right when is_float(left) and is_float(right), do: fz_op_identical_ff(left, right)
+  def left === right when is_integer(left) and is_float(right), do: false
+  def left === right when is_float(left) and is_integer(right), do: false
   def left === right, do: fz_op_identical(left, right)
 
   extern "C" defp fz_op_identical_ii(integer, integer) :: boolean
@@ -1705,10 +1705,10 @@ defmodule Kernel do
   @spec integer !== float :: boolean
   @spec float !== integer :: boolean
   @spec any !== any :: boolean
-  def (left :: integer) !== (right :: integer), do: fz_op_not_identical_ii(left, right)
-  def (left :: float) !== (right :: float), do: fz_op_not_identical_ff(left, right)
-  def (_left :: integer) !== (_right :: float), do: true
-  def (_left :: float) !== (_right :: integer), do: true
+  def left !== right when is_integer(left) and is_integer(right), do: fz_op_not_identical_ii(left, right)
+  def left !== right when is_float(left) and is_float(right), do: fz_op_not_identical_ff(left, right)
+  def left !== right when is_integer(left) and is_float(right), do: true
+  def left !== right when is_float(left) and is_integer(right), do: true
   def left !== right, do: fz_op_not_identical(left, right)
 
   extern "C" defp fz_op_not_identical_ii(integer, integer) :: boolean

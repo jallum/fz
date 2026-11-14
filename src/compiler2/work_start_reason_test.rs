@@ -351,7 +351,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // per program), 252 -> 248 executable facts (fewer activations).
         // (2528, 11, 28, 248) -> (2513, 11, 28, 246): no result-decoding
         // function is defined, analyzed or lowered.
-        (2513, 11, 28, 246),
+        // (2513, 11, 28, 246) -> (2529, 11, 28, 246): the operators' guards name
+        // `is_integer`, `is_float` and `is_binary`, so those helpers are defined
+        // and reified so the guards can be folded.
+        (2529, 11, 28, 246),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -443,7 +446,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.8: 885 -> 960. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // Literal-argument calls are no longer self-keyed: each function
         // reached with an atom argument derives its demand: 960 -> 987.
-        985,
+        // 985 -> 995: the operators' guards name `is_integer`, `is_float` and
+        // `is_binary`, so those helpers are defined and reified so the guards
+        // can be folded.
+        995,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -507,7 +513,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-sc8.8: 416 -> 440. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart:
         // 440 -> 424.
-        420,
+        // 420 -> 423: one blocked-waiter start for each of the three Kernel type
+        // predicates (`is_integer`, `is_float`, `is_binary`) defined so the
+        // operators' guards can be folded.
+        423,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(

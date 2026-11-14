@@ -186,7 +186,11 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // arithmetic and compare cone derives its input demand once per program.
 // 259 -> 204: Kernel's operators call their declared-failure extern wrappers
 // directly, so no result-decoding function is defined, analyzed or lowered.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 204;
+// 204 -> 213: a guard that names a Kernel type predicate (`is_integer`,
+// `is_float`) defines that helper so the guard can be folded into a type
+// question; each helper adds a definition, a source expansion and two guard
+// reifications, and each function whose guard calls one is planned twice.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 213;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {

@@ -186,9 +186,9 @@ defmodule Map do
   # integer to the ref writer aborts with "requires a heap/sentinel ref" -- and
   # letting the clause heads pick means the caller never has to know that.
   @spec put(any, any, any) :: any
-  def put(map, key, value :: integer), do: fz_map_put_int(map, key, value)
-  def put(map, key, value :: float), do: fz_map_put_float(map, key, value)
-  def put(map, key, value :: atom), do: fz_map_put_atom_ref(map, key, value)
+  def put(map, key, value) when is_integer(value), do: fz_map_put_int(map, key, value)
+  def put(map, key, value) when is_float(value), do: fz_map_put_float(map, key, value)
+  def put(map, key, value) when is_atom(value), do: fz_map_put_atom_ref(map, key, value)
   def put(map, key, value), do: fz_map_put_ref(map, key, value)
 
   extern "fz" defp fz_map_put_int(any, any, integer) :: any
@@ -456,7 +456,7 @@ defmodule Map do
 
   """
   @spec has_key?(any, any) :: boolean
-  def has_key?(map :: map, key), do: fz_map_has_key(map, key)
+  def has_key?(map, key) when is_map(map), do: fz_map_has_key(map, key)
   def has_key?(map, _key), do: raise(BadMapError, "expected a map, got:\n\n    " <> Kernel.inspect(map) <> "\n")
 
   extern "fz" defp fz_map_has_key(any, any) :: boolean

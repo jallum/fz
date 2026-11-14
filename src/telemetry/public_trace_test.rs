@@ -2358,7 +2358,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-sc8.8: 612 -> 732. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // Each function reached with an atom argument derives its demand, and
         // fewer activations are analyzed: 732 -> 764.
-        total_evaluations: 745,
+        // 745 -> 763: the operators' guards name `is_integer`, `is_float`, `is_binary`
+        // and `is_map`, so those helpers are defined and reified so the guards can
+        // be folded.
+        total_evaluations: 763,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2560,7 +2563,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // it reaches derive their demand, recursion and static callees before
         // their first activation is keyed, while AnalyzeActivation falls:
         // 1062 -> 1105.
-        total_evaluations: 1089,
+        // 1089 -> 1103: the operators' guards name Kernel type predicates, so
+        // those helpers are defined and reified so the guards can be folded.
+        total_evaluations: 1103,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -2945,7 +2950,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // A row that carries an atom is no longer its own key: InputDemand +17,
         // Recursive +3 and PlanEntryDispatch +5 on functions whose activations
         // did not rise: 1590 -> 1615.
-        total_evaluations: 1606,
+        // 1606 -> 1622: sixteen jobs for the Kernel type predicates the
+        // operators' guards name (a definition, an expansion and two
+        // reifications each, plus the repeated planning of the operators).
+        total_evaluations: 1622,
     },
 ];
 

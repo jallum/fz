@@ -2438,15 +2438,20 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // literal-argument calls are no longer self-keyed, so Kernel's
             // arithmetic and compare cone derives its input demand once per
             // program.
-            evaluations: 204,
+            // 204 -> 213 evaluations, initial 148 -> 154, content-caused
+            // 56 -> 59, changed outputs 179 -> 185, unchanged outputs 25 -> 28,
+            // wakes 130 -> 135, blocked completions 54 -> 57: the operators'
+            // guards name `is_integer` and `is_float`, so those helpers are
+            // defined and reified so the guards can be folded.
+            evaluations: 213,
             runtime_demand_evaluations: 24,
-            initial: 148,
-            content_caused: 56,
+            initial: 154,
+            content_caused: 59,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 179,
-            unchanged_outputs: 25,
+            changed_outputs: 185,
+            unchanged_outputs: 28,
             // fz-afu.13: 73 -> 180. `wakes` sums every completion's raw
             // subscriber-wake log, counted once per wake regardless of
             // whether it enqueues a job or coalesces into one already
@@ -2467,8 +2472,8 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // blocked runs too.
             // 155 -> 150 wakes, 65 -> 62 blocked completions: the same
             // DeriveRecursive drop.
-            wakes: 130,
-            blocked_completions: 54,
+            wakes: 135,
+            blocked_completions: 57,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2624,7 +2629,9 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
     // `fz_panic/1` live, and Kernel's failure heads now also define `raise/2`
     // and `fz_raise/2`.
     // 18 -> 14: no function decodes an arithmetic extern's result.
-    assert_eq!(functions, 14, "the fixture compiles its known function population");
+    // 14 -> 16: the operators' guards name `is_integer` and `is_float`, so
+    // those two helpers are defined so the guards can be folded.
+    assert_eq!(functions, 16, "the fixture compiles its known function population");
     assert_eq!(
         counter("fz.compiler2.entry_dispatch.defined"),
         // fz-xxd.11: 24 -> 15. The nine uncalled typed-clause externs named

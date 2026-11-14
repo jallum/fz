@@ -193,12 +193,12 @@ defmodule JSON do
   def encode!(true), do: "true"
   def encode!(false), do: "false"
   def encode!(nil), do: "null"
-  def encode!(v :: integer), do: Integer.to_string(v)
-  def encode!(v :: float), do: Float.to_string(v)
-  def encode!(v :: binary), do: encode_binary!(v, Utf8.from_bytes(v))
-  def encode!(v :: atom), do: encode!(Atom.to_string(v))
-  def encode!(v :: [any]), do: "[" <> elements(v, "") <> "]"
-  def encode!(v :: map), do: "{" <> pairs(Map.to_list(v), "") <> "}"
+  def encode!(v) when is_integer(v), do: Integer.to_string(v)
+  def encode!(v) when is_float(v), do: Float.to_string(v)
+  def encode!(v) when is_binary(v), do: encode_binary!(v, Utf8.from_bytes(v))
+  def encode!(v) when is_atom(v), do: encode!(Atom.to_string(v))
+  def encode!(v) when is_list(v), do: "[" <> elements(v, "") <> "]"
+  def encode!(v) when is_map(v), do: "{" <> pairs(Map.to_list(v), "") <> "}"
   def encode!(v), do: unsupported_value(v)
 
   @spec unsupported_value(any) :: never
@@ -217,9 +217,9 @@ defmodule JSON do
   end
 
   @spec type_name(any) :: binary
-  defp type_name(_v :: tuple), do: "Tuple"
-  defp type_name(_v :: pid), do: "PID"
-  defp type_name(_v :: ref), do: "Reference"
+  defp type_name(v) when is_tuple(v), do: "Tuple"
+  defp type_name(v) when is_pid(v), do: "PID"
+  defp type_name(v) when is_reference(v), do: "Reference"
   defp type_name(_v :: resource), do: "Reference"
   defp type_name(_v), do: "Function"
 
@@ -270,10 +270,10 @@ defmodule JSON do
   defp pairs([{k, v} | t], acc), do: pairs(t, acc <> encode_key!(k) <> ":" <> encode!(v) <> ",")
 
   @spec encode_key!(any) :: binary
-  defp encode_key!(key :: binary), do: encode!(key)
-  defp encode_key!(key :: atom), do: encode!(Atom.to_string(key))
-  defp encode_key!(key :: integer), do: encode!(Integer.to_string(key))
-  defp encode_key!(key :: float), do: encode!(Float.to_string(key))
+  defp encode_key!(key) when is_binary(key), do: encode!(key)
+  defp encode_key!(key) when is_atom(key), do: encode!(Atom.to_string(key))
+  defp encode_key!(key) when is_integer(key), do: encode!(Integer.to_string(key))
+  defp encode_key!(key) when is_float(key), do: encode!(Float.to_string(key))
   defp encode_key!(key),
     do: raise(Protocol.UndefinedError, "protocol String.Chars not implemented for #{type_name(key)}\n\nGot value:\n\n    #{Kernel.inspect(key)}\n")
 
