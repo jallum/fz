@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:55:41Z",
+  "description": ":% is refused: unsupported expression prefix in compiler2 front door: Colon. :\"%\" works and :+ parses. Elixir accepts :%. It is the head of a quoted struct literal, so macros that match one write it.",
+  "id": "fz-sc8.178",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "The atom :% parses",
+  "type": "bug",
+  "updated_at": "2026-11-14T01:55:41Z"
+}
