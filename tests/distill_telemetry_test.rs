@@ -23,6 +23,14 @@
 //! tests/distill_telemetry/main_returns_one.jsonl`. `fz2` running the same
 //! script through `interp`, `run` and `build` must print it byte for byte.
 //!
+//! `tests/distill_telemetry/tied_rows.jsonl` (`def main(), do: Map.get(%{a: 1}, :a)`)
+//! is a trace in which rows tie on the figure a table sorts by, at the `--top 32`
+//! cut. Every table breaks ties by the row's own label, so the rows a cut keeps
+//! do not depend on the order a map hands its entries back in, which Elixir
+//! leaves unspecified and fz does not reproduce. `tied_rows.expected.txt` is what
+//! `elixir tools/distill-telemetry.exs --top 32` prints for it. The trace is kept
+//! as captured: a fresh capture has different timings and may not tie.
+//!
 //! Compiling the script is itself a measurement. One drive of the product
 //! stack spends at most `PRODUCT_DRIVE_BUDGET` requests, and a compile runs
 //! several drives; the pin below holds the script's compile to the numbers
@@ -46,6 +54,13 @@ const EXPECTED: &str = concat!(
     "/tests/distill_telemetry/main_returns_one.expected.txt"
 );
 
+const TIED_TRACE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/distill_telemetry/tied_rows.jsonl");
+const TIED_EXPECTED: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/distill_telemetry/tied_rows.expected.txt"
+);
+const TIED_ARGS: [&str; 3] = ["--top", "32", TIED_TRACE];
+
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn unique_temp_path(prefix: &str, suffix: &str) -> PathBuf {
@@ -54,7 +69,11 @@ fn unique_temp_path(prefix: &str, suffix: &str) -> PathBuf {
 }
 
 fn expected_stdout() -> String {
-    read_to_string(EXPECTED).unwrap_or_else(|e| panic!("read {EXPECTED}: {e}"))
+    expectation(EXPECTED)
+}
+
+fn expectation(path: &str) -> String {
+    read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"))
 }
 
 fn stdout_of_success(output: Output, what: &str) -> String {
@@ -73,10 +92,13 @@ fn stdout_of_success(output: Output, what: &str) -> String {
 }
 
 fn assert_prints_expected(actual: &str, what: &str) {
+    assert_prints(actual, &expected_stdout(), what);
+}
+
+fn assert_prints(actual: &str, expected: &str, what: &str) {
     assert!(
-        actual == expected_stdout(),
-        "{what} did not print what real elixir prints for the same trace.\n--- expected ---\n{}\n--- actual ---\n{actual}",
-        expected_stdout()
+        actual == expected,
+        "{what} did not print what real elixir prints for the same trace.\n--- expected ---\n{expected}\n--- actual ---\n{actual}"
     );
 }
 
@@ -89,6 +111,21 @@ fn elixir_prints_the_checked_in_expectation() {
         .output()
         .expect("spawn `elixir tools/distill-telemetry.exs` (is Elixir installed and on PATH?)");
     assert_prints_expected(&stdout_of_success(output, "elixir distill-telemetry.exs"), "elixir");
+}
+
+/// The reference for the trace whose rows tie at the cut.
+#[test]
+fn elixir_prints_the_checked_in_expectation_for_tied_rows() {
+    let output = Command::new("elixir")
+        .arg(SCRIPT)
+        .args(TIED_ARGS)
+        .output()
+        .expect("spawn `elixir tools/distill-telemetry.exs` (is Elixir installed and on PATH?)");
+    assert_prints(
+        &stdout_of_success(output, "elixir distill-telemetry.exs --top 32"),
+        &expectation(TIED_EXPECTED),
+        "elixir, tied rows",
+    );
 }
 
 /// The distiller under the interpreter prints exactly what elixir prints.
@@ -124,10 +161,19 @@ fn build_links_the_distiller_that_prints_as_elixir_does() {
         .expect("invoke fz2 build");
     stdout_of_success(build, "fz2 build");
     let run = Command::new(&binary).arg(TRACE).output();
+    let tied = Command::new(&binary).args(TIED_ARGS).output();
     let _ = remove_file(&binary);
     let _ = remove_file(binary.with_extension("bin.o"));
     let run = run.expect("run the built distiller");
     assert_prints_expected(&stdout_of_success(run, "the built distiller"), "the built distiller");
+    // Rows that tie at the cut are the same rows elixir keeps, whatever order
+    // a map's entries come back in.
+    let tied = tied.expect("run the built distiller over tied rows");
+    assert_prints(
+        &stdout_of_success(tied, "the built distiller, tied rows"),
+        &expectation(TIED_EXPECTED),
+        "the built distiller, tied rows",
+    );
 }
 
 /// What a compile's telemetry says it spent on the product stack.
@@ -190,7 +236,7 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
     let measured = (spend.largest_drive(), spend.requests, spend.drives.len());
     assert_eq!(
         measured,
-        (47_688, 49_100, 28),
+        (47_681, 49_093, 28),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

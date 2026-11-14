@@ -132,7 +132,7 @@ defmodule Distill do
         runs = Enum.sum(counts)
         {kind, runs, subjects, runs - subjects, Enum.max(counts)}
       end)
-      |> Enum.sort_by(fn {_, _, _, excess, _} -> -excess end)
+      |> Enum.sort_by(fn {kind, _, _, excess, _} -> {-excess, kind} end)
 
     total_runs = length(jobs)
     total_subjects = jobs |> Enum.map(& &1.label) |> Enum.uniq() |> length()
@@ -188,7 +188,7 @@ defmodule Distill do
   defp cause_table(rows, top) do
     rows
     |> Enum.frequencies()
-    |> Enum.sort_by(fn {_, n} -> -n end)
+    |> Enum.sort_by(fn {cause, n} -> {-n, cause} end)
     |> Enum.take(top)
     |> Enum.map(fn {{kind, fact_kind, fact_use, completing, disposition}, n} ->
       {kind, "#{fact_kind} (#{fact_use})", completing, disposition, n}
@@ -271,7 +271,7 @@ defmodule Distill do
     |> Map.values()
     |> Enum.group_by(& &1.name)
     |> Enum.map(fn {name, ss} -> {name, length(ss), sum(ss, :inclusive), sum(ss, :self)} end)
-    |> Enum.sort_by(fn {_, _, inc, _} -> -inc end)
+    |> Enum.sort_by(fn {name, _, inc, _} -> {-inc, name} end)
     |> Enum.take(top)
     |> Enum.map(fn {n, c, inc, self} -> {n, c, fmt_ms(inc), fmt_ms(self)} end)
     |> table(["name", "count", "inclusive ms", "self ms"])
@@ -282,7 +282,7 @@ defmodule Distill do
     jobs
     |> Enum.group_by(fn s -> elem(s.label, 0) end)
     |> Enum.map(fn {kind, ss} -> {kind, length(ss), sum(ss, :inclusive), sum(ss, :self), max_ms(ss)} end)
-    |> Enum.sort_by(fn {_, _, _, self, _} -> -self end)
+    |> Enum.sort_by(fn {kind, _, _, self, _} -> {-self, kind} end)
     |> Enum.take(top)
     |> Enum.map(fn {k, c, inc, self, mx} -> {k, c, fmt_ms(inc), fmt_ms(self), fmt_ms(mx)} end)
     |> table(["kind", "count", "inclusive ms", "self ms", "max ms"])
@@ -293,7 +293,7 @@ defmodule Distill do
     jobs
     |> Enum.group_by(& &1.label)
     |> Enum.map(fn {{kind, subject}, ss} -> {"#{kind} #{subject}", length(ss), sum(ss, :inclusive), sum(ss, :self)} end)
-    |> Enum.sort_by(fn {_, _, _, self} -> -self end)
+    |> Enum.sort_by(fn {label, _, _, self} -> {-self, label} end)
     |> Enum.take(top)
     |> Enum.map(fn {k, c, inc, self} -> {k, c, fmt_ms(inc), fmt_ms(self)} end)
     |> table(["kind subject", "runs", "inclusive ms", "self ms"])
@@ -307,7 +307,7 @@ defmodule Distill do
     |> Enum.group_by(& &1.label)
     |> Enum.map(fn {{kind, subject}, ss} -> {"#{kind} #{subject}", length(ss), sum(ss, :self)} end)
     |> Enum.filter(fn {_, n, _} -> n > 1 end)
-    |> Enum.sort_by(fn {_, n, self} -> {-n, -self} end)
+    |> Enum.sort_by(fn {label, n, self} -> {-n, -self, label} end)
     |> Enum.take(top)
     |> Enum.map(fn {k, n, self} -> {k, n, fmt_ms(self)} end)
     |> table(["kind subject", "runs", "self ms"])

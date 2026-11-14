@@ -1,0 +1,142 @@
+597 records, 55 spans, 8.4 ms from first record to last
+
+timeline (span times include the stream's own rendering; read them as shape, take magnitudes from a sample of the plain binary)
+  before the first job                        0.1 ms
+  first job start to last job stop            7.9 ms
+    sum of job inclusive time                 6.9 ms
+  native codegen span                         0.0 ms
+  after the last span (program run)           0.4 ms
+
+span names by inclusive time
+  name              count  inclusive ms  self ms
+  fz.compiler2.job     52           6.9      6.2
+  fz.lexer.pass         3           0.7      0.7
+
+compiler jobs by kind
+  kind                    count  inclusive ms  self ms  max ms
+  DefineModule                5           2.5      2.5     1.8
+  IndexCode                   3           2.5      1.8     2.0
+  ScopeCode                   5           0.5      0.5     0.3
+  AnalyzeActivation           6           0.4      0.4     0.1
+  LowerFunction               4           0.2      0.2     0.1
+  DeriveRuntimeDemand         5           0.2      0.2     0.0
+  ExpandFunctionSource        4           0.1      0.1     0.1
+  SeedRoot                    3           0.1      0.1     0.1
+  DefineFunction              4           0.1      0.1     0.0
+  PlanEntryDispatch           4           0.1      0.1     0.0
+  DeriveExecutableFacts       4           0.1      0.1     0.0
+  DeriveFunctionContract      1           0.0      0.0     0.0
+  DeriveInputDemand           1           0.0      0.0     0.0
+  DeriveRecursive             2           0.0      0.0     0.0
+  DeriveStaticCallees         1           0.0      0.0     0.0
+
+job runs vs subjects
+  kind                    runs  subjects  excess  max runs/subject
+  DefineModule               5         1       4                 5
+  AnalyzeActivation          6         4       2                 3
+  ScopeCode                  5         3       2                 3
+  DeriveRecursive            2         1       1                 2
+  DeriveRuntimeDemand        5         4       1                 2
+  DefineFunction             4         4       0                 1
+  DeriveExecutableFacts      4         4       0                 1
+  DeriveFunctionContract     1         1       0                 1
+  DeriveInputDemand          1         1       0                 1
+  DeriveStaticCallees        1         1       0                 1
+  ExpandFunctionSource       4         4       0                 1
+  IndexCode                  3         3       0                 1
+  LowerFunction              4         4       0                 1
+  PlanEntryDispatch          4         4       0                 1
+  SeedRoot                   3         3       0                 1
+  TOTAL                     52        42      10                 -
+
+compiler jobs by kind and subject
+  kind subject                                                  runs  inclusive ms  self ms
+  DefineModule module_id=9                                         5           2.5      2.5
+  IndexCode source_owner=8                                         1           2.0      1.4
+  ScopeCode source_owner=8                                         1           0.3      0.3
+  IndexCode source_owner=26                                        1           0.3      0.2
+  AnalyzeActivation main/0 arrow=15 root_id=0                      3           0.2      0.2
+  IndexCode source_owner=27                                        1           0.2      0.1
+  ScopeCode source_owner=26                                        1           0.1      0.1
+  ScopeCode source_owner=27                                        3           0.1      0.1
+  AnalyzeActivation def/1 arrow=16 root_id=1                       1           0.1      0.1
+  LowerFunction def/1                                              1           0.1      0.1
+  ExpandFunctionSource Map.get/2                                   1           0.1      0.1
+  LowerFunction defp/1                                             1           0.1      0.1
+  DeriveRuntimeDemand main/0 arrow=15 need="value" root_id=0       2           0.1      0.1
+  SeedRoot root_id=1                                               1           0.1      0.1
+  AnalyzeActivation defp/1 arrow=16 root_id=2                      1           0.1      0.1
+  LowerFunction Map.get/2                                          1           0.0      0.0
+  DeriveRuntimeDemand def/1 arrow=16 need="value" root_id=1        1           0.0      0.0
+  DefineFunction Map.get/2                                         1           0.0      0.0
+  DeriveExecutableFacts def/1 arrow=16 need="value" root_id=1      1           0.0      0.0
+  PlanEntryDispatch def/1                                          1           0.0      0.0
+  DeriveRuntimeDemand defp/1 arrow=16 need="value" root_id=2       1           0.0      0.0
+  SeedRoot root_id=2                                               1           0.0      0.0
+  DefineFunction def/1                                             1           0.0      0.0
+  PlanEntryDispatch Map.get/2                                      1           0.0      0.0
+  SeedRoot root_id=0                                               1           0.0      0.0
+  DeriveFunctionContract Map.get/2                                 1           0.0      0.0
+  ExpandFunctionSource def/1                                       1           0.0      0.0
+  PlanEntryDispatch defp/1                                         1           0.0      0.0
+  AnalyzeActivation Map.get/2 arrow=36 root_id=0                   1           0.0      0.0
+  DeriveExecutableFacts main/0 arrow=15 need="value" root_id=0     1           0.0      0.0
+  DeriveExecutableFacts defp/1 arrow=16 need="value" root_id=2     1           0.0      0.0
+  DefineFunction defp/1                                            1           0.0      0.0
+
+most re-run jobs
+  kind subject                                                runs  self ms
+  DefineModule module_id=9                                       5      2.5
+  AnalyzeActivation main/0 arrow=15 root_id=0                    3      0.2
+  ScopeCode source_owner=27                                      3      0.1
+  DeriveRuntimeDemand main/0 arrow=15 need="value" root_id=0     2      0.1
+  DeriveRecursive Map.get/2                                      2      0.0
+
+return-type revisions per activation
+  activation                    revisions  widened
+  Map.get/2 arrow=36 root_id=0          1        -
+  def/1 arrow=16 root_id=1              1        -
+  defp/1 arrow=16 root_id=2             1        -
+  main/0 arrow=15 root_id=0             1        -
+
+cause of every wake
+  job kind                              changed fact (use)         completing job  disposition  count
+  DefineFunction          ExpandedFunctionSource (current)   ExpandFunctionSource     enqueued      4
+  DeriveRuntimeDemand            ExecutableFacts (settled)  DeriveExecutableFacts     enqueued      4
+  AnalyzeActivation                EntryDispatch (current)      PlanEntryDispatch     enqueued      3
+  AnalyzeActivation                ModuleDefined (current)           DefineModule     enqueued      1
+  AnalyzeActivation                    Recursive (current)        DeriveRecursive     enqueued      1
+  AnalyzeActivation                 ReturnType (concluded)      AnalyzeActivation     enqueued      1
+  DefineModule                       CodeIndexed (current)              IndexCode     enqueued      1
+  DefineModule                        CodeScoped (current)              ScopeCode     enqueued      1
+  DefineModule                   FunctionDefined (current)         DefineFunction     enqueued      1
+  DefineModule                           Product (settled)     dependencies_moved     enqueued      1
+  DeriveFunctionContract         FunctionDefined (current)         DefineFunction     enqueued      1
+  DeriveInputDemand                EntryDispatch (current)      PlanEntryDispatch     enqueued      1
+  DeriveInputDemand                StaticCallees (current)    DeriveStaticCallees     enqueued      1
+  DeriveRecursive                        Product (settled)     dependencies_moved     enqueued      1
+  DeriveRecursive                  StaticCallees (current)    DeriveStaticCallees     enqueued      1
+  DeriveRuntimeDemand      RuntimeDemandInputs (concluded)    DeriveRuntimeDemand     enqueued      1
+  DeriveStaticCallees                LoweredBody (current)          LowerFunction     enqueued      1
+  ExpandFunctionSource               CodeIndexed (current)              IndexCode     enqueued      1
+  ExpandFunctionSource                CodeScoped (current)              ScopeCode     enqueued      1
+  LowerFunction                  FunctionDefined (current)         DefineFunction     enqueued      1
+  ScopeCode                           CodeScoped (current)              ScopeCode     enqueued      1
+  ScopeCode                      FunctionDefined (current)         DefineFunction     enqueued      1
+  ScopeCode                              Product (settled)     dependencies_moved     enqueued      1
+  SeedRoot                       FunctionDefined (current)         DefineFunction     enqueued      1
+
+  coalesced: an additional cause landing on a job already enqueued by the row above, not a separate start
+  none
+
+  work starts by reason
+  reason                    count
+  changed_revision_wake        29
+  gate_expansion               17
+  blocked_waiter_expansion      5
+  ignition                      1
+  activation_published          0
+  unclassified                  0
+
+  sum of work_starts (52) == job runs (52)
+
