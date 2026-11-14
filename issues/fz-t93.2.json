@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:26:06Z",
+  "description": "The engine maintains cycle groups as waits are added (merge when the new wait's target already reaches the waiter), and answers group(job). World::answer_use's partner test and revive_blocked_chain read it. Deletes World::waits_reach (drive.rs ~932; 56,562 calls / 979 walks on the distiller, one pair found 48 times) and the DFS in revive_blocked_chain (drive.rs ~819). Paper first: a partner's answer is READ Current, not waited on, so partner edges may leave the wait graph once a partner is detected — establish on even/odd and a 3-member group which edges the group must be built over (waits only, or waits plus Current reads of unconcluded facts) before building. Predict and measure: identical outputs/dumps; waits_reach count -\u003e 0. Blocked by the crate move.",
+  "id": "fz-t93.2",
+  "labels": [],
+  "parent": "fz-t93",
+  "priority": 2,
+  "status": "open",
+  "title": "The engine knows which cycle group a waiting derivation is in",
+  "type": "task",
+  "updated_at": "2026-11-14T04:26:06Z"
+}
