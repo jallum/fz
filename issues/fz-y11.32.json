@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T02:25:57Z",
   "created": "2026-11-14T01:55:34Z",
   "description": "single_tuple_arity (types/mod.rs:2662) asks runtime_type_predicate_tuple_arities (types/mod.rs:4125-4145), which builds a FiniteSet per clause and unions them, to learn whether exactly one arity exists. Sites finite_set.rs:85 via mod.rs:4138 (1,520), finite_set.rs:42 via mod.rs:4133 (1,424), plus the per-clause BTreeSet.\n\nChange: answer 'the single arity, if exactly one' by folding over the clauses without a set, proving agreement with the set-building function over the existing inputs; the set-building function stays for callers that need the whole set, or is deleted if none do.\n\nEvidence: census of the OptionParser probe at c0e52fbaf (tip of #518; 734,597 allocations): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/c0e52fbaf_top.txt; call chains: cd /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census \u0026\u0026 python3 chain.py c0e52fbaf.pkl \u003cfile:line\u003e \u003cdepth\u003e \"\" \u003cn\u003e; line numbers are exact at commit c0e52fbaf.\n\nSignal: full gate green; no golden or pin moves except a falling pin, which is lowered and listed; program output and canonical backend dump identical on the probe; allocation count before and after in the commit.",
   "id": "fz-y11.32",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "The one tuple arity of a type is read without building sets of arities",
   "type": "task",
-  "updated_at": "2026-11-14T01:55:37Z"
+  "updated_at": "2026-11-14T02:25:57Z"
 }
