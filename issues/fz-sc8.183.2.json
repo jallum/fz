@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.183.1"
+  ],
   "blocks": [],
   "created": "2026-11-14T04:16:15Z",
   "description": "Step 2 of /Users/j5n/Workspace/fz-sc8.183.html. Clause dispatch extracts each bitstring field; the body binds those values instead of reading the pattern again. LoweredStep/BackendStep::BitstringInit and BitstringRead and their arms (body, keying, canon, artifact, executable_facts, native) go away where dispatch has already matched. Signal: the walk pin falls from 2 allocations per step to 1.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A clause body binds what dispatch already read from a binary",
   "type": "task",
-  "updated_at": "2026-11-14T04:16:15Z"
+  "updated_at": "2026-11-14T04:16:22Z"
 }
