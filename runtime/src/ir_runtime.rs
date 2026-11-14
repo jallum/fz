@@ -26,17 +26,14 @@ use crate::any_value::debug::{Limit, render_value, render_with_limit};
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, TAG_LAZY_CONT, ValueKind,
     closure_addr_from_tagged, closure_capture_value, closure_captured_count, closure_denotation, closure_fn_ptr,
-    closure_halt_kind, map_addr_from_tagged, object_size, procbin_addr_from_tagged, struct_addr_from_tagged,
-    struct_schema_id,
+    closure_halt_kind, map_addr_from_tagged, object_size, procbin_addr_from_tagged, struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
     encode_utf32, sign_extend,
 };
 use crate::exec_ctx::ExecCtx;
-use crate::heap::{
-    AllocStat, BITSTRING_READER_SCHEMA, BITSTRING_RESULT_SCHEMA, closure_capture_ref, list_head_ref, list_tail_ref,
-};
+use crate::heap::{AllocStat, closure_capture_ref, list_head_ref, list_tail_ref};
 use crate::module_name::STRUCT_MODULE_FIELD;
 use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
@@ -52,11 +49,6 @@ use std::mem::{size_of, transmute};
 use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicU64, Ordering};
 use unicode_segmentation::GraphemeCursor;
-
-fn any_value_from_heap_object_word(bits: u64) -> AnyValue {
-    AnyValue::decode_tagged_heap_bits(bits)
-        .unwrap_or_else(|| panic!("expected strict tagged heap value, got {bits:#x}"))
-}
 
 fn any_value_ref_from_word(word: u64, context: &str) -> AnyValueRef {
     AnyValueRef::from_raw_word(word).unwrap_or_else(|err| panic!("{context}: invalid any value ref {word:#x}: {err:?}"))
@@ -701,7 +693,7 @@ fn fz_bs_write_field_value(
     let endian = decode_endian(endian_tag);
     // `signed` is irrelevant on write: two's-complement truncation produces
     // the same bit pattern for signed and unsigned at fixed width. The flag
-    // is consumed on read (fz_bs_read_field) for sign extension.
+    // is consumed on read (fz_bs_read_int_ref) for sign extension.
     let _ = signed;
     {
         let w = (unsafe { &mut *process })
@@ -1468,224 +1460,127 @@ fn decode_bs_field_spec(spec: u64) -> (u32, u32, u32, u32, u32, u32) {
     )
 }
 
-/// Allocate a 3-tuple reader `[bs_ptr, bit_len_int, pos_int]` for an input
-/// bitstring. Schema id is set by compile() into BS_TUPLE_ARITY3_SCHEMA.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_reader_init_ref(process: *mut Process, bs_ref: u64) -> u64 {
-    fz_bs_reader_init_bits(process, heap_object_word_from_ref_word(bs_ref, "fz_bs_reader_init_ref"))
+/// Where a field that starts at bit `pos` of a `bit_len`-bit binary ends, or
+/// `None` when the binary does not hold it. A match carries a position, so this
+/// is the whole of "does the next field fit" and "where does the next field
+/// start".
+///
+/// A `binary` or `bits` field without a size is the rest of the binary, and only
+/// the last field may be one. An integer is at most 64 bits wide.
+pub fn bs_field_end(field_spec: u64, size_value: u32, pos: u64, bit_len: u64) -> Option<u64> {
+    let (ty_tag, size_present, unit, _, _, is_last) = decode_bs_field_spec(field_spec);
+    let size = (size_present != 0).then_some(size_value as u64);
+    let unit = unit as u64;
+    let total = match (decode_bit_type(ty_tag), size) {
+        (BitType::Integer, size) => Some(size.unwrap_or(8) * unit).filter(|total| *total <= 64),
+        (BitType::Float, size) => Some(size.unwrap_or(64) * unit).filter(|total| *total == 32 || *total == 64),
+        (BitType::Binary | BitType::Bits, Some(size)) => Some(size * unit),
+        (BitType::Binary | BitType::Bits, None) => (is_last != 0).then(|| bit_len - pos),
+        (BitType::Utf8 | BitType::Utf16 | BitType::Utf32, _) => unsupported_bit_read(decode_bit_type(ty_tag)),
+    }?;
+    (pos + total <= bit_len).then_some(pos + total)
 }
 
-fn fz_bs_reader_init_bits(process: *mut Process, bs_bits: u64) -> u64 {
-    let p = bitstring_like_word(bs_bits).unwrap_or_else(|| panic!("reader_init expects heap value"));
-    if !is_bitstring_like(p) {
-        panic!("reader_init source is not a Bitstring");
-    }
-    let bit_len = unsafe { bitstring_bit_len(p) } as i64;
-    let proc = unsafe { &mut *process };
-    let tuple_p = proc.heap.alloc_struct(BITSTRING_READER_SCHEMA);
-    unsafe {
-        proc.heap
-            .write_field_slot(tuple_p, 0, any_value_from_heap_object_word(bs_bits))
+/// `bs_field_end` for generated code that carries no inline arithmetic: the end
+/// position, or -1 when the binary does not hold the field.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bs_field_end(field_spec: u64, size_value: u32, pos: u64, bit_len: u64) -> i64 {
+    bs_field_end(field_spec, size_value, pos, bit_len).map_or(-1, |end| end as i64)
+}
+
+fn unsupported_bit_read(ty: BitType) -> ! {
+    panic!("a bitstring match on {ty:?} is not yet wired in the runtime (lands with UTF support)")
+}
+
+/// The bit length of a binary: what a match compares its position against.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bs_bit_len_ref(bs_ref: u64) -> u64 {
+    let bs_bits = heap_object_word_from_ref_word(bs_ref, "fz_bs_bit_len_ref");
+    let p = bitstring_like_word(bs_bits).unwrap_or_else(|| panic!("fz_bs_bit_len_ref expects a bitstring"));
+    unsafe { bitstring_bit_len(p) }
+}
+
+/// The bytes of the binary a match reads, and its bit length.
+fn bit_source<'a>(bs_bits: u64, context: &str) -> (&'a [u8], u64) {
+    let bsp = bitstring_like_word(bs_bits).unwrap_or_else(|| panic!("{context}: source is not a bitstring"));
+    let bit_len = unsafe { bitstring_bit_len(bsp) };
+    let bytes = unsafe { from_raw_parts(bitstring_byte_ptr(bsp), (bit_len as usize).div_ceil(8)) };
+    (bytes, bit_len)
+}
+
+/// Read the integer field at bit `pos`. The caller has proved the field fits
+/// (`bs_field_end` answers `Some`), so there is no miss to report.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bs_read_int_ref(source_ref: u64, pos: u64, field_spec: u64, size_value: u32) -> i64 {
+    let (_, _, _, endian_tag, signed, _) = decode_bs_field_spec(field_spec);
+    let bs_bits = heap_object_word_from_ref_word(source_ref, "fz_bs_read_int_ref");
+    let (bytes, bit_len) = bit_source(bs_bits, "fz_bs_read_int_ref");
+    let end = bs_field_end(field_spec, size_value, pos, bit_len)
+        .unwrap_or_else(|| panic!("fz_bs_read_int_ref: the field at bit {pos} does not fit"));
+    let total = (end - pos) as u32;
+    let mut reader = BitReader {
+        bytes,
+        bit_len: bit_len as usize,
+        pos: pos as usize,
     };
-    unsafe { proc.heap.write_field_slot(tuple_p, 8, AnyValue::int(bit_len)) };
-    unsafe { proc.heap.write_field_slot(tuple_p, 16, AnyValue::int(0)) };
-    heap_ref_word(ValueKind::STRUCT, tuple_p as *const u8)
+    let raw = reader.read_bits(total as usize).expect("a field that fits is readable");
+    let raw = apply_endian_for_read(raw, total, decode_endian(endian_tag));
+    if signed != 0 {
+        sign_extend(raw, total)
+    } else {
+        raw as i64
+    }
 }
 
+/// Read the `binary` or `bits` field at bit `pos` as a new binary. The caller
+/// has proved the field fits (`bs_field_end` answers `Some`).
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_read_field_ref(
+pub extern "C" fn fz_bs_read_binary_ref(
     process: *mut Process,
-    reader_ref: u64,
+    source_ref: u64,
+    pos: u64,
     field_spec: u64,
     size_value: u32,
 ) -> u64 {
-    let (ty_tag, size_present, unit, endian_tag, signed, is_last) = decode_bs_field_spec(field_spec);
-    fz_bs_read_field_bits(
-        process,
-        heap_object_word_from_ref_word(reader_ref, "fz_bs_read_field_ref"),
-        ty_tag,
-        size_present,
-        size_value,
-        unit,
-        endian_tag,
-        signed,
-        is_last,
-    )
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_reader_done_ref(process: *mut Process, reader_ref: u64) -> u8 {
-    let reader = any_value_ref_from_word(reader_ref, "fz_bs_reader_done_ref")
-        .struct_addr()
-        .expect("fz_bs_reader_done_ref");
-    let bit_len = (unsafe { &mut *process }).heap.read_field_slot(reader, 8).raw();
-    let pos = (unsafe { &mut *process }).heap.read_field_slot(reader, 16).raw();
-    (bit_len == pos) as u8
-}
-
-#[allow(clippy::too_many_arguments)]
-fn fz_bs_read_field_bits(
-    process: *mut Process,
-    reader_bits: u64,
-    ty_tag: u32,
-    size_present: u32,
-    size_value: u32,
-    unit: u32,
-    endian_tag: u32,
-    signed: u32,
-    is_last: u32,
-) -> u64 {
-    let ty = decode_bit_type(ty_tag);
-    let size = if size_present != 0 { Some(size_value) } else { None };
-    let endian = decode_endian(endian_tag);
-    let signed_b = signed != 0;
-    let is_last_b = is_last != 0;
-
-    // Decode reader tuple.
-    let rp =
-        struct_addr_from_tagged(reader_bits).unwrap_or_else(|| panic!("read_field: reader is not a tagged Struct"));
-    let bs_bits = (unsafe { &mut *process })
-        .heap
-        .read_field_slot(rp, 0)
-        .heap_object_word()
-        .expect("reader bitstring bits");
-    let bit_len = (unsafe { &mut *process }).heap.read_field_slot(rp, 8).raw() as usize;
-    let pos = (unsafe { &mut *process }).heap.read_field_slot(rp, 16).raw() as usize;
-
-    // Bytes pointer from bs.
-    let bsp = bitstring_like_word(bs_bits).expect("read_field: reader bs not a ptr");
-    if !is_bitstring_like(bsp) {
-        panic!("read_field reader bs is not a Bitstring");
+    let (ty_tag, ..) = decode_bs_field_spec(field_spec);
+    match decode_bit_type(ty_tag) {
+        BitType::Binary | BitType::Bits => {}
+        BitType::Float => panic!("a float field cannot be materialized as a one-word value"),
+        ty => unsupported_bit_read(ty),
     }
-    let bytes_ptr = unsafe { bitstring_byte_ptr(bsp) };
-    let bytes = unsafe { from_raw_parts(bytes_ptr, bit_len.div_ceil(8)) };
-
-    // Failure path: alloc 1-tuple [false].
-    let fail = || -> u64 {
-        let p = (unsafe { &mut *process }).heap.alloc_struct(BITSTRING_RESULT_SCHEMA);
-        unsafe { (&mut *process).heap.write_field_slot(p, 0, AnyValue::bool_atom(false)) };
-        heap_ref_word(ValueKind::STRUCT, p)
-    };
-
-    let mut r = BitReader { bytes, bit_len, pos };
-
-    let (extracted_value, consumed) = match ty {
-        BitType::Integer => {
-            let total = size.unwrap_or(8) * unit;
-            if total > 64 {
-                return fail();
-            }
-            let raw = match r.read_bits(total as usize) {
-                Some(v) => v,
-                None => return fail(),
-            };
-            let raw = apply_endian_for_read(raw, total, endian);
-            let n: i64 = if signed_b { sign_extend(raw, total) } else { raw as i64 };
-            (AnyValue::int(n), total as usize)
+    let bs_bits = heap_object_word_from_ref_word(source_ref, "fz_bs_read_binary_ref");
+    let (bytes, bit_len) = bit_source(bs_bits, "fz_bs_read_binary_ref");
+    let end = bs_field_end(field_spec, size_value, pos, bit_len)
+        .unwrap_or_else(|| panic!("fz_bs_read_binary_ref: the field at bit {pos} does not fit"));
+    let (pos, end, bit_len) = (pos as usize, end as usize, bit_len as usize);
+    let needed_bits = end - pos;
+    let heap = unsafe { &mut (*process).heap };
+    // A byte-aligned TAIL of a shared binary is another view of the same bytes,
+    // not a copy. This is the step every byte scanner performs, and copying it
+    // is what made scanning quadratic. Only a suffix qualifies, which is exactly
+    // what `<<_c, rest :: binary>>` asks for; `Heap::alloc_bitstring_suffix`
+    // decides whether the view is worth a stub.
+    let tail_of_shared = pos.is_multiple_of(8)
+        && end == bit_len
+        && needed_bits.is_multiple_of(8)
+        && procbin_addr_from_tagged(bs_bits).is_some();
+    let value = if tail_of_shared {
+        let src = unsafe { ProcBin::from_raw(procbin_addr_from_tagged(bs_bits).expect("procbin source")) };
+        let offset = src.byte_offset() + (pos / 8) as u64;
+        unsafe { heap.alloc_bitstring_suffix(src.shared_raw(), offset) }
+    } else if pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) {
+        // Byte-aligned is the overwhelmingly common case and is a slice copy
+        // rather than a walk over individual bits.
+        heap.alloc_bitstring(&bytes[pos / 8..pos / 8 + needed_bits / 8], needed_bits as u64)
+    } else {
+        let mut reader = BitReader { bytes, bit_len, pos };
+        let mut writer = BitWriter::new();
+        for _ in 0..needed_bits {
+            writer.append_bit(reader.read_bit().expect("a field that fits is readable"));
         }
-        BitType::Binary | BitType::Bits => {
-            let needed_bits = match (ty, size, is_last_b) {
-                (BitType::Binary, None, true) | (BitType::Bits, None, true) => bit_len - pos,
-                (BitType::Binary, None, false) => return fail(), // size required
-                (BitType::Bits, None, false) => return fail(),
-                (BitType::Binary, Some(n), _) => n as usize * unit as usize,
-                (BitType::Bits, Some(n), _) => n as usize * unit as usize,
-                _ => unreachable!(),
-            };
-            if pos + needed_bits > bit_len {
-                return fail();
-            }
-            // A byte-aligned TAIL of a shared binary is another
-            // view of the same bytes, not a copy. This is the step every byte
-            // scanner performs, and copying it is what made scanning
-            // quadratic. Only a suffix qualifies, which is exactly what
-            // `<<_c, rest :: binary>>` asks for; `Heap::alloc_bitstring_suffix`
-            // decides whether the view is worth a stub.
-            let tail_of_shared = pos.is_multiple_of(8)
-                && pos + needed_bits == bit_len
-                && needed_bits.is_multiple_of(8)
-                && procbin_addr_from_tagged(bs_bits).is_some();
-            if tail_of_shared {
-                let src = unsafe { ProcBin::from_raw(procbin_addr_from_tagged(bs_bits).expect("procbin source")) };
-                let offset = src.byte_offset() + (pos / 8) as u64;
-                let shared = src.shared_raw();
-                let value = unsafe { (&mut *process).heap.alloc_bitstring_suffix(shared, offset) };
-                (value, needed_bits)
-            } else {
-                // Build a fresh Bitstring from the slice: a copy, because the
-                // source either is not shared or the field is not its tail.
-                //
-                // Byte-aligned is the overwhelmingly common case -- every
-                // `<<c, rest :: binary>>` step over a binary is one -- and it can
-                // be a slice copy rather than a walk over individual bits. The bit
-                // path remains for genuinely unaligned reads.
-                // The reader's own position is not consulted after this -- the
-                // caller advances by `needed_bits` -- so the aligned path does not
-                // have to walk it forward.
-                let heap = unsafe { &mut (*process).heap };
-                let new_bs = if pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) {
-                    let start = pos / 8;
-                    heap.alloc_bitstring(&bytes[start..start + needed_bits / 8], needed_bits as u64)
-                } else {
-                    let mut w = BitWriter::new();
-                    for _ in 0..needed_bits {
-                        w.append_bit(r.read_bit().unwrap());
-                    }
-                    heap.alloc_bitstring(&w.bytes, needed_bits as u64)
-                };
-                (new_bs, needed_bits)
-            }
-        }
-        BitType::Float => {
-            let total = size.unwrap_or(64) * unit;
-            if total != 32 && total != 64 {
-                return fail();
-            }
-            panic!("BitReadField cannot materialize float as one-word ValueRef")
-        }
-        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
-            // UTF: read uses crate::bitstr::decode_utf*; not exercised by
-            // ticket tests, so panic to surface intent rather than partial.
-            panic!(
-                "BitReadField for {:?} not yet wired in JIT (lands with UTF support)",
-                ty
-            );
-        }
+        heap.alloc_bitstring(&writer.bytes, needed_bits as u64)
     };
-
-    // Allocate fresh reader tuple [bs_bits, bit_len_boxed, new_pos_boxed].
-    let new_pos = (pos + consumed) as i64;
-    let new_reader_p = (unsafe { &mut *process }).heap.alloc_struct(BITSTRING_READER_SCHEMA);
-    unsafe {
-        (&mut *process)
-            .heap
-            .write_field_slot(new_reader_p, 0, any_value_from_heap_object_word(bs_bits))
-    };
-    unsafe {
-        (&mut *process)
-            .heap
-            .write_field_slot(new_reader_p, 8, AnyValue::int(bit_len as i64))
-    };
-    unsafe {
-        (&mut *process)
-            .heap
-            .write_field_slot(new_reader_p, 16, AnyValue::int(new_pos))
-    };
-
-    // Allocate result tuple [true, extracted, new_reader].
-    let result_p = (unsafe { &mut *process }).heap.alloc_struct(BITSTRING_READER_SCHEMA);
-    unsafe {
-        (&mut *process)
-            .heap
-            .write_field_slot(result_p, 0, AnyValue::bool_atom(true))
-    };
-    unsafe { (&mut *process).heap.write_field_slot(result_p, 8, extracted_value) };
-    unsafe {
-        (&mut *process)
-            .heap
-            .write_field_slot(result_p, 16, AnyValue::heap_ptr(new_reader_p, ValueKind::STRUCT))
-    };
-    heap_ref_word(ValueKind::STRUCT, result_p as *const u8)
+    value.ref_word().raw_word()
 }
 
 // ===== Map cluster =====

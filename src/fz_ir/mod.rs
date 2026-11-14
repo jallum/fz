@@ -115,6 +115,25 @@ pub struct BitFieldIr {
     pub unit: Option<u32>,
 }
 
+/// One field of a bitstring pattern, as a match reads it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BitMatchField {
+    pub ty: BitType,
+    pub size: Option<BitSizeIr>,
+    pub endian: Endian,
+    pub signed: bool,
+    pub unit: Option<u32>,
+    /// The last field of the pattern: an unsized `binary` or `bits` reads to the
+    /// end of the binary.
+    pub is_last: bool,
+}
+
+impl BitMatchField {
+    fn size_var(&self) -> Option<Var> {
+        self.size.as_ref().and_then(BitSizeIr::var)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FnId(pub u32);
 
@@ -551,26 +570,33 @@ pub enum Prim {
     /// length. Codegen interns the payload as a module-private data symbol and
     /// emits a single allocation call.
     ConstBitstring(Vec<u8>, u64),
-    /// Initialize a bit-reader from a binary/bitstring value. Returns an
-    /// opaque reader value. Pattern-matching of bitstrings uses this plus
-    /// `BitReadField` per field, so size-vars in later fields can refer to
-    /// IR vars bound from earlier fields' patterns.
-    BitReaderInit(Var),
-    /// Read one field from a reader. Returns
-    /// `Tuple([ok_bool, extracted_value, new_reader])` on success and
-    /// `Tuple([false])` on failure (in which case extracted/new_reader are
-    /// absent). `is_last` matters for None-sized binary/bits ("rest").
-    BitReadField {
-        reader: Var,
-        ty: BitType,
-        size: Option<BitSizeIr>,
-        endian: Endian,
-        signed: bool,
-        unit: Option<u32>,
-        is_last: bool,
+    /// The bit length of a binary or bitstring: what a match's position is
+    /// compared against.
+    BitstringBitLen(Var),
+    /// True when `field`, starting at bit `pos`, lies within the `bit_len` bits
+    /// of the binary it is matched against. A `binary` or `bits` field without a
+    /// size is the rest and fits only as the last field; an integer is at most
+    /// 64 bits wide.
+    BitFieldFits {
+        pos: Var,
+        bit_len: Var,
+        field: BitMatchField,
     },
-    /// True if the reader has consumed all bits.
-    BitReaderDone(Var),
+    /// The position just after `field`, which starts at bit `pos`: `pos + size *
+    /// unit`. Only a sized field has one; the last field reads to the end.
+    BitFieldNext {
+        pos: Var,
+        field: BitMatchField,
+    },
+    /// The value of `field` at bit `pos` of `source`: an integer for an
+    /// integer field, a binary for a `binary` or `bits` field. The field is
+    /// known to fit (`BitFieldFits` held, or an earlier dispatch proved the
+    /// whole pattern), so a read has no miss to report.
+    BitReadField {
+        source: Var,
+        pos: Var,
+        field: BitMatchField,
+    },
     /// The `try` body completed: pop the process's innermost handler.
     PopHandler,
     /// Runtime-membership check over the first-class runtime-observable
@@ -680,12 +706,22 @@ impl Prim {
                     used.extend(f.size.as_ref().and_then(BitSizeIr::var));
                 }
             }
-            Prim::BitReaderInit(a) | Prim::BitReaderDone(a) => {
+            Prim::BitstringBitLen(a) => {
                 used.insert(*a);
             }
-            Prim::BitReadField { reader, size, .. } => {
-                used.insert(*reader);
-                used.extend(size.as_ref().and_then(BitSizeIr::var));
+            Prim::BitFieldFits { pos, bit_len, field } => {
+                used.insert(*pos);
+                used.insert(*bit_len);
+                used.extend(field.size_var());
+            }
+            Prim::BitFieldNext { pos, field } => {
+                used.insert(*pos);
+                used.extend(field.size_var());
+            }
+            Prim::BitReadField { source, pos, field } => {
+                used.insert(*source);
+                used.insert(*pos);
+                used.extend(field.size_var());
             }
             Prim::RuntimeTypeTest(v, _) => {
                 used.insert(*v);
@@ -1441,9 +1477,10 @@ impl fmt::Display for Prim {
             Prim::ConstBitstring(bytes, bit_len) => {
                 write!(f, "const_bitstring(byte_len={}, bit_len={})", bytes.len(), bit_len)
             }
-            Prim::BitReaderInit(v) => write!(f, "bit_reader_init({})", v),
-            Prim::BitReadField { reader, .. } => write!(f, "bit_read_field({})", reader),
-            Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
+            Prim::BitstringBitLen(v) => write!(f, "bitstring_bit_len({})", v),
+            Prim::BitFieldFits { pos, bit_len, .. } => write!(f, "bit_field_fits({}, {})", pos, bit_len),
+            Prim::BitFieldNext { pos, .. } => write!(f, "bit_field_next({})", pos),
+            Prim::BitReadField { source, pos, .. } => write!(f, "bit_read_field({}, {})", source, pos),
             Prim::PopHandler => write!(f, "pop_handler"),
             Prim::RuntimeTypeTest(v, d) => {
                 write!(f, "runtime_type_test({}, {})", v, d)

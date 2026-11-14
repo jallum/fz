@@ -282,17 +282,16 @@ enum ExprStep {
         head: ValueId,
         tail: ValueId,
     },
-    BitstringInit {
-        reader: ValueId,
-        source: ValueId,
-    },
+    /// The field of `source` that starts at bit `pos`. A clause body runs only
+    /// after its dispatch proved the whole pattern, so the field is there to
+    /// read. `next` is the position after the field, bound for a later field to
+    /// start from; the last field has none.
     BitstringRead {
-        ok: ValueId,
         value: ValueId,
-        next_reader: ValueId,
-        reader: ValueId,
+        next: Option<ValueId>,
+        source: ValueId,
+        pos: ValueId,
         spec: LoweredBitFieldSpec,
-        is_last: bool,
     },
 }
 
@@ -3769,17 +3768,18 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<(), FatalError> {
-        let mut reader = self.fresh_value();
-        steps.push(ExprStep::BitstringInit { reader, source });
+        if fields.is_empty() {
+            return Ok(());
+        }
+        let mut pos = self.push_const(steps, GroundValue::Int(0));
         for (index, field) in fields.iter().enumerate() {
-            let ok = self.fresh_value();
             let value = self.fresh_value();
-            let next_reader = self.fresh_value();
+            let next = (index + 1 < fields.len()).then(|| self.fresh_value());
             steps.push(ExprStep::BitstringRead {
-                ok,
                 value,
-                next_reader,
-                reader,
+                next,
+                source,
+                pos,
                 spec: self.lower_bitfield_spec(
                     &field.spec.size,
                     field.spec.ty,
@@ -3789,10 +3789,11 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     field.value.span,
                     env,
                 )?,
-                is_last: index + 1 == fields.len(),
             });
             self.bind_pattern(&field.value.node, value, env, steps)?;
-            reader = next_reader;
+            if let Some(next) = next {
+                pos = next;
+            }
         }
         Ok(())
     }
@@ -3868,21 +3869,18 @@ fn lower_projection_step(step: ExprStep) -> LoweredStep {
         ExprStep::RequireMapValue { value, source, key } => LoweredStep::RequireMapValue { value, source, key },
         ExprStep::TupleField { value, source, index } => LoweredStep::TupleField { value, source, index },
         ExprStep::SplitList { source, head, tail } => LoweredStep::SplitList { source, head, tail },
-        ExprStep::BitstringInit { reader, source } => LoweredStep::BitstringInit { reader, source },
         ExprStep::BitstringRead {
-            ok,
             value,
-            next_reader,
-            reader,
+            next,
+            source,
+            pos,
             spec,
-            is_last,
         } => LoweredStep::BitstringRead {
-            ok,
             value,
-            next_reader,
-            reader,
+            next,
+            source,
+            pos,
             spec,
-            is_last,
         },
         ExprStep::PopHandler => LoweredStep::PopHandler,
         ExprStep::DirectCall { .. }

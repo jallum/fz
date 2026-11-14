@@ -1131,25 +1131,22 @@ impl ProgramCanon<'_> {
                 let tail = self.names.value(*tail);
                 format!("split_list {source} -> head={head} tail={tail}")
             }
-            BackendStep::BitstringInit { reader, source } => {
-                let reader = self.names.value(*reader);
-                let source = self.names.value(*source);
-                format!("{reader} = bitstring_init {source}")
-            }
             BackendStep::BitstringRead {
-                ok,
                 value,
-                next_reader,
-                reader,
+                next,
+                source,
+                pos,
                 spec,
-                is_last,
             } => {
-                let ok = self.names.value(*ok);
-                let value = self.names.value(*value);
-                let next_reader = self.names.value(*next_reader);
-                let reader = self.names.value(*reader);
+                let defined = std::iter::once(*value)
+                    .chain(*next)
+                    .map(|defined| self.names.value(defined))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let source = self.names.value(*source);
+                let pos = self.names.value(*pos);
                 let spec = self.bit_spec(spec);
-                format!("{ok}, {value}, {next_reader} = bitstring_read {reader} {spec} last={is_last}")
+                format!("{defined} = bitstring_read {source} at {pos} {spec}")
             }
             BackendStep::PopHandler => "pop_handler".to_string(),
         }

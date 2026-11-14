@@ -673,10 +673,7 @@ pub(crate) fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::
         | LoweredStep::TupleField { value, .. } => vec![*value],
         LoweredStep::MapUpdate { value, ok, .. } => vec![*value, *ok],
         LoweredStep::SplitList { head, tail, .. } => vec![*head, *tail],
-        LoweredStep::BitstringInit { reader, .. } => vec![*reader],
-        LoweredStep::BitstringRead {
-            ok, value, next_reader, ..
-        } => vec![*ok, *value, *next_reader],
+        LoweredStep::BitstringRead { value, next, .. } => std::iter::once(*value).chain(*next).collect(),
         LoweredStep::PopHandler => Vec::new(),
     }
 }

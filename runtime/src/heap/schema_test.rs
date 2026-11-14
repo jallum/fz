@@ -1,26 +1,28 @@
-use super::schema::{BITSTRING_READER_SCHEMA, BITSTRING_RESULT_SCHEMA, Schema, SchemaIdentity, SchemaRegistry};
+use super::schema::{Schema, SchemaIdentity, SchemaRegistry};
 
 #[test]
-fn a_new_registry_starts_with_the_bitstring_readers_tuples_at_fixed_ids() {
+fn a_new_registry_holds_no_schema() {
     let registry = SchemaRegistry::new();
 
-    assert_eq!(registry.len(), 2);
-    assert_eq!(registry.get(BITSTRING_RESULT_SCHEMA).identity, SchemaIdentity::Tuple(1));
-    assert_eq!(registry.get(BITSTRING_READER_SCHEMA).identity, SchemaIdentity::Tuple(3));
+    assert_eq!(registry.len(), 0);
 }
 
 #[test]
-fn a_users_one_and_three_tuples_share_the_bitstring_readers_ids() {
+fn schemas_take_ids_in_registration_order() {
     let mut registry = SchemaRegistry::new();
 
-    assert_eq!(registry.register(Schema::tuple_of_arity(1)), BITSTRING_RESULT_SCHEMA);
-    assert_eq!(registry.register(Schema::tuple_of_arity(3)), BITSTRING_READER_SCHEMA);
-    assert_eq!(registry.len(), 2);
+    assert_eq!(registry.register(Schema::tuple_of_arity(3)), 0);
+    assert_eq!(registry.register(Schema::tuple_of_arity(1)), 1);
+    assert_eq!(registry.get(0).identity, SchemaIdentity::Tuple(3));
+    assert_eq!(registry.get(1).identity, SchemaIdentity::Tuple(1));
 }
 
 #[test]
-fn a_users_first_other_schema_follows_the_bitstring_readers_tuples() {
+fn registering_one_identity_twice_answers_the_same_id() {
     let mut registry = SchemaRegistry::new();
 
-    assert_eq!(registry.register(Schema::tuple_of_arity(2)), 2);
+    let first = registry.register(Schema::tuple_of_arity(2));
+
+    assert_eq!(registry.register(Schema::tuple_of_arity(2)), first);
+    assert_eq!(registry.len(), 1);
 }

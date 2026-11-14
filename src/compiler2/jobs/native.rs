@@ -16,6 +16,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::ast::BitType;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
@@ -25,9 +26,10 @@ use crate::dispatch_matrix::pattern::{
 };
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
-    BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DestMapSeed, DirectCallTarget,
-    ExternAbi, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FnBuilder, FnCategory, FnId,
-    ModuleBuilder, Prim, RaiseSubject, ReceiveAfter, ReceiveClause, SlotStore, Term, UnOp as IrUnOp, Var,
+    BinOp as IrBinOp, BitMatchField, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DestMapSeed,
+    DirectCallTarget, ExternAbi, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FnBuilder,
+    FnCategory, FnId, ModuleBuilder, Prim, RaiseSubject, ReceiveAfter, ReceiveClause, SlotStore, Term, UnOp as IrUnOp,
+    Var,
 };
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate, TuplePositions};
@@ -1491,35 +1493,29 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let (tail_var, _) = ctx.emit_let(Prim::ListTail(source));
                     self.bind_runtime_value(ctx, executable, env, *tail, tail_var);
                 }
-                BackendStep::BitstringInit { reader, source } => {
-                    let source = self.env_runtime_var(ctx, executable, env, *source);
-                    let (var, _) = ctx.emit_let(Prim::BitReaderInit(source));
-                    self.bind_runtime_value(ctx, executable, env, *reader, var);
-                }
                 BackendStep::BitstringRead {
-                    ok,
                     value,
-                    next_reader,
-                    reader,
+                    next,
+                    source,
+                    pos,
                     spec,
-                    is_last,
                 } => {
-                    let reader = self.env_runtime_var(ctx, executable, env, *reader);
-                    let (result, _) = ctx.emit_let(Prim::BitReadField {
-                        reader,
+                    let source = self.env_runtime_var(ctx, executable, env, *source);
+                    let pos = self.env_runtime_var(ctx, executable, env, *pos);
+                    let field = BitMatchField {
                         ty: spec.ty,
                         size: lower_bit_size_ir(self.world, &spec.size, env)?,
                         endian: spec.endian,
                         signed: spec.signed,
                         unit: spec.unit,
-                        is_last: *is_last,
-                    });
-                    let (ok_var, _) = ctx.emit_let(Prim::TupleField(result, 0));
-                    self.bind_runtime_value(ctx, executable, env, *ok, ok_var);
-                    let (value_var, _) = ctx.emit_let(Prim::TupleField(result, 1));
+                        is_last: next.is_none(),
+                    };
+                    let value_var = self.emit_bit_read(ctx, source, pos, &field);
                     self.bind_runtime_value(ctx, executable, env, *value, value_var);
-                    let (reader_var, _) = ctx.emit_let(Prim::TupleField(result, 2));
-                    self.bind_runtime_value(ctx, executable, env, *next_reader, reader_var);
+                    if let Some(next) = next {
+                        let next_var = self.emit_bit_next(ctx, pos, field);
+                        self.bind_runtime_value(ctx, executable, env, *next, next_var);
+                    }
                 }
                 BackendStep::PopHandler => {
                     ctx.emit_let(Prim::PopHandler);
@@ -3728,11 +3724,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ///
     /// A region test yields a boolean, so unlike the binding path — which
     /// reads fields the dispatch has already proven present — a failed read
-    /// has to fall through rather than abort. The reads cannot simply be
-    /// chained and their `ok` flags combined either: `fz_bs_read_field`
-    /// allocates a one-tuple `[false]` on failure, so projecting field 1 or 2
-    /// out of a failed read is out of bounds. Hence short-circuit control flow,
-    /// with every failure edge going to one block that answers false.
+    /// has to fall through rather than abort. A read has no miss to report: it
+    /// is only made once `BitFieldFits` says the field is there. Hence
+    /// short-circuit control flow, with every failure edge going to one block
+    /// that answers false. The position is an integer the region carries from
+    /// field to field.
     ///
     /// Each extracted field is recorded in `state.values` under its own
     /// subject. That is what lets a later field's `size(len)` read an earlier
@@ -3749,7 +3745,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let subject_var = self.dispatch_subject_var(ctx, plan, state, subject)?;
         let fail_b = ctx.builder.block(vec![]);
 
-        // `fz_bs_reader_init` panics on a non-bitstring, so the kind test comes
+        // `fz_bs_bit_len_ref` panics on a non-bitstring, so the kind test comes
         // first and is not optional.
         let mut predicate = crate::runtime_type_predicate::RuntimeTypePredicate::none();
         predicate.binaries = true;
@@ -3763,42 +3759,58 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         });
         ctx.current_block = read_b;
 
-        let (mut reader, _) = ctx.emit_let(Prim::BitReaderInit(subject_var));
+        let int = self.world.types_mut().int();
+        let (bit_len, _) = ctx.emit_let(Prim::BitstringBitLen(subject_var));
+        ctx.value_types.insert(bit_len, int);
+        let (mut pos, _) = ctx.emit_let(Prim::Const(Const::Int(0)));
+        ctx.value_types.insert(pos, int);
         let field_count = shape.fields.len();
         let mut extracted = Vec::with_capacity(field_count);
-        for field_subject in &shape.fields {
+        for (index, field_subject) in shape.fields.iter().enumerate() {
             let extraction = plan.bitstring_extraction(*field_subject);
-            let field = &extraction.spec;
-            let size = self.lower_dispatch_bit_size(ctx, plan, state, field)?;
-            let (result, _) = ctx.emit_let(Prim::BitReadField {
-                reader,
-                ty: dispatch_bit_type(field.kind),
-                size,
-                endian: dispatch_endian(field.endian),
-                signed: field.signed,
-                unit: field.unit,
+            let spec = &extraction.spec;
+            let field = BitMatchField {
+                ty: dispatch_bit_type(spec.kind),
+                size: self.lower_dispatch_bit_size(ctx, plan, state, spec)?,
+                endian: dispatch_endian(spec.endian),
+                signed: spec.signed,
+                unit: spec.unit,
                 is_last: extraction.is_last,
+            };
+            let (fits, _) = ctx.emit_let(Prim::BitFieldFits {
+                pos,
+                bit_len,
+                field: field.clone(),
             });
-            let (ok, _) = ctx.emit_let(Prim::TupleField(result, 0));
+            let bool_ty = self.world.types_mut().bool();
+            ctx.value_types.insert(fits, bool_ty);
             let next_b = ctx.builder.block(vec![]);
             ctx.set_term(Term::If {
-                cond: ok,
+                cond: fits,
                 then_b: next_b,
                 else_b: fail_b,
                 origin: BranchOrigin::ClauseDispatch,
             });
             ctx.current_block = next_b;
-            let (value, _) = ctx.emit_let(Prim::TupleField(result, 1));
-            let (next_reader, _) = ctx.emit_let(Prim::TupleField(result, 2));
-            reader = next_reader;
+            let value = self.emit_bit_read(ctx, subject_var, pos, &field);
+            // The last field has no successor unless the pattern must also end
+            // there; a field that reads to the end of the binary ends at its end.
+            let reads_to_end = field.size.is_none() && matches!(field.ty, BitType::Binary | BitType::Bits);
+            if reads_to_end {
+                pos = bit_len;
+            } else if index + 1 < field_count || shape.require_done {
+                pos = self.emit_bit_next(ctx, pos, field.clone());
+            }
             // A later field's `size(len)` reads this one, and the read happens
             // in this block, so it is available for the rest of the loop.
             state.values.insert(*field_subject, NativeBoundValue::Runtime(value));
-            extracted.push((*field_subject, value));
+            extracted.push((*field_subject, value, field.ty == BitType::Integer));
         }
 
         if shape.require_done {
-            let (exhausted, _) = ctx.emit_let(Prim::BitReaderDone(reader));
+            let (exhausted, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, pos, bit_len));
+            let bool_ty = self.world.types_mut().bool();
+            ctx.value_types.insert(exhausted, bool_ty);
             let matched_b = ctx.builder.block(vec![]);
             ctx.set_term(Term::If {
                 cond: exhausted,
@@ -3813,13 +3825,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         // failure edge does not pass through, so they cannot dominate uses
         // after the join. They cross it as block parameters instead. The
         // failure edge supplies placeholders that no reader can observe: the
-        // clause body only runs when the answer is true.
+        // clause body only runs when the answer is true. An integer crosses as
+        // a raw integer, so a pattern byte is never boxed to travel.
         let answer = ctx.builder.fresh_var();
         let mut params = Vec::with_capacity(extracted.len() + 1);
         params.push(answer);
         let carried = extracted
             .iter()
-            .map(|(field_index, _)| (*field_index, ctx.builder.fresh_var()))
+            .map(|(field_index, _, is_int)| {
+                let param = ctx.builder.fresh_var();
+                if *is_int {
+                    ctx.value_types.insert(param, int);
+                }
+                (*field_index, param)
+            })
             .collect::<Vec<_>>();
         params.extend(carried.iter().map(|(_, var)| *var));
         let done_b = ctx.builder.block(params);
@@ -3827,15 +3846,18 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let (matched, _) = ctx.emit_let(Prim::Const(Const::True));
         let mut matched_args = Vec::with_capacity(extracted.len() + 1);
         matched_args.push(matched);
-        matched_args.extend(extracted.iter().map(|(_, var)| *var));
+        matched_args.extend(extracted.iter().map(|(_, var, _)| *var));
         ctx.set_term(Term::Goto(done_b, matched_args));
 
         ctx.current_block = fail_b;
         let (missed, _) = ctx.emit_let(Prim::Const(Const::False));
         let mut missed_args = Vec::with_capacity(extracted.len() + 1);
         missed_args.push(missed);
-        for _ in &extracted {
-            let (placeholder, _) = ctx.emit_let(Prim::Const(Const::Nil));
+        for (_, _, is_int) in &extracted {
+            let (placeholder, _) = ctx.emit_let(Prim::Const(if *is_int { Const::Int(0) } else { Const::Nil }));
+            if *is_int {
+                ctx.value_types.insert(placeholder, int);
+            }
             missed_args.push(placeholder);
         }
         ctx.set_term(Term::Goto(done_b, missed_args));
@@ -3845,6 +3867,29 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             state.values.insert(field_subject, NativeBoundValue::Runtime(var));
         }
         Ok(answer)
+    }
+
+    /// The value of `field` at bit `pos` of `source`, which the caller has seen
+    /// fit. An integer field is a raw integer.
+    fn emit_bit_read(&mut self, ctx: &mut NativeFnCtx, source: Var, pos: Var, field: &BitMatchField) -> Var {
+        let (value, _) = ctx.emit_let(Prim::BitReadField {
+            source,
+            pos,
+            field: field.clone(),
+        });
+        if field.ty == BitType::Integer {
+            let int = self.world.types_mut().int();
+            ctx.value_types.insert(value, int);
+        }
+        value
+    }
+
+    /// The position after a sized `field` that starts at `pos`.
+    fn emit_bit_next(&mut self, ctx: &mut NativeFnCtx, pos: Var, field: BitMatchField) -> Var {
+        let (next, _) = ctx.emit_let(Prim::BitFieldNext { pos, field });
+        let int = self.world.types_mut().int();
+        ctx.value_types.insert(next, int);
+        next
     }
 
     /// A field's size is a literal, or an earlier field this same test already

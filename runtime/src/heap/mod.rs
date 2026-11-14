@@ -62,10 +62,7 @@ pub use self::gift::GiftSegment;
 pub use self::imp::{closure_capture_ref, list_head_ref, list_tail_ref};
 pub use self::map_view::MapLayout;
 pub(crate) use self::ref_io::map_entry_refs;
-pub use self::schema::{
-    BITSTRING_READER_SCHEMA, BITSTRING_RESULT_SCHEMA, FieldDescriptor, FieldKind, NamedSchema, Schema, SchemaIdentity,
-    SchemaRegistry, StructKey,
-};
+pub use self::schema::{FieldDescriptor, FieldKind, NamedSchema, Schema, SchemaIdentity, SchemaRegistry, StructKey};
 pub use self::stats::{AllocStat, GcStats, HeapAllocKind, HeapAllocStats};
 
 /// Bitstrings above this many bytes are routed through the

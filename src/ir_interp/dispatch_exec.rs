@@ -23,7 +23,7 @@ use crate::runtime_type_predicate::{
 };
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, TRUE_ATOM_ID, ValueKind, struct_schema_id};
 use fz_runtime::ir_runtime::{
-    fz_bs_begin, fz_bs_field_spec, fz_bs_finalize, fz_bs_read_field_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref,
+    bs_field_end, fz_bs_begin, fz_bs_bit_len_ref, fz_bs_field_spec, fz_bs_finalize, fz_bs_write_field_ref,
     fz_list_head_ref, fz_list_tail_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref,
 };
 use fz_runtime::procbin::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
@@ -836,17 +836,13 @@ impl<'a> Dispatch<'a> {
         }
         let plan = self.plan;
         let proc = self.proc();
-        let mut reader = fz_bs_reader_init_ref(proc, value.ref_word().raw_word());
+        let source_ref = value.ref_word().raw_word();
+        let bit_len = fz_bs_bit_len_ref(source_ref);
+        let mut pos = 0;
         for field_subject in &shape.fields {
             let extraction = plan.bitstring_extraction(*field_subject);
             let field = &extraction.spec;
             let Some((size_present, size_value)) = self.bit_size_value(&field.size) else {
-                return false;
-            };
-            let Ok(reader_any) = interp_value_from_ref_word(reader, "bitstring dispatch reader") else {
-                return false;
-            };
-            let Ok(reader_ref) = reader_any.as_ref_word(proc) else {
                 return false;
             };
             let field_spec = fz_bs_field_spec(
@@ -857,38 +853,23 @@ impl<'a> Dispatch<'a> {
                 field.signed as u32,
                 extraction.is_last as u32,
             );
-            let result = fz_bs_read_field_ref(proc, reader_ref, field_spec, size_value);
-            let Ok(ok) = interp_struct_field_from_tagged_bits(proc, result, 0, "bitstring dispatch ok") else {
+            let Some(end) = bs_field_end(field_spec, size_value, pos, bit_len) else {
                 return false;
             };
-            if ok.is_false() || ok.is_nil() {
-                return false;
-            }
-            let Ok(extracted) = interp_struct_field_from_tagged_bits(proc, result, 8, "bitstring dispatch extracted")
-            else {
-                return false;
-            };
-            let Ok(next_reader) =
-                interp_struct_field_from_tagged_bits(proc, result, 16, "bitstring dispatch next reader")
-            else {
+            let Ok(extracted) = interp_read_bit_field(
+                proc,
+                source_ref,
+                pos,
+                field_spec,
+                size_value,
+                matches!(field.kind, BitstringFieldKind::Integer),
+            ) else {
                 return false;
             };
             self.state.set(*field_subject, BackendBoundValue::Runtime(extracted));
-            let Ok(next_reader_ref) = next_reader.as_ref_word(proc) else {
-                return false;
-            };
-            reader = next_reader_ref;
+            pos = end;
         }
-        if !shape.require_done {
-            return true;
-        }
-        let Ok(bit_len) = interp_struct_field_from_tagged_bits(proc, reader, 8, "bitstring dispatch bit_len") else {
-            return false;
-        };
-        let Ok(pos) = interp_struct_field_from_tagged_bits(proc, reader, 16, "bitstring dispatch pos") else {
-            return false;
-        };
-        bit_len.as_i64() == pos.as_i64()
+        !shape.require_done || pos == bit_len
     }
 
     /// How wide one bitstring field is, and whether it says so at all.

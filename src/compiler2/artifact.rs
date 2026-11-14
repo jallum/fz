@@ -1557,17 +1557,16 @@ pub enum BackendStep {
         head: ValueId,
         tail: ValueId,
     },
-    BitstringInit {
-        reader: ValueId,
-        source: ValueId,
-    },
+    /// The field of `source` that starts at bit `pos`. A clause body runs only
+    /// after its dispatch proved the whole pattern, so the field is there to
+    /// read. `next` is the position after the field, bound for a later field to
+    /// start from; the last field has none.
     BitstringRead {
-        ok: ValueId,
         value: ValueId,
-        next_reader: ValueId,
-        reader: ValueId,
+        next: Option<ValueId>,
+        source: ValueId,
+        pos: ValueId,
         spec: LoweredBitFieldSpec,
-        is_last: bool,
     },
     PopHandler,
 }

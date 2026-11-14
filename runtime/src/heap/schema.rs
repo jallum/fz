@@ -138,13 +138,6 @@ impl Schema {
     }
 }
 
-/// The bitstring reader's result tuple (`{false}` on a miss) and reader tuple
-/// (`{bits, offset, size}`) are the registry's first two schemas, so generated
-/// code, the interpreter and the runtime agree on their ids without a program
-/// having to declare it reads bitstrings.
-pub const BITSTRING_RESULT_SCHEMA: u32 = 0;
-pub const BITSTRING_READER_SCHEMA: u32 = 1;
-
 /// The struct schema of the module a map names under `__struct__`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NamedSchema {
@@ -207,14 +200,10 @@ pub struct SchemaRegistry {
 
 impl SchemaRegistry {
     pub fn new() -> Self {
-        let mut registry = Self {
+        Self {
             schemas: Vec::new(),
             map_keys: Vec::new(),
-        };
-        let result = registry.register(Schema::tuple_of_arity(1));
-        let reader = registry.register(Schema::tuple_of_arity(3));
-        debug_assert_eq!((result, reader), (BITSTRING_RESULT_SCHEMA, BITSTRING_READER_SCHEMA));
-        registry
+        }
     }
 
     pub fn register(&mut self, schema: Schema) -> u32 {

@@ -3,10 +3,11 @@
 use super::repr::ExternLane;
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use super::*;
+use crate::ast::BitType;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{
-    BinOp, BitSizeIr, BlockId, Const, DestMapSeed, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnId,
-    Prim, UnOp, Var,
+    BinOp, BitMatchField, BitSizeIr, BlockId, Const, DestMapSeed, ExternArg, ExternDecl, ExternId, ExternMarshalSite,
+    ExternTy, FnId, Prim, UnOp, Var,
 };
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
@@ -20,8 +21,8 @@ use fz_runtime::any_value::{AnyValue, FALSE_ATOM_ID, SlotLayout, TRUE_ATOM_ID, V
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::{
-    fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_bs_begin, fz_bs_field_spec, fz_bs_finalize,
-    fz_bs_read_field_ref, fz_bs_reader_done_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref, fz_int_float_cmp,
+    fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_bs_begin, fz_bs_bit_len_ref, fz_bs_field_spec,
+    fz_bs_finalize, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_int_float_cmp,
     fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
     fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_dest_put_ref,
     fz_map_get_atom_key_ref, fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_map_named_schema_ref,
@@ -489,50 +490,6 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 ))
             }
         }
-        Prim::BitReaderInit(v) => {
-            let value_ref = body.tagged_var(var_env, v.0);
-            let process = body.process_arg();
-            LowerOut::ValueRef(runtime_call1!(body, fz_bs_reader_init_ref, [process, value_ref]))
-        }
-        Prim::BitReadField {
-            reader,
-            ty,
-            size,
-            endian,
-            signed,
-            unit,
-            is_last,
-        } => {
-            let reader_ref = body.tagged_var(var_env, reader.0);
-            let (size_present, size_value) = match size {
-                None => (0, body.b.ins().iconst(types::I32, 0)),
-                Some(BitSizeIr::Literal(n)) => (1, body.b.ins().iconst(types::I32, *n as i64)),
-                Some(BitSizeIr::Var(v)) => {
-                    let unb = body.as_raw_i64(var_env, v.0);
-                    let truncated = body.b.ins().ireduce(types::I32, unb);
-                    (1, truncated)
-                }
-                Some(BitSizeIr::ByteSizeOf(v)) => {
-                    let pinned = body.tagged_var(var_env, v.0);
-                    (1, runtime_call1!(body, fz_pinned_binary_segment_size, [pinned]))
-                }
-            };
-            let field_spec = fz_bs_field_spec(
-                encode_bit_type(*ty),
-                size_present,
-                unit.unwrap_or(default_unit_for(*ty)),
-                encode_endian(*endian),
-                *signed as u32,
-                *is_last as u32,
-            );
-            let field_spec = body.b.ins().iconst(types::I64, field_spec as i64);
-            let process = body.process_arg();
-            LowerOut::ValueRef(runtime_call1!(
-                body,
-                fz_bs_read_field_ref,
-                [process, reader_ref, field_spec, size_value]
-            ))
-        }
         Prim::DestMapBegin(seed) => {
             let process = body.process_arg();
             match seed {
@@ -637,6 +594,150 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
         _ => unreachable!("lower_collection_prim: not a collection prim"),
     };
     Ok(v)
+}
+
+/// How far a match field reaches from where it starts.
+enum MatchExtent {
+    /// A fixed number of bits: `size * unit`.
+    Bits(ir::Value),
+    /// To the end of the binary: the last, unsized `binary` or `bits` field.
+    Rest,
+    /// No extent: an unsized `binary` or `bits` field that is not the last.
+    Never,
+    /// A float or UTF field, which the runtime refuses when it reads.
+    Unsupported,
+}
+
+/// A match field's size operand widened to 64 bits. A size is the low 32 bits
+/// of the integer it names.
+fn emit_match_field_size<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    size: &Option<BitSizeIr>,
+) -> Option<ir::Value> {
+    let narrow = match size.as_ref()? {
+        BitSizeIr::Literal(n) => return Some(body.b.ins().iconst(types::I64, *n as i64)),
+        BitSizeIr::Var(v) => {
+            let raw = body.as_raw_i64(var_env, v.0);
+            body.b.ins().ireduce(types::I32, raw)
+        }
+        BitSizeIr::ByteSizeOf(v) => {
+            let pinned = body.tagged_var(var_env, v.0);
+            runtime_call1!(body, fz_pinned_binary_segment_size, [pinned])
+        }
+    };
+    Some(body.b.ins().uextend(types::I64, narrow))
+}
+
+fn match_field_extent<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    field: &BitMatchField,
+) -> MatchExtent {
+    let unit = field.unit.unwrap_or(default_unit_for(field.ty)) as i64;
+    let sized = |body: &mut CodegenFn<'_, '_, M>, default_size: i64| {
+        let bits = match emit_match_field_size(body, var_env, &field.size) {
+            Some(size) => body.b.ins().imul_imm(size, unit),
+            None => body.b.ins().iconst(types::I64, default_size * unit),
+        };
+        MatchExtent::Bits(bits)
+    };
+    match field.ty {
+        BitType::Integer => sized(body, 8),
+        BitType::Float => sized(body, 64),
+        BitType::Binary | BitType::Bits => match (&field.size, field.is_last) {
+            (Some(_), _) => sized(body, 0),
+            (None, true) => MatchExtent::Rest,
+            (None, false) => MatchExtent::Never,
+        },
+        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => MatchExtent::Unsupported,
+    }
+}
+
+/// The match prims: the position a match carries is an integer, so "does the
+/// next field fit" and "where does it end" are arithmetic on it, and a read is
+/// a call that cannot miss.
+fn lower_bit_match_prim<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    prim: &Prim,
+    dest_var: Var,
+) -> Result<LowerOut, CodegenError> {
+    Ok(match prim {
+        Prim::BitstringBitLen(source) => {
+            let source_ref = body.tagged_var(var_env, source.0);
+            LowerOut::RawI64(runtime_call1!(body, fz_bs_bit_len_ref, [source_ref]))
+        }
+        Prim::BitFieldFits { pos, bit_len, field } => {
+            let pos = body.as_raw_i64(var_env, pos.0);
+            let bit_len = body.as_raw_i64(var_env, bit_len.0);
+            let fits = match match_field_extent(body, var_env, field) {
+                MatchExtent::Never => body.b.ins().iconst(types::I8, 0),
+                MatchExtent::Rest | MatchExtent::Unsupported => body.b.ins().iconst(types::I8, 1),
+                MatchExtent::Bits(total) => {
+                    let end = body.b.ins().iadd(pos, total);
+                    let within = body.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, end, bit_len);
+                    let width_ok = match field.ty {
+                        BitType::Integer => Some(body.b.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, total, 64)),
+                        BitType::Float => {
+                            let is_32 = body.b.ins().icmp_imm(IntCC::Equal, total, 32);
+                            let is_64 = body.b.ins().icmp_imm(IntCC::Equal, total, 64);
+                            Some(body.b.ins().bor(is_32, is_64))
+                        }
+                        _ => None,
+                    };
+                    match width_ok {
+                        Some(width_ok) => body.b.ins().band(width_ok, within),
+                        None => within,
+                    }
+                }
+            };
+            if body.cache.if_only_conds.contains(&dest_var.0) {
+                return Ok(LowerOut::Condition(fits));
+            }
+            LowerOut::Strict(strict_bool(body.b, fits))
+        }
+        Prim::BitFieldNext { pos, field } => {
+            let pos = body.as_raw_i64(var_env, pos.0);
+            let MatchExtent::Bits(total) = match_field_extent(body, var_env, field) else {
+                panic!("BitFieldNext is asked of a sized field: the last field reads to the end");
+            };
+            LowerOut::RawI64(body.b.ins().iadd(pos, total))
+        }
+        Prim::BitReadField { source, pos, field } => {
+            let source_ref = body.tagged_var(var_env, source.0);
+            let pos = body.as_raw_i64(var_env, pos.0);
+            let size_value = match emit_match_field_size(body, var_env, &field.size) {
+                Some(size) => body.b.ins().ireduce(types::I32, size),
+                None => body.b.ins().iconst(types::I32, 0),
+            };
+            let field_spec = fz_bs_field_spec(
+                encode_bit_type(field.ty),
+                field.size.is_some() as u32,
+                field.unit.unwrap_or(default_unit_for(field.ty)),
+                encode_endian(field.endian),
+                field.signed as u32,
+                field.is_last as u32,
+            );
+            let field_spec = body.b.ins().iconst(types::I64, field_spec as i64);
+            match field.ty {
+                BitType::Integer => LowerOut::RawI64(runtime_call1!(
+                    body,
+                    fz_bs_read_int_ref,
+                    [source_ref, pos, field_spec, size_value]
+                )),
+                _ => {
+                    let process = body.process_arg();
+                    LowerOut::ValueRef(runtime_call1!(
+                        body,
+                        fz_bs_read_binary_ref,
+                        [process, source_ref, pos, field_spec, size_value]
+                    ))
+                }
+            }
+        }
+        _ => unreachable!("lower_bit_match_prim: not a bit match prim"),
+    })
 }
 
 /// `fz_abi` selects what a declared parameter type MEANS.
@@ -954,15 +1055,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             }
             Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
         }
-        Prim::BitReaderDone(r) => {
-            let rv = body.tagged_var(var_env, r.0);
-            let process = body.process_arg();
-            let cmp = runtime_call1!(body, fz_bs_reader_done_ref, [process, rv]);
-            if body.cache.if_only_conds.contains(&dest_var.0) {
-                return Ok(LowerOut::Condition(cmp));
-            }
-            Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
-        }
         Prim::PopHandler => {
             let process = body.process_arg();
             runtime_call!(body, fz_try_pop, [process]);
@@ -1033,8 +1125,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::StructModule(..)
         | Prim::MakeBitstring(..)
         | Prim::ConstBitstring(..)
-        | Prim::BitReaderInit(..)
-        | Prim::BitReadField { .. }
         | Prim::DestMapBegin(..)
         | Prim::DestMapPut { .. }
         | Prim::DestMapFreeze(..)
@@ -1043,6 +1133,10 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)
         | Prim::IsMapMiss(..) => lower_collection_prim(body, t, env, var_env, prim, dest_var, block_id),
+        Prim::BitstringBitLen(..)
+        | Prim::BitFieldFits { .. }
+        | Prim::BitFieldNext { .. }
+        | Prim::BitReadField { .. } => lower_bit_match_prim(body, var_env, prim, dest_var),
         Prim::MakeFnRef(_, fn_id) => lower_make_fn_ref(body, env, *fn_id),
         Prim::MakeClosure(_, fn_id, captured) => lower_make_closure(body, env, var_env, *fn_id, captured),
         Prim::RuntimeTypeTest(v, descr) => lower_runtime_type_predicate(body, env, var_env, *v, descr, dest_var),

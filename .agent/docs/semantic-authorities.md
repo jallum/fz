@@ -167,10 +167,13 @@ literal's byte length so a following field has a boundary. Backend lowering and
 the three runtime doors consume that spec and never reinterpret a value's
 carrier from the surrounding fields.
 
-Bitstring matching has one runtime implementation, `fz_bs_read_field_bits`,
-reached from every door. But the CLAUSE HEAD is lowered twice — once into a
-dispatch region to select the clause, once into body steps to bind — so each
-field is read twice: fz-5xp.56.
+Bitstring matching carries the reader as a bit position (a raw int). The
+bounds check is emitted arithmetic (`BitFieldFits`, `BitFieldNext`), and
+`BitReadField` cannot miss: `fz_bs_read_int_ref` returns a raw int and
+`fz_bs_read_binary_ref` a binary view. The receive matcher and the interpreter
+share the arithmetic through `bs_field_end`. The CLAUSE HEAD is lowered twice —
+once into a dispatch region to select the clause, once into body steps to
+bind — so each field is read twice: fz-5xp.56.
 
 **What a dispatch plan demands** — owner `DispatchGraphBuilder`
 (`dispatch_matrix/mod.rs`). The builder folds each question into

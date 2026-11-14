@@ -9,7 +9,7 @@ use fz_runtime::any_value::{
 };
 use fz_runtime::heap::Schema;
 use fz_runtime::ir_runtime::{
-    fz_box_float_for_any, fz_box_int_for_any, fz_struct_get_field_ref, fz_struct_get_named_field_ref,
+    fz_box_float_for_any, fz_box_int_for_any, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_struct_get_named_field_ref,
 };
 use fz_runtime::process::Process;
 
@@ -309,17 +309,23 @@ pub(super) fn with_value_ref<T>(
     Ok(f(value_ref))
 }
 
-pub(super) fn interp_struct_field_from_tagged_bits(
+/// The value of the bitstring field at bit `pos` of the binary `source_ref`.
+/// The caller has proved the field fits, so there is no miss to report.
+pub(super) fn interp_read_bit_field(
     proc: *mut Process,
-    bits: u64,
-    field_offset: u32,
-    context: &str,
+    source_ref: u64,
+    pos: u64,
+    field_spec: u64,
+    size_value: u32,
+    integer: bool,
 ) -> Result<AnyValue, String> {
-    let value = interp_value_from_ref_word(bits, context)?;
-    with_value_ref(proc, value, context, |struct_ref| {
-        fz_struct_get_field_ref(proc, struct_ref, field_offset)
-    })
-    .and_then(|ref_word| interp_value_from_ref_word(ref_word, context))
+    if integer {
+        return Ok(AnyValue::Int(fz_bs_read_int_ref(
+            source_ref, pos, field_spec, size_value,
+        )));
+    }
+    let value = fz_bs_read_binary_ref(proc, source_ref, pos, field_spec, size_value);
+    interp_value_from_ref_word(value, "bitstring field")
 }
 
 pub(super) fn interp_is_list_cons(value: RuntimeAnyValue) -> bool {

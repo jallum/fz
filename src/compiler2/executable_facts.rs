@@ -871,15 +871,11 @@ fn collect_entry_callsite_needs(
                 tuple_demands.remove(head);
                 tuple_demands.remove(tail);
             }
-            LoweredStep::BitstringInit { reader, .. } => {
-                tuple_demands.remove(reader);
-            }
-            LoweredStep::BitstringRead {
-                ok, value, next_reader, ..
-            } => {
-                tuple_demands.remove(ok);
+            LoweredStep::BitstringRead { value, next, .. } => {
                 tuple_demands.remove(value);
-                tuple_demands.remove(next_reader);
+                if let Some(next) = next {
+                    tuple_demands.remove(next);
+                }
             }
             LoweredStep::PopHandler => {}
         }
