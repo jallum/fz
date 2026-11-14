@@ -102,12 +102,13 @@ It does four macro-relevant jobs:
 2. Process `require`.
    `ScopeSession::apply_require` selects macro exports from the provider's
    `ModuleInterface`, or reserves exact macro identities from `only:` while
-   that interface is pending. It records those `FunctionId`s in
-   `required_remote_macros`. An invocation demands the macro's backend content.
+   that interface is pending. It binds each one into the namespace as a
+   required-macro entry (`NamespaceStore::bind_required_macro`). An invocation
+   demands the macro's backend content.
 
 3. Publish raw function source.
    `define_source_function(...)` writes `FunctionSource { owner, source,
-   required_remote_macros, ... }` without expanding ordinary bodies first. The
+   namespace, ... }` without expanding ordinary bodies first. The
    lexical publisher remains an owner while every returned node carries its own
    immutable version; see
    [`quoted-source`](quoted-source.md#source-identity-and-provenance).
@@ -230,17 +231,33 @@ or a new macro-cache identity. The def-head macros capture `__CALLER__` as
 
 Remote macros are not available just because a module exports them.
 
-`require Helpers` records the selected exported macro identities in
-`required_remote_macros`. An exact `only:` list can reserve those identities
-before the provider interface is ready. Macro code is demanded when invoked.
+A remote macro may be called by its qualified name when the call's namespace
+either holds a required-macro entry for it or holds any binding from its module
+(`World::macro_callable_remotely`). Both live in the lexical namespace, so a
+`require` or `import` covers its own scope and no sibling.
+
+- `require Helpers` binds a required-macro entry per selected exported macro. An
+  exact `only:` list can reserve those identities before the provider interface
+  is ready; `except:` removes the denied ones. A required-macro entry binds no
+  name: name lookups never meet it.
+- `import Helpers` in any shape (`only:`, `except:`, neither) binds callables of
+  `Helpers`, and any such binding makes every macro of `Helpers` callable by
+  its qualified name, as in Elixir where importing a module requires it. The
+  prelude's `import Kernel, only: [...]` therefore makes `Kernel.apply/3`,
+  `Kernel.&&/2` and the rest of Kernel's macros callable in every source.
+
+Macro code is demanded when invoked.
 
 Later, when expansion sees `Helpers.twice(...)`, it:
 
 1. resolves `Helpers` to a `ModuleId`
-2. waits for `ModuleDefined(Helpers)` if needed
+2. waits for `ModuleDefined(Helpers)` if needed; a runtime module whose
+   definition is not yet published is not waited for, and the call is left to
+   function resolution
 3. resolves `twice/1` against that module's exports
-4. rejects the call with `macro/not-required` if the selected `FunctionId`
-   is not in `required_remote_macros`
+4. rejects the call with `macro/not-required` if neither a required-macro entry
+   for the selected `FunctionId` nor a binding from `Helpers` is in the
+   call's namespace
 
 That is why an unrequired remote macro fails during source expansion instead of
 silently reaching body lowering.
@@ -517,6 +534,6 @@ cargo test --lib compiler2::source_publish_test::source_publication_defers_local
 Those four tests cover the four important contracts:
 
 - macros lower to backend interpreter-ready form
-- `require` gates remote macros
+- `require` and `import` gate remote macros
 - item macros are eager source fragments
 - ordinary function-body macros are lazy behind demand

@@ -271,9 +271,11 @@ declared later in the same scope:
    namespace so qualified remote macro calls can resolve the module name. For
    a dotted path such as `Foo.Bar`, the full path is made visible through
    `Foo`; the short name `Bar` still requires an explicit `alias`.
-   Separately, `require` records the selected remote macro `FunctionId`s that
-   this scope may expand. A visible module without a matching required macro
-   entry still trips `macro/not-required`.
+   Separately, `require` binds a required-macro entry in the lexical namespace
+   for each selected remote macro `FunctionId` this scope may expand, and an
+   `import` of a module (with or without `only:`/`except:`) makes all of that
+   module's macros callable the same way. A visible module with neither still
+   trips `macro/not-required`.
    A module or protocol declaration binds a name in its declaring scope as
    Elixir's `defmodule` does: a single-segment name binds itself; a dotted name
    nested in a module binds only its first segment, to the parent's child of

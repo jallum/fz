@@ -1712,6 +1712,10 @@ impl World {
         self.namespaces.bind(head, name, symbol)
     }
 
+    pub(crate) fn bind_required_macro(&mut self, head: Namespace, function: FunctionId) -> Namespace {
+        self.namespaces.bind_required_macro(head, function)
+    }
+
     pub(crate) fn lookup_namespace(&self, head: Namespace, name: &str) -> Option<NamespaceSymbol> {
         self.namespaces.lookup(head, name).cloned()
     }
@@ -2219,6 +2223,21 @@ impl World {
             })
             .cloned()
             .map(|symbol| self.resolve_callable_symbol(symbol))
+    }
+
+    /// Whether `function`, a macro, may be called by its qualified name from
+    /// `head`: a `require` named it, or `head` imports from its module. An
+    /// `import` of any shape (`only:`, `except:`, neither) imports the module,
+    /// as in Elixir, where importing a module requires it.
+    pub(crate) fn macro_callable_remotely(&self, head: Namespace, function: FunctionId) -> bool {
+        let module = self.function_module(function);
+        self.namespaces.is_required_macro(head, function)
+            || self.namespaces.any_symbol(head, |symbol| match symbol {
+                NamespaceSymbol::Function(imported)
+                | NamespaceSymbol::Macro(imported)
+                | NamespaceSymbol::Callable(imported) => self.function_module(*imported) == module,
+                NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) | NamespaceSymbol::Splice(_) => false,
+            })
     }
 
     /// Where a callable name's qualifier points. This is the one place a
@@ -3717,7 +3736,6 @@ impl World {
             owner_module: owner_source.owner_module,
             namespace,
             capture_params,
-            required_remote_macros: owner_source.required_remote_macros.clone(),
             variadic: surface.variadic,
             source: owner_source.source.clone(),
         };

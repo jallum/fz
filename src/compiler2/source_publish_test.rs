@@ -212,10 +212,6 @@ fn compiler_service_define_and_direct_source_publish_identical_raw_function_fact
         .expect("service function source");
     assert_eq!(direct_source.owner_module, service_source.owner_module);
     assert_eq!(direct_source.namespace, service_source.namespace);
-    assert_eq!(
-        direct_source.required_remote_macros,
-        service_source.required_remote_macros
-    );
     assert_eq!(direct_source.variadic, service_source.variadic);
     assert_eq!(direct_source.source.key(), service_source.source.key());
     assert_eq!(
