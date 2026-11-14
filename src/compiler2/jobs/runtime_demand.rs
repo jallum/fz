@@ -1252,6 +1252,9 @@ fn derive_executable_runtime_demand(
             &mut callable_flows,
             &mut walks,
         );
+        // The matcher's reads seed the walk, so a projection feeding one passes
+        // its demand on to the value it projects from.
+        note_clause_matcher_demands(facts, clause.projections.as_slice(), &mut live, &mut out);
         propagate_steps_reverse(
             types,
             clause.projections.as_slice(),
@@ -1261,7 +1264,6 @@ fn derive_executable_runtime_demand(
             &mut out,
             &mut callable_flows,
         );
-        note_clause_matcher_demands(facts, clause.projections.as_slice(), &mut live, &mut out);
         for (index, param) in clause.params.iter().enumerate() {
             if let Some(demand) = live.remove(param) {
                 out.input_demands[index].join_assign(&demand);

@@ -1,0 +1,27 @@
+#---
+# purpose: "Clauses that differ only by a guard on the head of a list nested two or three tuples deep each match their own values"
+#---
+def two({:a, {:b, [h | _]}}) when is_integer(h), do: 1
+def two({:a, {:b, [h | _]}}) when is_atom(h), do: 2
+def three({:a, {:b, {:c, [h | _]}}}) when is_integer(h), do: 3
+def three({:a, {:b, {:c, [h | _]}}}) when h == :ok, do: 4
+def pick_two(n) do
+  if n > 0 do
+    {:a, {:b, [n, n]}}
+  else
+    {:a, {:b, [:ok, :err]}}
+  end
+end
+def pick_three(n) do
+  if n > 0 do
+    {:a, {:b, {:c, [n, n]}}}
+  else
+    {:a, {:b, {:c, [:ok, :err]}}}
+  end
+end
+def main() do
+  IO.puts(two(pick_two(1)))
+  IO.puts(two(pick_two(0)))
+  IO.puts(three(pick_three(1)))
+  IO.puts(three(pick_three(0)))
+end
