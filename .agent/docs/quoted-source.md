@@ -153,7 +153,7 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   | `p <- e`, irrefutable `p` (variable, `_`, `_name`) | `Enum.reduce(e, acc, fn p, acc' -> STEP end)`; no skip arm, which would be a `type/redundant-clause` warning |
   | filter `f` | `if f, do: STEP, else: acc` |
   | innermost, plain | `[body \| acc]`; result `Enum.reverse(...)`, initial `[]` |
-  | innermost, `into: c` | `fun.(acc, {:cont, body})`; result `{init, fun} = Collectable.into(c)` then `fun.(..., :done)` over initial `init` |
+  | innermost, `into: c` | `fun.(acc, {:cont, body})`; result `{init, fun} = Collectable.into(c)` then `try do <reduction over initial init> catch kind, reason -> fun.(init, :halt); :erlang.raise(kind, reason, []) else acc -> fun.(acc, :done) end` |
   | innermost, `reduce: a` | `case acc do <the do clauses> end`; initial `a`, result as is |
 
   `uniq:` (and any unknown option), bitstring generators `<<x <- bin>>`,

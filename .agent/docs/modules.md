@@ -160,6 +160,8 @@ paths.
 `decimals: n` for an integer `n` from 0 to 253 and writes the float in fixed
 notation (`fz_float_to_fixed_binary`, rounded from the exact value with a tie
 going away from zero). Any other option or an out-of-range `n` has no clause.
+It also defines `raise/3`, which raises `reason` again as the kind it is
+given (`:error`, `:throw` or `:exit`) and ignores the stacktrace.
 
 ## A call on a module value
 

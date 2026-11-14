@@ -241,12 +241,16 @@ fn each_generator_threads_the_enclosing_accumulator_into_the_next_reduce() {
 }
 
 #[test]
-fn into_collects_through_the_collectable_and_finishes_with_done() {
+fn into_collects_under_a_try_that_finishes_with_done_and_halts_on_a_raise() {
     assert_eq!(
         rewrite_for("for x <- xs, into: c, do: x\n").unwrap(),
         "__block__(=({__fz_for_init#0, __fz_for_fun#0}, Collectable.into(c)), \
-         (__fz_for_fun#0.)(Enum.reduce(xs, __fz_for_init#0, \
-         fn(->([x, __fz_for_acc#0], (__fz_for_fun#0.)(__fz_for_acc#0, {:cont, x})))), :done))"
+         try([{:do, Enum.reduce(xs, __fz_for_init#0, \
+         fn(->([x, __fz_for_acc#0], (__fz_for_fun#0.)(__fz_for_acc#0, {:cont, x}))))}, \
+         {:catch, [->([__fz_for_kind#0, __fz_for_reason#0], \
+         __block__((__fz_for_fun#0.)(__fz_for_init#0, :halt), \
+         :erlang.raise(__fz_for_kind#0, __fz_for_reason#0, [])))]}, \
+         {:else, [->([__fz_for_acc#0], (__fz_for_fun#0.)(__fz_for_acc#0, :done))]}]))"
     );
 }
 
