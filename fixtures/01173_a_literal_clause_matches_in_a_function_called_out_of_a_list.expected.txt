@@ -1,0 +1,7 @@
+:three
+4
+:see
+:three
+[1, 2, :three]
+[:a, :b, :see]
+{:rescued, "three"}
