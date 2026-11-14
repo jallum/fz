@@ -83,7 +83,7 @@ fn a_collection_writes_its_boundary_and_the_stats_that_describe_it() {
     };
     assert_eq!(
         line(RuntimeEvent::Gc(&collection)),
-        r#"{"name":["fz","runtime","gc"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"pid":5,"boundary":"park","copied_bytes":288,"live_bytes":288,"from_space_capacity_bytes":4096,"blocks_released":1,"blocks_after":2}}"#
+        r#"{"name":["fz","runtime","gc"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"pid":5,"boundary":"park","generation":"minor","copied_bytes":288,"live_bytes":288,"from_space_capacity_bytes":4096,"blocks_released":1,"blocks_after":2}}"#
     );
 }
 

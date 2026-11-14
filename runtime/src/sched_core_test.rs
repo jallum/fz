@@ -593,7 +593,11 @@ fn a_resource_freed_by_a_collection_has_its_destructor_dispatched_at_the_boundar
     assert_eq!(payload_of(payload), 77);
     assert_eq!(process.dtors_dispatched, 1);
     assert!(process.heap.pending_dtors.is_empty());
-    assert_eq!(process.heap.mso_head, 0, "the dead stub left the chain");
+    assert_eq!(
+        (process.heap.mso_head, process.heap.mso_old_head),
+        (0, 0),
+        "the dead stub left the chains"
+    );
 }
 
 /// A resource the process still holds is not dead: the collection keeps its
@@ -612,7 +616,8 @@ fn a_resource_the_process_still_holds_survives_the_collection_undisturbed() {
 
     assert_eq!(scheduler.collections.len(), 1);
     assert!(scheduler.destructors.is_empty());
-    assert_ne!(process.heap.mso_head, 0, "the live stub stays on the chain");
+    assert_ne!(process.heap.mso_old_head, 0, "the live stub stays on the old chain");
+    assert_eq!(process.heap.mso_head, 0);
     assert_eq!(process.dtors_dispatched, 0);
 }
 

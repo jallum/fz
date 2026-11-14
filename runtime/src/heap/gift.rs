@@ -10,9 +10,10 @@
 //! tip back. The copy allocates exactly the measured bytes, so it cannot run
 //! past the block; `end_gift` refuses a window whose fill is not the
 //! measurement. The receiver later
-//! calls `graft` and owns the segment's block and off-heap stubs as if it had
-//! allocated them. Its next Cheney pass treats the grafted block as
-//! from-space and copies the live data out.
+//! calls `graft` and owns the segment's block and off-heap stubs as if a
+//! collection had kept them: they are old. A gift is packed, and references
+//! only itself and literals, so nothing in it points at the receiver's young
+//! data. Only a major collection copies the live data out of it.
 //!
 //! No process ever writes into another process's live heap: the sender only
 //! writes into a block that is not yet anyone's, and the receiver only moves
@@ -154,21 +155,27 @@ impl Heap {
         }
     }
 
-    /// Take ownership of a segment: its block joins this heap's parked blocks
-    /// as from-space, its mso prefix is spliced ahead of this heap's chain.
+    /// Take ownership of a segment: its block joins this heap's old blocks, its
+    /// mso prefix is spliced ahead of this heap's old chain.
     /// The gift is packed and fully live, like the heap after a collection, so
     /// its fill raises `live_baseline` rather than counting as allocation.
     pub fn graft(&mut self, mut segment: GiftSegment) {
         if let Some(block) = segment.block.take() {
             self.live_baseline += block.fill();
-            self.blocks.push(block);
+            self.old_blocks.push(block);
         }
         if segment.mso_head != 0 {
-            mso_set_next(segment.oldest_mso, self.mso_head);
-            self.mso_head = segment.mso_head;
+            mso_set_next(segment.oldest_mso, self.mso_old_head);
+            self.mso_old_head = segment.mso_head;
             segment.mso_head = 0;
         }
-        self.alloc_count += segment.objects;
+        self.old_objects += segment.objects;
+    }
+
+    /// Whether `begin_gift` has set the tip aside and `end_gift` has not yet cut
+    /// the segment.
+    pub(super) fn gift_window_is_open(&self) -> bool {
+        self.gift.is_some()
     }
 
     /// Make `bits` the head of the mso chain and return the previous head,

@@ -11,7 +11,7 @@ use super::ref_io::{
     write_any_value_to_storage,
 };
 use super::schema::{Schema, SchemaRegistry};
-use super::stats::GcStats;
+use super::stats::{GcStats, Generation};
 use super::{Heap, HeapAllocKind, HeapAllocStats, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MapDestinationKind,
@@ -34,6 +34,12 @@ use std::mem::size_of;
 use std::ptr::{copy_nonoverlapping, read, write, write_bytes};
 use std::rc::Rc;
 use std::slice::from_raw_parts;
+
+/// A major collection runs once the old bytes exceed this multiple of what the
+/// last major collection left. A larger multiple copies the old generation less
+/// often and lets more dead old data stay in memory: up to this multiple minus
+/// one times the live old bytes. Two holds at most as much dead data as live.
+pub(super) const MAJOR_GROWTH_FACTOR: usize = 2;
 
 /// Map entry lists up to this length are normalized without a heap vector.
 /// It is the longest the standard stable sort orders without allocating.
@@ -106,37 +112,49 @@ impl Heap {
             block_end,
             block_size,
             live_baseline: 0,
-            blocks: Vec::new(),
+            old_after_last_major: 0,
+            last_copied_bytes: 0,
+            young_blocks: Vec::new(),
+            old_blocks: Vec::new(),
             gift: None,
             node,
             schemas,
             struct_maps: Default::default(),
             gc_run_count: 0,
             alloc_count: 0,
+            old_objects: 0,
             alloc_stats: HeapAllocStats::default(),
             mso_head: 0,
+            mso_old_head: 0,
             pending_dtors: VecDeque::new(),
         }
     }
 
-    /// Whether a collection is due: the bytes allocated since the heap was
-    /// last known to be all live have reached the larger of that live
-    /// baseline and half the smallest tip. A collection sets the baseline to
-    /// its survivors and a graft raises it by the gift's fill, so only the
-    /// heap's own allocation counts, and a heap that holds N live bytes
-    /// collects after allocating N more. A pure function of the heap's
-    /// state, so a collection that reclaims the bytes answers the question by
-    /// itself.
+    /// Whether a collection is due: the young bytes, those allocated since
+    /// the last collection, have reached the larger of the old bytes and half
+    /// the smallest tip. A collection sets the old bytes to what it keeps and a
+    /// graft raises them by the gift's fill, so only the heap's own allocation
+    /// counts, and a heap that holds N live bytes collects after allocating N
+    /// more. A pure function of the heap's state, so a collection that
+    /// reclaims the bytes answers the question by itself.
     pub fn should_gc(&self) -> bool {
-        let allocated_since = self.bytes_used().saturating_sub(self.live_baseline);
-        allocated_since >= self.live_baseline.max(SIZE_TABLE[0] / 2)
+        self.young_bytes() >= self.young_budget().max(SIZE_TABLE[0] / 2)
+    }
+
+    /// The young bytes the heap allocates before a collection is due: as many
+    /// as it holds old, and never more than the largest pooled block. A larger
+    /// young generation would be a block the system allocator makes and frees
+    /// at every collection, and it keeps nothing more from being copied: what
+    /// dies young is already dead well inside that many bytes.
+    fn young_budget(&self) -> usize {
+        self.live_baseline.min(SIZE_TABLE[SIZE_TABLE.len() - 1])
     }
 
     /// Bump-only allocator. Rounds `size` up to 16 and advances `bump_top`.
     /// On overflow, an object larger than the capacity one step above the tip
-    /// is placed alone in a block sized for it, parked on `blocks` with the tip
+    /// is placed alone in a block sized for it, parked on `young_blocks` with the tip
     /// unchanged; any other object abandons the tip for a fresh tip one capacity
-    /// step up. The next park-time Cheney copies what is live out of the
+    /// step up. The next collection copies what is live out of the
     /// parked blocks and releases them.
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         self.alloc_kind(HeapAllocKind::Other, size)
@@ -178,7 +196,7 @@ impl Heap {
     }
 
     /// Place a huge object at the start of a block sized for it and park the
-    /// block on `blocks`, full. The tip is untouched, so the allocations after
+    /// block on `young_blocks`, full. The tip is untouched, so the allocations after
     /// it keep filling the block they were filling.
     ///
     /// A gift window never reaches this: its copy allocates exactly the
@@ -190,7 +208,7 @@ impl Heap {
         );
         let capacity = pick_block_capacity(size);
         let start = pool_alloc(capacity);
-        self.blocks.push(Block {
+        self.young_blocks.push(Block {
             start,
             top: unsafe { start.add(size) },
             capacity,
@@ -202,7 +220,7 @@ impl Heap {
     /// Park the tip and install a fresh tip one capacity step above it.
     fn climb_tip(&mut self) {
         let capacity = next_block_capacity(self.block_size);
-        self.blocks.push(self.current_block());
+        self.young_blocks.push(self.current_block());
         let start = pool_alloc(capacity);
         self.install_block(Block {
             start,
@@ -569,6 +587,7 @@ impl Heap {
     /// its next free slot, an update the slot already holding `key`. False
     /// when an update has no such key, and nothing is stored.
     unsafe fn entries_destination_put(&mut self, dest: *mut u8, key: AnyValue, value: AnyValue) -> bool {
+        self.assert_written_object_is_young(dest);
         let (count, filled, kind) = unsafe { map_destination_state(dest) };
         let slot = match kind {
             MapDestinationKind::Build => {
@@ -889,6 +908,7 @@ impl Heap {
     /// `closure_addr`, and `idx` is an allocated capture slot. `value` must be a
     /// published immutable finite acyclic term with no path to this closure.
     pub unsafe fn write_closure_capture_value(&mut self, closure_addr: *mut u8, idx: usize, value: AnyValue) {
+        self.assert_written_object_is_young(closure_addr);
         unsafe { closure_capture_set(closure_addr, idx, value) };
     }
 
@@ -903,6 +923,7 @@ impl Heap {
         value: AnyValueRef,
     ) -> Result<(), AnyValueRefError> {
         let closure = closure.closure_addr()?;
+        self.assert_written_object_is_young(closure);
         unsafe { closure_capture_set(closure, idx, AnyValue::from_ref(value)?) };
         Ok(())
     }
@@ -941,6 +962,7 @@ impl Heap {
         kind_offset: usize,
         value: AnyValueRef,
     ) -> Result<(), AnyValueRefError> {
+        self.assert_written_object_is_young(object);
         let raw = value.storage_raw()?;
         self.share_list_spine(value)?;
         unsafe {
@@ -1026,6 +1048,7 @@ impl Heap {
         self.publish_contained_parts(head_raw, head_kind);
         let cons = unsafe { &mut *(addr as *mut ListCons) };
         if may_rewrite && cons.rewrite_if_unaliased(head_raw, head_kind, tail_bits) {
+            self.assert_written_object_is_young(addr);
             return Ok(list);
         }
         let fresh = self.alloc_list_cons_storage(head_raw, head_kind, tail_bits);
@@ -1123,54 +1146,97 @@ impl Heap {
         self.schemas.clone()
     }
 
-    /// Total allocations made on this heap (since last GC). Each Cheney
-    /// pass resets this to the surviving-object count after the copy.
+    /// Objects on this heap: those a collection kept or a gift brought, and
+    /// those allocated since. A collection counts what it copied.
     pub fn live_count(&self) -> usize {
-        self.alloc_count as usize
+        (self.old_objects + self.alloc_count) as usize
     }
 
-    /// Bytes written into the heap since the last collection, which is also
-    /// the most a collection can copy: the tip's fill plus every parked
-    /// block's fill. Blocks count by fill, never by capacity: a gift's block
-    /// is mostly empty, and an abandoned block's tail was never written.
+    /// Bytes written into the heap, old and young. Blocks count by fill, never
+    /// by capacity: a gift's block is mostly empty, and an abandoned block's
+    /// tail was never written.
     pub fn bytes_used(&self) -> usize {
-        self.current_block().fill() + self.blocks.iter().map(Block::fill).sum::<usize>()
+        self.live_baseline + self.young_bytes()
+    }
+
+    /// A write into an object that already exists is sound only while the
+    /// object is young. A minor collection does not look inside old objects, so
+    /// an old object must never come to hold a pointer to a young one. Checked
+    /// in debug builds.
+    #[inline]
+    pub(super) fn assert_written_object_is_young(&self, object: *mut u8) {
+        debug_assert!(
+            super::ref_io::ptr_in_ranges(object, self.young_ranges()),
+            "a write into an object a collection has already kept"
+        );
+    }
+
+    /// Bytes written since the last collection, which is also the most a minor
+    /// collection can copy: the tip's fill plus every young parked block's fill.
+    pub fn young_bytes(&self) -> usize {
+        self.current_block().fill() + self.young_blocks.iter().map(Block::fill).sum::<usize>()
     }
 
     /// The address range of the tip, of the tip set aside by an open gift
-    /// window, and of every parked block.
-    pub(super) fn block_ranges(&self) -> impl Iterator<Item = (*mut u8, *mut u8)> + '_ {
+    /// window, and of every young parked block.
+    pub(super) fn young_ranges(&self) -> impl Iterator<Item = (*mut u8, *mut u8)> + '_ {
         let saved_tip = self.gift.as_ref().map(|window| window.saved_tip);
         std::iter::once((self.block_start, self.block_end))
             .chain(saved_tip.map(|block| (block.start, block.end())))
-            .chain(self.blocks.iter().map(|block| (block.start, block.end())))
+            .chain(self.young_blocks.iter().map(|block| (block.start, block.end())))
+    }
+
+    /// The address range of every old block.
+    pub(super) fn old_ranges(&self) -> impl Iterator<Item = (*mut u8, *mut u8)> + '_ {
+        self.old_blocks.iter().map(|block| (block.start, block.end()))
+    }
+
+    /// The address range of every block the heap owns.
+    pub(super) fn block_ranges(&self) -> impl Iterator<Item = (*mut u8, *mut u8)> + '_ {
+        self.young_ranges().chain(self.old_ranges())
     }
 
     pub fn bytes_remaining_in_block(&self) -> usize {
         unsafe { self.block_end.offset_from(self.bump_top) as usize }
     }
 
+    /// The generation the next collection takes: major once the old bytes have
+    /// outgrown what the last major collection left by `MAJOR_GROWTH_FACTOR`,
+    /// minor otherwise. A heap with no major collection yet is measured against
+    /// half the smallest tip, so a heap with nothing old is always minor.
+    pub(super) fn next_generation(&self) -> Generation {
+        let reference = self.old_after_last_major.max(SIZE_TABLE[0] / 2);
+        if self.live_baseline > MAJOR_GROWTH_FACTOR * reference {
+            Generation::Major
+        } else {
+            Generation::Minor
+        }
+    }
+
     /// The one collection entry: a Cheney copy of everything `roots` reaches
-    /// into a fresh tip, after which the old blocks are released.
+    /// in the from-space into fresh blocks, which become old, after which the
+    /// from-space is released. A minor collection's from-space is the young
+    /// blocks; a major collection's is every block (`next_generation`).
     ///
-    /// The fresh tip's capacity is a guess, the live baseline (the smallest
-    /// tip on an empty baseline). Every copy is placed by the ordinary bump
+    /// The fresh tip's capacity is a guess: the bytes a major collection holds
+    /// as old, the bytes the last collection copied for a minor one, at least
+    /// the smallest tip. Every copy is placed by the ordinary bump
     /// path, so a copy that outgrows the guess parks the tip and climbs the
     /// table, and a huge object parks alone; a wrong guess costs a block,
     /// never correctness. The scan reads a worklist of copied objects, not an
     /// address, so to-space needs no contiguity.
     ///
     /// Every slot of `roots` holds its forwarded value on return. A slot
-    /// that is not a pointer into this heap's from-space (a scalar immediate,
-    /// the empty list, a static closure or halt continuation) is
-    /// left as it was; a scalar box in from-space is copied without tracing
-    /// its payload.
+    /// that is not a pointer into the from-space (a scalar immediate, the empty
+    /// list, a static closure or halt continuation, a pointer into an old block
+    /// a minor collection leaves) is left as it was; a scalar box in the
+    /// from-space is copied without tracing its payload.
     ///
     /// The caller passes every reference it holds into this heap. For a
     /// `Process` that is `Process::collect`, which assembles the runnable
     /// closure, the park record, the mailbox and the caller's transient
     /// values into one slice. Gifts still waiting in a delivery in-queue are
-    /// not roots: their blocks join the from-space only when grafted, and
+    /// not roots: their blocks join the heap, old, only when grafted, and
     /// every reference inside a gift points into its own segment.
     ///
     /// The heap must not have a gift window open.
@@ -1179,28 +1245,30 @@ impl Heap {
             self.gift.is_none(),
             "a gift window is open; the heap collects only between end_gift and the next begin_gift"
         );
-        // From-space is every block the heap owns before to-space is installed.
-        let from_space = FromSpace::of(self);
-        let from_block_count = self.block_ranges().count();
-        let from_space_capacity_bytes: usize = self
-            .block_ranges()
-            .map(|(start, end)| unsafe { end.offset_from(start) as usize })
-            .sum();
-
-        let from_tip = self.current_block();
-        let from_blocks = std::mem::take(&mut self.blocks);
-        let to_capacity = pick_block_capacity(self.live_baseline.max(SIZE_TABLE[0]));
+        debug_assert_eq!(
+            self.live_baseline,
+            self.old_blocks.iter().map(Block::fill).sum::<usize>(),
+            "the old bytes are the fill of the old blocks"
+        );
+        let generation = self.next_generation();
+        let from_space = FromSpace::of(self, generation);
+        let to_capacity_guess = match generation {
+            Generation::Major => self.live_baseline,
+            Generation::Minor => self.last_copied_bytes,
+        };
+        let from_blocks = self.take_from_space(generation);
+        let to_capacity = pick_block_capacity(to_capacity_guess.max(SIZE_TABLE[0]));
         let to_start = pool_alloc(to_capacity);
         self.install_block(Block {
             start: to_start,
             top: to_start,
             capacity: to_capacity,
         });
-        self.alloc_count = 0;
         let mut copied_objects: Vec<CopiedObject> = Vec::new();
         let mut stats = GcStats {
-            from_space_capacity_bytes: from_space_capacity_bytes as u64,
-            blocks_released: from_block_count as u64,
+            generation,
+            from_space_capacity_bytes: from_blocks.iter().map(|block| block.capacity as u64).sum(),
+            blocks_released: from_blocks.len() as u64,
             ..GcStats::default()
         };
         let schemas_handle = self.schemas.clone();
@@ -1230,8 +1298,10 @@ impl Heap {
         // A resource stub nothing reached is dead, but its destructor closure
         // still has to run. Forward each such closure, with everything it
         // captures, so it outlives the from-space. A stub a closure captures
-        // is reached by this and survives until a later collection.
-        let unreached = mso_unreached_closures(self);
+        // is reached by this and survives until a later collection. Only the
+        // stubs of the from-space can be found dead: a minor collection looks
+        // at the young chain alone.
+        let unreached = mso_unreached_closures(self, generation);
         let mut dead_closures: HashMap<usize, AnyValue> = HashMap::with_capacity(unreached.len());
         for (stub, closure) in unreached {
             let forwarded = forward_heap_value(closure, &from_space, self, &schemas, &mut copied_objects, &mut stats);
@@ -1247,40 +1317,89 @@ impl Heap {
         );
         drop(schemas);
 
-        // The MSO sweep walks the intrusive chain: survivors are rewritten to
-        // their to-space copies and dead entries drop their off-heap
-        // reference. It must run before the from-space is released because
-        // it reads from-space stubs (their `mso_next` link, which Cheney never
-        // overwrites).
-        let dead = mso_sweep(self, |stub| {
+        // The MSO sweep walks the intrusive chains of the from-space: survivors
+        // are rewritten to their to-space copies and move to the old chain, and
+        // dead entries drop their off-heap reference. It must run before the
+        // from-space is released because it reads from-space stubs (their
+        // `mso_next` link, which Cheney never overwrites).
+        let dead = mso_sweep(self, generation, |stub| {
             *dead_closures
                 .get(&(stub.as_raw() as usize))
                 .expect("a dead unclaimed resource stub had its closure forwarded")
         });
 
-        // Release old from-space (current + parked blocks): pooled capacities
-        // return to the pool (§6.6), exact blocks to the system allocator.
-        from_tip.release();
+        self.retire_to_space_as_old();
+        let kept_objects = copied_objects.len() as u64;
+        match generation {
+            Generation::Major => {
+                self.live_baseline = stats.copied_bytes as usize;
+                self.old_objects = kept_objects;
+                self.old_after_last_major = self.live_baseline;
+            }
+            Generation::Minor => {
+                self.live_baseline += stats.copied_bytes as usize;
+                self.old_objects += kept_objects;
+            }
+        }
+        self.last_copied_bytes = stats.copied_bytes as usize;
+        self.install_fresh_tip();
+        self.gc_run_count += 1;
+        stats.live_objects = self.old_objects;
+        stats.live_bytes = self.live_baseline as u64;
+        stats.blocks_after = self.old_blocks.len() as u64;
+
+        // Release the from-space: pooled capacities return to the pool (§6.6),
+        // exact blocks to the system allocator. The fresh tip is installed
+        // first, so it never lands on an address the from-space is about to
+        // give up.
         for block in from_blocks {
             block.release();
         }
-
-        let live_count = copied_objects.len() as u64;
-        self.alloc_count = live_count;
-        self.gc_run_count += 1;
-        self.live_baseline = stats.copied_bytes as usize;
-        stats.live_objects = live_count;
-        stats.live_bytes = self.live_baseline as u64;
-        stats.blocks_after = 1 + self.blocks.len() as u64;
         self.queue_dead_resources(dead);
         stats
     }
 
-    /// Release every stub on the MSO chain as a process exit does: nothing is
+    /// Detach the blocks a collection of `generation` copies out of: the tip and
+    /// the young parked blocks, and for a major collection the old blocks too.
+    fn take_from_space(&mut self, generation: Generation) -> Vec<Block> {
+        let mut blocks = std::mem::take(&mut self.young_blocks);
+        blocks.push(self.current_block());
+        if generation == Generation::Major {
+            blocks.append(&mut self.old_blocks);
+        }
+        blocks
+    }
+
+    /// Make the blocks a collection copied into old: its tip, unless it holds
+    /// nothing, and the blocks the copy parked.
+    fn retire_to_space_as_old(&mut self) {
+        let tip = self.current_block();
+        if tip.fill() == 0 {
+            tip.release();
+        } else {
+            self.old_blocks.push(tip);
+        }
+        self.old_blocks.append(&mut self.young_blocks);
+    }
+
+    /// Install the empty tip allocation continues in after a collection,
+    /// sized to the old bytes: the heap collects again after allocating as many.
+    fn install_fresh_tip(&mut self) {
+        let capacity = pick_block_capacity(self.young_budget().max(SIZE_TABLE[0]));
+        let start = pool_alloc(capacity);
+        self.install_block(Block {
+            start,
+            top: start,
+            capacity,
+        });
+        self.alloc_count = 0;
+    }
+
+    /// Release every stub on the MSO chains as a process exit does: nothing is
     /// live, so every resource whose last reference this heap held queues its
     /// destructor on `pending_dtors`. Allocates no to-space.
     pub fn release_resources_at_exit(&mut self) {
-        let dead = mso_sweep(self, |stub| stub.closure_value());
+        let dead = mso_sweep(self, Generation::Major, |stub| stub.closure_value());
         self.queue_dead_resources(dead);
     }
 
@@ -1338,7 +1457,7 @@ impl Drop for Heap {
     fn drop(&mut self) {
         // release every SharedBin held via the intrusive MSO
         // chain. Order matters: must run before pool_free below, since
-        // mso_drop_all walks ProcBin payloads in the from-space blocks.
+        // mso_drop_all walks ProcBin payloads in the heap's blocks.
         mso_drop_all(self);
         // Release blocks: pooled capacities go back to the pool (§6.6) so the
         // next spawn pulls from it with no per-spawn malloc; exact blocks go
@@ -1348,7 +1467,7 @@ impl Drop for Heap {
         if let Some(window) = self.gift.take() {
             window.saved_tip.release();
         }
-        for block in self.blocks.drain(..) {
+        for block in self.young_blocks.drain(..).chain(self.old_blocks.drain(..)) {
             block.release();
         }
     }

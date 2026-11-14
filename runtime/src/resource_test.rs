@@ -1,6 +1,6 @@
 use super::*;
-use crate::any_value::heap_kind_from_tagged;
-use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
+use crate::any_value::{AnyValueRef, heap_kind_from_tagged};
+use crate::heap::{Generation, Heap, SIZE_TABLE, SchemaRegistry};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Barrier, atomic};
@@ -244,6 +244,63 @@ fn unrooted_resource_dies_in_gc_and_sweep_queues_its_closure_instead_of_firing_t
     drop(unsafe { Arc::from_raw(Arc::as_ptr(&drops)) });
 }
 
+fn destructor_closure(heap: &mut Heap) -> AnyValue {
+    let bits = heap.alloc_closure(crate::any_value::ClosureDenotationId::user(0), 0, 0, 0, 0x1234, &[]);
+    AnyValue::heap_ptr(
+        crate::any_value::closure_addr_from_tagged(bits).expect("closure addr"),
+        ValueKind::CLOSURE,
+    )
+}
+
+/// A dead resource's destructor is queued by the collection that examines its
+/// chain: a young one by the minor collection, an old one only by a major
+/// collection, which is when OTP's full sweep finds an old resource dead.
+#[test]
+fn a_dead_old_resource_queues_its_destructor_at_the_next_major_collection_and_a_young_one_at_a_minor() {
+    let (old_handle, old_drops) = observed_resource();
+    let (young_handle, young_drops) = observed_resource();
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let closure = destructor_closure(&mut heap);
+    let old = alloc_resource(&mut heap, old_handle, closure);
+    let mut roots = [AnyValueRef::from_raw_word(heap_object_word(old.as_raw(), ValueKind::RESOURCE)).expect("root")];
+    assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
+    assert!(heap.pending_dtors.is_empty());
+
+    let closure = destructor_closure(&mut heap);
+    alloc_resource(&mut heap, young_handle, closure);
+    let stats = heap.collect(&mut []);
+    assert_eq!(stats.generation, Generation::Minor);
+    assert_eq!(heap.pending_dtors.len(), 1, "the young resource's destructor is queued");
+
+    let mut cell = heap.alloc_list_cons_slot(AnyValue::int(0), crate::any_value::EMPTY_LIST);
+    for head in 1..100 {
+        cell = heap.alloc_list_cons_slot(AnyValue::int(head), cell);
+    }
+    let mut roots = [AnyValueRef::from_raw_word(cell).expect("list root")];
+    assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
+    assert_eq!(
+        heap.pending_dtors.len(),
+        1,
+        "a minor collection does not look at the old resource"
+    );
+
+    let stats = heap.collect(&mut roots);
+    assert_eq!(stats.generation, Generation::Major);
+    assert_eq!(
+        heap.pending_dtors.len(),
+        2,
+        "the major collection found the old resource dead"
+    );
+    assert_eq!(
+        (old_drops.load(Ordering::Relaxed), young_drops.load(Ordering::Relaxed)),
+        (0, 0),
+        "the closure is the destructor; the C destructor does not run"
+    );
+    for drops in [old_drops, young_drops] {
+        drop(unsafe { Arc::from_raw(Arc::as_ptr(&drops)) });
+    }
+}
+
 #[test]
 fn resource_forwarding_marker_through_gc() {
     let (handle, drops) = observed_resource();
@@ -256,7 +313,11 @@ fn resource_forwarding_marker_through_gc() {
     let to = resource_addr_from_tagged(root as u64).unwrap();
     assert_ne!(to, from);
     assert_eq!(unsafe { ResourceStub::from_raw(to).shared_raw() }, shared);
-    assert_eq!(heap.mso_head, heap_object_word(to as *const u8, ValueKind::RESOURCE));
+    assert_eq!(
+        heap.mso_old_head,
+        heap_object_word(to as *const u8, ValueKind::RESOURCE)
+    );
+    assert_eq!(heap.mso_head, 0);
     assert_eq!(drops.load(Ordering::Relaxed), 0);
     drop(heap);
     assert_eq!(drops.load(Ordering::Relaxed), 1);

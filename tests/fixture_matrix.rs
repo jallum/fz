@@ -3655,9 +3655,11 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     // The child yields on its reduction budget while it builds and sends the
     // 50000-element log. A yield collects once the child has allocated as many
     // bytes as it held live after its last collection, and a quantum allocates
-    // about 12.8 KB, so the child is collected at live sizes of 13024, 38624,
-    // 77024, 153824, 307424 and 614624 bytes, then at 800160 once the log is
-    // complete. The parent is collected once as it parks on its receive (608
+    // about 12.8 KB. Each collection copies what was allocated since the last
+    // one, except that a collection whose old bytes passed twice what the last
+    // major collection left is major and copies everything live: the child's
+    // collections copy 13024, 38624 (major), 38464, 76864, 307424 (major),
+    // 307264 and 440096 bytes. The parent is collected once as it parks on its receive (608
     // bytes: the values the parked receive holds, among them the heap-stats
     // maps the fixture binds, plus the closures its park record holds). The
     // gifts it grafts afterwards
@@ -3673,7 +3675,7 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     assert_eq!(events.len(), 8, "run: one gc event per collection");
     assert_eq!(
         events.iter().map(|e| e.copied_bytes).sum::<usize>(),
-        2_005_312,
+        1_222_368,
         "run: the bytes every collection copied"
     );
 
@@ -3877,8 +3879,10 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
 
     // The interpreter never yields, so it collects the parent once, at its
     // park for the announcement, with nothing live. The JIT yields while the
-    // parent builds the list and collects at live sizes that double until the
-    // list is complete (320128 bytes); neither path collects the child.
+    // parent builds the list; each collection copies what was allocated since
+    // the last one, except the second and the fifth, whose old bytes passed
+    // twice what the last major collection left: those are major and copy
+    // everything live. Neither path collects the child.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
     assert_eq!(
         collections_as_tuples(&events),
@@ -3891,10 +3895,10 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
         vec![
             (1, "yield", 12_992),
             (1, "yield", 38_592),
-            (1, "yield", 76_992),
-            (1, "yield", 153_792),
+            (1, "yield", 38_464),
+            (1, "yield", 76_864),
             (1, "yield", 307_392),
-            (1, "yield", 320_128),
+            (1, "yield", 304_096),
         ],
         "run: six yields while the parent builds the list"
     );

@@ -71,16 +71,44 @@ impl HeapAllocStats {
     }
 }
 
+/// Which blocks a collection took as from-space: the young blocks alone
+/// (minor), or every block the heap owned (major).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Generation {
+    #[default]
+    Minor,
+    Major,
+}
+
+impl Generation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Generation::Minor => "minor",
+            Generation::Major => "major",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GcStats {
+    pub generation: Generation,
+    /// Objects the collection copied: the survivors of its from-space.
     pub copied_objects: u64,
+    /// Bytes the collection copied.
     pub copied_bytes: u64,
+    /// Objects the heap holds once the collection finishes: what earlier
+    /// collections kept and what this one copied.
     pub live_objects: u64,
+    /// Bytes the heap holds once the collection finishes: what earlier
+    /// collections kept and what this one copied.
     pub live_bytes: u64,
+    /// Capacity of the from-space blocks.
     pub from_space_capacity_bytes: u64,
     /// Blocks of the from-space the collection released.
     pub blocks_released: u64,
-    /// Blocks the heap holds once the collection finishes: the tip and every parked to-space block.
+    /// Old blocks the heap holds once the collection finishes: every block
+    /// that holds data a collection kept or a gift brought. The fresh tip is
+    /// empty and is not counted.
     pub blocks_after: u64,
     pub root_heap_edges: u64,
     pub root_scalar_slots: u64,

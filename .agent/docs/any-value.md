@@ -286,10 +286,15 @@ heap object that is not there.
 
 The collector, deep copy and the debug formatter test this one bit: a tagged
 reference is left in place (collector) or shared (deep copy), an untagged one is
-a heap pointer in from-space. Debug builds keep the from-space range walk as a
-cross-check (`FromSpace::assert_classified`, `HeapView::assert_classified`): an
-untagged pointer must lie in from-space, a tagged one must not, and none may lie
-in to-space. Release builds never walk the from-space ranges.
+a heap pointer in from-space or, for a minor collection, in an old block it
+leaves as it is. The collector asks `FromSpace::moves`: untagged, and inside the
+from-space. A major collection's from-space is every block, so that is the
+literal bit alone; a minor collection's is the young blocks, tested against
+their few sorted ranges (`YoungRanges`, last hit first). Debug builds also keep
+the from-space range walk as a cross-check (`FromSpace::assert_classified`,
+`HeapView::assert_classified`): an untagged pointer must lie in from-space or in
+an old block a minor collection leaves, a tagged one must lie in no heap block,
+and none may lie in to-space. No allocation or mutator path tests an address.
 
 ## Container Storage
 
@@ -591,9 +596,11 @@ a marked tail. `ListCons::share_spine` stops at the first marked cell, so repeat
 publication visits only newly protected cells plus one check per Share edge.
 The bit setter and link are private; shared cells cannot relink, and GC relocates
 the same logical tail without changing this invariant. A collection marks every
-cell it keeps (`ListCons::keep_across_collection`, from `cheney_trace_list`), so
-a cell that has survived a collection is never rewritten in place and never
-comes to point at a value allocated after it.
+cell it keeps (`ListCons::keep_across_collection`, from `cheney_trace_list`), and
+a gift copy marks every cell it writes (`link_list_tail`), so a cell in an old
+block (one a collection kept, or one a graft brought) is never rewritten in place
+and never comes to point at a value allocated after it. A minor collection relies
+on this: it does not trace through old blocks.
 
 `ListRetention { source, permission }` belongs to the exact list construction.
 Identical raw head, kind, and tail retain the source even when shared or when
@@ -612,9 +619,11 @@ every internal field write, owns publication. No structural runtime scan is adde
 
 Cross-process send copies into storage the receiver will own: the sender
 copies into a gift window on its own heap (`sched::gift_copy`), and the receiver
-grafts the segment at its next dispatch. A singly copied list can remain clear;
-repeated forwarding hits and copied container fields protect receiver-side
-sharing. The sender's cells are not marked merely because a copy was sent. Self-send copies nothing and the runtime publishes nothing: the
+grafts the segment at its next dispatch. Every list cell the copy writes is
+shared from birth, because the grafted segment is old and an old cell is never
+rewritten in place; repeated forwarding hits and copied container fields protect
+receiver-side sharing the same way. The sender's own cells are not marked merely
+because a copy was sent. Self-send copies nothing and the runtime publishes nothing: the
 sender's own reference is pushed onto its mailbox (`sched::self_send`). The
 mailbox is then a second holder, and the compiler's call-site ownership rule is
 what protects it: `construct_call_ownership` (src/compiler2/jobs/body.rs) marks
@@ -624,7 +633,16 @@ remains one-way within a heap.
 
 ## GC: Roots, Edges, And Lifetime
 
-The process heap is a moving Cheney collector (`runtime/src/heap/gc/`). An
+The process heap is a moving, generational Cheney collector
+(`runtime/src/heap/gc/`). Blocks have an age: the tip and the blocks allocation
+has parked since the last collection are young; blocks a collection filled with
+survivors and blocks a graft brought are old. A minor collection copies the
+reachable objects of the young blocks into fresh blocks, which become old, and
+leaves old objects where they are; a major collection copies every reachable
+object (`Heap::next_generation` chooses). Nothing old points at anything young:
+data is immutable, and a list cell in an old block is shared, so none is
+rewritten in place. An
+`AnyValueRef` can point into it, so a bare ref is a *temporary*: it must not
 `AnyValueRef` can point into it, so a bare ref is a *temporary*: it must not
 survive an allocation, a yield, a GC, or any runtime call that may allocate or
 yield, unless it has been stored in a traced root.

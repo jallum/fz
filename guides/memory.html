@@ -16,7 +16,7 @@
   <li><a href="#anyvalue">1. Values — any value refs and container storage</a></li>
   <li><a href="#heap">2. The process heap — bump allocation</a></li>
   <li><a href="#pressure">3. Reductions, collection timing, and boundary GC</a></li>
-  <li><a href="#gc-parktime">4. Park-time GC — Cheney with explicit roots</a></li>
+  <li><a href="#gc-parktime">4. Collection — Cheney with explicit roots, minor and major</a></li>
   <li><a href="#gc-midflight">5. Mid-flight GC — collecting a running loop</a></li>
   <li><a href="#roots">6. GC roots and the MSO sweep</a></li>
   <li><a href="#scheduler">7. Scheduler dispatch</a></li>
@@ -24,7 +24,7 @@
   <li><a href="#shared-zone">9. The shared zone — refcounted off-heap binaries</a></li>
   <li><a href="#return-demand">10. Return-demand destination planning</a></li>
   <li><a href="#alloc-stats">11. Heap allocation stats</a></li>
-  <li><a href="#future">12. What comes next — generational GC</a></li>
+  <li><a href="#future">12. Generational collection</a></li>
 </ul>
 </div>
 
@@ -443,7 +443,9 @@ objects whose real bytes live elsewhere.</p>
 The MSO chain is a "things to clean up later" list. Every time the heap
 makes a ProcBin or Resource, it adds the stub to the chain. After each GC,
 we walk the chain to figure out which stubs survived and which need to release
-their off-heap payload. See
+their off-heap payload. The chain is split by age: <code>mso_head</code> holds
+stubs made since the last collection and <code>mso_old_head</code> holds the
+ones a collection already kept, plus the ones that arrived in gifts. See
 <a href="#shared-zone">§9</a> for the details.
 </div>
 
@@ -460,15 +462,18 @@ does not force a yield.</p>
 
 <p>Every <code>Heap::alloc()</code> call is a bump and nothing else. Whether a
 collection is due is a question about the heap's state, answered by
-<code>Heap::should_gc</code> when the scheduler asks at a boundary: the tip's
-fill plus the fill of every parked block, less the heap's
-<code>live_baseline</code>, against the larger of that baseline and half the
-smallest tip. The baseline is the bytes known to be live: a collection sets it
-to the bytes that survived, <code>graft</code> raises it by the gift's fill, and
-allocation leaves it alone. A heap holding N live bytes is therefore due a
-collection once it has allocated N more. A collection that reclaims those bytes
-answers the question by itself; nothing is cleared. If an allocation no longer fits in the current
-block, the heap parks it in <code>blocks</code> for the next Cheney pass and
+<code>Heap::should_gc</code> when the scheduler asks at a boundary: the fill of
+the young blocks (the tip and every parked block) against the heap's
+<code>live_baseline</code>, held between half the smallest tip and the largest
+pooled block. The baseline is the
+fill of the old blocks: a collection sets it to the bytes that survived,
+<code>graft</code> raises it by the gift's fill, and allocation leaves it alone.
+A heap holding N old bytes is therefore due a collection once it has allocated
+N more, and never more than the largest pooled block (about 7.4 MB): a large
+heap keeps its young data in one pooled block, so a collection neither obtains
+nor returns a large block. A collection that reclaims those bytes answers the question by itself;
+nothing is cleared. If an allocation no longer fits in the current
+block, the heap parks it in <code>young_blocks</code> for the next Cheney pass and
 installs a tip one step up, unless the object is larger than that step: then
 the object gets a parked block of its own and the tip stays.</p>
 
@@ -476,13 +481,13 @@ the object gets a parked block of its own and the tip stays.</p>
   bump_top += size
   if bump_top would cross block_end {
       if size &gt; next_block_capacity(block_size) {
-          blocks.push(block sized for the object)   // tip unchanged
+          young_blocks.push(block sized for the object)   // tip unchanged
       } else {
-          blocks.push(tip); tip = block one step up
+          young_blocks.push(tip); tip = block one step up
       }
   }
 
-  should_gc = bytes_used - live_baseline >= max(live_baseline, SIZE_TABLE[0] / 2)
+  should_gc = young_bytes >= max(live_baseline, SIZE_TABLE[0] / 2)
 </pre>
 
 <p>Compiled yield telemetry still samples the margin before and after the
@@ -524,16 +529,26 @@ mutual recursion (<code>f → g → f</code>) is covered automatically.</p>
 makes a process yield: a heap that is due for collection waits for the
 process to reach a boundary.</p>
 
-<!-- ─────────────────────────────── 4. PARK-TIME GC ─────────────────────────────── -->
-<h2 id="gc-parktime">4. Park-time GC — Cheney with explicit roots</h2>
+<!-- ─────────────────────────────── 4. COLLECTION ─────────────────────────────── -->
+<h2 id="gc-parktime">4. Collection — Cheney with explicit roots, minor and major</h2>
 
-<p>When a process parks on <code>receive</code>, all live data is reachable
+<p>When the scheduler finds a heap due at a boundary, all live data is reachable
 from the roots the process holds: mailbox values, the park record's outcome
 closure templates, after body and pinned values, and the runnable continuation
 closure. No stack scan, no register enumeration.</p>
 
+<p>Blocks have an age. The tip, the parked tips and huge blocks are
+<strong>young</strong>. The blocks a collection filled with survivors, and the
+blocks of a grafted gift, are <strong>old</strong>. A <strong>minor</strong>
+collection takes only the young blocks as from-space; old blocks stay where they
+are and are not traced through, because nothing old points at anything young. A
+<strong>major</strong> collection takes every block. A heap goes major when its
+old bytes exceed twice what the last major left (and never while it has nothing
+old); otherwise it is minor. The <code>fz.runtime.gc</code> event reports which
+it was in <code>generation</code>.</p>
+
 <pre>
-  from-space (current block + parked blocks)
+  from-space (a minor takes the young blocks; a major takes all)
   ┌────────────────────────────────┐
   │ [dead]  [dead]  <span class="live">[live]</span>  [dead]  │
   │      scheduler roots point ──►│──►<span class="live">closures + AnyValueRefs</span>
@@ -556,8 +571,8 @@ ride.
 </div>
 
 <p>The accepted consequence: a receiver that consumed a lot of mail keeps the
-dead blocks, once the mail is dropped, until its own allocation reaches the
-baseline the gifts raised. A process that receives a large gift, drops it and
+dead blocks, once the mail is dropped, until a major collection takes them; old
+data that dies is reclaimed only then. A process that receives a large gift, drops it and
 then goes quiet holds that memory; shrinking an idle heap is a separate policy,
 for which the census would have to show a need.</p>
 
@@ -565,7 +580,7 @@ for which the census would have to show a need.</p>
 
 <p>A copy is placed by the same bump path as an allocation. The collector
 installs a fresh tip and every copied object goes through
-<code>Heap::bump</code>: when the tip is full it is parked on <code>blocks</code>
+<code>Heap::bump</code>: when the tip is full it is parked on <code>young_blocks</code>
 and a tip one capacity step up is installed, and an object larger than that step
 is parked alone in a block of its own with the tip untouched. The scan pops a
 worklist of copied objects rather than walking an address, so to-space needs no
@@ -573,18 +588,18 @@ contiguity: it is the new tip plus the parked blocks.</p>
 
 <p>The tip's capacity has one job, how far the bump pointer runs before a block
 is parked, and one rule, climb the table on overflow. The fresh tip's capacity
-is only a starting point: <code>pick_block_capacity(live_baseline)</code>, the
-last survivors plus any grafted gifts (the smallest tip when the baseline is
-empty). A heap whose live set is steady collects into one block; a guess that
-is too small costs the extra blocks the copy parks, and the next collection's
-guess is the bytes this one copied. A gift is one parked block like any other,
-so its fill is part of the bytes in use. After the pass the old tip and every
-parked block go back to the pool, or to the system allocator when exact, with
-the rest of from-space.</p>
+is only a starting point: a major starts from <code>live_baseline</code>, a minor from the
+bytes the previous pass copied, both no smaller than the smallest tip. A guess
+that is too small costs the extra blocks the copy parks. The blocks the pass
+filled become old; an empty to-space tip is released. The heap then installs a
+fresh young tip sized for <code>live_baseline</code> before the from-space
+blocks go back to the pool, or to the system allocator when exact.</p>
 
-<p>After the BFS scan, <code>live_baseline</code> is the sum of the sizes of the
-objects copied. That feeds the next GC's trigger and tip guess, and is the
-<code>live_bytes</code> of the pass's <code>GcStats</code>.</p>
+<p>After a major scan, <code>live_baseline</code> is the sum of the sizes of the
+objects copied; after a minor it is the old bytes kept plus the bytes copied.
+That feeds the next GC's trigger. <code>copied_bytes</code> is what this pass
+moved and <code>live_bytes</code> is the new baseline, so after a minor it still
+counts old data that has died until the next major.</p>
 
 <p>Each copied from-space object gets an in-band forwarding marker written into
 its marker word: <code>to_space_address | 1</code>. Any other
@@ -681,7 +696,8 @@ transient roots and writes the forwarded refs back.</p>
 <h3>MSO sweep — keeping shared-zone refcounts honest</h3>
 
 <p>After Cheney's BFS scan completes and before from-space is freed, the GC
-walks the heap's MSO chain once. Each entry is a ProcBin or Resource stub that
+walks the MSO chains of the from-space once: a minor walks only the young
+chain, a major walks both. Each entry is a ProcBin or Resource stub that
 <em>was</em> in from-space. The forwarding marker Cheney writes into word 0 of
 every copied stub is the entire liveness signal — no separate
 bookkeeping. One function, <code>procbin::mso_sweep</code>, decides every stub,
@@ -689,7 +705,7 @@ after a collection and when a process exits (an exit is not collected; it is
 the same walk with nothing live and no to-space):</p>
 
 <pre>
-  cur = heap.mso_head
+  cur = heap.mso_head              <span class="note">// a major also walks mso_old_head</span>
   new_head = null
   while cur != null:
       kind = kind_of(cur)             <span class="note">// ProcBin or Resource from the link's high bits</span>
@@ -703,11 +719,15 @@ the same walk with nothing live and no to-space):</p>
           release_payload(kind, cur)             <span class="note">// dead MSO stub; drop its ref;</span>
                                                 <span class="note">// a Resource's last ref queues (closure, payload)</span>
       cur = next
-  heap.mso_head = new_head
+  heap.mso_head = null
+  heap.mso_old_head = new_head     <span class="note">// survivors are old</span>
 </pre>
 
-<p>The sweep is O(number of MSO stubs on this heap), not O(heap size). This
-pass runs in every collection.</p>
+<p>A minor sweep is O(young stubs); a major sweep is O(all stubs on this heap),
+not O(heap size). A gift's MSO prefix is spliced onto <code>mso_old_head</code>
+when it is grafted, so a minor never revisits it. A dead old Resource therefore
+queues its destructor at the next major collection, and a young one at the next
+minor.</p>
 
 <p>A dead Resource's destructor is fz code, so it never runs inside the sweep.
 Its closure lives in the from-space that is about to be released, so before the
@@ -717,7 +737,7 @@ stub, along with whatever the closure captures. The sweep then queues
 resource whose last reference it dropped. A stub that a forwarded closure
 captures is reached by that, so it survives until a later collection. A process
 that halts takes the same sweep without a collection:
-<code>Heap::release_resources_at_exit</code> decides every stub on the chain
+<code>Heap::release_resources_at_exit</code> decides every stub on both chains
 with nothing live and copies nothing. <code>Heap::drop</code> releases
 only what a process still holds when the program tears it down without having
 exited, such as one parked on a receive; no destructor closure runs for those.</p>
@@ -1062,18 +1082,18 @@ stats for lowering facts.
 </div>
 
 <!-- ─────────────────────────────── 12. FUTURE ─────────────────────────────── -->
-<h2 id="future">12. What comes next — generational GC</h2>
+<h2 id="future">12. Generational collection</h2>
 
-<p>The most expensive property of flat Cheney GC: it re-copies the entire
-live set on every cycle. A loop that builds a list of 1000 elements copies
-100 + 200 + … + 1000 = O(N²) bytes total if GC fires every 100 allocations.</p>
+<p>Flat Cheney collection re-copies the entire live set on every cycle: a loop
+that builds a list of 1000 elements would copy 100 + 200 + … + 1000 bytes,
+O(N²) in total, if GC fired every 100 allocations. The heap avoids that by
+splitting into <em>young</em> and <em>old</em> blocks (see
+<a href="#gc-parktime">§4</a>). A minor collection copies only the young
+blocks; the list tail, allocated many cycles ago, is not re-copied. Total
+copy work for a heap that keeps a thin slice of what it allocates is
+proportional to what it keeps.</p>
 
-<p>Generational GC fixes this by splitting the heap into <em>young</em> and
-<em>old</em> generations. A minor GC only collects new objects; old objects
-stay put. The list tail — allocated many GC cycles ago — is never re-copied
-in a minor collection. Total work: O(N).</p>
-
-<h3>Why fz gets generational GC almost for free</h3>
+<h3>Why fz needs no write barrier</h3>
 
 <p>Generational GC normally requires <strong>write barriers</strong>: if an
 old object is mutated to point at a new object, the GC must record it
@@ -1083,25 +1103,18 @@ pointer write needs an extra store — significant overhead.</p>
 <div class="box green">
 fz data is immutable, with one exception the runtime controls: a list cell
 nobody else holds may be reused in place when a list is rebuilt. A collection
-marks every list cell it keeps as shared, and a shared cell is never reused.
-So an object that has survived a collection never gains a reference to a newer
-one. <strong>No write barriers needed.</strong>
+marks every list cell it keeps as shared, and a gift's list cells are marked
+shared when they are copied into it, so a shared cell is never reused. An old
+object therefore never gains a reference to a younger one.
+<strong>No write barriers needed.</strong>
 </div>
 
-<p>The heap has no generation boundary; a minor collection would add
-one. After a collection, everything the pass copied would be "old" and objects
-allocated since would be "new". A minor-collection pass would:</p>
-<ul>
-  <li>Trace from <code>runnable_closure</code> and <code>mailbox</code> as roots.</li>
-  <li>Copy only objects allocated since the last collection (young generation).</li>
-  <li>Leave older objects untouched.</li>
-  <li>Mark every survivor old after collection.</li>
-</ul>
-
-<p>The MSO sweep changes in form but not in kind: minor collections release
-refs only for ProcBins that died in the young generation; major collections
-sweep both generations. The same forwarding-marker check that powers the
-current single-generation sweep generalises directly.</p>
+<p>A minor collection traces from the same roots as a major one, skips any
+reference that points into an old block, and copies the young objects it
+reaches. Its survivors fill new old blocks. A major collection runs when old
+bytes pass twice what the last major left, and is the only pass that reclaims
+old data. A debug assertion classifies every reference the collector meets as a
+literal, a from-space object or an old object, and fails on anything else.</p>
 
 </body>
 </html>

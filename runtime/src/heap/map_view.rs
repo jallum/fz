@@ -293,6 +293,7 @@ impl Heap {
     /// Store `value` in a field of the unpublished struct at `addr`. A list
     /// becomes shared, since the struct now holds it too.
     fn store_field(&mut self, addr: *mut u8, offset: u32, value: AnyValue) {
+        self.assert_written_object_is_young(addr);
         self.publish_contained_parts(value.raw(), value.kind());
         unsafe { self.write_field_slot(addr, offset, value) };
     }
