@@ -682,8 +682,7 @@ fn lower_backend_entry(
     entry_index: usize,
     entry: &LoweredEntry,
 ) -> Result<BackendEntry, FatalError> {
-    let entry_id = original_entry_id(abi, entry_index);
-    let capture_positions = lowerer.capture_positions_for_entry(abi, entry_id, entry)?;
+    let capture_positions = lowerer.capture_positions_for_entry(abi, entry);
     Ok(BackendEntry {
         span: entry.span,
         origin: lower_entry_origin(abi, entry_index, entry),
@@ -839,39 +838,19 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
     }
 
     fn capture_positions_for_entry(
-        &mut self,
+        &self,
         executable: &AbiReadyExecutable,
-        entry_id: ControlEntryId,
         entry: &LoweredEntry,
-    ) -> Result<Vec<super::super::transport::TransportPosition>, FatalError> {
-        let positions = executable
-            .transport
-            .entry_capture_positions
+    ) -> Vec<super::super::transport::TransportPosition> {
+        entry
+            .capture_owners
             .iter()
-            .filter(|position| {
-                matches!(
-                    position,
-                    super::super::transport::TransportPosition::EntryCapture {
-                        entry: captured_entry,
-                        ..
-                    } if *captured_entry == entry_id
-                )
+            .map(|owner| super::super::transport::TransportPosition::EntryCapture {
+                executable: executable.transport.executable.clone(),
+                entry: executable.materialized.original_entry_id(owner.entry),
+                capture_index: owner.index,
             })
-            .cloned()
-            .collect::<Vec<_>>();
-        if positions.len() != entry.captures.len() {
-            return Err(incomplete_backend_program(
-                self.telemetry,
-                self.root_id,
-                format!(
-                    "entry {} has {} captures but {} transport capture positions",
-                    entry_id.as_u32(),
-                    entry.captures.len(),
-                    positions.len()
-                ),
-            ));
-        }
-        Ok(positions)
+            .collect()
     }
 
     fn lower_step(&mut self, step: &LoweredStep) -> Result<BackendStep, FatalError> {
@@ -1158,7 +1137,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
 }
 
 fn lower_entry_origin(executable: &AbiReadyExecutable, entry_index: usize, entry: &LoweredEntry) -> BackendEntryOrigin {
-    let entry_id = original_entry_id(executable, entry_index);
+    let entry_id = executable
+        .materialized
+        .original_entry_id(ControlEntryId::from_u32(entry_index as u32));
     if let ControlEntryOrigin::DeliveredResume { value } = entry.origin {
         if let Some(position) = executable
             .transport
@@ -1197,15 +1178,6 @@ fn lower_entry_origin(executable: &AbiReadyExecutable, entry_index: usize, entry
         ControlEntryOrigin::Handler => BackendEntryOrigin::Handler,
         ControlEntryOrigin::DeliveredResume { .. } => unreachable!("delivered resumes return before branch fallback"),
     }
-}
-
-fn original_entry_id(executable: &AbiReadyExecutable, entry_index: usize) -> ControlEntryId {
-    executable
-        .materialized
-        .original_entry_ids
-        .get(entry_index)
-        .copied()
-        .unwrap_or_else(|| ControlEntryId::from_u32(entry_index as u32))
 }
 
 fn collect_executable_atoms(

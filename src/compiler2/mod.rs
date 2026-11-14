@@ -70,9 +70,9 @@ pub use artifact::{
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub use body::{
-    BodyState, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
-    LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredBodyMap, LoweredClause, LoweredEntry,
-    LoweredExtern, LoweredReceive, LoweredStep, LoweredTail, ReceiveAfter, ValueId,
+    BodyState, CallSiteId, CaptureOwner, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin,
+    DispatchBindings, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredBodyMap, LoweredClause,
+    LoweredEntry, LoweredExtern, LoweredReceive, LoweredStep, LoweredTail, ReceiveAfter, ValueId,
 };
 pub(crate) use canon::function_label;
 pub use cli::run as run_cli;

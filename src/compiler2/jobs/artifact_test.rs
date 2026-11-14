@@ -325,6 +325,7 @@ fn a_pruned_body_answers_only_for_the_call_sites_it_kept() {
         origin: ControlEntryOrigin::Clause,
         params: Vec::new(),
         captures: Vec::new(),
+        capture_owners: Vec::new(),
         physical_captures: Vec::new(),
         physical_params: Vec::new(),
         steps: Vec::new(),

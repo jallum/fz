@@ -625,10 +625,22 @@ pub struct LoweredEntry {
     pub origin: ControlEntryOrigin,
     pub params: Vec<ValueId>,
     pub captures: Vec<ValueId>,
+    /// For each of `captures`, the capture whose transport layout it reuses.
+    pub capture_owners: Vec<CaptureOwner>,
     pub physical_captures: Vec<ValueId>,
     pub physical_params: Vec<ValueId>,
     pub steps: Vec<LoweredStep>,
     pub tail: LoweredTail,
+}
+
+/// The capture where a value first joined the chain of entries that pass it
+/// along: an entry reached from exactly one other entry holds the same value
+/// at the same layout as that entry does, so both name the first holder. An
+/// entry that first holds a value owns its capture itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureOwner {
+    pub entry: ControlEntryId,
+    pub index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]

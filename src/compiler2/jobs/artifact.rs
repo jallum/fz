@@ -22,8 +22,8 @@ use super::super::artifact::{
     PositionedCallableConstructionOwner, TransportLayouts,
 };
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, DirectCallee, LoweredBody,
-    LoweredEntry, LoweredStep, LoweredTail, ValueId,
+    CallArg, CallSiteId, CaptureOwner, ControlDestination, ControlEntryId, ControlEntryOrigin, DirectCallee,
+    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId,
 };
 use super::super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::super::drive::FactKey;
@@ -430,18 +430,24 @@ fn required_entry_capture_transport_positions(
     let symbol = ExecutableSymbol::new(executable);
     let mut positions = Vec::new();
     for (entry_index, entry) in entries.iter().enumerate() {
-        let entry_id = materialized
-            .original_entry_ids
-            .get(entry_index)
-            .copied()
-            .unwrap_or_else(|| ControlEntryId::from_u32(entry_index as u32));
-        for capture_index in 0..entry.captures.len() {
-            let position = TransportPosition::EntryCapture {
+        let entry_id = ControlEntryId::from_u32(entry_index as u32);
+        let owned = entry
+            .capture_owners
+            .iter()
+            .enumerate()
+            .filter(|(capture_index, owner)| {
+                **owner
+                    == CaptureOwner {
+                        entry: entry_id,
+                        index: *capture_index,
+                    }
+            });
+        for (capture_index, _) in owned {
+            positions.push(TransportPosition::EntryCapture {
                 executable: symbol.clone(),
-                entry: entry_id,
+                entry: materialized.original_entry_id(entry_id),
                 capture_index,
-            };
-            positions.push(position);
+            });
         }
     }
     positions
@@ -522,11 +528,7 @@ fn required_resume_transport_positions(
         if diverges {
             continue;
         }
-        let entry_id = materialized
-            .original_entry_ids
-            .get(entry_id.as_u32() as usize)
-            .copied()
-            .unwrap_or(*entry_id);
+        let entry_id = materialized.original_entry_id(*entry_id);
         deliver_callsites.insert(entry_id, callsite);
     }
     for (entry_index, entry) in entries.iter().enumerate() {
@@ -538,11 +540,7 @@ fn required_resume_transport_positions(
         if matches!(&entry.tail, LoweredTail::Unreachable) {
             continue;
         }
-        let entry_id = materialized
-            .original_entry_ids
-            .get(entry_index)
-            .copied()
-            .unwrap_or_else(|| ControlEntryId::from_u32(entry_index as u32));
+        let entry_id = materialized.original_entry_id(ControlEntryId::from_u32(entry_index as u32));
         let position = TransportPosition::ResumePayload {
             executable: symbol.clone(),
             callsite: deliver_callsites.get(&entry_id).copied(),
@@ -1399,6 +1397,7 @@ fn specialize_entry(entry: &LoweredEntry, is_reachable: bool) -> LoweredEntry {
         origin: entry.origin.clone(),
         params: entry.params.clone(),
         captures: entry.captures.clone(),
+        capture_owners: entry.capture_owners.clone(),
         physical_captures: entry.physical_captures.clone(),
         physical_params: entry.physical_params.clone(),
         steps: Vec::new(),
@@ -1415,6 +1414,9 @@ fn reindex_entries(
         clause.entry = ids[&clause.entry];
     }
     for entry in entries {
+        for owner in &mut entry.capture_owners {
+            owner.entry = ids[&owner.entry];
+        }
         match &mut entry.tail {
             LoweredTail::Value { dest, .. }
             | LoweredTail::DirectCall { dest, .. }

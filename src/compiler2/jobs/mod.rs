@@ -15,6 +15,7 @@ mod body;
 #[cfg(test)]
 mod body_test;
 mod callable_target;
+mod capture_owners;
 mod contract;
 mod dispatch;
 pub(super) use dispatch::is_guard_expr;

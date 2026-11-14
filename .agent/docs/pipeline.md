@@ -255,7 +255,7 @@ submit_root(main/0)
           waits on settled ExecutableFacts(E) and ReturnType(E.activation)
           waits on settled RuntimeDemand(E), then pulls local TransportShape products
         pulls ExecutableEffects(E)
-        pulls EntryCapture, resume, input, return, and callable-boundary transport products
+        pulls EntryCapture (one per owned capture), resume, input, return, and callable-boundary transport products
       reads exact ABI prerequisites for return endpoints and construction members/captures
       lowers one interpreter-ready backend executable
       records typed executable/schema membership and extracts local atoms
@@ -369,6 +369,13 @@ Compiler2 lowers one function body as:
   body starts
 - `LoweredEntry`: one reusable local control node with `captures`, straight-line
   `steps`, and one `LoweredTail`
+- `CaptureOwner`: for each capture, the capture where its value first joined
+  the chain of entries that pass it along. An entry reached from exactly one
+  other entry (and not a clause's start) names that entry's owner for every
+  value both hold, and owns the values it holds first; an entry reached from
+  several entries owns every capture. `construct_entry_captures` records the
+  owners once, through `record_capture_owners`, right after it settles the
+  captures themselves
 - `LoweredTail`: the only place control can branch, call, or return
 - `ControlDestination`: either `Return` or `Deliver(next_entry)`
 - `BodyTables`: which step defines each value, which values each step and tail
@@ -959,7 +966,10 @@ The next products narrow the contract:
 - `AbiExecutable(E)` reads `MaterializedExecutable(E)`,
   `ExecutableEffects(E)`, and the exact transport products for executable
   inputs, returns, entry captures, resumes, local backend values, and callable
-  boundaries. It retains the materialized product explicitly: local effects
+  boundaries. Only the entry that owns a capture has an `EntryCapture` product
+  for it; every entry holding that value reads the owner's layout, so a body of
+  N sequential calls whose results stay live requests 2N+6 entry captures,
+  not N^2/2. It retains the materialized product explicitly: local effects
   and the pre-ABI transport view remain on that materialized input, while the
   ABI product owns settled/transitive effects, completed ABI transport,
   layouts, and edges. It does not derive movement from root-wide demand state.
