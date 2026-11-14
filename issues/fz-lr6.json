@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-l3p",
     "fz-wto"
   ],
   "blocks": [
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "A callable a function returns keeps its identity in the function's key, so two callers never share one return",
   "type": "bug",
-  "updated_at": "2026-11-14T15:12:24Z"
+  "updated_at": "2026-11-14T15:12:25Z"
 }

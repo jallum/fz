@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-lr6"
+  ],
   "created": "2026-11-14T12:47:53Z",
   "description": "keying.rs visit_protocol_callback marks every non-receiver input of a protocol callback returned Whole, because an implementation may hand an accumulator back and asking the implementations would make the answer move as implementations land. Sound, but conservative: Enumerable.reduce_while/3's reducer is marked returned though no implementation in lib returns it (every local return mask in the List and Range cones is Ignore at the reducer, measured on 00420). Once fz-lr6 keeps a returned callable's identity, every Enum wrapper's reducer keys per lambda: 00420 2,513 -\u003e 2,637 jobs, all in Enum.reduce_while/3.\n\nWanted: the callback's returned axis is the join of its implementations' returned axes, without re-keying activations already made when an implementation lands (or a measured argument that it cannot be). Acceptance: 00420 under fz-lr6 returns to the develop job count or the difference is attributed; no fixture changes output.",
   "id": "fz-l3p",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "A protocol callback states which inputs its implementations return, not every input",
   "type": "task",
-  "updated_at": "2026-11-14T15:12:24Z"
+  "updated_at": "2026-11-14T15:12:25Z"
 }
