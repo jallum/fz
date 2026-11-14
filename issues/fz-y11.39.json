@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T02:28:58Z",
+  "description": "phi_tuple (types/emptiness.rs) cuts coordinate i by the negation and recurses on the split product. When the cut is empty the callee's first act is to find the empty coordinate and answer 'empty'; the split vector and the step are spent only to learn what the caller can read from the cut it just built.\n\nChange: an empty cut is answered where it is made; no split is built and no step is taken. Spike on the fz-y11.38 tip: every types test passes and the pinned tuple_emptiness_steps count falls from 17 to 7.\n\nSignal: full gate green; the pin is lowered to 7 and listed; no other pin or golden moves; program output and canonical backend dump identical on the probe; allocation count before and after in the commit.",
+  "id": "fz-y11.39",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "A cut that leaves nothing is answered without a recursive step",
+  "type": "task",
+  "updated_at": "2026-11-14T02:28:58Z"
+}
