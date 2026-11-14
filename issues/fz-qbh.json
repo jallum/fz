@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T14:01:10Z",
+  "description": "DECIDED 2026-11-14 by the user (option A). One admission rule for every function with a @spec, ordinary or extern: a call column is admitted when the argument's known (static) part is a subtype of the union of the declared clause domains and the argument overlaps it. A union the program creates through if/case or a function return is known and checked strictly. Only an element type the compiler merges from a heterogeneous collection is dynamic: dynamic(int | binary) keeps the precise type for specialization and is admitted on overlap.\nWhy: today an ordinary function admits by overlap and an extern by subtype, so File.close(pick(1)) with pick returning int | resource passes File.close's @spec close(t) and the error surfaces inside Kernel (runtime:Kernel.fz:622, fz_resource_claim). Inside one body develop already path-splits an if and rejects the wrong path (v = if flag(1), do: 1, else: \"x\"; v + 1 is a compile error); only a function return hides the union. The rule stops the return hiding it.\nSpikes (worktree ../fz-admit, scratchpad/admit/): v1 per-clause instantiated params (33 failures, flawed); v2 strict with nested any as dynamic (admit2.patch: fc2 on the user's line; rejects correct 00750/00751 heterogeneous lists); v3 = v2 + a heterogeneous list literal's element type becomes any (admit3.patch, test3.txt): fixture matrix 3358 green; fails 2 contract_test unit tests asserting the old overlap rule, 2 drive_test seed-separation tests and 4 pins that read lost specialization precision (any is too blunt). Route probes (scratchpad/admit/routes/): cons through a function, Map.values, Keyword.put + update, recursive accumulator pass; Enum.map with an if in the closure then hd + 1 is rejected (same class as the in-body if develop already rejects).\nNeeds a proposal page (/Users/j5n/Workspace/\u003cthis id\u003e.html) before building: the dynamic(T) representation in Types, every merge site, the removal ledger (is_extern admission branch, column_is_admitted's brand rule, spec_violation_is_actionable's top-level any skip if subsumed), and the precision tests' fate.\nRelated: fz-i89 (what happens at run time to a dynamic argument outside the domain).\nAcceptance: fc2-shaped calls are rejected at the caller's line on all three paths; 00750-00753 and 01063 pass as written; no specialization precision lost (the seed-separation tests keep their intent); full gate green; pin rises explained.",
+  "id": "fz-qbh",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "A call is admitted only when everything known about each argument lies inside its @spec domain",
+  "type": "bug",
+  "updated_at": "2026-11-14T14:01:10Z"
+}
