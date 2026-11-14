@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T19:25:21Z",
+  "description": "Every continuation is built by inline bump allocation (fz_alloc_closure only when the block is full), with header, code pointer and captures stored inline; captures are read by inline loads; delivery is return_call_indirect. Allocation statistics are counted inline (the spike skips HeapAllocStats).\nRemoves: TAG_LAZY_CONT and its handling; in ir_runtime.rs is_lazy_cont_ref, lazy_cont_ptr, lazy_cont_count, lazy_cont_kind_base, lazy_cont_capture_raw, fz_materialize_cont and the lazy branches of fz_closure_get_capture_*; in codegen build_lazy_cont_descriptor, store_lazy_capture, ContinuationPlan::LazyNativeDescriptor, capture_forces_heap_continuation, continuation_uses_lazy_descriptor, the call_indirect+return_ delivery and the materialize_cont calls in build_cont_closure. Check: the yield-continuation margin samples on Process (max_yield_continuation_bytes and siblings) measure materialization that no longer happens.\nBuilder confirms first: whether in-place list rewriting (list_reuse_or_cons) relies on captures being marked shared (old heap path called fz_mark_published_ref_aliased; stack path never did; spike follows the stack path and the matrix passes).\nApproved pin movement (re-measure once stats are inline): enum_sort closure allocations 0-\u003e1 (80 B); map_atom_order and 01164 build allocation rows; a_matched_reply... reduction yields 7-\u003e25; a_large_list... yield pattern. The yield rises are untraced: trace them to a mechanism before blessing.\nAcceptance: full gate green; Enum.map and Enum.filter at 1M elements pass on run and build; distiller finishes the full log; fz-sc8.193 passes.\nProposal (approved 2026-11-14): https://claude.ai/artifact/94aN2YPxunzwVEzct26nz2 (local /Users/j5n/Workspace/fz-d7w.html). Spike evidence: worktree ../fz-hc, branch exp/heap-cont-reads (uncommitted, FZ_SPIKE_* switches).",
+  "id": "fz-9x7.1",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 1,
+  "status": "open",
+  "title": "A continuation is a heap object built and read by inline code",
+  "type": "task",
+  "updated_at": "2026-11-14T19:25:21Z"
+}
