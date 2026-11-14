@@ -2157,7 +2157,8 @@ macro_rules! semantic_helper_conformance_tests {
                 let collapsed = collapse_structure(&mut t, arrow, &[DispatchDemand::TupleFields(fields)], &[]);
 
                 let params = t.arrow_params(&collapsed).to_vec();
-                let readdressed = t.address_inputs(&params);
+                let mut readdressed = params.clone();
+                t.address_inputs(&mut readdressed);
                 assert_eq!(
                     readdressed, params,
                     "collapsed union slot must be canonically addressed (round-trip): {} vs {}",

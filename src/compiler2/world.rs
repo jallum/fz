@@ -941,14 +941,14 @@ impl World {
         contributions: Vec<(ActivationKey, Vec<Ty>)>,
     ) -> HashMap<ActivationKey, ActivationInputAlternatives> {
         let mut next = HashMap::<ActivationKey, ActivationInputAlternatives>::default();
-        for (activation, inputs) in contributions {
+        for (activation, mut normalized) in contributions {
             // Canonicalize the input evidence the same whole-scope way the key is
             // built (fz-hwn.27.6, A): one shared addressing pass, so distinct
             // observed vars stay distinct and the evidence shares the key's
             // canonical form. Idempotent on already-addressed contributions.
             // A closure nested inside itself folds as it does in the key, so
             // the rows under one key cannot grow a tower the key has cut.
-            let mut normalized = self.types.address_inputs(&inputs);
+            self.types.address_inputs(&mut normalized);
             self.types.fold_self_nested_closures_in_inputs(&mut normalized);
             let normalized = if self
                 .body_keying(activation.function)
@@ -3440,7 +3440,7 @@ impl World {
     ) -> bool {
         if let CallSiteResolution::Resolved(summary) = &mut resolution {
             for target in &mut summary.targets {
-                target.surface_inputs = self.types.address_inputs(&target.surface_inputs);
+                self.types.address_inputs(&mut target.surface_inputs);
             }
         }
         self.callsites.define(&mut self.types, key, resolution)
