@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-t93.8"
+  ],
   "blocks": [],
   "created": "2026-11-14T04:26:50Z",
   "description": "25 of 1,382 distiller executables (develop 01e69178a) have identical canon keys under distinct type ids (e.g. 1528 / 4882 with the same canon text); 20 have identical bodies. Cause untraced. Report: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/dist/rerun/report.md and /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/dist/row/report.md. Paper first: shrink to a program with one such pair and find where the two type ids are minted.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Two executables with the same canon key are one executable",
   "type": "bug",
-  "updated_at": "2026-11-14T04:26:50Z"
+  "updated_at": "2026-11-14T04:26:51Z"
 }
