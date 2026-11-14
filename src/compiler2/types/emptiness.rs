@@ -68,16 +68,18 @@ pub(super) fn phi_tuple<'d>(cx: TyCtx<'_>, t: &[&Descr], n: &[impl AsRef<[&'d De
     if head.iter().zip(t).any(|(h, ti)| ti.is_disjoint(cx, h)) {
         return phi_tuple(cx, t, rest);
     }
+    // Coordinates before `i` are met with the negation, `i` is cut by it, and
+    // the rest are the product's own. Each coordinate's meet is the same for
+    // every later `i`, so it is computed once and kept.
+    let mut met: Vec<Descr> = Vec::with_capacity(t.len());
     for i in 0..t.len() {
-        // Coordinates before `i` are met with the negation, `i` is cut by it,
-        // and the rest are the product's own.
-        let changed: Vec<Descr> = (0..i)
-            .map(|j| t[j].intersect(head[j]))
-            .chain([t[i].diff(head[i])])
-            .collect();
-        let split: Vec<&Descr> = changed.iter().chain(t[i + 1..].iter().copied()).collect();
+        let cut = t[i].diff(head[i]);
+        let split: Vec<&Descr> = met.iter().chain([&cut]).chain(t[i + 1..].iter().copied()).collect();
         if !phi_tuple(cx, &split, rest) {
             return false;
+        }
+        if i + 1 < t.len() {
+            met.push(t[i].intersect(head[i]));
         }
     }
     true
