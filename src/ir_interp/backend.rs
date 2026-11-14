@@ -1492,7 +1492,8 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 DispatchSource::Bound { env: &env, bindings },
             )?;
             let operands = pinned_values.over_frame(transport, &env, inputs);
-            let run = Dispatch::new(runtime, types, program, module, &dispatch.plan, operands);
+            let run = Dispatch::new(runtime, types, program, module, &dispatch.plan, operands)
+                .reading(dispatch.argument_subjects());
             let (target, params) = match run.run()? {
                 Some(mut decided) => {
                     let edge = dispatch.outcome(decided.outcome());
@@ -1648,7 +1649,8 @@ fn try_match_backend_receive(
     )?;
     let inputs = [Some(BackendBoundValue::Runtime(msg))];
     let operands = pinned.over(transport, &inputs);
-    let run = Dispatch::new(runtime, types, program, module, dispatch, operands);
+    let run = Dispatch::new(runtime, types, program, module, dispatch, operands)
+        .reading(crate::compiler2::outcome_argument_subjects(outcomes));
     let Some(mut decided) = run.run()? else {
         return Ok(None);
     };

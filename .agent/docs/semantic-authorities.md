@@ -173,7 +173,16 @@ bounds check is emitted arithmetic (`BitFieldFits`, `BitFieldNext`), and
 `fz_bs_read_binary_ref` a binary view. The receive matcher and the interpreter
 share the arithmetic through `bs_field_end`. The CLAUSE HEAD is lowered twice —
 once into a dispatch region to select the clause, once into body steps to
-bind — so each field is read twice: fz-5xp.56.
+bind — but only the body step builds a field the dispatch does not read. A
+dispatch region (`lower_bitstring_region`, `Dispatch::read_bitstring`,
+`emit_bitstring_test`) emits `BitReadField` for a field only when
+`DispatchGraph::asks` says a question reads its value (a comparison, a guard
+leaf, a later field's `size(len)`, and the subjects those were projected from)
+or the executor's outcome reads it (`DispatchState::outcome_reads`: the
+subjects of the control dispatch's outcome arguments or of a guard helper's
+bodies). Every other field is only checked to fit. A function-head entry
+dispatch reads nothing off its outcome, so a walk over `<<_c, r :: binary>>`
+builds one view of the rest per step, in the clause body.
 
 **What a dispatch plan demands** — owner `DispatchGraphBuilder`
 (`dispatch_matrix/mod.rs`). The builder folds each question into

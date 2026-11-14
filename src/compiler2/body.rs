@@ -770,6 +770,15 @@ pub(crate) struct OutcomeEdge {
     pub(crate) arguments: Box<[OutcomeArgument]>,
 }
 
+/// The subjects any of `edges` binds into its target.
+pub(crate) fn outcome_argument_subjects(
+    edges: &[OutcomeEdge],
+) -> impl Iterator<Item = crate::dispatch_matrix::SubjectId> + '_ {
+    edges
+        .iter()
+        .flat_map(|edge| edge.arguments.iter().map(|argument| argument.subject))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OutcomeArgument {
     pub(crate) subject: crate::dispatch_matrix::SubjectId,
@@ -832,6 +841,11 @@ impl ControlDispatch {
             self.miss_entry = None;
         }
         self.plan = plan;
+    }
+
+    /// The subjects some outcome of this dispatch binds into its target.
+    pub(crate) fn argument_subjects(&self) -> impl Iterator<Item = crate::dispatch_matrix::SubjectId> + '_ {
+        outcome_argument_subjects(&self.outcomes)
     }
 
     pub(crate) fn outcome(&self, outcome: crate::dispatch_matrix::OutcomeId) -> &OutcomeEdge {

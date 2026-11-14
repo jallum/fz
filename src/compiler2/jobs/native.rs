@@ -22,7 +22,7 @@ use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
     GuardExtern, LastResort, MessageSubject, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr,
-    PatternGuardUnaryOp,
+    PatternGuardUnaryOp, guard_body_subjects,
 };
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
@@ -1815,7 +1815,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         pinned: pinned_vars,
                         prepared,
                     },
-                );
+                )
+                .reading(dispatch.argument_subjects());
                 self.lower_control_dispatch_node(
                     ctx,
                     executable,
@@ -3639,7 +3640,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 pinned: Vec::new(),
                 prepared,
             },
-        );
+        )
+        .reading(guard_body_subjects(&dispatch.bodies));
         self.lower_guard_dispatch_node(
             ctx,
             &dispatch.plan,
@@ -3730,10 +3732,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     /// that answers false. The position is an integer the region carries from
     /// field to field.
     ///
-    /// Each extracted field is recorded in `state.values` under its own
-    /// subject. That is what lets a later field's `size(len)` read an earlier
-    /// one, and what lets `dispatch_subject_var` resolve a bitstring-field
-    /// projection instead of reporting it unsupported.
+    /// A field is built (`BitReadField`) only when something reads its value:
+    /// a later question, a later field's `size(len)`, or the winning outcome
+    /// (`DispatchState::outcome_reads`). Every other field is only checked to
+    /// fit, so a clause whose body re-reads its own fields allocates nothing
+    /// here. A built field is recorded in `state.values` under its own
+    /// subject, which is what lets `dispatch_subject_var` resolve a
+    /// bitstring-field projection instead of reporting it unsupported.
     fn lower_bitstring_region(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -3792,7 +3797,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 origin: BranchOrigin::ClauseDispatch,
             });
             ctx.current_block = next_b;
-            let value = self.emit_bit_read(ctx, subject_var, pos, &field);
+            let consumed = plan.graph.asks(*field_subject) || state.outcome_reads.contains(field_subject);
+            let value = consumed.then(|| self.emit_bit_read(ctx, subject_var, pos, &field));
             // The last field has no successor unless the pattern must also end
             // there; a field that reads to the end of the binary ends at its end.
             let reads_to_end = field.size.is_none() && matches!(field.ty, BitType::Binary | BitType::Bits);
@@ -3803,8 +3809,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             // A later field's `size(len)` reads this one, and the read happens
             // in this block, so it is available for the rest of the loop.
-            state.values.insert(*field_subject, NativeBoundValue::Runtime(value));
-            extracted.push((*field_subject, value, field.ty == BitType::Integer));
+            if let Some(value) = value {
+                state.values.insert(*field_subject, NativeBoundValue::Runtime(value));
+                extracted.push((*field_subject, value, field.ty == BitType::Integer));
+            }
         }
 
         if shape.require_done {
@@ -5051,6 +5059,9 @@ struct DispatchState {
     forwarded_args: Vec<Var>,
     bindings: DispatchBindings<Var>,
     values: HashMap<SubjectId, NativeBoundValue>,
+    /// The subjects the winning outcome reads, beyond what the decision asks.
+    /// A bitstring field outside both is checked for fit and never built.
+    outcome_reads: Vec<SubjectId>,
 }
 
 impl DispatchState {
@@ -5060,7 +5071,13 @@ impl DispatchState {
             forwarded_args,
             bindings,
             values: HashMap::default(),
+            outcome_reads: Vec::new(),
         }
+    }
+
+    fn reading(mut self, subjects: impl IntoIterator<Item = SubjectId>) -> Self {
+        self.outcome_reads.extend(subjects);
+        self
     }
 
     /// A state whose dispatch inputs are each already one runtime word,

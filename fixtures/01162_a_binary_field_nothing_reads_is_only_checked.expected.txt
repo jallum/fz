@@ -1,0 +1,10 @@
+{2, "\t"}
+:short
+:one
+:big
+:other
+:other
+<<5, 6>>
+:empty
+:zero
+{:rest, <<1, 2>>}

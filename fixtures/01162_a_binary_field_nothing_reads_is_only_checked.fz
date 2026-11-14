@@ -1,0 +1,46 @@
+#---
+# purpose: a clause dispatch builds a binary field only when a test, a size, a guard or the outcome reads it; every other field is only checked to fit
+# kind: run
+#---
+#
+# Each match below has a field that no question reads and a field that one
+# does, in a function head, a case, a receive and a guard. The answers are the
+# same whether or not the dispatch builds the unread field.
+defmodule P do
+  # `len` is read by the size of the next field; the payload is not read.
+  def framed(<<len, _payload :: binary-size(len), rest :: binary>>), do: {len, rest}
+  def framed(_other), do: :short
+
+  # The first byte is tested against a literal; the rest is not read.
+  def tagged(<<1, _r :: binary>>), do: :one
+  def tagged(<<c, _r :: binary>>) when c > 100, do: :big
+  def tagged(_other), do: :other
+
+  # The case binds the rest; the first byte is unread.
+  def rest_of(b) do
+    case b do
+      <<_c, r :: binary>> -> r
+      _ -> :empty
+    end
+  end
+
+  def mailbox(msg) do
+    send(self(), msg)
+
+    receive do
+      <<0, _r :: binary>> -> :zero
+      <<_c, r :: binary>> -> {:rest, r}
+    end
+  end
+end
+
+dbg(P.framed(<<2, 7, 8, 9>>))
+dbg(P.framed(<<5, 1>>))
+dbg(P.tagged(<<1, 2>>))
+dbg(P.tagged(<<200, 2>>))
+dbg(P.tagged(<<3, 2>>))
+dbg(P.tagged(<<>>))
+dbg(P.rest_of(<<4, 5, 6>>))
+dbg(P.rest_of(<<>>))
+dbg(P.mailbox(<<0, 1>>))
+dbg(P.mailbox(<<9, 1, 2>>))

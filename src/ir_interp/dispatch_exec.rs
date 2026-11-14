@@ -11,11 +11,12 @@ use crate::compiler2::transport::TransportStore;
 use crate::compiler2::{BackendProgram, DispatchBindings, Ty, Types, ValueId};
 use crate::dispatch_matrix::pattern::{
     PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp, PatternPinnedInput,
+    guard_body_subjects,
 };
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
     EdgeEvidence, GraphNodeId, GroundValue, ListRegion, OutcomeId, PinnedValueId, PreparedKeyId, ProjectionKind,
-    Region, SubjectId, SubjectSource,
+    Region, SubjectId, SubjectProjection, SubjectSource,
 };
 use crate::fz_ir::Module;
 use crate::runtime_type_predicate::{
@@ -384,6 +385,9 @@ pub(super) struct Dispatch<'a> {
     plan: &'a PatternDispatchPlan<Ty>,
     operands: DispatchOperands<'a>,
     state: DispatchExecState,
+    /// The subjects the winning outcome reads, beyond what the decision asks.
+    /// A bitstring field outside both is checked for fit and never built.
+    outcome_reads: Vec<SubjectId>,
 }
 
 impl<'a> Dispatch<'a> {
@@ -403,7 +407,14 @@ impl<'a> Dispatch<'a> {
             plan,
             operands,
             state: DispatchExecState::new(plan.graph.subjects.len()),
+            outcome_reads: Vec::new(),
         }
+    }
+
+    /// This run, told which subjects its caller reads off the winning outcome.
+    pub(super) fn reading(mut self, subjects: impl IntoIterator<Item = SubjectId>) -> Self {
+        self.outcome_reads.extend(subjects);
+        self
     }
 
     /// Decide the plan. `Ok(None)` is a subject that matched no clause, which
@@ -445,9 +456,22 @@ impl<'a> Dispatch<'a> {
         }
     }
 
+    /// Produces the subjects a matched edge projects. A bitstring field is not
+    /// one of them: the shape test that matched built the fields something
+    /// reads and left the rest unbuilt.
     fn apply_edge_evidence(&mut self, evidence: &EdgeEvidence<Ty>) -> Result<(), DispatchStop> {
+        let plan = self.plan;
         for projection in &evidence.projections {
-            self.resolve_subject(*projection)?;
+            let is_bitstring_field = matches!(
+                plan.subject(*projection),
+                SubjectSource::Projection(SubjectProjection {
+                    kind: ProjectionKind::BitstringField(_),
+                    ..
+                })
+            );
+            if !is_bitstring_field {
+                self.resolve_subject(*projection)?;
+            }
         }
         Ok(())
     }
@@ -754,7 +778,8 @@ impl<'a> Dispatch<'a> {
                     self.module,
                     &dispatch.plan,
                     helper_values.over(self.operands.transport, &values),
-                );
+                )
+                .reading(guard_body_subjects(&dispatch.bodies));
                 // A helper that matches nothing answers no value, which is a
                 // guard that does not hold.
                 let mut decided = required(helper.run().map_err(DispatchStop::Broken)?)?;
@@ -826,7 +851,9 @@ impl<'a> Dispatch<'a> {
         }
     }
 
-    /// Read a bitstring subject field by field, binding what each field yields.
+    /// Walk a bitstring subject field by field, checking that each fits. A
+    /// field's value is built and bound only when a question or the winning
+    /// outcome reads it.
     fn read_bitstring(&mut self, value: RuntimeAnyValue, shape: &BitstringShape) -> bool {
         let Some(value_bits) = value.heap_object_word() else {
             return false;
@@ -856,17 +883,19 @@ impl<'a> Dispatch<'a> {
             let Some(end) = bs_field_end(field_spec, size_value, pos, bit_len) else {
                 return false;
             };
-            let Ok(extracted) = interp_read_bit_field(
-                proc,
-                source_ref,
-                pos,
-                field_spec,
-                size_value,
-                matches!(field.kind, BitstringFieldKind::Integer),
-            ) else {
-                return false;
-            };
-            self.state.set(*field_subject, BackendBoundValue::Runtime(extracted));
+            if plan.graph.asks(*field_subject) || self.outcome_reads.contains(field_subject) {
+                let Ok(extracted) = interp_read_bit_field(
+                    proc,
+                    source_ref,
+                    pos,
+                    field_spec,
+                    size_value,
+                    matches!(field.kind, BitstringFieldKind::Integer),
+                ) else {
+                    return false;
+                };
+                self.state.set(*field_subject, BackendBoundValue::Runtime(extracted));
+            }
             pos = end;
         }
         !shape.require_done || pos == bit_len

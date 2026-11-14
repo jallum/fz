@@ -1,13 +1,13 @@
 #---
-# purpose: a `<<_c, r :: binary>>` match step allocates no struct; each step builds only the views of the rest that the dispatch read and the body read hand out
+# purpose: a `<<_c, r :: binary>>` match step allocates no struct and exactly one view of the rest; the clause dispatch only checks the field fits
 # kind: run
 #---
 #
 # The walk takes 10,000 steps over a 10,000-byte binary. A match keeps its
-# position as an integer, so the only heap objects a step makes are the views
-# of the rest: one from the clause dispatch's read, one from the clause body's
-# read. The program prints the step count, then allocations and struct
-# allocations per step.
+# position as an integer, and the clause dispatch builds a field's value only
+# when something consumes it, so the only heap object a step makes is the view
+# of the rest that the clause body's read hands out. The program prints the
+# step count, then allocations and struct allocations per step.
 defmodule P do
   def go(b), do: walk(b, 0)
   defp walk(<<_c, r :: binary>>, n), do: walk(r, n + 1)

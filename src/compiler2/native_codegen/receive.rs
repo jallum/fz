@@ -27,6 +27,7 @@
 
 use crate::dispatch_matrix::pattern::{
     GuardExtern, PatternDispatchPlan, PatternGuardBinOp, PatternGuardDispatch, PatternGuardExpr, PatternGuardUnaryOp,
+    guard_body_subjects,
 };
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
@@ -208,6 +209,10 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
             tuple_schema_ids,
             named_schema_ids,
             outcomes: clauses,
+            outcome_reads: clauses
+                .iter()
+                .flat_map(|clause| clause.arguments.iter().map(|(subject, _)| *subject))
+                .collect(),
             bindings: crate::compiler2::DispatchBindings {
                 pinned: (0..dispatch.pinned.len())
                     .map(|index| load_receive_value_ref(body.b, pinned_ptr, index))
@@ -260,6 +265,9 @@ struct DispatchCtx<'a> {
     tuple_schema_ids: &'a HashMap<usize, u32>,
     named_schema_ids: &'a HashMap<fz_runtime::module_name::ModuleName, u32>,
     outcomes: &'a [ReceiveClause],
+    /// The subjects the winning outcome reads, beyond what the decision asks.
+    /// A bitstring field outside both is checked for fit and never built.
+    outcome_reads: Vec<SubjectId>,
     bindings: crate::compiler2::DispatchBindings<ReceiveValue>,
     out_ptr: ir::Value,
     dispatch: &'a ReceiveDispatchPlan,
@@ -824,6 +832,13 @@ fn emit_receive_is_list_cons_flag<M: cranelift_module::Module>(
     })
 }
 
+fn is_bitstring_field(ctx: &DispatchCtx<'_>, subject: SubjectId) -> bool {
+    matches!(
+        ctx.dispatch.subject(subject),
+        SubjectSource::Projection(projection) if matches!(projection.kind, ProjectionKind::BitstringField(_))
+    )
+}
+
 fn apply_edge_evidence_to_receive_state<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
@@ -831,7 +846,9 @@ fn apply_edge_evidence_to_receive_state<M: cranelift_module::Module>(
     state: &mut DispatchEmitState,
 ) -> Result<(), CodegenError> {
     for projection in &evidence.projections {
-        if state.values.contains_key(projection) {
+        // A bitstring field is built by the shape test only where something
+        // reads it, so one the state lacks was left unbuilt on purpose.
+        if state.values.contains_key(projection) || is_bitstring_field(ctx, *projection) {
             continue;
         }
 
@@ -1072,20 +1089,22 @@ fn emit_bitstring_test<M: cranelift_module::Module>(
         body.b.ins().brif(fits, next_b, &[], false_b, &[]);
         body.b.switch_to_block(next_b);
         body.b.seal_block(next_b);
-        let extracted = match field.kind {
-            BitstringFieldKind::Integer => ReceiveValue::Int(runtime_call1!(
-                body,
-                fz_bs_read_int_ref,
-                [value_ref, pos, field_spec, size_value]
-            )),
-            _ => ReceiveValue::AnyRef(runtime_call1!(
-                body,
-                fz_bs_read_binary_ref,
-                [ctx.process, value_ref, pos, field_spec, size_value]
-            )),
-        };
+        if ctx.dispatch.graph.asks(*field_subject) || ctx.outcome_reads.contains(field_subject) {
+            let extracted = match field.kind {
+                BitstringFieldKind::Integer => ReceiveValue::Int(runtime_call1!(
+                    body,
+                    fz_bs_read_int_ref,
+                    [value_ref, pos, field_spec, size_value]
+                )),
+                _ => ReceiveValue::AnyRef(runtime_call1!(
+                    body,
+                    fz_bs_read_binary_ref,
+                    [ctx.process, value_ref, pos, field_spec, size_value]
+                )),
+            };
+            state.values.insert(*field_subject, extracted);
+        }
         pos = end;
-        state.values.insert(*field_subject, extracted);
     }
 
     if !shape.require_done {
@@ -1435,6 +1454,7 @@ fn emit_guard_dispatch<M: cranelift_module::Module>(
         tuple_schema_ids: parent.tuple_schema_ids,
         named_schema_ids: parent.named_schema_ids,
         outcomes: parent.outcomes,
+        outcome_reads: guard_body_subjects(&dispatch.bodies),
         bindings: crate::compiler2::DispatchBindings {
             pinned: Vec::new(),
             prepared: prepared_keys

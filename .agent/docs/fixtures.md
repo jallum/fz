@@ -111,7 +111,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01060-01079` | fz-sc8 (stack #274)               | in use through `01078` |
 | `01080-01099` | unallocated                       | free                   |
 | `01100-01119` | fz-rs7                            | in use through `01115` |
-| `01120-01199` | fz-sc8                            | in use through `01161` |
+| `01120-01199` | fz-sc8                            | in use through `01162` |
 | `01200-01229` | fz-iqp                            | in use through `01229` |
 | `01230-01249` | fz-rba                            | in use through `01232` |
 | `01250-01259` | fz-75e / fz-d7w                   | in use through `01252` |
