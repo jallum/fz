@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-t93.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-t93",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "The fact engine is its own crate, crates/fz-engine",
   "type": "task",
-  "updated_at": "2026-11-14T04:26:33Z"
+  "updated_at": "2026-11-14T04:27:00Z"
 }
