@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T23:37:01Z",
+  "description": "Investigation, no build. On the full 222,411-line log (PR #585 plus the Enum.uniq fix) Process::collect is 28% of samples: cheney_scan 24%, forward_heap_value 22%, FromSpace::moves (the young-or-old address test) 16%, cheney_trace_map 16%, cheney_trace_list 7%. On the 32,000-line prefix collection is under 3%. By hand a generational collector copies each kept byte about once plus majors at growth factor 2.\nDeliver: per-collection telemetry over the full log (generation, bytes copied, from-space size, young range count), a statement of the first difference from the hand answer, and a proposal page with predictions if a change is warranted. Suspects to test, not conclusions: the number of young ranges FromSpace::moves searches per pointer; old maps re-traced by minors; major frequency as live data grows.",
+  "id": "fz-sc8.207",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "Find why collection is 28% of the distiller's full-log run",
+  "type": "task",
+  "updated_at": "2026-11-14T23:37:01Z"
+}
