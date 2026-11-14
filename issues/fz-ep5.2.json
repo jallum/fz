@@ -7,14 +7,15 @@
   "blocks": [
     "fz-ep5.3"
   ],
+  "closed_at": "2026-11-14T12:13:10Z",
   "created": "2026-11-14T04:39:59Z",
   "description": "Stacked on fz-ep5.1 (PR #538). Decided 2026-11-13 by the user (the six recommendations): (1) a type alias becomes the guard of what it names (fixtures2/00040 'n :: count' -\u003e 'when is_integer(n) and positive(n)', fixtures2/00003 'x :: tkf_param' -\u003e the guard or nothing, the alias kept in the @spec); (2) a struct type becomes the struct pattern (struct_type_dispatch 'x :: Foo.t' -\u003e '%Foo{} = x'); (4) an opaque type moves to the clause's @spec and the annotation goes (00430, 00431, 00579: single-clause declarations) - if any clause choice depends on it, stop and report; (5) tuple shapes become patterns plus guards (dispatch_annotated_tuple_tag_clauses, tuple_param_dispatch_allocations: 'x :: {:cont, integer}' -\u003e '{:cont, n} = x when is_integer(n)'; 00624 't :: tuple' -\u003e 'when is_tuple(t)'); list element types become head patterns ('[integer]' -\u003e '[h | _] when is_integer(h)', '[:ok | :err]' -\u003e '[h | _] when h in [:ok, :err]', with an explicit [] clause where the fixture reaches []) in dispatch_list_head_separates and dispatch_nested_list_position_separates; 00651 is deleted (it only states that '::' and a guard are the same row); (6) extern declarations drop parameter names ('libc::open(path :: c_string, ...)' -\u003e 'libc::open(c_string, ...)') in fixtures, fixtures2 and tests/aot_variadic_open.rs; call-site ascriptions ('500 :: integer') stay. Also 00652's oracle script drops its duplicated 'is_integer(n) and'. Out of scope: 00632 (fz-sc8.34 is_function), 00615 (helper recognition). Prediction: no output or pin changes except where a fixture is deleted or its expectation genuinely changes (report each). Acceptance: full gate green.",
   "id": "fz-ep5.2",
   "labels": [],
   "parent": "fz-ep5",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The remaining fixtures say a type with a guard, a pattern, a spec or nothing, not '::'",
   "type": "task",
-  "updated_at": "2026-11-14T04:56:06Z"
+  "updated_at": "2026-11-14T12:13:10Z"
 }
