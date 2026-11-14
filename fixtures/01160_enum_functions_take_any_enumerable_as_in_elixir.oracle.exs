@@ -1,0 +1,57 @@
+defmodule Main do
+  def main() do
+    list = [3, 1, 2, 2, 1]
+    range = 1..4
+    set = MapSet.new([1, 2, 3])
+    map = %{a: 1}
+    numeric = [list, range, set]
+    all = [list, range, set, map]
+  
+    Enum.each(numeric, fn e -> IO.inspect(Enum.sum(e)) end)
+    Enum.each(numeric, fn e -> IO.inspect(Enum.product(e)) end)
+    Enum.each(numeric, fn e -> IO.inspect(Enum.join(e)) end)
+    Enum.each(numeric, fn e -> IO.inspect(Enum.join(e, "-")) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.max(e)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.min(e)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.min_max(e)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.max(e, fn -> 0 end)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.min(e, fn -> 0 end)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.at(e, 1)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.at(e, 9)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.at(e, 9, :none)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.fetch(e, 0)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.fetch(e, 9)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.fetch!(e, 0)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.count_until(e, 2)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.count_until(e, 99)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.chunk_every(e, 2)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.dedup(e)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.uniq(e)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.frequencies(e)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.concat(e, [7, 8])) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.concat([7], e)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.zip(e, 5..9)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.zip(range, e)) end)
+    IO.inspect(Enum.concat(all))
+    IO.inspect(Enum.concat([range, set, [9]]))
+    Enum.each(all, fn e -> IO.inspect(Enum.zip_with(e, range, fn x, y -> {x, y} end)) end)
+    IO.inspect(Enum.zip_with([list, range, set], fn [a, b, c] -> a + b + c end))
+    IO.inspect(Enum.zip_with([], fn xs -> xs end))
+    Enum.each(numeric, fn e -> IO.inspect(Enum.sum_by(e, fn x -> x * 2 end)) end)
+    Enum.each(numeric, fn e -> IO.inspect(Enum.product_by(e, fn x -> x + 1 end)) end)
+    Enum.each(numeric, fn e -> IO.inspect(Enum.max_by(e, fn x -> 0 - x end)) end)
+    Enum.each(numeric, fn e -> IO.inspect(Enum.min_by(e, fn x -> 0 - x end)) end)
+    Enum.each(numeric, fn e -> IO.inspect(Enum.min_max_by(e, fn x -> 0 - x end)) end)
+    Enum.each(numeric, fn e -> IO.inspect(Enum.sort_by(e, fn x -> 0 - x end)) end)
+    Enum.each(numeric, fn e -> IO.inspect(Enum.dedup_by(e, fn x -> x > 1 end)) end)
+    Enum.each(numeric, fn e -> IO.inspect(Enum.chunk_by(e, fn x -> x > 1 end)) end)
+    Enum.each(numeric, fn e -> IO.inspect(Enum.uniq_by(e, fn x -> x > 1 end)) end)
+    Enum.each(numeric, fn e -> IO.inspect(Enum.frequencies_by(e, fn x -> x > 1 end)) end)
+    Enum.each(numeric, fn e -> IO.inspect(Enum.group_by(e, fn x -> x > 1 end)) end)
+    Enum.each(numeric, fn e -> IO.inspect(Enum.group_by(e, fn x -> x > 1 end, fn x -> x * 10 end)) end)
+    Enum.each(all, fn e -> IO.inspect(Enum.unzip(Enum.map(e, fn x -> {x, 1} end))) end)
+    IO.inspect(Enum.unzip(%{a: 1}))
+  end
+end
+
+Main.main()
