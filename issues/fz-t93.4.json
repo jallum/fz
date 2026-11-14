@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-afu.15"
+  ],
   "blocks": [],
   "created": "2026-11-14T04:26:07Z",
   "description": "ExecutableEffects(E) and CallableConstruction(position) become engine derivations whose group concludes together. Deletes pull.rs pending_strong_component (16,005 calls on the distiller, 651 closed searches over 389 distinct pairs, groups up to 101), the pending-record cycle evidence, and with it the 168 missed cycles (records dropped by settle Wake 123 / Invalidate 39 / both 6). Predict: dumps identical; missed cycles 0.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Recursive product groups are engine derivations",
   "type": "task",
-  "updated_at": "2026-11-14T04:26:07Z"
+  "updated_at": "2026-11-14T04:26:34Z"
 }
