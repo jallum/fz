@@ -1163,9 +1163,21 @@ fn local_call_targets(summary: &CallSiteSummary, need: ExecutableNeed) -> impl I
         .filter_map(move |target| target.runtime_executable(need))
 }
 
-fn join_contributed_input_demands(input_demands: &mut [RuntimeDemand], contributed: &[RuntimeDemand]) {
+/// Joins what callers contribute into each input's demand, then reads every
+/// input against the activation's own input type. A clause narrows its
+/// parameter, so the input position is the one place an input's whole type
+/// is seen.
+fn settle_input_demands(
+    facts: &RuntimeDemandFacts<'_>,
+    input_demands: &mut [RuntimeDemand],
+    contributed: &[RuntimeDemand],
+    input_tys: &[Ty],
+) {
     for (slot, contribution) in input_demands.iter_mut().zip(contributed) {
         slot.join_assign(contribution);
+    }
+    for (slot, &ty) in input_demands.iter_mut().zip(input_tys) {
+        facts.escape_mixed_callables(slot, ty);
     }
 }
 
@@ -1214,7 +1226,12 @@ fn derive_executable_runtime_demand(
                     .unwrap_or_else(|| facts.boundary_demand(*ty))
             })
             .collect();
-        join_contributed_input_demands(&mut out.input_demands, contributed_input_demands);
+        settle_input_demands(
+            facts,
+            &mut out.input_demands,
+            contributed_input_demands,
+            executable.activation.inputs(types),
+        );
         emit_runtime_demand_walk(tel, executable.activation.function, 0);
         return DerivedExecutableDemand {
             demand: out,
@@ -1283,7 +1300,12 @@ fn derive_executable_runtime_demand(
         out.input_demands[semantic_index].join_assign(&demand);
     }
 
-    join_contributed_input_demands(&mut out.input_demands, contributed_input_demands);
+    settle_input_demands(
+        facts,
+        &mut out.input_demands,
+        contributed_input_demands,
+        activation_inputs,
+    );
     widen_boxed_closure_call_results(facts, &mut out);
     emit_runtime_demand_walk(tel, executable.activation.function, walks.entries_walked);
 
@@ -1453,7 +1475,7 @@ fn collect_entry_live_demands(
                 walks,
             );
             let demand = boundary_value_flow_demand(facts, callable_flows, *value, boundary_demand);
-            note_live_demand(out, &mut live, *value, demand);
+            note_live_demand(facts, out, &mut live, *value, demand);
             merge_live_demands(&mut live, external_demands, walks);
         }
         LoweredTail::DirectCall {
@@ -1477,7 +1499,7 @@ fn collect_entry_live_demands(
                 walks,
             );
             let demand = boundary_value_flow_demand(facts, callable_flows, *value, boundary_demand);
-            note_live_demand(out, &mut live, *value, demand.clone());
+            note_live_demand(facts, out, &mut live, *value, demand.clone());
             record_call_return_demand(call_return_demands, *callsite, demand);
             tail_call_return = Some((*callsite, *value));
             merge_live_demands(&mut live, external_demands, walks);
@@ -1492,12 +1514,12 @@ fn collect_entry_live_demands(
             );
             record_call_arg_demands(out, *callsite, arg_demands.as_slice());
             for (arg, demand) in args.iter().zip(arg_demands) {
-                note_live_demand(out, &mut live, arg.value, demand);
+                note_live_demand(facts, out, &mut live, arg.value, demand);
             }
             if let Some(module) = callee.module_value()
                 && facts.callsite_reads_its_module(*callsite)
             {
-                let ty = facts.argument_type(module);
+                let ty = facts.value_type(module);
                 let asked = boundary_value_flow_demand_at(
                     facts,
                     callable_flows,
@@ -1505,7 +1527,7 @@ fn collect_entry_live_demands(
                     Cow::Owned(facts.dispatch_demand(ty)),
                     ty,
                 );
-                note_live_demand(out, &mut live, module, asked.into_owned());
+                note_live_demand(facts, out, &mut live, module, asked.into_owned());
             }
             if let Some(module) = callee.module_value()
                 && facts
@@ -1513,8 +1535,14 @@ fn collect_entry_live_demands(
                     .get(callsite)
                     .is_some_and(CallSiteSummary::may_be_undefined)
             {
-                let shown = facts.boundary_demand(facts.argument_type(module));
-                note_live_demand(out, &mut live, module, boundary_value_demand(facts, module, shown));
+                let shown = facts.boundary_demand(facts.value_type(module));
+                note_live_demand(
+                    facts,
+                    out,
+                    &mut live,
+                    module,
+                    boundary_value_demand(facts, module, shown),
+                );
             }
         }
         LoweredTail::ClosureCall {
@@ -1539,7 +1567,7 @@ fn collect_entry_live_demands(
                 walks,
             );
             let demand = boundary_value_flow_demand(facts, callable_flows, *value, boundary_demand);
-            note_live_demand(out, &mut live, *value, demand.clone());
+            note_live_demand(facts, out, &mut live, *value, demand.clone());
             record_call_return_demand(call_return_demands, *callsite, demand);
             tail_call_return = Some((*callsite, *value));
             merge_live_demands(&mut live, external_demands, walks);
@@ -1556,7 +1584,7 @@ fn collect_entry_live_demands(
             );
             let callee_demand = RuntimeDemand::callable(callee_callable);
             callable_flows.record_direct_demand(facts, *callee, &callee_demand);
-            note_live_demand(out, &mut live, *callee, callee_demand);
+            note_live_demand(facts, out, &mut live, *callee, callee_demand);
             let arg_demands = closure_call_arg_demands(
                 types,
                 executable,
@@ -1568,7 +1596,7 @@ fn collect_entry_live_demands(
             );
             record_call_arg_demands(out, *callsite, arg_demands.as_slice());
             for (arg, demand) in args.iter().zip(arg_demands) {
-                note_live_demand(out, &mut live, arg.value, demand);
+                note_live_demand(facts, out, &mut live, arg.value, demand);
             }
         }
         LoweredTail::If {
@@ -1576,7 +1604,7 @@ fn collect_entry_live_demands(
             then_entry,
             else_entry,
         } => {
-            note_live_demand(out, &mut live, *cond, RuntimeDemand::whole());
+            note_live_demand(facts, out, &mut live, *cond, RuntimeDemand::whole());
             merge_live_demands(
                 &mut live,
                 collect_entry_external_demands(
@@ -1618,7 +1646,7 @@ fn collect_entry_live_demands(
             dispatch,
         } => {
             for value in bindings.pinned.iter().chain(bindings.prepared.iter()) {
-                note_live_demand(out, &mut live, *value, RuntimeDemand::whole());
+                note_live_demand(facts, out, &mut live, *value, RuntimeDemand::whole());
             }
             for target in dispatch.successors() {
                 merge_live_demands(
@@ -1643,12 +1671,12 @@ fn collect_entry_live_demands(
                 handed_to_arm_demand(facts, callable_flows, parameter, walks.parameter(parameter))
             });
             for (input, demand) in inputs.iter().zip(input_demands) {
-                note_live_demand(out, &mut live, *input, demand);
+                note_live_demand(facts, out, &mut live, *input, demand);
             }
         }
         LoweredTail::Receive(receive) => {
             for value in receive.bindings.pinned.iter().chain(receive.bindings.prepared.iter()) {
-                note_live_demand(out, &mut live, *value, RuntimeDemand::whole());
+                note_live_demand(facts, out, &mut live, *value, RuntimeDemand::whole());
             }
             for clause in &receive.outcomes {
                 merge_live_demands(
@@ -1670,7 +1698,7 @@ fn collect_entry_live_demands(
                 );
             }
             if let Some(after) = &receive.after {
-                note_live_demand(out, &mut live, after.timeout, RuntimeDemand::whole());
+                note_live_demand(facts, out, &mut live, after.timeout, RuntimeDemand::whole());
                 merge_live_demands(
                     &mut live,
                     collect_entry_external_demands(
@@ -2052,18 +2080,18 @@ pub(super) fn propagate_steps_reverse(
                 };
                 for (item, demand) in items.iter().zip(fields.into_iter().flatten()) {
                     let demand = boundary_value_flow_demand(facts, callable_flows, item.value, demand);
-                    note_live_demand(out, live, item.value, demand);
+                    note_live_demand(facts, out, live, item.value, demand);
                 }
             }
             LoweredStep::List { value, items, tail, .. } => {
                 if !take_live_demand(live, *value).is_ignore() {
                     for item in items {
                         let demand = boundary_value_flow_demand(facts, callable_flows, *item, RuntimeDemand::whole());
-                        note_live_demand(out, live, *item, demand);
+                        note_live_demand(facts, out, live, *item, demand);
                     }
                     if let Some(tail) = tail {
                         let demand = boundary_value_flow_demand(facts, callable_flows, *tail, RuntimeDemand::whole());
-                        note_live_demand(out, live, *tail, demand);
+                        note_live_demand(facts, out, live, *tail, demand);
                     }
                 }
             }
@@ -2074,8 +2102,8 @@ pub(super) fn propagate_steps_reverse(
                             boundary_value_flow_demand(facts, callable_flows, key.value, RuntimeDemand::whole());
                         let field_demand =
                             boundary_value_flow_demand(facts, callable_flows, *field, RuntimeDemand::whole());
-                        note_live_demand(out, live, key.value, key_demand);
-                        note_live_demand(out, live, *field, field_demand);
+                        note_live_demand(facts, out, live, key.value, key_demand);
+                        note_live_demand(facts, out, live, *field, field_demand);
                     }
                 }
             }
@@ -2089,14 +2117,14 @@ pub(super) fn propagate_steps_reverse(
                 let ok_demand = take_live_demand(live, *ok);
                 if !value_demand.is_ignore() || !ok_demand.is_ignore() {
                     let base_demand = boundary_value_flow_demand(facts, callable_flows, *base, RuntimeDemand::whole());
-                    note_live_demand(out, live, *base, base_demand);
+                    note_live_demand(facts, out, live, *base, base_demand);
                     for (key, field) in entries {
                         let key_demand =
                             boundary_value_flow_demand(facts, callable_flows, key.value, RuntimeDemand::whole());
                         let field_demand =
                             boundary_value_flow_demand(facts, callable_flows, *field, RuntimeDemand::whole());
-                        note_live_demand(out, live, key.value, key_demand);
-                        note_live_demand(out, live, *field, field_demand);
+                        note_live_demand(facts, out, live, key.value, key_demand);
+                        note_live_demand(facts, out, live, *field, field_demand);
                     }
                 }
             }
@@ -2104,21 +2132,21 @@ pub(super) fn propagate_steps_reverse(
                 if !take_live_demand(live, *value).is_ignore() {
                     for (_, field) in fields {
                         let demand = boundary_value_flow_demand(facts, callable_flows, *field, RuntimeDemand::whole());
-                        note_live_demand(out, live, *field, demand);
+                        note_live_demand(facts, out, live, *field, demand);
                     }
                 }
             }
             LoweredStep::Bitstring { value, fields } => {
                 if !take_live_demand(live, *value).is_ignore() {
                     for field in fields {
-                        note_live_demand(out, live, field.value, RuntimeDemand::whole());
+                        note_live_demand(facts, out, live, field.value, RuntimeDemand::whole());
                         if let Some(size) = field
                             .spec
                             .size
                             .as_ref()
                             .and_then(super::super::body::LoweredBitSize::read_value)
                         {
-                            note_live_demand(out, live, size, RuntimeDemand::whole());
+                            note_live_demand(facts, out, live, size, RuntimeDemand::whole());
                         }
                     }
                 }
@@ -2147,29 +2175,29 @@ pub(super) fn propagate_steps_reverse(
             }
             LoweredStep::BinaryOp { value, left, right, .. } => {
                 if !take_live_demand(live, *value).is_ignore() {
-                    note_live_demand(out, live, *left, RuntimeDemand::whole());
-                    note_live_demand(out, live, *right, RuntimeDemand::whole());
+                    note_live_demand(facts, out, live, *left, RuntimeDemand::whole());
+                    note_live_demand(facts, out, live, *right, RuntimeDemand::whole());
                 }
             }
             LoweredStep::UnaryOp { value, input, .. } => {
                 if !take_live_demand(live, *value).is_ignore() {
-                    note_live_demand(out, live, *input, RuntimeDemand::whole());
+                    note_live_demand(facts, out, live, *input, RuntimeDemand::whole());
                 }
             }
             LoweredStep::MapIndex { value, base, key } => {
                 if !take_live_demand(live, *value).is_ignore() {
-                    note_live_demand(out, live, *base, RuntimeDemand::whole());
-                    note_live_demand(out, live, key.value, RuntimeDemand::whole());
+                    note_live_demand(facts, out, live, *base, RuntimeDemand::whole());
+                    note_live_demand(facts, out, live, key.value, RuntimeDemand::whole());
                 }
             }
             LoweredStep::FieldAccess { value, base, .. } => {
                 if !take_live_demand(live, *value).is_ignore() {
-                    note_live_demand(out, live, *base, RuntimeDemand::whole());
+                    note_live_demand(facts, out, live, *base, RuntimeDemand::whole());
                 }
             }
             LoweredStep::RequireMapValue { value, source, .. } => {
                 if !take_live_demand(live, *value).is_ignore() {
-                    note_live_demand(out, live, *source, RuntimeDemand::whole());
+                    note_live_demand(facts, out, live, *source, RuntimeDemand::whole());
                 }
             }
             LoweredStep::TupleField { value, source, index } => {
@@ -2181,14 +2209,14 @@ pub(super) fn propagate_steps_reverse(
                     // prefix onto this one.
                     let mut fields = vec![RuntimeDemand::ignore(); index + 1];
                     fields[*index] = demand;
-                    note_live_demand(out, live, *source, RuntimeDemand::tuple_fields(fields));
+                    note_live_demand(facts, out, live, *source, RuntimeDemand::tuple_fields(fields));
                 }
             }
             LoweredStep::SplitList { source, head, tail } => {
                 let head_demand = take_live_demand(live, *head);
                 let tail_demand = take_live_demand(live, *tail);
                 if !head_demand.is_ignore() || !tail_demand.is_ignore() {
-                    note_live_demand(out, live, *source, RuntimeDemand::whole());
+                    note_live_demand(facts, out, live, *source, RuntimeDemand::whole());
                 }
             }
             LoweredStep::BitstringRead {
@@ -2201,16 +2229,16 @@ pub(super) fn propagate_steps_reverse(
                 let value_live = !take_live_demand(live, *value).is_ignore();
                 let next_live = next.is_some_and(|next| !take_live_demand(live, next).is_ignore());
                 if value_live {
-                    note_live_demand(out, live, *source, RuntimeDemand::whole());
+                    note_live_demand(facts, out, live, *source, RuntimeDemand::whole());
                 }
                 if value_live || next_live {
-                    note_live_demand(out, live, *pos, RuntimeDemand::whole());
+                    note_live_demand(facts, out, live, *pos, RuntimeDemand::whole());
                     if let Some(size) = spec
                         .size
                         .as_ref()
                         .and_then(super::super::body::LoweredBitSize::read_value)
                     {
-                        note_live_demand(out, live, size, RuntimeDemand::whole());
+                        note_live_demand(facts, out, live, size, RuntimeDemand::whole());
                     }
                 }
             }
@@ -2338,22 +2366,22 @@ fn note_clause_matcher_demands(
         match step {
             LoweredStep::RequireMapValue { source, .. } => {
                 let source_demand = boundary_value_demand(facts, *source, RuntimeDemand::whole());
-                note_live_demand(out, live, *source, source_demand);
+                note_live_demand(facts, out, live, *source, source_demand);
             }
             LoweredStep::SplitList { source, .. } => {
                 let demand = boundary_value_demand(facts, *source, RuntimeDemand::whole());
-                note_live_demand(out, live, *source, demand);
+                note_live_demand(facts, out, live, *source, demand);
             }
             LoweredStep::BitstringRead { source, pos, spec, .. } => {
                 let demand = boundary_value_demand(facts, *source, RuntimeDemand::whole());
-                note_live_demand(out, live, *source, demand);
-                note_live_demand(out, live, *pos, RuntimeDemand::whole());
+                note_live_demand(facts, out, live, *source, demand);
+                note_live_demand(facts, out, live, *pos, RuntimeDemand::whole());
                 if let Some(size) = spec
                     .size
                     .as_ref()
                     .and_then(super::super::body::LoweredBitSize::read_value)
                 {
-                    note_live_demand(out, live, size, RuntimeDemand::whole());
+                    note_live_demand(facts, out, live, size, RuntimeDemand::whole());
                 }
             }
             LoweredStep::PopHandler => {}
@@ -2389,7 +2417,7 @@ fn propagate_lambda_capture_demands(
 ) {
     if !demand.is_callable() {
         for capture in captures {
-            note_live_demand(out, live, *capture, RuntimeDemand::whole());
+            note_live_demand(facts, out, live, *capture, RuntimeDemand::whole());
         }
         return;
     }
@@ -2419,7 +2447,7 @@ fn propagate_lambda_capture_demands(
             if callable.is_first_class() {
                 demand.shape = ShapeDemand::Whole;
             }
-            note_live_demand(out, live, *capture, demand);
+            note_live_demand(facts, out, live, *capture, demand);
         }
     }
 }
@@ -2558,7 +2586,7 @@ fn arg_demands_for_summary(
         .zip(out.iter_mut().zip(facts.callsite_dispatch_demand_of(callsite)))
     {
         if read.asks_anything() {
-            let ty = facts.argument_type(arg.value);
+            let ty = facts.value_type(arg.value);
             let asked = boundary_value_flow_demand_at(
                 facts,
                 callable_flows,
@@ -2929,14 +2957,19 @@ fn unique_in_order<T: PartialEq>(values: impl IntoIterator<Item = T>) -> Vec<T> 
     unique
 }
 
+/// Records what a consumer asks of `value`, read against the value's own type.
 fn note_live_demand(
+    facts: &RuntimeDemandFacts<'_>,
     out: &mut ExecutableRuntimeDemand,
     live: &mut ValueMap<RuntimeDemand>,
     value: ValueId,
-    demand: RuntimeDemand,
+    mut demand: RuntimeDemand,
 ) {
     if demand.is_ignore() {
         return;
+    }
+    if let Some(&ty) = facts.value_types.get(&value) {
+        facts.escape_mixed_callables(&mut demand, ty);
     }
     join_map_demand(live, value, demand.clone());
     join_map_demand(&mut out.value_demands, value, demand);

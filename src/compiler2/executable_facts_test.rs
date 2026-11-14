@@ -18,6 +18,37 @@ fn a_dispatch_read_of_a_zero_width_tuple_is_present() {
     assert!(!dispatch_projection(&mut world, nested).is_ignore());
 }
 
+/// A tuple whose first field may be a callable or an integer and whose second
+/// is always a callable: a consumer that calls both fields needs the first
+/// boxed, so a type test can tell it from an integer, and the second direct.
+#[test]
+fn a_callable_that_shares_its_position_with_an_integer_is_boxed() {
+    let mut world = World::new();
+    let int = world.types_mut().int();
+    let callable = world.types_mut().arrow(&[int], int);
+    let maybe_callable = world.types_mut().union(callable, int);
+    let pair = world.types_mut().tuple(&[maybe_callable, callable]);
+    let any = world.types_mut().any();
+    let mut builder = RuntimeDemandTypeBuilder::new(any);
+    prepare_type_projection(&mut world, &mut builder, pair);
+
+    let called = || RuntimeDemand::callable(CallableDemand::opaque());
+    let mut demand = RuntimeDemand::tuple_fields(vec![called(), called()]);
+    escape_mixed_callables(&builder.projections, &mut demand, pair);
+
+    let ShapeDemand::TupleFields(fields) = &demand.shape else {
+        panic!("the pair is still read field by field: {demand:?}");
+    };
+    assert!(
+        fields[0].callable.escape,
+        "the field that may be an integer travels boxed: {demand:?}"
+    );
+    assert!(
+        !fields[1].callable.escape,
+        "the field that is always a callable stays direct: {demand:?}"
+    );
+}
+
 /// A tuple with a wide field keeps its per-field demand.
 #[test]
 fn a_dispatch_read_of_a_wide_tuple_keeps_its_field_demands() {

@@ -246,6 +246,8 @@ fn a_call_between_destinations_asks_for_exactly_the_arguments_its_choice_reads()
                 boundary: RuntimeDemand::ignore(),
                 dispatch,
                 callable_value_demand: None,
+                admits_non_callable: true,
+                field_tys: Vec::new(),
             }),
         )
     };

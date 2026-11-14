@@ -661,6 +661,13 @@ pub(crate) struct RuntimeDemandTypeProjection {
     pub(crate) boundary: RuntimeDemand,
     pub(crate) dispatch: RuntimeDemand,
     pub(crate) callable_value_demand: Option<RuntimeDemand>,
+    /// Whether a value of this type can be something other than a callable.
+    /// A callable at such a position has to be told apart from the rest, so
+    /// it travels boxed.
+    pub(crate) admits_non_callable: bool,
+    /// The field types of a tuple type of one arity, in order; empty for
+    /// every other type.
+    pub(crate) field_tys: Vec<Ty>,
 }
 
 impl RuntimeDemandTypeProjection {

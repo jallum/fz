@@ -2897,6 +2897,12 @@ impl Types {
         self.descr(a).is_pure_callable()
     }
 
+    /// True when some value of `a` is known not to be a callable. A type
+    /// variable is not known to be anything, so it does not count.
+    pub fn admits_non_callable(&self, a: &Ty) -> bool {
+        self.descr(a).admits_non_callable()
+    }
+
     /// Every free type-var id reachable from `a`, structural children
     /// included. The identity of the vars, not merely their presence: two
     /// types that mention DIFFERENT vars describe different families however
