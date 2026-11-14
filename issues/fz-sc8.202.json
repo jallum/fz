@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T16:40:17Z",
+  "description": "On develop 13d4783d0 (seen first on 87aaea64b) this prints [1, 2, :three] on interp and [1, 2, 3] on run and build. Elixir prints [1, 2, :three].\n\n  def pick(3), do: :three\n  def pick(n), do: n\n  def main() do\n    dbg(Enum.to_list(Stream.map([1, 2, 3], \u0026pick/1)))\n  end\n\nMeasured variants (probes: /Users/j5n/Workspace/fz-sc8.102-probes/sm_*.fz):\n- wrong on run: fn x -\u003e pick(x) end as the mapper; fn x -\u003e case x do 3 -\u003e :three; n -\u003e n end end; atoms ([:a, :b, :c] with pick(:c)); Enum.take/2 over the stream; with pick(3) raising or throwing, run returns [1, 2, 3] and nothing is raised.\n- right on run: a guard clause (def pick(n) when n == 3); fn x -\u003e if x == 3 ... end; Enum.map([1, 2, 3], \u0026pick/1); Enum.map over Stream.map(list, fn x -\u003e x end) with \u0026pick/1; a direct pick(3) in the same program.\n- fz-lr6 on or off makes no difference (Callables session).\n\nSo the miss is a literal pattern matched against the element a stream hands its mapper, in native code only; == on the same element is right. Mechanism not found.\n\nAcceptance: the mechanism is named from an experiment; the program above and the case and raising variants are oracle fixtures on interp, run and build; the full suite passes.\n\nFound while writing the fixture for fz-sc8.102.",
+  "id": "fz-sc8.202",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "A literal pattern on a Stream.map element misses on run and build",
+  "type": "bug",
+  "updated_at": "2026-11-14T16:40:17Z"
+}
