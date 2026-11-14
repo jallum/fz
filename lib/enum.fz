@@ -1631,16 +1631,16 @@ defmodule Enum do
 
   """
   @spec uniq_by(Enumerable.t(a), (a) -> any) :: [a]
-  def uniq_by(enumerable, fun), do: uniq_walk(to_list(enumerable), fun, [])
+  def uniq_by(enumerable, fun), do: uniq_walk(to_list(enumerable), fun, %{})
 
-  @spec uniq_walk([a], (a) -> any, [any]) :: [a]
+  @spec uniq_walk([a], (a) -> any, any) :: [a]
   defp uniq_walk([], _fun, _seen), do: []
   defp uniq_walk([head | tail], fun, seen) do
     key = fun.(head)
-    if List.member?(seen, key) do
+    if Map.has_key?(seen, key) do
       uniq_walk(tail, fun, seen)
     else
-      [head | uniq_walk(tail, fun, [key | seen])]
+      [head | uniq_walk(tail, fun, Map.put(seen, key, true))]
     end
   end
 
