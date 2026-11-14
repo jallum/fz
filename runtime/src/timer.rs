@@ -7,7 +7,7 @@
 //! after-continuation; F2 only owns the data structure and its tests.
 //!
 //! v1 is single-worker (src/runtime.rs:43-54), so no synchronization is
-//! used. Multi-worker will need an Arc<Mutex<TimerWheel>> or a per-worker
+//! used. Multi-worker will need an `Arc<Mutex<TimerWheel>>` or a per-worker
 //! shard — orthogonal to the per-receive semantics this wheel exists to
 //! support.
 

@@ -150,7 +150,7 @@ pub struct QuotedSourceMetadata {
     /// resolved in the context it is inserted into.
     pub bound_callable: Option<FunctionId>,
     /// True only on the callee this front door synthesises for `lhs[key]`.
-    /// See [`META_FROM_BRACKETS_KEY`].
+    /// See `META_FROM_BRACKETS_KEY`.
     pub from_brackets: bool,
     /// The byte-offset source span, carried verbatim from the lexer. Positions
     /// are stored as an exact source version plus byte range — never

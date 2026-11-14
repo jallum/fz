@@ -32,10 +32,10 @@ pub struct CallSiteKey {
 /// walk reached a live call, and the two variants separate the pair that
 /// absence used to carry together -- `Unresolved` is "no target is nameable
 /// yet", which is NOT a provider boundary (a RESOLVED edge whose
-/// [`CallTargetEdge::activation`] is `None`) and NOT an empty target list.
+/// `CallTargetEdge::activation` is `None`) and NOT an empty target list.
 ///
 /// `Unresolved` is the lattice BOTTOM. [`CallSiteMap`] and
-/// [`CallSiteTargetsMap`] never let it overwrite a resolved answer, so
+/// `CallSiteTargetsMap` never let it overwrite a resolved answer, so
 /// re-emitting it moves no revision and an analysis round that stopped
 /// resolving narrows nothing. That is exactly what
 /// `World::preserved_analysis_claims` used to do for these two kinds, stated
@@ -416,7 +416,7 @@ fn extend_missing<T: Ord + Clone>(set: &mut BTreeSet<T>, other: &BTreeSet<T>) {
 /// obligations.
 ///
 /// A field reading is bounded: one that asks for more than
-/// [`TUPLE_LANE_BUDGET`] lanes is `Whole`. Every producer of the value hears
+/// `TUPLE_LANE_BUDGET` lanes is `Whole`. Every producer of the value hears
 /// the same demand, so none of them leaves out a field the box needs.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum ShapeDemand {

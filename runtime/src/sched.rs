@@ -26,7 +26,7 @@ use std::collections::VecDeque;
 use std::ptr::write;
 
 /// Mint a fresh-task entry thunk on `heap`: a one-capture closure whose code
-/// is `fz_entry_thunk` and whose capture[0] is `inner` (the task's inner
+/// is `fz_entry_thunk` and whose `capture[0]` is `inner` (the task's inner
 /// closure). The scheduler resumes this thunk through the single `fz_resume`
 /// verb; on first resume the thunk supplies `inner`'s halt-cont and enters it.
 ///
@@ -50,7 +50,7 @@ pub fn mint_entry_thunk(heap: &mut Heap, entry_thunk_addr: *const u8, inner: Any
 const SCAFFOLDING_ARITY: u16 = 0;
 
 /// Mint a main-style entry's synthetic inner closure on `heap`: code is
-/// `fz_main_trampoline`, capture[0] is the raw `(cont)` main fn pointer stored
+/// `fz_main_trampoline`, `capture[0]` is the raw `(cont)` main fn pointer stored
 /// as a raw int (so GC never treats it as a heap reference), and `halt_kind`
 /// matches the entry fn's return repr. Wrapping this in `mint_entry_thunk`
 /// lets a plain main fn ride the same resume path as a spawned user closure.

@@ -1,7 +1,7 @@
 //! ANSI escape helpers and TTY/NO_COLOR detection (fz-ul4.20.6).
 //!
 //! Tiny by design — no `crossterm` / `termcolor` dependency. Honors the
-//! NO_COLOR convention (https://no-color.org) and IsTerminal probing
+//! NO_COLOR convention (<https://no-color.org>) and IsTerminal probing
 //! from the Rust 2024 edition's stable surface.
 
 use std::env::var_os;

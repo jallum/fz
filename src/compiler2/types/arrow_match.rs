@@ -215,7 +215,7 @@ impl Types {
     /// answers the result they determine. It does not decide whether a
     /// witness fits its parameter: a caller that wants that verdict first
     /// narrows each witness to the clause's domain
-    /// ([`Types::narrow_to_clause_domain`]), so the row reaching this walk
+    /// (`Types::narrow_to_clause_domain`), so the row reaching this walk
     /// already lies inside the domain and the answer is for the part of the
     /// argument that can return.
     pub fn match_arrow(
