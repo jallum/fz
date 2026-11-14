@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T11:46:21Z",
+  "description": "After fz-sc8.183.1-.3 a step of \u003c\u003cc, r :: binary\u003e\u003e still calls the runtime for the bit length (fz_bs_bit_len_ref), for the byte (fz_bs_read_int_ref) and for a view of the rest (fz_bs_read_binary_ref, 1 allocation). Release, 20.6 MB / 32,000 log lines: read + JSON.decode! keeping nothing takes 3.7 s (measured with integer patterns, before .183.2); Elixir 0.12 s. BEAM keeps a match context (base, offset, end) in registers and reuses it across the self-call, so a step is a load, a compare and an add. Goal: field reads are inline loads against a base pointer and bit length resolved once per function, and a self-recursive walk passes the position instead of building the rest. Needs a spike with predictions and a proposal page before building.",
+  "id": "fz-sc8.183.5",
+  "labels": [],
+  "parent": "fz-sc8.183",
+  "priority": 1,
+  "status": "open",
+  "title": "A binary walk reads bytes inline and passes its position",
+  "type": "task",
+  "updated_at": "2026-11-14T11:46:21Z"
+}
