@@ -513,6 +513,26 @@ impl JsonlBackend {
                     );
                 },
             );
+        let deferral_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event2::<crate::compiler2::pull::ProductKey, crate::compiler2::pull::ProductDeferral, _>(
+            &["fz", "compiler2", "pull", "drive", "deferred"],
+            move |name, span_id, parent_span_id, product, deferral| {
+                let scope = match deferral.scope {
+                    crate::compiler2::ProductScope::Root(root) => format!("root {}", root.as_u32()),
+                    crate::compiler2::ProductScope::Program => "program".to_string(),
+                };
+                deferral_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! {
+                        product: crate::telemetry::opaque(product),
+                        scope: scope,
+                        depth: deferral.depth,
+                    },
+                );
+            },
+        );
         telemetry.attach_raw_event3::<
             crate::compiler2::pull::ProductKey,
             crate::compiler2::pull::ProductKey,
@@ -686,11 +706,28 @@ impl JsonlBackend {
         Self::install_raw_value::<crate::diag::Diagnostic>(telemetry, backend, &["fz", "diag"], "diagnostic");
         // Readiness and externally owned product movements have no job
         // completion. Each carries its one causal graph step directly.
-        for name in ["quiesced", "dependencies_moved"] {
-            Self::install_raw_value::<
-                crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>,
-            >(telemetry, backend, &["fz", "compiler2", "work_graph", name], "step");
-        }
+        Self::install_raw_value::<crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>>(
+            telemetry,
+            backend,
+            &["fz", "compiler2", "work_graph", "dependencies_moved"],
+            "step",
+        );
+        let quiesced_backend = Rc::clone(backend);
+        telemetry.attach_raw_event2::<
+            crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>,
+            usize,
+            _,
+        >(
+            &["fz", "compiler2", "work_graph", "quiesced"],
+            move |name, span_id, parent_span_id, step, depth| {
+                quiesced_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! { step: crate::telemetry::opaque(step), depth: *depth },
+                );
+            },
+        );
         Self::install_raw_value::<std::time::Duration>(
             telemetry,
             backend,
@@ -1253,6 +1290,7 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "pull", "product", "evaluated"]
             | ["fz", "compiler2", "pull", "product", "validation"]
             | ["fz", "compiler2", "pull", "drive", "finished"]
+            | ["fz", "compiler2", "pull", "drive", "deferred"]
             | ["fz", "compiler2", "pull", "product", "copublished"]
             | ["fz", "compiler2", "pull", "recursive_group", "published"]
             | ["fz", "compiler2", "backend_request", ..]

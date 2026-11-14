@@ -645,17 +645,40 @@ unproducible product (`DriveOutcome::DependencyFailed`).
 When `pop_runnable` returns nothing the loop is at a drain, and
 `ExecutionContext::drain(also_settled)` is the one answer to "what work is
 left?". It first serves the product requests completions queued
-(`drive_product_requests`; see *Product pulls for artifacts*) -- a request
-queued behind a job that parked on its gates is only observable here, once the
-agenda is empty. Only when no request was served does it arbitrate: the blocked
-waiters' own settled questions plus `also_settled`, flushed as one set of
-readiness steps whose movements are published to the product sessions. It
-returns `Drained::Served`, `Drained::Moved` or `Drained::Silent`; `Served` and
-`Moved` send the loop back around, `Silent` ends it. `drive_until` calls
-`drain(&[])`; `drain_pending_for` calls `serve_requests`, the request half
-alone, and leaves quiescent questions indexed. The product fact-wait pump pops
-with `pop_runnable`, calls `drain` with its prerequisite set, and only on
-`Silent` demands the waited fact's producer and pops once more.
+(`serve_requests`; see *Product pulls for artifacts*) -- a request queued
+behind a job that parked on its gates is only observable here, once the agenda
+is empty. A request for a scope that is already active is parked, not served:
+one session is driven at most once at a time, and the parked request is
+released when that scope's drive ends. The serve loop sets aside every drive
+that defers (below) and queues it again once the loop has served everything
+else, so a drive nested in one request is never handed another's. A serve pass
+is `Served` when a product finished or a fact moved
+(`FactTable::movements`) during it, and `Silent` otherwise.
+
+Quiescence is a property of the whole drive stack. A drive with another drive
+beneath it can still be moved by that frame, so a drain at a stack depth above
+one arbitrates nothing and returns `Drained::Deferred`. The product fact-wait
+pump that gets `Deferred` still demands its own waited fact's producer and
+runs a job if it yields one; with none, it records the facts it waits on
+(`ProductSessions::defer_waits`) and its drive ends as `Driven::Deferred`, the
+request still standing. A rooted drive that was waiting on a program-scoped
+product drives it again after draining itself, so it defers in turn unless it
+is the outermost. Each deferral emits `pull.drive.deferred`.
+
+Only the drain of the outermost drive arbitrates: the blocked waiters' own
+settled questions plus `also_settled`, with the facts recorded by the deepest
+deferred drives asked first and in place of `also_settled`, flushed as one set
+of readiness steps whose movements are published to the product sessions. The
+arbitration's `work_graph.quiesced` event carries the stack depth, always at
+most one. A drain returns `Drained::Served`, `Drained::Moved`,
+`Drained::Silent` or `Drained::Deferred`; `Served` and `Moved` send the loop
+back around, `Silent` ends it. With no sessions the depth is zero.
+`drive_until` calls `drain(&[])`; `drain_pending_for` calls `serve_requests`,
+the request half alone, and leaves quiescent questions indexed. The product
+fact-wait pump pops with `pop_runnable`, calls `drain` with its prerequisite
+set, and only on `Silent` or `Deferred` demands the waited fact's producer and
+pops once more; on `Silent` with no job to pop the wait has no producer and
+the compile fails, on `Deferred` the drive unwinds.
 
 A need starts its producer the moment it is recorded, not when the agenda
 happens to run dry. `World::demand_recorded_needs` is the one call site,
