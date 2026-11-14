@@ -7,7 +7,7 @@
     "fz-ep5.5"
   ],
   "created": "2026-11-14T04:40:00Z",
-  "description": "Needs a walkthrough before building. Today type_predicate_of (src/dispatch_matrix/pattern.rs ~607) recognises a two-clause true/false helper only through an annotated parameter, and Kernel's is_* are defined as 'def is_integer(_ :: integer), do: true'. Once '::' is gone: the recognition reads the helper's first-row questions (patterns plus guard type tests), Kernel's is_* rest on a primitive integer/float/... test (design to propose: what primitive, how the guard path lowers it to a tag test, how \u0026is_integer/1 runs), and each predicate carries per-clause specs (@spec is_integer(integer) :: true / @spec is_integer(term) :: false, clause order supplying the negation). 00615 is rewritten with guard-form helpers. Acceptance: no pin rise, full gate green.",
+  "description": "Needs a walkthrough before building. Today type_predicate_of (src/dispatch_matrix/pattern.rs ~612-639) recognises a two-clause true/false helper only through an annotated parameter, and Kernel's is_* are defined as 'def is_integer(_ :: integer), do: true'. Once '::' is gone: the recognition reads the helper's first-row questions (patterns plus guard type tests), Kernel's is_* rest on a primitive integer/float/... test (design to propose: what primitive, how the guard path lowers it to a tag test, how \u0026is_integer/1 runs), and each predicate carries per-clause specs (@spec is_integer(integer) :: true / @spec is_integer(term) :: false, clause order supplying the negation). 00615 is rewritten with guard-form helpers.\nCost this should remove (measured on fz-ep5.3): a guard naming a Kernel type predicate folds into a Region::Type row (type_test_of, pattern.rs:1416-1447) only after the helper is defined: plan_entry_dispatch (src/compiler2/jobs/dispatch.rs:135-148) waits on FactKey::GuardDispatch(callee), whose reify waits on the helper's DefineFunction and ExpandFunctionSource. Per helper: 1 DefineFunction, 1 ExpandFunctionSource, 2 ReifyGuardDispatch, plus a second PlanEntryDispatch per guarded caller. fz-ep5.3 raised five pins for this (approved): enum_reduce operator refs 204 -\u003e 213; activation frontier 2513 -\u003e 2529; 00567 analysis claims 745 -\u003e 763; 00181 drain arbiter 204 -\u003e 213; tail recursion compiled functions 14 -\u003e 16 (Kernel.is_integer/1, Kernel.is_float/1). Recognising a Kernel type predicate in a guard without defining the helper should bring all five back to their earlier values.\nAcceptance: the five pins fall at least to their pre-ep5.3 values, no other pin rises, full gate green.",
   "id": "fz-ep5.4",
   "labels": [],
   "parent": "fz-ep5",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "A type predicate is recognised from its guards and clause specs, and Kernel's is_* rest on a primitive test",
   "type": "task",
-  "updated_at": "2026-11-14T04:40:02Z"
+  "updated_at": "2026-11-14T11:48:28Z"
 }
