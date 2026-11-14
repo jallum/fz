@@ -45,10 +45,19 @@ pub enum CallableQualifier {
     Unbound,
 }
 
+/// What one link of a scope's binding chain says.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Entry {
+    /// A name bound to a symbol; every name lookup reads these.
+    Named { name: String, symbol: NamespaceSymbol },
+    /// A macro `require` made callable by its qualified name. It binds no
+    /// name, so no lookup by name can meet it.
+    RequiredMacro(FunctionId),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Binding {
-    name: String,
-    symbol: NamespaceSymbol,
+    entry: Entry,
     prev: Namespace,
 }
 
@@ -65,11 +74,23 @@ impl NamespaceStore {
     }
 
     pub fn bind(&mut self, head: Namespace, name: impl Into<String>, symbol: NamespaceSymbol) -> Namespace {
-        let binding = Binding {
-            name: name.into(),
-            symbol,
-            prev: head,
-        };
+        self.push(
+            head,
+            Entry::Named {
+                name: name.into(),
+                symbol,
+            },
+        )
+    }
+
+    /// Records that `macro_function` may be called by its qualified name from
+    /// `head` on.
+    pub fn bind_required_macro(&mut self, head: Namespace, macro_function: FunctionId) -> Namespace {
+        self.push(head, Entry::RequiredMacro(macro_function))
+    }
+
+    fn push(&mut self, head: Namespace, entry: Entry) -> Namespace {
+        let binding = Binding { entry, prev: head };
         if let Some(&id) = self.by_binding.get(&binding) {
             return id;
         }
@@ -79,53 +100,67 @@ impl NamespaceStore {
         id
     }
 
-    pub fn lookup(&self, mut head: Namespace, name: &str) -> Option<&NamespaceSymbol> {
-        while !head.is_end() {
-            let binding = &self.bindings[head.0 as usize - 1];
-            if binding.name == name {
-                return Some(&binding.symbol);
-            }
-            head = binding.prev;
-        }
-        None
+    /// The chain's entries from `head` back to its start, newest first.
+    fn entries(&self, head: Namespace) -> impl Iterator<Item = &Entry> {
+        std::iter::successors((!head.is_end()).then_some(head), |&link| {
+            let prev = self.bindings[link.0 as usize - 1].prev;
+            (!prev.is_end()).then_some(prev)
+        })
+        .map(|link| &self.bindings[link.0 as usize - 1].entry)
+    }
+
+    /// The chain's named bindings from `head`, newest first.
+    fn named(&self, head: Namespace) -> impl Iterator<Item = (&str, &NamespaceSymbol)> {
+        self.entries(head).filter_map(|entry| match entry {
+            Entry::Named { name, symbol } => Some((name.as_str(), symbol)),
+            Entry::RequiredMacro(_) => None,
+        })
+    }
+
+    pub fn lookup(&self, head: Namespace, name: &str) -> Option<&NamespaceSymbol> {
+        self.named(head)
+            .find_map(|(bound, symbol)| (bound == name).then_some(symbol))
+    }
+
+    /// Whether `require` made `macro_function` callable by its qualified name
+    /// in the chain from `head`.
+    pub fn is_required_macro(&self, head: Namespace, macro_function: FunctionId) -> bool {
+        self.entries(head)
+            .any(|entry| matches!(entry, Entry::RequiredMacro(required) if *required == macro_function))
+    }
+
+    /// Whether any named binding in the chain from `head` carries a symbol
+    /// `predicate` accepts.
+    pub fn any_symbol(&self, head: Namespace, mut predicate: impl FnMut(&NamespaceSymbol) -> bool) -> bool {
+        self.named(head).any(|(_, symbol)| predicate(symbol))
     }
 
     pub fn lookup_matching(
         &self,
-        mut head: Namespace,
+        head: Namespace,
         name: &str,
         mut predicate: impl FnMut(&NamespaceSymbol) -> bool,
     ) -> Option<&NamespaceSymbol> {
-        while !head.is_end() {
-            let binding = &self.bindings[head.0 as usize - 1];
-            if binding.name == name && predicate(&binding.symbol) {
-                return Some(&binding.symbol);
-            }
-            head = binding.prev;
-        }
-        None
+        self.named(head)
+            .find_map(|(bound, symbol)| (bound == name && predicate(symbol)).then_some(symbol))
     }
 
     pub fn lookup_best_matching<T: Ord>(
         &self,
-        mut head: Namespace,
+        head: Namespace,
         name: &str,
         mut score: impl FnMut(&NamespaceSymbol) -> Option<T>,
     ) -> Option<&NamespaceSymbol> {
-        let mut best = None;
-        while !head.is_end() {
-            let binding = &self.bindings[head.0 as usize - 1];
-            if binding.name == name
-                && let Some(candidate) = score(&binding.symbol)
-            {
-                let replace = best
-                    .as_ref()
-                    .is_none_or(|(current, _): &(T, &NamespaceSymbol)| candidate > *current);
-                if replace {
-                    best = Some((candidate, &binding.symbol));
-                }
+        let mut best: Option<(T, &NamespaceSymbol)> = None;
+        for (bound, symbol) in self.named(head) {
+            if bound != name {
+                continue;
             }
-            head = binding.prev;
+            if let Some(candidate) = score(symbol)
+                && best.as_ref().is_none_or(|(current, _)| candidate > *current)
+            {
+                best = Some((candidate, symbol));
+            }
         }
         best.map(|(_, symbol)| symbol)
     }

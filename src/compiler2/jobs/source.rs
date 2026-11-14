@@ -1,4 +1,3 @@
-use crate::fast_hash::HashSet;
 use std::rc::Rc;
 
 use super::super::code::SourceOwner;
@@ -449,7 +448,6 @@ struct FunctionSourceExpander<'world, 'tel, T: crate::telemetry::Telemetry> {
     function: FunctionId,
     current_module: ModuleId,
     namespace: Namespace,
-    required_remote_macros: HashSet<FunctionId>,
     reads: Vec<FactKey>,
     /// See `ScopeSession::next_hygiene_counter` (source_publish.rs): one
     /// ordinal per macro invocation this expander visits.
@@ -475,10 +473,6 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for Functi
 
     fn current_module(&self) -> ModuleId {
         self.current_module
-    }
-
-    fn required_remote_macros(&self) -> &HashSet<FunctionId> {
-        &self.required_remote_macros
     }
 
     fn note_read(&mut self, fact: FactKey) {
@@ -536,7 +530,6 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             function,
             current_module,
             namespace: source.namespace,
-            required_remote_macros: source.required_remote_macros.iter().copied().collect(),
             reads: Vec::new(),
             next_hygiene_counter: 0,
             guard_depth: 0,

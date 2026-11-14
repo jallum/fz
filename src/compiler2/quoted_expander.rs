@@ -1,5 +1,3 @@
-use crate::fast_hash::HashSet;
-
 use fz_runtime::any_value::{AnyValueRef, ValueKind};
 
 use crate::diag::driver::emit_through;
@@ -48,7 +46,6 @@ pub(crate) trait QuotedExpansionCtx {
     fn telemetry(&self) -> &Self::Telemetry;
     fn split(&mut self) -> (&mut World, &Self::Telemetry);
     fn current_module(&self) -> ModuleId;
-    fn required_remote_macros(&self) -> &HashSet<FunctionId>;
     fn note_read(&mut self, fact: FactKey);
     fn products(&self) -> Option<&ProductSessions>;
     fn note_product_read(&mut self, product: ProductAddress);
@@ -458,7 +455,7 @@ pub(crate) trait QuotedExpansionCtx {
         let Some(function) = function else {
             return Ok(None);
         };
-        if !self.required_remote_macros().contains(&function) {
+        if !self.world().macro_callable_remotely(scope.namespace(), function) {
             return Err(remote_macro_not_required(
                 self.telemetry(),
                 &function_name,
@@ -485,7 +482,7 @@ pub(crate) trait QuotedExpansionCtx {
         let Some(function) = self.lookup_current_module_macro(scope, function_name, args.len()) else {
             return Ok(None);
         };
-        if !self.required_remote_macros().contains(&function) {
+        if !self.world().macro_callable_remotely(scope.namespace(), function) {
             return Err(remote_macro_not_required(
                 self.telemetry(),
                 function_name,

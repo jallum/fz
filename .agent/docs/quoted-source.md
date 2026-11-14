@@ -358,9 +358,11 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   kind. Invoking an imported macro reads its retained `RootBackendProduct`.
 - `require Mod` selects the requested macro exports from `ModuleInterface`
   (`only:` or all macros minus `except:`). An exact `only:` list can reserve
-  macro identities before the interface is ready. It records those function ids as
-  required in the source session. It does not import bare names; only required
-  remote macro calls such as `Mod.m(...)` are available to source expansion.
+  macro identities before the interface is ready. It binds those function ids as
+  required-macro entries in the lexical namespace. It does not import bare names;
+  only required remote macro calls such as `Mod.m(...)` are available to source
+  expansion. An `import Mod` of any shape also permits every `Mod.m(...)` macro
+  call, since an imported module is required.
 - Source-order item macro calls expand through the same
   retained `RootBackendProduct(root)` product as expression macros. The returned root is
   read as a source fragment, local definitions are reserved, and the fragment is
@@ -368,7 +370,7 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
 - Remote calls to user modules may wait for the provider `ModuleDefined` fact
   during staged body expansion so compiler2 can distinguish ordinary functions
   from macros before the demanded body can settle. If the provider exports a
-  macro and the current scope did not `require` it, source publication emits
+  macro and the current scope neither required nor imported it, source publication emits
   `macro/not-required` instead of letting a macro call leak into body lowering.
   Current-module remote calls use the live source-session callable map instead
   of waiting for the module fact the active job is producing. Runtime helper

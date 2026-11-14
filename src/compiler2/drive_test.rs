@@ -18729,6 +18729,152 @@ end
     );
 }
 
+const REMOTE_MACRO_PROVIDER: &str = r#"
+defmodule Helpers do
+  def double(x), do: x * 2
+  def triple(x), do: x * 3
+
+  defmacro twice(x) do
+    quote do: double(unquote(x))
+  end
+
+  defmacro thrice(x) do
+    quote do: triple(unquote(x))
+  end
+end
+"#;
+
+/// Drives `App.run/0` of `consumer` (appended to the `Helpers` provider).
+fn drive_remote_macro_consumer(
+    consumer: &str,
+) -> (
+    DriveOutcome<Job, DependencyKey>,
+    Capture,
+    FunctionCapture,
+    ModuleCapture,
+    LoweredBodyCapture,
+) {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let modules = ModuleCapture::new();
+    modules.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/remote_macro_consumer.fz".to_string()),
+        text: format!("{REMOTE_MACRO_PROVIDER}{consumer}"),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("App".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    (compiler.drive(), capture, functions, modules, bodies)
+}
+
+/// `App.run/0` calls `Helpers.<expansion>` directly once its remote macro has
+/// expanded into that call.
+fn assert_remote_macro_expands_to(consumer: &str, expansion: &str, intent: &str) {
+    let (outcome, _capture, functions, modules, bodies) = drive_remote_macro_consumer(consumer);
+    assert_resolved(outcome, intent);
+    let records = functions.all();
+    let function_named = |name: &str| {
+        records
+            .iter()
+            .find(|record| function_fq_name(record, &modules) == name)
+            .unwrap_or_else(|| panic!("{intent}: {name} should be defined"))
+            .function_id
+    };
+    let run = function_named("App.run");
+    direct_call_in_body(
+        lowered_body(&bodies, run),
+        function_named(&format!("Helpers.{expansion}")),
+    );
+}
+
+fn assert_remote_macro_refused(consumer: &str, intent: &str) {
+    let (outcome, capture, ..) = drive_remote_macro_consumer(consumer);
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "{intent}: expected a fatal outcome, got {outcome:?}",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .unwrap_or_else(|| panic!("{intent}: no error diagnostic"));
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::MACRO_NOT_REQUIRED.0,
+        "{intent}: {}",
+        metadata_str(&diagnostic, "message"),
+    );
+}
+
+#[test]
+fn compiler2_import_of_a_module_permits_its_qualified_macro_call() {
+    assert_remote_macro_expands_to(
+        "defmodule App do\n  import Helpers\n  def run(), do: Helpers.twice(21)\nend\n",
+        "double",
+        "importing a module requires it, so its macros are callable by qualified name",
+    );
+}
+
+#[test]
+fn compiler2_import_only_requires_the_whole_module() {
+    assert_remote_macro_expands_to(
+        "defmodule App do\n  import Helpers, only: [double: 1]\n  def run(), do: Helpers.twice(21)\nend\n",
+        "double",
+        "`import M, only: [...]` requires every macro of M, including those it does not list",
+    );
+}
+
+#[test]
+fn compiler2_import_except_requires_the_whole_module() {
+    assert_remote_macro_expands_to(
+        "defmodule App do\n  import Helpers, except: [twice: 1]\n  def run(), do: Helpers.twice(21)\nend\n",
+        "double",
+        "`import M, except: [...]` still requires the macros it leaves unimported",
+    );
+}
+
+#[test]
+fn compiler2_require_in_one_module_does_not_license_a_sibling_module() {
+    assert_remote_macro_refused(
+        "defmodule Other do\n  require Helpers\n  def run(), do: Helpers.twice(1)\nend\n\
+         defmodule App do\n  def run(), do: Helpers.twice(21)\nend\n",
+        "a require is lexical: it covers its own module and no sibling",
+    );
+}
+
+#[test]
+fn compiler2_import_in_one_module_does_not_license_a_sibling_module() {
+    assert_remote_macro_refused(
+        "defmodule Other do\n  import Helpers\n  def run(), do: Helpers.twice(1)\nend\n\
+         defmodule App do\n  def run(), do: Helpers.twice(21)\nend\n",
+        "an import is lexical: it covers its own module and no sibling",
+    );
+}
+
+#[test]
+fn compiler2_require_only_permits_only_the_listed_macros() {
+    assert_remote_macro_refused(
+        "defmodule App do\n  require Helpers, only: [twice: 1]\n  def run(), do: Helpers.thrice(14)\nend\n",
+        "`require M, only: [...]` leaves the unlisted macros of M refused",
+    );
+}
+
+#[test]
+fn compiler2_require_except_refuses_the_excluded_macro() {
+    assert_remote_macro_refused(
+        "defmodule App do\n  require Helpers, except: [twice: 1]\n  def run(), do: Helpers.twice(21)\nend\n",
+        "`require M, except: [...]` leaves the excluded macro refused",
+    );
+}
+
 #[test]
 fn compiler2_remote_macro_requires_explicit_require() {
     let tel = ConfiguredTelemetry::new();
