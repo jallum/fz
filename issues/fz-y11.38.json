@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T02:25:58Z",
   "created": "2026-11-14T01:55:37Z",
   "description": "CallableSurface { inputs: Vec\u003cTy\u003e } is cloned at semantic.rs:633 (448), executable_facts.rs:548 (384), :361 (288), semantic.rs:375 (256), :305/:320 (192), :712 (160) and smaller sites: semantic.rs:274 totals 4,448.\n\nChange: each clone is read: the last use moves, a reader borrows, a key that is only compared is compared through a borrow. A clone that is stored stays and is named.\n\nEvidence: census of the OptionParser probe at c0e52fbaf (tip of #518; 734,597 allocations): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/c0e52fbaf_top.txt; call chains: cd /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census \u0026\u0026 python3 chain.py c0e52fbaf.pkl \u003cfile:line\u003e \u003cdepth\u003e \"\" \u003cn\u003e; line numbers are exact at commit c0e52fbaf.\n\nSignal: full gate green; no golden or pin moves except a falling pin, which is lowered and listed; program output and canonical backend dump identical on the probe; allocation count before and after in the commit.",
   "id": "fz-y11.38",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A callable surface is moved or borrowed where it is copied today",
   "type": "task",
-  "updated_at": "2026-11-14T01:55:44Z"
+  "updated_at": "2026-11-14T02:25:58Z"
 }
