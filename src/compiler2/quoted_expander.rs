@@ -1,5 +1,3 @@
-use crate::fast_hash::HashSet;
-
 use fz_runtime::any_value::{AnyValueRef, ValueKind};
 
 use crate::diag::driver::emit_through;
@@ -48,7 +46,6 @@ pub(crate) trait QuotedExpansionCtx {
     fn telemetry(&self) -> &Self::Telemetry;
     fn split(&mut self) -> (&mut World, &Self::Telemetry);
     fn current_module(&self) -> ModuleId;
-    fn required_remote_macros(&self) -> &HashSet<FunctionId>;
     fn note_read(&mut self, fact: FactKey);
     fn products(&self) -> Option<&ProductSessions>;
     fn note_product_read(&mut self, product: ProductAddress);
@@ -437,6 +434,24 @@ pub(crate) trait QuotedExpansionCtx {
                 call_span,
             );
         }
+        if let Some(symbol) = self.imported_symbol_of(module, &function_name, arity, &scope) {
+            return match symbol {
+                NamespaceSymbol::Macro(function) => self
+                    .expand_macro_invocation(
+                        owner,
+                        invocation.clone(),
+                        function,
+                        scope,
+                        depth,
+                        &self.call_args(&node.tail)?,
+                    )
+                    .map(Some),
+                NamespaceSymbol::Callable(function) => Ok(Some(ExpandedValue::Blocked(Box::new(
+                    self.wait_for_callable_module_interface(function),
+                )))),
+                _ => Ok(None),
+            };
+        }
         let module_defined = self.world().module_defined_revision(module);
         if module_defined.is_none() {
             if self.world().is_runtime_module(module) {
@@ -468,7 +483,7 @@ pub(crate) trait QuotedExpansionCtx {
         let Some(function) = function else {
             return Ok(None);
         };
-        if !self.required_remote_macros().contains(&function) {
+        if !self.world().macro_callable_remotely(scope.namespace(), function) {
             return Err(remote_macro_not_required(
                 self.telemetry(),
                 &function_name,
@@ -488,6 +503,30 @@ pub(crate) trait QuotedExpansionCtx {
         .map(Some)
     }
 
+    /// What the scope's namespace binds `name/arity` to when that binding is
+    /// the callable of `module`: the answer an unqualified call of the same
+    /// name would get, so the qualified call follows the same route.
+    fn imported_symbol_of(
+        &mut self,
+        module: ModuleId,
+        name: &str,
+        arity: usize,
+        scope: &ScopeSnapshot,
+    ) -> Option<NamespaceSymbol> {
+        let world = self.world();
+        let symbol = world.lookup_callable_namespace(scope.namespace(), name, arity)?;
+        match symbol {
+            NamespaceSymbol::Macro(function)
+            | NamespaceSymbol::Callable(function)
+            | NamespaceSymbol::Function(function)
+                if world.function_module(function) == module =>
+            {
+                Some(symbol)
+            }
+            _ => None,
+        }
+    }
+
     fn expand_current_module_remote_ast_call(
         &mut self,
         owner: &QuotedSourceRoot,
@@ -503,7 +542,7 @@ pub(crate) trait QuotedExpansionCtx {
         let Some(function) = self.lookup_current_module_macro(scope, function_name, arity) else {
             return Ok(None);
         };
-        if !self.required_remote_macros().contains(&function) {
+        if !self.world().macro_callable_remotely(scope.namespace(), function) {
             return Err(remote_macro_not_required(
                 self.telemetry(),
                 function_name,

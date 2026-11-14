@@ -97,3 +97,42 @@ fn compiler2_namespace_store_reuses_identical_binding_chains() {
         "replaying the same namespace chain should stabilize on the same head id",
     );
 }
+
+#[test]
+fn compiler2_namespace_required_macro_is_invisible_to_name_lookup() {
+    let mut modules = ModuleMap::new();
+    let mut functions = FunctionMap::new();
+    let mut namespaces = NamespaceStore::new();
+
+    let module = modules.reference_named(crate::modules::identity::ModuleName::parse_dotted("Helpers").unwrap());
+    let twice = functions.reference(module, None, "twice", 1);
+    let other = functions.reference(module, None, "thrice", 1);
+
+    let bound = namespaces.bind(BindingId::END, "twice", NamespaceSymbol::Function(twice));
+    let head = namespaces.bind_required_macro(bound, other);
+
+    assert!(
+        namespaces.is_required_macro(head, other),
+        "a require makes its macro callable by qualified name from there on",
+    );
+    assert!(
+        !namespaces.is_required_macro(bound, other),
+        "the scope before the require does not see it",
+    );
+    assert!(
+        !namespaces.is_required_macro(head, twice),
+        "a require covers the macro it names, not its neighbours",
+    );
+    assert_eq!(
+        namespaces.lookup(head, "twice"),
+        Some(&NamespaceSymbol::Function(twice)),
+        "a required macro binds no name, so lookups see the bindings beneath it",
+    );
+    assert!(
+        !namespaces.any_symbol(
+            head,
+            |symbol| matches!(symbol, NamespaceSymbol::Function(f) if *f == other)
+        ),
+        "a required macro is not an imported symbol",
+    );
+}

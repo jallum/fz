@@ -150,7 +150,6 @@ struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
     namespace: Namespace,
     local_callables: HashMap<(String, usize), LocalCallable>,
     pending_types: Vec<PendingType>,
-    required_remote_macros: HashSet<FunctionId>,
     reads: Vec<FactKey>,
     /// One answer per function the walk has reached, each carrying the ground
     /// that stood above it at that point.
@@ -188,10 +187,6 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for ScopeS
 
     fn current_module(&self) -> ModuleId {
         self.current_module
-    }
-
-    fn required_remote_macros(&self) -> &HashSet<FunctionId> {
-        &self.required_remote_macros
     }
 
     fn note_read(&mut self, fact: FactKey) {
@@ -299,17 +294,7 @@ pub(crate) fn publish_protocol_surface(
         .map_err(|error| emit_surface_read_error(tel, "protocol module info synthesis failed", &error))?;
     let function_id = world.reference_function(module_id, function.name.clone(), function.arity);
     scope = world.bind_namespace(scope, function.name.clone(), NamespaceSymbol::Function(function_id));
-    let publication = publish_function_source(
-        world,
-        tel,
-        source_owner,
-        module_id,
-        module_id,
-        scope,
-        &function,
-        true,
-        Vec::new(),
-    );
+    let publication = publish_function_source(world, tel, source_owner, module_id, module_id, scope, &function, true);
     outputs.push(FactKey::FunctionSource(publication.function));
     if publication.source_changed {
         changed.push(FactKey::FunctionSource(publication.function));
@@ -590,7 +575,6 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             namespace: current_scope.namespace(),
             local_callables: HashMap::default(),
             pending_types: Vec::new(),
-            required_remote_macros: HashSet::default(),
             reads: Vec::new(),
             derivations: Vec::new(),
             outputs: Vec::new(),
@@ -998,7 +982,6 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             namespace,
             function,
             context.export_public,
-            required_remote_macro_list(&self.required_remote_macros),
         );
         // Reaching this definition is one answer of the walk: whatever the
         // rest of the scope turns out to need, this function's source follows
@@ -1751,7 +1734,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
     fn record_required_remote_macros(&mut self, callables: &[ModuleInterfaceCallable]) {
         for callable in callables {
             if callable.kind == InterfaceCallableKind::Macro {
-                self.required_remote_macros.insert(callable.function);
+                self.namespace = self.world.bind_required_macro(self.namespace, callable.function);
             }
         }
     }
@@ -2181,12 +2164,6 @@ fn declared_callable_kind(is_macro: bool) -> DeclaredCallableKind {
     }
 }
 
-fn required_remote_macro_list(required_remote_macros: &HashSet<FunctionId>) -> Vec<FunctionId> {
-    let mut macros = required_remote_macros.iter().copied().collect::<Vec<_>>();
-    macros.sort_by_key(|function| function.as_u32());
-    macros
-}
-
 struct FunctionPublication {
     function: FunctionId,
     callable: Option<ModuleInterfaceCallable>,
@@ -2206,7 +2183,6 @@ fn publish_function_source(
     namespace: Namespace,
     function: &FunctionForm,
     export_public: bool,
-    required_remote_macros: Vec<FunctionId>,
 ) -> FunctionPublication {
     let function_id = world.reference_declared_callable(
         function_module,
@@ -2223,7 +2199,6 @@ fn publish_function_source(
         owner_module,
         namespace,
         capture_params: Vec::new(),
-        required_remote_macros,
         variadic: function.variadic,
         source: function.source.clone(),
     };
