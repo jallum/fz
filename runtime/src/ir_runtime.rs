@@ -1259,7 +1259,8 @@ pub extern "C" fn fz_float_parse(process: *mut Process, binary_ref: u64) -> u64 
 }
 
 unsafe extern "C" {
-    fn fgetc(stream: *mut std::ffi::c_void) -> std::ffi::c_int;
+    fn getline(line: *mut *mut std::ffi::c_char, capacity: *mut usize, stream: *mut std::ffi::c_void) -> isize;
+    fn free(ptr: *mut std::ffi::c_void);
 }
 
 /// `File.Stream`'s line reader: `[]` at end of file, else `[line]`, where `line`
@@ -1267,8 +1268,8 @@ unsafe extern "C" {
 /// file that does not end in one). A line that ends in `\r\n` comes back
 /// ending in `\n`, as Elixir's `File.stream!` reads it; any other `\r` stays.
 ///
-/// `stream` is the C `FILE *` a `File` handle carries. The line is gathered in
-/// one growing buffer and allocated on the heap once.
+/// `stream` is the C `FILE *` a `File` handle carries. The C library finds the
+/// line in its own buffer, and the line is allocated on the heap once.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_file_read_line(process: *mut Process, stream: u64) -> u64 {
     let line = read_line_bytes(stream as *mut std::ffi::c_void);
@@ -1285,21 +1286,19 @@ pub extern "C" fn fz_file_read_line(process: *mut Process, stream: u64) -> u64 {
 /// The bytes of the next line of `stream`, newline included and `\r\n` folded to
 /// `\n`; empty at end of file.
 fn read_line_bytes(stream: *mut std::ffi::c_void) -> Vec<u8> {
-    let mut line = Vec::new();
-    loop {
-        let byte = unsafe { fgetc(stream) };
-        if byte < 0 {
-            return line;
-        }
-        line.push(byte as u8);
-        if byte == i32::from(b'\n') {
-            if line.ends_with(b"\r\n") {
-                line.truncate(line.len() - 2);
-                line.push(b'\n');
-            }
-            return line;
-        }
+    let mut buffer = std::ptr::null_mut();
+    let mut capacity = 0;
+    let read = unsafe { getline(&mut buffer, &mut capacity, stream) };
+    let mut line = match usize::try_from(read) {
+        Ok(len) => unsafe { from_raw_parts(buffer.cast::<u8>(), len) }.to_vec(),
+        Err(_) => Vec::new(),
+    };
+    unsafe { free(buffer.cast()) };
+    if line.ends_with(b"\r\n") {
+        line.truncate(line.len() - 2);
+        line.push(b'\n');
     }
+    line
 }
 
 /// The float at the start of `bytes` and how many bytes spell it, or `None`.
