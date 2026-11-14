@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-14T12:06:58Z",
-  "description": "Step 1 of /Users/j5n/Workspace/fz-sc8.184.html. Blocks above the pool's largest size (7.39 MB) are alloc_zeroed and dealloc'd on every collection (block_pool.rs; imp.rs:1192, :1263): at 62 MB live the OS shows 2.6 GB of freed large regions and 3.3 GB peak RSS. Also the copied_objects worklist is reallocated per collection, and mso_unreached_closures walks every binary stub looking for Resource stubs. Keep and reuse large blocks, keep the worklist, give Resource stubs their own chain. Signal: fz.runtime.gc gains bytes obtained from / returned to the allocator; a test pins a steady-state collection obtains none; peak RSS and time on the 32,000-line distiller run before and after. Note: generations (steps 2-3) make large to-spaces rare; measure whether this is still needed in the order built.",
+  "description": "Superseded by measurement (2026-11-14, develop + fz-sc8.184.3, distiller over 32,000 lines). The large-block churn came from sizing the young generation to everything live; fz-sc8.184.3 caps the young generation at the largest pooled block: peak memory 1,955 MB to 351 MB at the same run time (6.69 s vs 6.64 s, 3 runs each). Collection is then 5% of the run at 32,000 lines (8% at 64,000, mostly copying at major collections), so a separate resource chain and a reused worklist have nothing left to win here. Re-open with a profile if a workload shows mso_unreached_closures or worklist allocation as a cost.",
   "id": "fz-sc8.184.1",
   "labels": [],
   "parent": "fz-sc8.184",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A collection obtains no memory from the allocator in steady state",
   "type": "task",
-  "updated_at": "2026-11-14T12:06:58Z"
+  "updated_at": "2026-11-14T13:12:23Z"
 }
