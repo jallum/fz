@@ -72,7 +72,7 @@ pub(crate) trait QuotedExpansionCtx {
         guard: &QuotedSourceCursor,
         scope: ScopeSnapshot,
         depth: usize,
-    ) -> Result<ExpandedValue, super::scheduler::FatalError> {
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
         *self.guard_depth() += 1;
         let expanded = self.expand_cursor(owner, guard, scope, depth);
         *self.guard_depth() -= 1;
@@ -101,7 +101,7 @@ pub(crate) trait QuotedExpansionCtx {
         root: QuotedSourceRoot,
         scope: ScopeSnapshot,
         depth: usize,
-    ) -> Result<ExpandedRoot, super::scheduler::FatalError> {
+    ) -> Result<ExpandedRoot, fz_engine::FatalError> {
         match self.expand_cursor(&root, &root.cursor(), scope, depth)? {
             ExpandedValue::Complete(value) => Ok(ExpandedRoot::Complete(root.subroot(value))),
             ExpandedValue::Blocked(effects) => Ok(ExpandedRoot::Blocked(effects)),
@@ -114,7 +114,7 @@ pub(crate) trait QuotedExpansionCtx {
         cursor: &QuotedSourceCursor,
         scope: ScopeSnapshot,
         depth: usize,
-    ) -> Result<ExpandedValue, super::scheduler::FatalError> {
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
         self.expand_cursor_with_root_sugar(owner, cursor, scope, depth, true)
     }
 
@@ -125,7 +125,7 @@ pub(crate) trait QuotedExpansionCtx {
         scope: ScopeSnapshot,
         depth: usize,
         allow_root_sugar: bool,
-    ) -> Result<ExpandedValue, super::scheduler::FatalError> {
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
         if depth > MAX_MACRO_EXPANSION_DEPTH {
             return Err(emit_job_diagnostic(
                 self.telemetry(),
@@ -195,7 +195,7 @@ pub(crate) trait QuotedExpansionCtx {
         node: &QuotedAstNode,
         scope: ScopeSnapshot,
         depth: usize,
-    ) -> Result<ExpandedValue, super::scheduler::FatalError> {
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
         let head = match self.expand_cursor(owner, &node.head, scope, depth)? {
             ExpandedValue::Complete(root) => root,
             ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
@@ -223,7 +223,7 @@ pub(crate) trait QuotedExpansionCtx {
         node: &QuotedAstNode,
         scope: ScopeSnapshot,
         depth: usize,
-    ) -> Result<Option<ExpandedValue>, super::scheduler::FatalError> {
+    ) -> Result<Option<ExpandedValue>, fz_engine::FatalError> {
         if !is_list_like(&node.tail) {
             return Ok(None);
         }
@@ -313,7 +313,7 @@ pub(crate) trait QuotedExpansionCtx {
             .map(Some)
     }
 
-    fn call_args(&self, tail: &QuotedSourceCursor) -> Result<Vec<QuotedSourceCursor>, super::scheduler::FatalError> {
+    fn call_args(&self, tail: &QuotedSourceCursor) -> Result<Vec<QuotedSourceCursor>, fz_engine::FatalError> {
         tail.list_items().map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted call arg read failed: {error}"))
         })
@@ -329,7 +329,7 @@ pub(crate) trait QuotedExpansionCtx {
         args: &[QuotedSourceCursor],
         scope: ScopeSnapshot,
         depth: usize,
-    ) -> Result<ExpandedValue, super::scheduler::FatalError> {
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
         let (guard, patterns) = args.split_last().expect("a `when` call has a guard");
         let mut expanded = Vec::with_capacity(args.len());
         for pattern in patterns {
@@ -365,7 +365,7 @@ pub(crate) trait QuotedExpansionCtx {
         scope: ScopeSnapshot,
         depth: usize,
         arity: usize,
-    ) -> Result<Option<ExpandedValue>, super::scheduler::FatalError> {
+    ) -> Result<Option<ExpandedValue>, fz_engine::FatalError> {
         let source_map = self.world().source_map();
         let Some(head_node) = node.head.ast_node(&source_map.borrow()).map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted remote call read failed: {error}"))
@@ -538,7 +538,7 @@ pub(crate) trait QuotedExpansionCtx {
         function_name: &str,
         module_path: &[String],
         call_span: Span,
-    ) -> Result<Option<ExpandedValue>, super::scheduler::FatalError> {
+    ) -> Result<Option<ExpandedValue>, fz_engine::FatalError> {
         let Some(function) = self.lookup_current_module_macro(scope, function_name, arity) else {
             return Ok(None);
         };
@@ -570,7 +570,7 @@ pub(crate) trait QuotedExpansionCtx {
         scope: ScopeSnapshot,
         depth: usize,
         args: &[QuotedSourceCursor],
-    ) -> Result<ExpandedValue, super::scheduler::FatalError> {
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
         let call_span = self.invocation_span(&invocation)?;
         let expanded = self.run_macro_invocation(owner, invocation, function, scope, depth, args)?;
         if *self.guard_depth() > 0
@@ -583,7 +583,7 @@ pub(crate) trait QuotedExpansionCtx {
 
     /// The span of the call a macro was invoked by: the user's own source, or
     /// an earlier expansion's already-stamped result.
-    fn invocation_span(&mut self, invocation: &QuotedSourceRoot) -> Result<Option<Span>, super::scheduler::FatalError> {
+    fn invocation_span(&mut self, invocation: &QuotedSourceRoot) -> Result<Option<Span>, fz_engine::FatalError> {
         let source_map = self.world().source_map();
         let node = invocation.cursor().ast_node(&source_map.borrow()).map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("macro call span read failed: {error}"))
@@ -599,7 +599,7 @@ pub(crate) trait QuotedExpansionCtx {
         expansion: QuotedSourceRoot,
         function: FunctionId,
         call_span: Option<Span>,
-    ) -> Result<(), super::scheduler::FatalError> {
+    ) -> Result<(), fz_engine::FatalError> {
         let source_map = self.world().source_map();
         let guardable = decode_standalone_expr(&expansion.cursor(), call_span, &source_map.borrow())
             .map(|expr| is_guard_expr(&expr))
@@ -629,7 +629,7 @@ pub(crate) trait QuotedExpansionCtx {
         scope: ScopeSnapshot,
         depth: usize,
         args: &[QuotedSourceCursor],
-    ) -> Result<ExpandedValue, super::scheduler::FatalError> {
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
         let definition = FactKey::FunctionDefined(function);
         if self.world().fact_revision(&definition).is_none() {
             return Ok(ExpandedValue::Blocked(Box::new(JobEffects::wait_on_current(
@@ -710,7 +710,7 @@ pub(crate) trait QuotedExpansionCtx {
         cursor: &QuotedSourceCursor,
         scope: ScopeSnapshot,
         depth: usize,
-    ) -> Result<ExpandedValue, super::scheduler::FatalError> {
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
         let mut expanded = Vec::with_capacity(cursor.list_len().map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted list expansion failed: {error}"))
         })?);
@@ -742,7 +742,7 @@ pub(crate) trait QuotedExpansionCtx {
         cursor: &QuotedSourceCursor,
         scope: ScopeSnapshot,
         depth: usize,
-    ) -> Result<ExpandedValue, super::scheduler::FatalError> {
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
         let arity = cursor.tuple_arity().map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted tuple expansion failed: {error}"))
         })?;
@@ -775,7 +775,7 @@ pub(crate) trait QuotedExpansionCtx {
         cursor: &QuotedSourceCursor,
         scope: ScopeSnapshot,
         depth: usize,
-    ) -> Result<ExpandedValue, super::scheduler::FatalError> {
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
         let entries = cursor.map_entries().map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted map expansion failed: {error}"))
         })?;
@@ -1057,7 +1057,7 @@ pub(crate) fn expand_item_macro_fragment<C: QuotedExpansionCtx>(
     ctx: &mut C,
     macro_call: &MacroCallForm,
     scope: ScopeSnapshot,
-) -> Result<ExpandedScopeFragment, super::scheduler::FatalError> {
+) -> Result<ExpandedScopeFragment, fz_engine::FatalError> {
     let owner = &macro_call.source;
     let invocation = {
         let (world, tel) = ctx.split();
@@ -1104,7 +1104,7 @@ fn item_macro_fragment_root(
     tel: &impl crate::telemetry::Telemetry,
     root: &QuotedSourceRoot,
     sources: &SourceMap,
-) -> Result<QuotedSourceRoot, super::scheduler::FatalError> {
+) -> Result<QuotedSourceRoot, fz_engine::FatalError> {
     expanded_items(root.cursor(), sources)
         .and_then(|items| root.interned_list_subroot(&items))
         .map_err(|error| emit_internal_surface_error(tel, format!("item macro fragment root read failed: {error}")))
@@ -1160,7 +1160,7 @@ fn item_macro_invocation(
     owner: &QuotedSourceRoot,
     scope: ScopeSnapshot,
     span: Span,
-) -> Result<ItemMacroInvocation, super::scheduler::FatalError> {
+) -> Result<ItemMacroInvocation, fz_engine::FatalError> {
     let source_map = world.source_map();
     let cursor = owner.cursor();
     if let Some(node) = cursor
@@ -1281,7 +1281,7 @@ pub(crate) fn read_compiler_fragment_root(
     root: &QuotedSourceRoot,
     context: &str,
     sources: &crate::source::SourceMap,
-) -> Result<ScopeSurface, super::scheduler::FatalError> {
+) -> Result<ScopeSurface, fz_engine::FatalError> {
     read_surface_root_with(tel, root, context, sources, read_compiler_fragment_surface)
 }
 
@@ -1291,7 +1291,7 @@ fn read_surface_root_with(
     context: &str,
     sources: &crate::source::SourceMap,
     read: fn(&QuotedSourceRoot, &crate::source::SourceMap) -> Result<ScopeSurface, QuotedSourceError>,
-) -> Result<ScopeSurface, super::scheduler::FatalError> {
+) -> Result<ScopeSurface, fz_engine::FatalError> {
     let source = if root.root().is_empty_list() || root.root().tag() == ValueKind::LIST {
         root.clone()
     } else {
@@ -1313,9 +1313,9 @@ pub(crate) fn emit_macro_expanded(
 pub(crate) fn emit_job_diagnostic(
     tel: &impl crate::telemetry::Telemetry,
     diagnostic: Diagnostic,
-) -> super::scheduler::FatalError {
+) -> fz_engine::FatalError {
     emit_through(tel, std::slice::from_ref(&diagnostic));
-    super::scheduler::FatalError
+    fz_engine::FatalError
 }
 
 /// Route a failed surface read to the right diagnostic: a user-coded error
@@ -1325,7 +1325,7 @@ pub(crate) fn emit_surface_read_error(
     tel: &impl crate::telemetry::Telemetry,
     context: &str,
     error: &super::source::QuotedSourceError,
-) -> super::scheduler::FatalError {
+) -> fz_engine::FatalError {
     emit_job_diagnostic(tel, surface_read_diagnostic(context, error))
 }
 
@@ -1343,7 +1343,7 @@ pub(crate) fn surface_read_diagnostic(context: &str, error: &QuotedSourceError) 
 pub(crate) fn emit_internal_surface_error(
     tel: &impl crate::telemetry::Telemetry,
     message: String,
-) -> super::scheduler::FatalError {
+) -> fz_engine::FatalError {
     emit_job_diagnostic(
         tel,
         Diagnostic::error(codes::INTERNAL_POST_RESOLUTION_LEFTOVER, message, Span::DUMMY),
@@ -1356,7 +1356,7 @@ fn remote_macro_not_required(
     arity: usize,
     module_path: &[String],
     span: Span,
-) -> super::scheduler::FatalError {
+) -> fz_engine::FatalError {
     let module_name = module_path.join(".");
     emit_job_diagnostic(
         tel,
@@ -1417,7 +1417,7 @@ fn item_macro_of_the_module_being_defined(
     name: &str,
     arity: usize,
     span: Span,
-) -> super::scheduler::FatalError {
+) -> fz_engine::FatalError {
     emit_job_diagnostic(
         tel,
         Diagnostic::error(
@@ -1435,7 +1435,7 @@ fn item_macro_of_the_module_being_defined(
 pub(crate) fn item_macro_expanded_to_a_non_definition(
     tel: &impl crate::telemetry::Telemetry,
     span: Span,
-) -> super::scheduler::FatalError {
+) -> fz_engine::FatalError {
     emit_job_diagnostic(
         tel,
         Diagnostic::error(
@@ -1450,7 +1450,7 @@ pub(crate) fn item_macro_not_defmacro(
     tel: &impl crate::telemetry::Telemetry,
     name: &str,
     span: Span,
-) -> super::scheduler::FatalError {
+) -> fz_engine::FatalError {
     let message = format!("item-level call `{name}(...)` is not a defmacro");
     emit_job_diagnostic(tel, Diagnostic::error(codes::MACRO_NOT_A_DEFMACRO, message, span))
 }

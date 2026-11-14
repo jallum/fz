@@ -27,7 +27,6 @@ use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, cur
 use super::super::identity::{ActivationKey, FunctionId, ModuleId, function_id_of_closure_target};
 use super::super::module_interface::InterfaceRequester;
 use super::super::protocol::ProtocolCallbackImpl;
-use super::super::scheduler::FatalError;
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteResolution, CallSiteSummary, CallSiteTargets, CallTargetSummary,
     SelectedCallee, TrimmedPlans, UndefinedFunction,
@@ -35,6 +34,7 @@ use super::super::semantic::{
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::{BodyShape, World};
 use super::keying;
+use fz_engine::FatalError;
 
 /// A walk's incoming scope, keyed in canonical (sorted) form so two walks
 /// that saw the same values compare equal regardless of insertion order.

@@ -1,10 +1,9 @@
 use crate::fast_hash::HashSet;
 
 use super::{Agenda, AppliedStep, DependencyIndex, FactUse, Scheduler, Wake, WakeDisposition};
-use crate::compiler2::facts::ClaimShape;
-use crate::compiler2::scheduler::FactChangeQueue;
-use crate::compiler2::scheduler::{CompletionEffects, DerivationEffects};
-use crate::compiler2::semantic::SemanticOrd;
+use crate::facts::{ClaimShape, SemanticOrd};
+use crate::scheduler::FactChangeQueue;
+use crate::scheduler::{CompletionEffects, DerivationEffects};
 
 struct TestOrder;
 
@@ -22,7 +21,7 @@ impl SemanticOrd<TestOrder> for &'static str {
 
 /// The generic tests use a job that answers one question per run, so a job is
 /// its own publisher.
-impl crate::compiler2::facts::Publisher for u32 {
+impl crate::facts::Publisher for u32 {
     type Run = u32;
 
     fn run(&self) -> &u32 {
@@ -37,13 +36,13 @@ impl crate::compiler2::facts::Publisher for u32 {
 type TestScheduler = Scheduler<u32, &'static str>;
 type TestStep = AppliedStep<u32, &'static str>;
 
-struct ExternalProduct(crate::compiler2::facts::FactState);
+struct ExternalProduct(crate::facts::FactState);
 
 #[test]
 #[should_panic(expected = "external dependencies cannot be published as scheduler facts")]
 fn external_product_cannot_gain_a_second_publisher_in_the_fact_table() {
     let mut scheduler = TestScheduler::new();
-    let product = ExternalProduct(crate::compiler2::facts::FactState {
+    let product = ExternalProduct(crate::facts::FactState {
         revision: None,
         settled: false,
     });
@@ -61,15 +60,15 @@ fn external_product_cannot_gain_a_second_publisher_in_the_fact_table() {
     );
 }
 
-impl super::scheduler::ExternalDependencyStates<&'static str> for ExternalProduct {
-    fn external_state(&self, key: &&'static str) -> Option<crate::compiler2::facts::FactState> {
+impl crate::scheduler::ExternalDependencyStates<&'static str> for ExternalProduct {
+    fn external_state(&self, key: &&'static str) -> Option<crate::facts::FactState> {
         (*key == "product").then_some(self.0)
     }
 }
 
 #[test]
 fn external_product_wait_uses_authoritative_readiness_alongside_fact_waits() {
-    use crate::compiler2::facts::{FactChange, FactState};
+    use crate::facts::{FactChange, FactState};
     let mut scheduler = TestScheduler::new();
     let mut product = ExternalProduct(FactState {
         revision: Some(1),
@@ -106,7 +105,7 @@ fn external_product_wait_uses_authoritative_readiness_alongside_fact_waits() {
 
 #[test]
 fn replacing_external_reads_detaches_the_old_dependency() {
-    use crate::compiler2::facts::{FactChange, FactState};
+    use crate::facts::{FactChange, FactState};
     let mut scheduler = TestScheduler::new();
     let mut product = ExternalProduct(FactState {
         revision: Some(1),
@@ -134,7 +133,7 @@ fn replacing_external_reads_detaches_the_old_dependency() {
 
 #[test]
 fn quiescence_cannot_certify_a_fact_while_its_external_ground_is_dirty() {
-    use crate::compiler2::facts::{FactChange, FactState};
+    use crate::facts::{FactChange, FactState};
     let mut scheduler = TestScheduler::new();
     let mut product = ExternalProduct(FactState {
         revision: Some(1),
@@ -216,7 +215,7 @@ fn clean_cycle() -> TestScheduler {
 #[test]
 fn an_unrelated_dirty_product_does_not_block_fact_quiescence() {
     let mut scheduler = clean_cycle();
-    let product = ExternalProduct(crate::compiler2::facts::FactState {
+    let product = ExternalProduct(crate::facts::FactState {
         revision: Some(1),
         settled: false,
     });
@@ -230,7 +229,7 @@ fn an_unrelated_dirty_product_does_not_block_fact_quiescence() {
 
 #[test]
 fn external_product_equal_validation_restores_finality_without_running_its_reader() {
-    use crate::compiler2::facts::{FactChange, FactState};
+    use crate::facts::{FactChange, FactState};
     let mut scheduler = TestScheduler::new();
     let mut product = ExternalProduct(FactState {
         revision: Some(1),
@@ -324,7 +323,7 @@ impl ClaimShape for &'static str {
 #[test]
 fn compiler2_scheduler_fact_frontier_preserves_newest_first_equal_key_chronology() {
     let change = |key: &'static str, revision: u64| {
-        crate::compiler2::FactChange::replacing(key, revision.checked_sub(1), Some(revision), false, false)
+        crate::FactChange::replacing(key, revision.checked_sub(1), Some(revision), false, false)
     };
     let mut pending = FactChangeQueue::new(&TestOrder);
     pending.extend([change("a", 1), change("c", 2), change("b", 3), change("c", 4)]);
@@ -355,9 +354,7 @@ fn compiler2_scheduler_fact_frontier_comparisons_per_pop_grow_with_the_log_of_th
         let order = CountingOrder(std::cell::Cell::new(0));
         let mut pending = FactChangeQueue::new(&order);
         // 7919 is prime, so the keys arrive scrambled and each key is distinct.
-        pending.extend(
-            (0..size).map(|i| crate::compiler2::FactChange::replacing((i * 7919) % size, None, Some(1), false, false)),
-        );
+        pending.extend((0..size).map(|i| crate::FactChange::replacing((i * 7919) % size, None, Some(1), false, false)));
         let mut popped = Vec::new();
         while let Some(change) = pending.pop() {
             popped.push(change.key);
@@ -1743,7 +1740,7 @@ fn compiler2_scheduler_wake_attributes_each_coalesced_cause_to_a_single_evaluati
 /// nth question it reached along the way.
 type TestDerivation = (u32, u32);
 
-impl crate::compiler2::facts::Publisher for TestDerivation {
+impl crate::facts::Publisher for TestDerivation {
     type Run = u32;
 
     fn run(&self) -> &u32 {
@@ -2314,7 +2311,7 @@ fn cooutput_arbitration_preserves_other_publishers() {
 
 #[test]
 fn cooutput_finality_obeys_external_ground_and_later_readiness_movements() {
-    use crate::compiler2::facts::{FactChange, FactState};
+    use crate::facts::{FactChange, FactState};
     let mut scheduler = TestScheduler::new();
     let mut product = ExternalProduct(FactState {
         revision: Some(1),
@@ -2433,7 +2430,7 @@ fn cooutput_finality_obeys_external_ground_and_later_readiness_movements() {
 
 #[test]
 fn quiescent_read_accounting_distinguishes_old_ground_from_new_unquiet_edges() {
-    use crate::compiler2::facts::{FactChange, FactState};
+    use crate::facts::{FactChange, FactState};
     let mut scheduler = TestScheduler::new();
     let mut product = ExternalProduct(FactState {
         revision: Some(1),

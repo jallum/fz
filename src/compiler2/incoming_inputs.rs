@@ -5,8 +5,9 @@ use std::rc::Rc;
 
 use super::body::ValueId;
 use super::identity::ExecutableKey;
-use super::semantic::{JoinContribution, SemanticOrd};
+use super::semantic::JoinContribution;
 use super::types::Types;
+use fz_engine::SemanticOrd;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InputSlot {

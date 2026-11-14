@@ -562,7 +562,7 @@ mutation boundary:
       -> DependencyIndex                   typed job order
       -> job order                         -> intern order -> Ty ids
 
-`FactChangeQueue` (scheduler.rs) is the pending queue of one dispatch wave: a
+`FactChangeQueue` (`crates/fz-engine/src/scheduler.rs`) is the pending queue of one dispatch wave: a
 binary heap that pops the smallest typed key, and among equal keys the newest
 arrival. Dependents append movements while the wave drains, and each pop costs
 comparisons in the log of the queue length.
@@ -1344,8 +1344,11 @@ subscribed to a fact that just moved. That is the whole engine, applied once.
 
 ## Ownership boundaries
 
-- **Engine** (`scheduler`/`agenda`/`facts`/`deps`): generic fixpoint over
-  `(J, F)`. No types, no telemetry, no fz.
+- **Engine** (the `fz-engine` crate, `crates/fz-engine`; modules
+  `scheduler`/`agenda`/`facts`/`deps`/`ordered_set`/`ordered_worklist`):
+  generic fixpoint over `(J, F)`. No types, no telemetry, no fz; it depends
+  on nothing in the compiler. The compiler implements the engine's
+  `Publisher` and `SemanticOrd` traits (see `crates/fz-engine/README.md`).
 - **`World`**: lifetime-free semantic state that owns the type interner and
   threads `&mut Types` into `complete` so the join can widen; owns the typed
   stores behind the facts. Semantic operations neither accept nor dispatch

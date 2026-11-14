@@ -22,7 +22,8 @@
 //! the `Compiler2` — and with it the `ConfiguredTelemetry` and the backend's
 //! last `Rc` — drop, and only then parses the shared buffer.
 
-use crate::compiler2::{CodeSubmission, Compiler2, DependencyKey, DriveOutcome, ExecutableNeed, Job, RootSubmission};
+use crate::compiler2::{CodeSubmission, Compiler2, DependencyKey, ExecutableNeed, Job, RootSubmission};
+use fz_engine::DriveOutcome;
 
 use super::ConfiguredTelemetry;
 use super::capture::vec_writer;

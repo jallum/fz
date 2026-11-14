@@ -130,7 +130,7 @@ fn compiler_drive_and_job_spans_render_raw_authorities() {
 
     let outcome = compiler.drive();
 
-    assert!(matches!(outcome, crate::compiler2::DriveOutcome::Resolved));
+    assert!(matches!(outcome, fz_engine::DriveOutcome::Resolved));
     let output = String::from_utf8(buf.borrow().clone()).unwrap();
     let drive = output
         .lines()
@@ -448,8 +448,9 @@ fn drive_spend_survives_the_public_trace_boundary() {
 #[test]
 fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
     use crate::compiler2::DependencyKey;
-    use crate::compiler2::SemanticOrd as _;
-    use crate::compiler2::{ActivationKey, FactChange, FactKey, FactMovement, FactState, FactUse, FunctionId, RootId};
+    use crate::compiler2::{ActivationKey, FactKey, FunctionId, RootId};
+    use fz_engine::SemanticOrd as _;
+    use fz_engine::{FactChange, FactMovement, FactState, FactUse};
 
     fn canonicalize_arrows(
         value: &serde_json::Value,
@@ -511,7 +512,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
         };
         let mut keys = keys.into_iter().map(DependencyKey::Fact).collect::<Vec<_>>();
         keys.sort_by(|left, right| left.semantic_cmp(right, &types));
-        let step = crate::compiler2::AppliedStep {
+        let step = fz_engine::AppliedStep {
             changed: keys
                 .iter()
                 .cloned()
@@ -528,7 +529,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
                     },
                 })
                 .collect(),
-            wakes: Vec::<crate::compiler2::Wake<crate::compiler2::Job, DependencyKey>>::new(),
+            wakes: Vec::<fz_engine::Wake<crate::compiler2::Job, DependencyKey>>::new(),
             blocked: keys.into_iter().map(FactUse::settled).collect(),
         };
         let mut body = String::new();
@@ -563,9 +564,8 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
 #[test]
 fn fact_dependency_steps_preserve_the_existing_causal_json_shape() {
     use crate::compiler2::DependencyKey;
-    use crate::compiler2::{
-        AppliedStep, FactChange, FactKey, FactMovement, FactState, FactUse, Job, RootId, Wake, WakeDisposition,
-    };
+    use crate::compiler2::{FactKey, Job, RootId};
+    use fz_engine::{AppliedStep, FactChange, FactMovement, FactState, FactUse, Wake, WakeDisposition};
 
     let root = RootId::for_test(7);
     let key = DependencyKey::Fact(FactKey::RootEntry(root));
@@ -602,7 +602,8 @@ fn fact_dependency_steps_preserve_the_existing_causal_json_shape() {
 #[test]
 fn product_dependency_reads_identify_both_the_owner_and_the_product() {
     use crate::compiler2::{DependencyKey, ProductAddress};
-    use crate::compiler2::{FactUse, ProductKey, RootId};
+    use crate::compiler2::{ProductKey, RootId};
+    use fz_engine::FactUse;
 
     for owner in [7, 8] {
         let dependency = FactUse::settled(DependencyKey::Product(ProductAddress::of(
@@ -624,8 +625,9 @@ fn product_dependency_reads_identify_both_the_owner_and_the_product() {
 fn incoming_slot_facts_identify_the_exact_root_executable_and_input() {
     use crate::compiler2::incoming_inputs::InputSlot;
     use crate::compiler2::{
-        ActivationKey, DependencyKey, ExecutableKey, ExecutableNeed, FactKey, FactUse, FunctionId, RootId, Types,
+        ActivationKey, DependencyKey, ExecutableKey, ExecutableNeed, FactKey, FunctionId, RootId, Types,
     };
+    use fz_engine::FactUse;
 
     let mut types = Types::new();
     let int = types.int();
@@ -667,8 +669,9 @@ fn incoming_slot_facts_identify_the_exact_root_executable_and_input() {
 
 #[test]
 fn product_movements_are_public_causal_events() {
-    use crate::compiler2::{AppliedStep, FactMovement, FactState, Job, ProductKey, RootId};
     use crate::compiler2::{DependencyKey, ProductAddress};
+    use crate::compiler2::{Job, ProductKey, RootId};
+    use fz_engine::{AppliedStep, FactMovement, FactState};
 
     let telemetry = ConfiguredTelemetry::new();
     let (buf, writer) = vec_writer();
@@ -705,7 +708,8 @@ fn product_movements_are_public_causal_events() {
 
 #[test]
 fn failed_product_requests_report_the_dependency_that_failed() {
-    use crate::compiler2::{DependencyKey, DriveOutcome, Job, ProductAddress, ProductKey, RootId};
+    use crate::compiler2::{DependencyKey, Job, ProductAddress, ProductKey, RootId};
+    use fz_engine::DriveOutcome;
 
     let outcome = DriveOutcome::<Job, DependencyKey>::DependencyFailed {
         dependency: DependencyKey::Product(ProductAddress::of(

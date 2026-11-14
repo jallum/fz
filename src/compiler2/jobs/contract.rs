@@ -23,8 +23,8 @@ use super::super::code::SourceOwner;
 use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource};
-use super::super::scheduler::FatalError;
 use super::super::world::World;
+use fz_engine::FatalError;
 
 pub(super) fn derive_function_contract(
     world: &mut World,

@@ -62,7 +62,7 @@ fn a_callee_that_grows_an_edge_reopens_the_reach_above_it_and_closes_a_cycle() {
         text: include_str!("../../fixtures/00612_static_reach_edge_added_later_after.fz").to_string(),
     });
     let outcome = settled.compiler_mut().drive();
-    assert!(matches!(outcome, super::super::DriveOutcome::Resolved), "{outcome:?}");
+    assert!(matches!(outcome, fz_engine::DriveOutcome::Resolved), "{outcome:?}");
 
     assert!(
         is_recursive(settled.compiler(), a) && is_recursive(settled.compiler(), b),

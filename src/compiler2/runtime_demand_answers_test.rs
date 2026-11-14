@@ -34,10 +34,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::drive::DependencyKey;
-use super::scheduler::AppliedStep;
 use super::world::{JobCompletion, World};
 use super::{CodeSubmission, ExecutableNeed, FactKey, Job, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
+use fz_engine::AppliedStep;
 
 #[derive(Default)]
 struct DemandWork {

@@ -1,10 +1,10 @@
 use super::*;
-use crate::compiler2::{DriveOutcome, WorkStartReason, WorkStartTally};
 use crate::telemetry::causal::{
     CausalReport, FactLifecycle, FormulaWork, ProductEvaluationCause, ProductEvaluationTriggerKind,
     ProductPublicationKind, PublicEvent, ShiftWork,
 };
 use crate::telemetry::handler::EventKind;
+use fz_engine::{DriveOutcome, WorkStartReason, WorkStartTally};
 
 /// The ticket's acceptance scenario: two functions, one calling the other.
 /// `main/0` is required — `PublicTrace::compile` closes it as the root, the

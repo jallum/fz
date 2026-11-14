@@ -4,8 +4,8 @@ use super::super::{CallableValueKind, ClosureTarget};
 use super::AddrStep::{Elem, Field, Param, VarSlot, Variant};
 use super::*;
 use crate::compiler2::identity::{ActivationKey, FunctionId, RootId};
-use crate::compiler2::semantic::SemanticOrd;
 use crate::types::MapKey;
+use fz_engine::SemanticOrd;
 
 fn var(t: &mut Types, id: u32) -> Ty {
     t.type_var(TypeVarId(id))

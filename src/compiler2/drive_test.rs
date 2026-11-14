@@ -7,7 +7,7 @@ use super::drive_harness::{
     latest_entry_dispatch, latest_guard_dispatch, lowered_body, metadata_str, module_function_id, module_id,
     module_indexed_ids, module_name, named_module_id, presence, try_module_function_id,
 };
-use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission, RunFailure};
+use super::{CodeSubmission, Compiler2, ExecutableNeed, Job, RootSubmission, RunFailure};
 use crate::compiler2::ReachKey;
 use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
@@ -16,9 +16,9 @@ use crate::compiler2::pull::{ProductKey, TransportCarrier};
 use crate::compiler2::{
     AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
     CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, CallableValueKind, ControlEntryOrigin, ExecutableKey,
-    FactKey, FactUse, FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, Namespace,
-    QuotedSourceHeap, QuotedSourceMetadata, RuntimeDemand, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId,
-    World, parse_quoted_program,
+    FactKey, FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, Namespace, QuotedSourceHeap,
+    QuotedSourceMetadata, RuntimeDemand, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, World,
+    parse_quoted_program,
 };
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{LastResort, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
@@ -34,6 +34,8 @@ use crate::source::Span;
 use crate::telemetry::handler::{Event, EventKind};
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+use fz_engine::DriveOutcome;
+use fz_engine::FactUse;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -11407,7 +11409,7 @@ end
 /// needed.
 ///
 /// The LIFO half is verified by hand, per the fz-kdt.93 precedent: change
-/// `Agenda::pop` (src/compiler2/agenda.rs) to `self.queue.pop_back()` and run
+/// `Agenda::pop` (crates/fz-engine/src/agenda.rs) to `self.queue.pop_back()` and run
 /// `fz2 run fixtures/00183_enum_take_list_range.fz`; its first line must be
 /// `[1, 2, 3]`.
 ///
@@ -21295,7 +21297,7 @@ fn compiler2_native_program_publishes_construction_owned_callable_wrappers() {
 
 #[test]
 fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_mint_histories() {
-    use crate::compiler2::semantic::SemanticOrd;
+    use fz_engine::SemanticOrd;
 
     let ordered = |non_empty_first: bool| {
         let mut types = Types::new();
@@ -21369,8 +21371,8 @@ fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_
 #[test]
 fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
     use crate::compiler2::drive::{Derivation, DerivationKey};
-    use crate::compiler2::scheduler::{CompletionEffects, Scheduler};
-    use crate::compiler2::semantic::SemanticOrd;
+    use fz_engine::SemanticOrd;
+    use fz_engine::{CompletionEffects, Scheduler};
 
     let mut types = Types::new();
     let int = types.int();
@@ -23751,7 +23753,7 @@ fn a_product_drive_served_by_the_bare_drive_defers_to_the_bare_drain() {
     let observed = Rc::clone(&arbitrated);
     drive
         .telemetry()
-        .attach_raw_event2::<crate::compiler2::AppliedStep<Job, DependencyKey>, usize, _>(
+        .attach_raw_event2::<fz_engine::AppliedStep<Job, DependencyKey>, usize, _>(
             &["fz", "compiler2", "work_graph", "quiesced"],
             move |_, _, _, _, depth| observed.borrow_mut().push(*depth),
         );
@@ -23777,7 +23779,7 @@ fn a_bare_drive_that_makes_its_own_sessions_is_a_frame_too() {
     );
     let arbitrated = Rc::new(RefCell::new(Vec::new()));
     let observed = Rc::clone(&arbitrated);
-    tel.attach_raw_event2::<crate::compiler2::AppliedStep<Job, DependencyKey>, usize, _>(
+    tel.attach_raw_event2::<fz_engine::AppliedStep<Job, DependencyKey>, usize, _>(
         &["fz", "compiler2", "work_graph", "quiesced"],
         move |_, _, _, _, depth| observed.borrow_mut().push(*depth),
     );

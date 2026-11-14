@@ -2,10 +2,11 @@ use super::*;
 use crate::compiler2::drive::ExecutionContext;
 use crate::compiler2::dump::DumpStage;
 use crate::compiler2::types::TypeVarId;
-use crate::compiler2::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, RootSubmission};
+use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fast_hash::HashSet;
 use crate::telemetry::ConfiguredTelemetry;
+use fz_engine::DriveOutcome;
 use std::cell::RefCell;
 use std::rc::Rc;
 

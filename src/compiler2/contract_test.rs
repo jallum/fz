@@ -10,9 +10,10 @@ use super::contract::{ContractArrow, ResolvedContractArrow};
 use super::drive_harness::metadata_str;
 use super::protocol::ProtocolDomainObligation;
 use super::{
-    CallableValueKind, ClosureTarget, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, FunctionContract,
-    MapKey, ModuleId, RootSubmission, TypeVarId, Types,
+    CallableValueKind, ClosureTarget, CodeSubmission, Compiler2, ExecutableNeed, FunctionContract, MapKey, ModuleId,
+    RootSubmission, TypeVarId, Types,
 };
+use fz_engine::DriveOutcome;
 
 /// The `Enumerable` protocol identity every domain-obligation test below
 /// resolves its marker against.

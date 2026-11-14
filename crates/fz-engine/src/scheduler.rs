@@ -4,20 +4,21 @@ use std::collections::BinaryHeap;
 use std::fmt::Debug;
 use std::hash::Hash;
 
-use super::agenda::Agenda;
-use super::deps::{DependencyIndex, UnresolvedWait};
-use super::facts::{ClaimShape, ContentMovement, FactChange, FactMovement, FactState, FactTable, FactUse, Publisher};
-use super::ordered_set::OrderedSet;
-use super::semantic::SemanticOrd;
+use crate::agenda::Agenda;
+use crate::deps::{DependencyIndex, UnresolvedWait};
+use crate::facts::{
+    ClaimShape, ContentMovement, FactChange, FactMovement, FactState, FactTable, FactUse, Publisher, SemanticOrd,
+};
+use crate::ordered_set::OrderedSet;
 
 /// Reads dependency state from its owner without copying it into the fact table.
 /// `None` selects a scheduler-owned fact. `Some` selects external ownership,
 /// including when that dependency has no current value.
-pub(crate) trait ExternalDependencyStates<F> {
+pub trait ExternalDependencyStates<F> {
     fn external_state(&self, key: &F) -> Option<FactState>;
 }
 
-pub(crate) struct NoExternalDependencyStates;
+pub struct NoExternalDependencyStates;
 
 impl<F> ExternalDependencyStates<F> for NoExternalDependencyStates {
     fn external_state(&self, _key: &F) -> Option<FactState> {
@@ -158,7 +159,7 @@ impl WorkStartTally {
         self.0.iter().sum()
     }
 
-    pub(crate) fn delta_since(self, earlier: Self) -> Self {
+    pub fn delta_since(self, earlier: Self) -> Self {
         let mut delta = self;
         for reason in WorkStartReason::ALL {
             delta[reason] = self[reason]
@@ -168,7 +169,7 @@ impl WorkStartTally {
         delta
     }
 
-    pub(crate) fn add(&mut self, other: Self) {
+    pub fn add(&mut self, other: Self) {
         for reason in WorkStartReason::ALL {
             self[reason] += other[reason];
         }
@@ -484,7 +485,7 @@ where
     }
 
     /// Deliver authoritative external movements through the same finality and wake graph as facts.
-    pub(crate) fn apply_external_changes_ordered<Ctx>(
+    pub fn apply_external_changes_ordered<Ctx>(
         &mut self,
         mut changes: Vec<FactChange<F>>,
         external: &impl ExternalDependencyStates<F>,
@@ -536,7 +537,7 @@ where
 
     /// How many fact changes the work graph has reported so far; see
     /// `FactTable::movements`.
-    pub(crate) fn fact_movements(&self) -> u64 {
+    pub fn fact_movements(&self) -> u64 {
         self.facts.movements()
     }
 
@@ -576,13 +577,13 @@ where
             .flatten()
     }
 
-    pub(crate) fn has_dependency_consumers(&self, key: &F) -> bool {
+    pub fn has_dependency_consumers(&self, key: &F) -> bool {
         self.deps.has_consumers(key)
     }
 
     /// Every fact use this job depends on: what each of its answers read, plus
     /// the waits that stopped its last run.
-    pub(crate) fn dependency_uses(&self, job: &P::Run) -> impl Iterator<Item = &FactUse<F>> {
+    pub fn dependency_uses(&self, job: &P::Run) -> impl Iterator<Item = &FactUse<F>> {
         self.reads(job).chain(self.deps.waits_for(job))
     }
 
@@ -602,17 +603,17 @@ where
     /// recorded, even empty) or blocked (waits are standing). A job that has
     /// run is reachable by the graph's own wakes; a never-run job has no wake
     /// source, so only a fresh demand can start it.
-    pub(crate) fn has_run(&self, job: &P::Run) -> bool {
+    pub fn has_run(&self, job: &P::Run) -> bool {
         self.deps.has_run(job)
     }
 
     /// Whether `job`'s most recent completion left waits standing.
-    pub(crate) fn blocked(&self, job: &P::Run) -> bool {
+    pub fn blocked(&self, job: &P::Run) -> bool {
         self.deps.blocked(job)
     }
 
     /// The waits `job`'s most recent completion left standing.
-    pub(crate) fn waits_for(&self, job: &P::Run) -> &HashSet<FactUse<F>> {
+    pub fn waits_for(&self, job: &P::Run) -> &HashSet<FactUse<F>> {
         self.deps.waits_for(job)
     }
 
@@ -653,20 +654,20 @@ where
     /// answer parks the job again without running it, and no entry exists
     /// to charge until the ordinary wake that later re-queues the job names
     /// a fresh one.
-    pub(crate) fn record_run_start(&mut self, job: &P::Run) {
+    pub fn record_run_start(&mut self, job: &P::Run) {
         let reason = self.pending_reason.remove(job).unwrap_or_default();
         self.work_starts[reason] += 1;
     }
 
     /// Leaves `job` waiting on `waits` without running it, as a run that
     /// found those answers missing would have.
-    pub(crate) fn wait_without_running(&mut self, job: P::Run, waits: HashSet<FactUse<F>>) {
+    pub fn wait_without_running(&mut self, job: P::Run, waits: HashSet<FactUse<F>>) {
         self.deps.replace_waits(job, waits);
     }
 
     /// Concluding replaces reads and claims; waiting extends them and leaves
     /// every owned claim dirty. One completion dispatches one ordered wave.
-    pub(crate) fn complete_ordered_with_external<Ctx>(
+    pub fn complete_ordered_with_external<Ctx>(
         &mut self,
         job: &P::Run,
         effects: CompletionEffects<P, F>,
@@ -944,7 +945,7 @@ where
     /// a quiescence certificate and finalizes its own claims together.
     /// Ordinary quiet propagation carries that ownership decision downstream;
     /// independent publishers stay untouched.
-    pub(crate) fn settle_quiescent_ordered_with_external<Ctx>(
+    pub fn settle_quiescent_ordered_with_external<Ctx>(
         &mut self,
         facts: &[F],
         external: &impl ExternalDependencyStates<F>,
@@ -1320,3 +1321,7 @@ where
         self.propagate_quiet_flips(flips, pending_changes, ctx);
     }
 }
+
+#[cfg(test)]
+#[path = "scheduler_test.rs"]
+mod scheduler_test;

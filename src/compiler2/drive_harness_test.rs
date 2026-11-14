@@ -8,7 +8,8 @@
 
 use super::drive_harness::{Drive, module_name};
 use super::identity::TypeName;
-use super::{DriveOutcome, Job, LoweredBody, ModuleId};
+use super::{Job, LoweredBody, ModuleId};
+use fz_engine::DriveOutcome;
 
 /// `.open_root` enters a function other than `main/0`, and `.demand` forces a
 /// job the entered root's own reachability would never ask for. In

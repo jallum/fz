@@ -677,7 +677,7 @@ fn artifact_clause_ids_follow_source_order_on_the_target_fixtures() {
 /// decides.
 ///
 /// Measured on `enum_take_drop_split` (fz-kdt.101): flip `Agenda::pop` to
-/// `pop_back` (src/compiler2/agenda.rs:36 — build, dump, revert) and two
+/// `pop_back` (crates/fz-engine/src/agenda.rs:36 — build, dump, revert) and two
 /// byte-identical `Enum.reduce/3#lambda@439-517/2` construction wrappers trade
 /// indices, `w10` <-> `w11`, because their owning specializations carry the
 /// same types under different ids.
@@ -754,7 +754,7 @@ const LENSES: [u32; 4] = [571, 420, 183, 567];
 /// because the collapses all happen in the analysis both doors share; the
 /// choice is a matter of matching the gate, not of coverage. RED at base on
 /// two of the four at those counts. The byte-for-byte half is verified by
-/// hand, per the fz-kdt.93/.104 precedent: change `Agenda::pop` (src/compiler2/agenda.rs) to
+/// hand, per the fz-kdt.93/.104 precedent: change `Agenda::pop` (crates/fz-engine/src/agenda.rs) to
 /// `self.queue.pop_back()`, rebuild, and `fz2 interp <fixture> --dump
 /// backend=<path>` must produce the same bytes as the FIFO build on all four.
 /// `enum_predicate_search` was the exception until fz-kdt.129 -- ONE dispatch

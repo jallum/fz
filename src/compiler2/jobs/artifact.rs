@@ -28,15 +28,12 @@ use super::super::body::{
 use super::super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::super::drive::FactKey;
 use super::super::executable_facts::ExecutableFacts;
-use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
 use super::super::pull::{
     ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, RecursiveProductRead, TransportLayout,
 };
-use super::super::scheduler::FatalError;
 #[cfg(test)]
 use super::super::semantic::CallSiteKey;
-use super::super::semantic::SemanticOrd;
 use super::super::semantic::{ActivationAnalysis, CallSiteSummary, CallTargetSummary, SelectedCallee};
 #[cfg(test)]
 use super::super::transport::ShapeDescr;
@@ -44,6 +41,9 @@ use super::super::transport::{ExecutableSymbol, PhysicalLaneSource, TransportPos
 use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::transport::{ClosureCallForm, closure_call_form};
+use fz_engine::FactUse;
+use fz_engine::FatalError;
+use fz_engine::SemanticOrd;
 
 pub(crate) fn produce_materialized_executable_product(
     world: &mut World,

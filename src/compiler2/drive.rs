@@ -10,13 +10,14 @@ use std::time::{Duration, Instant};
 use crate::telemetry::{RawSpanGuard, RawSpanStop0, RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt};
 
 use super::code::SourceOwner;
-use super::facts::{ClaimShape, FactUse, Publisher};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::pull::{ProductKey, ProductScope, ProductSessions};
-use super::scheduler::{DriveOutcome, FatalError, Scheduler, WorkStartReason};
-use super::semantic::{CallSiteKey, CallableConstructionTargetKey, SemanticOrd};
+use super::semantic::{CallSiteKey, CallableConstructionTargetKey};
 use super::types::Types;
 use super::world::World;
+use fz_engine::SemanticOrd;
+use fz_engine::{ClaimShape, FactUse, Publisher};
+use fz_engine::{DriveOutcome, FatalError, Scheduler, WorkStartReason};
 
 pub(crate) struct ExecutionContext<'a, T: crate::telemetry::Telemetry> {
     pub(crate) world: &'a mut World,
@@ -91,14 +92,14 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
         completion
     }
 
-    pub(crate) fn publish_dependency_movements(&mut self, movements: &[super::facts::FactMovement<DependencyKey>]) {
+    pub(crate) fn publish_dependency_movements(&mut self, movements: &[fz_engine::FactMovement<DependencyKey>]) {
         let Some(sessions) = self.product_sessions.as_deref_mut() else {
             return;
         };
         let mut pending = movements
             .iter()
             .filter_map(|movement| {
-                movement.key.fact().map(|key| super::facts::FactMovement {
+                movement.key.fact().map(|key| fz_engine::FactMovement {
                     key: key.clone(),
                     state: movement.state,
                 })
@@ -117,7 +118,7 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
                 .movements
                 .into_iter()
                 .filter_map(|movement| {
-                    movement.key.into_fact().map(|key| super::facts::FactMovement {
+                    movement.key.into_fact().map(|key| fz_engine::FactMovement {
                         key,
                         state: movement.state,
                     })
@@ -126,7 +127,7 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
         }
     }
 
-    pub(crate) fn apply_product_changes(&mut self, changes: Vec<super::facts::FactChange<DependencyKey>>) {
+    pub(crate) fn apply_product_changes(&mut self, changes: Vec<fz_engine::FactChange<DependencyKey>>) {
         if changes.is_empty() {
             return;
         }
@@ -525,9 +526,9 @@ impl DependencyKey {
     }
 }
 
-impl super::facts::ClaimShape for DependencyKey {
+impl fz_engine::ClaimShape for DependencyKey {
     fn is_cumulative(&self) -> bool {
-        self.fact().is_some_and(super::facts::ClaimShape::is_cumulative)
+        self.fact().is_some_and(fz_engine::ClaimShape::is_cumulative)
     }
 }
 
@@ -1266,7 +1267,7 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
             .as_deref()
             .into_iter()
             .flat_map(ProductSessions::innermost_deferred_waits)
-            .filter(|fact| fact.readiness() == super::facts::FactReadiness::Settled)
+            .filter(|fact| fact.readiness() == fz_engine::FactReadiness::Settled)
             .map(|fact| fact.fact().clone())
             .collect::<Vec<_>>();
         if inner.is_empty() { also_settled.to_vec() } else { inner }
@@ -1411,7 +1412,7 @@ pub(super) fn flush_quiescence<T: RawSpanTelemetry>(
     world: &mut World,
     tel: &T,
     depth: usize,
-) -> Vec<super::AppliedStep<Job, DependencyKey>> {
+) -> Vec<fz_engine::AppliedStep<Job, DependencyKey>> {
     let steps = world.take_quiescence_steps();
     for step in &steps {
         tel.raw_event2(&["fz", "compiler2", "work_graph", "quiesced"], step, &depth);

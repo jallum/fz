@@ -2,9 +2,8 @@ use crate::fast_hash::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
 use std::hash::Hash;
 
-use super::facts::{FactUse, Publisher};
-use super::ordered_set::OrderedSet;
-use super::semantic::SemanticOrd;
+use crate::facts::{FactUse, Publisher, SemanticOrd};
+use crate::ordered_set::OrderedSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnresolvedWait<J, F> {
@@ -189,7 +188,7 @@ where
     pub fn waited_settled_facts(&self) -> Vec<F> {
         self.waiters
             .keys()
-            .filter(|fact| fact.readiness() == crate::compiler2::facts::FactReadiness::Settled)
+            .filter(|fact| fact.readiness() == crate::facts::FactReadiness::Settled)
             .map(|fact| fact.fact().clone())
             .collect()
     }

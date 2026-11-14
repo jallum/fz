@@ -5,9 +5,9 @@
 //! private to the relevant job family.
 
 use super::drive::{ExecutionContext, FactKey, Job, JobEffects, current_uses, settled_uses};
-use super::facts::FactUse;
-use super::scheduler::FatalError;
 use super::world::World;
+use fz_engine::FactUse;
+use fz_engine::FatalError;
 
 pub(crate) mod artifact;
 pub(crate) mod backend;

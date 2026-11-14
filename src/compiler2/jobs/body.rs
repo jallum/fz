@@ -39,12 +39,12 @@ use super::super::identity::{FunctionId, FunctionSource, ModuleId};
 use super::super::module_interface::{InterfaceCallableKind, InterfaceRequester};
 use super::super::namespace::{CallableQualifier, Namespace, NamespaceSymbol};
 use super::super::quoted_expander::emit_surface_read_error;
-use super::super::scheduler::FatalError;
 use super::super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError};
 use super::super::world::World;
 use super::dispatch::{
     collect_guard_calls_in_expr, hoist_zero_argument_guard_calls, resolve_guard_callee, resolve_guard_callee_checked,
 };
+use fz_engine::FatalError;
 
 mod storage_roots;
 use storage_roots::{LaterUses, StorageRootIndex, entries_reached_from};

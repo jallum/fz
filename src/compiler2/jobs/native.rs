@@ -46,11 +46,11 @@ use super::super::artifact::{
 use super::super::body::{ControlDestination, ControlEntryId, DispatchBindings, LoweredExtern, ValueId};
 use super::super::identity::RootId;
 use super::super::pull::{ProductKey, ProductReadContext, ProductValue, PullOutcome};
-use super::super::scheduler::FatalError;
 use super::super::semantic::{RuntimeDemand, ShapeDemand, UndefinedFunction};
 use super::super::transport::{BoundValue, CallableId, ShapeDescr, ShapeId, TransportLayout};
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
+use fz_engine::FatalError;
 
 pub(crate) fn produce_native_program(
     world: &mut World,

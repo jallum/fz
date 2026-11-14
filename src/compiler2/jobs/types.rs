@@ -12,8 +12,8 @@ use crate::diag::driver::emit_through;
 
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::TypeName;
-use super::super::scheduler::FatalError;
 use super::super::world::World;
+use fz_engine::FatalError;
 
 pub(super) fn derive_type_def(
     world: &mut World,

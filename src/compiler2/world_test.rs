@@ -1,16 +1,17 @@
 use crate::dispatch_matrix::demand::DispatchDemand;
 
-use super::facts::FactUse;
 use super::keying::{BodyKeying, InputDemand};
 use super::types::ClosureTarget;
 use super::{
-    DriveOutcome, FactKey, FunctionSource, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, TypeName, Types,
-    World, parse_quoted_program,
+    FactKey, FunctionSource, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, TypeName, Types, World,
+    parse_quoted_program,
 };
 use crate::ast::Attribute;
 use crate::compiler2::drive::{DependencyKey, JobEffects};
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
+use fz_engine::DriveOutcome;
+use fz_engine::FactUse;
 use std::cell::Cell;
 use std::rc::Rc;
 

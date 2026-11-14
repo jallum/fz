@@ -1,4 +1,3 @@
-mod agenda;
 mod artifact;
 mod backend_program;
 mod body;
@@ -9,13 +8,11 @@ mod cli;
 mod code;
 mod compiler;
 mod contract;
-mod deps;
 mod dispatch;
 mod dispatch_reachability;
 mod drive;
 mod dump;
 mod executable_facts;
-mod facts;
 mod frontdoor;
 mod identity;
 pub(crate) mod incoming_inputs;
@@ -24,8 +21,6 @@ mod keying;
 mod module_interface;
 mod namespace;
 pub(crate) mod native_codegen;
-mod ordered_set;
-mod ordered_worklist;
 mod product_drive;
 mod protocol;
 pub(crate) mod pull;
@@ -36,7 +31,6 @@ mod quoted_surface;
 mod reach;
 mod resolve;
 mod runtime;
-mod scheduler;
 mod scope;
 mod semantic;
 mod shared_order;
@@ -58,7 +52,6 @@ pub use value_map::ValueMap;
 pub use value_set::ValueSet;
 mod world;
 
-pub use agenda::Agenda;
 pub(crate) use artifact::NativeEntryAbi;
 pub use artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
@@ -80,12 +73,10 @@ pub use code::{CodeMap, CodeState, QuotedCodeSource, SourceOwner};
 pub(crate) use compiler::BackendRequestEvent;
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission, RunFailure};
 pub use contract::{FunctionContract, FunctionContractMap};
-pub use deps::{DependencyIndex, UnresolvedWait};
 pub(crate) use drive::JobEffects;
 #[cfg(test)]
 mod macro_product_test;
 pub use drive::{DependencyKey, FactKey, Job, ProductAddress, WorkGraph};
-pub use facts::{FactChange, FactMovement, FactReadiness, FactReplace, FactState, FactTable, FactUse};
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, FunctionMap, FunctionRef, FunctionSource, FunctionState,
@@ -100,10 +91,8 @@ pub use module_interface::{
 pub use namespace::{BindingId, CallableQualifier, Namespace, NamespaceStore, NamespaceSymbol};
 pub(crate) use pull::{ProductKey, ProductScope, PullSession};
 pub(crate) use reach::ReachKey;
-pub use scheduler::{
-    AppliedStep, DriveOutcome, FatalError, Scheduler, Wake, WakeDisposition, WorkStartReason, WorkStartTally,
-};
 pub use scope::ScopeSnapshot;
+pub(crate) use semantic::CallableConstructionTargetKey;
 /// The widening budget is the fixpoint's own constant; nothing outside
 /// `semantic` acts on it, and only the telemetry tests read it — to check that
 /// a widening event can only appear past it.
@@ -114,7 +103,6 @@ pub use semantic::{
     CallTargetSummary, CallableDemand, CallableFlowFact, CallableSurface, ContributionMap, ContributionReplace,
     EntryReachability, ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, ShapeDemand, UndefinedFunction,
 };
-pub(crate) use semantic::{CallableConstructionTargetKey, SemanticOrd};
 pub use source::{
     Horizon, QuotedAstNode, QuotedSourceBuilder, QuotedSourceCursor, QuotedSourceError, QuotedSourceHeap,
     QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot,
@@ -151,8 +139,6 @@ mod elixir_surface_fixtures_test;
 #[cfg(test)]
 mod extern_entry_dispatch_test;
 #[cfg(test)]
-mod facts_test;
-#[cfg(test)]
 mod fixture_contract_harness_test;
 #[cfg(test)]
 mod fixture_facts;
@@ -176,8 +162,6 @@ mod quoted_surface_test;
 mod resolve_test;
 #[cfg(test)]
 mod runtime_demand_answers_test;
-#[cfg(test)]
-mod scheduler_test;
 #[cfg(test)]
 mod scope_test;
 #[cfg(test)]

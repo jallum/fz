@@ -1,7 +1,7 @@
-use super::ordered_set::OrderedSet;
+use crate::ordered_set::OrderedSet;
 
-use super::FactTable;
-use super::facts::ContentMovement;
+use crate::FactTable;
+use crate::facts::ContentMovement;
 
 type TestFacts = FactTable<u32, &'static str>;
 

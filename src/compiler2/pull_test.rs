@@ -16,10 +16,10 @@ use super::super::artifact::{
     MaterializedExecutableTransport, TransportLayouts,
 };
 use super::super::body::{ControlEntryId, ControlEntryOrigin, LoweredClause, LoweredEntry, LoweredStep, LoweredTail};
-use super::super::facts::FactReadiness;
 use super::super::identity::{ExecutableNeed, FunctionId};
 use super::super::transport::{BoundaryFacts, BoundaryId, CallableFacts, CallableId, ExecutableSymbol};
 use super::*;
+use fz_engine::FactReadiness;
 
 fn prospective_dependency(dependency: &ProductKey) -> ProductDependencies {
     ProductDependencies {
@@ -115,7 +115,7 @@ fn retained_test_session(root: RootId, fact: &FactKey, types: &super::super::typ
 
 #[test]
 fn retiring_a_never_produced_observed_product_preserves_its_pending_demand() {
-    use super::super::scheduler::Scheduler;
+    use fz_engine::Scheduler;
 
     let types = fake_types();
     let root = RootId::for_test(1);
@@ -125,7 +125,7 @@ fn retiring_a_never_produced_observed_product_preserves_its_pending_demand() {
     let mut scheduler = Scheduler::new();
     scheduler.complete_ordered_with_external(
         &super::super::Job::SeedRoot(root),
-        crate::compiler2::scheduler::CompletionEffects::single(
+        fz_engine::CompletionEffects::single(
             crate::compiler2::drive::Derivation::of(
                 super::super::Job::SeedRoot(root),
                 crate::compiler2::drive::DerivationKey::Job,

@@ -5,10 +5,11 @@ use super::super::quoted_surface::read_compiler_fragment_surface;
 use super::super::source_publish::{ScopePublication, publish_scope};
 use super::super::source_test::quoted_tokens;
 use super::super::{
-    DriveOutcome, Job, ModuleId, Namespace, NamespaceSymbol, QuotedSourceBuilder, QuotedSourceHeap,
-    QuotedSourceMetadata, QuotedSourceRoot, ScopeSnapshot, World, parse_quoted_program,
+    Job, ModuleId, Namespace, NamespaceSymbol, QuotedSourceBuilder, QuotedSourceHeap, QuotedSourceMetadata,
+    QuotedSourceRoot, ScopeSnapshot, World, parse_quoted_program,
 };
 use crate::telemetry::{Capture, ConfiguredTelemetry};
+use fz_engine::DriveOutcome;
 
 fn meta() -> QuotedSourceMetadata {
     QuotedSourceMetadata::default()

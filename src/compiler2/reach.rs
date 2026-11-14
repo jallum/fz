@@ -16,11 +16,11 @@ use std::rc::Rc;
 
 use super::drive::FactKey;
 use super::executable_facts::TransportOrigin;
-use super::facts::FactUse;
 use super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::pull::{ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, RecursiveProductRead};
-use super::semantic::SemanticOrd;
 use super::world::World;
+use fz_engine::FactUse;
+use fz_engine::SemanticOrd;
 
 /// A node together with the edges that define its reach. Every successor of
 /// a key is a key of the same kind, so a node is never asked about under

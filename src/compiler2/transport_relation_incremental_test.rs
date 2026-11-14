@@ -6,11 +6,11 @@ use std::rc::Rc;
 
 use crate::telemetry::ConfiguredTelemetry;
 
-use super::facts::FactUse;
 use super::incoming_inputs::{IncomingInputSource, InputSlot};
 use super::pull::{ProductKey, ProductRequestId, PullOutcome, PullSession, PullSessionId, PullWait};
 use super::transport::{ExecutableSymbol, TransportPosition};
 use super::{CodeSubmission, Compiler2, DependencyKey, ExecutableNeed, FactKey, Job, RootSubmission, World};
+use fz_engine::FactUse;
 
 #[derive(Default)]
 struct Relations {

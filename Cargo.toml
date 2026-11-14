@@ -5,7 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [workspace]
-members = ["fixture-metadata", "runtime"]
+members = ["fixture-metadata", "runtime", "crates/fz-engine"]
 
 [workspace.lints.rust]
 # `runtime` uses `cfg(loom)` to swap in loom's synchronization primitives for
@@ -38,6 +38,7 @@ cranelift-jit = "0.131"
 cranelift-native = "0.131"
 target-lexicon = "0.13"
 fz-runtime = { path = "runtime" }
+fz-engine = { path = "crates/fz-engine" }
 smallvec = { version = "1.15.1", default-features = false, features = ["union"] }
 hashbrown = { version = "0.17.1", default-features = false }
 rustyline = { version = "18.0.0", default-features = false }

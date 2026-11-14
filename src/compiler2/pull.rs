@@ -27,17 +27,18 @@ use super::artifact::{
 };
 use super::drive::{DependencyKey, FactKey, ProductAddress};
 use super::executable_facts::ExecutableFacts;
-use super::facts::{FactChange, FactMovement, FactState, FactUse};
 use super::identity::{ExecutableKey, ModuleId, RootId};
-use super::ordered_worklist::OrderedWorklist;
-use super::scheduler::WorkStartTally;
-use super::semantic::{ExecutableRuntimeDemand, SemanticOrd};
+use super::semantic::ExecutableRuntimeDemand;
 #[cfg(test)]
 use super::transport::LaneId;
 #[cfg(test)]
 use super::transport::ShapeId;
 use super::transport::{CallableConstructionOwner, TransportPosition};
 pub use super::transport::{TransportCarrier, TransportLayout};
+use fz_engine::OrderedWorklist;
+use fz_engine::SemanticOrd;
+use fz_engine::WorkStartTally;
+use fz_engine::{FactChange, FactMovement, FactState, FactUse};
 static NEXT_PULL_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 const SESSION_STARTED_EVENT: &[&str] = &["fz", "compiler2", "pull", "session", "started"];
 const SESSION_FINISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "session", "finished"];
@@ -1716,7 +1717,7 @@ pub(crate) struct ProductSessions {
     active_scopes: HashMap<ProductScope, ActiveRootProduct>,
     work_start_cursor: WorkStartTally,
     active_work_starts: Vec<WorkStartOwner>,
-    pending_requests: super::agenda::Agenda<ProductAddress>,
+    pending_requests: fz_engine::Agenda<ProductAddress>,
     requested: HashSet<ProductAddress>,
     /// What each drive that deferred was waiting on, and how deep the stack
     /// was when it did, in the order they deferred. Dropped when the drive
@@ -2171,7 +2172,7 @@ impl ProductSessions {
     }
 }
 
-impl super::scheduler::ExternalDependencyStates<DependencyKey> for ProductSessions {
+impl fz_engine::ExternalDependencyStates<DependencyKey> for ProductSessions {
     fn external_state(&self, key: &DependencyKey) -> Option<FactState> {
         match key {
             DependencyKey::Fact(_) => None,
@@ -2434,9 +2435,9 @@ impl<'s> ProductReadContext<'s> {
         }
         .projected(&fact);
         let ready = match fact.readiness() {
-            super::facts::FactReadiness::Current => state.revision.is_some(),
-            super::facts::FactReadiness::Concluded => world.fact_is_concluded(fact.fact()),
-            super::facts::FactReadiness::Settled => state.settled,
+            fz_engine::FactReadiness::Current => state.revision.is_some(),
+            fz_engine::FactReadiness::Concluded => world.fact_is_concluded(fact.fact()),
+            fz_engine::FactReadiness::Settled => state.settled,
         };
         self.dependencies.facts.insert(fact, state);
         ready

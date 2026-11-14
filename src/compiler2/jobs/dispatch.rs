@@ -12,7 +12,6 @@ use std::sync::Arc;
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource};
 use super::super::namespace::{Namespace, NamespaceSymbol};
-use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
 use crate::ast::{CallableName, Callee, Expr, Pattern, Spanned, UnOp, Var, VarContext};
@@ -25,6 +24,7 @@ use crate::dispatch_matrix::pattern::{
 };
 use crate::function_surface::FunctionSurface;
 use crate::source::Span;
+use fz_engine::FatalError;
 
 #[derive(Debug, Clone)]
 pub(super) struct GuardCall {

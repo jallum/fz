@@ -1,8 +1,8 @@
 use super::super::drive::{FactKey, Job, JobEffects, current_uses, settled_uses};
 use super::super::identity::{ExecutableKey, ExecutableNeed};
-use super::super::scheduler::FatalError;
 use super::super::semantic::CallableConstructionTargetKey;
 use super::super::world::World;
+use fz_engine::FatalError;
 
 pub(super) fn derive(world: &mut World, key: &CallableConstructionTargetKey) -> Result<JobEffects, FatalError> {
     let owner_fact = FactKey::ExecutableFacts(key.owner.clone());

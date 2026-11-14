@@ -29,16 +29,16 @@ use super::super::body::{
     LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job};
-use super::super::facts::FactUse;
 use super::super::identity::{ActivationKey, ExecutableKey, ModuleId, RootId};
 use super::super::pull::{ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait};
-use super::super::scheduler::FatalError;
-use super::super::semantic::SemanticOrd;
 use super::super::transport::{
     BoundaryFacts, BoundaryId, CallableFacts, CallableId, ExecutableSymbol, PhysicalLaneSource, TransportPosition,
 };
 use super::super::types::Ty;
 use super::super::world::World;
+use fz_engine::FactUse;
+use fz_engine::FatalError;
+use fz_engine::SemanticOrd;
 
 /// Reports `RootBackendProduct` pull-drive failures as `FatalError`.
 ///

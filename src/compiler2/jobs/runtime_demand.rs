@@ -13,14 +13,12 @@ use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, set
 use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, RuntimeDemandFacts};
 #[cfg(test)]
 use super::super::executable_facts::{TransportOrigin, collect_value_origins};
-use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::super::incoming_inputs::{IncomingInputRole, IncomingInputSource, IncomingInputSources, InputSlot};
-use super::super::scheduler::FatalError;
 use super::super::semantic::{
     CallSiteSummary, CallableConstructionTargetKey, CallableDemand, CallableFlowEdge, CallableFlowFact,
-    CallableSurface, CallableTarget, ExecutableRuntimeDemand, RuntimeDemand, SemanticOrd, ShapeDemand,
-    TargetDemandContribution, ground_dispatch_surfaces,
+    CallableSurface, CallableTarget, ExecutableRuntimeDemand, RuntimeDemand, ShapeDemand, TargetDemandContribution,
+    ground_dispatch_surfaces,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
@@ -28,6 +26,9 @@ use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::dispatch_matrix::{ProjectionKind, SubjectId, SubjectSource};
 use crate::telemetry::Telemetry;
+use fz_engine::FactUse;
+use fz_engine::FatalError;
+use fz_engine::SemanticOrd;
 
 #[cfg(test)]
 thread_local! {

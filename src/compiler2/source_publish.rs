@@ -34,12 +34,12 @@ use super::quoted_surface::{
     ReservedSourceDefinition, ScopeForm, ScopeSurface, StatementForm, defines_a_function, read_module_body_surface,
     read_protocol_body_surface, read_protocol_impl_body_surface, reserved_source_definition,
 };
-use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
 use super::source::{QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata, QuotedSourceRoot};
 use super::structdef::StructDef;
 use super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use super::world::{ProtocolCallbackSurface, World};
+use fz_engine::FatalError;
 
 type Outputs = Vec<FactKey>;
 type Changed = Vec<FactKey>;
