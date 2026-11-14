@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:26:07Z",
+  "description": "cut_in_component_returns (jobs/transport.rs ~2182) asks whether the callee is in the owner's cycle group, under the derivation whose waits are Direct edges (closure-call returns skipped) or All edges; the non-rising function id tie-break is unchanged. Deletes ReachKey (Direct, All) and the Reach product entirely. On even/odd the cut must stay on odd-\u003eeven. Predict: dumps identical.",
+  "id": "fz-t93.5",
+  "labels": [],
+  "parent": "fz-t93",
+  "priority": 2,
+  "status": "open",
+  "title": "The transport cut asks the engine for the owner's cycle group",
+  "type": "task",
+  "updated_at": "2026-11-14T04:26:07Z"
+}
