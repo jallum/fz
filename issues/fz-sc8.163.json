@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T00:01:02Z",
   "created": "2026-11-13T22:03:59Z",
   "description": "Repro (0a1d44728): dbg(Kernel.apply(Kernel, :abs, [-2])) -\u003e error[macro/not-required]: remote macro Kernel.apply/3 requires require Kernel. Elixir prints 2. Unqualified apply(Kernel, :abs, [-2]) prints 2. With 'require Kernel' at the top of the user file the qualified call prints 2. Same for Kernel.\u0026\u0026(true, 3) and for a user module: 'import M' then M.twice(4) is refused, Elixir prints 8. Kernel.abs(-2) works because abs is a function.\n\nCause: Elixir says importing a module requires it, and Kernel is imported everywhere. fz kept a separate per-source HashSet\u003cFunctionId\u003e (required_remote_macros) filled only by apply_require and consulted at quoted_expander.rs:461 and :488; it was threaded through ScopeSession, FunctionSource (part of source identity) and FunctionSourceExpander, and was never scoped lexically. import records only per-callable namespace bindings, so the prelude's import of Kernel never reached the set.\n\nFix (spiked green: lib 2242/0, fixture_matrix 3215/0, no pin moved; patch scratch b163/spike/import-implies-require.patch, +79/-81 over 10 files): one answer, World::macro_callable_remotely: a remote macro may be called when the scope's namespace holds a 'required' entry for it, or holds any binding from the macro's module (module-level, as in Elixir: import M, only: [...] requires all of M). require records its macros in the namespace, so it is lexically scoped like import, and the separate set with its three copies is deleted.\n\nNot part of this: Kernel.if(true, do: 1, else: 2) is refused with resolve/unknown-import because if is a special form, not a Kernel export (own ticket). An import of a module defined later in the same file is accepted by fz and refused by Elixir (existing behaviour).\n\nDone when: an oracle fixture calls Kernel macros by qualified name (apply/3 with a named function and with :+, \u0026\u0026) without writing require, and a user module's macro qualified after 'import M' alone, matching Elixir on interp, run and build; behavior tests show a remote macro of a module neither imported nor required is still refused, and that 'require M' inside one module does not license a call in a sibling module.",
   "id": "fz-sc8.163",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "A module that is imported is also required, so Kernel's macros are callable by their qualified name",
   "type": "bug",
-  "updated_at": "2026-11-13T23:44:40Z"
+  "updated_at": "2026-11-14T00:01:02Z"
 }
