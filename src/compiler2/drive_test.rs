@@ -21399,7 +21399,7 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
             CompletionEffects::single(
                 Derivation::of(job.clone(), DerivationKey::Job),
                 reads,
-                waits,
+                waits.into_iter().map(|usage| (usage, None)).collect(),
                 outputs,
                 changed,
             ),

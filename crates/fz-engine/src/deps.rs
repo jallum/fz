@@ -4,6 +4,7 @@ use std::hash::Hash;
 
 use crate::facts::{FactUse, Publisher, SemanticOrd};
 use crate::ordered_set::OrderedSet;
+use crate::waits::StandingWaits;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnresolvedWait<J, F> {
@@ -13,12 +14,14 @@ pub struct UnresolvedWait<J, F> {
 
 /// Exact reads and output claims owned by each publisher, and the standing
 /// waits owned by each job. Reads and claims are per answer; a wait is what
-/// stopped a run, so it belongs to the job that will re-run.
+/// stopped a run, so it belongs to the job that will re-run. Each wait names
+/// the job that answers it, so the standing waits are also the graph of which
+/// job waits on which.
 #[derive(Debug)]
 pub struct DependencyIndex<P: Publisher, F> {
     reads: HashMap<P, HashSet<FactUse<F>>>,
     subscribers: HashMap<FactUse<F>, OrderedSet<P>>,
-    waits: HashMap<P::Run, HashSet<FactUse<F>>>,
+    waits: HashMap<P::Run, StandingWaits<F, P::Run>>,
     waiters: HashMap<FactUse<F>, OrderedSet<P::Run>>,
     outputs: HashMap<P, OrderedSet<F>>,
     /// Every publisher each job currently owns, in emission order. A
@@ -28,7 +31,7 @@ pub struct DependencyIndex<P: Publisher, F> {
     /// Answers for an absent key: a publisher or job with no entry owns, waits
     /// on and publishes nothing.
     no_outputs: OrderedSet<F>,
-    no_waits: HashSet<FactUse<F>>,
+    no_waits: StandingWaits<F, P::Run>,
     no_derivations: OrderedSet<P>,
 }
 
@@ -42,7 +45,7 @@ impl<P: Publisher, F> Default for DependencyIndex<P, F> {
             outputs: HashMap::default(),
             derivations: HashMap::default(),
             no_outputs: OrderedSet::default(),
-            no_waits: HashSet::default(),
+            no_waits: StandingWaits::default(),
             no_derivations: OrderedSet::default(),
         }
     }
@@ -92,7 +95,7 @@ where
         replace_held(&mut self.reads, &mut self.subscribers, publisher, next_reads);
     }
 
-    pub fn replace_waits(&mut self, job: P::Run, next_waits: HashSet<FactUse<F>>) {
+    pub fn replace_waits(&mut self, job: P::Run, next_waits: StandingWaits<F, P::Run>) {
         replace_held(&mut self.waits, &mut self.waiters, job, next_waits);
     }
 
@@ -163,8 +166,31 @@ where
         readers
     }
 
-    pub fn waits_for(&self, job: &P::Run) -> &HashSet<FactUse<F>> {
+    pub fn waits_for(&self, job: &P::Run) -> &StandingWaits<F, P::Run> {
         self.waits.get(job).unwrap_or(&self.no_waits)
+    }
+
+    /// Whether `from` waits, directly or through the jobs it waits on, for an
+    /// answer only `to` can give. A run that would wait on a job already
+    /// waiting on it would close a cycle of waits nothing can open.
+    pub fn waits_reach(&self, from: &P::Run, to: &P::Run) -> bool {
+        if self.waits_for(from).is_empty() {
+            return false;
+        }
+        let mut pending = vec![from];
+        let mut seen = HashSet::default();
+        while let Some(job) = pending.pop() {
+            if !seen.insert(job) {
+                continue;
+            }
+            for producer in self.waits_for(job).producers() {
+                if producer == to {
+                    return true;
+                }
+                pending.push(producer);
+            }
+        }
+        false
     }
 
     /// Whether `job`'s most recent completion left waits standing.
@@ -248,25 +274,52 @@ where
     }
 }
 
+/// The facts a held collection names.
+trait HeldUses<F> {
+    fn held_uses<'a>(&'a self) -> impl Iterator<Item = &'a FactUse<F>>
+    where
+        F: 'a;
+}
+
+impl<F: Eq + Hash> HeldUses<F> for HashSet<FactUse<F>> {
+    fn held_uses<'a>(&'a self) -> impl Iterator<Item = &'a FactUse<F>>
+    where
+        F: 'a,
+    {
+        self.iter()
+    }
+}
+
+impl<F: Eq + Hash, J> HeldUses<F> for StandingWaits<F, J> {
+    fn held_uses<'a>(&'a self) -> impl Iterator<Item = &'a FactUse<F>>
+    where
+        F: 'a,
+    {
+        self.uses()
+    }
+}
+
 /// Stores `next` as what `holder` holds, and brings the reverse index in line:
 /// the facts the holder no longer holds forget it, and the facts it holds
 /// remember it. The set is stored whole, then read back from where it lives.
-fn replace_held<K, F>(
-    held: &mut HashMap<K, HashSet<FactUse<F>>>,
+fn replace_held<K, F, H>(
+    held: &mut HashMap<K, H>,
     holders_of: &mut HashMap<FactUse<F>, OrderedSet<K>>,
     holder: K,
-    next: HashSet<FactUse<F>>,
+    next: H,
 ) where
     K: Clone + Eq + Hash,
     F: Clone + Eq + Hash,
+    H: HeldUses<F>,
 {
     let stored = match held.entry(holder.clone()) {
         Entry::Occupied(mut entry) => {
-            for fact in entry.insert(next) {
-                if let Some(holders) = holders_of.get_mut(&fact) {
+            let previous = entry.insert(next);
+            for fact in previous.held_uses() {
+                if let Some(holders) = holders_of.get_mut(fact) {
                     holders.remove(&holder);
                     if holders.is_empty() {
-                        holders_of.remove(&fact);
+                        holders_of.remove(fact);
                     }
                 }
             }
@@ -274,7 +327,7 @@ fn replace_held<K, F>(
         }
         Entry::Vacant(entry) => entry.insert(next),
     };
-    for fact in stored.iter() {
+    for fact in stored.held_uses() {
         holders_of.entry(fact.clone()).or_default().insert(holder.clone());
     }
 }

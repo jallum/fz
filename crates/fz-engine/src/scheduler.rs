@@ -10,6 +10,7 @@ use crate::facts::{
     ClaimShape, ContentMovement, FactChange, FactMovement, FactState, FactTable, FactUse, Publisher, SemanticOrd,
 };
 use crate::ordered_set::OrderedSet;
+use crate::waits::StandingWaits;
 
 /// Reads dependency state from its owner without copying it into the fact table.
 /// `None` selects a scheduler-owned fact. `Some` selects external ownership,
@@ -262,17 +263,17 @@ pub struct DerivationEffects<P, F> {
 /// a run with standing waits has not reached that answer yet, so the job's own
 /// publisher keeps its claims dirty while every other answer it reached stands.
 #[derive(Debug, Clone)]
-pub struct CompletionEffects<P, F> {
+pub struct CompletionEffects<P: Publisher, F> {
     pub derivations: Vec<DerivationEffects<P, F>>,
-    pub waits: HashSet<FactUse<F>>,
+    pub waits: StandingWaits<F, P::Run>,
 }
 
-impl<P, F> CompletionEffects<P, F> {
+impl<P: Publisher, F: Eq + Hash> CompletionEffects<P, F> {
     /// The shape of a job that answers one question per run.
     pub fn single(
         publisher: P,
         reads: HashSet<FactUse<F>>,
-        waits: HashSet<FactUse<F>>,
+        waits: StandingWaits<F, P::Run>,
         outputs: Vec<F>,
         changed: Vec<F>,
     ) -> Self {
@@ -606,7 +607,7 @@ where
     /// Every fact use this job depends on: what each of its answers read, plus
     /// the waits that stopped its last run.
     pub fn dependency_uses(&self, job: &P::Run) -> impl Iterator<Item = &FactUse<F>> {
-        self.reads(job).chain(self.deps.waits_for(job))
+        self.reads(job).chain(self.deps.waits_for(job).uses())
     }
 
     #[cfg(test)]
@@ -635,8 +636,14 @@ where
     }
 
     /// The waits `job`'s most recent completion left standing.
-    pub fn waits_for(&self, job: &P::Run) -> &HashSet<FactUse<F>> {
+    pub fn waits_for(&self, job: &P::Run) -> &StandingWaits<F, P::Run> {
         self.deps.waits_for(job)
+    }
+
+    /// Whether `from` waits, directly or through the jobs it waits on, for an
+    /// answer only `to` can give.
+    pub fn waits_reach(&self, from: &P::Run, to: &P::Run) -> bool {
+        self.deps.waits_reach(from, to)
     }
 
     pub fn waited_settled_facts(&self) -> Vec<F> {
@@ -683,7 +690,7 @@ where
 
     /// Leaves `job` waiting on `waits` without running it, as a run that
     /// found those answers missing would have.
-    pub fn wait_without_running(&mut self, job: P::Run, waits: HashSet<FactUse<F>>) {
+    pub fn wait_without_running(&mut self, job: P::Run, waits: StandingWaits<F, P::Run>) {
         self.deps.replace_waits(job, waits);
     }
 
@@ -711,7 +718,7 @@ where
         );
         let waiting = !effects.waits.is_empty();
         let own = P::of_run(job);
-        let mut blocked = effects.waits.iter().cloned().collect::<Vec<_>>();
+        let mut blocked = effects.waits.uses().cloned().collect::<Vec<_>>();
         blocked.sort_by(|left, right| left.semantic_cmp(right, ctx));
         self.deps.replace_waits(job.clone(), effects.waits);
 
@@ -1315,7 +1322,7 @@ where
     {
         for job in self.deps.waiters(&fact_use, ctx) {
             let waits = self.deps.waits_for(&job);
-            if !waits.iter().all(|wait| self.dependency_satisfies(wait, external)) {
+            if !waits.uses().all(|wait| self.dependency_satisfies(wait, external)) {
                 continue;
             }
             // A standing wait belongs to the job's own answer, so satisfying

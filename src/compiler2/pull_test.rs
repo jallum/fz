@@ -131,7 +131,9 @@ fn retiring_a_never_produced_observed_product_preserves_its_pending_demand() {
                 crate::compiler2::drive::DerivationKey::Job,
             ),
             HashSet::default(),
-            HashSet::from_iter([FactUse::current(DependencyKey::Product(address.clone()))]),
+            [(FactUse::current(DependencyKey::Product(address.clone())), None)]
+                .into_iter()
+                .collect(),
             Vec::new(),
             Vec::new(),
         ),

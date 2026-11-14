@@ -599,17 +599,14 @@ impl World {
                     .map(|address| FactUse::current(DependencyKey::Product(address))),
             )
             .collect();
-        let waits: HashSet<_> = effects
-            .waits
-            .into_iter()
-            .map(fact_dependency)
-            .chain(
+        let waits = self.standing_waits(
+            effects.waits.into_iter().map(fact_dependency).chain(
                 effects
                     .product_waits
                     .into_iter()
                     .map(|address| FactUse::settled(DependencyKey::Product(address))),
-            )
-            .collect();
+            ),
+        );
         // Waiting completions extend: a blocked job's prior contributions
         // stand untouched (the scheduler likewise keeps its claims standing).
         // A wait-free conclusion normally replaces the contribution key set.
