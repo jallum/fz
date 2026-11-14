@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-sc8.192.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.192.3"
+  ],
   "created": "2026-11-14T13:11:15Z",
   "description": "Step 2 of fz-sc8.192. Put and delete on a tree copy the leaf and the nodes above it and share the rest: split a full leaf, merge a sparse one, grow from flat to tree at 33 entries, shrink back at 32. Measured need (distiller, 32,000 lines, develop + fz-sc8.184.3): map put is 19% of run time; 39,573 puts into maps of 256+ entries copy 128M of the 131M entries all puts copy. Signal: a fixture pins bytes allocated by 10,000 puts; put 1..n then update 1..n re-timed at 10k/20k/40k/80k (0.66/2.6/10.2/40.6 s today, release); distiller map-put share re-measured (prediction: under 2%). Remove the O(n^2) statements in lib/map.fz, .agent/docs/any-value.md, .agent/docs.md, guides/memory.html and the comment near ir_runtime.rs:2000.",
   "id": "fz-sc8.192.2",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A put or delete on a large map copies a path, not the map",
   "type": "task",
-  "updated_at": "2026-11-14T13:11:15Z"
+  "updated_at": "2026-11-14T13:11:16Z"
 }
