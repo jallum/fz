@@ -19,7 +19,7 @@
   ],
   "priority": 1,
   "status": "open",
-  "title": "A continuation is a heap object built and read by inline code",
+  "title": "A continuation is a heap object built and read by inline code, and gives its frame back when it resumes as the newest object",
   "type": "task",
-  "updated_at": "2026-11-14T20:09:25Z"
+  "updated_at": "2026-11-14T20:09:31Z"
 }
