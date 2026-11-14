@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::fast_hash::HashMap;
-use crate::fz_ir::{Block, FnIr, Prim, SourceInfo, Stmt, Term};
+use crate::fz_ir::{Block, FnIr, Prim, SourceInfo, Stmt};
 use crate::ir_dce::classify_var_uses;
 use crate::source::Span;
 use crate::types::{ClosureTypes, Types};
@@ -106,12 +106,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             let params: Vec<ir::Value> = body.b.block_params(cl_blk).to_vec();
             let mut param_cursor = 0;
             for p in &blk.params {
-                let repr = native_body
-                    .block_param_reprs
-                    .get(p)
-                    .copied()
-                    .map(arg_repr_from_compiler2)
-                    .unwrap_or(ArgRepr::ValueRef);
+                let repr = block_param_repr(native_body, p);
                 var_env.insert(p.0, take_param_binding(body.b, &params, &mut param_cursor, repr));
             }
         }
@@ -177,32 +172,6 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         let term_span = source.term_span.get(&(f.id, blk.id)).copied().unwrap_or(Span::DUMMY);
         body.b.set_srcloc(span_to_srcloc(term_span));
 
-        // Repr-aware Goto coercion. Mirrors coerce_call_args but for
-        // intra-function block edges. Each arg is coerced to the repr
-        // the target block param actually needs (derived from
-        // compiler2 value_types), so RawInt values flow through without a
-        // box/unbox round-trip at block joins.
-        if let Term::Goto(target, args) = &blk.terminator {
-            if !block_map.contains_key(&target.0) {
-                return Err(CodegenError::new(format!(
-                    "block {:?} in {}#{} jumps to an unknown successor {:?}",
-                    blk.id, f.name, f.id.0, target
-                )));
-            }
-            for (param, arg) in f.block(*target).params.iter().zip(args.iter()) {
-                let want = native_body
-                    .block_param_reprs
-                    .get(param)
-                    .copied()
-                    .map(arg_repr_from_compiler2)
-                    .unwrap_or(ArgRepr::ValueRef);
-                let vb = *var_env.get(&arg.0).expect("unbound goto arg");
-                if let Some(coerced) = body.coerce_goto_arg(vb, want) {
-                    var_env.insert(arg.0, coerced);
-                }
-            }
-        }
-
         emit_terminator(
             &mut body,
             t,
@@ -212,7 +181,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             &block_map,
             is_cont_fn,
             this_spec_id,
-            f.id,
+            f,
             cont_param,
         )?;
     }

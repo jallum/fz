@@ -1,0 +1,38 @@
+#---
+# purpose: "A value that one case arm reads as an integer and another reads as an atom, a float or itself keeps one form for each arm"
+# oracle: 01155_a_value_that_two_case_arms_read_differently_keeps_its_own_form.oracle.exs
+# oracle.stamp: 0e1bd39d39abd780
+#---
+def main() do
+  dbg(Enum.map([4, :five], fn x ->
+    case x do
+      i when is_integer(i) -> :int
+      f -> {:other, f}
+    end
+  end))
+  dbg(Enum.map([4, :five], fn x ->
+    case x do
+      i when is_integer(i) -> {:int, i}
+      f when is_atom(f) -> {:atom, f}
+    end
+  end))
+  dbg(Enum.map([4, 2.5], fn x ->
+    case x do
+      i when is_integer(i) -> {:int, i}
+      f -> {:float, f}
+    end
+  end))
+  dbg(Enum.map([4, :five], fn x ->
+    case x do
+      i when is_integer(i) -> {:int, i}
+      _ -> {:other, x}
+    end
+  end))
+  dbg(Enum.map([4, :five], fn x ->
+    y = case x do
+      i when is_integer(i) -> i
+      _ -> 0
+    end
+    {y, x}
+  end))
+end

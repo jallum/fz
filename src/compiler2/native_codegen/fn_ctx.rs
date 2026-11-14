@@ -792,16 +792,14 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         self.value_as_any_ref(binding)
     }
 
-    /// Coerce a goto block argument to the repr its target param needs,
-    /// returning the rebound value when it changes and `None` when the
-    /// binding already matches.
-    pub(crate) fn coerce_goto_arg(&mut self, vb: CodegenValue, want: ArgRepr) -> Option<CodegenValue> {
+    /// A jump argument in the form its target parameter takes.
+    pub(crate) fn goto_arg_value(&mut self, binding: CodegenValue, want: ArgRepr) -> ir::Value {
         if want == ArgRepr::ValueRef {
-            Some(CodegenValue::any_ref(self.value_as_any_ref(vb)))
-        } else if vb.repr() != want {
-            Some(CodegenValue::from_abi_value(self.coerce_binding_to(vb, want), want))
+            self.value_as_any_ref(binding)
+        } else if binding.repr() != want {
+            self.coerce_binding_to(binding, want)
         } else {
-            None
+            binding.value()
         }
     }
 
