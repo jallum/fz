@@ -23728,3 +23728,36 @@ fn a_product_drive_served_by_the_bare_drive_defers_to_the_bare_drain() {
     assert_eq!(*deferred.borrow(), vec![2, 2, 2]);
     assert_eq!(*arbitrated.borrow(), vec![1, 1], "only the bare drain arbitrates");
 }
+
+/// A bare drive is a frame wherever it starts. A context driven without
+/// sessions of its own makes them for that drive, and a product drive it serves
+/// sits at depth two there as well.
+#[test]
+fn a_bare_drive_that_makes_its_own_sessions_is_a_frame_too() {
+    let tel = ConfiguredTelemetry::new();
+    let deferred = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&deferred);
+    tel.attach_raw_event2::<ProductKey, crate::compiler2::pull::ProductDeferral, _>(
+        &["fz", "compiler2", "pull", "drive", "deferred"],
+        move |_, _, _, _, deferral| observed.borrow_mut().push(deferral.depth),
+    );
+    let arbitrated = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&arbitrated);
+    tel.attach_raw_event2::<crate::compiler2::AppliedStep<Job, DependencyKey>, usize, _>(
+        &["fz", "compiler2", "work_graph", "quiesced"],
+        move |_, _, _, _, depth| observed.borrow_mut().push(*depth),
+    );
+    let mut world = crate::compiler2::World::new();
+    world.submit_code(
+        Some("defexception.fz".to_string()),
+        include_str!("../../fixtures/00882_defexception_declares_an_exception_struct_with_exception_and_message.fz")
+            .to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+
+    let outcome = super::drive::ExecutionContext::new(&mut world, &tel).drive();
+
+    assert_resolved(outcome, "the drive settles");
+    assert_eq!(*deferred.borrow(), vec![2, 2, 2]);
+    assert_eq!(*arbitrated.borrow(), vec![1, 1], "only the bare drain arbitrates");
+}
