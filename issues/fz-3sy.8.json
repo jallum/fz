@@ -1,6 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
+    "fz-3sy.24",
     "fz-3sy.3",
     "fz-3sy.6",
     "fz-3sy.7",
@@ -19,5 +20,5 @@
   "status": "in_progress",
   "title": "Built-in exceptions are declared in lib with Elixir's fields, and raise is Elixir's macro",
   "type": "feature",
-  "updated_at": "2026-11-13T20:04:32Z"
+  "updated_at": "2026-11-14T01:55:39Z"
 }
