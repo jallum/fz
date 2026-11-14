@@ -17,8 +17,11 @@ described in full in `.agent/docs/fact-engine.md`.
   returns an `AppliedStep` (changed facts, fact movements, `Wake`s, standing
   waits). `settle_quiescent_ordered` settles the facts it is given once nothing can
   still move them.
-  `DriveOutcome`, `FatalError`, `WorkStartReason` and `WorkStartTally` are the
-  vocabulary a drive loop reports in.
+  `DriveOutcome`, `FatalError`, `WorkStart` and `WorkStartTally` are the
+  vocabulary a drive loop reports in. The engine originates two work-start
+  reasons itself, `WorkStart::ChangedRevisionWake` (a wake) and
+  `WorkStart::Unclassified` (an entry that names no reason); every other
+  reason is the client's, carried as `WorkStart::Client`.
 - `facts`: `FactTable`, `FactUse`, `FactChange`, `FactMovement`, `FactState`,
   `FactReadiness`, `FactReplace`, and the three client traits below.
 - `deps`: `DependencyIndex` and `UnresolvedWait`: the reads and output claims
@@ -33,7 +36,13 @@ described in full in `.agent/docs/fact-engine.md`.
 - `Publisher` (`Clone + Eq + Hash + Debug`): the identity of one answer. Its
   associated `Run` is the job whose run produces the answer; `run()` maps an
   answer to its job and `of_run()` maps a job to the publisher of its own
-  answer. A job that answers one question per run is its own publisher.
+  answer. A job that answers one question per run is its own publisher. Its
+  associated `Reason` is the client's own set of work-start reasons
+  (`ClientReason`): `slot()` is the reason's position in `Counts`, a fixed
+  `[u64; N]` array the `WorkStartTally` keeps for the client's reasons, and
+  `name()` is its telemetry spelling. `Scheduler::enqueue` takes anything
+  convertible to `WorkStart<P::Reason>`, so a client passes its own reason
+  directly.
 - `ClaimShape` on the fact key: `is_cumulative()` declares whether the fact's
   content is a monotone join (cumulative) or overwrites (replacing).
 - `SemanticOrd<Ctx>` on publishers, runs and fact keys: `semantic_cmp(&self,

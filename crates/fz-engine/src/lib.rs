@@ -22,6 +22,6 @@ pub use facts::{
 pub use ordered_set::OrderedSet;
 pub use ordered_worklist::OrderedWorklist;
 pub use scheduler::{
-    AppliedStep, CompletionEffects, DerivationEffects, DriveOutcome, ExternalDependencyStates, FatalError,
-    NoExternalDependencyStates, Scheduler, Wake, WakeDisposition, WorkStartReason, WorkStartTally,
+    AppliedStep, ClientReason, CompletionEffects, DerivationEffects, DriveOutcome, ExternalDependencyStates,
+    FatalError, NoExternalDependencyStates, Scheduler, Wake, WakeDisposition, WorkStart, WorkStartTally,
 };

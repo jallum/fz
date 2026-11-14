@@ -50,6 +50,7 @@ mod value_map;
 mod value_set;
 pub use value_map::ValueMap;
 pub use value_set::ValueSet;
+mod work_start;
 mod world;
 
 pub(crate) use artifact::NativeEntryAbi;
@@ -113,6 +114,7 @@ pub use types::{
     BuiltinOpaque, CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Sigma, Ty, TypeVarId,
     Types,
 };
+pub use work_start::{WorkStartReason, WorkStartTally};
 pub(crate) use world::JobCompletion;
 pub use world::World;
 

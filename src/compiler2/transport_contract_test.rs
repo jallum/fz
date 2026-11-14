@@ -6402,7 +6402,7 @@ fn assert_materialized_executable_fact_authority(world: &World, session: &PullSe
     let producer_pokes = session.producer_pokes();
     let starts = world.work_start_tally();
     assert!(
-        starts[fz_engine::WorkStartReason::BlockedWaiterExpansion] >= producer_pokes,
+        starts[crate::compiler2::WorkStartReason::BlockedWaiterExpansion.into()] >= producer_pokes,
         "each product-triggered fact producer poke must be attributed to BlockedWaiterExpansion: {starts:?}",
     );
     assert_eq!(

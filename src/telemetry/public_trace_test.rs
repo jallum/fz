@@ -1,10 +1,11 @@
 use super::*;
+use crate::compiler2::{WorkStartReason, WorkStartTally};
 use crate::telemetry::causal::{
     CausalReport, FactLifecycle, FormulaWork, ProductEvaluationCause, ProductEvaluationTriggerKind,
     ProductPublicationKind, PublicEvent, ShiftWork,
 };
 use crate::telemetry::handler::EventKind;
-use fz_engine::{DriveOutcome, WorkStartReason, WorkStartTally};
+use fz_engine::DriveOutcome;
 
 /// The ticket's acceptance scenario: two functions, one calling the other.
 /// `main/0` is required — `PublicTrace::compile` closes it as the root, the
@@ -1191,7 +1192,10 @@ fn session_finish_reports_one_work_start_count_per_reason() {
         "a compile publishes at least one finished session"
     );
     let expected: Vec<&str> = {
-        let mut names: Vec<&str> = WorkStartReason::ALL.iter().map(|reason| reason.name()).collect();
+        let mut names: Vec<&str> = WorkStartReason::TELEMETRY_ORDER
+            .iter()
+            .map(|reason| reason.name())
+            .collect();
         names.sort_unstable();
         names
     };

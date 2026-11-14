@@ -1,5 +1,6 @@
 use crate::fast_hash::{HashMap, HashSet};
 use crate::ordered_set::OrderedSet;
+use crate::scheduler::ClientReason;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -202,6 +203,10 @@ pub trait Publisher: Clone + Eq + Hash + Debug {
     /// The job whose run produces this answer. The agenda, standing waits and
     /// every wake name this; reads, claims and finality name the publisher.
     type Run: Clone + Eq + Hash + Debug;
+
+    /// The reasons this client names for starting a run, beyond the ones the
+    /// engine originates itself.
+    type Reason: ClientReason;
 
     /// The job this answer came from.
     fn run(&self) -> &Self::Run;

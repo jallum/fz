@@ -315,7 +315,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     /// must be zero, and `ignition` must equal the true external front-door
     /// count (one `submit_code` + one `submit_root`).
     #[cfg(test)]
-    pub(crate) fn drive_root_backend_work_starts(&mut self, root: RootId) -> Result<fz_engine::WorkStartTally, String> {
+    pub(crate) fn drive_root_backend_work_starts(&mut self, root: RootId) -> Result<super::WorkStartTally, String> {
         self.drive_root_backend_product(root)?;
         Ok(self.world.work_start_tally())
     }
@@ -532,7 +532,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         while self.world.function_defined_revision(function).is_none() {
             let demanded = self.world.demand_fact_producer(
                 &FactKey::FunctionDefined(function),
-                fz_engine::WorkStartReason::BlockedWaiterExpansion,
+                super::WorkStartReason::BlockedWaiterExpansion,
             );
             let outcome = self.drive();
             let still_undefined = self.world.function_defined_revision(function).is_none();
