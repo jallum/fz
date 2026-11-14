@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:55:41Z",
+  "description": " x: 1}|%Pt{p | y: 2} is refused: expected =\u003e, got Bar. %{p | y: 2} works. In Elixir the named form also asserts that base is a Pt.",
+  "id": "fz-sc8.179",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A struct update names its struct: %Pt{base ",
+  "type": "bug",
+  "updated_at": "2026-11-14T01:55:41Z"
+}
