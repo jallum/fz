@@ -10,7 +10,6 @@ use crate::source::{SourceMap, Span};
 
 use super::identity::FunctionId;
 use super::quoted_concat_pattern::{concat_operands, decode_concat_pattern, refuse_concat_call};
-use super::quoted_surface::function_head_args;
 use super::source::{META_FROM_OPERATOR_KEY, QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::token_payload;
 
@@ -46,7 +45,8 @@ pub(crate) fn source_heads(root: &QuotedSourceRoot, sources: &SourceMap) -> Resu
         declares_spec: false,
     };
     let mut first_form = true;
-    for item in root.cursor().list_items()? {
+    for item in root.cursor().list_iter() {
+        let item = item?;
         let node = expect_ast_node(&item, "grouped function item", sources)?;
         let head = node.head.atom_name()?;
         if head == "@spec" {
@@ -67,7 +67,8 @@ pub(crate) fn derive_function_surface(
     let mut attrs = Vec::new();
     let mut attr_spans = Vec::new();
     let mut forms = Vec::new();
-    for item in root.cursor().list_items()? {
+    for item in root.cursor().list_iter() {
+        let item = item?;
         let node = expect_ast_node(&item, "grouped function item", sources)?;
         let head = node.head.atom_name()?;
         if head.starts_with('@') {
@@ -168,15 +169,14 @@ pub(crate) fn derive_function_surface(
 fn decode_attribute(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Attribute, QuotedSourceError> {
     let node = expect_ast_node(cursor, "function attribute", sources)?;
     let head = node.head.atom_name()?;
-    let args = node.tail.list_items()?;
-    let Some(value) = args.first() else {
+    let Some(value) = node.tail.list_iter().next().transpose()? else {
         return Err(QuotedSourceError::new(format!(
             "quoted function attribute `{head}` is missing its payload"
         )));
     };
     match head.as_str() {
         "@doc" => Ok(Attribute::Doc(value.utf8_binary_text()?)),
-        "@spec" => decode_spec_attribute(value, sources),
+        "@spec" => decode_spec_attribute(&value, sources),
         other => Err(QuotedSourceError::new(format!(
             "unsupported quoted function attribute `{other}`"
         ))),
@@ -188,12 +188,11 @@ fn decode_extern_fn(
     attrs: Vec<Attribute>,
     sources: &SourceMap,
 ) -> Result<FunctionSurface, QuotedSourceError> {
-    let args = node.tail.list_items()?;
-    if args.len() != 2 {
+    let Some((abi, details)) = node.tail.list_pair()? else {
         return Err(QuotedSourceError::new("quoted extern expects ABI and detail map"));
-    }
-    let abi = args[0].utf8_binary_text()?;
-    let details = &args[1];
+    };
+    let abi = abi.utf8_binary_text()?;
+    let details = &details;
     let name = required_map_utf8(details, "name")?;
     let params = required_map_list_tokens(details, "params", sources)?;
     let ret = required_map_tokens(details, "return", sources)?;
@@ -245,14 +244,14 @@ fn decode_function_clause(
     sources: &SourceMap,
 ) -> Result<(String, FnClause, Span), QuotedSourceError> {
     let span = node.span.unwrap_or(Span::DUMMY);
-    let args = node.tail.list_items()?;
-    if args.len() != 2 {
+    let Some((function_head, do_body)) = node.tail.list_pair()? else {
         return Err(QuotedSourceError::new(
             "quoted function clause expects head and do-body",
         ));
-    }
-    let (name, params, param_annotations, name_span, guard) = decode_function_head(occurrences, &args[0], sources)?;
-    let body = decode_do_body(occurrences, &args[1], Some(span), sources)?;
+    };
+    let (name, params, param_annotations, name_span, guard) =
+        decode_function_head(occurrences, &function_head, sources)?;
+    let body = decode_do_body(occurrences, &do_body, Some(span), sources)?;
     Ok((
         name,
         FnClause {
@@ -274,30 +273,29 @@ fn decode_function_head(
     let node = expect_ast_node(cursor, "function head", sources)?;
     let span = node.span.unwrap_or(Span::DUMMY);
     if node.head.atom_name()? == "when" {
-        let parts = node.tail.list_items()?;
-        if parts.len() != 2 {
+        let Some((function_head, guard)) = node.tail.list_pair()? else {
             return Err(QuotedSourceError::new(
                 "quoted `when` function head expects head and guard",
             ));
-        }
-        let (name, params, annotations, name_span, _) = decode_function_head(occurrences, &parts[0], sources)?;
-        let guard = decode_expr(occurrences, &parts[1], Some(span), sources)?;
+        };
+        let (name, params, annotations, name_span, _) = decode_function_head(occurrences, &function_head, sources)?;
+        let guard = decode_expr(occurrences, &guard, Some(span), sources)?;
         return Ok((name, params, annotations, name_span, Some(guard)));
     }
 
     let name = node.head.atom_name()?;
     let mut params = Vec::new();
     let mut annotations = Vec::new();
-    for arg in function_head_args(&node.tail)? {
+    for arg in node.tail.call_args() {
+        let arg = arg?;
         if let Some(ascribe) = arg.ast_node(sources)?
             && node_head_is_atom_named(&ascribe, "::")?
         {
-            let parts = ascribe.tail.list_items()?;
-            if parts.len() != 2 {
+            let Some((lhs, rhs)) = ascribe.tail.list_pair()? else {
                 return Err(QuotedSourceError::new("quoted `::` parameter expects lhs and rhs"));
-            }
-            params.push(decode_pattern(&parts[0], Some(span), sources)?);
-            annotations.push(Some(quoted_type_expr_body(&parts[1], sources)?));
+            };
+            params.push(decode_pattern(&lhs, Some(span), sources)?);
+            annotations.push(Some(quoted_type_expr_body(&rhs, sources)?));
             continue;
         }
         params.push(decode_pattern(&arg, Some(span), sources)?);
@@ -355,13 +353,15 @@ fn decode_expr(
             if let Some(head_node) = node.head.ast_node(sources)?
                 && head_node.head.atom_name()? == "."
             {
-                let callee_parts = head_node.tail.list_items()?;
-                if callee_parts.len() == 1 {
-                    let callee = decode_expr(occurrences, &callee_parts[0], Some(span), sources)?;
+                let callee_arity = head_node.tail.list_len()?;
+                if callee_arity == 1
+                    && let Some(callee) = head_node.tail.list_iter().next()
+                {
+                    let callee = decode_expr(occurrences, &callee?, Some(span), sources)?;
                     let call_args = decode_exprs(occurrences, &args, Some(span), sources)?;
                     return Ok(Spanned::new(Expr::ClosureCall(Box::new(callee), call_args), span));
                 }
-                if callee_parts.len() == 2 && is_bracket_access_callee(&head_node)? && args.len() == 2 {
+                if callee_arity == 2 && is_bracket_access_callee(&head_node)? && args.len() == 2 {
                     let base = decode_expr(occurrences, &args[0], Some(span), sources)?;
                     let key = decode_expr(occurrences, &args[1], Some(span), sources)?;
                     return Ok(Spanned::new(Expr::Index(Box::new(base), Box::new(key)), span));
@@ -619,10 +619,8 @@ pub(super) fn decode_pattern(
         }
         fz_runtime::any_value::ValueKind::LIST => decode_list_pattern(cursor, span, sources),
         fz_runtime::any_value::ValueKind::STRUCT => {
-            let items = cursor.tuple_items()?;
-            let elems = items
-                .into_iter()
-                .map(|item| decode_pattern(&item, Some(span), sources))
+            let elems = (0..cursor.tuple_arity()?)
+                .map(|index| decode_pattern(&cursor.tuple_item(index)?, Some(span), sources))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Spanned::new(Pattern::Tuple(elems), span))
         }
@@ -700,16 +698,15 @@ fn decode_clause_list_or_empty_block(
     if let Some(node) = body.ast_node(sources)?
         && node.head.atom_name()? == "__block__"
     {
-        if node.tail.list_items()?.is_empty() {
+        if node.tail.list_len()? == 0 {
             return Ok(Vec::new());
         }
         return Err(QuotedSourceError::new(format!(
             "quoted `{head}` body expects `->` clauses"
         )));
     }
-    body.list_items()?
-        .into_iter()
-        .map(|clause| decode_match_clause(occurrences, &clause, sources))
+    body.list_iter()
+        .map(|clause| decode_match_clause(occurrences, &clause?, sources))
         .collect()
 }
 
@@ -764,9 +761,8 @@ fn decode_with(
             "do" => body = Some(decode_expr(occurrences, &value, Some(span), sources)?),
             "else" => {
                 else_clauses = value
-                    .list_items()?
-                    .into_iter()
-                    .map(|clause| decode_match_clause(occurrences, &clause, sources))
+                    .list_iter()
+                    .map(|clause| decode_match_clause(occurrences, &clause?, sources))
                     .collect::<Result<Vec<_>, _>>()?;
             }
             other => {
@@ -782,15 +778,14 @@ fn decode_with(
         if let Some(node) = binding.ast_node(sources)?
             && node_head_is_atom_named(&node, "<-")?
         {
-            let parts = node.tail.list_items()?;
-            if parts.len() != 2 {
+            let Some((pattern, expr)) = node.tail.list_pair()? else {
                 return Err(QuotedSourceError::new(
                     "quoted `with` match binding expects pattern and expression",
                 ));
-            }
+            };
             bindings.push(WithBinding::Match(
-                decode_pattern(&parts[0], Some(span), sources)?,
-                decode_expr(occurrences, &parts[1], Some(span), sources)?,
+                decode_pattern(&pattern, Some(span), sources)?,
+                decode_expr(occurrences, &expr, Some(span), sources)?,
             ));
             continue;
         }
@@ -825,9 +820,8 @@ fn decode_receive(
         match key.as_str() {
             "do" => {
                 clauses = value
-                    .list_items()?
-                    .into_iter()
-                    .map(|clause| decode_match_clause(occurrences, &clause, sources))
+                    .list_iter()
+                    .map(|clause| decode_match_clause(occurrences, &clause?, sources))
                     .collect::<Result<Vec<_>, _>>()?;
             }
             "after" => {
@@ -1732,20 +1726,19 @@ fn decode_expr_keyword_pairs(
     sources: &SourceMap,
 ) -> Result<Vec<ExprPair>, QuotedSourceError> {
     cursor
-        .list_items()?
-        .into_iter()
-        .map(|entry| decode_expr_pair(occurrences, &entry, fallback_span, sources))
+        .list_iter()
+        .map(|entry| decode_expr_pair(occurrences, &entry?, fallback_span, sources))
         .collect::<Result<Vec<_>, _>>()
 }
 
 fn decode_keyword_entries(cursor: &QuotedSourceCursor) -> Result<Vec<(String, QuotedSourceCursor)>, QuotedSourceError> {
     let mut out = Vec::new();
-    for entry in cursor.list_items()? {
-        let items = entry.tuple_items()?;
-        if items.len() != 2 {
+    for entry in cursor.list_iter() {
+        let entry = entry?;
+        if entry.tuple_arity()? != 2 {
             return Err(QuotedSourceError::new("quoted keyword entry expects a 2-tuple"));
         }
-        out.push((items[0].atom_name()?.to_string(), items[1].clone()));
+        out.push((entry.tuple_item(0)?.atom_name()?.to_string(), entry.tuple_item(1)?));
     }
     Ok(out)
 }
@@ -2333,9 +2326,8 @@ fn required_map_list_tokens(
     cursor
         .map_value(key)?
         .ok_or_else(|| QuotedSourceError::new(format!("quoted map is missing `{key}`")))?
-        .list_items()?
-        .into_iter()
-        .map(|item| token_payload::decode_tokens(&item, sources))
+        .list_iter()
+        .map(|item| token_payload::decode_tokens(&item?, sources))
         .collect::<Result<Vec<_>, _>>()
 }
 

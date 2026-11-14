@@ -28,15 +28,15 @@ pub(crate) fn rewrite_source_sugar(
         return Ok(None);
     }
     let head = node.head.atom_name()?;
-    let args = node.tail.list_items()?;
+    let arity = node.tail.list_len()?;
     let rewritten = match head.as_str() {
-        "|>" if args.len() == 2 => rewrite_pipe(owner, node, &args, sources),
-        "&" if args.len() == 1 => rewrite_capture(owner, node, &args[0], sources),
-        "-" if args.len() == 1 => rewrite_unary_minus(owner, node, &args[0]),
-        "fn" => rewrite_lambda(owner, node, &args, sources),
-        "for" => rewrite_comprehension(owner, node, &args, sources),
-        "++" | "--" | "<>" | ".." | "//" | "in" | "not in" if args.len() == 2 => {
-            rewrite_operator(owner, node, head.as_str(), &args, sources)
+        "|>" if arity == 2 => rewrite_pipe(owner, node, &node.tail.list_items()?, sources),
+        "&" if arity == 1 => rewrite_capture(owner, node, &node.tail.list_items()?[0], sources),
+        "-" if arity == 1 => rewrite_unary_minus(owner, node, &node.tail.list_items()?[0]),
+        "fn" => rewrite_lambda(owner, node, &node.tail.list_items()?, sources),
+        "for" => rewrite_comprehension(owner, node, &node.tail.list_items()?, sources),
+        "++" | "--" | "<>" | ".." | "//" | "in" | "not in" if arity == 2 => {
+            rewrite_operator(owner, node, head.as_str(), &node.tail.list_items()?, sources)
         }
         _ => Ok(None),
     }?;
@@ -192,11 +192,11 @@ fn range_parts(
     if head != ".." && head != "Range.new" {
         return Ok(None);
     }
-    let args = node.tail.list_items()?;
-    if args.len() < 2 {
+    let mut args = node.tail.list_iter();
+    let (Some(first), Some(second)) = (args.next(), args.next()) else {
         return Ok(None);
-    }
-    Ok(Some((args[0].root(), args[1].root())))
+    };
+    Ok(Some((first?.root(), second?.root())))
 }
 
 fn rewrite_capture(
@@ -352,21 +352,17 @@ impl ComprehensionOptions {
         let mut body = None;
         let mut collector = None;
         let mut reduce = None;
-        for entry in option_lists
-            .iter()
-            .map(QuotedSourceCursor::list_items)
-            .collect::<Result<Vec<_>, _>>()?
-            .concat()
-        {
-            let items = entry.tuple_items()?;
-            let [key, value] = items.as_slice() else {
+        for entry in option_lists.iter().flat_map(QuotedSourceCursor::list_iter) {
+            let entry = entry?;
+            if entry.tuple_arity()? != 2 {
                 return Err(comprehension_error(
                     span,
                     "comprehension option expects a key and a value",
                 ));
-            };
-            match key.atom_name()?.as_str() {
-                "do" => body = Some(value.clone()),
+            }
+            let value = entry.tuple_item(1)?;
+            match entry.tuple_item(0)?.atom_name()?.as_str() {
+                "do" => body = Some(value),
                 "into" => collector = Some(value.root()),
                 "reduce" => reduce = Some(value.root()),
                 other => {
@@ -402,11 +398,10 @@ impl ComprehensionOptions {
 
 fn is_keyword_list(cursor: &QuotedSourceCursor) -> bool {
     cursor.root().tag() == ValueKind::LIST
-        && cursor.list_items().is_ok_and(|entries| {
-            entries.iter().all(|entry| {
-                entry
-                    .tuple_items()
-                    .is_ok_and(|items| items.len() == 2 && items[0].root().tag() == ValueKind::ATOM)
+        && cursor.list_iter().all(|entry| {
+            entry.is_ok_and(|entry| {
+                entry.tuple_arity().is_ok_and(|arity| arity == 2)
+                    && entry.tuple_item(0).is_ok_and(|key| key.root().tag() == ValueKind::ATOM)
             })
         })
 }
@@ -438,8 +433,7 @@ impl Qualifier {
         if head != "<-" {
             return Ok(Self::Filter(cursor.root()));
         }
-        let parts = node.tail.list_items()?;
-        let [pattern, source] = parts.as_slice() else {
+        let Some((pattern, source)) = node.tail.list_pair()? else {
             return Err(comprehension_error(
                 span,
                 "comprehension generator takes a pattern and an enumerable",
@@ -460,8 +454,8 @@ impl Qualifier {
 impl Qualifier {
     /// Whether a `<<...>>` qualifier is the `<<x <- bin>>` generator form.
     fn holds_generator(bitstring: &QuotedAstNode, sources: &SourceMap) -> Result<bool, QuotedSourceError> {
-        for part in bitstring.tail.list_items()? {
-            if let Some(node) = part.ast_node(sources)?
+        for part in bitstring.tail.list_iter() {
+            if let Some(node) = part?.ast_node(sources)?
                 && node.head.root().tag() == ValueKind::ATOM
                 && node.head.atom_name()? == "<-"
             {
@@ -613,8 +607,7 @@ fn lambda_clause(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Lam
     if node.head.atom_name()? != "->" {
         return Err(QuotedSourceError::new("lambda clause expected `->`"));
     }
-    let parts = node.tail.list_items()?;
-    let [params, body] = parts.as_slice() else {
+    let Some((params, body)) = node.tail.list_pair()? else {
         return Err(QuotedSourceError::new("lambda clause expected params and body"));
     };
     let params = params.list_items()?;
@@ -656,10 +649,30 @@ fn max_capture_arg(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<O
         return Ok(Some(index));
     }
     let mut max = None;
-    for child in child_cursors(cursor)? {
-        if let Some(index) = max_capture_arg(&child, sources)? {
+    let mut visit = |child: &QuotedSourceCursor| -> Result<(), QuotedSourceError> {
+        if let Some(index) = max_capture_arg(child, sources)? {
             max = Some(max.map_or(index, |current: usize| current.max(index)));
         }
+        Ok(())
+    };
+    match cursor.root().tag() {
+        ValueKind::LIST => {
+            for child in cursor.list_iter() {
+                visit(&child?)?;
+            }
+        }
+        ValueKind::STRUCT => {
+            for index in 0..cursor.tuple_arity()? {
+                visit(&cursor.tuple_item(index)?)?;
+            }
+        }
+        ValueKind::MAP => {
+            for (key, value) in cursor.map_entries()? {
+                visit(&key)?;
+                visit(&value)?;
+            }
+        }
+        _ => {}
     }
     Ok(max)
 }
@@ -676,10 +689,10 @@ fn replace_capture_args(
 
     match cursor.root().tag() {
         ValueKind::LIST => {
-            let items = cursor.list_items()?;
             let mut changed = false;
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
+            let mut out = Vec::with_capacity(cursor.list_len()?);
+            for item in cursor.list_iter() {
+                let item = item?;
                 let (root, item_changed) = replace_capture_args(builder, &item, span, sources)?;
                 changed |= item_changed;
                 out.push(root);
@@ -691,10 +704,11 @@ fn replace_capture_args(
             }
         }
         ValueKind::STRUCT => {
-            let items = cursor.tuple_items()?;
+            let arity = cursor.tuple_arity()?;
             let mut changed = false;
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
+            let mut out = Vec::with_capacity(arity);
+            for index in 0..arity {
+                let item = cursor.tuple_item(index)?;
                 let (root, item_changed) = replace_capture_args(builder, &item, span, sources)?;
                 changed |= item_changed;
                 out.push(root);
@@ -732,10 +746,11 @@ fn capture_arg_index(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result
     if node.head.root().tag() != ValueKind::ATOM || node.head.atom_name()? != "&" || !is_list_like(&node.tail) {
         return Ok(None);
     }
-    let args = node.tail.list_items()?;
-    let [arg] = args.as_slice() else {
+    let mut args = node.tail.list_iter();
+    let (Some(arg), None) = (args.next(), args.next()) else {
         return Ok(None);
     };
+    let arg = arg?;
     if arg.root().tag() != ValueKind::INT {
         return Ok(None);
     }
@@ -744,19 +759,6 @@ fn capture_arg_index(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result
         return Ok(None);
     }
     Ok(Some(index as usize))
-}
-
-fn child_cursors(cursor: &QuotedSourceCursor) -> Result<Vec<QuotedSourceCursor>, QuotedSourceError> {
-    match cursor.root().tag() {
-        ValueKind::LIST => cursor.list_items(),
-        ValueKind::STRUCT => cursor.tuple_items(),
-        ValueKind::MAP => Ok(cursor
-            .map_entries()?
-            .into_iter()
-            .flat_map(|(key, value)| [key, value])
-            .collect()),
-        _ => Ok(Vec::new()),
-    }
 }
 
 fn capture_lambda(
