@@ -4874,10 +4874,10 @@ fn positioned_callable_owners_have_observable_obligations() {
                 classes,
                 BTreeMap::from([
                     (("construction", true), 38),
-                    (("metadata", false), 223),
-                    (("metadata", true), 184)
+                    (("metadata", false), 201),
+                    (("metadata", true), 180)
                 ]),
-                "all 445 owners preserve their obligations; separating retained closure values from member execution demand removes lanes from 118 metadata-only positions"
+                "all 419 owners preserve their obligations; an entry that reuses its parent entry's capture layouts retains no callable owner of its own for them"
             );
         }
     }

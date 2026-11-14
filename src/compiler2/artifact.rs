@@ -217,6 +217,17 @@ pub struct MaterializedExecutable {
     pub call_edges: HashMap<CallSiteId, MaterializedCallEdge>,
 }
 
+impl MaterializedExecutable {
+    /// The id transport positions use for the body's entry `entry`: the id it
+    /// had before unreachable entries were pruned and the rest renumbered.
+    pub fn original_entry_id(&self, entry: ControlEntryId) -> ControlEntryId {
+        self.original_entry_ids
+            .get(entry.as_u32() as usize)
+            .copied()
+            .unwrap_or(entry)
+    }
+}
+
 /// One callsite's materialized edge, and what kind of callsite it is.
 ///
 /// A named callsite and a closure callsite are not the same call: only the

@@ -7,6 +7,7 @@ fn entry(tail: LoweredTail) -> LoweredEntry {
         origin: ControlEntryOrigin::Clause,
         params: Vec::new(),
         captures: Vec::new(),
+        capture_owners: Vec::new(),
         physical_captures: Vec::new(),
         physical_params: Vec::new(),
         steps: Vec::new(),

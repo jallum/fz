@@ -118,6 +118,7 @@ fn a_calls_return_origin_is_derived_from_its_tail() {
         origin: ControlEntryOrigin::Clause,
         params: Vec::new(),
         captures: Vec::new(),
+        capture_owners: Vec::new(),
         physical_captures: Vec::new(),
         physical_params: Vec::new(),
         steps: Vec::new(),

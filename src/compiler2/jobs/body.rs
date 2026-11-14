@@ -3269,7 +3269,12 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         }
         let value_count = body.value_count();
         let clause_bounds = clause_bounds(body);
-        let LoweredBody::Clauses { entries, tables, .. } = body;
+        let LoweredBody::Clauses {
+            clauses,
+            entries,
+            tables,
+            ..
+        } = body;
         let semantic = compute_entry_captures(entries, tables, &clause_bounds, value_count, false);
         let mut physical = compute_entry_captures(entries, tables, &clause_bounds, value_count, true);
         for entry in entries.iter() {
@@ -3295,6 +3300,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             entry.physical_captures = retained.into_iter().filter(|value| !captures.contains(value)).collect();
             entry.captures = captures;
         }
+        super::capture_owners::record_capture_owners(entries, clauses.iter().map(|clause| clause.entry));
         let origins = collect_value_origins(body);
         construct_call_ownership(body, &origins);
         construct_tuple_ownership(body, &origins, &scanned, &compared);
@@ -3327,6 +3333,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             origin,
             params,
             captures,
+            capture_owners: Vec::new(),
             physical_captures: Vec::new(),
             physical_params: Vec::new(),
             steps,
@@ -4629,7 +4636,7 @@ pub(super) fn retained_value_ids(body: &LoweredBody) -> ValueSet {
     retained
 }
 
-fn child_entries(tail: &LoweredTail) -> impl Iterator<Item = ControlEntryId> + '_ {
+pub(super) fn child_entries(tail: &LoweredTail) -> impl Iterator<Item = ControlEntryId> + '_ {
     let beside_the_outcomes = match tail {
         LoweredTail::Value { dest, .. }
         | LoweredTail::DirectCall { dest, .. }
