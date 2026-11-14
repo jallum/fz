@@ -26,9 +26,10 @@ pub(crate) struct PatternDispatchPlan<TypeHandle> {
     #[cfg(test)]
     pub(crate) source_matrix: DispatchMatrix<TypeHandle>,
     pub(crate) input_count: usize,
-    pub(crate) outcomes: Vec<PatternDispatchOutcome>,
+    /// Shared by every plan narrowed from this one: narrowing keeps outcome ids.
+    pub(crate) outcomes: Arc<[PatternDispatchOutcome]>,
     pub(crate) guards: Vec<PatternGuardExpr<TypeHandle>>,
-    pub(crate) pinned: Vec<PatternPinnedInput>,
+    pub(crate) pinned: Arc<[PatternPinnedInput]>,
     pub(crate) prepared_keys: Vec<GroundValue>,
     /// The exception a decision that ends with no outcome raises, or `None`
     /// when the construct that owns the plan takes such a decision elsewhere:
@@ -137,9 +138,9 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
             #[cfg(test)]
             source_matrix: self.source_matrix.clone(),
             input_count: self.input_count,
-            outcomes: self.outcomes.clone(),
+            outcomes: Arc::clone(&self.outcomes),
             guards: self.guards.clone(),
-            pinned: self.pinned.clone(),
+            pinned: Arc::clone(&self.pinned),
             prepared_keys: self.prepared_keys.clone(),
             last_resort: self.last_resort.clone(),
             proven_tuple_arities: self.proven_tuple_arities.clone(),
@@ -155,9 +156,9 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
             #[cfg(test)]
             source_matrix: self.source_matrix.map_type_handle(map),
             input_count: self.input_count,
-            outcomes: self.outcomes.clone(),
+            outcomes: Arc::clone(&self.outcomes),
             guards: self.guards.iter().map(|guard| guard.map_type_handle(map)).collect(),
-            pinned: self.pinned.clone(),
+            pinned: Arc::clone(&self.pinned),
             prepared_keys: self.prepared_keys.clone(),
             last_resort: self.last_resort.clone(),
             proven_tuple_arities: self.proven_tuple_arities.clone(),
@@ -1038,9 +1039,9 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             #[cfg(test)]
             source_matrix,
             input_count: self.input_count,
-            outcomes: self.outcomes,
+            outcomes: self.outcomes.into(),
             guards: self.guards,
-            pinned: self.pinned,
+            pinned: self.pinned.into(),
             prepared_keys: self.prepared_keys,
             last_resort: self.last_resort,
             proven_tuple_arities,
