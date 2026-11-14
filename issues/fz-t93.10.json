@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:26:49Z",
+  "description": "ACTIVATION_INPUT_ROW_BUDGET = 8 (semantic.rs ~1012; ActivationInputAlternatives::rebuild joins rows past it). At \u003e=9 same-seed sites it joins rows that are the correct answer (Enumerable.List.reduce/3 with erased closure; Kernel.+/2 turns generic). With the budget unlimited: hand-count keys, no lib test or fixture needs it to terminate, 14 fixtures fire it today (00616, 00642, 00758-00767, 00769, 01024) with identical stdout. Blockers: fz2 run panics at 12 sites in cranelift-jit compiled_blob.rs:225 TryFromIntError(NegOverflow) (fz-2un), and the distiller's largest drive goes 49,760 -\u003e 50,644 (over the 50,000 budget). Report: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/nine/report.md; diffs exp_budget_max.diff, exp_budget_per_publisher.diff.",
+  "id": "fz-t93.10",
+  "labels": [],
+  "parent": "fz-t93",
+  "priority": 2,
+  "status": "open",
+  "title": "The 8-row activation input budget is deleted",
+  "type": "task",
+  "updated_at": "2026-11-14T04:26:49Z"
+}
