@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T13:11:14Z",
+  "description": "Step 1 of fz-sc8.192 (page fz-sc8.192.html in the workspace root). A map above 32 entries can be a persistent ordered tree: leaves are the existing flat layout (up to 32 entries), interior nodes hold up to 32 children with, per child, a pointer, the child's smallest key and the entry count beneath it. This step adds the node as a heap object (header discriminant, size, collector trace/forward under minor and major collections, deep copy and gift sizing with shared nodes copied once, allocation and collection counters), a third MapLayout variant with get, count, entry-by-index and in-order walk (compare, equality, inspect), and builds a tree bottom-up in the bulk builders (fz_map_from_kv, destination freeze/publish) when the result has more than 32 entries. Put and delete on a tree may flatten and rebuild in this step (step 2 makes them copy a path). Signal: a fixture builds a 10,000-key map in one bulk call and reads it every way (get, has_key, to_list, reduce, slice, inspect, compare, equality, send to another process, survive collections) on interp, run and build against an Elixir oracle with sorted output; maps of 32 entries or fewer are byte-identical (no existing pin moves).",
+  "id": "fz-sc8.192.1",
+  "labels": [],
+  "parent": "fz-sc8.192",
+  "priority": 1,
+  "status": "open",
+  "title": "A large map is an ordered tree that every read understands",
+  "type": "task",
+  "updated_at": "2026-11-14T13:11:14Z"
+}
