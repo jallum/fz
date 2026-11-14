@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T14:36:33Z",
+  "description": "lib/list.fz defines neither. List.first([5, 6]) fails with error[resolve/unknown-import]: module List does not export first/1 (reported by session Type System, confirmed by reading lib/list.fz at develop cbe0630a4: it exports only concat, member?, reduce, reduce_while, reverse, subtract). Elixir: List.first([]) is nil, List.first([], d) is d, same for last. Sibling of fz-sc8.132 (List.foldl/foldr). The rest of the List module (flatten, delete, zip, duplicate, wrap, keyfind, ...) is also absent; not in the distiller's path. Signal: an oracle fixture on interp, run and build.",
+  "id": "fz-sc8.200",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "List.first/1,2 and List.last/1,2",
+  "type": "feature",
+  "updated_at": "2026-11-14T14:36:33Z"
+}
