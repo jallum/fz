@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T19:25:22Z",
+  "description": "A captured integer, float, pid or reference read as a ref word points at the frame's own slot, so the pop must skip that frame. Distiller: 3.3% of frames pinned (32k trace 2,480,050 of 74,267,467; full 3.5%). Carry such captures raw so the frame does not pin. Acceptance: pinned count near zero on the distiller, telemetry pin.\nProposal (approved 2026-11-14): https://claude.ai/artifact/94aN2YPxunzwVEzct26nz2 (local /Users/j5n/Workspace/fz-d7w.html). Spike evidence: worktree ../fz-hc, branch exp/heap-cont-reads (uncommitted, FZ_SPIKE_* switches).",
+  "id": "fz-9x7.4",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 2,
+  "status": "open",
+  "title": "A captured scalar stays raw in its frame",
+  "type": "task",
+  "updated_at": "2026-11-14T19:25:22Z"
+}
