@@ -1189,9 +1189,21 @@ impl World {
 }
 
 impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
-    pub(crate) fn drive_for(&mut self, timeout: Option<Duration>) -> DriveOutcome<Job, DependencyKey> {
+    /// Runs the bare drive: the drive with no product drive beneath it. It is
+    /// the bottom frame of the drive stack for as long as it runs, so every
+    /// product drive it serves counts it and defers to its drain.
+    pub(crate) fn drive_standalone(
+        world: &mut World,
+        telemetry: &T,
+        sessions: &mut super::pull::ProductSessions,
+        timeout: Option<Duration>,
+    ) -> DriveOutcome<Job, DependencyKey> {
+        sessions.begin_standalone_drive(world.work_start_tally());
         let deadline = timeout.map(|limit| Instant::now() + limit);
-        self.drive_until(deadline, timeout, true)
+        let outcome =
+            ExecutionContext::with_product_sessions(world, telemetry, sessions).drive_until(deadline, timeout, true);
+        sessions.finish_standalone_drive(world.work_start_tally());
+        outcome
     }
 
     /// Applies only work already on the agenda (including exact wakes it
@@ -1272,8 +1284,7 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
     pub fn drive(&mut self) -> DriveOutcome<Job, DependencyKey> {
         if self.product_sessions.is_none() {
             let mut sessions = super::pull::ProductSessions::default();
-            return ExecutionContext::with_product_sessions(self.world, self.telemetry, &mut sessions)
-                .drive_until(None, None, true);
+            return Self::drive_standalone(self.world, self.telemetry, &mut sessions, None);
         }
         self.drive_until(None, None, true)
     }

@@ -56,8 +56,11 @@ and artifact emission.
 - **`Scheduler`** — owns the agenda, facts, and deps, and applies job completions.
 - **`ExecutionContext::drive_until`** — split-borrows semantic state and
   telemetry, then pops a job, runs it, applies its effects, and repeats.
-  `drive()`, `drive_for(timeout)`, and `drain_pending_for(timeout)` are its
-  entry points; the last runs only already-queued work, without expanding
+  `drive_standalone(world, telemetry, sessions, timeout)` and
+  `drain_pending_for(timeout)` are its entry points. The first runs the bare
+  drive and registers it as the bottom frame of the drive stack, so no bare
+  drive starts uncounted; `Compiler::drive()` and the test-only `drive()` both
+  go through it. The second runs only already-queued work, without expanding
   standing demand (see *The drive loop*).
 
 ## Jobs are rules; effects are their contract

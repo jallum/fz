@@ -182,17 +182,12 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     }
 
     pub fn drive(&mut self) -> DriveOutcome<Job, super::DependencyKey> {
-        self.product_sessions
-            .begin_standalone_drive(self.world.work_start_tally());
-        let outcome = super::drive::ExecutionContext::with_product_sessions(
+        super::drive::ExecutionContext::drive_standalone(
             &mut self.world,
             &self.telemetry,
             &mut self.product_sessions,
+            self.drive_timeout,
         )
-        .drive_for(self.drive_timeout);
-        self.product_sessions
-            .finish_standalone_drive(self.world.work_start_tally());
-        outcome
     }
 
     fn native_program_for_root(&mut self, root: RootId) -> Result<Rc<NativeProgram>, String> {
