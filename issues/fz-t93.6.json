@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:26:07Z",
+  "description": "TransportShape(position) (61% of distiller product requests: 31,177 of 51,196) becomes an engine derivation scoped to its root. First root-scoped key in the engine: scope is a key attribute; values live in a store outside the core (the core keeps revisions only). Predict and measure requests/evaluations/instructions on the distiller and add.fz.",
+  "id": "fz-t93.6",
+  "labels": [],
+  "parent": "fz-t93",
+  "priority": 2,
+  "status": "open",
+  "title": "Transport shapes are engine derivations",
+  "type": "task",
+  "updated_at": "2026-11-14T04:26:07Z"
+}
