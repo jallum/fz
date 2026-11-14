@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T03:02:06Z",
+  "description": "Oracle stamps hash the script, golden and arguments, not the Elixir version, so bumping otp-version or elixir-version in .github/workflows/ci.yml leaves every stamp matching and Elixir is never run: goldens could silently describe the old Elixir. DECIDED 2026-11-13 by the user: CI runs ORACLE=check on a pull request whose diff changes either pinned version line. Measured: a full ORACLE=check takes 184 s (load 13-35) against 0.6 s stamped.\nDone when: the test job has a pull_request step that diffs ci.yml against the base branch and runs ORACLE=check cargo test --test fixture_matrix oracle_goldens_match_elixir only when an otp-version or elixir-version line changed; the decision logic is exercised locally against a version-bump diff and a no-change diff; tests/fixture_matrix.rs and .agent/docs say CI does this.",
+  "id": "fz-t8p",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "CI runs the full oracle check when the pinned Elixir or OTP changes",
+  "type": "task",
+  "updated_at": "2026-11-14T03:02:06Z"
+}
