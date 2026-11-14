@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-t93",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compile work does not depend on the agenda's pop order",
   "type": "task",
-  "updated_at": "2026-11-14T13:13:33Z"
+  "updated_at": "2026-11-14T15:32:01Z"
 }
