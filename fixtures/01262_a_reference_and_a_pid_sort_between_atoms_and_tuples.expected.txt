@@ -1,0 +1,3 @@
+integer float atom reference function pid tuple map list bitstring
+bitstring list map tuple pid function reference atom float integer
+{true, true, true, true, true, true, true, true, true, true, true}

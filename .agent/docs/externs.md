@@ -243,6 +243,8 @@ target names its convention just as it does for an imported helper.
 I64       proven i64                       F64    proven f64
 I32       C `int`: the low 32 bits of an integer register, read as signed
 Bool      C `uint64_t`: false=0, true=any nonzero word (never an atom id or C _Bool)
+Opaque    a pid or a reference: one word in an integer register, held as a
+          value of its own kind (`ValueKind::PID` or `ValueKind::REF`)
 Any       one opaque fz value word         Unit   maps to 0 on return
 Binary    under "C": *const u8 to the bytes, no NUL guarantee (caller passes
           length). Under "fz": the tagged value ref.
@@ -424,7 +426,7 @@ one with the two mixed shapes transposed.
 
 A variadic extern's `FunctionContract` carries a tail domain alongside its
 fixed parameters: the type every argument past the declared prefix must
-belong to, `integer | pid | reference | c_pointer | binary`.
+belong to, `integer | c_pointer | binary`.
 `extern_contract::variadic_tail_domain` builds it next to `ty_to_extern_ty`'s
 own raw-word union, so the domain and the wire alphabet can't drift apart.
 `FunctionContract::apply` widens a clause's parameter list by repeating the
@@ -475,9 +477,12 @@ Which arguments the compiler refuses outright and which it tests at run time is
 unchanged: an argument whose type is narrower than `any` and outside the
 parameter's type is `spec/violation`; an `any` argument is tested.
 
-The entry test for `pid`, `ref` and `c_pointer` admits every value, because the
-run-time type predicate has no axis for those types. An ordinary function
-annotated `pid` admits every value the same way.
+The entry test for `pid` and `ref` reads the value's kind: a pid passes
+`pid` and a reference passes `ref`, and no integer, float, atom, binary or list
+passes either. The test for `c_pointer` admits every value, because the
+run-time type predicate has no axis for that type; an ordinary function
+annotated `c_pointer` admits every value the same way. An ordinary function
+annotated `pid` or `ref` is as exact as the extern's entry test.
 
 The interpreter's `marshal_arg` keeps its conversions as internal-error guards:
 after the entry dispatch an integer, float or boolean parameter always holds
@@ -724,12 +729,13 @@ code before they own it.
 
 Every extern is callable from a guard; the guard-expression node is
 `PatternGuardExpr::Extern`. `GuardExtern::new` (dispatch_matrix/pattern.rs)
-admits parameters of class `I64`, `F64` or `Any` and returns of `I64`, `F64`,
-`Any`, `Bool` or `never`, plain or `Checked`; any other class is
-`SourcePatternError::GuardExternClass`, a compile error on every path. The
-receive matcher's shim (`emit_guard_extern`) therefore marshals three classes
-of operand: an integer (`receive_value_int`), a float (`receive_value_float`)
-and a reference word (`emit_receive_value_ref`); a `Bool` return is a nonzero
+admits parameters of class `I64`, `Opaque`, `F64` or `Any` and returns of `I64`,
+`Opaque`, `F64`, `Any`, `Bool` or `never`, plain or `Checked`; any other class
+is `SourcePatternError::GuardExternClass`, a compile error on every path. The
+receive matcher's shim (`emit_guard_extern`) therefore marshals four classes
+of operand: an integer (`receive_value_int`), a float (`receive_value_float`),
+a pid or reference (`fz_unbox_opaque` on the way in, `fz_box_opaque_for_any`
+on the way out) and a reference word (`emit_receive_value_ref`); a `Bool` return is a nonzero
 word read as the atom `true` or `false`. `===` and `!==` in a guard are the
 Kernel functions a body calls, so they reach `fz_op_identical*` and
 `fz_op_not_identical*` through this node. An extern returning `never` fails the

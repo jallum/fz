@@ -36,6 +36,13 @@ pub(super) fn interp_map_put(
     with_value_ref(proc, key, context, |key_ref| match value {
         AnyValue::Int(value) => Ok::<u64, String>(fz_map_put_int(proc, map_bits, key_ref, value)),
         AnyValue::Float(value) => Ok::<u64, String>(fz_map_put_float(proc, map_bits, key_ref, value)),
+        AnyValue::Opaque(kind, word) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_map_put_opaque(
+            proc,
+            map_bits,
+            key_ref,
+            word,
+            kind.tag() as u64,
+        )),
         AnyValue::Atom(value) => Ok::<u64, String>(fz_map_put_atom(proc, map_bits, key_ref, value as u64)),
         AnyValue::Null | AnyValue::EmptyList | AnyValue::FnRef(..) | AnyValue::Ref(_) => {
             let value_ref = value

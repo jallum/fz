@@ -29,6 +29,15 @@ fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy, fz_abi: bool) 
         ExternTy::I64 => ArgWord::Int(value.as_i64().ok_or_else(|| {
             "internal error: an integer extern parameter received a non-integer after entry dispatch".to_string()
         })? as u64),
+        ExternTy::Opaque(kind) => match value {
+            AnyValue::Opaque(held, word) if held == kind => ArgWord::Int(word),
+            _ => {
+                return Err(
+                    "internal error: a pid or reference extern parameter received another kind after entry dispatch"
+                        .to_string(),
+                );
+            }
+        },
         // A C `int` parameter is the low half of the fz integer. The word is
         // still handed over whole -- a callee reading an `int` reads the low
         // 32 bits of the register -- so narrowing here is what makes the
@@ -242,6 +251,7 @@ fn call_variadic_extern(
     // every integer-lane answer arrives here as a full 64-bit word.
     match ret_ty {
         ExternTy::I64 | ExternTy::I32 => Ok(ExternCallValue::Scalar(AnyValue::Int(ret as i64))),
+        ExternTy::Opaque(kind) => Ok(ExternCallValue::Scalar(AnyValue::Opaque(kind, ret))),
         ExternTy::Bool => Ok(ExternCallValue::Scalar(decode_bool_word(ret))),
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
             interp_value_from_extern_ref_word(ret).map(ExternCallValue::Scalar)
@@ -377,6 +387,10 @@ unsafe fn call_declared_return(
         ExternReturn::Scalar(ExternTy::I64) => {
             let value = unsafe { dispatch_fn_returning_int(fp, raw_args) };
             Ok(ExternCallValue::Scalar(AnyValue::Int(value as i64)))
+        }
+        ExternReturn::Scalar(ExternTy::Opaque(kind)) => {
+            let value = unsafe { dispatch_fn_returning_int(fp, raw_args) };
+            Ok(ExternCallValue::Scalar(AnyValue::Opaque(*kind, value)))
         }
         // A C `int` result occupies only the low half of the return register.
         // Reading the whole register is how `open`'s -1 becomes 4294967295 on

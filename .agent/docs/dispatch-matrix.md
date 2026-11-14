@@ -501,6 +501,7 @@ deciding it:
 | atoms | separating | passing is BEING one of the named values |
 | callables | per position | passing is being MINTED FROM a named construction -- a function AND the capture types it closed over -- so it separates exactly as far as the capture sub-tests do |
 | ints, floats | separating | presence bits: one representation, so no admitted body can misread what arrives — brands are runtime-erased by construction (fz-bsx), and restoring numeric singletons to the lattice would re-open this row |
+| pids and references (opaques) | separating | presence bits like ints: the value's kind says which of the two it is, so no admitted body can misread what arrives |
 | lists | per position | empty-or-cons, plus the first element's own question — as separating as two head questions are DISJOINT |
 | named/other structs, maps, binaries, resources | erasing | a schema id or a kind, never the contents |
 | tuples | per position | as separating as the positions' own sub-tests |

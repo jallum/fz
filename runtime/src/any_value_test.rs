@@ -85,6 +85,8 @@ fn tag_constants_all_distinct() {
         TAG_BITSTRING,
         TAG_PROCBIN,
         TAG_RESOURCE,
+        TAG_KIND_PID,
+        TAG_KIND_REF,
         TAG_KIND_INT,
         TAG_KIND_FLOAT,
         TAG_KIND_ATOM,
@@ -107,6 +109,8 @@ fn tag_constants_fit_in_4_bits() {
         TAG_BITSTRING,
         TAG_PROCBIN,
         TAG_RESOURCE,
+        TAG_KIND_PID,
+        TAG_KIND_REF,
         TAG_KIND_INT,
         TAG_KIND_FLOAT,
         TAG_KIND_ATOM,
@@ -139,10 +143,19 @@ fn heap_object_word_carries_kind_above_the_address() {
 #[test]
 fn value_kind_rejects_non_value_tags() {
     assert_eq!(ValueKind::new(TAG_LAZY_CONT as u8), None);
-    assert_eq!(ValueKind::new(9), None);
-    assert_eq!(ValueKind::new(10), None);
     assert_eq!(ValueKind::new(11), None);
     assert_eq!(ValueKind::new(12), None);
+}
+
+#[test]
+fn a_pid_and_a_reference_are_value_kinds_of_their_own() {
+    assert_eq!(ValueKind::new(TAG_KIND_PID as u8), Some(ValueKind::PID));
+    assert_eq!(ValueKind::new(TAG_KIND_REF as u8), Some(ValueKind::REF));
+    assert!(ValueKind::PID.is_scalar() && ValueKind::PID.is_opaque_word());
+    assert!(ValueKind::REF.is_scalar() && ValueKind::REF.is_opaque_word());
+    assert!(!ValueKind::INT.is_opaque_word());
+    assert_ne!(ValueKind::PID, ValueKind::INT);
+    assert_ne!(ValueKind::PID, ValueKind::REF);
 }
 
 #[test]

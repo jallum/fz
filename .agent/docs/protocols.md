@@ -156,8 +156,8 @@ implementation takes raises `Protocol.UndefinedError` on every path. The message
 is Elixir's: `protocol P not implemented for <kind>`, a blank line, `Got value:`,
 a blank line and the inspected value indented four spaces. The kind is
 `Integer`, `Float`, `Atom`, `List`, `Map`, `Tuple`, `BitString`, `Function`,
-`Reference` for a resource, or `<Module> (a struct)`; a pid and a reference are
-integers at runtime and are named `Integer`. `runtime::any_value::debug::kind_name`
+`PID`, `Reference` for a reference or a resource, or `<Module> (a struct)`.
+`runtime::any_value::debug::kind_name`
 answers it for the interpreter and compiled code alike. A callsite with an empty
 remainder carries no last resort.
 

@@ -216,7 +216,10 @@ fn generic_spawn_dispatch_returns_adapter_error_before_pid_sentinel() {
         .expect("real lowered fz_spawn declaration");
     assert_eq!(signature.abi, crate::fz_ir::ExternAbi::Fz);
     assert_eq!(signature.params, [crate::fz_ir::ExternTy::Any]);
-    assert_eq!(signature.ret, crate::fz_ir::ExternTy::I64);
+    assert_eq!(
+        signature.ret,
+        crate::fz_ir::ExternTy::Opaque(fz_runtime::any_value::ValueKind::PID)
+    );
 
     let names = program.atom_names.iter().cloned().collect::<Vec<_>>();
     let module = Module::default();

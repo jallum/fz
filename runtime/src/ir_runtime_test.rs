@@ -987,3 +987,33 @@ fn fixed_notation_spells_the_smallest_float_in_full() {
     assert_eq!(text.len(), "0.".len() + 253);
     assert!(text.bytes().all(|b| b == b'0' || b == b'.'));
 }
+
+/// Intent: a pid and a reference inspect in the shape Elixir prints, alone and
+/// as a list element, and a protocol error names each by its Elixir kind.
+#[test]
+fn a_pid_and_a_reference_render_in_elixir_shapes() {
+    with_process(|process| {
+        let process_ptr = process as *mut Process;
+        let pid = AnyValue::Opaque(ValueKind::PID, 7);
+        let reference = AnyValue::Opaque(ValueKind::REF, (3 << 32) | 9);
+        assert_eq!(render_value(process_ptr, pid), "#PID<0.7.0>");
+        assert_eq!(render_value(process_ptr, reference), "#Reference<0.0.3.9>");
+        assert_eq!(
+            render_value(process_ptr, AnyValue::Opaque(ValueKind::PID, (2 << 15) | 5)),
+            "#PID<0.5.2>",
+            "a pid past 15 bits carries its serial"
+        );
+
+        let tail = process.heap.alloc_list_cons_slot(reference, EMPTY_LIST_BITS);
+        let list = process.heap.alloc_list_cons_slot(pid, tail);
+        let list = AnyValue::decode_tagged_heap_bits(list).unwrap();
+        assert_eq!(
+            render_value(process_ptr, list),
+            "[#PID<0.7.0>, #Reference<0.0.3.9>]",
+            "a cons cell holds a pid or a reference in its own kind"
+        );
+
+        assert_eq!(crate::any_value::debug::kind_name(process_ptr, pid), "PID");
+        assert_eq!(crate::any_value::debug::kind_name(process_ptr, reference), "Reference");
+    });
+}

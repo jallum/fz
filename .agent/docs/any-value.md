@@ -2,8 +2,8 @@
 
 ## The Idea
 
-Every fz value — integer, float, atom, list, map, tuple/struct, closure,
-bitstring, ProcBin, resource — is handled at runtime boundaries as one opaque
+Every fz value — integer, float, atom, pid, reference, list, map, tuple/struct,
+closure, bitstring, ProcBin, resource — is handled at runtime boundaries as one opaque
 word:
 
 ```text
@@ -11,7 +11,7 @@ AnyValueRef = one word that says "here is a value"
 ```
 
 The word carries a 4-bit tag (what kind) and an address (where the payload is).
-An int or float ref points at a scalar payload word; an atom ref holds the atom
+An int, float, pid or reference ref points at a scalar payload word; an atom ref holds the atom
 id in its address field and points at nothing, as `[]` and `null` do; heap refs
 point at a heap object. A heap reference is not a separate idea — it is the
 heap-object subset of `AnyValueRef`. The interpreter, REPL, JIT, and AOT paths all pass values through
@@ -21,7 +21,9 @@ every path.
 ```text
 Int ref      -> i64 payload word        Map ref      -> map object
 Float ref    -> f64 payload word        List ref     -> cons cell
-Atom ref     == the atom id itself      Struct ref   -> tuple/struct object
+Pid ref      -> u64 process id          Struct ref   -> tuple/struct object
+Reference ref -> u64 counter word
+Atom ref     == the atom id itself
                                         Closure ref  -> closure object
                                         Bitstring/ProcBin ref -> binary object
                                         Resource ref -> resource object
@@ -40,10 +42,16 @@ owns packing, projection, and the platform difference behind the word.
   built over a slot: `from_scalar_slot` rejects `ValueKind::ATOM`); `list_addr`/`map_addr`/`struct_addr`/… project heap refs to a
   cleared address (each checks the tag and errors on mismatch).
 - **`ValueKind`**: the tag, one byte. `is_heap()` (List..Resource) and
-  `is_scalar()` (Int/Float/Atom) classify it.
+  `is_scalar()` (Int/Float/Atom/Pid/Reference) classify it; `is_opaque_word()` is
+  the pid and reference kinds, whose one word is meaningless as an integer: a
+  pid is not `1`, and `self() == 1` is false. `debug::render_opaque_word`
+  prints them as Elixir does: `#PID<0.N.S>` (the pid's low 15 bits and the
+  serial above them) and `#Reference<0.0.A.B>` (the counter's high and low
+  halves), in `inspect/1`, `dbg/1` and inside any container.
 - **`AnyValue`**: the by-value enum a host caller decodes a ref into —
-  `Null`, `EmptyList`, `Int(i64)`, `Float(u64)`, `Atom(u32)`, `HeapRef(AnyValueRef)`.
-  An int or float `AnyValue` has no address; `ref_word()` panics on one because
+  `Null`, `EmptyList`, `Int(i64)`, `Opaque(ValueKind, u64)` (a pid or a
+  reference and its word), `Float(u64)`, `Atom(u32)`, `HeapRef(AnyValueRef)`.
+  An int, float, pid or reference `AnyValue` has no address; `ref_word()` panics on one because
   it needs object-local storage before it can become a ref. An atom needs none:
   `ref_word()` answers `AnyValueRef::atom(id)`. The interpreter's
   temporary `FnRef` view materializes a closure before a public boundary and

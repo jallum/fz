@@ -65,6 +65,7 @@ impl<'a> TermComparator<'a> {
         }
         match category {
             Category::Number => number_cmp(a, b, mode),
+            Category::Reference | Category::Pid => a.raw().cmp(&b.raw()),
             Category::Atom => self.node.cmp_atom_names(a.raw() as u32, b.raw() as u32),
             Category::Tuple => self.tuple_cmp(address(a), address(b), mode),
             Category::Closure => self.closure_cmp(address(a), address(b)),
@@ -89,6 +90,8 @@ impl<'a> TermComparator<'a> {
         match value.kind() {
             ValueKind::INT | ValueKind::FLOAT => Category::Number,
             ValueKind::ATOM => Category::Atom,
+            ValueKind::REF => Category::Reference,
+            ValueKind::PID => Category::Pid,
             ValueKind::RESOURCE => Category::Resource,
             ValueKind::CLOSURE => Category::Closure,
             ValueKind::STRUCT if self.struct_map_keys(address(value)).is_some() => Category::Map,
@@ -276,8 +279,10 @@ impl<'a> TermComparator<'a> {
 enum Category {
     Number,
     Atom,
+    Reference,
     Resource,
     Closure,
+    Pid,
     Tuple,
     Map,
     List,

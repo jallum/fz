@@ -195,8 +195,9 @@ pub(crate) fn explicit_extern_wire_hint(body: &TypeExprBody) -> Option<ExternTy>
 ///
 /// Explicit marshal hints should already have been handled before this point.
 /// The fallback uses the semantic upper bound: raw integer lanes cover both
-/// `integer` and the closed builtin word identities; float-only types get F64; nil-only -> Unit;
-/// never -> Never. Everything else stays as a tagged value.
+/// `integer` and `c_pointer`; a pid-only or reference-only type gets the opaque
+/// lane of its kind; float-only types get F64; nil-only -> Unit; never -> Never.
+/// Everything else stays as a tagged value.
 pub(crate) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
     if t.is_empty(d) {
         return ExternTy::Never;
@@ -211,6 +212,14 @@ pub(crate) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
     if t.is_floating(d) {
         return ExternTy::F64;
     }
+    let pid = t.pid();
+    if t.is_subtype(d, &pid) {
+        return ExternTy::Opaque(fz_runtime::any_value::ValueKind::PID);
+    }
+    let reference = t.reference();
+    if t.is_subtype(d, &reference) {
+        return ExternTy::Opaque(fz_runtime::any_value::ValueKind::REF);
+    }
     let raw_word = raw_word_domain(t);
     if t.is_subtype(d, &raw_word) {
         return ExternTy::I64;
@@ -222,12 +231,8 @@ pub(crate) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
 /// `I64`. Named so the variadic tail domain below can't drift from it.
 fn raw_word_domain<T: Types>(t: &mut T) -> T::Ty {
     let int = t.int();
-    let pid = t.pid();
-    let reference = t.reference();
     let c_pointer = t.c_pointer();
-    let raw_word = t.union(int, pid);
-    let raw_word = t.union(raw_word, reference);
-    t.union(raw_word, c_pointer)
+    t.union(int, c_pointer)
 }
 
 /// Every fz type a variadic extern's tail may carry: a raw word, or a binary

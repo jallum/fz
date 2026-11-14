@@ -57,6 +57,8 @@ pub(crate) enum RuntimeTestAxis {
     Binaries,
     Callables,
     Resources,
+    /// A pid or a reference: an opaque word whose kind says which it is.
+    Opaques,
 }
 
 /// How much a decided axis tells a dispatch SEAT.
@@ -84,7 +86,7 @@ pub(crate) enum AxisPrecision {
 }
 
 impl RuntimeTestAxis {
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Ints,
         Self::Floats,
         Self::Atoms,
@@ -96,6 +98,7 @@ impl RuntimeTestAxis {
         Self::Binaries,
         Self::Callables,
         Self::Resources,
+        Self::Opaques,
     ];
 
     /// What deciding this axis is worth to a seat.
@@ -128,7 +131,7 @@ impl RuntimeTestAxis {
             // here can misread what arrives. Restoring numeric singletons to
             // the lattice would populate `ints.values`/`floats.values` and
             // this row would have to be re-derived with them (fz-kdt.131).
-            Self::Ints | Self::Floats => AxisPrecision::Separating,
+            Self::Ints | Self::Floats | Self::Opaques => AxisPrecision::Separating,
             // A list test decides empty-or-cons and, where the projection
             // could name the element type, the first element's own question.
             // A list type is HOMOGENEOUS by construction (`ListSig` carries
@@ -161,6 +164,7 @@ impl RuntimeTestAxis {
             RuntimeAnyValue::Null => &[],
             RuntimeAnyValue::EmptyList => &[Self::Lists],
             RuntimeAnyValue::Int(_) => &[Self::Ints],
+            RuntimeAnyValue::Opaque(..) => &[Self::Opaques],
             RuntimeAnyValue::Float(_) => &[Self::Floats],
             RuntimeAnyValue::Atom(_) => &[Self::Atoms],
             RuntimeAnyValue::HeapRef(value_ref) => match value_ref.tag() {
@@ -200,6 +204,8 @@ pub(crate) struct RuntimeTypePredicate {
     /// grain the lattice's closure literal names it. See [`CallableShapes`].
     pub(crate) callables: CallableShapes,
     pub(crate) resources: bool,
+    /// Which opaque word kinds pass: pid, reference.
+    pub(crate) opaques: FiniteSet<crate::types::BuiltinOpaque>,
 }
 
 impl RuntimeTypePredicate {
@@ -216,6 +222,7 @@ impl RuntimeTypePredicate {
             binaries: false,
             callables: CallableShapes::none(),
             resources: false,
+            opaques: FiniteSet::none(),
         }
     }
 
@@ -234,6 +241,7 @@ impl RuntimeTypePredicate {
             binaries: true,
             callables: CallableShapes::any(),
             resources: true,
+            opaques: FiniteSet::any(),
         }
     }
 
@@ -387,7 +395,8 @@ impl RuntimeTypePredicate {
             | RuntimeTestAxis::Maps
             | RuntimeTestAxis::Binaries
             | RuntimeTestAxis::Callables
-            | RuntimeTestAxis::Resources => Vec::new(),
+            | RuntimeTestAxis::Resources
+            | RuntimeTestAxis::Opaques => Vec::new(),
         }
     }
 
@@ -405,6 +414,7 @@ impl RuntimeTypePredicate {
             RuntimeTestAxis::Binaries => !self.binaries,
             RuntimeTestAxis::Callables => self.callables.is_none(),
             RuntimeTestAxis::Resources => !self.resources,
+            RuntimeTestAxis::Opaques => self.opaques.is_none(),
         }
     }
 
@@ -451,6 +461,7 @@ impl RuntimeTypePredicate {
             RuntimeTestAxis::Binaries => other.binaries || !self.binaries,
             RuntimeTestAxis::Callables => other.callables.contains_all(&self.callables),
             RuntimeTestAxis::Resources => other.resources || !self.resources,
+            RuntimeTestAxis::Opaques => other.opaques.contains_all(&self.opaques),
         }
     }
 
@@ -468,6 +479,7 @@ impl RuntimeTypePredicate {
             RuntimeTestAxis::Binaries => self.binaries && other.binaries,
             RuntimeTestAxis::Callables => self.callables.overlaps(&other.callables),
             RuntimeTestAxis::Resources => self.resources && other.resources,
+            RuntimeTestAxis::Opaques => self.opaques.overlaps(&other.opaques),
         }
     }
 
@@ -1268,12 +1280,36 @@ fn axis_admits(
         }
         RuntimeTestAxis::Binaries => predicate.binaries && is_binary_value(value),
         RuntimeTestAxis::Resources => predicate.resources && has_kind(value, ValueKind::RESOURCE),
+        RuntimeTestAxis::Opaques => match value {
+            RuntimeAnyValue::Opaque(kind, _) => {
+                opaque_of_kind(kind).is_some_and(|opaque| predicate.opaques.contains(&opaque))
+            }
+            _ => false,
+        },
         RuntimeTestAxis::Callables => {
             has_kind(value, ValueKind::CLOSURE) && matches_runtime_callable(predicate, value, reader.callables)
         }
         RuntimeTestAxis::Tuples => matches_tuple_axis(predicate, reader, value, scope),
         RuntimeTestAxis::NamedStructs => matches_named_struct_axis(predicate, reader, value),
         RuntimeTestAxis::OtherStructs => matches_other_struct_axis(predicate, reader, value),
+    }
+}
+
+/// The builtin opaque a runtime kind holds.
+pub(crate) fn opaque_of_kind(kind: ValueKind) -> Option<crate::types::BuiltinOpaque> {
+    match kind {
+        ValueKind::PID => Some(crate::types::BuiltinOpaque::Pid),
+        ValueKind::REF => Some(crate::types::BuiltinOpaque::Ref),
+        _ => None,
+    }
+}
+
+/// The runtime kind a builtin opaque is held in, where it has its own.
+pub(crate) fn kind_of_opaque(opaque: crate::types::BuiltinOpaque) -> Option<ValueKind> {
+    match opaque {
+        crate::types::BuiltinOpaque::Pid => Some(ValueKind::PID),
+        crate::types::BuiltinOpaque::Ref => Some(ValueKind::REF),
+        crate::types::BuiltinOpaque::CPointer => None,
     }
 }
 
@@ -1803,6 +1839,7 @@ pub(crate) mod surface_membership {
         match value {
             RuntimeAnyValue::Null => "null".to_string(),
             RuntimeAnyValue::Int(int) => int.to_string(),
+            RuntimeAnyValue::Opaque(kind, word) => fz_runtime::any_value::debug::render_opaque_word(kind, word),
             RuntimeAnyValue::Float(bits) => f64::from_bits(bits).to_string(),
             RuntimeAnyValue::Atom(atom_id) => match reader.module.atom_names.get(atom_id as usize) {
                 Some(name) => format!(":{name}"),

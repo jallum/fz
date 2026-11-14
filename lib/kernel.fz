@@ -20,8 +20,8 @@ defmodule Kernel do
       `length/1`, `elem/2`, `hd/1` and `tl/1`, the numeric functions `abs/1`,
       `round/1`, `trunc/1`, `floor/1` and `ceil/1`, and the type tests `is_integer/1`,
       `is_float/1`, `is_binary/1`, `is_list/1`, `is_map/1`, `is_tuple/1`,
-      `is_atom/1`, `is_boolean/1`, `is_nil/1`, `is_struct/1` and `is_struct/2`, all
-      of which a guard may call
+      `is_atom/1`, `is_boolean/1`, `is_pid/1`, `is_reference/1`, `is_nil/1`,
+      `is_struct/1` and `is_struct/2`, all of which a guard may call
     * `match?/2`, a macro answering whether a value matches a pattern
 
   Every arithmetic and comparison operator is a typed clause family: one
@@ -562,7 +562,8 @@ defmodule Kernel do
   extern "fz" defp fz_self() :: pid
 
   @doc """
-  Sends `msg` to `pid` and returns `msg`.
+  Sends `msg` to `pid` and returns `msg`. Raises `ArgumentError` when `pid` is
+  not a pid.
 
   ## Examples
 
@@ -576,7 +577,8 @@ defmodule Kernel do
 
   """
   @spec send(pid, t) :: t when t: any
-  def send(pid, msg), do: fz_send(pid, msg)
+  def send(pid :: pid, msg), do: fz_send(pid, msg)
+  def send(_pid, _msg), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: invalid destination\n")
 
   extern "fz" defp fz_send(pid, t) :: t when t: any
 
@@ -1499,6 +1501,38 @@ defmodule Kernel do
   @spec is_atom(any) :: boolean
   def is_atom(_ :: atom), do: true
   def is_atom(_), do: false
+
+  @doc """
+  Returns `true` when `term` is a process identifier.
+
+  ## Examples
+
+      Kernel.is_pid(self())
+      #=> true
+
+      Kernel.is_pid(1)
+      #=> false
+
+  """
+  @spec is_pid(any) :: boolean
+  def is_pid(_ :: pid), do: true
+  def is_pid(_), do: false
+
+  @doc """
+  Returns `true` when `term` is a reference.
+
+  ## Examples
+
+      Kernel.is_reference(make_ref())
+      #=> true
+
+      Kernel.is_reference(1)
+      #=> false
+
+  """
+  @spec is_reference(any) :: boolean
+  def is_reference(_ :: ref), do: true
+  def is_reference(_), do: false
 
   @doc """
   Returns `true` when `term` is `true` or `false`.

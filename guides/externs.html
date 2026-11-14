@@ -189,8 +189,8 @@ value of a kind the parameter does not accept raises
 <code>rescue</code> catches it. When the compiler can see the argument's type
 is outside the parameter's type it refuses the call instead; when the type is
 <code>any</code> the check happens when the call runs. A parameter declared
-<code>pid</code>, <code>ref</code> or <code>c_pointer</code> accepts every
-value at that check.</p>
+<code>pid</code> or <code>ref</code> accepts only a pid or a reference at that
+check; one declared <code>c_pointer</code> accepts every value.</p>
 
 <h3>The <code>c_string</code> trick</h3>
 

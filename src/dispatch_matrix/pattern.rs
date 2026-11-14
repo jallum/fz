@@ -315,7 +315,7 @@ impl GuardExtern {
         }
         if let Some(param) = params
             .iter()
-            .find(|ty| !matches!(ty, ExternTy::I64 | ExternTy::F64 | ExternTy::Any))
+            .find(|ty| !matches!(ty, ExternTy::I64 | ExternTy::Opaque(_) | ExternTy::F64 | ExternTy::Any))
         {
             return Err(refuse(format!(
                 "parameter class {param:?} is neither a number nor a reference word"
@@ -325,7 +325,12 @@ impl GuardExtern {
             ExternReturn::Scalar(lane) | ExternReturn::Checked(lane, _) => {
                 matches!(
                     lane,
-                    ExternTy::I64 | ExternTy::F64 | ExternTy::Any | ExternTy::Bool | ExternTy::Never
+                    ExternTy::I64
+                        | ExternTy::Opaque(_)
+                        | ExternTy::F64
+                        | ExternTy::Any
+                        | ExternTy::Bool
+                        | ExternTy::Never
                 )
             }
         };

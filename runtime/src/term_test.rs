@@ -340,3 +340,61 @@ fn signed_zeros_are_distinct_strict_keys_but_widening_equal() {
         Ordering::Equal
     );
 }
+
+/// Intent: a pid and a reference stand where Erlang puts them: a reference
+/// above every number and atom and below a function, a pid above a function
+/// and below a tuple; within a kind, words order by value.
+#[test]
+fn a_reference_and_a_pid_sort_between_atoms_and_tuples() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let node = Rc::new(Node::empty());
+    let mut heap = Heap::with_node(1024, Rc::clone(&schemas), Rc::clone(&node));
+    let denotation = ClosureDenotationId::user(7);
+    node.register_closure_denotation(
+        denotation,
+        Arc::new(FunctionDenotation::named(None, "capture".into(), 0)),
+    );
+    let closure_bits = heap.alloc_closure_slots(denotation, 0, 0, 0);
+    let schema = schemas.borrow_mut().register(Schema::tuple_of_arity(1));
+    let tuple = tuple(&mut heap, schema, AnyValue::int(1));
+    let registry = schemas.borrow();
+    let cmp = TermComparator::new(&node, &registry);
+    let ascending = [
+        AnyValue::float(1.5),
+        AnyValue::int(i64::MAX),
+        AnyValue::atom(0),
+        AnyValue::Opaque(ValueKind::REF, 1),
+        AnyValue::Opaque(ValueKind::REF, 2),
+        heap_value(closure_bits),
+        AnyValue::Opaque(ValueKind::PID, 1),
+        AnyValue::Opaque(ValueKind::PID, 2),
+        tuple,
+    ];
+    for (i, lower) in ascending.iter().enumerate() {
+        for higher in &ascending[i + 1..] {
+            assert_eq!(
+                cmp.compare(*lower, *higher, NumericMode::Strict),
+                Ordering::Less,
+                "{lower:?} sorts below {higher:?}"
+            );
+            assert_eq!(cmp.compare(*higher, *lower, NumericMode::Strict), Ordering::Greater);
+        }
+    }
+    assert_eq!(
+        cmp.compare(
+            AnyValue::Opaque(ValueKind::PID, 7),
+            AnyValue::Opaque(ValueKind::PID, 7),
+            NumericMode::Strict
+        ),
+        Ordering::Equal
+    );
+    assert_ne!(
+        cmp.compare(
+            AnyValue::Opaque(ValueKind::PID, 7),
+            AnyValue::int(7),
+            NumericMode::Strict
+        ),
+        Ordering::Equal,
+        "a pid is not the integer with the same word"
+    );
+}

@@ -29,6 +29,7 @@ use fz_runtime::ir_runtime::{
     fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref, fz_try_pop,
     fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
+use fz_runtime::ir_runtime::{fz_box_opaque_for_any, fz_unbox_opaque};
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
 use target_lexicon::{Architecture, OperatingSystem, Triple};
@@ -654,6 +655,11 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
 ) -> Result<ir::Value, CodegenError> {
     Ok(match ty {
         ExternTy::I64 => body.as_raw_i64(var_env, var.0),
+        ExternTy::Opaque(kind) => {
+            let value_ref = body.tagged_var(var_env, var.0);
+            let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
+            runtime_call1!(body, fz_unbox_opaque, [value_ref, kind])
+        }
         // A C `int` parameter is the low half of the fz integer.
         ExternTy::I32 => {
             let word = body.as_raw_i64(var_env, var.0);
@@ -685,6 +691,17 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
             )));
         }
     })
+}
+
+/// A pid or reference word an extern returned, held as a value of its kind.
+fn box_opaque_word<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    raw: ir::Value,
+    kind: ValueKind,
+) -> ir::Value {
+    let process = body.process_arg();
+    let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
+    runtime_call1!(body, fz_box_opaque_for_any, [process, raw, kind])
 }
 
 fn emit_variadic_extern_call<M: cranelift_module::Module>(
@@ -761,6 +778,7 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
     };
     match ret {
         ExternTy::I64 => Ok(LowerOut::RawI64(raw)),
+        ExternTy::Opaque(kind) => Ok(LowerOut::ValueRef(box_opaque_word(body, raw, kind))),
         ExternTy::I32 => Ok(LowerOut::RawI64(body.b.ins().sextend(types::I64, raw))),
         ExternTy::Bool => Ok(LowerOut::Strict(decode_foreign_boolean_word(body, raw))),
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => Ok(LowerOut::ValueRef(raw)),
@@ -1806,6 +1824,7 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         // to an f64 that failed Cranelift verification.
         return Ok(match ret {
             ExternTy::I64 => LowerOut::RawI64(raw),
+            ExternTy::Opaque(kind) => LowerOut::ValueRef(box_opaque_word(body, raw, kind)),
             // A C `int` result fills only the low half of the return
             // register, so the fz integer is its sign extension. Reading the
             // whole register instead is what turned `open`'s -1 into

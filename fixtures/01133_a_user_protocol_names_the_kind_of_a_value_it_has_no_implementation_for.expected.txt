@@ -43,3 +43,5 @@ Got value:
 
 an integer, 7
 protocol Sizer not implemented for Function
+protocol Sizer not implemented for PID
+protocol Sizer not implemented for Reference

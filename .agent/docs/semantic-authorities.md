@@ -85,8 +85,10 @@ question from the op, so a call site cannot get it wrong.
 **Ordering** — the same `TermComparator`, reached through `fz_value_cmp_ref`
 and unboxed scalar adapters, owns every published finite term's order:
 `number < atom < reference < fun < port < pid < tuple < map < list < bitstring`.
-For the atom category it delegates to `Node::cmp_atom_names`, the single owner
-of atom name order. Atom ids are handed out in first-seen order, so ordering by
+A pid and a reference each have a `ValueKind` of their own, so each stands in
+its category and two of one kind order by their words; a resource stands with
+the references, below the functions. For the atom category it delegates to
+`Node::cmp_atom_names`, the single owner of atom name order. Atom ids are handed out in first-seen order, so ordering by
 id would depend on which atom the program mentioned first. Ordinary comparison
 reaches the node through its process; each process heap shares that same node so
 map ordering asks the same question without ambient process state (fz-5xp.90).

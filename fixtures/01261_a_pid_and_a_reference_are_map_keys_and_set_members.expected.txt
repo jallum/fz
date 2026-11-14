@@ -1,0 +1,5 @@
+{:me, :r, :r2, :child, :one, nil, 5}
+{:again, :r_again, 5, true, false}
+{:again, :r_again, true, 4}
+{4, true, true, false, false}
+{4, true, false}
