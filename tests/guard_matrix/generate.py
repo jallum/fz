@@ -7,21 +7,19 @@ Needs `elixir` on PATH. Every operator in {+ - * / div rem, unary minus} is
 paired with every operand kind: an integer, a float, `integer | float`, and an
 untyped value. The right operand is also an integer or a float literal. Each
 shape is written twice, as an entry guard on a function head and as a receive
-guard (where the kinds come from `is_integer`, `is_float`, their `or`, and no
-test at all). A program evaluates every pair of values its operand kinds allow
+guard; in both, the kinds come from `is_integer`, `is_float`, their `or`, and no
+test at all. A program evaluates every pair of values its operand kinds allow
 and prints the list of answers `:a` (the guard held) and `:b` (it did not).
 Elixir's list is the expected output; a program Elixir cannot run stops the
 generator.
 """
 import json
-import re
 import subprocess
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-ANNOTATION = {"int": "integer", "float": "float", "union": "integer | float", "any": None}
 VALUES = {"int": ["7"], "float": ["7.0"], "union": ["7", "7.0"], "any": ["7", "7.0"]}
 LITERAL = {"lit_int": "2", "lit_float": "2.0"}
 OPERATORS = ["+", "-", "*", "/", "div", "rem", "neg"]
@@ -45,10 +43,6 @@ def kind_test(kind, var):
     }[kind]
 
 
-def annotated(kind, var):
-    return var if ANNOTATION[kind] is None else f"{var} :: {ANNOTATION[kind]}"
-
-
 def conjunction(*parts):
     return " and ".join(part for part in parts if part)
 
@@ -62,13 +56,12 @@ def entry_program(op, left_kind, right_kind):
     pairs = value_pairs(left_kind, right_kind)
     if op == "neg" or right_kind in LITERAL:
         right = LITERAL.get(right_kind)
-        head = f"def f({annotated(left_kind, 'a')}) when {comparison(op, 'a', right)}, do: :a\ndef f(_), do: :b\n"
+        guard = conjunction(kind_test(left_kind, "a"), comparison(op, "a", right))
+        head = f"def f(a) when {guard}, do: :a\ndef f(_), do: :b\n"
         calls = ", ".join(f"f({l})" for l, _ in pairs)
     else:
-        head = (
-            f"def f({annotated(left_kind, 'a')}, {annotated(right_kind, 'b')}) "
-            f"when {comparison(op, 'a', 'b')}, do: :a\ndef f(_, _), do: :b\n"
-        )
+        guard = conjunction(kind_test(left_kind, "a"), kind_test(right_kind, "b"), comparison(op, "a", "b"))
+        head = f"def f(a, b) when {guard}, do: :a\ndef f(_, _), do: :b\n"
         calls = ", ".join(f"f({l}, {r})" for l, r in pairs)
     return head + f"def main() do\n  dbg([{calls}])\nend\n"
 
@@ -101,10 +94,9 @@ def programs():
 
 
 def elixir_twin(source):
-    """The same functions in a module, without the fz type annotations."""
+    """The same functions in a module."""
     functions, main = source.split("def main() do\n  dbg(")
     answers = main.rsplit(")\nend", 1)[0].strip()
-    functions = re.sub(r" :: [a-z]+( \| [a-z]+)?", "", functions)
     body = "".join("  " + line + "\n" for line in functions.strip().split("\n"))
     return f"defmodule M do\n{body}  def main(), do: IO.inspect({answers}, charlists: :as_lists)\nend\nM.main()\n"
 

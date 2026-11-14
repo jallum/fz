@@ -19,7 +19,7 @@ defmodule Card do
   defstruct [:name, :corner, :pair, :extra]
 end
 
-def retag(b :: any, tag), do: %{b | tag: tag}
+def retag(b, tag), do: %{b | tag: tag}
 
 def step(b, 0), do: b
 def step(b, n), do: step(%{b | count: b.count + n, items: [n | b.items]}, n - 1)

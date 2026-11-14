@@ -6,7 +6,7 @@
 #
 # Elixir reads `:+` as the atom `+`, the same atom `:"+"` names. A colon is
 # an atom's colon only where no identifier precedes it, so `a: -1` stays a
-# keyword pair and `x :: integer` stays a type annotation.
+# keyword pair and the `::` of `@spec f() :: integer` stays a separate token.
 def main() do
   IO.inspect(:+)
   IO.inspect(:+ == :"+")

@@ -4,7 +4,7 @@
 #---
 #
 # An extern is a function with one typed clause. The received 1.5 is not an
-# integer, so no clause matches, exactly as for `def f(x :: integer)`.
+# integer, so no clause matches, exactly as for `def f(x) when is_integer(x)`.
 extern "C" defp fz_op_add_ii(integer, integer) :: integer,
   raises: ArithmeticError,
   message: "bad argument in arithmetic expression"

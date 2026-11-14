@@ -10,7 +10,7 @@ defmodule Pt do
   defstruct [:x, :y]
 end
 
-def grow(v :: any), do: %{v | z: 0}
+def grow(v), do: %{v | z: 0}
 
 def main() do
   m = %{a: 1}

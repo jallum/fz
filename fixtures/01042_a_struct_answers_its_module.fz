@@ -14,7 +14,7 @@ defmodule Geo.Pt do
   defstruct [:lat]
 end
 
-def module_of(v :: any), do: v.__struct__
+def module_of(v), do: v.__struct__
 
 def main() do
   p = %Pt{x: 1, y: 2}

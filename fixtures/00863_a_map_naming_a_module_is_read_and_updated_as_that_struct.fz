@@ -10,10 +10,10 @@ defmodule Pt do
   defstruct [:x, :y]
 end
 
-def x_of(p :: %Pt{}), do: p.x
+def x_of(%Pt{} = p), do: p.x
 def x_of(_), do: :not_a_pt
 
-def moved(p :: %Pt{}), do: %{p | x: p.x + 10}
+def moved(%Pt{} = p), do: %{p | x: p.x + 10}
 def moved(_), do: :not_a_pt
 
 def main() do

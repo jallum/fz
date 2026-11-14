@@ -180,16 +180,13 @@ questions in section 2. On <code>true</code>, the matcher proceeds to the
 leaf; on <code>false</code>, it falls through to the next row of the
 SourcePatternRows.</p>
 
-<p>A type test in a guard is not opaque. <code>when is_integer(n)</code> and
-a typed parameter <code>n :: integer</code> are the same clause: they build
-the same row, the body sees <code>n</code> as an integer, and a call with an
-integer settles the clause without a test. This holds for any helper written
-as <code>def h(_ :: T), do: true</code> followed by <code>def h(_), do:
-false</code>, and for each such call in a top-level <code>and</code> chain whose
-arguments are names the clause binds, wherever they bind: a whole argument, a
-tuple field, a list head or a struct field. Under <code>or</code> or
-<code>not</code>, or with an expression as the argument, the call stays an
-ordinary guard.</p>
+<p>A type test in a guard is not opaque. A call such as
+<code>is_integer(n)</code>, written as a top-level conjunct of an
+<code>and</code> chain on a name the clause binds, builds a type row: the body
+sees <code>n</code> as an integer, and a call with an integer settles the
+clause without a test. The name may bind a whole argument, a tuple field, a
+list head or a struct field. Under <code>or</code> or <code>not</code>, or with
+an expression as the argument, the call stays an ordinary guard.</p>
 
 <h3>Pins: match against a value already in scope</h3>
 
@@ -366,11 +363,10 @@ same program.</p>
 <p>What the compiler does flag at compile time is the opposite shape: a
 clause that can never run because an earlier clause already matches
 everything it could see. The check reads the same compiled DispatchGraph
-every surface form lowers to — real guards, real annotation preconditions,
-nothing normalized away — so a guarded clause is never mistaken for
-redundant, and a parameter annotation that actually partitions the input
-(<code>f(x :: integer)</code> beside <code>f(x :: atom)</code>) is never
-mistaken for overlap. The warning is <code>type/redundant-clause</code>,
+every surface form lowers to — real guards, nothing normalized away — so a
+guarded clause is never mistaken for redundant, and a type-test guard that
+actually partitions the input (<code>f(x) when is_integer(x)</code> beside
+<code>f(x) when is_atom(x)</code>) is never mistaken for overlap. The warning is <code>type/redundant-clause</code>,
 worded the way Elixir words the same warning: "this clause cannot match
 because a previous clause at line N always matches".</p>
 

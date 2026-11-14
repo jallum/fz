@@ -8,8 +8,8 @@
 # `panic`, so the published callable boundary carries one returning and one
 # divergent member. `mapper` is passed as a value to `Enum.map`, which calls it
 # opaquely. The taken path selects the integer clause and prints `2`.
-def mapper(x :: integer), do: x + 1
-def mapper(x :: atom), do: panic(x)
+def mapper(x) when is_integer(x), do: x + 1
+def mapper(x) when is_atom(x), do: panic(x)
 
 def main() do
   n = Process.heap_alloc_stats()[:allocs]
