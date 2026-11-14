@@ -9,9 +9,15 @@
   "id": "fz-sc8.86",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Probe on fz-sc8.171/qualified-macro-order e2ebcdf6f: the three-clause wrap/1 written out directly (module W; has?(kind, x) = List.member?(wrap(kind), x); called with :integer, [:integer, :keep] and nil) prints true, true, false on interp and run, which is correct. So the plain shape does not reproduce. The ticket's own repro file (scratch p16/op.fz) no longer exists; the earlier lib/option_parser.fz would have to be recovered from history near 492b32fe1 to test whether the bug is still present. Probe: scratchpad b141/w86.fz in the fz-xxd13-build session. The distiller tests pass on develop 01e69178a with this open.",
+      "timestamp": "2026-11-14T01:08:50Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A three-clause function returns the wrong clause's value when one caller passes an atom and another a list",
   "type": "bug",
-  "updated_at": "2026-11-08T13:07:33Z"
+  "updated_at": "2026-11-14T01:08:50Z"
 }
