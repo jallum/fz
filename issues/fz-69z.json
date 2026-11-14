@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T23:35:53Z",
+  "description": "Found 2026-11-14 while building fz-3sy.9; reproduced on develop 13d4783d0 and 135b67da3 (interp, 40 s timeout, never finishes).\n\n    defmodule W do\n      defexception [:original]\n    end\n\n    def wrap(x) when is_exception(x), do: x\n    def wrap(x), do: wrap(%W{original: x})\n\n    def main() do\n      IO.inspect(wrap(:a))\n    end\n\nElixir prints %W{original: :a}. In fz the analysis cannot decide the is_exception/1 guard from the type, so the second clause stays reachable for %W{original: atom}, and each self-call has a new, larger argument type (%W{original: %W{original: ...}}): the activations never settle. With the argument typed any it settles at once, because any absorbs the wrap. Seen in the sample as the type calculator (emptiness::map_clause_empty) under AnalyzeActivation jobs with ever new arrows. fz-3sy.9 avoids the shape in Exception.__uncaught__/1 (it decides by pattern and does not call itself); this ticket is the compiler defect. Related shape, different cause: fz-sc8.100.",
+  "id": "fz-69z",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "A function that calls itself with its argument wrapped in a struct finishes compiling",
+  "type": "bug",
+  "updated_at": "2026-11-14T23:35:53Z"
+}
