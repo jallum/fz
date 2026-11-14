@@ -1,0 +1,10 @@
+:empty_map
+:other
+:pair
+:other
+:singleton
+:headed
+:other
+:other
+:other
+:other

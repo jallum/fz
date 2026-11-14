@@ -22430,6 +22430,30 @@ fn a_quoted_guard_helper_reifies_its_retained_callable() {
     );
 }
 
+/// A guard evaluates an aborting call's arguments never, so reifying a guard
+/// function asks for nothing those arguments name. `map_size/1` aborts with a
+/// text built by `inspect/1`: the guard needs `map_size/1` and the aborting
+/// call, not `inspect/1`.
+#[test]
+fn a_guard_function_asks_for_nothing_an_aborting_calls_arguments_name() {
+    let settled = Drive::fixture(1149).settle();
+    let map_size = settled.functions().id_in_module("Kernel", "map_size", 1);
+    let inspect = settled.functions().id_in_module("Kernel", "inspect", 1);
+    let reads = settled.outputs().effects(Job::ReifyGuardDispatch(map_size)).reads;
+    assert!(
+        reads
+            .iter()
+            .any(|read| read.fact() == &FactKey::FunctionDefined(map_size)),
+        "the guard function itself is read: {reads:?}"
+    );
+    assert!(
+        !reads
+            .iter()
+            .any(|read| read.fact() == &FactKey::FunctionDefined(inspect)),
+        "inspect/1 appears only in the argument of the call that aborts: {reads:?}"
+    );
+}
+
 /// Captures the primary span of the last `[fz, diag, error]` diagnostic seen.
 /// `Capture` durably owns its events, which strips the opaque `Diagnostic`
 /// payload (opaque values are not durable) -- so a span assertion needs a
