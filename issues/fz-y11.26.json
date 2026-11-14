@@ -10,7 +10,7 @@
   "parent": "fz-y11",
   "priority": 2,
   "status": "closed",
-  "title": "A type variable, atom literal or arrow that exists is found without building its descriptor",
+  "title": "The type of an address is remembered with the address",
   "type": "task",
-  "updated_at": "2026-11-14T01:45:17Z"
+  "updated_at": "2026-11-14T01:45:20Z"
 }
