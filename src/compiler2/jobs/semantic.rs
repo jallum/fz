@@ -89,10 +89,10 @@ impl SemanticValues {
 /// nothing else. The first arrival walks and records the answer; a later
 /// arrival with an equal scope reuses it and walks nothing below it. The
 /// table lives for one [`analyze_activation`] call and is never published --
-/// its keys, deduplicated by entry, become `ActivationAnalysis.reachable_entries`.
+/// its entries become `ActivationAnalysis.reachable_entries`.
 #[derive(Default)]
 struct EntryWalkTable {
-    answers: HashMap<(super::super::body::ControlEntryId, SemanticValues), Option<Ty>>,
+    answers: HashMap<super::super::body::ControlEntryId, HashMap<SemanticValues, Option<Ty>>>,
     /// How many entries this walk actually visited, as opposed to answered
     /// from the memo. [`emit_semantic_walk`] reports it.
     entries_walked: u64,
@@ -105,12 +105,12 @@ impl EntryWalkTable {
         Self::default()
     }
 
-    fn get(&self, key: &(super::super::body::ControlEntryId, SemanticValues)) -> Option<Option<Ty>> {
-        self.answers.get(key).copied()
+    fn get(&self, entry: super::super::body::ControlEntryId, values: &SemanticValues) -> Option<Option<Ty>> {
+        self.answers.get(&entry)?.get(values).copied()
     }
 
-    fn record(&mut self, key: (super::super::body::ControlEntryId, SemanticValues), answer: Option<Ty>) {
-        self.answers.insert(key, answer);
+    fn record(&mut self, entry: super::super::body::ControlEntryId, values: SemanticValues, answer: Option<Ty>) {
+        self.answers.entry(entry).or_default().insert(values, answer);
         self.entries_walked += 1;
     }
 }
@@ -320,7 +320,7 @@ pub(super) fn analyze_activation(
                 tel,
                 entries.as_slice(),
                 clause.entry,
-                &values,
+                values,
                 &mut walks,
                 &mut value_types,
                 &mut analysis_calls,
@@ -418,13 +418,7 @@ pub(super) fn analyze_activation(
             entry_reachability,
             trimmed,
             reachable_entries: {
-                let mut entries = walks
-                    .answers
-                    .keys()
-                    .map(|(entry, _)| *entry)
-                    .collect::<HashSet<_>>()
-                    .into_iter()
-                    .collect::<Vec<_>>();
+                let mut entries = walks.answers.keys().copied().collect::<Vec<_>>();
                 entries.sort_by_key(|entry| entry.as_u32());
                 entries
             },
@@ -499,7 +493,7 @@ fn analyze_entry(
     tel: &impl crate::telemetry::Telemetry,
     entries: &[LoweredEntry],
     entry_id: super::super::body::ControlEntryId,
-    values: &SemanticValues,
+    values: SemanticValues,
     walks: &mut EntryWalkTable,
     value_types: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
@@ -511,8 +505,7 @@ fn analyze_entry(
     // evidence it already recorded -- walking it again would record nothing
     // new (`merge_value_types` and every call-emission join are idempotent on
     // equal input), so the second arrival just returns the stored answer.
-    let key = (entry_id, values.clone());
-    if let Some(answer) = walks.get(&key) {
+    if let Some(answer) = walks.get(entry_id, &values) {
         return Ok(answer);
     }
     let entry = &entries[entry_id.as_u32() as usize];
@@ -532,7 +525,7 @@ fn analyze_entry(
         activation,
         walk,
     )?;
-    walks.record(key, answer);
+    walks.record(entry_id, values, answer);
     Ok(answer)
 }
 
@@ -866,7 +859,7 @@ fn analyze_branch(
         tel,
         entries,
         entry_id,
-        &scope,
+        scope,
         walks,
         value_types,
         calls,
@@ -1249,7 +1242,7 @@ fn deliver_tail_value(
                 tel,
                 entries,
                 *entry_id,
-                &scope,
+                scope,
                 walks,
                 value_types,
                 calls,
