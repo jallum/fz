@@ -198,6 +198,7 @@ impl FunctionContract {
         let mut matched_arrows = Vec::new();
         let mut result = None;
         let mut params: Vec<Ty> = Vec::new();
+        let mut row: Vec<Ty> = Vec::new();
         let mut matched_any = false;
         let mut enforceable = false;
         let mut enforceable_matched = false;
@@ -206,9 +207,9 @@ impl FunctionContract {
             enforceable |= clause_enforceable;
             params.clear();
             params.extend_from_slice(&clause.matched_params(types, arg_tys.len()));
-            let Some(row) = clause.narrowed_row(types, &params, arg_tys) else {
+            if !clause.narrow_row(types, &params, arg_tys, &mut row) {
                 continue;
-            };
+            }
             let clause_result = types
                 .arrow_result(&clause.arrow)
                 .expect("a contract clause is an arrow with a result slot");
@@ -335,8 +336,8 @@ impl ContractArrow {
         parts.join(", ")
     }
 
-    /// The row a call is answered on, or `None` when the call is refused for
-    /// this clause. This is the one place a witness is narrowed to a clause's
+    /// Writes the row a call is answered on into `row`, or answers `false`
+    /// when the call is refused for this clause. This is the one place a witness is narrowed to a clause's
     /// domain.
     ///
     /// Each column narrows to the clause's domain at every instantiation, so
@@ -344,21 +345,21 @@ impl ContractArrow {
     /// from the domain refuses the clause. Whether the part of the call
     /// outside the instantiated clause is let through unnoticed is decided
     /// afterwards, by [`FunctionContract::admits_instantiated_clause`].
-    fn narrowed_row(&self, types: &mut Types, params: &[Ty], arg_tys: &[Ty]) -> Option<Vec<Ty>> {
+    fn narrow_row(&self, types: &mut Types, params: &[Ty], arg_tys: &[Ty], row: &mut Vec<Ty>) -> bool {
+        row.clear();
         if params.len() != arg_tys.len() {
-            return None;
+            return false;
         }
         let closed = types.close_bounds(&self.bounds, &HashMap::default());
-        let mut row = Vec::with_capacity(arg_tys.len());
         for (witness, pattern) in arg_tys.iter().zip(params) {
             let domain = types.clause_domain_envelope(*pattern, &closed);
             let narrowed = types.narrow_to_clause_domain(*witness, domain);
             if types.is_empty(&narrowed) {
-                return None;
+                return false;
             }
             row.push(narrowed);
         }
-        Some(row)
+        true
     }
 }
 
