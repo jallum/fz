@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T04:28:43Z",
   "created": "2026-11-14T04:03:29Z",
   "description": "Over larger traces the fz distiller and Elixir printed different rows in several tables. Cause (verified): the tables sort map-derived rows by a figure alone (count, self time, inclusive time, excess) and then Enum.take(top); rows that tie keep the map's iteration order, which Elixir leaves unspecified (hash order past 32 keys) and fz does not reproduce, so the cut keeps different rows. Seen in cause_table (8,000 lines of a compile log, default top) and in by_subject (a 597-line trace at --top 32). Not a miscompile. Fix: every sort in tools/distill-telemetry.exs breaks ties by the row's label, so both runtimes agree whatever the map order. Pinned by tests/distill_telemetry/tied_rows.jsonl at --top 32.",
   "id": "fz-sc8.185",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The rows a distiller table keeps do not depend on map order",
   "type": "bug",
-  "updated_at": "2026-11-14T04:28:08Z"
+  "updated_at": "2026-11-14T04:28:43Z"
 }
