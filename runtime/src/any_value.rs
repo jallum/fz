@@ -27,9 +27,6 @@ pub const TAG_BITSTRING: u64 = 0x5;
 pub const TAG_PROCBIN: u64 = 0x6;
 /// Heap resource stub; resource pointer plus MSO next link.
 pub const TAG_RESOURCE: u64 = 0x7;
-/// Ref-word tag of a stack-resident lazy continuation. It is a code in the
-/// ref word's tag field only; no heap object and no `ValueKind` carries it.
-pub const TAG_LAZY_CONT: u64 = 0x8;
 /// Side-band immediate tag for raw process-id slots.
 pub const TAG_KIND_PID: u64 = 0x9;
 /// Side-band immediate tag for raw reference-counter slots.
@@ -595,7 +592,12 @@ pub fn closure_flags_halt_kind(flags: u16) -> u16 {
 }
 
 /// Bit position of `flags` in the closure header's layout half.
-const CLOSURE_LAYOUT_FLAGS_SHIFT: u32 = 4;
+pub const CLOSURE_LAYOUT_FLAGS_SHIFT: u32 = 4;
+/// Offset of a closure's code pointer.
+pub const CLOSURE_CODE_OFFSET: i32 = 8;
+/// Offset of a closure's first capture slot. The capture kind bytes follow the
+/// last slot, one byte per capture.
+pub const CLOSURE_CAPTURES_OFFSET: i32 = 16;
 /// Bit position of `arity` in the closure header's layout half.
 const CLOSURE_LAYOUT_ARITY_SHIFT: u32 = 20;
 /// `arity` is the closure's user-visible parameter count.
@@ -716,7 +718,7 @@ pub unsafe fn closure_halt_kind(addr: *const u8) -> u16 {
 /// `addr` must point to the start of an initialized strict Closure object.
 #[inline]
 pub unsafe fn closure_fn_ptr(addr: *const u8) -> u64 {
-    unsafe { ptr::read(addr.add(8) as *const u64) }
+    unsafe { ptr::read(addr.add(CLOSURE_CODE_OFFSET as usize) as *const u64) }
 }
 
 /// # Safety
@@ -725,7 +727,7 @@ pub unsafe fn closure_fn_ptr(addr: *const u8) -> u64 {
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
 pub unsafe fn closure_capture_raw_slot(addr: *const u8, idx: usize) -> *mut u64 {
-    unsafe { addr.add(16 + idx * 8) as *mut u64 }
+    unsafe { addr.add(CLOSURE_CAPTURES_OFFSET as usize + idx * 8) as *mut u64 }
 }
 
 /// # Safety
@@ -735,7 +737,7 @@ pub unsafe fn closure_capture_raw_slot(addr: *const u8, idx: usize) -> *mut u64 
 #[inline]
 pub unsafe fn closure_capture_kind_slot(addr: *const u8, idx: usize) -> *mut u8 {
     let count = unsafe { closure_captured_count(addr) };
-    unsafe { addr.add(16 + count * 8 + idx) as *mut u8 }
+    unsafe { addr.add(CLOSURE_CAPTURES_OFFSET as usize + count * 8 + idx) as *mut u8 }
 }
 
 /// # Safety

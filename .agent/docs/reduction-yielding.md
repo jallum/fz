@@ -83,7 +83,7 @@ dispatch          reset_reduction_budget():
 
 back edge         reductions_remaining -= 1
                   if reductions_remaining <= 0:
-                    compiled: materialize the zero-arg continuation closure
+                    compiled: build the zero-arg continuation closure
                     interpreter: forward resume_fn + resume_args
                     yield, reporting REDUCTIONS
 
@@ -98,7 +98,7 @@ boundary          if heap.should_gc():   (young_bytes >= max(live_baseline, SIZE
 ```
 
 The two engines hand control back differently. Compiled code (JIT and AOT)
-materializes a zero-arg continuation closure on exhaustion and leaves it in
+builds a zero-arg continuation closure on exhaustion and leaves it in
 `runnable` (see
 [`scheduler-zero-arg-closures.md`](scheduler-zero-arg-closures.md)). The
 interpreter runs synchronously: it forwards the next iteration's `resume_fn` and
@@ -172,7 +172,7 @@ from-space is released, and allocation continues in a fresh tip sized to the
 old bytes. After a minor collection `live_baseline` is the old bytes it had plus
 the bytes copied; after a major collection it is the bytes copied.
 
-Compiled yield telemetry still samples the slow path that materializes a
+Compiled yield telemetry samples the slow path that builds the yield
 continuation closure:
 `max_yield_continuation_bytes`,
 `min_yield_continuation_margin_before_bytes`, and

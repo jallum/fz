@@ -24,9 +24,9 @@
 
 use crate::any_value::debug::{Limit, render_value, render_with_limit};
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, TAG_LAZY_CONT, ValueKind,
-    closure_addr_from_tagged, closure_capture_value, closure_captured_count, closure_denotation, closure_fn_ptr,
-    closure_halt_kind, map_addr_from_tagged, object_size, procbin_addr_from_tagged, struct_schema_id,
+    AnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, ValueKind, closure_addr_from_tagged,
+    closure_captured_count, closure_denotation, closure_fn_ptr, closure_halt_kind, map_addr_from_tagged, object_size,
+    procbin_addr_from_tagged, struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -45,7 +45,7 @@ use crate::sched::{ReceiveStep, reach_receive};
 use crate::scheduler_hooks::YIELD_PTR;
 use crate::term::{NumericMode, TermComparator};
 use crate::write_output;
-use std::mem::{size_of, transmute};
+use std::mem::transmute;
 use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicU64, Ordering};
 use unicode_segmentation::GraphemeCursor;
@@ -130,6 +130,7 @@ pub extern "C" fn fz_process_heap_alloc_stats(process: *mut Process) -> u64 {
     alloc_stat_entries(process, &mut entries, "list_cons", snapshot.list_cons);
     alloc_stat_entries(process, &mut entries, "struct", snapshot.struct_);
     alloc_stat_entries(process, &mut entries, "closure", snapshot.closure);
+    alloc_stat_entries(process, &mut entries, "continuation", snapshot.continuation);
     alloc_stat_entries(process, &mut entries, "map", snapshot.map);
     alloc_stat_entries(process, &mut entries, "bitstring", snapshot.bitstring);
     alloc_stat_entries(process, &mut entries, "procbin", snapshot.procbin);
@@ -621,11 +622,21 @@ pub extern "C" fn fz_alloc_closure(
     closure_ref_word_from_bits(bits)
 }
 
+/// Allocate a continuation frame with `captured_count` capture slots, for the
+/// inline builder whose tip block is full. Generated code stores the
+/// captures.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_alloc_continuation(process: *mut Process, arity: u32, captured_count: u32, body_addr: u64) -> u64 {
+    let bits = (unsafe { &mut *process })
+        .heap
+        .alloc_continuation_slots(arity as u16, captured_count as usize);
+    let addr = closure_addr_from_tagged(bits).expect("new continuation bits");
+    unsafe { std::ptr::write(addr.add(8) as *mut u64, body_addr) };
+    closure_ref_word_from_bits(bits)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_code_ref(closure_ref_word: u64) -> u64 {
-    if is_lazy_cont_ref(closure_ref_word) {
-        return unsafe { *(lazy_cont_ptr(closure_ref_word) as *const u64) };
-    }
     let addr = closure_addr_from_ref_word(closure_ref_word, "fz_closure_code_ref closure");
     unsafe { closure_fn_ptr(addr) }
 }
@@ -2214,9 +2225,6 @@ pub extern "C" fn fz_map_named_schema_ref(process: *mut Process, map_ref_word: u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_get_capture_ref(closure_ref_word: u64, index: u64) -> u64 {
-    if is_lazy_cont_ref(closure_ref_word) {
-        return unsafe { lazy_cont_capture_raw(closure_ref_word, index as usize) };
-    }
     let value = AnyValueRef::from_raw_word(closure_ref_word).unwrap_or_else(|err| {
         panic!(
             "fz_closure_get_capture_ref idx={} invalid any value ref {:#x}: {:?}",
@@ -2244,45 +2252,6 @@ pub extern "C" fn fz_closure_get_capture_ref(closure_ref_word: u64, index: u64) 
                 err
             )
         }
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_closure_get_capture_i64(closure_ref_word: u64, index: u64) -> i64 {
-    if is_lazy_cont_ref(closure_ref_word) {
-        return unsafe { lazy_cont_capture_raw(closure_ref_word, index as usize) as i64 };
-    }
-    let value = any_value_ref_from_word(closure_ref_word, "fz_closure_get_capture_i64");
-    let addr = value.closure_addr().expect("fz_closure_get_capture_i64 closure");
-    match unsafe { closure_capture_value(addr, index as usize) } {
-        AnyValue::Int(value) => value,
-        other => panic!("fz_closure_get_capture_i64 expected int, got {:?}", other),
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_closure_get_capture_f64(closure_ref_word: u64, index: u64) -> f64 {
-    if is_lazy_cont_ref(closure_ref_word) {
-        return f64::from_bits(unsafe { lazy_cont_capture_raw(closure_ref_word, index as usize) });
-    }
-    let value = any_value_ref_from_word(closure_ref_word, "fz_closure_get_capture_f64");
-    let addr = value.closure_addr().expect("fz_closure_get_capture_f64 closure");
-    match unsafe { closure_capture_value(addr, index as usize) } {
-        AnyValue::Float(bits) => f64::from_bits(bits),
-        other => panic!("fz_closure_get_capture_f64 expected float, got {:?}", other),
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_closure_get_capture_atom(closure_ref_word: u64, index: u64) -> i64 {
-    if is_lazy_cont_ref(closure_ref_word) {
-        return unsafe { lazy_cont_capture_raw(closure_ref_word, index as usize) as i64 };
-    }
-    let value = any_value_ref_from_word(closure_ref_word, "fz_closure_get_capture_atom");
-    let addr = value.closure_addr().expect("fz_closure_get_capture_atom closure");
-    match unsafe { closure_capture_value(addr, index as usize) } {
-        AnyValue::Atom(value) => value as i64,
-        other => panic!("fz_closure_get_capture_atom expected atom, got {:?}", other),
     }
 }
 
@@ -2334,106 +2303,6 @@ pub extern "C" fn fz_closure_set_capture_atom(process: *mut Process, closure_ref
             .heap
             .write_closure_capture_value(addr, index as usize, AnyValue::Atom(value as u32))
     };
-}
-
-const LAZY_CONT_CODE_OFF: usize = 0;
-// +8 is reserved.
-const LAZY_CONT_COUNT_OFF: usize = 16;
-const LAZY_CONT_RAW_OFF: usize = 32;
-
-/// A continuation is applied to exactly the one value it receives.
-const CONT_ARITY: u16 = 1;
-const LAZY_CONT_KIND_REF: u8 = 0;
-const LAZY_CONT_KIND_I64: u8 = 1;
-const LAZY_CONT_KIND_F64: u8 = 2;
-const LAZY_CONT_KIND_ATOM: u8 = 3;
-
-#[inline]
-fn is_lazy_cont_ref(word: u64) -> bool {
-    let tag_shift = AnyValueRefPacking::current().tag_shift();
-    (word >> tag_shift) == TAG_LAZY_CONT
-}
-
-#[inline]
-fn lazy_cont_ptr(word: u64) -> *mut u8 {
-    (word & AnyValueRefPacking::current().address_mask()) as *mut u8
-}
-
-#[inline]
-unsafe fn lazy_cont_count(ptr: *const u8) -> usize {
-    unsafe { *(ptr.add(LAZY_CONT_COUNT_OFF) as *const u64) as usize }
-}
-
-#[inline]
-unsafe fn lazy_cont_kind_base(ptr: *const u8, count: usize) -> *const u8 {
-    unsafe { ptr.add(LAZY_CONT_RAW_OFF + count * size_of::<u64>()) }
-}
-
-#[inline]
-unsafe fn lazy_cont_capture_raw(word: u64, index: usize) -> u64 {
-    let ptr = lazy_cont_ptr(word);
-    unsafe { *(ptr.add(LAZY_CONT_RAW_OFF + index * size_of::<u64>()) as *const u64) }
-}
-
-/// Materialize a stack-backed lazy continuation descriptor into a normal
-/// scheduler-visible closure. Ordinary closure refs are returned unchanged.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> u64 {
-    if !is_lazy_cont_ref(cont_word) {
-        return cont_word;
-    }
-    let ptr = lazy_cont_ptr(cont_word);
-    let code = unsafe { *(ptr.add(LAZY_CONT_CODE_OFF) as *const u64) };
-    let count = unsafe { lazy_cont_count(ptr) };
-    // A continuation is applied to exactly the one value it receives.
-    let bits = (unsafe { &mut *process }).heap.alloc_closure_slots(
-        crate::any_value::ClosureDenotationId::INTERNAL,
-        CONT_ARITY,
-        count,
-        0,
-    );
-    let addr = closure_addr_from_tagged(bits).expect("materialized cont bits");
-    unsafe { std::ptr::write(addr.add(8) as *mut u64, code) };
-    let kind_base = unsafe { lazy_cont_kind_base(ptr, count) };
-    for i in 0..count {
-        let raw = unsafe { lazy_cont_capture_raw(cont_word, i) };
-        let kind = unsafe { *kind_base.add(i) };
-        match kind {
-            LAZY_CONT_KIND_REF => {
-                let value = if is_lazy_cont_ref(raw) {
-                    fz_materialize_cont(process, raw)
-                } else {
-                    raw
-                };
-                let any = any_value_ref_from_word(value, "fz_materialize_cont capture");
-                unsafe {
-                    (&mut *process).heap.write_closure_capture_ref(
-                        AnyValueRef::from_raw_word(closure_ref_word_from_bits(bits)).expect("materialized closure ref"),
-                        i,
-                        any,
-                    )
-                }
-                .expect("materialized closure capture ref");
-            }
-            LAZY_CONT_KIND_I64 => unsafe {
-                (&mut *process)
-                    .heap
-                    .write_closure_capture_value(addr, i, AnyValue::Int(raw as i64))
-            },
-            LAZY_CONT_KIND_F64 => unsafe {
-                (&mut *process)
-                    .heap
-                    .write_closure_capture_value(addr, i, AnyValue::float(f64::from_bits(raw)))
-            },
-            LAZY_CONT_KIND_ATOM => unsafe {
-                (&mut *process)
-                    .heap
-                    .write_closure_capture_value(addr, i, AnyValue::Atom(raw as u32))
-            },
-            _ => panic!("fz_materialize_cont: unknown lazy capture kind {}", kind),
-        }
-    }
-    closure_ref_word_from_bits(bits)
 }
 
 // ===== Arith / cmp / eq cluster =====

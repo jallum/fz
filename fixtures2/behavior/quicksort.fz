@@ -33,11 +33,11 @@
 # this fixture is also a regression against spurious `type/redundant-clause`
 # warnings on list-total helpers.
 #
-# After printing the sorted list, this fixture prints
-# `Process.heap_alloc_stats/0` and a `heap_bytes` headline computed from
-# `:list_cons_bytes + :struct_bytes + :map_bytes`. The full map keeps runtime
-# path counters visible; the headline isolates immutable value heap objects from
-# frame and scheduler details.
+# After printing the sorted list, this fixture prints the allocation counts and
+# bytes `Process.heap_alloc_stats/0` reports for the value families (list cells,
+# structs, closures, maps) and a `heap_bytes` headline computed from
+# `:list_cons_bytes + :struct_bytes + :map_bytes`. The headline isolates
+# immutable value heap objects from frame and scheduler details.
 #
 # Owned-cons reuse target for native JIT/AOT:
 #
@@ -47,12 +47,17 @@
 # - `struct_bytes = 0`
 # - `closure_allocs = 0`
 # - `closure_bytes = 0`
+# - `continuation_allocs = 103` and `continuation_bytes = 5408` on the native
+#   paths, 0 on the interpreter: every pending call builds a heap frame that
+#   is counted when allocated; a frame that resumes as the newest object is
+#   given back, any other stays until the next collection
 # - `map_allocs = 0`
 # - `map_bytes = 0`
 # - `heap_bytes = 176`
 #
 # Those numbers mean interpreter, JIT, and AOT allocate only the 11 literal
-# input cons cells. All doors consume the same construction-owned retention.
+# input cons cells as values; the native paths also allocate continuation
+# frames. All doors consume the same construction-owned retention.
 def append([], ys), do: ys
 def append([h | t], ys), do: [h | append(t, ys)]
 
@@ -71,7 +76,8 @@ def main() do
   dbg(sorted)
 
   stats = Process.heap_alloc_stats()
-  dbg(stats)
+  dbg(%{list_cons_allocs: stats[:list_cons_allocs], list_cons_bytes: stats[:list_cons_bytes], struct_allocs: stats[:struct_allocs], struct_bytes: stats[:struct_bytes], closure_allocs: stats[:closure_allocs], closure_bytes: stats[:closure_bytes], map_allocs: stats[:map_allocs], map_bytes: stats[:map_bytes]})
   heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
   dbg(heap_bytes)
+  dbg({stats[:continuation_allocs], stats[:continuation_bytes]})
 end

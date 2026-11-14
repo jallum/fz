@@ -5,7 +5,12 @@
 #
 # The long string is 1,000 plain ASCII bytes. The decoder counts the run up to
 # the closing quote and slices it once; the program prints the decoded length,
-# then the allocations and the off-heap bytes the decode made. A string that
+# then the allocations and the off-heap bytes the decode made. The allocations
+# exclude what one `Process.heap_alloc_stats` call itself allocates, which a
+# second snapshot measures: the stats map lands in the window after its snapshot.
+# The native paths count the continuation frames the decode builds (17) and
+# one more bitstring in the total, and the interpreter builds no frames: the
+# native number is 18 above the interpreter's. A string that
 # is a single run needs no append, so the decoded value is the slice itself.
 #
 # The remaining cases pin what the decoder does at each kind of stop: an
@@ -16,9 +21,12 @@
 defmodule P do
   def decode_cost(doc) do
     a = Process.heap_alloc_stats()
+    a2 = Process.heap_alloc_stats()
     {:ok, v} = JSON.decode(doc)
     b = Process.heap_alloc_stats()
-    {String.length(v), b[:allocs] - a[:allocs], b[:shared_bin_bytes] - a[:shared_bin_bytes]}
+    stats_call_allocs = a2[:allocs] - a[:allocs]
+    decode_allocs = (b[:allocs] - a2[:allocs]) - stats_call_allocs
+    {String.length(v), decode_allocs, b[:shared_bin_bytes] - a2[:shared_bin_bytes]}
   end
 end
 

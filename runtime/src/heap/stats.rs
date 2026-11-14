@@ -19,6 +19,9 @@ pub struct HeapAllocStats {
     pub list_cons: AllocStat,
     pub struct_: AllocStat,
     pub closure: AllocStat,
+    /// Continuation frames the compiler builds to resume a call's caller;
+    /// `closure` counts only the closures a program makes.
+    pub continuation: AllocStat,
     pub map: AllocStat,
     pub bitstring: AllocStat,
     pub procbin: AllocStat,
@@ -40,6 +43,7 @@ pub enum HeapAllocKind {
     ListCons,
     Struct,
     Closure,
+    Continuation,
     Map,
     Bitstring,
     ProcBin,
@@ -61,6 +65,7 @@ impl HeapAllocStats {
             HeapAllocKind::ListCons => self.list_cons.record(bytes),
             HeapAllocKind::Struct => self.struct_.record(bytes),
             HeapAllocKind::Closure => self.closure.record(bytes),
+            HeapAllocKind::Continuation => self.continuation.record(bytes),
             HeapAllocKind::Map => self.map.record(bytes),
             HeapAllocKind::Bitstring => self.bitstring.record(bytes),
             HeapAllocKind::ProcBin => self.procbin.record(bytes),

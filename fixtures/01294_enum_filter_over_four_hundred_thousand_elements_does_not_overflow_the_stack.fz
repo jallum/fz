@@ -1,0 +1,14 @@
+#---
+# purpose: Enum.filter over four hundred thousand elements completes, because each pending continuation lives on the heap rather than the native stack
+#---
+# The library's filter is not a tail call: every kept element leaves one
+# continuation waiting for the rest of the list. Two hundred thousand waiting
+# continuations must fit in the heap, not the native stack: a filter of two
+# hundred thousand elements overflows the native stack when its continuations
+# live there.
+def main() do
+  evens = Enum.filter(Enum.to_list(1..400_000), fn x -> rem(x, 2) == 0 end)
+  IO.inspect(length(evens))
+  IO.inspect(hd(evens))
+  IO.inspect(hd(Enum.reverse(evens)))
+end

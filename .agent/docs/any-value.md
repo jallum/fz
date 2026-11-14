@@ -228,9 +228,7 @@ continuation arguments, and typed closure capture slots.
 3  Struct
 ```
 
-`8`–`12` are unused; `ValueKind::new` rejects them. (`TAG_LAZY_CONT`, also
-`8`, is a ref-word field code for a stack-resident lazy continuation, never a
-`ValueKind`.) The empty list is `List` with a
+`8`, `11` and `12` are unused; `ValueKind::new` rejects them. The empty list is `List` with a
 null address (`AnyValueRef::empty_list`). Object storage also uses an
 `EMPTY_LIST` tail sentinel (`0x8`, an address inside the OS-reserved unmapped
 page 0, distinct from `nil`), but that sentinel is internal list-tail

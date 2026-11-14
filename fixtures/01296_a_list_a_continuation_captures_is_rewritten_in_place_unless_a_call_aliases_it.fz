@@ -1,0 +1,36 @@
+#---
+# purpose: "a list that a continuation captures is not made shared by the capture: the continuation's one-cons rewrite of it runs in place, and only a call that receives an alias of the same cell refuses the rewrite"
+#---
+#
+# `Enum.count` is a call with a continuation, and the continuation holds the
+# cells the code after the call still names.
+#
+# In the first case the continuation holds `xs` while the call receives an
+# unrelated list. Nothing else names the cell, so `[h | [n]]` rewrites it in
+# place: list retention telemetry counts a hit. If building the continuation
+# marked its captured lists shared, this rewrite would always allocate.
+#
+# In the second case the call receives `src` while the continuation holds
+# `twin`, which is the very same cell. The compiler's call-site ownership rule
+# (`construct_call_ownership` in src/compiler2/jobs/body.rs) publishes the call
+# argument because the continuation retains an alias of it, so the later rewrite
+# finds the cell shared and allocates a fresh one: a retention attempt without a
+# hit. `src` is still `[4, 5, 6]` afterwards.
+#
+# Across the run: three retention attempts, two hits. `twin = [ah | at]` is the
+# third attempt: it rebuilds the cell it was taken from with identical contents,
+# so it keeps that cell. The missing hit is the refused rewrite of the shared cell.
+def main() do
+  xs = Enum.to_list(1..3)
+  n = Enum.count([0, 0])
+  [h | _] = xs
+  dbg([h | [n]])
+
+  src = Enum.to_list(4..6)
+  [ah | at] = src
+  twin = [ah | at]
+  m = Enum.count(src)
+  [bh | _] = twin
+  dbg([bh | [m]])
+  dbg(src)
+end

@@ -52,12 +52,15 @@ allocated copy whose only difference is the tail pointer.</p>
 
 <h3>3. We box up "what to do next" as a heap object</h3>
 
-<p>A CPS-style lowering can represent "what to do when this call returns" as a
-small closure. That representation is useful when execution must park or
-resume later, but it is unnecessary for a synchronous native call that returns
-before the scheduler gets involved. fz keeps compiler-known continuations as
-stack-backed lazy descriptors on the fast path and materializes a heap closure
-only at a real yield boundary.</p>
+<p>A CPS-style lowering represents "what to do when this call returns" as a
+small closure. fz builds every such continuation as a heap frame: inline code
+bumps the heap tip, stores the header, the code address and the captures, and
+the continuation is delivered with an indirect tail call. The statistics count
+these frames in their own row, <code>continuation_allocs</code> and
+<code>continuation_bytes</code>, so the closure rows count only closures the
+program makes. A continuation resumes at most once; when its frame is the
+newest object on the heap at that moment the resume gives the bytes back, and
+otherwise the frame stays until the next collection.</p>
 
 <h3>4. We return a pair through memory instead of through registers</h3>
 
@@ -104,7 +107,9 @@ run, on both the JIT and the AOT backend:</p>
 <pre>
 list_cons_bytes  = 176          <span class="note">11 cons cells × 16 bytes each</span>
 struct_bytes     = 0            <span class="note">no tuples allocated</span>
-closure_bytes    = 0            <span class="note">no continuation closures allocated</span>
+closure_bytes    = 0            <span class="note">the program makes no closures</span>
+continuation_allocs = 103       <span class="note">native JIT/AOT only: frames built for the calls that return to a caller (the interpreter builds none)</span>
+continuation_bytes  = 5408      <span class="note">allocated, not live: a frame that resumes as the newest object is given back</span>
 map_bytes        = 0
 </pre>
 
@@ -119,11 +124,11 @@ program's semantic arguments, and codegen calls the total reuse-or-cons helper.
 If the source cell is still private, the helper relinks it in place; if it has
 been published, the helper allocates a fresh cons instead.</p>
 
-<p>The two numbers that are surprising are the zeros. In this fixture, native
-JIT and AOT allocate no tuple structs and no continuation closures on the
-ordinary run. The native stack holds ordinary machine frames and stack-backed
-continuation descriptors; the scheduler is not involved unless a yield edge is
-taken.</p>
+<p>The numbers that are surprising are the zeros. In this fixture, native
+JIT and AOT allocate no tuple structs and no closures on the ordinary run. The
+pending work of the recursive calls lives in continuation frames on the heap,
+103 of them, 5408 bytes allocated over the run; the scheduler is not involved
+unless a yield edge is taken.</p>
 
 <p>The source did not change. We did not add uniqueness annotations,
 linearity, borrow markers, or any "this list is mine" syntax. It is the same
@@ -185,17 +190,15 @@ then copying it through <code>append</code>.</p>
       if the process gets paused mid-flight.</li>
 </ul>
 
-<p>Most ordinary native calls only need the first job. So fz keeps the
-continuation as a lightweight stack-backed descriptor by default. It
-<em>materializes</em> into a real heap closure only at the moment the process
-actually has to yield because its reduction budget is exhausted. The same
-descriptor plays both roles; the runtime picks which one based on whether the
-scheduler is asking for the process back.</p>
+<p>One heap frame plays both roles. It is built by inline code at the heap
+tip, read by inline loads when it resumes, and it is already a heap object the
+scheduler can hold when the process yields or parks. Nothing is converted at a
+yield: the frame a yield needs is the same kind of object every call builds.</p>
 
 <div class="aside">
-The mental model is: run normally while you can; allocate only the immutable
-data the algorithm <em>publishes</em>; spill a closure only when the process
-must become resumable outside the current native activation.
+The mental model is: every pending call is a small heap frame; a frame that
+resumes as the newest object is given back at once; one that is buried under
+newer objects stays until a collection.
 </div>
 
 <h2>How fz combines older ideas</h2>
@@ -223,8 +226,7 @@ must become resumable outside the current native activation.
       systems attack allocation pressure through linearity, reuse, or precise
       reference counting; fz's quicksort fixture instead keeps ordinary source
       syntax and uses compiler-created reuse capabilities plus a runtime alias bit
-      to remove the temporary tuple, append copy, and fast-path continuation
-      closures.</li>
+      to remove the temporary tuple and the append copy.</li>
 </ul>
 
 <p>What fz's codebase currently proves for this fixture:</p>
@@ -241,12 +243,13 @@ must become resumable outside the current native activation.
       borrow marker, uniqueness annotation, or refcount syntax. The
       JIT/AOT output pins <code>list_cons_bytes = 176</code>,
       <code>struct_bytes = 0</code>, <code>closure_bytes = 0</code>, and
-      <code>map_bytes = 0</code>.</li>
-  <li><strong>Same descriptor, two roles.</strong> The lazy continuation acts
-      like a compiler-known native continuation in the synchronous case and can
-      become a scheduler-rootable continuation closure at the yield boundary.
-      The choice is made at runtime by a single flag. The current code path is
-      pinned by lazy-continuation and quicksort fixture tests.</li>
+      <code>map_bytes = 0</code>; the continuation row reports 103 frames and
+      5408 bytes on the native paths.</li>
+  <li><strong>One frame, two roles.</strong> The continuation frame is a
+      compiler-known native continuation when it resumes at once, and a
+      scheduler-rootable heap object when the process yields or parks. No
+      conversion happens between the two. The quicksort fixture pins its
+      count.</li>
 </ol>
 
 <p>One-line summary: <em>join-point-style native continuations plus CPR-style
@@ -288,9 +291,9 @@ append([h | t], ys)
 <p><code>qsort/1</code> is also not syntactically tail-recursive. It must sort
 one side, sort the other side, build <code>[p | sorted_hi]</code>, then deliver
 the combined list. Those pending steps are real continuation work. The
-important improvement is that they are not heap scheduler work by default. They
-run through native calls and stack-backed descriptors whenever the chain is
-non-parking.</p>
+important improvement is that they are not scheduler work by default. They
+run through native calls whose pending steps are heap frames, given back as
+they resume.</p>
 
 <h3>What uses the heap</h3>
 
@@ -301,8 +304,9 @@ building:</p>
   <li>each cons cell in the input, partition lists, and output list,</li>
   <li>the two-field tuple returned by <code>partition/4</code> &mdash; only when
       a caller is not asking for tuple-fields delivery,</li>
-  <li>continuation closures only when codegen must preserve "what to do next"
-      across a scheduler-visible boundary or another heap escape.</li>
+  <li>continuation frames, one per call that returns to a caller, reported
+      in their own statistics row; a frame that resumes as the newest object
+      is given back.</li>
 </ul>
 
 <p>A back-edge yield is the key boundary. The fast path just keeps running:</p>
@@ -332,8 +336,9 @@ needed to continue is reachable from the closure.</p>
 
 <p>No. The <em>idea</em> of CPS is still present in the IR: non-tail calls name
 their continuation explicitly, and receive/yield paths still need resumable
-state. What disappeared from the hot path is the assumption that every
-continuation must be a scheduler-visible heap frame.</p>
+state. What changed is the representation: every continuation is a small heap frame
+built and read by inline code, and the scheduler is not involved unless a
+yield edge is taken.</p>
 
 <table class="data">
   <thead>
@@ -342,7 +347,7 @@ continuation must be a scheduler-visible heap frame.</p>
   <tbody>
     <tr><td class="term">partition tail recursion</td><td>native Tail-CC <code>return_call</code></td><td class="note">constant stack</td></tr>
     <tr><td class="term">append body recursion</td><td>child call plus pending cons continuation</td><td class="note">pending work remains</td></tr>
-    <tr><td class="term">qsort recursive sort</td><td>native call chain plus continuation work</td><td class="note">scheduler absent on fast path</td></tr>
+    <tr><td class="term">qsort recursive sort</td><td>native call chain plus continuation frames on the heap</td><td class="note">scheduler absent on fast path</td></tr>
     <tr><td class="term">back-edge yield</td><td>heap closure rooted by scheduler</td><td class="note">stack intentionally abandoned</td></tr>
     <tr><td class="term">receive park</td><td>heap continuation/outcome closure</td><td class="note">process blocks</td></tr>
   </tbody>

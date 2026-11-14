@@ -142,7 +142,7 @@ fn heap_object_word_carries_kind_above_the_address() {
 
 #[test]
 fn value_kind_rejects_non_value_tags() {
-    assert_eq!(ValueKind::new(TAG_LAZY_CONT as u8), None);
+    assert_eq!(ValueKind::new(8), None);
     assert_eq!(ValueKind::new(11), None);
     assert_eq!(ValueKind::new(12), None);
 }
@@ -211,7 +211,7 @@ fn any_value_round_trip_without_packed_scalar_tags() {
 
 #[test]
 fn any_value_decode_parts_rejects_unknown_kind_bytes() {
-    assert_eq!(AnyValue::decode_parts(0, TAG_LAZY_CONT as u8), None);
+    assert_eq!(AnyValue::decode_parts(0, 8), None);
     assert_eq!(AnyValue::decode_parts(0, 0x10), None);
 }
 

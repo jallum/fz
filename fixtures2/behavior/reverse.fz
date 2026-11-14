@@ -18,7 +18,7 @@ def main() do
   dbg(out)
 
   stats = Process.heap_alloc_stats()
-  dbg(stats)
+  dbg(%{list_cons_allocs: stats[:list_cons_allocs], list_cons_bytes: stats[:list_cons_bytes], struct_allocs: stats[:struct_allocs], struct_bytes: stats[:struct_bytes], closure_allocs: stats[:closure_allocs], closure_bytes: stats[:closure_bytes], map_allocs: stats[:map_allocs], map_bytes: stats[:map_bytes]})
   heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
   dbg(heap_bytes)
 end

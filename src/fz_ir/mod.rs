@@ -828,6 +828,14 @@ impl Stmt {
 
 /// First-class continuation: an IR fn to invoke with the given captured vars
 /// (plus the value(s) being returned to it, supplied by the caller at runtime).
+///
+/// A continuation is resumed at most once, and its frame is dead after the
+/// resume reads it. Three things make that so: collections run only at quantum
+/// end, never between a resume's reads and its release; a runnable process and
+/// a park record take their continuation out of their own storage when they
+/// resume it; and a try handler captures the outer continuation and is popped
+/// before that continuation resumes. Native code gives the frame back to the
+/// heap at entry when it is the newest object (`release_resumed_frame`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cont {
     pub fn_id: FnId,

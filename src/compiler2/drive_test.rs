@@ -15809,10 +15809,13 @@ end
     assert_eq!((run.attempts, run.reused), (1, 1));
     assert_eq!(
         (run.live_count, run.bytes_used),
-        // fz-sc8.8: (6, 160) -> (9, 240). `dbg` renders the tuple into a
-        // binary on the process heap before writing it: three more objects,
-        // eighty more bytes, none of them list conses.
-        (9, 240),
+        // `dbg` renders the tuple into a binary on the process heap before
+        // writing it: three more objects, eighty more bytes over the program's
+        // own (6, 160), none of them list conses. The program's calls build
+        // eighteen continuation frames; fourteen resume as the newest heap
+        // object and are given back, four resume under a newer object and stay
+        // on the heap: four more objects, 128 more bytes.
+        (13, 368),
         "preserving the source list type avoids a redundant 16-byte cons"
     );
     assert!(run.source_and_rebuild_share_return);

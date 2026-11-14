@@ -250,6 +250,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             self_send_pushes_the_senders_reference_and_the_send_site_publishes_it,
         ),
         (
+            "a_list_a_continuation_captures_stays_rewritable_in_place",
+            a_list_a_continuation_captures_stays_rewritable_in_place,
+        ),
+        (
             "a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue",
             a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue,
         ),
@@ -3469,6 +3473,28 @@ fn self_send_pushes_the_senders_reference_and_the_send_site_publishes_it() {
     assert_eq!(stats.runtime_fallback_count(), 1);
 }
 
+fn a_list_a_continuation_captures_stays_rewritable_in_place() {
+    let fixture = FixtureCase::new(
+        "fixtures/01296_a_list_a_continuation_captures_is_rewritten_in_place_unless_a_call_aliases_it.fz",
+    );
+    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 01296 expected.txt");
+    assert_eq!(
+        expected, "[1, 2]\n[4, 3]\n[4, 5, 6]\n",
+        "the unaliased cell is rewritten; the aliased cell's other name still reads its original contents"
+    );
+
+    // Three one-cons constructions retain a source cell: the identical twin,
+    // the rewrite of the cell only a continuation captures, and the rewrite of
+    // the cell a call argument aliases. Only the last one misses.
+    let stats = list_retention_telemetry_stats_for_fixture(&fixture);
+    assert_eq!(
+        (stats.runtime_attempted_count, stats.runtime_reused_count),
+        (3, 2),
+        "a capture does not share its list; the call-site publication of an aliased argument does",
+    );
+    assert_eq!(stats.runtime_fallback_count(), 1);
+}
+
 /// One `fz.runtime.send.probe` event as the jsonl log renders it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SendProbeEvent {
@@ -3652,39 +3678,40 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     let fixture =
         FixtureCase::new("fixtures/00901_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent.fz");
 
-    // The child yields on its reduction budget while it builds and sends the
-    // 50000-element log. A yield collects once the child has allocated as many
-    // bytes as it held live after its last collection, and a quantum allocates
-    // about 12.8 KB. Each collection copies what was allocated since the last
-    // one, except that a collection whose old bytes passed twice what the last
-    // major collection left is major and copies everything live: the child's
-    // collections copy 13024, 38624 (major), 38464, 76864, 307424 (major),
-    // 307264 and 440096 bytes. The parent is collected once as it parks on its receive (608
-    // bytes: the values the parked receive holds, among them the heap-stats
-    // maps the fixture binds, plus the closures its park record holds). The
-    // gifts it grafts afterwards
-    // raise its baseline to its fill, so it is not collected again, and the
-    // child's exit is not a collection.
+    // The child yields on its reduction budget, 112 times, while it builds and
+    // sends the 50000-element log; a yield collects only when the heap is due,
+    // once the child has allocated as many bytes as it held live after its last
+    // collection. Each quantum's continuation frames raise the bytes allocated:
+    // a frame that resumes as the newest object is given back, but a frame
+    // under a newer cons cell stays until the collection, so a quantum
+    // allocates about 90 KB of which about 12.8 KB survive. The child is
+    // collected on 25 of its yields, more than the 7 it was when its
+    // continuations lived on the stack. The parent is collected once as it
+    // parks on its receive (912 bytes: the values the parked receive holds,
+    // among them the heap-stats maps the fixture binds, each of 34 entries, plus the closures and
+    // continuation frames its park record holds). The gifts it grafts
+    // afterwards raise its baseline to its fill, so it is not collected again,
+    // and the child's exit is not a collection.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
     let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
     assert_eq!(
         (count("yield"), count("park"), count("exit")),
-        (7, 1, 0),
-        "run: the child's reduction yields, the parent's park, no exit"
+        (25, 1, 0),
+        "run: the child's collected yields, the parent's park, no exit"
     );
-    assert_eq!(events.len(), 8, "run: one gc event per collection");
+    assert_eq!(events.len(), 26, "run: one gc event per collection");
     assert_eq!(
         events.iter().map(|e| e.copied_bytes).sum::<usize>(),
-        1_222_368,
+        2_817_792,
         "run: the bytes every collection copied"
     );
 
     // The interpreter never yields, so the child builds and sends its whole
     // log inside one quantum and is never collected: it exits without a
-    // collection. The parent is collected as it parks (560 bytes, the
+    // collection. The parent is collected as it parks (864 bytes, the
     // values its parked receive holds, among them the heap-stats maps the
-    // fixture binds: the JIT's 608 also counts the closures its park record
-    // holds); the gifts it grafts afterwards are baseline, so
+    // fixture binds, each of 34 entries and so not a flat map: the JIT's 912
+    // also counts the closures its park record holds); the gifts it grafts afterwards are baseline, so
     // it is not collected again.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
     let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
@@ -3695,7 +3722,7 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     );
     assert_eq!(
         events.iter().map(|e| e.copied_bytes).sum::<usize>(),
-        560,
+        864,
         "interp: only the parent's park copies anything"
     );
 }
@@ -3879,10 +3906,15 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
 
     // The interpreter never yields, so it collects the parent once, at its
     // park for the announcement, with nothing live. The JIT yields while the
-    // parent builds the list; each collection copies what was allocated since
-    // the last one, except the second and the fifth, whose old bytes passed
-    // twice what the last major collection left: those are major and copy
-    // everything live. Neither path collects the child.
+    // parent builds the list, and a yield collects only when the heap is due:
+    // the continuation frames a quantum builds that resume under a newer cons
+    // cell stay on the heap until a collection, so a quantum allocates several
+    // times the bytes of the cells that survive and the heap is due on most of
+    // its yields (the parent's yields are 64; it is collected on 21 of them).
+    // Each minor collection copies what was allocated since the last one;
+    // those whose old bytes passed twice what the last major collection left
+    // are major and copy everything live. The child is collected once, as it
+    // parks (288 bytes), and the parent once more at a park mid-run (208).
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
     assert_eq!(
         collections_as_tuples(&events),
@@ -3893,14 +3925,31 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
     assert_eq!(
         collections_as_tuples(&events),
         vec![
+            (2, "park", 288),
             (1, "yield", 12_992),
-            (1, "yield", 38_592),
+            (1, "yield", 25_792),
+            (1, "yield", 12_864),
+            (1, "yield", 12_864),
+            (1, "yield", 12_864),
+            (1, "yield", 76_992),
+            (1, "yield", 12_864),
+            (1, "yield", 25_664),
+            (1, "yield", 25_664),
+            (1, "yield", 25_664),
+            (1, "yield", 192_192),
             (1, "yield", 38_464),
-            (1, "yield", 76_864),
-            (1, "yield", 307_392),
-            (1, "yield", 304_096),
+            (1, "yield", 38_464),
+            (1, "yield", 38_464),
+            (1, "yield", 48_096),
+            (1, "yield", 64_048),
+            (1, "yield", 320_128),
+            (1, "yield", 64_048),
+            (1, "park", 208),
+            (1, "yield", 32_160),
+            (1, "yield", 96),
+            (1, "yield", 96),
         ],
-        "run: six yields while the parent builds the list"
+        "run: the child's park, then the parent's collected yields and its mid-run park"
     );
 }
 
