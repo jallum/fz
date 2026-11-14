@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T01:49:10Z",
   "created": "2026-11-14T01:08:32Z",
   "description": "Measured on fz-sc8.171/qualified-macro-order e2ebcdf6f, interp, against elixir, with a range (1..3) and a MapSet as the enumerable. Thirty calls, each on both receivers; ten functions agree with Elixir (chunk_by, dedup_by, frequencies_by, group_by, max_by, min_by, min_max_by, sort_by, uniq_by, unzip). Twenty calls diverge:\n\nRefused with error[spec/violation] because the @spec declares a list first argument (18): at/2, chunk_every/2, concat/1 (a list of enumerables), concat/2, count_until/2, dedup/1, fetch/2, fetch!/2, frequencies/1, join/1, join/2, max/1, min/1, min_max/1, product/1, sum/1, uniq/1, zip/2.\n\nMissing (resolve/unknown-import): Enum.zip/1, Enum.zip_with/3.\n\nSpiked: changing the spec domain from [a] to Enumerable.t(a) on join/1, join/2 and sum/1 alone makes all six probes print Elixir s output on interp and run (\"123\", \"1-2-3\", 6). The bodies already go through to_list or reduce. Not measured: build, the other fifteen, and the effect on the distiller compile-spend pin in tests/distill_telemetry_test.rs (49_760, 51_196, 28; 240 requests of headroom). Measure the pin before and after; a rise needs the user.\n\nBuild: for each of the eighteen, widen the domain and confirm the body handles a non-list; add zip/1 and zip_with/3 (check zip_with/2 too). One fixture printing every function on a list, a range, a MapSet and a map, identical to elixir on interp, run and build.\n\nSeparate from fz-sc8.141, which is about a receiver type only some of whose members implement the protocol.\n\nProbe files and results: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/b141/census/ (result.txt).",
   "id": "fz-sc8.173",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Enum's list-only functions take any enumerable, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-14T01:33:35Z"
+  "updated_at": "2026-11-14T01:49:10Z"
 }
