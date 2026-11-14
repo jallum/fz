@@ -157,13 +157,20 @@ impl Types {
         let id = TypeVarId(ADDRESS_TAG | index);
         self.address_vars.insert(path.to_vec(), id);
         self.address_paths.push(path.to_vec());
+        self.address_tys.push(None);
         id
     }
 
     /// The interned type variable living at a structural address.
     pub fn address_var(&mut self, path: &[AddrStep]) -> Ty {
         let id = self.address_id(path);
-        self.type_var(id)
+        let slot = (id.0 & !ADDRESS_TAG) as usize;
+        if let Some(ty) = self.address_tys[slot] {
+            return ty;
+        }
+        let ty = self.type_var(id);
+        self.address_tys[slot] = Some(ty);
+        ty
     }
 
     /// `a{i}` — the variable at parameter slot `i`.
@@ -180,12 +187,7 @@ impl Types {
 
     /// `r0` — the variable at the result slot.
     pub fn result_alpha(&mut self) -> Ty {
-        if let Some(alpha) = self.result_alpha {
-            return alpha;
-        }
-        let alpha = self.address_var(&[AddrStep::Result]);
-        self.result_alpha = Some(alpha);
-        alpha
+        self.address_var(&[AddrStep::Result])
     }
 
     /// The `TypeVarId` of `r0` — the result slot's address key.
