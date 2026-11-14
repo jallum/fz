@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.2"
+  ],
   "blocks": [],
   "created": "2026-11-14T19:25:22Z",
   "description": "Spike: a missed pop records its frame as the heap's single hole; Heap::bump takes it if it fits (young block, no gift open); forgotten at collection. Map 1M: misses 5.0M-\u003e1.9M, minor 55-\u003e17; filter 4.3M-\u003e1.2M, 51-\u003e13; distiller 32k minor 290-\u003e241, time unchanged. Full trace regresses: 17.4-23.1 s, peak 1.31-1.41 GB vs 16.5 s / 1.21 GB. The young-range check is 1% of samples; cause unknown. First question: explain the full-trace regression with a hypothesis and a measurement, then propose or drop.\nProposal (approved 2026-11-14): https://claude.ai/artifact/94aN2YPxunzwVEzct26nz2 (local /Users/j5n/Workspace/fz-d7w.html). Spike evidence: worktree ../fz-hc, branch exp/heap-cont-reads (uncommitted, FZ_SPIKE_* switches).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Experiment: a stranded frame's memory is reused",
   "type": "task",
-  "updated_at": "2026-11-14T19:25:22Z"
+  "updated_at": "2026-11-14T19:25:24Z"
 }
