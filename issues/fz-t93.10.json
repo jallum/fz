@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-2un",
     "fz-t93.8"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "The 8-row activation input budget is deleted",
   "type": "task",
-  "updated_at": "2026-11-14T04:26:51Z"
+  "updated_at": "2026-11-14T04:26:52Z"
 }
