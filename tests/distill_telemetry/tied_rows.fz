@@ -1,0 +1,1 @@
+def main(), do: Map.get(%{a: 1}, :a)
