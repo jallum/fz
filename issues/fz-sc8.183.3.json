@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:16:15Z",
+  "description": "Step 3 of /Users/j5n/Workspace/fz-sc8.183.html. A wildcard field (_r :: binary) and the rest of a clause that fails cost a bounds check, not a view or copy. Signal: a 5-clause walk shaped like JSON.string/2 (21 allocations per step on develop e515ae314) costs 1 per step; JSON.decode! of a fixed line is pinned.",
+  "id": "fz-sc8.183.3",
+  "labels": [],
+  "parent": "fz-sc8.183",
+  "priority": 1,
+  "status": "open",
+  "title": "A binary field nobody names is checked, not built",
+  "type": "task",
+  "updated_at": "2026-11-14T04:16:15Z"
+}
