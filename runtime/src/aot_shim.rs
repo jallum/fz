@@ -9,7 +9,7 @@
 //!   4. `return exit`
 //!
 //! `fz_entry_thunk`, `fz_main_trampoline`, `fz_resume`, `fz_halt_cont_body`,
-//! and the Tail-CC `fz_fn_<id>` bodies are emitted as Local symbols in the
+//! and the Tail-CC `fz_fn_<id>_<name>` bodies are emitted as Local symbols in the
 //! same object, alongside the read-only halt continuation and static closure
 //! data objects code addresses directly — the C main resolves each via `func_addr` and passes them
 //! by raw pointer. No per-program dispatch / frame-size shim, no trampoline.

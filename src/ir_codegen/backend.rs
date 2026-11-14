@@ -43,7 +43,7 @@ pub trait Backend {
 
     fn module_mut(&mut self) -> &mut Self::Module;
 
-    /// Linkage applied to user `fz_fn_<id>` declarations. JIT keeps them
+    /// Linkage applied to user `fz_fn_<id>_<name>` declarations. JIT keeps them
     /// `Local` (only resolved in-process). AOT exports them so the linker
     /// can see them when assembling the final binary.
     fn fn_linkage(&self) -> Linkage;
@@ -347,7 +347,7 @@ impl Backend for AotBackend {
             .map_err(|e| CodegenError::new(format!("object emit: {}", e)))?;
         // For programs with a fz `main`, the C-callable `main` shim is the
         // linker's entry point. Without a fz main, no shim was emitted and
-        // we surface the underlying fz_fn_<id> name so `fz2 build` can
+        // we surface the underlying `fz_fn_<id>_<name>` symbol so `fz2 build` can
         // error cleanly.
         let main_symbol = if meta.main_fn_id.is_some() {
             Some("main".to_string())

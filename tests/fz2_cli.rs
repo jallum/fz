@@ -1618,6 +1618,53 @@ fn quicksort_run_lexes_each_source_once() {
     let _ = remove_file(&telemetry_path);
 }
 
+/// A profile or a backtrace of a built program names what the program's author
+/// wrote: each compiled function's symbol carries its source name after its id.
+#[test]
+fn a_built_binarys_symbols_name_the_source_functions() {
+    use object::{Object, ObjectSymbol};
+
+    let source_path = unique_temp_path("fz2_symbols", ".fz");
+    let out_bin = unique_temp_path("fz2_symbols", ".bin");
+    write(
+        &source_path,
+        "def countdown(0), do: 0\ndef countdown(n), do: countdown(n - 1)\ndef main(), do: countdown(3)\n",
+    )
+    .expect("write the program");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build should succeed; stderr={:?}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let bytes = read(&out_bin).expect("read the built binary");
+    let binary = object::File::parse(&*bytes).expect("parse the built binary");
+    let compiled: Vec<String> = binary
+        .symbols()
+        .filter_map(|symbol| symbol.name().ok().map(|name| name.trim_start_matches('_').to_string()))
+        .filter(|name| name.starts_with("fz_fn_"))
+        .collect();
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&out_bin);
+
+    let names_function = |function: &str| {
+        compiled.iter().any(|symbol| {
+            let after_id = symbol["fz_fn_".len()..].trim_start_matches(|c: char| c.is_ascii_digit());
+            after_id.starts_with(&format!("_{function}"))
+        })
+    };
+    assert!(
+        names_function("countdown") && names_function("main"),
+        "the binary's compiled-function symbols should name `countdown` and `main`: {compiled:?}"
+    );
+}
+
 #[test]
 fn build_stays_on_compiler2_telemetry_and_links_a_native_binary() {
     let source_path = unique_temp_path("fz2_build", ".fz");
