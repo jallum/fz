@@ -2665,10 +2665,18 @@ impl Types {
         if runtime_type_predicate_widens_non_structs(descr) {
             return None;
         }
-        let arities = runtime_type_predicate_tuple_arities(descr);
-        let mut arities = arities.finite_elems()?;
-        let arity = arities.next()?;
-        arities.next().is_none().then_some(arity)
+        let mut single = None;
+        for clause in &descr.tuples {
+            match tuple_clause_arities(clause) {
+                TupleClauseArities::Nothing => {}
+                TupleClauseArities::Every => return None,
+                TupleClauseArities::One(arity) if single.is_none_or(|seen| seen == arity) => {
+                    single = Some(arity);
+                }
+                TupleClauseArities::One(_) => return None,
+            }
+        }
+        single
     }
 
     /// The arity of `a` when every value of `a` is a tuple of that one arity
@@ -4118,6 +4126,25 @@ fn runtime_type_predicate_list_shapes(descr: &Descr) -> FiniteSet<ListShape> {
 /// negative names the positive's own element.
 fn negative_swallows_the_fragment(clause: &Conj<ListSig>, negative: &ListSig) -> bool {
     matches!(clause.pos.as_slice(), [positive] if positive.elem.is_some() && positive.elem == negative.elem)
+}
+
+/// The arities one tuple clause admits: none, one, or every arity but the
+/// negated ones.
+enum TupleClauseArities {
+    Nothing,
+    One(usize),
+    Every,
+}
+
+fn tuple_clause_arities(clause: &Conj<TupleSig>) -> TupleClauseArities {
+    let mut positives = clause.pos.iter().map(|sig| sig.elems.len());
+    let Some(arity) = positives.next() else {
+        return TupleClauseArities::Every;
+    };
+    if positives.any(|other| other != arity) || clause.neg.iter().any(|sig| sig.elems.len() == arity) {
+        return TupleClauseArities::Nothing;
+    }
+    TupleClauseArities::One(arity)
 }
 
 fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {
