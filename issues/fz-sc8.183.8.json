@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T12:34:41Z",
+  "description": "A bitstring dispatch region calls fz_type_of twice (heap binary, shared binary) and boxes its yes/no as an atom the next block decodes with fz_truthy_ref: 3 runtime calls per step, about 8% of the plain walk after inline reads (not isolated). Goal: one kind test, and the region's result is a raw condition. Measure runtime calls per step before and after; re-time the walk. Stacks on fz-sc8.183.5. Evidence and predictions: proposal page fz-sc8.183.5.html (workspace root); spike files in scratchpad b183-5 and b183-6.",
+  "id": "fz-sc8.183.8",
+  "labels": [],
+  "parent": "fz-sc8.183",
+  "priority": 2,
+  "status": "open",
+  "title": "A bitstring match keeps its type test and result raw",
+  "type": "task",
+  "updated_at": "2026-11-14T12:34:41Z"
+}
