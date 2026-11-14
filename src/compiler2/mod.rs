@@ -23,6 +23,7 @@ mod jobs;
 mod keying;
 mod module_interface;
 mod namespace;
+mod native_body_frame;
 pub(crate) mod native_codegen;
 mod ordered_set;
 mod ordered_worklist;

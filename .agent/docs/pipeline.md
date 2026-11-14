@@ -1143,6 +1143,7 @@ caller owns target/profile ABI compatibility for an override.
 | callable-boundary lookup | `MakeFnRef` / `MakeClosure` `identity_fn` resolved against `NativeProgram.callable_boundaries` |
 | extern decls plus wire classes | `NativeProgram.module.externs` plus `NativeBody.extern_marshals` |
 | continuation / entry ABI classification | `NativeBody.entry_abi` and `NativeBodyOrigin::Continuation` |
+| which continuations share one body frame, and its width | `NativeBody.frame` (`BodyFrame { role, slots }`) |
 | runtime type-membership questions | explicit `RuntimeTypePredicate` facts |
 
 Questions that are illegal after `NativeProgram(root)`:
@@ -1194,6 +1195,53 @@ packaged `BackendReturnFlow`; `NoReturn` emits a tail call without a
 continuation, while `Continue` and `Deliver` carry their resolved source layout and
 the caller executable or destination entry owns the other side of the adapter.
 Codegen does not rediscover ABI at individual tailcall or callable entry sites.
+
+### Body frames
+
+A body with N non-tail calls is cut into N continuations, one per call, and
+the values live across a call ride in the continuation's descriptor. After
+sibling sharing, `frame_bodies` (`src/compiler2/native_body_frame.rs`) records
+once, on `NativeBody.frame`, which continuations run in one shared descriptor,
+the body frame:
+
+- A continuation that is not entered any other way (the program entry, an
+  executable entry, a callable boundary, a protocol target, a `MakeFnRef` /
+  `MakeClosure` target, a direct-call callee, a `try` handler, or a `receive`
+  clause, guard or `after` body) and that is built at exactly one site, by
+  another continuation, is a `FrameRole::Member` of its builder's frame. A
+  chain that builds itself in a cycle has no members.
+- The first continuation of a chain is the `FrameRole::Root`. Every site that
+  builds it hands it exactly its captures, so its descriptor is built
+  `slots` wide: slot 0 holds the return continuation, its captures follow, and
+  the rest stay empty (nil on the stack, a `NULL` kind on the heap) until a
+  member writes them.
+
+The pass rewrites the IR so the frame is explicit. A function running in a
+frame binds it first with `frame`. At a member's site the builder writes the
+values new there with `frame_store(frame, slot, lane, value)`, empties the
+boxed slots whose values die there with `frame_clear(frame, slot)`, and hands
+the frame on as the member's one capture. The member keeps only the
+parameters it resumes with and reads each value it uses with
+`frame_load(frame, slot, lane)`. A value gets a fresh slot the first time it
+is written, so a slot is written once and a scalar slot is never reused: a
+reference to a scalar capture points into the slot itself.
+
+Codegen (`src/compiler2/native_codegen/frame.rs`) reads the frame's tag on
+each access. A lazy stack descriptor and a heap closure both keep one raw word
+per slot followed by one kind byte per slot, so scalar loads and stores are
+inline in either layout. A boxed store on the stack is inline; on the heap it
+goes through `fz_heap_frame_store_ref`, which moves a stack continuation the
+value names to the heap and marks the value shared. A boxed load from the heap
+goes through `fz_closure_get_capture_ref`, and a heap clear through
+`fz_heap_frame_clear`, which empties only heap kinds. A store of a value that
+forces a heap continuation (`capture_forces_heap_continuation`) materializes
+the frame first. Handing a member on writes its code into the frame and tail
+calls the callee, since nothing the call reaches lives in the caller's stack
+frame; so a body of N calls keeps one descriptor, writes each value once, and
+runs at constant native stack depth however large N is.
+
+The interpreter runs the backend program, not `NativeProgram`, and keeps its
+own resume state.
 
 ## Front doors consume published artifacts
 

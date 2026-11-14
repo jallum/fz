@@ -1783,6 +1783,16 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
             .map(|code| code.code_buffer().len() as u64)
             .unwrap_or(0);
         push_u64(out, code_bytes);
+        out.push(',');
+        write_str_lit(out, "stack_slot_bytes");
+        out.push(':');
+        let stack_slot_bytes = context
+            .func
+            .sized_stack_slots
+            .values()
+            .map(|slot| u64::from(slot.size))
+            .sum();
+        push_u64(out, stack_slot_bytes);
     } else if let Some(code) = opaque.downcast_ref::<crate::source::SourceVersion>() {
         out.push(',');
         write_str_lit(out, "source_version");

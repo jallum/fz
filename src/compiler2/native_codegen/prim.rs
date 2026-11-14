@@ -6,7 +6,7 @@ use super::*;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{
     BinOp, BitSizeIr, BlockId, Const, DestMapSeed, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnId,
-    Prim, UnOp, Var,
+    FrameLane, Prim, UnOp, Var,
 };
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
@@ -1047,6 +1047,58 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         Prim::MakeClosure(_, fn_id, captured) => lower_make_closure(body, env, var_env, *fn_id, captured),
         Prim::RuntimeTypeTest(v, descr) => lower_runtime_type_predicate(body, env, var_env, *v, descr, dest_var),
         Prim::ClosureCapture { closure, index } => lower_closure_capture(body, var_env, *closure, *index),
+        Prim::Frame => Ok(LowerOut::ValueRef(
+            body.cache
+                .own_continuation
+                .expect("only a continuation runs in a body frame"),
+        )),
+        Prim::FrameLoad { frame, slot, lane } => {
+            let frame = frame_word(var_env, *frame);
+            Ok(LowerOut::Strict(body.frame_load(frame, *slot, *lane)))
+        }
+        Prim::FrameStore {
+            frame,
+            slot,
+            lane,
+            value,
+        } => {
+            let mut frame = frame_word(var_env, *frame);
+            if *lane == FrameLane::Ref && super::terminator::capture_forces_heap_continuation(t, env, value) {
+                frame = body.materialize_cont(frame);
+            }
+            let capture = closure_capture_for_var_as(body, var_env, value.0, lane_repr(*lane));
+            body.frame_store(frame, frame_width(env), *slot, capture);
+            Ok(LowerOut::ValueRef(frame))
+        }
+        Prim::FrameClear { frame, slot } => {
+            let frame = frame_word(var_env, *frame);
+            body.frame_clear(frame, frame_width(env), *slot);
+            Ok(LowerOut::ValueRef(frame))
+        }
+    }
+}
+
+fn frame_word(var_env: &HashMap<u32, CodegenValue>, frame: Var) -> ir::Value {
+    match var_env.get(&frame.0) {
+        Some(CodegenValue::AnyRef(word)) => *word,
+        _ => panic!("a body frame is bound to a continuation word"),
+    }
+}
+
+fn frame_width(env: &CodegenEnv<'_>) -> u32 {
+    env.active_native_body()
+        .frame
+        .as_ref()
+        .expect("a body that touches a frame runs in one")
+        .slots
+}
+
+fn lane_repr(lane: FrameLane) -> ArgRepr {
+    match lane {
+        FrameLane::Ref => ArgRepr::ValueRef,
+        FrameLane::Int => ArgRepr::RawInt,
+        FrameLane::Float => ArgRepr::RawF64,
+        FrameLane::Atom => ArgRepr::RawAtom,
     }
 }
 

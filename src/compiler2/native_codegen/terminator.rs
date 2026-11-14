@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::compiler2::NativeEntryAbi;
+use crate::compiler2::artifact::{BodyFrame, FrameRole};
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{
     self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, RaiseSubject, ReceiveAfter, ReceiveClause, Term,
@@ -57,6 +58,72 @@ fn resolve_callee_sid(env: &CodegenEnv<'_>, blk: &fz_ir::Block, slot: EmitSlot) 
         .unwrap_or_else(|| panic!("native callee fn {} has no registered codegen body id", callee_fn_id.0))
 }
 
+/// The continuation a call site hands its callee.
+enum HandedContinuation {
+    /// The body frame the continuation resumes in: it outlives this function.
+    Frame(ir::Value),
+    /// A descriptor built here, on this function's stack or on the heap.
+    Built { value: ir::Value, on_this_stack: bool },
+}
+
+impl HandedContinuation {
+    fn value(&self) -> ir::Value {
+        match self {
+            Self::Frame(value) | Self::Built { value, .. } => *value,
+        }
+    }
+
+    /// The call need not return here: nothing it reaches lives in this
+    /// function's stack frame.
+    fn lets_caller_go(&self) -> bool {
+        match self {
+            Self::Frame(_) => true,
+            Self::Built { on_this_stack, .. } => !on_this_stack,
+        }
+    }
+}
+
+fn is_frame_member(env: &CodegenEnv<'_>, sid: u32) -> bool {
+    matches!(
+        env.body_native(sid).frame,
+        Some(BodyFrame {
+            role: FrameRole::Member,
+            ..
+        })
+    )
+}
+
+/// Builds the continuation `cont_sid` from `captured`, or, when it is a member
+/// of the running frame, points that frame at it: then `captured` is the frame.
+fn hand_continuation_on<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
+    body: &mut CodegenFn<'_, '_, M>,
+    t: &mut T,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    is_cont_fn: bool,
+    cont_param: ir::Value,
+    cont_sid: u32,
+    captured: &[Var],
+) -> HandedContinuation {
+    if is_frame_member(env, cont_sid) {
+        let [frame] = captured else {
+            panic!(
+                "a frame member is handed exactly its frame, got {} value(s)",
+                captured.len()
+            );
+        };
+        let frame = var_env.get(&frame.0).expect("unbound body frame").value();
+        let cont_fid = *env.fn_ids.get(&cont_sid).expect("cont fn_id missing");
+        let code = fn_addr(body.jmod, cont_fid, body.b);
+        body.frame_resume_at(frame, code);
+        return HandedContinuation::Frame(frame);
+    }
+    let on_this_stack = continuation_uses_lazy_descriptor(t, env, captured);
+    let payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, captured);
+    let value = plan_closure_shaped_continuation(payload, on_this_stack).emit_value(body, is_cont_fn, cont_param);
+    HandedContinuation::Built { value, on_this_stack }
+}
+
 fn emit_native_continuation_tail_delivery<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
@@ -77,13 +144,11 @@ fn emit_native_continuation_tail_delivery<M: cranelift_module::Module, T: Types<
         extra_params,
         args.len()
     );
-    assert_eq!(
-        args.len(),
-        callee_param_reprs.len(),
+    assert!(
+        is_frame_member(env, callee_sid) || args.len() == callee_param_reprs.len(),
         "continuation callee {} logical arg count must match published param reprs",
         callee_sid
     );
-
     let mut delivered_args = Vec::with_capacity(
         callee_param_reprs
             .iter()
@@ -102,19 +167,20 @@ fn emit_native_continuation_tail_delivery<M: cranelift_module::Module, T: Types<
         mid_flight_arg_shapes.push(MidFlightArgShape::Value(repr));
     }
 
-    let semantic_cap_vars = args.iter().skip(extra_params).copied().collect::<Vec<_>>();
-    let semantic_cap_bindings = semantic_cap_vars
-        .iter()
-        .enumerate()
-        .map(|(i, arg)| closure_capture_for_var_as(body, var_env, arg.0, callee_param_reprs[extra_params + i]))
-        .collect::<Vec<_>>();
-    let use_lazy = continuation_uses_lazy_descriptor(t, env, &semantic_cap_vars);
-    let payload = ContinuationPayload::from_parts(env, callee_sid, semantic_cap_bindings, vec![], vec![]);
-    let self_arg = plan_closure_shaped_continuation(payload, use_lazy).emit_value(body, is_cont_fn, cont_param);
+    let handed = hand_continuation_on(
+        body,
+        t,
+        env,
+        var_env,
+        is_cont_fn,
+        cont_param,
+        callee_sid,
+        &args[extra_params..],
+    );
+    let self_arg = handed.value();
     delivered_args.push(self_arg);
     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
 
-    let code = body.closure_code_ref(self_arg);
     let mut sig = Signature::new(CallConv::Tail);
     for repr in callee_param_reprs.iter().take(extra_params).copied() {
         push_repr_param(&mut sig, repr);
@@ -125,9 +191,16 @@ fn emit_native_continuation_tail_delivery<M: cranelift_module::Module, T: Types<
     if is_back_edge {
         emit_back_edge_yield_check(body, env, callee_sid, &mid_flight_arg_shapes, &delivered_args);
     }
-    let call_inst = body.b.ins().call_indirect(sig_ref, code, &delivered_args);
-    let result = body.b.inst_results(call_inst)[0];
-    body.b.ins().return_(&[result]);
+    if let HandedContinuation::Frame(_) = handed {
+        let callee_fid = *env.fn_ids.get(&callee_sid).expect("cont fn_id missing");
+        let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
+        body.b.ins().return_call(callee_fref, &delivered_args);
+    } else {
+        let code = body.closure_code_ref(self_arg);
+        let call_inst = body.b.ins().call_indirect(sig_ref, code, &delivered_args);
+        let result = body.b.inst_results(call_inst)[0];
+        body.b.ins().return_(&[result]);
+    }
 }
 
 enum ContinuationPlan {
@@ -138,24 +211,25 @@ enum ContinuationPlan {
 struct ContinuationPayload {
     cont_fid: FuncId,
     semantic_cap_bindings: Vec<ClosureCapture>,
-    physical_ref_captures: Vec<ir::Value>,
-    materialization_ref_captures: Vec<ir::Value>,
+    /// The slots of the frame the continuation starts that its captures do not
+    /// fill: the values its members write later.
+    empty_slots: usize,
 }
 
 impl ContinuationPayload {
-    fn from_parts(
-        env: &CodegenEnv<'_>,
-        cont_sid: u32,
-        semantic_cap_bindings: Vec<ClosureCapture>,
-        physical_ref_captures: Vec<ir::Value>,
-        materialization_ref_captures: Vec<ir::Value>,
-    ) -> Self {
+    fn from_parts(env: &CodegenEnv<'_>, cont_sid: u32, semantic_cap_bindings: Vec<ClosureCapture>) -> Self {
         let cont_fid = *env.fn_ids.get(&cont_sid).expect("cont fn_id missing");
+        let empty_slots = match env.body_native(cont_sid).frame {
+            Some(BodyFrame {
+                role: FrameRole::Root,
+                slots,
+            }) => slots as usize - 1 - semantic_cap_bindings.len(),
+            _ => 0,
+        };
         Self {
             cont_fid,
             semantic_cap_bindings,
-            physical_ref_captures,
-            materialization_ref_captures,
+            empty_slots,
         }
     }
 
@@ -178,15 +252,7 @@ impl ContinuationPayload {
                 closure_capture_for_var_as(body, var_env, cv.0, repr)
             })
             .collect();
-        Self::from_parts(env, cont_sid, cap_bindings, vec![], vec![])
-    }
-
-    fn ref_captures(&self) -> Vec<ir::Value> {
-        self.physical_ref_captures
-            .iter()
-            .chain(&self.materialization_ref_captures)
-            .copied()
-            .collect()
+        Self::from_parts(env, cont_sid, cap_bindings)
     }
 }
 
@@ -199,10 +265,6 @@ impl ContinuationPlan {
         Self::HeapClosure(payload)
     }
 
-    fn uses_lazy_descriptor(&self) -> bool {
-        matches!(self, Self::LazyNativeDescriptor(_))
-    }
-
     fn emit_value<M: cranelift_module::Module>(
         &self,
         body: &mut CodegenFn<'_, '_, M>,
@@ -210,28 +272,22 @@ impl ContinuationPlan {
         cont_param: ir::Value,
     ) -> ir::Value {
         match self {
-            ContinuationPlan::LazyNativeDescriptor(payload) => {
-                let ref_captures = payload.ref_captures();
-                build_lazy_cont_descriptor(
-                    body,
-                    is_cont_fn,
-                    cont_param,
-                    payload.cont_fid,
-                    &payload.semantic_cap_bindings,
-                    &ref_captures,
-                )
-            }
-            ContinuationPlan::HeapClosure(payload) => {
-                let ref_captures = payload.ref_captures();
-                build_cont_closure(
-                    body,
-                    is_cont_fn,
-                    cont_param,
-                    payload.cont_fid,
-                    &payload.semantic_cap_bindings,
-                    &ref_captures,
-                )
-            }
+            ContinuationPlan::LazyNativeDescriptor(payload) => build_lazy_cont_descriptor(
+                body,
+                is_cont_fn,
+                cont_param,
+                payload.cont_fid,
+                &payload.semantic_cap_bindings,
+                payload.empty_slots,
+            ),
+            ContinuationPlan::HeapClosure(payload) => build_cont_closure(
+                body,
+                is_cont_fn,
+                cont_param,
+                payload.cont_fid,
+                &payload.semantic_cap_bindings,
+                payload.empty_slots,
+            ),
         }
     }
 }
@@ -251,7 +307,7 @@ fn plan_closure_shaped_continuation(payload: ContinuationPayload, use_lazy: bool
 // stack descriptor is not a GC root, so a cont that *owns* such a value must be
 // a heap closure that the collector can trace. `match!`/known thin function
 // refs (zero-capture callable boundaries) do not force the heap.
-fn capture_forces_heap_continuation<T: Types<Ty = Ty> + ClosureTypes>(
+pub(super) fn capture_forces_heap_continuation<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     env: &CodegenEnv<'_>,
     cv: &Var,
@@ -422,7 +478,7 @@ fn emit_try<M: cranelift_module::Module>(
         .iter()
         .map(|cv| closure_capture_for_var(body, var_env, cv.0))
         .collect();
-    let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings, vec![], vec![]);
+    let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings);
     let template = ContinuationPlan::heap_closure(payload).emit_value(body, is_cont_fn, cont_param);
     let process = body.process_arg();
     runtime_call!(body, fz_try_push, [process, template]);
@@ -659,16 +715,23 @@ fn emit_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>
     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
     let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
     let mut native_args = body.coerce_call_args(args, callee_param_reprs, var_env);
-    let use_lazy = continuation_uses_lazy_descriptor(t, env, &continuation.captured);
-    let payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
-    let continuation_plan = plan_closure_shaped_continuation(payload, use_lazy);
-    native_args.push(continuation_plan.emit_value(body, is_cont_fn, cont_param));
-    if continuation_plan.uses_lazy_descriptor() {
+    let handed = hand_continuation_on(
+        body,
+        t,
+        env,
+        var_env,
+        is_cont_fn,
+        cont_param,
+        cont_sid,
+        &continuation.captured,
+    );
+    native_args.push(handed.value());
+    if handed.lets_caller_go() {
+        body.b.ins().return_call(callee_fref, &native_args);
+    } else {
         let inst = body.b.ins().call(callee_fref, &native_args);
         let result = body.b.inst_results(inst)[0];
         body.b.ins().return_(&[result]);
-    } else {
-        body.b.ins().return_call(callee_fref, &native_args);
     }
     Ok(())
 }
@@ -864,15 +927,21 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
         .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
         .collect();
     let cont_sid = resolve_cont_sid(env, blk);
-    let cont_payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
-    let can_use_lazy_cont = continuation_uses_lazy_descriptor(t, env, &continuation.captured);
-    let continuation_plan = plan_closure_shaped_continuation(cont_payload, can_use_lazy_cont);
-    let cf = continuation_plan.emit_value(body, is_cont_fn, cont_param);
+    let handed = hand_continuation_on(
+        body,
+        t,
+        env,
+        var_env,
+        is_cont_fn,
+        cont_param,
+        cont_sid,
+        &continuation.captured,
+    );
     // Load body address from the closure and
     // Tail-CC indirect-call with closure-target sig
     // `(args..., self, cont) -> i64 tail` (all-ValueRef params).
-    // A lazy cont lives in this frame, so the call returns here;
-    // a heap cont tail-calls (TCO via return_call_indirect).
+    // A continuation on this function's stack needs the call to return
+    // here; any other tail-calls (TCO via return_call_indirect).
     let body_fp = body.closure_code_ref(cl_val);
     let mut sig = Signature::new(CallConv::Tail);
     for _ in &arg_vals {
@@ -888,13 +957,13 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
         body.push_binding_as_abi_arg(&mut indirect_args, binding, ArgRepr::ValueRef);
     }
     indirect_args.push(cl_val);
-    indirect_args.push(cf);
-    if can_use_lazy_cont {
+    indirect_args.push(handed.value());
+    if handed.lets_caller_go() {
+        body.b.ins().return_call_indirect(sig_ref, body_fp, &indirect_args);
+    } else {
         let call_inst = body.b.ins().call_indirect(sig_ref, body_fp, &indirect_args);
         let result = body.b.inst_results(call_inst)[0];
         body.b.ins().return_(&[result]);
-    } else {
-        body.b.ins().return_call_indirect(sig_ref, body_fp, &indirect_args);
     }
     Ok(())
 }
@@ -1096,7 +1165,7 @@ fn build_park_record<M: cranelift_module::Module>(
     };
     for (i, c) in clauses.iter().enumerate() {
         let cont_sid = resolve_body_sid(c.body);
-        let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone(), vec![], vec![]);
+        let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone());
         let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(body, is_cont_fn, cont_param);
         body.b.ins().stack_store(cl_ptr, bodies_slot, (i * 8) as i32);
         if let Some(slot) = bound_counts_slot {
@@ -1116,7 +1185,7 @@ fn build_park_record<M: cranelift_module::Module>(
     let (after_deadline_v, after_cont_v) = match after {
         Some(a) => {
             let cont_sid = resolve_body_sid(a.body);
-            let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings, vec![], vec![]);
+            let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings);
             let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(body, is_cont_fn, cont_param);
             let unboxed = body.as_raw_i64(var_env, a.timeout.0);
             (unboxed, cl_ptr)

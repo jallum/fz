@@ -764,7 +764,8 @@ Compiler2-native codegen keeps topology and timing on the
 `emit_runtime`, and `finalize` spans. Their starts carry no reconstructed
 program summary. The `define_function` span stop carries the raw
 Cranelift `Context`; handlers derive compiled code size while that context is
-valid.
+valid. The JSONL projection writes it as `code_bytes`, beside
+`stack_slot_bytes`, the bytes of the function's explicit stack slots.
 
 ABI, callable-boundary, and closure-call correctness belong to the published
 `NativeProgram`, generated CLIF, and runtime behavior. Compiler2-native does

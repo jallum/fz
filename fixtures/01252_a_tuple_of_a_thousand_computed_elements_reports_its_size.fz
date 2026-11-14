@@ -1,13 +1,13 @@
 #---
-# purpose: "A tuple built from a thousand computed elements reports its size on the interpreter"
+# purpose: "A tuple built from a thousand computed elements reports its size"
 # oracle: oracle.exs
 # oracle.stamp: 20ee689e8d913c1a
 #---
 #
 # Each element is a call whose result stays live until the tuple is built, so
 # the body is cut into a thousand resume steps. Compiling it stays inside the
-# product drive budget. On `run` and `build` the same program overflows the
-# native stack, so only the interpreter runs it.
+# product drive budget, and on `run` and `build` the steps run in one frame
+# without growing the native stack.
 def f(x), do: x + 1
 
 def main() do

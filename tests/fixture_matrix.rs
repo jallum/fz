@@ -3826,7 +3826,7 @@ fn many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_mis
     }
 
     // The interpreter collects the parent once, as it parks (48 bytes live).
-    // The JIT collects it once as it parks (288 bytes, which include the
+    // The JIT collects it once as it parks (352 bytes, which include the
     // closures its park record holds); the parent's exit after grafting 99
     // gifts is not a collection. Neither path collects a child.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
@@ -3838,7 +3838,9 @@ fn many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_mis
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
     assert_eq!(
         collections_as_tuples(&events),
-        vec![(1, "park", 288)],
+        // The parked state is one body frame: 3x32 + 3x48 + 1x112 bytes, where
+        // the 112-byte object is the 10-slot frame.
+        vec![(1, "park", 352)],
         "run: the parent's park only; its exit is not collected"
     );
 }

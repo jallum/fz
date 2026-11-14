@@ -467,6 +467,15 @@ pub struct SlotStore<V> {
     pub value: V,
 }
 
+/// The physical form of one body-frame slot: one boxed word, or a raw scalar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FrameLane {
+    Ref,
+    Int,
+    Float,
+    Atom,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Prim {
     Const(Const),
@@ -587,6 +596,30 @@ pub enum Prim {
         closure: Var,
         index: u32,
     },
+    /// The body frame the running continuation resumes in: the record that
+    /// holds every value of its body that lives across a call.
+    Frame,
+    /// Read the value in `slot` of `frame`.
+    FrameLoad {
+        frame: Var,
+        slot: u32,
+        lane: FrameLane,
+    },
+    /// Write `value` into the empty `slot` of `frame`. The result is the frame
+    /// to use from here on: a value only the collector can keep alive moves
+    /// the frame onto the heap first.
+    FrameStore {
+        frame: Var,
+        slot: u32,
+        lane: FrameLane,
+        value: Var,
+    },
+    /// The value in `slot` of `frame` is dead: a heap value there is
+    /// released. The result is `frame`.
+    FrameClear {
+        frame: Var,
+        slot: u32,
+    },
 }
 
 impl Prim {
@@ -692,6 +725,14 @@ impl Prim {
             }
             Prim::ClosureCapture { closure, .. } => {
                 used.insert(*closure);
+            }
+            Prim::Frame => {}
+            Prim::FrameLoad { frame, .. } | Prim::FrameClear { frame, .. } => {
+                used.insert(*frame);
+            }
+            Prim::FrameStore { frame, value, .. } => {
+                used.insert(*frame);
+                used.insert(*value);
             }
         }
     }
@@ -1449,6 +1490,15 @@ impl fmt::Display for Prim {
                 write!(f, "runtime_type_test({}, {})", v, d)
             }
             Prim::ClosureCapture { closure, index } => write!(f, "closure_capture({closure}, {index})"),
+            Prim::Frame => write!(f, "frame"),
+            Prim::FrameLoad { frame, slot, lane } => write!(f, "frame_load({frame}, {slot}, {lane:?})"),
+            Prim::FrameStore {
+                frame,
+                slot,
+                lane,
+                value,
+            } => write!(f, "frame_store({frame}, {slot}, {lane:?}, {value})"),
+            Prim::FrameClear { frame, slot } => write!(f, "frame_clear({frame}, {slot})"),
         }
     }
 }

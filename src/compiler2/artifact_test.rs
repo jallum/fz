@@ -225,6 +225,7 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             value_types: HashMap::from_iter([(Var(0), int)]),
             extern_marshals: marshals.clone(),
             effects: EffectSummary::default(),
+            frame: None,
         }],
         callable_boundaries: vec![NativeCallableBoundary {
             denotation: fz_runtime::any_value::ClosureDenotationId::user(0),
@@ -398,6 +399,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 value_types: HashMap::from_iter([(Var(0), int)]),
                 extern_marshals: HashMap::from_iter([(extern_site, ExternTy::CString)]),
                 effects: EffectSummary::default(),
+                frame: None,
             },
             NativeBody {
                 fn_id: cont_fn,
@@ -410,6 +412,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 value_types: HashMap::from_iter([(Var(1), int)]),
                 extern_marshals: HashMap::default(),
                 effects: EffectSummary::default(),
+                frame: None,
             },
         ],
         callable_boundaries: vec![NativeCallableBoundary {
@@ -569,6 +572,7 @@ fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authori
             value_types: HashMap::from_iter([(Var(0), int)]),
             extern_marshals: HashMap::from_iter([(marshal_site, ExternTy::CString)]),
             effects: EffectSummary::default(),
+            frame: None,
         }],
         callable_boundaries: Vec::new(),
     };
