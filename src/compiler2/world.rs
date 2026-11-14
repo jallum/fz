@@ -2593,26 +2593,28 @@ impl World {
         current_module: ModuleId,
         head: Namespace,
         path: &crate::modules::identity::ModuleName,
-    ) -> Option<ModuleId> {
+    ) -> ModuleId {
         if path.segments().len() == 1 {
             let local = path.last_segment();
             if let Some(NamespaceSymbol::Module(module)) = self.lookup_namespace(head, local) {
-                return Some(module);
+                return module;
             }
             if current_module.is_global() {
-                return Some(self.reference_module(path.clone()));
+                return self.reference_module(path.clone());
             }
             if self
                 .module_name(current_module)
                 .is_some_and(|name| name.last_segment() == local)
             {
-                return Some(current_module);
+                return current_module;
             }
-            return Some(self.reference_module(path.clone()));
+            return self.reference_module(path.clone());
         }
 
-        self.lookup_module_path(head, path)
-            .or_else(|| Some(self.reference_module(path.clone())))
+        match self.lookup_module_path(head, path) {
+            Some(module) => module,
+            None => self.reference_module(path.clone()),
+        }
     }
 
     /// The atom a module alias is in value position: the full name of the
@@ -2623,9 +2625,11 @@ impl World {
         current_module: ModuleId,
         head: Namespace,
         alias: &ModuleName,
-    ) -> Option<String> {
-        let module = self.resolve_module_name(current_module, head, alias)?;
-        self.module_name(module).map(ModuleName::atom_name)
+    ) -> String {
+        let module = self.resolve_module_name(current_module, head, alias);
+        self.module_name(module)
+            .expect("a resolved module name is a named module")
+            .atom_name()
     }
 
     pub(crate) fn resolve_module_target(
@@ -2633,10 +2637,10 @@ impl World {
         owner: ModuleId,
         head: Namespace,
         target: &crate::ast::ModuleTarget,
-    ) -> Option<ModuleId> {
+    ) -> ModuleId {
         match target {
             crate::ast::ModuleTarget::Unresolved(name) => self.resolve_module_name(owner, head, name),
-            crate::ast::ModuleTarget::Exact(module) => Some(self.reference_module_denotation(module.clone())),
+            crate::ast::ModuleTarget::Exact(module) => self.reference_module_denotation(module.clone()),
         }
     }
 

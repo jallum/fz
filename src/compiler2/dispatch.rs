@@ -138,10 +138,7 @@ where
     F: FnMut(&mut World, &Callee, usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError>,
 {
     fn struct_type(&mut self, module: &ModuleTarget, _span: Span) -> Result<Ty, SourcePatternError> {
-        let module_id = self
-            .world
-            .resolve_module_target(self.owner, self.namespace, module)
-            .ok_or_else(|| SourcePatternError::UnresolvedStruct(module.clone()))?;
+        let module_id = self.world.resolve_module_target(self.owner, self.namespace, module);
         Ok(self.world.struct_value_ty(module_id, &[], &[]))
     }
 
@@ -149,9 +146,7 @@ where
         &mut self,
         alias: &crate::modules::identity::ModuleName,
     ) -> Result<String, SourcePatternError> {
-        self.world
-            .module_alias_atom(self.owner, self.namespace, alias)
-            .ok_or(SourcePatternError::UnsupportedGuardExpr)
+        Ok(self.world.module_alias_atom(self.owner, self.namespace, alias))
     }
 
     fn guard_call(&mut self, callee: &Callee, arity: usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {

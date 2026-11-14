@@ -1730,7 +1730,6 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         let path = ModuleName::from_segments(import.path.clone());
         self.world
             .resolve_module_name(self.current_module, self.namespace, &path)
-            .expect("module resolution should always mint a module id for import/require paths")
     }
 
     fn interface_requester(&self, span: Span) -> InterfaceRequester {
@@ -2513,9 +2512,7 @@ fn reference_impl_protocol_module(
     head: Namespace,
     name: &ModuleName,
 ) -> ModuleId {
-    world
-        .resolve_module_name(current_module, head, name)
-        .expect("module resolution should always mint a module id for defimpl protocol names")
+    world.resolve_module_name(current_module, head, name)
 }
 
 fn reference_impl_target_module(
@@ -2524,9 +2521,7 @@ fn reference_impl_target_module(
     head: Namespace,
     name: &ModuleName,
 ) -> ModuleId {
-    world
-        .resolve_module_name(current_module, head, name)
-        .expect("module resolution should always mint a module id for defimpl target names")
+    world.resolve_module_name(current_module, head, name)
 }
 
 #[cfg(test)]
