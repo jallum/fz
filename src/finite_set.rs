@@ -98,6 +98,17 @@ impl<T: Ord + Clone> FiniteSet<T> {
         }
     }
 
+    /// What is ours and not `other`'s: `self.intersect(&other.neg())`, without
+    /// building the negation.
+    pub(crate) fn diff(&self, other: &Self) -> Self {
+        match (self.cofinite, other.cofinite) {
+            (false, false) => Self::finite(self.values.difference(&other.values).cloned()),
+            (false, true) => Self::finite(self.values.intersection(&other.values).cloned()),
+            (true, false) => Self::cofinite(self.values.union(&other.values).cloned()),
+            (true, true) => Self::finite(other.values.difference(&self.values).cloned()),
+        }
+    }
+
     pub(crate) fn neg(&self) -> Self {
         Self {
             values: self.values.clone(),

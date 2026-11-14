@@ -95,3 +95,20 @@ fn finite_len_tracks_finite_only() {
     assert_eq!(FiniteSet::finite([1, 2, 3]).finite_len(), Some(3));
     assert_eq!(FiniteSet::<i64>::cofinite([1]).finite_len(), None);
 }
+
+#[test]
+fn diff_is_intersect_with_the_negation() {
+    let sides: [FiniteSet<i64>; 6] = [
+        FiniteSet::none(),
+        FiniteSet::any(),
+        FiniteSet::finite([1, 2]),
+        FiniteSet::finite([2, 3]),
+        FiniteSet::cofinite([1, 2]),
+        FiniteSet::cofinite([2, 3]),
+    ];
+    for a in &sides {
+        for b in &sides {
+            assert_eq!(a.diff(b), a.intersect(&b.neg()), "{a:?} minus {b:?}");
+        }
+    }
+}
