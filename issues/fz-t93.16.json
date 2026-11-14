@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T13:13:32Z",
+  "description": "Evidence (experiments for fz-afu.15, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/afu15y/followup.md, e10.md; /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/afu15x/e9.md): with a test-only pop-order knob in Agenda::pop, base json_roundtrip AnalyzeActivation runs are 882 under FIFO and 597 under LIFO (A-out: 815 / 592); base same/2 activations range 8 to 37 over 12 orders (A-out removes that: 8 in all); 00420 DeriveRuntimeDemand evaluations range 645 to 699 over orders. Outputs are identical under every order. So the amount of compile work is a function of the order jobs happen to be popped, and one order does about a third less on json.\n\nPaper first: shrink to the smallest program where FIFO and LIFO differ in runs, answer by hand which runs are necessary, and find the first decision where one order does work the other avoids (e.g. a reader run before its producer's answer is final, then re-run). Fix where that decision starts, so the work follows from facts, not order. Measure: run counts across the 12 orders on the matrix and the distiller should collapse toward one value; no fixture rises. The order knob used for measurement does not ship (or ships only behind cfg(test) as a permutation test, per sorting-is-a-barrier).",
+  "id": "fz-t93.16",
+  "labels": [],
+  "parent": "fz-t93",
+  "priority": 2,
+  "status": "open",
+  "title": "Compile work does not depend on the agenda's pop order",
+  "type": "task",
+  "updated_at": "2026-11-14T13:13:32Z"
+}
