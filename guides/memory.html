@@ -1081,9 +1081,11 @@ old object is mutated to point at a new object, the GC must record it
 pointer write needs an extra store — significant overhead.</p>
 
 <div class="box green">
-fz is purely immutable. Once an object is allocated and initialised, it is
-never modified. Old objects can never gain new-object references after
-promotion. <strong>No write barriers needed.</strong>
+fz data is immutable, with one exception the runtime controls: a list cell
+nobody else holds may be reused in place when a list is rebuilt. A collection
+marks every list cell it keeps as shared, and a shared cell is never reused.
+So an object that has survived a collection never gains a reference to a newer
+one. <strong>No write barriers needed.</strong>
 </div>
 
 <p>The heap has no generation boundary; a minor collection would add

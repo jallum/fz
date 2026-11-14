@@ -876,6 +876,30 @@ fn gc_preserves_list_alias_metadata() {
     assert_eq!(copied_n2.head as i64, 2);
 }
 
+/// A collection keeps what is reachable, and what it keeps is old. An old cell
+/// must never come to point at a value made after the collection, so a kept
+/// cell answers a changed rebuild with a fresh cell even when the compiler
+/// granted rewrite permission.
+#[test]
+fn a_list_cell_a_collection_kept_is_not_rewritten_in_place() {
+    let mut h = Heap::new(1024, fresh_registry());
+    let tail = alloc_int_list_cons(&mut h, 2, EMPTY_LIST);
+    let source = alloc_int_list_cons(&mut h, 1, tail);
+    let mut roots = [heap_ref(source)];
+    h.collect(&mut roots);
+    let kept = roots[0];
+    h.reset_alloc_stats();
+
+    let rebuilt = h
+        .reuse_or_alloc_list_cons_raw_kind(kept, 1, ValueKind::INT, AnyValueRef::empty_list(), true)
+        .expect("rebuild");
+
+    assert_ne!(rebuilt, kept);
+    assert_eq!(h.alloc_stats_snapshot().list_cons.allocs, 1);
+    let kept_cell = unsafe { &*(kept.list_addr().unwrap() as *const ListCons) };
+    assert_ne!(kept_cell.tail_addr(), 0, "the kept cell still has its tail");
+}
+
 #[test]
 fn published_ref_alias_marking_marks_every_reachable_list_cons() {
     let mut h = Heap::new(1024, fresh_registry());

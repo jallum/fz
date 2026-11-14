@@ -22,6 +22,7 @@ pub fn cheney_trace_list(
     stats: &mut GcStats,
 ) {
     let cons = unsafe { &mut *obj };
+    cons.keep_across_collection();
     if cons.head_kind().is_heap() {
         stats.list_head_heap_edges += 1;
         let head = forward_heap_value(cons.head_value(), from_space, heap, schemas, copied_objects, stats);

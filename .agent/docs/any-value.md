@@ -590,7 +590,10 @@ The list link's **alias bit** protects a closed shared spine: a marked cell has
 a marked tail. `ListCons::share_spine` stops at the first marked cell, so repeated
 publication visits only newly protected cells plus one check per Share edge.
 The bit setter and link are private; shared cells cannot relink, and GC relocates
-the same logical tail without changing this invariant.
+the same logical tail without changing this invariant. A collection marks every
+cell it keeps (`ListCons::keep_across_collection`, from `cheney_trace_list`), so
+a cell that has survived a collection is never rewritten in place and never
+comes to point at a value allocated after it.
 
 `ListRetention { source, permission }` belongs to the exact list construction.
 Identical raw head, kind, and tail retain the source even when shared or when
