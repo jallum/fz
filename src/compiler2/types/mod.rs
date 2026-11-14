@@ -3674,8 +3674,7 @@ impl SharedRenderTypes for Types {
     }
 }
 
-fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
-    let finite: Vec<TypeVarId> = d.vars.finite_elems()?.collect();
+fn pure_var_ids(d: &Descr) -> Option<impl Iterator<Item = TypeVarId> + '_> {
     let only_vars = d.basic.is_empty()
         && d.atoms.is_none()
         && d.opaques.is_none()
@@ -3685,7 +3684,12 @@ fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
         && d.resources.is_empty()
         && d.funcs.is_empty()
         && d.maps.is_empty();
-    (only_vars && !finite.is_empty()).then_some(finite)
+    let named_some = d.vars.finite_len().is_some_and(|len| len > 0);
+    if only_vars && named_some {
+        d.vars.finite_elems()
+    } else {
+        None
+    }
 }
 
 fn intersect_descr(types: &mut Types, a: &Descr, b: &Descr) -> Descr {
