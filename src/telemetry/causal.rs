@@ -241,7 +241,9 @@ pub struct FormulaWork {
     pub uncaused: u64,
     pub changed_outputs: u64,
     pub unchanged_outputs: u64,
-    pub wakes: u64,
+    /// Wakes this formula's completions caused that found their job already
+    /// pending: churn, never work.
+    pub already_pending: u64,
     pub blocked_completions: u64,
 }
 
@@ -256,7 +258,7 @@ impl FormulaWork {
         self.uncaused += work.uncaused;
         self.changed_outputs += work.changed_outputs;
         self.unchanged_outputs += work.unchanged_outputs;
-        self.wakes += work.wakes;
+        self.already_pending += work.already_pending;
         self.blocked_completions += work.blocked_completions;
     }
 }
@@ -470,7 +472,7 @@ pub struct ShiftWork {
 pub struct SessionWork {
     pub sessions: u64,
     pub producer_pokes: u64,
-    pub work_starts: crate::compiler2::WorkStartTally,
+    pub ledger: crate::compiler2::WorkLedger,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -571,7 +573,7 @@ impl CausalReport {
             put("uncaused", work.uncaused);
             put("changed_outputs", work.changed_outputs);
             put("unchanged_outputs", work.unchanged_outputs);
-            put("wakes", work.wakes);
+            put("already_pending", work.already_pending);
             put("blocked_completions", work.blocked_completions);
         }
         for (product, work) in &self.products {
@@ -688,7 +690,7 @@ impl CausalReport {
             put_count(
                 &mut multiset,
                 format!("session\u{1}{}", reason.name()),
-                session.work_starts[reason],
+                session.ledger.ran[reason],
             );
         }
         for (kind, lifecycle) in &self.lifecycles {
@@ -1154,7 +1156,10 @@ impl Replay {
         } else {
             work.changed_outputs += 1;
         }
-        work.wakes += array(completion.get("wakes")).len() as u64;
+        work.already_pending += array(completion.get("wakes"))
+            .iter()
+            .filter(|wake| wake.get("admission").and_then(Json::as_str) == Some("already_pending"))
+            .count() as u64;
         if !blocked.is_empty() {
             work.blocked_completions += 1;
         }
@@ -1651,13 +1656,23 @@ impl Replay {
         let tally = &mut self.report.sessions;
         tally.sessions += 1;
         tally.producer_pokes += count("producer_pokes");
-        let work_starts = session.get("work_starts");
-        for reason in crate::compiler2::WorkStartReason::TELEMETRY_ORDER {
-            tally.work_starts[reason] += work_starts
-                .and_then(|starts| starts.get(reason.name()))
-                .and_then(Json::as_u64)
-                .unwrap_or(0);
-        }
+        let reason_counts = |tally: Option<&Json>| {
+            let mut counts = crate::compiler2::WorkStartTally::default();
+            for reason in crate::compiler2::WorkStartReason::TELEMETRY_ORDER {
+                counts[reason] = tally
+                    .and_then(|counts| counts.get(reason.name()))
+                    .and_then(Json::as_u64)
+                    .unwrap_or(0);
+            }
+            counts
+        };
+        let requests = session.get("requests");
+        tally.ledger.add(crate::compiler2::WorkLedger {
+            ran: reason_counts(session.get("work_starts")),
+            started: reason_counts(requests.and_then(|requests| requests.get("started"))),
+            already_pending: reason_counts(requests.and_then(|requests| requests.get("already_pending"))),
+            reparked: reason_counts(requests.and_then(|requests| requests.get("reparked"))),
+        });
     }
 }
 

@@ -100,33 +100,33 @@ return-type revisions per activation
   main/0 arrow=15 root_id=0             1        -
 
 cause of every wake
-  job kind                              changed fact (use)         completing job  disposition  count
-  DefineFunction          ExpandedFunctionSource (current)   ExpandFunctionSource     enqueued      4
-  DeriveRuntimeDemand            ExecutableFacts (settled)  DeriveExecutableFacts     enqueued      4
-  AnalyzeActivation                EntryDispatch (current)      PlanEntryDispatch     enqueued      3
-  AnalyzeActivation                ModuleDefined (current)           DefineModule     enqueued      1
-  AnalyzeActivation                    Recursive (current)        DeriveRecursive     enqueued      1
-  AnalyzeActivation                 ReturnType (concluded)      AnalyzeActivation     enqueued      1
-  DefineModule                       CodeIndexed (current)              IndexCode     enqueued      1
-  DefineModule                        CodeScoped (current)              ScopeCode     enqueued      1
-  DefineModule                   FunctionDefined (current)         DefineFunction     enqueued      1
-  DefineModule                           Product (settled)     dependencies_moved     enqueued      1
-  DeriveFunctionContract         FunctionDefined (current)         DefineFunction     enqueued      1
-  DeriveInputDemand                EntryDispatch (current)      PlanEntryDispatch     enqueued      1
-  DeriveInputDemand                StaticCallees (current)    DeriveStaticCallees     enqueued      1
-  DeriveRecursive                        Product (settled)     dependencies_moved     enqueued      1
-  DeriveRecursive                  StaticCallees (current)    DeriveStaticCallees     enqueued      1
-  DeriveRuntimeDemand      RuntimeDemandInputs (concluded)    DeriveRuntimeDemand     enqueued      1
-  DeriveStaticCallees                LoweredBody (current)          LowerFunction     enqueued      1
-  ExpandFunctionSource               CodeIndexed (current)              IndexCode     enqueued      1
-  ExpandFunctionSource                CodeScoped (current)              ScopeCode     enqueued      1
-  LowerFunction                  FunctionDefined (current)         DefineFunction     enqueued      1
-  ScopeCode                           CodeScoped (current)              ScopeCode     enqueued      1
-  ScopeCode                      FunctionDefined (current)         DefineFunction     enqueued      1
-  ScopeCode                              Product (settled)     dependencies_moved     enqueued      1
-  SeedRoot                       FunctionDefined (current)         DefineFunction     enqueued      1
+  job kind                              changed fact (use)         completing job  admission  count
+  DefineFunction          ExpandedFunctionSource (current)   ExpandFunctionSource    started      4
+  DeriveRuntimeDemand            ExecutableFacts (settled)  DeriveExecutableFacts    started      4
+  AnalyzeActivation                EntryDispatch (current)      PlanEntryDispatch    started      3
+  AnalyzeActivation                ModuleDefined (current)           DefineModule    started      1
+  AnalyzeActivation                    Recursive (current)        DeriveRecursive    started      1
+  AnalyzeActivation                 ReturnType (concluded)      AnalyzeActivation    started      1
+  DefineModule                       CodeIndexed (current)              IndexCode    started      1
+  DefineModule                        CodeScoped (current)              ScopeCode    started      1
+  DefineModule                   FunctionDefined (current)         DefineFunction    started      1
+  DefineModule                           Product (settled)     dependencies_moved    started      1
+  DeriveFunctionContract         FunctionDefined (current)         DefineFunction    started      1
+  DeriveInputDemand                EntryDispatch (current)      PlanEntryDispatch    started      1
+  DeriveInputDemand                StaticCallees (current)    DeriveStaticCallees    started      1
+  DeriveRecursive                        Product (settled)     dependencies_moved    started      1
+  DeriveRecursive                  StaticCallees (current)    DeriveStaticCallees    started      1
+  DeriveRuntimeDemand      RuntimeDemandInputs (concluded)    DeriveRuntimeDemand    started      1
+  DeriveStaticCallees                LoweredBody (current)          LowerFunction    started      1
+  ExpandFunctionSource               CodeIndexed (current)              IndexCode    started      1
+  ExpandFunctionSource                CodeScoped (current)              ScopeCode    started      1
+  LowerFunction                  FunctionDefined (current)         DefineFunction    started      1
+  ScopeCode                           CodeScoped (current)              ScopeCode    started      1
+  ScopeCode                      FunctionDefined (current)         DefineFunction    started      1
+  ScopeCode                              Product (settled)     dependencies_moved    started      1
+  SeedRoot                       FunctionDefined (current)         DefineFunction    started      1
 
-  coalesced: an additional cause landing on a job already enqueued by the row above, not a separate start
+  already pending: an additional cause landing on a job already queued by the row above, not a separate start
   none
 
   work starts by reason

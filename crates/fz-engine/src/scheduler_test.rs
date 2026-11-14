@@ -1,8 +1,9 @@
 use crate::fast_hash::HashSet;
 
-use super::{Agenda, AppliedStep, ClientReason, DependencyIndex, FactUse, Scheduler, Wake, WakeDisposition};
+use super::{Agenda, AppliedStep, ClientReason, DependencyIndex, FactUse, Scheduler, Wake};
 use crate::facts::{ClaimShape, SemanticOrd};
 use crate::scheduler::FactChangeQueue;
+use crate::scheduler::{Admission, WorkStart};
 use crate::scheduler::{CompletionEffects, DerivationEffects};
 use crate::waits::StandingWaits;
 
@@ -123,7 +124,7 @@ fn external_product_wait_uses_authoritative_readiness_alongside_fact_waits() {
         &product,
         &TestOrder,
     );
-    assert_eq!(enqueued_jobs(&step), vec![1], "all named waits are now satisfied");
+    assert_eq!(started_jobs(&step), vec![1], "all named waits are now satisfied");
     assert_eq!(scheduler.facts().revision(&"product"), None);
 }
 
@@ -297,7 +298,7 @@ fn external_product_equal_validation_restores_finality_without_running_its_reade
         &product,
         &TestOrder,
     );
-    assert_eq!(enqueued_jobs(&step), vec![1]);
+    assert_eq!(started_jobs(&step), vec![1]);
     assert!(
         scheduler.rebased(&1),
         "changed replacing content rebases its exact reader"
@@ -306,32 +307,32 @@ fn external_product_equal_validation_restores_finality_without_running_its_reade
     assert_eq!(scheduler.facts().revision(&"product"), None);
 }
 
-/// The jobs `step` newly started (`WakeDisposition::Enqueued`), in wake
+/// The jobs `step` newly started (`Admission::Started`), in wake
 /// order, standing in for the retired `AppliedStep::enqueued` field: same
 /// intent (a job's own new work start), read off `wakes` instead.
-fn enqueued_jobs(step: &TestStep) -> Vec<u32> {
-    wakes_with(step, WakeDisposition::Enqueued)
+fn started_jobs(step: &TestStep) -> Vec<u32> {
+    wakes_with(step, Admission::Started)
 }
 
-/// The jobs `step` found already pending (`WakeDisposition::Coalesced`), in
+/// The jobs `step` found already pending (`Admission::AlreadyPending`), in
 /// wake order — standing in for the retired `AppliedStep::coalesced` field.
 /// Unlike the retired field, this is not deduped: a job coalesced by two
 /// distinct causes in the same `complete` call appears twice, once per
 /// cause, which is the whole point of carrying causes at all.
-fn coalesced_jobs(step: &TestStep) -> Vec<u32> {
-    wakes_with(step, WakeDisposition::Coalesced)
+fn already_pending_jobs(step: &TestStep) -> Vec<u32> {
+    wakes_with(step, Admission::AlreadyPending)
 }
 
-fn wakes_with(step: &TestStep, disposition: WakeDisposition) -> Vec<u32> {
+fn wakes_with(step: &TestStep, admission: Admission) -> Vec<u32> {
     step.wakes
         .iter()
-        .filter(|wake| wake.disposition == disposition)
+        .filter(|wake| wake.admission == admission)
         .map(|wake| wake.job)
         .collect()
 }
 
 /// The `Wake` records in `step` attributing `job`, whatever the
-/// disposition — for tests that need to inspect cause attribution directly
+/// admission — for tests that need to inspect cause attribution directly
 /// rather than just the woken-job list.
 fn wakes_for(step: &TestStep, job: u32) -> Vec<&Wake<u32, &'static str>> {
     step.wakes.iter().filter(|wake| wake.job == job).collect()
@@ -498,11 +499,11 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
         "reads-only registration should not change facts"
     );
     assert!(
-        enqueued_jobs(&subscribe).is_empty(),
+        started_jobs(&subscribe).is_empty(),
         "reads-only registration should not enqueue work"
     );
     assert!(
-        coalesced_jobs(&subscribe).is_empty(),
+        already_pending_jobs(&subscribe).is_empty(),
         "reads-only registration should not coalesce work"
     );
 
@@ -514,7 +515,7 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
         vec![fact],
         vec![fact],
     );
-    assert_eq!(enqueued_jobs(&first), vec![subscriber]);
+    assert_eq!(started_jobs(&first), vec![subscriber]);
     assert_eq!(
         scheduler.facts().revision(&fact),
         Some(1),
@@ -531,7 +532,7 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
         Vec::new(),
     );
     assert!(
-        enqueued_jobs(&second).is_empty(),
+        started_jobs(&second).is_empty(),
         "republishing with changed=false should not wake subscribers"
     );
     assert!(
@@ -547,7 +548,7 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
         vec![fact],
         vec![fact],
     );
-    assert_eq!(enqueued_jobs(&third), vec![subscriber]);
+    assert_eq!(started_jobs(&third), vec![subscriber]);
     assert_eq!(
         scheduler.facts().revision(&fact),
         Some(2),
@@ -692,7 +693,7 @@ fn compiler2_scheduler_retracts_outputs_a_job_stops_publishing() {
         retracted.changed[0].new_revision, None,
         "a retracted fact should read as absent"
     );
-    assert_eq!(enqueued_jobs(&retracted), vec![subscriber]);
+    assert_eq!(started_jobs(&retracted), vec![subscriber]);
 }
 
 #[test]
@@ -716,7 +717,7 @@ fn compiler2_scheduler_wakes_waiters_when_a_matching_fact_appears() {
         vec!["foo"],
         vec!["foo"],
     );
-    assert_eq!(enqueued_jobs(&result), vec![waiter]);
+    assert_eq!(started_jobs(&result), vec![waiter]);
 }
 
 #[test]
@@ -742,7 +743,7 @@ fn compiler2_scheduler_parks_waiters_until_their_full_wait_set_is_satisfied() {
         vec!["foo"],
     );
     assert!(
-        enqueued_jobs(&foo).is_empty(),
+        started_jobs(&foo).is_empty(),
         "a waiter blocked on foo + bar should stay parked when only foo appears",
     );
     assert_eq!(
@@ -760,7 +761,7 @@ fn compiler2_scheduler_parks_waiters_until_their_full_wait_set_is_satisfied() {
         vec!["bar"],
     );
     assert_eq!(
-        enqueued_jobs(&bar),
+        started_jobs(&bar),
         vec![waiter],
         "the waiter should wake once every fact in its wait set is satisfied",
     );
@@ -877,7 +878,7 @@ fn compiler2_scheduler_stable_recompute_wakes_settled_waiters_without_revision_b
         vec!["foo"],
     );
     assert_eq!(
-        enqueued_jobs(&upstream_change),
+        started_jobs(&upstream_change),
         vec![producer],
         "a current dependency change should dirty the producer but not wake current readers of its dirty outputs",
     );
@@ -907,7 +908,7 @@ fn compiler2_scheduler_stable_recompute_wakes_settled_waiters_without_revision_b
         Vec::new(),
     );
     assert_eq!(
-        enqueued_jobs(&settled),
+        started_jobs(&settled),
         vec![settled_waiter],
         "a stable recompute should wake settled waiters when readiness flips dirty -> settled",
     );
@@ -1072,7 +1073,7 @@ fn compiler2_scheduler_waiting_completion_keeps_subscriptions() {
         vec!["foo"],
     );
     assert!(
-        enqueued_jobs(&step).contains(&reader),
+        started_jobs(&step).contains(&reader),
         "a waiting completion must not unsubscribe the job from its prior reads",
     );
 }
@@ -1129,7 +1130,7 @@ fn compiler2_scheduler_replacing_change_rebases_readers_without_retracting() {
         vec!["def"],
         vec!["def"],
     );
-    assert!(enqueued_jobs(&step).contains(&reader));
+    assert!(started_jobs(&step).contains(&reader));
     assert!(
         !scheduler.rebased(&reader),
         "first appearance of a fact wakes readers without rebasing them",
@@ -1145,7 +1146,7 @@ fn compiler2_scheduler_replacing_change_rebases_readers_without_retracting() {
         vec!["def"],
         vec!["def"],
     );
-    assert!(enqueued_jobs(&step).contains(&reader));
+    assert!(started_jobs(&step).contains(&reader));
     assert!(
         scheduler.rebased(&reader),
         "a replacing fact's content change rebases its readers",
@@ -1192,7 +1193,7 @@ fn compiler2_scheduler_cumulative_ascent_wakes_without_rebasing() {
         vec!["cum_ret"],
         vec!["cum_ret"],
     );
-    assert!(enqueued_jobs(&step).contains(&reader));
+    assert!(started_jobs(&step).contains(&reader));
     assert!(
         !scheduler.rebased(&reader),
         "growth of a cumulative fact is an ascent: readers re-run and join, no rebase",
@@ -1363,7 +1364,7 @@ fn compiler2_scheduler_cumulative_appearance_at_bottom_wakes_no_current_reader()
         "the claim is clean and its publisher read nothing, so the fact settles",
     );
     assert_eq!(
-        enqueued_jobs(&step),
+        started_jobs(&step),
         vec![settled_waiter],
         "settledness DID move, so the settled waiter wakes",
     );
@@ -1460,7 +1461,7 @@ fn compiler2_scheduler_replacing_appearance_wakes_current_readers_unmarked() {
         "a replacing fact appears with content, so it appears at revision 1",
     );
     assert_eq!(
-        enqueued_jobs(&step),
+        started_jobs(&step),
         vec![reader],
         "a replacing fact's first appearance is news for its Current readers whether or not the \
          publisher marked it changed",
@@ -1500,7 +1501,7 @@ fn compiler2_scheduler_contentful_retraction_shifts() {
         Vec::new(),
         Vec::new(),
     );
-    assert!(enqueued_jobs(&step).contains(&reader));
+    assert!(started_jobs(&step).contains(&reader));
     assert!(scheduler.rebased(&reader), "retraction is a ground shift");
 }
 
@@ -1558,7 +1559,7 @@ fn compiler2_scheduler_rebased_conclusion_propagates_changes_as_shifts() {
         vec!["cum_mid"],
         vec!["cum_mid"],
     );
-    assert!(enqueued_jobs(&step).contains(&downstream));
+    assert!(started_jobs(&step).contains(&downstream));
     assert!(
         scheduler.rebased(&downstream),
         "a rebased publisher's content changes shift its readers in turn",
@@ -1619,7 +1620,7 @@ fn compiler2_scheduler_rebased_equal_conclusion_stops_the_cone() {
         Vec::new(),
     );
     assert!(
-        !enqueued_jobs(&step).contains(&downstream),
+        !started_jobs(&step).contains(&downstream),
         "equal recomputation propagates nothing",
     );
     assert!(!scheduler.rebased(&downstream));
@@ -1673,7 +1674,7 @@ fn compiler2_scheduler_waiting_keeps_rebase_pending() {
 }
 
 #[test]
-fn compiler2_scheduler_wake_attributes_each_coalesced_cause_to_a_single_evaluation() {
+fn compiler2_scheduler_wake_attributes_each_already_pending_cause_to_a_single_evaluation() {
     // fz-kdt.34.3: two facts change in one `complete` call, both read by the
     // same subscriber. The subscriber must still land in the agenda exactly
     // once (coalescing is real), but each of the two causes that moved it
@@ -1726,20 +1727,20 @@ fn compiler2_scheduler_wake_attributes_each_coalesced_cause_to_a_single_evaluati
          enqueued only once: {subscriber_wakes:?}"
     );
 
-    let enqueued_count = subscriber_wakes
+    let started_count = subscriber_wakes
         .iter()
-        .filter(|wake| wake.disposition == WakeDisposition::Enqueued)
+        .filter(|wake| wake.admission == Admission::Started)
         .count();
-    let coalesced_count = subscriber_wakes
+    let already_pending_count = subscriber_wakes
         .iter()
-        .filter(|wake| wake.disposition == WakeDisposition::Coalesced)
+        .filter(|wake| wake.admission == Admission::AlreadyPending)
         .count();
     assert_eq!(
-        enqueued_count, 1,
+        started_count, 1,
         "exactly one cause is the subscriber's real work start"
     );
     assert_eq!(
-        coalesced_count, 1,
+        already_pending_count, 1,
         "exactly one cause found the subscriber already pending"
     );
 
@@ -1907,7 +1908,7 @@ fn compiler2_scheduler_dirtying_a_chain_head_unsettles_the_whole_chain_without_e
     );
 
     assert_eq!(
-        enqueued_jobs(&step),
+        started_jobs(&step),
         vec![JOB_A],
         "only the direct content reader may evaluate; readiness travels without re-running anyone",
     );
@@ -1941,7 +1942,7 @@ fn compiler2_scheduler_dirtying_a_chain_head_unsettles_the_whole_chain_without_e
     );
 
     assert_eq!(
-        enqueued_jobs(&concluded),
+        started_jobs(&concluded),
         Vec::<u32>::new(),
         "an unchanged conclusion re-finalizes the chain without evaluating anyone",
     );
@@ -2036,7 +2037,7 @@ fn compiler2_scheduler_readiness_flip_wakes_parked_settled_waiters_and_no_comple
         vec!["foo"],
         vec!["foo"],
     );
-    assert_eq!(enqueued_jobs(&dirtied), vec![producer]);
+    assert_eq!(started_jobs(&dirtied), vec![producer]);
     assert!(!scheduler.facts().is_settled(&"bar"));
     assert!(
         wakes_for(&dirtied, subscriber).is_empty(),
@@ -2060,7 +2061,7 @@ fn compiler2_scheduler_readiness_flip_wakes_parked_settled_waiters_and_no_comple
         Vec::new(),
     );
     assert_eq!(
-        enqueued_jobs(&settled_again),
+        started_jobs(&settled_again),
         vec![parked],
         "the readiness flip wakes the parked waiter and not the completed subscriber",
     );
@@ -2083,7 +2084,7 @@ fn compiler2_scheduler_readiness_flip_wakes_parked_settled_waiters_and_no_comple
         vec!["fresh"],
     );
     assert_eq!(
-        enqueued_jobs(&appeared),
+        started_jobs(&appeared),
         vec![first_parked],
         "a fact's first appearance wakes the job parked on its settledness",
     );
@@ -2114,7 +2115,7 @@ fn compiler2_scheduler_content_movement_still_evaluates_only_content_readers() {
         vec!["a"],
     );
     assert_eq!(
-        enqueued_jobs(&moved),
+        started_jobs(&moved),
         vec![JOB_B],
         "a's content moved, so exactly its reader evaluates",
     );
@@ -2128,7 +2129,7 @@ fn compiler2_scheduler_content_movement_still_evaluates_only_content_readers() {
         vec!["b"],
         vec!["b"],
     );
-    assert_eq!(enqueued_jobs(&moved), vec![JOB_C]);
+    assert_eq!(started_jobs(&moved), vec![JOB_C]);
 
     let _ = scheduler.pop();
     complete(
@@ -2209,7 +2210,7 @@ fn compiler2_scheduler_a_quiesced_cycle_needs_the_drain_arbiter_to_become_final(
         "at a drain a locally clean cone with no dirty member is quiescent, so it is final",
     );
     assert_eq!(
-        enqueued_jobs(&drained),
+        started_jobs(&drained),
         vec![waiter],
         "the settled waiter wakes from the arbiter's readiness movement",
     );
@@ -2432,7 +2433,7 @@ fn cooutput_finality_obeys_external_ground_and_later_readiness_movements() {
         &product,
         &TestOrder,
     );
-    assert_eq!(enqueued_jobs(&moved), vec![1]);
+    assert_eq!(started_jobs(&moved), vec![1]);
     assert_eq!(scheduler.pop(), Some(1));
     scheduler.complete_ordered_with_external(
         &1,
@@ -2653,11 +2654,7 @@ fn compiler2_scheduler_adding_a_read_updates_finality_incrementally() {
         !scheduler.facts().is_settled(&"late"),
         "the new read reaches a fact that can still move, so the claim is no longer final",
     );
-    assert_eq!(
-        enqueued_jobs(&step),
-        Vec::<u32>::new(),
-        "adding a read evaluates nobody",
-    );
+    assert_eq!(started_jobs(&step), Vec::<u32>::new(), "adding a read evaluates nobody",);
 
     // Replacing the read with one that reaches nothing unfinal restores it.
     let _ = scheduler.pop();
@@ -2691,7 +2688,7 @@ fn compiler2_scheduler_retraction_reaches_the_fixed_point_without_stale_settled_
     );
     assert_eq!(scheduler.facts().revision(&"a"), None);
     assert!(
-        enqueued_jobs(&retracted).contains(&JOB_B),
+        started_jobs(&retracted).contains(&JOB_B),
         "a retraction is a ground shift for its readers",
     );
     assert!(scheduler.rebased(&JOB_B), "the reader of a retracted fact rebases",);
@@ -2803,7 +2800,7 @@ fn compiler2_scheduler_current_waiter_on_a_cumulative_bottom_claim_is_woken() {
         "a bottom claim is present, so the Current wait is satisfied",
     );
     assert_eq!(
-        enqueued_jobs(&step),
+        started_jobs(&step),
         vec![waiter],
         "the satisfied waiter must be woken -- satisfies and the wake path may never disagree",
     );
@@ -3113,7 +3110,7 @@ fn a_group_closes_when_a_completion_leaves_no_member_queued_or_waiting() {
         vec!["b", "x"],
         vec!["b"],
     );
-    assert_eq!(enqueued_jobs(&step), vec![1]);
+    assert_eq!(started_jobs(&step), vec![1]);
     assert!(!scheduler.is_concluded(&"x"), "a queued member keeps the group open");
 
     assert_eq!(scheduler.pop(), Some(1));
@@ -3157,7 +3154,7 @@ fn closing_a_group_wakes_a_waiting_outside_reader_once_with_the_conclusion() {
         vec!["b"],
     );
     assert!(
-        !enqueued_jobs(&step).contains(&9),
+        !started_jobs(&step).contains(&9),
         "the group is open, so nothing has told the outside reader yet"
     );
     assert_eq!(scheduler.pop(), Some(1));
@@ -3176,7 +3173,7 @@ fn closing_a_group_wakes_a_waiting_outside_reader_once_with_the_conclusion() {
         1,
         "one report from the close, one wake of the reader"
     );
-    assert_eq!(enqueued_jobs(&step), vec![9]);
+    assert_eq!(started_jobs(&step), vec![9]);
     assert_eq!(wakes_for(&step, 9)[0].cause, FactUse::concluded("x"));
 }
 
@@ -3202,7 +3199,7 @@ fn enqueuing_a_member_reopens_a_closed_group() {
     );
     assert!(scheduler.is_concluded(&"x"));
 
-    assert!(scheduler.enqueue(1, crate::scheduler::WorkStart::Unclassified));
+    assert!(scheduler.enqueue(1, WorkStart::Unclassified));
     assert!(
         !scheduler.is_concluded(&"x"),
         "a queued member is a climb that has not finished"
@@ -3251,7 +3248,7 @@ fn a_wake_that_enqueues_a_member_reopens_its_group() {
         vec!["b", "x"],
         vec!["x"],
     );
-    assert_eq!(enqueued_jobs(&step), vec![1]);
+    assert_eq!(started_jobs(&step), vec![1]);
     assert!(
         scheduler.groups.borrow().is_in_open_group(&1),
         "the wake queued a member, inside the dispatch"
@@ -3275,4 +3272,105 @@ fn quiescence_does_not_certify_a_fact_whose_publisher_is_in_an_open_group() {
         scheduler.facts().is_settled(&"cum_a"),
         "once the group has closed the drain certifies it"
     );
+}
+
+/// A demand that finds its job already queued is counted as already pending
+/// under the demand's own reason, so `requested = started + already_pending`
+/// holds for demands as it does for wakes.
+#[test]
+fn a_demand_that_finds_its_job_queued_is_counted_already_pending() {
+    let mut scheduler = TestScheduler::new();
+    assert!(scheduler.enqueue(1, WorkStart::Unclassified));
+    assert!(!scheduler.enqueue(1, WorkStart::Unclassified));
+    assert!(!scheduler.enqueue(1, WorkStart::Unclassified));
+
+    let ledger = scheduler.work_ledger();
+    assert_eq!(ledger.started[WorkStart::Unclassified], 1);
+    assert_eq!(ledger.already_pending[WorkStart::Unclassified], 2);
+    assert_eq!(ledger.requested(WorkStart::Unclassified), 3);
+    assert_eq!(
+        ledger.started[WorkStart::ChangedRevisionWake],
+        0,
+        "a demand charges its own reason, never the wake reason"
+    );
+}
+
+/// A wake that lands on a pending job is counted already pending under
+/// `ChangedRevisionWake`, in step with the `Wake` record it logs.
+#[test]
+fn a_wake_that_finds_its_job_queued_is_counted_already_pending() {
+    let mut scheduler = TestScheduler::new();
+    let subscriber = 5;
+    complete(
+        &mut scheduler,
+        subscriber,
+        HashSet::from_iter([current("f1"), current("f2")]),
+        HashSet::default(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let step = complete(
+        &mut scheduler,
+        1,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["f1", "f2"],
+        vec!["f1", "f2"],
+    );
+
+    let ledger = scheduler.work_ledger();
+    assert_eq!(wakes_for(&step, subscriber).len(), 2);
+    assert_eq!(ledger.started[WorkStart::ChangedRevisionWake], 1);
+    assert_eq!(ledger.already_pending[WorkStart::ChangedRevisionWake], 1);
+    assert_eq!(ledger.requested(WorkStart::ChangedRevisionWake), 2);
+}
+
+/// Every started job leaves the agenda exactly one of two ways: it runs
+/// (`record_run_start`) or the pop gate parks it again (`record_reparked`);
+/// each charges the reason of the entry that started it.
+#[test]
+fn a_started_job_either_runs_or_is_reparked_under_its_starting_reason() {
+    let mut scheduler = TestScheduler::new();
+    assert!(scheduler.enqueue(1, WorkStart::Unclassified));
+    assert!(scheduler.enqueue(2, WorkStart::ChangedRevisionWake));
+    assert!(scheduler.enqueue(3, WorkStart::ChangedRevisionWake));
+
+    let ran = scheduler.pop().unwrap();
+    scheduler.record_run_start(&ran);
+    let reparked = scheduler.pop().unwrap();
+    scheduler.record_reparked(&reparked);
+    let queued = scheduler.pop().unwrap();
+    scheduler.record_run_start(&queued);
+
+    let ledger = scheduler.work_ledger();
+    assert_eq!(ledger.ran[WorkStart::Unclassified], 1);
+    assert_eq!(ledger.reparked[WorkStart::ChangedRevisionWake], 1);
+    assert_eq!(ledger.ran[WorkStart::ChangedRevisionWake], 1);
+    for reason in [WorkStart::Unclassified, WorkStart::ChangedRevisionWake] {
+        assert_eq!(
+            ledger.started[reason],
+            ledger.ran[reason] + ledger.reparked[reason],
+            "started = ran + reparked once the agenda is drained: {reason:?}"
+        );
+    }
+    assert_eq!(scheduler.work_start_tally(), ledger.ran);
+}
+
+/// The ledger is cumulative and deltas subtract per ledger, so a session's
+/// share of requests is the difference of two snapshots.
+#[test]
+fn a_ledger_delta_is_the_requests_made_between_two_snapshots() {
+    let mut scheduler = TestScheduler::new();
+    scheduler.enqueue(1, WorkStart::Unclassified);
+    let before = scheduler.work_ledger();
+    scheduler.enqueue(1, WorkStart::Unclassified);
+    scheduler.enqueue(2, WorkStart::Unclassified);
+
+    let delta = scheduler.work_ledger().delta_since(before);
+    assert_eq!(delta.started[WorkStart::Unclassified], 1);
+    assert_eq!(delta.already_pending[WorkStart::Unclassified], 1);
+
+    let mut sum = before;
+    sum.add(delta);
+    assert_eq!(sum, scheduler.work_ledger());
 }

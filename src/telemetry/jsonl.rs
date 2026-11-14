@@ -1756,24 +1756,32 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         out.push(':');
         push_u64(out, physical_capture_count);
     } else if let Some(session) = opaque.downcast_ref::<crate::compiler2::PullSession>() {
-        let work_starts = session.work_starts();
+        let ledger = session.work_ledger();
         out.push(',');
         write_str_lit(out, "producer_pokes");
         out.push(':');
         push_u64(out, session.producer_pokes());
         out.push(',');
         write_str_lit(out, "work_starts");
+        out.push(':');
+        write_reason_counts(out, &ledger.ran);
+        out.push(',');
+        write_str_lit(out, "requests");
         out.push_str(":{");
-        for (position, reason) in crate::compiler2::WorkStartReason::TELEMETRY_ORDER
-            .into_iter()
-            .enumerate()
+        for (position, (name, tally)) in [
+            ("started", &ledger.started),
+            ("already_pending", &ledger.already_pending),
+            ("reparked", &ledger.reparked),
+        ]
+        .into_iter()
+        .enumerate()
         {
             if position > 0 {
                 out.push(',');
             }
-            write_str_lit(out, reason.name());
+            write_str_lit(out, name);
             out.push(':');
-            push_u64(out, work_starts[reason]);
+            write_reason_counts(out, tally);
         }
         out.push('}');
     } else if let Some(context) = opaque.downcast_ref::<cranelift_codegen::Context>() {
@@ -2457,11 +2465,29 @@ fn write_fact_change_identity(out: &mut String, change: &fz_engine::FactChange<c
     out.push('}');
 }
 
+/// A tally as one object: each work-start reason's spelling, in telemetry
+/// order, mapped to its count.
+fn write_reason_counts(out: &mut String, tally: &crate::compiler2::WorkStartTally) {
+    out.push('{');
+    for (position, reason) in crate::compiler2::WorkStartReason::TELEMETRY_ORDER
+        .into_iter()
+        .enumerate()
+    {
+        if position > 0 {
+            out.push(',');
+        }
+        write_str_lit(out, reason.name());
+        out.push(':');
+        push_u64(out, tally[reason]);
+    }
+    out.push('}');
+}
+
 /// One dependency wake: the cause use, the woken job's identity,
-/// its disposition (new work start vs. already-pending), and the
+/// its admission (new work start vs. already-pending), and the
 /// ground-shift classification `complete` computed for the cause.
 fn write_wake(out: &mut String, wake: &fz_engine::Wake<crate::compiler2::Job, crate::compiler2::DependencyKey>) {
-    use fz_engine::WakeDisposition;
+    use fz_engine::Admission;
 
     out.push_str("{\"cause\":");
     write_dependency_use_identity(out, &wake.cause);
@@ -2469,12 +2495,12 @@ fn write_wake(out: &mut String, wake: &fz_engine::Wake<crate::compiler2::Job, cr
     write_str_lit(out, job_kind(&wake.job));
     write_job_identity(out, &wake.job);
     out.push('}');
-    out.push_str(",\"disposition\":");
+    out.push_str(",\"admission\":");
     write_str_lit(
         out,
-        match wake.disposition {
-            WakeDisposition::Enqueued => "enqueued",
-            WakeDisposition::Coalesced => "coalesced",
+        match wake.admission {
+            Admission::Started => "started",
+            Admission::AlreadyPending => "already_pending",
         },
     );
     out.push_str(",\"shift\":");

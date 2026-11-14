@@ -84,3 +84,6 @@ impl WorkStartReason {
 
 /// The scheduler's work-start attribution, over the compiler's reasons.
 pub type WorkStartTally = fz_engine::WorkStartTally<WorkStartReason>;
+
+/// The scheduler's request accounting, over the compiler's reasons.
+pub type WorkLedger = fz_engine::WorkLedger<WorkStartReason>;

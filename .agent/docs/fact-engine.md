@@ -166,8 +166,7 @@ publisher identity. See
 [`quoted-source`](quoted-source.md#source-identity-and-provenance).
 
 Each fact use wakes a subscribed job once. Distinct causes retain distinct
-`Wake` records, including coalesced attempts to enqueue an already pending
-job. The records attribute the work to the job and exact read or wait that
+`Wake` records, including attempts to enqueue an already pending job. The records attribute the work to the job and exact read or wait that
 caused it.
 
 ## Waiting extends, concluding replaces
@@ -382,8 +381,7 @@ job's own run, not split per derivation, because the jobs that make them
 (`analyze_activation` and friends) answer one question per run.
 
 Each fact use wakes a subscribed job once. Distinct causes retain distinct
-`Wake` records, including coalesced attempts to enqueue an already pending
-job. The records attribute the work to the job and exact read or wait that
+`Wake` records, including attempts to enqueue an already pending job. The records attribute the work to the job and exact read or wait that
 caused it.
 
 ## One job, several facts
@@ -1429,13 +1427,36 @@ standing). Published keys remain authoritative in the scheduler's per-job
 claim ledger; completion does not rebuild them for observation.
 `wakes: Vec<Wake<J, F>>` is
 every wake this completion caused, in wake order; each `Wake` attributes one
-`job` to the `cause: FactUse<F>` that moved it, carries `disposition`
-(`Enqueued` — the job's real work start — or `Coalesced` — the job was
-already pending) and `shift` (the same ground-shift-vs-ascent classification
+`job` to the `cause: FactUse<F>` that moved it, carries `admission`
+(`Started` — the job's real work start — or `AlreadyPending` — the job was
+already queued) and `shift` (the same ground-shift-vs-ascent classification
 `complete` computed for `cause`). A job can carry more than one `Wake` in one
-`AppliedStep`: `enqueue_step` records one per cause, so a job coalesced by
-two distinct causes in the same `complete` call gets two `Wake`s, not one
-deduped entry — coalescing a job's *evaluation* must not coalesce away *why*
-it woke. This distinguishes attributed cause from deduped job identity: an
-earlier design reported only deduped `enqueued`/`coalesced` job lists with no
-cause attribution.
+`AppliedStep`: `enqueue_step` records one per cause, so a job found already
+pending by two distinct causes in the same `complete` call gets two `Wake`s,
+not one deduped entry — deduping a job's *evaluation* must not dedupe away
+*why* it woke.
+
+## Request counts at the door
+
+`Scheduler::admit` is the one door every request to queue a job passes: a
+wake (`enqueue_step`, reason `ChangedRevisionWake`) and a demand
+(`Scheduler::enqueue`, the client's reason) alike. The door answers each
+request with an `Admission` and charges it to the request's `WorkStart`
+reason in a `WorkLedger`, read as `ledger.<count>[reason]`:
+
+- `started`: the job was absent, so the request placed a new entry on the
+  agenda and named its reason.
+- `already_pending`: the job was already queued, so the request joined that
+  entry and left its reason in place.
+- `ran` (`record_run_start`): a started job was popped, found runnable and
+  run. `Scheduler::work_start_tally` is this count.
+- `reparked` (`record_reparked`): a started job was popped and the pop gate
+  (`World::pop_runnable`: a missing gate, or a concluded answer being derived
+  again) parked it again without running it.
+
+The identities are `requested = started + already_pending` and
+`started = ran + reparked` once the agenda is drained; jobs still queued are
+in neither `ran` nor `reparked`. `ran` is work; `already_pending` and
+`reparked` are churn, and tests pin them apart. `started` can exceed what
+completions' `Wake` records show, because wakes caused by external fact
+changes between completions are requests too.

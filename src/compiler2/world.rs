@@ -67,7 +67,7 @@ use super::transport::{
 };
 use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, KeyDemand, MapKey, Ty, Types};
-use super::work_start::{WorkStartReason, WorkStartTally};
+use super::work_start::{WorkLedger, WorkStartReason, WorkStartTally};
 use crate::ir_interp::AnyValue as RuntimeValue;
 use fz_engine::ExternalDependencyStates;
 use fz_engine::FactUse;
@@ -805,6 +805,12 @@ impl World {
     /// whole-fact-table-scan count. See `WorkStartReason` for the taxonomy.
     pub fn work_start_tally(&self) -> WorkStartTally {
         self.work_graph.work_start_tally()
+    }
+
+    /// The cumulative request accounting for this world: every request to
+    /// queue a job by reason, and what became of the entries it started.
+    pub fn work_ledger(&self) -> WorkLedger {
+        self.work_graph.work_ledger()
     }
 
     /// How many fact changes have been reported so far. Two readings that

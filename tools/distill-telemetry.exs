@@ -160,7 +160,7 @@ defmodule Distill do
 
   # Why jobs were started: every wake across the three events
   # above, grouped by (job kind, changed fact + use, completing job kind,
-  # disposition) rather than free text, so the same shape of cause across many
+  # admission) rather than free text, so the same shape of cause across many
   # subjects collapses to one row instead of one row per subject.
   defp wakes(records, jobs, top) do
     IO.puts("cause of every wake")
@@ -168,13 +168,13 @@ defmodule Distill do
     wake_rows =
       for {completing, wakes} <- wake_events(records),
           wake <- wakes,
-          do: {wake["job"]["kind"], wake["cause"]["kind"], wake["cause"]["use"], completing, wake["disposition"]}
+          do: {wake["job"]["kind"], wake["cause"]["kind"], wake["cause"]["use"], completing, wake["admission"]}
 
-    {enqueued, coalesced} = Enum.split_with(wake_rows, fn {_, _, _, _, d} -> d == "enqueued" end)
+    {started, already_pending} = Enum.split_with(wake_rows, fn {_, _, _, _, a} -> a == "started" end)
 
-    cause_table(enqueued, top)
-    IO.puts("  coalesced: an additional cause landing on a job already enqueued by the row above, not a separate start")
-    cause_table(coalesced, top)
+    cause_table(started, top)
+    IO.puts("  already pending: an additional cause landing on a job already queued by the row above, not a separate start")
+    cause_table(already_pending, top)
 
     work_starts = work_start_tally(records)
     work_start_table(work_starts)
@@ -190,10 +190,10 @@ defmodule Distill do
     |> Enum.frequencies()
     |> Enum.sort_by(fn {cause, n} -> {-n, cause} end)
     |> Enum.take(top)
-    |> Enum.map(fn {{kind, fact_kind, fact_use, completing, disposition}, n} ->
-      {kind, "#{fact_kind} (#{fact_use})", completing, disposition, n}
+    |> Enum.map(fn {{kind, fact_kind, fact_use, completing, admission}, n} ->
+      {kind, "#{fact_kind} (#{fact_use})", completing, admission, n}
     end)
-    |> table(["job kind", "changed fact (use)", "completing job", "disposition", "count"])
+    |> table(["job kind", "changed fact (use)", "completing job", "admission", "count"])
   end
 
   # The scheduler charges exactly one reason to each job run, so the reasons

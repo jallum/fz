@@ -1,29 +1,29 @@
-250 records, 24 spans, 18.1 ms from first record to last
+245 records, 24 spans, 19.9 ms from first record to last
 
 timeline (span times include the stream's own rendering; read them as shape, take magnitudes from a sample of the plain binary)
-  before the first job                        0.9 ms
-  first job start to last job stop           16.4 ms
-    sum of job inclusive time                12.3 ms
+  before the first job                        2.1 ms
+  first job start to last job stop           17.3 ms
+    sum of job inclusive time                15.4 ms
   native codegen span                         0.0 ms
-  after the last span (program run)           0.7 ms
+  after the last span (program run)           0.4 ms
 
 span names by inclusive time
   name              count  inclusive ms  self ms
-  fz.compiler2.job     22          12.3     12.1
-  fz.lexer.pass         2           0.2      0.2
+  fz.compiler2.job     22          15.4     13.7
+  fz.lexer.pass         2           1.7      1.7
 
 compiler jobs by kind
   kind                   count  inclusive ms  self ms  max ms
-  LowerFunction              2           3.1      3.1     3.0
-  IndexCode                  2           3.2      3.0     2.2
-  ScopeCode                  4           1.5      1.5     0.7
-  SeedRoot                   2           1.0      1.0     0.8
-  ExpandFunctionSource       2           0.9      0.9     0.8
-  AnalyzeActivation          2           0.8      0.8     0.7
-  DefineFunction             2           0.6      0.6     0.5
-  DeriveExecutableFacts      2           0.5      0.5     0.4
-  DeriveRuntimeDemand        2           0.4      0.4     0.3
-  PlanEntryDispatch          2           0.3      0.3     0.2
+  IndexCode                  2           6.8      5.1     5.7
+  LowerFunction              2           1.6      1.6     1.6
+  ScopeCode                  4           1.5      1.5     0.8
+  SeedRoot                   2           1.2      1.2     1.2
+  AnalyzeActivation          2           1.2      1.2     1.2
+  DefineFunction             2           0.8      0.8     0.8
+  DeriveRuntimeDemand        2           0.6      0.6     0.6
+  PlanEntryDispatch          2           0.6      0.6     0.6
+  ExpandFunctionSource       2           0.5      0.5     0.5
+  DeriveExecutableFacts      2           0.5      0.5     0.5
 
 job runs vs subjects
   kind                   runs  subjects  excess  max runs/subject
@@ -41,49 +41,49 @@ job runs vs subjects
 
 compiler jobs by kind and subject
   kind subject                                                  runs  inclusive ms  self ms
-  LowerFunction def/1                                              1           3.0      3.0
-  IndexCode source_owner=16                                        1           2.2      2.0
-  ScopeCode source_owner=17                                        3           0.9      0.9
-  IndexCode source_owner=17                                        1           1.0      0.9
-  ExpandFunctionSource def/1                                       1           0.8      0.8
-  SeedRoot root_id=1                                               1           0.8      0.8
-  AnalyzeActivation def/1 arrow=15 root_id=1                       1           0.7      0.7
-  ScopeCode source_owner=16                                        1           0.6      0.6
-  DefineFunction def/1                                             1           0.5      0.5
-  DeriveExecutableFacts def/1 arrow=15 need="value" root_id=1      1           0.4      0.4
-  DeriveRuntimeDemand def/1 arrow=15 need="value" root_id=1        1           0.3      0.3
-  SeedRoot root_id=0                                               1           0.2      0.2
-  PlanEntryDispatch def/1                                          1           0.2      0.2
-  AnalyzeActivation main/0 arrow=14 root_id=0                      1           0.1      0.1
-  DeriveExecutableFacts main/0 arrow=14 need="value" root_id=0     1           0.1      0.1
-  DeriveRuntimeDemand main/0 arrow=14 need="value" root_id=0       1           0.1      0.1
-  PlanEntryDispatch main/0                                         1           0.1      0.1
-  ExpandFunctionSource main/0                                      1           0.1      0.1
-  LowerFunction main/0                                             1           0.1      0.1
-  DefineFunction main/0                                            1           0.1      0.1
+  IndexCode source_owner=27                                        1           5.7      4.1
+  LowerFunction def/1                                              1           1.6      1.6
+  AnalyzeActivation def/1 arrow=16 root_id=1                       1           1.2      1.2
+  SeedRoot root_id=1                                               1           1.2      1.2
+  IndexCode source_owner=26                                        1           1.1      1.0
+  DefineFunction def/1                                             1           0.8      0.8
+  ScopeCode source_owner=26                                        1           0.8      0.8
+  ScopeCode source_owner=27                                        3           0.7      0.7
+  DeriveRuntimeDemand def/1 arrow=16 need="value" root_id=1        1           0.6      0.6
+  PlanEntryDispatch def/1                                          1           0.6      0.6
+  ExpandFunctionSource def/1                                       1           0.5      0.5
+  DeriveExecutableFacts def/1 arrow=16 need="value" root_id=1      1           0.5      0.5
+  SeedRoot root_id=0                                               1           0.0      0.0
+  PlanEntryDispatch main/0                                         1           0.0      0.0
+  AnalyzeActivation main/0 arrow=15 root_id=0                      1           0.0      0.0
+  ExpandFunctionSource main/0                                      1           0.0      0.0
+  LowerFunction main/0                                             1           0.0      0.0
+  DeriveExecutableFacts main/0 arrow=15 need="value" root_id=0     1           0.0      0.0
+  DefineFunction main/0                                            1           0.0      0.0
+  DeriveRuntimeDemand main/0 arrow=15 need="value" root_id=0       1           0.0      0.0
 
 most re-run jobs
   kind subject               runs  self ms
-  ScopeCode source_owner=17     3      0.9
+  ScopeCode source_owner=27     3      0.7
 
 return-type revisions per activation
   activation                 revisions  widened
-  def/1 arrow=15 root_id=1           1        -
-  main/0 arrow=14 root_id=0          1        -
+  def/1 arrow=16 root_id=1           1        -
+  main/0 arrow=15 root_id=0          1        -
 
 cause of every wake
-  job kind                            changed fact (use)         completing job  disposition  count
-  AnalyzeActivation              EntryDispatch (current)      PlanEntryDispatch     enqueued      2
-  DefineFunction        ExpandedFunctionSource (current)   ExpandFunctionSource     enqueued      2
-  DeriveRuntimeDemand          ExecutableFacts (settled)  DeriveExecutableFacts     enqueued      2
-  ExpandFunctionSource             CodeIndexed (current)              IndexCode     enqueued      1
-  ExpandFunctionSource              CodeScoped (current)              ScopeCode     enqueued      1
-  ScopeCode                         CodeScoped (current)              ScopeCode     enqueued      1
-  ScopeCode                    FunctionDefined (current)         DefineFunction     enqueued      1
-  ScopeCode                            Product (settled)     dependencies_moved     enqueued      1
-  SeedRoot                     FunctionDefined (current)         DefineFunction     enqueued      1
+  job kind                            changed fact (use)         completing job  admission  count
+  AnalyzeActivation              EntryDispatch (current)      PlanEntryDispatch    started      2
+  DefineFunction        ExpandedFunctionSource (current)   ExpandFunctionSource    started      2
+  DeriveRuntimeDemand          ExecutableFacts (settled)  DeriveExecutableFacts    started      2
+  ExpandFunctionSource             CodeIndexed (current)              IndexCode    started      1
+  ExpandFunctionSource              CodeScoped (current)              ScopeCode    started      1
+  ScopeCode                         CodeScoped (current)              ScopeCode    started      1
+  ScopeCode                    FunctionDefined (current)         DefineFunction    started      1
+  ScopeCode                            Product (settled)     dependencies_moved    started      1
+  SeedRoot                     FunctionDefined (current)         DefineFunction    started      1
 
-  coalesced: an additional cause landing on a job already enqueued by the row above, not a separate start
+  already pending: an additional cause landing on a job already queued by the row above, not a separate start
   none
 
   work starts by reason

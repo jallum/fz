@@ -565,7 +565,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
 fn fact_dependency_steps_preserve_the_existing_causal_json_shape() {
     use crate::compiler2::DependencyKey;
     use crate::compiler2::{FactKey, Job, RootId};
-    use fz_engine::{AppliedStep, FactChange, FactMovement, FactState, FactUse, Wake, WakeDisposition};
+    use fz_engine::{Admission, AppliedStep, FactChange, FactMovement, FactState, FactUse, Wake};
 
     let root = RootId::for_test(7);
     let key = DependencyKey::Fact(FactKey::RootEntry(root));
@@ -574,7 +574,7 @@ fn fact_dependency_steps_preserve_the_existing_causal_json_shape() {
         wakes: vec![Wake {
             cause: FactUse::settled(key.clone()),
             job: Job::SeedRoot(root),
-            disposition: WakeDisposition::Enqueued,
+            admission: Admission::Started,
             shift: true,
         }],
         movements: vec![FactMovement {
@@ -592,7 +592,7 @@ fn fact_dependency_steps_preserve_the_existing_causal_json_shape() {
         body,
         concat!(
             ",\"changed\":[{\"kind\":\"RootEntry\",\"root_id\":7,\"old_revision\":null,\"new_revision\":1,\"old_settled\":false,\"new_settled\":true}]",
-            ",\"wakes\":[{\"cause\":{\"use\":\"settled\",\"kind\":\"RootEntry\",\"root_id\":7},\"job\":{\"kind\":\"SeedRoot\",\"root_id\":7},\"disposition\":\"enqueued\",\"shift\":true}]",
+            ",\"wakes\":[{\"cause\":{\"use\":\"settled\",\"kind\":\"RootEntry\",\"root_id\":7},\"job\":{\"kind\":\"SeedRoot\",\"root_id\":7},\"admission\":\"started\",\"shift\":true}]",
             ",\"movements\":[{\"kind\":\"RootEntry\",\"root_id\":7,\"revision\":1,\"settled\":true}]",
             ",\"blocked\":[{\"kind\":\"RootEntry\",\"root_id\":7}]",
         )
