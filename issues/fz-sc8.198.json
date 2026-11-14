@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T13:12:22Z",
+  "description": "lower_guard_boolean (src/compiler2/jobs/native.rs:3440) skips its boolean test only when ctx.value_types proves the operand a boolean. The result of a guard comparison (and of not/and/or) has no type recorded there, so every operand of and/or/not in a guard is tested with two Identical ops against true and false, each a call to fz_value_eq_raw_const. For 'c \u003e= 32 and c \u003c 128 and c != 34 and c != 92' that is up to about 12 runtime calls per evaluation; the comparisons themselves are plain icmp. Seen as fz_value_eq_raw_const at 8% of a decode profile (scratchpad b183-6/new.sample summary) and in the CLIF of a scan function. Goal: record bool for the results of guard comparisons, type tests, not, and, or, so the test is emitted only for an operand that can be a non-boolean. Effect size not yet measured in isolation: measure a guarded walk before and after (runtime calls per step, time). Interp is unaffected (native lowering only); check whether the interpreter has the same redundancy.",
+  "id": "fz-sc8.198",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A guard comparison's result is known to be a boolean",
+  "type": "task",
+  "updated_at": "2026-11-14T13:12:22Z"
+}
