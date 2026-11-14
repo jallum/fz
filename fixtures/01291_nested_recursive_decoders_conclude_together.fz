@@ -1,0 +1,22 @@
+#---
+# purpose: nested recursive decoders conclude together, so their callers analyze one activation per call instead of one per intermediate type
+#---
+# val/1, object/2 and array/2 form one cycle through object_value/2 and array_value/2.
+# A caller outside the cycle is woken when the cycle concludes.
+def decode(b), do: val(b)
+def val(<<"true", r :: binary>>), do: {:ok, true, r}
+def val(<<"{", r :: binary>>), do: object(r, %{})
+def val(<<"[", r :: binary>>), do: array(r, [])
+def val(b), do: {:error, b}
+def object(<<"}", r :: binary>>, acc), do: {:ok, acc, r}
+def object(b, acc), do: object_value(val(b), acc)
+def object_value({:ok, v, r}, acc), do: object(r, Map.put(acc, "k", v))
+def object_value(other, _acc), do: other
+def array(<<"]", r :: binary>>, acc), do: {:ok, acc, r}
+def array(b, acc), do: array_value(val(b), acc)
+def array_value({:ok, v, r}, acc), do: array(r, [v | acc])
+def array_value(other, _acc), do: other
+def roundtrip(v), do: same(decode("true"), v)
+def same({:ok, decoded, _rest}, original), do: decoded == original
+def same(_other, _original), do: false
+def main(), do: {dbg(roundtrip(true)), dbg(decode("{true}")), dbg(decode("[{true}]"))}

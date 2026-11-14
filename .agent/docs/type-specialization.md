@@ -312,10 +312,11 @@ callback's.
 One job (`Job::DeriveInputDemand`) builds the demand from its callees'
 answers (`ForwardingWalk` in `jobs/keying.rs`). A callee's concluded
 `InputDemand` already is the join over everything that callee forwards to, so
-it enters the graph as a leaf and its body is never read. A callee that is
-already waiting on this job is a partner (`World::answer_use`): the two demands
-are one fixpoint, so the job walks the partner's body itself and the Kleene
-iteration solves the cycle in one run. Any other callee is waited for, and the
+it enters the graph as a leaf and its body is never read. So is a partner's
+answer that already exists (`World::answer_use`). A callee that is already
+waiting on this job and has no answer yet is one fixpoint with it, so the job
+walks the partner's body itself and the Kleene iteration solves the cycle in
+one run. Any other callee is waited for, and the
 job publishes nothing until every answer it needs has concluded. On a chain
 `main -> f -> g -> h`, `f` runs once to learn it needs `g`'s answer and once
 more to read it.

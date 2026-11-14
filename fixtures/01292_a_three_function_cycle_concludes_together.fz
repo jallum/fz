@@ -1,0 +1,14 @@
+#---
+# purpose: a three-function cycle concludes together, and the caller outside it reads its return type once
+#---
+# a/1 calls b/1, b/1 calls c/1, and c/1 calls a/1. `main/0` calls a/1 from outside the cycle.
+defmodule M do
+  def a([]), do: 0
+  def a([_ | t]), do: b(t)
+  def b([]), do: 1
+  def b([_ | t]), do: c(t)
+  def c([]), do: 2
+  def c([_ | t]), do: a(t)
+  def main(), do: IO.inspect(a([1, 2, 3, 4, 5, 6, 7]))
+end
+M.main()

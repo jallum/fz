@@ -1,4 +1,5 @@
 use crate::fast_hash::{HashMap, HashSet};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::fmt::Debug;
@@ -9,6 +10,7 @@ use crate::deps::{DependencyIndex, UnresolvedWait};
 use crate::facts::{
     ClaimShape, ContentMovement, FactChange, FactMovement, FactState, FactTable, FactUse, Publisher, SemanticOrd,
 };
+use crate::groups::Groups;
 use crate::ordered_set::OrderedSet;
 use crate::waits::StandingWaits;
 
@@ -439,6 +441,11 @@ pub struct Scheduler<P: Publisher, F> {
     /// reason of its own. `record_run_start` spends the entry the one time
     /// `pop_runnable` commits to actually running it.
     pending_reason: HashMap<P::Run, WorkStart<P::Reason>>,
+    /// The groups of jobs that conclude together (see `groups`). Partner
+    /// detection is a question asked through a shared reference, and forming
+    /// the group is its answer's side effect, so the groups sit behind a
+    /// `RefCell`; no borrow outlives a method of this scheduler.
+    groups: RefCell<Groups<P::Run>>,
 }
 
 impl<P, F> Default for Scheduler<P, F>
@@ -548,6 +555,7 @@ where
             read_finality: HashMap::default(),
             work_starts: WorkStartTally::default(),
             pending_reason: HashMap::default(),
+            groups: RefCell::default(),
         }
     }
 
@@ -640,14 +648,61 @@ where
         self.deps.waits_for(job)
     }
 
-    /// Whether `from` waits, directly or through the jobs it waits on, for an
-    /// answer only `to` can give.
-    pub fn waits_reach(&self, from: &P::Run, to: &P::Run) -> bool {
-        self.deps.waits_reach(from, to)
-    }
-
     pub fn waited_settled_facts(&self) -> Vec<F> {
         self.deps.waited_settled_facts()
+    }
+
+    /// Whether `producer`'s answer and `reader`'s are one fixpoint: the
+    /// reader's own, or one whose producer waits, through standing waits, on
+    /// the reader. Between two members of one group that is `waits_reach`.
+    /// Otherwise a wait path from the producer's group to the reader makes the
+    /// two partners, and forms a group of the reader, the producer and every
+    /// job on the path, merged with any group among them.
+    pub fn partners(&self, producer: &P::Run, reader: &P::Run) -> bool {
+        if producer == reader {
+            return true;
+        }
+        let mut groups = self.groups.borrow_mut();
+        match groups.group_of(producer) {
+            Some(group) if Some(group) == groups.group_of(reader) => {
+                return self.deps.waits_reach(producer, reader);
+            }
+            None if self.deps.waits_for(producer).is_empty() => return false,
+            _ => {}
+        }
+        let starts = groups.members_or_self(producer);
+        let Some(path) = groups.wait_path(starts, reader, |job| self.deps.waits_for(job)) else {
+            return false;
+        };
+        let members = path
+            .into_iter()
+            .chain([producer.clone(), reader.clone()])
+            .collect::<Vec<_>>();
+        groups.join(members);
+        true
+    }
+
+    /// Whether `key` has concluded for a reader outside every group that
+    /// publishes it: locally settled, and no publisher in a group still open.
+    pub fn is_concluded(&self, key: &F) -> bool {
+        let groups = self.groups.borrow();
+        self.facts.is_locally_settled(key)
+            && self
+                .facts
+                .publishers(key)
+                .all(|publisher| !groups.withholds_from(publisher.run(), None))
+    }
+
+    /// Whether `key` has concluded for `reader`. A member of the publisher's
+    /// group asks only that the fact be locally settled; any other reader
+    /// asks `is_concluded`.
+    pub fn is_concluded_for(&self, reader: &P::Run, key: &F) -> bool {
+        let groups = self.groups.borrow();
+        self.facts.is_locally_settled(key)
+            && self
+                .facts
+                .publishers(key)
+                .all(|publisher| !groups.withholds_from(publisher.run(), Some(reader)))
     }
 
     /// Every standing wait in the semantic order owned by `ctx`.
@@ -668,6 +723,7 @@ where
     pub fn enqueue(&mut self, job: P::Run, reason: impl Into<WorkStart<P::Reason>>) -> bool {
         let started = self.agenda.enqueue(job.clone());
         if started {
+            self.groups.get_mut().reopen(&job);
             self.pending_reason.insert(job, reason.into());
         }
         started
@@ -827,13 +883,50 @@ where
         pending_changes.extend(changed.iter().cloned());
         let flips = self.quiet_flips(&touched, quiet_before);
         self.propagate_quiet_flips(flips, &mut pending_changes, ctx);
-        let (wakes, movements) = self.dispatch_changes(pending_changes, external, ctx);
+        let (mut wakes, mut movements) = self.dispatch_changes(pending_changes, external, ctx);
+        let released = self.close_group_if_idle(job, ctx);
+        if !released.is_empty() {
+            let (more_wakes, more_movements) = self.dispatch_changes(released, external, ctx);
+            wakes.extend(more_wakes);
+            movements.extend(more_movements);
+        }
         AppliedStep {
             changed,
             movements,
             wakes,
             blocked,
         }
+    }
+
+    /// Closes `job`'s group when this completion left none of its members
+    /// queued or waiting, and reports each fact of the group that a job is
+    /// parked on a `Concluded` wait for and that thereby concluded, so
+    /// readers outside the group hear it once.
+    fn close_group_if_idle<Ctx>(&mut self, job: &P::Run, ctx: &Ctx) -> Vec<FactChange<F>>
+    where
+        F: SemanticOrd<Ctx>,
+    {
+        let Some(group) = self
+            .groups
+            .get_mut()
+            .close_if_idle(job, |member| self.agenda.contains(member) || self.deps.blocked(member))
+        else {
+            return Vec::new();
+        };
+        let mut concluded: Vec<F> = self
+            .deps
+            .concluded_waits()
+            .filter(|key| {
+                let groups = self.groups.borrow();
+                self.facts
+                    .publishers(key)
+                    .any(|publisher| groups.group_of(publisher.run()) == Some(group))
+                    && self.is_concluded(key)
+            })
+            .cloned()
+            .collect();
+        concluded.sort_by(|left, right| left.semantic_cmp(right, ctx));
+        concluded.iter().map(|key| self.facts.report_conclusion(key)).collect()
     }
 
     /// Drains a wave of fact changes into wakes. An ascent re-runs readers,
@@ -1074,6 +1167,9 @@ where
             }
             cone.push(key.clone());
             for publisher in self.facts.publishers(key) {
+                if self.groups.borrow().is_in_open_group(publisher.run()) {
+                    return None;
+                }
                 if let Some(reads) = self.deps.reads(publisher) {
                     pending.extend(reads.iter().map(FactUse::fact));
                 }
@@ -1234,6 +1330,7 @@ where
     /// leaves that job's earlier reason in place.
     fn enqueue_step(&mut self, job: P::Run, cause: &FactUse<F>, shift: bool, wakes: &mut Vec<Wake<P::Run, F>>) {
         let disposition = if self.agenda.enqueue(job.clone()) {
+            self.groups.get_mut().reopen(&job);
             self.pending_reason.insert(job.clone(), WorkStart::ChangedRevisionWake);
             WakeDisposition::Enqueued
         } else {

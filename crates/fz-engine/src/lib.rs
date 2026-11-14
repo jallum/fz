@@ -7,6 +7,7 @@
 mod agenda;
 mod deps;
 mod facts;
+mod groups;
 mod ordered_set;
 mod ordered_worklist;
 mod scheduler;

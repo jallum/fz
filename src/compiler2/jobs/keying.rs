@@ -17,7 +17,7 @@ use super::super::pull::{ProductKey, ProductSessions, ProductValue};
 use super::super::reach::ReachKey;
 use super::super::world::{BodyShape, World};
 use crate::telemetry::TelemetryExt as _;
-use fz_engine::FatalError;
+use fz_engine::{FactReadiness, FatalError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StaticEdge {
@@ -517,28 +517,33 @@ impl<'w> ForwardingWalk<'w> {
         if self.graph.contains_key(&callee) {
             return;
         }
-        // Classified, not answered: a partner callee is walked whole below,
-        // so its plain `InputDemand` fact is never itself a read. Recording
-        // one here, the way `answer` would, would subscribe this walk to a
-        // fact it otherwise never touches.
+        // Classified, not answered: a partner callee with no answer yet is
+        // walked whole below, so its plain `InputDemand` fact is never itself
+        // a read. Recording one here, the way `answer` would, would subscribe
+        // this walk to a fact it otherwise never touches. An answer that
+        // exists is a leaf, partner or not: the callee's own job derived it.
         let fact = FactKey::InputDemand(callee);
         match self.uses.classify(&*self.world, fact) {
-            AnswerUse::Concluded(read) => {
-                let answer = self
-                    .world
-                    .input_demand(callee)
-                    .expect("a concluded InputDemand is present");
-                let leaf = DemandNode {
-                    local: answer.forwarded_dispatch.clone(),
-                    uses: Vec::new(),
-                    local_result: answer.returned.clone(),
-                    forwards: Vec::new(),
-                };
-                self.uses.record_read(read);
-                self.graph.insert(callee, leaf);
-            }
-            AnswerUse::Partner(_) => self.visit_body(callee),
             AnswerUse::Wait(wait) => self.uses.record_wait(wait),
+            AnswerUse::Partner(read) | AnswerUse::Concluded(read) => match self.world.input_demand(callee) {
+                Some(answer) => {
+                    let leaf = DemandNode {
+                        local: answer.forwarded_dispatch.clone(),
+                        uses: Vec::new(),
+                        local_result: answer.returned.clone(),
+                        forwards: Vec::new(),
+                    };
+                    self.uses.record_read(read);
+                    self.graph.insert(callee, leaf);
+                }
+                None => {
+                    assert!(
+                        read.readiness() == FactReadiness::Current,
+                        "a concluded InputDemand is present"
+                    );
+                    self.visit_body(callee);
+                }
+            },
         }
     }
 

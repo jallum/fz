@@ -939,18 +939,21 @@ impl World {
     }
 
     /// How `reader` may use the answer `fact` gives. A partner's answer, one
-    /// whose producer is waiting on `reader`, is one fixpoint with the
-    /// reader's own and is read however unfinished. Any other answer is read
-    /// only once it has concluded, and waited for until then. The reader's
-    /// own answer counts as a partner too: a self-recursive job's first run
-    /// has registered no wait yet for `waits_reach` to find.
+    /// whose producer is waiting on `reader` (the engine forms a group of the
+    /// two and the jobs between them), is one fixpoint with the reader's own
+    /// and is read however unfinished. Any other answer is read only once it
+    /// has concluded for this reader (`Scheduler::is_concluded_for`), and
+    /// waited for until then. The reader's own answer counts as a partner
+    /// too: a self-recursive job's first run has registered no wait yet to
+    /// find.
     pub(crate) fn answer_use(&self, reader: &Job, fact: FactKey) -> AnswerUse {
+        let key = DependencyKey::Fact(fact.clone());
         let partner = self
             .fact_producer(&fact)
-            .is_some_and(|producer| &producer == reader || self.work_graph.waits_reach(&producer, reader));
+            .is_some_and(|producer| self.work_graph.partners(&producer, reader));
         if partner {
             AnswerUse::Partner(FactUse::current(fact))
-        } else if self.fact_is_concluded(&fact) {
+        } else if self.work_graph.is_concluded_for(reader, &key) {
             AnswerUse::Concluded(FactUse::concluded(fact))
         } else {
             AnswerUse::Wait(FactUse::concluded(fact))

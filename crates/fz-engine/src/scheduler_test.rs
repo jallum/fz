@@ -2924,32 +2924,11 @@ fn block_on(scheduler: &mut TestScheduler, job: u32, waits: &[(&'static str, Opt
     );
 }
 
-#[test]
-fn compiler2_waits_reach_follows_waits_through_the_jobs_waited_on() {
-    let mut scheduler = TestScheduler::new();
-    block_on(&mut scheduler, 1, &[("b", Some(2))]);
-    block_on(&mut scheduler, 2, &[("c", Some(3))]);
-    block_on(&mut scheduler, 3, &[("d", Some(4))]);
-
-    assert!(scheduler.waits_reach(&1, &4));
-    assert!(scheduler.waits_reach(&2, &3));
-    assert!(
-        !scheduler.waits_reach(&4, &1),
-        "a wait runs from waiter to producer, never back"
-    );
-}
-
-#[test]
-fn compiler2_a_job_reaches_itself_only_through_a_returning_chain() {
-    let mut scheduler = TestScheduler::new();
-    block_on(&mut scheduler, 1, &[("b", Some(2))]);
-    assert!(
-        !scheduler.waits_reach(&1, &1),
-        "one wait is not a chain back to the waiter"
-    );
-
-    block_on(&mut scheduler, 2, &[("a", Some(1))]);
-    assert!(scheduler.waits_reach(&1, &1));
+/// The jobs `job` waits on, in order.
+fn producers_of(scheduler: &TestScheduler, job: u32) -> Vec<u32> {
+    let mut producers = scheduler.waits_for(&job).producers().copied().collect::<Vec<_>>();
+    producers.sort_unstable();
+    producers
 }
 
 #[test]
@@ -2959,19 +2938,25 @@ fn compiler2_a_wait_with_no_producer_blocks_but_adds_no_edge() {
 
     assert!(scheduler.blocked(&1));
     assert_eq!(scheduler.waits_for(&1).uses().count(), 2, "both waits stand");
-    assert!(scheduler.waits_reach(&1, &3));
-    assert!(!scheduler.waits_reach(&1, &2));
+    assert_eq!(
+        producers_of(&scheduler, 1),
+        vec![3],
+        "only the produced wait is an edge"
+    );
 }
 
 #[test]
 fn compiler2_a_new_completion_replaces_the_jobs_wait_edges() {
     let mut scheduler = TestScheduler::new();
     block_on(&mut scheduler, 1, &[("b", Some(2))]);
-    assert!(scheduler.waits_reach(&1, &2));
+    assert_eq!(producers_of(&scheduler, 1), vec![2]);
 
     block_on(&mut scheduler, 1, &[("c", Some(3))]);
-    assert!(!scheduler.waits_reach(&1, &2), "the earlier wait no longer stands");
-    assert!(scheduler.waits_reach(&1, &3));
+    assert_eq!(
+        producers_of(&scheduler, 1),
+        vec![3],
+        "the earlier wait no longer stands"
+    );
 
     complete(
         &mut scheduler,
@@ -2981,7 +2966,7 @@ fn compiler2_a_new_completion_replaces_the_jobs_wait_edges() {
         vec!["a"],
         vec!["a"],
     );
-    assert!(!scheduler.waits_reach(&1, &3), "a conclusion leaves no waits");
+    assert!(producers_of(&scheduler, 1).is_empty(), "a conclusion leaves no waits");
     assert!(!scheduler.blocked(&1));
 }
 
@@ -2989,8 +2974,305 @@ fn compiler2_a_new_completion_replaces_the_jobs_wait_edges() {
 fn compiler2_waiting_without_running_records_the_same_edges() {
     let mut scheduler = TestScheduler::new();
     scheduler.wait_without_running(1, [(current("b"), Some(2))].into_iter().collect());
-    scheduler.wait_without_running(2, [(current("c"), Some(3))].into_iter().collect());
 
-    assert!(scheduler.waits_reach(&1, &3));
+    assert_eq!(producers_of(&scheduler, 1), vec![2]);
     assert!(scheduler.blocked(&1));
+}
+
+// Groups. Jobs 1..=4 stand for the jobs of one recursive climb and 9 for a
+// reader outside it. A job `n` publishes the fact named after it.
+
+/// Whether `left` and `right` are in one group.
+fn grouped(scheduler: &TestScheduler, left: u32, right: u32) -> bool {
+    let groups = scheduler.groups.borrow();
+    groups.group_of(&left).is_some() && groups.group_of(&left) == groups.group_of(&right)
+}
+
+/// Jobs 1 and 2 wait on each other's answers: the first wait of a climb.
+fn climbing_pair() -> TestScheduler {
+    let mut scheduler = TestScheduler::new();
+    block_on(&mut scheduler, 1, &[("b", Some(2))]);
+    scheduler
+}
+
+#[test]
+fn a_reader_the_producer_waits_on_is_its_partner_and_forms_a_group_with_the_wait_path() {
+    let mut scheduler = TestScheduler::new();
+    block_on(&mut scheduler, 1, &[("b", Some(2))]);
+    block_on(&mut scheduler, 2, &[("c", Some(3))]);
+
+    assert!(
+        scheduler.partners(&1, &3),
+        "1 waits, through 2, on the job that now reads its answer"
+    );
+    for job in [1, 2, 3] {
+        assert!(grouped(&scheduler, 1, job), "job {job} is on the wait path");
+    }
+    assert!(
+        !scheduler.partners(&3, &1),
+        "a wait runs from waiter to producer, never back; no path means no partnership"
+    );
+    assert!(!grouped(&scheduler, 1, 4));
+}
+
+#[test]
+fn a_job_is_its_own_partner_and_forms_no_group() {
+    let scheduler = TestScheduler::new();
+    assert!(scheduler.partners(&1, &1));
+    assert!(!grouped(&scheduler, 1, 1), "a lone job has no group to belong to");
+}
+
+#[test]
+fn an_existing_group_is_one_node_anywhere_along_the_wait_path() {
+    let mut scheduler = TestScheduler::new();
+    // 2 and 3 are already a group; 1 waits on 2 and 3 waits on 4. Only the
+    // group as a whole connects the two waits: from 2 the wait path continues
+    // through the wait of 3.
+    scheduler.groups.get_mut().join([2, 3]);
+    block_on(&mut scheduler, 1, &[("b", Some(2))]);
+    block_on(&mut scheduler, 3, &[("d", Some(4))]);
+
+    assert!(scheduler.partners(&1, &4));
+    for job in [1, 2, 3, 4] {
+        assert!(grouped(&scheduler, 1, job), "job {job} joined the one group");
+    }
+}
+
+#[test]
+fn joining_merges_every_group_a_joiner_already_belongs_to() {
+    let mut scheduler = TestScheduler::new();
+    scheduler.groups.get_mut().join([1, 2]);
+    scheduler.groups.get_mut().join([3, 4]);
+    scheduler.groups.get_mut().join([2, 3, 5]);
+    for job in [1, 2, 3, 4, 5] {
+        assert!(grouped(&scheduler, 1, job));
+    }
+}
+
+#[test]
+fn between_two_members_of_a_group_partnership_is_still_the_wait_path() {
+    let mut scheduler = climbing_pair();
+    assert!(scheduler.partners(&1, &2), "2 reads the answer of 1, which waits on 2");
+    assert!(grouped(&scheduler, 1, 2));
+
+    assert!(
+        !scheduler.partners(&2, &1),
+        "inside a group a read is a partner's only when the producer waits on the reader"
+    );
+    block_on(&mut scheduler, 2, &[("a", Some(1))]);
+    assert!(scheduler.partners(&2, &1));
+}
+
+/// Jobs 1 and 2 climb together and job 2 has published "x"; job 1 still
+/// waits, so the group is open.
+fn open_group_with_a_settled_fact() -> TestScheduler {
+    let mut scheduler = climbing_pair();
+    assert!(scheduler.partners(&1, &2));
+    complete(
+        &mut scheduler,
+        2,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["x"],
+        vec!["x"],
+    );
+    scheduler
+}
+
+#[test]
+fn a_fact_of_an_open_group_is_concluded_for_its_members_and_not_for_a_reader_outside() {
+    let scheduler = open_group_with_a_settled_fact();
+
+    assert!(
+        scheduler.facts().is_locally_settled(&"x"),
+        "no publisher is queued to re-run it"
+    );
+    assert!(
+        scheduler.is_concluded_for(&1, &"x"),
+        "inside the group a read asks only that the fact be locally settled"
+    );
+    assert!(
+        !scheduler.is_concluded_for(&9, &"x"),
+        "an outside reader waits for the group to close"
+    );
+    assert!(!scheduler.is_concluded(&"x"));
+}
+
+#[test]
+fn a_group_closes_when_a_completion_leaves_no_member_queued_or_waiting() {
+    let mut scheduler = open_group_with_a_settled_fact();
+    // Job 1 is still waiting on "b": publishing something else does not close.
+    assert!(!scheduler.is_concluded(&"x"));
+
+    // 2 answers 1's wait: 1 is queued, the group stays open.
+    let step = complete(
+        &mut scheduler,
+        2,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["b", "x"],
+        vec!["b"],
+    );
+    assert_eq!(enqueued_jobs(&step), vec![1]);
+    assert!(!scheduler.is_concluded(&"x"), "a queued member keeps the group open");
+
+    assert_eq!(scheduler.pop(), Some(1));
+    complete(
+        &mut scheduler,
+        1,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["a"],
+        vec!["a"],
+    );
+    assert!(
+        scheduler.is_concluded(&"x"),
+        "the last member to conclude closes the group"
+    );
+    assert!(scheduler.is_concluded_for(&9, &"x"));
+}
+
+#[test]
+fn closing_a_group_wakes_a_waiting_outside_reader_once_with_the_conclusion() {
+    let mut scheduler = open_group_with_a_settled_fact();
+    // The outside reader parks on "x" being concluded after "x" is already
+    // locally settled, so the only thing that can wake it is the group's report.
+    scheduler.complete_ordered(
+        &9,
+        CompletionEffects::single(
+            9,
+            HashSet::default(),
+            [(FactUse::concluded("x"), Some(2))].into_iter().collect(),
+            Vec::new(),
+            Vec::new(),
+        ),
+        &TestOrder,
+    );
+    let step = complete(
+        &mut scheduler,
+        2,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["b", "x"],
+        vec!["b"],
+    );
+    assert!(
+        !enqueued_jobs(&step).contains(&9),
+        "the group is open, so nothing has told the outside reader yet"
+    );
+    assert_eq!(scheduler.pop(), Some(1));
+
+    let step = complete(
+        &mut scheduler,
+        1,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["a"],
+        vec!["a"],
+    );
+
+    assert_eq!(
+        wakes_for(&step, 9).len(),
+        1,
+        "one report from the close, one wake of the reader"
+    );
+    assert_eq!(enqueued_jobs(&step), vec![9]);
+    assert_eq!(wakes_for(&step, 9)[0].cause, FactUse::concluded("x"));
+}
+
+#[test]
+fn enqueuing_a_member_reopens_a_closed_group() {
+    let mut scheduler = open_group_with_a_settled_fact();
+    complete(
+        &mut scheduler,
+        2,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["b", "x"],
+        vec!["b"],
+    );
+    assert_eq!(scheduler.pop(), Some(1));
+    complete(
+        &mut scheduler,
+        1,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["a"],
+        vec!["a"],
+    );
+    assert!(scheduler.is_concluded(&"x"));
+
+    assert!(scheduler.enqueue(1, crate::scheduler::WorkStart::Unclassified));
+    assert!(
+        !scheduler.is_concluded(&"x"),
+        "a queued member is a climb that has not finished"
+    );
+
+    assert_eq!(scheduler.pop(), Some(1));
+    complete(
+        &mut scheduler,
+        1,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["a"],
+        vec!["a"],
+    );
+    assert!(scheduler.is_concluded(&"x"));
+}
+
+#[test]
+fn a_wake_that_enqueues_a_member_reopens_its_group() {
+    let mut scheduler = open_group_with_a_settled_fact();
+    complete(
+        &mut scheduler,
+        2,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["b", "x"],
+        vec!["b"],
+    );
+    assert_eq!(scheduler.pop(), Some(1));
+    complete(
+        &mut scheduler,
+        1,
+        HashSet::from_iter([current("x")]),
+        HashSet::default(),
+        vec!["a"],
+        vec!["a"],
+    );
+    assert!(scheduler.is_concluded(&"x"));
+
+    // Job 2 publishes "x" again, moving a fact member 1 read.
+    let step = complete(
+        &mut scheduler,
+        2,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["b", "x"],
+        vec!["x"],
+    );
+    assert_eq!(enqueued_jobs(&step), vec![1]);
+    assert!(
+        scheduler.groups.borrow().is_in_open_group(&1),
+        "the wake queued a member, inside the dispatch"
+    );
+}
+
+#[test]
+fn quiescence_does_not_certify_a_fact_whose_publisher_is_in_an_open_group() {
+    let mut scheduler = clean_cycle();
+    scheduler.groups.get_mut().join([JOB_A, JOB_B]);
+
+    scheduler.settle_quiescent_ordered(&["cum_a"], &TestOrder);
+    assert!(
+        !scheduler.facts().is_settled(&"cum_a"),
+        "an open group is still climbing: no drain can call its facts final"
+    );
+
+    scheduler.groups.get_mut().close_if_idle(&JOB_A, |_| false);
+    scheduler.settle_quiescent_ordered(&["cum_a"], &TestOrder);
+    assert!(
+        scheduler.facts().is_settled(&"cum_a"),
+        "once the group has closed the drain certifies it"
+    );
 }

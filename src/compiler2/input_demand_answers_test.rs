@@ -7,8 +7,9 @@
 //! There are three ways to meet such a callee:
 //!
 //! - its answer has concluded: read it, once;
-//! - it is already waiting on `f`: the two are one cycle, so `f` reads the
-//!   callee's body facts and solves both in the same run;
+//! - it is already waiting on `f`: the two are one cycle. If the callee has an
+//!   answer, `f` reads it; if not, `f` reads the callee's body facts and solves
+//!   both in the same run;
 //! - otherwise: wait for its answer.
 //!
 //! On a chain `main -> f -> g -> h` each caller runs once to learn which

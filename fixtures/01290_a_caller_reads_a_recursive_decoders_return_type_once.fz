@@ -1,0 +1,24 @@
+#---
+# purpose: a caller of a recursive decoder reads its return type once, at its final revision, and keys one activation of the function it hands the result to
+#---
+# The decoder is a cycle: val/1 calls object/2, which calls object_value/2, which calls object/2 again.
+# The return type of `J.decode/1` climbs while the cycle runs. `T.roundtrip/1` is outside the cycle, so it
+# is told the type once the cycle has concluded, and `same/2` is analyzed for that one type.
+defmodule J do
+  def decode(b), do: val(b)
+  defp val(<<"true", r :: binary>>), do: {:ok, true, r}
+  defp val(<<"{", r :: binary>>), do: object(r, %{})
+  defp val(b), do: {:error, b}
+  defp object(<<"}", r :: binary>>, acc), do: {:ok, acc, r}
+  defp object(b, acc), do: object_value(val(b), acc)
+  defp object_value({:ok, v, r}, acc), do: object(r, Map.put(acc, "k", v))
+  defp object_value(other, _acc), do: other
+end
+
+defmodule T do
+  def main(), do: dbg(roundtrip(true))
+  defp roundtrip(v), do: same(J.decode("true"), v)
+  defp same({:ok, decoded}, original), do: decoded == original
+  defp same(_other, _original), do: false
+end
+T.main()
