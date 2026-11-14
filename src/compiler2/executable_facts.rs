@@ -356,7 +356,8 @@ pub(crate) fn project_executable_facts(
         .iter()
         .filter(|row| row.len() >= capture_count)
         .map(|row| {
-            let captures = world.types_mut().address_inputs(&row[..capture_count]);
+            let mut captures = row[..capture_count].to_vec();
+            world.types_mut().address_inputs(&mut captures);
             let surface = prepare_surface(world, &mut demand_builder, &row[capture_count..]).clone();
             CallableActivationInput {
                 captures,

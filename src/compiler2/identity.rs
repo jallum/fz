@@ -113,12 +113,13 @@ impl ActivationKey {
             !types.has_empty_argument(inputs),
             "an activation cannot be keyed by an input no value inhabits"
         );
-        let addressed = types.address_inputs(inputs);
+        let mut addressed = inputs.to_vec();
+        types.address_inputs(&mut addressed);
         // The result slot is the addressed result var `r0` — "return not yet
         // known", an unknown to resolve — NOT `none()` (⊥). `none`, like `any`,
         // must be earned, never a fallback for an unknown (fz-f98.14.10.1).
         let result = types.result_alpha();
-        let arrow = types.arrow(&addressed, result);
+        let arrow = types.arrow_owned(addressed, result);
         Self { root, function, arrow }
     }
 

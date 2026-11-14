@@ -1390,7 +1390,13 @@ impl Types {
     }
 
     pub fn arrow(&mut self, args: &[Ty], ret: Ty) -> Ty {
-        self.intern(Descr::arrow(args.iter().copied(), ret))
+        self.arrow_owned(args.to_vec(), ret)
+    }
+
+    /// As [`arrow`](Self::arrow), for a caller that owns the parameter vector:
+    /// it becomes the arrow's args without a second copy.
+    pub fn arrow_owned(&mut self, args: Vec<Ty>, ret: Ty) -> Ty {
+        self.intern(Descr::arrow(args, ret))
     }
 
     /// Project the parameter (input) side of an arrow type immutably. This is
