@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T01:45:16Z",
   "created": "2026-11-14T01:05:27Z",
   "description": "Types::arrow_params (types/mod.rs:1400) clones the parameter vector of an interned arrow for every reader: about 4,240 allocations. Chains: contract.rs:265 ContractArrow::matched_params (3,216), identity.rs:129 ActivationKey::inputs (about 930), resolve.rs:200 (96).\n\nChange: arrow_params answers a borrowed slice. matched_params / widened_to_row copy only when a variadic tail widens the row. Readers of ActivationKey::inputs that only read borrow; those that keep the vector copy it themselves, visibly.\n\nEvidence: census of the OptionParser probe at develop 01e69178a (771,812 allocations): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/01e69178a_top.txt; call chains: cd /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census \u0026\u0026 python3 chain.py 01e69178a.pkl \u003cfile:line\u003e \u003cdepth\u003e \"\" \u003cn\u003e; line numbers are exact in /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src (read only).\n\nSignal: full gate green; no golden or pin moves except a falling pin, which is lowered and listed; program output and canonical backend dump identical on the probe; allocation count before and after in the commit.",
   "id": "fz-y11.24",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "An arrow's parameters are read where they live",
   "type": "task",
-  "updated_at": "2026-11-14T01:05:38Z"
+  "updated_at": "2026-11-14T01:45:16Z"
 }
