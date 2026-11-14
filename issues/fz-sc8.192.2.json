@@ -7,13 +7,13 @@
     "fz-sc8.192.3"
   ],
   "created": "2026-11-14T13:11:15Z",
-  "description": "Step 2 of fz-sc8.192. Put and delete on a tree copy the leaf and the nodes above it and share the rest: split a full leaf, merge a sparse one, grow from flat to tree at 33 entries, shrink back at 32. Measured need (distiller, 32,000 lines, develop + fz-sc8.184.3): map put is 19% of run time; 39,573 puts into maps of 256+ entries copy 128M of the 131M entries all puts copy. Signal: a fixture pins bytes allocated by 10,000 puts; put 1..n then update 1..n re-timed at 10k/20k/40k/80k (0.66/2.6/10.2/40.6 s today, release); distiller map-put share re-measured (prediction: under 2%). Remove the O(n^2) statements in lib/map.fz, .agent/docs/any-value.md, .agent/docs.md, guides/memory.html and the comment near ir_runtime.rs:2000.",
+  "description": "Step 2 of fz-sc8.192 (page v2). Put and delete on a trie copy the nodes on one path; a flat map grows into a trie at 33 entries and a trie shrinks to the flat array at 32; collision nodes; %{m | k: v} on a trie updates a path. Signal: a fixture pins bytes allocated by 10,000 puts (Process.heap_alloc_stats); the spike table re-measured in the real runtime (spike at 100,000 integer keys: build 149 ns per put, hit 35 ns, 586 bytes per put); the distiller re-timed and re-profiled, prediction: map put under 3% of samples; collector cost of many small nodes measured on the distiller. Removes the O(n^2) statements in lib/map.fz, .agent/docs/any-value.md, .agent/docs.md, guides/memory.html, and the spike worktree fz-maps-spike.",
   "id": "fz-sc8.192.2",
   "labels": [],
   "parent": "fz-sc8.192",
   "priority": 1,
   "status": "open",
-  "title": "A put or delete on a large map copies a path, not the map",
+  "title": "A put into a large map copies a path of the hash tree",
   "type": "task",
-  "updated_at": "2026-11-14T13:11:16Z"
+  "updated_at": "2026-11-14T14:34:23Z"
 }
