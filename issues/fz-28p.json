@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-75e"
+  ],
   "created": "2026-11-14T01:32:34Z",
   "description": "A body with N non-tail calls is cut into N resume steps; step K captures all K live values, and every (entry, capture) pair requests its own EntryCapture transport product: about N^2/2 requests. A capture that an entry inherits from the single entry that reaches it has the same type and the same layout there, so only the entry that first holds a value needs the product.\n\nSpike (worktree ../fz-75e, branch fz-d7w/linked-captures-spike, patch scratchpad/s75e/linked_captures_spike.patch, request-side half = entry_capture_owners in src/compiler2/jobs/body.rs, read by jobs/artifact.rs and jobs/backend.rs; measured with FZ_SPIKE_NO_LINK=1): fixture_matrix 3309 passed 0 failed with this half alone. Largest drive: 308-element computed tuple 49,548 -\u003e 2,572; 1,000 elements 505,922 -\u003e 7,416; 1,000 sequential calls 1,009,384 -\u003e 12,378; a 3-call body 420 -\u003e 412 (EntryCapture 20 -\u003e 12). t1000 compiles and prints 1000 on interp (develop: budget exhausted). With both spike halves the distiller pin falls to 47,910 / 49,346 / 28 from 49,760 / 51,196 / 28; this half's own share is to be measured.\n\nRemoved: per-(entry, capture) EntryCapture products for inherited captures; the filter-by-entry and count check in capture_positions_for_entry.\nNot in this ticket: the stack/code half (linked descriptors, ContSelf/ContCapture prims) and every FZ_SPIKE_* env switch.\n\nFails before, passes after: a fixture with a computed tuple of 1,000 elements prints its size on interp; a telemetry test pins EntryCapture requests for an N-call body at 2N+6 (622 at N=308). On run and build the same program still overflows the stack (fz-d7w) until the stack half lands.\nAcceptance: full gate green; pins only fall, each listed with its measured value.",
   "id": "fz-28p",

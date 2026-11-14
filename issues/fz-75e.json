@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-28p",
     "fz-2un",
     "fz-d7w"
   ],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "The product drive budget bounds repetition, not program size",
   "type": "bug",
-  "updated_at": "2026-11-13T23:14:29Z"
+  "updated_at": "2026-11-14T01:32:34Z"
 }
