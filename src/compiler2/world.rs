@@ -1200,7 +1200,12 @@ impl World {
         self.modules.scope(id, base_namespace);
     }
 
-    pub fn reference_function(&mut self, module: ModuleId, name: impl Into<String>, arity: usize) -> FunctionId {
+    pub fn reference_function(
+        &mut self,
+        module: ModuleId,
+        name: impl AsRef<str> + Into<String>,
+        arity: usize,
+    ) -> FunctionId {
         let id = self
             .functions
             .reference(module, self.modules.denotation(module), name, arity);
@@ -1214,7 +1219,7 @@ impl World {
     pub fn reference_declared_callable(
         &mut self,
         module: ModuleId,
-        name: impl Into<String>,
+        name: impl AsRef<str> + Into<String>,
         arity: usize,
         kind: DeclaredCallableKind,
     ) -> FunctionId {

@@ -303,13 +303,6 @@ pub struct FunctionSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct FunctionKey {
-    module: ModuleId,
-    name: String,
-    arity: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct GeneratedFunctionKey {
     owner: FunctionId,
     occurrence: crate::ast::LambdaOccurrence,
@@ -560,7 +553,7 @@ pub struct FunctionMap {
     /// seen: a bare cross-module reference mints a slot whose kind only its
     /// owning module's interface can settle.
     declared_kinds: Vec<Option<DeclaredCallableKind>>,
-    by_key: HashMap<FunctionKey, FunctionId>,
+    by_key: HashMap<(ModuleId, usize), HashMap<String, FunctionId>>,
     generated_by_key: HashMap<GeneratedFunctionKey, FunctionId>,
 }
 
@@ -573,18 +566,17 @@ impl FunctionMap {
         &mut self,
         module: ModuleId,
         module_denotation: Option<&ModuleDenotation>,
-        name: impl Into<String>,
+        name: impl AsRef<str> + Into<String>,
         arity: usize,
     ) -> FunctionId {
-        let name = name.into();
-        let key = FunctionKey {
-            module,
-            name: name.clone(),
-            arity,
-        };
-        if let Some(id) = self.by_key.get(&key) {
+        if let Some(id) = self
+            .by_key
+            .get(&(module, arity))
+            .and_then(|names| names.get(name.as_ref()))
+        {
             return *id;
         }
+        let name: String = name.into();
         let id = FunctionId(self.slots.len() as u32);
         self.slots.push(FunctionState::Placeholder);
         self.declared_kinds.push(None);
@@ -593,12 +585,12 @@ impl FunctionMap {
             denotation: Arc::new(FunctionDenotation {
                 origin: FunctionOrigin::Named {
                     module: module_denotation.cloned(),
-                    name,
+                    name: name.clone(),
                 },
                 arity,
             }),
         }));
-        self.by_key.insert(key, id);
+        self.by_key.entry((module, arity)).or_default().insert(name, id);
         id
     }
 
