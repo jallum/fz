@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:20:23Z",
+  "description": "pure_var_ids collected the variable set into a Vec before testing whether the descriptor is only variables. Site: types/mod.rs:3665 (2,192). Change: test first, return an iterator over the set. Spike: 705,444 -\u003e 703,455, output and canonical dump identical.",
+  "id": "fz-y11.41",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "The pure-variable test reads a type's variables in place",
+  "type": "task",
+  "updated_at": "2026-11-14T04:20:23Z"
+}
