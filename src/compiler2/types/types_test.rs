@@ -2737,7 +2737,7 @@ fn tuple_emptiness_under_many_overlapping_negations_is_tractable() {
     );
     let steps = t.interning_work_stats().tuple_emptiness_steps - before;
     assert_eq!(
-        steps, 17,
+        steps, 7,
         "tuple emptiness under many negations must visit a bounded number of walk steps, not arity^negations"
     );
 }
