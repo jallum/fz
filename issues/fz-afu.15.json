@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-afu.13"
+    "fz-afu.13",
+    "fz-t93.2"
   ],
   "blocks": [
     "fz-afu.16",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "A caller reads a recursive callee's return only once its climb has finished",
   "type": "bug",
-  "updated_at": "2026-11-14T04:26:25Z"
+  "updated_at": "2026-11-14T04:26:33Z"
 }
