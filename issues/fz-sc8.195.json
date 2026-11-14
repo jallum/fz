@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T12:34:41Z",
+  "description": "Parked with measurements. Of 177 rest views decoding one 172-byte line, 120 (68%) are consumed by a self-recursive step, 35 (20%) by another function's first match, 17 (10%) escape in {:ok, v, rest}, 5 (3%) are unused. Removing the 88% needs a new transport shape (binary + bit position as two lanes), a demand arm for 'only matched', a distinct executable per layout, interpreter parity, and a view built on escape. Estimated worth: 5-7% of decode (views plus their collection); a minor collection makes a dead view cheaper still. Re-measure after fz-sc8.183.5 and its siblings and the collector work before building. Evidence and predictions: proposal page fz-sc8.183.5.html (workspace root); spike files in scratchpad b183-5 and b183-6.",
+  "id": "fz-sc8.195",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A binary walk passes its position instead of a rest view",
+  "type": "task",
+  "updated_at": "2026-11-14T12:34:41Z"
+}
