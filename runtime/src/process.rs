@@ -10,6 +10,7 @@
 
 use crate::any_value::ClosureDenotationId;
 use crate::function_denotation::FunctionDenotation;
+use crate::term_hash::name_hash;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
@@ -286,8 +287,13 @@ pub struct Raised {
 /// atoms are append-only with no gaps — the next id is just `by_id.len()`),
 /// and `by_name` for text→id so interning is a hash lookup, not a scan. The
 /// BEAM shape (index array + interning hash table), scaled to one node.
+///
+/// Each atom also keeps the hash of its name, computed once when the atom is
+/// interned. A term hash reads it, so it depends on the name and never on the
+/// id, which follows the order atoms happened to be interned in.
 pub struct AtomTable {
     by_id: Vec<AtomName>,
+    name_hashes: Vec<u64>,
     by_name: HashMap<AtomName, u32>,
 }
 
@@ -352,7 +358,12 @@ impl AtomTable {
             .enumerate()
             .map(|(id, name)| (name.clone(), id as u32))
             .collect();
-        Self { by_id: names, by_name }
+        let name_hashes = names.iter().map(|name| name_hash(name)).collect();
+        Self {
+            by_id: names,
+            name_hashes,
+            by_name,
+        }
     }
 
     /// Return the atom's id, allocating a fresh one (the next dense index) if
@@ -375,6 +386,7 @@ impl AtomTable {
 
     fn append(&mut self, name: AtomName) -> u32 {
         let id = self.by_id.len() as u32;
+        self.name_hashes.push(name_hash(&name));
         self.by_id.push(name.clone());
         self.by_name.insert(name, id);
         id
@@ -388,6 +400,11 @@ impl AtomTable {
     /// The atom's text, or `None` if `id` is out of range. O(1).
     pub fn name(&self, id: u32) -> Option<&AtomName> {
         self.by_id.get(id as usize)
+    }
+
+    /// The hash of the atom's name, or `None` if `id` is out of range. O(1).
+    pub fn name_hash(&self, id: u32) -> Option<u64> {
+        self.name_hashes.get(id as usize).copied()
     }
 }
 
@@ -405,7 +422,14 @@ pub struct Node {
     /// Reached through `intern_atom` / `atom_name`, never
     /// directly, so the interior mutability stays an implementation detail.
     atoms: RefCell<AtomTable>,
-    closure_denotations: RefCell<HashMap<ClosureDenotationId, Arc<FunctionDenotation>>>,
+    closure_denotations: RefCell<HashMap<ClosureDenotationId, ClosureOrigin>>,
+}
+
+/// What the node keeps for a closure's denotation: its source origin, and the
+/// hash of that origin, computed once at registration.
+struct ClosureOrigin {
+    origin: Arc<FunctionDenotation>,
+    hash: u64,
 }
 
 impl Node {
@@ -426,12 +450,17 @@ impl Node {
         let mut origins = self.closure_denotations.borrow_mut();
         match origins.entry(id) {
             std::collections::hash_map::Entry::Occupied(existing) => {
-                if !Arc::ptr_eq(existing.get(), &origin) {
-                    assert_eq!(existing.get(), &origin, "closure source denotations are immutable");
+                if !Arc::ptr_eq(&existing.get().origin, &origin) {
+                    assert_eq!(
+                        &existing.get().origin,
+                        &origin,
+                        "closure source denotations are immutable"
+                    );
                 }
             }
             std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(origin);
+                let hash = origin.semantic_hash();
+                entry.insert(ClosureOrigin { origin, hash });
             }
         }
     }
@@ -440,12 +469,14 @@ impl Node {
         left.user_index();
         right.user_index();
         let origins = self.closure_denotations.borrow();
-        let left = origins
+        let left = &origins
             .get(&left)
-            .expect("published closure must have a source denotation");
-        let right = origins
+            .expect("published closure must have a source denotation")
+            .origin;
+        let right = &origins
             .get(&right)
-            .expect("published closure must have a source denotation");
+            .expect("published closure must have a source denotation")
+            .origin;
         if Arc::ptr_eq(left, right) {
             Ordering::Equal
         } else {
@@ -453,13 +484,26 @@ impl Node {
         }
     }
 
+    /// The hash of a closure's source denotation: equal for every id whose
+    /// denotations compare equal, and read from the table, not recomputed.
+    pub fn closure_denotation_hash(&self, id: ClosureDenotationId) -> u64 {
+        id.user_index();
+        self.closure_denotations
+            .borrow()
+            .get(&id)
+            .expect("published closure must have a source denotation")
+            .hash
+    }
+
     #[cfg(test)]
     pub(crate) fn closure_denotation(&self, id: ClosureDenotationId) -> Arc<FunctionDenotation> {
         Arc::clone(
-            self.closure_denotations
+            &self
+                .closure_denotations
                 .borrow()
                 .get(&id)
-                .expect("registered denotation"),
+                .expect("registered denotation")
+                .origin,
         )
     }
 
@@ -477,6 +521,15 @@ impl Node {
     /// allocation instead of copying the text.
     pub fn intern_shared_atom(&self, name: &AtomName) -> u32 {
         self.atoms.borrow_mut().intern_shared(name)
+    }
+
+    /// The hash of the atom's name, kept in the table since the atom was
+    /// interned. Published values always name registered atoms.
+    pub fn atom_name_hash(&self, id: u32) -> u64 {
+        self.atoms
+            .borrow()
+            .name_hash(id)
+            .expect("published atom must be registered")
     }
 
     /// Every atom's name in id order, shared with the table.

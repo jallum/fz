@@ -1,18 +1,14 @@
 use crate::fast_hash::HashMap;
 use std::cell::{Ref, RefCell, RefMut};
 use std::fmt;
-use std::ptr;
 use std::rc::Rc;
 use std::slice;
 use std::sync::OnceLock;
 
 use smallvec::SmallVec;
 
-use fz_runtime::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, ValueKind, map_count, map_key_kind, map_keys_ptr, map_tag_ptr,
-    map_value_kind, map_values_ptr, struct_schema_id,
-};
-use fz_runtime::heap::{Schema, SchemaRegistry};
+use fz_runtime::any_value::{AnyValue, AnyValueRef, AnyValueRefError, ValueKind, map_count, struct_schema_id};
+use fz_runtime::heap::{Schema, SchemaRegistry, map_entries_refs, map_entry_refs};
 use fz_runtime::procbin::bitstring_bit_len as tagged_bitstring_bit_len;
 use fz_runtime::procbin::bitstring_byte_ptr as procbin_byte_ptr;
 use fz_runtime::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
@@ -341,8 +337,8 @@ impl QuotedSourceBuilder {
         AnyValueRef::from_heap_object(ValueKind::STRUCT, ptr).map_err(QuotedSourceError::from)
     }
 
-    /// The heap publishes strict structural key order once. Quoted source
-    /// consumes that order directly.
+    /// The heap publishes the entries once: sorted by strict structural key up
+    /// to 32 entries, in a hash trie above.
     pub fn map(&self, entries: &[(AnyValueRef, AnyValueRef)]) -> Result<AnyValueRef, QuotedSourceError> {
         let mut proc = self.heap.process_mut();
         proc.heap.alloc_map_refs(entries).map_err(QuotedSourceError::from)
@@ -828,19 +824,24 @@ impl QuotedSourceCursor {
         })
     }
 
+    /// Every entry, in the map's own order: key order up to 32 entries, hash
+    /// order above.
     pub fn map_entries(&self) -> Result<Vec<(Self, Self)>, QuotedSourceError> {
         let addr = self.root.map_addr().map_err(QuotedSourceError::from)?;
-        let count = unsafe { map_count(addr as *const u8) };
-        (0..count).map(|index| self.map_entry(addr, count, index)).collect()
+        let entries = unsafe { map_entries_refs(addr) };
+        Ok(entries
+            .into_iter()
+            .map(|(key, value)| self.entry_cursors(key, value))
+            .collect())
     }
 
-    fn map_entry(&self, addr: *mut u8, count: usize, index: usize) -> Result<(Self, Self), QuotedSourceError> {
-        let tag = unsafe { ptr::read(map_tag_ptr(addr as *const u8).add(index)) };
-        let keys = unsafe { map_keys_ptr(addr as *const u8, count) };
-        let values = unsafe { map_values_ptr(addr as *const u8, count) };
-        let key = storage_ref(unsafe { keys.add(index) }, map_key_kind(tag))?;
-        let value = storage_ref(unsafe { values.add(index) }, map_value_kind(tag))?;
-        Ok((
+    fn map_entry(&self, addr: *mut u8, index: usize) -> (Self, Self) {
+        let (key, value) = unsafe { map_entry_refs(addr, index) };
+        self.entry_cursors(key, value)
+    }
+
+    fn entry_cursors(&self, key: AnyValueRef, value: AnyValueRef) -> (Self, Self) {
+        (
             Self {
                 heap: self.heap.clone(),
                 root: key,
@@ -849,7 +850,7 @@ impl QuotedSourceCursor {
                 heap: self.heap.clone(),
                 root: value,
             },
-        ))
+        )
     }
 
     /// The value under the atom key `key_name`. Entries are read in map order
@@ -858,7 +859,7 @@ impl QuotedSourceCursor {
         let addr = self.root.map_addr().map_err(QuotedSourceError::from)?;
         let count = unsafe { map_count(addr as *const u8) };
         for index in 0..count {
-            let (key, value) = self.map_entry(addr, count, index)?;
+            let (key, value) = self.map_entry(addr, index);
             if key.root.tag() == ValueKind::ATOM && key.atom_name()? == key_name {
                 return Ok(Some(value));
             }
@@ -992,27 +993,21 @@ fn list_eq(
 }
 
 /// Map entries minus the non-semantic metadata keys (span + namespace-id).
-/// Runtime order includes metadata inside composite keys. Erasing that
+/// The map's order includes metadata inside composite keys. Erasing that
 /// metadata can change order, so callers match the projected content.
 fn included_map_entries(
     proc: &Process,
     value: AnyValueRef,
 ) -> Result<Vec<(AnyValueRef, AnyValueRef)>, QuotedSourceError> {
     let addr = value.map_addr().map_err(QuotedSourceError::from)?;
-    let count = unsafe { map_count(addr as *const u8) };
-    let mut entries = Vec::with_capacity(count);
-    for index in 0..count {
-        let tag = unsafe { ptr::read(map_tag_ptr(addr as *const u8).add(index)) };
-        let keys = unsafe { map_keys_ptr(addr as *const u8, count) };
-        let values = unsafe { map_values_ptr(addr as *const u8, count) };
-        let key_ref = storage_ref(unsafe { keys.add(index) }, map_key_kind(tag))?;
+    let mut entries = Vec::new();
+    for (key_ref, value_ref) in unsafe { map_entries_refs(addr) } {
         if key_ref.tag() == ValueKind::ATOM {
             let atom_name = render_atom_name(proc, key_ref.load_atom().map_err(QuotedSourceError::from)? as u32)?;
             if atom_name == META_SPAN_KEY {
                 continue;
             }
         }
-        let value_ref = storage_ref(unsafe { values.add(index) }, map_value_kind(tag))?;
         entries.push((key_ref, value_ref));
     }
     Ok(entries)
@@ -1031,7 +1026,7 @@ fn map_eq(
         return Ok(false);
     }
     // Match each left entry to one right entry under metadata-erased equality.
-    // Stable runtime order does not order this different relation.
+    // The map's order does not order this different relation.
     for (left_key, left_value) in &left {
         let mut matched = None;
         for (index, (right_key, right_value)) in right.iter().enumerate() {
@@ -1145,17 +1140,6 @@ fn bitstring_payload(value: AnyValueRef) -> Result<(usize, Vec<u8>), QuotedSourc
     let byte_len = bit_len.div_ceil(8);
     let bytes = unsafe { slice::from_raw_parts(byte_ptr, byte_len) }.to_vec();
     Ok((bit_len, bytes))
-}
-
-fn storage_ref(raw_slot: *const u64, kind: ValueKind) -> Result<AnyValueRef, QuotedSourceError> {
-    Ok(match kind {
-        ValueKind::NULL => AnyValueRef::null(),
-        ValueKind::LIST if unsafe { ptr::read(raw_slot) } == 0 => AnyValueRef::empty_list(),
-        ValueKind::ATOM => AnyValueRef::atom(unsafe { ptr::read(raw_slot) } as u32),
-        tag if tag.is_scalar() => AnyValueRef::from_scalar_slot(tag, raw_slot).map_err(QuotedSourceError::from)?,
-        tag => AnyValueRef::from_heap_object(tag, unsafe { ptr::read(raw_slot) } as *const u8)
-            .map_err(QuotedSourceError::from)?,
-    })
 }
 
 fn render_atom_name(proc: &Process, atom_id: u32) -> Result<AtomName, QuotedSourceError> {

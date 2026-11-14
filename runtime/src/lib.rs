@@ -33,6 +33,7 @@ pub mod symbol_lookup;
 pub mod sync;
 pub mod telemetry;
 pub mod term;
+pub mod term_hash;
 pub mod timer;
 
 use crate::process::Process;

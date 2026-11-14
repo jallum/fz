@@ -310,7 +310,8 @@ last-value-wins dedup at publication. Destination freeze compacts that same
 allocation. Put, delete, and lookup share one binary search; updates copy the
 ordered sequence directly, absent deletion returns the original allocation,
 and GC/transport preserve order without sorting. Iteration consumes this stored
-order directly. Quoted-source equality erases diagnostic metadata, which can
+order directly; above 32 entries a map is a hash trie and its order is the
+trie's node order. Quoted-source equality erases diagnostic metadata, which can
 change key order; its distinct relation matches entries without assuming that
 metadata-erased keys retain runtime order.
 

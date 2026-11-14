@@ -1,7 +1,9 @@
 //! A map read the same way whichever layout holds it.
 //!
-//! A map has two physical layouts. The entries layout is a sorted array of
-//! key/value pairs. The struct layout is a schema-backed object: a named
+//! A map has three physical layouts. The entries layout is a sorted array of
+//! key/value pairs. The trie layout is a hash array mapped trie, for a map of
+//! more than `MAP_FLAT_MAX` entries built in one call (see `map_trie`). The
+//! struct layout is a schema-backed object: a named
 //! struct's keys are its schema's fields plus `__struct__`, which answers the
 //! module. Which layout a value has is invisible to the language, so every map
 //! operation reads through `MapLayout` and never asks for one layout by name.
@@ -19,17 +21,23 @@ use super::Heap;
 use super::schema::SchemaIdentity;
 use super::schema::{NamedSchema, StructKey};
 use crate::any_value::{
-    AnyValue, AnyValueRef, SlotLayout, ValueKind, heap_object_word, map_addr_from_tagged, map_count, map_entry,
-    struct_addr_from_tagged, struct_schema_id,
+    AnyValue, AnyValueRef, SlotLayout, ValueKind, heap_object_word, map_addr_from_tagged, map_count, map_entries,
+    map_entry, map_header_is_trie, map_slot, struct_addr_from_tagged, struct_schema_id,
 };
-use crate::heap::map_entry_refs;
+use crate::heap::{map_entry_refs, map_slot_refs};
 use crate::module_name::{ModuleName, STRUCT_MODULE_FIELD};
 use crate::term::{NumericMode, TermComparator};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapLayout {
+    /// A flat array of entries in key order.
     Entries(*mut u8),
-    Struct { object: AnyValueRef, schema_id: u32 },
+    /// The root of a trie, whose entries are in trie order.
+    Trie(*mut u8),
+    Struct {
+        object: AnyValueRef,
+        schema_id: u32,
+    },
 }
 
 /// A named struct's keys in map key order, each with its atom and, for a
@@ -55,7 +63,13 @@ impl Heap {
     /// every other value, a tuple included.
     pub fn map_layout(&self, value: AnyValueRef) -> Option<MapLayout> {
         match value.tag() {
-            ValueKind::MAP => value.map_addr().ok().map(MapLayout::Entries),
+            ValueKind::MAP => value.map_addr().ok().map(|addr| {
+                if unsafe { map_header_is_trie(addr as *const u8) } {
+                    MapLayout::Trie(addr)
+                } else {
+                    MapLayout::Entries(addr)
+                }
+            }),
             ValueKind::STRUCT => {
                 let addr = value.struct_addr().ok()?;
                 let schema_id = unsafe { struct_schema_id(addr as *const u8) };
@@ -82,17 +96,17 @@ impl Heap {
     pub fn named_schema(&self, value: AnyValueRef) -> NamedSchema {
         match self.map_layout(value) {
             Some(MapLayout::Struct { schema_id, .. }) => NamedSchema::Schema(schema_id),
-            Some(MapLayout::Entries(addr)) => self.entries_named_schema(addr),
+            Some(MapLayout::Entries(addr) | MapLayout::Trie(addr)) => self.entries_named_schema(addr),
             None => NamedSchema::None,
         }
     }
 
     fn entries_named_schema(&self, addr: *mut u8) -> NamedSchema {
         let key = AnyValue::atom(self.node.intern_atom(STRUCT_MODULE_FIELD));
-        let Ok(index) = self.map_key_position(addr, key) else {
+        let Some((node, slot)) = self.locate_key(addr, key) else {
             return NamedSchema::None;
         };
-        let (_, module) = unsafe { map_entry(addr, index) };
+        let (_, module) = unsafe { map_slot(node, slot) };
         if module.kind() != ValueKind::ATOM {
             return NamedSchema::None;
         }
@@ -133,10 +147,10 @@ impl Heap {
         };
         let mut fields = vec![None; schema.fields.len()];
         for (key, atom) in keys.keys.iter().zip(&keys.atoms) {
-            let index = self.map_key_position(addr, *atom).ok()?;
+            let (node, slot) = self.locate_key(addr, *atom)?;
             if let StructKey::Field(field) = key {
                 let name = schema.fields[*field].name.clone()?;
-                fields[*field] = Some((name, unsafe { map_entry(addr, index) }.1));
+                fields[*field] = Some((name, unsafe { map_slot(node, slot) }.1));
             }
         }
         Some((module.clone(), fields.into_iter().collect::<Option<_>>()?))
@@ -148,18 +162,23 @@ impl Heap {
             .unwrap_or_else(|| panic!("{context}: expected a map, found {:?}", value.tag()))
     }
 
+    /// The entries of `layout`. Constant time in every layout: a trie keeps its
+    /// total in its root.
     pub fn map_view_count(&self, layout: MapLayout) -> usize {
         match layout {
-            MapLayout::Entries(addr) => unsafe { map_count(addr) },
+            MapLayout::Entries(addr) | MapLayout::Trie(addr) => unsafe { map_count(addr) },
             MapLayout::Struct { schema_id, .. } => self.struct_map(schema_id).keys.len(),
         }
     }
 
-    /// The entry at `index` in map key order.
+    /// The entry at `index` in the map's own order: key order for an entries
+    /// layout and a struct, trie order for a trie. A trie finds it by skipping
+    /// whole children by their totals, so reading every entry by index costs
+    /// more than `map_view_entries`.
     pub fn map_view_entry(&self, layout: MapLayout, index: usize) -> (AnyValue, AnyValue) {
         assert!(index < self.map_view_count(layout), "map entry index out of bounds");
         match layout {
-            MapLayout::Entries(addr) => unsafe { map_entry(addr, index) },
+            MapLayout::Entries(addr) | MapLayout::Trie(addr) => unsafe { map_entry(addr, index) },
             MapLayout::Struct { object, schema_id } => {
                 let map = self.struct_map(schema_id);
                 (
@@ -174,7 +193,7 @@ impl Heap {
     /// no slot of the object, so they are boxed.
     pub fn map_view_entry_refs(&mut self, layout: MapLayout, index: usize) -> (AnyValueRef, AnyValueRef) {
         match layout {
-            MapLayout::Entries(addr) => {
+            MapLayout::Entries(addr) | MapLayout::Trie(addr) => {
                 assert!(index < unsafe { map_count(addr) }, "map entry index out of bounds");
                 unsafe { map_entry_refs(addr, index) }
             }
@@ -186,19 +205,44 @@ impl Heap {
         }
     }
 
+    /// Every entry, in the map's own order, in one pass.
     pub fn map_view_entries(&self, layout: MapLayout) -> Vec<(AnyValue, AnyValue)> {
-        (0..self.map_view_count(layout))
-            .map(|index| self.map_view_entry(layout, index))
-            .collect()
+        match layout {
+            MapLayout::Entries(addr) | MapLayout::Trie(addr) => unsafe { map_entries(addr) },
+            MapLayout::Struct { .. } => (0..self.map_view_count(layout))
+                .map(|index| self.map_view_entry(layout, index))
+                .collect(),
+        }
+    }
+
+    /// Every entry in key order: the order of an entries layout and a struct,
+    /// and a trie's entries sorted.
+    pub fn map_view_entries_in_key_order(&self, layout: MapLayout) -> Vec<(AnyValue, AnyValue)> {
+        let mut entries = self.map_view_entries(layout);
+        if matches!(layout, MapLayout::Trie(_)) {
+            self.sort_entries_by_key(&mut entries);
+        }
+        entries
+    }
+
+    /// The node and entry slot that hold `key` in the map at `addr`, an
+    /// entries layout or a trie.
+    pub(super) fn locate_key(&self, addr: *mut u8, key: AnyValue) -> Option<(*const u8, usize)> {
+        if unsafe { map_header_is_trie(addr) } {
+            self.trie_find(addr, key)
+        } else {
+            self.map_key_position(addr, key)
+                .ok()
+                .map(|index| (addr as *const u8, index))
+        }
     }
 
     /// The value under `key`, or `None` when the map lacks it.
     pub fn map_view_get(&mut self, layout: MapLayout, key: AnyValue) -> Option<AnyValueRef> {
         match layout {
-            MapLayout::Entries(addr) => self
-                .map_key_position(addr, key)
-                .ok()
-                .map(|index| unsafe { map_entry_refs(addr, index).1 }),
+            MapLayout::Entries(addr) | MapLayout::Trie(addr) => self
+                .locate_key(addr, key)
+                .map(|(node, slot)| unsafe { map_slot_refs(node, slot).1 }),
             MapLayout::Struct { object, schema_id } => {
                 let map = self.struct_map(schema_id);
                 let index = map.position(key)?;
@@ -209,16 +253,18 @@ impl Heap {
 
     pub fn map_view_has_key(&self, layout: MapLayout, key: AnyValue) -> bool {
         match layout {
-            MapLayout::Entries(addr) => self.map_key_position(addr, key).is_ok(),
+            MapLayout::Entries(addr) | MapLayout::Trie(addr) => self.locate_key(addr, key).is_some(),
             MapLayout::Struct { schema_id, .. } => self.struct_map(schema_id).position(key).is_some(),
         }
     }
 
     /// The map with `key` bound to `value`. A struct keeps its layout when
-    /// `key` is one of its fields; any other key leaves the schema.
+    /// `key` is one of its fields; any other key leaves the schema. A trie is
+    /// rebuilt as a trie.
     pub fn map_view_put(&mut self, layout: MapLayout, key: AnyValue, value: AnyValue) -> AnyValueRef {
         match layout {
             MapLayout::Entries(addr) => entries_ref(self.map_put_entry(addr, key, value)),
+            MapLayout::Trie(addr) => entries_ref(self.trie_put(addr, key, value)),
             MapLayout::Struct { object, schema_id } => {
                 let map = self.struct_map(schema_id);
                 match map.position(key).map(|index| map.keys[index]) {
@@ -238,6 +284,9 @@ impl Heap {
         let layout = self.expect_map_layout(map, "map delete");
         if !self.map_view_has_key(layout, key) {
             return map;
+        }
+        if let MapLayout::Trie(root) = layout {
+            return entries_ref(self.trie_delete(root, key));
         }
         let entries: Vec<_> = {
             let schemas = self.schemas.borrow();

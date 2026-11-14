@@ -2,8 +2,9 @@ use super::*;
 use crate::any_value::{
     AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST_BITS, MapDestinationKind, bitstring_bit_len,
     bitstring_bytes_ptr, bitstring_header_word, closure_capture_set, closure_capture_value, closure_denotation,
-    closure_header_word, heap_object_word, list_addr_from_tagged, map_count, map_destination_header_word,
-    map_header_word, struct_addr_from_tagged, struct_header_word, struct_schema_id,
+    closure_header_word, heap_object_word, list_addr_from_tagged, map_collision_header_word, map_count,
+    map_destination_header_word, map_header_word, map_trie_header_word, struct_addr_from_tagged, struct_header_word,
+    struct_schema_id,
 };
 use crate::heap::SHARED_BIN_THRESHOLD_BYTES;
 use crate::heap::{Heap, SIZE_TABLE, Schema, SchemaRegistry};
@@ -110,6 +111,23 @@ fn live_headers_of_every_kind_have_a_clear_low_nibble() {
     }
     for count in [0usize, 1, 8, 15, 4096] {
         assert_eq!(map_header_word(count) & LOW_NIBBLE, 0, "map of {count}");
+        assert_eq!(
+            map_collision_header_word(count) & LOW_NIBBLE,
+            0,
+            "collision node of {count}"
+        );
+    }
+    for (data, children, total) in [
+        (0u16, 0u16, 0usize),
+        (0xffff, 0, 16),
+        (0, 0xffff, 4096),
+        (0xaaaa, 0x5555, 65_535),
+    ] {
+        assert_eq!(
+            map_trie_header_word(data, children, total) & LOW_NIBBLE,
+            0,
+            "trie node {data:#x} {children:#x} {total}"
+        );
     }
     for (capacity, filled) in [(0usize, 0usize), (1, 1), (8, 8), (15, 3), (4096, 4095)] {
         for kind in [MapDestinationKind::Build, MapDestinationKind::Update] {

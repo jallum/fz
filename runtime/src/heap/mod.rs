@@ -37,6 +37,7 @@ mod deep_copy;
 mod gc;
 mod gift;
 mod imp;
+mod map_trie;
 mod map_view;
 mod ref_io;
 mod schema;
@@ -71,7 +72,7 @@ pub(crate) use self::gc::forwarding::forwarded_target;
 pub use self::gift::GiftSegment;
 pub use self::imp::{closure_capture_ref, list_head_ref, list_tail_ref};
 pub use self::map_view::MapLayout;
-pub(crate) use self::ref_io::map_entry_refs;
+pub use self::ref_io::{map_entries_refs, map_entry_refs, map_slot_refs};
 pub use self::schema::{FieldDescriptor, FieldKind, NamedSchema, Schema, SchemaIdentity, SchemaRegistry, StructKey};
 pub use self::stats::{AllocStat, GcStats, Generation, HeapAllocKind, HeapAllocStats};
 

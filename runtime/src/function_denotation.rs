@@ -95,6 +95,13 @@ impl FunctionDenotation {
         .then_with(|| self.arity.cmp(&other.arity))
     }
 
+    /// A hash that agrees with `semantic_cmp`: denotations that compare equal
+    /// have the same label, and the label names every field the comparison
+    /// reads.
+    pub fn semantic_hash(&self) -> u64 {
+        crate::term_hash::name_hash(&self.label())
+    }
+
     pub fn label(&self) -> String {
         match &self.origin {
             FunctionOrigin::Named { module, name } => match module {

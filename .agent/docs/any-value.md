@@ -309,7 +309,7 @@ List cons (16 bytes): head payload word
                                   high bits; the low nibble is clear
 Map:                  count, one packed key/value kind byte per entry,
                       then key payload words, then value payload words
-                      -- ENTRIES ARE SORTED BY KEY, see below
+                      -- UP TO 32 ENTRIES ARE SORTED BY KEY; more are a hash trie, see below
 Closure:              ClosureDenotationId + header word, code pointer,
                       capture payload words, capture kind bytes
 ```
@@ -466,9 +466,9 @@ quanta (`end_quantum`), so nothing reads the object half built. The
 interpreter and the runtime's own tuples use `Heap::alloc_struct`, which does
 zero the payload, since their stores are not adjacent to the allocation.
 
-### A map is a flat sorted array
+### A map is a flat sorted array, or above 32 entries a hash trie
 
-Every map has one entry per strict structural key, stored in comparator order.
+Every map has one entry per strict structural key. Up to `MAP_FLAT_MAX` (32) entries they are stored in comparator order in one array; a larger map built in one call is a trie (below).
 `TermComparator` borrows Node and SchemaRegistry and is the authority for
 construction, lookup, updates, equality, order, and iteration. Equal tuple,
 list, nested-map, and binary keys collide even when separately allocated.
@@ -507,9 +507,57 @@ puts `a` then `b`, with `h`'s value. A literal with any other key keeps its
 source order and ends in the freeze, which sorts.
 
 A single update copies the flat array, so repeated updates remain quadratic.
-Use bulk operations when touching several keys. Iteration follows strict fz
-term order, including atom names and binary content; Elixir's atom-key
-iteration may differ because it uses VM identity.
+Use bulk operations when touching several keys. Iteration of a flat map
+follows strict fz term order, including atom names and binary content;
+Elixir's atom-key iteration may differ because it uses VM identity.
+
+#### The hash trie above 32 entries
+
+`term_hash` (`runtime/src/term_hash.rs`) is the one hash, and it agrees with
+strict key equality: equal keys hash equal in every representation. Ints and
+floats hash under different tags, a float by its bits; a bitstring by bit
+length and content, whether inline, a ProcBin or a ProcBin view, with the bits
+past its length left out; a tuple by arity and fields; a map as a sum over its
+entries, so a flat map, a trie and a named struct spelling the same entries
+hash alike; a pid, ref or resource by its word. An atom hashes by its name's
+hash, which `AtomTable` keeps when it interns the atom, and a closure by the
+hash of its source denotation, which the `Node` keeps when it registers the
+denotation. Neither depends on an id, so trie order is the same under the
+interpreter, `run` and `build`. A hash walks a tree of containers, so after 256
+containers it remembers each container's hash by address and a shared
+substructure costs one lookup.
+
+A trie node (`runtime/src/any_value/map_node.rs`) is a Map object whose first
+word has bit 62 set:
+
+```text
+trie node:   TRIE | total << 36 | child_map << 20 | data_map << 4
+collision:   TRIE | COLLISION | count << 36
+node body:   tag bytes, keys, values (one per data_map bit), children (one word per child_map bit)
+```
+
+The node size is a function of its header alone, and the low nibble stays
+clear for the forwarding marker. A hash takes four bits per level, top bits
+first, sixteen levels; a slot holds an entry or a child, and a node exists
+only where two or more keys share the path, so a key set has one trie whatever
+order built it. Keys with equal 64-bit hashes share a collision node and are
+told apart by equality. `total` counts the entries at and beneath a node, so
+the root answers `map_size` in constant time and bounds a map at 2^25 entries.
+The collector traces a node's own entries and its children from the header, and
+deep copy and gift copy each node once through the forwarding map.
+
+`Heap::map_layout` answers `MapLayout::Trie` for a root. `alloc_map_slots`,
+`alloc_map_refs_bits`, `fz_map_from_kv` and the destination freeze and publish
+make a trie when more than 32 entries result; put and delete on a trie rebuild
+it from its entries (a result of 32 or fewer is flat), and put on a flat map
+keeps it flat. Enumeration (`map_view_entries`, `Enum`, `Map.to_list`, `for`,
+`inspect`) is node order: a node's entries in slot order, then each child's. It
+is a function of the hashes, so anything that needs key order sorts
+(`map_view_entries_in_key_order`). Entry `i` of a trie (`map_view_entry`) skips
+whole children by their totals and costs one header read per child passed, so
+reading every entry by index costs more than one walk; `Map.to_list`, `keys`
+and `values` read by index. Equality and ordering of two maps are those of the
+same entries in a flat map: ordering sorts both sides by key.
 
 ### A struct is a map in its own layout
 
@@ -517,7 +565,7 @@ A named struct is a map whose keys are its fields and `__struct__`. It has a
 second physical layout, the schema-backed object, but no operation asks which
 layout it holds: every map read and write goes through
 `Heap::map_layout` (`runtime/src/heap/map_view.rs`), which answers
-`MapLayout::Entries` for the sorted array and `MapLayout::Struct` for a named
+`MapLayout::Entries` for the sorted array, `MapLayout::Trie` for a trie root and `MapLayout::Struct` for a named
 struct, and `None` for every other value, a tuple included. A struct's keys
 come in map key order, `__struct__` among them; `SchemaRegistry::map_keys`
 holds that order once per schema.

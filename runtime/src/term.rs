@@ -5,7 +5,8 @@
 
 use crate::any_value::{
     AnyValue, ListCons, MAP_DESTINATION_FLAG, ValueKind, closure_capture_value, closure_captured_count,
-    closure_denotation, map_count, map_entry, map_key, struct_schema_id,
+    closure_denotation, map_count, map_entries, map_entry, map_header_is_collision, map_header_is_trie, map_key,
+    map_node_child, map_node_child_count, map_node_entry_count, map_slot, struct_schema_id,
 };
 use crate::heap::{Schema, SchemaIdentity, SchemaRegistry, StructKey};
 use crate::module_name::STRUCT_MODULE_FIELD;
@@ -25,7 +26,7 @@ pub enum NumericMode {
 /// The raw address of a heap value: what dereferencing and identity
 /// comparison use, never its payload word. The empty list has no object; its
 /// word is the null address the list comparator expects.
-fn address(value: AnyValue) -> *mut u8 {
+pub(crate) fn address(value: AnyValue) -> *mut u8 {
     value.heap_addr().unwrap_or(value.raw() as *mut u8)
 }
 
@@ -98,7 +99,7 @@ impl<'a> TermComparator<'a> {
 
     /// Where a value stands among the kinds of term. A struct stands with the
     /// maps, whichever layout holds it.
-    fn category(&self, value: AnyValue) -> Category {
+    pub(crate) fn category(&self, value: AnyValue) -> Category {
         match value.kind() {
             ValueKind::INT | ValueKind::FLOAT => Category::Number,
             ValueKind::ATOM => Category::Atom,
@@ -119,7 +120,7 @@ impl<'a> TermComparator<'a> {
         self.schemas.map_keys(unsafe { struct_schema_id(object) })
     }
 
-    fn map_term(&self, value: AnyValue) -> MapTerm<'a> {
+    pub(crate) fn map_term(&self, value: AnyValue) -> MapTerm<'a> {
         let addr = address(value) as *const u8;
         match value.kind() {
             ValueKind::MAP => MapTerm::Entries(addr),
@@ -153,7 +154,9 @@ impl<'a> TermComparator<'a> {
 
     /// Maps order by size, then by their keys, then by their values in key
     /// order. Two structs of one schema have the same size, keys and module,
-    /// so only their fields are read.
+    /// so only their fields are read. Two tries that hold the same keys have
+    /// the same shape, so a walk of both settles equality without ordering
+    /// either; any other pair is read in key order, sorting a trie first.
     fn map_cmp(&self, a: MapTerm<'a>, b: MapTerm<'a>, mode: NumericMode) -> Ordering {
         if let (
             MapTerm::Struct { object, schema, keys },
@@ -167,24 +170,90 @@ impl<'a> TermComparator<'a> {
         {
             return self.fields_cmp(schema, keys, object, other, mode);
         }
-        let count = self.map_count(a);
-        let size = count.cmp(&self.map_count(b));
+        let size = self.map_count(a).cmp(&self.map_count(b));
         if size != Ordering::Equal {
             return size;
         }
-        for i in 0..count {
-            let order = self.compare(self.map_key(a, i), self.map_key(b, i), NumericMode::Strict);
+        if let (MapTerm::Entries(left), MapTerm::Entries(right)) = (a, b)
+            && unsafe { map_header_is_trie(left) && map_header_is_trie(right) }
+            && self.tries_equal(left, right, mode)
+        {
+            return Ordering::Equal;
+        }
+        let (a, b) = (self.in_key_order(a), self.in_key_order(b));
+        for i in 0..self.map_count(a.map) {
+            let order = self.compare(self.ordered_key(&a, i), self.ordered_key(&b, i), NumericMode::Strict);
             if order != Ordering::Equal {
                 return order;
             }
         }
-        for i in 0..count {
-            let order = self.compare(self.map_value(a, i), self.map_value(b, i), mode);
+        for i in 0..self.map_count(a.map) {
+            let order = self.compare(self.ordered_value(&a, i), self.ordered_value(&b, i), mode);
             if order != Ordering::Equal {
                 return order;
             }
         }
         Ordering::Equal
+    }
+
+    /// Whether two trie nodes hold the same keys with equal values. Equal keys
+    /// hash alike, so a canonical trie of a key set has one shape: bitmaps that
+    /// differ mean different keys, and equal ones put the keys in one order.
+    /// Only a collision node, whose entries are unordered, is matched by key.
+    fn tries_equal(&self, a: *const u8, b: *const u8, mode: NumericMode) -> bool {
+        if a == b {
+            return true;
+        }
+        if unsafe { read(a as *const u64) != read(b as *const u64) } {
+            return false;
+        }
+        let entries = unsafe { map_node_entry_count(a) };
+        let own_equal = if unsafe { map_header_is_collision(a) } {
+            (0..entries).all(|i| self.collision_entry_matches(a, i, b, mode))
+        } else {
+            (0..entries).all(|i| self.entries_equal(unsafe { map_slot(a, i) }, unsafe { map_slot(b, i) }, mode))
+        };
+        own_equal
+            && (0..unsafe { map_node_child_count(a) })
+                .all(|i| self.tries_equal(unsafe { map_node_child(a, i) }, unsafe { map_node_child(b, i) }, mode))
+    }
+
+    fn collision_entry_matches(&self, a: *const u8, slot: usize, b: *const u8, mode: NumericMode) -> bool {
+        let entry = unsafe { map_slot(a, slot) };
+        (0..unsafe { map_node_entry_count(b) }).any(|j| self.entries_equal(entry, unsafe { map_slot(b, j) }, mode))
+    }
+
+    fn entries_equal(&self, a: (AnyValue, AnyValue), b: (AnyValue, AnyValue), mode: NumericMode) -> bool {
+        self.compare(a.0, b.0, NumericMode::Strict).is_eq() && self.compare(a.1, b.1, mode).is_eq()
+    }
+
+    /// The map's entries as they are read in key order.
+    fn in_key_order(&self, map: MapTerm<'a>) -> KeyOrder<'a> {
+        match map {
+            MapTerm::Entries(addr) if unsafe { map_header_is_trie(addr) } => {
+                let mut entries = unsafe { map_entries(addr) };
+                entries.sort_by(|a, b| self.compare(a.0, b.0, NumericMode::Strict));
+                KeyOrder {
+                    map,
+                    sorted: Some(entries),
+                }
+            }
+            _ => KeyOrder { map, sorted: None },
+        }
+    }
+
+    fn ordered_key(&self, order: &KeyOrder<'a>, index: usize) -> AnyValue {
+        match &order.sorted {
+            Some(entries) => entries[index].0,
+            None => self.map_key(order.map, index),
+        }
+    }
+
+    fn ordered_value(&self, order: &KeyOrder<'a>, index: usize) -> AnyValue {
+        match &order.sorted {
+            Some(entries) => entries[index].1,
+            None => self.map_value(order.map, index),
+        }
     }
 
     fn fields_cmp(
@@ -207,14 +276,14 @@ impl<'a> TermComparator<'a> {
         Ordering::Equal
     }
 
-    fn map_count(&self, map: MapTerm<'a>) -> usize {
+    pub(crate) fn map_count(&self, map: MapTerm<'a>) -> usize {
         match map {
             MapTerm::Entries(addr) => unsafe { map_count(addr) },
             MapTerm::Struct { keys, .. } => keys.len(),
         }
     }
 
-    fn map_key(&self, map: MapTerm<'a>, index: usize) -> AnyValue {
+    pub(crate) fn map_key(&self, map: MapTerm<'a>, index: usize) -> AnyValue {
         match map {
             MapTerm::Entries(addr) => unsafe { map_key(addr, index) },
             MapTerm::Struct { schema, keys, .. } => match keys[index] {
@@ -229,7 +298,7 @@ impl<'a> TermComparator<'a> {
         }
     }
 
-    fn map_value(&self, map: MapTerm<'a>, index: usize) -> AnyValue {
+    pub(crate) fn map_value(&self, map: MapTerm<'a>, index: usize) -> AnyValue {
         match map {
             MapTerm::Entries(addr) => unsafe { map_entry(addr, index).1 },
             MapTerm::Struct { object, schema, keys } => match keys[index] {
@@ -288,7 +357,7 @@ impl<'a> TermComparator<'a> {
 
 /// The kinds of term, in term order.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Category {
+pub(crate) enum Category {
     Number,
     Atom,
     Reference,
@@ -303,7 +372,7 @@ enum Category {
 
 /// A map in either layout, read in map key order.
 #[derive(Clone, Copy)]
-enum MapTerm<'a> {
+pub(crate) enum MapTerm<'a> {
     Entries(*const u8),
     Struct {
         object: *const u8,
@@ -312,9 +381,16 @@ enum MapTerm<'a> {
     },
 }
 
+/// A map read in key order: in place where the layout is stored sorted, and
+/// from a sorted copy of its entries where it is not.
+struct KeyOrder<'a> {
+    map: MapTerm<'a>,
+    sorted: Option<Vec<(AnyValue, AnyValue)>>,
+}
+
 /// The value in field `index` of a tuple or struct whose fields are all
 /// language values.
-fn field_value(schema: &Schema, object: *const u8, index: usize) -> AnyValue {
+pub(crate) fn field_value(schema: &Schema, object: *const u8, index: usize) -> AnyValue {
     let offset = schema.fields[index].offset as usize;
     unsafe {
         AnyValue::decode_parts(
