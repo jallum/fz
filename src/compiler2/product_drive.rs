@@ -16,12 +16,13 @@ use super::pull::{
     ProductDeferral, ProductDriveReport, ProductDriver, ProductKey, ProductRequestId, ProductScope, ProductSessions,
     ProductValidation, ProductValue, PullOutcome, PullWait, WorldProductProducers,
 };
+use super::work_start::WorkStartReason;
 use super::world::World;
 use super::{BackendProgram, Job};
 use crate::telemetry::RawSpanGuard as _;
 use fz_engine::OrderedWorklist;
 use fz_engine::SemanticOrd;
-use fz_engine::{DriveOutcome, FatalError, WorkStartReason};
+use fz_engine::{DriveOutcome, FatalError};
 use fz_engine::{FactReadiness, FactUse};
 
 /// A retry-budgeted stack expansion of this size backs both the outer product

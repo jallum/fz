@@ -1764,7 +1764,10 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         out.push(',');
         write_str_lit(out, "work_starts");
         out.push_str(":{");
-        for (position, reason) in fz_engine::WorkStartReason::ALL.into_iter().enumerate() {
+        for (position, reason) in crate::compiler2::WorkStartReason::TELEMETRY_ORDER
+            .into_iter()
+            .enumerate()
+        {
             if position > 0 {
                 out.push(',');
             }

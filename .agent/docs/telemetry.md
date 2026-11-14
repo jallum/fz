@@ -572,7 +572,7 @@ in `work_start_reason_test` asserts the whole production path: its
 `ignition == 2` (the true external front-door count: one `submit_code` before
 any root exists, one `submit_root`) for every fixture they drive.
 
-### Work-Start Attribution (`WorkStartReason`)
+### Work-Start Attribution (`WorkStart`, `WorkStartReason`)
 
 `Scheduler::enqueue` tags each new agenda entry with the reason it started,
 recording it in a `pending_reason` map without charging anything yet.
@@ -580,7 +580,9 @@ recording it in a `pending_reason` map without charging anything yet.
 it the moment `pop_runnable` commits the job to actually run -- never when
 the entry is merely gated and parked without running, so a job re-enqueued
 for the same eventual run is not charged twice. The finished `PullSession` is
-the raw telemetry authority. The sanctioned reasons mirror the pull model:
+the raw telemetry authority. The sanctioned reasons mirror the pull model. The engine (`fz_engine::WorkStart`)
+owns `ChangedRevisionWake` and `Unclassified`; `compiler2::WorkStartReason`
+owns the rest and reaches the engine as `WorkStart::Client`:
 
 - `Ignition` is the one job started by an external code, interface, or root
   submission.
@@ -606,7 +608,7 @@ the raw telemetry authority. The sanctioned reasons mirror the pull model:
   (walking a blocked job's own wait chain for a producer that failed
   silently and left no record) tags its own demands this way too.
 
-`Unclassified` is the default and makes an untagged enqueue fail the running
+`WorkStart::Unclassified` is the default and makes an untagged enqueue fail the running
 guard through `unsanctioned_work_starts`. The fixture guard also pins
 `ignition == 2`, so internal work mislabeled as an external start fails. Other
 deliberate mislabeling remains a review concern made visible by the session's

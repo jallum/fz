@@ -67,12 +67,13 @@ use super::transport::{
 };
 use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, KeyDemand, MapKey, Ty, Types};
+use super::work_start::{WorkStartReason, WorkStartTally};
 use crate::ir_interp::AnyValue as RuntimeValue;
 use fz_engine::ExternalDependencyStates;
 use fz_engine::FactUse;
 use fz_engine::OrderedSet;
 use fz_engine::UnresolvedWait;
-use fz_engine::{CompletionEffects, FatalError, WorkStartReason, WorkStartTally};
+use fz_engine::{CompletionEffects, FatalError, WorkStart};
 use fz_runtime::any_value::AnyValueRef;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -799,7 +800,7 @@ impl World {
     /// directly) -- it exists for tests that seed jobs without going through
     /// submission.
     pub fn demand(&mut self, job: Job) -> bool {
-        self.work_graph.enqueue(job, WorkStartReason::Unclassified)
+        self.work_graph.enqueue(job, WorkStart::Unclassified)
     }
 
     /// The cumulative work-start attribution snapshot for this world: how many

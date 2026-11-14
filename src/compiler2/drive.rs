@@ -14,10 +14,11 @@ use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId
 use super::pull::{ProductKey, ProductScope, ProductSessions};
 use super::semantic::{CallSiteKey, CallableConstructionTargetKey};
 use super::types::Types;
+use super::work_start::WorkStartReason;
 use super::world::World;
 use fz_engine::SemanticOrd;
 use fz_engine::{ClaimShape, FactUse, Publisher};
-use fz_engine::{DriveOutcome, FatalError, Scheduler, WorkStartReason};
+use fz_engine::{DriveOutcome, FatalError, Scheduler};
 
 pub(crate) struct ExecutionContext<'a, T: crate::telemetry::Telemetry> {
     pub(crate) world: &'a mut World,
@@ -670,6 +671,7 @@ impl Derivation {
 
 impl Publisher for Derivation {
     type Run = Job;
+    type Reason = WorkStartReason;
 
     fn run(&self) -> &Job {
         &self.job

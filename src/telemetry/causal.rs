@@ -470,7 +470,7 @@ pub struct ShiftWork {
 pub struct SessionWork {
     pub sessions: u64,
     pub producer_pokes: u64,
-    pub work_starts: fz_engine::WorkStartTally,
+    pub work_starts: crate::compiler2::WorkStartTally,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -684,7 +684,7 @@ impl CausalReport {
         ] {
             put_count(&mut multiset, format!("session\u{1}{dimension}"), count);
         }
-        for reason in fz_engine::WorkStartReason::ALL {
+        for reason in crate::compiler2::WorkStartReason::TELEMETRY_ORDER {
             put_count(
                 &mut multiset,
                 format!("session\u{1}{}", reason.name()),
@@ -1652,7 +1652,7 @@ impl Replay {
         tally.sessions += 1;
         tally.producer_pokes += count("producer_pokes");
         let work_starts = session.get("work_starts");
-        for reason in fz_engine::WorkStartReason::ALL {
+        for reason in crate::compiler2::WorkStartReason::TELEMETRY_ORDER {
             tally.work_starts[reason] += work_starts
                 .and_then(|starts| starts.get(reason.name()))
                 .and_then(Json::as_u64)

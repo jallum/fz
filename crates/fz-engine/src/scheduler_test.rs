@@ -1,6 +1,6 @@
 use crate::fast_hash::HashSet;
 
-use super::{Agenda, AppliedStep, DependencyIndex, FactUse, Scheduler, Wake, WakeDisposition};
+use super::{Agenda, AppliedStep, ClientReason, DependencyIndex, FactUse, Scheduler, Wake, WakeDisposition};
 use crate::facts::{ClaimShape, SemanticOrd};
 use crate::scheduler::FactChangeQueue;
 use crate::scheduler::{CompletionEffects, DerivationEffects};
@@ -19,10 +19,27 @@ impl SemanticOrd<TestOrder> for &'static str {
     }
 }
 
+/// The generic tests start work only for the reasons the engine originates.
+#[derive(Debug, Clone, Copy)]
+pub enum NoClientReason {}
+
+impl ClientReason for NoClientReason {
+    type Counts = [u64; 0];
+
+    fn slot(self) -> usize {
+        match self {}
+    }
+
+    fn name(self) -> &'static str {
+        match self {}
+    }
+}
+
 /// The generic tests use a job that answers one question per run, so a job is
 /// its own publisher.
 impl crate::facts::Publisher for u32 {
     type Run = u32;
+    type Reason = NoClientReason;
 
     fn run(&self) -> &u32 {
         self
@@ -1742,6 +1759,7 @@ type TestDerivation = (u32, u32);
 
 impl crate::facts::Publisher for TestDerivation {
     type Run = u32;
+    type Reason = NoClientReason;
 
     fn run(&self) -> &u32 {
         &self.0

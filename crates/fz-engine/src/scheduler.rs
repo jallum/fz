@@ -26,116 +26,130 @@ impl<F> ExternalDependencyStates<F> for NoExternalDependencyStates {
     }
 }
 
-/// Why a job entered the agenda. This is observation-only: it never changes
-/// which job runs or in what order, it only tags each work-start so a running
-/// test can distinguish the compiler's sanctioned entry points from anything
-/// else.
-///
-/// The pull-based northstar (`../pull-based.html`, `.agent/docs/telemetry.md`)
-/// allows exactly these ways for a job to start:
-///
-/// - `Ignition`: an external submission (`World::submit_code`,
-///   `submit_module_interface`, `submit_root`) enqueuing the one job that
-///   begins that submission's own work. This is the front door, not a job
-///   commanding another job.
-/// - `ChangedRevisionWake`: `Scheduler::complete`'s wake propagation
-///   (`enqueue_dependents`/`enqueue_step`) re-running a job whose fact
-///   subscription (read or wait) just changed. This is
-///   the core pull mechanism: readers wake because their ground moved, never
-///   because a producer pushed them by name.
-/// - `ActivationPublished`: `World::demand_recorded_needs` demanding the
-///   first analysis of an activation `complete_job` just published --
-///   `Activation(key)` without a settled `ActivationAnalyzed(key)` is a
-///   recorded need the instant it is published. Root entries and
-///   caller-discovered callees both use this one path.
-/// - `GateExpansion`: `World::park_on_gates`'s own redirect, whenever a job
-///   named by any of the reasons above is not yet runnable: instead of
-///   starting that job to discover from inside its own body the same fact it
-///   is missing, the still-missing gate's own producer is demanded instead,
-///   and the job is parked on it. That producer is a different job than the
-///   one that was named, so every caller's gate detour is tallied here,
-///   uniformly, never folded into whichever reason asked for the job that
-///   turned out to be gated. This is load-bearing for `ActivationPublished`
-///   in particular: its own dedup invariant (`work_start_reason_test.rs`)
-///   requires exactly one credit per activation, the call that actually
-///   places its job on the agenda, never the prerequisites it waited out
-///   along the way.
-/// - `BlockedWaiterExpansion`: the fact->producer map
-///   (`World::demand_fact_producer`) expanding a job's own wait to its
-///   single producer the moment that wait is recorded
-///   (`World::demand_recorded_needs`, at completion) -- the bounded
-///   product-pull's own fact-wait loop
-///   (`product_drive::drive_product_fact_wait`) uses this reason too, when
-///   the demanded producer is itself runnable; a further gate detour from
-///   there is `GateExpansion` instead.
-///
-/// `Unclassified` is the catch-all default. A future enqueue call site that
-/// does not pass one of the reasons above — a reintroduced `follow_up`-style
-/// push, for instance — is counted here, which is exactly what trips the
-/// running pull-only guard (`work_start_reason_test`'s
-/// `pull_only_guard_holds_for_*` cases).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum WorkStartReason {
-    Ignition,
-    ChangedRevisionWake,
-    ActivationPublished,
-    GateExpansion,
-    BlockedWaiterExpansion,
-    #[default]
-    Unclassified,
-}
+/// The reasons a client names for starting work. The engine never inspects
+/// one: it stores it with the job's agenda entry, charges it to the tally when
+/// the job runs, and hands it back through the tally's `Index`.
+pub trait ClientReason: Copy + Debug {
+    /// The fixed-size counters the tally keeps for the client's reasons: an
+    /// array with one slot per reason.
+    type Counts: Copy + Default + Eq + Debug + AsRef<[u64]> + AsMut<[u64]>;
 
-impl WorkStartReason {
-    /// Every reason, in the order a `WorkStartTally` stores them. This list
-    /// and `name` are the only places the reasons are spelled out; the tally,
-    /// the telemetry writer and its readers all iterate it.
-    pub const ALL: [WorkStartReason; 6] = [
-        WorkStartReason::Ignition,
-        WorkStartReason::ChangedRevisionWake,
-        WorkStartReason::ActivationPublished,
-        WorkStartReason::GateExpansion,
-        WorkStartReason::BlockedWaiterExpansion,
-        WorkStartReason::Unclassified,
-    ];
+    /// This reason's position in `Counts`.
+    fn slot(self) -> usize;
 
     /// The reason's spelling in telemetry.
-    pub const fn name(self) -> &'static str {
+    fn name(self) -> &'static str;
+}
+
+/// Why a job entered the agenda. This is observation-only: it never changes
+/// which job runs or in what order, it only tags each work-start.
+///
+/// The engine itself originates two reasons; every other reason is the
+/// client's, carried as `Client`.
+///
+/// - `ChangedRevisionWake`: `Scheduler::complete`'s wake propagation re-runs
+///   a job whose fact subscription (read or wait) just changed. Readers wake
+///   because their ground moved, never because a producer pushed them by name.
+/// - `Unclassified`: the catch-all default, for an agenda entry that carries no
+///   reason. A client that wants to see a start with no sanctioned reason
+///   names it here, so it is counted rather than lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum WorkStart<R> {
+    ChangedRevisionWake,
+    #[default]
+    Unclassified,
+    Client(R),
+}
+
+impl<R> From<R> for WorkStart<R> {
+    fn from(reason: R) -> Self {
+        WorkStart::Client(reason)
+    }
+}
+
+impl<R: ClientReason> WorkStart<R> {
+    /// The reason's spelling in telemetry.
+    pub fn name(self) -> &'static str {
         match self {
-            WorkStartReason::Ignition => "ignition",
-            WorkStartReason::ChangedRevisionWake => "changed_revision_wake",
-            WorkStartReason::ActivationPublished => "activation_published",
-            WorkStartReason::GateExpansion => "gate_expansion",
-            WorkStartReason::BlockedWaiterExpansion => "blocked_waiter_expansion",
-            WorkStartReason::Unclassified => "unclassified",
+            WorkStart::ChangedRevisionWake => "changed_revision_wake",
+            WorkStart::Unclassified => "unclassified",
+            WorkStart::Client(reason) => reason.name(),
         }
     }
 }
 
-/// A scheduler's cumulative work-start attribution: how many jobs entered
-/// the agenda under each `WorkStartReason`, read as `tally[reason]`. Carried
-/// out of the scheduler as a single value so the pull session can record and
-/// emit the full breakdown (`pull.session.finished`) without reaching back
-/// into the world.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct WorkStartTally([u64; WorkStartReason::ALL.len()]);
+const ENGINE_REASONS: usize = 2;
 
-impl std::ops::Index<WorkStartReason> for WorkStartTally {
+/// A scheduler's cumulative work-start attribution: how many jobs entered
+/// the agenda under each `WorkStart`, read as `tally[reason]`. Carried out of
+/// the scheduler as a single value so a client can record and emit the full
+/// breakdown without reaching back into the scheduler.
+pub struct WorkStartTally<R: ClientReason> {
+    engine: [u64; ENGINE_REASONS],
+    client: R::Counts,
+}
+
+// The traits below are written out because a derive would also demand them of
+// `R`, when only `R::Counts` is stored.
+impl<R: ClientReason> Clone for WorkStartTally<R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R: ClientReason> Copy for WorkStartTally<R> {}
+
+impl<R: ClientReason> Default for WorkStartTally<R> {
+    fn default() -> Self {
+        Self {
+            engine: [0; ENGINE_REASONS],
+            client: R::Counts::default(),
+        }
+    }
+}
+
+impl<R: ClientReason> PartialEq for WorkStartTally<R> {
+    fn eq(&self, other: &Self) -> bool {
+        self.engine == other.engine && self.client == other.client
+    }
+}
+
+impl<R: ClientReason> Eq for WorkStartTally<R> {}
+
+impl<R: ClientReason> Debug for WorkStartTally<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkStartTally")
+            .field("engine", &self.engine)
+            .field("client", &self.client)
+            .finish()
+    }
+}
+
+impl<R: ClientReason> std::ops::Index<WorkStart<R>> for WorkStartTally<R> {
     type Output = u64;
 
-    fn index(&self, reason: WorkStartReason) -> &u64 {
-        &self.0[reason as usize]
+    fn index(&self, reason: WorkStart<R>) -> &u64 {
+        match reason {
+            WorkStart::ChangedRevisionWake => &self.engine[0],
+            WorkStart::Unclassified => &self.engine[1],
+            WorkStart::Client(reason) => &self.client.as_ref()[reason.slot()],
+        }
     }
 }
 
-impl std::ops::IndexMut<WorkStartReason> for WorkStartTally {
-    fn index_mut(&mut self, reason: WorkStartReason) -> &mut u64 {
-        &mut self.0[reason as usize]
+impl<R: ClientReason> std::ops::IndexMut<WorkStart<R>> for WorkStartTally<R> {
+    fn index_mut(&mut self, reason: WorkStart<R>) -> &mut u64 {
+        match reason {
+            WorkStart::ChangedRevisionWake => &mut self.engine[0],
+            WorkStart::Unclassified => &mut self.engine[1],
+            WorkStart::Client(reason) => &mut self.client.as_mut()[reason.slot()],
+        }
     }
 }
 
-impl WorkStartTally {
+impl<R: ClientReason> WorkStartTally<R> {
     /// A tally holding exactly the given counts; every other reason is zero.
-    pub fn of(counts: &[(WorkStartReason, u64)]) -> Self {
+    pub fn of(counts: &[(WorkStart<R>, u64)]) -> Self {
         let mut tally = Self::default();
         for &(reason, count) in counts {
             tally[reason] = count;
@@ -144,11 +158,11 @@ impl WorkStartTally {
     }
 
     /// Jobs that entered the agenda with no attributable sanctioned reason.
-    /// Must stay zero on every sanctioned path: a reintroduced push (a
-    /// follow-up-style enqueue that forgets to name a reason) lands here by
-    /// construction, since `WorkStartReason` defaults to `Unclassified`.
+    /// Must stay zero on every sanctioned path: a reintroduced push that
+    /// forgets to name a reason lands here by construction, since
+    /// `WorkStart` defaults to `Unclassified`.
     pub fn unsanctioned_work_starts(&self) -> u64 {
-        self[WorkStartReason::Unclassified]
+        self[WorkStart::Unclassified]
     }
 
     /// Every run this tally has ever charged, summed across every reason.
@@ -156,30 +170,38 @@ impl WorkStartTally {
     /// each job is popped and committed to run, so this total is also the
     /// number of runs the scheduler has completed.
     pub fn total(&self) -> u64 {
-        self.0.iter().sum()
+        self.engine.iter().chain(self.client.as_ref()).sum()
     }
 
     pub fn delta_since(self, earlier: Self) -> Self {
         let mut delta = self;
-        for reason in WorkStartReason::ALL {
-            delta[reason] = self[reason]
-                .checked_sub(earlier[reason])
+        for (slot, before) in delta.slots_mut().zip(earlier.slots()) {
+            *slot = slot
+                .checked_sub(before)
                 .expect("cumulative work-start counters cannot move backwards");
         }
         delta
     }
 
     pub fn add(&mut self, other: Self) {
-        for reason in WorkStartReason::ALL {
-            self[reason] += other[reason];
+        for (slot, added) in self.slots_mut().zip(other.slots()) {
+            *slot += added;
         }
+    }
+
+    fn slots(&self) -> impl Iterator<Item = u64> + '_ {
+        self.engine.iter().chain(self.client.as_ref()).copied()
+    }
+
+    fn slots_mut(&mut self) -> impl Iterator<Item = &mut u64> {
+        self.engine.iter_mut().chain(self.client.as_mut())
     }
 }
 
 /// Whether a wake newly started a job or found it already pending.
 ///
 /// `Enqueued`: `Agenda::enqueue` transitioned the job from absent to pending
-/// — a new work start (tallied under `WorkStartReason::ChangedRevisionWake`).
+/// — a new work start (tallied under `WorkStart::ChangedRevisionWake`).
 ///
 /// `Coalesced`: the job was already pending in the agenda from an earlier
 /// wake this same `complete` call (agenda dedupe: `Agenda::enqueue` returned
@@ -403,8 +425,8 @@ pub struct Scheduler<P: Publisher, F> {
     read_finality: HashMap<P, ReadFinality>,
     /// Work-start attribution tally: how many jobs ran, under the reason
     /// named by the agenda entry that led to that run. Observation-only —
-    /// see `WorkStartReason`.
-    work_starts: WorkStartTally,
+    /// see `WorkStart`.
+    work_starts: WorkStartTally<P::Reason>,
     /// The reason named by each job's current agenda entry, while that
     /// entry is still unspent. `enqueue`/`enqueue_step` record a reason only
     /// when the job was not already queued, so a coalesced demand on a
@@ -415,7 +437,7 @@ pub struct Scheduler<P: Publisher, F> {
     /// gone, and the ordinary wake that later re-queues it records a fresh
     /// reason of its own. `record_run_start` spends the entry the one time
     /// `pop_runnable` commits to actually running it.
-    pending_reason: HashMap<P::Run, WorkStartReason>,
+    pending_reason: HashMap<P::Run, WorkStart<P::Reason>>,
 }
 
 impl<P, F> Default for Scheduler<P, F>
@@ -531,7 +553,7 @@ where
     /// The cumulative work-start attribution snapshot: per-reason agenda-entry
     /// counts (coalesced re-demands of an already-pending job do not count —
     /// they are not a new work start).
-    pub fn work_start_tally(&self) -> WorkStartTally {
+    pub fn work_start_tally(&self) -> WorkStartTally<P::Reason> {
         self.work_starts
     }
 
@@ -636,10 +658,10 @@ where
     /// whether the job was newly enqueued (`false` means it was already
     /// pending and this call coalesced into it, leaving the pending entry's
     /// own reason in place).
-    pub fn enqueue(&mut self, job: P::Run, reason: WorkStartReason) -> bool {
+    pub fn enqueue(&mut self, job: P::Run, reason: impl Into<WorkStart<P::Reason>>) -> bool {
         let started = self.agenda.enqueue(job.clone());
         if started {
-            self.pending_reason.insert(job, reason);
+            self.pending_reason.insert(job, reason.into());
         }
         started
     }
@@ -1194,7 +1216,7 @@ where
     }
 
     /// The changed-revision wake path: a subscriber's fact use changed, so it
-    /// re-enters the agenda under `WorkStartReason::ChangedRevisionWake` --
+    /// re-enters the agenda under `WorkStart::ChangedRevisionWake` --
     /// the one work-start reason that is never passed in by a caller, since
     /// it names the wake mechanism itself, not an external demand. Records
     /// one `Wake` attributing `job` to `cause`, whatever the disposition —
@@ -1205,8 +1227,7 @@ where
     /// leaves that job's earlier reason in place.
     fn enqueue_step(&mut self, job: P::Run, cause: &FactUse<F>, shift: bool, wakes: &mut Vec<Wake<P::Run, F>>) {
         let disposition = if self.agenda.enqueue(job.clone()) {
-            self.pending_reason
-                .insert(job.clone(), WorkStartReason::ChangedRevisionWake);
+            self.pending_reason.insert(job.clone(), WorkStart::ChangedRevisionWake);
             WakeDisposition::Enqueued
         } else {
             WakeDisposition::Coalesced
