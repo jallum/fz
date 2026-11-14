@@ -675,6 +675,21 @@ impl ProductDriveReport {
     }
 }
 
+/// A drive that ran dry beneath another drive and unwound with its request
+/// standing. `scope` is the scope the drive was in and `depth` how many drives
+/// were on the stack, itself included.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProductDeferral {
+    pub scope: ProductScope,
+    pub depth: usize,
+}
+
+impl ProductDeferral {
+    pub(super) fn report(&self, tel: &impl Telemetry, key: &ProductKey) {
+        tel.raw_event2(&["fz", "compiler2", "pull", "drive", "deferred"], key, self);
+    }
+}
+
 #[derive(Default)]
 struct ProductValidationWalk {
     checked: HashSet<ProductKey>,
@@ -1703,6 +1718,10 @@ pub(crate) struct ProductSessions {
     active_work_starts: Vec<WorkStartOwner>,
     pending_requests: super::agenda::Agenda<ProductAddress>,
     requested: HashSet<ProductAddress>,
+    /// What each drive that deferred was waiting on, and how deep the stack
+    /// was when it did, in the order they deferred. Dropped when the drive
+    /// starts again.
+    deferred_waits: IndexMap<ProductScope, (usize, Vec<FactUse<FactKey>>)>,
 }
 
 #[derive(Debug, Default)]
@@ -1763,6 +1782,28 @@ impl ProductSessions {
             }
         }
         None
+    }
+
+    /// How many product drives are on the stack right now, the one asking
+    /// included.
+    pub(crate) fn drive_depth(&self) -> usize {
+        self.active_scopes.len()
+    }
+
+    /// A drive that ended deferred leaves the facts it was waiting on for the
+    /// outermost drain to arbitrate on its behalf, until it is driven again.
+    pub(crate) fn defer_waits<'a>(&mut self, scope: ProductScope, facts: impl Iterator<Item = &'a FactUse<FactKey>>) {
+        let depth = self.drive_depth();
+        self.deferred_waits.insert(scope, (depth, facts.cloned().collect()));
+    }
+
+    /// The waits of the deepest deferred drives, in the order they deferred.
+    pub(crate) fn innermost_deferred_waits(&self) -> impl Iterator<Item = &FactUse<FactKey>> {
+        let deepest = self.deferred_waits.values().map(|(depth, _)| *depth).max();
+        self.deferred_waits
+            .values()
+            .filter(move |(depth, _)| Some(*depth) == deepest)
+            .flat_map(|(_, facts)| facts)
     }
 
     pub(crate) fn retry_request(&mut self, address: ProductAddress) {
@@ -1899,6 +1940,7 @@ impl ProductSessions {
             self.active_scopes.insert(scope, ActiveRootProduct::default()).is_none(),
             "one product session cannot be driven recursively"
         );
+        self.deferred_waits.shift_remove(&scope);
         let delta = self.take_work_start_delta(work_starts);
         let initial = match self.active_work_starts.last_mut() {
             Some(WorkStartOwner::StandaloneDrive) => WorkStartTally::default(),

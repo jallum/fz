@@ -15,8 +15,8 @@ use super::facts::{FactReadiness, FactUse};
 use super::identity::RootId;
 use super::ordered_worklist::OrderedWorklist;
 use super::pull::{
-    ProductDriveReport, ProductDriver, ProductKey, ProductRequestId, ProductScope, ProductSessions, ProductValidation,
-    ProductValue, PullOutcome, PullWait, WorldProductProducers,
+    ProductDeferral, ProductDriveReport, ProductDriver, ProductKey, ProductRequestId, ProductScope, ProductSessions,
+    ProductValidation, ProductValue, PullOutcome, PullWait, WorldProductProducers,
 };
 use super::scheduler::{DriveOutcome, FatalError, WorkStartReason};
 use super::semantic::SemanticOrd;
@@ -29,19 +29,39 @@ use crate::telemetry::RawSpanGuard as _;
 /// budgets in both call sites.
 pub(super) const PRODUCT_DRIVE_BUDGET: u64 = 50_000;
 
+/// How a product drive that did not fail ended.
+#[derive(Debug)]
+pub(crate) enum Driven<T> {
+    Finished(T),
+    /// The drive had another drive beneath it, ran dry with its product still
+    /// waiting, and unwound without arbitrating: quiescence belongs to the
+    /// whole stack. Its request stands; ask again.
+    Deferred,
+}
+
+impl<T> Driven<T> {
+    /// The result of a drive with nothing beneath it, which cannot defer.
+    pub(crate) fn finished(self) -> T {
+        match self {
+            Self::Finished(value) => value,
+            Self::Deferred => unreachable!("only a drive nested beneath another defers"),
+        }
+    }
+}
+
 pub(crate) fn drive_retained_product<T: crate::telemetry::RawSpanTelemetry>(
     world: &mut World,
     tel: &T,
     sessions: &mut ProductSessions,
     address: ProductAddress,
-) -> Result<ProductValue, FatalError> {
+) -> Result<Driven<ProductValue>, FatalError> {
     with_retained_root_request(
         world,
         tel,
         sessions,
         address.scope,
         |world, tel, sessions, driver, _| {
-            drive_root_product_with_driver(
+            drive_scope_product_with_driver(
                 world,
                 tel,
                 address.scope,
@@ -56,19 +76,42 @@ pub(crate) fn drive_retained_product<T: crate::telemetry::RawSpanTelemetry>(
 }
 
 impl<T: crate::telemetry::RawSpanTelemetry> ExecutionContext<'_, T> {
-    pub(crate) fn drive_product_requests(&mut self) -> Result<bool, (ProductAddress, FatalError)> {
+    /// Nothing is runnable: drives every queued request that may run now.
+    /// Every drain starts here, because a request queued behind a job that
+    /// parked on its gates is only observable once the agenda is empty.
+    ///
+    /// A drive that defers is set aside until the loop has served everything
+    /// else, then queued again: queued at once, a drive nested in one of the
+    /// others would pick it up beneath that frame. `Silent` means no product
+    /// finished and no fact moved during the pass, so every deferred request
+    /// was served again against ground that did not move.
+    pub(crate) fn serve_requests(&mut self) -> Result<Drained, (ProductAddress, FatalError)> {
         let Some(sessions) = self.product_sessions.as_deref_mut() else {
-            return Ok(false);
+            return Ok(Drained::Silent);
         };
-        let mut drove = false;
+        let movements_before = self.world.fact_movements();
+        let mut finished = false;
+        let mut set_aside = Vec::new();
+        let mut failure = None;
         while let Some(address) = sessions.next_request() {
-            if let Err(error) = drive_retained_product(self.world, self.telemetry, sessions, address.clone()) {
-                sessions.retry_request(address.clone());
-                return Err((address, error));
+            match drive_retained_product(self.world, self.telemetry, sessions, address.clone()) {
+                Ok(Driven::Finished(_)) => finished = true,
+                Ok(Driven::Deferred) => set_aside.push(address),
+                Err(error) => {
+                    set_aside.push(address.clone());
+                    failure = Some((address, error));
+                    break;
+                }
             }
-            drove = true;
         }
-        Ok(drove)
+        for address in set_aside {
+            sessions.retry_request(address);
+        }
+        if let Some(failure) = failure {
+            return Err(failure);
+        }
+        let moved = finished || self.world.fact_movements() != movements_before;
+        Ok(if moved { Drained::Served } else { Drained::Silent })
     }
 }
 
@@ -333,6 +376,7 @@ fn drive_root_backend_product_with_driver<T: crate::telemetry::RawSpanTelemetry,
     }
 }
 
+/// A top-level drive has nothing beneath it, so it never defers.
 fn drive_root_product_with_driver<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
     world: &mut World,
     tel: &T,
@@ -343,7 +387,30 @@ fn drive_root_product_with_driver<T: crate::telemetry::RawSpanTelemetry, E: Prod
     product_stack_budget: u64,
     fact_wait_budget: u64,
 ) -> Result<ProductValue, E> {
-    drive_root_product_with(
+    drive_scope_product_with_driver(
+        world,
+        tel,
+        scope,
+        root_key,
+        driver,
+        sessions,
+        product_stack_budget,
+        fact_wait_budget,
+    )
+    .map(Driven::finished)
+}
+
+fn drive_scope_product_with_driver<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
+    world: &mut World,
+    tel: &T,
+    scope: ProductScope,
+    root_key: ProductKey,
+    driver: &mut ProductDriver<'_, T>,
+    sessions: Option<&mut ProductSessions>,
+    product_stack_budget: u64,
+    fact_wait_budget: u64,
+) -> Result<Driven<ProductValue>, E> {
+    drive_scope_product_with(
         world,
         tel,
         scope,
@@ -357,6 +424,33 @@ fn drive_root_product_with_driver<T: crate::telemetry::RawSpanTelemetry, E: Prod
             driver.pull(&mut producers, current)
         },
     )
+}
+
+/// The test seam over a top-level drive, which never defers.
+#[cfg(test)]
+pub(super) fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
+    world: &mut World,
+    tel: &T,
+    scope: ProductScope,
+    root_key: ProductKey,
+    driver: &mut ProductDriver<'_, T>,
+    sessions: Option<&mut ProductSessions>,
+    product_stack_budget: u64,
+    fact_wait_budget: u64,
+    pull: impl FnMut(&mut World, &mut ProductDriver<'_, T>, &ProductKey) -> PullOutcome,
+) -> Result<ProductValue, E> {
+    drive_scope_product_with(
+        world,
+        tel,
+        scope,
+        root_key,
+        driver,
+        sessions,
+        product_stack_budget,
+        fact_wait_budget,
+        pull,
+    )
+    .map(Driven::finished)
 }
 
 #[cfg(test)]
@@ -580,7 +674,42 @@ fn next_waiting_product<T: crate::telemetry::Telemetry>(
     Some(SelectedProduct::Owner(frame.batch))
 }
 
-fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
+/// Drives a program-scoped product a rooted drive is waiting on. A drive that
+/// defers has left its request standing and its waits with the sessions, so
+/// this frame drains in its place: the drain arbitrates if this is the
+/// outermost drive and defers in turn if it is not.
+fn drive_program_product<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
+    world: &mut World,
+    tel: &T,
+    sessions: &mut ProductSessions,
+    scope: ProductScope,
+    address: ProductAddress,
+) -> Result<Driven<ProductValue>, E> {
+    loop {
+        match drive_retained_product(world, tel, sessions, address.clone()) {
+            Ok(Driven::Finished(value)) => return Ok(Driven::Finished(value)),
+            Ok(Driven::Deferred) => {}
+            Err(source) => return Err(E::dependency_failed(world, tel, address, source)),
+        }
+        let drained = ExecutionContext::with_product_sessions(world, tel, sessions)
+            .drain(&[])
+            .map_err(|(request, source)| E::dependency_failed(world, tel, request, source))?;
+        match drained {
+            Drained::Served | Drained::Moved => {}
+            Drained::Deferred => return Ok(Driven::Deferred),
+            Drained::Silent => {
+                let stuck = sessions
+                    .innermost_deferred_waits()
+                    .next()
+                    .cloned()
+                    .expect("a deferred drive recorded the wait it stalled on");
+                return Err(E::no_ready_producer(world, tel, scope, &stuck));
+            }
+        }
+    }
+}
+
+fn drive_scope_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
     world: &mut World,
     tel: &T,
     scope: ProductScope,
@@ -590,7 +719,7 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
     product_stack_budget: u64,
     fact_wait_budget: u64,
     mut pull: impl FnMut(&mut World, &mut ProductDriver<'_, T>, &ProductKey) -> PullOutcome,
-) -> Result<ProductValue, E> {
+) -> Result<Driven<ProductValue>, E> {
     // `Vec::new` is allocation-free: a retained root hit returns before the
     // first wait pushes anything onto the expansion stack.
     let mut stack = Vec::new();
@@ -637,9 +766,9 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
                     // read find the answer instead of asking again.
                     sessions.observe(&address);
                     driver.link_external(sessions.program_handle());
-                    match drive_retained_product(world, tel, sessions, address.clone()) {
-                        Ok(value) => PullOutcome::Produced(value),
-                        Err(source) => return Err(E::dependency_failed(world, tel, address, source)),
+                    match drive_program_product::<T, E>(world, tel, sessions, scope, address)? {
+                        Driven::Finished(value) => PullOutcome::Produced(value),
+                        Driven::Deferred => return Ok(Driven::Deferred),
                     }
                 }
                 _ => pull(world, driver, key),
@@ -663,7 +792,7 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
                 PullOutcome::Produced(value) => {
                     if current.as_ref().map(SelectedProduct::key) == Some(&root_key) {
                         ExecutionContext::new(world, tel).flush_reported_warnings();
-                        return Ok(value);
+                        return Ok(Driven::Finished(value));
                     }
                     release_selected(
                         &stack,
@@ -722,7 +851,7 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
                         };
                         fact
                     });
-                    let producer_pokes = drive_product_fact_waits_with_sessions::<T, E>(
+                    let Driven::Finished(producer_pokes) = drive_product_fact_waits_with_sessions::<T, E>(
                         world,
                         tel,
                         scope,
@@ -730,7 +859,10 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
                         sessions.as_deref_mut(),
                         facts,
                         fact_wait_budget,
-                    )?;
+                    )?
+                    else {
+                        return Ok(Driven::Deferred);
+                    };
                     driver.session_mut().record_producer_pokes(producer_pokes);
                     current = Some(
                         reconcile_wait_frames(
@@ -779,6 +911,13 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
         budget: product_stack_budget,
     }
     .report(tel, &root_key);
+    if let (Ok(Driven::Deferred), Some(sessions)) = (&result, sessions.as_deref()) {
+        ProductDeferral {
+            scope,
+            depth: sessions.drive_depth(),
+        }
+        .report(tel, &root_key);
+    }
     result
 }
 
@@ -818,6 +957,7 @@ pub(super) fn drive_product_fact_wait<T: crate::telemetry::RawSpanTelemetry, E: 
         std::iter::once(&fact),
         fact_wait_budget,
     )
+    .map(Driven::finished)
 }
 
 #[cfg(test)]
@@ -838,6 +978,7 @@ pub(super) fn drive_product_fact_waits<T: crate::telemetry::RawSpanTelemetry, E:
         facts.iter(),
         fact_wait_budget,
     )
+    .map(Driven::finished)
 }
 
 fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
@@ -848,8 +989,9 @@ fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTe
     mut sessions: Option<&mut ProductSessions>,
     facts: impl Iterator<Item = &'facts FactUse<FactKey>> + Clone,
     fact_wait_budget: u64,
-) -> Result<u64, E> {
+) -> Result<Driven<u64>, E> {
     let mut producer_pokes = 0_u64;
+    let awaited = facts.clone();
     let settled_facts = facts
         .clone()
         .filter(|fact| fact.readiness() == super::facts::FactReadiness::Settled)
@@ -862,7 +1004,7 @@ fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTe
                 sessions.drain_active_movements(scope, &mut driver.session_mut());
             }
             if driver.wait_frames_canceled(world.types()) {
-                return Ok(producer_pokes);
+                return Ok(Driven::Finished(producer_pokes));
             }
             if product_fact_wait_is_satisfied(world, fact) {
                 break;
@@ -875,16 +1017,23 @@ fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTe
                     // scheduler step so their typed movements stay atomic.
                     let mut context =
                         ExecutionContext::with_optional_product_sessions(world, tel, sessions.as_deref_mut());
-                    match context
+                    let may_arbitrate = match context
                         .drain(&settled_facts)
                         .map_err(|(address, source)| E::dependency_failed(context.world, tel, address, source))?
                     {
                         Drained::Served | Drained::Moved => continue,
-                        Drained::Silent => {}
-                    }
+                        Drained::Deferred => false,
+                        Drained::Silent => true,
+                    };
                     producer_pokes += world.demand_fact_producer(fact.fact(), WorkStartReason::BlockedWaiterExpansion);
                     let Some(job) = world.pop_runnable() else {
-                        return Err(E::no_ready_producer(world, tel, scope, fact));
+                        if may_arbitrate {
+                            return Err(E::no_ready_producer(world, tel, scope, fact));
+                        }
+                        if let Some(sessions) = sessions.as_deref_mut() {
+                            sessions.defer_waits(scope, awaited);
+                        }
+                        return Ok(Driven::Deferred);
                     };
                     job
                 }
@@ -922,7 +1071,7 @@ fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTe
             }
         }
     }
-    Ok(producer_pokes)
+    Ok(Driven::Finished(producer_pokes))
 }
 
 fn product_fact_wait_is_satisfied(world: &World, fact: &FactUse<FactKey>) -> bool {

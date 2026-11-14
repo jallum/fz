@@ -534,6 +534,12 @@ where
         self.work_starts
     }
 
+    /// How many fact changes the work graph has reported so far; see
+    /// `FactTable::movements`.
+    pub(crate) fn fact_movements(&self) -> u64 {
+        self.facts.movements()
+    }
+
     /// Whether `job`'s ground has shifted since it last concluded.
     /// Whether any answer this job owns stood on ground that shifted. The job
     /// re-runs as a whole, so this is the question a re-demand asks.

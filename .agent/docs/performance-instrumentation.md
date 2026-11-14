@@ -112,6 +112,16 @@ made it but emits no `pull.product.requested`, so `requests` can exceed that
 drive's request events. `tests/distill_telemetry_test.rs` pins the largest drive,
 the total and the drive count for compiling `tools/distill-telemetry.exs`.
 
+**Deferred drives** — `pull.drive.deferred` fires when a drive that has another
+drive beneath it runs dry with its product still waiting and unwinds, its
+request standing, instead of settling facts as unknown (only the outermost
+drive arbitrates; see `.agent/docs/fact-engine.md`). It carries the `product`
+the drive was asked for, its `scope` (`program` or `root N`) and the stack
+`depth`, the deferred drive included, always above one. The drive's own
+`pull.drive.finished` still fires. Each deferral is a request served again, so
+the count is the price of the rule on a program; `tests/whole_stack_quiescence_test.rs`
+pins it for fixture 00882.
+
 **Retained product validation** — `pull.product.validation` reports the
 product and `work`. `vertex_visits` counts dirty nodes entered into complete
 proofs (distinct within each proof, summed when proofs are nested);

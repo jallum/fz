@@ -301,12 +301,17 @@ impl<P> FactSlot<P> {
 #[derive(Debug)]
 pub struct FactTable<P, F> {
     slots: HashMap<F, FactSlot<P>>,
+    /// Every change the table has ever reported: a revision, a settled bit or
+    /// a conclusion that moved. It only grows, so two readings that differ say
+    /// that some fact moved between them.
+    movements: u64,
 }
 
 impl<P, F> Default for FactTable<P, F> {
     fn default() -> Self {
         Self {
             slots: HashMap::default(),
+            movements: 0,
         }
     }
 }
@@ -322,6 +327,11 @@ where
 
     pub fn revision(&self, key: &F) -> Option<u64> {
         self.slots.get(key).and_then(FactSlot::revision)
+    }
+
+    /// How many fact changes the table has reported so far.
+    pub(crate) fn movements(&self) -> u64 {
+        self.movements
     }
 
     pub(crate) fn publishers(&self, key: &F) -> impl Iterator<Item = &P> {
@@ -497,6 +507,7 @@ where
             }
         }
 
+        self.movements += changed.len() as u64;
         FactReplace { changed, output_keys }
     }
 
@@ -583,6 +594,7 @@ where
             }
         }
 
+        self.movements += changed.len() as u64;
         FactReplace { changed, output_keys }
     }
 
@@ -600,7 +612,7 @@ where
         let new_settled = slot.is_settled();
         let revision = slot.revision();
         let concluded = slot.is_locally_settled();
-        (old_settled != new_settled).then(|| FactChange {
+        let change = (old_settled != new_settled).then(|| FactChange {
             key: key.clone(),
             old_revision: revision,
             new_revision: revision,
@@ -610,7 +622,9 @@ where
             new_concluded: concluded,
             content_movement: None,
             concluded_movement: None,
-        })
+        });
+        self.movements += u64::from(change.is_some());
+        change
     }
 
     pub fn mark_dirty(&mut self, publisher: &P, output_keys: &OrderedSet<F>) -> Vec<FactChange<F>> {
@@ -645,6 +659,7 @@ where
                 });
             }
         }
+        self.movements += changed.len() as u64;
         changed
     }
 }

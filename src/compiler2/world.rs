@@ -812,6 +812,12 @@ impl World {
         self.work_graph.work_start_tally()
     }
 
+    /// How many fact changes have been reported so far. Two readings that
+    /// differ say that some fact moved between them.
+    pub(crate) fn fact_movements(&self) -> u64 {
+        self.work_graph.fact_movements()
+    }
+
     pub(crate) fn clear_unresolved_diagnostics(&mut self) {
         self.reported_unresolved.clear();
     }

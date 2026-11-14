@@ -349,7 +349,9 @@ job completion behind it, so it gets its own event.
 
 `[fz, compiler2, work_graph, quiesced]` is public. It carries a bare
 `AppliedStep` under `metadata.step`, rendered by the same
-`write_applied_step_body`, and fires when the drain arbiter
+`write_applied_step_body`, and the product-drive stack depth of the drain that
+arbitrated under `metadata.depth` (zero with no product sessions, at most one
+otherwise: only the outermost drive arbitrates). It fires when the drain arbiter
 (`Scheduler::settle_quiescent`) discharges the settled questions standing at an
 empty agenda. `blocked` is always empty and every `changed` entry is
 readiness-only: `old_revision == new_revision`, `old_settled != new_settled`.

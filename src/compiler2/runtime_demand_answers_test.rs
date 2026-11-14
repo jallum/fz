@@ -78,9 +78,9 @@ fn runtime_demand_work(source: &str, expected: i64) -> DemandWork {
         },
     );
     let observed = Rc::clone(&work);
-    tel.attach_raw_event1::<AppliedStep<Job, DependencyKey>, _>(
+    tel.attach_raw_event2::<AppliedStep<Job, DependencyKey>, usize, _>(
         &["fz", "compiler2", "work_graph", "quiesced"],
-        move |_, _, _, step| {
+        move |_, _, _, step, _| {
             let mut work = observed.borrow_mut();
             count_shift_wakes(&mut work, step);
             work.settled_at_drain.extend(
