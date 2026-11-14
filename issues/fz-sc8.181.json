@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:57:33Z",
+  "description": "fz-sc8.159 (on develop as ed17997a7) lets only the outermost drive arbitrate quiescence, and decides \"outermost\" by ProductSessions::drive_depth() \u003c= 1, where drive_depth is active_scopes.len(). That is right on the interp, run and build paths, where the first product drive has nothing beneath it. Under Compiler::drive() it is wrong: the bare drive loop (drive_until -\u003e serve_requests) is a frame beneath the product drives it serves, and can still serve other queued requests, yet a product drive it starts sits at depth 1 and arbitrates.\n\nMeasured on a59d95d01 plus the fz-da session s uncommitted exceptions work (wip-3sy8-v8.patch + guard-rule-spike.patch, lazily pulled lib modules declared through a macro with a recursive helper): cargo test --lib has 48 failures, 28 ending DependencyFailed { Product(Program, Reach(Static(..))) } out of Drive::fixture(n).settle(). Chain on fixtures/00179 (read from prints by fz-da): the bare drive serves Reach(Static(Enum.count)); its fact wait needs StaticCallees of ArithmeticError.exception/1; DefineModule(ArithmeticError) waits RootBackendProduct of the defexception macro root; that root s DeriveRecursive waits a Program-scoped Reach; the agenda runs dry, drain answers Silent at depth 1, no_ready_producer.\n\nExperiment: drive_depth returning active_work_starts.len() (the real stack, which includes the StandaloneDrive frame) gives 19 failures, 3 DependencyFailed; 29 fixed, none newly red. The other 16 are count pins moved by the exceptions work. The 3 remaining DependencyFailed are not yet examined.\n\nOn plain develop Drive::fixture(n).drive() resolves 592, 593, 870, 877, 882 and 1148, so there is no develop-native stall through the harness; the test must observe the rule another way (a drive served by the bare drive does not arbitrate).\n\nBuild: depth is the length of the real drive stack; re-derive what work_graph.quiesced depth and pull.drive.deferred depth mean and fix the three docs; confirm a drive deferred under the bare loop is requeued, re-served, and that the bare drain then arbitrates; re-measure the 00882 deferral pin (3) and the distiller spend pin. Blocks fz-3sy.8.",
+  "id": "fz-sc8.181",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "A drive the bare drive serves defers to it",
+  "type": "bug",
+  "updated_at": "2026-11-14T01:57:33Z"
+}
