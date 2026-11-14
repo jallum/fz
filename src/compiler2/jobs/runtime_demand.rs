@@ -113,6 +113,9 @@ struct EntryDemandWalkTable {
     /// What each walked entry reads of its parameters. A decision that hands
     /// an arm its parameters reads the subjects behind them this much.
     parameters: ValueMap<RuntimeDemand>,
+    /// Tables a merge has emptied, kept so the next entry walked fills one
+    /// instead of allocating.
+    spare_tables: Vec<ValueMap<RuntimeDemand>>,
     /// How many entries this walk actually visited, as opposed to answered
     /// from the memo. [`emit_runtime_demand_walk`] reports it.
     entries_walked: u64,
@@ -124,12 +127,23 @@ impl EntryDemandWalkTable {
             value_count,
             answers: HashMap::default(),
             parameters: ValueMap::with_capacity(value_count),
+            spare_tables: Vec::new(),
             entries_walked: 0,
         }
     }
 
-    fn demand_table(&self) -> ValueMap<RuntimeDemand> {
-        ValueMap::with_capacity(self.value_count)
+    /// An empty table, taken from the ones the walk has finished with before
+    /// a new one is made.
+    fn demand_table(&mut self) -> ValueMap<RuntimeDemand> {
+        self.spare_tables
+            .pop()
+            .unwrap_or_else(|| ValueMap::with_capacity(self.value_count))
+    }
+
+    /// Keeps an emptied table for the next [`Self::demand_table`].
+    fn recycle(&mut self, table: ValueMap<RuntimeDemand>) {
+        debug_assert!(table.is_empty());
+        self.spare_tables.push(table);
     }
 
     fn get(&self, key: &(ControlEntryId, RuntimeDemand)) -> Option<&ValueMap<RuntimeDemand>> {
@@ -1366,15 +1380,16 @@ fn collect_entry_external_demands(
         callable_flows,
         walks,
     );
-    let mut external = walks.demand_table();
-    if let Some(value) = entry.origin.input_value()
-        && let Some(demand) = live.remove(&value)
-    {
-        let demand = upgrade_joined_delivered_callable_value_demand(facts, callable_flows, entry_id, value, demand);
-        record_delivered_call_return_demands(facts, call_return_demands, entry_id, value, &demand);
-        join_map_demand(&mut out.value_demands, value, demand.clone());
-        external.insert(value, demand);
-    }
+    let delivered = entry
+        .origin
+        .input_value()
+        .and_then(|value| live.remove(&value).map(|demand| (value, demand)))
+        .map(|(value, demand)| {
+            let demand = upgrade_joined_delivered_callable_value_demand(facts, callable_flows, entry_id, value, demand);
+            record_delivered_call_return_demands(facts, call_return_demands, entry_id, value, &demand);
+            join_map_demand(&mut out.value_demands, value, demand.clone());
+            (value, demand)
+        });
     let capture_demands = entry
         .captures
         .iter()
@@ -1384,19 +1399,23 @@ fn collect_entry_external_demands(
         })
         .collect::<Vec<_>>();
     record_entry_capture_demands(out, entry_id, capture_demands.iter());
-    for (capture, demand) in entry.captures.iter().zip(capture_demands) {
-        if !demand.is_ignore() {
-            join_map_demand(&mut external, *capture, demand);
-        }
-    }
     for param in &entry.params {
         if let Some(demand) = live.remove(param) {
             walks.note_parameter(*param, demand);
         }
     }
-    merge_live_demands(&mut external, live);
-    walks.record(key, external.clone());
-    external
+    // What remains of `live` is what the entry demands of values outside it;
+    // the entry's own input and captures join it, and its parameters do not.
+    if let Some((value, demand)) = delivered {
+        live.insert(value, demand);
+    }
+    for (capture, demand) in entry.captures.iter().zip(capture_demands) {
+        if !demand.is_ignore() {
+            join_map_demand(&mut live, *capture, demand);
+        }
+    }
+    walks.record(key, live.clone());
+    live
 }
 
 fn collect_entry_live_demands(
@@ -1432,7 +1451,7 @@ fn collect_entry_live_demands(
             );
             let demand = boundary_value_flow_demand(facts, callable_flows, *value, boundary_demand);
             note_live_demand(out, &mut live, *value, demand);
-            merge_live_demands(&mut live, external_demands);
+            merge_live_demands(&mut live, external_demands, walks);
         }
         LoweredTail::DirectCall {
             value,
@@ -1458,7 +1477,7 @@ fn collect_entry_live_demands(
             note_live_demand(out, &mut live, *value, demand.clone());
             record_call_return_demand(call_return_demands, *callsite, demand);
             tail_call_return = Some((*callsite, *value));
-            merge_live_demands(&mut live, external_demands);
+            merge_live_demands(&mut live, external_demands, walks);
             let arg_demands = direct_call_arg_demands(
                 types,
                 executable,
@@ -1520,7 +1539,7 @@ fn collect_entry_live_demands(
             note_live_demand(out, &mut live, *value, demand.clone());
             record_call_return_demand(call_return_demands, *callsite, demand);
             tail_call_return = Some((*callsite, *value));
-            merge_live_demands(&mut live, external_demands);
+            merge_live_demands(&mut live, external_demands, walks);
             let callee_callable = closure_callee_demand(
                 types,
                 facts,
@@ -1570,6 +1589,7 @@ fn collect_entry_live_demands(
                     callable_flows,
                     walks,
                 ),
+                walks,
             );
             merge_live_demands(
                 &mut live,
@@ -1586,6 +1606,7 @@ fn collect_entry_live_demands(
                     callable_flows,
                     walks,
                 ),
+                walks,
             );
         }
         LoweredTail::Dispatch {
@@ -1612,6 +1633,7 @@ fn collect_entry_live_demands(
                         callable_flows,
                         walks,
                     ),
+                    walks,
                 );
             }
             let input_demands = inline_dispatch_input_demands(dispatch, |parameter| {
@@ -1641,6 +1663,7 @@ fn collect_entry_live_demands(
                         callable_flows,
                         walks,
                     ),
+                    walks,
                 );
             }
             if let Some(after) = &receive.after {
@@ -1660,6 +1683,7 @@ fn collect_entry_live_demands(
                         callable_flows,
                         walks,
                     ),
+                    walks,
                 );
             }
             let ignore = RuntimeDemand::ignore();
@@ -1693,6 +1717,7 @@ fn collect_entry_live_demands(
                         callable_flows,
                         walks,
                     ),
+                    walks,
                 );
             }
         }
@@ -2916,10 +2941,17 @@ fn note_live_demand(
     join_map_demand(&mut out.value_demands, value, demand);
 }
 
-fn merge_live_demands(target: &mut ValueMap<RuntimeDemand>, observed: ValueMap<RuntimeDemand>) {
-    for (value, demand) in observed {
+/// Joins `observed` into `target`, then hands the emptied table back to the
+/// walk for its next demand table.
+fn merge_live_demands(
+    target: &mut ValueMap<RuntimeDemand>,
+    mut observed: ValueMap<RuntimeDemand>,
+    walks: &mut EntryDemandWalkTable,
+) {
+    for (value, demand) in observed.drain() {
         join_map_demand(target, value, demand);
     }
+    walks.recycle(observed);
 }
 
 fn join_map_demand(target: &mut ValueMap<RuntimeDemand>, value: ValueId, demand: RuntimeDemand) {

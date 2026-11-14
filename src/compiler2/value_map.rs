@@ -82,6 +82,16 @@ impl<V> ValueMap<V> {
         self.len = 0;
     }
 
+    /// Removes every entry, yielding them in id order and keeping the
+    /// table's room for the next fill.
+    pub fn drain(&mut self) -> impl Iterator<Item = (ValueId, V)> + '_ {
+        self.len = 0;
+        self.slots
+            .drain(..)
+            .enumerate()
+            .filter_map(|(index, slot)| slot.map(|v| (ValueId::from_u32(index as u32), v)))
+    }
+
     /// Keep only the entries `keep` accepts.
     pub fn retain(&mut self, mut keep: impl FnMut(&ValueId, &mut V) -> bool) {
         for (index, slot) in self.slots.iter_mut().enumerate() {

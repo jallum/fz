@@ -63,3 +63,18 @@ fn retain_drops_rejected_entries() {
     assert_eq!(map.keys().collect::<Vec<_>>(), vec![id(0), id(2), id(4)]);
     assert_eq!(map.len(), 3);
 }
+
+/// Draining yields the entries in id order and leaves an empty table that
+/// keeps its room, so it can be filled again without allocating.
+#[test]
+fn drain_yields_in_id_order_and_keeps_room() {
+    let mut map: ValueMap<char> = ValueMap::with_capacity(16);
+    map.insert(id(9), 'c');
+    map.insert(id(1), 'a');
+    let room = map.slots.capacity();
+
+    assert_eq!(map.drain().collect::<Vec<_>>(), vec![(id(1), 'a'), (id(9), 'c')]);
+    assert!(map.is_empty());
+    assert_eq!(map.get(&id(1)), None);
+    assert_eq!(map.slots.capacity(), room);
+}
