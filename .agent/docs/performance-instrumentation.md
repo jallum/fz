@@ -177,7 +177,8 @@ against each other with the exact overlap question. A storage-root index
 (`StorageRootIndex`, built once per body) offers each item only the later uses
 that share a storage root with it, plus the uses whose storage cannot be
 bounded; an item whose own storage cannot be bounded is set against every later
-use. Doubling the literals of a body at most doubles the count; a count that
+use. A value defined after the tuple's step is not offered: it reaches the item
+only through an operand, and that operand's use is already offered. Doubling the literals of a body at most doubles the count; a count that
 grows with their square is a pass that asked every later use about every item
 again.
 

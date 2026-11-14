@@ -554,8 +554,21 @@ fn compiler2_tuple_ownership_reads_the_body_a_fixed_number_of_times() {
 /// must be set against.
 fn pairs_compared_by_literal_lines(lines: usize) -> u64 {
     let line = "  dbg({[\"-abc\", \"f\"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})\n";
-    let text = format!("def main() do\n{}end\n", line.repeat(lines));
+    pairs_compared_lowering_main(format!("def main() do\n{}end\n", line.repeat(lines)))
+}
 
+/// The ownership pairs a chain of `depth` nested pairs compares: each pair
+/// holds the one before it, so every value in the body shares one storage
+/// root.
+fn pairs_compared_by_chain_depth(depth: usize) -> u64 {
+    let links = (1..=depth)
+        .map(|link| format!("  x{link} = {{x{}, {link}}}\n", link - 1))
+        .collect::<String>();
+    pairs_compared_lowering_main(format!("def main() do\n  x0 = {{0, 0}}\n{links}  dbg(x{depth})\nend\n"))
+}
+
+/// The ownership pairs compared while lowering `main` of `text`.
+fn pairs_compared_lowering_main(text: String) -> u64 {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &["fz", "compiler2", "lowered_body"]);
@@ -604,6 +617,23 @@ fn compiler2_tuple_ownership_work_at_most_doubles_when_the_literals_double() {
     assert!(
         eight <= 2 * four,
         "doubling the literal lines took the pairs compared from {four} to {eight}"
+    );
+}
+
+/// A value built after a tuple does not compete for the tuple's items.
+///
+/// A pair that holds the pair before it is built from that pair, and the use
+/// that builds it is the one set against the item. The values built later
+/// still share the item's storage root, but each reaches the item only
+/// through a use that was already asked, so a chain twice as deep compares at
+/// most twice the pairs.
+#[test]
+fn compiler2_tuple_ownership_work_at_most_doubles_when_a_nested_chain_doubles() {
+    let eight = pairs_compared_by_chain_depth(8);
+    let sixteen = pairs_compared_by_chain_depth(16);
+    assert!(
+        sixteen <= 2 * eight.max(1),
+        "doubling the chain depth took the pairs compared from {eight} to {sixteen}"
     );
 }
 
