@@ -1059,6 +1059,13 @@ impl ListCons {
         marked
     }
 
+    /// A cell a collection keeps is shared from then on. A kept cell is older
+    /// than everything allocated after the collection, and a shared cell is
+    /// never rewritten, so no kept cell comes to point at a younger value.
+    pub(crate) fn keep_across_collection(&mut self) {
+        self.mark_aliased();
+    }
+
     /// Relocate the same logical tail in a collector-owned graph.
     pub(crate) fn relocate_tail_for_gc(&mut self, tail_bits: u64) {
         self.link = self.link().with_tail(tail_bits).raw();
