@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T02:37:19Z",
+  "description": "ExecutionContext::drive() (test-only entry, src/compiler2/drive.rs) on a context without sessions makes a fresh ProductSessions and calls drive_until without begin_standalone_drive. drive_depth() is then 1 inside a product drive that drive serves, so that drive arbitrates instead of deferring to the bare drain: the stall fz-sc8.181 closed for Compiler::drive() is still open on this entry.\n\nProof: drive_test a_bare_drive_that_makes_its_own_sessions_is_a_frame_too drives fixture 00882 through ExecutionContext::new(\u0026mut world, \u0026tel).drive(); on develop + fz-sc8.181 it observes no pull.drive.deferred event (expected depths [2,2,2]).\n\nReported by the fz-3sy.8 session: with fz-3sy.8 applied, 11 lib tests that enter this way stop resolving (3 in drive_test, 8 in jobs/semantic_test).\n\nFix: one function runs the bare drive and brackets it with its frame; Compiler::drive() and the session-less entry both call it, so a bare drive cannot start without being counted.",
+  "id": "fz-sc8.182",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "Every bare drive is a frame, wherever it starts",
+  "type": "bug",
+  "updated_at": "2026-11-14T02:37:19Z"
+}
