@@ -991,10 +991,7 @@ fn evaluate_transport_recipe(
         TransportRecipe::Terminal => {
             joined_transport_layout(world, Some(CallableReads { tel, context, position }), ty, demand, &[])
         }
-        TransportRecipe::PublicCallableReturn => {
-            let layout = derived_transport_layout(world, ty, demand, &[]);
-            RecipeLayout::Exact(with_value_ref_carrier(world, ty, layout))
-        }
+        TransportRecipe::PublicCallableReturn => RecipeLayout::Exact(public_callable_return_layout(world, ty, demand)),
         TransportRecipe::ClosureCallReturn { callee, grounded } => {
             // One authority: `closure_call_form` mints a direct edge only when
             // the caller can supply the target's captures, and the claim
@@ -1911,9 +1908,11 @@ fn produce_named_transport_position(
             // The payload is the CALLSITE RESULT's contract. A tail-positioned
             // call's result IS the caller's return, so those alias; a
             // delivered result has its own value, whose type and demand are
-            // the contract -- a discarded result carries no demand and must
-            // publish no lanes, the same zero its callee-side boundary
-            // derives. Deriving the delivered case from the caller's OWN
+            // the contract -- a discarded result carries no demand and
+            // publishes no lanes, the same zero its callee-side boundary
+            // derives, unless the call crosses the boxed apply seam, whose
+            // recipe always makes room for the one word the wrapper hands
+            // back. Deriving the delivered case from the caller's OWN
             // return instead compiled the two halves of one calling
             // convention against different lane counts (fz-f98.14.11).
             match callsite_result(&facts, *callsite) {
@@ -1970,7 +1969,7 @@ fn produce_named_transport_position(
         }
     };
 
-    if demand.is_ignore() {
+    if demand.is_ignore() && !matches!(recipe, TransportRecipe::ClosureCallReturn { .. }) {
         return Some(bottom_transport_shape(world));
     }
     let names_in_component_direct_return = match cut_in_component_returns(world, tel, context, executable, &mut recipe)
@@ -2046,6 +2045,20 @@ fn position_requires_value_ref(
 
 fn is_root_value_entry(world: &mut World, executable: &ExecutableKey) -> bool {
     executable.need == ExecutableNeed::Value && *executable == world.root_entry_executable(executable.activation.root)
+}
+
+/// What a call through the boxed apply seam hands back: one public word,
+/// whatever the caller does with it. The construction wrapper behind the seam
+/// serves every caller and cannot know that this one discards the result, so
+/// a discarded result still arrives and the caller makes room for it.
+fn public_callable_return_layout(world: &mut World, ty: Ty, demand: &RuntimeDemand) -> TransportLayout {
+    let layout = derived_transport_layout(world, ty, demand, &[]);
+    let layout = if matches!(world.shape(layout.structural), ShapeDescr::Nothing) {
+        derived_transport_layout(world, ty, &RuntimeDemand::whole(), &[])
+    } else {
+        layout
+    };
+    with_value_ref_carrier(world, ty, layout)
 }
 
 fn with_value_ref_carrier(world: &mut World, ty: Ty, mut layout: TransportLayout) -> TransportLayout {
