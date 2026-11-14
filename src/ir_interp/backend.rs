@@ -2100,15 +2100,17 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     spec.signed as u32,
                     next.is_none() as u32,
                 );
-                let read = interp_read_bit_field(
-                    proc,
-                    source_ref,
-                    pos,
-                    field_spec,
-                    size_value,
-                    spec.ty == crate::ast::BitType::Integer,
-                )?;
-                env.insert(*value, BackendBoundValue::Runtime(read));
+                if let Some(value) = value {
+                    let read = interp_read_bit_field(
+                        proc,
+                        source_ref,
+                        pos,
+                        field_spec,
+                        size_value,
+                        spec.ty == crate::ast::BitType::Integer,
+                    )?;
+                    env.insert(*value, BackendBoundValue::Runtime(read));
+                }
                 if let Some(next) = next {
                     let bit_len = fz_runtime::ir_runtime::fz_bs_bit_len_ref(source_ref);
                     let end = fz_runtime::ir_runtime::bs_field_end(field_spec, size_value, pos, bit_len)

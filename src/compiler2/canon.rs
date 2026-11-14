@@ -1138,8 +1138,10 @@ impl ProgramCanon<'_> {
                 pos,
                 spec,
             } => {
-                let defined = std::iter::once(*value)
-                    .chain(*next)
+                let defined = value
+                    .iter()
+                    .chain(next)
+                    .copied()
                     .map(|defined| self.names.value(defined))
                     .collect::<Vec<_>>()
                     .join(", ");
