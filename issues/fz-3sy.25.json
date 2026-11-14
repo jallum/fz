@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-3sy.9"
+  ],
   "blocks": [],
   "created": "2026-11-14T23:35:54Z",
   "description": "Found 2026-11-14 while building fz-3sy.9. Once an uncaught exception is asked for its message through its module, an extern declared `raises: MyApp.NotThere` whose module the program never defines fails only when it raises, at run time, with UndefinedFunctionError for MyApp.NotThere.message/1 in place of the declared failure. Fixtures 01086 and 01087 named such modules and now declare them. The declaration should be checked where it is written: the module must be defined and be an exception, else a diagnostic at the extern. On develop before fz-3sy.9 the runtime words the failure in Rust and never asks the module, so the gap does not show there.",
