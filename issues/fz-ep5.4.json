@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:40:00Z",
+  "description": "Needs a walkthrough before building. Today type_predicate_of (src/dispatch_matrix/pattern.rs ~607) recognises a two-clause true/false helper only through an annotated parameter, and Kernel's is_* are defined as 'def is_integer(_ :: integer), do: true'. Once '::' is gone: the recognition reads the helper's first-row questions (patterns plus guard type tests), Kernel's is_* rest on a primitive integer/float/... test (design to propose: what primitive, how the guard path lowers it to a tag test, how \u0026is_integer/1 runs), and each predicate carries per-clause specs (@spec is_integer(integer) :: true / @spec is_integer(term) :: false, clause order supplying the negation). 00615 is rewritten with guard-form helpers. Acceptance: no pin rise, full gate green.",
+  "id": "fz-ep5.4",
+  "labels": [],
+  "parent": "fz-ep5",
+  "priority": 2,
+  "status": "open",
+  "title": "A type predicate is recognised from its guards and clause specs, and Kernel's is_* rest on a primitive test",
+  "type": "task",
+  "updated_at": "2026-11-14T04:40:00Z"
+}
