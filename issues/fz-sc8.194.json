@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T11:46:21Z",
+  "description": "Reported by the fz-8c session (fz-ep5.2 builder, stack base 62d660974): def kind([h | _]) when h in [:ok, :err], do: 2 fails to compile with error[lower/unsupported]: compiler2 entry guards for kind/1 are not dispatch-pure and cannot be planned. The equivalent when h == :ok or h == :err works on interp. Elixir accepts in with a literal list in any guard. Not checked: receive and case guards. Not yet reproduced in this session.",
+  "id": "fz-sc8.194",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A function-head guard using 'in' with a literal list compiles",
+  "type": "bug",
+  "updated_at": "2026-11-14T11:46:21Z"
+}
