@@ -127,16 +127,12 @@ pub(crate) fn produce_root_backend_product(
     root: RootId,
 ) -> PullOutcome {
     let root_entry = world.root_entry(root);
-    let mut keying_facts = vec![FactKey::RootEntry(root)];
-    if world
-        .self_keyed_activation(root, root_entry.function, &root_entry.input)
-        .is_none()
-    {
-        keying_facts.push(FactKey::InputDemand(root_entry.function));
-        keying_facts.push(FactKey::Recursive(root_entry.function));
-    }
-    let keying_waits = keying_facts
+    let keying_facts = world
+        .activation_key_prerequisites(root, root_entry.function, &root_entry.input)
         .into_iter()
+        .flatten();
+    let keying_waits = std::iter::once(FactKey::RootEntry(root))
+        .chain(keying_facts)
         .filter(|fact| !context.read_fact(world, FactUse::settled(fact.clone())))
         .map(|fact| PullWait::Fact(FactUse::settled(fact)))
         .collect::<Vec<_>>();

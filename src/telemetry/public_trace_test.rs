@@ -1287,7 +1287,10 @@ const SCENARIOS: [&str; 5] = [
 // 00571 190 -> 201 and 00420 245 -> 261 reachable executables: a returned callable keeps its
 // brand in its function's key, and a protocol callback counts every input but the receiver as
 // returned, so `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
-const POPULATION_BASELINES: [(u64, u64); 3] = [(81, 0), (201, 32), (261, 38)];
+// The range/map row 81 -> 79 and the take/drop/split row 261 -> 260: a non-recursive key collapses
+// structure nothing asks about to its class, as a recursive key does, so callers that differ only
+// in such freight share one activation.
+const POPULATION_BASELINES: [(u64, u64); 3] = [(79, 0), (201, 32), (260, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -1537,7 +1540,10 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // its brand in its function's key, and a protocol callback counts every input
                 // but the receiver as returned, so `Enum.reduce_while/3` and its Enum wrappers
                 // are keyed once per reducer lambda.
-                [[178, 0, 0, 1, 4], [530, 0, 0, 1, 4], [680, 0, 0, 1, 4]][fixture_index][scenario],
+                // 00567 cold 178 -> 175 and 00420 cold 680 -> 678: a non-recursive key collapses
+                // structure nothing asks about to its class, as a recursive key does, so callers
+                // that differ only in such freight share one activation.
+                [[175, 0, 0, 1, 4], [530, 0, 0, 1, 4], [678, 0, 0, 1, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -2171,7 +2177,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `==`) mints activations, none retracted.
         // An activation key names only the literals a use can tell apart:
         // 86 -> 84.
-        activations: lifecycle(82, 82, 0),
+        // 82 -> 80: a non-recursive key collapses structure nothing asks about to its class, as a
+        // recursive key does, so callers that differ only in such freight share one activation.
+        activations: lifecycle(80, 80, 0),
         // fz-kdt.183: 73 -> 74 distinct, 75 -> 76 first appearances,
         // retractions flat -- the recovered activation brings its call edge.
         //
@@ -2187,7 +2195,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-sc8.9: 77 -> 78, the call edge into Kernel's `map_size`.
         // fz-sc8.8: 78 -> 99. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart: 99 -> 98.
-        callsites: lifecycle(95, 95, 0),
+        // 95 -> 94: a non-recursive key collapses structure nothing asks about to its class, as a
+        // recursive key does, so callers that differ only in such freight share one activation.
+        callsites: lifecycle(94, 94, 0),
         // fz-kdt.183: 17 -> 30 shift wakes and 19 -> 127 rebased completions.
         // The RISING row of this landing, and the cause is that `InputDemand`
         // is now a fact that MOVES: the forwarded demand of a function whose
@@ -2282,7 +2292,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-sc8.37: 171 -> 172. Kernel defines `&&`, `||` and `!` as macros.
         // fz-sc8.8: 172 -> 221 evaluations, 3 -> 4 zero-change. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart: 221 -> 219.
-        analyze_evaluations: 210,
+        // 210 -> 206: a non-recursive key collapses structure nothing asks about to its class, as a
+        // recursive key does, so callers that differ only in such freight share one activation.
+        analyze_evaluations: 206,
         analyze_zero_change: 4,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
@@ -2368,7 +2380,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 745 -> 763: the operators' guards name `is_integer`, `is_float`, `is_binary`
         // and `is_map`, so those helpers are defined and reified so the guards can
         // be folded.
-        total_evaluations: 763,
+        // 763 -> 759: a non-recursive key collapses structure nothing asks about to its class, as a
+        // recursive key does, so callers that differ only in such freight share one activation.
+        total_evaluations: 759,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2677,7 +2691,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 246 -> 262: a returned callable keeps its brand in its function's key, and a protocol
         // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
         // and its Enum wrappers are keyed once per reducer lambda; no retractions.
-        activations: lifecycle(262, 262, 0),
+        // 262 -> 261: a non-recursive key collapses structure nothing asks about to its class, as a
+        // recursive key does, so callers that differ only in such freight share one activation.
+        activations: lifecycle(261, 261, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -2906,7 +2922,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // (666, 9) -> (742, 23): a returned callable keeps its brand in its function's key, and
         // a protocol callback counts every input but the receiver as returned, so
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
-        analyze_evaluations: 742,
+        // (742, 23) -> (741, 23): a non-recursive key collapses structure nothing asks about to its
+        // class, as a recursive key does, so callers that differ only in such freight share one
+        // activation.
+        analyze_evaluations: 741,
         analyze_zero_change: 23,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
@@ -2991,7 +3010,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 1622 -> 1698: a returned callable keeps its brand in its function's key, and a
         // protocol callback counts every input but the receiver as returned, so
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
-        total_evaluations: 1698,
+        // 1698 -> 1697: a non-recursive key collapses structure nothing asks about to its class, as
+        // a recursive key does, so callers that differ only in such freight share one activation.
+        total_evaluations: 1697,
     },
 ];
 

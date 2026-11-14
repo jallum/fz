@@ -236,7 +236,10 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
     let measured = (spend.largest_drive(), spend.requests, spend.drives.len());
     assert_eq!(
         measured,
-        (47_681, 49_093, 28),
+        // (47_681, 49_093, 28) -> (47_534, 48_946, 28): a non-recursive key collapses structure
+        // nothing asks about to its class, as a recursive key does, so callers that differ only in
+        // such freight share one activation.
+        (47_534, 48_946, 28),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

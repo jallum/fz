@@ -173,7 +173,11 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
 /// intermediate types are not.
 fn duplicate_ceiling(number: u32) -> usize {
     match number {
-        420 => 122,
+        // 122 -> 142: a non-recursive key collapses a list nothing asks about to its
+        // class, so the Enum `*_while`, `*_every` and `*_positive` wrappers gain key
+        // arrows beside their evidence arrows, and each carries a closure whose two
+        // ids render alike (the pair described for 00567 below).
+        420 => 142,
         // A closure carried with differently instantiated surfaces gets two
         // ids that render alike; the widened key type `%{1: atom}` beside
         // `%{1: :a}` inherits one such pair (14 -> 15). This raise was
@@ -536,7 +540,10 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-sc8.8: 65 -> 83. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
             // An activation key names only the literals a use can tell
             // apart, so fewer activations are emitted: 83 -> 81.
-            79,
+            // 79 -> 77: a non-recursive key collapses structure nothing asks about to its class, as
+            // a recursive key does, so callers that differ only in such freight share one
+            // activation.
+            77,
         ),
         (
             569, // enum_map_family
@@ -550,7 +557,10 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-sc8.8: 116 -> 138. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
             // An activation key names only the literals a use can tell
             // apart, so fewer activations are emitted: 138 -> 136.
-            134,
+            // 134 -> 126: a non-recursive key collapses structure nothing asks about to its class,
+            // as a recursive key does, so callers that differ only in such freight share one
+            // activation.
+            126,
         ),
         // fz-sc8.8: 36 -> 54. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart: 54 -> 52.
@@ -609,7 +619,10 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // 243 -> 259: a returned callable keeps its brand in its function's key, and a
             // protocol callback counts every input but the receiver as returned, so
             // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
-            259,
+            // 259 -> 258: a non-recursive key collapses structure nothing asks about to its class,
+            // as a recursive key does, so callers that differ only in such freight share one
+            // activation.
+            258,
         ),
     ] {
         let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);

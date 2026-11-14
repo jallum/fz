@@ -23644,7 +23644,9 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
     }
     assert_eq!(
         activations.values().map(BTreeSet::len).sum::<usize>(),
-        140,
+        // 140 -> 138: a non-recursive key collapses structure nothing asks about to its class, as a
+        // recursive key does, so callers that differ only in such freight share one activation.
+        138,
         "activations of the whole program"
     );
 }

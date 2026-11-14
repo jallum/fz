@@ -358,7 +358,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // its function's key, and a protocol callback counts every input but the receiver as
         // returned, so `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer
         // lambda; 16 more executables, 76 more AnalyzeActivation runs.
-        (2653, 11, 28, 262),
+        // (2653, 11, 28, 262) -> (2649, 11, 28, 261): a non-recursive key collapses structure
+        // nothing asks about to its class, as a recursive key does, so callers that differ only in
+        // such freight share one activation.
+        (2649, 11, 28, 261),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -526,7 +529,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 423 -> 439: a returned callable keeps its brand in its function's key, and a protocol
         // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
         // and its Enum wrappers are keyed once per reducer lambda.
-        439,
+        // 439 -> 438: a non-recursive key collapses structure nothing asks about to its class, as a
+        // recursive key does, so callers that differ only in such freight share one activation.
+        438,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -591,7 +596,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // input but the receiver as returned, so `Enum.reduce_while/3` and its Enum wrappers
         // are keyed once per reducer lambda; each new activation's runtime demand is derived
         // once.
-        (624, 626, [24, 262, 82, 258, 0]),
+        // (624, 626, [24, 262, 82, 258, 0]) -> (622, 624, [24, 261, 82, 257, 0]): a non-recursive
+        // key collapses structure nothing asks about to its class, as a recursive key does, so
+        // callers that differ only in such freight share one activation.
+        (622, 624, [24, 261, 82, 257, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
@@ -609,7 +617,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 318 -> 334: a returned callable keeps its brand in its function's key, and a protocol
         // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
         // and its Enum wrappers are keyed once per reducer lambda.
-        334,
+        // 334 -> 333: a non-recursive key collapses structure nothing asks about to its class, as a
+        // recursive key does, so callers that differ only in such freight share one activation.
+        333,
         "the demand frontier retains every ordinary generic helper key",
     );
     assert_eq!(
@@ -736,7 +746,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 666 -> 742: a returned callable keeps its brand in its function's key, and a protocol
         // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
         // and its Enum wrappers are keyed once per reducer lambda.
-        742,
+        // 742 -> 741: a non-recursive key collapses structure nothing asks about to its class, as a
+        // recursive key does, so callers that differ only in such freight share one activation.
+        741,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();
@@ -760,7 +772,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 246 -> 262: a returned callable keeps its brand in its function's key, and a protocol
         // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
         // and its Enum wrappers are keyed once per reducer lambda.
-        262,
+        // 262 -> 261: a non-recursive key collapses structure nothing asks about to its class, as a
+        // recursive key does, so callers that differ only in such freight share one activation.
+        261,
         "the demand frontier's distinct activations, deduplicated across repeats",
     );
 

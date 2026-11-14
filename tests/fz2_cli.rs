@@ -63,7 +63,9 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // 645 -> 677: a returned callable keeps its brand in its function's
         // key, and a protocol callback counts every input but the receiver as returned, so
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
-        runtime_demand_walks: 677,
+        // 677 -> 675: a non-recursive key collapses structure nothing asks about to its class, as a
+        // recursive key does, so callers that differ only in such freight share one activation.
+        runtime_demand_walks: 675,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -92,7 +94,9 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // `raise`, `==`) is walked.
         // An activation key names only the literals a use can tell apart,
         // so fewer activations are walked: 183 -> 179.
-        runtime_demand_walks: 175,
+        // 175 -> 172: a non-recursive key collapses structure nothing asks about to its class, as a
+        // recursive key does, so callers that differ only in such freight share one activation.
+        runtime_demand_walks: 172,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
