@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-t93.8"
+  ],
   "blocks": [],
   "created": "2026-11-14T04:26:50Z",
   "description": "World::protocol_impls_for sorts its answer, and one site in types/canon.rs depends on order; neither has a test that fails when the order changes. Add the permutation test for each, then decide (per the sorting-is-a-barrier rule) whether the sort is a legitimate boundary or should go.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Two order dependences are pinned by tests",
   "type": "task",
-  "updated_at": "2026-11-14T04:26:50Z"
+  "updated_at": "2026-11-14T04:26:51Z"
 }
