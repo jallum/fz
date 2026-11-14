@@ -4,14 +4,15 @@
   "blocks": [
     "fz-sc8.102"
   ],
+  "closed_at": "2026-11-14T15:33:13Z",
   "created": "2026-11-14T15:22:38Z",
   "description": "On develop 87aaea64b (and before fz-wto, 03c97bade) this fails to compile on interp and run:\n\n  def make(map) do\n    {map, fn acc, cmd -\u003e\n      case cmd do\n        :done -\u003e acc\n        :halt -\u003e :ok\n      end\n    end}\n  end\n  def run(map) do\n    {initial, collector} = make(map)\n    collector.(initial, :halt)\n    collector.(initial, :done)\n  end\n  def main(), do: dbg(run(%{}))\n\nerror[artifact/incomplete-semantic-plan]: boxed closure call in FunctionId(80) expects delivered lane(s) [] but construction wrapper ... publishes [ValueRef]: the two halves of one calling convention were compiled against different contracts.\n\nElixir prints %{}. Binding and reading the first call's result (kept = collector.(initial, :halt); dbg(kept)) compiles and runs. Probes: /Users/j5n/Workspace/fz-sc8.102-probes/discarded_boxed_call.fz and discarded_boxed_call_result_used.fz.\n\nMechanism (measured): widen_boxed_closure_call_results (src/compiler2/jobs/runtime_demand.rs) widens the ignored result of a closure call that crosses the boxed seam to one boxed lane, so the caller reads what the wrapper hands back. It applies only when the callee's joined demand in THIS body is first-class. A callee that arrives already boxed from another function (inside a returned tuple here) is called through the seam (closure_call_form: its layout is one public word and it supplies no target captures) but is not first-class by this body's demand, so the rule skips it: the callsite expects zero lanes and the wrapper publishes one.\n\nExperiment: a local switch dropping the first-class condition made the probe print %{} on interp and run, and made 00795, 01007 and 01032 pass on top of the fz-sc8.102 spike (interp). The switch is not the fix: a callee in its exact carrier must stay untouched (its result aliases the named target's own return fact).\n\nFix direction: the widening rule asks the question the seam decision asks (does the callee travel as one boxed word), from one authority, instead of this body's demand. Work out whether that is knowable in runtime demand or whether the widening belongs where the call form is decided; measure across the suite.\n\nAcceptance: the probe as an oracle fixture on interp, run and build; the full suite passes; pin moves attributed, rises authorized; the rule's doc comment and the agent doc that states the boxed calling convention say the one condition.\n\nFound by fz-sc8.102 (Enum.into tells the collector :halt): its collector.(initial, :halt) in statement position hits this with the built-in Map, List and MapSet collectors.",
   "id": "fz-sc8.201",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A boxed closure call whose result is discarded reads the lane its wrapper publishes",
   "type": "bug",
-  "updated_at": "2026-11-14T15:22:39Z"
+  "updated_at": "2026-11-14T15:33:13Z"
 }
