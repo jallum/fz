@@ -18850,6 +18850,49 @@ fn compiler2_require_in_one_module_does_not_license_a_sibling_module() {
     );
 }
 
+/// A qualified call to a macro of an imported runtime module expands the way
+/// the unqualified call does, so the answer cannot depend on whether the
+/// module's definition happens to be published when the call expands.
+fn assert_qualified_kernel_macro_expands(program: &str, intent: &str) {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/qualified_kernel_macro.fz".to_string()),
+        text: program.to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let outcome = compiler.drive();
+    let message = capture
+        .last(&["fz", "diag", "error"])
+        .map(|diagnostic| metadata_str(&diagnostic, "message").to_string());
+    assert_resolved(outcome, &format!("{intent}: {message:?}"));
+}
+
+#[test]
+fn compiler2_qualified_runtime_macro_call_does_not_depend_on_the_module_being_defined() {
+    let call = "def main(), do: Kernel.&&(true, 3)\n";
+    assert_qualified_kernel_macro_expands(call, "the file's only Kernel macro use is qualified");
+    assert_qualified_kernel_macro_expands(
+        &format!("defmodule Before do\n  def f(x), do: x\nend\n{call}"),
+        "an unrelated module defined before changes nothing",
+    );
+    assert_qualified_kernel_macro_expands(
+        &format!("{call}defmodule After do\n  def f(x), do: x\nend\n"),
+        "an unrelated module defined after changes nothing",
+    );
+    assert_qualified_kernel_macro_expands(
+        "def main(), do: Kernel.apply(Kernel, :abs, [-2])\n",
+        "apply/3 expands the same way",
+    );
+}
+
 #[test]
 fn compiler2_import_in_one_module_does_not_license_a_sibling_module() {
     assert_remote_macro_refused(

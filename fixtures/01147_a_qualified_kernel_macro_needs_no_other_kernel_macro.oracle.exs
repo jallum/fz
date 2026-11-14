@@ -1,0 +1,8 @@
+IO.inspect(Kernel.&&(true, 3))
+IO.inspect(Kernel.&&(nil, 3))
+IO.inspect(Kernel.||(nil, 3))
+IO.inspect(Kernel.||(2, 3))
+IO.inspect(Kernel.!(nil))
+IO.inspect(Kernel.!(1))
+IO.inspect(Kernel.apply(Kernel, :abs, [-2]))
+IO.inspect(Kernel.apply(Kernel, :+, [1, 2]))

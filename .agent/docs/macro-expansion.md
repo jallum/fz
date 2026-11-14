@@ -251,11 +251,19 @@ Macro code is demanded when invoked.
 Later, when expansion sees `Helpers.twice(...)`, it:
 
 1. resolves `Helpers` to a `ModuleId`
-2. waits for `ModuleDefined(Helpers)` if needed; a runtime module whose
-   definition is not yet published is not waited for, and the call is left to
-   function resolution
-3. resolves `twice/1` against that module's exports
-4. rejects the call with `macro/not-required` if neither a required-macro entry
+2. asks the call's namespace what `twice/1` is bound to
+   (`QuotedExpansionCtx::imported_symbol_of`). When an import bound that
+   name and arity to a callable of `Helpers`, the call follows the route an
+   unqualified `twice(...)` takes: a `Macro` binding expands, and a `Callable`
+   placeholder waits on `ModuleInterface(Helpers)` first. The module's
+   definition is not consulted, so the answer does not depend on whether
+   `Helpers` is defined yet.
+3. otherwise waits for `ModuleDefined(Helpers)` if needed; a runtime module
+   whose definition is not yet published is not waited for, and the call is
+   left to function resolution (an ordinary `Enum.count(...)` call needs no
+   definition to proceed)
+4. resolves `twice/1` against that module's exports
+5. rejects the call with `macro/not-required` if neither a required-macro entry
    for the selected `FunctionId` nor a binding from `Helpers` is in the
    call's namespace
 

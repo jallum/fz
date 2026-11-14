@@ -424,6 +424,17 @@ pub(crate) trait QuotedExpansionCtx {
                 call_span,
             );
         }
+        if let Some(symbol) = self.imported_symbol_of(module, &function_name, args.len(), &scope) {
+            return match symbol {
+                NamespaceSymbol::Macro(function) => self
+                    .expand_macro_invocation(owner, invocation.clone(), function, scope, depth, args)
+                    .map(Some),
+                NamespaceSymbol::Callable(function) => Ok(Some(ExpandedValue::Blocked(Box::new(
+                    self.wait_for_callable_module_interface(function),
+                )))),
+                _ => Ok(None),
+            };
+        }
         let module_defined = self.world().module_defined_revision(module);
         if module_defined.is_none() {
             if self.world().is_runtime_module(module) {
@@ -466,6 +477,30 @@ pub(crate) trait QuotedExpansionCtx {
         }
         self.expand_macro_invocation(owner, invocation.clone(), function, scope, depth, args)
             .map(Some)
+    }
+
+    /// What the scope's namespace binds `name/arity` to when that binding is
+    /// the callable of `module`: the answer an unqualified call of the same
+    /// name would get, so the qualified call follows the same route.
+    fn imported_symbol_of(
+        &mut self,
+        module: ModuleId,
+        name: &str,
+        arity: usize,
+        scope: &ScopeSnapshot,
+    ) -> Option<NamespaceSymbol> {
+        let world = self.world();
+        let symbol = world.lookup_callable_namespace(scope.namespace(), name, arity)?;
+        match symbol {
+            NamespaceSymbol::Macro(function)
+            | NamespaceSymbol::Callable(function)
+            | NamespaceSymbol::Function(function)
+                if world.function_module(function) == module =>
+            {
+                Some(symbol)
+            }
+            _ => None,
+        }
     }
 
     fn expand_current_module_remote_ast_call(
