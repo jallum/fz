@@ -762,7 +762,7 @@ fn record_for_delivered_callables<T: Clone + Ord>(
         return;
     }
     let mut seen = ValueSet::for_values(facts.body.value_count());
-    let mut pending = vec![value];
+    let mut pending = PendingValues::from_elem(value, 1);
     while let Some(value) = pending.pop() {
         if !seen.mark(value) {
             continue;
@@ -1832,12 +1832,16 @@ fn value_depends_on_callsite_return(facts: &RuntimeDemandFacts<'_>, value: Value
     !callsite_returns_feeding(facts, value).is_empty()
 }
 
+/// The values a walk back through a body still has to visit. A walk rarely
+/// holds more than a handful at once, so the list lives on the stack.
+type PendingValues = smallvec::SmallVec<[ValueId; 16]>;
+
 /// Every callsite whose returned value flows into `value`, through delivered
 /// joins and the steps that build one value from others.
 fn callsite_returns_feeding(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> HashSet<CallSiteId> {
     let mut seen = ValueSet::for_values(facts.body.value_count());
     let mut feeding = HashSet::default();
-    let mut pending = vec![value];
+    let mut pending = PendingValues::from_elem(value, 1);
     while let Some(value) = pending.pop() {
         if !seen.mark(value) {
             continue;
@@ -1881,7 +1885,7 @@ fn decision_source_of(tail: &LoweredTail, value: ValueId) -> Option<ValueId> {
 
 /// Appends to `out` the values `step` reads to define `value`; appends nothing
 /// when `step` does not define it.
-fn push_step_sources(step: &LoweredStep, value: ValueId, out: &mut Vec<ValueId>) {
+fn push_step_sources(step: &LoweredStep, value: ValueId, out: &mut PendingValues) {
     let size_value = |size: &Option<super::super::body::LoweredBitSize>| {
         size.as_ref().and_then(super::super::body::LoweredBitSize::read_value)
     };
