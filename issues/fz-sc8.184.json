@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T13:12:34Z",
   "created": "2026-11-14T04:03:29Z",
   "description": "Measured on develop e515ae314 (AOT), distiller-shaped decode over the first 16,000 lines of a compile log, records retained: 1,195 collections copy 7.5 GB while live data peaks at 25 MB; the same decode with nothing retained copies 26 MB and runs in 7.8 s instead of 15.0 s. Heap::collect is a full Cheney copy, so every retained record is recopied by every collection, and procbin::mso_unreached_closures / mso_sweep walk the chain of every live ProcBin each time (18% of a 32,000-line profile). Because a collection is due only after allocating as much as is live (Heap::should_gc), the copying is bounded by total allocation: it is a constant factor (about 2x here), not a scaling defect. The first lever is allocating less (fz-sc8.183); re-measure this after it lands. Goal if still material: survivors are not recopied by every collection (generations, as BEAM), and the off-heap chain walk is proportional to what the collection examined. Needs a proposal page. Data: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/slow (rt*.jsonl, samp.txt).",
   "id": "fz-sc8.184",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A collection copies only what is new, and walks no chain of every live binary",
   "type": "bug",
-  "updated_at": "2026-11-14T04:06:34Z"
+  "updated_at": "2026-11-14T13:12:34Z"
 }
