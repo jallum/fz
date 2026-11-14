@@ -6,13 +6,14 @@
     "fz-d7w"
   ],
   "blocks": [],
+  "closed_at": "2026-11-14T11:22:13Z",
   "created": "2026-11-13T21:18:22Z",
   "description": "Closed: the premise no longer holds on develop.\nOriginal claim (GH #296): PRODUCT_DRIVE_BUDGET, a flat 50,000 requests per drive, bounds program size, because a body of N computed tuple elements needed about N^2/2 transport_shape requests (308 elements 49,548 requests; 1,000 elements 505,922; 1,000 sequential calls 1,009,384).\nRe-measured on develop f822f0f84 (scratch scratchpad/m296/, --log-telemetry pull.drive.finished): the largest drive is linear, about 7N + 432 requests for tuples and 12.2N for sequential calls. tuple308 2,588; tuple1000 7,432; tuple2000 14,432; seq1000 12,376; seq2000 24,376. Nothing fails on budget up to N = 2,000; by linear extrapolation the budget is reached near N = 7,100 (tuples) and 4,100 (seq). The one-frame-per-body branch (fz-d7w) gives the same counts.\nWhat fails first on this family now has its own tickets: the compiler's stack at 2,000 live values (fz-j41), the JIT relocation panic on run (fz-2un), and wall time that grows with N^2 in the per-body jobs (fz-jxo). Whether a flat per-drive budget is the right runaway guard stays open with no program that shows it is wrong.",
   "id": "fz-75e",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The product drive budget bounds repetition, not program size",
   "type": "bug",
-  "updated_at": "2026-11-14T11:22:12Z"
+  "updated_at": "2026-11-14T11:22:13Z"
 }
