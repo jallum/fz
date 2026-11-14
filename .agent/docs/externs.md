@@ -628,7 +628,7 @@ them.
 file and `[line]` otherwise, and the stream's `line_step/4` clauses match the
 two. The `c_pointer` is the `FILE *` the stream reads from its `File.open/2`
 handle's `.value`. The Rust helper gathers the bytes up to and including `\n`
-(or the trailing bytes of a file that does not end in one) with C `fgetc`
+(or the trailing bytes of a file that does not end in one) with C `getline`, one call per line
 into one buffer and allocates the binary once; a line that ends in `\r\n`
 comes back ending in `\n`, which is what Elixir's `File.stream!/1` yields, and
 any other `\r` stays. `read_line_bytes` in `runtime/src/ir_runtime.rs` holds the
