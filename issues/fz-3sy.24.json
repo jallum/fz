@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-3sy.8"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-3sy",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "A dispatch asks only for the aborting call when a guard helper clause is one call that never returns",
   "type": "bug",
-  "updated_at": "2026-11-14T01:55:39Z"
+  "updated_at": "2026-11-14T01:55:47Z"
 }
