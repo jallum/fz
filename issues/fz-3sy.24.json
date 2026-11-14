@@ -4,14 +4,15 @@
   "blocks": [
     "fz-3sy.8"
   ],
+  "closed_at": "2026-11-14T02:20:04Z",
   "created": "2026-11-14T01:55:39Z",
   "description": "A guard helper clause whose body is one call to a function that only aborts makes the guard false. The reifier already treats it so (GuardCallee::always_fails, src/dispatch_matrix/pattern.rs). The walk that collects what a dispatch needs (collect_requirements, src/compiler2/jobs/dispatch.rs) still descends into the aborting call's arguments and requires each call there as a guard helper. With raise a macro, tuple_size/1's raising clause calls exception/1, and the guard is refused as not dispatch-pure.\n\nChange: when a clause body is one call whose callee only aborts (an extern declared to return never, or a helper whose every clause body is such a call), the dispatch requires only that callee. An extern's never is read from its declaration, not from a settled wire.\n\nProof: fixture with def f(x) when tuple_size(x) == 2 over a non-tuple, Elixir oracle, three paths; a drive test that the dispatch records no requirement for the arguments of the aborting call. Spiked on a59d95d01: the whole suite shows no guard refusal with fz-3sy.8 applied.",
   "id": "fz-3sy.24",
   "labels": [],
   "parent": "fz-3sy",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A dispatch asks only for the aborting call when a guard helper clause is one call that never returns",
   "type": "bug",
-  "updated_at": "2026-11-14T01:55:47Z"
+  "updated_at": "2026-11-14T02:20:04Z"
 }
