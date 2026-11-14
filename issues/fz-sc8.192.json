@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T11:46:19Z",
+  "description": "A map is one flat sorted array (Heap::map_put_entry, runtime/src/heap/imp.rs): every put allocates a new array of all entries, so building an n-key map costs n^2/2 entry copies. Measured, release, put 1..n then update 1..n: 10,000 keys 0.66 s, 20,000 2.6 s, 40,000 10.2 s, 80,000 40.6 s; Elixir 0.23-0.28 s throughout (probe: scratchpad/map/mp.exs). The distiller's span table has 23,154 keys on the user's full compile log and is written about three times per key; map put is 10% of the 32,000-line profile and cheney_trace_map 16%. BEAM uses a flat map up to 32 keys and a hash tree above. Tied to the open question of map iteration order past 32 keys. Needs a proposal page.",
+  "id": "fz-sc8.192",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "A put into a large map copies a path, not the map",
+  "type": "bug",
+  "updated_at": "2026-11-14T11:46:19Z"
+}
