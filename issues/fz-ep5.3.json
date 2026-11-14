@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ep5.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ep5.4"
+  ],
   "created": "2026-11-14T04:40:00Z",
   "description": "The 51 lib parameter annotations that pick a clause become guards (e.g. Kernel 'def negate(x :: integer)' -\u003e 'def negate(x) when is_integer(x)'); File.close's declaration-only 'handle :: t' is carried by its @spec. Kernel's type predicates (is_integer, is_float, is_binary, is_list, is_map, is_atom, is_tuple, is_boolean, is_nil, is_pid, is_reference) are NOT changed here (fz-ep5 type-predicate ticket). Prediction: no output or pin change, since a guard type test and a parameter annotation build the same Region::Type row; a guard referencing a Kernel predicate from inside Kernel must not create a cycle - report if it does. Acceptance: full gate green, no pin rise.",
   "id": "fz-ep5.3",
