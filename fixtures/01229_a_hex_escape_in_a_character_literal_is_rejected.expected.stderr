@@ -1,0 +1,7 @@
+error[parse/expected-token]: `?\x` is not an escape in a character literal; write the character itself
+  --> fixtures/01229_a_hex_escape_in_a_character_literal_is_rejected.fz:1:5
+   |
+1 | x = ?\x41
+   |     ^^^^^
+   |
+

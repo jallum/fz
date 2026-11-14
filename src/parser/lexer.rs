@@ -352,9 +352,23 @@ fn whitespace_escape(c: char) -> Option<(&'static str, char)> {
     }
 }
 
-/// Appends the UTF-8 encoding of `c`.
-fn push_char(bytes: &mut Vec<u8>, c: char) {
-    bytes.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+const HEX_ESCAPE_SHAPE: &str = "invalid hex escape character, expected \\xHH where H is a hexadecimal digit";
+
+/// What an escape denotes: a character, which a string stores as its UTF-8
+/// encoding, or a single byte, which `\xHH` stores as it is.
+#[derive(Debug, Clone, Copy)]
+enum Escape {
+    Char(char),
+    Byte(u8),
+}
+
+impl Escape {
+    fn push_onto(self, bytes: &mut Vec<u8>) {
+        match self {
+            Escape::Char(c) => bytes.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
+            Escape::Byte(b) => bytes.push(b),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -607,7 +621,7 @@ impl<'a> Lexer<'a> {
                     parts.push(StringPart::Bytes(bytes));
                     return Ok(parts);
                 }
-                Some(b'\\') => push_char(&mut bytes, self.read_escape()?),
+                Some(b'\\') => self.read_escape()?.push_onto(&mut bytes),
                 Some(b'#') if self.peek(0) == Some(b'{') => {
                     self.bump(); // consume {
                     let range = self.read_interpolation_range()?;
@@ -655,7 +669,7 @@ impl<'a> Lexer<'a> {
                     bytes.push(b'\n');
                     at_line_start = true;
                 }
-                Some(b'\\') => push_char(&mut bytes, self.read_escape()?),
+                Some(b'\\') => self.read_escape()?.push_onto(&mut bytes),
                 Some(b'#') if self.peek(0) == Some(b'{') => {
                     self.bump(); // consume {
                     let range = self.read_interpolation_range()?;
@@ -758,27 +772,28 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// The character an escape denotes, read after its backslash. Strings,
-    /// heredocs and quoted atoms share this reader.
-    fn read_escape(&mut self) -> Result<char, LexError> {
+    /// What an escape denotes, read after its backslash. Strings, heredocs,
+    /// quoted atoms and character literals share this reader.
+    fn read_escape(&mut self) -> Result<Escape, LexError> {
         let start = self.pos - 1;
         match self.bump() {
-            Some(b'n') => Ok('\n'),
-            Some(b't') => Ok('\t'),
-            Some(b'r') => Ok('\r'),
-            Some(b'\\') => Ok('\\'),
-            Some(b'"') => Ok('"'),
-            Some(b'#') => Ok('#'),
-            Some(b'\'') => Ok('\''),
-            Some(b's') => Ok(' '),
-            Some(b'0') => Ok('\0'),
-            Some(b'a') => Ok('\u{7}'),
-            Some(b'b') => Ok('\u{8}'),
-            Some(b'd') => Ok('\u{7f}'),
-            Some(b'e') => Ok('\u{1b}'),
-            Some(b'f') => Ok('\u{c}'),
-            Some(b'v') => Ok('\u{b}'),
-            Some(b'u') => self.read_unicode_escape(start),
+            Some(b'n') => Ok(Escape::Char('\n')),
+            Some(b't') => Ok(Escape::Char('\t')),
+            Some(b'r') => Ok(Escape::Char('\r')),
+            Some(b'\\') => Ok(Escape::Char('\\')),
+            Some(b'"') => Ok(Escape::Char('"')),
+            Some(b'#') => Ok(Escape::Char('#')),
+            Some(b'\'') => Ok(Escape::Char('\'')),
+            Some(b's') => Ok(Escape::Char(' ')),
+            Some(b'0') => Ok(Escape::Char('\0')),
+            Some(b'a') => Ok(Escape::Char('\u{7}')),
+            Some(b'b') => Ok(Escape::Char('\u{8}')),
+            Some(b'd') => Ok(Escape::Char('\u{7f}')),
+            Some(b'e') => Ok(Escape::Char('\u{1b}')),
+            Some(b'f') => Ok(Escape::Char('\u{c}')),
+            Some(b'v') => Ok(Escape::Char('\u{b}')),
+            Some(b'u') => self.read_unicode_escape(start).map(Escape::Char),
+            Some(b'x') => self.read_hex_escape(start),
             Some(c) => Err(self.escape_error(start, &format!("unknown escape `\\{}`", c as char))),
             None => Err(self.err("unterminated escape".into())),
         }
@@ -801,7 +816,15 @@ impl<'a> Lexer<'a> {
                     "`?\\u` is not an escape in a character literal; write the character itself",
                 ));
             }
-            self.read_escape()?
+            match self.read_escape()? {
+                Escape::Char(c) => c,
+                Escape::Byte(_) => {
+                    return Err(self.escape_error(
+                        start,
+                        "`?\\x` is not an escape in a character literal; write the character itself",
+                    ));
+                }
+            }
         } else {
             self.pos += c.len_utf8();
             if let Some((name, escape)) = whitespace_escape(c) {
@@ -814,35 +837,62 @@ impl<'a> Lexer<'a> {
 
     /// `\uHHHH` or `\u{H...}` with one to six digits, after the `u`.
     fn read_unicode_escape(&mut self, start: usize) -> Result<char, LexError> {
-        let braced = self.peek(0) == Some(b'{');
-        if braced {
+        if self.peek(0) == Some(b'{') {
             self.bump();
+            return self.read_braced_code_point(start, 'u', UNICODE_ESCAPE_SHAPE);
         }
-        let digits_start = self.pos;
-        let limit = if braced { usize::MAX } else { 4 };
-        let mut count = 0;
-        while count < limit && self.peek(0).is_some_and(|c| c.is_ascii_hexdigit()) {
-            self.bump();
-            count += 1;
-        }
-        let text = self.text;
-        let digits = &text[digits_start..self.pos];
-        let well_formed = if braced {
-            (1..=6).contains(&count) && self.peek(0) == Some(b'}')
-        } else {
-            count == 4
-        };
-        if !well_formed {
+        let digits = self.read_hex_digits(4);
+        if digits.len() != 4 {
             return Err(self.escape_error(start, UNICODE_ESCAPE_SHAPE));
         }
-        let value = u32::from_str_radix(digits, 16).expect("the digits are hexadecimal");
-        if braced {
-            self.bump(); // consume }
+        self.code_point(start, 'u', digits)
+    }
+
+    /// `\xHH` is the byte of one or two hex digits, whatever it is; `\x{H...}`
+    /// is a code point, stored as its UTF-8 encoding. Elixir deprecates the
+    /// one-digit and braced forms with a warning; the lexer has no channel for
+    /// a warning, so both are accepted.
+    fn read_hex_escape(&mut self, start: usize) -> Result<Escape, LexError> {
+        if self.peek(0) == Some(b'{') {
+            self.bump();
+            return self
+                .read_braced_code_point(start, 'x', HEX_ESCAPE_SHAPE)
+                .map(Escape::Char);
         }
+        let digits = self.read_hex_digits(2);
+        if digits.is_empty() {
+            return Err(self.escape_error(start, HEX_ESCAPE_SHAPE));
+        }
+        let byte = u8::from_str_radix(digits, 16).expect("one or two hexadecimal digits fit a byte");
+        Ok(Escape::Byte(byte))
+    }
+
+    /// The one to six digits of a braced escape and its closing brace, after
+    /// the opening one.
+    fn read_braced_code_point(&mut self, start: usize, letter: char, shape: &str) -> Result<char, LexError> {
+        let digits = self.read_hex_digits(usize::MAX);
+        if !(1..=6).contains(&digits.len()) || self.peek(0) != Some(b'}') {
+            return Err(self.escape_error(start, shape));
+        }
+        self.bump(); // consume }
+        self.code_point(start, letter, digits)
+    }
+
+    /// Up to `limit` hexadecimal digits at the cursor.
+    fn read_hex_digits(&mut self, limit: usize) -> &'a str {
+        let digits_start = self.pos;
+        while self.pos - digits_start < limit && self.peek(0).is_some_and(|c| c.is_ascii_hexdigit()) {
+            self.pos += 1;
+        }
+        &self.text[digits_start..self.pos]
+    }
+
+    fn code_point(&self, start: usize, letter: char, digits: &str) -> Result<char, LexError> {
+        let value = u32::from_str_radix(digits, 16).expect("the digits are hexadecimal");
         char::from_u32(value).ok_or_else(|| {
             self.escape_error(
                 start,
-                &format!("invalid or reserved Unicode code point \\u{{{digits}}}"),
+                &format!("invalid or reserved Unicode code point \\{letter}{{{digits}}}"),
             )
         })
     }
@@ -937,11 +987,9 @@ impl<'a> Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
-    /// fz-axu.9 (L1) — byte-oriented quoted binary literal reader, for the
-    /// sites that name a value rather than build one: atom names, `@doc`
-    /// text, extern ABI strings. Interpolation is not meaningful there, so
-    /// this reader keeps rejecting nothing and copying bytes; expression
-    /// literals go through `read_quoted_binary_parts`.
+    /// Byte-oriented quoted literal reader, for the quoted atom, which names
+    /// a value rather than builds one. Interpolation is not meaningful there;
+    /// expression literals go through `read_quoted_binary_parts`.
     fn read_quoted_binary_bytes(&mut self) -> Result<Vec<u8>, LexError> {
         self.bump(); // consume opening "
         let mut bytes: Vec<u8> = Vec::new();
@@ -949,19 +997,29 @@ impl<'a> Lexer<'a> {
             match self.bump() {
                 None => return Err(self.err("unterminated string".into())),
                 Some(b'"') => return Ok(bytes),
-                Some(b'\\') => push_char(&mut bytes, self.read_escape()?),
+                Some(b'\\') => self.read_escape()?.push_onto(&mut bytes),
                 Some(c) => bytes.push(c),
             }
         }
     }
 
-    /// fz-axu.9 (L1) — UTF-8-validated text reader. Used at sites
-    /// where the bytes name an identifier-like value (atom names via
-    /// `:"foo"`, `@doc` text, extern ABI strings). Returns a `String`
-    /// or surfaces a lex error on invalid UTF-8.
-    fn read_string_utf8(&mut self) -> Result<String, LexError> {
+    /// The text of a quoted atom, after its opening quote.
+    fn read_quoted_atom_name(&mut self) -> Result<String, LexError> {
         let bytes = self.read_quoted_binary_bytes()?;
-        String::from_utf8(bytes).map_err(|e| self.err(format!("invalid UTF-8 in string: {}", e)))
+        self.name_from_bytes(bytes)
+    }
+
+    /// A name is text, so a `\xHH` escape that breaks UTF-8 is an error here
+    /// although a string may hold it.
+    fn name_from_bytes(&self, bytes: Vec<u8>) -> Result<String, LexError> {
+        String::from_utf8(bytes).map_err(|e| {
+            let from = e.utf8_error().valid_up_to();
+            let rest: Vec<String> = e.as_bytes()[from..].iter().map(u8::to_string).collect();
+            self.err(format!(
+                "invalid encoding in atom: invalid encoding starting at <<{}>>",
+                rest.join(", ")
+            ))
+        })
     }
 
     fn keyword_value_starts_after_colon(&self) -> bool {
@@ -1270,8 +1328,7 @@ impl<'a> Lexer<'a> {
                 }
                 Some(b'"') => {
                     self.bump();
-                    // fz-axu.9 (L1) — atom names must be valid UTF-8.
-                    Tok::Atom(self.read_string_utf8()?)
+                    Tok::Atom(self.read_quoted_atom_name()?)
                 }
                 _ => {
                     self.bump();
@@ -1302,10 +1359,7 @@ impl<'a> Lexer<'a> {
                 if self.peek(0) == Some(b':') && self.peek(1) != Some(b':') {
                     self.bump();
                     if self.keyword_value_starts_after_colon() {
-                        Tok::KwKey(
-                            String::from_utf8(bytes)
-                                .map_err(|e| self.err(format!("invalid UTF-8 in string: {}", e)))?,
-                        )
+                        Tok::KwKey(self.name_from_bytes(bytes)?)
                     } else {
                         return Err(self.err("keyword argument must be followed by space after quoted key".into()));
                     }
