@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:40:24Z",
+  "description": "After fz-sc8.183.1 the question 'where does this field end, and does it fit' is answered twice: by bs_field_end in runtime/src/ir_runtime.rs (used by the interpreter, the receive matcher via fz_bs_field_end, and re-checked inside fz_bs_read_int_ref / fz_bs_read_binary_ref) and by Cranelift emission in src/compiler2/native_codegen/prim.rs (match_field_extent, Prim::BitFieldFits, Prim::BitFieldNext). Candidate fold: lowering emits ordinary integer IR (multiply, add, compare) for the position, so native code and the interpreter share one source and BitFieldFits / BitFieldNext go away; the read's own re-check goes with it. Not blocking: found while reviewing fz-sc8.183.1.",
+  "id": "fz-sc8.183.4",
+  "labels": [],
+  "parent": "fz-sc8.183",
+  "priority": 3,
+  "status": "open",
+  "title": "A binary match's bounds arithmetic has one implementation",
+  "type": "task",
+  "updated_at": "2026-11-14T04:40:24Z"
+}
