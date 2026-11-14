@@ -8,6 +8,7 @@ use cranelift_codegen::settings::{self, Configurable, Flags};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Module, ModuleError};
 use cranelift_native::builder;
+use fz_runtime::any_value::{AnyValueRefPacking, ValueKind};
 use std::sync::Arc;
 
 pub(crate) fn host_isa() -> Arc<dyn TargetIsa> {
@@ -82,6 +83,14 @@ pub(crate) fn cached_iconst(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCach
         return v;
     }
     b.ins().iconst(types::I64, val)
+}
+
+/// The ref word of the atom whose id is `raw`: the id sits in the address
+/// field under the atom tag. It names no object, so no arch clears an address
+/// first.
+pub(crate) fn atom_ref_word(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
+    let tag_word = (u64::from(ValueKind::ATOM.tag()) << AnyValueRefPacking::current().tag_shift()) as i64;
+    b.ins().bor_imm(raw, tag_word)
 }
 
 /// Convert an i8 Cranelift bool to the reserved true/false atom bit patterns.

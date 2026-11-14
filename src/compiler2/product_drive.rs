@@ -15,8 +15,8 @@ use super::facts::{FactReadiness, FactUse};
 use super::identity::RootId;
 use super::ordered_worklist::OrderedWorklist;
 use super::pull::{
-    ProductDriver, ProductKey, ProductRequestId, ProductScope, ProductSessions, ProductValidation, ProductValue,
-    PullOutcome, PullWait, WorldProductProducers,
+    ProductDriveReport, ProductDriver, ProductKey, ProductRequestId, ProductScope, ProductSessions, ProductValidation,
+    ProductValue, PullOutcome, PullWait, WorldProductProducers,
 };
 use super::scheduler::{DriveOutcome, FatalError, WorkStartReason};
 use super::semantic::SemanticOrd;
@@ -597,8 +597,10 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
     let mut current = Some(SelectedProduct::Owned(root_key.clone()));
     let mut last_wait = None;
     let mut work = ProductValidation::default();
+    let mut requests = 0;
     let result = (|| {
         for _ in 0..product_stack_budget {
+            requests += 1;
             if let Some(sessions) = sessions.as_deref_mut() {
                 sessions.drain_active_movements(scope, &mut driver.session_mut());
             }
@@ -772,6 +774,11 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
     );
     driver.finish_wait_frames();
     work.report(tel, &root_key);
+    ProductDriveReport {
+        requests,
+        budget: product_stack_budget,
+    }
+    .report(tel, &root_key);
     result
 }
 

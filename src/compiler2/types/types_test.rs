@@ -2682,7 +2682,7 @@ impl_types_conformance_tests!(
     Types::new()
 );
 
-// fz-go4.18.28.3 — tuple-clause emptiness must prune, not fan out.
+// Tuple-clause emptiness must prune, not fan out.
 //
 // A tuple type minus a union of overlapping tuple negations drives
 // `emptiness::phi_tuple`. Each negation below constrains exactly one coordinate
@@ -2691,7 +2691,8 @@ impl_types_conformance_tests!(
 // 00277_enum_tier0_fixture burn >120s inside one `is_subtype` query. With
 // empty-product and disjoint-negation pruning the same query is linear in the
 // negation count. The intent captured: the ANSWERS are the emptiness semantics
-// (unchanged), and the query completes in bounded time.
+// (unchanged), and the walk's step count, observed through the interning work
+// counters, is pinned rather than any elapsed time.
 #[test]
 fn tuple_emptiness_under_many_overlapping_negations_is_tractable() {
     let mut t = Types::new();
@@ -2712,7 +2713,7 @@ fn tuple_emptiness_under_many_overlapping_negations_is_tractable() {
         cover = t.union(cover, neg);
     }
 
-    let start = std::time::Instant::now();
+    let before = t.interning_work_stats().tuple_emptiness_steps;
     // `{int, int, int, int}` inhabits `big` and no negation covers it: the
     // difference is non-empty, so `big` is NOT a subtype of the cover.
     assert!(
@@ -2726,10 +2727,10 @@ fn tuple_emptiness_under_many_overlapping_negations_is_tractable() {
         t.is_subtype(&big, &cover_full),
         "adding the top tuple covers everything"
     );
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(5),
-        "tuple emptiness under many negations must be tractable, took {:?}",
-        start.elapsed()
+    let steps = t.interning_work_stats().tuple_emptiness_steps - before;
+    assert_eq!(
+        steps, 17,
+        "tuple emptiness under many negations must visit a bounded number of walk steps, not arity^negations"
     );
 }
 

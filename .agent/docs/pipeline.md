@@ -782,6 +782,20 @@ for fields nobody reads. A trailing `ignore` says what saying nothing says, so
 the normal form trims them and one demand is one value for equality, hashing
 and keying.
 
+A tuple travels field by field only while that fits `TUPLE_LANE_BUDGET` lanes
+(eight, in `semantic.rs`); a wider one travels as one reference to the built
+tuple. The bound sits in two places that agree by reading the same constant.
+`ShapeDemand::normalize` turns a field reading that asks for more lanes than
+the budget into `Whole`, so a producer is never told it may leave a field of a
+tuple that travels whole unbuilt. `decomposed_field_tys` in `jobs/transport.rs`
+answers for a `Whole` demand on an exact tuple type: the tuple's field types
+when its lanes, nested tuples included, fit the budget, and nothing when they
+do not, in which case the layout is one value lane. A tuple read by a few
+fields keeps those fields however wide it is, and a callable demand keeps its
+decomposition. The budget is one constant for every target, so a layout does
+not depend on the machine the compiler runs on; an executable asks for a
+tuple input as `ExecutableNeed::TupleFields` only inside the budget.
+
 A tuple value can cross several positions whose exact layouts retain different
 fields. The producer layout remains the authority for the lanes already in
 hand; the consumer layout says which positions it needs. When both layouts are

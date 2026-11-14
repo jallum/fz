@@ -9,8 +9,7 @@ use fz_runtime::any_value::{
 };
 use fz_runtime::heap::Schema;
 use fz_runtime::ir_runtime::{
-    fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_struct_get_field_ref,
-    fz_struct_get_named_field_ref,
+    fz_box_float_for_any, fz_box_int_for_any, fz_struct_get_field_ref, fz_struct_get_named_field_ref,
 };
 use fz_runtime::process::Process;
 
@@ -112,15 +111,15 @@ impl AnyValue {
         interp_value_from_ref(value, "interpreter tagged mailbox value")
     }
 
-    /// Box this value into a heap ref word. Scalar arms allocate a ScalarBox
-    /// on `proc`'s heap (`proc` must be the running process); Ref/EmptyList/Null
-    /// arms are allocation-free and ignore it.
+    /// Box this value into a heap ref word. The Int and Float arms allocate a
+    /// ScalarBox on `proc`'s heap (`proc` must be the running process);
+    /// Atom/Ref/EmptyList/Null arms are allocation-free and ignore it.
     pub(super) fn as_ref_word(self, proc: *mut Process) -> Result<u64, String> {
         match self {
             AnyValue::Null => Ok(AnyValueRef::null().raw_word()),
             AnyValue::Int(value) => Ok(fz_box_int_for_any(proc, value)),
             AnyValue::Float(value) => Ok(fz_box_float_for_any(proc, value)),
-            AnyValue::Atom(value) => Ok(fz_box_atom_for_any(proc, value as u64)),
+            AnyValue::Atom(value) => Ok(AnyValueRef::atom(value).raw_word()),
             AnyValue::EmptyList => Ok(AnyValueRef::empty_list().raw_word()),
             AnyValue::FnRef(fn_id, arity, denotation) => Ok(Self::materialize_fn_ref(proc, fn_id, arity, denotation)?
                 .ref_word()

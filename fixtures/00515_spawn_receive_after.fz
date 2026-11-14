@@ -7,7 +7,7 @@ def main() do
   result = receive do
     [1, 2.5, :a] -> :ok
   after
-    50 -> :miss
+    60000 -> :miss
   end
-  assert(result == :ok, "the child's message arrives well within the 50ms timeout")
+  assert(result == :ok, "the child's message arrives before the 60000ms timeout can fire")
 end

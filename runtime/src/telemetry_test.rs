@@ -27,6 +27,32 @@ fn a_sleep_writes_its_wait_in_nanoseconds() {
 }
 
 #[test]
+fn a_timer_arming_writes_its_timer_pid_arm_time_and_deadline() {
+    let armed = TimerArmed {
+        timer: 5,
+        pid: 2,
+        armed: Duration::from_millis(5),
+        deadline: Duration::from_millis(80),
+    };
+    assert_eq!(
+        line(RuntimeEvent::TimerArmed(armed)),
+        r#"{"name":["fz","runtime","timer","armed"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"timer":5,"pid":2,"armed_ns":5000000,"deadline_ns":80000000}}"#
+    );
+}
+
+#[test]
+fn a_timer_firing_and_a_timer_cancelling_write_their_timer_and_pid() {
+    assert_eq!(
+        line(RuntimeEvent::TimerFired(TimerFired { timer: 5, pid: 2 })),
+        r#"{"name":["fz","runtime","timer","fired"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"timer":5,"pid":2}}"#
+    );
+    assert_eq!(
+        line(RuntimeEvent::TimerCancelled(TimerCancelled { timer: 5, pid: 2 })),
+        r#"{"name":["fz","runtime","timer","cancelled"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"timer":5,"pid":2}}"#
+    );
+}
+
+#[test]
 fn a_probe_writes_its_outcome_and_what_the_gift_cost() {
     let probe = SendProbe {
         outcome: ProbeOutcome::Miss,

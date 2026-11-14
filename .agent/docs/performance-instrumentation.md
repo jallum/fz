@@ -100,6 +100,18 @@ payload construction, and no session id is minted.
 The public reader still decodes historical ordinary `product.copublished`
 records; current producers do not emit them.
 
+**Drive spend** — `pull.drive.finished` fires once when a `drive_root_product_with`
+call ends, whether the product settled or the drive failed. It carries the root
+`product` the drive was asked for, `requests` (the loop turns charged against the
+budget) and `budget` (`PRODUCT_DRIVE_BUDGET` outside tests). The budget bounds one
+drive, not a compile: a compile runs several drives, each with its own budget, so
+`pull.product.requested` summed over a trace says how much the compile asked for
+and the largest `requests` says how close any drive came to stopping. A turn that
+hands a program-scoped key to the program session is charged to the drive that
+made it but emits no `pull.product.requested`, so `requests` can exceed that
+drive's request events. `tests/distill_telemetry_test.rs` pins the largest drive,
+the total and the drive count for compiling `tools/distill-telemetry.exs`.
+
 **Retained product validation** — `pull.product.validation` reports the
 product and `work`. `vertex_visits` counts dirty nodes entered into complete
 proofs (distinct within each proof, summed when proofs are nested);

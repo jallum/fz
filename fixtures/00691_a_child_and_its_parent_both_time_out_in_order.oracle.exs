@@ -5,19 +5,20 @@ defmodule Oracle do
       receive do
         :never -> :ok
       after
-        20 ->
+        1 ->
           IO.inspect(:child_timeout)
           send(parent, :child_done)
       end
     end)
-    receive do
-      :never -> IO.inspect(:got)
+    timed_out = receive do
+      :never -> false
     after
-      80 -> IO.inspect(:main_timeout)
+      2 -> true
     end
     receive do
       :child_done -> IO.inspect(:joined)
     end
+    IO.inspect({:main_timeout, timed_out})
   end
 end
 

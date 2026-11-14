@@ -18,7 +18,7 @@ use super::super::pull::{
 use super::super::reach::ReachKey;
 use super::super::semantic::{
     CallSiteSummary, CallTargetSummary, CallableDemand, CallableFlowFact, CallableSurface, CallableTarget,
-    ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, SemanticOrd, ShapeDemand,
+    ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, SemanticOrd, ShapeDemand, TUPLE_LANE_BUDGET,
 };
 use super::super::transport::{
     BoundaryDescr, BoundaryFacts, BoundaryId, CallableConstructionCapture, CallableConstructionFact,
@@ -1077,10 +1077,12 @@ fn evaluate_transport_recipe(
                     }
                 }
             }
-            if waits.is_empty() {
-                RecipeLayout::Exact(tuple_layout(world, &layouts))
-            } else {
+            if !waits.is_empty() {
                 RecipeLayout::Waiting(waits)
+            } else if tuple_travels_whole(world, ty, demand) {
+                RecipeLayout::Exact(TransportLayout::structural(value_lane_shape(world, ty)))
+            } else {
+                RecipeLayout::Exact(tuple_layout(world, &layouts))
             }
         }
         TransportRecipe::Projection { source, kind } => {
@@ -1978,8 +1980,7 @@ fn produce_named_transport_position(
     // A CALLABLE return is exempt: a callable's form is not a lane contract but
     // the row its own demand names, which `exact_direct_callable_layout`
     // derives from facts alone and every view of the convention reaches the
-    // same way (fz-9i4.4.5). `tuple_refined_demand` stands aside for the same
-    // reason -- there is no type contract to state for a clause set.
+    // same way. There is no type contract to state for a clause set.
     let cycle_return = names_in_component_direct_return
         && matches!(position, TransportPosition::ExecutableReturn { .. })
         && !demand.is_callable();
@@ -2051,9 +2052,7 @@ fn with_value_ref_carrier(world: &mut World, ty: Ty, mut layout: TransportLayout
         return layout;
     }
     if !layout_carries(world, layout, ty) {
-        let whole = RuntimeDemand::whole();
-        let complete = tuple_refined_demand(world, ty, &whole);
-        layout = derived_transport_layout(world, ty, &complete, &[]);
+        layout = derived_transport_layout(world, ty, &RuntimeDemand::whole(), &[]);
     }
     layout.carrier = TransportCarrier::ValueRef(value_lane(world, ty));
     layout
@@ -2091,38 +2090,7 @@ fn cut_transport_layout(
 /// reach the same form here by construction, which is the whole point: a
 /// calling convention has more than one view of it, and they must agree.
 fn contract_transport_layout(world: &mut World, ty: Ty, demand: &RuntimeDemand) -> TransportLayout {
-    let contract = tuple_refined_demand(world, ty, demand);
-    derived_transport_layout(world, ty, &contract, &[])
-}
-
-/// A whole-value demand on an exact tuple type, read as the per-field demand it
-/// stands for -- the same reading `boundary_runtime_demand` gives a boundary's
-/// contract, for the same reason.
-///
-/// Only the contract asks. Elsewhere a position's form comes from sources it
-/// actually read, or from a demand a consumer actually stated; where the
-/// contract is reached the form must be INVENTED, and every end has to invent
-/// the same one from the same fact. A value of an exact tuple type is built
-/// decomposed, so the form its type describes is the form it already travels
-/// in.
-fn tuple_refined_demand<'a>(world: &mut World, ty: Ty, demand: &'a RuntimeDemand) -> Cow<'a, RuntimeDemand> {
-    let ShapeDemand::Whole = demand.shape else {
-        return Cow::Borrowed(demand);
-    };
-    if demand.is_callable() {
-        return Cow::Borrowed(demand);
-    }
-    let Some(fields) = exact_tuple_field_tys(world, ty) else {
-        return Cow::Borrowed(demand);
-    };
-    let mut refined = demand.clone();
-    refined.shape = ShapeDemand::TupleFields(
-        fields
-            .into_iter()
-            .map(|field_ty| tuple_refined_demand(world, field_ty, &RuntimeDemand::whole()).into_owned())
-            .collect(),
-    );
-    Cow::Owned(refined)
+    derived_transport_layout(world, ty, demand, &[])
 }
 
 /// Whether every value of `ty` has somewhere to travel in `shape`. A callable
@@ -2471,7 +2439,7 @@ fn joined_tuple_structural<T: crate::telemetry::Telemetry>(
     demand: &RuntimeDemand,
     layouts: &[TransportLayout],
 ) -> Result<Option<ShapeId>, RecipeLayout> {
-    let Some(field_tys) = exact_tuple_field_tys(world, ty) else {
+    let Some(field_tys) = decomposed_field_tys(world, ty, demand) else {
         return Ok(None);
     };
     let arity = field_tys.len();
@@ -2613,7 +2581,7 @@ fn layout_from_demand<T: crate::telemetry::Telemetry>(
             return RecipeLayout::Exact(TransportLayout::structural(world.intern_shape(ShapeDescr::Nothing)));
         }
         ShapeDemand::Whole | ShapeDemand::TupleFields(_) => {
-            let Some(field_tys) = exact_tuple_field_tys(world, ty) else {
+            let Some(field_tys) = decomposed_field_tys(world, ty, demand) else {
                 return RecipeLayout::Exact(TransportLayout::structural(value_lane_shape(world, ty)));
             };
             let Some(field_demands) = demand.shape.field_prefix(field_tys.len()) else {
@@ -2723,6 +2691,57 @@ fn boundary_resolution_symbols_for_flow_surfaces(
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// The field types of a value that travels field by field under `demand`, or
+/// `None` for one that travels as a single value lane.
+///
+/// This is the one answer to how a tuple travels. A demand that names fields
+/// is already inside the lane budget, so the value travels as those fields. A
+/// demand for the whole value decomposes an exact tuple type only while its
+/// fields fit the budget; a wider tuple is built once and travels by
+/// reference, as a value of an inexact tuple type does.
+fn decomposed_field_tys(world: &mut World, ty: Ty, demand: &RuntimeDemand) -> Option<Vec<Ty>> {
+    let fields = exact_tuple_field_tys(world, ty)?;
+    if matches!(demand.shape, ShapeDemand::Whole) && !demand.is_callable() && !fits_lane_budget(world, &fields) {
+        return None;
+    }
+    Some(fields)
+}
+
+/// Whether a value of type `ty` is an exact tuple that `demand` asks to travel
+/// as one value lane.
+fn tuple_travels_whole(world: &mut World, ty: Ty, demand: &RuntimeDemand) -> bool {
+    world.types().exact_tuple_arity(&ty).is_some() && decomposed_field_tys(world, ty, demand).is_none()
+}
+
+/// Whether whole values of these field types travel together inside the lane
+/// budget.
+fn fits_lane_budget(world: &mut World, fields: &[Ty]) -> bool {
+    let mut lanes = 0;
+    for field in fields {
+        lanes += whole_value_lanes(world, *field);
+        if lanes > TUPLE_LANE_BUDGET {
+            return false;
+        }
+    }
+    true
+}
+
+/// The lanes a whole value of type `ty` travels in: its fields' lanes for an
+/// exact tuple inside the budget, one for anything else.
+fn whole_value_lanes(world: &mut World, ty: Ty) -> usize {
+    let Some(fields) = exact_tuple_field_tys(world, ty) else {
+        return 1;
+    };
+    let mut lanes = 0;
+    for field in fields {
+        lanes += whole_value_lanes(world, field);
+        if lanes > TUPLE_LANE_BUDGET {
+            return 1;
+        }
+    }
+    lanes
 }
 
 fn exact_tuple_field_tys(world: &mut World, ty: Ty) -> Option<Vec<Ty>> {

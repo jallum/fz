@@ -50,6 +50,8 @@ pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>) -> bool {
 /// Every entry of `n` must have the same arity as `t`; a mismatched arity
 /// subtracts nothing and belongs to the caller's filter.
 pub(super) fn phi_tuple<'d>(cx: TyCtx<'_>, t: &[&Descr], n: &[impl AsRef<[&'d Descr]>]) -> bool {
+    #[cfg(test)]
+    cx.count_tuple_emptiness_step();
     // One empty coordinate empties the whole product — no negation needed.
     // Checking at entry prunes every recursive branch whose diff/intersect
     // zeroed a coordinate; without this the recursion only discovers the

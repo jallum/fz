@@ -25,7 +25,7 @@ observes a sleep, and the send paths and run teardown observe their own events.
   `write_line`, to the file `FZ_LOG_TELEMETRY` names; see
   [Built binaries](#built-binaries).
 
-Seven events matter:
+Ten events matter:
 
 - `fz.runtime.execution_ready` — the boundary between compiling a program and
   running it, emitted by `run_root_jit` and `run_root_interp`.
@@ -33,6 +33,8 @@ Seven events matter:
   live `Process` authority.
 - `fz.runtime.scheduler_slept` — one each time the scheduling core sleeps for a
   pending receive-after timer because nothing is runnable.
+- `fz.runtime.timer.armed`, `fz.runtime.timer.fired`, `fz.runtime.timer.cancelled`
+  — the life of one receive-after timer; see [`fz.runtime.timer.*`](#fzruntimetimer).
 - `fz.runtime.send.probe` — one per cross-process send, carrying what the
   sender's probe decided and what it cost.
 - `fz.runtime.raise` — one per raise, caught or not, before the runtime decides
@@ -110,13 +112,63 @@ fields synchronously.
 ## `fz.runtime.scheduler_slept`
 
 `next_runnable` (`runtime/src/sched_core.rs`) observes
-`RuntimeEvent::SchedulerSlept(wait)` just before it sleeps; `wait` is the
+`RuntimeEvent::SchedulerSlept(wait)` just before it waits on its `Clock`; `wait` is the
 `Duration` until the next timer deadline. `write_line` renders it as `wait_ns`.
-The event fires only when the run queue is empty and a timer pends, so a program
-whose timers are all cancelled by arriving messages never emits it.
-`exec/runtime_test.rs` observes the event on the `run` and `interp` paths, and
-`a_built_binary_sleeps_the_scheduler_once_for_a_receive_that_times_out` pins
-exactly one on `build` for fixture 00687 (the count, never the wait).
+The event fires only when the run queue is empty and a timer pends and has not
+yet expired, so a program whose timers are all cancelled by arriving messages
+never emits it, and whether a short timer emits it depends on how long the
+machine took to reach the wait. A test therefore pins it only on a core driven
+by a manual `Clock` (`sched_core_test.rs`), where the wait is exact; a test of a
+whole run reads the `timer` events instead.
+
+## `fz.runtime.timer.*`
+
+<a id="fzruntimetimer"></a>
+
+A receive with a positive `after` timeout arms one timer for its process.
+Three events report its life, each carrying the timer id the core handed out and
+the pid it wakes:
+
+```text
+raw event:    fz.runtime.timer.armed       signature: (&TimerArmed)      { timer, pid, armed, deadline }
+raw event:    fz.runtime.timer.fired       signature: (&TimerFired)      { timer, pid }
+raw event:    fz.runtime.timer.cancelled   signature: (&TimerCancelled)  { timer, pid }
+```
+
+- `armed` is observed by the `ExecCtx::timer_schedule` hook (`timer_schedule_hook`)
+  right after the core schedules the timer. `armed` and `deadline` are how long
+  after the scheduler's `Clock` began the core read its clock and the timer
+  expires; `write_line` renders them as `armed_ns` and `deadline_ns`, so
+  `deadline_ns - armed_ns` is exactly the requested `after` in nanoseconds.
+  Deadlines of one run share that origin, so they order the run's
+  timers whatever the load on the machine.
+- `fired` is observed by `next_runnable` for each timer it drains as expired, in
+  deadline order, just before the scheduler's `wake_expired` runs.
+- `cancelled` is observed by the `ExecCtx::timer_cancel` hook only when the timer
+  was still pending: a message that wakes the receiver cancels its timer, and a
+  cancel of a timer that already fired or was already cancelled reports nothing.
+
+Every timer armed ends in exactly one of `fired` or `cancelled`, unless the
+program halts first. All three schedulers report them through `observe`: the JIT
+`Runtime` and the interpreter adapter raise the typed raw event
+(`emit_runtime_event`) and the AOT scheduler writes the line to its log, so the
+three paths emit the same sequence for the same program.
+
+`SchedulingCore` reads and waits on a `Clock` (`runtime/src/clock.rs`): the system
+clock sleeps the thread, and a manual clock, which only tests construct, lets
+the core's wait pass instantly. `sched_core_test.rs` drives the core on a manual
+clock, so deadline order, cancellation and the exact `scheduler_slept` wait are
+asserted without sleeping. `TimerWheel::schedule` takes the deadline itself and
+`drain_expired` takes `now`, so `timer_test.rs` never waits for a deadline.
+
+`tests/fixture_matrix.rs`
+(`a_receive_timer_is_armed_then_fired_or_cancelled_and_fires_in_deadline_order_on_every_path`)
+reads the events from the `run`, `interp` and `build` logs: fixture 00687's one
+timer is armed for exactly 1 ms then fired, 00692's is armed for exactly 60000 ms then cancelled with nothing fired,
+00690's child timer fires while main's long timer is cancelled, and the two
+timers of 00693 and 00691 fire in the order of the deadlines their `armed` events
+reported. That order is read from the run's own deadlines, so it holds however
+long the machine stalled between the two arms.
 
 ## `fz.runtime.run_ended`
 
@@ -272,7 +324,7 @@ branch. A path that cannot be opened is a loud failure: a message naming the
 path and the error on stderr and a non-zero exit before the program runs.
 
 The binary reports `execution_ready`, `send.probe`, `gc`, `scheduler_slept`,
-`process_exited` and `run_ended`. The absolute pool counts in `run_ended` are
+the three `timer` events, `process_exited` and `run_ended`. The absolute pool counts in `run_ended` are
 smaller than on `run`, since no compiler heaps share the thread; the guarantee
 is the same equality. In the fixture matrix the build leg of
 `run_path_logged_to` runs `fz2 --log-telemetry <log> build`, then the binary

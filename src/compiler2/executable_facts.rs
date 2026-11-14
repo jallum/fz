@@ -20,7 +20,7 @@ use super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableActivationInput, CallableDemand, CallableSurface,
-    RuntimeDemand, RuntimeDemandTypeInputs, RuntimeDemandTypeProjection,
+    RuntimeDemand, RuntimeDemandTypeInputs, RuntimeDemandTypeProjection, TUPLE_LANE_BUDGET,
 };
 use super::types::{Ty, Types};
 use super::world::World;
@@ -816,10 +816,13 @@ fn collect_entry_callsite_needs(
                 let _ = collect_entry_callsite_needs(entries, target, outgoing_need, out, walks);
             }
             // A decision that cannot fail, and whose every outcome proves its
-            // input to be an N-tuple, reads that input as N fields.
+            // input to be an N-tuple, reads that input as N fields while N
+            // fields fit the lane budget; a wider tuple arrives as one value.
             if !dispatch.plan.can_fail() {
                 for (ordinal, input) in inputs.iter().enumerate() {
-                    if let Some(arity) = dispatch.plan.proven_tuple_arity(ordinal) {
+                    if let Some(arity) = dispatch.plan.proven_tuple_arity(ordinal)
+                        && arity <= TUPLE_LANE_BUDGET
+                    {
                         tuple_demands.insert(*input, arity);
                     }
                 }

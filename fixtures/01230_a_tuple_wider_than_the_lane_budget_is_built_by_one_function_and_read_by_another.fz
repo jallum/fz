@@ -1,0 +1,29 @@
+#---
+# purpose: "A tuple of twelve fields returned by one function is read whole, by field and by destructuring in another, and prints as Elixir prints it"
+# oracle: oracle.exs
+# oracle.stamp: 7d8cc55ae7e4fef2
+#---
+#
+# Twelve fields are more than a tuple travels in field by field, so `make/1`
+# builds the tuple and hands over a reference. `pair/1` returns a tuple narrow
+# enough to travel as its fields.
+def make(n), do: {n, n + 1, n + 2, n + 3, n + 4, n + 5, n + 6, n + 7, n + 8, n + 9, n + 10, n + 11}
+
+def pair(n), do: {n, n * 2}
+
+def last({_, _, _, _, _, _, _, _, _, _, _, z}), do: z
+
+def sum({a, b, c, d, e, f, g, h, i, j, k, l}), do: a + b + c + d + e + f + g + h + i + j + k + l
+
+def main() do
+  t = make(7)
+  dbg(t)
+  dbg(tuple_size(t))
+  dbg(elem(t, 0))
+  dbg(elem(t, 11))
+  dbg(last(t))
+  dbg(sum(t))
+  {a, _, _, _, _, _, _, _, _, _, _, l} = t
+  dbg(a + l)
+  dbg({pair(3), t, pair(4)})
+end

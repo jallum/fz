@@ -243,3 +243,32 @@ fn a_mixed_message_measures_what_it_copies() {
     }
     measured_equals_copied(&mut sender, &[heap_ref(ValueKind::STRUCT, pair_p), list_ref(list)]);
 }
+
+#[test]
+fn an_atom_ref_measures_nothing_and_crosses_as_it_is() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let atoms = [AnyValueRef::atom(0), AnyValueRef::atom(41), AnyValueRef::atom(u32::MAX)];
+    assert_eq!(measure_deep_copy(&atoms, &sender.view()), 0);
+
+    let (segment, copied) = gift_copy(&mut sender, &atoms);
+
+    assert_eq!(segment.block_count(), 0, "an atom ref needs no block");
+    assert_eq!(copied, atoms, "the atoms cross as they are");
+}
+
+#[test]
+fn deep_copying_an_atom_ref_to_another_heap_allocates_nothing() {
+    let source = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut destination = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let before = destination.alloc_stats_snapshot();
+
+    let copy = deep_copy_any_value_ref(
+        AnyValueRef::atom(7),
+        &source.view(),
+        &mut destination,
+        &mut AddressMap::default(),
+    );
+
+    assert_eq!(copy, AnyValueRef::atom(7));
+    assert_eq!(destination.alloc_stats_snapshot().total.allocs, before.total.allocs);
+}

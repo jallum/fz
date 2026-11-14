@@ -1,0 +1,29 @@
+true true false
+true false true
+false false false
+false false false
+false false false
+false false false
+false false false
+p struct
+other_struct q
+map no
+map no
+neither no
+neither no
+neither no
+true
+false
+true
+false
+true
+false
+false
+true
+false
+true
+false
+[true, false, false, false]
+[a: 1, a: 3]
+true
+5

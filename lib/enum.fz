@@ -764,7 +764,8 @@ defmodule Enum do
   Returns a list of the elements of `enumerable`, sorted by `sorter`.
 
   `sorter` takes two elements and returns whether the first is allowed to
-  come before the second (a total order, like `<=/2`).
+  come before the second (a total order, like `<=/2`). The sort is stable
+  when `sorter` returns true for equal elements: they keep their order.
 
   ## Examples
 
@@ -976,21 +977,18 @@ defmodule Enum do
 
   @spec sort_list([a], (a, a) -> boolean) :: [a]
   defp sort_list([], _sorter), do: []
-  defp sort_list([single], _sorter), do: [single]
   defp sort_list(list, sorter) do
-    {left, right} = split_sort_list(list, [], [])
-    merge_sort_lists(
-      sort_list(reverse_list(left), sorter),
-      sort_list(reverse_list(right), sorter),
-      sorter
-    )
+    {sorted, _rest} = sort_prefix(list, length(list), sorter)
+    sorted
   end
 
-  @spec split_sort_list([a], [a], [a]) :: {[a], [a]}
-  defp split_sort_list([], left, right), do: {left, right}
-  defp split_sort_list([single], left, right), do: {[single | left], right}
-  defp split_sort_list([left_head, right_head | tail], left, right) do
-    split_sort_list(tail, [left_head | left], [right_head | right])
+  @spec sort_prefix([a], integer, (a, a) -> boolean) :: {[a], [a]}
+  defp sort_prefix([head | rest], 1, _sorter), do: {[head], rest}
+  defp sort_prefix(list, count, sorter) do
+    left_count = div(count, 2)
+    {left, after_left} = sort_prefix(list, left_count, sorter)
+    {right, rest} = sort_prefix(after_left, count - left_count, sorter)
+    {merge_sort_lists(left, right, sorter), rest}
   end
 
   @spec reverse_list([a]) :: [a]

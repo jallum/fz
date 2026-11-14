@@ -232,6 +232,8 @@ pub(crate) struct InterningWorkStats {
     pub normalizations: usize,
     pub canonical_index_probes: usize,
     pub inserted: usize,
+    /// Calls of the tuple emptiness walk (`phi_tuple`), recursive ones included.
+    pub tuple_emptiness_steps: usize,
 }
 
 #[cfg(test)]
@@ -242,6 +244,8 @@ struct InterningWork {
     normalizations: usize,
     canonical_index_probes: usize,
     inserted: usize,
+    /// Counted through a shared `TyCtx`, which only borrows the interner.
+    tuple_emptiness_steps: std::cell::Cell<usize>,
 }
 
 #[derive(Default)]
@@ -338,9 +342,16 @@ pub(super) struct TyCtx<'a> {
     /// structural address as `a1_0`/`r0`. Empty for the interner-internal ctx,
     /// which only resolves descriptors and never renders.
     addresses: &'a [Vec<addressed::AddrStep>],
+    #[cfg(test)]
+    tuple_emptiness_steps: &'a std::cell::Cell<usize>,
 }
 
 impl<'a> TyCtx<'a> {
+    #[cfg(test)]
+    fn count_tuple_emptiness_step(&self) {
+        self.tuple_emptiness_steps.set(self.tuple_emptiness_steps.get() + 1);
+    }
+
     fn descr(&self, t: &Ty) -> &'a Descr {
         self.arena
             .get(t.0 as usize)
@@ -423,6 +434,8 @@ impl TypeInterner {
         TyCtx {
             arena: &self.arena,
             addresses: &[],
+            #[cfg(test)]
+            tuple_emptiness_steps: &self.work.tuple_emptiness_steps,
         }
     }
 
@@ -1064,6 +1077,8 @@ impl Types {
         TyCtx {
             arena: &self.interner.arena,
             addresses: &self.address_paths,
+            #[cfg(test)]
+            tuple_emptiness_steps: &self.interner.work.tuple_emptiness_steps,
         }
     }
 
@@ -1187,6 +1202,7 @@ impl Types {
             normalizations: work.normalizations,
             canonical_index_probes: work.canonical_index_probes,
             inserted: work.inserted,
+            tuple_emptiness_steps: work.tuple_emptiness_steps.get(),
         }
     }
 

@@ -401,6 +401,10 @@ impl CallableDemand {
 /// correctness-safe — it only means "materialize the whole box." Each field is a
 /// full [`RuntimeDemand`], so a tuple of callables keeps each field's callable
 /// obligations.
+///
+/// A field reading is bounded: one that asks for more than
+/// [`TUPLE_LANE_BUDGET`] lanes is `Whole`. Every producer of the value hears
+/// the same demand, so none of them leaves out a field the box needs.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum ShapeDemand {
     #[default]
@@ -408,6 +412,15 @@ pub enum ShapeDemand {
     Whole,
     TupleFields(Vec<RuntimeDemand>),
 }
+
+/// The most lanes a tuple travels in field by field. A wider one travels as one
+/// reference to the built tuple.
+///
+/// Fields ride in argument registers while there are registers for them, and
+/// the targets' calling conventions have eight (aarch64) and six (x86-64) for
+/// integers. Past that a field is a stack slot, which is memory as the tuple's
+/// own box is, and each one is a parameter the code generator places.
+pub(crate) const TUPLE_LANE_BUDGET: usize = 8;
 
 impl ShapeDemand {
     pub fn is_ignore(&self) -> bool {
@@ -449,6 +462,21 @@ impl ShapeDemand {
         }
         if fields.is_empty() {
             *self = Self::Ignore;
+        } else if self.lanes() > TUPLE_LANE_BUDGET {
+            *self = Self::Whole;
+        }
+    }
+
+    /// How many lanes this demand asks a value to travel in. A field wanted
+    /// only as a callable still travels.
+    fn lanes(&self) -> usize {
+        match self {
+            Self::Ignore => 0,
+            Self::Whole => 1,
+            Self::TupleFields(fields) => fields
+                .iter()
+                .map(|field| field.shape.lanes().max(usize::from(field.is_callable())))
+                .sum(),
         }
     }
 

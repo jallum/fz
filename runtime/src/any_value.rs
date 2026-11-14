@@ -116,10 +116,15 @@ impl ValueKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnyValueRefError {
     UnknownTag(u8),
-    ExpectedTag { expected: ValueKind, found: ValueKind },
+    ExpectedTag {
+        expected: ValueKind,
+        found: ValueKind,
+    },
     ExpectedScalarTag(ValueKind),
     ExpectedHeapObjectTag(ValueKind),
     NullAddress(ValueKind),
+    /// An atom ref carries its id; no slot holds it.
+    AtomHasNoSlot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,7 +254,17 @@ impl AnyValueRef {
         AnyValueRefPacking::current().pack(ValueKind::LIST, 0)
     }
 
+    /// An atom is its own ref: the id sits in the address field and names no
+    /// object.
+    pub fn atom(atom_id: u32) -> Self {
+        AnyValueRefPacking::current().pack(ValueKind::ATOM, atom_id as usize)
+    }
+
+    /// A ref to the integer or float payload word at `slot`.
     pub fn from_scalar_slot(tag: ValueKind, slot: *const u64) -> Result<Self, AnyValueRefError> {
+        if tag == ValueKind::ATOM {
+            return Err(AnyValueRefError::AtomHasNoSlot);
+        }
         if !tag.is_scalar() {
             return Err(AnyValueRefError::ExpectedScalarTag(tag));
         }
@@ -338,7 +353,7 @@ impl AnyValueRef {
 
     pub fn load_atom(self) -> Result<u64, AnyValueRefError> {
         self.expect_tag(ValueKind::ATOM)?;
-        Ok(unsafe { ptr::read(self.cleared_addr() as *const u64) })
+        Ok(self.cleared_addr() as u64)
     }
 
     pub fn heap_addr(self, expected: ValueKind) -> Result<*mut u8, AnyValueRefError> {
@@ -517,8 +532,9 @@ impl AnyValue {
             Self::Null => AnyValueRef::null(),
             Self::EmptyList => AnyValueRef::empty_list(),
             Self::HeapRef(value) => value,
-            Self::Int(_) | Self::Float(_) | Self::Atom(_) => {
-                panic!("scalar AnyValue needs object-local storage before it can become a ref")
+            Self::Atom(atom_id) => AnyValueRef::atom(atom_id),
+            Self::Int(_) | Self::Float(_) => {
+                panic!("int or float AnyValue needs object-local storage before it can become a ref")
             }
         }
     }
@@ -757,11 +773,10 @@ pub unsafe fn closure_capture_ref_word(addr: *const u8, idx: usize) -> u64 {
     match kind {
         ValueKind::NULL => AnyValueRef::null().raw_word(),
         ValueKind::LIST if raw == 0 => AnyValueRef::empty_list().raw_word(),
-        ValueKind::INT | ValueKind::FLOAT | ValueKind::ATOM => {
-            AnyValueRef::from_scalar_slot(kind, raw_slot as *const u64)
-                .expect("closure scalar capture ref")
-                .raw_word()
-        }
+        ValueKind::ATOM => AnyValueRef::atom(raw as u32).raw_word(),
+        ValueKind::INT | ValueKind::FLOAT => AnyValueRef::from_scalar_slot(kind, raw_slot as *const u64)
+            .expect("closure scalar capture ref")
+            .raw_word(),
         kind if kind.is_heap() => heap_object_word(raw as *const u8, kind),
         _ => unreachable!("unknown closure capture kind"),
     }

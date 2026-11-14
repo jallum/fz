@@ -17,6 +17,6 @@ def main() do
   receive do
     ^key -> dbg(kept)
   after
-    5000 -> dbg(:timeout)
+    60000 -> dbg(:timeout)
   end
 end

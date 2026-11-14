@@ -7,7 +7,7 @@ def retain(xs) do
     :go -> [h | t]
     :skip -> []
   after
-    1000 -> []
+    0 -> []
   end
 end
 

@@ -440,10 +440,9 @@ fn fz_brand_bitstring_as_utf8_is_identity() {
 fn ref_projection_helpers_load_scalar_payloads() {
     let int_slot = -42_i64 as u64;
     let float_slot = 3.5_f64.to_bits();
-    let atom_slot = 17_u64;
     let int_ref = AnyValueRef::from_scalar_slot(ValueKind::INT, &int_slot).expect("int ref");
     let float_ref = AnyValueRef::from_scalar_slot(ValueKind::FLOAT, &float_slot).expect("float ref");
-    let atom_ref = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &atom_slot).expect("atom ref");
+    let atom_ref = AnyValueRef::atom(17);
 
     assert_eq!(fz_ref_tag(int_ref.raw_word()), ValueKind::INT.tag());
     assert_eq!(fz_ref_load_int(int_ref.raw_word()), -42);
@@ -455,8 +454,7 @@ fn ref_projection_helpers_load_scalar_payloads() {
 fn map_typed_get_projects_expected_scalar_value() {
     with_process(|process| {
         let key_atom = process.node.intern_atom("key");
-        let key_slot = u64::from(key_atom);
-        let key_ref = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &key_slot).expect("key ref");
+        let key_ref = AnyValueRef::atom(key_atom);
         let map_bits = process
             .heap
             .alloc_map_slots(&[(AnyValue::atom(key_atom), AnyValue::int(42))]);
@@ -471,7 +469,7 @@ fn map_typed_get_projects_expected_scalar_value() {
 fn typed_map_put_ffi_round_trips_atom_key_int_value() {
     with_process(|process| {
         let key_atom = process.node.intern_atom("key");
-        let key = fz_box_atom_for_any(process, key_atom as u64);
+        let key = AnyValueRef::atom(key_atom).raw_word();
         let map = fz_map_put_int(process, fz_map_empty(process), key, 42);
         let map_ref = AnyValueRef::from_raw_word(map).expect("map ref");
         let got = fz_map_get_ref(process, map_ref.raw_word(), key);
@@ -485,8 +483,7 @@ fn map_typed_get_panics_on_wrong_scalar_type() {
     with_process(|process| {
         let key_atom = process.node.intern_atom("key");
         let value_atom = process.node.intern_atom("value");
-        let key_slot = u64::from(key_atom);
-        let key_ref = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &key_slot).expect("key ref");
+        let key_ref = AnyValueRef::atom(key_atom);
         let map_bits = process
             .heap
             .alloc_map_slots(&[(AnyValue::atom(key_atom), AnyValue::atom(value_atom))]);

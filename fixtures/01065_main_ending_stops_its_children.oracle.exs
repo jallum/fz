@@ -4,7 +4,7 @@ defmodule Oracle do
       receive do
         :never -> :ok
       after
-        100 -> IO.puts("late")
+        60000 -> IO.puts("late")
       end
     end)
 

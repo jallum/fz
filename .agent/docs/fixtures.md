@@ -113,6 +113,16 @@ their block. A new epic claims the next free block and adds a row here.
 | `01100-01119` | fz-rs7                            | in use through `01115` |
 | `01120-01199` | fz-sc8                            | in use through `01144` |
 | `01200-01229` | fz-iqp                            | in use through `01224` |
+| `01230-01249` | fz-rba                            | in use through `01232` |
+
+A fixture orders its processes with messages and never by a timing margin: an
+`after` timeout is `0` when mail is already in the mailbox or nothing is
+expected, a single `after` that is meant to fire is the smallest positive value,
+and a receive whose message must beat its timeout carries a bound no healthy run
+reaches (60000 ms) so a lost message is a hang the guard names, not a different
+output. Where the fact under test is the order of the runtime's own timers, the
+fixture fixes its output with messages and the order is read from
+`fz.runtime.timer.*` telemetry (see [runtime telemetry](runtime-telemetry.md#fzruntimetimer)).
 
 Behavioural routing lives in the filename when a fixture is path-specific.
 Ordinary fixtures run on all three compiler2 paths by default. A prefix before

@@ -435,6 +435,83 @@ mod tests {
         );
     }
 
+    /// The whole-value layout of a tuple type: `Some(n)` when it travels as
+    /// `n` field layouts, `None` when it travels as one value lane.
+    fn whole_tuple_field_count(world: &mut World, ty: Ty) -> Option<usize> {
+        let layout = derived_transport_layout(world, ty, &RuntimeDemand::whole(), &[]);
+        match world.shape(layout.structural) {
+            ShapeDescr::Tuple(fields) => Some(fields.len()),
+            ShapeDescr::Lane(_) => None,
+            other => panic!("a whole tuple travels as fields or as one lane, not {other:?}"),
+        }
+    }
+
+    /// A tuple travels field by field only while its fields fit the lane
+    /// budget. One field more and the tuple is built once and handed over as a
+    /// reference, so a function that takes it has one parameter for it, not
+    /// one per field.
+    #[test]
+    fn a_whole_tuple_past_the_lane_budget_travels_as_one_value_lane() {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let at_budget = world.types_mut().tuple(&[int; TUPLE_LANE_BUDGET]);
+        let past_budget = world.types_mut().tuple(&[int; TUPLE_LANE_BUDGET + 1]);
+
+        assert_eq!(whole_tuple_field_count(&mut world, at_budget), Some(TUPLE_LANE_BUDGET));
+        assert_eq!(whole_tuple_field_count(&mut world, past_budget), None);
+    }
+
+    /// The budget counts the lanes of nested tuples. A pair is two lanes
+    /// wherever it sits, so a tuple of pairs fits only while the pairs' lanes
+    /// do. A nested tuple that is itself past the budget is one lane to the
+    /// tuple that holds it.
+    #[test]
+    fn the_lane_budget_counts_the_lanes_of_nested_tuples() {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let pair = world.types_mut().tuple(&[int, int]);
+        let pairs_at_budget = world.types_mut().tuple(&[pair; TUPLE_LANE_BUDGET / 2]);
+        let pairs_past_budget = world.types_mut().tuple(&[pair; TUPLE_LANE_BUDGET / 2 + 1]);
+        let wide = world.types_mut().tuple(&[int; TUPLE_LANE_BUDGET + 1]);
+        let holds_a_wide_tuple = world.types_mut().tuple(&[wide, int]);
+
+        assert_eq!(
+            whole_tuple_field_count(&mut world, pairs_at_budget),
+            Some(TUPLE_LANE_BUDGET / 2)
+        );
+        assert_eq!(whole_tuple_field_count(&mut world, pairs_past_budget), None);
+        assert_eq!(
+            whole_tuple_field_count(&mut world, holds_a_wide_tuple),
+            Some(2),
+            "the wide field is one lane, so the pair around it still travels as fields"
+        );
+    }
+
+    /// A consumer that reads two fields of a wide tuple asks for two lanes,
+    /// and the tuple travels as those two fields however many it has.
+    #[test]
+    fn a_wide_tuple_read_by_a_few_fields_travels_as_those_fields() {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let wide = world.types_mut().tuple(&[int; TUPLE_LANE_BUDGET * 4]);
+        let demand = RuntimeDemand::tuple_fields(vec![
+            RuntimeDemand::whole(),
+            RuntimeDemand::ignore(),
+            RuntimeDemand::whole(),
+        ]);
+
+        let layout = derived_transport_layout(&mut world, wide, &demand, &[]);
+
+        let ShapeDescr::Tuple(fields) = world.shape(layout.structural).clone() else {
+            panic!("a field reading inside the budget keeps the tuple decomposed")
+        };
+        let lanes = fields
+            .iter()
+            .filter(|field| matches!(world.shape(field.structural), ShapeDescr::Lane(_)))
+            .count();
+        assert_eq!(lanes, 2, "only the two fields that were read travel");
+    }
+
     #[test]
     fn generic_partial_exact_tuple_fills_omitted_trailing_fields_with_nothing() {
         let mut world = World::new();

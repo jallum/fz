@@ -1579,7 +1579,7 @@ def main() do
   value = receive do
     x -> x
   after
-    10 -> :timeout
+    0 -> :timeout
   end
   dbg(bump(value))
 end

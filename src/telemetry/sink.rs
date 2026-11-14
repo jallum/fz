@@ -8,7 +8,6 @@ use std::any::{Any, TypeId};
 use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::thread::panicking;
-use std::time::Instant;
 
 use super::event::{Measurements, Metadata};
 use super::handler::{Handler, HandlerId};
@@ -71,6 +70,13 @@ pub trait Telemetry {
     /// Returns whether a typed raw-event or raw-lifecycle subscriber observes `name`.
     fn is_raw_event_enabled(&self, name: &[&'static str]) -> bool {
         self.is_enabled(name)
+    }
+
+    /// Nanoseconds on the monotonic clock this telemetry measures spans and
+    /// stamps lines with. A span's elapsed time is the difference of two
+    /// readings.
+    fn now_ns(&self) -> u64 {
+        super::clock::system_now_ns()
     }
 
     /// Emit a single event. `name` is the hierarchical path
@@ -325,17 +331,17 @@ pub struct DetachedSpan<'a> {
 struct DetachedActiveSpan<'a> {
     name: &'a [&'static str],
     span_id: u64,
-    start: Instant,
+    start_ns: u64,
 }
 
 #[cfg(test)]
 impl<'a> DetachedSpan<'a> {
-    fn new(name: &'a [&'static str], span_id: u64) -> Self {
+    fn new(name: &'a [&'static str], span_id: u64, start_ns: u64) -> Self {
         Self {
             active: Some(DetachedActiveSpan {
                 name,
                 span_id,
-                start: Instant::now(),
+                start_ns,
             }),
         }
     }
@@ -349,7 +355,7 @@ struct ActiveSpan<'a, T: Telemetry + ?Sized> {
     tel: &'a T,
     name: &'a [&'static str],
     span_id: u64,
-    start: Instant,
+    start_ns: u64,
     stop_measurements: Measurements<'static>,
     stop_metadata: Metadata<'static>,
     closed: bool,
@@ -364,7 +370,7 @@ impl<'a, T: Telemetry + ?Sized> Span<'a, T> {
                 tel,
                 name,
                 span_id,
-                start: Instant::now(),
+                start_ns: tel.now_ns(),
                 stop_measurements: Measurements::new(),
                 stop_metadata: Metadata::new(),
                 closed: false,
@@ -386,7 +392,7 @@ impl<'a, T: Telemetry + ?Sized> Span<'a, T> {
     /// the guard for drop-time emission.
     pub fn stop_with<'meas, 'meta>(mut self, measurements: &Measurements<'meas>, metadata: &Metadata<'meta>) {
         if let Some(active) = self.active.as_mut() {
-            let elapsed_ns = active.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            let elapsed_ns = active.tel.now_ns().saturating_sub(active.start_ns);
             active
                 .tel
                 .span_stop(active.name, active.span_id, elapsed_ns, measurements, metadata);
@@ -409,7 +415,7 @@ impl<'a, T: Telemetry + ?Sized, S1: Any, S2: Any, P1: Any, P2: Any> Span<'a, T, 
                 tel,
                 name,
                 span_id,
-                start: Instant::now(),
+                start_ns: tel.now_ns(),
                 stop_measurements: Measurements::new(),
                 stop_metadata: Metadata::new(),
                 closed: false,
@@ -420,14 +426,14 @@ impl<'a, T: Telemetry + ?Sized, S1: Any, S2: Any, P1: Any, P2: Any> Span<'a, T, 
     }
 
     fn elapsed(active: &ActiveSpan<'_, T>) -> u64 {
-        active.start.elapsed().as_nanos().min(u64::MAX as u128) as u64
+        active.tel.now_ns().saturating_sub(active.start_ns)
     }
 
-    fn close_raw_exception(active: &mut ActiveSpan<'_, T>) {
+    fn close_raw_exception(active: &mut ActiveSpan<'_, T>, elapsed_ns: u64) {
         active.tel.exception_raw_span(
             active.name,
             active.span_id,
-            Self::elapsed(active),
+            elapsed_ns,
             TypeId::of::<S1>(),
             TypeId::of::<S2>(),
             TypeId::of::<P1>(),
@@ -438,7 +444,8 @@ impl<'a, T: Telemetry + ?Sized, S1: Any, S2: Any, P1: Any, P2: Any> Span<'a, T, 
 
     pub fn exception(mut self) {
         if let Some(active) = self.active.as_mut() {
-            Self::close_raw_exception(active);
+            let elapsed_ns = Self::elapsed(active);
+            Self::close_raw_exception(active, elapsed_ns);
         }
     }
 
@@ -495,7 +502,7 @@ impl<T: Telemetry + ?Sized, S1: Any, S2: Any, P1: Any, P2: Any> Drop for Span<'_
                     stop_2,
                 );
             } else if active.raw {
-                Self::close_raw_exception(active);
+                Self::close_raw_exception(active, elapsed_ns);
             } else if panicking() {
                 active.tel.span_exception(
                     active.name,
@@ -729,7 +736,7 @@ impl<T: Telemetry + ?Sized> TelemetryExt for T {
         metadata: impl FnOnce() -> Metadata<'meta>,
     ) -> DetachedSpan<'a> {
         if self.is_span_enabled(name) {
-            DetachedSpan::new(name, self.span_start(name, &metadata()))
+            DetachedSpan::new(name, self.span_start(name, &metadata()), self.now_ns())
         } else {
             DetachedSpan::disabled()
         }
@@ -743,7 +750,7 @@ impl<T: Telemetry + ?Sized> TelemetryExt for T {
     ) {
         if let Some(active) = span.active {
             let (measurements, metadata) = payload();
-            let elapsed_ns = active.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            let elapsed_ns = self.now_ns().saturating_sub(active.start_ns);
             self.span_stop(active.name, active.span_id, elapsed_ns, &measurements, &metadata);
         }
     }

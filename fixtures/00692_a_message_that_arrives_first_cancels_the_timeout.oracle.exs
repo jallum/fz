@@ -5,7 +5,7 @@ defmodule Oracle do
     receive do
       :hello -> IO.inspect(:hello)
     after
-      200 -> IO.inspect(:timeout)
+      60000 -> IO.inspect(:timeout)
     end
     IO.inspect(:end)
   end

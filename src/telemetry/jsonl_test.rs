@@ -4,7 +4,6 @@ use std::fs::{read_to_string, remove_file};
 use std::io::Write;
 use std::process::id as process_id;
 use std::rc::Rc;
-use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::telemetry::capture::vec_writer;
@@ -287,12 +286,10 @@ fn time_ns_is_present_and_numeric() {
 #[test]
 fn time_ns_increases_across_events() {
     let (buf, w) = vec_writer();
-    let backend = JsonlBackend::new_writer(w);
+    let backend = JsonlBackend::new_writer_with_clock(w, Clock::ticking());
     let (m, md) = (Measurements::new(), Metadata::new());
     let ev = make_event(&["x"], EventKind::Event, &m, &md);
     backend.handle(&ev);
-    // Burn a small but reliable amount of time.
-    sleep(Duration::from_micros(50));
     backend.handle(&ev);
     backend.flush();
     let output = String::from_utf8(buf.borrow().clone()).unwrap();
@@ -309,12 +306,7 @@ fn time_ns_increases_across_events() {
         })
         .collect();
     assert_eq!(times.len(), 2);
-    assert!(
-        times[1] > times[0],
-        "second time_ns {} not > first {}",
-        times[1],
-        times[0]
-    );
+    assert_eq!(times, vec![1, 2], "each line is stamped with the clock's next reading");
 }
 
 #[test]
@@ -431,6 +423,26 @@ fn product_validation_work_survives_the_public_trace_boundary() {
     assert_eq!(measured["reparent_candidates"], 6);
     assert_eq!(measured["reparent_proof_nodes"], 9);
     assert_eq!(measured["ordering_comparisons"], 0);
+}
+
+#[test]
+fn drive_spend_survives_the_public_trace_boundary() {
+    let (buf, writer) = vec_writer();
+    let telemetry = ConfiguredTelemetry::new();
+    JsonlBackend::new_public_writer(writer).install(&telemetry);
+    let product = crate::compiler2::pull::ProductKey::RootBackendProduct(crate::compiler2::RootId::for_test(9));
+    let report = crate::compiler2::pull::ProductDriveReport {
+        requests: 49_760,
+        budget: 50_000,
+    };
+    telemetry.raw_event2(&["fz", "compiler2", "pull", "drive", "finished"], &product, &report);
+    drop(telemetry);
+    let output = String::from_utf8(buf.borrow().clone()).unwrap();
+    assert_eq!(output.lines().count(), 1);
+    let event: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(event["metadata"]["requests"], 49_760);
+    assert_eq!(event["metadata"]["budget"], 50_000);
+    assert_eq!(event["metadata"]["product"]["kind"], "root_backend_product");
 }
 
 #[test]

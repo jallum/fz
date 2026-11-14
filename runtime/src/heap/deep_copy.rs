@@ -155,7 +155,7 @@ impl CopyMeasure<'_> {
             return;
         }
         match value.tag() {
-            ValueKind::NULL => {}
+            ValueKind::NULL | ValueKind::ATOM => {}
             tag if tag.is_scalar() => self.bytes += round_up_16(size_of::<u64>()),
             tag if tag.is_heap() => {
                 self.value(AnyValue::from_ref(value).expect("heap ref value"));
@@ -253,7 +253,7 @@ pub fn deep_copy_any_value_ref(
         return value;
     }
     match value.tag() {
-        ValueKind::NULL => value,
+        ValueKind::NULL | ValueKind::ATOM => value,
         tag if tag.is_scalar() => {
             let src = value.storage_addr();
             let dst = dst_heap.alloc_kind(HeapAllocKind::ScalarBox, 8);
