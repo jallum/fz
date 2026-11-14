@@ -19,5 +19,5 @@
   "status": "open",
   "title": "A caller reads a recursive callee's return only once its climb has finished",
   "type": "bug",
-  "updated_at": "2026-11-14T04:26:34Z"
+  "updated_at": "2026-11-14T11:52:51Z"
 }
