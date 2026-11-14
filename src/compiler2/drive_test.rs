@@ -11744,7 +11744,7 @@ fn compiler2_source_struct_patterns_publish_typed_tests_and_named_field_evidence
                 }
             }
         }
-        for outcome in &plan.outcomes {
+        for outcome in plan.outcomes.iter() {
             for binding in &outcome.bindings {
                 if let SubjectSource::Projection(projection) = &plan.graph.subjects[binding.source.0 as usize].source
                     && let ProjectionKind::StructField(field) = &projection.kind
