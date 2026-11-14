@@ -6,14 +6,15 @@
   "blocks": [
     "fz-sc8.183.3"
   ],
+  "closed_at": "2026-11-14T05:05:18Z",
   "created": "2026-11-14T04:16:15Z",
   "description": "Step 2 of /Users/j5n/Workspace/fz-sc8.183.html, redefined by investigation. A function-head binary pattern is read twice: the entry dispatch reads every field (lower_bitstring_region, jobs/native.rs) and drops the values, because the clause helper receives only the entry params (native.rs Outcome arm forwards state.forwarded_args); the helper then re-projects from the raw param with BitstringRead steps, the same way tuple, list and map patterns re-project. case, =, receive, with and for bind from dispatch (OutcomeArgument) and read once. So the body read is the one real read for function heads, and the fix is on the dispatch side: a dispatch node builds a field's value only if a later node, a size expression or an outcome binding consumes it; otherwise it checks bounds only. No clause-helper ABI change; BitstringRead body steps stay. Signal: the walk pin falls from 2 allocations per step to 1 on interp, run and build. Files: jobs/native.rs, ir_interp/dispatch_exec.rs, native_codegen/receive.rs.",
   "id": "fz-sc8.183.2",
   "labels": [],
   "parent": "fz-sc8.183",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Dispatch builds a binary field's value only when something consumes it",
   "type": "task",
-  "updated_at": "2026-11-14T04:22:43Z"
+  "updated_at": "2026-11-14T05:05:18Z"
 }
