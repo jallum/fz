@@ -752,6 +752,25 @@ impl QuotedSourceCursor {
         }
     }
 
+    /// The two items of a quoted list, or `None` when it has any other
+    /// number.
+    pub fn list_pair(&self) -> Result<Option<(Self, Self)>, QuotedSourceError> {
+        let mut items = self.list_iter();
+        let (Some(first), Some(second), None) = (items.next(), items.next(), items.next()) else {
+            return Ok(None);
+        };
+        Ok(Some((first?, second?)))
+    }
+
+    /// The arguments of a call node's tail, none when the tail is a bare
+    /// name's context rather than a list.
+    pub(crate) fn call_args(&self) -> ListItems {
+        ListItems {
+            heap: Rc::clone(&self.heap),
+            rest: self.is_list_like().then_some(self.root),
+        }
+    }
+
     pub fn list_atom_names(&self) -> Result<Vec<String>, QuotedSourceError> {
         self.list_iter()
             .map(|item| item?.atom_name().map(|name| name.to_string()))
@@ -871,7 +890,7 @@ impl QuotedSourceCursor {
         let Some([_, _, tail]) = self.ast_node_parts()? else {
             return Ok(false);
         };
-        Ok(tail.list_items().is_ok())
+        Ok(tail.list_len().is_ok())
     }
 
     /// Structural inspection for tests that own the builder input. Production

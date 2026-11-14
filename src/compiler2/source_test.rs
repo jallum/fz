@@ -677,6 +677,27 @@ fn list_and_tuple_iterators_read_the_items_the_vec_accessors_collect() {
 }
 
 #[test]
+fn list_pair_answers_only_for_two_items_and_call_args_is_empty_for_a_bare_name() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let items = |count: i64| {
+        let numbers = (0..count).map(|n| builder.int(n)).collect::<Vec<_>>();
+        builder.root(builder.list(&numbers).expect("list")).expect("list root")
+    };
+
+    for count in 0..4 {
+        let pair = items(count).cursor().list_pair().expect("list_pair");
+        assert_eq!(pair.is_some(), count == 2, "pair of {count} items");
+    }
+    let (first, second) = items(2).cursor().list_pair().expect("list_pair").expect("two items");
+    assert_eq!((first.int_value().unwrap(), second.int_value().unwrap()), (0, 1));
+
+    let bare_name_context = builder.root(builder.int(7)).expect("int root");
+    assert_eq!(bare_name_context.cursor().call_args().count(), 0);
+    assert_eq!(items(3).cursor().call_args().count(), 3);
+}
+
+#[test]
 fn list_iterator_reports_a_non_list_once_and_stops() {
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();

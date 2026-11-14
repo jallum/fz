@@ -16,7 +16,7 @@ use super::pull::{ProductKey, ProductSessions, ProductValue};
 use super::quoted_function::decode_standalone_expr;
 use super::quoted_surface::{MacroCallForm, ScopeSurface, is_scope_definition_head, read_compiler_fragment_surface};
 use super::scope::ScopeSnapshot;
-use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
+use super::source::{ListItems, QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::source_sugar::rewrite_source_sugar;
 use super::world::World;
 
@@ -230,11 +230,11 @@ pub(crate) trait QuotedExpansionCtx {
         if !is_list_like(&node.tail) {
             return Ok(None);
         }
-        let args = node.tail.list_items().map_err(|error| {
+        let arity = node.tail.list_len().map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted call arg read failed: {error}"))
         })?;
         let source_map = self.world().source_map();
-        if is_compiler_define_call(node, &args, &source_map.borrow()).map_err(|error| {
+        if is_compiler_define_call(node, arity, &source_map.borrow()).map_err(|error| {
             emit_internal_surface_error(
                 self.telemetry(),
                 format!("quoted compiler-service detection failed: {error}"),
@@ -244,7 +244,7 @@ pub(crate) trait QuotedExpansionCtx {
         }
 
         let invocation = owner.subroot(cursor.root());
-        if let Some(result) = self.expand_remote_ast_call(owner, &invocation, node, scope, depth, &args)? {
+        if let Some(result) = self.expand_remote_ast_call(owner, &invocation, node, scope, depth, arity)? {
             return Ok(Some(result));
         }
 
@@ -257,12 +257,14 @@ pub(crate) trait QuotedExpansionCtx {
         if head == "quote" {
             return Ok(Some(ExpandedValue::Complete(cursor.root())));
         }
-        if head == "when" && args.len() >= 2 {
+        if head == "when" && arity >= 2 {
+            let args = self.call_args(&node.tail)?;
             return self
                 .expand_when_call(owner, cursor, node, &args, scope, depth)
                 .map(Some);
         }
         if is_scope_definition_head(&head) {
+            let args = self.call_args(&node.tail)?;
             let mut expanded = Vec::with_capacity(args.len());
             for (index, arg) in args.iter().enumerate() {
                 let value = self.expand_cursor_with_root_sugar(owner, arg, scope, depth, index != 0)?;
@@ -293,7 +295,7 @@ pub(crate) trait QuotedExpansionCtx {
         })?;
         let symbol = {
             let world = self.world();
-            call_node_symbol(world, bound, scope, &head, args.len())
+            call_node_symbol(world, bound, scope, &head, arity)
         };
         let Some(symbol) = symbol else {
             return Ok(None);
@@ -310,8 +312,14 @@ pub(crate) trait QuotedExpansionCtx {
             | NamespaceSymbol::Type(_)
             | NamespaceSymbol::Splice(_) => return Ok(None),
         };
-        self.expand_macro_invocation(owner, invocation, function, scope, depth, &args)
+        self.expand_macro_invocation(owner, invocation, function, scope, depth, &self.call_args(&node.tail)?)
             .map(Some)
+    }
+
+    fn call_args(&self, tail: &QuotedSourceCursor) -> Result<Vec<QuotedSourceCursor>, super::scheduler::FatalError> {
+        tail.list_items().map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted call arg read failed: {error}"))
+        })
     }
 
     /// `left when guard`: everything before the last argument is a pattern or
@@ -359,7 +367,7 @@ pub(crate) trait QuotedExpansionCtx {
         node: &QuotedAstNode,
         scope: ScopeSnapshot,
         depth: usize,
-        args: &[QuotedSourceCursor],
+        arity: usize,
     ) -> Result<Option<ExpandedValue>, super::scheduler::FatalError> {
         let source_map = self.world().source_map();
         let Some(head_node) = node.head.ast_node(&source_map.borrow()).map_err(|error| {
@@ -374,12 +382,13 @@ pub(crate) trait QuotedExpansionCtx {
         })? {
             return Ok(None);
         }
-        let target = head_node.tail.list_items().map_err(|error| {
+        let Some((module_cursor, function_cursor)) = head_node.tail.list_pair().map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted remote target read failed: {error}"))
-        })?;
-        let [module_cursor, function_cursor] = target.as_slice() else {
+        })?
+        else {
             return Ok(None);
         };
+        let (module_cursor, function_cursor) = (&module_cursor, &function_cursor);
         let denotation = module_cursor
             .ast_node(&source_map.borrow())
             .and_then(|node| node.map(|node| node.meta.module_denotation()).transpose())
@@ -421,7 +430,8 @@ pub(crate) trait QuotedExpansionCtx {
                 invocation,
                 scope,
                 depth,
-                args,
+                &node.tail,
+                arity,
                 &function_name,
                 &module_path,
                 call_span,
@@ -445,7 +455,7 @@ pub(crate) trait QuotedExpansionCtx {
         self.note_read(FactKey::ModuleDefined(module));
         let function = {
             let world = self.world();
-            match world.lookup_module_callable(module, &function_name, args.len()) {
+            match world.lookup_module_callable(module, &function_name, arity) {
                 Some(NamespaceSymbol::Macro(function)) => Some(function),
                 Some(NamespaceSymbol::Callable(function)) => {
                     return Ok(Some(ExpandedValue::Blocked(Box::new(
@@ -462,13 +472,20 @@ pub(crate) trait QuotedExpansionCtx {
             return Err(remote_macro_not_required(
                 self.telemetry(),
                 &function_name,
-                args.len(),
+                arity,
                 &module_path,
                 call_span,
             ));
         }
-        self.expand_macro_invocation(owner, invocation.clone(), function, scope, depth, args)
-            .map(Some)
+        self.expand_macro_invocation(
+            owner,
+            invocation.clone(),
+            function,
+            scope,
+            depth,
+            &self.call_args(&node.tail)?,
+        )
+        .map(Some)
     }
 
     fn expand_current_module_remote_ast_call(
@@ -477,25 +494,33 @@ pub(crate) trait QuotedExpansionCtx {
         invocation: &QuotedSourceRoot,
         scope: ScopeSnapshot,
         depth: usize,
-        args: &[QuotedSourceCursor],
+        tail: &QuotedSourceCursor,
+        arity: usize,
         function_name: &str,
         module_path: &[String],
         call_span: Span,
     ) -> Result<Option<ExpandedValue>, super::scheduler::FatalError> {
-        let Some(function) = self.lookup_current_module_macro(scope, function_name, args.len()) else {
+        let Some(function) = self.lookup_current_module_macro(scope, function_name, arity) else {
             return Ok(None);
         };
         if !self.required_remote_macros().contains(&function) {
             return Err(remote_macro_not_required(
                 self.telemetry(),
                 function_name,
-                args.len(),
+                arity,
                 module_path,
                 call_span,
             ));
         }
-        self.expand_macro_invocation(owner, invocation.clone(), function, scope, depth, args)
-            .map(Some)
+        self.expand_macro_invocation(
+            owner,
+            invocation.clone(),
+            function,
+            scope,
+            depth,
+            &self.call_args(tail)?,
+        )
+        .map(Some)
     }
 
     fn expand_macro_invocation(
@@ -647,12 +672,14 @@ pub(crate) trait QuotedExpansionCtx {
         scope: ScopeSnapshot,
         depth: usize,
     ) -> Result<ExpandedValue, super::scheduler::FatalError> {
-        let items = cursor.list_items().map_err(|error| {
+        let mut expanded = Vec::with_capacity(cursor.list_len().map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted list expansion failed: {error}"))
-        })?;
+        })?);
         let mut changed = false;
-        let mut expanded = Vec::with_capacity(items.len());
-        for item in items {
+        for item in cursor.list_iter() {
+            let item = item.map_err(|error| {
+                emit_internal_surface_error(self.telemetry(), format!("quoted list expansion failed: {error}"))
+            })?;
             match self.expand_cursor(owner, &item, scope, depth)? {
                 ExpandedValue::Complete(value) => {
                     changed |= value != item.root();
@@ -677,12 +704,15 @@ pub(crate) trait QuotedExpansionCtx {
         scope: ScopeSnapshot,
         depth: usize,
     ) -> Result<ExpandedValue, super::scheduler::FatalError> {
-        let items = cursor.tuple_items().map_err(|error| {
+        let arity = cursor.tuple_arity().map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted tuple expansion failed: {error}"))
         })?;
+        let mut expanded = Vec::with_capacity(arity);
         let mut changed = false;
-        let mut expanded = Vec::with_capacity(items.len());
-        for item in items {
+        for index in 0..arity {
+            let item = cursor.tuple_item(index).map_err(|error| {
+                emit_internal_surface_error(self.telemetry(), format!("quoted tuple expansion failed: {error}"))
+            })?;
             match self.expand_cursor(owner, &item, scope, depth)? {
                 ExpandedValue::Complete(value) => {
                     changed |= value != item.root();
@@ -1042,15 +1072,14 @@ fn item_macro_fragment_root(
 }
 
 fn expanded_items(expansion: QuotedSourceCursor, sources: &SourceMap) -> Result<Vec<AnyValueRef>, QuotedSourceError> {
-    let elements = if expansion.root().tag() == ValueKind::LIST {
-        expansion.list_items()?
-    } else {
-        vec![expansion]
-    };
     let mut items = Vec::new();
-    elements
-        .into_iter()
-        .try_for_each(|element| collect_statements(element, sources, &mut items))?;
+    if expansion.root().tag() == ValueKind::LIST {
+        for element in expansion.list_iter() {
+            collect_statements(element?, sources, &mut items)?;
+        }
+    } else {
+        collect_statements(expansion, sources, &mut items)?;
+    }
     Ok(items)
 }
 
@@ -1062,7 +1091,7 @@ fn collect_statements(
     match block_statements(&quoted, sources)? {
         Some(statements) => statements
             .into_iter()
-            .try_for_each(|statement| collect_statements(statement, sources, items)),
+            .try_for_each(|statement| collect_statements(statement?, sources, items)),
         None => {
             items.push(quoted.root());
             Ok(())
@@ -1070,13 +1099,10 @@ fn collect_statements(
     }
 }
 
-fn block_statements(
-    quoted: &QuotedSourceCursor,
-    sources: &SourceMap,
-) -> Result<Option<Vec<QuotedSourceCursor>>, QuotedSourceError> {
+fn block_statements(quoted: &QuotedSourceCursor, sources: &SourceMap) -> Result<Option<ListItems>, QuotedSourceError> {
     match quoted.ast_node(sources)? {
         Some(node) if node.head.root().tag() == ValueKind::ATOM && node.head.atom_name()? == "__block__" => {
-            node.tail.list_items().map(Some)
+            Ok(Some(node.tail.list_iter()))
         }
         _ => Ok(None),
     }
@@ -1112,7 +1138,7 @@ fn item_macro_invocation(
                 // call path. The one thing decided here is whose macro it is:
                 // at item position the module is still being defined, so its
                 // own macros are not callable yet.
-                let arity = node.tail.list_items().map_or(0, |args| args.len());
+                let arity = node.tail.list_len().unwrap_or(0);
                 let bound = read_bound_callable(&node).map_err(|error| {
                     emit_internal_surface_error(tel, format!("item macro classification read failed: {error}"))
                 })?;
@@ -1166,11 +1192,10 @@ fn item_macro_invocation(
         });
     }
 
-    let items = cursor
-        .list_items()
-        .map_err(|error| emit_internal_surface_error(tel, format!("grouped item macro read failed: {error}")))?;
     let mut display_name = "item".to_string();
-    for item in items {
+    for item in cursor.list_iter() {
+        let item =
+            item.map_err(|error| emit_internal_surface_error(tel, format!("grouped item macro read failed: {error}")))?;
         let Some(node) = item.ast_node(&source_map.borrow()).map_err(|error| {
             emit_internal_surface_error(tel, format!("grouped item macro item read failed: {error}"))
         })?
@@ -1398,13 +1423,12 @@ fn item_macro_display_name(node: &QuotedAstNode, sources: &SourceMap) -> Result<
     let Some(head_node) = node.head.ast_node(sources)? else {
         return Ok("item".to_string());
     };
-    let parts = head_node.tail.list_items()?;
-    let [module, function] = parts.as_slice() else {
+    let Some((module, function)) = head_node.tail.list_pair()? else {
         return Ok("item".to_string());
     };
     if head_node.head.root().tag() == ValueKind::ATOM
         && head_node.head.atom_name()? == "."
-        && let Some(path) = alias_path(module, sources)?
+        && let Some(path) = alias_path(&module, sources)?
         && function.root().tag() == ValueKind::ATOM
     {
         return Ok(format!("{}.{}", path.join("."), function.atom_name()?));
@@ -1412,12 +1436,8 @@ fn item_macro_display_name(node: &QuotedAstNode, sources: &SourceMap) -> Result<
     Ok("item".to_string())
 }
 
-fn is_compiler_define_call(
-    node: &QuotedAstNode,
-    args: &[QuotedSourceCursor],
-    sources: &SourceMap,
-) -> Result<bool, QuotedSourceError> {
-    if args.len() != 2 {
+fn is_compiler_define_call(node: &QuotedAstNode, arity: usize, sources: &SourceMap) -> Result<bool, QuotedSourceError> {
+    if arity != 2 {
         return Ok(false);
     }
     let Some(callee) = node.head.ast_node(sources)? else {
@@ -1426,11 +1446,10 @@ fn is_compiler_define_call(
     if callee.head.atom_name()? != "." {
         return Ok(false);
     }
-    let target = callee.tail.list_items()?;
-    let [module_cursor, function_cursor] = target.as_slice() else {
+    let Some((module_cursor, function_cursor)) = callee.tail.list_pair()? else {
         return Ok(false);
     };
-    if !alias_path(module_cursor, sources)?.is_some_and(|path| path == ["Fz".to_string(), "Compiler".to_string()])
+    if !alias_path(&module_cursor, sources)?.is_some_and(|path| path == ["Fz".to_string(), "Compiler".to_string()])
         || function_cursor.root().tag() != ValueKind::ATOM
     {
         return Ok(false);
