@@ -22,8 +22,9 @@ use crate::any_value::AnyValueRef;
 use crate::any_value::{
     AnyValue, EMPTY_LIST, ListCons, ValueKind, bitstring_bit_len, bitstring_bytes_ptr, closure_addr_from_tagged,
     closure_arity, closure_capture_set, closure_capture_value, closure_captured_count, closure_fn_ptr,
-    closure_halt_kind, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, struct_field_kind_slot,
-    struct_field_raw_slot, struct_schema_id,
+    closure_halt_kind, heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_node_child,
+    map_node_child_count, map_node_entry_count, map_slot, struct_field_kind_slot, struct_field_raw_slot,
+    struct_schema_id,
 };
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
@@ -203,10 +204,14 @@ impl CopyMeasure<'_> {
     fn children(&mut self, sp: *mut u8, kind: ValueKind) {
         match kind {
             ValueKind::MAP => {
-                for i in 0..unsafe { map_count(sp as *const u8) } {
-                    let (key, value) = unsafe { map_entry(sp as *const u8, i) };
+                for i in 0..unsafe { map_node_entry_count(sp as *const u8) } {
+                    let (key, value) = unsafe { map_slot(sp as *const u8, i) };
                     self.slot(key);
                     self.slot(value);
+                }
+                for i in 0..unsafe { map_node_child_count(sp as *const u8) } {
+                    let child = unsafe { map_node_child(sp as *const u8, i) };
+                    self.slot(AnyValue::heap_ptr(child, ValueKind::MAP));
                 }
             }
             ValueKind::CLOSURE => {
@@ -270,6 +275,39 @@ pub fn deep_copy_any_value_ref(
     }
 }
 
+/// A copy of the map node at `sp` in `dst_heap`, with its entries and children
+/// copied through `forwarding`. The copy has the node's header, so a trie node
+/// keeps its bitmaps and a flat map its count.
+fn deep_copy_map_node(
+    sp: *mut u8,
+    src_heap: &HeapView,
+    dst_heap: &mut Heap,
+    forwarding: &mut AddressMap<*mut u8>,
+) -> u64 {
+    let node = sp as *const u8;
+    let mut copy = |value: AnyValue| {
+        if value.kind().is_heap() {
+            deep_copy_any_value(value, src_heap, dst_heap, forwarding)
+        } else {
+            value
+        }
+    };
+    let entries: Vec<(AnyValue, AnyValue)> = (0..unsafe { map_node_entry_count(node) })
+        .map(|slot| {
+            let (key, value) = unsafe { map_slot(node, slot) };
+            (copy(key), copy(value))
+        })
+        .collect();
+    let children: Vec<*mut u8> = (0..unsafe { map_node_child_count(node) })
+        .map(|index| {
+            let child = AnyValue::heap_ptr(unsafe { map_node_child(node, index) }, ValueKind::MAP);
+            copy(child).heap_addr().expect("a copied child node")
+        })
+        .collect();
+    let header = unsafe { std::ptr::read(node as *const u64) };
+    heap_object_word(dst_heap.alloc_map_node(header, &entries, &children), ValueKind::MAP)
+}
+
 pub fn deep_copy_any_value(
     src: AnyValue,
     src_heap: &HeapView,
@@ -288,24 +326,8 @@ pub fn deep_copy_any_value(
             if let Some(&dp) = forwarding.get(&sp) {
                 return AnyValue::heap_ptr(dp, ValueKind::MAP);
             }
-            let count = unsafe { map_count(sp as *const u8) };
             forwarding.insert(sp, null_mut());
-            let mut copied_entries: Vec<(AnyValue, AnyValue)> = Vec::with_capacity(count);
-            for i in 0..count {
-                let (key, value) = unsafe { map_entry(sp as *const u8, i) };
-                let new_key = if key.kind().is_heap() {
-                    deep_copy_any_value(key, src_heap, dst_heap, forwarding)
-                } else {
-                    key
-                };
-                let new_value = if value.kind().is_heap() {
-                    deep_copy_any_value(value, src_heap, dst_heap, forwarding)
-                } else {
-                    value
-                };
-                copied_entries.push((new_key, new_value));
-            }
-            let new_bits = dst_heap.alloc_ordered_map_entries(copied_entries.into_iter());
+            let new_bits = deep_copy_map_node(sp, src_heap, dst_heap, forwarding);
             let new_p = map_addr_from_tagged(new_bits).expect("new map ptr");
             forwarding.insert(sp, new_p);
             AnyValue::heap_ptr(new_p, ValueKind::MAP)

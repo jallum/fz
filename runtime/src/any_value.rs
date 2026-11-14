@@ -896,7 +896,7 @@ unsafe fn size_of_list(_addr: *const u8) -> usize {
 }
 
 unsafe fn size_of_map(addr: *const u8) -> usize {
-    map_size_for_count(unsafe { map_count(addr) })
+    unsafe { map_object_size(addr) }
 }
 
 unsafe fn size_of_struct(addr: *const u8, struct_payload_size: &mut impl FnMut(u32) -> usize) -> usize {
@@ -1272,6 +1272,9 @@ pub fn resource_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     addr_of_kind(bits, ValueKind::RESOURCE)
 }
 
+mod map_node;
+pub use self::map_node::*;
+
 const MAP_HEADER_FIELD_SHIFT: u32 = 4;
 const MAP_DESTINATION_FIELD_BITS: u32 = 28;
 const MAP_DESTINATION_FILLED_SHIFT: u32 = MAP_HEADER_FIELD_SHIFT + MAP_DESTINATION_FIELD_BITS;
@@ -1304,12 +1307,13 @@ impl MapDestinationKind {
     }
 }
 
-/// A published map's first word: the entry count above four clear bits. A
-/// live map's low nibble is clear; only a forwarding marker sets it.
+/// A published flat map's first word: the entry count above four clear bits.
+/// A live map's low nibble is clear; only a forwarding marker sets it. Bits 62
+/// and 63 stay clear: they name a trie node and a destination.
 #[inline]
 pub fn map_header_word(count: usize) -> u64 {
     assert!(
-        (count as u64) < 1 << (63 - MAP_HEADER_FIELD_SHIFT),
+        (count as u64) < 1 << (62 - MAP_HEADER_FIELD_SHIFT),
         "map entry count overflow"
     );
     (count as u64) << MAP_HEADER_FIELD_SHIFT
@@ -1353,15 +1357,21 @@ pub unsafe fn map_destination_state(addr: *const u8) -> (usize, usize, MapDestin
     )
 }
 
+/// The entries in the map: in a flat map, its slots; in a trie node, the
+/// entries at and beneath it; in a destination, its capacity.
+///
 /// # Safety
 ///
 /// `addr` must point to the start of an initialized strict Map object.
+#[inline]
 pub unsafe fn map_count(addr: *const u8) -> usize {
     let header = unsafe { ptr::read(addr as *const u64) };
-    if header & MAP_DESTINATION_FLAG == 0 {
-        (header >> MAP_HEADER_FIELD_SHIFT) as usize
-    } else {
+    if header & MAP_DESTINATION_FLAG != 0 {
         unsafe { map_destination_state(addr) }.0
+    } else if map_header_is_trie_word(header) {
+        map_trie_total(header)
+    } else {
+        (header >> MAP_HEADER_FIELD_SHIFT) as usize
     }
 }
 
@@ -1406,35 +1416,28 @@ pub fn map_value_kind(tag_byte: u8) -> ValueKind {
     ValueKind::new(tag_byte & KIND_FIELD_MASK as u8).expect("map value kind tag")
 }
 
-#[inline]
+/// The raw words and kinds of entry `index` of the map at `addr`, in node
+/// order.
+///
 /// # Safety
 ///
 /// `addr` must point to the start of an initialized strict Map object, and
 /// `index` must be in bounds for that map's entry count.
 pub unsafe fn map_entry_raw_kinds(addr: *const u8, index: usize) -> (u64, ValueKind, u64, ValueKind) {
-    let count = unsafe { map_count(addr) };
-    assert!(index < count, "map entry index out of bounds");
-    let tag = unsafe { ptr::read(map_tag_ptr(addr).add(index)) };
-    let keys = unsafe { map_keys_ptr(addr, count) };
-    let values = unsafe { map_values_ptr(addr, count) };
-    (
-        unsafe { ptr::read(keys.add(index)) },
-        map_key_kind(tag),
-        unsafe { ptr::read(values.add(index)) },
-        map_value_kind(tag),
-    )
+    let (node, slot) = unsafe { map_locate(addr, index) };
+    unsafe { map_slot_raw_kinds(node, slot) }
 }
 
+/// Entry `index` of the map at `addr`, in node order: key order in a flat map,
+/// trie order in a trie. This is the one way to read "entry i of a map".
+///
 /// # Safety
 ///
 /// `addr` must point to the start of an initialized strict Map object, and
 /// `index` must be in bounds for that map's entry count.
 pub unsafe fn map_entry(addr: *const u8, index: usize) -> (AnyValue, AnyValue) {
-    let (kr, kk, vr, vk) = unsafe { map_entry_raw_kinds(addr, index) };
-    (
-        AnyValue::decode_parts(kr, kk.tag()).expect("map key value"),
-        AnyValue::decode_parts(vr, vk.tag()).expect("map entry value"),
-    )
+    let (node, slot) = unsafe { map_locate(addr, index) };
+    unsafe { map_slot(node, slot) }
 }
 
 /// The key in slot `index` of a map's key and kind arrays, decoded without
@@ -1450,13 +1453,16 @@ pub unsafe fn map_key_in_arrays(keys: *const u64, kinds: *const u8, index: usize
     AnyValue::decode_parts(raw, map_key_kind(tag).tag()).expect("map key value")
 }
 
-/// The key of entry `index`, decoded without its value.
+/// The key of entry `index`; a flat map's is decoded without its value.
 ///
 /// # Safety
 ///
 /// `addr` must point to the start of an initialized strict Map object, and
 /// `index` must be in bounds for that map's entry count.
 pub unsafe fn map_key(addr: *const u8, index: usize) -> AnyValue {
+    if unsafe { map_header_is_trie(addr) } {
+        return unsafe { map_entry(addr, index) }.0;
+    }
     let count = unsafe { map_count(addr) };
     assert!(index < count, "map entry index out of bounds");
     unsafe { map_key_in_arrays(map_keys_ptr(addr, count), map_tag_ptr(addr), index) }
@@ -1478,8 +1484,7 @@ pub mod debug {
     use super::{
         AnyValue, AnyValueRef, EMPTY_LIST, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
         bitstring_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_denotation, list_addr_from_tagged,
-        map_addr_from_tagged, map_count, map_entry_raw_kinds, procbin_addr_from_tagged, struct_addr_from_tagged,
-        struct_schema_id,
+        map_addr_from_tagged, map_entries, procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id,
     };
     use crate::heap::{FieldKind, SchemaIdentity};
     use crate::module_name::{alias_spelling, is_alias_namespace_atom};
@@ -1843,7 +1848,8 @@ pub mod debug {
         }
 
         /// A heap Map as `%{k => v}`, or `%{k: v}` when every key can head a
-        /// keyword entry, in the map's own order. A map whose keys spell a
+        /// keyword entry, in the map's own order: key order for a flat
+        /// map, trie order for a trie. A map whose keys spell a
         /// declared struct prints as that struct.
         fn map(&mut self, bits: u64) -> String {
             let p = map_addr_from_tagged(bits).unwrap();
@@ -1851,16 +1857,7 @@ pub mod debug {
             if let Some((module, fields)) = unsafe { &*self.proc }.heap.entries_spelling_a_struct(map_ref) {
                 return self.named_struct(&module, fields);
             }
-            let count = unsafe { map_count(p) };
-            let entries: Vec<(AnyValue, AnyValue)> = (0..count)
-                .map(|i| {
-                    let (kr, kk, vr, vk) = unsafe { map_entry_raw_kinds(p, i) };
-                    (
-                        AnyValue::decode_parts(kr, kk.tag()).expect("map key"),
-                        AnyValue::decode_parts(vr, vk.tag()).expect("map value"),
-                    )
-                })
-                .collect();
+            let entries = unsafe { map_entries(p) };
             let keywords: Option<Vec<(String, AnyValue)>> = entries
                 .iter()
                 .map(|(key, value)| Some((self.keyword_key(*key)?, *value)))

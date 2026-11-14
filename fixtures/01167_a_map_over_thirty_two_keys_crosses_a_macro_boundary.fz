@@ -1,0 +1,23 @@
+#---
+# purpose: "a macro that unquotes a runtime-built 40-key map, returns a 40-key literal from quote, or passes one through unchanged hands the compiler a hash-trie map it reads entry by entry"
+# oracle: 01167_a_map_over_thirty_two_keys_crosses_a_macro_boundary.oracle.exs
+# oracle.stamp: 4584d28d44b47fb7
+#---
+defmacro held() do
+  m = Map.new(Enum.map(1..40, fn i -> {i, i * i} end))
+  quote do: unquote(m)
+end
+
+defmacro big() do
+  quote do: %{k0: 0, k1: 1, k2: 2, k3: 3, k4: 4, k5: 5, k6: 6, k7: 7, k8: 8, k9: 9, k10: 10, k11: 11, k12: 12, k13: 13, k14: 14, k15: 15, k16: 16, k17: 17, k18: 18, k19: 19, k20: 20, k21: 21, k22: 22, k23: 23, k24: 24, k25: 25, k26: 26, k27: 27, k28: 28, k29: 29, k30: 30, k31: 31, k32: 32, k33: 33, k34: 34, k35: 35, k36: 36, k37: 37, k38: 38, k39: 39}
+end
+
+defmacro pass(x), do: x
+
+def main() do
+  h = held()
+  IO.inspect({map_size(h), Map.get(h, 1), Map.get(h, 40), Map.get(h, 41)})
+  a = big()
+  b = pass(%{k0: 0, k1: 1, k2: 2, k3: 3, k4: 4, k5: 5, k6: 6, k7: 7, k8: 8, k9: 9, k10: 10, k11: 11, k12: 12, k13: 13, k14: 14, k15: 15, k16: 16, k17: 17, k18: 18, k19: 19, k20: 20, k21: 21, k22: 22, k23: 23, k24: 24, k25: 25, k26: 26, k27: 27, k28: 28, k29: 29, k30: 30, k31: 31, k32: 32, k33: 33, k34: 34, k35: 35, k36: 36, k37: 37, k38: 38, k39: 39})
+  IO.inspect({map_size(a), map_size(b), a == b, Map.get(a, :k0), Map.get(b, :k39), Map.get(a, :k40)})
+end

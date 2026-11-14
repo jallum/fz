@@ -5,7 +5,8 @@ use std::ptr::{read, write};
 use super::schema::SchemaRegistry;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, ValueKind, heap_object_word, map_count, map_key_kind,
-    map_keys_ptr, map_tag_ptr, map_value_kind, map_values_ptr, object_size_with_struct_payload,
+    map_keys_ptr, map_locate, map_node_child, map_node_child_count, map_node_entry_count, map_tag_ptr, map_value_kind,
+    map_values_ptr, object_size_with_struct_payload,
 };
 
 pub(super) fn strict_object_size(kind: ValueKind, addr: *const u8, schemas: &SchemaRegistry) -> usize {
@@ -35,13 +36,55 @@ pub(super) fn write_any_value_to_storage(raw_slot: *mut u64, kind_slot: Option<*
     }
 }
 
-pub(crate) unsafe fn map_entry_refs(addr: *mut u8, index: usize) -> (AnyValueRef, AnyValueRef) {
-    let count = unsafe { map_count(addr) };
-    let tag = unsafe { read(map_tag_ptr(addr).add(index)) };
+/// The key and value of entry `index` of the map at `addr`, in node order, as
+/// references into the node that holds them.
+///
+/// # Safety
+///
+/// `addr` must point to the start of an initialized published Map object and
+/// `index` must be in bounds for its entry count.
+pub unsafe fn map_entry_refs(addr: *mut u8, index: usize) -> (AnyValueRef, AnyValueRef) {
+    let (node, slot) = unsafe { map_locate(addr, index) };
+    unsafe { map_slot_refs(node, slot) }
+}
+
+/// Every entry of the map at `addr` as references, in the map's own order, in
+/// one walk: the cost of reading all of them by index grows with the depth of
+/// a trie.
+///
+/// # Safety
+///
+/// `addr` must point to the start of an initialized published Map object.
+pub unsafe fn map_entries_refs(addr: *mut u8) -> Vec<(AnyValueRef, AnyValueRef)> {
+    let mut entries = Vec::with_capacity(unsafe { map_count(addr) });
+    unsafe { push_node_entry_refs(addr, &mut entries) };
+    entries
+}
+
+unsafe fn push_node_entry_refs(node: *mut u8, entries: &mut Vec<(AnyValueRef, AnyValueRef)>) {
+    for slot in 0..unsafe { map_node_entry_count(node) } {
+        entries.push(unsafe { map_slot_refs(node, slot) });
+    }
+    for child in 0..unsafe { map_node_child_count(node) } {
+        unsafe { push_node_entry_refs(map_node_child(node, child), entries) };
+    }
+}
+
+/// The key and value of entry `slot` of the node at `addr`, as references into
+/// it.
+///
+/// # Safety
+///
+/// `addr` must point to the start of an initialized published Map object and
+/// `slot` must be below its own entry count.
+pub unsafe fn map_slot_refs(addr: *const u8, slot: usize) -> (AnyValueRef, AnyValueRef) {
+    let count = unsafe { map_node_entry_count(addr) };
+    assert!(slot < count, "map entry index out of bounds");
+    let tag = unsafe { read(map_tag_ptr(addr).add(slot)) };
     let keys = unsafe { map_keys_ptr(addr, count) };
     let values = unsafe { map_values_ptr(addr, count) };
-    let key = any_value_ref_from_storage(unsafe { keys.add(index) }, map_key_kind(tag)).expect("map key ref");
-    let value = any_value_ref_from_storage(unsafe { values.add(index) }, map_value_kind(tag)).expect("map value ref");
+    let key = any_value_ref_from_storage(unsafe { keys.add(slot) }, map_key_kind(tag)).expect("map key ref");
+    let value = any_value_ref_from_storage(unsafe { values.add(slot) }, map_value_kind(tag)).expect("map value ref");
     (key, value)
 }
 

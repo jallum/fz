@@ -628,12 +628,13 @@ fn map_value_reads_entries_only_up_to_the_match() {
         values.add(position(last)).write(0);
     }
 
+    let reads = |read: &dyn Fn()| std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)).is_err();
     assert!(cursor.map_value(first).unwrap().is_some());
     assert!(
-        cursor.map_value(last).is_err(),
-        "a lookup that reaches the entry reports it"
+        reads(&|| drop(cursor.map_value(last))),
+        "a lookup that reaches the entry reads it"
     );
-    assert!(cursor.map_entries().is_err(), "a full read reports it");
+    assert!(reads(&|| drop(cursor.map_entries())), "a full read reads it");
 }
 
 #[test]
@@ -707,4 +708,57 @@ fn list_iterator_reports_a_non_list_once_and_stops() {
 
     assert!(items.next().is_some_and(|item| item.is_err()));
     assert!(items.next().is_none());
+}
+
+/// A map of `count` atom keys `k00`, `k01`, ... bound to their index, plus a
+/// span entry of `span`, big enough that the runtime publishes it as a trie.
+fn wide_map_root(count: i64, span: i64, last_value: i64) -> QuotedSourceRoot {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let mut entries: Vec<_> = (0..count)
+        .map(|index| {
+            let value = if index == count - 1 { last_value } else { index };
+            (builder.atom(&format!("k{index:02}")), builder.int(value))
+        })
+        .collect();
+    entries.push((builder.atom(META_SPAN_KEY), builder.int(span)));
+    let map = builder.map(&entries).expect("wide map");
+    assert!(
+        unsafe { fz_runtime::any_value::map_header_is_trie(map.map_addr().expect("map") as *const u8) },
+        "the map under test is a trie"
+    );
+    builder.root(map).expect("wide map root")
+}
+
+#[test]
+fn a_map_wider_than_one_array_reads_every_entry_once_and_by_atom_key() {
+    let root = wide_map_root(40, 7, 39);
+    let cursor = root.cursor();
+    let entries = cursor.map_entries().expect("map entries");
+    assert_eq!(entries.len(), 41);
+    let mut read: Vec<_> = entries
+        .iter()
+        .map(|(key, value)| {
+            (
+                key.atom_name().expect("atom key").to_string(),
+                value.int_value().expect("int"),
+            )
+        })
+        .filter(|(name, _)| name != META_SPAN_KEY)
+        .collect();
+    read.sort();
+    let expected: Vec<_> = (0..40).map(|index| (format!("k{index:02}"), index)).collect();
+    assert_eq!(read, expected, "the trie yields each entry exactly once");
+    let found = cursor.map_value("k39").expect("lookup").expect("k39 is present");
+    assert_eq!(found.int_value().expect("int"), 39);
+    assert!(cursor.map_value("k40").expect("lookup").is_none());
+}
+
+#[test]
+fn semantic_equality_of_wide_maps_ignores_the_span_entry_and_sees_a_changed_value() {
+    let a = wide_map_root(40, 7, 39);
+    let b = wide_map_root(40, 900, 39);
+    let c = wide_map_root(40, 7, -1);
+    assert!(a.semantically_eq(&b, Horizon::Full), "the span entry is not semantic");
+    assert!(!a.semantically_eq(&c, Horizon::Full), "a value is");
 }

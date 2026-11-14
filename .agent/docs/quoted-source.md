@@ -46,9 +46,10 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   `QuotedSourceRoot::semantically_eq(&other, Horizon)` — a two-sided structural
   walk over both graphs that fast-fails at the first difference. No canonical
   rendering or digest is ever materialized.
-- Maps retain the heap's normalized strict structural key order. Quoted
-  construction calls the one runtime publisher; reads use stored entries
-  directly, with no compiler sort. Independently allocated equal composite
+- Maps keep the heap's published order: strict structural key order up to 32
+  entries, hash-trie node order above. Quoted construction calls the one
+  runtime publisher; reads use stored entries directly (`map_entries_refs`
+  walks a trie once), with no compiler sort and no dependence on the order. Independently allocated equal composite
   keys occupy one entry, so structural addresses do not depend on allocation.
 - Quoted equality erases diagnostic metadata, including metadata nested inside
   composite keys. Runtime order includes that data, so it cannot order this

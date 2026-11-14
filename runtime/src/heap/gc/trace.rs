@@ -6,9 +6,9 @@ use super::super::stats::GcStats;
 use super::forward::forward_heap_value;
 use super::{CopiedObject, FromSpace};
 use crate::any_value::{
-    AnyValue, ListCons, ValueKind, closure_capture_set, closure_capture_value, closure_captured_count, map_count,
-    map_key_kind, map_keys_ptr, map_tag_ptr, map_value_kind, map_values_ptr, struct_field_kind_slot,
-    struct_field_raw_slot, struct_schema_id,
+    AnyValue, ListCons, ValueKind, closure_capture_set, closure_capture_value, closure_captured_count, map_key_kind,
+    map_keys_ptr, map_node_child_count, map_node_children_ptr, map_node_entry_count, map_tag_ptr, map_value_kind,
+    map_values_ptr, struct_field_kind_slot, struct_field_raw_slot, struct_schema_id,
 };
 use crate::resource::ResourceStub;
 use std::ptr::{read, write};
@@ -102,7 +102,7 @@ pub fn cheney_trace_map(
     copied_objects: &mut Vec<CopiedObject>,
     stats: &mut GcStats,
 ) {
-    let count = unsafe { map_count(obj as *const u8) };
+    let count = unsafe { map_node_entry_count(obj as *const u8) };
     let tags = unsafe { map_tag_ptr(obj as *const u8) };
     let keys = unsafe { map_keys_ptr(obj as *const u8, count) };
     let values = unsafe { map_values_ptr(obj as *const u8, count) };
@@ -126,6 +126,13 @@ pub fn cheney_trace_map(
         } else {
             stats.map_scalar_slots += 1;
         }
+    }
+    let children = unsafe { map_node_children_ptr(obj as *const u8) };
+    for i in 0..unsafe { map_node_child_count(obj as *const u8) } {
+        stats.map_heap_edges += 1;
+        let child = AnyValue::heap_ptr(unsafe { read(children.add(i)) } as *mut u8, ValueKind::MAP);
+        let forwarded = forward_heap_value(child, from_space, heap, schemas, copied_objects, stats);
+        unsafe { write(children.add(i), forwarded.raw()) };
     }
 }
 

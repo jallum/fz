@@ -72,6 +72,11 @@ use std::sync::atomic::AtomicU64;
 pub struct ResourceId(u64);
 
 impl ResourceId {
+    /// The identity as one word, for hashing.
+    pub(crate) fn word(self) -> u64 {
+        self.0
+    }
+
     fn fresh() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         Self(

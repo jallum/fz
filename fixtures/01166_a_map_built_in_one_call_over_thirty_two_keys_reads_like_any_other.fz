@@ -1,0 +1,79 @@
+#---
+# purpose: "a 10,000-key map built in one Map.new call answers size, get, has_key?, fetch, to_list, reduce, take, drop, keys, values, inspect, ==, comparison, send, put, delete and update as any other map does"
+# oracle: 01166_a_map_built_in_one_call_over_thirty_two_keys_reads_like_any_other.oracle.exs
+# oracle.stamp: 5c64552630d2fab9
+#---
+#
+# Past 32 keys Elixir orders a map by hash, so everything printed is either
+# order-free (sizes, sums, membership) or sorted first.
+def pairs(n), do: Enum.map(1..n, fn i -> {i * 3, i * 3 + 1} end)
+
+def sorted_entries(map), do: Enum.sort(Map.to_list(map))
+
+def entries_agree(map, entries) do
+  Enum.all?(entries, fn {k, v} -> Map.fetch(map, k) == {:ok, v} end)
+end
+
+def inspected_entries(map) do
+  inner = map |> inspect() |> String.replace_prefix("%{", "") |> String.replace_suffix("}", "")
+  inner |> String.split(", ") |> Enum.sort()
+end
+
+def reader(parent) do
+  receive do
+    map ->
+      send(parent, {map_size(map), Map.get(map, 3), Map.get(map, 29_999), Enum.reduce(Map.values(map), 0, fn v, a -> a + v end)})
+  end
+end
+
+def main() do
+  n = 10_000
+  list = pairs(n)
+  m = Map.new(list)
+
+  IO.inspect(map_size(m))
+  IO.inspect({Map.get(m, 3), Map.get(m, 30_000), Map.get(m, 15_000), Map.get(m, 4), Map.get(m, 0), Map.get(m, 30_003), Map.get(m, -7)})
+  IO.inspect({Map.has_key?(m, 3), Map.has_key?(m, 30_000), Map.has_key?(m, 14_999), Map.has_key?(m, 0), Map.has_key?(m, 30_003)})
+  IO.inspect({Map.fetch(m, 15), Map.fetch(m, 16), Map.fetch(m, 3), Map.fetch(m, 30_000)})
+
+  entries = sorted_entries(m)
+  IO.inspect({length(entries), entries == list})
+  IO.inspect(Enum.take(entries, 3))
+  IO.inspect(Enum.take(entries, -3))
+  IO.inspect(Enum.reduce(m, 0, fn {k, v}, acc -> acc + k + v end))
+  IO.inspect(Enum.count(m))
+
+  taken = Enum.take(m, 5)
+  IO.inspect({length(taken), entries_agree(m, taken)})
+  sliced = Enum.take(Enum.drop(m, 5_000), 7)
+  IO.inspect({length(sliced), entries_agree(m, sliced)})
+  IO.inspect({Enum.reduce(Map.keys(m), 0, fn k, a -> a + k end), Enum.reduce(Map.values(m), 0, fn v, a -> a + v end)})
+
+  small = Map.new(Enum.map(1..40, fn i -> {i, i * i} end))
+  IO.puts(Enum.join(inspected_entries(small), "; "))
+
+  puts = Enum.reduce(list, %{}, fn {k, v}, acc -> Map.put(acc, k, v) end)
+  IO.inspect({m == puts, puts == m, m != puts})
+  other = Map.put(puts, 6, 100_000)
+  IO.inspect({m == other, m < other, other < m, m > other})
+  IO.inspect({Map.put(m, 3, 4) == m, Map.put(m, 3, 5) == m})
+
+  me = self()
+  child = spawn(fn () -> reader(me) end)
+  send(child, m)
+  receive do
+    answer -> IO.inspect(answer)
+  end
+
+  added = Map.put(m, 4, 5)
+  IO.inspect({map_size(added), Map.get(added, 4), Map.get(added, 3), Map.get(added, 30_000), map_size(m)})
+  replaced = Map.put(m, 15_000, :x)
+  IO.inspect({map_size(replaced), Map.get(replaced, 15_000), Map.get(m, 15_000)})
+  deleted = Map.delete(m, 3)
+  IO.inspect({map_size(deleted), Map.has_key?(deleted, 3), Map.has_key?(deleted, 6), Map.has_key?(m, 3)})
+  IO.inspect(Map.delete(m, 4) == m)
+  updated = %{m | 3 => 0}
+  IO.inspect({map_size(updated), Map.get(updated, 3), Map.get(updated, 6), Map.get(m, 3)})
+  merged = Map.merge(m, %{1 => 1, 30_000 => 2})
+  IO.inspect({map_size(merged), Map.get(merged, 1), Map.get(merged, 30_000)})
+end

@@ -86,7 +86,7 @@ because the container layout already says where the stamp lives.
   <tbody>
     <tr><td class="tag">0x0</td><td>NULL</td><td>sentinel</td><td>zero-init memory; local empty value</td></tr>
     <tr><td class="tag">0x1</td><td>List</td><td>heap</td><td>cons cell, 16 bytes, no header</td></tr>
-    <tr><td class="tag">0x2</td><td>Map</td><td>heap</td><td>flat sorted array with packed tag bytes</td></tr>
+    <tr><td class="tag">0x2</td><td>Map</td><td>heap</td><td>flat sorted array with packed tag bytes (up to 32 entries) or a hash trie of such nodes</td></tr>
     <tr><td class="tag">0x3</td><td>Struct</td><td>heap</td><td>tuple/struct; 8-byte prefix (schema_id in the high 32 bits)</td></tr>
     <tr><td class="tag">0x4</td><td>Closure</td><td>heap</td><td>8-byte prefix (denotation in the high 32 bits; flags and arity above four clear bits in the low 32); captures carry their own kind bytes</td></tr>
     <tr><td class="tag">0x5</td><td>Bitstring</td><td>heap</td><td>small inline; 8-byte prefix (bit_len above four clear bits)</td></tr>
@@ -182,6 +182,33 @@ next 16-byte boundary. A map still under construction (an unpublished
 destination) has a different header: bit 63 set, the number of entries filled
 so far at bit 33 and the capacity at bit 4, each 29 bits wide. Freezing it
 writes the published header.</p>
+
+<p>A map with more than 32 entries is a hash trie. Each node
+is a Map object whose header has bit 62 set; it keeps the layout above for its
+own entries and appends one word per child after the values:</p>
+
+<pre>
+  header:  bit 62 | total &lt;&lt; 36 | child_map &lt;&lt; 20 | data_map &lt;&lt; 4
+  then:    tag_bytes, keys, values (one per bit of data_map), children (one per bit of child_map)
+  collision node: bits 62 and 61 set, entry count at bit 36, entries and no children
+</pre>
+
+<p>A key's 64-bit hash (<code>term_hash</code>) picks a slot per level, four
+bits at a time, top bits first. A slot holds an entry or a child, and a node
+exists only where two or more keys share the path, so a key set has exactly one
+trie. Keys whose whole hash is equal share a collision node. The root's
+<code>total</code> is the map's size. The low nibble of every header is clear,
+so the forwarding marker works on a node as on any other object. A map of up to
+32 entries is a flat array, and enumeration order is key order for it and
+node order (a function of the hashes) for a trie.</p>
+
+<p>A put or a delete on a trie copies the nodes on the path from the root to
+the key's slot, which is a handful of nodes whatever the map's size, and shares
+every other node with the map it was given. A node left with one entry is
+pulled up into its parent, which keeps the one trie per key set. A put that
+takes a flat map to 33 entries makes a trie, and a delete that takes a trie to
+32 makes the flat array again. An update, <code>%{m | k: v}</code>, of a trie
+is a put of that key on the trie itself.</p>
 
 <p><strong>Dynamic roots:</strong></p>
 

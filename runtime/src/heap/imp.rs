@@ -14,7 +14,7 @@ use super::schema::{Schema, SchemaRegistry};
 use super::stats::{GcStats, Generation};
 use super::{Heap, HeapAllocKind, HeapAllocStats, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MapDestinationKind,
+    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MAP_FLAT_MAX, MapDestinationKind,
     STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, bitstring_header_word, bitstring_size_for_bit_len,
     closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot, closure_capture_set,
     closure_capture_value, closure_header_word, closure_header_write, closure_size_for_count, heap_object_word,
@@ -63,6 +63,10 @@ unsafe fn copy_map_slots(from: *mut u8, to: *mut u8, count: usize) {
 
 fn entries_map_ref(addr: *mut u8) -> AnyValueRef {
     AnyValueRef::from_heap_object(ValueKind::MAP, addr).expect("published map")
+}
+
+fn map_bits_ref(bits: u64) -> AnyValueRef {
+    entries_map_ref(map_addr_from_tagged(bits).expect("published map"))
 }
 
 pub fn list_head_ref(list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
@@ -465,7 +469,17 @@ impl Heap {
 
     fn publish_normalized_map_entries(&mut self, entries: &mut [(AnyValue, AnyValue)]) -> u64 {
         let count = self.normalize_map_entries(entries);
-        self.alloc_ordered_map_entries(entries[..count].iter().copied())
+        self.alloc_bulk_map_entries(&entries[..count])
+    }
+
+    /// Publish entries in key order with no key repeated, as a trie when there
+    /// are more than `MAP_FLAT_MAX` of them and as a flat array otherwise.
+    pub(super) fn alloc_bulk_map_entries(&mut self, entries: &[(AnyValue, AnyValue)]) -> u64 {
+        if entries.len() > MAP_FLAT_MAX {
+            self.alloc_trie(entries)
+        } else {
+            self.alloc_ordered_map_entries(entries.iter().copied())
+        }
     }
 
     /// Sort the entries by strict structural key and merge equal keys, the
@@ -492,6 +506,7 @@ impl Heap {
         entries: impl ExactSizeIterator<Item = (AnyValue, AnyValue)>,
     ) -> u64 {
         let count = entries.len();
+        debug_assert!(count <= MAP_FLAT_MAX, "a flat map holds at most {MAP_FLAT_MAX} entries");
         let p = self.alloc_kind(HeapAllocKind::Map, map_size_for_count(count));
         self.write_ordered_map_entries(p, count, entries);
         heap_object_word(p, ValueKind::MAP)
@@ -503,8 +518,19 @@ impl Heap {
         count: usize,
         entries: impl Iterator<Item = (AnyValue, AnyValue)>,
     ) {
+        unsafe { write(p as *mut u64, map_header_word(count)) };
+        self.write_map_entries(p, count, entries);
+    }
+
+    /// Write `count` entries, as the kind bytes, keys and values of the node at
+    /// `p`, which has room for them and whose header is written already.
+    pub(super) fn write_map_entries(
+        &mut self,
+        p: *mut u8,
+        count: usize,
+        entries: impl Iterator<Item = (AnyValue, AnyValue)>,
+    ) {
         unsafe {
-            write(p as *mut u64, map_header_word(count));
             let tag_p = map_tag_ptr(p);
             write_bytes(tag_p, 0, map_tag_bytes_len(count));
             let keys = map_keys_ptr(p, count);
@@ -534,18 +560,20 @@ impl Heap {
         heap_object_word(p, ValueKind::MAP)
     }
 
-    /// An unpublished destination holding `base`'s entries, whose puts may
-    /// only replace them. A struct's destination is a copy of the struct, so
-    /// replacing its fields keeps it that struct.
+    /// A destination holding `base`'s entries, whose puts may only replace
+    /// them. A struct's destination is a copy of the struct, so replacing its
+    /// fields keeps it that struct. A trie is its own destination: each put
+    /// copies one path of it and leaves the map it was given as it was.
     pub fn alloc_map_update(&mut self, base: AnyValueRef) -> u64 {
         match self.expect_map_layout(base, "map update base") {
             MapLayout::Struct { object, schema_id } => self.alloc_struct_update(object, schema_id),
-            entries => self.alloc_entries_update(entries),
+            MapLayout::Trie(root) => heap_object_word(root, ValueKind::MAP),
+            entries @ MapLayout::Entries(_) => self.alloc_entries_update(entries),
         }
     }
 
     /// An unpublished entries destination holding the entries of `base`, in
-    /// either of its layouts.
+    /// key order: a flat map is copied as it is, a struct is read in key order.
     pub(super) fn alloc_entries_update(&mut self, base: MapLayout) -> u64 {
         let count = self.map_view_count(base);
         let p = self.alloc_kind(HeapAllocKind::Map, map_size_for_count(count));
@@ -555,6 +583,7 @@ impl Heap {
                 let entries = self.map_view_entries(base);
                 self.write_ordered_map_entries(p, count, entries.into_iter());
             }
+            MapLayout::Trie(_) => unreachable!("a trie is its own update destination"),
         }
         let header = map_destination_header_word(count, count, MapDestinationKind::Update);
         unsafe { write(p as *mut u64, header) };
@@ -577,6 +606,10 @@ impl Heap {
             Some(MapLayout::Struct { object, schema_id }) => self.struct_update_put(object, schema_id, key, value),
             Some(MapLayout::Entries(dest)) if unsafe { self.entries_destination_put(dest, key, value) } => dest_bits,
             Some(MapLayout::Entries(_)) => 0,
+            Some(MapLayout::Trie(root)) => match self.trie_find(root, key) {
+                Some(_) => self.trie_put(root, key, value),
+                None => 0,
+            },
         }
     }
 
@@ -610,19 +643,29 @@ impl Heap {
     /// Publish a destination. An update that missed a key has no destination
     /// left and answers `None`: `%{map | k: v}` with no `k` in `map` makes no
     /// map, and its caller raises `KeyError`. An update's puts only replace,
-    /// so its entries are already in order and it publishes in place; a
-    /// struct's destination is the finished struct.
+    /// so its entries are already in key order and it publishes in place; a
+    /// struct's destination is the finished struct and a trie's is the trie the
+    /// puts made. A destination that holds more than `MAP_FLAT_MAX` entries
+    /// once published becomes a trie.
     pub fn map_destination_freeze(&mut self, dest_bits: u64) -> Option<AnyValueRef> {
         let dest = match destination_layout(dest_bits)? {
             MapLayout::Struct { object, .. } => return Some(object),
             MapLayout::Entries(dest) => dest,
+            MapLayout::Trie(root) => return Some(map_bits_ref(heap_object_word(root, ValueKind::MAP))),
         };
         let (_, filled, kind) = unsafe { map_destination_state(dest) };
         match kind {
             MapDestinationKind::Build => {
                 let mut entries: Vec<_> = (0..filled).map(|i| unsafe { map_entry(dest, i) }).collect();
                 let count = self.normalize_map_entries(&mut entries);
+                if count > MAP_FLAT_MAX {
+                    return Some(map_bits_ref(self.alloc_bulk_map_entries(&entries[..count])));
+                }
                 self.write_ordered_map_entries(dest, count, entries.into_iter().take(count));
+            }
+            MapDestinationKind::Update if filled > MAP_FLAT_MAX => {
+                let entries: Vec<_> = (0..filled).map(|i| unsafe { map_entry(dest, i) }).collect();
+                return Some(map_bits_ref(self.alloc_bulk_map_entries(&entries)));
             }
             MapDestinationKind::Update => self.publish_entries_in_place(dest, filled),
         }
@@ -639,6 +682,10 @@ impl Heap {
             self.entries_are_in_key_order(dest, filled),
             "a map published in place must already be in key order"
         );
+        if filled > MAP_FLAT_MAX {
+            let entries: Vec<_> = (0..filled).map(|i| unsafe { map_entry(dest, i) }).collect();
+            return map_bits_ref(self.alloc_bulk_map_entries(&entries));
+        }
         self.publish_entries_in_place(dest, filled);
         entries_map_ref(dest)
     }
@@ -651,6 +698,10 @@ impl Heap {
             self.publish_contained_parts(key.raw(), key.kind());
             self.publish_contained_parts(value.raw(), value.kind());
         }
+        debug_assert!(
+            filled <= MAP_FLAT_MAX,
+            "a flat map holds at most {MAP_FLAT_MAX} entries"
+        );
         unsafe { write(dest as *mut u64, map_header_word(filled)) };
     }
 
@@ -740,6 +791,8 @@ impl Heap {
         self.map_view_put(layout, key, value)
     }
 
+    /// The flat map at `addr` with `key` bound to `value`: a trie when the
+    /// key is new and the map held `MAP_FLAT_MAX` entries.
     pub(super) fn map_put_entry(&mut self, addr: *mut u8, key: AnyValue, value: AnyValue) -> u64 {
         let count = unsafe { map_count(addr) };
         let position = self.map_key_position(addr, key);
@@ -747,15 +800,20 @@ impl Heap {
             Ok(index) => (index, 0),
             Err(index) => (index, 1),
         };
-        self.alloc_ordered_map_entries((0..count + inserted).map(|i| {
+        let entries = (0..count + inserted).map(|i| {
             if i == index {
                 (key, value)
             } else {
                 unsafe { map_entry(addr, if i < index { i } else { i - inserted }) }
             }
-        }))
+        });
+        if count + inserted > MAP_FLAT_MAX {
+            return self.alloc_trie(&entries.collect::<Vec<_>>());
+        }
+        self.alloc_ordered_map_entries(entries)
     }
 
+    /// Where `key` is, or would be, in the flat map at `addr`.
     pub(super) fn map_key_position(&self, addr: *mut u8, key: AnyValue) -> Result<usize, usize> {
         let schemas = self.schemas.borrow();
         let comparator = TermComparator::new(&self.node, &schemas);
