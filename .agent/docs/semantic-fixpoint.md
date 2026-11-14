@@ -512,18 +512,20 @@ claims it, so it can never settle.
 ## How recursive convergence works right now
 
 `canonical_activation_key(function, raw_inputs)` still decides activation
-identity. For recursive functions it collapses UNDEMANDED inputs by
-`convergence_class`, using the `Recursive(fn)` and `InputDemand(fn)` facts to
-decide which slots may balloon. `InputDemand` is transitive: a slot this body
-hands unchanged to a callee carries that callee's demand too, because the value
-that arrives decides which callee activation is reached and therefore what this
-activation publishes (fz-kdt.183,
+identity. It collapses UNDEMANDED inputs to their convergence class, using the
+`InputDemand(fn)` fact to decide which slots may balloon and the `Recursive(fn)`
+fact to decide whether the collapse must be bounded for an ascent. `InputDemand`
+is transitive: a slot this body hands unchanged to a callee carries that
+callee's demand too, because the value that arrives decides which callee
+activation is reached and therefore what this activation publishes (fz-kdt.183,
 [`type-specialization`](type-specialization.md)). It carries a second axis
-beside that one: a position the body RETURNS, and the recursion does not
-supply, is kept as well, because an activation publishes ONE return and two
-callers sharing a key would share it (fz-kdt.199).
+beside that one: a position the body RETURNS, and the recursion does not supply,
+is kept as well, because an activation publishes ONE return and two callers
+sharing a key would share it (fz-kdt.199).
 
-A NON-recursive body is keyed by precise evidence, with one erasure. A body
+A NON-recursive body takes the same collapse without the bounds an ascent
+needs: its callables keep their shape and its returned positions stay as the
+evidence states them. Then it takes one erasure. A body
 that never consumes callable identity -- never calls through a callable, never
 constructs a lambda, and is not itself a capture-holding lambda
 (`BodyKeying::consumes_callable_identity`) -- only TRANSPORTS the closures that

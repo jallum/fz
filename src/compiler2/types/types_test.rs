@@ -462,6 +462,105 @@ fn a_key_that_changes_no_slot_returns_before_it_rebuilds_the_arrow() {
 }
 
 #[test]
+fn a_returned_callable_keeps_its_brand_on_both_key_paths() {
+    let mut t = Types::new();
+    let int = t.int();
+    let surface = t.arrow(&[int], int);
+    let inc = t.closure_lit(ClosureTarget(7), vec![], 1);
+    let inc = t.intersect(inc, surface);
+    let dec = t.closure_lit(ClosureTarget(8), vec![], 1);
+    let dec = t.intersect(dec, surface);
+    let any = t.any();
+    let inc_arrow = t.arrow(&[inc], any);
+    let dec_arrow = t.arrow(&[dec], any);
+    let untested = [DispatchDemand::Ignore];
+    let key = |t: &mut Types, arrow: Ty, recursive: bool, returned: &[DispatchDemand]| {
+        t.activation_key_arrow(
+            arrow,
+            recursive,
+            &KeyDemand {
+                local: &untested,
+                forwarded: &untested,
+                returned,
+                consumes_callable_identity: false,
+            },
+        )
+    };
+
+    for recursive in [false, true] {
+        assert_ne!(
+            key(&mut t, inc_arrow, recursive, &[DispatchDemand::Whole]),
+            key(&mut t, dec_arrow, recursive, &[DispatchDemand::Whole]),
+            "a body that hands its callable back gives each caller its own (recursive: {recursive})"
+        );
+        assert_eq!(
+            key(&mut t, inc_arrow, recursive, &[DispatchDemand::Ignore]),
+            key(&mut t, dec_arrow, recursive, &[DispatchDemand::Ignore]),
+            "a callable the body neither tests nor returns is freight (recursive: {recursive})"
+        );
+    }
+}
+
+#[test]
+fn a_non_recursive_key_collapses_freight_but_bounds_nothing() {
+    let mut t = Types::new();
+    let int = t.int();
+    let any = t.any();
+    let maybe_empty = t.list(int);
+    let non_empty = t.non_empty_list(int);
+    let surface = t.arrow(&[int], int);
+    let inc = t.closure_lit(ClosureTarget(7), vec![], 1);
+    let inc = t.intersect(inc, surface);
+    let untested = [DispatchDemand::Ignore];
+    let key = |t: &mut Types, input: Ty, recursive: bool, returned: &[DispatchDemand]| {
+        let arrow = t.arrow(&[input], any);
+        let keyed = t.activation_key_arrow(
+            arrow,
+            recursive,
+            &KeyDemand {
+                local: &untested,
+                forwarded: &untested,
+                returned,
+                consumes_callable_identity: false,
+            },
+        );
+        t.descr(&keyed).pure_arrow().expect("a key is an arrow").args[0]
+    };
+
+    for recursive in [false, true] {
+        assert_eq!(
+            key(&mut t, maybe_empty, recursive, &untested),
+            key(&mut t, non_empty, recursive, &untested),
+            "a list nothing asks about is freight whatever its shape (recursive: {recursive})"
+        );
+    }
+
+    let kept = key(&mut t, inc, false, &untested);
+    let erased = t.erase_closure_identity(&inc);
+    assert_eq!(
+        kept, erased,
+        "a non-recursive key keeps a callable's shape and erases only its brand"
+    );
+    let addressed = key(&mut t, inc, true, &untested);
+    assert!(
+        t.has_vars(&addressed),
+        "a recursive key bounds the callable by its address so the ascent settles"
+    );
+
+    let returned = [DispatchDemand::Whole];
+    assert_ne!(
+        key(&mut t, maybe_empty, false, &returned),
+        key(&mut t, non_empty, false, &returned),
+        "a non-recursive key keeps a returned position as the evidence states it"
+    );
+    assert_eq!(
+        key(&mut t, maybe_empty, true, &returned),
+        key(&mut t, non_empty, true, &returned),
+        "a recursive key keeps a returned position's bounded class"
+    );
+}
+
+#[test]
 fn structural_children_are_interned_handles() {
     let mut t = Types::new();
     let elem = t.int();
@@ -5321,7 +5420,7 @@ fn a_kept_key_leaf_holding_a_closure_stays_the_ground_type() {
     let with_int = t.tuple(&[tag_g, int]);
     let element = t.union(with_closure, with_int);
 
-    let kept = t.convergence_class_at(&element, &[], true);
+    let kept = t.convergence_class_at(&element, &[], ClassReach::Demanded, KeyCollapse::Recursive);
 
     assert!(
         t.is_equivalent(&kept, &element),

@@ -4880,7 +4880,11 @@ fn positioned_callable_owners_have_observable_obligations() {
                 BTreeMap::from([
                     (("construction", true), 38),
                     (("metadata", false), 201),
-                    (("metadata", true), 180)
+                    // 180 -> 212 callable owners: a returned callable keeps its brand in its
+                    // function's key, and a protocol callback counts every input but the
+                    // receiver as returned, so `Enum.reduce_while/3` and its Enum wrappers are
+                    // keyed once per reducer lambda.
+                    (("metadata", true), 212)
                 ]),
                 "all 419 owners preserve their obligations; an entry that reuses its parent entry's capture layouts retains no callable owner of its own for them"
             );

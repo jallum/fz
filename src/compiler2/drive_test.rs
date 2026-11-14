@@ -16177,12 +16177,16 @@ fn compiler2_same_shape_lambda_literals_share_the_library_chain() {
     // The second call site's marginal cost is its own lambda plus the two
     // identity-consuming specializations (`find/3` captures the predicate
     // into its wrapper; the wrapper calls it) -- never a private copy of the
-    // transport-only chain (`find/2`, the `reduce_while/3`s).
+    // transport-only chain (`find/2`, `Enumerable.reduce_while/3`). The fourth
+    // is a second `Enum.reduce_while/3`: a returned callable keeps its brand
+    // in its function's key, and a protocol callback counts every input but
+    // the receiver as returned, so the reducer's brand keys it.
     assert_eq!(
         two_site_executables,
-        one_site_executables + 3,
-        "a second same-shape lambda literal should add its own executable and the \
-         two identity-consuming splits, not respecialize the transport chain \
+        one_site_executables + 4,
+        "a second same-shape lambda literal should add its own executable, the \
+         two identity-consuming splits and its own `Enum.reduce_while/3`, not \
+         respecialize the transport chain \
          ({one_site_executables} -> {two_site_executables})"
     );
 }
@@ -23640,7 +23644,9 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
     }
     assert_eq!(
         activations.values().map(BTreeSet::len).sum::<usize>(),
-        140,
+        // 140 -> 138: a non-recursive key collapses structure nothing asks about to its class, as a
+        // recursive key does, so callers that differ only in such freight share one activation.
+        138,
         "activations of the whole program"
     );
 }

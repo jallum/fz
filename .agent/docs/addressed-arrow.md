@@ -149,7 +149,8 @@ function on both paths. A recursive body takes the whole structural collapse; a
 non-recursive body has no ascent to settle, so its structure is left exactly as
 the evidence stated it and only identity is erased -- a literal atom where no
 use can tell it from another (`Types::widen_literals`), and a closure brand
-where no clause of this body tests the slot (the LOCAL mask). A slot that is
+where no clause of this body tests the slot (the LOCAL mask) and the body does
+not return it (the returned axis). A slot that is
 already its own key skips the function (`probe_keys_as_itself`, which includes
 `widen_literals(a) == a`). The collapse reads `demand`, which is
 `InputDemand::forwarded_dispatch` — this body's own entry dispatch joined with
@@ -164,13 +165,15 @@ dispatch observes (for example a tuple tag) and collapse the payload. A
 demanded list keeps its ELEMENT at every depth, because the element decides
 which callee activation the forward reaches; only freight collapses. A RETURNED
 position keeps its addressed convergence class on the second axis — list
-families normalise to `list(elem)` with the element kept, brands still erase —
+families normalise to `list(elem)` with the element kept, and a pure callable
+keeps its brand with its literals widened (`ClassReach::Returned`) —
 because an activation publishes one return and a returned position the key
 erased is a position on which two callers' answers blend. `{:done, acc}` is the
 shape: the tag is the question, the payload is the answer, and each axis keeps
 its own half. A `Whole` slot has no collapse at all, and forwarding can hand a
 `Whole` up; that slot sits outside fz-y6w's termination argument. The returned
-axis does not widen that: it never keeps a slot verbatim. A `Class` slot --
+axis keeps verbatim only a pure callable, whose self-nesting is folded before
+the key is derived. A `Class` slot --
 read, but by nothing that tells one literal from another -- keeps its structure
 and widens its literals, and a position the returned axis keeps keeps its
 literals too: the literal is the answer.

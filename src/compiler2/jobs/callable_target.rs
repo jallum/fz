@@ -42,14 +42,11 @@ pub(super) fn derive(world: &mut World, key: &CallableConstructionTargetKey) -> 
     };
     let mut inputs = capture_types;
     inputs.extend(key.surface.inputs.iter().copied());
-    let mut prerequisites = vec![owner_fact];
-    if world
-        .self_keyed_activation(key.owner.activation.root, producer.function, &inputs)
-        .is_none()
-    {
-        prerequisites.push(FactKey::Recursive(producer.function));
-        prerequisites.push(FactKey::InputDemand(producer.function));
-    }
+    let keying_facts = world
+        .activation_key_prerequisites(key.owner.activation.root, producer.function, &inputs)
+        .into_iter()
+        .flatten();
+    let prerequisites = std::iter::once(owner_fact).chain(keying_facts).collect::<Vec<_>>();
     let waits = prerequisites
         .iter()
         .filter(|fact| !world.fact_is_settled(fact))

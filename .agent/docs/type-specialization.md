@@ -152,8 +152,7 @@ it, all via the activation **key** (`canonical_activation_key`):
   tell it from another literal of its kind; everywhere else the literal widens
   to `atom` and the structure stays exactly as it was. `Types::widen_literals`
   is the one widening, memoised, idempotent and monotone. It applies on BOTH
-  key paths: a recursive body's structural collapse and a non-recursive body's
-  key, which leaves structure alone and erases only identity. Two callers that
+  key paths, a recursive body's and a non-recursive body's. Two callers that
   differ only in a literal no use reads share one activation and one analysis.
   `Types::activation_key_arrow` is memoised on its whole question (arrow,
   recursion, the three demand masks, callable identity): the same key is asked
@@ -162,18 +161,28 @@ it, all via the activation **key** (`canonical_activation_key`):
   The evidence rows keep the exact literals, so each row is still analysed on
   its own and the key is only the identity they share.
 
-- **The convergence collapse.** For a recursive function, each UNDEMANDED input
-  slot is keyed by its `convergence_class` — the whole list family, including
-  `[] | [t]` joins, folds to one class, while disjoint families (`int` vs a
-  tagged tuple) stay distinct. So many call shapes map to one key (the
-  "balloon"), and the slot's actual type is recovered as the union join of the
-  contributing inputs.
+- **The convergence collapse.** Each UNDEMANDED input slot is keyed by its
+  convergence class — the whole list family, including `[] | [t]` joins, folds
+  to one class, while disjoint families (`int` vs a tagged tuple) stay
+  distinct. So many call shapes map to one key (the "balloon"), and the slot's
+  actual type is recovered as the union join of the contributing inputs. Both
+  key paths take it (`KeyCollapse::Recursive`, `KeyCollapse::NonRecursive`).
+  Only a recursive key bounds what the ascent could grow: there a callable
+  collapses to an address variable and a returned position to its class. A
+  non-recursive key keeps a callable's shape (its brand is then erased or kept
+  by the rule below) and keeps a returned position as the evidence states it.
+  An address variable there would only join the evidence of every caller
+  sharing the key, so a callable a body captures into a closure it builds would
+  be typed by every caller's arguments at once. Three `Stream.map` pipelines,
+  one over file lines, would share `Stream.compose/2`'s `funs`, and the
+  compiler would reject `fn x -> x + 1 end` for a `binary` argument that the
+  program never passes.
 - **The input demand.** The collapse is shaped by `InputDemand::forwarded_dispatch`
   (`FactKey::InputDemand`, `jobs::keying::derive_input_demand`). `Whole`
   preserves an input, tuple-field demand preserves only the demanded fields, and
   `ListShape(elem_demand)` preserves demanded element information from the whole
-  list-family descriptor while converging empty-vs-cons shape for recursive
-  keys. That keeps recursive list walkers from splitting the initial cons call
+  list-family descriptor while converging empty-vs-cons shape on both key
+  paths. That keeps recursive list walkers from splitting the initial cons call
   from the possibly-empty tail, even when the input surface is already a joined
   list family, while still letting body evidence decide which clauses are
   reachable.
@@ -243,8 +252,13 @@ The two axes never join into one mask, because they ask for two collapses. On
 the dispatch axis `Whole` means a question reads the value itself and the key
 keeps it VERBATIM. On the returned axis it means the value is the answer, and
 the key keeps its addressed convergence CLASS: list families normalise to
-`list(elem)` with the element kept at every depth, and closure brands still
-erase -- the same bounded collapse fz-kdt.183 gives a demanded list. The depth
+`list(elem)` with the element kept at every depth -- the same bounded collapse
+fz-kdt.183 gives a demanded list -- and a pure callable is kept with its brand,
+its literals widened (`ClassReach::Returned`). That class is a recursive key's;
+a non-recursive key has no ascent to bound and keeps a returned position as the
+evidence states it. The return carries that callable
+out, so a key that dropped its identity would publish, to every caller, one
+return holding every callable that reached it. The depth
 cap applies to LIST families only: `Types::convergence_class_at` checks
 `ADDRESS_COLLAPSE_DEPTH` inside its `is_pure_list_family` branch, so a tuple,
 map or resource nest at a returned position recurses uncapped and is bounded
@@ -299,7 +313,9 @@ from the receiver's type, so its published demand is on the receiver and
 `Ignore` elsewhere, with no forwards. Its returned axis is `Whole` on every
 slot but the receiver: the implementation may hand an accumulator back, and
 the callback does not consult implementations to say otherwise, so a landing
-implementation never revises the answer. The receiver is `Class` when no
+implementation never revises the answer. A returned callable keeps its
+brand, so a reducer handed to `Enumerable.reduce_while/3` keys its caller
+once per lambda, though no implementation returns the reducer. The receiver is `Class` when no
 implementation's target can tell one literal from another -- the receiver's
 literals then pick no implementation -- and `Whole` otherwise; the job reads
 `ProtocolImplProviders` and each target's `StructDefined`, so an implementation
@@ -330,13 +346,17 @@ of `uses` -- is what closure-brand erasure reads
 (fz-6gb), because "does a clause of THIS body test this slot" is a different
 question from "does anything downstream read it", and a forwarder that only
 transports a callable must still key one activation for two same-shape lambdas.
+A slot the returned axis keeps is the one exception: its brands survive on both
+key paths (`reads_closure_identity`), because the forwarder hands that callable
+back and each caller must get back its own.
 
 Three limits are known and stated rather than argued away. A `Whole` slot has NO
 collapse, and forwarding can hand a `Whole` up from a callee that tests a
 literal -- or from a closure call, a branch or a capture that reads the value
 whole -- so fz-y6w's termination argument does not cover such a slot.
-The returned axis does not widen that exposure: it never produces a verbatim
-slot, only an addressed class. And the
+The returned axis widens it only for a pure callable, which it keeps with its
+brand. Every input is folded before the key is derived (`fold_arrow_params`),
+so a kept callable cannot nest inside itself without bound. And the
 recursion-supplied rule reads SELF calls only: a mutually recursive pair
 rebuilds across the cycle rather than inside one body, and a recursion routed
 through a generated lambda (`00032_lambda_recursion`) is not local either, so

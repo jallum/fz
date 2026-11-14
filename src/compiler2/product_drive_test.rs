@@ -1843,8 +1843,11 @@ fn live_executable_order_distinguishes_noninjective_display_pairs() {
     }
     assert_eq!(
         measured_pairs.len(),
-        6,
-        "fixture must retain the six live empty/non-empty list pairs that display conflates"
+        // 6 -> 1: a non-recursive key collapses a list nothing asks about to its class,
+        // so five of the pairs no longer live in two executables; the one left keeps the
+        // order tested.
+        1,
+        "fixture must retain the live empty/non-empty list pair that display conflates"
     );
     for (index, left) in executables.iter().enumerate() {
         for right in &executables[index + 1..] {
