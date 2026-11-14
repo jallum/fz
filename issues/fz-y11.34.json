@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:55:35Z",
+  "description": "RuntimeDemandWalk::demand_table (jobs/runtime_demand.rs:131) makes a ValueMap sized to the whole body per ask: value_map.rs:38 from runtime_demand.rs:132 is about 3,600 tables and most of 9.3 MB, via runtime_demand.rs:1416 and :1369.\n\nChange: read who keeps each table and who drops it. Tables that are dropped after one use come from a pool the walk owns, or the caller's table is cleared and reused; tables that are stored are sized to what they hold if they are sparse.\n\nEvidence: census of the OptionParser probe at c0e52fbaf (tip of #518; 734,597 allocations): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/c0e52fbaf_top.txt; call chains: cd /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census \u0026\u0026 python3 chain.py c0e52fbaf.pkl \u003cfile:line\u003e \u003cdepth\u003e \"\" \u003cn\u003e; line numbers are exact at commit c0e52fbaf.\n\nSignal: full gate green; no golden or pin moves except a falling pin, which is lowered and listed; program output and canonical backend dump identical on the probe; allocation count before and after in the commit.",
+  "id": "fz-y11.34",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "Runtime-demand walks reuse their value tables",
+  "type": "task",
+  "updated_at": "2026-11-14T01:55:35Z"
+}
