@@ -152,7 +152,7 @@ defmodule File do
 
   @doc "Closes an open handle once; every later alias receives `:closed`."
   @spec close(t) :: :ok | {:error, :closed | :io}
-  def close(handle :: t), do: close_claim(Kernel.claim_resource(handle))
+  def close(handle), do: close_claim(Kernel.claim_resource(handle))
 
   @spec stream_open!(binary) :: t
   def stream_open!(path), do: stream_value!(open(path, [:read]), path)

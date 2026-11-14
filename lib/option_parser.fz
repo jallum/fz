@@ -258,11 +258,11 @@ defmodule OptionParser do
   defp validate_count(_other), do: :invalid
 
   @spec validate_integer(any) :: {:ok, integer} | :invalid
-  defp validate_integer(text :: binary), do: whole(Integer.parse(text))
+  defp validate_integer(text) when is_binary(text), do: whole(Integer.parse(text))
   defp validate_integer(_other), do: :invalid
 
   @spec validate_float(any) :: {:ok, float} | :invalid
-  defp validate_float(text :: binary), do: whole(Float.parse(text))
+  defp validate_float(text) when is_binary(text), do: whole(Float.parse(text))
   defp validate_float(_other), do: :invalid
 
   # A value is valid only if the parse consumed all of it.

@@ -152,7 +152,7 @@ defmodule Enum do
 
   """
   @spec to_list(Enumerable.t(a)) :: [a]
-  def to_list(list :: [a]), do: list
+  def to_list(list) when is_list(list), do: list
   def to_list(enumerable), do: reverse(reverse(enumerable))
 
   @doc """
@@ -325,7 +325,7 @@ defmodule Enum do
   """
   @spec with_index(Enumerable.t(a), integer) :: [{a, integer}]
   @spec with_index(Enumerable.t(a), (a, integer) -> b) :: [b]
-  def with_index(enumerable, offset :: integer), do: with_index_list(to_list(enumerable), offset)
+  def with_index(enumerable, offset) when is_integer(offset), do: with_index_list(to_list(enumerable), offset)
   def with_index(enumerable, fun), do: with_index_list(to_list(enumerable), 0, fun)
 
   @doc """
@@ -741,8 +741,8 @@ defmodule Enum do
   # operators already have; only the pairs no typed clause covers reach the
   # comparator.
   @spec default_order(any, any) :: boolean
-  defp default_order(left :: integer, right :: integer), do: left <= right
-  defp default_order(left :: float, right :: float), do: left <= right
+  defp default_order(left, right) when is_integer(left) and is_integer(right), do: left <= right
+  defp default_order(left, right) when is_float(left) and is_float(right), do: left <= right
   defp default_order(left, right), do: Kernel.compare(left, right) <= 0
 
   @doc """

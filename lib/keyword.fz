@@ -453,6 +453,6 @@ defmodule Keyword do
   def keyword?(_other), do: false
 
   @spec atom_key?(any) :: boolean
-  defp atom_key?(_key :: atom), do: true
+  defp atom_key?(key) when is_atom(key), do: true
   defp atom_key?(_other), do: false
 end
