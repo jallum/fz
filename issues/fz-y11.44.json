@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T04:27:23Z",
   "created": "2026-11-14T04:20:24Z",
   "description": "callsite_returns_feeding and the callable-origin recorder each start a Vec work list per call. Site: jobs/runtime_demand.rs:1840 (2,592) and :765. Change: PendingValues = SmallVec\u003c[ValueId; 16]\u003e. Spike: 694,365 -\u003e 691,166, output and canonical dump identical.",
   "id": "fz-y11.44",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A walk back through a body keeps its pending values on the stack",
   "type": "task",
-  "updated_at": "2026-11-14T04:20:24Z"
+  "updated_at": "2026-11-14T04:27:23Z"
 }
