@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.176"
+  ],
   "created": "2026-11-14T12:16:10Z",
   "description": "On develop f822f0f84, def id(f), do: f called with fn x -\u003e x + 1 end and with \u0026String.upcase/1 fails to compile: 'call to +/2 violates its @spec for arguments (binary, int)'. Elixir prints both results. The same happens for def wrap(f), do: {:w, f} and for a recursive wrap_after(f, n) that returns {:w, f} at n = 0.\n\nMechanism (measured):\n- A caller reads its callee's return by key alone: prepare_function_call (jobs/semantic.rs) reads world.activation_return(\u0026activation), which is one return joined over every evidence row under that key.\n- A non-recursive key erases a closure's brand wherever demand.local is Ignore (derive_activation_key_arrow, types/mod.rs). It does not consult demand.returned, so a callable the body returns but never tests loses its identity. Both lambdas reach one key, the published return is the union of both, and each caller applies both lambdas.\n- A recursive key keeps a returned position as its addressed convergence class (convergence_collapse_returned -\u003e convergence_class_at), and that class turns a pure callable into an address var. Same blend.\n- type-specialization.md and addressed-arrow.md state this as design ('brands still erase' at a returned position). It contradicts the rule both docs give: an activation's published return may depend only on what its key names.\n\nNot affected (probed, pass on develop): a callable returned inside a new closure's captures, a callable chosen by a literal the body tests, a callable read out of a list pattern.\n\nExperiment D (local switch, never committed): skip brand erasure at a returned slot, and keep a returned pure callable verbatim (literals widened) in convergence_class_at. Results:\n- every probe above prints Elixir's answer on interp and run;\n- distiller (tools/distill-telemetry.exs over main_returns_one.jsonl, interp): 12,892 -\u003e 12,892 jobs, identical output;\n- 00420: 2,513 -\u003e 2,637 jobs, all in Enum.reduce_while/3 (9 -\u003e 25 executables): each Enum wrapper's reducer lambda now keys its own activation, because the return is built from what that reducer returns. That is the rule's cost, paid where develop joined the returns of every reducer under one key.\n\nAcceptance:\n- fixture 01153_a_returned_callable_keeps_its_identity (id, wrap, recursive wrap_after; oracle) passes on interp, run and build;\n- one rule in code: a position the returned axis keeps keeps callable identity on both key paths;\n- type-specialization.md and addressed-arrow.md state the rule (a returned callable keeps its brand), with the old 'brands still erase' text removed;\n- pin moves attributed per pin, rises authorized before commit.",
   "id": "fz-lr6",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "A callable a function returns keeps its identity in the function's key, so two callers never share one return",
   "type": "bug",
-  "updated_at": "2026-11-14T12:16:10Z"
+  "updated_at": "2026-11-14T12:16:18Z"
 }
