@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T00:29:06Z",
   "created": "2026-11-14T00:00:41Z",
   "description": "Repro (fz-sc8.163 branch; same on 0a1d44728 once require is written):\n  def main() do\n    IO.inspect(Kernel.\u0026\u0026(true, 3))\n  end\n-\u003e error[resolve/unknown-import]: module Kernel does not export \u0026\u0026/2, on interp and run. Elixir prints 3. Same for Kernel.apply(Kernel, :abs, [-2]) as the only Kernel macro use. Adding any unqualified Kernel macro use to the file (dbg(...), true \u0026\u0026 4), or defining a user module first, makes the same qualified call work.\n\nCause: src/compiler2/quoted_expander.rs ~:420-424. A qualified call asks module_defined_revision(module); when it is None and the module is a runtime module the expander returns Ok(None) so that an ordinary Runtime.f(x) call need not wait for the module's definition. The call then goes to function resolution, which does not know a macro as a function. The permission check added by fz-sc8.163 (macro_callable_remotely) is never reached: 0 calls on the failing programs. So whether a qualified macro call expands depends on what else in the file happened to make Kernel's definition available first.\n\nDirections to spike (none tried): (1) in that branch, when the scope's namespace holds a Macro binding of that module with that name and arity, expand through it exactly as the unqualified call does; this leaves an imported module's macros that an only: list omits. (2) when the namespace shows the module is in scope by import, wait for its definition as a non-runtime module does; check for a wait cycle among runtime modules.\n\nDone when: an oracle fixture whose only Kernel macro uses are qualified (Kernel.\u0026\u0026, Kernel.||, Kernel.!, Kernel.apply/3) matches Elixir on interp, run and build, and the answer does not change when unrelated definitions are added or removed.",
   "id": "fz-sc8.171",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A qualified macro call does not depend on whether its runtime module is defined yet",
   "type": "bug",
-  "updated_at": "2026-11-14T00:00:41Z"
+  "updated_at": "2026-11-14T00:29:06Z"
 }
