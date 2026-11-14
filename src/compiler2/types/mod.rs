@@ -1397,11 +1397,8 @@ impl Types {
     /// the read path for `ActivationKey::inputs`: the key stores its canonical
     /// inputs as the params of an interned arrow, and consumers recover them
     /// here without needing `&mut` on the interner.
-    pub fn arrow_params(&self, arrow: &Ty) -> Vec<Ty> {
-        self.descr(arrow)
-            .pure_arrow()
-            .map(|sig| sig.args.clone())
-            .unwrap_or_default()
+    pub fn arrow_params(&self, arrow: &Ty) -> &[Ty] {
+        self.descr(arrow).pure_arrow().map_or(&[], |sig| &sig.args)
     }
 
     /// The parameter at `slot` of a pure arrow; `slot` must be below its arity.
@@ -3573,7 +3570,7 @@ impl SharedTypes for Types {
         Types::arrow_join_return(self, a)
     }
 
-    fn arrow_params(&self, a: &Self::Ty) -> Vec<Self::Ty> {
+    fn arrow_params(&self, a: &Self::Ty) -> &[Self::Ty] {
         Types::arrow_params(self, a)
     }
 

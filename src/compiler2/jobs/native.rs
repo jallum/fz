@@ -778,8 +778,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             return_reprs,
             executable.abi.effects,
         );
-        let activation_inputs = executable.key.activation.inputs(self.world.types());
-        let params = ctx.entry_params(activation_inputs.as_slice());
+        let params = ctx.entry_params(executable.key.activation.inputs(self.world.types()));
         let mut extern_args = Vec::with_capacity(params.len());
         for (arg_index, param) in params.iter().copied().enumerate() {
             let arg = if arg_index < signature.params.len() {

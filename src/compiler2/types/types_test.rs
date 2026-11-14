@@ -2073,7 +2073,7 @@ macro_rules! semantic_helper_conformance_tests {
                 let arrow = t.arrow(&[list_int.clone(), list_int.clone()], int.clone());
                 let collapsed = collapse_structure(&mut t, arrow, &[DispatchDemand::Whole, DispatchDemand::Ignore], &[]);
 
-                let params = t.arrow_params(&collapsed);
+                let params = t.arrow_params(&collapsed).to_vec();
                 let ret = t.arrow_join_return(&collapsed);
                 assert_eq!(t.display(&params[0]), "[int]");
                 assert_eq!(t.display(&params[1]), "[a1_e]");
@@ -2119,7 +2119,7 @@ macro_rules! semantic_helper_conformance_tests {
                 // payload (field 1) collapses to its ADDRESSED class — the list
                 // element addressed at `[Param(0), Field(1), Elem]`, displayed
                 // `a0_1_e` — not the path-blind `list(any)` (fz-f98.14.10.2).
-                let params = t.arrow_params(&collapsed);
+                let params = t.arrow_params(&collapsed).to_vec();
                 assert_eq!(
                     t.display(&params[0]),
                     "{:cont, [a0_1_e]}",
@@ -2156,7 +2156,7 @@ macro_rules! semantic_helper_conformance_tests {
                 fields.insert(0, DispatchDemand::Whole); // tag dispatches, payload ignored
                 let collapsed = collapse_structure(&mut t, arrow, &[DispatchDemand::TupleFields(fields)], &[]);
 
-                let params = t.arrow_params(&collapsed);
+                let params = t.arrow_params(&collapsed).to_vec();
                 let readdressed = t.address_inputs(&params);
                 assert_eq!(
                     readdressed, params,

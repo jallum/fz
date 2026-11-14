@@ -197,7 +197,7 @@ impl World {
         // alpha-equivalent specs intern byte-identical. Names and bounds re-key
         // through the env, never escaping un-addressed (addressing > encounter).
         let (arrow, env) = self.types_mut().address_arrow_with_env(&params, result);
-        let params = self.types_mut().arrow_params(&arrow);
+        let params = self.types_mut().arrow_params(&arrow).to_vec();
         let result = self
             .types_mut()
             .arrow_result(&arrow)
