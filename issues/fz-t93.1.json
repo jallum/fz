@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:26:06Z",
+  "description": "A pure move. src/compiler2/{scheduler,agenda,facts,deps,ordered_set,ordered_worklist}.rs move to a workspace crate at crates/fz-engine (package fz-engine), added to [workspace].members. On develop 01e69178a they depend only on fast_hash and the SemanticOrd trait (semantic.rs ~914): fast_hash and SemanticOrd move with them or into the crate, whichever leaves one authority. Tests move to sibling _test.rs files in the crate. Acceptance: no behaviour change (every pin, golden and backend dump identical; cargo test --workspace --all-targets green); compiler2 imports the crate; no re-export shims left behind. Docs: fact-engine.md 'Ownership boundaries' names the crate; crate README states the producer contract as it stands.",
+  "id": "fz-t93.1",
+  "labels": [],
+  "parent": "fz-t93",
+  "priority": 2,
+  "status": "open",
+  "title": "The fact engine is its own crate, crates/fz-engine",
+  "type": "task",
+  "updated_at": "2026-11-14T04:26:06Z"
+}
