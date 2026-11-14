@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T02:58:23Z",
+  "description": "On fz-i89 6ed56d515 (includes fz-28p), debug build, fz2 interp:\n- 2,000 bindings a_i = x + i followed by a1 + a2 + ... + a2000 (scratchpad/s75e/varsum2000.fz): 'fatal runtime error: stack overflow, aborting' in the compiler's main thread. With ulimit -s 65520 it compiles and prints 2001000.\n- 2,000 sequential calls whose results are summed (seqsum2000.fz): same overflow; with the larger stack it prints 2003000.\n- Controls that pass at 2,000: the same bindings returning only a2000 (varlast2000.fz); a sum of 2,000 constants (addonly2000.fz); x + x + ... 2,000 times (xsum2000.fz); 2,000 calls returning only the last (seqnosum2000.fz).\nSo the trigger is many distinct values live at once across a long chain, and the depth is the compiler's recursion, not generated code. At 1,000 it passes.\nNot investigated: which compiler function recurses per live value or per step (profile with the stack limit lowered, or run under lldb and read the repeating frame).\nFails before, passes after: varsum2000 and seqsum2000 compile and print on interp with the default stack; a telemetry or stack-depth test pins that the recursion does not grow with the number of live values.\nAcceptance: full gate green; no pin rises unexplained.",
+  "id": "fz-j41",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "The compiler does not overflow its own stack on a body of 2,000 live values",
+  "type": "bug",
+  "updated_at": "2026-11-14T02:58:23Z"
+}
