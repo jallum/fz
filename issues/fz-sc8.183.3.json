@@ -4,14 +4,15 @@
     "fz-sc8.183.2"
   ],
   "blocks": [],
+  "closed_at": "2026-11-14T05:16:28Z",
   "created": "2026-11-14T04:16:15Z",
   "description": "Step 3 of /Users/j5n/Workspace/fz-sc8.183.html, redefined by fz-sc8.183.2, which already made an unread field a bounds check. What is left: a string-literal segment such as \u003c\u003c\"\\\"\", r :: binary\u003e\u003e is a binary-typed field of literal size tested with Region::Equal(Const(Utf8Binary)). Each clause tried builds a one-byte view (fz_bs_read_binary_ref), allocates the constant (Prim::ConstBitstring -\u003e fz_alloc_bitstring_const) and calls generic equality (fz_value_eq_ref). The integer form \u003c\u003c34, r :: binary\u003e\u003e is a raw compare and allocates nothing. Measured: lit.fz 4 allocations per step against int.fz 1 (after .183.2); rewriting lib/json.fz's 37 literal patterns as integers took the built distiller from 4.26 s to 3.06 s on 16,000 lines (release), same output. Fix: where the pattern is built, a literal binary segment becomes one integer-8 field per byte, each with an integer equality test, so it shares the decision tree with integer-literal clauses and needs no new primitive. Signal: lit.fz equals int.fz in allocations per step on interp, run and build; json_decode_cost goldens fall; distiller timing re-measured.",
   "id": "fz-sc8.183.3",
   "labels": [],
   "parent": "fz-sc8.183",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A string literal in a binary pattern is tested as its bytes",
   "type": "task",
-  "updated_at": "2026-11-14T05:05:35Z"
+  "updated_at": "2026-11-14T05:16:28Z"
 }
