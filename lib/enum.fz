@@ -1673,7 +1673,15 @@ defmodule Enum do
   @spec into(Enumerable.t(a), Collectable.t) :: any
   def into(enumerable, collectable) do
     {initial, collector} = Collectable.into(collectable)
-    collector.(reduce(enumerable, initial, fn (entry, acc) -> collector.(acc, {:cont, entry}) end), :done)
+    try do
+      reduce(enumerable, initial, fn (entry, acc) -> collector.(acc, {:cont, entry}) end)
+    catch
+      kind, reason ->
+        collector.(initial, :halt)
+        :erlang.raise(kind, reason, __STACKTRACE__)
+    else
+      acc -> collector.(acc, :done)
+    end
   end
 
   @doc """
@@ -1689,7 +1697,15 @@ defmodule Enum do
   @spec into(Enumerable.t(a), Collectable.t, (a) -> any) :: any
   def into(enumerable, collectable, transform) do
     {initial, collector} = Collectable.into(collectable)
-    collector.(reduce(enumerable, initial, fn (entry, acc) -> collector.(acc, {:cont, transform.(entry)}) end), :done)
+    try do
+      reduce(enumerable, initial, fn (entry, acc) -> collector.(acc, {:cont, transform.(entry)}) end)
+    catch
+      kind, reason ->
+        collector.(initial, :halt)
+        :erlang.raise(kind, reason, __STACKTRACE__)
+    else
+      acc -> collector.(acc, :done)
+    end
   end
 
   @doc """

@@ -486,8 +486,8 @@ impl ComprehensionBuild<'_> {
             let collectable = remote_call(builder, "Collectable.into", self.meta, &[collector])?;
             let bind = named_call(builder, "=", self.meta, &[builder.tuple(&[init, fun])?, collectable])?;
             let reduced = self.nest(0, 0, init)?;
-            let done = self.closure_call(fun, &[reduced, builder.atom("done")])?;
-            return named_call(builder, "__block__", self.meta, &[bind, done]);
+            let collected = self.halting_on_a_raise(reduced, init, fun)?;
+            return named_call(builder, "__block__", self.meta, &[bind, collected]);
         }
         let reduced = self.nest(0, 0, builder.empty_list())?;
         remote_call(builder, "Enum.reverse", self.meta, &[reduced])
@@ -567,6 +567,39 @@ impl ComprehensionBuild<'_> {
     fn closure_call(&self, fun: AnyValueRef, args: &[AnyValueRef]) -> Result<AnyValueRef, QuotedSourceError> {
         let callee = named_call(self.builder, ".", self.meta, &[fun])?;
         ast_call(self.builder, callee, self.meta, args)
+    }
+
+    /// The reduction under a `try`: a finished accumulator goes to the
+    /// collector with `:done`; a raise, throw or exit tells the collector
+    /// `:halt` with the initial accumulator and then goes on with its own kind.
+    fn halting_on_a_raise(
+        &self,
+        reduced: AnyValueRef,
+        init: AnyValueRef,
+        fun: AnyValueRef,
+    ) -> Result<AnyValueRef, QuotedSourceError> {
+        let builder = self.builder;
+        let kind = self.generated("__fz_for_kind", 0)?;
+        let reason = self.generated("__fz_for_reason", 0)?;
+        let acc = self.generated("__fz_for_acc", 0)?;
+        let halt = self.closure_call(fun, &[init, builder.atom("halt")])?;
+        let raise = ast_call(
+            builder,
+            builder.atom("."),
+            self.meta,
+            &[builder.atom("erlang"), builder.atom("raise")],
+        )?;
+        let raise_again = ast_call(builder, raise, self.meta, &[kind, reason, builder.empty_list()])?;
+        let halted = named_call(builder, "__block__", self.meta, &[halt, raise_again])?;
+        let caught = named_call(builder, "->", self.meta, &[builder.list(&[kind, reason])?, halted])?;
+        let done = self.closure_call(fun, &[acc, builder.atom("done")])?;
+        let finished = named_call(builder, "->", self.meta, &[builder.list(&[acc])?, done])?;
+        let clauses = builder.list(&[
+            builder.keyword("do", reduced)?,
+            builder.keyword("catch", builder.list(&[caught])?)?,
+            builder.keyword("else", builder.list(&[finished])?)?,
+        ])?;
+        named_call(builder, "try", self.meta, &[clauses])
     }
 
     fn generated(&self, name: &str, ordinal: usize) -> Result<AnyValueRef, QuotedSourceError> {

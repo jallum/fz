@@ -50,7 +50,7 @@ threads inward.</p>
 <tr><td>Generator, irrefutable <code>p</code> (a variable, <code>_</code>, <code>_name</code>)</td><td><code>Enum.reduce(e, acc, fn p, acc' -&gt; STEP end)</code></td></tr>
 <tr><td>Filter <code>f</code></td><td><code>if f, do: STEP, else: acc</code></td></tr>
 <tr><td>Innermost, plain</td><td><code>[body | acc]</code>; the outer result is <code>Enum.reverse(result)</code>, starting from <code>[]</code></td></tr>
-<tr><td>Innermost, <code>into: c</code></td><td><code>fun.(acc, {:cont, body})</code>; with <code>{init, fun} = Collectable.into(c)</code> before and <code>fun.(result, :done)</code> after</td></tr>
+<tr><td>Innermost, <code>into: c</code></td><td><code>fun.(acc, {:cont, body})</code>; with <code>{init, fun} = Collectable.into(c)</code> before and <code>fun.(result, :done)</code> after. The reduction runs under a <code>try</code>: if it raises, throws or exits, <code>fun.(init, :halt)</code> is called and the raise goes on</td></tr>
 <tr><td>Innermost, <code>reduce: a</code></td><td><code>case acc do clauses end</code>; the start is <code>a</code> and the result is returned as is</td></tr>
 </table>
 
