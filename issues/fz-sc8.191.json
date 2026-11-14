@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T11:25:32Z",
+  "description": "fz_file_read_line (runtime/src/ir_runtime.rs, read_line_bytes) calls fgetc once per byte. C stdio buffers the file, so it is not a system call per byte (sys time 0.00), but each byte is a locked libc call (flockfile shows in the profile) plus a Vec push into a buffer that starts empty for every line. Measured, release: reading the 20.6 MB / 32,000-line compile-log prefix and summing byte_size takes 0.30 s; Elixir takes 0.010 s. It is 4% of the built distiller. Fix: getline(3), one call per line. Signal: the read-only probe timing before and after; File.stream! fixtures (CRLF folding, last line without a newline, empty file) stay green on interp, run and build.",
+  "id": "fz-sc8.191",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "File.stream! reads a line with one libc call, not one per byte",
+  "type": "task",
+  "updated_at": "2026-11-14T11:25:32Z"
+}
