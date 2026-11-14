@@ -30,9 +30,9 @@ transport shape, and a `ProjectionKind::TupleField` is a view over lanes already
 in hand. Neither builds a value, and a statically settled question emits no
 branch at all.
 
-`Region::Type` is decided from lane form too, per position. An annotated clause
-head -- `def tag(x :: {:cont, integer})` -- asks a whole-value question about a
-parameter that can perfectly well arrive as lanes, so the lowering asks the
+`Region::Type` is decided from lane form too, per position. A guarded clause
+head -- `def tag({:cont, n}) when is_integer(n)` -- asks a whole-value question
+about a parameter that can perfectly well arrive as lanes, so the lowering asks the
 predicate what it wants of a tuple of that arity instead.
 `RuntimeTypePredicate::tuple_positions` is that calculator: `Never` and `Always`
 are settled answers, and `AnyOf` is the shapes of that arity, each a question per

@@ -1,10 +1,10 @@
 #---
-# purpose: "Clauses annotated with different tuple tags dispatch on the tag, not on the arity"
+# purpose: "Clauses guarded on different tuple tags dispatch on the tag, not on the arity"
 # oracle: oracle.exs
 # oracle.stamp: de4548078359824a
 #---
 #
-# fz-kdt.119. Two clauses annotated `{:cont, integer}` and `{:halt, integer}`,
+# fz-kdt.119. Two clauses matching `{:cont, n}` and `{:halt, n}` when `is_integer(n)`,
 # reached with a value the compiler cannot fold away. The PLAN is right --
 # one clause tests `{:cont, integer}` and the other `{:halt, integer}` -- but
 # the runtime projection of those types used to be "a 2-tuple" for both, so
@@ -15,13 +15,12 @@
 # The tuple test now carries one sub-predicate per position per clause, and an
 # atom position is one a value passes only by BEING that atom, so the tag is
 # what routes the call. Both clause orders print the same two lines, which is
-# the whole claim: annotation-based dispatch on tagged tuples means what it
-# says.
-def tag(x :: {:cont, integer}), do: 1
-def tag(x :: {:halt, integer}), do: 2
+# the whole claim: dispatch on tagged tuples means what it says.
+def tag({:cont, n}) when is_integer(n), do: 1
+def tag({:halt, n}) when is_integer(n), do: 2
 
-def gat(x :: {:halt, integer}), do: 2
-def gat(x :: {:cont, integer}), do: 1
+def gat({:halt, n}) when is_integer(n), do: 2
+def gat({:cont, n}) when is_integer(n), do: 1
 
 def pick(n) do
   if n > 0 do

@@ -1,16 +1,16 @@
 #---
-# purpose: "`tuple` names the type of every tuple: a typed head accepts a tuple of any arity and rejects anything else, and is_tuple/1 agrees"
+# purpose: "`tuple` names the type of every tuple: an is_tuple guard accepts a tuple of any arity and rejects anything else, and is_tuple/1 agrees"
 # oracle: oracle.exs
 # oracle.stamp: 834a1b2c34e66aae
 #---
 #
-# `t :: tuple` is the type of {}, {1}, {1, 2, 3} and so on. A list, a map, a
+# `is_tuple(t)` is true of {}, {1}, {1, 2, 3} and so on. A list, a map, a
 # number and a named struct are not tuples.
 defmodule Point do
   defstruct [:x]
 end
 
-def typed(t :: tuple), do: :tuple
+def typed(t) when is_tuple(t), do: :tuple
 def typed(_), do: :other
 
 def guarded(t) when is_tuple(t), do: :tuple

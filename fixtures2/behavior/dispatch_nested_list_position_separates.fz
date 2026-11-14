@@ -48,32 +48,32 @@
 # narrow-first order asks a question the blind position could get wrong, and
 # that is the order written here. The other three pairs are disjoint, so both
 # their orders print the same two lines, which is the claim those twins carry.
-def kind(x :: {:a, [integer]}), do: 1
-def kind(x :: {:a, [:ok | :err]}), do: 2
+def kind({:a, [h | _]}) when is_integer(h), do: 1
+def kind({:a, [h | _]}) when h == :ok or h == :err, do: 2
 
-def dnik(x :: {:a, [:ok | :err]}), do: 2
-def dnik(x :: {:a, [integer]}), do: 1
+def dnik({:a, [h | _]}) when h == :ok or h == :err, do: 2
+def dnik({:a, [h | _]}) when is_integer(h), do: 1
 
-def axis(x :: {:a, [integer]}), do: 1
-def axis(x :: {:a, integer}), do: 2
+def axis({:a, [h | _]}) when is_integer(h), do: 1
+def axis({:a, n}) when is_integer(n), do: 2
 
-def sixa(x :: {:a, integer}), do: 2
-def sixa(x :: {:a, [integer]}), do: 1
+def sixa({:a, n}) when is_integer(n), do: 2
+def sixa({:a, [h | _]}) when is_integer(h), do: 1
 
-def size(x :: {:a, []}), do: 1
-def size(x :: {:a, [integer]}), do: 2
+def size({:a, []}), do: 1
+def size({:a, [h | _]}) when is_integer(h), do: 2
 
-def deep(x :: {:a, {:b, [integer]}}), do: 1
-def deep(x :: {:a, {:b, [:ok | :err]}}), do: 2
+def deep({:a, {:b, [h | _]}}) when is_integer(h), do: 1
+def deep({:a, {:b, [h | _]}}) when h == :ok or h == :err, do: 2
 
-def peed(x :: {:a, {:b, [:ok | :err]}}), do: 2
-def peed(x :: {:a, {:b, [integer]}}), do: 1
+def peed({:a, {:b, [h | _]}}) when h == :ok or h == :err, do: 2
+def peed({:a, {:b, [h | _]}}) when is_integer(h), do: 1
 
-def twin(x :: {[integer], [:ok | :err]}), do: 1
-def twin(x :: {[:ok | :err], [integer]}), do: 2
+def twin({[a | _], [b | _]}) when is_integer(a) and (b == :ok or b == :err), do: 1
+def twin({[a | _], [b | _]}) when (a == :ok or a == :err) and is_integer(b), do: 2
 
-def niwt(x :: {[:ok | :err], [integer]}), do: 2
-def niwt(x :: {[integer], [:ok | :err]}), do: 1
+def niwt({[a | _], [b | _]}) when (a == :ok or a == :err) and is_integer(b), do: 2
+def niwt({[a | _], [b | _]}) when is_integer(a) and (b == :ok or b == :err), do: 1
 
 def pick_head(n) do
   if n > 0 do
