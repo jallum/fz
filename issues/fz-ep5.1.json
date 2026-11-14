@@ -5,13 +5,13 @@
     "fz-4i4"
   ],
   "created": "2026-11-14T03:26:51Z",
-  "description": "Rewrite every 'name :: type' in a pattern under fixtures/, fixtures2/, guides/ and tests/ (bitstring segment specs stay). A typed parameter that picks a clause becomes a guard (x :: integer -\u003e when is_integer(x)); 'x :: any' is dropped; a tuple or struct shape becomes a pattern; a declaration-only annotation becomes or stays an @spec. Prediction: every expected output and every pin is unchanged, because a guard type test and a parameter annotation become the same Region::Type question (dispatch_matrix/pattern.rs add_row). A fixture whose subject is the annotation itself (a ParamAnnotation diagnostic, annotation-specific dispatch) is listed for decision, not rewritten. A fixture that becomes valid Elixir and whose output Elixir agrees with may be made an oracle fixture. Acceptance: full gate green, no pin change.",
+  "description": "PR #538 (62d660974). Rewrote every pattern '::' outside lib/ that a guard or pattern can state: 22 parameters to guards, 8 ':: any' dropped, 4 shapes to patterns, 00652's duplicate, tests/guard_matrix/generate.py entry guards (programs.json regenerated with Elixir, 129/296 sources changed, every answer identical), guides/pattern-matching.html. Prediction held: no output, pin, stamp or warning changed; gate 6292 passed. Leftovers carried in the epic fz-ep5 for decision.",
   "id": "fz-ep5.1",
   "labels": [],
   "parent": "fz-ep5",
   "priority": 2,
   "status": "open",
-  "title": "Fixtures, guides and tests state types with guards and @spec, not '::' in patterns",
+  "title": "Fixtures, guides and tests pick clauses with guards and patterns where a guard can say the type",
   "type": "task",
-  "updated_at": "2026-11-14T03:26:52Z"
+  "updated_at": "2026-11-14T03:42:42Z"
 }
