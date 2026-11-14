@@ -1,0 +1,25 @@
+#---
+# purpose: "A function that hands back a callable it was given returns that callable to each caller, whether it returns it bare, in a tuple, or after recursing"
+# oracle: 01153_a_returned_callable_keeps_its_identity.oracle.exs
+# oracle.stamp: 6119726d629b15c4
+#---
+defmodule Hand do
+  def id(f), do: f
+  def wrap(f), do: {:w, f}
+  def wrap_after(f, 0), do: {:w, f}
+  def wrap_after(f, n), do: wrap_after(f, n - 1)
+end
+
+def main() do
+  inc = Hand.id(fn x -> x + 1 end)
+  up = Hand.id(&String.upcase/1)
+  dbg({inc.(1), up.("a")})
+
+  {:w, inc} = Hand.wrap(fn x -> x + 1 end)
+  {:w, up} = Hand.wrap(&String.upcase/1)
+  dbg({inc.(1), up.("a")})
+
+  {:w, inc} = Hand.wrap_after(fn x -> x + 1 end, 2)
+  {:w, up} = Hand.wrap_after(&String.upcase/1, 2)
+  dbg({inc.(1), up.("a")})
+end

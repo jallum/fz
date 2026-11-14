@@ -582,7 +582,11 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-sc8.8: 174 -> 200. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
             // An activation key names only the literals a use can tell
             // apart, so fewer activations are emitted: 200 -> 190.
-            188,
+            // 188 -> 199: a returned callable keeps its brand
+            // in its function's key, and a protocol callback counts every input but the
+            // receiver as returned, so `Enum.reduce_while/3` and its Enum wrappers are keyed
+            // once per reducer lambda.
+            199,
         ),
         (
             420, // enum_take_drop_split, over both a list and a range
@@ -602,7 +606,10 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-sc8.8: 233 -> 249. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
             // An activation key names only the literals a use can tell
             // apart, so fewer activations are emitted: 249 -> 245.
-            243,
+            // 243 -> 259: a returned callable keeps its brand in its function's key, and a
+            // protocol callback counts every input but the receiver as returned, so
+            // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
+            259,
         ),
     ] {
         let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);

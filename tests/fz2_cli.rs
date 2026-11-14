@@ -60,7 +60,10 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // runs.
         // fz-sc8.8: 626 -> 658. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart: 658 -> 649.
-        runtime_demand_walks: 645,
+        // 645 -> 677: a returned callable keeps its brand in its function's
+        // key, and a protocol callback counts every input but the receiver as returned, so
+        // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
+        runtime_demand_walks: 677,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -71,7 +74,10 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // fz-sc8.37: 472 -> 473. Kernel defines `&&`, `||` and `!` as macros.
         // fz-sc8.8: 473 -> 528. Same cause.
         // An activation key names only the literals a use can tell apart: 528 -> 512.
-        runtime_demand_walks: 505,
+        // 505 -> 527: a returned callable keeps its brand in its function's
+        // key, and a protocol callback counts every input but the receiver as returned, so
+        // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
+        runtime_demand_walks: 527,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
