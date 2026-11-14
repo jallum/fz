@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ep5.1"
+  ],
   "blocks": [],
   "created": "2026-11-14T01:53:57Z",
   "description": "On develop 01e69178a 'name :: type' is accepted only on a top-level function parameter. Inside a struct field pattern (%S{funs: fs :: list}), a tuple pattern ({e, fs :: list}), a map pattern (%{funs: fs :: list}), a defimpl function head, and a bare case clause head (x :: list -\u003e) the compile stops with 'internal/post-resolution-leftover: quoted function decode failed: unsupported quoted pattern head `::`', an internal-class error without a source span.\nDecision needed: support the annotation in nested patterns (it would let a library state a field's type at the read site, which fz-i89 showed matters because a spec result is not read for an unproven argument), or keep it unsupported and report a spanned parse/type diagnostic.\nFails before, passes after: either fixtures where each nested form tests its value on all three paths, or a diagnostic fixture per form with a span.\nAcceptance: full gate green.",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "A type annotation inside a pattern is a spanned diagnostic or is supported",
   "type": "bug",
-  "updated_at": "2026-11-14T01:53:57Z"
+  "updated_at": "2026-11-14T03:26:52Z"
 }
