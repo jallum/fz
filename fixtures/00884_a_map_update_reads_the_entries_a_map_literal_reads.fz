@@ -1,6 +1,7 @@
 #---
 # purpose: "a map update takes `key => value` entries with any key expression, mixed with keyword entries, and a newline on either side of the bar"
 # oracle: 00884_a_map_update_reads_the_entries_a_map_literal_reads.oracle.exs
+# oracle.stamp: 1d1a0cceecad9419
 #---
 defmodule Pt do
   defstruct [:x, :y]

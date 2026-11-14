@@ -1,6 +1,7 @@
 #---
 # purpose: a name, atom or keyword key may end in ? or !, a capitalised atom or key may too, and the name ends at that mark so a name written after it is a separate word
 # oracle: 01218_a_name_takes_a_question_mark_or_bang_only_as_its_last_character.oracle.exs
+# oracle.stamp: 95f3dcaf8c54c3e9
 #---
 def big?(n), do: n > 10
 def save!(n), do: n + 1

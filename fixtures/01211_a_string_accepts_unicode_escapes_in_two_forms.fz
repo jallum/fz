@@ -1,6 +1,7 @@
 #---
 # purpose: a string, a heredoc and a quoted atom accept \uHHHH and \u{H...} escapes, which stand for the code point's UTF-8 bytes
 # oracle: 01211_a_string_accepts_unicode_escapes_in_two_forms.oracle.exs
+# oracle.stamp: dfe5f1e7d3eebbca
 #---
 def main() do
   four = "caf\u00e9"

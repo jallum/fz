@@ -1,6 +1,7 @@
 #---
 # purpose: a variable spelled with a combining accent is the variable spelled with the composed letter, because unquoted names are normalized
 # oracle: 01207_a_variable_bound_with_one_spelling_is_read_with_the_other.oracle.exs
+# oracle.stamp: 4e9fb37c7dac291a
 #---
 def main() do
   café = 40

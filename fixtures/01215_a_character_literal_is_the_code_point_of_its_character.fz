@@ -1,6 +1,7 @@
 #---
 # purpose: ?c is the code point of c, ?\e the code point of an escape, and a literal works in expressions, patterns and next to a name ending in a question mark
 # oracle: 01215_a_character_literal_is_the_code_point_of_its_character.oracle.exs
+# oracle.stamp: c78a15a414600c92
 #---
 def kind(?a), do: :a
 def kind(?\n), do: :newline
