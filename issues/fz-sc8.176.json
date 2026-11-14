@@ -9,9 +9,9 @@
   "id": "fz-sc8.176",
   "labels": [],
   "parent": "fz-sc8",
-  "priority": 3,
+  "priority": 2,
   "status": "open",
   "title": "panic/1 is analysed once, not once per exception type",
   "type": "bug",
-  "updated_at": "2026-11-14T04:18:26Z"
+  "updated_at": "2026-11-14T04:18:32Z"
 }
