@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:03:29Z",
+  "description": "Over the first 8,000 lines of a real compile log (develop e515ae314, AOT build) the fz output differs from Elixir's in the wake table: fz prints extra rows and a wider 'completing job' column. Both exit 1 with the same MISMATCH line (the trace is truncated), so the difference is in the table, not the exit. The pinned test covers only the 112 KB main_returns_one.jsonl. Repro: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/slow/h8000.jsonl, out8000.txt (fz), ex8000.txt (elixir). Minimize to a fixture and fix.",
+  "id": "fz-sc8.185",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "The distiller prints what Elixir prints over a large trace",
+  "type": "bug",
+  "updated_at": "2026-11-14T04:03:29Z"
+}
