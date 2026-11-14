@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-t93.1"
+  ],
   "blocks": [],
   "created": "2026-11-14T04:39:44Z",
   "description": "fz_engine::WorkStartReason (crates/fz-engine/src/scheduler.rs ~78, moved by fz-t93.1) spells compiler reasons inside the generic engine: Ignition, ChangedRevisionWake, ActivationPublished, GateExpansion, BlockedWaiterExpansion, Unclassified; WorkStartTally is a fixed array over them, and telemetry (jsonl.rs, causal.rs, public_trace) spells them. The engine should know only the reasons it originates itself (establish which: e.g. a changed-revision wake) and carry the client's reasons opaquely (a type the client supplies, e.g. an associated type on the client trait, or WorkStart\u003cR\u003e = Engine(..) | Client(R)). Acceptance: the engine source names no compiler concept; telemetry spelling and every work-start census/pin identical (work_start_reason_test.rs, distill_telemetry_test); no shims. Docs: crates/fz-engine/README.md client contract; fact-engine.md where reasons are described.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The engine names only its own reasons for starting work; the client names the rest",
   "type": "task",
-  "updated_at": "2026-11-14T04:39:44Z"
+  "updated_at": "2026-11-14T04:39:45Z"
 }

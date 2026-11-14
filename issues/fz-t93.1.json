@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
+    "fz-t93.14",
     "fz-t93.2"
   ],
   "created": "2026-11-14T04:26:06Z",
@@ -13,5 +14,5 @@
   "status": "in_progress",
   "title": "The fact engine is its own crate, crates/fz-engine",
   "type": "task",
-  "updated_at": "2026-11-14T04:27:00Z"
+  "updated_at": "2026-11-14T04:39:45Z"
 }
