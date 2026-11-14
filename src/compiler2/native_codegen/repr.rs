@@ -86,6 +86,17 @@ impl ExternLane for ExternTy {
     }
 }
 
+/// The form a block parameter arrives in. A parameter the native body does not
+/// name travels as a value reference.
+pub(crate) fn block_param_repr(native_body: &crate::compiler2::NativeBody, param: &crate::fz_ir::Var) -> ArgRepr {
+    native_body
+        .block_param_reprs
+        .get(param)
+        .copied()
+        .map(arg_repr_from_compiler2)
+        .unwrap_or(ArgRepr::ValueRef)
+}
+
 pub(crate) fn arg_repr_from_compiler2(repr: crate::compiler2::AbiValueRepr) -> ArgRepr {
     match repr {
         crate::compiler2::AbiValueRepr::ValueRef => ArgRepr::ValueRef,

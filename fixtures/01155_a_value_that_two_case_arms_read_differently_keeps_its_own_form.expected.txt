@@ -1,0 +1,5 @@
+[:int, {:other, :five}]
+[int: 4, atom: :five]
+[int: 4, float: 2.5]
+[int: 4, other: :five]
+[{4, 4}, {0, :five}]

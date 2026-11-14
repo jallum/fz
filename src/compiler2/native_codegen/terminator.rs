@@ -1,17 +1,16 @@
 //! Terminator emission for fz IR blocks.
 
 use super::*;
-use crate::compiler2::NativeEntryAbi;
+use crate::compiler2::{NativeBody, NativeEntryAbi};
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{
-    self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, RaiseSubject, ReceiveAfter, ReceiveClause, Term,
-    Var,
+    self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, FnIr, RaiseSubject, ReceiveAfter, ReceiveClause,
+    Term, Var,
 };
 use crate::types::{ClosureTypes, Types};
 use cranelift_codegen::ir::TrapCode;
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
-use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
 use fz_runtime::failure::{fz_raise, fz_raise_naming_kind, fz_raise_showing, fz_raise_undefined_function, fz_reraise};
 use fz_runtime::ir_runtime::{
@@ -298,17 +297,23 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
     block_map: &HashMap<u32, ir::Block>,
     is_cont_fn: bool,
     this_spec_id: u32,
-    caller_fn_id: FnId,
+    f: &FnIr,
     cont_param: ir::Value,
 ) -> Result<(), CodegenError> {
+    let caller_fn_id = f.id;
+    let edges = GotoEdges {
+        f,
+        native_body: env.body_native(this_spec_id),
+        block_map,
+    };
     match &blk.terminator {
-        Term::Goto(target, args) => emit_goto(body.b, var_env, block_map, target, args),
+        Term::Goto(target, args) => edges.emit(body, var_env, target, args),
         Term::Try {
             handler,
             captures,
             body: body_block,
         } => emit_try(
-            body, env, var_env, block_map, is_cont_fn, cont_param, *handler, captures, body_block,
+            body, env, var_env, &edges, is_cont_fn, cont_param, *handler, captures, body_block,
         ),
         Term::If {
             cond, then_b, else_b, ..
@@ -408,7 +413,7 @@ fn emit_try<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
-    block_map: &HashMap<u32, ir::Block>,
+    edges: &GotoEdges<'_>,
     is_cont_fn: bool,
     cont_param: ir::Value,
     handler: FnId,
@@ -426,23 +431,54 @@ fn emit_try<M: cranelift_module::Module>(
     let template = ContinuationPlan::heap_closure(payload).emit_value(body, is_cont_fn, cont_param);
     let process = body.process_arg();
     runtime_call!(body, fz_try_push, [process, template]);
-    emit_goto(body.b, var_env, block_map, body_block, &[])
+    edges.emit(body, var_env, body_block, &[])
 }
 
-fn emit_goto(
-    b: &mut FunctionBuilder<'_>,
-    var_env: &HashMap<u32, CodegenValue>,
-    block_map: &HashMap<u32, ir::Block>,
-    target: &BlockId,
-    args: &[Var],
-) -> Result<(), CodegenError> {
-    let tgt = *block_map.get(&target.0).unwrap();
-    let arg_vals: Vec<BlockArg> = args
-        .iter()
-        .map(|v| BlockArg::Value(var_env.get(&v.0).expect("unbound goto arg").value()))
-        .collect();
-    b.ins().jump(tgt, &arg_vals);
-    Ok(())
+/// The jumps between one function's blocks. Each jump hands every argument
+/// over in the form its target parameter takes, converting on that edge
+/// alone: a value that jumps to two blocks wanting different forms is
+/// converted once per edge, and its own binding is left as it was.
+struct GotoEdges<'a> {
+    f: &'a FnIr,
+    native_body: &'a NativeBody,
+    block_map: &'a HashMap<u32, ir::Block>,
+}
+
+impl GotoEdges<'_> {
+    fn emit<M: cranelift_module::Module>(
+        &self,
+        body: &mut CodegenFn<'_, '_, M>,
+        var_env: &HashMap<u32, CodegenValue>,
+        target: &BlockId,
+        args: &[Var],
+    ) -> Result<(), CodegenError> {
+        let Some(&successor) = self.block_map.get(&target.0) else {
+            return Err(CodegenError::new(format!(
+                "{}#{} jumps to an unknown successor {target:?}",
+                self.f.name, self.f.id.0
+            )));
+        };
+        let params = &self.f.block(*target).params;
+        if params.len() != args.len() {
+            return Err(CodegenError::new(format!(
+                "{}#{} jumps to {target:?} with {} arguments for {} parameters",
+                self.f.name,
+                self.f.id.0,
+                args.len(),
+                params.len()
+            )));
+        }
+        let arg_vals: Vec<BlockArg> = args
+            .iter()
+            .zip(params)
+            .map(|(arg, param)| {
+                let binding = *var_env.get(&arg.0).expect("unbound goto arg");
+                BlockArg::Value(body.goto_arg_value(binding, block_param_repr(self.native_body, param)))
+            })
+            .collect();
+        body.b.ins().jump(successor, &arg_vals);
+        Ok(())
+    }
 }
 
 fn emit_if<M: cranelift_module::Module>(
