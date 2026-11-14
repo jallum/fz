@@ -870,15 +870,19 @@ impl LoweredTail {
     }
 }
 
+/// The projections from a dispatch input down to one of its subjects, outermost
+/// first. Patterns nest a few levels at most, so the path lives on the stack.
+pub(crate) type SubjectPath<'a> = smallvec::SmallVec<[&'a crate::dispatch_matrix::ProjectionKind; 4]>;
+
 impl LoweredBody {
     pub(crate) fn dispatch_subject_origin(
         &self,
         owner: ControlEntryId,
         mut subject: crate::dispatch_matrix::SubjectId,
-    ) -> (SubjectOriginRoot, Vec<&crate::dispatch_matrix::ProjectionKind>) {
+    ) -> (SubjectOriginRoot, SubjectPath<'_>) {
         let Self::Clauses { entries, .. } = self;
         let tail = &entries[owner.as_u32() as usize].tail;
-        let mut path = Vec::new();
+        let mut path = SubjectPath::new();
         loop {
             match tail.dispatch_plan().subject(subject) {
                 crate::dispatch_matrix::SubjectSource::Input { ordinal } => {

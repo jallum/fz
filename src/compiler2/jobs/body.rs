@@ -31,7 +31,8 @@ use crate::source::{SourceMap, Span};
 use super::super::body::{
     BodyTables, CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin,
     DirectCallee, DispatchBindings, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause,
-    LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, SubjectOriginRoot, ValueId, step_used_values,
+    LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, SubjectOriginRoot, SubjectPath, ValueId,
+    step_used_values,
 };
 use super::super::code::SourceOwner;
 use super::super::drive::{FactKey, JobEffects, current_uses};
@@ -4016,14 +4017,13 @@ fn origin_source_path(
 ) -> Option<SourcePath> {
     use super::super::executable_facts::TransportOrigin;
     let (value, suffix) = match origin {
-        TransportOrigin::LocalValue(value) => (*value, Vec::new()),
-        TransportOrigin::Projection { source, kind } => (*source, vec![kind.clone()]),
+        TransportOrigin::LocalValue(value) => (*value, SubjectPath::new()),
+        TransportOrigin::Projection { source, kind } => (*source, SubjectPath::from_elem(kind, 1)),
         TransportOrigin::OutcomeSubject { owner, subject } => {
             let (source, path) = body.dispatch_subject_origin(*owner, *subject);
-            let path = path.into_iter().cloned().collect();
             match source {
                 SubjectOriginRoot::Value(value) => (value, path),
-                SubjectOriginRoot::MailboxMessage(_) => return Some((source, path)),
+                SubjectOriginRoot::MailboxMessage(_) => return Some((source, path.into_iter().cloned().collect())),
             }
         }
         TransportOrigin::Join(alternatives) => {
@@ -4046,7 +4046,7 @@ fn origin_source_path(
         | None => (SubjectOriginRoot::Value(value), Vec::new()),
         Some(origin) => origin_source_path(body, origins, origin)?,
     };
-    path.extend(suffix);
+    path.extend(suffix.into_iter().cloned());
     while let SubjectOriginRoot::Value(value) = root
         && let Some((item, consumed)) = construction_projection(body, origins, value, &path)
     {
