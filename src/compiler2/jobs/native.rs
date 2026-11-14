@@ -3175,7 +3175,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         F: FnMut(&mut Self, &mut NativeFnCtx, GraphNodeId, &mut DispatchState) -> Result<(), FatalError>,
     {
         let mut match_state = state.clone();
-        let answer = self.lower_dispatch_region(
+        let outcome = self.lower_dispatch_region(
             ctx,
             plan,
             predicate.subject,
@@ -3183,10 +3183,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             &on_match.evidence,
             &mut match_state,
         )?;
-        match answer {
-            DispatchAnswer::Static(true) => lower_child(self, ctx, on_match.target, &mut match_state),
-            DispatchAnswer::Static(false) => lower_child(self, ctx, on_miss.target, state),
-            DispatchAnswer::Runtime(cond) => {
+        match outcome {
+            RegionOutcome::Answer(DispatchAnswer::Static(true)) => {
+                lower_child(self, ctx, on_match.target, &mut match_state)
+            }
+            RegionOutcome::Answer(DispatchAnswer::Static(false)) => lower_child(self, ctx, on_miss.target, state),
+            RegionOutcome::Answer(DispatchAnswer::Runtime(cond)) => {
                 let then_b = ctx.builder.block(vec![]);
                 let else_b = ctx.builder.block(vec![]);
                 ctx.set_term(Term::If {
@@ -3198,6 +3200,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ctx.current_block = then_b;
                 lower_child(self, ctx, on_match.target, &mut match_state)?;
                 ctx.current_block = else_b;
+                lower_child(self, ctx, on_miss.target, state)
+            }
+            RegionOutcome::Matched { missed } => {
+                lower_child(self, ctx, on_match.target, &mut match_state)?;
+                ctx.current_block = missed;
                 lower_child(self, ctx, on_miss.target, state)
             }
         }
@@ -3299,19 +3306,21 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         region: &Region<Ty>,
         evidence: &crate::dispatch_matrix::EdgeEvidence<Ty>,
         state: &mut DispatchState,
-    ) -> Result<DispatchAnswer, FatalError> {
-        Ok(DispatchAnswer::Runtime(match region {
+    ) -> Result<RegionOutcome, FatalError> {
+        Ok(RegionOutcome::Answer(DispatchAnswer::Runtime(match region {
             Region::Type(ty) => {
                 // The value is asked in the form it is held: a tuple delivered
                 // as lanes is decided per position, without one being built.
                 let value = self.dispatch_subject_value(ctx, plan, state, subject)?;
                 let predicate = self.world.types().runtime_type_predicate(ty);
-                return self.lane_form_type_test(ctx, value, &predicate);
+                return self
+                    .lane_form_type_test(ctx, value, &predicate)
+                    .map(RegionOutcome::Answer);
             }
             Region::List(list) => {
                 let value = self.dispatch_subject_value(ctx, plan, state, subject)?;
                 if !self.value_may_be_list(ctx, value) {
-                    return Ok(DispatchAnswer::Static(false));
+                    return Ok(RegionOutcome::Answer(DispatchAnswer::Static(false)));
                 }
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
                 let question = match list {
@@ -3374,8 +3383,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, subject, pinned));
                 var
             }
-            Region::Bitstring(shape) => self.lower_bitstring_region(ctx, plan, subject, shape, state)?,
-        }))
+            Region::Bitstring(shape) => return self.lower_bitstring_region(ctx, plan, subject, shape, state),
+        })))
     }
 
     /// A guard's truth. A call inside it that fails the guard (a helper that
@@ -3737,13 +3746,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     /// dispatch's answer, and it is why `case <<len, rest :: binary>> -> ...`
     /// used to run on the interpreter and refuse to lower natively.
     ///
-    /// A region test yields a boolean, so unlike the binding path — which
-    /// reads fields the dispatch has already proven present — a failed read
-    /// has to fall through rather than abort. A read has no miss to report: it
-    /// is only made once `BitFieldFits` says the field is there. Hence
-    /// short-circuit control flow, with every failure edge going to one block
-    /// that answers false. The position is an integer the region carries from
-    /// field to field.
+    /// Unlike the binding path — which reads fields the dispatch has already
+    /// proven present — a failed read has to fall through rather than abort. A
+    /// read has no miss to report: it is only made once `BitFieldFits` says the
+    /// field is there. Hence short-circuit control flow: every failure edge
+    /// goes to one block, and the region ends in the block where everything
+    /// matched, with no yes or no value in between. The position is an
+    /// integer the region carries from field to field.
     ///
     /// A field is built (`BitReadField`) only when something reads its value:
     /// a later question, a later field's `size(len)`, or the winning outcome
@@ -3759,33 +3768,30 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         subject: SubjectId,
         shape: &crate::dispatch_matrix::BitstringShape,
         state: &mut DispatchState,
-    ) -> Result<Var, FatalError> {
+    ) -> Result<RegionOutcome, FatalError> {
         let subject_var = self.dispatch_subject_var(ctx, plan, state, subject)?;
         let fail_b = ctx.builder.block(vec![]);
 
-        // The length and the first byte are read straight out of the object, so
-        // the kind test comes first and is not optional.
-        let mut predicate = crate::runtime_type_predicate::RuntimeTypePredicate::none();
-        predicate.binaries = true;
-        let (is_bitstring, _) = ctx.emit_let(Prim::RuntimeTypeTest(subject_var, Box::new(predicate)));
+        // The length is read straight out of the object, and the same read of
+        // the object's kind says whether it is a binary at all.
+        let int = self.world.types_mut().int();
+        let (bit_len, _) = ctx.emit_let(Prim::BitstringBitLen(subject_var));
+        ctx.value_types.insert(bit_len, int);
+        let (not_binary, _) = ctx.emit_let(Prim::IsNotBinary(bit_len));
         let read_b = ctx.builder.block(vec![]);
         ctx.set_term(Term::If {
-            cond: is_bitstring,
-            then_b: read_b,
-            else_b: fail_b,
+            cond: not_binary,
+            then_b: fail_b,
+            else_b: read_b,
             origin: BranchOrigin::ClauseDispatch,
         });
         ctx.current_block = read_b;
 
-        let int = self.world.types_mut().int();
-        let (bit_len, _) = ctx.emit_let(Prim::BitstringBitLen(subject_var));
-        ctx.value_types.insert(bit_len, int);
         let (mut pos, _) = ctx.emit_let(Prim::Const(Const::Int(0)));
         ctx.value_types.insert(pos, int);
         let mut pos_bits = Some(0);
         let mut bases = BitstringBases::default();
         let field_count = shape.fields.len();
-        let mut extracted = Vec::with_capacity(field_count);
         for (index, field_subject) in shape.fields.iter().enumerate() {
             let extraction = plan.bitstring_extraction(*field_subject);
             let spec = &extraction.spec;
@@ -3828,7 +3834,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             // in this block, so it is available for the rest of the loop.
             if let Some(value) = value {
                 state.values.insert(*field_subject, NativeBoundValue::Runtime(value));
-                extracted.push((*field_subject, value, field.ty == BitType::Integer));
             }
         }
 
@@ -3846,52 +3851,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             ctx.current_block = matched_b;
         }
 
-        // The extracted values are defined inside the blocks above, which the
-        // failure edge does not pass through, so they cannot dominate uses
-        // after the join. They cross it as block parameters instead. The
-        // failure edge supplies placeholders that no reader can observe: the
-        // clause body only runs when the answer is true. An integer crosses as
-        // a raw integer, so a pattern byte is never boxed to travel.
-        let answer = ctx.builder.fresh_var();
-        let mut params = Vec::with_capacity(extracted.len() + 1);
-        params.push(answer);
-        let carried = extracted
-            .iter()
-            .map(|(field_index, _, is_int)| {
-                let param = ctx.builder.fresh_var();
-                if *is_int {
-                    ctx.value_types.insert(param, int);
-                }
-                (*field_index, param)
-            })
-            .collect::<Vec<_>>();
-        params.extend(carried.iter().map(|(_, var)| *var));
-        let done_b = ctx.builder.block(params);
-
-        let (matched, _) = ctx.emit_let(Prim::Const(Const::True));
-        let mut matched_args = Vec::with_capacity(extracted.len() + 1);
-        matched_args.push(matched);
-        matched_args.extend(extracted.iter().map(|(_, var, _)| *var));
-        ctx.set_term(Term::Goto(done_b, matched_args));
-
-        ctx.current_block = fail_b;
-        let (missed, _) = ctx.emit_let(Prim::Const(Const::False));
-        let mut missed_args = Vec::with_capacity(extracted.len() + 1);
-        missed_args.push(missed);
-        for (_, _, is_int) in &extracted {
-            let (placeholder, _) = ctx.emit_let(Prim::Const(if *is_int { Const::Int(0) } else { Const::Nil }));
-            if *is_int {
-                ctx.value_types.insert(placeholder, int);
-            }
-            missed_args.push(placeholder);
-        }
-        ctx.set_term(Term::Goto(done_b, missed_args));
-
-        ctx.current_block = done_b;
-        for (field_subject, var) in carried {
-            state.values.insert(field_subject, NativeBoundValue::Runtime(var));
-        }
-        Ok(answer)
+        Ok(RegionOutcome::Matched { missed: fail_b })
     }
 
     /// The value of `field` at bit `pos` of `source`, which the caller has seen
@@ -5077,6 +5037,17 @@ fn native_block_param_reprs(
 enum DispatchAnswer {
     Static(bool),
     Runtime(Var),
+}
+
+/// What a region question left behind.
+enum RegionOutcome {
+    /// A yes or no, for the caller to branch on.
+    Answer(DispatchAnswer),
+    /// The question has already branched: control is in the block where it
+    /// matched, and every way it can miss leads to `missed`. What it extracted
+    /// is defined where it matched, so it needs no join to reach the matched
+    /// side.
+    Matched { missed: BlockId },
 }
 
 impl DispatchAnswer {

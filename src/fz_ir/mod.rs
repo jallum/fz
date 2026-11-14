@@ -614,8 +614,12 @@ pub enum Prim {
     /// emits a single allocation call.
     ConstBitstring(Vec<u8>, u64),
     /// The bit length of a binary or bitstring: what a match's position is
-    /// compared against.
+    /// compared against. A value that is not a binary answers a negative word,
+    /// which `IsNotBinary` recognizes, so one read of the value's kind both
+    /// tests it and resolves its length.
     BitstringBitLen(Var),
+    /// True when a `BitstringBitLen` result says its value is not a binary.
+    IsNotBinary(Var),
     /// The address of the first byte of a binary's bits, a raw integer.
     ///
     /// Native code only. The address names bytes the process's heap may move,
@@ -768,7 +772,7 @@ impl Prim {
             Prim::BitstringBitLen(a) => {
                 used.insert(*a);
             }
-            Prim::BitstringBase(a) => {
+            Prim::BitstringBase(a) | Prim::IsNotBinary(a) => {
                 used.insert(*a);
             }
             Prim::BitReadByteInt { base, .. } => {
@@ -1544,6 +1548,7 @@ impl fmt::Display for Prim {
             }
             Prim::BitstringBitLen(v) => write!(f, "bitstring_bit_len({})", v),
             Prim::BitstringBase(v) => write!(f, "bitstring_base({})", v),
+            Prim::IsNotBinary(v) => write!(f, "is_not_binary({})", v),
             Prim::BitReadByteInt {
                 base,
                 byte_offset,

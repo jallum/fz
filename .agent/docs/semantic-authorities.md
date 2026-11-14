@@ -177,7 +177,15 @@ bounds check is emitted arithmetic (`BitFieldFits`, `BitFieldNext`), and
 `fz_bs_read_binary_ref` a binary view. Native code reads a whole-byte field
 without the runtime. `BitstringBitLen` and `BitstringBase` branch inline on the
 two binary representations (inline bitstring, ProcBin over a `SharedBin`;
-layout constants in `runtime/src/procbin.rs` and `any_value.rs`), and an
+layout constants in `runtime/src/procbin.rs` and `any_value.rs`) through
+`emit_by_binary_representation`, which reads the reference's own kind bits. That
+is also the region's "is this a binary" test: `BitstringBitLen` answers
+`NOT_A_BINARY` (-1) for any other kind and `IsNotBinary` turns that into a raw
+condition for the branch, so a region makes no `fz_type_of` call. A bitstring
+region does not answer yes or no: `lower_bitstring_region` returns
+`RegionOutcome::Matched`, ending in the block where every field matched with
+every miss edge leading to one `missed` block, so no boxed result crosses a join
+and no `fz_truthy_ref` decodes it. An
 unsigned big-endian integer field of one to seven whole bytes at a position
 known statically to be a whole byte (`BitMatchField::whole_byte_integer_width`,
 `static_bits`) lowers to `BitReadByteInt`, a load from the base plus a byte

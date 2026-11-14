@@ -8410,6 +8410,28 @@ fn a_byte_walk_resolves_its_binary_inline_and_loads_each_byte() {
     );
 }
 
+/// Whether a step is a binary, and which of its two forms, is read from the
+/// reference's own kind bits, and the answer feeds the branch as a condition:
+/// the generated code asks the runtime neither for the type nor for the truth
+/// of a boxed answer.
+#[test]
+fn a_byte_walk_tests_its_binary_inline_and_branches_on_a_raw_condition() {
+    let clif = lowered_clif_text(concat!(
+        "defmodule P do\n",
+        "  def go(b), do: walk(b, 0)\n",
+        "  defp walk(<<_c, r :: binary>>, n), do: walk(r, n + 1)\n",
+        "  defp walk(_b, n), do: n\n",
+        "end\n",
+        "def main(), do: P.go(\"abc\")\n",
+    ));
+    for runtime_call in ["fz_type_of", "fz_truthy_ref"] {
+        assert!(
+            !clif.contains(runtime_call),
+            "a binary match step does not call {runtime_call}:\n{clif}"
+        );
+    }
+}
+
 /// A field that does not start on a byte is still read by the runtime, which
 /// the byte load cannot do.
 #[test]

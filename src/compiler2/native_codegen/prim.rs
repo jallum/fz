@@ -663,13 +663,21 @@ fn match_field_extent<M: cranelift_module::Module>(
     }
 }
 
+/// The bit length `BitstringBitLen` answers for a value that is not a binary:
+/// no binary has a negative length.
+const NOT_A_BINARY: i64 = -1;
+
 /// A word computed from a binary's reference by one of its two representations:
 /// an inline bitstring on the heap, or a ProcBin stub over a refcounted
 /// `SharedBin`. `inline` and `procbin` each get the address of the object the
-/// reference names and return the word.
+/// reference names and return the word. The reference's own kind bits say which
+/// form it is; a reference of any other kind answers `not_binary` when the
+/// caller asks for that, and is taken to be an inline bitstring when it does not
+/// (the caller has proven a binary).
 fn emit_by_binary_representation<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     source_ref: ir::Value,
+    not_binary: Option<i64>,
     inline: impl FnOnce(&mut CodegenFn<'_, '_, M>, ir::Value) -> ir::Value,
     procbin: impl FnOnce(&mut CodegenFn<'_, '_, M>, ir::Value) -> ir::Value,
 ) -> ir::Value {
@@ -694,8 +702,29 @@ fn emit_by_binary_representation<M: cranelift_module::Module>(
 
     body.b.switch_to_block(inline_b);
     body.b.seal_block(inline_b);
-    let from_inline = inline(body, addr);
-    body.b.ins().jump(join_b, &[BlockArg::Value(from_inline)]);
+    match not_binary {
+        None => {
+            let from_inline = inline(body, addr);
+            body.b.ins().jump(join_b, &[BlockArg::Value(from_inline)]);
+        }
+        Some(miss) => {
+            let is_inline = body
+                .b
+                .ins()
+                .icmp_imm(IntCC::Equal, kind, ValueKind::BITSTRING.tag() as i64);
+            let read_b = body.b.create_block();
+            let miss_b = body.b.create_block();
+            body.b.ins().brif(is_inline, read_b, &[], miss_b, &[]);
+            body.b.switch_to_block(read_b);
+            body.b.seal_block(read_b);
+            let from_inline = inline(body, addr);
+            body.b.ins().jump(join_b, &[BlockArg::Value(from_inline)]);
+            body.b.switch_to_block(miss_b);
+            body.b.seal_block(miss_b);
+            let missed = body.b.ins().iconst(types::I64, miss);
+            body.b.ins().jump(join_b, &[BlockArg::Value(missed)]);
+        }
+    }
 
     body.b.switch_to_block(join_b);
     body.b.seal_block(join_b);
@@ -713,7 +742,7 @@ fn load_word<M: cranelift_module::Module>(
 }
 
 /// The bit length of a binary, read from its header or from its ProcBin's
-/// `SharedBin` less the bytes its view skips.
+/// `SharedBin` less the bytes its view skips; `NOT_A_BINARY` for any other value.
 fn emit_binary_bit_len<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     source_ref: ir::Value,
@@ -721,6 +750,7 @@ fn emit_binary_bit_len<M: cranelift_module::Module>(
     emit_by_binary_representation(
         body,
         source_ref,
+        Some(NOT_A_BINARY),
         |body, addr| {
             let header = load_word(body, addr, 0);
             body.b.ins().ushr_imm(header, BITSTRING_BIT_LEN_SHIFT as i64)
@@ -740,6 +770,7 @@ fn emit_binary_base<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>
     emit_by_binary_representation(
         body,
         source_ref,
+        None,
         |body, addr| body.b.ins().iadd_imm(addr, BITSTRING_BYTES_OFFSET as i64),
         |body, addr| {
             let shared = load_word(body, addr, PROCBIN_SHARED_OFFSET);
@@ -800,6 +831,14 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
         Prim::BitstringBase(source) => {
             let source_ref = body.tagged_var(var_env, source.0);
             LowerOut::RawI64(emit_binary_base(body, source_ref))
+        }
+        Prim::IsNotBinary(bit_len) => {
+            let bit_len = body.as_raw_i64(var_env, bit_len.0);
+            let missed = body.b.ins().icmp_imm(IntCC::Equal, bit_len, NOT_A_BINARY);
+            if body.cache.if_only_conds.contains(&dest_var.0) {
+                return Ok(LowerOut::Condition(missed));
+            }
+            LowerOut::Strict(strict_bool(body.b, missed))
         }
         Prim::BitReadByteInt {
             base,
@@ -1276,6 +1315,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::IsMapMiss(..) => lower_collection_prim(body, t, env, var_env, prim, dest_var, block_id),
         Prim::BitstringBitLen(..)
         | Prim::BitstringBase(..)
+        | Prim::IsNotBinary(..)
         | Prim::BitReadByteInt { .. }
         | Prim::BitFieldFits { .. }
         | Prim::BitFieldNext { .. }

@@ -1,0 +1,34 @@
+#---
+# purpose: a binary match tells a binary from every other kind of value, and tells a bitstring that is not a whole number of bytes from a binary
+# kind: run
+#---
+#
+# Native code asks the matched value's own kind whether it is an inline
+# bitstring or a ProcBin and takes the clause's miss edge for any other kind.
+# Each function below gets one value of every kind, on the same two clauses.
+defmodule P do
+  def head(<<a, _r :: binary>>), do: a
+  def head(_other), do: :miss
+  def any_bits(<<_r :: bitstring>>), do: :bits
+  def any_bits(_other), do: :miss
+  def count(<<_c, r :: binary>>, n), do: count(r, n + 1)
+  def count(<<>>, n), do: n
+  def count(_other, _n), do: :miss
+
+  def probe(v), do: {head(v), any_bits(v), count(v, 0)}
+end
+
+large = String.duplicate("z", 100)
+
+dbg(P.probe("ab"))
+dbg(P.probe(large))
+dbg(P.probe(<<5 :: 3>>))
+dbg(P.probe(<<1, 2, 3 :: 3>>))
+dbg(P.probe([]))
+dbg(P.probe([1, 2]))
+dbg(P.probe({1, 2}))
+dbg(P.probe(%{a: 1}))
+dbg(P.probe(1.5))
+dbg(P.probe(7))
+dbg(P.probe(nil))
+dbg(P.probe(fn x -> x end))
