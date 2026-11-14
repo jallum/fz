@@ -4,7 +4,6 @@
     "fz-wto"
   ],
   "blocks": [
-    "fz-l3p",
     "fz-sc8.176"
   ],
   "created": "2026-11-14T12:16:10Z",
@@ -15,5 +14,5 @@
   "status": "open",
   "title": "A callable a function returns keeps its identity in the function's key, so two callers never share one return",
   "type": "bug",
-  "updated_at": "2026-11-14T12:47:54Z"
+  "updated_at": "2026-11-14T15:12:24Z"
 }
