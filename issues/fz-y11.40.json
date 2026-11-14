@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:20:22Z",
+  "description": "Descr::diff negated every axis of the subtrahend and then intersected, even where the minuend's axis is empty; an empty negation alone allocates a one-clause top list. Sites (census f4c8d266a): types/dnf.rs:84 (5,936), dnf.rs:61 (8,288), finite_set.rs:103 (1,808). Change: FiniteSet::diff, dnf_diff, Descr::diff_structure per axis; dnf_intersect_with returns early when either side is empty; neg_structure removed. Spike: 718,197 -\u003e 705,444 on the OptionParser probe, output and canonical dump identical.",
+  "id": "fz-y11.40",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "Subtracting from an empty axis negates nothing",
+  "type": "task",
+  "updated_at": "2026-11-14T04:20:22Z"
+}
