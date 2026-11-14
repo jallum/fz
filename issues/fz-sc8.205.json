@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T17:34:54Z",
+  "description": "Split from fz-sc8.176 (item 4; folded there from fz-l3p).\n\nkeying.rs visit_protocol_callback marks every non-receiver input of a callback returned Whole, so under fz-lr6 Enumerable.reduce_while/3's reducer keeps its brand in every Enum wrapper's key, though no implementation returns the reducer.\n\nCensus (849 fixtures, applied work, interp, at a18fb1519): base 364,735; fz-lr6 alone +510 (18 fixtures up; 00420 +124, 01129 +209, 00571 +77). That +510 is the most a precise answer can recover.\nRejected: an untyped join over ProtocolDispatch's implementations (+2,987: answers 'returns nothing' before an implementation lands, then rebuilds; withdrawals 1 -\u003e 35), and a join after every provider module is defined (+30,526, not proportional). A spec-derived answer is unsound: implementation contracts never check the protocol @spec.\n\nTarget: join the callback's returned axis over the implementations the receiver's type selects, as resolve_protocol_call already demands only overlapping providers (semantic.rs demand_overlapping_impl_providers). This needs demand stated per key, not per function.\n\nAcceptance: census recovers part of fz-lr6's +510 with no rise in withdrawals or shift wakes; matrix passes on all three paths; every pin move attributed.",
+  "id": "fz-sc8.205",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A protocol callback's returned axis is answered per receiver type",
+  "type": "bug",
+  "updated_at": "2026-11-14T17:34:54Z"
+}
