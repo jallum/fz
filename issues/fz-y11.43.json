@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T04:27:22Z",
   "created": "2026-11-14T04:20:23Z",
   "description": "return_flow_mask and body_flows each rebuilt input_positions for the same body; resolve_input_positions returned a copy of every position list, which the top-level loop discarded, and made a visiting set per value. Sites: jobs/keying.rs:1238, :1243, :1272 (~6,800). Change: the demand walk builds the positions once and lends them; the resolver fills the table and returns nothing; one visiting set. Spike: 702,431 -\u003e 694,365, output and canonical dump identical.",
   "id": "fz-y11.43",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A body's input positions are built once per demand walk",
   "type": "task",
-  "updated_at": "2026-11-14T04:20:23Z"
+  "updated_at": "2026-11-14T04:27:22Z"
 }
