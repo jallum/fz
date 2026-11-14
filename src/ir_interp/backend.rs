@@ -7,7 +7,7 @@ use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get, interp_map_put};
 use super::value::{
     AnyValue, HeapRef, interp_bool_value, interp_empty_list_value, interp_named_field, interp_nil_value,
-    interp_struct_field_from_tagged_bits, interp_value_from_ref_word, with_value_ref,
+    interp_read_bit_field, interp_value_from_ref_word, with_value_ref,
 };
 use super::*;
 use crate::compiler2::pull::TransportCarrier;
@@ -1492,7 +1492,8 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 DispatchSource::Bound { env: &env, bindings },
             )?;
             let operands = pinned_values.over_frame(transport, &env, inputs);
-            let run = Dispatch::new(runtime, types, program, module, &dispatch.plan, operands);
+            let run = Dispatch::new(runtime, types, program, module, &dispatch.plan, operands)
+                .reading(dispatch.argument_subjects());
             let (target, params) = match run.run()? {
                 Some(mut decided) => {
                     let edge = dispatch.outcome(decided.outcome());
@@ -1648,7 +1649,8 @@ fn try_match_backend_receive(
     )?;
     let inputs = [Some(BackendBoundValue::Runtime(msg))];
     let operands = pinned.over(transport, &inputs);
-    let run = Dispatch::new(runtime, types, program, module, dispatch, operands);
+    let run = Dispatch::new(runtime, types, program, module, dispatch, operands)
+        .reading(crate::compiler2::outcome_argument_subjects(outcomes));
     let Some(mut decided) = run.run()? else {
         return Ok(None);
     };
@@ -2076,66 +2078,42 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 env.insert(*head, BackendBoundValue::Runtime(head_value));
                 env.insert(*tail, BackendBoundValue::Runtime(tail_value));
             }
-            ProgramStep::BitstringInit { reader, source } => {
-                let source = env_get(transport, runtime.cur_proc(), env, *source)?;
-                let source_ref = source.as_ref_word(runtime.cur_proc())?;
-                let reader_ref = fz_runtime::ir_runtime::fz_bs_reader_init_ref(runtime.cur_proc(), source_ref);
-                env.insert(
-                    *reader,
-                    BackendBoundValue::Runtime(interp_value_from_ref_word(reader_ref, "backend bitstring reader")?),
-                );
-            }
             ProgramStep::BitstringRead {
-                ok,
                 value,
-                next_reader,
-                reader,
+                next,
+                source,
+                pos,
                 spec,
-                is_last,
             } => {
-                let reader_ref =
-                    env_get(transport, runtime.cur_proc(), env, *reader)?.as_ref_word(runtime.cur_proc())?;
-                let (size_present, size_value) =
-                    backend_bit_size_value(transport, runtime.cur_proc(), env, &spec.size)?;
+                let proc = runtime.cur_proc();
+                let source_ref = env_get(transport, proc, env, *source)?.as_ref_word(proc)?;
+                let pos = env_get(transport, proc, env, *pos)?
+                    .as_i64()
+                    .ok_or_else(|| "bitstring position must be an integer".to_string())?
+                    as u64;
+                let (size_present, size_value) = backend_bit_size_value(transport, proc, env, &spec.size)?;
                 let field_spec = fz_runtime::ir_runtime::fz_bs_field_spec(
                     backend_bit_type_tag(spec.ty),
                     size_present,
                     spec.unit.unwrap_or(backend_default_bit_unit(spec.ty)),
                     backend_endian_tag(spec.endian),
                     spec.signed as u32,
-                    *is_last as u32,
+                    next.is_none() as u32,
                 );
-                let result = fz_runtime::ir_runtime::fz_bs_read_field_ref(
-                    runtime.cur_proc(),
-                    reader_ref,
+                let read = interp_read_bit_field(
+                    proc,
+                    source_ref,
+                    pos,
                     field_spec,
                     size_value,
-                );
-                let ok_value =
-                    interp_struct_field_from_tagged_bits(runtime.cur_proc(), result, 0, "backend bitstring ok")?;
-                env.insert(*ok, BackendBoundValue::Runtime(ok_value));
-                if ok_value.is_false() || ok_value.is_nil() {
-                    env.insert(*value, BackendBoundValue::Runtime(AnyValue::Null));
-                    env.insert(*next_reader, BackendBoundValue::Runtime(AnyValue::Null));
-                } else {
-                    env.insert(
-                        *value,
-                        BackendBoundValue::Runtime(interp_struct_field_from_tagged_bits(
-                            runtime.cur_proc(),
-                            result,
-                            8,
-                            "backend bitstring extracted",
-                        )?),
-                    );
-                    env.insert(
-                        *next_reader,
-                        BackendBoundValue::Runtime(interp_struct_field_from_tagged_bits(
-                            runtime.cur_proc(),
-                            result,
-                            16,
-                            "backend bitstring next reader",
-                        )?),
-                    );
+                    spec.ty == crate::ast::BitType::Integer,
+                )?;
+                env.insert(*value, BackendBoundValue::Runtime(read));
+                if let Some(next) = next {
+                    let bit_len = fz_runtime::ir_runtime::fz_bs_bit_len_ref(source_ref);
+                    let end = fz_runtime::ir_runtime::bs_field_end(field_spec, size_value, pos, bit_len)
+                        .ok_or_else(|| "a clause body reads a bitstring field its dispatch proved".to_string())?;
+                    env.insert(*next, BackendBoundValue::Runtime(AnyValue::Int(end as i64)));
                 }
             }
         }

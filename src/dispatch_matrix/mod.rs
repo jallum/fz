@@ -51,7 +51,7 @@
 //! plan states what it reads of its inputs and no reader walks the graph to
 //! rediscover it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) mod demand;
 pub(crate) mod pattern;
@@ -492,6 +492,11 @@ pub(crate) struct DispatchGraph<TypeHandle> {
     /// What the graph's questions ask of each declared input, one slot per
     /// input, folded as the nodes were added.
     pub(crate) input_demand: Vec<DispatchDemand>,
+    /// The subjects a question reads the value of: the tested subject, a
+    /// guard's leaves, a bitstring field a later field's size names, and the
+    /// subjects each of those was projected from. A subject outside the set
+    /// is read only by whatever consumes the winning outcome.
+    asked: BTreeSet<SubjectId>,
     /// How many questions a decision can ask, counted when the graph is built.
     test_count: usize,
     /// Whether some decision ends with no outcome, found when the graph is built.
@@ -537,6 +542,11 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
         let mut order = Vec::new();
         visit_reachable(&self.nodes, self.root, |id, _| order.push(id));
         order
+    }
+
+    /// Whether some question reads the value of `subject`.
+    pub(crate) fn asks(&self, subject: SubjectId) -> bool {
+        self.asked.contains(&subject)
     }
 
     /// How many questions a decision can ask.
@@ -644,6 +654,7 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
             nodes: self.nodes.iter().map(|node| node.map_type_handle(map)).collect(),
             root: self.root,
             input_demand: self.input_demand.clone(),
+            asked: self.asked.clone(),
             test_count: self.test_count,
             can_fail: self.can_fail,
         }
@@ -1095,6 +1106,7 @@ pub(crate) struct DispatchGraphBuilder<'a, TypeHandle> {
     nodes: Vec<DispatchNode<TypeHandle>>,
     inputs: PlanInputs<'a, TypeHandle>,
     input_demand: Vec<DispatchDemand>,
+    asked: BTreeSet<SubjectId>,
 }
 
 impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
@@ -1106,6 +1118,7 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
             subjects,
             nodes: Vec::new(),
             input_demand: vec![DispatchDemand::Ignore; inputs.count],
+            asked: BTreeSet::new(),
             inputs,
         };
         for pinned in 0..inputs.pinned.len() {
@@ -1141,6 +1154,7 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
             nodes: self.nodes,
             root,
             input_demand: self.input_demand,
+            asked: self.asked,
             test_count,
             can_fail,
         })
@@ -1172,6 +1186,7 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
             predicate.subject,
             demand_for_region(&predicate.region, self.inputs.literal_blind),
         );
+        self.ask(predicate.subject);
         match &predicate.region {
             Region::Equal(ComparisonValue::Pinned(pinned)) => self.charge_pin(*pinned),
             Region::Bitstring(shape) => self.charge_bitstring_sizes(shape),
@@ -1186,33 +1201,47 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
         };
         for leaf in leaves {
             match leaf {
-                GuardLeaf::Subject(subject) => self.charge_subject(*subject, DispatchDemand::Whole),
+                GuardLeaf::Subject(subject) => {
+                    self.charge_subject(*subject, DispatchDemand::Whole);
+                    self.ask(*subject);
+                }
                 GuardLeaf::Pinned(pinned) => self.charge_pin(*pinned),
             }
         }
     }
 
     /// A bitstring field whose size was bound before the pattern began reads
-    /// the input that delivers the pin, on top of the bitstring itself.
+    /// the input that delivers the pin, on top of the bitstring itself. A size
+    /// an earlier field bound reads that field's value.
     fn charge_bitstring_sizes(&mut self, shape: &BitstringShape) {
         for field in &shape.fields {
-            let pinned = self
+            let size = self
                 .subjects
                 .get(field.0 as usize)
                 .and_then(|subject| match &subject.source {
-                    SubjectSource::Projection(projection) => match &projection.kind {
-                        ProjectionKind::BitstringField(extraction) => match &extraction.spec.size {
-                            Some(BitstringFieldSize::Pinned(pinned) | BitstringFieldSize::PinnedByteSize(pinned)) => {
-                                Some(*pinned)
-                            }
-                            _ => None,
-                        },
-                        _ => None,
-                    },
+                    SubjectSource::Projection(SubjectProjection {
+                        kind: ProjectionKind::BitstringField(extraction),
+                        ..
+                    }) => extraction.spec.size.clone(),
                     _ => None,
                 });
-            if let Some(pinned) = pinned {
-                self.charge_pin(pinned);
+            match size {
+                Some(BitstringFieldSize::Pinned(pinned) | BitstringFieldSize::PinnedByteSize(pinned)) => {
+                    self.charge_pin(pinned)
+                }
+                Some(BitstringFieldSize::Binding(bound)) => self.ask(bound),
+                Some(BitstringFieldSize::Literal(_)) | None => {}
+            }
+        }
+    }
+
+    /// Records that a question reads `subject`'s value, and so the value of
+    /// every subject it was projected from.
+    fn ask(&mut self, mut subject: SubjectId) {
+        while self.asked.insert(subject) {
+            match self.subjects.get(subject.0 as usize).map(|subject| &subject.source) {
+                Some(SubjectSource::Projection(projection)) => subject = projection.source,
+                _ => break,
             }
         }
     }

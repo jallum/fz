@@ -27,6 +27,7 @@
 
 use crate::dispatch_matrix::pattern::{
     GuardExtern, PatternDispatchPlan, PatternGuardBinOp, PatternGuardDispatch, PatternGuardExpr, PatternGuardUnaryOp,
+    guard_body_subjects,
 };
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
@@ -47,11 +48,12 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
 use fz_runtime::ir_runtime::{
-    fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any, fz_bs_field_spec, fz_bs_read_field_ref,
-    fz_bs_reader_init_ref, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_map_named_schema_ref,
-    fz_matcher_eq_bytes, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref,
-    fz_struct_get_named_field_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float,
-    fz_unbox_int, fz_unbox_opaque, fz_value_cmp_ref, fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any, fz_bs_bit_len_ref, fz_bs_field_end,
+    fz_bs_field_spec, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref,
+    fz_map_is_map, fz_map_named_schema_ref, fz_matcher_eq_bytes, fz_matcher_map_get_ref, fz_pinned_binary_segment_size,
+    fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of,
+    fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque, fz_value_cmp_ref, fz_value_eq_ref,
+    fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 
@@ -207,6 +209,10 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
             tuple_schema_ids,
             named_schema_ids,
             outcomes: clauses,
+            outcome_reads: clauses
+                .iter()
+                .flat_map(|clause| clause.arguments.iter().map(|(subject, _)| *subject))
+                .collect(),
             bindings: crate::compiler2::DispatchBindings {
                 pinned: (0..dispatch.pinned.len())
                     .map(|index| load_receive_value_ref(body.b, pinned_ptr, index))
@@ -259,6 +265,9 @@ struct DispatchCtx<'a> {
     tuple_schema_ids: &'a HashMap<usize, u32>,
     named_schema_ids: &'a HashMap<fz_runtime::module_name::ModuleName, u32>,
     outcomes: &'a [ReceiveClause],
+    /// The subjects the winning outcome reads, beyond what the decision asks.
+    /// A bitstring field outside both is checked for fit and never built.
+    outcome_reads: Vec<SubjectId>,
     bindings: crate::compiler2::DispatchBindings<ReceiveValue>,
     out_ptr: ir::Value,
     dispatch: &'a ReceiveDispatchPlan,
@@ -823,6 +832,13 @@ fn emit_receive_is_list_cons_flag<M: cranelift_module::Module>(
     })
 }
 
+fn is_bitstring_field(ctx: &DispatchCtx<'_>, subject: SubjectId) -> bool {
+    matches!(
+        ctx.dispatch.subject(subject),
+        SubjectSource::Projection(projection) if matches!(projection.kind, ProjectionKind::BitstringField(_))
+    )
+}
+
 fn apply_edge_evidence_to_receive_state<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
@@ -830,7 +846,9 @@ fn apply_edge_evidence_to_receive_state<M: cranelift_module::Module>(
     state: &mut DispatchEmitState,
 ) -> Result<(), CodegenError> {
     for projection in &evidence.projections {
-        if state.values.contains_key(projection) {
+        // A bitstring field is built by the shape test only where something
+        // reads it, so one the state lacks was left unbuilt on purpose.
+        if state.values.contains_key(projection) || is_bitstring_field(ctx, *projection) {
             continue;
         }
 
@@ -1049,7 +1067,8 @@ fn emit_bitstring_test<M: cranelift_module::Module>(
     let value = resolve_dispatch_subject(body, ctx, subject, state)?;
     emit_bitstring_like_guard(body, value, false_b)?;
     let value_ref = emit_receive_value_ref(body, ctx, value)?;
-    let mut reader = runtime_call1!(body, fz_bs_reader_init_ref, [ctx.process, value_ref]);
+    let bit_len = runtime_call1!(body, fz_bs_bit_len_ref, [value_ref]);
+    let mut pos = body.b.ins().iconst(types::I64, 0);
 
     for field_subject in &shape.fields {
         let extraction = ctx.dispatch.bitstring_extraction(*field_subject);
@@ -1064,33 +1083,34 @@ fn emit_bitstring_test<M: cranelift_module::Module>(
             extraction.is_last as u32,
         );
         let field_spec = body.b.ins().iconst(types::I64, field_spec as i64);
-        let result = runtime_call1!(
-            body,
-            fz_bs_read_field_ref,
-            [ctx.process, reader, field_spec, size_value]
-        );
-        let result_value = ReceiveValue::AnyRef(result);
-        let ok = emit_struct_get_field(body, ctx, result_value, 0)?;
-        let ok_truthy = emit_truthy_cmp(body, ok)?;
+        let end = runtime_call1!(body, fz_bs_field_end, [field_spec, size_value, pos, bit_len]);
+        let fits = body.b.ins().icmp_imm(IntCC::SignedGreaterThanOrEqual, end, 0);
         let next_b = body.b.create_block();
-        body.b.ins().brif(ok_truthy, next_b, &[], false_b, &[]);
+        body.b.ins().brif(fits, next_b, &[], false_b, &[]);
         body.b.switch_to_block(next_b);
         body.b.seal_block(next_b);
-        let extracted = emit_struct_get_field(body, ctx, result_value, 1)?;
-        let next_reader = emit_struct_get_field(body, ctx, result_value, 2)?;
-        reader = emit_receive_value_ref(body, ctx, next_reader)?;
-        state.values.insert(*field_subject, extracted);
+        if ctx.dispatch.graph.asks(*field_subject) || ctx.outcome_reads.contains(field_subject) {
+            let extracted = match field.kind {
+                BitstringFieldKind::Integer => ReceiveValue::Int(runtime_call1!(
+                    body,
+                    fz_bs_read_int_ref,
+                    [value_ref, pos, field_spec, size_value]
+                )),
+                _ => ReceiveValue::AnyRef(runtime_call1!(
+                    body,
+                    fz_bs_read_binary_ref,
+                    [ctx.process, value_ref, pos, field_spec, size_value]
+                )),
+            };
+            state.values.insert(*field_subject, extracted);
+        }
+        pos = end;
     }
 
     if !shape.require_done {
         body.b.ins().jump(true_b, &[]);
         return Ok(());
     }
-    let reader_value = ReceiveValue::AnyRef(reader);
-    let bit_len_value = emit_struct_get_field(body, ctx, reader_value, 1)?;
-    let bit_len = receive_value_int(body, bit_len_value)?;
-    let pos_value = emit_struct_get_field(body, ctx, reader_value, 2)?;
-    let pos = receive_value_int(body, pos_value)?;
     let done = body.b.ins().icmp(IntCC::Equal, bit_len, pos);
     body.b.ins().brif(done, true_b, &[], false_b, &[]);
     Ok(())
@@ -1434,6 +1454,7 @@ fn emit_guard_dispatch<M: cranelift_module::Module>(
         tuple_schema_ids: parent.tuple_schema_ids,
         named_schema_ids: parent.named_schema_ids,
         outcomes: parent.outcomes,
+        outcome_reads: guard_body_subjects(&dispatch.bodies),
         bindings: crate::compiler2::DispatchBindings {
             pinned: Vec::new(),
             prepared: prepared_keys

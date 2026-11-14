@@ -1,0 +1,106 @@
+#---
+# purpose: a string literal in a binary pattern is tested as the integers of its bytes, so a walk over literal clauses allocates exactly what a walk over integer clauses does
+# kind: run
+#---
+#
+# The walk takes 10,000 steps over a 10,000-byte binary. Its clauses name the
+# bytes they test as string literals; each step allocates one view of the rest,
+# as fixture 01161's walk over `<<_c, r :: binary>>` does. The program prints
+# the step count, then allocations and struct allocations per step.
+#
+# The remaining cases pin what a literal segment matches: a multi-byte literal,
+# a prefix, an input shorter than the literal, a literal after another field, a
+# literal that is the whole pattern, a multi-byte UTF-8 character, and
+# literals in a case and in a receive. A clause written with an integer shares
+# its first-byte test with a literal clause.
+defmodule P do
+  def go(b), do: walk(b, 0)
+  defp walk(<<"\"", _r :: binary>>, n), do: n
+  defp walk(<<"\\", _r :: binary>>, n), do: n
+  defp walk(<<_c, r :: binary>>, n), do: walk(r, n + 1)
+  defp walk(_b, n), do: n
+
+  def word(<<"true", r :: binary>>), do: {:true, r}
+  def word(<<116, r :: binary>>), do: {:t, r}
+  def word(<<"false", r :: binary>>), do: {:false, r}
+  def word(_other), do: :none
+
+  def after_field(<<c, "ab", r :: binary>>), do: {c, r}
+  def after_field(_other), do: :none
+
+  def whole(<<"ab">>), do: :ab
+  def whole(_other), do: :none
+
+  def utf8(<<"é", r :: binary>>), do: {:e_acute, r}
+  def utf8(<<"€", r :: binary>>), do: {:euro, r}
+  def utf8(_other), do: :none
+
+  def prefix("key=" <> value), do: {:key, value}
+  def prefix(_other), do: :none
+
+  # Literals longer than one integer field: 16 bytes, and 7 bytes of UTF-8.
+  def long("content-length: " <> v), do: {:len, v}
+  def long("éé€" <> v), do: {:accents, v}
+  def long(_other), do: :none
+
+  def in_case(b) do
+    case b do
+      <<"GET ", path :: binary>> -> {:get, path}
+      <<"PUT ", path :: binary>> -> {:put, path}
+      _ -> :other
+    end
+  end
+
+  def in_receive(msg) do
+    send(self(), msg)
+
+    receive do
+      <<"ok", r :: binary>> -> {:ok, r}
+      <<"no", r :: binary>> -> {:no, r}
+      other -> {:other, other}
+    end
+  end
+end
+
+line = String.duplicate("x", 10000)
+a = Process.heap_alloc_stats()
+n = P.go(line)
+b = Process.heap_alloc_stats()
+dbg(n)
+dbg(div(b[:allocs] - a[:allocs], 10000))
+dbg(div(b[:struct_allocs] - a[:struct_allocs], 10000))
+
+dbg(P.go("ab\"cd"))
+dbg(P.go("ab\\cd"))
+dbg(P.word("true!"))
+dbg(P.word("tru"))
+dbg(P.word("trux"))
+dbg(P.word("false?"))
+dbg(P.word("fals"))
+dbg(P.word(""))
+dbg(P.after_field("zab!"))
+dbg(P.after_field("zaB!"))
+dbg(P.after_field("za"))
+dbg(P.after_field("ab"))
+dbg(P.whole("ab"))
+dbg(P.whole("abc"))
+dbg(P.whole("a"))
+dbg(P.whole(""))
+dbg(P.utf8("éa"))
+dbg(P.utf8("€a"))
+dbg(P.utf8(<<195>>))
+dbg(P.utf8("e"))
+dbg(P.prefix("key=v"))
+dbg(P.prefix("key"))
+dbg(P.long("content-length: 42"))
+dbg(P.long("content-length:x42"))
+dbg(P.long("content-lengtH: 42"))
+dbg(P.long("content-len"))
+dbg(P.long("éé€!"))
+dbg(P.long("éé$!"))
+dbg(P.in_case("GET /a"))
+dbg(P.in_case("PUT /b"))
+dbg(P.in_case("GE"))
+dbg(P.in_receive("ok1"))
+dbg(P.in_receive("no2"))
+dbg(P.in_receive("n"))

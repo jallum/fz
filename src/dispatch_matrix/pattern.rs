@@ -431,7 +431,7 @@ impl<TypeHandle> PatternGuardExpr<TypeHandle> {
     /// Every value this expression reads: the subjects and pins that reach it.
     /// A nested helper call contributes only what its argument expressions
     /// read, because the helper's own plan is closed over its own input space.
-    fn leaves(&self) -> Vec<GuardLeaf> {
+    pub(crate) fn leaves(&self) -> Vec<GuardLeaf> {
         let mut leaves = Vec::new();
         self.collect_leaves(&mut leaves);
         leaves
@@ -502,6 +502,18 @@ pub(crate) struct PatternGuardDispatch<TypeHandle> {
     /// Set when the helper only asks of each listed argument whether it has a
     /// type: a call to it holds exactly when every listed argument has its type.
     pub(crate) type_predicate: Option<Vec<(u32, TypeHandle)>>,
+}
+
+/// The subjects the bodies of a guard helper read when an outcome wins.
+pub(crate) fn guard_body_subjects<TypeHandle>(bodies: &[PatternGuardExpr<TypeHandle>]) -> Vec<SubjectId> {
+    bodies
+        .iter()
+        .flat_map(PatternGuardExpr::leaves)
+        .filter_map(|leaf| match leaf {
+            GuardLeaf::Subject(subject) => Some(subject),
+            GuardLeaf::Pinned(_) => None,
+        })
+        .collect()
 }
 
 impl<TypeHandle> PatternGuardDispatch<TypeHandle> {

@@ -745,23 +745,10 @@ fn apply_step_evidence(
             values.insert(*head, elem);
             values.insert(*tail, rest);
         }
-        LoweredStep::BitstringInit { reader, source } => {
-            if let Some(source_ty) = value_ty(values, *source) {
-                values.insert(*reader, source_ty);
-            }
-        }
-        LoweredStep::BitstringRead {
-            ok,
-            value,
-            next_reader,
-            reader,
-            spec,
-            ..
-        } => {
-            values.insert(*ok, world.types_mut().bool());
+        LoweredStep::BitstringRead { value, next, spec, .. } => {
             values.insert(*value, bitfield_value_ty(world, spec));
-            if let Some(reader_ty) = value_ty(values, *reader) {
-                values.insert(*next_reader, reader_ty);
+            if let Some(next) = next {
+                values.insert(*next, world.types_mut().int());
             }
         }
         LoweredStep::PopHandler => {}

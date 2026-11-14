@@ -1945,17 +1945,19 @@ fn push_step_sources(step: &LoweredStep, value: ValueId, out: &mut PendingValues
             value: defined, source, ..
         } if *defined == value => out.push(*source),
         LoweredStep::SplitList { source, head, tail } if *head == value || *tail == value => out.push(*source),
-        LoweredStep::BitstringInit { reader, source } if *reader == value => out.push(*source),
         LoweredStep::BitstringRead {
-            ok,
             value: read_value,
-            next_reader,
-            reader,
+            source,
+            pos,
             spec,
             ..
-        } if *ok == value || *read_value == value || *next_reader == value => {
-            out.extend(std::iter::once(*reader).chain(size_value(&spec.size)))
-        }
+        } if *read_value == value => out.extend([*source, *pos].into_iter().chain(size_value(&spec.size))),
+        LoweredStep::BitstringRead {
+            next: Some(next),
+            pos,
+            spec,
+            ..
+        } if *next == value => out.extend(std::iter::once(*pos).chain(size_value(&spec.size))),
         LoweredStep::Const { .. }
         | LoweredStep::FunctionRef { .. }
         | LoweredStep::Lambda { .. }
@@ -1973,7 +1975,6 @@ fn push_step_sources(step: &LoweredStep, value: ValueId, out: &mut PendingValues
         | LoweredStep::RequireMapValue { .. }
         | LoweredStep::TupleField { .. }
         | LoweredStep::SplitList { .. }
-        | LoweredStep::BitstringInit { .. }
         | LoweredStep::BitstringRead { .. } => {}
     }
 }
@@ -2188,24 +2189,20 @@ pub(super) fn propagate_steps_reverse(
                     note_live_demand(out, live, *source, RuntimeDemand::whole());
                 }
             }
-            LoweredStep::BitstringInit { reader, source } => {
-                if !take_live_demand(live, *reader).is_ignore() {
+            LoweredStep::BitstringRead {
+                value,
+                next,
+                source,
+                pos,
+                spec,
+            } => {
+                let value_live = !take_live_demand(live, *value).is_ignore();
+                let next_live = next.is_some_and(|next| !take_live_demand(live, next).is_ignore());
+                if value_live {
                     note_live_demand(out, live, *source, RuntimeDemand::whole());
                 }
-            }
-            LoweredStep::BitstringRead {
-                ok,
-                value,
-                next_reader,
-                reader,
-                spec,
-                ..
-            } => {
-                let ok_demand = take_live_demand(live, *ok);
-                let value_demand = take_live_demand(live, *value);
-                let next_reader_demand = take_live_demand(live, *next_reader);
-                if !ok_demand.is_ignore() || !value_demand.is_ignore() || !next_reader_demand.is_ignore() {
-                    note_live_demand(out, live, *reader, RuntimeDemand::whole());
+                if value_live || next_live {
+                    note_live_demand(out, live, *pos, RuntimeDemand::whole());
                     if let Some(size) = spec
                         .size
                         .as_ref()
@@ -2337,10 +2334,6 @@ fn note_clause_matcher_demands(
 ) {
     for step in steps {
         match step {
-            LoweredStep::BitstringInit { source, .. } => {
-                let demand = boundary_value_demand(facts, *source, RuntimeDemand::whole());
-                note_live_demand(out, live, *source, demand);
-            }
             LoweredStep::RequireMapValue { source, .. } => {
                 let source_demand = boundary_value_demand(facts, *source, RuntimeDemand::whole());
                 note_live_demand(out, live, *source, source_demand);
@@ -2349,9 +2342,10 @@ fn note_clause_matcher_demands(
                 let demand = boundary_value_demand(facts, *source, RuntimeDemand::whole());
                 note_live_demand(out, live, *source, demand);
             }
-            LoweredStep::BitstringRead { reader, spec, .. } => {
-                let demand = boundary_value_demand(facts, *reader, RuntimeDemand::whole());
-                note_live_demand(out, live, *reader, demand);
+            LoweredStep::BitstringRead { source, pos, spec, .. } => {
+                let demand = boundary_value_demand(facts, *source, RuntimeDemand::whole());
+                note_live_demand(out, live, *source, demand);
+                note_live_demand(out, live, *pos, RuntimeDemand::whole());
                 if let Some(size) = spec
                     .size
                     .as_ref()

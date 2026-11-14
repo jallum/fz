@@ -162,15 +162,31 @@ the existing named-field accessors.
 but quoted source represents an unsuffixed string field as the raw binary value:
 there is no `:: binary` node downstream can consult. The decoder therefore
 reifies that one source shape as `BitType::Binary`. Construction leaves its
-size absent so the writer consumes the whole source binary; matching adds the
-literal's byte length so a following field has a boundary. Backend lowering and
-the three runtime doors consume that spec and never reinterpret a value's
-carrier from the surrounding fields.
+size absent so the writer consumes the whole source binary; matching gives the
+literal's byte length as its size, and `bitstring_pattern` then replaces a
+literal of exactly that size with big-endian unsigned integer fields, one per
+run of up to seven bytes, for both `<<...>>` and `<>` patterns. A literal is
+therefore tested as integers, the same way an integer-literal segment is, and
+allocates nothing. A literal whose field has an authored size of another
+length keeps the `Pattern::Binary` equality test. Backend lowering and the three runtime doors consume that spec and never
+reinterpret a value's carrier from the surrounding fields.
 
-Bitstring matching has one runtime implementation, `fz_bs_read_field_bits`,
-reached from every door. But the CLAUSE HEAD is lowered twice — once into a
-dispatch region to select the clause, once into body steps to bind — so each
-field is read twice: fz-5xp.56.
+Bitstring matching carries the reader as a bit position (a raw int). The
+bounds check is emitted arithmetic (`BitFieldFits`, `BitFieldNext`), and
+`BitReadField` cannot miss: `fz_bs_read_int_ref` returns a raw int and
+`fz_bs_read_binary_ref` a binary view. The receive matcher and the interpreter
+share the arithmetic through `bs_field_end`. The CLAUSE HEAD is lowered twice —
+once into a dispatch region to select the clause, once into body steps to
+bind — but only the body step builds a field the dispatch does not read. A
+dispatch region (`lower_bitstring_region`, `Dispatch::read_bitstring`,
+`emit_bitstring_test`) emits `BitReadField` for a field only when
+`DispatchGraph::asks` says a question reads its value (a comparison, a guard
+leaf, a later field's `size(len)`, and the subjects those were projected from)
+or the executor's outcome reads it (`DispatchState::outcome_reads`: the
+subjects of the control dispatch's outcome arguments or of a guard helper's
+bodies). Every other field is only checked to fit. A function-head entry
+dispatch reads nothing off its outcome, so a walk over `<<_c, r :: binary>>`
+builds one view of the rest per step, in the clause body.
 
 **What a dispatch plan demands** — owner `DispatchGraphBuilder`
 (`dispatch_matrix/mod.rs`). The builder folds each question into

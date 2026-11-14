@@ -160,13 +160,10 @@ pub(crate) fn step_defined_values(step: &LoweredStep) -> impl Iterator<Item = Va
         | LoweredStep::MapIndex { value, .. }
         | LoweredStep::FieldAccess { value, .. }
         | LoweredStep::RequireMapValue { value, .. }
-        | LoweredStep::TupleField { value, .. }
-        | LoweredStep::BitstringInit { reader: value, .. } => [Some(*value), None, None],
+        | LoweredStep::TupleField { value, .. } => [Some(*value), None, None],
         LoweredStep::MapUpdate { value, ok, .. } => [Some(*value), Some(*ok), None],
         LoweredStep::SplitList { head, tail, .. } => [Some(*head), Some(*tail), None],
-        LoweredStep::BitstringRead {
-            ok, value, next_reader, ..
-        } => [Some(*ok), Some(*value), Some(*next_reader)],
+        LoweredStep::BitstringRead { value, next, .. } => [Some(*value), *next, None],
         LoweredStep::PopHandler => [None; 3],
     };
     values.into_iter().flatten()
@@ -219,12 +216,12 @@ pub(crate) fn step_used_values(step: &LoweredStep, out: &mut Vec<ValueId>) {
         }
         LoweredStep::RequireMapValue { source, .. }
         | LoweredStep::TupleField { source, .. }
-        | LoweredStep::SplitList { source, .. }
-        | LoweredStep::BitstringInit { source, .. } => {
+        | LoweredStep::SplitList { source, .. } => {
             out.push(*source);
         }
-        LoweredStep::BitstringRead { reader, spec, .. } => {
-            out.push(*reader);
+        LoweredStep::BitstringRead { source, pos, spec, .. } => {
+            out.push(*source);
+            out.push(*pos);
             out.extend(spec.size.as_ref().and_then(LoweredBitSize::read_value));
         }
     }
@@ -773,6 +770,15 @@ pub(crate) struct OutcomeEdge {
     pub(crate) arguments: Box<[OutcomeArgument]>,
 }
 
+/// The subjects any of `edges` binds into its target.
+pub(crate) fn outcome_argument_subjects(
+    edges: &[OutcomeEdge],
+) -> impl Iterator<Item = crate::dispatch_matrix::SubjectId> + '_ {
+    edges
+        .iter()
+        .flat_map(|edge| edge.arguments.iter().map(|argument| argument.subject))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OutcomeArgument {
     pub(crate) subject: crate::dispatch_matrix::SubjectId,
@@ -835,6 +841,11 @@ impl ControlDispatch {
             self.miss_entry = None;
         }
         self.plan = plan;
+    }
+
+    /// The subjects some outcome of this dispatch binds into its target.
+    pub(crate) fn argument_subjects(&self) -> impl Iterator<Item = crate::dispatch_matrix::SubjectId> + '_ {
+        outcome_argument_subjects(&self.outcomes)
     }
 
     pub(crate) fn outcome(&self, outcome: crate::dispatch_matrix::OutcomeId) -> &OutcomeEdge {
@@ -1109,17 +1120,16 @@ pub enum LoweredStep {
         head: ValueId,
         tail: ValueId,
     },
-    BitstringInit {
-        reader: ValueId,
-        source: ValueId,
-    },
+    /// The field of `source` that starts at bit `pos`. A clause body runs only
+    /// after its dispatch proved the whole pattern, so the field is there to
+    /// read. `next` is the position after the field, bound for a later field to
+    /// start from; the last field has none.
     BitstringRead {
-        ok: ValueId,
         value: ValueId,
-        next_reader: ValueId,
-        reader: ValueId,
+        next: Option<ValueId>,
+        source: ValueId,
+        pos: ValueId,
         spec: LoweredBitFieldSpec,
-        is_last: bool,
     },
     /// The `try` body completed: its handler leaves the process's handler
     /// stack before the body's value travels on.

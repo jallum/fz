@@ -99,11 +99,10 @@ pub(crate) const FALSE_BITS: i64 = FALSE_BITS_RAW as i64;
 // one block — no CPS splits between begin and finalize, so per-thread state
 // is safe.
 //
-// Reader prims model the reader as a 3-tuple `[bs_ptr, bit_len_int, pos_int]`
-// (allocated by the runtime). Each BitReadField allocates a fresh
-// 3-tuple result `[ok, extracted, new_reader]` on success or 1-tuple
-// `[false]` on failure. Tuple schema_ids for arities 1 and 3 are registered
-// at compile() time when any bitstring prim is present.
+// A match reads the binary it is matching at a bit position the compiled code
+// carries as an integer: `BitFieldFits` and `BitFieldNext` are arithmetic on
+// that position, and `BitReadField` takes the source binary and the position.
+// A match allocates nothing but the binaries its fields extract.
 
 pub(crate) fn encode_bit_type(t: BitType) -> u32 {
     match t {

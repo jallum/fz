@@ -1232,6 +1232,56 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
     assert!(outcome.bindings.iter().any(|binding| binding.name.name == "payload"));
 }
 
+/// A bitstring field is asked only by a question that reads its value: a later
+/// field's size reads `n`, a literal comparison reads the tag, and nothing
+/// reads the payload, so a decision never has to build it.
+#[test]
+fn a_bitstring_field_is_asked_only_when_a_question_reads_its_value() {
+    let field = |value: Pattern, ty: BitType, size: Option<BitSize>| BitField {
+        value: sp(value),
+        spec: BitFieldSpec {
+            ty,
+            size,
+            ..Default::default()
+        },
+    };
+    let plan = pattern_plan(SourcePatternRows::lexical(
+        1,
+        vec![pattern_row(
+            vec![Pattern::Bitstring(vec![
+                field(Pattern::Int(1), BitType::Integer, None),
+                field(Pattern::Var(Var::user("n")), BitType::Integer, None),
+                field(
+                    Pattern::Var(Var::user("payload")),
+                    BitType::Binary,
+                    Some(BitSize::Var(Var::user("n"))),
+                ),
+            ])],
+            0,
+        )],
+    ));
+    let shape = plan
+        .graph
+        .nodes
+        .iter()
+        .find_map(|node| match node {
+            DispatchNode::Test {
+                predicate:
+                    RegionPredicate {
+                        region: Region::Bitstring(shape),
+                        ..
+                    },
+                ..
+            } => Some(shape),
+            _ => None,
+        })
+        .expect("bitstring region");
+
+    assert!(plan.graph.asks(shape.fields[0]), "the literal comparison reads the tag");
+    assert!(plan.graph.asks(shape.fields[1]), "the size of the payload reads n");
+    assert!(!plan.graph.asks(shape.fields[2]), "no question reads the payload");
+}
+
 #[test]
 fn pattern_dispatch_plan_carries_executable_payloads_directly() {
     let source_patterns = SourcePatternRows::lexical(

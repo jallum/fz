@@ -912,9 +912,9 @@ fn step_value_uses(step: &LoweredStep, add: &mut impl FnMut(ValueId, ValueUse)) 
             add(*base, whole());
             add(key.value, if key.literal.is_some() { class() } else { whole() });
         }
-        LoweredStep::BitstringInit { source, .. } => add(*source, whole()),
-        LoweredStep::BitstringRead { reader, spec, .. } => {
-            add(*reader, whole());
+        LoweredStep::BitstringRead { source, pos, spec, .. } => {
+            add(*source, whole());
+            add(*pos, class());
             if let Some(size) = spec.size.as_ref().and_then(LoweredBitSize::read_value) {
                 add(size, whole());
             }
@@ -1516,7 +1516,6 @@ fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
             | LoweredStep::RequireMapValue { .. }
             | LoweredStep::TupleField { .. }
             | LoweredStep::SplitList { .. }
-            | LoweredStep::BitstringInit { .. }
             | LoweredStep::BitstringRead { .. }
             | LoweredStep::PopHandler => {}
         }

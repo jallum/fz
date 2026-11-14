@@ -1,7 +1,7 @@
 mod artifact;
 mod backend_program;
 mod body;
-pub(crate) use body::OutcomeEdge;
+pub(crate) use body::{OutcomeEdge, outcome_argument_subjects};
 pub(crate) mod callsite_dispatch;
 mod canon;
 mod cli;

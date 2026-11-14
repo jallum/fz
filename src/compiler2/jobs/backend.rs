@@ -976,24 +976,18 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 head: *head,
                 tail: *tail,
             },
-            LoweredStep::BitstringInit { reader, source } => BackendStep::BitstringInit {
-                reader: *reader,
-                source: *source,
-            },
             LoweredStep::BitstringRead {
-                ok,
                 value,
-                next_reader,
-                reader,
+                next,
+                source,
+                pos,
                 spec,
-                is_last,
             } => BackendStep::BitstringRead {
-                ok: *ok,
                 value: *value,
-                next_reader: *next_reader,
-                reader: *reader,
+                next: *next,
+                source: *source,
+                pos: *pos,
                 spec: spec.clone(),
-                is_last: *is_last,
             },
             LoweredStep::PopHandler => BackendStep::PopHandler,
         })
@@ -1261,7 +1255,6 @@ fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut Hash
             | BackendStep::MapIndex { .. }
             | BackendStep::TupleField { .. }
             | BackendStep::SplitList { .. }
-            | BackendStep::BitstringInit { .. }
             | BackendStep::BitstringRead { .. }
             | BackendStep::PopHandler => {}
         }
