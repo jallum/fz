@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-14T02:28:58Z",
@@ -8,7 +8,7 @@
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A cut that leaves nothing is answered without a recursive step",
   "type": "task",
   "updated_at": "2026-11-14T02:28:58Z"
