@@ -10,6 +10,7 @@ mod facts;
 mod ordered_set;
 mod ordered_worklist;
 mod scheduler;
+mod waits;
 
 mod fast_hash;
 
@@ -25,3 +26,4 @@ pub use scheduler::{
     AppliedStep, ClientReason, CompletionEffects, DerivationEffects, DriveOutcome, ExternalDependencyStates,
     FatalError, NoExternalDependencyStates, Scheduler, Wake, WakeDisposition, WorkStart, WorkStartTally,
 };
+pub use waits::StandingWaits;

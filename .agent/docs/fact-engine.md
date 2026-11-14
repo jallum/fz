@@ -873,10 +873,18 @@ callable edges. `CallableConstructionTarget(owner, value, surface)` supplies an
 exact first-class target. Newly exposed local callables extend that finite
 keyed read set until it stops growing; there is no function or executable scan.
 
+A job's standing waits are `StandingWaits`: each wait names the job that
+answers it, resolved by `World::standing_waits` (`fact_producer`) at the moment
+the wait is recorded (completion, `park_on_gates`, `pop_runnable`). The engine
+answers which job waits on which from those stored edges: `waits_reach(from,
+to)`, whether `from` waits on `to` directly or through the jobs it waits on. A wait whose
+fact has no single producer blocks and carries no edge. `revive_blocked_chain`
+walks the same edges.
+
 A callee's `RuntimeDemandInputs` is its answer: how much of each argument it
 needs. `World::answer_use` says how a run may use it, as an `AnswerUse`. A
 partner's answer, one whose producer is already waiting on this run
-(`World::waits_reach`), is read `Current`, however unfinished: the two are one
+(`Scheduler::waits_reach`), is read `Current`, however unfinished: the two are one
 fixpoint (`AnswerUse::Partner`). Any other answer is read only once it has
 concluded (`AnswerUse::Concluded`), and until then the run waits for it
 (`AnswerUse::Wait`) and the callee is unanswered. `DeriveInputDemand` asks the

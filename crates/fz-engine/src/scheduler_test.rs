@@ -4,6 +4,7 @@ use super::{Agenda, AppliedStep, ClientReason, DependencyIndex, FactUse, Schedul
 use crate::facts::{ClaimShape, SemanticOrd};
 use crate::scheduler::FactChangeQueue;
 use crate::scheduler::{CompletionEffects, DerivationEffects};
+use crate::waits::StandingWaits;
 
 struct TestOrder;
 
@@ -68,7 +69,7 @@ fn external_product_cannot_gain_a_second_publisher_in_the_fact_table() {
         CompletionEffects::single(
             1,
             HashSet::default(),
-            HashSet::default(),
+            StandingWaits::default(),
             vec!["product"],
             vec!["product"],
         ),
@@ -96,7 +97,7 @@ fn external_product_wait_uses_authoritative_readiness_alongside_fact_waits() {
         CompletionEffects::single(
             1,
             HashSet::default(),
-            HashSet::from_iter([FactUse::settled("product"), FactUse::current("input")]),
+            unresolved_waits([FactUse::settled("product"), FactUse::current("input")]),
             Vec::new(),
             Vec::new(),
         ),
@@ -105,7 +106,13 @@ fn external_product_wait_uses_authoritative_readiness_alongside_fact_waits() {
     );
     scheduler.complete_ordered_with_external(
         &2,
-        CompletionEffects::single(2, HashSet::default(), HashSet::default(), vec!["input"], vec!["input"]),
+        CompletionEffects::single(
+            2,
+            HashSet::default(),
+            StandingWaits::default(),
+            vec!["input"],
+            vec!["input"],
+        ),
         &product,
         &TestOrder,
     );
@@ -131,7 +138,7 @@ fn replacing_external_reads_detaches_the_old_dependency() {
     for reads in [HashSet::from_iter([FactUse::current("product")]), HashSet::default()] {
         scheduler.complete_ordered_with_external(
             &1,
-            CompletionEffects::single(1, reads, HashSet::default(), vec!["answer"], Vec::new()),
+            CompletionEffects::single(1, reads, StandingWaits::default(), vec!["answer"], Vec::new()),
             &product,
             &TestOrder,
         );
@@ -162,7 +169,7 @@ fn quiescence_cannot_certify_a_fact_while_its_external_ground_is_dirty() {
             CompletionEffects::single(
                 job,
                 HashSet::from_iter([FactUse::current(input)]),
-                HashSet::default(),
+                StandingWaits::default(),
                 vec![output],
                 vec![output],
             ),
@@ -181,7 +188,7 @@ fn quiescence_cannot_certify_a_fact_while_its_external_ground_is_dirty() {
         CompletionEffects::single(
             3,
             HashSet::default(),
-            HashSet::from_iter([FactUse::settled("downstream")]),
+            unresolved_waits([FactUse::settled("downstream")]),
             Vec::new(),
             Vec::new(),
         ),
@@ -257,7 +264,7 @@ fn external_product_equal_validation_restores_finality_without_running_its_reade
         CompletionEffects::single(
             1,
             HashSet::from_iter([FactUse::current("product")]),
-            HashSet::default(),
+            StandingWaits::default(),
             vec!["answer"],
             vec!["answer"],
         ),
@@ -416,6 +423,11 @@ fn compiler2_scheduler_keeps_claims_in_the_ledger_not_the_completion_report() {
     assert_eq!(scheduler.output_keys(&1).copied().collect::<Vec<_>>(), vec!["answer"]);
 }
 
+/// Waits whose answering job is not named: they block and carry no edge.
+fn unresolved_waits(uses: impl IntoIterator<Item = FactUse<&'static str>>) -> StandingWaits<&'static str, u32> {
+    uses.into_iter().map(|usage| (usage, None)).collect()
+}
+
 fn current(fact: &'static str) -> FactUse<&'static str> {
     FactUse::current(fact)
 }
@@ -434,7 +446,7 @@ fn complete(
 ) -> AppliedStep<u32, &'static str> {
     scheduler.complete_ordered(
         &job,
-        CompletionEffects::single(job, reads, waits, outputs, changed),
+        CompletionEffects::single(job, reads, unresolved_waits(waits), outputs, changed),
         &TestOrder,
     )
 }
@@ -459,7 +471,7 @@ fn compiler2_agenda_coalesces_and_requeues_after_pop() {
 #[test]
 fn compiler2_dependency_index_wakes_exact_waiters() {
     let mut deps: DependencyIndex<u32, &'static str> = DependencyIndex::new();
-    deps.replace_waits(3_u32, HashSet::from_iter([current("foo")]));
+    deps.replace_waits(3_u32, unresolved_waits([current("foo")]));
 
     let waiters = deps.waiters(&current("foo"), &TestOrder);
     assert_eq!(waiters, vec![3], "exact fact waiters should wake on matching fact");
@@ -1795,7 +1807,7 @@ fn compiler2_scheduler_a_concluded_derivation_is_final_while_its_job_waits() {
                     outputs: vec!["early"],
                     changed,
                 }],
-                waits: HashSet::from_iter([current("late")]),
+                waits: unresolved_waits([current("late")]),
             },
             &TestOrder,
         );
@@ -1808,7 +1820,7 @@ fn compiler2_scheduler_a_concluded_derivation_is_final_while_its_job_waits() {
         CompletionEffects::single(
             (JOB_B, 0),
             HashSet::from_iter([current("early")]),
-            HashSet::default(),
+            StandingWaits::default(),
             vec!["b"],
             vec!["b"],
         ),
@@ -2341,7 +2353,7 @@ fn cooutput_finality_obeys_external_ground_and_later_readiness_movements() {
             CompletionEffects::single(
                 1,
                 HashSet::from_iter([current("cum_cycle"), current("product")]),
-                HashSet::default(),
+                StandingWaits::default(),
                 vec!["cum_cycle", "answer"],
                 changed,
             ),
@@ -2370,7 +2382,7 @@ fn cooutput_finality_obeys_external_ground_and_later_readiness_movements() {
         CompletionEffects::single(
             2,
             HashSet::from_iter([current("answer")]),
-            HashSet::default(),
+            StandingWaits::default(),
             vec![],
             vec![],
         ),
@@ -2427,7 +2439,7 @@ fn cooutput_finality_obeys_external_ground_and_later_readiness_movements() {
         CompletionEffects::single(
             1,
             HashSet::from_iter([current("cum_cycle"), current("product")]),
-            HashSet::default(),
+            StandingWaits::default(),
             vec!["cum_cycle", "answer"],
             vec![],
         ),
@@ -2462,7 +2474,7 @@ fn quiescent_read_accounting_distinguishes_old_ground_from_new_unquiet_edges() {
             CompletionEffects::single(
                 job,
                 HashSet::from_iter([current(input)]),
-                HashSet::default(),
+                StandingWaits::default(),
                 vec![output],
                 vec![output],
             ),
@@ -2478,7 +2490,7 @@ fn quiescent_read_accounting_distinguishes_old_ground_from_new_unquiet_edges() {
         CompletionEffects::single(
             10,
             HashSet::from_iter([current("ground_peer")]),
-            HashSet::default(),
+            StandingWaits::default(),
             vec!["ground"],
             Vec::new(),
         ),
@@ -2491,7 +2503,7 @@ fn quiescent_read_accounting_distinguishes_old_ground_from_new_unquiet_edges() {
         CompletionEffects::single(
             1,
             HashSet::from_iter([current("ground"), current("product")]),
-            HashSet::default(),
+            StandingWaits::default(),
             vec!["answer", "coanswer"],
             vec!["answer", "coanswer"],
         ),
@@ -2510,7 +2522,7 @@ fn quiescent_read_accounting_distinguishes_old_ground_from_new_unquiet_edges() {
 
     scheduler.complete_ordered_with_external(
         &10,
-        CompletionEffects::single(10, HashSet::default(), HashSet::default(), vec!["ground"], vec![]),
+        CompletionEffects::single(10, HashSet::default(), StandingWaits::default(), vec!["ground"], vec![]),
         &product,
         &TestOrder,
     );
@@ -2896,4 +2908,89 @@ fn compiler2_unresolved_renders_the_same_whatever_order_the_waits_arrived_in() {
         format!("{:?}", descending.unresolved(&TestOrder)),
         "the same standing waits should render the same however they were recorded"
     );
+}
+
+/// Completes `job` as blocked on each `(fact, producer)`: the standing waits
+/// name the job that answers each fact.
+fn block_on(scheduler: &mut TestScheduler, job: u32, waits: &[(&'static str, Option<u32>)]) {
+    let waits = waits
+        .iter()
+        .map(|(fact, producer)| (current(fact), *producer))
+        .collect();
+    scheduler.complete_ordered(
+        &job,
+        CompletionEffects::single(job, HashSet::default(), waits, Vec::new(), Vec::new()),
+        &TestOrder,
+    );
+}
+
+#[test]
+fn compiler2_waits_reach_follows_waits_through_the_jobs_waited_on() {
+    let mut scheduler = TestScheduler::new();
+    block_on(&mut scheduler, 1, &[("b", Some(2))]);
+    block_on(&mut scheduler, 2, &[("c", Some(3))]);
+    block_on(&mut scheduler, 3, &[("d", Some(4))]);
+
+    assert!(scheduler.waits_reach(&1, &4));
+    assert!(scheduler.waits_reach(&2, &3));
+    assert!(
+        !scheduler.waits_reach(&4, &1),
+        "a wait runs from waiter to producer, never back"
+    );
+}
+
+#[test]
+fn compiler2_a_job_reaches_itself_only_through_a_returning_chain() {
+    let mut scheduler = TestScheduler::new();
+    block_on(&mut scheduler, 1, &[("b", Some(2))]);
+    assert!(
+        !scheduler.waits_reach(&1, &1),
+        "one wait is not a chain back to the waiter"
+    );
+
+    block_on(&mut scheduler, 2, &[("a", Some(1))]);
+    assert!(scheduler.waits_reach(&1, &1));
+}
+
+#[test]
+fn compiler2_a_wait_with_no_producer_blocks_but_adds_no_edge() {
+    let mut scheduler = TestScheduler::new();
+    block_on(&mut scheduler, 1, &[("b", None), ("c", Some(3))]);
+
+    assert!(scheduler.blocked(&1));
+    assert_eq!(scheduler.waits_for(&1).uses().count(), 2, "both waits stand");
+    assert!(scheduler.waits_reach(&1, &3));
+    assert!(!scheduler.waits_reach(&1, &2));
+}
+
+#[test]
+fn compiler2_a_new_completion_replaces_the_jobs_wait_edges() {
+    let mut scheduler = TestScheduler::new();
+    block_on(&mut scheduler, 1, &[("b", Some(2))]);
+    assert!(scheduler.waits_reach(&1, &2));
+
+    block_on(&mut scheduler, 1, &[("c", Some(3))]);
+    assert!(!scheduler.waits_reach(&1, &2), "the earlier wait no longer stands");
+    assert!(scheduler.waits_reach(&1, &3));
+
+    complete(
+        &mut scheduler,
+        1,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["a"],
+        vec!["a"],
+    );
+    assert!(!scheduler.waits_reach(&1, &3), "a conclusion leaves no waits");
+    assert!(!scheduler.blocked(&1));
+}
+
+#[test]
+fn compiler2_waiting_without_running_records_the_same_edges() {
+    let mut scheduler = TestScheduler::new();
+    scheduler.wait_without_running(1, [(current("b"), Some(2))].into_iter().collect());
+    scheduler.wait_without_running(2, [(current("c"), Some(3))].into_iter().collect());
+
+    assert!(scheduler.waits_reach(&1, &3));
+    assert!(scheduler.blocked(&1));
 }

@@ -26,7 +26,10 @@ described in full in `.agent/docs/fact-engine.md`.
   `FactReadiness`, `FactReplace`, and the three client traits below.
 - `deps`: `DependencyIndex` and `UnresolvedWait`: the reads and output claims
   of each publisher, the standing waits of each job, and the reverse indexes
-  from a fact use to its readers and waiters.
+  from a fact use to its readers and waiters. It answers `waits_reach` over the
+  waits' answering jobs.
+- `waits`: `StandingWaits`, the waits that stopped one run, each with the job
+  the client names as its answerer (or none).
 - `agenda`: `Agenda<J>`, a job queue that holds each job at most once.
 - `ordered_set`, `ordered_worklist`: `OrderedSet` (registration-order set) and
   `OrderedWorklist` (a min-heap under a caller-supplied comparison).

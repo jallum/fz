@@ -18,7 +18,7 @@ use super::work_start::WorkStartReason;
 use super::world::World;
 use fz_engine::SemanticOrd;
 use fz_engine::{ClaimShape, FactUse, Publisher};
-use fz_engine::{DriveOutcome, FatalError, Scheduler};
+use fz_engine::{DriveOutcome, FatalError, Scheduler, StandingWaits};
 
 pub(crate) struct ExecutionContext<'a, T: crate::telemetry::Telemetry> {
     pub(crate) world: &'a mut World,
@@ -790,7 +790,7 @@ impl World {
         let mut waits: Vec<FactKey> = self
             .work_graph
             .waits_for(job)
-            .iter()
+            .uses()
             .filter_map(|wait| wait.fact().fact().cloned())
             .collect();
         waits.sort_by(|left, right| left.semantic_cmp(right, self.types()));
@@ -824,18 +824,15 @@ impl World {
         let mut visited = HashSet::from_iter([job.clone()]);
         let mut frontier = vec![job.clone()];
         while let Some(current) = frontier.pop() {
-            let mut waits: Vec<FactKey> = self
+            let mut waits: Vec<(FactKey, Job)> = self
                 .work_graph
                 .waits_for(&current)
                 .iter()
-                .filter_map(|wait| wait.fact().fact().cloned())
+                .filter_map(|(wait, producer)| Some((wait.fact().fact()?.clone(), producer?.clone())))
                 .collect();
-            waits.sort_by(|left, right| left.semantic_cmp(right, self.types()));
-            waits.dedup();
-            for fact in waits {
-                let Some(producer) = self.fact_producer(&fact) else {
-                    continue;
-                };
+            waits.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, self.types()));
+            waits.dedup_by(|(left, _), (right, _)| left == right);
+            for (fact, producer) in waits {
                 if !self.work_graph.has_run(&producer) {
                     demanded += self.demand_fact_producer(&fact, WorkStartReason::GateExpansion);
                 } else if self.work_graph.blocked(&producer) && visited.insert(producer.clone()) {
@@ -852,8 +849,9 @@ impl World {
     /// the gate's own landing wakes this job the ordinary way. Returns how
     /// many producers were actually demanded.
     fn park_on_gates(&mut self, job: Job, gates: &[FactUse<FactKey>]) -> u64 {
-        let uses = gates.iter().cloned().map(fact_dependency).collect();
-        self.work_graph.wait_without_running(job, uses);
+        let uses = gates.iter().cloned().map(fact_dependency);
+        let waits = self.standing_waits(uses);
+        self.work_graph.wait_without_running(job, waits);
         gates
             .iter()
             .map(|gate| self.demand_fact_producer(gate.fact(), WorkStartReason::GateExpansion))
@@ -925,34 +923,19 @@ impl World {
         }
     }
 
-    /// Whether `from` is waiting, directly or through the jobs it waits on,
-    /// for an answer only `to` can give.
-    ///
-    /// A run that would wait on a job already waiting on it would close a
-    /// cycle of waits that nothing can open: each is the other's missing
-    /// answer. The walk follows standing waits to their producers and visits
-    /// each job once.
-    pub(crate) fn waits_reach(&self, from: &Job, to: &Job) -> bool {
-        if self.work_graph.waits_for(from).is_empty() {
-            return false;
-        }
-        let mut pending = vec![from.clone()];
-        let mut seen = HashSet::default();
-        while let Some(job) = pending.pop() {
-            if !seen.insert(job.clone()) {
-                continue;
-            }
-            for wait in self.work_graph.waits_for(&job) {
-                let Some(producer) = wait.fact().fact().and_then(|fact| self.fact_producer(fact)) else {
-                    continue;
-                };
-                if &producer == to {
-                    return true;
-                }
-                pending.push(producer);
-            }
-        }
-        false
+    /// `uses` as standing waits: each names the job that answers it, resolved
+    /// now, so the engine can answer which job waits on which without asking
+    /// the world again.
+    pub(crate) fn standing_waits(
+        &self,
+        uses: impl IntoIterator<Item = FactUse<DependencyKey>>,
+    ) -> StandingWaits<DependencyKey, Job> {
+        uses.into_iter()
+            .map(|usage| {
+                let producer = usage.fact().fact().and_then(|fact| self.fact_producer(fact));
+                (usage, producer)
+            })
+            .collect()
     }
 
     /// How `reader` may use the answer `fact` gives. A partner's answer, one
@@ -964,7 +947,7 @@ impl World {
     pub(crate) fn answer_use(&self, reader: &Job, fact: FactKey) -> AnswerUse {
         let partner = self
             .fact_producer(&fact)
-            .is_some_and(|producer| &producer == reader || self.waits_reach(&producer, reader));
+            .is_some_and(|producer| &producer == reader || self.work_graph.waits_reach(&producer, reader));
         if partner {
             AnswerUse::Partner(FactUse::current(fact))
         } else if self.fact_is_concluded(&fact) {
@@ -991,7 +974,8 @@ impl World {
                 self.work_graph.record_run_start(&job);
                 return Some(job);
             }
-            self.work_graph.wait_without_running(job, missing);
+            let waits = self.standing_waits(missing);
+            self.work_graph.wait_without_running(job, waits);
         }
         None
     }
@@ -1002,7 +986,7 @@ impl World {
     fn concluded_answers_missing(&self, job: &Job) -> HashSet<FactUse<DependencyKey>> {
         self.work_graph
             .reads(job)
-            .chain(self.work_graph.waits_for(job))
+            .chain(self.work_graph.waits_for(job).uses())
             .filter_map(|use_| match use_ {
                 FactUse::Concluded(DependencyKey::Fact(fact)) => Some(fact.clone()),
                 _ => None,
