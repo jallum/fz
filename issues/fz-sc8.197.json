@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T12:34:43Z",
+  "description": "n + 1 with both operands known integers lowers to a direct call of Kernel.+ whose result is delivered to a resume entry: the caller is split in two, the rest of the body's live values are captured in a closure, and fz_op_add_ii runs behind deliver_lanes. Seen in the backend dump of walk(\u003c\u003cc, r :: binary\u003e\u003e, n) -\u003e walk(r, n + 1): 'tail direct_call +(v1, 1) -\u003e deliver e1', e1 captures r. About 26% of the plain walk after inline reads; about 4 fz_closure_get_capture_ref and 2 fz_closure_code_ref calls per step. Not checked in release. Needs investigation (why the operator is not folded into its caller; what else is in the same position: comparisons, rem, byte_size) and a proposal page before building. Evidence: scratchpad b183-5/walkd.backend, walkd.clif.",
+  "id": "fz-sc8.197",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "Arithmetic on known integers does not go through a continuation",
+  "type": "task",
+  "updated_at": "2026-11-14T12:34:43Z"
+}
