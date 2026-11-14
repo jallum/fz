@@ -22,7 +22,7 @@
 //! runs on the calling thread. When pool size > 1 lands:
 //!   - the core's run queue becomes contended (currently a plain VecDeque; will
 //!     wrap in Mutex when threads matter).
-//!   - tasks registry: HashMap becomes RwLock<HashMap> or per-worker
+//!   - tasks registry: `HashMap` becomes `RwLock<HashMap>` or per-worker
 //!     local + global registry.
 //!   - Process needs Send (currently `Heap` holds Rc — will switch to
 //!     Arc when threading lands).

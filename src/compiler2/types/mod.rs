@@ -3100,7 +3100,7 @@ impl Types {
     /// UNIFY `pattern` against `witness`: the two describe the SAME thing, so
     /// every aligned position binds and no polarity applies. This is template
     /// instantiation (a callable clause specialized by a concrete surface), not
-    /// constraint solving -- see [`Types::collect_constraint_subst`] for that.
+    /// constraint solving -- see `Types::collect_constraint_subst` for that.
     pub fn collect_instantiation_subst(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) {
         collect_subst_into(self, *pattern, *witness, BindingSide::Unify, BindingSide::Unify, sigma);
     }

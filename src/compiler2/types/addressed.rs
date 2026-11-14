@@ -144,9 +144,9 @@ pub(super) fn format_address(path: &[AddrStep]) -> String {
 impl Types {
     /// Intern a structural address to its canonical [`TypeVarId`]. Same address
     /// always yields the same id, so `param_alpha(0)` is stable across every
-    /// signature built by this `Types` instance. The id carries [`ADDRESS_TAG`]
+    /// signature built by this `Types` instance. The id carries `ADDRESS_TAG`
     /// so it is structurally distinguishable from a free var, and its dense
-    /// index (the tag masked off) keys the [`Types::address_paths`] reverse
+    /// index (the tag masked off) keys the `Types::address_paths` reverse
     /// table that display reads back.
     pub fn address_id(&mut self, path: &[AddrStep]) -> TypeVarId {
         if let Some(&id) = self.address_vars.get(path) {
@@ -179,7 +179,7 @@ impl Types {
     }
 
     /// The `TypeVarId` of `a{i}` — the key consumers use to read a parameter
-    /// slot's bound out of a [`ResolvedArrow`](crate::compiler2::resolve)'s
+    /// slot's bound out of a `ResolvedArrow`'s
     /// bounds map without naming the `AddrStep` path.
     pub fn param_alpha_id(&mut self, i: usize) -> TypeVarId {
         self.address_id(&[AddrStep::Param(i as u16)])
