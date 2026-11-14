@@ -2472,7 +2472,12 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // blocked runs too.
             // 155 -> 150 wakes, 65 -> 62 blocked completions: the same
             // DeriveRecursive drop.
-            wakes: 135,
+            // 135 -> 138 wakes, every other count unmoved: a group of
+            // recursive jobs reports its facts concluded when it closes, and
+            // three of those reports (an activation's `ReturnType`,
+            // `InputDemand` and `RuntimeDemandInputs`) reach readers that are
+            // already queued, so each coalesces into a pending run.
+            wakes: 138,
             blocked_completions: 57,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"

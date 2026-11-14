@@ -179,6 +179,15 @@ impl Drive {
         Self::new(fixture_path, text)
     }
 
+    /// Submits the unnumbered behavioural fixture `fixtures2/behavior/<name>.fz`,
+    /// for a test whose program has not yet moved to a numbered fixture.
+    pub(crate) fn behavior_fixture(name: &str) -> Self {
+        let fixture_path = format!("fixtures2/behavior/{name}.fz");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(&fixture_path);
+        let text = fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        Self::new(fixture_path, text)
+    }
+
     fn new(fixture_path: String, text: String) -> Self {
         let telemetry = ConfiguredTelemetry::new();
         let captures = Captures::install(&telemetry);

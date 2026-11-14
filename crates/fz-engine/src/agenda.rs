@@ -39,6 +39,10 @@ where
         Some(job)
     }
 
+    pub fn contains(&self, job: &J) -> bool {
+        self.queued.contains(job)
+    }
+
     pub fn len(&self) -> usize {
         self.queue.len()
     }

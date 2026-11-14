@@ -633,6 +633,26 @@ where
         change
     }
 
+    /// The change that tells readers `key` has concluded though nothing about
+    /// the fact moved: a group closing leaves every table cell as it was, and
+    /// the conclusion is the news.
+    pub fn report_conclusion(&mut self, key: &F) -> FactChange<F> {
+        let revision = self.revision(key);
+        let settled = self.is_settled(key);
+        self.movements += 1;
+        FactChange {
+            key: key.clone(),
+            old_revision: revision,
+            new_revision: revision,
+            old_settled: settled,
+            new_settled: settled,
+            old_concluded: false,
+            new_concluded: true,
+            content_movement: None,
+            concluded_movement: None,
+        }
+    }
+
     pub fn mark_dirty(&mut self, publisher: &P, output_keys: &OrderedSet<F>) -> Vec<FactChange<F>> {
         let mut changed = Vec::new();
         for key in output_keys {

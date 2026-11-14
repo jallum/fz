@@ -2100,11 +2100,11 @@ impl World {
         self.work_graph.facts().is_settled(&DependencyKey::Fact(key.clone()))
     }
 
-    /// Present, and no publisher is still deriving it.
+    /// Present, no publisher is still deriving it, and none sits in a group
+    /// that is still open: the answer a reader outside the group may take as
+    /// final.
     pub fn fact_is_concluded(&self, key: &FactKey) -> bool {
-        self.work_graph
-            .facts()
-            .is_locally_settled(&DependencyKey::Fact(key.clone()))
+        self.work_graph.is_concluded(&DependencyKey::Fact(key.clone()))
     }
 
     /// Terminal standing waits in the same faithful semantic order used by

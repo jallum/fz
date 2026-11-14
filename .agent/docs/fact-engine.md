@@ -427,6 +427,52 @@ it re-lists its standing claims and reads (`World::standing_claims_and_reads`,
 see *Retraction and preservation* above) so a conclusion reached with no
 ground under it retracts nothing it never refuted.
 
+## Groups
+
+A recursive answer is found by a climb: each job of a cycle re-runs as the
+others' answers grow, until nothing moves. Between two steps no job of the
+cycle is queued, because the next step is started by a wake and not by a
+standing wait, so "no publisher is queued" is true at every rung. A reader
+outside the cycle that took that for conclusion would read every rung it
+happened to see, and each rung keys work of its own. A **group** names the
+jobs of one climb so that readers outside it hear one answer.
+
+- **Formation.** `Scheduler::partners(producer, reader)` is the partner
+  question `World::answer_use` asks. A job is its own partner. Otherwise the
+  two are partners when the producer waits on the reader through standing
+  waits, and the question then forms a group of the reader, the producer and
+  every job on the wait path between them (`Groups::wait_path`). A group that
+  already holds a job of the path counts as one node, however far along the
+  path it sits: a wait on any member reaches every member. Joining merges every
+  group a joiner already belongs to. Membership is by run identity, so every
+  answer a job owns belongs to its group. Partner detection is asked through a
+  shared reference, so the groups sit behind a `RefCell` in the scheduler.
+- **Inside a group, nothing changes.** Between two members `partners` is
+  `waits_reach` (the producer reaches the reader through waits), and a fact
+  that is not a partner's is concluded for a member when it is locally
+  settled. Reading every in-group answer as a partner would key a fresh
+  activation for each unfinished step of a climb, and each of those would join
+  the group and climb in turn.
+- **Open and closed.** A group is open from formation and whenever a member is
+  enqueued (`Scheduler::enqueue` and every wake). At the end of a completion
+  the completing job's group closes when no member is queued and none has
+  standing waits. Closing reports, in one more dispatch, each fact a member
+  publishes that is now concluded and that a job is parked on a `Concluded`
+  wait for, so a reader outside the group waiting on it wakes once. No pass
+  looks at every group: the group of the job that completed is the only one
+  asked. A fact slot carries no held flag.
+- **Concluded, for whom.** For a reader outside the publisher's group a fact is
+  concluded when it is locally settled and no publisher's group is open
+  (`Scheduler::is_concluded`, behind `World::fact_is_concluded`). For a member
+  of the publisher's group it is concluded when it is locally settled
+  (`Scheduler::is_concluded_for`). A `Concluded` wait is still woken the
+  moment its fact is locally settled, which is how a reader that parked before
+  a cycle closed learns the cycle exists; the reader's next run asks
+  `answer_use` again and, if the group is open, parks again.
+- **Quiescence.** A publisher in an open group counts as dirty in
+  `quiescent_cone`: the drain arbiter does not certify a fact whose cone holds
+  one, because the group is still climbing.
+
 ## Three questions a fact answers
 
 Content, cleanliness, and finality sound like one idea. They are three, asked
@@ -877,16 +923,17 @@ A job's standing waits are `StandingWaits`: each wait names the job that
 answers it, resolved by `World::standing_waits` (`fact_producer`) at the moment
 the wait is recorded (completion, `park_on_gates`, `pop_runnable`). The engine
 answers which job waits on which from those stored edges: `waits_reach(from,
-to)`, whether `from` waits on `to` directly or through the jobs it waits on. A wait whose
+to)`, whether `from` waits on `to` directly or through the jobs it waits on, and
+`Groups::wait_path`, the jobs on such a path (see *Groups*). A wait whose
 fact has no single producer blocks and carries no edge. `revive_blocked_chain`
 walks the same edges.
 
 A callee's `RuntimeDemandInputs` is its answer: how much of each argument it
 needs. `World::answer_use` says how a run may use it, as an `AnswerUse`. A
 partner's answer, one whose producer is already waiting on this run
-(`Scheduler::waits_reach`), is read `Current`, however unfinished: the two are one
+(`Scheduler::partners`), is read `Current`, however unfinished: the two are one
 fixpoint (`AnswerUse::Partner`). Any other answer is read only once it has
-concluded (`AnswerUse::Concluded`), and until then the run waits for it
+concluded for this reader (`Scheduler::is_concluded_for`; `AnswerUse::Concluded`; see *Groups*), and until then the run waits for it
 (`AnswerUse::Wait`) and the callee is unanswered. `DeriveInputDemand` asks the
 same question of its callees' `InputDemand` (see type-specialization.md). An unanswered callee is never read as bottom:
 

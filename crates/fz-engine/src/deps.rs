@@ -148,6 +148,14 @@ where
         jobs
     }
 
+    /// Every fact some job is parked on a `Concluded` wait for.
+    pub fn concluded_waits(&self) -> impl Iterator<Item = &F> {
+        self.waiters.iter().filter_map(|(usage, jobs)| match usage {
+            FactUse::Concluded(key) if !jobs.is_empty() => Some(key),
+            _ => None,
+        })
+    }
+
     pub fn has_waiter(&self, fact_use: &FactUse<F>) -> bool {
         self.waiters.get(fact_use).is_some_and(|jobs| !jobs.is_empty())
     }

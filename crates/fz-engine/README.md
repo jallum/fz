@@ -30,6 +30,16 @@ described in full in `.agent/docs/fact-engine.md`.
   waits' answering jobs.
 - `waits`: `StandingWaits`, the waits that stopped one run, each with the job
   the client names as its answerer (or none).
+- `groups`: `Groups<J>`, the jobs whose answers conclude together. A group forms
+  when `Scheduler::partners` finds a producer waiting on its reader, from the
+  reader, the producer and every job on the wait path (an existing group is one
+  node on that path). It is open from formation and whenever a member is
+  enqueued, and closes when a completion leaves no member queued or waiting,
+  reporting the concluded facts its members publish and a job waits on in one
+  more dispatch.
+  `Scheduler::is_concluded_for(reader, fact)` asks local settledness of a member
+  of the publisher's group; `Scheduler::is_concluded(fact)` asks, of any other
+  reader, local settledness and every publisher's group closed.
 - `agenda`: `Agenda<J>`, a job queue that holds each job at most once.
 - `ordered_set`, `ordered_worklist`: `OrderedSet` (registration-order set) and
   `OrderedWorklist` (a min-heap under a caller-supplied comparison).
