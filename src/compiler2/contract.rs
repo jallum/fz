@@ -348,9 +348,10 @@ impl ContractArrow {
         if params.len() != arg_tys.len() {
             return None;
         }
-        let domain = types.clause_domain_at_every_instantiation(params, &self.bounds);
+        let closed = types.close_bounds(&self.bounds, &HashMap::default());
         let mut row = Vec::with_capacity(arg_tys.len());
-        for (witness, domain) in arg_tys.iter().zip(domain) {
+        for (witness, pattern) in arg_tys.iter().zip(params) {
+            let domain = types.clause_domain_envelope(*pattern, &closed);
             let narrowed = types.narrow_to_clause_domain(*witness, domain);
             if types.is_empty(&narrowed) {
                 return None;
