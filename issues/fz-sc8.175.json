@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:49:11Z",
+  "description": "Measured on develop 7df703b5f, interp.\n\n  defmodule T do\n    @spec g([a], integer) :: integer\n    def g(_xs, _n), do: 2\n    @spec f([a], (a) -\u003e any) :: integer\n    def f(_xs, _g), do: 1\n  end\n\nT.g(1..3, 1) is refused: error[spec/violation]: call to g/2 violates its @spec for arguments (%Range{...}, int); the declared domain is ([a0_e], int).\nT.f(1..3, fn x -\u003e x end) prints 1. T.f(:atom, fn x -\u003e x end) prints 1 as well. The same holds when the body calls the closure.\n\nSo the declared domain of the first argument is not checked at a call whose arguments include a closure. This is why Enum.sort_by, max_by, chunk_by and the other *_by functions accepted a range while declaring [a], and Enum.sum did not.\n\nNot investigated: where the check is skipped, whether it is every arrow-typed parameter or only ones mentioning a type variable, and run/build. Decide the intended behaviour with fz-i89 in view (the user decided there that a spec over an untyped clause follows Elixir and does not narrow); the defect here is that two calls to equally specced functions are treated differently.\n\nProbes: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/b173/spec1.fz .. spec4.fz",
+  "id": "fz-sc8.175",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A call is checked against its @spec when the function also takes a closure",
+  "type": "bug",
+  "updated_at": "2026-11-14T01:49:11Z"
+}
