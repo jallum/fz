@@ -1,0 +1,1 @@
+__STACKTRACE__ is available only inside catch and rescue clauses of try expressions

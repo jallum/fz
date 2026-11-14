@@ -1,0 +1,12 @@
+#---
+# purpose: "__STACKTRACE__ read outside a rescue or catch clause is refused with Elixir's words, a try body included"
+# expect: diagnostic
+# diagnostic.code: lower/unbound
+#---
+def main() do
+  try do
+    dbg(__STACKTRACE__)
+  rescue
+    _ -> :rescued
+  end
+end

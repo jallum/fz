@@ -1,0 +1,40 @@
+#---
+# purpose: "__STACKTRACE__ is a list a rescue clause, a catch clause and a closure inside one can read, and reraise/2 takes it"
+# oracle: 00885_stacktrace_is_a_list_in_rescue_and_catch_and_reraise_takes_it.oracle.exs
+# oracle.stamp: 254dddffd0f58fe8
+#---
+def main() do
+  rescued = try do
+    raise ArgumentError, "first"
+  rescue
+    e in ArgumentError -> {e.message, is_list(__STACKTRACE__)}
+  end
+  dbg(rescued)
+
+  caught = try do
+    throw(:ball)
+  catch
+    :throw, value -> {value, is_list(__STACKTRACE__)}
+  end
+  dbg(caught)
+
+  in_a_closure = try do
+    raise ArgumentError, "second"
+  rescue
+    _ ->
+      read = fn -> is_list(__STACKTRACE__) end
+      read.()
+  end
+  dbg(in_a_closure)
+
+  outer = try do
+    try do
+      raise ArgumentError, "third"
+    rescue
+      e in ArgumentError -> reraise e, __STACKTRACE__
+    end
+  rescue
+    e in ArgumentError -> {:outer_saw, e.message}
+  end
+  dbg(outer)
+end

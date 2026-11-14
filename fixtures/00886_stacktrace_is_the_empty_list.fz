@@ -1,0 +1,18 @@
+#---
+# purpose: "fz carries no stacktraces: __STACKTRACE__ is the empty list in a rescue clause and in a catch clause, where Elixir's holds frames"
+#---
+def main() do
+  rescued = try do
+    raise ArgumentError, "boom"
+  rescue
+    _ -> __STACKTRACE__
+  end
+  dbg(rescued)
+
+  caught = try do
+    throw(:ball)
+  catch
+    _ -> __STACKTRACE__
+  end
+  dbg(caught)
+end

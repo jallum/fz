@@ -135,6 +135,11 @@ impl std::fmt::Display for CallableName {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeExprBody(pub Vec<Token>);
 
+/// The name a rescue or catch clause binds to the raise's stacktrace. It is a
+/// special form, not a hygienic variable: wherever it is written, a macro's
+/// quote included, it reads the binding of the clause that encloses it.
+pub const STACKTRACE: &str = "__STACKTRACE__";
+
 /// A variable's full identity: its spelling, and where that spelling was
 /// written. Two `Var`s with the same `name` but a different `context` never
 /// resolve to the same binding — that is what makes macro expansion

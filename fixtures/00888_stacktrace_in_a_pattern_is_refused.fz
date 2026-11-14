@@ -1,0 +1,9 @@
+#---
+# purpose: "__STACKTRACE__ is not a name a pattern can bind; a match on it is refused with Elixir's words"
+# expect: diagnostic
+# diagnostic.code: parse/stacktrace-pattern
+#---
+def main() do
+  __STACKTRACE__ = 5
+  dbg(__STACKTRACE__)
+end
