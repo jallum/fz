@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-xxd.16"
+  ],
   "blocks": [],
   "created": "2026-11-14T03:02:05Z",
   "description": "Split from fz-xxd.16. A c_pointer is the raw FILE* word passed to C externs; a c_pointer-typed clause accepts any integer. fz-xxd.16 gives pid and ref their own runtime kinds; c_pointer was left as is by its spike because three resource sites assume an integer payload: resource_payload_ref, the drain_destructors assert, and the 't: integer | c_pointer' parameter on make_resource/claim_resource (spike notes, scratchpad/xxd16/tagged_opaques_spike.patch report).\nFails before, passes after: a c_pointer-typed clause refuses an integer and admits a pointer returned by a C extern, on all three paths; file resources still close via their destructor.\nAcceptance: full gate green; no pin rises unexplained.",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "A c_pointer type test tells a C pointer from every other value",
   "type": "bug",
-  "updated_at": "2026-11-14T03:02:05Z"
+  "updated_at": "2026-11-14T03:02:15Z"
 }
