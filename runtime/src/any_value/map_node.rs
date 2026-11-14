@@ -1,7 +1,7 @@
 //! The raw layout of a map object that is a node of a trie.
 //!
-//! A map of up to `MAP_FLAT_MAX` entries built in one call is one flat sorted
-//! array (`map_header_word`). A larger one is a hash array mapped trie of
+//! A map of up to `MAP_FLAT_MAX` entries is one flat sorted array
+//! (`map_header_word`). A larger one is a hash array mapped trie of
 //! nodes, each a heap object of kind MAP whose first word says so:
 //!
 //! ```text
@@ -34,7 +34,7 @@ use super::{
 };
 use std::ptr;
 
-/// The most entries a map built in one call holds as a flat array.
+/// The most entries a map holds as a flat array.
 pub const MAP_FLAT_MAX: usize = 32;
 
 const MAP_TRIE_FLAG: u64 = 1 << 62;

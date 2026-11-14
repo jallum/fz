@@ -183,7 +183,7 @@ destination) has a different header: bit 63 set, the number of entries filled
 so far at bit 33 and the capacity at bit 4, each 29 bits wide. Freezing it
 writes the published header.</p>
 
-<p>A map built in one call with more than 32 entries is a hash trie. Each node
+<p>A map with more than 32 entries is a hash trie. Each node
 is a Map object whose header has bit 62 set; it keeps the layout above for its
 own entries and appends one word per child after the values:</p>
 
@@ -199,8 +199,16 @@ exists only where two or more keys share the path, so a key set has exactly one
 trie. Keys whose whole hash is equal share a collision node. The root's
 <code>total</code> is the map's size. The low nibble of every header is clear,
 so the forwarding marker works on a node as on any other object. A map of up to
-32 entries stays a flat array, and enumeration order is key order for it and
+32 entries is a flat array, and enumeration order is key order for it and
 node order (a function of the hashes) for a trie.</p>
+
+<p>A put or a delete on a trie copies the nodes on the path from the root to
+the key's slot, which is a handful of nodes whatever the map's size, and shares
+every other node with the map it was given. A node left with one entry is
+pulled up into its parent, which keeps the one trie per key set. A put that
+takes a flat map to 33 entries makes a trie, and a delete that takes a trie to
+32 makes the flat array again. An update, <code>%{m | k: v}</code>, of a trie
+is a put of that key on the trie itself.</p>
 
 <p><strong>Dynamic roots:</strong></p>
 

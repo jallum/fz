@@ -2,7 +2,7 @@
 //!
 //! A map has three physical layouts. The entries layout is a sorted array of
 //! key/value pairs. The trie layout is a hash array mapped trie, for a map of
-//! more than `MAP_FLAT_MAX` entries built in one call (see `map_trie`). The
+//! more than `MAP_FLAT_MAX` entries (see `map_trie`). The
 //! struct layout is a schema-backed object: a named
 //! struct's keys are its schema's fields plus `__struct__`, which answers the
 //! module. Which layout a value has is invisible to the language, so every map
@@ -215,16 +215,6 @@ impl Heap {
         }
     }
 
-    /// Every entry in key order: the order of an entries layout and a struct,
-    /// and a trie's entries sorted.
-    pub fn map_view_entries_in_key_order(&self, layout: MapLayout) -> Vec<(AnyValue, AnyValue)> {
-        let mut entries = self.map_view_entries(layout);
-        if matches!(layout, MapLayout::Trie(_)) {
-            self.sort_entries_by_key(&mut entries);
-        }
-        entries
-    }
-
     /// The node and entry slot that hold `key` in the map at `addr`, an
     /// entries layout or a trie.
     pub(super) fn locate_key(&self, addr: *mut u8, key: AnyValue) -> Option<(*const u8, usize)> {
@@ -259,8 +249,8 @@ impl Heap {
     }
 
     /// The map with `key` bound to `value`. A struct keeps its layout when
-    /// `key` is one of its fields; any other key leaves the schema. A trie is
-    /// rebuilt as a trie.
+    /// `key` is one of its fields; any other key leaves the schema. A trie
+    /// copies the path to the key's slot.
     pub fn map_view_put(&mut self, layout: MapLayout, key: AnyValue, value: AnyValue) -> AnyValueRef {
         match layout {
             MapLayout::Entries(addr) => entries_ref(self.map_put_entry(addr, key, value)),
@@ -282,11 +272,11 @@ impl Heap {
     /// The map without `key`; the same map when it lacks `key`.
     pub fn map_view_delete(&mut self, map: AnyValueRef, key: AnyValue) -> AnyValueRef {
         let layout = self.expect_map_layout(map, "map delete");
+        if let MapLayout::Trie(root) = layout {
+            return self.trie_delete(root, key).map_or(map, entries_ref);
+        }
         if !self.map_view_has_key(layout, key) {
             return map;
-        }
-        if let MapLayout::Trie(root) = layout {
-            return entries_ref(self.trie_delete(root, key));
         }
         let entries: Vec<_> = {
             let schemas = self.schemas.borrow();
@@ -430,15 +420,20 @@ fn struct_addr(object: AnyValueRef) -> *mut u8 {
     object.struct_addr().expect("a struct layout holds a struct")
 }
 
-/// The layout of the unpublished destination `bits` names: an entries
-/// destination or a struct's copy. `None` for `0`, which is what an update
-/// that missed a key is left with.
+/// The layout of the destination `bits` names: an unpublished entries
+/// destination, a struct's copy, or the trie an update of a trie continues
+/// with. `None` for `0`, which is what an update that missed a key is left
+/// with.
 pub(super) fn destination_layout(bits: u64) -> Option<MapLayout> {
     if bits == 0 {
         return None;
     }
     if let Some(addr) = map_addr_from_tagged(bits) {
-        return Some(MapLayout::Entries(addr));
+        return Some(if unsafe { map_header_is_trie(addr) } {
+            MapLayout::Trie(addr)
+        } else {
+            MapLayout::Entries(addr)
+        });
     }
     let addr = struct_addr_from_tagged(bits).expect("a map destination is a map or a struct");
     Some(MapLayout::Struct {

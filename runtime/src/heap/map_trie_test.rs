@@ -5,14 +5,14 @@
 use super::*;
 use crate::any_value::{
     AnyValueRef, EMPTY_LIST, ValueKind, heap_word_addr, map_addr_from_tagged, map_count, map_entry, map_header_is_trie,
-    map_node_child_count, map_object_size,
+    map_node_child_count, map_object_size, map_slot_raw_kinds,
 };
 use crate::heap::{Generation, MapLayout, SchemaRegistry, measure_deep_copy};
 use crate::sched::gift_copy;
 use crate::term::{NumericMode, TermComparator};
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
 
 fn heap() -> Heap {
@@ -335,9 +335,10 @@ fn a_trie_and_the_flat_map_of_the_same_entries_are_equal_and_order_alike() {
     }
     assert!(unsafe { map_header_is_trie(root_addr(trie)) });
     assert!(
-        !unsafe { map_header_is_trie(root_addr(flat)) },
-        "a put leaves a flat map flat"
+        unsafe { map_header_is_trie(root_addr(flat)) },
+        "a put past the flat limit makes a trie"
     );
+    assert_eq!(shape(root_addr(flat)), shape(root_addr(trie)));
     let (trie_value, flat_value) = (map_value(trie), map_value(flat));
     assert_eq!(compare(&heap, trie_value, flat_value), Ordering::Equal);
     assert_eq!(compare(&heap, flat_value, trie_value), Ordering::Equal);
@@ -440,11 +441,270 @@ fn the_entry_by_index_of_a_trie_is_the_entry_the_walk_visits_at_that_position() 
     assert_eq!(value.raw(), walked[999].1.raw());
 }
 
+/// A small deterministic generator, so a failing interleaving repeats.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, bound: u64) -> u64 {
+        self.next() % bound
+    }
+}
+
+/// The nodes of the map at `node` and everything beneath it, as text: each
+/// node's header, its entries' words and kinds, and its children in order.
+/// Two maps of one key set are one tree exactly when this text is equal.
+fn shape(node: *const u8) -> String {
+    let own = unsafe { map_node_entry_count(node) };
+    let entries: Vec<_> = (0..own).map(|slot| unsafe { map_slot_raw_kinds(node, slot) }).collect();
+    let children: Vec<_> = (0..unsafe { map_node_child_count(node) })
+        .map(|child| shape(unsafe { map_node_child(node, child) }))
+        .collect();
+    format!(
+        "{:x}{entries:?}({})",
+        unsafe { std::ptr::read(node as *const u64) },
+        children.join(",")
+    )
+}
+
+/// Every node address of the map at `node`.
+fn node_addresses(node: *const u8, into: &mut HashSet<usize>) {
+    into.insert(node as usize);
+    for child in 0..unsafe { map_node_child_count(node) } {
+        node_addresses(unsafe { map_node_child(node, child) }, into);
+    }
+}
+
+fn entries_of(model: &BTreeMap<i64, i64>) -> Vec<(AnyValue, AnyValue)> {
+    model
+        .iter()
+        .map(|(&k, &v)| (AnyValue::int(k), AnyValue::int(v)))
+        .collect()
+}
+
+fn is_trie(map: AnyValueRef) -> bool {
+    unsafe { map_header_is_trie(root_addr(map)) }
+}
+
+fn map_bytes_allocated(heap: &Heap) -> u64 {
+    heap.alloc_stats_snapshot().map.bytes
+}
+
+fn map_allocs(heap: &Heap) -> u64 {
+    heap.alloc_stats_snapshot().map.allocs
+}
+
 #[test]
-fn a_map_in_key_order_lists_a_trie_sorted() {
+fn puts_and_deletes_in_any_order_leave_the_trie_a_bulk_build_of_the_same_entries_would_make() {
     let mut heap = heap();
-    let map = map_ref(heap.alloc_map_slots(&shuffled_entries(200)));
-    let sorted = heap.map_view_entries_in_key_order(layout_of(&heap, map));
-    let keys: Vec<i64> = sorted.iter().map(|e| int_of(e.0)).collect();
-    assert_eq!(keys, (0..200).collect::<Vec<_>>());
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let mut model = BTreeMap::new();
+    let mut map = map_ref(heap.alloc_map_slots(&[]));
+    let (mut grew, mut shrank) = (0, 0);
+    for step in 0..6000 {
+        let was_trie = is_trie(map);
+        let key = rng.below(80) as i64;
+        let (old_map, old_shape, old_contents) = (map, shape(root_addr(map)), contents(&heap, map));
+        if rng.below(100) < 52 {
+            let value = step as i64;
+            map = heap.map_view_put(layout_of(&heap, map), AnyValue::int(key), AnyValue::int(value));
+            model.insert(key, value);
+        } else {
+            map = heap.map_view_delete(map, AnyValue::int(key));
+            model.remove(&key);
+        }
+        grew += usize::from(!was_trie && is_trie(map));
+        shrank += usize::from(was_trie && !is_trie(map));
+        assert_eq!(
+            is_trie(map),
+            model.len() > MAP_FLAT_MAX,
+            "step {step}: {} entries",
+            model.len()
+        );
+        if is_trie(map) {
+            assert_holds_model(&mut heap, map, &model);
+        } else {
+            assert_eq!(contents(&heap, map), model);
+        }
+        let bulk = map_ref(heap.alloc_map_slots(&entries_of(&model)));
+        assert_eq!(
+            shape(root_addr(map)),
+            shape(root_addr(bulk)),
+            "step {step}: one key set, one tree"
+        );
+        assert_eq!(
+            shape(root_addr(old_map)),
+            old_shape,
+            "step {step}: the map operated on is as it was"
+        );
+        assert_eq!(contents(&heap, old_map), old_contents);
+    }
+    assert!(
+        grew > 8 && shrank > 8,
+        "the run crossed the limit both ways ({grew}, {shrank})"
+    );
+}
+
+#[test]
+fn an_operation_leaves_the_map_it_was_given_as_it_was() {
+    let mut heap = heap();
+    let entries = shuffled_entries(300);
+    let original = map_ref(heap.alloc_map_slots(&entries));
+    let (original_shape, original_contents) = (shape(root_addr(original)), contents(&heap, original));
+    let layout = layout_of(&heap, original);
+    let _ = heap.map_view_put(layout, AnyValue::int(7), AnyValue::int(-1));
+    let _ = heap.map_view_put(layout, AnyValue::int(7000), AnyValue::int(-1));
+    let _ = heap.map_view_delete(original, AnyValue::int(8));
+    assert_eq!(shape(root_addr(original)), original_shape);
+    assert_eq!(contents(&heap, original), original_contents);
+}
+
+/// A hash that gives forty-odd keys in two hundred the same sixty-four bits,
+/// and keeps the rest of the key set on shared long paths.
+fn colliding_hash(key: AnyValue) -> u64 {
+    let i = int_of(key);
+    ((i % 4) as u64) << 62 | (i % 20) as u64
+}
+
+fn colliding_ops() -> KeyOps<'static> {
+    KeyOps {
+        hash: &colliding_hash,
+        order: &|a, b| int_of(a).cmp(&int_of(b)),
+    }
+}
+
+fn colliding_bulk(heap: &mut Heap, model: &BTreeMap<i64, i64>) -> AnyValueRef {
+    let mut hashed: Vec<_> = entries_of(model)
+        .into_iter()
+        .map(|e| (colliding_hash(e.0), e))
+        .collect();
+    map_ref(heap.alloc_trie_hashed(&mut hashed))
+}
+
+#[test]
+fn keys_that_share_a_whole_hash_are_put_and_deleted_through_collision_nodes_and_long_paths() {
+    let mut heap = heap();
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let ops = colliding_ops();
+    let mut model: BTreeMap<i64, i64> = (0..100).map(|i| (i, i * 10)).collect();
+    let mut map = colliding_bulk(&mut heap, &model);
+    let mut saw_collision_shrink = false;
+    for step in 0..4000 {
+        let key = rng.below(200) as i64;
+        let put = model.len() < 40 || (model.len() < 190 && rng.below(2) == 0);
+        if put {
+            let bits = heap.trie_put_with(root_addr(map), AnyValue::int(key), AnyValue::int(step), &ops);
+            map = map_ref(bits);
+            model.insert(key, step);
+        } else if let Some(bits) = heap.trie_delete_with(root_addr(map), AnyValue::int(key), &ops) {
+            map = map_ref(bits);
+            model.remove(&key);
+            saw_collision_shrink |= model.len() < 100;
+        } else {
+            assert!(!model.contains_key(&key), "only an absent key is a missing delete");
+        }
+        assert_eq!(check_node(&|k| colliding_hash(k), root_addr(map), 0, 0), model.len());
+        assert_eq!(contents(&heap, map), model);
+        let bulk = colliding_bulk(&mut heap, &model);
+        assert_eq!(shape(root_addr(map)), shape(root_addr(bulk)), "step {step}");
+    }
+    assert!(saw_collision_shrink);
+}
+
+#[test]
+fn a_put_into_a_flat_map_of_the_limit_makes_a_trie_and_a_replacement_does_not() {
+    let mut heap = heap();
+    let flat = map_ref(heap.alloc_map_slots(&shuffled_entries(MAP_FLAT_MAX as i64)));
+    let replaced = heap.map_view_put(layout_of(&heap, flat), AnyValue::int(3), AnyValue::int(-3));
+    assert!(
+        !is_trie(replaced),
+        "replacing a value keeps {MAP_FLAT_MAX} entries flat"
+    );
+    let grown = heap.map_view_put(layout_of(&heap, flat), AnyValue::int(1000), AnyValue::int(1));
+    assert!(is_trie(grown));
+    assert_eq!(check_trie(&heap, grown), MAP_FLAT_MAX + 1);
+}
+
+#[test]
+fn a_delete_that_leaves_the_limit_makes_the_flat_array_and_an_absent_key_is_the_same_map() {
+    let mut heap = heap();
+    let trie = map_ref(heap.alloc_map_slots(&shuffled_entries(MAP_FLAT_MAX as i64 + 1)));
+    let allocated = map_allocs(&heap);
+    assert_eq!(
+        root_addr(heap.map_view_delete(trie, AnyValue::int(5000))),
+        root_addr(trie)
+    );
+    assert_eq!(map_allocs(&heap), allocated, "an absent key allocates nothing");
+    let shrunk = heap.map_view_delete(trie, AnyValue::int(5));
+    assert!(!is_trie(shrunk));
+    let keys: Vec<i64> = contents(&heap, shrunk).keys().copied().collect();
+    let flat_keys: Vec<i64> = heap
+        .map_view_entries(layout_of(&heap, shrunk))
+        .iter()
+        .map(|e| int_of(e.0))
+        .collect();
+    assert_eq!(keys, flat_keys, "the flat array is in key order");
+    let flat = map_ref(heap.alloc_map_slots(&[]));
+    assert_eq!(root_addr(heap.map_view_delete(flat, AnyValue::int(1))), root_addr(flat));
+}
+
+#[test]
+fn a_put_into_a_large_trie_allocates_the_nodes_of_one_path_whatever_its_size() {
+    for size in [1000i64, 100_000] {
+        let mut heap = heap();
+        let entries = shuffled_entries(size);
+        let map = map_ref(heap.alloc_map_slots(&entries));
+        let layout = layout_of(&heap, map);
+        let mut before = HashSet::new();
+        node_addresses(root_addr(map), &mut before);
+        let (bytes, allocs) = (map_bytes_allocated(&heap), map_allocs(&heap));
+        let replaced = heap.map_view_put(layout, AnyValue::int(size / 2), AnyValue::int(-1));
+        let added = heap.map_view_put(layout, AnyValue::int(size + 10), AnyValue::int(-1));
+        let deleted = heap.map_view_delete(map, AnyValue::int(size / 3));
+        let per_operation = (map_bytes_allocated(&heap) - bytes) / 3;
+        assert!(
+            per_operation < 3000,
+            "{size} entries: {per_operation} bytes an operation"
+        );
+        assert!(
+            map_allocs(&heap) - allocs <= 3 * 9,
+            "{size} entries: a path of nodes an operation"
+        );
+        for result in [replaced, added, deleted] {
+            let mut after = HashSet::new();
+            node_addresses(root_addr(result), &mut after);
+            let fresh = after.difference(&before).count();
+            assert!(fresh <= 9, "{size} entries: {fresh} nodes are new, the rest are shared");
+        }
+    }
+}
+
+#[test]
+fn an_update_destination_over_a_trie_replaces_along_a_path_and_misses_an_absent_key() {
+    let mut heap = heap();
+    let entries = shuffled_entries(5000);
+    let map = map_ref(heap.alloc_map_slots(&entries));
+    let mut model = model_of(&entries);
+    let (bytes, allocs) = (map_bytes_allocated(&heap), map_allocs(&heap));
+    let mut dest = heap.alloc_map_update(map);
+    dest = unsafe { heap.map_destination_put(dest, AnyValue::int(10), AnyValue::int(-10)) };
+    dest = unsafe { heap.map_destination_put(dest, AnyValue::int(4000), AnyValue::int(-4000)) };
+    model.insert(10, -10);
+    model.insert(4000, -4000);
+    let updated = heap.map_destination_freeze(dest).expect("an update that hit freezes");
+    assert_holds_model(&mut heap, updated, &model);
+    assert!(map_bytes_allocated(&heap) - bytes < 2 * 3000, "two paths, not the map");
+    assert!(map_allocs(&heap) - allocs <= 2 * 9);
+    assert_eq!(contents(&heap, map), model_of(&entries), "the base is untouched");
+
+    let miss = heap.alloc_map_update(map);
+    let miss = unsafe { heap.map_destination_put(miss, AnyValue::int(99_999), AnyValue::int(1)) };
+    assert_eq!(miss, 0, "a key the base lacks is the miss");
+    assert!(heap.map_destination_freeze(miss).is_none());
 }

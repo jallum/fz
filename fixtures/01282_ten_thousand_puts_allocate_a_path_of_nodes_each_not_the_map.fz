@@ -1,0 +1,39 @@
+#---
+# purpose: growing a map to 10,000 keys by single puts allocates a few hundred bytes a put, and one put into the finished map allocates one path of nodes, not the map
+# kind: run
+#---
+#
+# The program prints the map bytes and map allocations of 10,000 puts, then of
+# one put that adds a key, one that replaces a value, one that deletes a key,
+# one that deletes an absent key and one update `%{m | k => v}` of the
+# finished map. Each figure is net of what two stats snapshots allocate
+# themselves, which a call that does nothing measures.
+defmodule P do
+  def grown(n), do: Enum.reduce(1..n, %{}, fn i, m -> Map.put(m, i * 7, i) end)
+
+  def gross(fun) do
+    a = Process.heap_alloc_stats()
+    result = fun.()
+    b = Process.heap_alloc_stats()
+    {result, {b[:map_allocs] - a[:map_allocs], b[:map_bytes] - a[:map_bytes]}}
+  end
+
+  def cost(fun) do
+    {_, {idle_allocs, idle_bytes}} = gross(fn -> :ok end)
+    {result, {allocs, bytes}} = gross(fun)
+    {result, {allocs - idle_allocs, bytes - idle_bytes}}
+  end
+end
+
+{m, build} = P.cost(fn -> P.grown(10_000) end)
+dbg({map_size(m), build})
+{_, added} = P.cost(fn -> Map.put(m, 1, 1) end)
+dbg(added)
+{_, replaced} = P.cost(fn -> Map.put(m, 70, 0) end)
+dbg(replaced)
+{_, deleted} = P.cost(fn -> Map.delete(m, 70) end)
+dbg(deleted)
+{_, absent} = P.cost(fn -> Map.delete(m, 71) end)
+dbg(absent)
+{_, updated} = P.cost(fn -> %{m | 70 => 0} end)
+dbg(updated)

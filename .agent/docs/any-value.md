@@ -468,7 +468,7 @@ zero the payload, since their stores are not adjacent to the allocation.
 
 ### A map is a flat sorted array, or above 32 entries a hash trie
 
-Every map has one entry per strict structural key. Up to `MAP_FLAT_MAX` (32) entries they are stored in comparator order in one array; a larger map built in one call is a trie (below).
+Every map has one entry per strict structural key. Up to `MAP_FLAT_MAX` (32) entries they are stored in comparator order in one array; a larger map is a trie (below).
 `TermComparator` borrows Node and SchemaRegistry and is the authority for
 construction, lookup, updates, equality, order, and iteration. Equal tuple,
 list, nested-map, and binary keys collide even when separately allocated.
@@ -506,8 +506,9 @@ example, `%{b: f(), a: g(), b: h()}` calls `f`, `g` and `h` in that order and
 puts `a` then `b`, with `h`'s value. A literal with any other key keeps its
 source order and ends in the freeze, which sorts.
 
-A single update copies the flat array, so repeated updates remain quadratic.
-Use bulk operations when touching several keys. Iteration of a flat map
+A single update of a flat map copies the array of at most 32 entries; an update
+of a trie copies one path (below). Use bulk operations when touching several
+keys. Iteration of a flat map
 follows strict fz term order, including atom names and binary content;
 Elixir's atom-key iteration may differ because it uses VM identity.
 
@@ -546,14 +547,33 @@ the root answers `map_size` in constant time and bounds a map at 2^25 entries.
 The collector traces a node's own entries and its children from the header, and
 deep copy and gift copy each node once through the forwarding map.
 
-`Heap::map_layout` answers `MapLayout::Trie` for a root. `alloc_map_slots`,
-`alloc_map_refs_bits`, `fz_map_from_kv` and the destination freeze and publish
-make a trie when more than 32 entries result; put and delete on a trie rebuild
-it from its entries (a result of 32 or fewer is flat), and put on a flat map
-keeps it flat. Enumeration (`map_view_entries`, `Enum`, `Map.to_list`, `for`,
+`Heap::map_layout` answers `MapLayout::Trie` for a root. A map of more than 32
+entries is always a trie and a map of 32 or fewer is always a flat array:
+`alloc_map_slots`, `alloc_map_refs_bits`, `fz_map_from_kv` and the destination
+freeze and publish make a trie when more than 32 entries result, a put of a new
+key on a flat map of 32 entries makes one (`map_put_entry`), and a delete on a
+trie of 33 entries makes the flat array (`trie_delete`). Debug builds assert
+that no flat map is published with more than 32 entries.
+
+Put and delete on a trie (`trie_put`, `trie_delete` in
+`runtime/src/heap/map_trie.rs`) copy the nodes on the path from the root to the
+slot the key's hash names, and share every other node by pointer. A put
+replaces the value of an equal key, fills an empty slot with an inline entry,
+or, where the slot holds another key's entry, moves both into a new child
+(repeating a level while their hash bits agree, and ending in a collision node
+when all sixteen levels agree). Each copied node's `total` is updated. A delete
+that leaves a child holding one entry pulls that entry up into its parent, so
+a key set has one trie whichever puts and deletes built it; a collision node
+keeps its entries in key order for the same reason. Deleting an absent key
+returns the map it was given and allocates nothing. Nodes are allocated
+bottom-up and each is complete before the next allocation; allocation never
+collects (collection runs between quanta), and no old node is written. An
+update `%{m | k: v}` of a trie uses the trie as its own destination:
+`alloc_map_update` answers the root, each put of an existing key is a
+`trie_put`, a put of an absent key is the miss, and freeze answers the trie.
+Enumeration (`map_view_entries`, `Enum`, `Map.to_list`, `for`,
 `inspect`) is node order: a node's entries in slot order, then each child's. It
-is a function of the hashes, so anything that needs key order sorts
-(`map_view_entries_in_key_order`). Entry `i` of a trie (`map_view_entry`) skips
+is a function of the hashes, so anything that needs key order sorts the entries. Entry `i` of a trie (`map_view_entry`) skips
 whole children by their totals and costs one header read per child passed, so
 reading every entry by index costs more than one walk; `Map.to_list`, `keys`
 and `values` read by index. Equality and ordering of two maps are those of the

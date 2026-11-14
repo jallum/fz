@@ -366,20 +366,20 @@ fn a_map_hashes_by_its_entries_not_the_order_they_were_given_in() {
 }
 
 #[test]
-fn a_flat_map_a_trie_and_a_struct_that_spell_the_same_entries_hash_alike() {
+fn a_trie_built_by_puts_and_a_trie_built_at_once_that_spell_the_same_entries_hash_alike() {
     let mut w = world();
     let big: Vec<_> = (0..40).map(|i| (AnyValue::int(i), AnyValue::int(i * 2))).collect();
     let trie = heap_value(w.heap.alloc_map_slots(&big));
-    let mut flat = heap_value(w.heap.alloc_map_slots(&big[..1]));
+    let mut by_puts = heap_value(w.heap.alloc_map_slots(&big[..1]));
     for &(key, value) in &big[1..] {
-        let flat_ref = AnyValueRef::from_heap_object(ValueKind::MAP, flat.heap_addr().unwrap()).unwrap();
-        let next = w.heap.map_put_slot(flat_ref, key, value);
-        flat = AnyValue::from_ref(next).unwrap();
+        let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, by_puts.heap_addr().unwrap()).unwrap();
+        let next = w.heap.map_put_slot(map_ref, key, value);
+        by_puts = AnyValue::from_ref(next).unwrap();
     }
     assert!(unsafe { map_header_is_trie(trie.heap_addr().unwrap()) });
-    assert!(!unsafe { map_header_is_trie(flat.heap_addr().unwrap()) });
-    assert_eq!(w.compare(trie, flat), Ordering::Equal);
-    assert_eq!(w.hash(trie), w.hash(flat));
+    assert!(unsafe { map_header_is_trie(by_puts.heap_addr().unwrap()) });
+    assert_eq!(w.compare(trie, by_puts), Ordering::Equal);
+    assert_eq!(w.hash(trie), w.hash(by_puts));
 }
 
 /// A tuple of `depth` levels in which every level holds the one below twice:

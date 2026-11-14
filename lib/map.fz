@@ -1,13 +1,15 @@
 defmodule Map do
   @moduledoc """
-  A map of up to 32 entries is a flat sorted array; a map built in one call
-  with more is a hash trie.
+  A map of up to 32 entries is a flat sorted array; a map of more is a hash
+  trie.
 
   In a flat map keys stay in sorted order, so `get/2` and `has_key?/2` are
-  binary searches; in a trie they follow the key's hash. `put/3` and `delete/2` each copy the whole array, so a loop
-  over `n` keys is `O(n^2)`. `new/1`, `merge/2`, `take/2`, `drop/2`,
+  binary searches; in a trie they follow the key's hash. `put/3` and
+  `delete/2` copy the whole array of a flat map, and the nodes on one path of
+  a trie, so a loop of them over `n` keys is `O(n)` copies of at most 32
+  entries once the map is a trie. `new/1`, `merge/2`, `take/2`, `drop/2`,
   `filter/2`, and `split/2` each do one pass and one allocation instead --
-  reach for one of those when a call site touches more than one key.
+  reach for one of those when a call site touches several keys.
 
   Keys use strict structural identity: independently built equal tuples,
   lists, maps, and binaries are the same key, and the last input value wins.
@@ -165,14 +167,14 @@ defmodule Map do
   defp key_listed_or?(true, _t, _v), do: true
   defp key_listed_or?(false, t, v), do: key_listed?(t, v)
 
-  # Each of these copies the whole array. Use them for a single key, not in a loop.
+  # Each of these copies the whole array of a flat map and one path of a trie.
 
   @doc """
   Returns the map with `value` set for `key`, overwriting any existing
   entry.
 
-  Copies the whole array; prefer `new/1` or `merge/2` over a loop of
-  `put/3` calls.
+  Copies the whole array of a flat map and one path of a trie; prefer `new/1`
+  or `merge/2` for several keys.
 
   ## Examples
 
@@ -314,7 +316,7 @@ defmodule Map do
   Returns the map with `fun` applied to the value at `key`, and aborts with
   `KeyError` when the key is absent.
 
-  Copies the whole array, like `put/3`.
+  Copies as `put/3` does.
 
   ## Examples
 
@@ -371,7 +373,7 @@ defmodule Map do
   Returns the map with `fun` applied to the value at `key`, or with `key`
   put to `default` when it is absent. `fun` is not called for an absent key.
 
-  Copies the whole array, like `put/3`.
+  Copies as `put/3` does.
 
   ## Examples
 
@@ -392,7 +394,7 @@ defmodule Map do
   @doc """
   Returns the map without `key`, or `map` unchanged if `key` is absent.
 
-  Copies the whole array; prefer `drop/2` for removing several keys.
+  Copies as `put/3` does; prefer `drop/2` for removing several keys.
 
   ## Examples
 

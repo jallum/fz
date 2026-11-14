@@ -1,0 +1,49 @@
+#---
+# purpose: "a map grown to 10,000 integer keys one put at a time, updated key by key, thinned by deleting half and read back, and a map of binary keys grown the same way, agree with Elixir"
+# oracle: 01281_a_large_map_is_built_updated_thinned_and_read_back_by_single_puts.oracle.exs
+# oracle.stamp: beacb9fb6f90bcb5
+#---
+#
+# Past 32 keys Elixir orders a map by hash, so everything printed is sorted
+# first or order-free. Each put and each delete lands in a map that is a hash
+# tree of many nodes; the program checks the tree after every phase against the
+# entries it was fed.
+def grown(n), do: Enum.reduce(1..n, %{}, fn i, m -> Map.put(m, i * 7, i) end)
+
+def bumped(m, n), do: Enum.reduce(1..n, m, fn i, acc -> %{acc | i * 7 => i + 1} end)
+
+def thinned(m, n), do: Enum.reduce(1..n, m, fn i, acc -> if rem(i, 2) == 1, do: Map.delete(acc, i * 7), else: acc end)
+
+def summary(m) do
+  entries = Enum.sort(Map.to_list(m))
+  {map_size(m), Enum.take(entries, 3), Enum.take(entries, -3), Enum.reduce(entries, 0, fn {k, v}, a -> a + k + v end)}
+end
+
+def word(i), do: "k" <> Integer.to_string(i)
+
+def main() do
+  n = 10_000
+  m = grown(n)
+  IO.inspect(summary(m))
+  IO.inspect({Map.get(m, 7), Map.get(m, 70_000), Map.get(m, 35_000), Map.get(m, 8), Map.get(m, 0)})
+
+  up = bumped(m, n)
+  IO.inspect(summary(up))
+  IO.inspect({map_size(m), Map.get(m, 7), Map.get(up, 7)})
+
+  half = thinned(up, n)
+  IO.inspect(summary(half))
+  IO.inspect({Map.has_key?(half, 7), Map.has_key?(half, 14), Map.has_key?(half, 69_993), Map.has_key?(half, 70_000)})
+  IO.inspect(Enum.all?(2..n//2, fn i -> Map.fetch(half, i * 7) == {:ok, i + 1} end))
+  IO.inspect(Enum.all?(1..n//2, fn i -> not Map.has_key?(half, i * 7) end))
+  IO.inspect(Map.delete(half, 7) == half)
+
+  shrunk = Enum.reduce(Map.keys(half), half, fn k, acc -> if rem(div(k, 7), 4) == 0, do: acc, else: Map.delete(acc, k) end)
+  IO.inspect(summary(shrunk))
+  IO.inspect(Enum.reduce(1..40, shrunk, fn i, acc -> Map.put(acc, -i, i) end) |> map_size())
+
+  words = Enum.reduce(1..2_000, %{}, fn i, acc -> Map.put(acc, word(i), i) end)
+  IO.inspect({map_size(words), Map.get(words, "k1"), Map.get(words, "k2000"), Map.get(words, "k2001")})
+  fewer = Enum.reduce(1..1_990, words, fn i, acc -> Map.delete(acc, word(i)) end)
+  IO.inspect({map_size(fewer), Enum.sort(Map.to_list(fewer))})
+end
