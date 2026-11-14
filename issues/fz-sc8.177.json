@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:55:40Z",
+  "description": "show %Pt{x: 1} is refused: expected ), got LBrace. show %{a: 1} parses. Elixir accepts both. raise %KeyError{key: k} is the common spelling.",
+  "id": "fz-sc8.177",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A call without parentheses takes a struct literal argument",
+  "type": "bug",
+  "updated_at": "2026-11-14T01:55:40Z"
+}
