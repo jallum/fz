@@ -677,7 +677,7 @@ impl ProductDriveReport {
 
 /// A drive that ran dry beneath another drive and unwound with its request
 /// standing. `scope` is the scope the drive was in and `depth` how many drives
-/// were on the stack, itself included.
+/// were on the stack, itself included; the standalone drive counts as one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProductDeferral {
     pub scope: ProductScope,
@@ -1784,10 +1784,10 @@ impl ProductSessions {
         None
     }
 
-    /// How many product drives are on the stack right now, the one asking
-    /// included.
+    /// How many drives are on the stack right now, the one asking included:
+    /// the standalone drive, when one runs, and every product drive.
     pub(crate) fn drive_depth(&self) -> usize {
-        self.active_scopes.len()
+        self.active_work_starts.len()
     }
 
     /// A drive that ended deferred leaves the facts it was waiting on for the

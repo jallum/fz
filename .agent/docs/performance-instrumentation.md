@@ -117,7 +117,8 @@ drive beneath it runs dry with its product still waiting and unwinds, its
 request standing, instead of settling facts as unknown (only the outermost
 drive arbitrates; see `.agent/docs/fact-engine.md`). It carries the `product`
 the drive was asked for, its `scope` (`program` or `root N`) and the stack
-`depth`, the deferred drive included, always above one. The drive's own
+`depth`, the deferred drive included and the standalone drive counted as one,
+always above one. The drive's own
 `pull.drive.finished` still fires. Each deferral is a request served again, so
 the count is the price of the rule on a program; `tests/whole_stack_quiescence_test.rs`
 pins it for fixture 00882.

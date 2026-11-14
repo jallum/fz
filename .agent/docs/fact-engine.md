@@ -655,24 +655,29 @@ else, so a drive nested in one request is never handed another's. A serve pass
 is `Served` when a product finished or a fact moved
 (`FactTable::movements`) during it, and `Silent` otherwise.
 
-Quiescence is a property of the whole drive stack. A drive with another drive
-beneath it can still be moved by that frame, so a drain at a stack depth above
-one arbitrates nothing and returns `Drained::Deferred`. The product fact-wait
+Quiescence is a property of the whole drive stack, which is the standalone
+drive (`Compiler2::drive`), when one runs, and every product drive above it
+(`ProductSessions::drive_depth`). A drive with another drive beneath it can
+still be moved by that frame -- the bare drive's serve loop can serve queued
+requests too -- so a drain at a stack depth above one arbitrates nothing and returns `Drained::Deferred`. The product fact-wait
 pump that gets `Deferred` still demands its own waited fact's producer and
 runs a job if it yields one; with none, it records the facts it waits on
 (`ProductSessions::defer_waits`) and its drive ends as `Driven::Deferred`, the
 request still standing. A rooted drive that was waiting on a program-scoped
 product drives it again after draining itself, so it defers in turn unless it
-is the outermost. Each deferral emits `pull.drive.deferred`.
+is the outermost. A deferred request set aside by the bare drive's serve loop
+is queued again when that pass ends, and the bare drain arbitrates once the
+pass moved nothing. Each deferral emits `pull.drive.deferred`.
 
 Only the drain of the outermost drive arbitrates: the blocked waiters' own
 settled questions plus `also_settled`, with the facts recorded by the deepest
 deferred drives asked first and in place of `also_settled`, flushed as one set
 of readiness steps whose movements are published to the product sessions. The
 arbitration's `work_graph.quiesced` event carries the stack depth, always at
-most one. A drain returns `Drained::Served`, `Drained::Moved`,
+most one: the bare drain arbitrates at one, and a product drive with no
+standalone drive beneath it arbitrates at one. A drain returns `Drained::Served`, `Drained::Moved`,
 `Drained::Silent` or `Drained::Deferred`; `Served` and `Moved` send the loop
-back around, `Silent` ends it. With no sessions the depth is zero.
+back around, `Silent` ends it. With no sessions, or no drive running, the depth is zero.
 `drive_until` calls `drain(&[])`; `drain_pending_for` calls `serve_requests`,
 the request half alone, and leaves quiescent questions indexed. The product
 fact-wait pump pops with `pop_runnable`, calls `drain` with its prerequisite
