@@ -740,6 +740,10 @@ fn exact_tuple_arity_agrees_with_the_runtime_predicate() {
     let pair_and_triple = t.intersect(pair, triple);
     let any_pair = t.tuple(&[any, any]);
     let any_pair_without_pair = t.difference(any_pair, pair);
+    let pair_or_triple = t.union(pair, triple);
+    let pair_or_triple_without_pair = t.difference(pair_or_triple, pair);
+    let any_pair_or_triple = t.union(any_pair, triple);
+    let any_pair_or_triple_without_pair = t.difference(any_pair_or_triple, pair);
 
     let mut samples = vec![
         any,
@@ -771,6 +775,9 @@ fn exact_tuple_arity_agrees_with_the_runtime_predicate() {
         pair_and_triple,
         any_pair,
         any_pair_without_pair,
+        pair_or_triple,
+        pair_or_triple_without_pair,
+        any_pair_or_triple_without_pair,
     ];
     for kind in [
         int, float, atom, binary, empty_list, int_list, map_top, resource, closure, nil,
