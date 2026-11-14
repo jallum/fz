@@ -4,13 +4,14 @@
   "blocks": [
     "fz-4i4"
   ],
+  "closed_at": "2026-11-14T03:42:42Z",
   "created": "2026-11-14T03:26:51Z",
   "description": "PR #538 (62d660974). Rewrote every pattern '::' outside lib/ that a guard or pattern can state: 22 parameters to guards, 8 ':: any' dropped, 4 shapes to patterns, 00652's duplicate, tests/guard_matrix/generate.py entry guards (programs.json regenerated with Elixir, 129/296 sources changed, every answer identical), guides/pattern-matching.html. Prediction held: no output, pin, stamp or warning changed; gate 6292 passed. Leftovers carried in the epic fz-ep5 for decision.",
   "id": "fz-ep5.1",
   "labels": [],
   "parent": "fz-ep5",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Fixtures, guides and tests pick clauses with guards and patterns where a guard can say the type",
   "type": "task",
   "updated_at": "2026-11-14T03:42:42Z"
