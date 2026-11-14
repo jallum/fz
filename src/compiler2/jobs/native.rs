@@ -362,6 +362,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             &program,
         );
         program.deduplicate_equivalent_sibling_graphs();
+        let any = self.world.types_mut().any();
+        super::super::native_body_frame::frame_bodies(&mut program, any);
         Ok(program)
     }
 
@@ -5151,6 +5153,7 @@ impl NativeFnCtx {
             value_types: self.value_types,
             extern_marshals: self.extern_marshals,
             effects: self.effects,
+            frame: None,
         };
         (fn_ir, body)
     }

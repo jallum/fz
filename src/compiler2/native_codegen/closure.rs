@@ -2,7 +2,7 @@ use super::*;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlags, StackSlotData, StackSlotKind, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
-use fz_runtime::any_value::{AnyValueRefPacking, TAG_LAZY_CONT, TaggedRefArch};
+use fz_runtime::any_value::{AnyValueRefPacking, NIL_ATOM_ID, TAG_LAZY_CONT, TaggedRefArch};
 
 /// The outer-cont ref to forward into a new cont closure. A cont fn's
 /// `cont_param` is its own closure, so the outer cont is loaded from the
@@ -24,13 +24,15 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
 ///
 /// `cap_bindings` is a slice of user captures. Typed captures stay in raw
 /// payload slots; `ValueRef` captures are already one-word any value refs.
+/// `empty_slots` more slots follow them, empty until a member of the frame the
+/// continuation starts writes one.
 pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     is_cont_fn: bool,
     cont_param: ir::Value,
     cont_fid: FuncId,
     cap_bindings: &[ClosureCapture],
-    extra_ref_captures: &[ir::Value],
+    empty_slots: usize,
 ) -> ir::Value {
     let my_outer_cont = resolve_outer_cont(body, is_cont_fn, cont_param);
     let cont_arity = body.b.ins().iconst(types::I32, CONT_ARITY);
@@ -38,7 +40,7 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     let n_caps_v = body
         .b
         .ins()
-        .iconst(types::I32, (cap_bindings.len() + extra_ref_captures.len() + 1) as i64);
+        .iconst(types::I32, (cap_bindings.len() + empty_slots + 1) as i64);
     let zero_hk = body.b.ins().iconst(types::I32, 0);
     let cont_code_addr = fn_addr(body.jmod, cont_fid, body.b);
     let cl_ptr = body.alloc_closure(
@@ -50,7 +52,7 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     );
     let heap_safe_outer_cont = body.materialize_cont(my_outer_cont);
     body.store_closure_capture_ref_word(cl_ptr, 0, heap_safe_outer_cont);
-    store_user_captures(cap_bindings, extra_ref_captures, |idx, capture| match capture {
+    store_user_captures(cap_bindings, |idx, capture| match capture {
         ClosureCapture::RefWord(ref_word) => {
             let heap_safe_ref = body.materialize_cont(ref_word);
             body.store_closure_capture_ref_word(cl_ptr, idx, heap_safe_ref);
@@ -68,30 +70,26 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     cl_ptr
 }
 
-/// Iterate user captures (typed `cap_bindings` followed by `extra_ref_captures`)
-/// and invoke `store` for each one at its target slot index. Slot 0 is reserved
-/// for the synthetic outer_cont and must be written by the caller before
-/// invoking this helper; user captures begin at index 1.
-fn store_user_captures<F>(cap_bindings: &[ClosureCapture], extra_ref_captures: &[ir::Value], mut store: F)
+/// Iterate user captures and invoke `store` for each one at its target slot
+/// index. Slot 0 is reserved for the synthetic outer_cont and must be written
+/// by the caller before invoking this helper; user captures begin at index 1.
+fn store_user_captures<F>(cap_bindings: &[ClosureCapture], mut store: F)
 where
     F: FnMut(usize, ClosureCapture),
 {
     for (i, &capture) in cap_bindings.iter().enumerate() {
         store(i + 1, capture);
     }
-    for (i, &extra) in extra_ref_captures.iter().enumerate() {
-        store(cap_bindings.len() + 1 + i, ClosureCapture::RefWord(extra));
-    }
 }
 
 /// A continuation is applied to exactly the one value it receives.
 pub(crate) const CONT_ARITY: i64 = 1;
 
-const LAZY_CONT_HEADER_BYTES: usize = 32;
-const LAZY_CONT_KIND_REF: i64 = 0;
-const LAZY_CONT_KIND_I64: i64 = 1;
-const LAZY_CONT_KIND_F64: i64 = 2;
-const LAZY_CONT_KIND_ATOM: i64 = 3;
+pub(super) const LAZY_CONT_HEADER_BYTES: usize = 32;
+pub(super) const LAZY_CONT_KIND_REF: i64 = 0;
+pub(super) const LAZY_CONT_KIND_I64: i64 = 1;
+pub(super) const LAZY_CONT_KIND_F64: i64 = 2;
+pub(super) const LAZY_CONT_KIND_ATOM: i64 = 3;
 
 pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
@@ -99,10 +97,10 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
     cont_param: ir::Value,
     cont_fid: FuncId,
     cap_bindings: &[ClosureCapture],
-    extra_ref_captures: &[ir::Value],
+    empty_slots: usize,
 ) -> ir::Value {
     let my_outer_cont = resolve_outer_cont(body, is_cont_fn, cont_param);
-    let captured_count = cap_bindings.len() + extra_ref_captures.len() + 1;
+    let captured_count = cap_bindings.len() + empty_slots + 1;
     let raw_base = LAZY_CONT_HEADER_BYTES;
     let kind_base = raw_base + captured_count * SLOT_BYTES as usize;
     let slot_size = kind_base + captured_count;
@@ -116,7 +114,7 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
     body.b.ins().stack_store(captured_count_v, slot, 16);
 
     store_lazy_capture(body.b, slot, raw_base, kind_base, 0, my_outer_cont, LAZY_CONT_KIND_REF);
-    store_user_captures(cap_bindings, extra_ref_captures, |idx, capture| match capture {
+    store_user_captures(cap_bindings, |idx, capture| match capture {
         ClosureCapture::RefWord(value) => {
             store_lazy_capture(body.b, slot, raw_base, kind_base, idx, value, LAZY_CONT_KIND_REF);
         }
@@ -131,6 +129,10 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
             store_lazy_capture(body.b, slot, raw_base, kind_base, idx, value, LAZY_CONT_KIND_ATOM);
         }
     });
+    let nil = body.b.ins().iconst(types::I64, i64::from(NIL_ATOM_ID));
+    for idx in captured_count - empty_slots..captured_count {
+        store_lazy_capture(body.b, slot, raw_base, kind_base, idx, nil, LAZY_CONT_KIND_ATOM);
+    }
     let ptr = body.b.ins().stack_addr(types::I64, slot, 0);
     emit_tagged_pointer_ref_word(body.b, ptr, TAG_LAZY_CONT)
 }

@@ -18,6 +18,7 @@ pub(crate) mod driver;
 pub(crate) mod entry;
 pub(crate) mod env;
 mod fn_ctx;
+mod frame;
 mod function;
 mod prim;
 mod receive;

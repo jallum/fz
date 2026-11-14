@@ -628,6 +628,12 @@ pub unsafe fn closure_header_write(addr: *mut u8, header: u64) {
     unsafe { ptr::write(addr as *mut u64, header) };
 }
 
+/// A closure's code word follows its one header word.
+pub const CLOSURE_CODE_OFFSET: usize = 8;
+/// A closure's raw capture words follow its code word; one kind byte per
+/// capture follows them.
+pub const CLOSURE_CAPTURES_OFFSET: usize = 16;
+
 #[inline]
 pub fn closure_size_for_count(captured_count: usize) -> usize {
     let raw_bytes = (captured_count + 1) * 8;
@@ -716,7 +722,7 @@ pub unsafe fn closure_halt_kind(addr: *const u8) -> u16 {
 /// `addr` must point to the start of an initialized strict Closure object.
 #[inline]
 pub unsafe fn closure_fn_ptr(addr: *const u8) -> u64 {
-    unsafe { ptr::read(addr.add(8) as *const u64) }
+    unsafe { ptr::read(addr.add(CLOSURE_CODE_OFFSET) as *const u64) }
 }
 
 /// # Safety
@@ -725,7 +731,7 @@ pub unsafe fn closure_fn_ptr(addr: *const u8) -> u64 {
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
 pub unsafe fn closure_capture_raw_slot(addr: *const u8, idx: usize) -> *mut u64 {
-    unsafe { addr.add(16 + idx * 8) as *mut u64 }
+    unsafe { addr.add(CLOSURE_CAPTURES_OFFSET + idx * 8) as *mut u64 }
 }
 
 /// # Safety
@@ -735,7 +741,7 @@ pub unsafe fn closure_capture_raw_slot(addr: *const u8, idx: usize) -> *mut u64 
 #[inline]
 pub unsafe fn closure_capture_kind_slot(addr: *const u8, idx: usize) -> *mut u8 {
     let count = unsafe { closure_captured_count(addr) };
-    unsafe { addr.add(16 + count * 8 + idx) as *mut u8 }
+    unsafe { addr.add(CLOSURE_CAPTURES_OFFSET + count * 8 + idx) as *mut u8 }
 }
 
 /// # Safety

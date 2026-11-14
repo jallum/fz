@@ -625,7 +625,7 @@ pub extern "C" fn fz_alloc_closure(
         halt_kind as u16,
     );
     let addr = closure_addr_from_tagged(bits).expect("new closure bits");
-    unsafe { std::ptr::write(addr.add(8) as *mut u64, body_addr) };
+    unsafe { std::ptr::write(addr.add(crate::any_value::CLOSURE_CODE_OFFSET) as *mut u64, body_addr) };
     closure_ref_word_from_bits(bits)
 }
 
@@ -2442,6 +2442,28 @@ pub extern "C" fn fz_closure_set_capture_atom(process: *mut Process, closure_ref
     };
 }
 
+/// Writes `value` into the empty `slot` of a body frame that lives on the heap.
+/// The frame belongs to the one chain of continuations that runs in it, so no
+/// one else reads the slot while it is written.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_heap_frame_store_ref(process: *mut Process, frame: u64, slot: u64, value: u64) {
+    let value = fz_materialize_cont(process, value);
+    let value = fz_mark_published_ref_aliased(process, value);
+    fz_closure_set_capture_ref(process, frame, slot, value);
+}
+
+/// Releases the heap value in `slot` of a body frame that lives on the heap. A
+/// scalar stays where it is: a reference to a scalar capture points into the
+/// slot itself.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_heap_frame_clear(process: *mut Process, frame: u64, slot: u64) {
+    let addr = closure_addr_from_tagged(frame).expect("a heap body frame is a closure");
+    let (_, kind) = unsafe { crate::any_value::closure_capture_raw_kind(addr, slot as usize) };
+    if kind.is_heap() {
+        fz_closure_set_capture_atom(process, frame, slot, crate::any_value::NIL_ATOM_ID as u64);
+    }
+}
+
 const LAZY_CONT_CODE_OFF: usize = 0;
 // +8 is reserved.
 const LAZY_CONT_COUNT_OFF: usize = 16;
@@ -2499,7 +2521,7 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
         0,
     );
     let addr = closure_addr_from_tagged(bits).expect("materialized cont bits");
-    unsafe { std::ptr::write(addr.add(8) as *mut u64, code) };
+    unsafe { std::ptr::write(addr.add(crate::any_value::CLOSURE_CODE_OFFSET) as *mut u64, code) };
     let kind_base = unsafe { lazy_cont_kind_base(ptr, count) };
     for i in 0..count {
         let raw = unsafe { lazy_cont_capture_raw(cont_word, i) };
