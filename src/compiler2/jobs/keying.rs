@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_path, demand_within_path};
 
 use super::super::body::{
-    CallInputMode, ControlDestination, DirectCallee, LoweredBody, LoweredStep, LoweredTail, ValueId,
+    CallInputMode, ControlDestination, DirectCallee, LoweredBody, LoweredStep, LoweredTail, SubjectPath, ValueId,
     delivered_value_joins,
 };
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, ProductAddress, UseCollector, current_uses};
@@ -1273,8 +1273,8 @@ fn input_origin_positions(
 ) -> Vec<(usize, Vec<DemandPathStep>)> {
     use super::super::executable_facts::TransportOrigin;
     let (source, path) = match origin {
-        TransportOrigin::LocalValue(value) => (*value, Vec::new()),
-        TransportOrigin::Projection { source, kind } => (*source, vec![kind]),
+        TransportOrigin::LocalValue(value) => (*value, SubjectPath::new()),
+        TransportOrigin::Projection { source, kind } => (*source, SubjectPath::from_elem(kind, 1)),
         TransportOrigin::OutcomeSubject { owner, subject } => {
             let (root, path) = body.dispatch_subject_origin(*owner, *subject);
             let super::super::body::SubjectOriginRoot::Value(value) = root else {
