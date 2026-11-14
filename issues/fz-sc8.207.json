@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-14T23:37:01Z",
-  "description": "Investigation, no build. On the full 222,411-line log (PR #585 plus the Enum.uniq fix) Process::collect is 28% of samples: cheney_scan 24%, forward_heap_value 22%, FromSpace::moves (the young-or-old address test) 16%, cheney_trace_map 16%, cheney_trace_list 7%. On the 32,000-line prefix collection is under 3%. By hand a generational collector copies each kept byte about once plus majors at growth factor 2.\nDeliver: per-collection telemetry over the full log (generation, bytes copied, from-space size, young range count), a statement of the first difference from the hand answer, and a proposal page with predictions if a change is warranted. Suspects to test, not conclusions: the number of young ranges FromSpace::moves searches per pointer; old maps re-traced by minors; major frequency as live data grows.",
+  "description": "Investigation, no build. Finding so far (PR #585 plus the Enum.uniq fix, full 222,411-line log):\n- Debug runtime: Process::collect is 28% of samples; FromSpace::moves alone is 16%. Its debug-only assert_classified (runtime/src/heap/gc/from_space.rs) scans heap.old_ranges() for every pointer forwarded, and the old block list reaches 578 blocks because every minor collection retires its own small to-space block as old (average 270-360 KB copied per minor).\n- Release runtime: collect is 13.7% (cheney_scan 8.0%, cheney_forward_object 5.7%, object_size_with_struct_payload 2.1%); the two MSO chain walks are another 5.1%.\n- Volume: 1,471 minors copy 468 MB, 15 majors copy 642 MB, live at end 467 MB, 21.5 GB allocated. By hand each kept byte is copied about twice at growth factor 2, so the volume is near the hand answer.\n- Times, user, loaded machine: debug 13.7 s, release 10.5 s, Elixir 4.1-4.6 s.\nOpen questions: (1) whether the debug assertion should cost O(old blocks) per pointer (a sorted range search would make debug runs representative); (2) whether hundreds of small old blocks cost anything in release (pool churn, locality); (3) copy rate per byte against a hand estimate. Deliver a proposal page only if one of these shows a real difference.",
   "id": "fz-sc8.207",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
   "status": "open",
-  "title": "Find why collection is 28% of the distiller's full-log run",
+  "title": "The distiller's full-log collection cost: 14% in a release runtime, doubled by a debug assertion in a debug one",
   "type": "task",
-  "updated_at": "2026-11-14T23:37:01Z"
+  "updated_at": "2026-11-14T23:43:04Z"
 }
