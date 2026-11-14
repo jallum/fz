@@ -488,7 +488,9 @@ deduplication. An unpublished destination header records capacity and filled
 count, so each input entry writes its next slot directly. Freeze normalizes
 and compacts that same allocation, then clears construction state. A published
 map cannot be reopened for mutation. `put`, `delete`, and lookup share one
-binary search; put/delete preserve order while copying the new sequence, and
+binary search, which reads each probed key from the contiguous key array
+(`map_key_in_arrays`) and decodes only the key, never the value; put/delete
+preserve order while copying the new sequence, and
 an absent deletion returns the original map with no allocation. GC and
 cross-heap transport preserve structural order without a sort.
 

@@ -6,6 +6,7 @@ use crate::any_value::{
 use crate::function_denotation::FunctionDenotation;
 use crate::heap::AddressMap;
 use crate::heap::{Heap, Schema, deep_copy_slot};
+use crate::module_name::ModuleName;
 use crate::procbin::{SharedBinHandle, alloc_procbin};
 use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 use std::cell::{Cell, RefCell};
@@ -190,9 +191,26 @@ fn absent_carrier_has_no_language_order() {
 fn unregistered_atom_has_no_language_order() {
     TermComparator::new(&Node::empty(), &SchemaRegistry::new()).compare(
         AnyValue::atom(100),
-        AnyValue::atom(100),
+        AnyValue::atom(101),
         NumericMode::Strict,
     );
+}
+
+/// Intent: an atom is equal to itself by id alone, so an id the table has
+/// never heard of still answers for itself, though it has no place in the order.
+#[test]
+fn an_atom_equals_itself_without_a_name() {
+    let cmp_schemas = SchemaRegistry::new();
+    let node = Node::empty();
+    let cmp = TermComparator::new(&node, &cmp_schemas);
+    for mode in [NumericMode::Strict, NumericMode::Widening] {
+        assert_eq!(
+            cmp.compare(AnyValue::atom(100), AnyValue::atom(100), mode),
+            Ordering::Equal
+        );
+        assert!(cmp.equal(AnyValue::atom(100), AnyValue::atom(100), mode));
+        assert!(!cmp.equal(AnyValue::atom(100), AnyValue::atom(101), mode));
+    }
 }
 
 #[test]
@@ -397,4 +415,289 @@ fn a_reference_and_a_pid_sort_between_atoms_and_tuples() {
         Ordering::Equal,
         "a pid is not the integer with the same word"
     );
+}
+
+/// Intent: equality is the same question as comparison asked for less; each
+/// of the early exits must leave `equal` answering exactly `compare == Equal`.
+fn equal_matches_compare(cmp: &TermComparator, a: AnyValue, b: AnyValue, mode: NumericMode) {
+    let want = cmp.compare(a, b, mode) == Ordering::Equal;
+    assert_eq!(cmp.equal(a, b, mode), want, "{a:?} vs {b:?}");
+}
+
+struct Xorshift(u64);
+
+impl Xorshift {
+    fn below(&mut self, bound: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 % bound as u64) as usize
+    }
+}
+
+struct Pool {
+    heap: Heap,
+    node: Rc<Node>,
+    schemas: Rc<RefCell<SchemaRegistry>>,
+    values: Vec<AnyValue>,
+}
+
+impl Pool {
+    fn new() -> Self {
+        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+        let node = Rc::new(Node::empty());
+        let heap = Heap::with_node(1 << 16, Rc::clone(&schemas), Rc::clone(&node));
+        Self {
+            heap,
+            node,
+            schemas,
+            values: Vec::new(),
+        }
+    }
+
+    fn atom(&self, name: &str) -> AnyValue {
+        AnyValue::atom(self.node.intern_atom(name))
+    }
+
+    fn add_scalars(&mut self) {
+        self.values.extend((-3..3).map(AnyValue::int));
+        self.values.extend([0.0, -0.0, 1.0, 1.5, -2.0].map(AnyValue::float));
+        self.values.extend([i64::MAX, 9_007_199_254_740_993].map(AnyValue::int));
+        self.values.push(AnyValue::float(9_007_199_254_740_992.0));
+        for name in ["a", "b", "ab", "ba", "", "zz"] {
+            self.values.push(self.atom(name));
+        }
+        let opaque = [
+            (ValueKind::PID, 1),
+            (ValueKind::PID, 2),
+            (ValueKind::REF, 1),
+            (ValueKind::REF, 2),
+        ];
+        self.values
+            .extend(opaque.map(|(kind, word)| AnyValue::Opaque(kind, word)));
+        self.values.push(AnyValue::EmptyList);
+    }
+
+    /// Binaries of every representation over a few contents: inline, whole
+    /// ProcBin, ProcBin viewed from an offset, whole bytes and partial
+    /// trailing bytes whose padding bits differ.
+    fn add_bitstrings(&mut self) {
+        let contents: [&[u8]; 4] = [b"", b"a", b"abc", b"0123456789abcdefghijklmnopqrstuvwxyz0123"];
+        for bytes in contents {
+            let bits = 8 * bytes.len() as u64;
+            self.values.push(self.heap.alloc_bitstring(bytes, bits));
+            let shared = alloc_procbin(&mut self.heap, SharedBinHandle::from_bytes(bytes, bits), 0);
+            self.values
+                .push(AnyValue::heap_ptr(shared.as_raw(), ValueKind::PROCBIN));
+        }
+        let framed = SharedBinHandle::from_bytes(b"xxabc", 40);
+        let view = alloc_procbin(&mut self.heap, framed, 2);
+        self.values.push(AnyValue::heap_ptr(view.as_raw(), ValueKind::PROCBIN));
+        for (bytes, bits) in [(0b1011_1111u8, 3), (0b1010_0000, 3), (0b1000_0000, 3), (0b1010_0000, 4)] {
+            self.values.push(self.heap.alloc_bitstring(&[bytes], bits));
+            let shared = alloc_procbin(&mut self.heap, SharedBinHandle::from_bytes(&[bytes], bits), 0);
+            self.values
+                .push(AnyValue::heap_ptr(shared.as_raw(), ValueKind::PROCBIN));
+        }
+        self.values.push(self.heap.alloc_bitstring(&[0xff, 0b1010_0000], 11));
+    }
+
+    fn add_containers(&mut self) {
+        let pair = self.schemas.borrow_mut().register(Schema::tuple_of_arity(2));
+        for (x, y) in [(1.0, 2.0), (1.0, 2.0), (3.0, 4.0)] {
+            let pair_value = self.pair(pair, AnyValue::float(x), AnyValue::float(y));
+            self.values.push(pair_value);
+            let pair_value = self.pair(pair, AnyValue::int(x as i64), AnyValue::int(y as i64));
+            self.values.push(pair_value);
+        }
+        for head in [AnyValue::int(1), AnyValue::float(1.0), AnyValue::int(2)] {
+            self.values
+                .push(heap_value(self.heap.alloc_list_cons_slot(head, EMPTY_LIST_BITS)));
+        }
+        for (key, value) in [(1, 1), (1, 2), (2, 1)] {
+            let entries = [(AnyValue::int(key), AnyValue::int(value))];
+            self.values.push(heap_value(self.heap.alloc_map_slots(&entries)));
+            let widened = [(AnyValue::int(key), AnyValue::float(value as f64))];
+            self.values.push(heap_value(self.heap.alloc_map_slots(&widened)));
+            let float_key = [(AnyValue::float(key as f64), AnyValue::int(value))];
+            self.values.push(heap_value(self.heap.alloc_map_slots(&float_key)));
+        }
+    }
+
+    fn pair(&mut self, schema: u32, first: AnyValue, second: AnyValue) -> AnyValue {
+        let object = self.heap.alloc_struct(schema);
+        unsafe {
+            self.heap.write_field_slot(object, 0, first);
+            self.heap.write_field_slot(object, 8, second);
+        }
+        AnyValue::heap_ptr(object, ValueKind::STRUCT)
+    }
+
+    /// Each named struct beside the entries map that holds the same fields
+    /// and its module under `__struct__`: the two are one term.
+    fn add_structs_and_their_maps(&mut self) {
+        let module = ModuleName::from_segments(vec!["Pt".to_string()]);
+        let schema = self
+            .schemas
+            .borrow_mut()
+            .register(Schema::named_struct(module, ["x".to_string(), "y".to_string()]));
+        for (x, y) in [(1, 2), (1, 2), (3, 4)] {
+            let pair_value = self.pair(schema, AnyValue::int(x), AnyValue::int(y));
+            self.values.push(pair_value);
+            let entries = [
+                (self.atom("__struct__"), self.atom("Elixir.Pt")),
+                (self.atom("x"), AnyValue::int(x)),
+                (self.atom("y"), AnyValue::int(y)),
+            ];
+            self.values.push(heap_value(self.heap.alloc_map_slots(&entries)));
+        }
+    }
+
+    /// Closures of one denotation, equal when their environments are.
+    fn add_closures(&mut self) {
+        let denotation = ClosureDenotationId::user(7);
+        self.node.register_closure_denotation(
+            denotation,
+            Arc::new(FunctionDenotation::named(None, "capture".into(), 1)),
+        );
+        for captured in [1, 1, 2] {
+            let bits = self.heap.alloc_closure_slots(denotation, 0, 1, 0);
+            unsafe { closure_capture_set(closure_addr_from_tagged(bits).unwrap(), 0, AnyValue::int(captured)) };
+            self.values.push(heap_value(bits));
+        }
+    }
+
+    fn mixed() -> Self {
+        let mut pool = Self::new();
+        pool.add_scalars();
+        pool.add_bitstrings();
+        pool.add_containers();
+        pool.add_structs_and_their_maps();
+        pool.add_closures();
+        pool
+    }
+}
+
+/// Intent: over a pool that mixes every kind of term, every pair in both
+/// numeric modes, `equal` is exactly `compare == Equal`, and the pool holds
+/// enough equal pairs that the property is not met by answering false.
+#[test]
+fn equal_agrees_with_compare_over_mixed_terms_in_both_modes() {
+    let pool = Pool::mixed();
+    let registry = pool.schemas.borrow();
+    let cmp = TermComparator::new(&pool.node, &registry);
+    let mut rng = Xorshift(0x9e37_79b9_7f4a_7c15);
+    for mode in [NumericMode::Strict, NumericMode::Widening] {
+        let mut equal_pairs = 0;
+        for _ in 0..200_000 {
+            let a = pool.values[rng.below(pool.values.len())];
+            let b = pool.values[rng.below(pool.values.len())];
+            equal_matches_compare(&cmp, a, b, mode);
+            equal_pairs += usize::from(cmp.equal(a, b, mode));
+        }
+        assert!(equal_pairs > 1_000, "only {equal_pairs} equal pairs");
+    }
+    for mode in [NumericMode::Strict, NumericMode::Widening] {
+        for a in &pool.values {
+            for b in &pool.values {
+                equal_matches_compare(&cmp, *a, *b, mode);
+            }
+        }
+    }
+}
+
+/// Intent: the integer fast path never decides an integer against a float,
+/// which widening equates and strictness separates.
+#[test]
+fn an_integer_and_a_float_are_equal_only_when_widening() {
+    let cmp_schemas = SchemaRegistry::new();
+    let node = Node::empty();
+    let cmp = TermComparator::new(&node, &cmp_schemas);
+    let (one, one_float) = (AnyValue::int(1), AnyValue::float(1.0));
+    assert!(cmp.equal(one, one_float, NumericMode::Widening));
+    assert!(cmp.equal(one_float, one, NumericMode::Widening));
+    assert!(!cmp.equal(one, one_float, NumericMode::Strict));
+    assert!(!cmp.equal(one_float, one, NumericMode::Strict));
+    assert!(!cmp.equal(AnyValue::int(2), one_float, NumericMode::Widening));
+    assert!(cmp.equal(AnyValue::float(0.0), AnyValue::float(-0.0), NumericMode::Widening));
+    assert!(!cmp.equal(AnyValue::float(0.0), AnyValue::float(-0.0), NumericMode::Strict));
+}
+
+/// Intent: two integers compare as integers, so values a float cannot tell
+/// apart still order exactly.
+#[test]
+fn two_integers_compare_exactly_beyond_float_precision() {
+    let cmp_schemas = SchemaRegistry::new();
+    let node = Node::empty();
+    let cmp = TermComparator::new(&node, &cmp_schemas);
+    let (low, high) = (
+        AnyValue::int(9_007_199_254_740_992),
+        AnyValue::int(9_007_199_254_740_993),
+    );
+    for mode in [NumericMode::Strict, NumericMode::Widening] {
+        assert_eq!(cmp.compare(low, high, mode), Ordering::Less);
+        assert_eq!(cmp.compare(high, low, mode), Ordering::Greater);
+        assert_eq!(cmp.compare(high, high, mode), Ordering::Equal);
+        assert!(!cmp.equal(low, high, mode));
+    }
+}
+
+/// Intent: binaries are equal by their bits, not their bytes: the same bytes
+/// at different bit lengths differ, and padding past the last bit is ignored,
+/// in whatever representation each side is stored.
+#[test]
+fn binaries_are_equal_by_bit_length_then_bits() {
+    let mut pool = Pool::new();
+    let whole = pool.heap.alloc_bitstring(&[0b1010_0000], 8);
+    let three = pool.heap.alloc_bitstring(&[0b1010_0000], 3);
+    let three_padded = pool.heap.alloc_bitstring(&[0b1011_1111], 3);
+    let three_shared = alloc_procbin(&mut pool.heap, SharedBinHandle::from_bytes(&[0b1010_1010], 3), 0);
+    let three_shared = AnyValue::heap_ptr(three_shared.as_raw(), ValueKind::PROCBIN);
+    let different_third_bit = pool.heap.alloc_bitstring(&[0b1000_0000], 3);
+    let framed = alloc_procbin(&mut pool.heap, SharedBinHandle::from_bytes(b"xab", 24), 1);
+    let framed = AnyValue::heap_ptr(framed.as_raw(), ValueKind::PROCBIN);
+    let ab = pool.heap.alloc_bitstring(b"ab", 16);
+    let registry = pool.schemas.borrow();
+    let cmp = TermComparator::new(&pool.node, &registry);
+    for mode in [NumericMode::Strict, NumericMode::Widening] {
+        assert!(!cmp.equal(whole, three, mode), "same byte, different bit length");
+        assert!(
+            cmp.equal(three, three_padded, mode),
+            "padding bits are not part of the value"
+        );
+        assert!(cmp.equal(three, three_shared, mode), "storage does not matter");
+        assert!(!cmp.equal(three, different_third_bit, mode));
+        assert!(
+            cmp.equal(framed, ab, mode),
+            "a view from an offset is the bytes it shows"
+        );
+        assert_eq!(cmp.compare(whole, three, mode), Ordering::Greater);
+    }
+}
+
+/// Intent: terms of different kinds are never equal, and a kind that only
+/// shares a payload word with another does not become equal to it.
+#[test]
+fn terms_of_different_kinds_are_not_equal() {
+    let mut pool = Pool::new();
+    let atom = pool.atom("a");
+    let binary = pool.heap.alloc_bitstring(b"a", 8);
+    let registry = pool.schemas.borrow();
+    let cmp = TermComparator::new(&pool.node, &registry);
+    for mode in [NumericMode::Strict, NumericMode::Widening] {
+        let kinds = [
+            AnyValue::int(7),
+            atom,
+            binary,
+            AnyValue::EmptyList,
+            AnyValue::Opaque(ValueKind::PID, 7),
+            AnyValue::Opaque(ValueKind::REF, 7),
+        ];
+        for (i, a) in kinds.iter().enumerate() {
+            for b in &kinds[i + 1..] {
+                assert!(!cmp.equal(*a, *b, mode), "{a:?} vs {b:?}");
+                assert!(!cmp.equal(*b, *a, mode), "{b:?} vs {a:?}");
+            }
+        }
+    }
 }

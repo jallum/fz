@@ -1437,6 +1437,31 @@ pub unsafe fn map_entry(addr: *const u8, index: usize) -> (AnyValue, AnyValue) {
     )
 }
 
+/// The key in slot `index` of a map's key and kind arrays, decoded without
+/// touching the value half of the entry.
+///
+/// # Safety
+///
+/// `keys` and `kinds` must be the key and tag arrays of an initialized strict
+/// Map object (`map_keys_ptr`, `map_tag_ptr`), and `index` must be in bounds.
+#[inline(always)]
+pub unsafe fn map_key_in_arrays(keys: *const u64, kinds: *const u8, index: usize) -> AnyValue {
+    let (raw, tag) = unsafe { (ptr::read(keys.add(index)), ptr::read(kinds.add(index))) };
+    AnyValue::decode_parts(raw, map_key_kind(tag).tag()).expect("map key value")
+}
+
+/// The key of entry `index`, decoded without its value.
+///
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Map object, and
+/// `index` must be in bounds for that map's entry count.
+pub unsafe fn map_key(addr: *const u8, index: usize) -> AnyValue {
+    let count = unsafe { map_count(addr) };
+    assert!(index < count, "map entry index out of bounds");
+    unsafe { map_key_in_arrays(map_keys_ptr(addr, count), map_tag_ptr(addr), index) }
+}
+
 #[cfg(test)]
 #[path = "any_value_test.rs"]
 mod any_value_test;

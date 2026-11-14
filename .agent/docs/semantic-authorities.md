@@ -82,6 +82,19 @@ call site, answered `same?(1, 1.0)` as `:different` where Elixir says `:equal`
 operator with two meanings, not a divergence. The lowering now derives the
 question from the op, so a call site cannot get it wrong.
 
+**Equality is asked, not derived from order.** `TermComparator::equal` answers
+exactly `compare(..) == Equal` and is the one implementation of the question:
+`fz_op_eq`/`fz_op_neq`/`fz_op_identical`/`fz_op_not_identical`,
+`fz_value_eq_widening_ref`, `fz_value_eq_ref`, map-literal key deduplication and
+`map_view_delete` all call it. It settles two integers, two atoms (by id, so
+an atom is equal to itself without a registered name; ordering two different
+unregistered atoms still panics), two pids or references, two identical floats
+and two bitstrings (bit length, then bytes, ignoring the padding past the last
+bit) without an ordering, and answers false for terms of different categories;
+everything else, including an integer against a float, goes to `compare`.
+`compare` itself returns early for two integers, two atoms of one id and two
+bitstrings, after its entry asserts.
+
 **Ordering** — the same `TermComparator`, reached through `fz_value_cmp_ref`
 and unboxed scalar adapters, owns every published finite term's order:
 `number < atom < reference < fun < port < pid < tuple < map < list < bitstring`.

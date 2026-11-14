@@ -2537,10 +2537,29 @@ ref_bool_export!(fz_op_lt_bb, NumericMode::Widening, is_lt);
 ref_bool_export!(fz_op_lte_bb, NumericMode::Widening, is_le);
 ref_bool_export!(fz_op_gt_bb, NumericMode::Widening, is_gt);
 ref_bool_export!(fz_op_gte_bb, NumericMode::Widening, is_ge);
-ref_bool_export!(fz_op_eq, NumericMode::Widening, is_eq);
-ref_bool_export!(fz_op_neq, NumericMode::Widening, is_ne);
-ref_bool_export!(fz_op_identical, NumericMode::Strict, is_eq);
-ref_bool_export!(fz_op_not_identical, NumericMode::Strict, is_ne);
+
+macro_rules! ref_equality_export {
+    ($name:ident, $mode:expr, $expected:expr) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name(process: *mut Process, left: u64, right: u64) -> u64 {
+            let left = any_value_from_ref_word(left, "runtime equality lhs");
+            let right = any_value_from_ref_word(right, "runtime equality rhs");
+            u64::from(values_equal(process, left, right, $mode) == $expected)
+        }
+    };
+}
+
+ref_equality_export!(fz_op_eq, NumericMode::Widening, true);
+ref_equality_export!(fz_op_neq, NumericMode::Widening, false);
+ref_equality_export!(fz_op_identical, NumericMode::Strict, true);
+ref_equality_export!(fz_op_not_identical, NumericMode::Strict, false);
+
+fn values_equal(process: *mut Process, a: AnyValue, b: AnyValue, mode: NumericMode) -> bool {
+    let process = unsafe { &*process };
+    let registry = process.heap.schemas_registry();
+    let schemas = registry.borrow();
+    TermComparator::new(&process.node, &schemas).equal(a, b, mode)
+}
 
 fn compare_values(process: *mut Process, a: AnyValue, b: AnyValue, mode: NumericMode) -> std::cmp::Ordering {
     let process = unsafe { &*process };
@@ -2586,14 +2605,14 @@ pub extern "C" fn fz_value_cmp_raw_const(
 pub extern "C" fn fz_value_eq_widening_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> u64 {
     let a = any_value_from_ref_word(a_ref, "fz_value_eq_widening_ref lhs");
     let b = any_value_from_ref_word(b_ref, "fz_value_eq_widening_ref rhs");
-    u64::from(compare_values(process, a, b, NumericMode::Widening).is_eq())
+    u64::from(values_equal(process, a, b, NumericMode::Widening))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> u64 {
     let a = any_value_from_ref_word(a_ref, "fz_value_eq_ref lhs");
     let b = any_value_from_ref_word(b_ref, "fz_value_eq_ref rhs");
-    u64::from(compare_values(process, a, b, NumericMode::Strict).is_eq())
+    u64::from(values_equal(process, a, b, NumericMode::Strict))
 }
 
 // UTF-8 runtime support.
