@@ -474,8 +474,13 @@ non-tuple and raises `ArgumentError` in a body. A call that can only abort is
 one `PatternGuardExpr::Fails` node, made in `guard_expr_from_ast` for an extern
 returning `never` and for a helper whose every body is itself `Fails`: the callee
 is resolved before its arguments, so they are never built and no evaluator
-lowers them. A function's domain is therefore written once, in its Kernel heads,
-and the extern under it is only called inside the domain.
+lowers them. The walk that gathers what a guard function's reification needs
+(`collect_requirements`, `jobs/dispatch.rs`) follows the same order: it asks
+whether the callee only aborts (`only_aborts`) before it looks at the arguments,
+so an aborting call's arguments may be anything, a struct literal or a call to
+an impure function included, and name no requirement. A function's domain is
+therefore written once, in its Kernel heads, and the extern under it is only
+called inside the domain.
 
 Failing is propagated to the guard, not to the helper: a helper that matches
 nothing, or an extern that aborts, makes the whole guard false however deeply it

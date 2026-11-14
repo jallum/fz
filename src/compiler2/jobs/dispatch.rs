@@ -281,14 +281,94 @@ fn collect_requirements(
             )?;
         }
     }
-    for call in collect_guard_calls_in_fn(&surface).map_err(|span| {
-        emit_guard_dispatch_error(tel, world, function, span, SourcePatternError::UnsupportedGuardExpr)
-    })? {
-        let callee = resolve_guard_callee(world, tel, namespace, &call)?;
-        collect_requirements(world, tel, callee, reads, waits, seen, stack)?;
+    let guards = surface.clauses.iter().filter_map(|clause| clause.guard.as_ref());
+    let bodies = surface.clauses.iter().map(|clause| &clause.body);
+    for expr in guards.chain(bodies) {
+        let walked = walk_guard_calls(expr, &mut |call| {
+            let callee = resolve_guard_callee(world, tel, namespace, &call)?;
+            collect_requirements(world, tel, callee, reads, waits, seen, stack)?;
+            Ok(guard_call_arguments(world, callee))
+        });
+        match walked {
+            Ok(()) => {}
+            Err(GuardWalkError::Visit(error)) => return Err(error),
+            Err(GuardWalkError::NotAGuardExpr(span)) => {
+                return Err(emit_guard_dispatch_error(
+                    tel,
+                    world,
+                    function,
+                    span,
+                    SourcePatternError::UnsupportedGuardExpr,
+                ));
+            }
+        }
     }
     stack.pop();
     Ok(())
+}
+
+/// What a guard does with the arguments of a call to `function`. A call that
+/// can only abort is the guard failing, and reification replaces the whole
+/// call with that failure, so nothing its arguments name is needed. While the
+/// callee's definition or wire is unsettled the answer is also `Unread`: the
+/// collection has recorded a wait on it and runs again once it settles.
+fn guard_call_arguments(world: &mut World, function: FunctionId) -> GuardArguments {
+    match only_aborts(world, function, &mut Vec::new()) {
+        Some(false) => GuardArguments::Evaluated,
+        Some(true) | None => GuardArguments::Unread,
+    }
+}
+
+/// Whether a call to `function` can only abort: an extern that returns
+/// `never`, or a function whose every clause body is one such call. `None`
+/// while a definition or an extern's wire on the way is unsettled.
+fn only_aborts(world: &mut World, function: FunctionId, visiting: &mut Vec<FunctionId>) -> Option<bool> {
+    world.function_defined_revision(function)?;
+    let (source, surface) = world.function_definition(function);
+    if surface.extern_abi.is_some() {
+        return world
+            .extern_wire(function)
+            .map(|wire| wire.ret == crate::fz_ir::ExternTy::Never);
+    }
+    if surface.clauses.is_empty() || visiting.contains(&function) {
+        return Some(false);
+    }
+    let namespace = source.namespace;
+    let surface = Rc::clone(surface);
+    visiting.push(function);
+    let mut verdict = Some(true);
+    for clause in &surface.clauses {
+        match body_only_aborts(world, namespace, &clause.body, visiting) {
+            Some(true) => {}
+            Some(false) => {
+                verdict = Some(false);
+                break;
+            }
+            None => verdict = None,
+        }
+    }
+    visiting.pop();
+    verdict
+}
+
+fn body_only_aborts(
+    world: &mut World,
+    namespace: Namespace,
+    body: &Spanned<Expr>,
+    visiting: &mut Vec<FunctionId>,
+) -> Option<bool> {
+    let Expr::Call(target, args) = &body.node else {
+        return Some(false);
+    };
+    let Some(callee) = Callee::for_call(&target.node, args.len()) else {
+        return Some(false);
+    };
+    match world.lookup_callee(namespace, &callee, args.len()) {
+        Some(NamespaceSymbol::Function(function)) | Some(NamespaceSymbol::Callable(function)) => {
+            only_aborts(world, function, visiting)
+        }
+        _ => Some(false),
+    }
 }
 
 fn build_guard_dispatch(
@@ -430,17 +510,6 @@ fn collect_guard_calls_in_guards(def: &FunctionSurface) -> Result<Vec<GuardCall>
     Ok(calls)
 }
 
-fn collect_guard_calls_in_fn(def: &FunctionSurface) -> Result<Vec<GuardCall>, Span> {
-    let mut calls = Vec::new();
-    for clause in &def.clauses {
-        if let Some(guard) = &clause.guard {
-            collect_guard_calls_in_expr(guard, &mut calls)?;
-        }
-        collect_guard_calls_in_expr(&clause.body, &mut calls)?;
-    }
-    Ok(calls)
-}
-
 /// A zero-argument call a receive guard makes, hoisted out of the guard so the
 /// receiver evaluates it before it parks. `name` is what the guard reads in
 /// the call's place.
@@ -499,6 +568,36 @@ pub(in crate::compiler2) fn is_guard_expr(expr: &Spanned<Expr>) -> bool {
 }
 
 pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<GuardCall>) -> Result<(), Span> {
+    let walked = walk_guard_calls::<std::convert::Infallible>(expr, &mut |call| {
+        out.push(call);
+        Ok(GuardArguments::Evaluated)
+    });
+    match walked {
+        Ok(()) => Ok(()),
+        Err(GuardWalkError::NotAGuardExpr(span)) => Err(span),
+        Err(GuardWalkError::Visit(never)) => match never {},
+    }
+}
+
+/// Whether a guard evaluates a call's arguments.
+enum GuardArguments {
+    Evaluated,
+    Unread,
+}
+
+enum GuardWalkError<E> {
+    /// The expression at this span is not one a guard can evaluate.
+    NotAGuardExpr(Span),
+    Visit(E),
+}
+
+/// Visits each call a guard expression makes, a call before its arguments.
+/// `visit` answers whether the guard evaluates those arguments; the walk
+/// leaves the arguments of a call that does not unvisited and unjudged.
+fn walk_guard_calls<E>(
+    expr: &Spanned<Expr>,
+    visit: &mut impl FnMut(GuardCall) -> Result<GuardArguments, E>,
+) -> Result<(), GuardWalkError<E>> {
     match &expr.node {
         Expr::Int(_)
         | Expr::Float(_)
@@ -508,43 +607,22 @@ pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<Gu
         | Expr::Bool(_)
         | Expr::Nil
         | Expr::Var(_) => Ok(()),
-        Expr::Ascribe(inner, _) => collect_guard_calls_in_expr(inner, out),
+        Expr::Ascribe(inner, _) => walk_guard_calls(inner, visit),
         Expr::UnOp(op, inner) => {
-            collect_guard_calls_in_expr(inner, out)?;
-            if matches!(op, UnOp::Neg) {
-                out.push(GuardCall {
-                    callee: Callee::Name(CallableName::negation()),
-                    arity: 1,
-                    span: expr.span,
-                });
-            }
-            Ok(())
+            let callee = matches!(op, UnOp::Neg).then(|| Callee::Name(CallableName::negation()));
+            walk_guard_call(callee, expr.span, std::slice::from_ref(inner.as_ref()), visit)
         }
         Expr::BinOp(op, left, right) => {
-            collect_guard_calls_in_expr(left, out)?;
-            collect_guard_calls_in_expr(right, out)?;
-            if let Some(name) = op.arithmetic_function() {
-                out.push(GuardCall {
-                    callee: Callee::Name(CallableName::source(name)),
-                    arity: 2,
-                    span: expr.span,
-                });
-            }
-            Ok(())
+            let callee = op
+                .arithmetic_function()
+                .map(|name| Callee::Name(CallableName::source(name)));
+            walk_guard_call(callee, expr.span, &[left.as_ref(), right.as_ref()], visit)
         }
         Expr::Call(target, args) => {
             let Some(callee) = Callee::for_call(&target.node, args.len()) else {
-                return Err(expr.span);
+                return Err(GuardWalkError::NotAGuardExpr(expr.span));
             };
-            for arg in args {
-                collect_guard_calls_in_expr(arg, out)?;
-            }
-            out.push(GuardCall {
-                callee,
-                arity: args.len(),
-                span: expr.span,
-            });
-            Ok(())
+            walk_guard_call(Some(callee), expr.span, args, visit)
         }
         Expr::FnRef { .. }
         | Expr::Module(_)
@@ -569,7 +647,30 @@ pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<Gu
         | Expr::Block(_)
         | Expr::Lambda { .. }
         | Expr::Quote(_, _)
-        | Expr::Unquote(_) => Err(expr.span),
+        | Expr::Unquote(_) => Err(GuardWalkError::NotAGuardExpr(expr.span)),
+    }
+}
+
+/// One operation over `args`. An operator the guard evaluates itself has no
+/// callee, and its operands are always evaluated.
+fn walk_guard_call<E, A: std::borrow::Borrow<Spanned<Expr>>>(
+    callee: Option<Callee>,
+    span: Span,
+    args: &[A],
+    visit: &mut impl FnMut(GuardCall) -> Result<GuardArguments, E>,
+) -> Result<(), GuardWalkError<E>> {
+    let arguments = match callee {
+        Some(callee) => visit(GuardCall {
+            callee,
+            arity: args.len(),
+            span,
+        })
+        .map_err(GuardWalkError::Visit)?,
+        None => GuardArguments::Evaluated,
+    };
+    match arguments {
+        GuardArguments::Evaluated => args.iter().try_for_each(|arg| walk_guard_calls(arg.borrow(), visit)),
+        GuardArguments::Unread => Ok(()),
     }
 }
 
