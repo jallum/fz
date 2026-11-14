@@ -745,7 +745,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         observed_runtime_demand_counts
             .iter()
             .all(|(executable, runs)| *runs <= exact_woken_reader_counts[executable]),
-        "coalesced wakes may save evaluations, but no evaluation may exist without a causal wake",
+        "already-pending wakes may save evaluations, but no evaluation may exist without a causal wake",
     );
     assert_eq!(
         reached_counts,
@@ -900,7 +900,7 @@ fn nested_retained_activations_partition_work_without_replaying_it_on_a_cache_hi
         move |_, _, _, session| {
             observed
                 .borrow_mut()
-                .push((session.root(), session.producer_pokes(), session.work_starts()));
+                .push((session.root(), session.producer_pokes(), session.work_ledger().ran));
         },
     );
     let mut compiler = Compiler2::new(tel);
@@ -967,7 +967,7 @@ fn standalone_drive_work_is_not_charged_to_the_next_retained_request() {
     let observed = std::rc::Rc::clone(&finished);
     tel.attach_raw_event1::<PullSession, _>(
         &["fz", "compiler2", "pull", "session", "finished"],
-        move |_, _, _, session| observed.borrow_mut().push(session.work_starts()),
+        move |_, _, _, session| observed.borrow_mut().push(session.work_ledger().ran),
     );
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(Box::new(fz_runtime::output::NullOutput));
@@ -1011,7 +1011,7 @@ fn standalone_drive_owns_the_prefix_before_a_nested_root_product_session() {
     tel.attach_raw_event1::<PullSession, _>(
         &["fz", "compiler2", "pull", "session", "finished"],
         move |_, _, _, session| {
-            observed.borrow_mut().push((session.root(), session.work_starts()));
+            observed.borrow_mut().push((session.root(), session.work_ledger().ran));
         },
     );
     let mut compiler = Compiler2::new(tel);
@@ -1077,7 +1077,7 @@ fn reconciliation_failure_retries_pending_work_attributed_to_each_request_alone(
         move |_, _, _, session| {
             observed
                 .borrow_mut()
-                .push((session.root(), session.producer_pokes(), session.work_starts()));
+                .push((session.root(), session.producer_pokes(), session.work_ledger().ran));
         },
     );
     let mut compiler = Compiler2::new(tel);
@@ -1155,7 +1155,7 @@ fn zero_timeout_is_a_balanced_retained_activation_and_does_not_leak_work() {
         move |_, _, _, session| {
             observed
                 .borrow_mut()
-                .push((session.root(), session.producer_pokes(), session.work_starts()));
+                .push((session.root(), session.producer_pokes(), session.work_ledger().ran));
         },
     );
     let mut compiler = Compiler2::new(tel);
@@ -2248,7 +2248,7 @@ fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
     let observed = std::rc::Rc::clone(&finished);
     tel.attach_raw_event1::<PullSession, _>(
         &["fz", "compiler2", "pull", "session", "finished"],
-        move |_, _, _, session| observed.borrow_mut().push(session.work_starts()),
+        move |_, _, _, session| observed.borrow_mut().push(session.work_ledger().ran),
     );
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {

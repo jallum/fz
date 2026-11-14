@@ -7,7 +7,7 @@
 //! `tests/distill_telemetry/main_returns_one.jsonl` (`def main(), do: 1`) is
 //! the smallest program there is: 22 job runs over 20 subjects, 2 re-runs
 //! (`ScopeCode`, 4 runs over 2 subjects). The cause table counts every
-//! `enqueued` wake -- 12 of them, none coalesced -- and one of those
+//! wake that started its job -- 12 of them, none already pending -- and one of those
 //! (`ScopeCode` woken by the nested `def/1` macro root's
 //! `Product(root_backend_product)` settling) arrives on
 //! `work_graph.dependencies_moved`, not `work_graph.applied`, which is why
@@ -29,7 +29,9 @@
 //! do not depend on the order a map hands its entries back in, which Elixir
 //! leaves unspecified and fz does not reproduce. `tied_rows.expected.txt` is what
 //! `elixir tools/distill-telemetry.exs --top 32` prints for it. The trace is kept
-//! as captured: a fresh capture has different timings and may not tie.
+//! as captured, with its wake `disposition` fields renamed to `admission`
+//! (`enqueued` -> `started`): a fresh capture has different timings and may
+//! not tie.
 //!
 //! Compiling the script is itself a measurement. One drive of the product
 //! stack spends at most `PRODUCT_DRIVE_BUDGET` requests, and a compile runs

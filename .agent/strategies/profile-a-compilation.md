@@ -52,7 +52,7 @@ Read the sections in order, each narrower than the last:
   activation at the ceiling widened its answer instead of finding it.
 - **cause of every wake**: every wake in the stream (not just the hottest
   subjects), grouped by (job kind, changed fact + use, completing job kind,
-  disposition) so the same shape of cause across many subjects is one row
+  admission) so the same shape of cause across many subjects is one row
   instead of one per subject. A wake rides on whichever of three events the
   scheduler emitted its `AppliedStep` on — `work_graph.applied` (an ordinary
   job completing), `work_graph.dependencies_moved` (a product settling), or
@@ -61,9 +61,9 @@ Read the sections in order, each narrower than the last:
   drain step carried. The "completing job" column is the completion's job kind
   for `applied` rows and the bare event name (`dependencies_moved` /
   `quiesced`) for the other two. Every
-  `enqueued` wake is counted, first runs included — an `enqueued` wake is
-  what started the job; a `coalesced` wake landed on a job some other wake had
-  already enqueued, so those are reported in their own table underneath
+  `started` wake is counted, first runs included — a `started` wake is
+  what started the job; an `already_pending` wake landed on a job some other
+  wake had already queued, so those are reported in their own table underneath
   rather than double-counted. The census then prints the session-summed
   `work_starts` object from `pull.session.finished` (one count per
   `WorkStartReason`, whatever keys the trace carries) and checks that the

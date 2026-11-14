@@ -201,26 +201,106 @@ impl<R: ClientReason> WorkStartTally<R> {
     }
 }
 
-/// Whether a wake newly started a job or found it already pending.
+/// How the agenda's door answered one request to queue a job.
 ///
-/// `Enqueued`: `Agenda::enqueue` transitioned the job from absent to pending
-/// — a new work start (tallied under `WorkStart::ChangedRevisionWake`).
+/// `Started`: `Agenda::enqueue` transitioned the job from absent to pending,
+/// and the request's reason names the new entry.
 ///
-/// `Coalesced`: the job was already pending in the agenda from an earlier
-/// wake this same `complete` call (agenda dedupe: `Agenda::enqueue` returned
-/// false because the job was already queued). This is the only coalescing
-/// source — there is no standing-conclusion coalescing left to conflate it
-/// with. A job can be coalesced more than once in one `complete` call, once
-/// per additional cause that finds it already pending; each is its own
-/// record.
+/// `AlreadyPending`: the job was already queued by an earlier request, so the
+/// request joined that entry and left its reason in place. A wake can find a
+/// job already pending more than once in one `complete` call, once per
+/// additional cause; each is its own record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WakeDisposition {
-    Enqueued,
-    Coalesced,
+pub enum Admission {
+    Started,
+    AlreadyPending,
+}
+
+/// Every request to queue a job, counted at the one door by the reason it
+/// named, together with what became of the entries it started.
+///
+/// - `requested = started + already_pending`: each request either places a
+///   new entry on the agenda or finds the job already there.
+/// - `started = ran + reparked`: each entry leaves the agenda by running
+///   (`Scheduler::record_run_start`) or by being parked again at the pop gate
+///   without running (`Scheduler::record_reparked`). Entries still queued are
+///   in neither, so the identity holds once the agenda is drained.
+///
+/// `ran` is the work; `already_pending` and `reparked` are churn.
+pub struct WorkLedger<R: ClientReason> {
+    pub ran: WorkStartTally<R>,
+    pub started: WorkStartTally<R>,
+    pub already_pending: WorkStartTally<R>,
+    pub reparked: WorkStartTally<R>,
+}
+
+impl<R: ClientReason> Clone for WorkLedger<R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R: ClientReason> Copy for WorkLedger<R> {}
+
+impl<R: ClientReason> Default for WorkLedger<R> {
+    fn default() -> Self {
+        Self {
+            ran: WorkStartTally::default(),
+            started: WorkStartTally::default(),
+            already_pending: WorkStartTally::default(),
+            reparked: WorkStartTally::default(),
+        }
+    }
+}
+
+impl<R: ClientReason> PartialEq for WorkLedger<R> {
+    fn eq(&self, other: &Self) -> bool {
+        self.tallies() == other.tallies()
+    }
+}
+
+impl<R: ClientReason> Eq for WorkLedger<R> {}
+
+impl<R: ClientReason> Debug for WorkLedger<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkLedger")
+            .field("ran", &self.ran)
+            .field("started", &self.started)
+            .field("already_pending", &self.already_pending)
+            .field("reparked", &self.reparked)
+            .finish()
+    }
+}
+
+impl<R: ClientReason> WorkLedger<R> {
+    /// How many requests named `reason`, whatever the door answered.
+    pub fn requested(&self, reason: WorkStart<R>) -> u64 {
+        self.started[reason] + self.already_pending[reason]
+    }
+
+    pub fn delta_since(self, earlier: Self) -> Self {
+        Self {
+            ran: self.ran.delta_since(earlier.ran),
+            started: self.started.delta_since(earlier.started),
+            already_pending: self.already_pending.delta_since(earlier.already_pending),
+            reparked: self.reparked.delta_since(earlier.reparked),
+        }
+    }
+
+    pub fn add(&mut self, other: Self) {
+        self.ran.add(other.ran);
+        self.started.add(other.started);
+        self.already_pending.add(other.already_pending);
+        self.reparked.add(other.reparked);
+    }
+
+    fn tallies(&self) -> [WorkStartTally<R>; 4] {
+        [self.ran, self.started, self.already_pending, self.reparked]
+    }
 }
 
 /// One attributable wake: `cause` is the fact use whose change made `job`
-/// re-enter (or attempt to re-enter) the agenda, `disposition` says whether
+/// re-enter (or attempt to re-enter) the agenda, `admission` says whether
 /// that attempt was the job's new work start or found it already pending,
 /// and `shift` carries the same ground-shift-vs-ascent classification
 /// `complete` computed for `cause`. Wake order is preserved (the order
@@ -231,7 +311,7 @@ pub enum WakeDisposition {
 pub struct Wake<J, F> {
     pub cause: FactUse<F>,
     pub job: J,
-    pub disposition: WakeDisposition,
+    pub admission: Admission,
     pub shift: bool,
 }
 
@@ -240,7 +320,7 @@ pub struct AppliedStep<J, F> {
     pub changed: Vec<FactChange<F>>,
     pub movements: Vec<FactMovement<F>>,
     /// Every wake this completion caused, in wake order, each carrying its
-    /// own cause and disposition (see `Wake`).
+    /// own cause and admission (see `Wake`).
     pub wakes: Vec<Wake<J, F>>,
     pub blocked: Vec<FactUse<F>>,
 }
@@ -426,20 +506,20 @@ pub struct Scheduler<P: Publisher, F> {
     /// transitive finality; the fact half is `FactSlot::unfinal_publishers`,
     /// keyed by the same publisher identity. An absent entry means zero.
     read_finality: HashMap<P, ReadFinality>,
-    /// Work-start attribution tally: how many jobs ran, under the reason
-    /// named by the agenda entry that led to that run. Observation-only —
-    /// see `WorkStart`.
-    work_starts: WorkStartTally<P::Reason>,
+    /// Every request to queue a job, counted at the door by reason, and the
+    /// fate of the entries they started. Observation-only — see `WorkStart`
+    /// and `WorkLedger`.
+    ledger: WorkLedger<P::Reason>,
     /// The reason named by each job's current agenda entry, while that
-    /// entry is still unspent. `enqueue`/`enqueue_step` record a reason only
-    /// when the job was not already queued, so a coalesced demand on a
-    /// still-pending entry leaves its reason untouched: the first demand to
-    /// place an entry on the agenda names it. A job popped off the agenda
-    /// can still turn out to be gated or missing an answer, in which case it
-    /// is parked without running and without being charged — its entry is
-    /// gone, and the ordinary wake that later re-queues it records a fresh
-    /// reason of its own. `record_run_start` spends the entry the one time
-    /// `pop_runnable` commits to actually running it.
+    /// entry is still unspent. The door records a reason only when the job
+    /// was not already queued, so a request that finds its job pending leaves
+    /// the entry's reason untouched: the first request to place an entry on
+    /// the agenda names it. A job popped off the agenda can still turn out to
+    /// be gated or missing an answer, in which case it is parked without
+    /// running — its entry is spent by `record_reparked`, and the ordinary
+    /// wake that later re-queues it records a fresh reason of its own.
+    /// `record_run_start` spends the entry the one time the pop gate commits
+    /// to actually running it.
     pending_reason: HashMap<P::Run, WorkStart<P::Reason>>,
     /// The groups of jobs that conclude together (see `groups`). Partner
     /// detection is a question asked through a shared reference, and forming
@@ -553,17 +633,20 @@ where
             deps: DependencyIndex::new(),
             rebased: HashSet::default(),
             read_finality: HashMap::default(),
-            work_starts: WorkStartTally::default(),
+            ledger: WorkLedger::default(),
             pending_reason: HashMap::default(),
             groups: RefCell::default(),
         }
     }
 
-    /// The cumulative work-start attribution snapshot: per-reason agenda-entry
-    /// counts (coalesced re-demands of an already-pending job do not count —
-    /// they are not a new work start).
+    /// The cumulative runs, per reason of the entry that led to each.
     pub fn work_start_tally(&self) -> WorkStartTally<P::Reason> {
-        self.work_starts
+        self.ledger.ran
+    }
+
+    /// The cumulative request accounting; see `WorkLedger`.
+    pub fn work_ledger(&self) -> WorkLedger<P::Reason> {
+        self.ledger
     }
 
     /// How many fact changes the work graph has reported so far; see
@@ -718,30 +801,42 @@ where
     /// Enqueues `job`, naming `reason` as its entry's reason when this
     /// demand is the one that places the entry on the agenda. Returns
     /// whether the job was newly enqueued (`false` means it was already
-    /// pending and this call coalesced into it, leaving the pending entry's
-    /// own reason in place).
+    /// pending and this call joined that entry, leaving its own reason in
+    /// place).
     pub fn enqueue(&mut self, job: P::Run, reason: impl Into<WorkStart<P::Reason>>) -> bool {
-        let started = self.agenda.enqueue(job.clone());
-        if started {
-            self.groups.get_mut().reopen(&job);
-            self.pending_reason.insert(job, reason.into());
+        self.admit(job, reason.into()) == Admission::Started
+    }
+
+    /// The one door: every request to queue a job passes here and is counted
+    /// under its reason as started or already pending.
+    fn admit(&mut self, job: P::Run, reason: WorkStart<P::Reason>) -> Admission {
+        if !self.agenda.enqueue(job.clone()) {
+            self.ledger.already_pending[reason] += 1;
+            return Admission::AlreadyPending;
         }
-        started
+        self.ledger.started[reason] += 1;
+        self.groups.get_mut().reopen(&job);
+        self.pending_reason.insert(job, reason);
+        Admission::Started
     }
 
     pub fn pop(&mut self) -> Option<P::Run> {
         self.agenda.pop()
     }
 
-    /// Charges `job`'s current agenda entry's reason to the tally. Called
-    /// exactly once a job is popped and found genuinely runnable — not
-    /// merely popped, since a pop that turns up a missing gate or missing
-    /// answer parks the job again without running it, and no entry exists
-    /// to charge until the ordinary wake that later re-queues the job names
-    /// a fresh one.
+    /// Charges `job`'s current agenda entry's reason as a run. Called exactly
+    /// once a job is popped and found genuinely runnable; a pop that turns up
+    /// a missing gate or missing answer is `record_reparked` instead.
     pub fn record_run_start(&mut self, job: &P::Run) {
         let reason = self.pending_reason.remove(job).unwrap_or_default();
-        self.work_starts[reason] += 1;
+        self.ledger.ran[reason] += 1;
+    }
+
+    /// Charges `job`'s current agenda entry's reason as parked again: the job
+    /// was popped, found not runnable, and waits without running.
+    pub fn record_reparked(&mut self, job: &P::Run) {
+        let reason = self.pending_reason.remove(job).unwrap_or_default();
+        self.ledger.reparked[reason] += 1;
     }
 
     /// Leaves `job` waiting on `waits` without running it, as a run that
@@ -1322,24 +1417,18 @@ where
     /// re-enters the agenda under `WorkStart::ChangedRevisionWake` --
     /// the one work-start reason that is never passed in by a caller, since
     /// it names the wake mechanism itself, not an external demand. Records
-    /// one `Wake` attributing `job` to `cause`, whatever the disposition —
+    /// one `Wake` attributing `job` to `cause`, whatever the admission —
     /// there is no dedupe on the wake itself, since a distinct cause is a
     /// distinct attribution even when it lands on an already-pending job.
     /// This call names the entry's reason only when it is the one placing
     /// the entry on the agenda; a cause that lands on an already-pending job
     /// leaves that job's earlier reason in place.
     fn enqueue_step(&mut self, job: P::Run, cause: &FactUse<F>, shift: bool, wakes: &mut Vec<Wake<P::Run, F>>) {
-        let disposition = if self.agenda.enqueue(job.clone()) {
-            self.groups.get_mut().reopen(&job);
-            self.pending_reason.insert(job.clone(), WorkStart::ChangedRevisionWake);
-            WakeDisposition::Enqueued
-        } else {
-            WakeDisposition::Coalesced
-        };
+        let admission = self.admit(job.clone(), WorkStart::ChangedRevisionWake);
         wakes.push(Wake {
             cause: cause.clone(),
             job,
-            disposition,
+            admission,
             shift,
         });
     }

@@ -168,13 +168,13 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
                 _ => {}
             }
             for wake in &completion.wakes {
-                if wake.disposition == fz_engine::WakeDisposition::Enqueued
+                if wake.admission == fz_engine::Admission::Started
                     && let super::DependencyKey::Fact(FactKey::FunctionDefined(function)) = wake.cause.fact()
                     && world.function_definition(*function).1.is_macro
                 {
                     observed_macro_consumers.borrow_mut().insert(wake.job.clone());
                 }
-                if wake.disposition == fz_engine::WakeDisposition::Enqueued
+                if wake.admission == fz_engine::Admission::Started
                     && matches!(wake.job, Job::DeriveRuntimeDemand(_))
                 {
                     demand_work.1 += 1;
@@ -200,7 +200,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         &["fz", "compiler2", "work_graph", "dependencies_moved"],
         move |_, _, _, step| {
             for wake in &step.wakes {
-                if wake.disposition == fz_engine::WakeDisposition::Enqueued
+                if wake.admission == fz_engine::Admission::Started
                     && let super::DependencyKey::Product(address) = wake.cause.fact()
                     && matches!(address.key, super::ProductKey::RootBackendProduct(_))
                 {

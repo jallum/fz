@@ -35,7 +35,7 @@ use super::transport::LaneId;
 use super::transport::ShapeId;
 use super::transport::{CallableConstructionOwner, TransportPosition};
 pub use super::transport::{TransportCarrier, TransportLayout};
-use super::work_start::WorkStartTally;
+use super::work_start::WorkLedger;
 use fz_engine::OrderedWorklist;
 use fz_engine::SemanticOrd;
 use fz_engine::{FactChange, FactMovement, FactState, FactUse};
@@ -1610,7 +1610,7 @@ pub struct PullSession {
     // Request-local counters reset whenever this retained session is
     // reactivated. The memo and dependency indexes above remain durable.
     producer_pokes: u64,
-    work_starts: WorkStartTally,
+    ledger: WorkLedger,
     pending_fact_states: HashMap<FactKey, FactState>,
     /// The program session, for a root session to read a program-scoped
     /// member's answer from. Always `None` on the program session itself.
@@ -1626,7 +1626,7 @@ impl PullSession {
             memo: ProductMemo::default(),
             demanded_executables: HashSet::default(),
             producer_pokes: 0,
-            work_starts: WorkStartTally::default(),
+            ledger: WorkLedger::default(),
             pending_fact_states: HashMap::default(),
             external: None,
         }
@@ -1661,19 +1661,19 @@ impl PullSession {
         self.producer_pokes
     }
 
-    /// This activation's work-start attribution (per-reason agenda-entry
-    /// counts plus whole-fact-table scans and global drain-discovery sweeps).
-    pub fn work_starts(&self) -> WorkStartTally {
-        self.work_starts
+    /// This activation's request accounting: every request to queue a job,
+    /// by reason, and what became of the entries it started.
+    pub fn work_ledger(&self) -> WorkLedger {
+        self.ledger
     }
 
     fn begin_activation(&mut self) {
         self.producer_pokes = 0;
-        self.work_starts = WorkStartTally::default();
+        self.ledger = WorkLedger::default();
     }
 
-    fn finish_activation(&mut self, tally: WorkStartTally) {
-        self.work_starts = tally;
+    fn finish_activation(&mut self, ledger: WorkLedger) {
+        self.ledger = ledger;
     }
 
     pub fn record_producer_pokes(&mut self, count: u64) {
@@ -1715,7 +1715,7 @@ pub(crate) struct ProductSessions {
     subscriptions_by_scope: HashMap<ProductScope, HashSet<FactKey>>,
     scopes_by_fact: HashMap<FactKey, HashSet<ProductScope>>,
     active_scopes: HashMap<ProductScope, ActiveRootProduct>,
-    work_start_cursor: WorkStartTally,
+    work_start_cursor: WorkLedger,
     active_work_starts: Vec<WorkStartOwner>,
     pending_requests: fz_engine::Agenda<ProductAddress>,
     requested: HashSet<ProductAddress>,
@@ -1734,7 +1734,7 @@ struct ActiveRootProduct {
 #[derive(Debug)]
 enum WorkStartOwner {
     StandaloneDrive,
-    Scope(ProductScope, WorkStartTally),
+    Scope(ProductScope, WorkLedger),
 }
 
 impl ProductSessions {
@@ -1910,7 +1910,7 @@ impl ProductSessions {
         }
     }
 
-    pub(crate) fn begin_standalone_drive(&mut self, work_starts: WorkStartTally) {
+    pub(crate) fn begin_standalone_drive(&mut self, work_starts: WorkLedger) {
         assert!(
             self.active_work_starts.is_empty() && self.active_scopes.is_empty(),
             "a standalone drive cannot begin inside a product session activation"
@@ -1919,7 +1919,7 @@ impl ProductSessions {
         self.active_work_starts.push(WorkStartOwner::StandaloneDrive);
     }
 
-    pub(crate) fn finish_standalone_drive(&mut self, work_starts: WorkStartTally) {
+    pub(crate) fn finish_standalone_drive(&mut self, work_starts: WorkLedger) {
         let _ = self.take_work_start_delta(work_starts);
         match self.active_work_starts.pop() {
             Some(WorkStartOwner::StandaloneDrive) => {}
@@ -1932,11 +1932,7 @@ impl ProductSessions {
         );
     }
 
-    pub(crate) fn take(
-        &mut self,
-        scope: ProductScope,
-        work_starts: WorkStartTally,
-    ) -> (Rc<RefCell<PullSession>>, bool) {
+    pub(crate) fn take(&mut self, scope: ProductScope, work_starts: WorkLedger) -> (Rc<RefCell<PullSession>>, bool) {
         assert!(
             self.active_scopes.insert(scope, ActiveRootProduct::default()).is_none(),
             "one product session cannot be driven recursively"
@@ -1944,10 +1940,10 @@ impl ProductSessions {
         self.deferred_waits.shift_remove(&scope);
         let delta = self.take_work_start_delta(work_starts);
         let initial = match self.active_work_starts.last_mut() {
-            Some(WorkStartOwner::StandaloneDrive) => WorkStartTally::default(),
+            Some(WorkStartOwner::StandaloneDrive) => WorkLedger::default(),
             Some(WorkStartOwner::Scope(_, outer)) => {
                 outer.add(delta);
-                WorkStartTally::default()
+                WorkLedger::default()
             }
             None => delta,
         };
@@ -1966,7 +1962,7 @@ impl ProductSessions {
         &mut self,
         scope: ProductScope,
         session: &mut PullSession,
-        work_starts: WorkStartTally,
+        work_starts: WorkLedger,
     ) {
         let delta = self.take_work_start_delta(work_starts);
         let (active_scope, mut tally) = match self.active_work_starts.pop() {
@@ -1984,7 +1980,7 @@ impl ProductSessions {
         session.finish_activation(tally);
     }
 
-    fn take_work_start_delta(&mut self, current: WorkStartTally) -> WorkStartTally {
+    fn take_work_start_delta(&mut self, current: WorkLedger) -> WorkLedger {
         let delta = current.delta_since(self.work_start_cursor);
         self.work_start_cursor = current;
         delta

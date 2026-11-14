@@ -1,5 +1,5 @@
 use super::*;
-use crate::compiler2::{WorkStartReason, WorkStartTally};
+use crate::compiler2::{WorkLedger, WorkStartReason};
 use crate::telemetry::causal::{
     CausalReport, FactLifecycle, FormulaWork, ProductEvaluationCause, ProductEvaluationTriggerKind,
     ProductPublicationKind, PublicEvent, ShiftWork,
@@ -221,7 +221,7 @@ fn product_dependency_movement_attributes_only_its_exact_consumer() {
                 "step": {
                     "changed": [change], "movements": [moved],
                     "wakes": [{"cause": wake, "job": {"kind": "ScopeCode", "source_owner": 1},
-                        "disposition": "enqueued", "shift": false}], "blocked": []
+                        "admission": "started", "shift": false}], "blocked": []
                 }
             }),
         );
@@ -780,7 +780,7 @@ fn fact_identity(value: &serde_json::Value, exclude: &[&str]) -> serde_json::Val
 /// its `CodeIndexed` output always has a subscriber), and proves three
 /// things hold together: the wake's `cause` is genuinely one of *this*
 /// completion's own `changed` facts (not asserted in a vacuum), the
-/// disposition is the woken job's real work start, and a later
+/// admission is the woken job's real work start, and a later
 /// `work_graph.applied` event exists for exactly that woken job — i.e. the
 /// public log lets a reader walk cause -> wake -> evaluation in order.
 #[test]
@@ -821,8 +821,8 @@ fn work_graph_applied_carries_a_readable_cause_wake_evaluation_chain() {
     );
 
     assert_eq!(
-        wake.get("disposition").and_then(|v| v.as_str()),
-        Some("enqueued"),
+        wake.get("admission").and_then(|v| v.as_str()),
+        Some("started"),
         "the first wake a fresh job receives should be its real work start: {wake:?}"
     );
 
@@ -1209,6 +1209,52 @@ fn session_finish_reports_one_work_start_count_per_reason() {
     }
 }
 
+/// Every finished session reports the request accounting beside its runs:
+/// one count per reason for jobs started, requests that found their job
+/// already pending, and started jobs parked again. A started job is run or
+/// parked again at most once; jobs still queued when a session ends are in
+/// neither, so the sum never exceeds the started count.
+#[test]
+fn session_finish_reports_request_counts_beside_its_runs() {
+    let trace = PublicTrace::compile_requests(TWO_FORMULA_SOURCE, &[None]);
+    let finished: Vec<_> = trace
+        .events()
+        .iter()
+        .filter(|event| named(event, &["fz", "compiler2", "pull", "session", "finished"]))
+        .collect();
+    assert!(!finished.is_empty());
+    for event in finished {
+        let requests = event.metadata["session"]["requests"]
+            .as_object()
+            .expect("the session carries its request counts as one object");
+        let mut ledgers: Vec<&str> = requests.keys().map(String::as_str).collect();
+        ledgers.sort_unstable();
+        assert_eq!(ledgers, ["already_pending", "reparked", "started"]);
+        for ledger in requests.values() {
+            assert_eq!(
+                ledger.as_object().expect("a count per reason").len(),
+                WorkStartReason::TELEMETRY_ORDER.len(),
+                "every reason appears in every ledger"
+            );
+        }
+    }
+
+    let report = CausalReport::derive(trace.events());
+    let ledger = report.sessions.ledger;
+    assert!(ledger.ran.total() > 0, "the compile ran jobs");
+    for reason in WorkStartReason::TELEMETRY_ORDER {
+        assert!(
+            ledger.ran[reason] + ledger.reparked[reason] <= ledger.started[reason],
+            "a started job leaves the agenda at most once: {}",
+            reason.name()
+        );
+        assert_eq!(
+            ledger.requested(reason),
+            ledger.started[reason] + ledger.already_pending[reason]
+        );
+    }
+}
+
 #[test]
 fn product_sessions_publish_balanced_identity_lifecycles() {
     let trace = PublicTrace::compile_requests(TWO_FORMULA_SOURCE, &[None]);
@@ -1241,11 +1287,11 @@ fn retained_session_work_is_reported_per_request_instead_of_replaying_the_cold_s
     let unchanged = &requests[1].sessions;
     assert_eq!(unchanged.sessions, 1);
     assert_eq!(unchanged.producer_pokes, 0);
-    assert_eq!(unchanged.work_starts, WorkStartTally::default());
+    assert_eq!(unchanged.ledger, WorkLedger::default());
 
     let run = CausalReport::derive(trace.events());
     assert_eq!(run.sessions.producer_pokes, cold.producer_pokes);
-    assert_eq!(run.sessions.work_starts, cold.work_starts);
+    assert_eq!(run.sessions.ledger, cold.ledger);
 }
 
 /// fz-kdt.34's three target fixtures. Chosen by the epic: a convergence-heavy
@@ -1572,7 +1618,7 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             );
             assert!(report.sessions.sessions > 0, "{fixture} {name}");
             assert_eq!(
-                report.sessions.work_starts.unsanctioned_work_starts(),
+                report.sessions.ledger.ran.unsanctioned_work_starts(),
                 0,
                 "{fixture} {name}"
             );

@@ -114,7 +114,7 @@ pub use types::{
     BuiltinOpaque, CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Sigma, Ty, TypeVarId,
     Types,
 };
-pub use work_start::{WorkStartReason, WorkStartTally};
+pub use work_start::{WorkLedger, WorkStartReason, WorkStartTally};
 pub(crate) use world::JobCompletion;
 pub use world::World;
 

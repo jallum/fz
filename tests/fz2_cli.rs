@@ -2253,7 +2253,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     );
 
     let mut wake_causes = BTreeSet::new();
-    let mut wake_dispositions = BTreeMap::new();
+    let mut wake_admissions = BTreeMap::new();
     for wake in &wakes {
         let cause = wake.get("cause").expect("a readiness wake names its cause");
         let cause_kind = cause
@@ -2316,11 +2316,11 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             "readiness alone is not a content shift: {wake:?}"
         );
         wake_causes.insert(cause_kind);
-        let disposition = wake
-            .get("disposition")
+        let admission = wake
+            .get("admission")
             .and_then(serde_json::Value::as_str)
-            .expect("a readiness wake names its agenda disposition");
-        *wake_dispositions.entry(disposition).or_insert(0) += 1;
+            .expect("a readiness wake names its admission");
+        *wake_admissions.entry(admission).or_insert(0) += 1;
     }
     assert_eq!(
         wake_causes,
@@ -2328,7 +2328,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         "{fixture}: callsite co-outputs must settle with their analysis, without another producer wake"
     );
     assert_eq!(
-        wake_dispositions,
+        wake_admissions,
         // fz-5xp.30: 6 -> 9. Three ordinary helper executable facts wake
         // their exact settled consumers.
         BTreeMap::new(),
@@ -2452,35 +2452,74 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             uncaused: 0,
             changed_outputs: 185,
             unchanged_outputs: 28,
-            // fz-afu.13: 73 -> 180. `wakes` sums every completion's raw
-            // subscriber-wake log, counted once per wake regardless of
-            // whether it enqueues a job or coalesces into one already
-            // pending -- it is not a count of jobs run. A need now starts
-            // its producer the moment it is recorded instead of on a later
-            // drain, so a job parked on a missing gate is woken, parked
-            // again, and woken again as each of its gates lands one at a
-            // time, rather than being swept once per drain; every one of
-            // those cycles logs its own wake even though the job still runs
-            // exactly once in the end (evaluations, content-caused, and
-            // changed/unchanged outputs above are all unmoved).
-            // A caller waits for a callee's concluded `ReturnType` instead
-            // of reading its current one, and each of those waits logs its
-            // own wake and its own blocked completion without changing
-            // which run concludes what.
-            // fz-xxd.10: 182 -> 155 wakes, 72 -> 65 blocked completions --
-            // the same drop: fewer formulas means fewer of their wakes and
-            // blocked runs too.
-            // 155 -> 150 wakes, 65 -> 62 blocked completions: the same
-            // DeriveRecursive drop.
-            // 135 -> 138 wakes, every other count unmoved: a group of
-            // recursive jobs reports its facts concluded when it closes, and
-            // three of those reports (an activation's `ReturnType`,
-            // `InputDemand` and `RuntimeDemandInputs`) reach readers that are
-            // already queued, so each coalesces into a pending run.
-            wakes: 138,
+            already_pending: 5,
             blocked_completions: 57,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
+    );
+    // Work (`ran`) is pinned apart from churn (`already_pending`, `reparked`):
+    // a request that finds its job queued, or a started job the pop gate parks
+    // again, moves a churn count and never a run.
+    let ledger = report.sessions.ledger;
+    let by_reason = |tally: fz::compiler2::WorkStartTally| {
+        fz::compiler2::WorkStartReason::TELEMETRY_ORDER
+            .into_iter()
+            .map(|reason| (reason.name(), tally[reason]))
+            .filter(|(_, count)| *count > 0)
+            .collect::<BTreeMap<_, _>>()
+    };
+    assert_eq!(
+        by_reason(ledger.ran),
+        BTreeMap::from([
+            ("blocked_waiter_expansion", 33),
+            ("changed_revision_wake", 126),
+            ("gate_expansion", 53),
+            ("ignition", 1),
+        ]),
+        "{fixture}: the jobs run, by the reason that queued each"
+    );
+    assert_eq!(
+        by_reason(ledger.already_pending),
+        BTreeMap::from([
+            ("activation_published", 7),
+            ("changed_revision_wake", 5),
+            ("gate_expansion", 10)
+        ]),
+        "{fixture}: requests that found their job already queued"
+    );
+    assert_eq!(
+        by_reason(ledger.reparked),
+        BTreeMap::from([("changed_revision_wake", 12)]),
+        "{fixture}: started jobs the pop gate parked again without running"
+    );
+    for reason in fz::compiler2::WorkStartReason::TELEMETRY_ORDER {
+        assert_eq!(
+            ledger.started[reason],
+            ledger.ran[reason] + ledger.reparked[reason],
+            "{fixture}: every started job ran or was parked again ({})",
+            reason.name()
+        );
+    }
+    let wake_records = |event_name: &str, path: &[&str]| {
+        events
+            .iter()
+            .filter(|ev| ev.name.last().map(String::as_str) == Some(event_name))
+            .filter_map(|ev| path.iter().try_fold(&ev.metadata, |node, key| node.get(key)))
+            .map(|node| node.get("wakes").and_then(|w| w.as_array()).map_or(0, Vec::len))
+            .sum::<usize>()
+    };
+    assert_eq!(
+        (
+            wake_records("applied", &["completion"]),
+            wake_records("dependencies_moved", &["step"])
+        ),
+        (138, 5),
+        "{fixture}: wake records of the completions, and of the external changes between them"
+    );
+    assert_eq!(
+        ledger.requested(fz_engine::WorkStart::ChangedRevisionWake),
+        143,
+        "{fixture}: every wake record is one request at the door"
     );
     let products = report.product_totals();
     let effect_cache_hits = sum_reporting_counts(

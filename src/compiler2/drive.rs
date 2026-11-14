@@ -969,6 +969,7 @@ impl World {
         while let Some(job) = self.work_graph.pop() {
             let gates = job.missing_gates(self);
             if !gates.is_empty() {
+                self.work_graph.record_reparked(&job);
                 self.park_on_gates(job, &gates);
                 continue;
             }
@@ -977,6 +978,7 @@ impl World {
                 self.work_graph.record_run_start(&job);
                 return Some(job);
             }
+            self.work_graph.record_reparked(&job);
             let waits = self.standing_waits(missing);
             self.work_graph.wait_without_running(job, waits);
         }
@@ -1188,11 +1190,11 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
         sessions: &mut super::pull::ProductSessions,
         timeout: Option<Duration>,
     ) -> DriveOutcome<Job, DependencyKey> {
-        sessions.begin_standalone_drive(world.work_start_tally());
+        sessions.begin_standalone_drive(world.work_ledger());
         let deadline = timeout.map(|limit| Instant::now() + limit);
         let outcome =
             ExecutionContext::with_product_sessions(world, telemetry, sessions).drive_until(deadline, timeout, true);
-        sessions.finish_standalone_drive(world.work_start_tally());
+        sessions.finish_standalone_drive(world.work_ledger());
         outcome
     }
 

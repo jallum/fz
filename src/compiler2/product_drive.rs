@@ -227,7 +227,7 @@ pub(super) fn drive_root_backend_product_with_budgets<
     fact_wait_budget: u64,
 ) -> Result<(Rc<BackendProgram>, ProductDriver<'a, T>), E> {
     let mut sessions = ProductSessions::default();
-    let (session, _) = sessions.take(ProductScope::Root(root), world.work_start_tally());
+    let (session, _) = sessions.take(ProductScope::Root(root), world.work_ledger());
     let mut driver = ProductDriver::with_shared_session(tel, Rc::clone(&session));
     let result = drive_root_backend_product_with_driver(
         world,
@@ -238,11 +238,7 @@ pub(super) fn drive_root_backend_product_with_budgets<
         product_stack_budget,
         fact_wait_budget,
     );
-    sessions.finish_activation(
-        ProductScope::Root(root),
-        &mut driver.session_mut(),
-        world.work_start_tally(),
-    );
+    sessions.finish_activation(ProductScope::Root(root), &mut driver.session_mut(), world.work_ledger());
     sessions.restore(session);
     let program = result?;
     Ok((program, driver))
@@ -323,10 +319,10 @@ pub(crate) fn with_retained_root_request<'a, T, E, R>(
 where
     T: crate::telemetry::RawSpanTelemetry,
 {
-    let (session, retained) = sessions.take(scope, world.work_start_tally());
+    let (session, retained) = sessions.take(scope, world.work_ledger());
     let mut driver = ProductDriver::with_shared_session(tel, session);
     let result = run(world, tel, sessions, &mut driver, retained);
-    sessions.finish_activation(scope, &mut driver.session_mut(), world.work_start_tally());
+    sessions.finish_activation(scope, &mut driver.session_mut(), world.work_ledger());
     let session = driver.into_session();
     sessions.restore(session);
     result

@@ -21504,7 +21504,7 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
         let wakes = step
             .wakes
             .into_iter()
-            .map(|wake| (wake.job, wake.disposition))
+            .map(|wake| (wake.job, wake.admission))
             .collect::<Vec<_>>();
         let popped = std::iter::from_fn(|| scheduler.pop()).collect::<Vec<_>>();
         (wakes, popped)
@@ -21535,7 +21535,7 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
         let wakes = step
             .wakes
             .into_iter()
-            .map(|wake| (wake.job, wake.disposition))
+            .map(|wake| (wake.job, wake.admission))
             .collect::<Vec<_>>();
         let popped = std::iter::from_fn(|| scheduler.pop()).collect::<Vec<_>>();
         (unresolved, wakes, popped)

@@ -327,10 +327,9 @@ arm and the `JobCompletion` arm call it, so the two can never drift apart:
 `old_revision`/`new_revision`, `old_settled`/`new_settled`), in the typed
 completion order; `"wakes"` is every `Wake` this completion
 caused, in wake order, each `{"cause": <FactUse identity>, "job": <Job
-identity>, "disposition": "enqueued"|"coalesced", "shift": bool}` —
-`AppliedStep::wakes` replaced the old deduped `enqueued`/`coalesced` job
-lists, so a job coalesced by two distinct causes in the same `Scheduler::
-complete` call now renders as two `Wake` records, not one; `"movements"` is
+identity>, "admission": "started"|"already_pending", "shift": bool}` —
+a job found already pending by two distinct causes in the same `Scheduler::
+complete` call renders as two `Wake` records, not one; `"movements"` is
 the full typed owner-ordered `FactMovement` report, each entry a full identity
 object. The event's `"semantic":{"reads":[...]}` projection reads the
 completed job's current `deps.reads` directly from `World.work_graph` and
@@ -378,11 +377,12 @@ in this fixture, `ActivationAnalyzed` and `CallSiteSummary` finality flips wake
 that exact producer and exercise `Cause::Readiness`. This signal comes from
 direct `ExecutableFacts` scheduling and is independent of how root analysis is
 ignited. On
-`00181_enum_reduce_operator_ref`, the 21 recorded wakes are 18 enqueues and 3
-coalesces, producing 18 readiness-caused evaluations and no uncaused work.
+`00181_enum_reduce_operator_ref` the readiness-only steps record no producer
+wakes and no evaluation is readiness-caused or uncaused.
 `the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation`
-(`tests/fz2_cli.rs`) pins the cause identities and preserves the surrounding
-causal and output counts.
+(`tests/fz2_cli.rs`) pins the cause identities and the surrounding causal and
+output counts, and pins the session `WorkLedger` by reason: runs (work) apart
+from `already_pending` and `reparked` (churn).
 
 The public stream is SELF-DESCRIBING (fz-kdt.34.6). A raw `Ty` or `FunctionId`
 is a position in one `World`, so a log that carries only ids means nothing to a
@@ -422,7 +422,7 @@ defines those ids before the job's payload-free `span_stop`.
 `telemetry::causal` (`causal.rs`, `pub`, re-exported as `fz::causal`) replays a
 public log into a `CausalReport`: per canonical formula identity, evaluations
 classified `Initial`/`Content`/`Readiness`/`Concluded`/`Uncaused` plus changed outputs,
-wakes and blocked completions; per canonical `ProductKey`, settlements,
+`already_pending` wakes (churn) and blocked completions; per canonical `ProductKey`, settlements,
 generations, the changed split, cache hits and displacements; the summed
 session tallies; per FACT KIND a `FactLifecycle` (distinct facts, first
 appearances, retractions — `first_appearances > distinct` is the
@@ -564,8 +564,11 @@ repeating the same snapshot. Standalone `Compiler2::drive` owns the work across
 its balanced boundary, so a nested session excludes the drive's prefix and the
 next retained request cannot inherit it. The event carries the raw
 `PullSession`, from which handlers derive its root and demanded set cardinalities,
-`producer_pokes`, and per-reason work-start breakdown (the `work_starts` object; its
-`unclassified` entry is the unsanctioned count) during the callback. The emitter does not
+`producer_pokes`, the per-reason runs (the `work_starts` object; its
+`unclassified` entry is the unsanctioned count) and the per-reason request
+counts (the `requests` object: `started`, `already_pending` and `reparked`,
+each an object with one count per reason; see "Request counts at the door" in
+`fact-engine.md`) during the callback. The emitter does not
 duplicate those values into measurements. The separate World-cumulative guard
 in `work_start_reason_test` asserts the whole production path: its
 `pull_only_guard_holds_for_*` cases assert `unsanctioned_work_starts == 0` AND
@@ -574,12 +577,14 @@ any root exists, one `submit_root`) for every fixture they drive.
 
 ### Work-Start Attribution (`WorkStart`, `WorkStartReason`)
 
-`Scheduler::enqueue` tags each new agenda entry with the reason it started,
-recording it in a `pending_reason` map without charging anything yet.
-`record_run_start` spends that entry's reason into `WorkStartTally`, charging
-it the moment `pop_runnable` commits the job to actually run -- never when
-the entry is merely gated and parked without running, so a job re-enqueued
-for the same eventual run is not charged twice. The finished `PullSession` is
+`Scheduler::admit` (the door under `Scheduler::enqueue` and every wake) tags
+each new agenda entry with the reason it started, recording it in a
+`pending_reason` map and counting the request in the `WorkLedger`.
+`record_run_start` spends that entry's reason into the ledger's `ran`
+`WorkStartTally`, charging it the moment `pop_runnable` commits the job to
+actually run; an entry the pop gate parks again without running is spent into
+`reparked` instead, so a job re-enqueued for the same eventual run is not
+charged twice as work. The finished `PullSession` is
 the raw telemetry authority. The sanctioned reasons mirror the pull model. The engine (`fz_engine::WorkStart`)
 owns `ChangedRevisionWake` and `Unclassified`; `compiler2::WorkStartReason`
 owns the rest and reaches the engine as `WorkStart::Client`:

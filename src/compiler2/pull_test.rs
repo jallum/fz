@@ -217,8 +217,8 @@ fn retained_session_broker_fans_runtime_demand_movement_to_dormant_and_nested_ac
     }
     assert_eq!(sessions.counts(), (3, 3));
 
-    let (active_left, _) = sessions.take(ProductScope::Root(left), WorkStartTally::default());
-    let (active_right, _) = sessions.take(ProductScope::Root(right), WorkStartTally::default());
+    let (active_left, _) = sessions.take(ProductScope::Root(left), WorkLedger::default());
+    let (active_right, _) = sessions.take(ProductScope::Root(right), WorkLedger::default());
     let tel = ConfiguredTelemetry::new();
     sessions.publish(
         &tel,
@@ -265,13 +265,13 @@ fn retained_session_broker_fans_runtime_demand_movement_to_dormant_and_nested_ac
     sessions.finish_activation(
         ProductScope::Root(right),
         &mut active_right.borrow_mut(),
-        WorkStartTally::default(),
+        WorkLedger::default(),
     );
     sessions.restore(active_right);
     sessions.finish_activation(
         ProductScope::Root(left),
         &mut active_left.borrow_mut(),
-        WorkStartTally::default(),
+        WorkLedger::default(),
     );
     sessions.restore(active_left);
 
