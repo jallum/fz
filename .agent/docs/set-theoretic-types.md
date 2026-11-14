@@ -632,12 +632,15 @@ RUNTIME question   "can these two values be equal? can this pattern match?"
 `is_value_disjoint(a, b)` erases nominal tags from both operands and asks whether the
 results intersect emptily — set-equal to `is_disjoint(erase_nominal(a),
 erase_nominal(b))`. It is the only disjointness that may authorize folding `==`/`!=`
-or pruning a pattern arm.
+or pruning a pattern arm. A type variable erases to `any`, as an opaque does: code
+compiled for `a` runs with whatever value arrives in its place, so a literal clause
+in a function specialized on a variable is tested when it runs.
 
 ```text
 is_value_disjoint(utf8, binary)        = false    (overlap -> == runs)
 is_value_disjoint(utf8, int)           = true     (a binary is never an int)
 is_value_disjoint(:ok, :error)         = true     (distinct atom singletons)
+is_value_disjoint(a, int)             = false    (a type variable can hold an int)
 ```
 
 ## Which predicate, where

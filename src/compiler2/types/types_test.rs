@@ -1388,6 +1388,30 @@ fn value_disjointness_reuses_the_symmetric_operand_pair() {
     assert_eq!(after_reverse.hits, after_first.hits + 1);
 }
 
+/// A type variable says nothing about the value that arrives in its place:
+/// code compiled for `a` runs with an integer, an atom or a list there. So no
+/// type is value-disjoint from one, and a match against a literal in such
+/// code is decided when it runs.
+#[test]
+fn a_type_variable_shares_values_with_every_inhabited_type() {
+    let mut t = Types::new();
+    let var = t.type_var(TypeVarId(0));
+    let other_var = t.type_var(TypeVarId(1));
+    let int = t.int();
+    let three = t.atom_lit("three");
+    let none = t.none();
+
+    assert!(!t.is_value_disjoint(&var, &int));
+    assert!(!t.is_value_disjoint(&three, &var));
+    assert!(!t.is_value_disjoint(&var, &other_var));
+    let var_or_int = t.union(var, int);
+    assert!(!t.is_value_disjoint(&var_or_int, &three));
+    assert!(
+        t.is_value_disjoint(&var, &none),
+        "nothing shares a value with the empty type"
+    );
+}
+
 #[test]
 fn comparison_cache_keys_predicates_and_order_by_operation() {
     let mut t = Types::new();
