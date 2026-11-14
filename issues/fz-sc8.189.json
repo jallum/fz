@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:29:19Z",
+  "description": "Enum.sort([1, 3, 2], :desc) is [3, 2, 1] in Elixir. fz2 interp (develop e515ae314) compiles it and fails at run time in a closure call: the atom is taken for the sorter function. :asc fails the same way. Elixir also accepts a module (Enum.sort(dates, Date)) and {:asc | :desc, module}; Enum.sort_by/3, min/max and friends take the same sorter forms. Reported by fz-8c; reproduced here.",
+  "id": "fz-sc8.189",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "Enum.sort/2 takes :asc and :desc, as in Elixir",
+  "type": "bug",
+  "updated_at": "2026-11-14T04:29:19Z"
+}
