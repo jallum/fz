@@ -47,6 +47,15 @@ jobs:
       - name: Test workspace
         if: github.event_name == 'pull_request'
         run: cargo test --workspace --all-features
+      - name: Oracle check when the pinned Elixir or OTP changes
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin "$GITHUB_BASE_REF"
+          pins="$(.github/scripts/beam-pins FETCH_HEAD)"
+          echo "pinned Elixir and OTP: $pins"
+          if [ "$pins" = changed ]; then
+            ORACLE=check cargo test --test fixture_matrix oracle_goldens_match_elixir
+          fi
       - name: Generate coverage report
         if: github.event_name == 'push'
         run: |

@@ -321,7 +321,9 @@ tests `oracle_stamps_in_the_tree_are_current_so_no_elixir_starts` and
   golden stays byte for byte; empty output removes the file), and writes the
   pair's `oracle.stamp` after the `oracle:` line.
 - `ORACLE=check` runs Elixir for every pair, ignoring stamps, and fails on any
-  difference from the golden. Run it after changing the Elixir version.
+  difference from the golden. Stamps do not hash the Elixir version, so CI
+  runs it on every pull request whose `.github/workflows/ci.yml` changes an
+  `otp-version` or `elixir-version` line (`.github/scripts/beam-pins` decides).
 - `ORACLE_FIXTURE=<stem>` narrows either mode to one fixture.
 
 ```
