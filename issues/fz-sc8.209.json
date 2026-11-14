@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T23:50:52Z",
+  "description": "Compiled functions are declared as fz_fn_\u003cid\u003e (src/compiler2/native_codegen/driver.rs declare_spec_fns), so a sampling profile or a debugger backtrace of a built program cannot be read back to source: 40% of the distiller's release profile was generated code spread over 240 anonymous functions. NativeCodegenBody already carries display_name.\nChange: the symbol is fz_fn_\u003cid\u003e_\u003cdisplay name with non-alphanumerics as _\u003e. The id keeps it unique.\nTrial result: the distiller's generated-code time attributes to the JSON decoder (string 7.7%, object 6.4%, digits 3.0%, run_join 3.6%) and to continuation bodies (deliver_lanes 11.8%).\nSignal: a test builds a program and finds a symbol naming one of its functions in the binary's symbol table.",
+  "id": "fz-sc8.209",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A compiled function's symbol carries its source name",
+  "type": "task",
+  "updated_at": "2026-11-14T23:50:52Z"
+}
