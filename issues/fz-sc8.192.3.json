@@ -9,9 +9,15 @@
   "id": "fz-sc8.192.3",
   "labels": [],
   "parent": "fz-sc8.192",
+  "comments": [
+    {
+      "text": "Measured 2026-11-14 on develop 37a5ef63b (debug, opt-level 1), 100,000 integer keys, ten walks: Enum.reduce over the map 290 ns per entry, Map.to_list the same, Enum.reduce over a list of the same pairs 60 ns per entry. The walk by entry index costs about 230 ns per entry more than a list walk. Probe: scratchpad ovf/w.exs.",
+      "timestamp": "2026-11-14T16:02:48Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A walk over a large map does not pay per entry to find its place",
   "type": "task",
-  "updated_at": "2026-11-14T14:34:24Z"
+  "updated_at": "2026-11-14T16:02:48Z"
 }
