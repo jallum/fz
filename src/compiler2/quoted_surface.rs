@@ -150,7 +150,7 @@ enum FunctionFormContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FunctionGroupKey {
-    name: String,
+    name: AtomName,
     arity: usize,
 }
 
@@ -682,7 +682,7 @@ fn parse_function_form(
     let FunctionGroupKey { name, arity } = validate_function_clauses(&source, context, sources)?;
     Ok(FunctionForm {
         source,
-        name,
+        name: name.to_string(),
         arity,
         is_macro: head == "defmacro",
         is_private: head == "defp",
@@ -763,7 +763,7 @@ fn is_single_do_keyword(cursor: &QuotedSourceCursor) -> bool {
 pub(crate) fn validate_protocol_callback_clause(
     node: &QuotedAstNode,
     sources: &SourceMap,
-) -> Result<(String, usize), QuotedSourceError> {
+) -> Result<(AtomName, usize), QuotedSourceError> {
     let definition_head = node.head.atom_name()?;
     if definition_head != "def" {
         return Err(QuotedSourceError::new(format!(
@@ -980,7 +980,7 @@ pub(crate) fn reserved_source_definition(
         head if is_function_definition_head(head) => {
             let FunctionGroupKey { name, arity } = parse_function_group_key(source, sources)?;
             Some(ReservedSourceDefinition::Function {
-                name,
+                name: name.to_string(),
                 arity,
                 is_macro: head == "defmacro",
             })
@@ -1062,16 +1062,10 @@ fn parse_function_head_key_inner(
                     .join(" or ")
             )));
         }
-        return Ok(FunctionGroupKey {
-            name: name.to_string(),
-            arity,
-        });
+        return Ok(FunctionGroupKey { name, arity });
     }
     if is_local_function_name(&name, allow_reserved_macro_name) {
-        return Ok(FunctionGroupKey {
-            name: name.to_string(),
-            arity,
-        });
+        return Ok(FunctionGroupKey { name, arity });
     }
     Err(QuotedSourceError::new(format!(
         "`{name}` is not a definable function name"
