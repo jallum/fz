@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-t93.6"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-xcu"
+  ],
   "created": "2026-11-14T04:26:08Z",
   "description": "RootBackendProduct, NativeProgram, BackendExecutable, AbiExecutable, MaterializedExecutable, StructSchema become engine derivations. Retiring a root withdraws its demand and the engine releases what nothing demands. Failed is a producer outcome with FatalError's contract (pull.rs documents it so). Deletes ProductMemo readers/readiness/rooted membership witness, ProductMutationWave, PullSession scheduling, ProductSessions routing, DependencyKey::Product, product_drive.rs as a separate drive. Docs: fact-engine.md 'Product pulls for artifacts' folds into the engine sections; pipeline.md artifact path.",
   "id": "fz-t93.7",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Artifacts are root-scoped engine derivations; the pull system is gone",
   "type": "task",
-  "updated_at": "2026-11-14T04:26:35Z"
+  "updated_at": "2026-11-14T04:26:36Z"
 }
