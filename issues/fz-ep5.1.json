@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-4i4"
+    "fz-4i4",
+    "fz-ep5.2"
   ],
   "closed_at": "2026-11-14T03:42:42Z",
   "created": "2026-11-14T03:26:51Z",
@@ -14,5 +15,5 @@
   "status": "closed",
   "title": "Fixtures, guides and tests pick clauses with guards and patterns where a guard can say the type",
   "type": "task",
-  "updated_at": "2026-11-14T03:42:42Z"
+  "updated_at": "2026-11-14T04:40:01Z"
 }
