@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:05:29Z",
+  "description": "parse_function_head_key_inner (quoted_surface.rs:1040-1080) allocates about 5,570 Strings at quoted_surface.rs:1073, all through quoted_surface.rs:1027 (callers :964 and :733). Read what atom_name answers and how many copies one head makes (the name read, then name.to_string() into FunctionGroupKey); callers that only compare the key against a name they already hold need no key at all.\n\nChange: one copy per key that is kept; a caller that only asks 'is this head named N with arity A' compares through a borrow.\n\nEvidence: census of the OptionParser probe at develop 01e69178a (771,812 allocations): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/01e69178a_top.txt; call chains: cd /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census \u0026\u0026 python3 chain.py 01e69178a.pkl \u003cfile:line\u003e \u003cdepth\u003e \"\" \u003cn\u003e; line numbers are exact in /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src (read only).\n\nSignal: full gate green; no golden or pin moves except a falling pin, which is lowered and listed; program output and canonical backend dump identical on the probe; allocation count before and after in the commit.",
+  "id": "fz-y11.30",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "A function head's name is copied once, into the key that keeps it",
+  "type": "task",
+  "updated_at": "2026-11-14T01:05:29Z"
+}
