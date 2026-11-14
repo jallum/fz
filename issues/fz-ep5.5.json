@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:40:00Z",
+  "description": "Delete the '::' branch of decode_function_head (src/compiler2/quoted_function.rs ~288), FnClause::param_annotations (src/ast/mod.rs ~595) and its readers (dispatch.rs surface_pattern_rows loop, source_publish.rs ~490, jobs/body.rs ~3119), SourcePatternError::ParamAnnotation and its diagnostics, and docs teaching it (.agent/docs pattern-matching.md, specs.md, dispatch-matrix.md, guides). '::' anywhere in a pattern (outside a bitstring segment) is a user diagnostic with a code and a span suggesting a guard, matching Elixir's 'misplaced operator ::/2'. The generic 'unsupported quoted pattern head' fallback (quoted_function.rs ~592, e.g. 'def f({a, foo(b)})') also becomes a spanned user error. Absorbs fz-4i4. Diagnostic fixtures per form (top-level parameter, tuple, map, struct, case, fn, defimpl, call in a pattern). Acceptance: no '::' in any pattern in the repo; full gate green.",
+  "id": "fz-ep5.5",
+  "labels": [],
+  "parent": "fz-ep5",
+  "priority": 2,
+  "status": "open",
+  "title": "'::' in a pattern is a spanned error; the parameter-annotation machinery is deleted",
+  "type": "task",
+  "updated_at": "2026-11-14T04:40:00Z"
+}
