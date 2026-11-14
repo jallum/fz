@@ -1,6 +1,7 @@
 #---
 # purpose: a name drawn from a single script, with digits and underscores, is accepted, and an underscore lets scripts mix
 # oracle: 01210_a_name_in_one_script_is_accepted_and_scripts_mix_across_an_underscore.oracle.exs
+# oracle.stamp: 856e223460f0f665
 #---
 def main() do
   привет_1 = 40
