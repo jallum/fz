@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T16:57:50Z",
+  "description": "A closure carried with differently instantiated surfaces gets two interned ids that are mutually subtype and render alike. canon_test's canon_is_faithful_over_the_full_arena_of_both_target_fixtures counts them as duplicate ids: 00567's ceiling is 15 (one pair inherited by the widened key %{1: atom}); 00420's is 142 after fz-sc8.176.\n\nMeasured at fz-sc8.176 (FZ_DUPS probe printing each class with more than one id): every duplicate class in 00420 carries a closure -- bare closures (closure[main/0#lambda@N/1]()), unions of closures, and arrows holding them ((list(int), {empty_list(), int}, closure[Enum.take_every/2#lambda@0/2](int)) -\u003e r0). .176 raised the ceiling 122 -\u003e 142 because a non-recursive key collapses an unasked list to its class, so each Enum *_while/*_every/*_positive wrapper gets a key arrow beside its evidence arrow, and each such arrow inherits its closure's pair.\n\nTarget: one id per type at the interning boundary, so both ceilings fall toward zero. First step: find where the second id is minted (closure_lit intersected with its surface vs the literal alone is the suspect) by printing both ids' descriptors for one 00420 pair.\n\nAcceptance: 00420 and 00567 ceilings lowered to what remains, with the cause; suite passes on all three paths.",
+  "id": "fz-sc8.203",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A closure type is interned once, whatever surface it is carried with",
+  "type": "bug",
+  "updated_at": "2026-11-14T16:57:50Z"
+}
