@@ -4,13 +4,14 @@
   "blocks": [
     "fz-lr6"
   ],
+  "closed_at": "2026-11-14T14:06:11Z",
   "created": "2026-11-14T12:47:53Z",
   "description": "On develop f822f0f84 this fails on interp ('backend type test cannot read lane-form ShapeId(..)') and on run ('native type test cannot read lane-form'):\n\n  def kind(n :: integer), do: {:int, n}\n  def kind(f :: ((integer) -\u003e integer)), do: {:fn, f.(10)}\n  def pick(flag, a, b) do\n    case flag do\n      true -\u003e a\n      _ -\u003e b\n    end\n  end\n  def main() do\n    n = Process.heap_alloc_stats()[:allocs]\n    flag = n \u003c n + 1\n    dbg(kind(pick(flag, fn (x) -\u003e x + 1 end, 5)))\n  end\n\nElixir prints {:fn, 11}.\n\nMechanism (measured with a local print): the value reaches kind's integer test as ShapeDescr::Callable with zero lanes. Transport gives it the exact direct-callable layout (layout_from_demand -\u003e callable_layout_from_demand -\u003e exact_direct_callable_layout) because its runtime demand is callable and names one target, though its type is closure | int. A direct callable has no room for the integer. Only a join of DISTINCT callable producers is marked escaped (runtime_demand.rs delivered_join_has_distinct_callable_producers, whose filter_map drops non-callable and parameter sources). Fixture 00632 passes on develop only because its three callers blend three lambdas into one return (the fz-lr6 bug), which trips that rule.\n\nRefuted placement: gating the exact layout on a pure-callable type gets past the type test and then fails at the apply seam ('reached function N through the apply seam, which publishes no construction wrapper'). Boxing is a runtime-demand fact (CallableDemand::escape) read by both the layout and the wrapper publication, so the decision belongs there, once.\n\nAcceptance:\n- new oracle fixture with the program above (and a two-caller variant) passes on interp, run and build;\n- 00632 still passes, and passes with fz-lr6's change;\n- one rule in runtime demand, stated in pipeline.md: a callable value whose type admits anything but that callable is first-class;\n- pin moves attributed; rises authorized.",
   "id": "fz-wto",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A value that may be a callable or something else travels boxed, so a type test and a call can both read it",
   "type": "bug",
-  "updated_at": "2026-11-14T12:47:54Z"
+  "updated_at": "2026-11-14T14:06:11Z"
 }
