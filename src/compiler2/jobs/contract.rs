@@ -227,7 +227,7 @@ fn resolve_extern_wire(
     let Some(clause) = contract.arrows.first().cloned() else {
         return Err(FatalError);
     };
-    let params_ty = world.types().arrow_params(&clause.arrow);
+    let params_ty = world.types().arrow_params(&clause.arrow).to_vec();
     let result_ty = world
         .types()
         .arrow_result(&clause.arrow)

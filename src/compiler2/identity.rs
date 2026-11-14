@@ -125,7 +125,7 @@ impl ActivationKey {
     /// The canonical input vector — the params side of `arrow`. This is the
     /// dispatch identity that every consumer reads; the field is an arrow only
     /// to keep the key in the single arrow type language.
-    pub fn inputs(&self, types: &super::types::Types) -> Vec<Ty> {
+    pub fn inputs<'t>(&self, types: &'t super::types::Types) -> &'t [Ty] {
         types.arrow_params(&self.arrow)
     }
 

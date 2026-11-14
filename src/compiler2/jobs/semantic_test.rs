@@ -741,7 +741,7 @@ fn only_activation_inputs(world: &mut World, starts: &JobStarts) -> Vec<Ty> {
     let activations = starts.activations(function);
     assert_eq!(activations.len(), 1, "f/1 is analysed at one activation");
     let activation = activations.into_iter().next().expect("one activation");
-    activation.inputs(world.types())
+    activation.inputs(world.types()).to_vec()
 }
 
 /// A spec describes what a callee accepts; it does not tell the callee what

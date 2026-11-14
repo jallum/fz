@@ -1587,7 +1587,7 @@ end
             world
                 .activation_inputs_joined(&executable.activation)
                 .map(<[_]>::to_vec)
-                .unwrap_or_else(|| executable.activation.inputs(world.types()))
+                .unwrap_or_else(|| executable.activation.inputs(world.types()).to_vec())
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -2165,8 +2165,8 @@ end
                     .find(|(executable, _)| {
                         executable.need == resolution.need
                             && executable.activation.function == resolution.activation.function
-                            && executable.activation.inputs(world.types()).as_slice()
-                                == world.types().arrow_params(&resolution.activation.arrow).as_slice()
+                            && executable.activation.inputs(world.types())
+                                == world.types().arrow_params(&resolution.activation.arrow)
                     })
                     .map(|(_, demand)| demand.return_demand.clone());
                 (resolution.clone(), demand)
@@ -5495,8 +5495,12 @@ fn compiler2_declared_struct_field_types_keep_integer_range_elements_off_float()
             .iter()
             .filter_map(|sym| {
                 let name = world.function_ref(sym.activation.function).source_name()?;
-                (name.contains("reduce_cont") || name.contains("reduce_step") || name.contains("done?"))
-                    .then(|| (name.to_string(), world.types().arrow_params(&sym.activation.arrow)))
+                (name.contains("reduce_cont") || name.contains("reduce_step") || name.contains("done?")).then(|| {
+                    (
+                        name.to_string(),
+                        world.types().arrow_params(&sym.activation.arrow).to_vec(),
+                    )
+                })
             })
             .collect()
     };
@@ -6552,8 +6556,8 @@ fn callable_owner_positions_break_sibling_ties_on_canonical_inputs() {
         .filter(|pair| {
             types
                 .cmp_activation_tys(
-                    &types.arrow_params(&pair[0].identity.executable().activation.arrow),
-                    &types.arrow_params(&pair[1].identity.executable().activation.arrow),
+                    types.arrow_params(&pair[0].identity.executable().activation.arrow),
+                    types.arrow_params(&pair[1].identity.executable().activation.arrow),
                 )
                 .is_gt()
         })

@@ -151,7 +151,7 @@ pub(super) fn seed_activation(
             FactKey::Activation(activation.clone()),
             FactKey::ActivationInputs(activation.clone()),
         ],
-        activation_input_contributions: vec![(activation.clone(), activation.inputs(world.types()))],
+        activation_input_contributions: vec![(activation.clone(), activation.inputs(world.types()).to_vec())],
         ..JobEffects::default()
     })
 }

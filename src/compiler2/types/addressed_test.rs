@@ -199,7 +199,7 @@ fn captured_values_and_nested_callable_binders_keep_scoped_correlations() {
     let root = RootId::for_test(1);
     let function = FunctionId::from_coordinate(2);
     let key = ActivationKey::from_inputs(root, function, &[closure], &mut t);
-    let once = key.inputs(&t);
+    let once = key.inputs(&t).to_vec();
     let outer_captures = t
         .closure_lit_parts(&once[0])
         .expect("addressed closure literal")
