@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T23:37:01Z",
+  "description": "Enum.uniq_by (lib/enum.fz uniq_walk) keeps the keys it has seen in a list and scans it with List.member? for every element, so n elements with d distinct keys cost n*d comparisons. Elixir's Enum.uniq keeps them in a map. In the distiller (Enum.uniq over every job label) this scan is 37% of the 32,000-line run on PR #585: fz_op_identical 1240 of 3385 samples, 752 directly from the one compiled function.\nChange: uniq_walk carries a map of seen keys (Map.has_key? / Map.put). Order of the result and === semantics are unchanged (map keys are strict: 1 and 1.0 are different keys).\nMeasured with the change on #585, tools/distill-telemetry.exs unchanged: 32,000 lines 2.90 s -\u003e 1.56 s user; full 222,411-line log 19.9 s -\u003e 13.7 s; output byte-identical to Elixir on both.\nSignal: a fixture runs Enum.uniq over many distinct binaries on interp, run and build against an Elixir oracle, and pins the allocation count so the cost is linear in the input.",
+  "id": "fz-sc8.206",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "Enum.uniq and uniq_by remember what they have seen in a map",
+  "type": "bug",
+  "updated_at": "2026-11-14T23:37:01Z"
+}
