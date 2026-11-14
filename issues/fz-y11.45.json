@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T04:20:24Z",
+  "description": "LoweredBody::dispatch_subject_origin returned a Vec of projection refs; origin_source_path built a suffix Vec and copied it. Sites: body.rs:885 (2,368), jobs/body.rs:4013 (1,808), :4042 (3,200). Change: SubjectPath = SmallVec\u003c[\u0026ProjectionKind; 4]\u003e, suffix borrowed. Spike: 691,166 -\u003e 685,020, output and canonical dump identical.",
+  "id": "fz-y11.45",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "A dispatch subject's path lives on the stack",
+  "type": "task",
+  "updated_at": "2026-11-14T04:20:24Z"
+}
