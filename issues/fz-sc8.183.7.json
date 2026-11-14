@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T12:34:41Z",
+  "description": "A clause body emits a BitstringRead for every field of its pattern (src/compiler2/body.rs:3778), including a byte only the guard needed and a _ :: binary nobody named. Each is a runtime call; a binary one allocates a view. Measured: walk reads its byte twice per step (one dead); JSON val/1 clause 7 builds 5 dead views per 172-byte line. Rule: the body reads a field only when the body uses its binding (the rule dispatch got in fz-sc8.183.2). Signal: a fixture walking with _ :: binary pins 0 allocations per step (1 today); fixture 01161 unchanged; pins fall or hold. Evidence and predictions: proposal page fz-sc8.183.5.html (workspace root); spike files in scratchpad b183-5 and b183-6.",
+  "id": "fz-sc8.183.7",
+  "labels": [],
+  "parent": "fz-sc8.183",
+  "priority": 1,
+  "status": "open",
+  "title": "A clause body reads only the bitstring fields it uses",
+  "type": "task",
+  "updated_at": "2026-11-14T12:34:41Z"
+}
