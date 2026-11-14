@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-3ul",
-    "fz-sc8.12"
+    "fz-sc8.12",
+    "fz-sc8.201"
   ],
   "blocks": [],
   "created": "2026-11-08T23:07:35Z",
@@ -14,5 +15,5 @@
   "status": "in_progress",
   "title": "Enum.into and for into: tell the collector :halt when the reduction raises",
   "type": "feature",
-  "updated_at": "2026-11-14T15:09:02Z"
+  "updated_at": "2026-11-14T15:22:38Z"
 }
