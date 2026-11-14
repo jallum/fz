@@ -9,6 +9,12 @@
   "id": "fz-9x7.2",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Folded into fz-9x7.1 by user decision 2026-11-14; its scope and acceptance (pop at resume, poison test with late-read positive control, pinned rule, resumed-once rule documented) are fz-9x7.1's.",
+      "timestamp": "2026-11-14T20:09:32Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A continuation gives its frame back when it resumes as the newest object",
