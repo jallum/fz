@@ -186,7 +186,13 @@ or the executor's outcome reads it (`DispatchState::outcome_reads`: the
 subjects of the control dispatch's outcome arguments or of a guard helper's
 bodies). Every other field is only checked to fit. A function-head entry
 dispatch reads nothing off its outcome, so a walk over `<<_c, r :: binary>>`
-builds one view of the rest per step, in the clause body.
+builds one view of the rest per step, in the clause body. The body follows the
+same rule through value demand: a field whose value the body never uses has a
+semantically absent layout, so `BackendProgram` lowering emits
+`BackendStep::BitstringRead { value: None, .. }` for it (interpreter and native
+alike skip the read and still bind `next`, the position after the field), and
+`BackendStep::Omitted` when no later field starts from its position either.
+`first(<<c, _ :: binary>>)` builds no view.
 
 **What a dispatch plan demands** — owner `DispatchGraphBuilder`
 (`dispatch_matrix/mod.rs`). The builder folds each question into

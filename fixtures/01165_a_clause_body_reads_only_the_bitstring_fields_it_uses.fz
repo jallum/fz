@@ -1,0 +1,63 @@
+#---
+# purpose: a clause body reads a bitstring field only when it uses the field's binding, so a loop over fields that are ignored, guard-only or unused allocates nothing per step
+# kind: run
+#---
+#
+# Each loop takes 10,000 steps over a 10,000-byte binary and prints its result
+# and the allocations one step makes. A field's binding that the body never mentions
+# is not read: the position moves past it, and a binary field is not built as a
+# view. A byte only a guard tests, and a byte the body does use, are the
+# controls.
+#
+#   skip    `<<_c, r :: binary>>`            the byte is ignored, the rest is used
+#   guarded `<<c, r :: binary>> when c < 128` the byte is only tested
+#   used    `<<c, r :: binary>>`             the byte is added into the result
+#   unused  `<<c, _ :: binary>>`             the rest is ignored: no view at all
+#
+# `unused` calls `first` on the whole binary each step, so a view of the rest
+# would be the step's only allocation.
+#
+# The last cases pin the values when unread fields sit before and between read
+# ones: the position still advances past a field nothing reads.
+defmodule P do
+  def skip(b), do: skip(b, 0)
+  defp skip(<<_c, r :: binary>>, n), do: skip(r, n + 1)
+  defp skip(_b, n), do: n
+
+  def guarded(b), do: guarded(b, 0)
+  defp guarded(<<c, r :: binary>>, n) when c < 128, do: guarded(r, n + 1)
+  defp guarded(_b, n), do: n
+
+  def used(b), do: used(b, 0)
+  defp used(<<c, r :: binary>>, n), do: used(r, n + c)
+  defp used(_b, n), do: n
+
+  def unused(b, steps), do: unused(b, steps, 0)
+  defp unused(_b, 0, n), do: n
+  defp unused(b, steps, n), do: unused(b, steps - 1, n + first(b))
+  defp first(<<c, _ :: binary>>), do: c
+
+  def after_unused(<<_a, _b :: binary-size(2), c, _rest :: binary>>), do: c
+  def after_unused(_other), do: :short
+
+  def middle(<<a, _b, c>>), do: {a, c}
+  def middle(_other), do: :short
+end
+
+line = String.duplicate("x", 10000)
+
+measure = fn fun ->
+  a = Process.heap_alloc_stats()
+  result = fun.()
+  b = Process.heap_alloc_stats()
+  {result, div(b[:allocs] - a[:allocs], 10000)}
+end
+
+dbg(measure.(fn -> P.skip(line) end))
+dbg(measure.(fn -> P.guarded(line) end))
+dbg(measure.(fn -> P.used(line) end))
+dbg(measure.(fn -> P.unused(line, 10000) end))
+dbg(P.after_unused(<<1, 2, 3, 4, 5, 6>>))
+dbg(P.after_unused(<<1, 2, 3>>))
+dbg(P.middle(<<7, 8, 9>>))
+dbg(P.middle(<<7, 8>>))

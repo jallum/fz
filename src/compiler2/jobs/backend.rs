@@ -25,8 +25,8 @@ use super::super::artifact::{
     BackendStep, BackendTail, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm,
 };
 use super::super::body::{
-    CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep,
-    LoweredTail, ValueId,
+    CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBitFieldSpec, LoweredBody, LoweredEntry,
+    LoweredMapKey, LoweredStep, LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job};
 use super::super::identity::{ActivationKey, ExecutableKey, ModuleId, RootId};
@@ -982,15 +982,34 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 source,
                 pos,
                 spec,
-            } => BackendStep::BitstringRead {
-                value: *value,
-                next: *next,
-                source: *source,
-                pos: *pos,
-                spec: spec.clone(),
-            },
+            } => self.bitstring_read(*value, *next, *source, *pos, spec),
             LoweredStep::PopHandler => BackendStep::PopHandler,
         })
+    }
+
+    /// A field the body never uses is not read; its position is still
+    /// advanced for the fields after it, and a field that is neither read nor
+    /// advanced past has no step at all.
+    fn bitstring_read(
+        &self,
+        value: ValueId,
+        next: Option<ValueId>,
+        source: ValueId,
+        pos: ValueId,
+        spec: &LoweredBitFieldSpec,
+    ) -> BackendStep {
+        let read = (!self.value_is_proven_semantically_absent(value)).then_some(value);
+        let advanced = next.is_some_and(|next| !self.value_is_proven_semantically_absent(next));
+        if read.is_none() && !advanced {
+            return BackendStep::Omitted { value };
+        }
+        BackendStep::BitstringRead {
+            value: read,
+            next,
+            source,
+            pos,
+            spec: spec.clone(),
+        }
     }
 
     fn value_is_proven_semantically_absent(&self, value: ValueId) -> bool {

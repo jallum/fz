@@ -1560,9 +1560,11 @@ pub enum BackendStep {
     /// The field of `source` that starts at bit `pos`. A clause body runs only
     /// after its dispatch proved the whole pattern, so the field is there to
     /// read. `next` is the position after the field, bound for a later field to
-    /// start from; the last field has none.
+    /// start from; the last field has none. `value` is `None` for a field the
+    /// body never uses: the position still advances, and the field is never
+    /// built.
     BitstringRead {
-        value: ValueId,
+        value: Option<ValueId>,
         next: Option<ValueId>,
         source: ValueId,
         pos: ValueId,

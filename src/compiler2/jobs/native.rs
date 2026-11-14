@@ -1510,8 +1510,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         unit: spec.unit,
                         is_last: next.is_none(),
                     };
-                    let value_var = self.emit_bit_read(ctx, source, pos, &field);
-                    self.bind_runtime_value(ctx, executable, env, *value, value_var);
+                    if let Some(value) = value {
+                        let value_var = self.emit_bit_read(ctx, source, pos, &field);
+                        self.bind_runtime_value(ctx, executable, env, *value, value_var);
+                    }
                     if let Some(next) = next {
                         let next_var = self.emit_bit_next(ctx, pos, field);
                         self.bind_runtime_value(ctx, executable, env, *next, next_var);
