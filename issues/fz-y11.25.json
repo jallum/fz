@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:05:27Z",
+  "description": "Types::address_inputs (types/addressed.rs:214) takes a slice and answers a new vector: about 5,340 allocations. Chains: identity.rs:116 ActivationKey::from_inputs (about 2,340; the result is copied again into the arrow's args by Types::arrow), world.rs:3443 define_callsite_summary (1,152; assigned back over the vector it read), world.rs:951 (1,072), semantic.rs:283 CallableSurface::new (about 600; takes an owned vector and builds another).\n\nChange: one addressing entry that rewrites a mutable slice in place; callers that own the vector pass it; from_inputs addresses a scratch copy that becomes the arrow's args without a second copy.\n\nEvidence: census of the OptionParser probe at develop 01e69178a (771,812 allocations): /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/01e69178a_top.txt; call chains: cd /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census \u0026\u0026 python3 chain.py 01e69178a.pkl \u003cfile:line\u003e \u003cdepth\u003e \"\" \u003cn\u003e; line numbers are exact in /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/wt-alloc/src (read only).\n\nSignal: full gate green; no golden or pin moves except a falling pin, which is lowered and listed; program output and canonical backend dump identical on the probe; allocation count before and after in the commit.",
+  "id": "fz-y11.25",
+  "labels": [],
+  "parent": "fz-y11",
+  "priority": 2,
+  "status": "open",
+  "title": "Inputs are addressed in the vector that holds them",
+  "type": "task",
+  "updated_at": "2026-11-14T01:05:27Z"
+}
