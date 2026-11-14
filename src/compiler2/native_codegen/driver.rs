@@ -673,6 +673,8 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
                 let value_ref = cg.closure_capture_ref_at(self_bits, i);
                 arg_shape.replay_from_capture(&mut cg, CodegenValue::AnyRef(value_ref), &mut args);
             }
+            let ref_slots: Vec<usize> = (0..arg_shapes.len()).collect();
+            release_resumed_frame(&mut cg, self_bits, &ref_slots, arg_shapes.len());
             let mut callee_sig = Signature::new(CallConv::Tail);
             for arg_shape in arg_shapes {
                 arg_shape.push_param(&mut callee_sig);

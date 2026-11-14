@@ -13,17 +13,16 @@ use cranelift_codegen::ir::{self, InstBuilder, MemFlags, condcodes::IntCC, types
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataId, FuncId, Module};
 use fz_runtime::any_value::{
-    AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, TaggedRefArch, ValueKind,
-    struct_header_word,
+    AnyValueRef, AnyValueRefPacking, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, CLOSURE_FLAGS_CAPTURED_MASK,
+    CLOSURE_LAYOUT_FLAGS_SHIFT, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, TaggedRefArch, ValueKind, struct_header_word,
 };
 use fz_runtime::ir_runtime::{
-    fz_alloc_closure, fz_alloc_struct, fz_box_float_for_any, fz_box_int_for_any, fz_closure_code_ref,
-    fz_closure_get_capture_atom, fz_closure_get_capture_f64, fz_closure_get_capture_i64, fz_closure_get_capture_ref,
+    fz_alloc_closure, fz_alloc_continuation, fz_alloc_struct, fz_box_float_for_any, fz_box_int_for_any,
     fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64, fz_closure_set_capture_i64,
     fz_closure_set_capture_ref, fz_halt_implicit_atom, fz_halt_implicit_f64, fz_halt_implicit_i64,
     fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref, fz_list_head_ref, fz_list_reuse_or_cons_parts,
-    fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_mark_published_ref_aliased, fz_materialize_cont, fz_struct_copy,
-    fz_struct_store_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
+    fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_mark_published_ref_aliased, fz_struct_copy, fz_struct_store_ref,
+    fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
 
 /// A struct or tuple that is allocated and whose fields are being stored.
@@ -315,6 +314,16 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         )
     }
 
+    pub(crate) fn alloc_continuation(
+        &mut self,
+        arity: ir::Value,
+        captured_count: ir::Value,
+        code_addr: ir::Value,
+    ) -> ir::Value {
+        let process = self.process_arg();
+        runtime_call1!(self, fz_alloc_continuation, [process, arity, captured_count, code_addr])
+    }
+
     pub(crate) fn list_head(&mut self, list_ref: ir::Value) -> ir::Value {
         runtime_call1!(self, fz_list_head_ref, [list_ref])
     }
@@ -358,24 +367,79 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         runtime_call1!(self, fz_list_reuse_or_cons_ref, [process, source, head, tail, rewrite])
     }
 
+    /// The address of a closure's object: its ref word without kind or literal bit.
+    fn closure_address(&mut self, closure_ref: ir::Value) -> ir::Value {
+        self.b
+            .ins()
+            .band_imm(closure_ref, AnyValueRefPacking::current().address_mask() as i64)
+    }
+
+    /// The address of capture `index`'s raw slot.
+    fn closure_capture_slot(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
+        let address = self.closure_address(closure_ref);
+        let offset = self.b.ins().ishl_imm(index, 3);
+        let slot = self.b.ins().iadd(address, offset);
+        self.b.ins().iadd_imm(slot, CLOSURE_CAPTURES_OFFSET as i64)
+    }
+
     pub(crate) fn closure_capture_i64(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
-        runtime_call1!(self, fz_closure_get_capture_i64, [closure_ref, index])
+        let slot = self.closure_capture_slot(closure_ref, index);
+        self.b.ins().load(types::I64, MemFlags::trusted(), slot, 0)
     }
 
     pub(crate) fn closure_capture_f64(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
-        runtime_call1!(self, fz_closure_get_capture_f64, [closure_ref, index])
+        let slot = self.closure_capture_slot(closure_ref, index);
+        self.b.ins().load(types::F64, MemFlags::trusted(), slot, 0)
     }
 
     pub(crate) fn closure_capture_atom(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
-        runtime_call1!(self, fz_closure_get_capture_atom, [closure_ref, index])
+        self.closure_capture_i64(closure_ref, index)
     }
 
+    /// A capture as a ref word: its kind byte over its raw slot. An int,
+    /// float, pid or reference names the slot that holds its raw word; every
+    /// other kind carries its raw word as the payload.
     pub(crate) fn closure_capture_ref(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
-        runtime_call1!(self, fz_closure_get_capture_ref, [closure_ref, index])
+        let packing = AnyValueRefPacking::current();
+        let flags = MemFlags::trusted();
+        let address = self.closure_address(closure_ref);
+        let layout = self.b.ins().uload32(flags, address, 0);
+        let flags_field = self.b.ins().ushr_imm(layout, CLOSURE_LAYOUT_FLAGS_SHIFT as i64);
+        let count = self
+            .b
+            .ins()
+            .band_imm(flags_field, i64::from(CLOSURE_FLAGS_CAPTURED_MASK));
+        let raw_slot = self.closure_capture_slot(closure_ref, index);
+        let raw = self.b.ins().load(types::I64, flags, raw_slot, 0);
+        let kinds_offset = self.b.ins().ishl_imm(count, 3);
+        let kinds = self.b.ins().iadd(address, kinds_offset);
+        let kind_at = self.b.ins().iadd(kinds, index);
+        let kind = self.b.ins().uload8(types::I64, flags, kind_at, CLOSURE_CAPTURES_OFFSET);
+        let names_slot = self.kind_names_its_slot(kind);
+        let payload = self.b.ins().select(names_slot, raw_slot, raw);
+        let payload = self.b.ins().band_imm(payload, packing.payload_mask() as i64);
+        let kind_bits = self.b.ins().ishl_imm(kind, i64::from(packing.tag_shift()));
+        self.b.ins().bor(kind_bits, payload)
+    }
+
+    /// Whether a ref of this kind points at the slot that holds its raw word.
+    pub(crate) fn kind_names_its_slot(&mut self, kind: ir::Value) -> ir::Value {
+        let at_least_pid =
+            self.b
+                .ins()
+                .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, kind, i64::from(ValueKind::PID.tag()));
+        let at_most_float =
+            self.b
+                .ins()
+                .icmp_imm(IntCC::UnsignedLessThanOrEqual, kind, i64::from(ValueKind::FLOAT.tag()));
+        self.b.ins().band(at_least_pid, at_most_float)
     }
 
     pub(crate) fn closure_code_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
-        runtime_call1!(self, fz_closure_code_ref, [closure_ref])
+        let address = self.closure_address(closure_ref);
+        self.b
+            .ins()
+            .load(types::I64, MemFlags::trusted(), address, CLOSURE_CODE_OFFSET)
     }
 
     pub(crate) fn closure_halt_kind_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
@@ -400,11 +464,6 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     pub(crate) fn set_closure_capture_atom(&mut self, closure_ref: ir::Value, index: ir::Value, value: ir::Value) {
         let process = self.process_arg();
         runtime_call!(self, fz_closure_set_capture_atom, [process, closure_ref, index, value]);
-    }
-
-    pub(crate) fn materialize_cont(&mut self, value: ir::Value) -> ir::Value {
-        let process = self.process_arg();
-        runtime_call1!(self, fz_materialize_cont, [process, value])
     }
 
     // -- value classification reads (cache-free) --

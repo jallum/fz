@@ -6,15 +6,17 @@
 #
 # Pins the basic `Process.heap_alloc_stats/0` runtime API. The program allocates
 # two list cons cells, snapshots the current process allocation counters, and
-# prints the returned map.
+# prints facts read from the returned map.
 #
-# The expected output pins the full map shape and proves snapshot-first
+# The expected output pins the map's key set, and proves snapshot-first
 # semantics: `:map_allocs` is `0` because the stats map is allocated only after
-# the snapshot is taken.
+# the snapshot is taken, so the two cons cells are the only list allocations the
+# snapshot reports.
 def main() do
   xs = [1, 2]
   dbg(xs)
 
   stats = Process.heap_alloc_stats()
-  dbg(stats)
+  dbg(Enum.sort(Map.keys(stats)))
+  dbg(Map.take(stats, [:list_cons_allocs, :list_cons_bytes, :map_allocs, :map_bytes]))
 end

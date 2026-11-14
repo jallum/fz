@@ -1,0 +1,7 @@
+#---
+# purpose: String.duplicate of a hundred thousand copies completes and reports its byte size
+# kind: run
+#---
+# Building the result recurses once per copy, so a hundred thousand copies need a
+# hundred thousand pending continuations, which must live on the heap.
+IO.puts(Integer.to_string(byte_size(String.duplicate("x", 100000))))

@@ -1,0 +1,13 @@
+#---
+# purpose: Enum.map over two hundred thousand elements completes, because each pending continuation lives on the heap rather than the native stack
+#---
+# The library's map is not a tail call: every element leaves one continuation
+# waiting for the rest of the list. Two hundred thousand waiting continuations
+# must fit in the heap, not the native stack: a map of a hundred thousand
+# elements overflows the native stack when its continuations live there.
+def main() do
+  mapped = Enum.map(Enum.to_list(1..200_000), fn x -> x + 1 end)
+  IO.inspect(length(mapped))
+  IO.inspect(hd(mapped))
+  IO.inspect(hd(Enum.reverse(mapped)))
+end

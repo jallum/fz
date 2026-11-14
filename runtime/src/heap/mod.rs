@@ -82,6 +82,32 @@ pub use self::stats::{AllocStat, GcStats, Generation, HeapAllocKind, HeapAllocSt
 /// BEAM's refc-binary threshold.
 pub const SHARED_BIN_THRESHOLD_BYTES: usize = 64;
 
+/// Byte offsets, from the start of a `Heap`, of the fields compiled code
+/// updates to place a continuation frame at the tip without calling the runtime: the
+/// bump pointer and its block's end, the object count, and the allocation
+/// statistics a placement must keep truthful (the total and the continuation
+/// counters).
+#[derive(Clone, Copy, Debug)]
+pub struct InlineAllocLayout {
+    pub bump_top: usize,
+    pub block_end: usize,
+    pub alloc_count: usize,
+    pub total_allocs: usize,
+    pub total_bytes: usize,
+    pub continuation_allocs: usize,
+    pub continuation_bytes: usize,
+}
+
+pub const INLINE_ALLOC_LAYOUT: InlineAllocLayout = InlineAllocLayout {
+    bump_top: std::mem::offset_of!(Heap, bump_top),
+    block_end: std::mem::offset_of!(Heap, block_end),
+    alloc_count: std::mem::offset_of!(Heap, alloc_count),
+    total_allocs: std::mem::offset_of!(Heap, alloc_stats.total.allocs),
+    total_bytes: std::mem::offset_of!(Heap, alloc_stats.total.bytes),
+    continuation_allocs: std::mem::offset_of!(Heap, alloc_stats.continuation.allocs),
+    continuation_bytes: std::mem::offset_of!(Heap, alloc_stats.continuation.bytes),
+};
+
 pub struct Heap {
     block_start: *mut u8,
     bump_top: *mut u8,

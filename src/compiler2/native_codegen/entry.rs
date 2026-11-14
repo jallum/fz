@@ -9,8 +9,8 @@ use cranelift_module::Module as ClModule;
 
 pub(crate) struct EntryHarnessOut {
     pub(super) var_env: HashMap<u32, CodegenValue>,
-    /// The trailing i64 of the signature: the caller's continuation, or for a
-    /// continuation fn its own closure (`self`).
+    /// The caller's continuation: the signature's trailing i64, or for a
+    /// continuation fn the outer continuation read from its frame.
     pub(super) cont_param: ir::Value,
 }
 
@@ -45,7 +45,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
 
 /// Cont fn entry harness:
 ///   params[0..N] = extras     -> fz_param[0..N]
-///   params[N]    = self       -> closure ptr
+///   params[N]    = self       -> closure ptr (the frame; given back after the reads)
 /// Closure env layout:
 ///   self+8  : code_ptr
 ///   self+16 : outer_cont       (synthetic; not in fz_param)
@@ -63,7 +63,9 @@ pub(crate) fn build_entry_harness<M: ClModule>(
 /// not one synthetic tuple param. If the semantic program wants a tuple value,
 /// native lowering reconstructs it explicitly in the body with `Prim::MakeTuple`.
 ///
-/// Returns the closure's own pointer (`self`), which is the fn's `cont_param`.
+/// Every capture and the outer continuation are read into registers first,
+/// then the frame is released (see `release_resumed_frame`). Returns the outer
+/// continuation, which is the fn's `cont_param`.
 fn harness_cont_fn<M: ClModule>(
     body: &mut CodegenFn<'_, '_, M>,
     entry_blk: &crate::fz_ir::Block,
@@ -84,7 +86,18 @@ fn harness_cont_fn<M: ClModule>(
         let binding = body.closure_capture_as_binding(self_val, capture_idx, my_param_reprs[repr_idx]);
         var_env.insert(p.0, binding);
     }
-    self_val
+    let slot_count = 1 + entry_blk.params.len() - extras_count;
+    let ref_slots: Vec<usize> = (extras_count..entry_blk.params.len())
+        .filter(|&i| my_param_reprs[i] == ArgRepr::ValueRef)
+        .map(|i| 1 + i - extras_count)
+        .collect();
+    if outer_cont_read_after_release() {
+        release_resumed_frame(body, self_val, &ref_slots, slot_count);
+        return body.outer_cont_ref(self_val);
+    }
+    let outer_cont = body.outer_cont_ref(self_val);
+    release_resumed_frame(body, self_val, &ref_slots, slot_count);
+    outer_cont
 }
 
 /// Plain native fn entry harness.

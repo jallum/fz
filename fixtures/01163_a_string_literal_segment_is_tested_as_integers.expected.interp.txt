@@ -1,0 +1,37 @@
+10000
+1
+0
+2
+2
+{true, "!"}
+{:t, "ru"}
+{:t, "rux"}
+{false, "?"}
+:none
+:none
+{122, "!"}
+:none
+:none
+:none
+:ab
+:none
+:none
+:none
+{:e_acute, "a"}
+{:euro, "a"}
+:none
+:none
+{:key, "v"}
+:none
+{:len, "42"}
+:none
+:none
+:none
+{:accents, "!"}
+:none
+{:get, "/a"}
+{:put, "/b"}
+:other
+{:ok, "1"}
+{:no, "2"}
+{:other, "n"}

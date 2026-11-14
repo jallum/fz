@@ -921,12 +921,36 @@ impl Heap {
         captured_count: usize,
         halt_kind: u16,
     ) -> u64 {
+        self.alloc_closure_slots_of(HeapAllocKind::Closure, denotation, arity, captured_count, halt_kind)
+    }
+
+    /// A continuation frame: an internal closure the compiler builds to
+    /// resume a call's caller. The statistics count it apart from the
+    /// closures a program makes.
+    pub fn alloc_continuation_slots(&mut self, arity: u16, captured_count: usize) -> u64 {
+        self.alloc_closure_slots_of(
+            HeapAllocKind::Continuation,
+            crate::any_value::ClosureDenotationId::INTERNAL,
+            arity,
+            captured_count,
+            0,
+        )
+    }
+
+    fn alloc_closure_slots_of(
+        &mut self,
+        kind: HeapAllocKind,
+        denotation: crate::any_value::ClosureDenotationId,
+        arity: u16,
+        captured_count: usize,
+        halt_kind: u16,
+    ) -> u64 {
         assert!(
             captured_count <= CLOSURE_FLAGS_CAPTURED_MASK as usize,
             "closure captured count overflow"
         );
         let total = closure_size_for_count(captured_count);
-        let p = self.alloc_kind(HeapAllocKind::Closure, total);
+        let p = self.alloc_kind(kind, total);
         unsafe {
             closure_header_write(
                 p,

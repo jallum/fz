@@ -298,10 +298,21 @@ fn process_heap_alloc_stats_returns_pre_materialization_snapshot() {
         0
     );
 
+    // The map the call returns is allocated after its snapshot: the heap now
+    // counts the map's own objects, which the returned `map_allocs` and
+    // `allocs` did not. How many objects the map takes depends on its size, so
+    // the test states the relation, not a count.
     let after = process.heap.alloc_stats_snapshot();
     assert_eq!(after.list_cons.allocs, 1);
-    assert_eq!(after.map.allocs, 1);
-    assert_eq!(after.total.allocs, 2);
+    assert!(
+        after.map.allocs >= 1,
+        "the returned map is allocated after the snapshot"
+    );
+    assert_eq!(
+        after.total.allocs,
+        after.list_cons.allocs + after.map.allocs,
+        "the cons and the map's objects are the only allocations"
+    );
 }
 
 /// Valid UTF-8 byte-aligned bitstring → 1.

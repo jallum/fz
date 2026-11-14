@@ -12,6 +12,10 @@ pub const PROCESS_FAILED_OFFSET: i32 = offset_of!(Process, failed) as i32;
 /// `Process::delivered` is an `Option<ClosureRef>`: one word, zero when empty.
 pub const PROCESS_DELIVERED_OFFSET: i32 = offset_of!(Process, delivered) as i32;
 
+/// `Process::heap`; add a `heap::INLINE_ALLOC_LAYOUT` field offset to reach a
+/// heap field that inline allocation updates.
+pub const PROCESS_HEAP_OFFSET: i32 = offset_of!(Process, heap) as i32;
+
 #[cfg(test)]
 #[path = "process_abi_test.rs"]
 mod process_abi_test;

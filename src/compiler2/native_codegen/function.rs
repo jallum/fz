@@ -172,18 +172,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         let term_span = source.term_span.get(&(f.id, blk.id)).copied().unwrap_or(Span::DUMMY);
         body.b.set_srcloc(span_to_srcloc(term_span));
 
-        emit_terminator(
-            &mut body,
-            t,
-            env,
-            &var_env,
-            blk,
-            &block_map,
-            is_cont_fn,
-            this_spec_id,
-            f,
-            cont_param,
-        )?;
+        emit_terminator(&mut body, env, &var_env, blk, &block_map, this_spec_id, f, cont_param)?;
     }
 
     for blk in &f.blocks {

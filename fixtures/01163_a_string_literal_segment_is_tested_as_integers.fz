@@ -6,7 +6,10 @@
 # The walk takes 10,000 steps over a 10,000-byte binary. Its clauses name the
 # bytes they test as string literals; each step allocates one view of the rest,
 # as fixture 01161's walk over `<<_c, r :: binary>>` does. The program prints
-# the step count, then allocations and struct allocations per step.
+# the step count, then allocations and struct allocations per step. The count is
+# the total, which includes continuation frames: on the native paths each step
+# builds two (one for the call that adds 1 to the count, one that delivers its
+# result) and counts 3; the interpreter builds none and counts 1.
 #
 # The remaining cases pin what a literal segment matches: a multi-byte literal,
 # a prefix, an input shorter than the literal, a literal after another field, a

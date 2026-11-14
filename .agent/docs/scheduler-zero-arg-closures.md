@@ -327,7 +327,7 @@ edge spends one reduction and yields when the budget is gone:
 ```text
 reductions_remaining -= 1
 if reductions_remaining <= 0:
-  k = closure capturing the loop roots (last root materialized via materialize_cont)
+  k = closure capturing the loop roots
   fz_yield_mid_flight_report(k, remaining, YIELD_REASON_REDUCTIONS)
   return YIELD_PTR
 else:
@@ -339,10 +339,66 @@ banks the burned reductions, and returns the `YIELD_PTR` sentinel so the trampol
 hands control back to the scheduler. `k` is then a GC root, forwarded to its
 to-space copy at the boundary if GC runs, and restart is `k()`.
 
-Synchronous native calls do not build this closure eagerly. They carry
-compiler-known continuation state as a stack-backed lazy descriptor and
-materialize it only on the exhausted-budget branch (`materialize_cont` on the last
-root above) — the budget mechanism is in [`reduction-yielding`](reduction-yielding.md).
+The budget mechanism is in [`reduction-yielding`](reduction-yielding.md). The
+yield closure is built only on the exhausted-budget branch; the continuation a
+non-tail call leaves behind is built every time, as described next.
+
+## A continuation is a heap object built and read by inline code
+
+Every continuation a non-tail call leaves behind (`Term::Call`,
+`Term::CallClosure`, and the `NativeEntryAbi::Continuation` delivery) is a
+one-argument closure on the process heap. `build_cont_closure`
+(`src/compiler2/native_codegen/closure.rs`) emits the whole construction as CLIF:
+
+```text
+top, end = heap.bump_top, heap.block_end
+if top + closure_size_for_count(n) <= end:        inline
+  heap.bump_top += size
+  heap.alloc_count, alloc_stats.total, alloc_stats.continuation += 1 object, size bytes
+  [top+0] = header; [top+8] = code address
+else:                                              block full
+  top = fz_alloc_continuation(...)                 header and code written there
+[top+16+8*i]        = raw word of capture i        (capture 0 is the outer cont)
+[top+16+8*n+i]      = kind byte of capture i
+```
+
+`heap::INLINE_ALLOC_LAYOUT` and `process_abi::PROCESS_HEAP_OFFSET` give the field
+offsets, and a heap test pins them against the real fields. Because the inline
+path counts its own allocation, `Process.heap_alloc_stats()` reports every
+continuation in its own `continuation_allocs` / `continuation_bytes` row (the
+total includes it); the `closure` rows count only closures a program makes. The
+stats map holds 34 entries, past `MAP_FLAT_MAX` (32). A ref capture's raw word is the payload of
+its ref word; an int, float, pid or reference ref names a slot, so its raw word
+is read through the ref. A capture does not mark a list shared: whether a cell a
+continuation holds may be rewritten in place is the compiler's call-site
+ownership decision, and an argument that a retained alias may reach is published
+before the call.
+
+Captures are read by inline loads (`closure_capture_ref`, `closure_capture_i64`,
+`closure_capture_f64`, `closure_capture_atom`, `closure_code_ref`), and a
+continuation is delivered with `return_call` / `return_call_indirect`, so a chain
+of pending continuations lives on the heap rather than the native stack.
+
+A continuation is resumed at most once (the rule is written on
+`fz_ir::Cont`). At entry a continuation function reads every capture and its
+outer continuation into registers, then `release_resumed_frame` gives the frame
+back: when the frame ends at `heap.bump_top` and no `ValueRef` capture is
+scalar-kinded (kinds 9..=0xE name their raw slot inside the frame), `bump_top`
+returns to the frame's start and `alloc_count` falls by one. The statistics keep
+the allocation; a frame under a newer object, or a pinned one, stays until the
+next collection. The mid-flight yield continuation body releases its frame the
+same way before it calls the callee.
+
+The `poison_dead_frames` cargo feature builds a compiler that poisons a
+releasable frame (null code pointer, kind bytes 0xB, raw words
+`0xDEAD000000000008`) instead of giving it back, and
+`FZ_POISON_LATE_OUTER_READ` makes it read the outer continuation after the
+release. `cargo test --features poison_dead_frames --test poison_dead_frames`
+runs the native paths of representative fixtures under poison and checks that
+the late read fails. CI runs that command as its own pull-request step
+(`.github/workflows/ci.yml`); the workspace step and the coverage run do not
+pass `--all-features`, because the feature replaces the pop with poison and so
+changes the heap pins of every other test. The local gate does not run it.
 
 ## Spawn: a fresh task is still just a closure
 

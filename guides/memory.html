@@ -1093,10 +1093,14 @@ map allocated by an earlier stats call.</p>
 <p>The total keys are <code>:allocs</code> and <code>:bytes</code>. Per-kind
 keys use the pattern <code>:K_allocs</code> and <code>:K_bytes</code>, where
 <code>K</code> is one of <code>list_cons</code>, <code>struct</code>,
-<code>closure</code>, <code>map</code>, <code>bitstring</code>,
-<code>procbin</code>, <code>shared_bin</code>, <code>scalar_box</code>,
-<code>resource</code>, or <code>other</code>. Heap object
-bytes are 16-byte aligned request sizes.</p>
+<code>closure</code>, <code>continuation</code>, <code>map</code>,
+<code>bitstring</code>, <code>procbin</code>, <code>shared_bin</code>,
+<code>scalar_box</code>, <code>resource</code>, or <code>other</code>. Heap
+object bytes are 16-byte aligned request sizes. The <code>closure</code> row
+counts closures a program makes; the <code>continuation</code> row counts the
+frames native code builds for calls that return to a caller, and the
+interpreter builds none. The counts are allocations: a continuation frame that
+resumes as the newest heap object is given back and stays counted.</p>
 
 <p><code>:shared_bin_allocs</code> and <code>:shared_bin_bytes</code> count the
 off-heap byte buffers behind large binaries, and are deliberately NOT part of

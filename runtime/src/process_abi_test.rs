@@ -44,3 +44,12 @@ fn delivered_offset_matches_process_layout() {
     assert_eq!(PROCESS_DELIVERED_OFFSET, (field - base) as i32);
     assert_eq!(std::mem::size_of::<Option<crate::process::ClosureRef>>(), 8);
 }
+
+#[test]
+fn heap_offset_matches_process_layout() {
+    let process = process();
+    let base = (&process as *const Process).addr();
+    let field = (&process.heap as *const crate::heap::Heap).addr();
+
+    assert_eq!(PROCESS_HEAP_OFFSET, (field - base) as i32);
+}

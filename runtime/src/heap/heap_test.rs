@@ -3196,3 +3196,30 @@ fn an_atom_read_from_a_literal_struct_names_no_literal() {
     assert!(!field.is_literal());
     assert_eq!(field, AnyValueRef::atom(5));
 }
+
+#[test]
+fn inline_alloc_layout_names_the_fields_a_placement_updates() {
+    let heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let base = (&heap as *const Heap).addr();
+    let at = |field: usize| field - base;
+    let layout = INLINE_ALLOC_LAYOUT;
+    assert_eq!(layout.bump_top, at((&heap.bump_top as *const *mut u8).addr()));
+    assert_eq!(layout.block_end, at((&heap.block_end as *const *mut u8).addr()));
+    assert_eq!(layout.alloc_count, at((&heap.alloc_count as *const u64).addr()));
+    assert_eq!(
+        layout.total_allocs,
+        at((&heap.alloc_stats.total.allocs as *const u64).addr())
+    );
+    assert_eq!(
+        layout.total_bytes,
+        at((&heap.alloc_stats.total.bytes as *const u64).addr())
+    );
+    assert_eq!(
+        layout.continuation_allocs,
+        at((&heap.alloc_stats.continuation.allocs as *const u64).addr())
+    );
+    assert_eq!(
+        layout.continuation_bytes,
+        at((&heap.alloc_stats.continuation.bytes as *const u64).addr())
+    );
+}

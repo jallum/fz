@@ -49,7 +49,13 @@ jobs:
       - run: cargo test --workspace --doc
       - name: Test workspace
         if: github.event_name == 'pull_request'
-        run: cargo test --workspace --all-features
+        # No `--all-features`: the `poison_dead_frames` feature swaps the
+        # continuation pop for poison, which changes the heap pins of every
+        # other test. Only its own test runs with it, in the next step.
+        run: cargo test --workspace
+      - name: Test dead continuation frames under poison
+        if: github.event_name == 'pull_request'
+        run: cargo test --features poison_dead_frames --test poison_dead_frames
       - name: Oracle check when the pinned Elixir or OTP changes
         if: github.event_name == 'pull_request'
         run: |
@@ -63,7 +69,6 @@ jobs:
         if: github.event_name == 'push'
         run: |
           cargo llvm-cov \
-            --all-features \
             --workspace \
             --fail-under-lines "$(cat .coverage-threshold)" \
             --json --summary-only \
