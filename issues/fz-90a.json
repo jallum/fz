@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-t93.14"
+  ],
   "blocks": [],
   "created": "2026-11-14T04:39:45Z",
   "description": "cargo doc --workspace --no-deps reports 14 warnings on develop f822f0f84 (same 14 after fz-t93.1; none in fz-engine). CI (.github/workflows) does not run cargo doc, so they accumulate. Fix every warning at its source (broken intra-doc links, private-item links, bare URLs, etc. — no blanket allow), then add a CI step that fails on any rustdoc warning (RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps). Log of the 14: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_1/doc_br.log.",
