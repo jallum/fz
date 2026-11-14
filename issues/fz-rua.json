@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-14T01:23:35Z",
+  "description": "Probe on develop 01e69178a (release, interp and run agree), b = \u003c\u003c65, 255, 66\u003e\u003e, against Elixir 1.19.4:\n- String.upcase(b): Elixir returns b unchanged; fz panics 'case mapping expects valid UTF-8' at runtime/src/ir_runtime.rs:1007 and aborts the process. downcase and capitalize share the path and were not probed.\n- String.reverse(b): Elixir \u003c\u003c65, 255, 66\u003e\u003e; fz \u003c\u003c255, 66, 65\u003e\u003e (reverses bytes).\n- String.codepoints(b): Elixir [\"A\", \u003c\u003c255\u003e\u003e, \"B\"]; fz [\"A\", \u003c\u003c255, 66\u003e\u003e].\n- IO.puts(b): Elixir raises ArgumentError; fz writes the raw bytes.\n- @doc \"a\\xFFb\" (reachable once PR #510 lands): error[internal/post-resolution-leftover] 'quoted function decode failed: expected valid UTF-8 bitstring', an internal-class error with no source span; it should be a spanned diagnostic.\n- String.to_charlist/1 is not exported.\nScratch: scratchpad/xxd16/{up,rev,cp,puts}.fz and e.exs.\nFails before, passes after: oracle fixtures for upcase/downcase/capitalize, reverse and codepoints on an invalid binary on all three paths; a diagnostic fixture for @doc. IO.puts raising depends on exceptions (fz-3ul).\nAcceptance: full gate green; no pin rises unexplained.",
+  "id": "fz-rua",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "String functions on a binary that is not valid UTF-8 answer as Elixir does",
+  "type": "bug",
+  "updated_at": "2026-11-14T01:23:35Z"
+}
