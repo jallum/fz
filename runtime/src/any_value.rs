@@ -1227,7 +1227,12 @@ pub fn bitstring_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     addr_of_kind(bits, ValueKind::BITSTRING)
 }
 
-const BITSTRING_BIT_LEN_SHIFT: u32 = 4;
+/// How far a bit length sits above the low bits of an inline bitstring's
+/// header word.
+pub const BITSTRING_BIT_LEN_SHIFT: u32 = 4;
+
+/// Where an inline bitstring's bytes start, in bytes from the object.
+pub const BITSTRING_BYTES_OFFSET: usize = 8;
 
 /// An inline bitstring's first word: the bit length above four clear bits. A
 /// live bitstring's low nibble is clear; only a forwarding marker sets it.
@@ -1254,7 +1259,7 @@ pub unsafe fn bitstring_bit_len(addr: *const u8) -> u64 {
 /// `addr` must point to the start of an initialized strict inline Bitstring.
 #[inline]
 pub unsafe fn bitstring_bytes_ptr(addr: *const u8) -> *const u8 {
-    unsafe { addr.add(8) }
+    unsafe { addr.add(BITSTRING_BYTES_OFFSET) }
 }
 
 #[inline]

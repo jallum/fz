@@ -174,7 +174,22 @@ reinterpret a value's carrier from the surrounding fields.
 Bitstring matching carries the reader as a bit position (a raw int). The
 bounds check is emitted arithmetic (`BitFieldFits`, `BitFieldNext`), and
 `BitReadField` cannot miss: `fz_bs_read_int_ref` returns a raw int and
-`fz_bs_read_binary_ref` a binary view. The receive matcher and the interpreter
+`fz_bs_read_binary_ref` a binary view. Native code reads a whole-byte field
+without the runtime. `BitstringBitLen` and `BitstringBase` branch inline on the
+two binary representations (inline bitstring, ProcBin over a `SharedBin`;
+layout constants in `runtime/src/procbin.rs` and `any_value.rs`), and an
+unsigned big-endian integer field of one to seven whole bytes at a position
+known statically to be a whole byte (`BitMatchField::whole_byte_integer_width`,
+`static_bits`) lowers to `BitReadByteInt`, a load from the base plus a byte
+swap. A dispatch region resolves the base once, at its first such field, and a
+run of body steps (`lower_entry_steps`) once per source binary
+(`BitstringBases`); a position is known when it is a literal or follows known
+positions by statically sized fields. The base is a raw address, safe only
+because the heap moves objects only at a quantum boundary, which compiled code
+reaches at a call or a back edge, and neither occurs inside a dispatch region or
+a run of entry steps. Every other field (rest, signed, little-endian, unaligned
+or dynamically sized position, float, utf) keeps its runtime call, as does the
+receive matcher. The receive matcher and the interpreter
 share the arithmetic through `bs_field_end`. The CLAUSE HEAD is lowered twice —
 once into a dispatch region to select the clause, once into body steps to
 bind — but only the body step builds a field the dispatch does not read. A

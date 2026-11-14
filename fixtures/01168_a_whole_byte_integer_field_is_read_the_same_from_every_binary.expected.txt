@@ -1,0 +1,10 @@
+{{200, 51201, 13107458, 3355509251, 56296103494288646}, {258, {131844, 5}}, {:high, {:tagged, 66051}}, {64, :miss, 456, -14335, -4034941579171658233}}
+{{200, 51201, 13107458, 3355509251, 56296103494288646}, {258, {131844, 5}}, {:high, {:tagged, 66051}}, {64, :miss, 456, -14335, -4034941579171658233}}
+{{3, 772, 197637, 50595078, 848844552603657}, {1029, {329223, 8}}, {:low, :untagged}, {24, {3, 1800}, 1027, 772, 217304205466536314}}
+{{255, 65534, :miss, :miss, :miss}, {:miss, :miss}, {:high, :untagged}, {255, :miss, 65279, -2, :miss}}
+{{:miss, :miss, :miss, :miss, :miss}, {:miss, :miss}, {:miss, :miss}, {:miss, :miss, :miss, :miss, :miss}}
+{{:miss, :miss, :miss, :miss, :miss}, {:miss, :miss}, {:miss, :miss}, {:miss, :miss, :miss, :miss, :miss}}
+{{:miss, :miss, :miss, :miss, :miss}, {:miss, :miss}, {:miss, :miss}, {:miss, :miss, :miss, :miss, :miss}}
+245
+12445
+12242

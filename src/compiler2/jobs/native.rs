@@ -1145,12 +1145,19 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         env: &mut ValueEnv,
         steps: &[BackendStep],
     ) -> Result<(), FatalError> {
+        // Entry steps never end a quantum: none calls a function or loops back,
+        // so an address a read resolves stays good for the later reads here.
+        let mut bases = BitstringBases::default();
+        let mut known_positions: HashMap<ValueId, u64> = HashMap::default();
         for step in steps {
             match step {
                 BackendStep::Omitted { value } => {
                     bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
                 }
                 BackendStep::Const { value, literal } => {
+                    if let GroundValue::Int(bits) = literal {
+                        known_positions.extend(u64::try_from(*bits).ok().map(|bits| (*value, bits)));
+                    }
                     let var = lower_backend_literal(ctx, &self.atom_ids, self.world.types_mut(), literal)?;
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
@@ -1501,6 +1508,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     spec,
                 } => {
                     let source = self.env_runtime_var(ctx, executable, env, *source);
+                    let pos_bits = known_positions.get(pos).copied();
                     let pos = self.env_runtime_var(ctx, executable, env, *pos);
                     let field = BitMatchField {
                         ty: spec.ty,
@@ -1511,10 +1519,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         is_last: next.is_none(),
                     };
                     if let Some(value) = value {
-                        let value_var = self.emit_bit_read(ctx, source, pos, &field);
+                        let value_var = self.emit_bit_read(ctx, &mut bases, source, pos, pos_bits, &field);
                         self.bind_runtime_value(ctx, executable, env, *value, value_var);
                     }
                     if let Some(next) = next {
+                        if let Some(next_bits) = pos_bits.zip(field.static_bits()).map(|(at, extent)| at + extent) {
+                            known_positions.insert(*next, next_bits);
+                        }
                         let next_var = self.emit_bit_next(ctx, pos, field);
                         self.bind_runtime_value(ctx, executable, env, *next, next_var);
                     }
@@ -3752,8 +3763,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let subject_var = self.dispatch_subject_var(ctx, plan, state, subject)?;
         let fail_b = ctx.builder.block(vec![]);
 
-        // `fz_bs_bit_len_ref` panics on a non-bitstring, so the kind test comes
-        // first and is not optional.
+        // The length and the first byte are read straight out of the object, so
+        // the kind test comes first and is not optional.
         let mut predicate = crate::runtime_type_predicate::RuntimeTypePredicate::none();
         predicate.binaries = true;
         let (is_bitstring, _) = ctx.emit_let(Prim::RuntimeTypeTest(subject_var, Box::new(predicate)));
@@ -3771,6 +3782,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx.value_types.insert(bit_len, int);
         let (mut pos, _) = ctx.emit_let(Prim::Const(Const::Int(0)));
         ctx.value_types.insert(pos, int);
+        let mut pos_bits = Some(0);
+        let mut bases = BitstringBases::default();
         let field_count = shape.fields.len();
         let mut extracted = Vec::with_capacity(field_count);
         for (index, field_subject) in shape.fields.iter().enumerate() {
@@ -3800,14 +3813,16 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             });
             ctx.current_block = next_b;
             let consumed = plan.graph.asks(*field_subject) || state.outcome_reads.contains(field_subject);
-            let value = consumed.then(|| self.emit_bit_read(ctx, subject_var, pos, &field));
+            let value = consumed.then(|| self.emit_bit_read(ctx, &mut bases, subject_var, pos, pos_bits, &field));
             // The last field has no successor unless the pattern must also end
             // there; a field that reads to the end of the binary ends at its end.
             let reads_to_end = field.size.is_none() && matches!(field.ty, BitType::Binary | BitType::Bits);
             if reads_to_end {
                 pos = bit_len;
+                pos_bits = None;
             } else if index + 1 < field_count || shape.require_done {
                 pos = self.emit_bit_next(ctx, pos, field.clone());
+                pos_bits = pos_bits.zip(field.static_bits()).map(|(at, extent)| at + extent);
             }
             // A later field's `size(len)` reads this one, and the read happens
             // in this block, so it is available for the rest of the loop.
@@ -3881,17 +3896,51 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
 
     /// The value of `field` at bit `pos` of `source`, which the caller has seen
     /// fit. An integer field is a raw integer.
-    fn emit_bit_read(&mut self, ctx: &mut NativeFnCtx, source: Var, pos: Var, field: &BitMatchField) -> Var {
-        let (value, _) = ctx.emit_let(Prim::BitReadField {
-            source,
-            pos,
-            field: field.clone(),
-        });
+    ///
+    /// `pos_bits` is `pos` when it is known without running the program. A
+    /// whole-byte integer field at a known whole-byte position is a load from
+    /// the binary's address; every other field is read by the runtime.
+    fn emit_bit_read(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        bases: &mut BitstringBases,
+        source: Var,
+        pos: Var,
+        pos_bits: Option<u64>,
+        field: &BitMatchField,
+    ) -> Var {
+        let prim = match (pos_bits, field.whole_byte_integer_width()) {
+            (Some(at), Some(bytes)) if at % 8 == 0 => {
+                let base = self.bitstring_base(ctx, bases, source);
+                Prim::BitReadByteInt {
+                    base,
+                    byte_offset: (at / 8) as u32,
+                    bytes,
+                }
+            }
+            _ => Prim::BitReadField {
+                source,
+                pos,
+                field: field.clone(),
+            },
+        };
+        let (value, _) = ctx.emit_let(prim);
         if field.ty == BitType::Integer {
             let int = self.world.types_mut().int();
             ctx.value_types.insert(value, int);
         }
         value
+    }
+
+    /// The address of `source`'s first byte, resolved by the first read that
+    /// needs it and reused by the rest.
+    fn bitstring_base(&mut self, ctx: &mut NativeFnCtx, bases: &mut BitstringBases, source: Var) -> Var {
+        *bases.0.entry(source).or_insert_with(|| {
+            let (base, _) = ctx.emit_let(Prim::BitstringBase(source));
+            let int = self.world.types_mut().int();
+            ctx.value_types.insert(base, int);
+            base
+        })
     }
 
     /// The position after a sized `field` that starts at `pos`.
@@ -5054,6 +5103,12 @@ impl DispatchAnswer {
         }
     }
 }
+
+/// The address of each binary a run of straight-line lowering has resolved,
+/// by the variable that holds the binary. An address is raw: it is shared only
+/// by reads that no call or back edge separates.
+#[derive(Default)]
+struct BitstringBases(HashMap<Var, Var>);
 
 #[derive(Clone)]
 struct DispatchState {

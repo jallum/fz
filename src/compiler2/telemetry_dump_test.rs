@@ -31,13 +31,8 @@ fn clif_output_observes_populated_functions() {
             true
         }
 
-        fn clif(
-            &mut self,
-            _: &crate::fz_ir::Module,
-            _: crate::fz_ir::FnId,
-            function: &cranelift_codegen::ir::Function,
-        ) {
-            self.0.borrow_mut().push(function.display().to_string());
+        fn clif(&mut self, _: &crate::fz_ir::Module, _: crate::fz_ir::FnId, text: &str) {
+            self.0.borrow_mut().push(text.to_string());
         }
     }
 

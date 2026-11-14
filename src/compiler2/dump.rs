@@ -65,19 +65,39 @@ pub(crate) fn parse_dump_spec(spec: &str) -> Result<DumpSpec, String> {
     Ok(DumpSpec { kind, path })
 }
 
+/// A lowered function as text: the Cranelift listing, then the symbol each
+/// callee reference names. The listing alone says `fn3 = u0:28`, which does not
+/// say whether the code calls the runtime or one of its own functions.
+pub(crate) fn clif_text(
+    function: &cranelift_codegen::ir::Function,
+    declarations: &cranelift_module::ModuleDeclarations,
+) -> String {
+    use cranelift_codegen::ir::ExternalName;
+    let mut text = function.display().to_string();
+    for (func_ref, data) in function.dfg.ext_funcs.iter() {
+        let ExternalName::User(user) = &data.name else {
+            continue;
+        };
+        let name = &function.params.user_named_funcs()[*user];
+        if name.namespace != 0 {
+            continue;
+        }
+        let decl = declarations.get_function_decl(cranelift_module::FuncId::from_u32(name.index));
+        text.push_str(&format!(
+            "; {func_ref} = {}\n",
+            decl.name.as_deref().unwrap_or("<anonymous>")
+        ));
+    }
+    text
+}
+
 pub(crate) trait RequestedOutputSink {
     fn wants_clif(&self) -> bool {
         false
     }
     fn semantic(&mut self, _world: &World, _root: RootId, _activations: &[ActivationKey]) {}
     fn program(&mut self, _world: &World, _root: RootId, _backend: &BackendProgram, _native: Option<&NativeProgram>) {}
-    fn clif(
-        &mut self,
-        _module: &crate::fz_ir::Module,
-        _fn_id: crate::fz_ir::FnId,
-        _function: &cranelift_codegen::ir::Function,
-    ) {
-    }
+    fn clif(&mut self, _module: &crate::fz_ir::Module, _fn_id: crate::fz_ir::FnId, _text: &str) {}
 }
 
 pub(crate) struct NullRequestedOutput;
@@ -138,24 +158,14 @@ impl RequestedOutputSink for FileRequestedOutput {
         }
     }
 
-    fn clif(
-        &mut self,
-        module: &crate::fz_ir::Module,
-        fn_id: crate::fz_ir::FnId,
-        function: &cranelift_codegen::ir::Function,
-    ) {
+    fn clif(&mut self, module: &crate::fz_ir::Module, fn_id: crate::fz_ir::FnId, text: &str) {
         for spec in self.specs.iter().filter(|spec| spec.kind == DumpKind::Clif) {
             if !self.clif_cleared {
                 clear_dump_file(&spec.path);
             }
             append_dump_file(
                 &spec.path,
-                &format!(
-                    "; fn {} ({})\n{}\n",
-                    module.fn_by_id(fn_id).name,
-                    fn_id.0,
-                    function.display()
-                ),
+                &format!("; fn {} ({})\n{}\n", module.fn_by_id(fn_id).name, fn_id.0, text),
             );
         }
         self.clif_cleared = true;

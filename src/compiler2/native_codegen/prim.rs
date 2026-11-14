@@ -7,7 +7,7 @@ use crate::ast::BitType;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{
     BinOp, BitMatchField, BitSizeIr, BlockId, Const, DestMapSeed, ExternArg, ExternDecl, ExternId, ExternMarshalSite,
-    ExternTy, FnId, Prim, UnOp, Var,
+    ExternTy, FnId, Prim, UnOp, Var, default_unit_for,
 };
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
@@ -17,20 +17,26 @@ use cranelift_codegen::ir::{
 };
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
-use fz_runtime::any_value::{AnyValue, FALSE_ATOM_ID, SlotLayout, TRUE_ATOM_ID, ValueKind, struct_header_word};
+use fz_runtime::any_value::{
+    AnyValue, AnyValueRefPacking, BITSTRING_BIT_LEN_SHIFT, BITSTRING_BYTES_OFFSET, FALSE_ATOM_ID, SlotLayout,
+    TRUE_ATOM_ID, ValueKind, struct_header_word,
+};
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::{
-    fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_bs_begin, fz_bs_bit_len_ref, fz_bs_field_spec,
-    fz_bs_finalize, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_int_float_cmp,
-    fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
-    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_dest_put_ref,
-    fz_map_get_atom_key_ref, fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_map_named_schema_ref,
-    fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int,
-    fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref, fz_try_pop,
-    fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_bs_begin, fz_bs_field_spec, fz_bs_finalize,
+    fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_int_float_cmp, fz_list_cons_any,
+    fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin, fz_map_dest_begin_update,
+    fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_dest_put_ref, fz_map_get_atom_key_ref,
+    fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_map_named_schema_ref, fz_matcher_map_get_ref,
+    fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref,
+    fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref, fz_try_pop, fz_value_cmp_raw_const,
+    fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::ir_runtime::{fz_box_opaque_for_any, fz_unbox_opaque};
+use fz_runtime::procbin::{
+    PROCBIN_BYTE_OFFSET_OFFSET, PROCBIN_SHARED_OFFSET, SHARED_BIN_BIT_LEN_OFFSET, SHARED_BIN_BYTES_PTR_OFFSET,
+};
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
 use target_lexicon::{Architecture, OperatingSystem, Triple};
@@ -634,6 +640,9 @@ fn match_field_extent<M: cranelift_module::Module>(
     var_env: &HashMap<u32, CodegenValue>,
     field: &BitMatchField,
 ) -> MatchExtent {
+    if let Some(bits) = field.static_bits() {
+        return MatchExtent::Bits(body.b.ins().iconst(types::I64, bits as i64));
+    }
     let unit = field.unit.unwrap_or(default_unit_for(field.ty)) as i64;
     let sized = |body: &mut CodegenFn<'_, '_, M>, default_size: i64| {
         let bits = match emit_match_field_size(body, var_env, &field.size) {
@@ -654,6 +663,126 @@ fn match_field_extent<M: cranelift_module::Module>(
     }
 }
 
+/// A word computed from a binary's reference by one of its two representations:
+/// an inline bitstring on the heap, or a ProcBin stub over a refcounted
+/// `SharedBin`. `inline` and `procbin` each get the address of the object the
+/// reference names and return the word.
+fn emit_by_binary_representation<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    source_ref: ir::Value,
+    inline: impl FnOnce(&mut CodegenFn<'_, '_, M>, ir::Value) -> ir::Value,
+    procbin: impl FnOnce(&mut CodegenFn<'_, '_, M>, ir::Value) -> ir::Value,
+) -> ir::Value {
+    let packing = AnyValueRefPacking::current();
+    let addr = body.b.ins().band_imm(source_ref, packing.address_mask() as i64);
+    let kind_bits = body.b.ins().band_imm(source_ref, !packing.literal_bit() as i64);
+    let kind = body.b.ins().ushr_imm(kind_bits, packing.tag_shift() as i64);
+    let is_procbin = body
+        .b
+        .ins()
+        .icmp_imm(IntCC::Equal, kind, ValueKind::PROCBIN.tag() as i64);
+    let procbin_b = body.b.create_block();
+    let inline_b = body.b.create_block();
+    let join_b = body.b.create_block();
+    body.b.append_block_param(join_b, types::I64);
+    body.b.ins().brif(is_procbin, procbin_b, &[], inline_b, &[]);
+
+    body.b.switch_to_block(procbin_b);
+    body.b.seal_block(procbin_b);
+    let from_procbin = procbin(body, addr);
+    body.b.ins().jump(join_b, &[BlockArg::Value(from_procbin)]);
+
+    body.b.switch_to_block(inline_b);
+    body.b.seal_block(inline_b);
+    let from_inline = inline(body, addr);
+    body.b.ins().jump(join_b, &[BlockArg::Value(from_inline)]);
+
+    body.b.switch_to_block(join_b);
+    body.b.seal_block(join_b);
+    body.b.block_params(join_b)[0]
+}
+
+fn load_word<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    address: ir::Value,
+    offset: usize,
+) -> ir::Value {
+    body.b
+        .ins()
+        .load(types::I64, MemFlags::trusted(), address, offset as i32)
+}
+
+/// The bit length of a binary, read from its header or from its ProcBin's
+/// `SharedBin` less the bytes its view skips.
+fn emit_binary_bit_len<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    source_ref: ir::Value,
+) -> ir::Value {
+    emit_by_binary_representation(
+        body,
+        source_ref,
+        |body, addr| {
+            let header = load_word(body, addr, 0);
+            body.b.ins().ushr_imm(header, BITSTRING_BIT_LEN_SHIFT as i64)
+        },
+        |body, addr| {
+            let shared = load_word(body, addr, PROCBIN_SHARED_OFFSET);
+            let total_bits = load_word(body, shared, SHARED_BIN_BIT_LEN_OFFSET);
+            let skipped = load_word(body, addr, PROCBIN_BYTE_OFFSET_OFFSET);
+            let skipped_bits = body.b.ins().ishl_imm(skipped, 3);
+            body.b.ins().isub(total_bits, skipped_bits)
+        },
+    )
+}
+
+/// The address of a binary's first byte.
+fn emit_binary_base<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, source_ref: ir::Value) -> ir::Value {
+    emit_by_binary_representation(
+        body,
+        source_ref,
+        |body, addr| body.b.ins().iadd_imm(addr, BITSTRING_BYTES_OFFSET as i64),
+        |body, addr| {
+            let shared = load_word(body, addr, PROCBIN_SHARED_OFFSET);
+            let bytes = load_word(body, shared, SHARED_BIN_BYTES_PTR_OFFSET);
+            let skipped = load_word(body, addr, PROCBIN_BYTE_OFFSET_OFFSET);
+            body.b.ins().iadd(bytes, skipped)
+        },
+    )
+}
+
+/// The big-endian integer of `bytes` bytes at `base + offset`, read in loads of
+/// four, two and one bytes, most significant first.
+fn emit_big_endian_load<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    base: ir::Value,
+    byte_offset: u32,
+    bytes: u8,
+) -> ir::Value {
+    let mut value = body.b.ins().iconst(types::I64, 0);
+    let mut at = byte_offset as i32;
+    let mut remaining = bytes;
+    while remaining > 0 {
+        let chunk: u8 = match remaining {
+            4.. => 4,
+            2..=3 => 2,
+            _ => 1,
+        };
+        let ty = match chunk {
+            4 => types::I32,
+            2 => types::I16,
+            _ => types::I8,
+        };
+        let loaded = body.b.ins().load(ty, MemFlags::new(), base, at);
+        let ordered = if chunk > 1 { body.b.ins().bswap(loaded) } else { loaded };
+        let widened = body.b.ins().uextend(types::I64, ordered);
+        let shifted = body.b.ins().ishl_imm(value, i64::from(chunk) * 8);
+        value = body.b.ins().bor(shifted, widened);
+        at += i32::from(chunk);
+        remaining -= chunk;
+    }
+    value
+}
+
 /// The match prims: the position a match carries is an integer, so "does the
 /// next field fit" and "where does it end" are arithmetic on it, and a read is
 /// a call that cannot miss.
@@ -666,7 +795,19 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
     Ok(match prim {
         Prim::BitstringBitLen(source) => {
             let source_ref = body.tagged_var(var_env, source.0);
-            LowerOut::RawI64(runtime_call1!(body, fz_bs_bit_len_ref, [source_ref]))
+            LowerOut::RawI64(emit_binary_bit_len(body, source_ref))
+        }
+        Prim::BitstringBase(source) => {
+            let source_ref = body.tagged_var(var_env, source.0);
+            LowerOut::RawI64(emit_binary_base(body, source_ref))
+        }
+        Prim::BitReadByteInt {
+            base,
+            byte_offset,
+            bytes,
+        } => {
+            let base = body.as_raw_i64(var_env, base.0);
+            LowerOut::RawI64(emit_big_endian_load(body, base, *byte_offset, *bytes))
         }
         Prim::BitFieldFits { pos, bit_len, field } => {
             let pos = body.as_raw_i64(var_env, pos.0);
@@ -1134,6 +1275,8 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::MatcherMapGet(..)
         | Prim::IsMapMiss(..) => lower_collection_prim(body, t, env, var_env, prim, dest_var, block_id),
         Prim::BitstringBitLen(..)
+        | Prim::BitstringBase(..)
+        | Prim::BitReadByteInt { .. }
         | Prim::BitFieldFits { .. }
         | Prim::BitFieldNext { .. }
         | Prim::BitReadField { .. } => lower_bit_match_prim(body, var_env, prim, dest_var),
