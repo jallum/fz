@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-14T13:49:28Z",
   "created": "2026-11-14T13:36:40Z",
   "description": "Native code panics on a plain program; interp is right.\n\ndef main() do\n  r = Enum.map([4, :five], fn x -\u003e\n    case x do\n      i when is_integer(i) -\u003e :int\n      f -\u003e {:other, f}\n    end\n  end)\n  IO.inspect(r)\nend\n\ninterp prints [:int, {:other, :five}]. run panics: 'cannot coerce atom and numeric raw ABI reprs' (src/compiler2/native_codegen/fn_ctx.rs:624). Variants give Cranelift 'uses value .. from non-dominating inst'. Reproduced on develop 76cf77155 plus the collector.\n\nCause (found by session fz-9c, read and confirmed): src/compiler2/native_codegen/function.rs, the Goto pre-pass. It coerces each argument to the target block parameter's repr and writes the coerced value back into the function-wide var_env under the source variable. One variable that jumps to two blocks wanting different reprs (RawInt and RawAtom here) then reads the first edge's coercion at the second edge, and that value is defined in a block that does not dominate the second.\n\nProposed shape: the coercion belongs to the edge. emit_goto coerces per edge without mutating var_env; the pre-pass is deleted; one block_param_repr helper is shared with the block-parameter binding site.\n\nSignal: a fixture of the program above on interp, run and build; plus a variant that produced the non-dominating-value error.",
   "id": "fz-fc2",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A value that jumps to two blocks is coerced for each edge, not once for the function",
   "type": "bug",
-  "updated_at": "2026-11-14T13:36:40Z"
+  "updated_at": "2026-11-14T13:49:28Z"
 }
