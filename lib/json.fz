@@ -433,40 +433,37 @@ defmodule JSON do
   @spec token(binary, binary) :: binary
   defp token(start, rest), do: String.take_bytes(start, byte_size(start) - byte_size(rest))
 
-  # `string(start, rest, acc)` scans plain bytes (printable ASCII other than
-  # `"` and `\`): `start` is where the current run began and `rest` what is
-  # left of it. A byte that is not plain ends the run, which is taken with one
-  # slice, so a string costs one append per run, not one per byte; the first
-  # run is the slice itself.
+  # `string(start, rest, acc)` is one pass over a string. `start` is where the
+  # current run began and `rest` what is left of it. A run is every byte but
+  # `"`, `\` and a control byte, and a multi-byte character is one step of it,
+  # matched by the `utf8` segment. The run is taken with one slice when it
+  # ends, so a string with no escape is a view of the input and an escape costs
+  # one append for the run before it and one for itself.
   @spec string(binary, binary, binary) :: any
   defp string(s, b = <<"\"", r :: binary>>, acc), do: {:ok, run_join(s, b, acc), r}
   defp string(s, b = <<"\\", r :: binary>>, acc), do: escaped(r, run_join(s, b, acc), b)
   defp string(_s, b = <<c, _r :: binary>>, _acc) when c < 32, do: {:error, b}
   defp string(s, <<c, r :: binary>>, acc) when c < 128, do: string(s, r, acc)
-  defp string(s, b, acc) do
-    case Utf8.next(b) do
-      {:ok, codepoint, rest} ->
-        joined = run_join(s, b, acc) <> Utf8.to_bytes(codepoint)
-        string(rest, rest, joined)
+  defp string(_s, "", _acc), do: {:error, ""}
+  defp string(s, b, acc), do: string_scalar(s, b, acc)
 
-      {:error, rest} ->
-        {:error, rest}
-
-      nil ->
-        {:error, ""}
-    end
-  end
+  # Where the `utf8` match fails, `Utf8.next` answers `{:error, rest}`: `rest`
+  # begins at the first byte no sequence can contain, and is `""` when the
+  # input ends inside one.
+  @spec string_scalar(binary, binary, binary) :: any
+  defp string_scalar(s, <<_c :: utf8, r :: binary>>, acc), do: string(s, r, acc)
+  defp string_scalar(_s, b, _acc), do: Utf8.next(b)
 
   @spec run_join(binary, binary, binary) :: binary
   defp run_join(s, b, acc) do
     n = byte_size(s) - byte_size(b)
     <<run :: binary-size(n), _ :: binary>> = s
-
-    case acc do
-      <<>> -> run
-      _ -> acc <> run
-    end
+    join_run(acc, run)
   end
+
+  @spec join_run(binary, binary) :: binary
+  defp join_run(<<>>, run), do: run
+  defp join_run(acc, run), do: acc <> run
 
   @spec escaped(binary, binary, binary) :: any
   defp escaped(<<"u", a, b, c, d, r :: binary>>, acc, at), do: unicode(r, acc, hex4(a, b, c, d), at)
@@ -497,7 +494,7 @@ defmodule JSON do
   defp unicode(_r, _acc, :error, at), do: {:error, {:sequence, at, String.take_bytes(at, 6)}}
   defp unicode(r, acc, cp, at) when cp >= 0xd800 and cp <= 0xdbff, do: unicode_high(r, acc, cp, at)
   defp unicode(_r, _acc, cp, at) when cp >= 0xdc00 and cp <= 0xdfff, do: {:error, {:sequence, at, String.take_bytes(at, 6)}}
-  defp unicode(r, acc, cp, at), do: unicode_scalar(r, acc, Utf8.from_codepoint(cp), at, 6)
+  defp unicode(r, acc, cp, _at), do: string(r, r, acc <> <<cp :: utf8>>)
 
   @spec unicode_high(binary, binary, integer, binary) :: any
   defp unicode_high(<<"\\u", a, b, c, d, r :: binary>>, acc, high, at) do
@@ -507,15 +504,11 @@ defmodule JSON do
 
   @spec unicode_low(binary, binary, integer, integer | :error, binary) :: any
   defp unicode_low(_r, _acc, _high, :error, at), do: {:error, {:sequence, at, String.take_bytes(at, 12)}}
-  defp unicode_low(r, acc, high, low, at) when low >= 0xdc00 and low <= 0xdfff do
+  defp unicode_low(r, acc, high, low, _at) when low >= 0xdc00 and low <= 0xdfff do
     codepoint = 0x10000 + (high - 0xd800) * 0x400 + (low - 0xdc00)
-    unicode_scalar(r, acc, Utf8.from_codepoint(codepoint), at, 12)
+    string(r, r, acc <> <<codepoint :: utf8>>)
   end
   defp unicode_low(_r, _acc, _high, _low, at), do: {:error, {:sequence, at, String.take_bytes(at, 12)}}
-
-  @spec unicode_scalar(binary, binary, {:ok, utf8} | {:error, :invalid_codepoint}, binary, integer) :: any
-  defp unicode_scalar(r, acc, {:ok, scalar}, _at, _size), do: string(r, r, acc <> Utf8.to_bytes(scalar))
-  defp unicode_scalar(_r, _acc, {:error, :invalid_codepoint}, at, size), do: {:error, {:sequence, at, size}}
 
   @spec hex4(integer, integer, integer, integer) :: integer | :error
   defp hex4(a, b, c, d), do: hex4_join(hex(a), hex(b), hex(c), hex(d))

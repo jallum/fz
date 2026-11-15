@@ -1,0 +1,28 @@
+#---
+# purpose: JSON.decode takes a string in one pass, so a string with no escapes is a view of the input whatever its characters, and a string made of escapes grows one buffer
+#---
+defmodule Cost do
+  # {decoded size, tuples built, off-heap buffers, off-heap bytes} allocated by one decode
+  # of a string, less what one `Process.heap_alloc_stats` call itself allocates.
+  def of(doc) do
+    base = Process.heap_alloc_stats()
+    before = Process.heap_alloc_stats()
+    {:ok, value} = JSON.decode(doc)
+    after_ = Process.heap_alloc_stats()
+    {byte_size(value), delta(after_, before, base, :struct_allocs), delta(after_, before, base, :shared_bin_allocs), delta(after_, before, base, :shared_bin_bytes)}
+  end
+
+  defp delta(after_, before, base, kind), do: after_[kind] - before[kind] - (before[kind] - base[kind])
+
+  def quoted(body), do: "\"" <> body <> "\""
+end
+
+def main() do
+  IO.inspect({:ascii, Cost.of(Cost.quoted(String.duplicate("a", 1000)))})
+  IO.inspect({:wide, Cost.of(Cost.quoted(String.duplicate("世", 333)))})
+  IO.inspect({:accented, Cost.of(Cost.quoted(String.duplicate("é", 500)))})
+  IO.inspect({:emoji, Cost.of(Cost.quoted(String.duplicate("😀", 250)))})
+  IO.inspect({:escaped, Cost.of(Cost.quoted(String.duplicate("\\u4e16", 333)))})
+  IO.inspect({:pairs, Cost.of(Cost.quoted(String.duplicate("\\ud83d\\ude00", 200)))})
+  IO.inspect({:mixed, Cost.of(Cost.quoted(String.duplicate("ab世cd\\nef é gh ", 60)))})
+end

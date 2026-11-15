@@ -237,7 +237,10 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // accumulator, and its pass is the helpers `encode_into`, `key_into`, `string_into`, `walk`,
 // `walk_scalar` and `append_run` in place of `encode_binary!` and `encode_key!`, so the
 // distiller derives demand for more functions.
-const DERIVATIONS: u64 = 18_410;
+// 18_410 -> 18_335 derivations, and fewer reads: a `JSON` string decodes in one pass with
+// the `utf8` segment, so `Utf8.next`'s result handling, `Utf8.from_codepoint` and the
+// decoder's second pass are no longer compiled for decoding.
+const DERIVATIONS: u64 = 18_335;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -247,7 +250,8 @@ const DERIVATIONS: u64 = 18_410;
 // for it, not two.
 // 111_880 -> 112_107: the 227 reads of the demand derived once more.
 // 112_107 -> 112_127: the reads of the encoder's helpers.
-const READS_HANDED: u64 = 112_127;
+// 112_127 -> 111_800: the reads the one-pass decoder no longer derives.
+const READS_HANDED: u64 = 111_800;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
@@ -288,7 +292,11 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // (49_041, 50_908, 66) -> (49_044, 50_911, 66): code after a map update's key check
         // reads the update's own value rather than the check's result, so that value is
         // carried through the check and its transport is asked for once more per carry.
-        (49_044, 50_911, 66),
+        // (49_044, 50_911, 66) -> (48_664, 50_522, 66): a `JSON` string is one pass that matches
+        // a multi-byte character with the `utf8` segment and appends `<<codepoint :: utf8>>`
+        // for a `\u` escape, so the distiller no longer compiles `Utf8.next`'s result handling
+        // or `Utf8.from_codepoint` for decoding.
+        (48_664, 50_522, 66),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."
