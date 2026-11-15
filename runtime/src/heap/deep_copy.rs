@@ -23,7 +23,7 @@ use crate::any_value::{
     AnyValue, EMPTY_LIST, ListCons, ValueKind, bitstring_bit_len, bitstring_bytes_ptr, closure_addr_from_tagged,
     closure_arity, closure_capture_set, closure_capture_value, closure_captured_count, closure_fn_ptr,
     closure_halt_kind, heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_node_child,
-    map_node_child_count, map_node_entry_count, map_slot, struct_field_kind_slot, struct_field_raw_slot,
+    map_node_child_count, map_node_entry_count, map_slot, share_struct, struct_field_kind_slot, struct_field_raw_slot,
     struct_schema_id,
 };
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin};
@@ -505,10 +505,18 @@ fn deep_copy_strict_struct(
     forwarding: &mut AddressMap<*mut u8>,
 ) -> AnyValue {
     if let Some(&dp) = forwarding.get(&sp) {
+        // A struct reached twice inside one copy is one struct in the
+        // destination too; the second holder makes it shared there.
+        unsafe { share_struct(dp) };
         return AnyValue::heap_ptr(dp, ValueKind::STRUCT);
     }
     let schema_id = unsafe { struct_schema_id(sp as *const u8) };
     let dp = dst_heap.alloc_struct(schema_id);
+    // A struct copied into a gift window is shared from birth: the receiver
+    // grafts the gift as old data, and old data is never written in place.
+    if dst_heap.gift_window_is_open() {
+        unsafe { share_struct(dp) };
+    }
     forwarding.insert(sp, dp);
     let registry = src_heap.schemas.borrow();
     let schema = registry.get(schema_id);

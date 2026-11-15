@@ -8,7 +8,7 @@ use super::{CopiedObject, FromSpace};
 use crate::any_value::{
     AnyValue, ListCons, ValueKind, closure_capture_set, closure_capture_value, closure_captured_count, map_key_kind,
     map_keys_ptr, map_node_child_count, map_node_children_ptr, map_node_entry_count, map_tag_ptr, map_value_kind,
-    map_values_ptr, struct_field_kind_slot, struct_field_raw_slot, struct_schema_id,
+    map_values_ptr, share_struct, struct_field_kind_slot, struct_field_raw_slot, struct_schema_id,
 };
 use crate::resource::ResourceStub;
 use std::ptr::{read, write};
@@ -53,6 +53,9 @@ pub fn cheney_trace_struct(
     copied_objects: &mut Vec<CopiedObject>,
     stats: &mut GcStats,
 ) {
+    // A struct a collection keeps is shared from then on, as a kept list
+    // cell is: it is older than everything allocated after the collection.
+    unsafe { share_struct(obj) };
     let schema_id = unsafe { struct_schema_id(obj as *const u8) };
     let schema = schemas.get(schema_id);
     for (field, kind_offset) in schema.any_value_fields_with_kind_offsets() {

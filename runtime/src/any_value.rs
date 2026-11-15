@@ -1190,7 +1190,50 @@ pub fn struct_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 /// clear. A live struct's low nibble is clear; only a forwarding marker sets it.
 #[inline]
 pub const fn struct_header_word(schema_id: u32) -> u64 {
-    (schema_id as u64) << 32
+    (schema_id as u64) << STRUCT_HEADER_SCHEMA_SHIFT
+}
+
+/// Where a struct's first word keeps its schema id.
+pub const STRUCT_HEADER_SCHEMA_SHIFT: i64 = 32;
+
+/// The bit of a struct's first word that says a second holder may exist, so
+/// the struct is never written again. It means what a list cell's alias bit
+/// means, sits above the forwarding nibble, and below the schema id.
+pub const STRUCT_HEADER_SHARED_MASK: u64 = 1 << 4;
+
+/// The first word of a struct that is shared from birth: one in read-only
+/// program data, which must never be written.
+#[inline]
+pub const fn shared_struct_header_word(schema_id: u32) -> u64 {
+    struct_header_word(schema_id) | STRUCT_HEADER_SHARED_MASK
+}
+
+/// Whether the struct at `addr` may have a second holder.
+///
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Struct object.
+#[inline]
+pub unsafe fn struct_is_shared(addr: *const u8) -> bool {
+    let header = unsafe { ptr::read(addr as *const u64) };
+    header & STRUCT_HEADER_SHARED_MASK != 0
+}
+
+/// Mark the struct at `addr` shared, writing only when it is not already: a
+/// shared struct may be read-only program data or old. Answers whether this
+/// call marked it.
+///
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Struct object.
+#[inline]
+pub unsafe fn share_struct(addr: *mut u8) -> bool {
+    if unsafe { struct_is_shared(addr) } {
+        return false;
+    }
+    let header = unsafe { ptr::read(addr as *const u64) };
+    unsafe { ptr::write(addr as *mut u64, header | STRUCT_HEADER_SHARED_MASK) };
+    true
 }
 
 /// # Safety

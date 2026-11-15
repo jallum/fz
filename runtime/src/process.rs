@@ -165,6 +165,10 @@ pub struct Process {
     pub list_retention_attempts: u64,
     /// Attempts that returned the source cell, unchanged or after guarded rewrite.
     pub list_retention_hits: u64,
+    /// Cumulative updates of a struct in its own layout.
+    pub struct_retention_attempts: u64,
+    /// Updates that stored into the base itself, rewriting it in place.
+    pub struct_retention_hits: u64,
     /// Cumulative resource destructors the scheduler dispatched for this
     /// process, after collections and at exit.
     pub dtors_dispatched: u64,
@@ -591,6 +595,8 @@ impl Process {
             reduction_yields: 0,
             list_retention_attempts: 0,
             list_retention_hits: 0,
+            struct_retention_attempts: 0,
+            struct_retention_hits: 0,
             dtors_dispatched: 0,
             frame_copies: 0,
             yield_reasons: 0,

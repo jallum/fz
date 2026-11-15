@@ -9,12 +9,13 @@
 use super::*;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::Var;
-use cranelift_codegen::ir::{self, InstBuilder, MemFlags, condcodes::IntCC, types};
+use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlags, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataId, FuncId, Module};
 use fz_runtime::any_value::{
     AnyValueRef, AnyValueRefPacking, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, CLOSURE_FLAGS_CAPTURED_MASK,
-    CLOSURE_LAYOUT_FLAGS_SHIFT, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, TaggedRefArch, ValueKind, struct_header_word,
+    CLOSURE_LAYOUT_FLAGS_SHIFT, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT, STRUCT_HEADER_SHARED_MASK,
+    SlotLayout, TaggedRefArch, ValueKind,
 };
 use fz_runtime::ir_runtime::{
     fz_alloc_closure, fz_alloc_continuation, fz_alloc_struct, fz_box_float_for_any, fz_box_int_for_any,
@@ -24,6 +25,7 @@ use fz_runtime::ir_runtime::{
     fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_mark_published_ref_aliased, fz_struct_copy, fz_struct_store_ref,
     fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
+use fz_runtime::process_abi::{PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET, PROCESS_STRUCT_RETENTION_HITS_OFFSET};
 
 /// A struct or tuple that is allocated and whose fields are being stored.
 pub(crate) struct NewStruct {
@@ -123,11 +125,80 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             .icmp_imm(IntCC::Equal, kind, ValueKind::STRUCT.tag() as i64);
         let object = self.object_address(value_ref);
         let header = self.b.ins().load(types::I64, MemFlags::new(), object, 0);
-        let is_schema = self
+        let schema = self.b.ins().ushr_imm(header, STRUCT_HEADER_SCHEMA_SHIFT);
+        let is_schema = self.b.ins().icmp_imm(IntCC::Equal, schema, i64::from(schema_id));
+        self.b.ins().band(is_struct, is_schema)
+    }
+
+    fn copy_struct(&mut self, base_ref: ir::Value, fields: usize) -> ir::Value {
+        let count = self.b.ins().iconst(types::I32, fields as i64);
+        let process = self.process_arg();
+        runtime_call1!(self, fz_struct_copy, [process, base_ref, count])
+    }
+
+    /// `base_ref` when its header's shared bit is clear, counted as a
+    /// retention hit; otherwise `fz_struct_copy`'s copy.
+    fn rewrite_unshared_struct(&mut self, base_ref: ir::Value, fields: usize) -> ir::Value {
+        let reuse_blk = self.b.create_block();
+        let copy_blk = self.b.create_block();
+        let done_blk = self.b.create_block();
+        let target = self.b.append_block_param(done_blk, types::I64);
+        let object = self.object_address(base_ref);
+        let header = self.b.ins().load(types::I64, MemFlags::trusted(), object, 0);
+        let shared = self.b.ins().band_imm(header, STRUCT_HEADER_SHARED_MASK as i64);
+        self.b.ins().brif(shared, copy_blk, &[], reuse_blk, &[]);
+
+        self.b.switch_to_block(reuse_blk);
+        self.b.seal_block(reuse_blk);
+        self.bump_process_counter(PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET);
+        self.bump_process_counter(PROCESS_STRUCT_RETENTION_HITS_OFFSET);
+        self.b.ins().jump(done_blk, &[BlockArg::Value(base_ref)]);
+
+        self.b.switch_to_block(copy_blk);
+        self.b.seal_block(copy_blk);
+        let copy = self.copy_struct(base_ref, fields);
+        self.b.ins().jump(done_blk, &[BlockArg::Value(copy)]);
+
+        self.b.switch_to_block(done_blk);
+        self.b.seal_block(done_blk);
+        target
+    }
+
+    fn bump_process_counter(&mut self, offset: i32) {
+        let process = self.process_arg();
+        let count = self.b.ins().load(types::I64, MemFlags::trusted(), process, offset);
+        let bumped = self.b.ins().iadd_imm(count, 1);
+        self.b.ins().store(MemFlags::trusted(), bumped, process, offset);
+    }
+
+    /// Mark the object `reference` names shared when its `kind` is a struct
+    /// or tuple, as storing it into a container must. A struct already
+    /// shared is only read: it may be read-only program data or old.
+    fn share_if_struct(&mut self, reference: ir::Value, kind: ir::Value) {
+        let check_blk = self.b.create_block();
+        let mark_blk = self.b.create_block();
+        let done_blk = self.b.create_block();
+        let is_struct = self
             .b
             .ins()
-            .icmp_imm(IntCC::Equal, header, struct_header_word(schema_id) as i64);
-        self.b.ins().band(is_struct, is_schema)
+            .icmp_imm(IntCC::Equal, kind, ValueKind::STRUCT.tag() as i64);
+        self.b.ins().brif(is_struct, check_blk, &[], done_blk, &[]);
+
+        self.b.switch_to_block(check_blk);
+        self.b.seal_block(check_blk);
+        let object = self.object_address(reference);
+        let header = self.b.ins().load(types::I64, MemFlags::trusted(), object, 0);
+        let shared = self.b.ins().band_imm(header, STRUCT_HEADER_SHARED_MASK as i64);
+        self.b.ins().brif(shared, done_blk, &[], mark_blk, &[]);
+
+        self.b.switch_to_block(mark_blk);
+        self.b.seal_block(mark_blk);
+        let marked = self.b.ins().bor_imm(header, STRUCT_HEADER_SHARED_MASK as i64);
+        self.b.ins().store(MemFlags::trusted(), marked, object, 0);
+        self.b.ins().jump(done_blk, &[]);
+
+        self.b.switch_to_block(done_blk);
+        self.b.seal_block(done_blk);
     }
 
     /// The raw word in `slot` of the struct or tuple `object_ref` names,
@@ -156,13 +227,21 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         }
     }
 
-    /// An unpublished copy of the struct `base_ref` names, which has `fields`
-    /// fields. `store_field` may follow for the fields an update replaces,
-    /// before any other code runs.
-    pub(crate) fn copy_struct(&mut self, base_ref: ir::Value, fields: usize) -> NewStruct {
-        let count = self.b.ins().iconst(types::I32, fields as i64);
-        let process = self.process_arg();
-        let reference = runtime_call1!(self, fz_struct_copy, [process, base_ref, count]);
+    /// The struct an update of the struct `base_ref` names, which has
+    /// `fields` fields, stores into: `base_ref` itself when `rewrite` permits
+    /// and its header says it is not shared, otherwise an unpublished copy.
+    /// The rewrite makes no runtime call. `store_field` may follow for the
+    /// fields the update replaces, before any other code runs.
+    pub(crate) fn reuse_or_copy_struct(
+        &mut self,
+        base_ref: ir::Value,
+        fields: usize,
+        rewrite: crate::fz_ir::RewritePermission,
+    ) -> NewStruct {
+        let reference = match rewrite {
+            crate::fz_ir::RewritePermission::RetainOnly => self.copy_struct(base_ref, fields),
+            crate::fz_ir::RewritePermission::Rewrite => self.rewrite_unshared_struct(base_ref, fields),
+        };
         NewStruct {
             reference,
             address: self.object_address(reference),
@@ -217,7 +296,11 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             CodegenValue::Condition(flag) => (bool_to_fz(self.b, self.cache, flag), ValueKind::ATOM),
             CodegenValue::Known { payload, kind } if kind.is_scalar() => (payload, kind),
             CodegenValue::Known { kind, .. } => (self.b.ins().iconst(types::I64, 0), kind),
-            CodegenValue::AnyRef(reference) if addressed_object => return Some(self.addressed_form(reference)),
+            CodegenValue::AnyRef(reference) if addressed_object => {
+                let (raw, kind) = self.addressed_form(reference);
+                self.share_if_struct(reference, kind);
+                return Some((raw, kind));
+            }
             CodegenValue::AnyRef(_) => return None,
         };
         Some((raw, self.b.ins().iconst(types::I8, kind.tag() as i64)))

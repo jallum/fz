@@ -19,7 +19,7 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use fz_runtime::any_value::{
     AnyValue, AnyValueRefPacking, BITSTRING_BIT_LEN_SHIFT, BITSTRING_BYTES_OFFSET, FALSE_ATOM_ID, SlotLayout,
-    TRUE_ATOM_ID, ValueKind, struct_header_word,
+    TRUE_ATOM_ID, ValueKind, shared_struct_header_word,
 };
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
@@ -205,7 +205,7 @@ fn define_static_struct_literal<M: cranelift_module::Module>(
 ) -> Result<DataId, CodegenError> {
     let layout = SlotLayout::of(fields.len());
     let mut buf = vec![0u8; layout.size()];
-    buf[0..8].copy_from_slice(&struct_header_word(schema_id).to_le_bytes());
+    buf[0..8].copy_from_slice(&shared_struct_header_word(schema_id).to_le_bytes());
 
     let mut child_relocs = Vec::new();
     for (idx, field) in fields.iter().enumerate() {
@@ -520,6 +520,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             module,
             arity,
             stores,
+            rewrite,
         } => {
             let base_ref = body.any_ref_for_var(var_env, base.0);
             let slot_blk = body.b.create_block();
@@ -534,7 +535,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
 
             body.b.switch_to_block(slot_blk);
             body.b.seal_block(slot_blk);
-            let object = body.copy_struct(base_ref, *arity as usize);
+            let object = body.reuse_or_copy_struct(base_ref, *arity as usize, *rewrite);
             for store in stores {
                 let addressed_object = ty_is_addressed_object(t, value_types, store.value);
                 body.store_field(

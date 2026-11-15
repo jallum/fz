@@ -1,7 +1,7 @@
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, EMPTY_LIST_BITS, ValueKind, closure_size_for_count, heap_object_word, list_addr_from_tagged,
-    map_count, map_entry,
+    AnyValue, AnyValueRef, EMPTY_LIST_BITS, SlotLayout, ValueKind, closure_size_for_count, heap_object_word,
+    list_addr_from_tagged, map_count, map_entry, struct_is_shared,
 };
 use crate::exec_ctx::Argv;
 use crate::heap::{Schema, SchemaRegistry};
@@ -712,6 +712,102 @@ fn list_reuse_or_cons_parts_updates_process_counters() {
         assert_eq!(process.list_retention_attempts, 2);
         assert_eq!(process.list_retention_hits, 1);
     });
+}
+
+fn point_process() -> (Box<Process>, u32) {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let point = schemas.borrow_mut().register(Schema::named_struct(
+        crate::module_name::ModuleName::from_segments(vec!["Point".to_string()]),
+        ["x".to_string(), "y".to_string()],
+    ));
+    (Box::new(Process::new(schemas)), point)
+}
+
+fn is_shared(value: AnyValueRef) -> bool {
+    unsafe { struct_is_shared(value.struct_addr().expect("struct")) }
+}
+
+#[test]
+fn a_struct_update_rewrites_its_base_only_when_permitted_and_unshared() {
+    let (mut process, point) = point_process();
+    let process_ptr: *mut Process = &mut *process;
+    let unshared = tuple_ref(&mut process, point, &[AnyValue::int(1), AnyValue::int(2)]);
+    let rewritten = fz_struct_reuse_or_copy(process_ptr, unshared.raw_word(), 2, 1);
+    assert_eq!(
+        rewritten,
+        unshared.raw_word(),
+        "nothing else holds the base, so it is the update"
+    );
+
+    let refused = fz_struct_reuse_or_copy(process_ptr, unshared.raw_word(), 2, 0);
+    assert_ne!(
+        refused,
+        unshared.raw_word(),
+        "without the compiler's permission the update copies"
+    );
+
+    let shared = tuple_ref(&mut process, point, &[AnyValue::int(3), AnyValue::int(4)]);
+    fz_mark_published_ref_aliased(process_ptr, shared.raw_word());
+    let copied = fz_struct_reuse_or_copy(process_ptr, shared.raw_word(), 2, 1);
+    assert_ne!(
+        copied,
+        shared.raw_word(),
+        "a shared base is copied even with permission"
+    );
+    let copy = AnyValueRef::from_raw_word(copied).expect("copy ref");
+    assert!(!is_shared(copy), "the copy is fresh, so the next update may rewrite it");
+    assert_eq!(
+        process.heap.read_struct_field_ref(copy, 8).and_then(|y| y.load_int()),
+        Ok(4),
+        "the copy keeps the fields the update does not replace"
+    );
+    assert_eq!(
+        (process.struct_retention_attempts, process.struct_retention_hits),
+        (3, 1)
+    );
+}
+
+#[test]
+fn a_struct_becomes_shared_wherever_a_second_holder_can_appear() {
+    let (mut process, point) = point_process();
+    let process_ptr: *mut Process = &mut *process;
+    let fresh = tuple_ref(&mut process, point, &[AnyValue::int(1), AnyValue::int(2)]);
+    assert!(!is_shared(fresh), "a struct is born unshared");
+
+    let passed = tuple_ref(&mut process, point, &[AnyValue::int(1), AnyValue::int(2)]);
+    fz_mark_published_ref_aliased(process_ptr, passed.raw_word());
+    assert!(is_shared(passed), "a struct passed to a call the caller still holds");
+
+    let field = tuple_ref(&mut process, point, &[AnyValue::int(1), AnyValue::int(2)]);
+    let outer = process.heap.alloc_struct(point);
+    let layout = SlotLayout::of(2);
+    fz_struct_store_ref(
+        process_ptr,
+        AnyValueRef::from_heap_object(ValueKind::STRUCT, outer as *const u8)
+            .expect("outer")
+            .raw_word(),
+        SlotLayout::slot_offset(0) as u32,
+        layout.kind_offset(0) as u32,
+        field.raw_word(),
+    );
+    assert!(is_shared(field), "a struct stored into another struct");
+
+    let head = tuple_ref(&mut process, point, &[AnyValue::int(1), AnyValue::int(2)]);
+    process
+        .heap
+        .alloc_list_cons_any(AnyValue::from_ref(head).expect("head"), AnyValueRef::empty_list())
+        .expect("cons");
+    assert!(is_shared(head), "a struct stored as a list head");
+
+    let kept = tuple_ref(&mut process, point, &[AnyValue::int(1), AnyValue::int(2)]);
+    let mut roots = [kept];
+    process.collect(&mut roots);
+    assert!(
+        is_shared(roots[0]),
+        "a struct a collection keeps is old, and old data is never written"
+    );
+    let after = fz_struct_reuse_or_copy(process_ptr, roots[0].raw_word(), 2, 1);
+    assert_ne!(after, roots[0].raw_word(), "so an update of it copies");
 }
 
 fn tuple_ref(process: &mut Process, schema_id: u32, fields: &[AnyValue]) -> AnyValueRef {

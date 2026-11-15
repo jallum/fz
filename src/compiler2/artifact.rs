@@ -1540,8 +1540,10 @@ pub enum BackendStep {
     },
     /// `%{base | field: v, ...}` where the types say `base` is the `module`
     /// struct, of `arity` fields, and every key names one of them. In the
-    /// struct layout it is a copy of `base` with each slot replaced; in the
-    /// entries layout each key is replaced. It cannot miss, so `ok` is true.
+    /// struct layout each slot is replaced in `base` itself when `rewrite`
+    /// permits and the runtime finds nothing else holding it, otherwise in a
+    /// copy; in the entries layout each key is replaced. It cannot miss, so
+    /// `ok` is true.
     StructUpdate {
         value: ValueId,
         ok: ValueId,
@@ -1549,6 +1551,7 @@ pub enum BackendStep {
         module: fz_runtime::module_name::ModuleName,
         arity: u32,
         stores: Vec<crate::fz_ir::SlotStore<ValueId>>,
+        rewrite: crate::fz_ir::RewritePermission,
     },
     Struct {
         value: ValueId,

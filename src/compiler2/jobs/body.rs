@@ -1539,7 +1539,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     base,
                     entries: lowered,
                 });
-                self.lower_update_key_check(expr.span, updated, ok, base, keys, steps)
+                self.lower_update_key_check(expr.span, ok, base, keys, steps)?;
+                Ok(updated)
             }
             Expr::Struct { module, fields } => self.lower_struct_expr(expr.span, module, fields, env, steps),
             Expr::Bitstring(fields) => self.lower_bitstring_expr(fields, env, steps),
@@ -2327,15 +2328,18 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     /// and raises `KeyError` naming a missing one otherwise, as Elixir's
     /// `put_map_exact` does. The update itself reports the miss, so the check
     /// is one test of `ok`; only a miss pays for finding which key it was.
+    ///
+    /// The check is a guard: code after it reads the update's own value, which
+    /// the guard's passing arm proves is the updated map. The guard's result is
+    /// only its verdict, so the raise on the miss arm never joins the map.
     fn lower_update_key_check(
         &mut self,
         span: Span,
-        updated: ValueId,
         ok: ValueId,
         base: ValueId,
         keys: Vec<ValueId>,
         steps: &mut Vec<ExprStep>,
-    ) -> Result<ValueId, FatalError> {
+    ) -> Result<(), FatalError> {
         let key_list = self.fresh_value();
         let raised = self.fresh_value();
         let callee = self.resolve_callee(&update_key_error_callee(), 2, span, "map update key check")?;
@@ -2378,13 +2382,13 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     block: ExprBlock {
                         span,
                         steps: Vec::new(),
-                        result: updated,
+                        result: ok,
                     },
                 }],
                 miss_block: Some(miss_block),
             }),
         });
-        Ok(value)
+        Ok(())
     }
 
     fn lower_with_block(
@@ -3222,24 +3226,29 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
 
     fn construct_entry_captures(&mut self, body: &mut LoweredBody) {
         use super::super::executable_facts::{TransportOrigin, collect_value_origins};
-        use crate::fz_ir::ListRewritePermission;
+        use crate::fz_ir::RewritePermission;
         let scanned = Cell::new(0);
         let compared = Cell::new(0);
         let origins = collect_value_origins(body);
         let LoweredBody::Clauses { entries, .. } = &*body;
-        let sources = scan_steps(entries, &scanned)
-            .filter_map(|(entry, step, instruction)| {
-                let LoweredStep::List {
+        let mut sources = Vec::new();
+        let mut updates = Vec::new();
+        for (entry, step, instruction) in scan_steps(entries, &scanned) {
+            match instruction {
+                LoweredStep::List {
                     items, tail: Some(_), ..
-                } = instruction
-                else {
-                    return None;
-                };
-                let head = *items.first().filter(|_| items.len() == 1)?;
-                let origin = list_source_origin(body, &origins, head)?;
-                Some((entry, step, head, origin))
-            })
-            .collect::<Vec<_>>();
+                } => {
+                    let Some(&head) = items.first().filter(|_| items.len() == 1) else {
+                        continue;
+                    };
+                    if let Some(origin) = list_source_origin(body, &origins, head) {
+                        sources.push((entry, step, head, origin));
+                    }
+                }
+                LoweredStep::MapUpdate { .. } => updates.push((entry, step)),
+                _ => {}
+            }
+        }
         for (entry, step, head, origin) in &sources {
             let source = match origin {
                 TransportOrigin::LocalValue(source) => *source,
@@ -3296,7 +3305,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 ControlEntryId::from_u32(*entry as u32),
                 *step,
                 source,
-                ListRewritePermission::RetainOnly,
+                RewritePermission::RetainOnly,
             );
         }
         let value_count = body.value_count();
@@ -3336,13 +3345,17 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         let origins = collect_value_origins(body);
         construct_call_ownership(body, &origins);
         construct_tuple_ownership(body, &origins, &scanned, &compared);
-        for (entry, step, _, _) in sources {
-            let permission = if list_can_rewrite(body, &origins, entry, step) {
-                ListRewritePermission::Rewrite
+        let rebuilds = sources
+            .into_iter()
+            .map(|(entry, step, _, _)| (entry, step))
+            .chain(updates);
+        for (entry, step) in rebuilds {
+            let permission = if can_rewrite(body, &origins, entry, step) {
+                RewritePermission::Rewrite
             } else {
-                ListRewritePermission::RetainOnly
+                RewritePermission::RetainOnly
             };
-            body.set_list_rewrite_permission(ControlEntryId::from_u32(entry as u32), step, permission);
+            body.set_rewrite_permission(ControlEntryId::from_u32(entry as u32), step, permission);
         }
         self.ownership_steps_scanned += scanned.get();
         self.ownership_pairs_compared += compared.get();
@@ -3882,6 +3895,7 @@ fn lower_projection_step(step: ExprStep) -> LoweredStep {
             ok,
             base,
             entries,
+            rewrite: crate::fz_ir::RewritePermission::RetainOnly,
         },
         ExprStep::Struct { value, module, fields } => LoweredStep::Struct { value, module, fields },
         ExprStep::Bitstring { value, fields } => LoweredStep::Bitstring { value, fields },
@@ -4116,7 +4130,12 @@ fn construction_projection(
     None
 }
 
-fn list_can_rewrite(
+/// Whether the construction at `step` of `entry` may store into the source
+/// it rebuilds -- a list step's retained cell, an update's base -- rather than
+/// allocate. Nothing it stores may hold the source, and nothing that can run
+/// after it may use the source. The runtime asks the other half, whether
+/// anything outside this body holds it.
+fn can_rewrite(
     body: &LoweredBody,
     origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
     entry: usize,
@@ -4124,25 +4143,34 @@ fn list_can_rewrite(
 ) -> bool {
     use super::super::executable_facts::TransportOrigin;
     let LoweredBody::Clauses { entries, .. } = body;
-    let LoweredStep::List {
-        value,
-        items,
-        tail,
-        retention: Some(retention),
-    } = &entries[entry].steps[step]
-    else {
+    let (value, source, operands): (ValueId, ValueId, Vec<ValueId>) = match &entries[entry].steps[step] {
+        LoweredStep::List {
+            value,
+            items,
+            tail,
+            retention: Some(retention),
+        } => (*value, retention.source, items.iter().chain(tail).copied().collect()),
+        LoweredStep::MapUpdate {
+            value, base, entries, ..
+        } => (
+            *value,
+            *base,
+            entries.iter().flat_map(|(key, value)| [key.value, *value]).collect(),
+        ),
+        _ => return false,
+    };
+    let Some(source) = origin_source_path(body, origins, &TransportOrigin::LocalValue(source)) else {
         return false;
     };
-    let Some(source) = origin_source_path(body, origins, &TransportOrigin::LocalValue(retention.source)) else {
-        return false;
-    };
-    !items
+    !operands
         .iter()
-        .chain(tail)
-        .any(|operand| value_retains_source(body, origins, *operand, &source, Some(*value)))
+        .any(|operand| value_retains_source(body, origins, *operand, &source, Some(value)))
         && !source_used_after(body, origins, entry, step, &source)
 }
 
+/// Whether anything that can run after `step` of `entry` uses `source`. The
+/// step's own result does not count, nor does an update's verdict `ok`, an
+/// atom that holds nothing.
 fn source_used_after(
     body: &LoweredBody,
     origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
@@ -4151,12 +4179,16 @@ fn source_used_after(
     source: &SourcePath,
 ) -> bool {
     let LoweredBody::Clauses { entries, .. } = body;
-    let exempt = match entries[entry].steps.get(step) {
-        Some(LoweredStep::List { value, .. } | LoweredStep::Tuple { value, .. }) => Some(*value),
-        _ => None,
+    let (exempt, verdict) = match entries[entry].steps.get(step) {
+        Some(LoweredStep::List { value, .. } | LoweredStep::Tuple { value, .. }) => (Some(*value), None),
+        Some(LoweredStep::MapUpdate { value, ok, .. }) => (Some(*value), Some(*ok)),
+        _ => (None, None),
     };
-    any_later_ownership_use(body, entry, step, |value, role| match role {
-        super::super::body::ValueRole::Semantic => value_retains_source(body, origins, value, source, exempt),
+    let missed = update_miss_entry(body, entry, step);
+    any_later_ownership_use(body, entry, step, missed, |value, role| match role {
+        super::super::body::ValueRole::Semantic => {
+            Some(value) != verdict && value_retains_source(body, origins, value, source, exempt)
+        }
         super::super::body::ValueRole::Physical => origin_source_path(
             body,
             origins,
@@ -4167,6 +4199,25 @@ fn source_used_after(
     })
 }
 
+/// The entry an update at `step` of `entry` falls to when a key is missing.
+///
+/// An update that misses writes nothing, so its base reaches that entry
+/// untouched: the base's uses there never see a rewrite.
+fn update_miss_entry(body: &LoweredBody, entry: usize, step: usize) -> Option<ControlEntryId> {
+    let LoweredBody::Clauses { entries, .. } = body;
+    let block = &entries[entry];
+    let LoweredStep::MapUpdate { ok, .. } = block.steps.get(step)? else {
+        return None;
+    };
+    let is_last_step = step + 1 == block.steps.len();
+    match &block.tail {
+        LoweredTail::Dispatch { inputs, dispatch, .. } if is_last_step && inputs.as_slice() == [*ok] => {
+            dispatch.miss_entry
+        }
+        _ => None,
+    }
+}
+
 /// Whether any use that can still happen after `step` of `entry` competes for
 /// ownership.
 ///
@@ -4174,11 +4225,13 @@ fn source_used_after(
 /// reached entry runs in full, so its first step is as "later" as its last.
 /// Both questions are answered from the body's use tables, so the walk costs
 /// one visit per reachable entry and one per use it offers, never a search
-/// through the body's steps.
+/// through the body's steps. The uses of `unclaimed`, an entry that runs only
+/// when the step gave up its claim, are not counted; the entries it reaches are.
 fn any_later_ownership_use(
     body: &LoweredBody,
     entry: usize,
     step: usize,
+    unclaimed: Option<ControlEntryId>,
     mut competes: impl FnMut(ValueId, super::super::body::ValueRole) -> bool,
 ) -> bool {
     use super::super::body::ValueRole;
@@ -4187,6 +4240,11 @@ fn any_later_ownership_use(
     let mut visited = HashSet::default();
     while let Some((block_id, start)) = pending.pop() {
         if !visited.insert(block_id) {
+            continue;
+        }
+        let block = &entries[block_id.as_u32() as usize];
+        pending.extend(child_entries(&block.tail).map(|child| (child, 0)));
+        if unclaimed == Some(block_id) {
             continue;
         }
         if tables
@@ -4200,8 +4258,6 @@ fn any_later_ownership_use(
         if used.iter().any(|value| competes(value, ValueRole::Semantic)) {
             return true;
         }
-        let block = &entries[block_id.as_u32() as usize];
-        pending.extend(child_entries(&block.tail).map(|child| (child, 0)));
     }
     false
 }
@@ -4579,7 +4635,7 @@ fn tuple_item_has_old_owner(
         .is_none_or(|source| value_retains_source(body, origins, item, &source, Some(result)))
     };
     let Some(competitors) = index.competitors_after(item, later) else {
-        return any_later_ownership_use(body, later.entry(), later.step(), |value, role| match role {
+        return any_later_ownership_use(body, later.entry(), later.step(), None, |value, role| match role {
             ValueRole::Semantic => overlaps(value),
             ValueRole::Physical => retains(value),
         });

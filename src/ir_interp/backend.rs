@@ -34,8 +34,8 @@ use fz_runtime::heap::{GcStats, Schema};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_dest_begin,
     fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts,
-    fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_copy, fz_struct_get_field_ref, fz_struct_module,
-    fz_struct_store_ref,
+    fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref, fz_struct_module,
+    fz_struct_reuse_or_copy, fz_struct_store_ref,
 };
 use fz_runtime::module_name::STRUCT_MODULE_FIELD;
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
@@ -1960,13 +1960,15 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 module: struct_module,
                 arity,
                 stores,
+                rewrite,
             } => {
                 let proc = runtime.cur_proc();
                 let base = env_get(transport, proc, env, *base)?;
                 let updated = if interp_has_struct_layout(runtime, base, struct_module) {
                     let layout = SlotLayout::of(*arity as usize);
+                    let may_rewrite = u64::from(*rewrite == crate::fz_ir::RewritePermission::Rewrite);
                     let copy = with_value_ref(proc, base, "backend struct update base", |base_ref| {
-                        fz_struct_copy(proc, base_ref, *arity)
+                        fz_struct_reuse_or_copy(proc, base_ref, *arity, may_rewrite)
                     })?;
                     for store in stores {
                         let slot = store.slot as usize;
@@ -2093,7 +2095,7 @@ fn rebuild_backend_list_from_source(
     source_id: ValueId,
     head: AnyValue,
     tail: AnyValue,
-    permission: crate::fz_ir::ListRewritePermission,
+    permission: crate::fz_ir::RewritePermission,
 ) -> Result<AnyValue, String> {
     let source = env_get(transport, proc, env, source_id)?;
     let source_ref = source
@@ -2112,7 +2114,7 @@ fn rebuild_backend_list_from_source(
             head.raw(),
             u64::from(head.kind().tag()),
             tail_ref.raw_word(),
-            u64::from(permission == crate::fz_ir::ListRewritePermission::Rewrite),
+            u64::from(permission == crate::fz_ir::RewritePermission::Rewrite),
         ),
         "backend list",
     )

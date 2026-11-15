@@ -150,7 +150,7 @@ fn compiler2_list_reconstruction_preserves_duplicate_consumers_and_later_source_
         source,
         "rebuild",
         1,
-        crate::fz_ir::ListRewritePermission::RetainOnly,
+        crate::fz_ir::RewritePermission::RetainOnly,
         None,
     );
 }
@@ -163,7 +163,7 @@ fn compiler2_list_reconstruction_keeps_physical_alias_across_semantic_call() {
         source,
         "keep",
         1,
-        crate::fz_ir::ListRewritePermission::Rewrite,
+        crate::fz_ir::RewritePermission::Rewrite,
         Some(("rewrite", 1)),
     );
 }
@@ -176,7 +176,7 @@ fn compiler2_list_reconstruction_rejects_rewrite_through_joined_alias() {
         source,
         "rebuild",
         2,
-        crate::fz_ir::ListRewritePermission::RetainOnly,
+        crate::fz_ir::RewritePermission::RetainOnly,
         None,
     );
 }
@@ -189,7 +189,7 @@ fn compiler2_list_reconstruction_composes_retained_identity_without_old_children
         source,
         "rebuild",
         1,
-        crate::fz_ir::ListRewritePermission::RetainOnly,
+        crate::fz_ir::RewritePermission::RetainOnly,
         None,
     );
 }
@@ -202,7 +202,7 @@ fn compiler2_list_reconstruction_guards_composed_physical_identity_at_calls() {
         source,
         "keep",
         1,
-        crate::fz_ir::ListRewritePermission::RetainOnly,
+        crate::fz_ir::RewritePermission::RetainOnly,
         Some(("rewrite", 1)),
     );
 }
@@ -215,7 +215,7 @@ fn compiler2_list_reconstruction_cannot_rewrite_its_own_new_tail() {
         source,
         "prepend",
         1,
-        crate::fz_ir::ListRewritePermission::RetainOnly,
+        crate::fz_ir::RewritePermission::RetainOnly,
         None,
     );
 }
@@ -228,7 +228,7 @@ fn compiler2_list_reconstruction_preserves_a_distinct_aliased_input() {
         source,
         "rebuild",
         2,
-        crate::fz_ir::ListRewritePermission::Rewrite,
+        crate::fz_ir::RewritePermission::Rewrite,
         Some(("rebuild", 2)),
     );
 }
@@ -238,7 +238,7 @@ fn assert_list_retention_ownership(
     source: &str,
     function: &str,
     arity: u64,
-    permission: crate::fz_ir::ListRewritePermission,
+    permission: crate::fz_ir::RewritePermission,
     shared_callee: Option<(&str, u64)>,
 ) {
     for native in [false, true] {
@@ -350,10 +350,71 @@ fn compiler2_operand_returning_boolean_ops_retain_source_ownership() {
             .collect::<Vec<_>>();
         assert_eq!(
             permissions,
-            vec![crate::fz_ir::ListRewritePermission::RetainOnly],
+            vec![crate::fz_ir::RewritePermission::RetainOnly],
             "{expression} can return its list operand"
         );
     }
+}
+
+/// The rewrite permission of each `%{base | ...}` update in `function`/`arity`
+/// of `program`, in body order.
+fn update_permissions(program: &str, function: &str, arity: u64) -> Vec<crate::fz_ir::RewritePermission> {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("update_permission.fz".into()),
+        text: program.into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root);
+    let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function_id(&functions, function, arity));
+    entries
+        .iter()
+        .flat_map(|entry| &entry.steps)
+        .filter_map(|step| match step {
+            LoweredStep::MapUpdate { rewrite, .. } => Some(*rewrite),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn compiler2_an_update_whose_base_is_never_used_again_may_rewrite_it() {
+    // The key check after the update reads the base only when a key is
+    // missing, and then the update wrote nothing; the check's own verdict
+    // holds no part of the base.
+    let program =
+        "defmodule P do\n  defstruct [:a]\nend\ndef step(s), do: %{s | a: s.a + 1}\ndef main(), do: step(%P{a: 1}).a\n";
+    assert_eq!(
+        update_permissions(program, "step", 1),
+        vec![crate::fz_ir::RewritePermission::Rewrite]
+    );
+}
+
+#[test]
+fn compiler2_an_update_keeps_a_base_read_afterwards_or_stored_in_itself() {
+    let read_after = "defmodule P do\n  defstruct [:a]\nend\ndef both(s) do\n  t = %{s | a: 2}\n  {s.a, t.a}\nend\ndef main(), do: both(%P{a: 1})\n";
+    assert_eq!(
+        update_permissions(read_after, "both", 1),
+        vec![crate::fz_ir::RewritePermission::RetainOnly],
+        "the base is read after the update"
+    );
+    let stored =
+        "defmodule P do\n  defstruct [:a]\nend\ndef nest(s), do: %{s | a: s}\ndef main(), do: nest(%P{a: 1}).a.a\n";
+    assert_eq!(
+        update_permissions(stored, "nest", 1),
+        vec![crate::fz_ir::RewritePermission::RetainOnly],
+        "the update stores its own base"
+    );
 }
 
 #[test]
@@ -781,7 +842,7 @@ fn compiler2_list_reconstruction_keeps_conditional_and_projected_rewrite_permiss
             .collect::<Vec<_>>();
         assert_eq!(
             permissions,
-            vec![crate::fz_ir::ListRewritePermission::Rewrite; expected],
+            vec![crate::fz_ir::RewritePermission::Rewrite; expected],
             "{name}: mutually exclusive consumers and dead parent paths preserve conditional ownership"
         );
     }

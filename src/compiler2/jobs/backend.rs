@@ -898,7 +898,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 ok,
                 base,
                 entries,
-            } => self.update(*value, *ok, *base, entries),
+                rewrite,
+            } => self.update(*value, *ok, *base, entries, *rewrite),
             LoweredStep::Struct { value, module, fields } => self.step_or_omitted_when_absent(
                 *value,
                 BackendStep::Struct {
@@ -1050,9 +1051,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
     }
 
     /// `%{base | k: v, ...}` answered from what the types know of `base`. One
-    /// known struct whose fields the keys all name is copied and has those
-    /// slots replaced; any other update finds each key at run time.
-    fn update(&self, value: ValueId, ok: ValueId, base: ValueId, entries: &[(LoweredMapKey, ValueId)]) -> BackendStep {
+    /// known struct whose fields the keys all name has those slots replaced,
+    /// in `base` itself when `rewrite` permits and nothing else holds it,
+    /// otherwise in a copy; any other update finds each key at run time.
+    fn update(
+        &self,
+        value: ValueId,
+        ok: ValueId,
+        base: ValueId,
+        entries: &[(LoweredMapKey, ValueId)],
+        rewrite: crate::fz_ir::RewritePermission,
+    ) -> BackendStep {
         match self.updated_slots(base, entries) {
             Some((module, arity, stores)) => BackendStep::StructUpdate {
                 value,
@@ -1061,6 +1070,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 module: self.module_name(module).clone(),
                 arity,
                 stores,
+                rewrite,
             },
             None => BackendStep::MapUpdate {
                 value,

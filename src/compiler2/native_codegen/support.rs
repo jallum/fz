@@ -44,7 +44,7 @@ pub(crate) fn emit_list_retention_or_alloc<M: Module>(
     let tail_ref = body.list_tail_ref_word(tail);
     let rewrite = body.b.ins().iconst(
         types::I64,
-        i64::from(retention.permission == crate::fz_ir::ListRewritePermission::Rewrite),
+        i64::from(retention.permission == crate::fz_ir::RewritePermission::Rewrite),
     );
     if let CodegenValue::AnyRef(head_ref) = head_value {
         return Some(body.list_reuse_or_cons_ref(source_ref, head_ref, tail_ref, rewrite));

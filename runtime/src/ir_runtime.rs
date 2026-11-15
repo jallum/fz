@@ -26,7 +26,7 @@ use crate::any_value::debug::{Limit, render_value, render_with_limit};
 use crate::any_value::{
     AnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, ValueKind, closure_addr_from_tagged,
     closure_captured_count, closure_denotation, closure_fn_ptr, closure_halt_kind, map_addr_from_tagged, object_size,
-    procbin_addr_from_tagged, struct_schema_id,
+    procbin_addr_from_tagged, struct_is_shared, struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -2223,19 +2223,47 @@ pub extern "C" fn fz_alloc_struct(process: *mut Process, schema_id: u32, size: u
     heap_ref_word(ValueKind::STRUCT, p)
 }
 
-/// An unpublished copy of a struct of `fields` fields. Compiled code stores
-/// the fields an update replaces next, in place, before anything can read it.
+/// An unpublished copy of a struct of `fields` fields, for an update that
+/// may not rewrite its base. Compiled code stores the fields the update
+/// replaces next, in place, before anything can read it.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_struct_copy(process: *mut Process, struct_ref_word: u64, fields: u32) -> u64 {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_copy")
         .struct_addr()
         .expect("fz_struct_copy");
+    let process = unsafe { &mut *process };
+    process.struct_retention_attempts = process.struct_retention_attempts.saturating_add(1);
     let copy = unsafe {
-        (*process)
+        process
             .heap
             .copy_struct(object.cast_const(), SlotLayout::of(fields as usize))
     };
     heap_ref_word(ValueKind::STRUCT, copy)
+}
+
+/// The struct an update of a struct of `fields` fields stores into: the base
+/// itself when `may_rewrite` is set and the base is not shared, otherwise
+/// `fz_struct_copy`'s copy. The answer is the base exactly when it is
+/// rewritten. Compiled native code makes the same decision inline.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_struct_reuse_or_copy(
+    process: *mut Process,
+    struct_ref_word: u64,
+    fields: u32,
+    may_rewrite: u64,
+) -> u64 {
+    let object = any_value_ref_from_word(struct_ref_word, "fz_struct_reuse_or_copy")
+        .struct_addr()
+        .expect("fz_struct_reuse_or_copy");
+    if may_rewrite == 0 || unsafe { struct_is_shared(object) } {
+        return fz_struct_copy(process, struct_ref_word, fields);
+    }
+    let process = unsafe { &mut *process };
+    // A collection shares every struct it keeps, so an unshared one is young.
+    process.heap.assert_written_object_is_young(object);
+    process.struct_retention_attempts = process.struct_retention_attempts.saturating_add(1);
+    process.struct_retention_hits = process.struct_retention_hits.saturating_add(1);
+    struct_ref_word
 }
 
 /// Store a value held as a reference into a struct under construction, at

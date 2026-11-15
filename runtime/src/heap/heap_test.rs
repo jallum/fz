@@ -926,10 +926,10 @@ fn shared_spine_publication_visits_only_newly_protected_cells() {
     let middle = alloc_int_list_cons(&mut heap, 2, tail);
     let head = alloc_int_list_cons(&mut heap, 1, middle);
 
-    assert_eq!(heap.share_list_spine(list_ref_from_bits(middle)).unwrap(), 2);
-    assert_eq!(heap.share_list_spine(list_ref_from_bits(head)).unwrap(), 1);
-    assert_eq!(heap.share_list_spine(list_ref_from_bits(head)).unwrap(), 0);
-    assert_eq!(heap.share_list_spine(list_ref_from_bits(tail)).unwrap(), 0);
+    assert_eq!(heap.share(list_ref_from_bits(middle)).unwrap(), 2);
+    assert_eq!(heap.share(list_ref_from_bits(head)).unwrap(), 1);
+    assert_eq!(heap.share(list_ref_from_bits(head)).unwrap(), 0);
+    assert_eq!(heap.share(list_ref_from_bits(tail)).unwrap(), 0);
     for bits in [head, middle, tail] {
         let cons = unsafe { &*(list_addr_from_tagged(bits).unwrap() as *const ListCons) };
         assert!(cons.aliased());
@@ -2984,7 +2984,7 @@ fn an_unwritten_struct_reads_back_exactly_what_was_stored() {
     );
     assert_eq!(h.read_field_slot(object, 16), AnyValue::EmptyList);
     assert_eq!(
-        h.share_list_spine(list_ref_from_bits(list)).unwrap(),
+        h.share(list_ref_from_bits(list)).unwrap(),
         0,
         "the store shared the list the struct now holds"
     );
@@ -3014,7 +3014,7 @@ fn a_struct_copy_holds_every_field_and_leaves_the_original_alone() {
     assert_eq!(h.read_field_slot(copy, 8), held);
     assert_eq!(h.read_field_slot(copy, 16), AnyValue::EmptyList);
     assert_eq!(
-        h.share_list_spine(list_ref_from_bits(list)).unwrap(),
+        h.share(list_ref_from_bits(list)).unwrap(),
         0,
         "the copy shared the list both structs now hold"
     );
