@@ -7,9 +7,15 @@
   "id": "fz-nml.4",
   "labels": [],
   "parent": "fz-nml",
+  "comments": [
+    {
+      "text": "Measured on ../fz-json (bd3edae98 + change): fixture 01320 holds 45 number inputs, and all 45 match Elixir 1.19.4's JSON.decode (oracle) on interp, run and build. That covers the grammar errors (01, -01, -, 1., 1e, 1e+, 1E-, .5, +1, 00, [1,01], [1e], {\"a\":1.}, 1.5x, 1ex, -x), the exact floats at the double edges, and out-of-range floats as unexpected_sequence with Elixir's rewritten text (1E400 -\u003e \"1.0e400\"). -0e0 -\u003e 0.0 as in Elixir. Fixture 01321 pins D1: an integer past 64 bits is {:unexpected_sequence, offset, text}. Both fixtures fail on the base binary. Fixture block: 01080-01099 was marked free but is full (fz-348 / fz-rs7); fz-nml claims 01320-01339, and the table row is corrected.",
+      "timestamp": "2026-11-15T04:01:56Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A JSON number is checked by its syntax and converted from its text",
   "type": "bug",
-  "updated_at": "2026-11-15T03:53:50Z"
+  "updated_at": "2026-11-15T04:01:56Z"
 }
