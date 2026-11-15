@@ -51,11 +51,15 @@
     {
       "text": "Re-measured on #592 (fz-9x7.6, 3f7328f1e), same spike patch applied cleanly, release, 32,000 lines, stdout identical in all four, two runs each.\nDistiller instructions: off 24.15G; narrow 22.15G (-8.3%); rule A 21.64G (-10.4%); rule B 20.83G (-13.8%). On the old base (#585) these were 28.81G / -13.4% / -16.3% / -22.8%. Absolute saving: narrow 3.87G -\u003e 2.00G, A 4.68G -\u003e 2.51G, B 6.57G -\u003e 3.32G: about half, as Type System said.\nBinary: 3,707,000 / 3,483,016 / 3,461,112 / 3,433,464 bytes. Peak RSS: 287 / 288 / 279 / 360 MB. User time 1.04 / 0.96-1.02 / 0.95-1.05 / 0.90-0.92 s.\nByte walk p1b: 96.2G / 66.8G / 66.8G / 64.1G; peak 674 MB except rule B 5,857 MB.",
       "timestamp": "2026-11-15T02:16:26Z"
+    },
+    {
+      "text": "X5 instructions instead of C calls (user's direction: reduce +/2 on two integers to an instruction). Base #592 + narrow spike; switch FZ_SPIKE_INTRINSIC=1 emits fz_op_{add,sub,mul}_ii as an overflow-checked add/sub/mul and fz_op_{lt,lte,gt,gte,eq,neq}_ii as a compare. Predictions before the run: distiller 22.15G -\u003e between 21.95G and 22.10G (under 1%: about 9.6M such calls at 10-15 instructions each); byte walk p1b 66.8G -\u003e 61-64G; index walk larger in proportion; stdout identical; overflow still raises ArithmeticError with the same text.",
+      "timestamp": "2026-11-15T02:28:51Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Arithmetic on known integers does not go through a continuation",
   "type": "task",
-  "updated_at": "2026-11-15T02:16:26Z"
+  "updated_at": "2026-11-15T02:28:51Z"
 }
