@@ -702,3 +702,52 @@ fn a_receiver_dropped_with_queued_gifts_leaves_no_block_outstanding() {
     }
     assert_eq!(pool_outstanding_blocks(), outstanding_before);
 }
+
+/// A binary sent to another process, then appended to by the sender, leaves
+/// the receiver's bytes intact: the send froze the buffer, so the sender's
+/// append went to a new one.
+#[test]
+fn a_sender_appending_to_a_binary_it_sent_leaves_the_receivers_bytes_intact() {
+    let mut sender = running_task();
+    let mut receiver = fresh_task();
+    let sent = sender.heap.alloc_bitstring(&[b'a'; 100], 100 * 8);
+    let sent_view = unsafe {
+        let word = sent.heap_object_word().unwrap();
+        crate::procbin::ProcBin::from_raw(crate::any_value::heap_word_addr(word))
+    };
+    let grown = unsafe {
+        let ptr = sent_view.bytes_ptr();
+        // A concatenation gives a buffer room; the first call allocates it.
+        sender
+            .heap
+            .alloc_concatenation(std::slice::from_raw_parts(ptr, 100), Some(sent_view), b"b")
+    };
+    let grown_ref = grown.ref_word();
+    let (segment, delivered) = gift_copy(&mut sender.heap, &[grown_ref]);
+    receiver.heap.graft(segment);
+    let received = delivered[0];
+
+    let appended = unsafe {
+        let view = crate::procbin::ProcBin::from_raw(grown.heap_addr().unwrap());
+        sender
+            .heap
+            .alloc_concatenation(std::slice::from_raw_parts(view.bytes_ptr(), 101), Some(view), b"XYZ")
+    };
+
+    let received_bytes = unsafe {
+        let word = received.heap_object_word().unwrap();
+        std::slice::from_raw_parts(
+            crate::procbin::bitstring_byte_ptr(word),
+            crate::procbin::bitstring_bit_len(word) as usize / 8,
+        )
+    };
+    let mut expected = vec![b'a'; 100];
+    expected.push(b'b');
+    assert_eq!(received_bytes, expected.as_slice());
+    let appended_addr = appended.heap_addr().unwrap();
+    assert_ne!(
+        unsafe { crate::procbin::ProcBin::from_raw(appended_addr) }.bytes_ptr(),
+        received_bytes.as_ptr(),
+        "the sender's append went to a new buffer"
+    );
+}

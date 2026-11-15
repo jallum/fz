@@ -1391,13 +1391,8 @@ pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_r
     let (right_ptr, right_len) = byte_aligned_binary_slice(right_ref, "fz_binary_concat right");
     let left = unsafe { from_raw_parts(left_ptr, left_len) };
     let right = unsafe { from_raw_parts(right_ptr, right_len) };
-    let mut bytes = Vec::with_capacity(left_len + right_len);
-    bytes.extend_from_slice(left);
-    bytes.extend_from_slice(right);
-
-    let value = (unsafe { &mut *process })
-        .heap
-        .alloc_bitstring(&bytes, ((left_len + right_len) * 8) as u64);
+    let left_view = procbin_addr_from_tagged(left_ref).map(|addr| unsafe { ProcBin::from_raw(addr) });
+    let value = unsafe { (&mut *process).heap.alloc_concatenation(left, left_view, right) };
     value.ref_word().raw_word()
 }
 
@@ -1424,7 +1419,7 @@ pub extern "C" fn fz_alloc_bitstring_const(process: *mut Process, ptr: u64, byte
 /// then the new ProcBin's lifetime release brings it back to 1 (anchor
 /// preserved). The noop destructor never runs in practice.
 ///
-/// `static_sharedbin` is the address of the 40-byte SharedBin struct
+/// `static_sharedbin` is the address of the 48-byte SharedBin struct
 /// emitted into `.data` by codegen, with bytes_ptr and destructor
 /// relocations resolved by the linker.
 #[unsafe(no_mangle)]

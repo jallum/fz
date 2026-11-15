@@ -335,6 +335,11 @@ readings of the threshold remain and are different questions:
 asks what to EMIT for a constant bitstring, which it must answer at compile time
 with no heap to ask.
 
+**Appending to a binary** — owner `Heap::alloc_concatenation`: a `<>` whose left
+side ends where its buffer's written bytes end writes into the buffer's spare
+room, and only the owning process may (`shared_bin_freeze` closes the buffer
+before any cross-process copy).
+
 **Where a symbol lives** — owner `fz_extern_symbol_addr`
 (`runtime/src/symbol_lookup.rs`), for fz's own exports and foreign ones
 alike. The interpreter's `resolve_symbol` and its variadic path call it, and

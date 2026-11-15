@@ -32,7 +32,7 @@ use crate::heap::forwarded_target;
 use crate::resource::{ResourceStub, fz_resource_release, fz_resource_release_deferred};
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::mem::{align_of, forget, size_of};
-use std::ptr::{NonNull, read, slice_from_raw_parts_mut, write};
+use std::ptr::{NonNull, copy_nonoverlapping, read, slice_from_raw_parts_mut, write};
 
 // ===== SharedBin layout =====================================================
 
@@ -45,6 +45,23 @@ use std::ptr::{NonNull, read, slice_from_raw_parts_mut, write};
 /// marker, which is told from a live pointer by a set low nibble. Sharing the
 /// heap's own 16-alignment invariant is what makes a real pointer and a
 /// marker distinguishable by construction.
+///
+/// A buffer a concatenation allocated has room after its written bytes, and
+/// only the process that owns it may write into that room. A view that ends
+/// where the written bytes end can be handed to C as a string without a copy,
+/// because the one byte after it is a NUL; a write by another process would
+/// replace that NUL under a call in progress. Ownership is therefore
+/// single: every path that makes a buffer reachable from another process
+/// freezes it first (`shared_bin_freeze`), on the owner's thread, and a
+/// frozen buffer is never written again. Until then every view of it lives on
+/// the owner's heap, so `bytes_len` and `bit_len` change with no concurrent
+/// reader, and `bytes_ptr` never moves.
+///
+/// `room` holds the buffer's capacity (the bytes it can hold ahead of the
+/// trailing NUL) in its low bits and `ROOM_FROZEN` above them. The spare room
+/// is the capacity less the written bytes; it is zero for a buffer that was
+/// frozen and for a buffer with no capacity beyond its bytes, which is every
+/// buffer but a concatenation's, and a compiler-baked static one holds 0.
 #[repr(C, align(16))]
 pub struct SharedBin {
     pub refcount: AtomicUsize,                            // offset 0..8
@@ -52,12 +69,17 @@ pub struct SharedBin {
     pub bytes_ptr: *const u8,                             // offset 16..24
     pub bytes_len: usize,                                 // offset 24..32
     pub destructor: unsafe extern "C" fn(*mut SharedBin), // offset 32..40
+    pub room: usize,                                      // offset 40..48
 }
 
-/// 40 bytes of fields, rounded to the 16-byte alignment above. The field
-/// offsets are unchanged, and `define_static_sharedbin` emits this many
-/// bytes for the compiler-baked copies.
+/// 48 bytes of fields, which is the 16-byte alignment above.
+/// `define_static_sharedbin` emits this many bytes for the compiler-baked
+/// copies, with `room` zero.
 pub const SHARED_BIN_BYTES: usize = 48;
+
+/// Set in `SharedBin::room` once the buffer has been made reachable from
+/// another process: no one may write into it again.
+const ROOM_FROZEN: usize = 1 << (usize::BITS - 1);
 
 const _: () = {
     assert!(size_of::<SharedBin>() == SHARED_BIN_BYTES);
@@ -72,6 +94,25 @@ pub const PROCBIN_BYTE_OFFSET_OFFSET: usize = 16;
 pub const PROCBIN_BIT_LEN_OFFSET: usize = 24;
 /// Where a `SharedBin` keeps the address of its bytes.
 pub const SHARED_BIN_BYTES_PTR_OFFSET: usize = std::mem::offset_of!(SharedBin, bytes_ptr);
+/// Where a `SharedBin` keeps its capacity and frozen flag. A compiler-baked
+/// static buffer holds 0 here.
+pub const SHARED_BIN_ROOM_OFFSET: usize = std::mem::offset_of!(SharedBin, room);
+
+impl SharedBin {
+    /// Bytes the buffer can hold ahead of its trailing NUL.
+    fn capacity(&self) -> usize {
+        self.room & !ROOM_FROZEN
+    }
+
+    /// Bytes an owner may still write after the written bytes. Zero once
+    /// frozen.
+    pub fn spare(&self) -> usize {
+        if self.room & ROOM_FROZEN != 0 {
+            return 0;
+        }
+        self.capacity().saturating_sub(self.bytes_len)
+    }
+}
 
 // Safety: refcount is atomic; the byte buffer is either an owned Box<[u8]>
 // (heap destructor reclaims) or a static `.rodata` payload (noop dtor).
@@ -89,9 +130,9 @@ unsafe impl Sync for SharedBin {}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn shared_bin_destructor_heap(p: *mut SharedBin) {
     let bin = unsafe { Box::from_raw(p) };
-    // The buffer was overallocated by 1 for the invisible trailing NUL.
-    // Free the full allocation.
-    let bytes = unsafe { Box::from_raw(slice_from_raw_parts_mut(bin.bytes_ptr as *mut u8, bin.bytes_len + 1)) };
+    // The buffer was allocated with its capacity and one more byte for the
+    // invisible trailing NUL. Free the full allocation.
+    let bytes = unsafe { Box::from_raw(slice_from_raw_parts_mut(bin.bytes_ptr as *mut u8, bin.capacity() + 1)) };
     drop(bytes);
     drop(bin);
 }
@@ -112,14 +153,19 @@ pub unsafe extern "C" fn shared_bin_destructor_noop(_p: *mut SharedBin) {}
 /// destructor installed. Bytes are leaked separately as a `Box<[u8]>` so
 /// the destructor can reconstruct both boxes independently.
 pub fn shared_bin_alloc(bytes: &[u8], bit_len: u64) -> *mut SharedBin {
-    // Overallocate one byte beyond bytes_len and zero it.
-    // The trailing NUL is invisible to the language (bytes_len/bit_len
-    // unchanged) and underwrites the c_string extern marshal contract.
+    shared_bin_alloc_with_room(bytes, bit_len, 0)
+}
+
+/// Allocate a heap-backed SharedBin holding `bytes` and `spare` more bytes of
+/// room for its owner to append into. Everything past the written bytes is
+/// zero, so the trailing NUL is in place. The trailing NUL is invisible to the
+/// language (bytes_len/bit_len unchanged) and underwrites the c_string extern
+/// marshal contract.
+pub fn shared_bin_alloc_with_room(bytes: &[u8], bit_len: u64, spare: usize) -> *mut SharedBin {
     let bytes_len = bytes.len();
-    let mut v: Vec<u8> = Vec::with_capacity(bytes_len + 1);
-    v.extend_from_slice(bytes);
-    v.push(0);
-    debug_assert_eq!(v.len(), bytes_len + 1);
+    let capacity = bytes_len + spare;
+    let mut v: Vec<u8> = vec![0; capacity + 1];
+    v[..bytes_len].copy_from_slice(bytes);
     let buf: Box<[u8]> = v.into_boxed_slice();
     let bytes_ptr: *const u8 = Box::leak(buf).as_ptr();
     let bin = Box::new(SharedBin {
@@ -128,8 +174,45 @@ pub fn shared_bin_alloc(bytes: &[u8], bit_len: u64) -> *mut SharedBin {
         bytes_ptr,
         bytes_len,
         destructor: shared_bin_destructor_heap,
+        room: capacity,
     });
     Box::into_raw(bin)
+}
+
+/// Forbid any further append into `p`'s buffer. Called on the owner's thread
+/// before a view of the buffer becomes reachable from another process. A
+/// buffer that is already frozen is left untouched, so a process that
+/// received it never writes the word the sender's other receivers read.
+///
+/// # Safety
+/// `p` must point at a live SharedBin, and the caller must be its owner or
+/// hold it frozen already.
+pub unsafe fn shared_bin_freeze(p: *mut SharedBin) {
+    let bin = unsafe { &mut *p };
+    if bin.room & ROOM_FROZEN == 0 {
+        bin.room |= ROOM_FROZEN;
+    }
+}
+
+/// Write `bytes` after `p`'s written bytes, widening them. The caller has
+/// checked `bytes.len() <= (*p).spare()`.
+///
+/// # Safety
+/// `p` must point at a live SharedBin the caller owns (see `SharedBin`).
+pub unsafe fn shared_bin_append(p: *mut SharedBin, bytes: &[u8]) {
+    let bin = unsafe { &mut *p };
+    assert!(bytes.len() <= bin.spare(), "append past the buffer's spare room");
+    unsafe {
+        copy_nonoverlapping(
+            bytes.as_ptr(),
+            (bin.bytes_ptr as *mut u8).add(bin.bytes_len),
+            bytes.len(),
+        );
+    }
+    bin.bytes_len += bytes.len();
+    bin.bit_len = bin.bytes_len as u64 * 8;
+    // The byte after the new end is still zero: the buffer is zeroed beyond
+    // its written bytes and only appends write there.
 }
 
 /// Increment the refcount on an already-owned SharedBin.
@@ -171,6 +254,13 @@ impl SharedBinHandle {
     pub fn from_bytes(bytes: &[u8], bit_len: u64) -> Self {
         let p = shared_bin_alloc(bytes, bit_len);
         Self(NonNull::new(p).expect("shared_bin_alloc returned null"))
+    }
+
+    /// Allocate a new heap-backed SharedBin holding `bytes` with `spare` bytes
+    /// of room after them, and wrap the initial refcount.
+    pub fn from_bytes_with_room(bytes: &[u8], spare: usize) -> Self {
+        let p = shared_bin_alloc_with_room(bytes, bytes.len() as u64 * 8, spare);
+        Self(NonNull::new(p).expect("shared_bin_alloc_with_room returned null"))
     }
 
     /// Retain `p` and wrap the new reference.

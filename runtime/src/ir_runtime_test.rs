@@ -588,6 +588,7 @@ fn alloc_procbin_from_static_preserves_anchor() {
         bytes_ptr: PAYLOAD.as_ptr(),
         bytes_len: PAYLOAD.len(),
         destructor: noop,
+        room: 0,
     };
     let sb_ptr = &mut sb as *mut SharedBin;
     with_process(|process| {
