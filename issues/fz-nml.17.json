@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-nml.16"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-nml.18"
+  ],
   "created": "2026-11-15T16:24:28Z",
   "description": "Proposal (approved 2026-11-15 with recommended decisions D1 direct bytes pointer, D2 OTP-style send = one BinRef per copied view, D3 rename ProcBin view -\u003e BinView and chain object BinRef): /Users/j5n/Workspace/fz-binref-split.html.\nGO/NO-GO: fz-nml.16's per-site table must show the plateau stubs are mostly views of few buffers (in-place appends, slices, cursor rests). If mostly fresh buffers, rewrite the page before building.\nWhat: heap kind BINREF (16 B: shared_ptr, mso_next; on the sweep chain; holds the one SharedBin retain). View BinView (24 B: tagged binref, bytes_ptr = SharedBin.bytes_ptr + first byte, bit_len; ordinary heap object, traced, no retain, no chain). Fresh buffer sites allocate BinRef+view together (OTP ERL_REFC_BITS_SIZE); slice / in-place \u003c\u003e / cursor rest = new view with the parent's binref. Cheney copies+forwards BinRef once (no children); sweep walks BinRefs only. deep_copy: one new BinRef per copied view (OTP copy.c:833-866). Gift WindowChain over BinRef as the binary MsoStub. Native byte read: 1 load (bytes_ptr) instead of 3 (prim.rs:796-798); bit_len at offset 16. referenced_byte_size / ends_at_buffer_end go through binref. Buffers never move in fz (shared_bin_append asserts spare; ROOM_FROZEN), so no VOLATILE/MUTABLE flags.\nRemoves: per-view atomic retain/release, per-view mso_next + chain push, per-view sweep visit, stored byte_offset, 8 B per view.\nAcceptance: predictions in page section 6 measured (stub visits per plateau minor = live buffers; retain pairs per buffer; loads per byte = 1); runtime tests for each creation site, collection survival of a view whose BinRef is old, send, gift; fixtures green on three paths; pins only fall (a rise is reported with mechanism and waits). Docs: .agent/docs/any-value.md, runtime-telemetry.md, guides memory. Coordinate with Make Distiller Fast (native layout reads) and fz-sc8.30 (emit_binary_bit_len offset) before landing.",
   "id": "fz-nml.17",
@@ -13,5 +15,5 @@
   "status": "in_progress",
   "title": "A view names its buffer through the heap's BinRef: one stub per buffer per heap, as in OTP",
   "type": "task",
-  "updated_at": "2026-11-15T16:29:29Z"
+  "updated_at": "2026-11-15T17:05:26Z"
 }

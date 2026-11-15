@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-nml.17"
+  ],
   "blocks": [],
   "created": "2026-11-15T17:05:26Z",
   "description": "Approved 2026-11-15, the F1 fold from /Users/j5n/Workspace/fz-binref-split.html. Today each heap keeps two off-heap chains, BinRefs and resource stubs. fz-sc8.210 (86874bce2) split them because a stub for every binary view made the destructor pre-pass (mso_unreached_closures) walk 2M+ binary stubs to find a few resources. After fz-nml.17 the binary chain holds only BinRefs, one per buffer per heap (distiller h32000: 32.5k BinRefs, not 2.1M views), so that cost is gone. OTP keeps one off-heap list, where NIF resources are magic binaries (erl_nif.c:3138, erl_bits.h:132-139). Change: one chain whose objects are BinRefs and resource stubs, told apart by tag. Sweep and the destructor pre-pass both walk it. Delete the second chain head, its push, its sweep and its relink code (heap/gc sweep_chains, heap/imp.rs). Prediction to measure before and after on the distiller h32000: pre-pass visits ~= BinRef count + resource count (about 2x today's resource-only walk), sweep visits unchanged, instructions and RSS flat within noise. If pre-pass visits exceed that, stop and report. Tests: a heap holding both kinds sweeps both and runs only the unreached resources' destructors. Docs: runtime-telemetry, guides/memory.html. Pins: report every move with its mechanism; a rise waits for authorization.",
