@@ -6,14 +6,15 @@
   "blocks": [
     "fz-t93.5"
   ],
+  "closed_at": "2026-11-15T01:22:59Z",
   "created": "2026-11-14T04:26:06Z",
   "description": "Recursive(f) is answered by the engine: DeriveRecursive(f) waits on its static callees' Recursive, and f is recursive when its group has more than one member or a self-wait. Deletes ReachKey::Static, its product arm, ProductAddress::program if left unused, and Static reach telemetry. Proven (develop f822f0f84): the Static reach set's only production reader is derive_recursive (jobs/keying.rs ~263-272), which reads only reach.contains(Static(f)); the bit is load-bearing (key collapse, world.rs ~961, ~2521). Probe first: Recursive identical on the corpus. Note fz-229: StaticCallees omits closure/dispatch/function-ref edges; Recursive today is defined over StaticCallees and this ticket keeps that definition. Spike reference: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/dist/reachfact/.\n\nREFUTED 2026-11-14 (scratchpad t93_3/findings.md; spikes spike_waitgroups.diff, spike_readgraph.diff; probe probe_test_h2.rs.txt + probe_fixtures/):\n- Wait-group membership: static corpus identical (1205 files, SCC oracle 0 mismatches over 22,399 functions), but a cycle REMOVED by redefinition stays Recursive=true (po/pe probe; base goes false), because a group forms only when two pending jobs meet and never shrinks. (The add-edge 611/612 failure in the first spike was a spike bug: StaticCallees was not read.) Same staleness confirmed independently on fz-afu.15 groups (scratchpad h1/report.md case 3: an off-cycle member stays in the group).\n- Read-graph formulation (DFS over DeriveRecursive jobs' recorded reads): both edit directions correct, corpus identical, but it is a hand-written reachability walk re-hosting what Reach(Static) already computes, costs a rescan per run (+0.32% distiller instructions, DeriveRecursive 285 -\u003e 844 runs), moves nine pins, and has an argued stale-false hole (no wake when an already-true node gains a new cycle).\n- Conclusion: Recursive(f) is a property of the static call graph, not of the scheduling groups; it stays a derived fact over StaticCallees (Reach Static). Not built.",
   "id": "fz-t93.3",
   "labels": [],
   "parent": "fz-t93",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A function is recursive exactly when its derivation's cycle group is cyclic",
   "type": "task",
-  "updated_at": "2026-11-15T01:22:58Z"
+  "updated_at": "2026-11-15T01:22:59Z"
 }
