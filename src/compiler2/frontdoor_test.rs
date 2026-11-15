@@ -2116,3 +2116,94 @@ fn compiler2_frontdoor_line_that_is_neither_head_nor_body_is_reported_at_that_li
     );
     assert!(error.msg.contains("without a newline"), "{}", error.msg);
 }
+
+#[test]
+fn compiler2_frontdoor_expression_start_set_is_what_the_prefix_parser_accepts() {
+    // `Tok::starts_expression` is the one answer to "may this token begin an
+    // expression", and a no-parens call argument reads it. If the prefix
+    // parser gained or lost a token without the predicate following, the
+    // predicate and the parser would disagree here.
+    let starters = [
+        "1",
+        "1.5",
+        "\"s\"",
+        ":a",
+        "true",
+        "false",
+        "nil",
+        "_",
+        "y",
+        "Foo",
+        "(1)",
+        "[1]",
+        "{1}",
+        "%{}",
+        "%Foo{}",
+        "<<1>>",
+        "-1",
+        "+1",
+        "not true",
+        "!true",
+        "fn -> 1 end",
+        "&y/1",
+        "^y",
+        "defstruct",
+    ];
+    let non_starters = [")", "]", "}", ",", "*", "/", "==", "|>", "when", "->", ">>", "|", "end"];
+    let tel = ConfiguredTelemetry::new();
+    for (snippet, starts) in starters
+        .iter()
+        .map(|s| (*s, true))
+        .chain(non_starters.iter().map(|s| (*s, false)))
+    {
+        let source = format!("x = {snippet}\n");
+        let mut sources = crate::source::SourceMap::default();
+        let version = sources.add_code(Some("expression-start.fz"), source.as_str());
+        let tokens = crate::parser::lexer::Lexer::with_source_version_and_name(&source, version, "expression-start.fz")
+            .tokenize(&tel)
+            .expect("snippet lexes");
+        assert_eq!(
+            tokens[2].tok.starts_expression(),
+            starts,
+            "starts_expression disagrees with the expected set for `{snippet}`"
+        );
+        let refused_as_prefix = match super::parse_quoted_program(&sources, version, &tel) {
+            Err(error) => error.to_string().contains("unsupported expression prefix"),
+            Ok(_) => false,
+        };
+        assert_eq!(
+            !refused_as_prefix, starts,
+            "the prefix parser and starts_expression disagree for `{snippet}`"
+        );
+    }
+}
+
+#[test]
+fn compiler2_frontdoor_no_parens_argument_may_start_with_any_expression_token() {
+    // A token that is also an infix operator starts an argument only where
+    // the spacing says so: `n % 4` and `n - 1` are binary, `f %Point{}` and
+    // `f -1` are calls.
+    let tel = ConfiguredTelemetry::new();
+    for source in [
+        "def main() do\n  for _ <- 1..3 do f(:x) end\nend\n",
+        "def main() do\n  f not true\nend\n",
+        "def main() do\n  f %Point{}\nend\n",
+        "def main() do\n  f ^x\nend\n",
+    ] {
+        let root = parse_quoted_program("no-parens-argument.fz", source, &tel).expect("program parses");
+        let body = macro_do_body(&root)
+            .trusted_ast_node()
+            .expect("body cursor")
+            .expect("body node");
+        assert!(
+            matches!(head_name(&body).as_str(), "for" | "f"),
+            "`{source}` parses to a single call"
+        );
+    }
+    let root = parse_quoted_program("modulus.fz", "def main() do\n  n % 4\nend\n", &tel).expect("modulus parses");
+    let body = macro_do_body(&root)
+        .trusted_ast_node()
+        .expect("body cursor")
+        .expect("body node");
+    assert_eq!(head_name(&body), "%", "`n % 4` stays the modulus");
+}
