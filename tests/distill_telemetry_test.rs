@@ -185,6 +185,10 @@ struct CompileSpend {
     requests: u64,
     /// `requests` of each `pull.drive.finished`, in drive order.
     drives: Vec<u64>,
+    /// Every derivation the World's job completions filed, over all jobs.
+    derivations: u64,
+    /// Every read those derivations handed the World, counted per derivation.
+    reads_handed: u64,
 }
 
 impl CompileSpend {
@@ -194,6 +198,7 @@ impl CompileSpend {
 }
 
 const REQUESTED_LINE: &str = r#"{"name":["fz","compiler2","pull","product","requested"]"#;
+const APPLIED_LINE: &str = r#"{"name":["fz","compiler2","work_graph","applied"]"#;
 const DRIVE_FINISHED_LINE: &str = r#"{"name":["fz","compiler2","pull","drive","finished"]"#;
 
 fn read_compile_spend(trace: &Path) -> CompileSpend {
@@ -201,6 +206,8 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
     let mut spend = CompileSpend {
         requests: 0,
         drives: Vec::new(),
+        derivations: 0,
+        reads_handed: 0,
     };
     for line in lines.lines() {
         let line = line.expect("telemetry line is UTF-8");
@@ -212,10 +219,18 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
                 .as_u64()
                 .expect("drive.finished carries requests");
             spend.drives.push(requests);
+        } else if line.starts_with(APPLIED_LINE) {
+            let event: serde_json::Value = serde_json::from_str(&line).expect("applied event is JSON");
+            let completion = &event["metadata"]["completion"];
+            spend.derivations += completion["derivations"].as_u64().unwrap_or(0);
+            spend.reads_handed += completion["reads_handed"].as_u64().unwrap_or(0);
         }
     }
     spend
 }
+
+const DERIVATIONS: u64 = 18_324;
+const READS_HANDED: u64 = 111_876;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
@@ -257,5 +272,12 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."
+    );
+    assert_eq!(
+        (spend.derivations, spend.reads_handed),
+        (DERIVATIONS, READS_HANDED),
+        "(derivations, reads handed) the World's job completions took for the distiller's compile \
+         moved. A fall is lowered in this pin; a rise is investigated first, because each read \
+         handed to the World is paid for per derivation."
     );
 }

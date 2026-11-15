@@ -49,18 +49,40 @@ fn consuming_a_set_yields_insertion_order_like_iter() {
     assert_eq!(owned, borrowed, "owned and borrowed iteration agree");
 }
 
-/// Membership needs only equality: the set is its order vector, so a member
-/// type that cannot be hashed is still a member type.
-#[derive(Debug, PartialEq, Eq)]
-struct Unhashable(&'static str);
-
+/// Past the point where the set indexes its members, the answers it gives are
+/// the order vector's: `insert` reports whether the member was new, `contains`
+/// and `remove` see exactly the members the iteration yields, and iteration
+/// stays in insertion order whatever was removed or re-inserted.
 #[test]
-fn members_need_equality_only() {
+fn an_indexed_set_agrees_with_its_order() {
     let mut set = OrderedSet::default();
+    let mut order: Vec<u32> = Vec::new();
+    for member in (0..40).map(|n| (n * 7) % 31) {
+        assert_eq!(
+            set.insert(member),
+            !order.contains(&member),
+            "insert reports novelty of {member}"
+        );
+        if !order.contains(&member) {
+            order.push(member);
+        }
+    }
+    for member in [7, 0, 30, 99] {
+        set.remove(&member);
+        order.retain(|existing| *existing != member);
+        assert!(!set.contains(&member), "{member} is gone after removal");
+    }
+    assert!(set.insert(7), "a removed member is new again");
+    order.push(7);
 
-    assert!(set.insert(Unhashable("a")), "a new member is reported as inserted");
-    assert!(set.contains(&Unhashable("a")), "membership is by equality");
-    assert!(!set.contains(&Unhashable("b")));
+    for member in 0..40 {
+        assert_eq!(set.contains(&member), order.contains(&member), "membership of {member}");
+    }
+    assert_eq!(
+        set.iter().copied().collect::<Vec<_>>(),
+        order,
+        "iteration keeps insertion order"
+    );
 }
 
 /// Inserting a member that is already present changes nothing and says so, so

@@ -23,37 +23,69 @@
 //! stable. Keeping the order the producer already established costs nothing and
 //! is correct by construction.
 
-/// The set is its order vector. Membership is a linear scan of that order: the
-/// sets compiler2 keeps are small, so scanning costs less than hashing and
-/// keeping a second copy of every member.
+use std::hash::Hash;
+
+/// The set is its order vector. Membership is a linear scan of that order
+/// until the set outgrows `INDEX_THRESHOLD`; from then on a hash index answers
+/// it, because a scan costs in proportion to the members and hashing does not.
+/// The index never orders anything: iteration is always the order vector.
 #[derive(Debug, Clone)]
 pub struct OrderedSet<T> {
     order: Vec<T>,
+    index: Option<crate::fast_hash::HashSet<T>>,
 }
+
+const INDEX_THRESHOLD: usize = 12;
 
 impl<T> Default for OrderedSet<T> {
     fn default() -> Self {
-        Self { order: Vec::new() }
+        Self {
+            order: Vec::new(),
+            index: None,
+        }
     }
 }
 
-impl<T: Eq> OrderedSet<T> {
+impl<T: Eq + Hash + Clone> OrderedSet<T> {
     pub fn insert(&mut self, value: T) -> bool {
         if self.contains(&value) {
             return false;
         }
+        self.index_new_member(&value);
         self.order.push(value);
         true
     }
 
+    fn index_new_member(&mut self, value: &T) {
+        match &mut self.index {
+            Some(index) => {
+                index.insert(value.clone());
+            }
+            None if self.order.len() >= INDEX_THRESHOLD => {
+                let mut index: crate::fast_hash::HashSet<T> = self.order.iter().cloned().collect();
+                index.insert(value.clone());
+                self.index = Some(index);
+            }
+            None => {}
+        }
+    }
+
     pub fn remove(&mut self, value: &T) {
-        if let Some(index) = self.order.iter().position(|existing| existing == value) {
-            self.order.remove(index);
+        if let Some(index) = &mut self.index
+            && !index.remove(value)
+        {
+            return;
+        }
+        if let Some(position) = self.order.iter().position(|existing| existing == value) {
+            self.order.remove(position);
         }
     }
 
     pub fn contains(&self, value: &T) -> bool {
-        self.order.contains(value)
+        match &self.index {
+            Some(index) => index.contains(value),
+            None => self.order.contains(value),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -65,7 +97,7 @@ impl<T: Eq> OrderedSet<T> {
     }
 }
 
-impl<T: Eq> FromIterator<T> for OrderedSet<T> {
+impl<T: Eq + Hash + Clone> FromIterator<T> for OrderedSet<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let mut set = Self::default();
         for value in iter {
@@ -75,7 +107,7 @@ impl<T: Eq> FromIterator<T> for OrderedSet<T> {
     }
 }
 
-impl<T: Eq> Extend<T> for OrderedSet<T> {
+impl<T: Eq + Hash + Clone> Extend<T> for OrderedSet<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         for value in iter {
             self.insert(value);

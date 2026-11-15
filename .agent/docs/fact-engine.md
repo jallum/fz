@@ -328,7 +328,7 @@ A job run may conclude more than one derivation. A `Derivation` is
 `(Job, DerivationKey)`: the job that ran, and which answer of that run this
 is. `DerivationKey::Job` is the run's own answer — the one its standing waits
 leave unfinished. Other keys (`Function(FunctionId)`, and, reserved for future
-publishers of the same shape, `Activation`/`Executable`/`InputSlot`) name an
+publishers of the same shape, `Activation`/`Executable`) name an
 answer the run reached on the way to its own conclusion. Reads, claims,
 dirtiness, rebase flag, and finality are all per derivation, not per job: two
 derivations of the same run can be clean and dirty at once. The agenda and
@@ -364,16 +364,19 @@ walk's re-derivation of a shorter function list (a definition dropped by a
 rebase upstream) retracts exactly the `Function(f)` derivations it no longer
 reaches, the same way an ordinary job's shrinking output list retracts a fact.
 
-`DeriveRuntimeDemand` is the other. When its run concludes, the demand it
-sends each callee (`RuntimeDemandInput(callee)`, `DerivationKey::Executable`)
-and the sources it records for each input slot (`IncomingInputSlot`,
-`DerivationKey::InputSlot`) are answers of their own
-(`runtime_demand_contribution_derivations`). A send stands on the reads the run
-names for it (`JobEffects::send_reads`), or on everything the run read when it
-names none, so a caller's demand on a callee does not rest on that callee's
-reply, and an acyclic program's demand settles as it is published instead of
-waiting for the drain to break a read cycle. While the run waits, the sends and
-slots stay with the job's own derivation and extend like any other claim.
+`DeriveRuntimeDemand` is the other. When its run concludes, the sources it
+records for each input slot (`IncomingInputSlot`) and the demand it sends a
+callee that names no reads of its own (`RuntimeDemandInput(callee)`) stand on
+everything the run read, which is what the job's own derivation does, so they
+are facts of that derivation. A send that names the reads it stands on
+(`JobEffects::send_reads`) is a `DerivationKey::Executable` answer of its own
+(`split_runtime_demand_sends`), so a caller's demand on a callee does not rest
+on that callee's reply, and an acyclic program's demand settles as it is
+published instead of waiting for the drain to break a read cycle. While the run
+waits, the sends and slots stay with the job's own derivation and extend like
+any other claim. Each `work_graph.applied` completion event carries
+`derivations` and `reads_handed` (reads counted per derivation), the volume the
+World takes per completion.
 
 Source-publisher jobs follow this rule with typed `SourceOwner` keys; exact
 text provenance stays in `SourceVersion` spans rather than becoming a second
@@ -618,7 +621,10 @@ binary heap that pops the smallest typed key, and among equal keys the newest
 arrival. Dependents append movements while the wave drains, and each pop costs
 comparisons in the log of the queue length.
 
-`OrderedSet` still preserves source emission and membership, but insertion
+`OrderedSet` keeps its members in an order vector and answers membership by a
+linear scan until it holds more than 12 members, then by a hash index (members
+are `Hash + Clone`); the index never orders anything. It still preserves source
+emission and membership, but insertion
 order is not semantic identity. `DependencyIndex` orders subscriber, waiter,
 reader, and unresolved-job waves with the World's typed job relation.
 `ContributionMap` likewise orders every touched/next key wave before

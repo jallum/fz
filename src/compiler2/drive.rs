@@ -657,7 +657,6 @@ pub enum DerivationKey {
     Function(FunctionId),
     Activation(ActivationKey),
     Executable(ExecutableKey),
-    InputSlot(super::incoming_inputs::InputSlot),
 }
 
 /// One answer a job gave. Reads, claims, cleanliness and finality are all
@@ -706,7 +705,6 @@ impl SemanticOrd<Types> for DerivationKey {
                 (DerivationKey::Function(left), DerivationKey::Function(right)) => left.cmp(right),
                 (DerivationKey::Activation(left), DerivationKey::Activation(right)) => left.semantic_cmp(right, types),
                 (DerivationKey::Executable(left), DerivationKey::Executable(right)) => left.semantic_cmp(right, types),
-                (DerivationKey::InputSlot(left), DerivationKey::InputSlot(right)) => left.semantic_cmp(right, types),
                 _ => std::cmp::Ordering::Equal,
             })
     }
@@ -718,7 +716,6 @@ fn derivation_key_rank(key: &DerivationKey) -> u8 {
         DerivationKey::Function(_) => 1,
         DerivationKey::Activation(_) => 2,
         DerivationKey::Executable(_) => 3,
-        DerivationKey::InputSlot(_) => 4,
     }
 }
 
