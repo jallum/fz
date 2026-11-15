@@ -1873,8 +1873,8 @@ fn live_executable_order_distinguishes_noninjective_display_pairs() {
 fn add1_world(_tel: &ConfiguredTelemetry) -> (World, RootId) {
     let mut world = World::new();
     world.submit_code(
-        Some("fixtures2/behavior/add1.fz".to_string()),
-        include_str!("../../fixtures2/behavior/add1.fz").to_string(),
+        Some("fixtures/00382_add1_call_fuse.fz".to_string()),
+        include_str!("../../fixtures/00382_add1_call_fuse.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     (world, root)

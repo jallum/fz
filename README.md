@@ -498,11 +498,11 @@ The rule in this repo: **do not guess.** Make the compiler leave
 breadcrumbs.
 
 ```sh
-fz2 run --dump clif=/tmp/quicksort.clif fixtures2/behavior/quicksort.fz
-fz2 run --dump types=/tmp/quicksort.types fixtures2/behavior/quicksort.fz
-fz2 run --dump activations=/tmp/quicksort.activations fixtures2/behavior/quicksort.fz
-fz2 run --dump backend=/tmp/quicksort.backend fixtures2/behavior/quicksort.fz
-fz2 run --dump native=/tmp/quicksort.native fixtures2/behavior/quicksort.fz
+fz2 run --dump clif=/tmp/quicksort.clif fixtures/01577_quicksort.fz
+fz2 run --dump types=/tmp/quicksort.types fixtures/01577_quicksort.fz
+fz2 run --dump activations=/tmp/quicksort.activations fixtures/01577_quicksort.fz
+fz2 run --dump backend=/tmp/quicksort.backend fixtures/01577_quicksort.fz
+fz2 run --dump native=/tmp/quicksort.native fixtures/01577_quicksort.fz
 ```
 
 Compiler2 dumps are file sinks installed on a `run`, `interp`, or `build`
@@ -536,7 +536,7 @@ That gives you a `fz2` binary at `target/release/fz2` — put it on your
 Run a file with the JIT:
 
 ```sh
-fz2 run fixtures2/behavior/quicksort.fz
+fz2 run fixtures/01577_quicksort.fz
 ```
 
 fz2's options go before the source path. Every token after the path belongs to
@@ -557,14 +557,14 @@ fz2 build script.fz -o /tmp/script
 Build a native executable:
 
 ```sh
-fz2 build fixtures2/behavior/quicksort.fz -o /tmp/qsort
+fz2 build fixtures/01577_quicksort.fz -o /tmp/qsort
 /tmp/qsort
 ```
 
 Run through the interpreter:
 
 ```sh
-fz2 interp fixtures2/behavior/quicksort.fz
+fz2 interp fixtures/01577_quicksort.fz
 ```
 
 Start the REPL:

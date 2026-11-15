@@ -490,8 +490,8 @@ fn compiler2_contract_harness_keeps_code_ingest_isolated_from_production_compile
         },
         ContractCase {
             name: "fixture_add1",
-            source_name: "fixtures2/behavior/add1.fz",
-            source_text: include_str!("../../fixtures2/behavior/add1.fz"),
+            source_name: "fixtures/00382_add1_call_fuse.fz",
+            source_text: include_str!("../../fixtures/00382_add1_call_fuse.fz"),
         },
     ] {
         run_contract(case);
@@ -838,7 +838,7 @@ fn compiler2_compile_root_aot_consumes_native_program() {
         (
             "quicksort",
             "fixtures/quicksort_compiler2_aot.fz",
-            include_str!("../../fixtures2/behavior/quicksort.fz").to_string(),
+            include_str!("../../fixtures/01577_quicksort.fz").to_string(),
             "quicksort_compiler2",
         ),
         (
@@ -1741,7 +1741,7 @@ fn drive_and_count_expanded_against_scoped_sources(name: &str, source: &str) -> 
 
 #[test]
 fn quicksort_compiles_through_definition_macros() {
-    let source = include_str!("../../fixtures2/behavior/quicksort.fz");
+    let source = include_str!("../../fixtures/01577_quicksort.fz");
     let (expanded, scoped) = drive_and_count_expanded_against_scoped_sources("quicksort_def_surface.fz", source);
 
     assert!(expanded > 0, "the def surface must expand reached quicksort functions");

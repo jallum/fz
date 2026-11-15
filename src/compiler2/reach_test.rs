@@ -89,8 +89,8 @@ fn a_callee_that_grows_an_edge_reopens_the_reach_above_it_and_closes_a_cycle() {
 fn a_closure_threaded_through_a_recursion_is_a_cycle_only_when_closure_calls_are_followed() {
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/closure_threaded_recursion.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/closure_threaded_recursion.fz").to_string(),
+        name: Some("fixtures/01434_closure_threaded_recursion.fz".to_string()),
+        text: include_str!("../../fixtures/01434_closure_threaded_recursion.fz").to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,

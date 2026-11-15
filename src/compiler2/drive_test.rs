@@ -112,7 +112,7 @@ fn compiler2_pinned_equality_does_not_define_or_merge_value_origins() {
     let mut compiler = Compiler2::new(tel);
     let source = compiler.submit_code(CodeSubmission {
         name: Some("equality_widening_and_identity.fz".into()),
-        text: include_str!("../../fixtures2/behavior/equality_widening_and_identity.fz").into(),
+        text: include_str!("../../fixtures/01465_equality_widening_and_identity.fz").into(),
     });
     assert_resolved(compiler.drive(), "source indexing");
     compiler.demand(Job::ScopeCode(source));
@@ -438,7 +438,7 @@ fn assert_container_list_publication(function: &str, expected: &str) {
         name: Some("container_list_publication.fz".into()),
         text: format!(
             "{}\ndef publication_test(), do: if {function}() == {expected}, do: 42, else: 0\n",
-            include_str!("../../fixtures2/behavior/list_ownership_edges.fz"),
+            include_str!("../../fixtures/01528_list_ownership_edges.fz"),
         ),
     });
     let root = compiler.submit_root(RootSubmission {
@@ -461,7 +461,7 @@ fn compiler2_forwarded_constructor_descendants_share_at_each_ownership_boundary(
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("forwarded_ownership.fz".into()),
-        text: include_str!("../../fixtures2/behavior/list_ownership_edges.fz").into(),
+        text: include_str!("../../fixtures/01528_list_ownership_edges.fz").into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1020,7 +1020,7 @@ fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("receive_outcome_identity.fz".into()),
-        text: include_str!("../../fixtures2/behavior/receive_outcome_identity.fz").into(),
+        text: include_str!("../../fixtures/01592_receive_outcome_identity.fz").into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -5972,8 +5972,8 @@ fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering(
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/multi_relay.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
+        name: Some("fixtures/01556_multi_relay.fz".to_string()),
+        text: include_str!("../../fixtures/01556_multi_relay.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -6690,8 +6690,8 @@ fn compiler2_native_program_keeps_grounded_predicates_distinct_without_boxed_cap
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/grounded_predicate_captures.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/grounded_predicate_captures.fz").to_string(),
+        name: Some("fixtures/01481_grounded_predicate_captures.fz".to_string()),
+        text: include_str!("../../fixtures/01481_grounded_predicate_captures.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -6807,7 +6807,7 @@ fn compiler2_native_program_shares_runtime_selected_predicate_invocation_only() 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("boxed_predicate_cps_sharing.fz".into()),
-        text: include_str!("../../fixtures2/behavior/boxed_predicate_cps_sharing.fz").into(),
+        text: include_str!("../../fixtures/01418_boxed_predicate_cps_sharing.fz").into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -6964,7 +6964,7 @@ fn measure_native_cps_sharing_corpus() {
         removed_native_bytes: usize,
     }
 
-    let mut paths = ["fixtures2", "fixtures2/behavior"]
+    let mut paths = ["fixtures2", "fixtures"]
         .into_iter()
         .flat_map(|directory| {
             std::fs::read_dir(directory)
@@ -7243,8 +7243,8 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/opaque_fn_value_join.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
+        name: Some("fixtures/00281_opaque_reducer_closure.fz".to_string()),
+        text: include_str!("../../fixtures/00281_opaque_reducer_closure.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7296,8 +7296,8 @@ fn compiler2_opaque_callable_each_uses_a_boxed_return_boundary() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/opaque_fn_each_discarded_return.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/opaque_fn_each_discarded_return.fz").to_string(),
+        name: Some("fixtures/01568_opaque_fn_each_discarded_return.fz".to_string()),
+        text: include_str!("../../fixtures/01568_opaque_fn_each_discarded_return.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7379,8 +7379,8 @@ fn compiler2_all_divergent_public_callable_is_rejected_at_compile_time() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/opaque_fn_all_divergent.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/opaque_fn_all_divergent.fz").to_string(),
+        name: Some("fixtures/01567_opaque_fn_all_divergent.fz".to_string()),
+        text: include_str!("../../fixtures/01567_opaque_fn_all_divergent.fz").to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7408,8 +7408,8 @@ fn compiler2_mixed_public_callable_adapts_only_its_returning_member() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/opaque_fn_mixed_return.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/opaque_fn_mixed_return.fz").to_string(),
+        name: Some("fixtures/01569_opaque_fn_mixed_return.fz".to_string()),
+        text: include_str!("../../fixtures/01569_opaque_fn_mixed_return.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7491,8 +7491,8 @@ fn compiler2_native_program_marks_settled_singleton_closure_flows_with_exact_tar
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/closure_typed_captures.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/closure_typed_captures.fz").to_string(),
+        name: Some("fixtures/01437_closure_typed_captures.fz".to_string()),
+        text: include_str!("../../fixtures/01437_closure_typed_captures.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7544,8 +7544,8 @@ fn compiler2_native_codegen_keeps_callable_boundary_surface_authoritative_for_ra
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/fz_f98_range_reduce_scalar.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz").to_string(),
+        name: Some("fixtures/01480_fz_f98_range_reduce_scalar.fz".to_string()),
+        text: include_str!("../../fixtures/01480_fz_f98_range_reduce_scalar.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7586,8 +7586,8 @@ fn compiler2_interp_runs_range_reduce_scalar_bridge_from_backend_artifacts() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/fz_f98_range_reduce_scalar.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz").to_string(),
+        name: Some("fixtures/01480_fz_f98_range_reduce_scalar.fz".to_string()),
+        text: include_str!("../../fixtures/01480_fz_f98_range_reduce_scalar.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7621,8 +7621,8 @@ fn compiler2_jit_runs_range_reduce_scalar_bridge_from_native_artifacts() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/fz_f98_range_reduce_scalar.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz").to_string(),
+        name: Some("fixtures/01480_fz_f98_range_reduce_scalar.fz".to_string()),
+        text: include_str!("../../fixtures/01480_fz_f98_range_reduce_scalar.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7651,8 +7651,8 @@ fn compiler2_interp_runs_range_reduce2_first_acc_bridge_from_backend_artifacts()
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/fz_f98_range_reduce2.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce2.fz").to_string(),
+        name: Some("fixtures/01479_fz_f98_range_reduce2.fz".to_string()),
+        text: include_str!("../../fixtures/01479_fz_f98_range_reduce2.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7684,8 +7684,8 @@ fn compiler2_jit_runs_range_reduce2_first_acc_bridge_from_native_artifacts() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/fz_f98_range_reduce2.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce2.fz").to_string(),
+        name: Some("fixtures/01479_fz_f98_range_reduce2.fz".to_string()),
+        text: include_str!("../../fixtures/01479_fz_f98_range_reduce2.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -8478,8 +8478,8 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/lambda_sugars.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/lambda_sugars.fz").to_string(),
+        name: Some("fixtures/01526_lambda_sugars.fz".to_string()),
+        text: include_str!("../../fixtures/01526_lambda_sugars.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -8758,8 +8758,8 @@ fn compiler2_native_program_jit_runs_map_fixture_through_compiler2_codegen() {
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/map_three_path_parity.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/map_three_path_parity.fz").to_string(),
+        name: Some("fixtures/01545_map_three_path_parity.fz".to_string()),
+        text: include_str!("../../fixtures/01545_map_three_path_parity.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -8794,7 +8794,7 @@ fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/tail_recursion.fz".to_string()),
+        name: Some("fixtures/01627_tail_recursion.fz".to_string()),
         text: include_str!("../../fixtures2/00018_tail_recursion.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
@@ -8840,7 +8840,7 @@ fn compiler2_cont_threaded_recursion_closes_with_a_back_edge() {
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/tail_recursion.fz".to_string()),
+        name: Some("fixtures/01627_tail_recursion.fz".to_string()),
         text: include_str!("../../fixtures2/00018_tail_recursion.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
@@ -9348,8 +9348,8 @@ fn compiler2_jit_grounds_curried_closure_call_returns() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/curried_add.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/curried_add.fz").to_string(),
+        name: Some("fixtures/01442_curried_add.fz".to_string()),
+        text: include_str!("../../fixtures/01442_curried_add.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -9385,8 +9385,8 @@ fn compiler2_native_program_grounds_exact_carrier_closure_call_returns() {
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/curried_add.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/curried_add.fz").to_string(),
+        name: Some("fixtures/01442_curried_add.fz".to_string()),
+        text: include_str!("../../fixtures/01442_curried_add.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -9726,8 +9726,8 @@ fn compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts(
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/receive_selective_refs.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/receive_selective_refs.fz").to_string(),
+        name: Some("fixtures/00247_selective_refs_stress.fz".to_string()),
+        text: include_str!("../../fixtures/00247_selective_refs_stress.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -9906,8 +9906,8 @@ fn compiler2_native_program_routes_post_receive_resumes_through_delivered_contin
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/receive_shared_tuple_arity.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/receive_shared_tuple_arity.fz").to_string(),
+        name: Some("fixtures/01593_receive_shared_tuple_arity.fz".to_string()),
+        text: include_str!("../../fixtures/01593_receive_shared_tuple_arity.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -10118,8 +10118,8 @@ fn compiler2_native_multi_relay_delivers_resume_values_through_continuation_abi(
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/multi_relay.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
+        name: Some("fixtures/01556_multi_relay.fz".to_string()),
+        text: include_str!("../../fixtures/01556_multi_relay.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -10141,8 +10141,8 @@ fn compiler2_native_lowering_consumes_return_payload_flow_through_return_lanes()
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/multi_relay.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
+        name: Some("fixtures/01556_multi_relay.fz".to_string()),
+        text: include_str!("../../fixtures/01556_multi_relay.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -10576,8 +10576,8 @@ fn compiler2_unused_construction_call_binding_keeps_the_root_runnable() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/unused_range_binding.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/unused_range_binding.fz").to_string(),
+        name: Some("fixtures/01638_unused_range_binding.fz".to_string()),
+        text: include_str!("../../fixtures/01638_unused_range_binding.fz").to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -10613,8 +10613,8 @@ fn compiler2_dead_closure_capture_does_not_starve_the_empty_list_path() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/dead_closure_capture_empty_list.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/dead_closure_capture_empty_list.fz").to_string(),
+        name: Some("fixtures/01443_dead_closure_capture_empty_list.fz".to_string()),
+        text: include_str!("../../fixtures/01443_dead_closure_capture_empty_list.fz").to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -10646,8 +10646,8 @@ fn compiler2_rendered_closure_reports_its_arity_not_its_capture_count() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/closure_render_arity.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/closure_render_arity.fz").to_string(),
+        name: Some("fixtures/01433_closure_render_arity.fz".to_string()),
+        text: include_str!("../../fixtures/01433_closure_render_arity.fz").to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -10682,8 +10682,8 @@ fn compiler2_native_program_keeps_published_closure_calls_indirect() {
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/opaque_fn_each_discarded_return.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/opaque_fn_each_discarded_return.fz").to_string(),
+        name: Some("fixtures/01568_opaque_fn_each_discarded_return.fz".to_string()),
+        text: include_str!("../../fixtures/01568_opaque_fn_each_discarded_return.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -10845,8 +10845,8 @@ fn compiler2_variable_callee_is_absence_not_an_earned_any() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/enum_hof_three_distinct_closures.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/enum_hof_three_distinct_closures.fz").to_string(),
+        name: Some("fixtures/01455_enum_hof_three_distinct_closures.fz".to_string()),
+        text: include_str!("../../fixtures/01455_enum_hof_three_distinct_closures.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -10863,7 +10863,7 @@ fn compiler2_variable_callee_is_absence_not_an_earned_any() {
     compiler
         .run_root_interp(root_id)
         .expect("three distinct closures should run in the interpreter");
-    let expected = include_str!("../../fixtures2/behavior/enum_hof_three_distinct_closures.expected.txt")
+    let expected = include_str!("../../fixtures/01455_enum_hof_three_distinct_closures.expected.txt")
         .lines()
         .collect::<Vec<_>>();
     assert_eq!(dbg.lines(), expected.as_slice());
@@ -11198,8 +11198,8 @@ fn compiler2_native_codegen_dispatches_typed_capture_closure_directly_without_a_
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/closure_typed_captures.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/closure_typed_captures.fz").to_string(),
+        name: Some("fixtures/01437_closure_typed_captures.fz".to_string()),
+        text: include_str!("../../fixtures/01437_closure_typed_captures.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -11747,16 +11747,16 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
         "fixtures/00183_enum_take_list_range.fz",
         "fixtures/00420_enum_take_drop_split.fz",
         "fixtures/00568_enum_count_member_reduce.fz",
-        "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
-        "fixtures2/behavior/range_enumerable.fz",
-        "fixtures2/behavior/closure_identity_tag_split.fz",
-        "fixtures2/behavior/closure_identity_captures.fz",
+        "fixtures/01458_enum_reduce_halt_arm_order.fz",
+        "fixtures/01581_range_enumerable.fz",
+        "fixtures/01432_closure_identity_tag_split.fz",
+        "fixtures/01431_closure_identity_captures.fz",
         "fixtures/00569_enum_map_family.fz",
         "fixtures/00231_joined_fn_refs_enum_reduce.fz",
         "fixtures/00277_enum_tier0_fixture.fz",
         "fixtures/00281_opaque_reducer_closure.fz",
-        "fixtures2/behavior/opaque_fn_value_join.fz",
-        "fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz",
+        "fixtures/00281_opaque_reducer_closure.fz",
+        "fixtures/01599_repr_seam_enum_count_after_reduce2.fz",
     ] {
         for finding in indistinguishable_dispatch_arms(fixture) {
             let (site, group) = finding
@@ -11845,7 +11845,7 @@ const INDISTINGUISHABLE_ARM_POPULATION: &[(&str, &str, usize)] = &[];
 /// `compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key` pins that.
 #[test]
 fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
-    let fixture = "fixtures2/behavior/same_lambda_two_capture_types_dynamic.fz";
+    let fixture = "fixtures/01608_same_lambda_two_capture_types_dynamic.fz";
     let (compiler, program) = driven_backend_program(fixture);
     let types = compiler.world().types();
     let mut separated = Vec::new();
@@ -11910,7 +11910,7 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
 /// and the runtime test disappears. Static knowledge flows by KEY.
 #[test]
 fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
-    let fixture = "fixtures2/behavior/same_lambda_two_capture_types.fz";
+    let fixture = "fixtures/01607_same_lambda_two_capture_types.fz";
     let (compiler, program) = driven_backend_program(fixture);
     let plans = artifact_plans(compiler.world(), &program);
     let forwarded_callsite_plans = plans.iter().collect::<Vec<_>>();
@@ -12000,7 +12000,7 @@ fn driven_backend_program(fixture: &str) -> (Compiler2<ConfiguredTelemetry>, Rc<
 fn compiler2_source_struct_patterns_publish_typed_tests_and_named_field_evidence() {
     use crate::dispatch_matrix::{ProjectionKind, SubjectSource};
 
-    let (compiler, program) = driven_backend_program("fixtures2/behavior/source_struct_pattern_fields.fz");
+    let (compiler, program) = driven_backend_program("fixtures/01614_source_struct_pattern_fields.fz");
     let plans = artifact_plans(compiler.world(), &program);
     let mut projected = 0;
     let mut bound = 0;
@@ -12956,26 +12956,26 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 /// blind-escape walk under every seed -- the ratchet that would catch a
 /// regression of that cure.
 const ARM_ORDER_CENSUS: [&str; 21] = [
-    "fixtures2/behavior/dispatch_seat_element_blind.fz",
-    "fixtures2/behavior/dispatch_list_head_separates.fz",
+    "fixtures/01452_dispatch_seat_element_blind.fz",
+    "fixtures/01450_dispatch_list_head_separates.fz",
     "fixtures/00231_joined_fn_refs_enum_reduce.fz",
     "fixtures/00568_enum_count_member_reduce.fz",
     "fixtures/00277_enum_tier0_fixture.fz",
     "fixtures/00281_opaque_reducer_closure.fz",
     "fixtures/00569_enum_map_family.fz",
     "fixtures/00571_enum_predicate_search.fz",
-    "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
+    "fixtures/01458_enum_reduce_halt_arm_order.fz",
     "fixtures/00567_fz_f98_range_map_converges.fz",
-    "fixtures2/behavior/opaque_fn_value_join.fz",
-    "fixtures2/behavior/range_enumerable.fz",
-    "fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz",
-    "fixtures2/behavior/closure_identity_tag_split.fz",
-    "fixtures2/behavior/closure_identity_captures.fz",
+    "fixtures/00281_opaque_reducer_closure.fz",
+    "fixtures/01581_range_enumerable.fz",
+    "fixtures/01599_repr_seam_enum_count_after_reduce2.fz",
+    "fixtures/01432_closure_identity_tag_split.fz",
+    "fixtures/01431_closure_identity_captures.fz",
     "fixtures/00276_enum_to_list_and_map.fz",
-    "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
-    "fixtures2/behavior/list_literal_trailing_call.fz",
-    "fixtures2/behavior/mailbox_closure_enum_hofs.fz",
-    "fixtures2/behavior/map_enumerable.fz",
+    "fixtures/01455_enum_hof_three_distinct_closures.fz",
+    "fixtures/01527_list_literal_trailing_call.fz",
+    "fixtures/01534_mailbox_closure_enum_hofs.fz",
+    "fixtures/01541_map_enumerable.fz",
     "fixtures/00420_enum_take_drop_split.fz",
 ];
 
@@ -13007,15 +13007,15 @@ const WRAPPER_MEMBER_CENSUS: [&str; 18] = [
     "fixtures/00418_enum_count_range.fz",
     "fixtures/00419_enum_take_mixed.fz",
     "fixtures/00420_enum_take_drop_split.fz",
-    "fixtures2/behavior/dispatch_seat_element_blind.fz",
-    "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
+    "fixtures/01452_dispatch_seat_element_blind.fz",
+    "fixtures/01455_enum_hof_three_distinct_closures.fz",
     "fixtures/00569_enum_map_family.fz",
     "fixtures/00571_enum_predicate_search.fz",
     "fixtures/00567_fz_f98_range_map_converges.fz",
-    "fixtures2/behavior/list_literal_trailing_call.fz",
-    "fixtures2/behavior/map_enumerable.fz",
-    "fixtures2/behavior/opaque_fn_mixed_return.fz",
-    "fixtures2/behavior/unused_range_binding.fz",
+    "fixtures/01527_list_literal_trailing_call.fz",
+    "fixtures/01541_map_enumerable.fz",
+    "fixtures/01569_opaque_fn_mixed_return.fz",
+    "fixtures/01638_unused_range_binding.fz",
 ];
 
 /// The arrival-order settings the in-process gate drives.
@@ -13085,7 +13085,7 @@ const WRAPPER_MEMBER_STRESSES: [&str; 2] = ["wrappers:1", "wrappers:6"];
 /// harness, where an abort could not take the suite down with it:
 ///
 ///     FZ_STRESS_PERMUTE_DISPATCH=arms:1 \
-///       cargo run --bin fz2 -- run fixtures2/behavior/dispatch_seat_element_blind.fz
+///       cargo run --bin fz2 -- run fixtures/01452_dispatch_seat_element_blind.fz
 ///
 /// The full recipe -- every fixture, every door, N seeds -- is in
 /// `.agent/docs/dispatch-matrix.md`.
@@ -13321,7 +13321,7 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 12] = [
     ("fixtures/00418_enum_count_range.fz", "", 9, 0),
     ("fixtures/00419_enum_take_mixed.fz", "", 54, 0),
     ("fixtures/00420_enum_take_drop_split.fz", "", 225, 0),
-    ("fixtures2/behavior/unused_range_binding.fz", "", 9, 0),
+    ("fixtures/01638_unused_range_binding.fz", "", 9, 0),
     // fz-kdt.187: the four permuted arrivals `00277_enum_tier0_fixture` used to
     // hold, re-homed onto the fixture that still selects among members.
     ("fixtures/00420_enum_take_drop_split.fz", "arms:6", 225, 0),
@@ -13337,7 +13337,7 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 12] = [
     // what holds that sentence to the tree.
     // fz-sc8.44: 4 -> 2 observations. The trimmed plans no longer ask the
     // type questions the activation's input types already answer.
-    ("fixtures2/behavior/dispatch_list_head_separates.fz", "", 2, 0),
+    ("fixtures/01450_dispatch_list_head_separates.fz", "", 2, 0),
 ];
 
 /// fz-kdt.141 / fz-kdt.136: the wrapper half of the stress has teeth.
@@ -13574,20 +13574,20 @@ const ARM_ORDER_ARTIFACT_CENSUS: [&str; 21] = [
     "fixtures/00420_enum_take_drop_split.fz",
     "fixtures/00426_closed_union_protocol_dispatch.fz",
     "fixtures/00428_open_union_protocol.fz",
-    "fixtures2/behavior/brand_refines_its_inner.fz",
-    "fixtures2/behavior/bsx_guard_eq.fz",
-    "fixtures2/behavior/bsx_nested_match.fz",
-    "fixtures2/behavior/closure_identity_captures.fz",
-    "fixtures2/behavior/closure_identity_tag_split.fz",
+    "fixtures/01419_brand_refines_its_inner.fz",
+    "fixtures/01421_bsx_guard_eq.fz",
+    "fixtures/01423_bsx_nested_match.fz",
+    "fixtures/01431_closure_identity_captures.fz",
+    "fixtures/01432_closure_identity_tag_split.fz",
     "fixtures/00569_enum_map_family.fz",
-    "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
-    "fixtures2/behavior/enumerable_protocol_dispatch.fz",
-    "fixtures2/behavior/opaque_fn_mixed_return.fz",
-    "fixtures2/behavior/opaque_fn_value_join.fz",
-    "fixtures2/behavior/pipe_headless_case.fz",
-    "fixtures2/behavior/range_enumerable.fz",
-    "fixtures2/behavior/repr_seam_closure_predicate.fz",
-    "fixtures2/behavior/same_lambda_two_capture_types_dynamic.fz",
+    "fixtures/01458_enum_reduce_halt_arm_order.fz",
+    "fixtures/01464_enumerable_protocol_dispatch.fz",
+    "fixtures/01569_opaque_fn_mixed_return.fz",
+    "fixtures/00281_opaque_reducer_closure.fz",
+    "fixtures/01571_pipe_headless_case.fz",
+    "fixtures/01581_range_enumerable.fz",
+    "fixtures/00384_closure_predicate_wrapper.fz",
+    "fixtures/01608_same_lambda_two_capture_types_dynamic.fz",
 ];
 
 /// The arrival settings the artifact ratchet drives: the two SEEDS
@@ -14274,8 +14274,8 @@ fn compiler2_jit_halts_a_reduce_under_every_arm_order() {
         let mut compiler = Compiler2::new(tel);
         compiler.set_output(dbg.sink());
         compiler.submit_code(CodeSubmission {
-            name: Some("fixtures2/behavior/enum_reduce_halt_arm_order.fz".to_string()),
-            text: include_str!("../../fixtures2/behavior/enum_reduce_halt_arm_order.fz").to_string(),
+            name: Some("fixtures/01458_enum_reduce_halt_arm_order.fz".to_string()),
+            text: include_str!("../../fixtures/01458_enum_reduce_halt_arm_order.fz").to_string(),
         });
         let root_id = compiler.submit_root(RootSubmission {
             module_name: None,
@@ -14361,7 +14361,7 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/membership_operator_compiler2.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/membership_operator.fz").to_string(),
+        text: include_str!("../../fixtures/01546_membership_operator.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -16546,12 +16546,12 @@ fn compiler2_discarded_indirect_call_result_matches_its_boundary_return() {
     }
 
     assert_seam_halves_agree(
-        "fixtures2/behavior/opaque_fn_each_discarded_return.fz",
-        include_str!("../../fixtures2/behavior/opaque_fn_each_discarded_return.fz"),
+        "fixtures/01568_opaque_fn_each_discarded_return.fz",
+        include_str!("../../fixtures/01568_opaque_fn_each_discarded_return.fz"),
     );
     assert_seam_halves_agree(
-        "fixtures2/behavior/a_mixed.fz",
-        include_str!("../../fixtures2/behavior/a_mixed.fz"),
+        "fixtures/01402_a_mixed.fz",
+        include_str!("../../fixtures/01402_a_mixed.fz"),
     );
 }
 
@@ -16572,8 +16572,8 @@ fn compiler2_never_boxed_discarded_closure_call_delivers_no_lanes() {
     backend.install(&tel);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/static_closure_each.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/static_closure_each.fz").to_string(),
+        name: Some("fixtures/01622_static_closure_each.fz".to_string()),
+        text: include_str!("../../fixtures/01622_static_closure_each.fz").to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -18562,7 +18562,7 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
 /// `make_answer/0` has to be planned, lowered and executed while
 /// `DefineModule(Provider)` is still mid-body, so `ModuleDefined(Provider)`
 /// cannot exist yet at that point.
-const PROVIDER_ITEM_MACRO: &str = include_str!("../../fixtures2/behavior/provider_macros_item_macro.fz");
+const PROVIDER_ITEM_MACRO: &str = include_str!("../../fixtures/01576_provider_macros_item_macro.fz");
 
 #[test]
 fn entry_dispatch_settles_without_its_module_aggregate() {
@@ -19923,7 +19923,7 @@ fn compiler2_a_capture_unpack_reads_semantic_slots_across_storage_representation
     let native = NativeProgramCapture::new();
     native.install(&tel);
     let mut compiler = Compiler2::new(tel);
-    let fixture = "fixtures2/behavior/same_lambda_two_capture_types_dynamic.fz";
+    let fixture = "fixtures/01608_same_lambda_two_capture_types_dynamic.fz";
     compiler.submit_code(CodeSubmission {
         name: Some(fixture.to_string()),
         text: std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read {fixture}: {error}")),
@@ -20504,7 +20504,7 @@ fn tuple_ladder_costs(file_name: &str, source: &str) -> TupleLadderCosts {
     }
 }
 
-const TUPLE_LADDER_SOURCE: &str = include_str!("../../fixtures2/behavior/return_tuple_ladder.fz");
+const TUPLE_LADDER_SOURCE: &str = include_str!("../../fixtures/01604_return_tuple_ladder.fz");
 
 #[test]
 fn compiler2_tuple_return_ladder_ends_at_its_first_repeat() {
@@ -20693,7 +20693,7 @@ fn compiler2_recursive_typedef_deadlocks_on_its_own_definition() {
     let (mut compiler, root) = submit_main_root(
         ConfiguredTelemetry::new(),
         "recursive_typedef.fz",
-        include_str!("../../fixtures2/behavior/recursive_typedef.fz"),
+        include_str!("../../fixtures/01595_recursive_typedef.fz"),
     );
     let outcome = compiler.drive_root_to_dump_stage(root, super::dump::DumpStage::Backend);
     assert!(
@@ -20775,20 +20775,20 @@ type PinnedLadder = (&'static str, &'static [PinnedAscent]);
 /// table reports, and the `type.clash_folded` event names the fold that ended
 /// the ladder it would otherwise have climbed.
 const RETURN_LADDERS: &[PinnedLadder] = &[
-    ("fixtures2/behavior/return_tuple_ladder.fz", &[]),
-    ("fixtures2/behavior/json_roundtrip.fz", &[]),
+    ("fixtures/01604_return_tuple_ladder.fz", &[]),
+    ("fixtures/01521_json_roundtrip.fz", &[]),
 ];
 
 /// The other four `json_*` fixtures share this one's decode loop and measure the
 /// same climb, so pinning the goal program pins them too.
 const RETURN_LADDER_FIXTURES: &[(&str, &str)] = &[
     (
-        "fixtures2/behavior/return_tuple_ladder.fz",
-        include_str!("../../fixtures2/behavior/return_tuple_ladder.fz"),
+        "fixtures/01604_return_tuple_ladder.fz",
+        include_str!("../../fixtures/01604_return_tuple_ladder.fz"),
     ),
     (
-        "fixtures2/behavior/json_roundtrip.fz",
-        include_str!("../../fixtures2/behavior/json_roundtrip.fz"),
+        "fixtures/01521_json_roundtrip.fz",
+        include_str!("../../fixtures/01521_json_roundtrip.fz"),
     ),
 ];
 
@@ -21031,7 +21031,7 @@ fn compiler2_quicksort_cli_builds_are_stable_smoke() {
         binary.exists(),
         "build the release binary first: cargo build --release --bin fz2",
     );
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures2/behavior/quicksort.fz");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/01577_quicksort.fz");
     let mut line_counts = Vec::new();
     for run in 0..20 {
         let dir = std::env::temp_dir().join(format!("fz2-smoke-{run}"));
@@ -21427,8 +21427,8 @@ fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs()
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/repr_seam_closure_predicate.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/repr_seam_closure_predicate.fz").to_string(),
+        name: Some("fixtures/00384_closure_predicate_wrapper.fz".to_string()),
+        text: include_str!("../../fixtures/00384_closure_predicate_wrapper.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -22048,11 +22048,11 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
 /// six NEW rungs live in plus the three heaviest ladder fixtures, so the gate
 /// below walks real ladders rather than asserting a vacuous zero.
 const ASCENT_RUNG_FIXTURES: &[&str] = &[
-    "fixtures2/behavior/map_enumerable.fz",
-    "fixtures2/behavior/range_enumerable.fz",
+    "fixtures/01541_map_enumerable.fz",
+    "fixtures/01581_range_enumerable.fz",
     "fixtures/00420_enum_take_drop_split.fz",
     "fixtures/00567_fz_f98_range_map_converges.fz",
-    "fixtures2/behavior/dead_closure_capture_empty_list.fz",
+    "fixtures/01443_dead_closure_capture_empty_list.fz",
 ];
 
 /// fz-kdt.183 / fz-kdt.124: an ascent rung never climbs a slot nothing demands.
@@ -23096,7 +23096,7 @@ fn a_caller_alias_cannot_redirect_a_quoted_helper() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("quoted_helper_keeps_its_provider.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/quoted_helper_keeps_its_provider.fz").to_string(),
+        text: include_str!("../../fixtures/01579_quoted_helper_keeps_its_provider.fz").to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -23139,7 +23139,7 @@ fn a_quoted_macro_keeps_its_provider() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("quoted_macro_keeps_its_provider.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/quoted_macro_keeps_its_provider.fz").to_string(),
+        text: include_str!("../../fixtures/01580_quoted_macro_keeps_its_provider.fz").to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -23205,7 +23205,7 @@ fn a_quoted_guard_helper_reifies_its_retained_callable() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("quoted_guard_helper_keeps_its_provider.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/quoted_guard_helper_keeps_its_provider.fz").to_string(),
+        text: include_str!("../../fixtures/01578_quoted_guard_helper_keeps_its_provider.fz").to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,

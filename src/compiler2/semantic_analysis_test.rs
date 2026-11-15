@@ -568,7 +568,7 @@ fn compiler2_semantic_callsite_preserves_distinct_function_specializations() {
     let mut world = World::new();
     world.submit_code(
         Some("opaque_fn_value_join.fz".to_string()),
-        include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
+        include_str!("../../fixtures/00281_opaque_reducer_closure.fz").to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     drive_backend_product_to_settlement(
@@ -607,7 +607,7 @@ fn compiler2_semantic_callsite_retains_reduce_and_count_specializations() {
     let mut world = World::new();
     world.submit_code(
         Some("repr_seam_enum_count_after_reduce2.fz".to_string()),
-        include_str!("../../fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz").to_string(),
+        include_str!("../../fixtures/01599_repr_seam_enum_count_after_reduce2.fz").to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     drive_backend_product_to_settlement(

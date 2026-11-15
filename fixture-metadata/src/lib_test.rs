@@ -193,11 +193,11 @@ fn fixture_metadata_parser_requires_well_formed_values() {
 
 #[test]
 fn fixture_metadata_filename_routes_are_optional_and_normalized() {
-    let parsed = fixture_matrix_paths_from_filename(Path::new("fixtures2/behavior/matrix_smoke.fz"))
+    let parsed = fixture_matrix_paths_from_filename(Path::new("fixtures/matrix_smoke.fz"))
         .expect("plain fixture stem should parse");
     assert_eq!(parsed, None, "ordinary stems use the behavioural matrix default");
 
-    let parsed = fixture_matrix_paths_from_filename(Path::new("fixtures2/behavior/ija-matrix_smoke.fz"))
+    let parsed = fixture_matrix_paths_from_filename(Path::new("fixtures/ija-matrix_smoke.fz"))
         .expect("route-prefixed stem should parse");
     assert_eq!(
         parsed,
@@ -220,14 +220,14 @@ fn fixture_metadata_filename_routes_are_optional_and_normalized() {
 
 #[test]
 fn fixture_metadata_filename_routes_reject_duplicate_or_unknown_codes() {
-    let err = fixture_matrix_paths_from_filename(Path::new("fixtures2/behavior/iia-bad.fz"))
+    let err = fixture_matrix_paths_from_filename(Path::new("fixtures/iia-bad.fz"))
         .expect_err("duplicate route codes should fail");
     assert!(
         err.to_string().contains("repeats route code"),
         "duplicate filename routes should fail loudly: {err}",
     );
 
-    let err = fixture_matrix_paths_from_filename(Path::new("fixtures2/behavior/ix-bad.fz"))
+    let err = fixture_matrix_paths_from_filename(Path::new("fixtures/ix-bad.fz"))
         .expect_err("unknown route codes should fail");
     assert!(
         err.to_string().contains("unknown route code"),
