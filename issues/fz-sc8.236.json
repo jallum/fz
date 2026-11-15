@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.233"
+  ],
   "blocks": [],
   "created": "2026-11-15T19:22:41Z",
   "description": "Why: every step result in a lowered body gets its own transport-shape product (jobs/artifact.rs, the step_result_values loop). A literal built from constants, such as [a: 1] or %{start: 0, length: 3}, lowers to one step per part, so its cost grows with its size even though its value is known at compile time. Quoted metadata made this visible: since quoted metadata became a keyword list, a run-time quote builds each node's metadata from a list, an entry tuple, the span map and three ints, about five more products per quoted node. That raised the distiller's total requests from 50,522 to 50,922, product_drive_test's evaluations from 50 to 69, and fixture 00181's event budget from 10,163 to 11,166 and its drain settlement from 1,524 to 1,871.\n\nWhat: GroundValue gains composite constants (list, tuple, map of ground values). A literal whose parts are all ground lowers as one ExprStep::Const, on interp, run and build. Quote lowering's metadata (jobs/body.rs push_meta) is then one constant per node.\n\nRemoves: QuoteLowerer::meta_keys, the per-quote cache of metadata key atoms, which exists only to soften this cost.\n\nProof: the four pins above fall, and each is lowered; a fixture shows a constant nested literal reads back the same on all three paths.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A literal list, tuple or map whose parts are all constant lowers as one constant",
   "type": "feature",
-  "updated_at": "2026-11-15T19:22:41Z"
+  "updated_at": "2026-11-15T19:22:44Z"
 }
