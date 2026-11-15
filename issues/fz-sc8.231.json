@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-11-15T15:46:02Z",
-  "description": "Receive outcomes and handlers are filled by the runtime: the native receive matcher (src/compiler2/native_codegen/receive.rs) builds each subject whole, keeps its own outcome_reads and has no cursor form; the interpreter's try_match_backend_receive hands whole words. After the three steps before this one, they are the remaining place where a matched rest is whole by rule.\n\nChange: a receive outcome's and a handler's parameters arrive by their layouts like any other entry's, so a rest the arm only walks is a cursor. What the receive matcher keeps only because it must build whole values is removed.\n\nTo establish first: what the matcher can hand over as a source and position (the message is copied into the receiver's heap before the arm runs), and whether its outcome_reads is then the same idea as the dispatch's and one of the two goes.\n\nDone when: no entry origin hands a matched rest whole by rule; gate green; fixtures on three paths.\n\nProposal page: /Users/j5n/Workspace/fz-sc8.cursor-fold.html (approved by the user 2026-11-15: remove special cases; what is no longer needed is fully removed).",
+  "description": "Receive outcomes and handlers are filled by the runtime: the native receive matcher (src/compiler2/native_codegen/receive.rs) builds each subject whole, keeps its own outcome_reads and has no cursor form; the interpreter's try_match_backend_receive hands whole words. After the three steps before this one, they are the remaining place where a matched rest is whole by rule.\n\nChange: a receive outcome's and a handler's parameters arrive by their layouts like any other entry's, so a rest the arm only walks is a cursor. What the receive matcher keeps only because it must build whole values is removed.\n\nTo establish first: what the matcher can hand over as a source and position (the message is copied into the receiver's heap before the arm runs), and whether its outcome_reads is then the same idea as the dispatch's and one of the two goes.\n\nDone when: no entry origin hands a matched rest whole by rule; gate green; fixtures on three paths.\n\nProposal page: /Users/j5n/Workspace/fz-sc8.cursor-fold.html (approved by the user 2026-11-15: remove special cases; what is no longer needed is fully removed).\n\nFrom fz-sc8.228 as built, removed here in full: whole_value_layout (jobs/transport.rs), ControlEntryOrigin::is_handed_parameters (body.rs), the handed-parameter fill loop in build_executable_abi_plan (jobs/artifact.rs), and the one-lane check in receive_clause_arguments (jobs/native.rs). Done-when adds: grep finds none of them.",
   "id": "fz-sc8.231",
   "labels": [],
   "parent": "fz-sc8",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A rest matched out of a received message or a rescued exception arrives the way its arm reads it",
   "type": "task",
-  "updated_at": "2026-11-15T15:46:03Z"
+  "updated_at": "2026-11-15T16:26:39Z"
 }
