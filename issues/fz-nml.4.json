@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T04:21:26Z",
   "created": "2026-11-15T03:53:50Z",
   "description": "Now (measured on the release build): 01 -\u003e {:ok,1}; - -\u003e {:ok,0}; 1. -\u003e {:ok,1.0}; 1e -\u003e {:ok,1.0}; 0.12345678901234567890, 5e-324, 1e400 and 99999999999999999999 raise ArithmeticError; 1.7976931348623157e308 -\u003e ...153e308; 2.2250738585072014e-308 -\u003e ...202e-308. OTP json:decode answers invalid_byte, unexpected_end x3, exact values, and unexpected_sequence for 1e400. Change: scan the grammar with no arithmetic; accumulate integers of up to 18 digits; a float's text goes to Float.parse (measured to round correctly on all of the above); Float.parse :error -\u003e unexpected_sequence; an integer that does not fit 64 bits -\u003e {:error, {:unexpected_sequence, offset, token}} (decision D1: fz has no bignums). Deletes fraction_digits, scale, apply_scale, pow10, negate. No dependencies. Proposal page: /Users/j5n/Workspace/fz-json-garbage.html (approved 2026-11-14). Worktree ../fz-json, base bd3edae98.",
   "id": "fz-nml.4",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A JSON number is checked by its syntax and converted from its text",
   "type": "bug",
-  "updated_at": "2026-11-15T04:01:56Z"
+  "updated_at": "2026-11-15T04:21:26Z"
 }
