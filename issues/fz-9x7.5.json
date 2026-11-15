@@ -13,11 +13,15 @@
     {
       "text": "Re-measured on c5a03e198 with shim elision (/private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/9x7-gc/notes.md, gc-schedule-spike.patch). RSS at one trace length is dominated by the phase of the geometric major chain (steps of 60-100 MB when a major lands), so single-length RSS comparisons are confounded; judge on a length sweep or a time-integrated measure. Over the 11-length distiller sweep, mean RSS: shim 224, shim+reuse 233, reuse+budget80 207, reuse+budget60 197, s2 (collect at next safe point on budget crossing) 218, s2+budget80 213, base 237. Reuse alone wins clearly on 1M map/filter (RSS 260-\u003e192, 204-\u003e134; minors 48-\u003e15, 46-\u003e13; instructions -11%/-13%). Budget results are non-monotone across 70/80/90 under s2, which points at phase-fitting on one workload. Next experiment: a phase-robust metric (mean/peak over a length sweep) across several workloads, not the distiller alone, before any budget constant moves; S2 contradicts reduction-yielding.md and fails two scheduling pins.",
       "timestamp": "2026-11-15T00:37:41Z"
+    },
+    {
+      "text": "DECIDED 2026-11-14 by the pre-registered rule (8 workloads x 8-11 sizes, /private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/9x7-gc/notes.md, round2-tables.txt): 'reuse lands if it lowers instructions and does not raise mean RSS on more than one workload'. Instructions: geometric-mean ratio 0.991 vs shim-only (enum -7.8%, json -1.2%, others within +-0.6%). Mean RSS rises \u003e2% on one workload only (distiller +4.4%); falls on enum -27%, qsort -10%, json -11%. The experimenter also applied a stricter reading (\u003e0.5% on 4 of 8) under which it fails; the rule as written is aggregate, so reuse LANDS: runtime path only (Heap::bump takes the single recorded stranded frame; compiled continuation building does not take it: inline-taking measured 13.0M misses vs 1.9M). Budget changes (80%/60%) do NOT land: RSS better on 1 of 8, monotone on 4 of 8, instructions +2.9%. S2 (collect at next safe point) does NOT land. Patch: /private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/9x7-gc/gc-schedule-spike-r2.patch (reuse part only).",
+      "timestamp": "2026-11-15T01:16:17Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Experiment: a stranded frame's memory is reused",
   "type": "task",
-  "updated_at": "2026-11-15T00:37:41Z"
+  "updated_at": "2026-11-15T01:16:17Z"
 }
