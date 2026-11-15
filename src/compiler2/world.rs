@@ -2876,7 +2876,7 @@ impl World {
     /// Classifies a protocol impl target module by fact, not by string: a
     /// struct wins whenever `StructDefined(module)` has published one,
     /// otherwise the name is checked against the compiler's built-in ground
-    /// value families (`List`/`Integer`/`Float`/`Atom`/`Binary`/`Map` — these
+    /// value families (`List`/`Integer`/`Float`/`Atom`/`BitString`/`Map` — these
     /// publish no `StructDefined`, so the name literally *is* their identity),
     /// and anything left over is a bare nominal target (e.g.
     /// `defimpl P, for: String`, where `String` names no struct and no ground
@@ -3586,7 +3586,7 @@ enum BuiltinValueFamily {
     Integer,
     Float,
     Atom,
-    Binary,
+    BitString,
     Map,
 }
 
@@ -3600,7 +3600,7 @@ impl BuiltinValueFamily {
             "Integer" => Some(Self::Integer),
             "Float" => Some(Self::Float),
             "Atom" => Some(Self::Atom),
-            "Binary" => Some(Self::Binary),
+            "BitString" => Some(Self::BitString),
             "Map" => Some(Self::Map),
             _ => None,
         }
@@ -3616,7 +3616,7 @@ fn builtin_value_family_ty(t: &mut Types, family: BuiltinValueFamily) -> Ty {
         BuiltinValueFamily::Integer => t.int(),
         BuiltinValueFamily::Float => t.float(),
         BuiltinValueFamily::Atom => t.atom(),
-        BuiltinValueFamily::Binary => t.bitstring(),
+        BuiltinValueFamily::BitString => t.bitstring(),
         BuiltinValueFamily::Map => t.plain_map(),
     }
 }

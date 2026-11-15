@@ -110,7 +110,7 @@ are exact top-level source names and map to their concrete value family:
 
 ```text
 List -> list(any)   Integer -> int   Float -> float   Atom -> atom
-Binary -> str       Map -> plain_map
+BitString -> bitstring   Map -> plain_map
 ```
 
 `plain_map` is the maps that name no module (`map_top \ %{__struct__: atom}`),

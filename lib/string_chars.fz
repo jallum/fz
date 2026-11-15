@@ -8,13 +8,9 @@
 # compile time, naming this protocol, because fz knows the receiver's type
 # where Elixir has to wait until the call happens. A receiver whose family has
 # an implementation but whose value is out of range -- a bitstring that is not
-# byte-aligned -- cannot be known statically and raises at runtime, below.
+# byte-aligned -- reaches the impl's second clause, below, which raises.
 # Either way, there is no generic fallback: an unconvertible value never gets
 # printed as some structural approximation.
-#
-# fz names the binary value family `Binary` where Elixir names it `BitString`.
-# The impl has to use fz's name: `for: BitString` would classify as a bare
-# nominal target and silently never match a binary receiver.
 
 defprotocol String.Chars do
   @moduledoc """
@@ -53,7 +49,7 @@ defimpl String.Chars, for: Atom do
   def to_string(a), do: Atom.to_string(a)
 end
 
-defimpl String.Chars, for: Binary do
+defimpl String.Chars, for: BitString do
   # The impl receives any bitstring. A binary converts to itself; a bitstring
   # whose bit length is not a whole number of bytes has no string form.
   def to_string(s :: binary), do: s

@@ -208,7 +208,8 @@ defmodule JSON do
   defp encode_into(nil, acc), do: acc <> "null"
   defp encode_into(v, acc) when is_integer(v), do: acc <> Integer.to_string(v)
   defp encode_into(v, acc) when is_float(v), do: acc <> Float.to_string(v)
-  defp encode_into(v, acc) when is_bitstring(v), do: string_into(v, acc, fz_bitstring_is_binary(v))
+  defp encode_into(v, acc) when is_binary(v), do: walk(v, v, acc <> "\"") <> "\""
+  defp encode_into(v, _acc) when is_bitstring(v), do: raise(%FunctionClauseError{module: :elixir_json, function: :encode_binary, arity: 1})
   defp encode_into(v, acc) when is_atom(v), do: encode_into(Atom.to_string(v), acc)
   defp encode_into(v, acc) when is_list(v), do: elements(v, acc <> "[") <> "]"
   defp encode_into(v, acc) when is_map(v), do: pairs(Map.to_list(v), acc <> "{") <> "}"
@@ -230,13 +231,6 @@ defmodule JSON do
         "    Protocol.derive(JSON.Encoder, NameOfTheStruct, only: [...])\n    Protocol.derive(JSON.Encoder, NameOfTheStruct)"
     )
   end
-
-  extern "C" defp fz_bitstring_is_binary(any) :: integer
-
-  # What Elixir's encoder fails with for a bitstring that is not a binary.
-  @spec string_into(binary, binary, integer) :: binary
-  defp string_into(_v, _acc, 0), do: raise(%FunctionClauseError{module: :elixir_json, function: :encode_binary, arity: 1})
-  defp string_into(v, acc, _aligned), do: walk(v, v, acc <> "\"") <> "\""
 
   # Validates and escapes in one walk. `start` is where the current run of
   # bytes needing no escape began and `rest` what is left of it; a byte that
