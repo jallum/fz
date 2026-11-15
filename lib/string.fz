@@ -63,6 +63,9 @@ defmodule String do
   `replace_invalid/2` replaces every invalid byte.
   """
 
+  # A string is a binary; `String.t()` names it in a `@spec`.
+  @type t :: binary
+
   # Almost everything here is a byte scanner over binaries. A tail is a view
   # of the original binary rather than a copy, and a segment whose size is
   # computed can still be matched, so ordinary fz recursion over a binary --

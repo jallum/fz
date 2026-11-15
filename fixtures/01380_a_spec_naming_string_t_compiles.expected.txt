@@ -1,0 +1,3 @@
+"Elixir.Foo.Bar"
+"hello!"
+"Elixir.Baz!"

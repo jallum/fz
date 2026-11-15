@@ -1606,6 +1606,15 @@ impl World {
         }
     }
 
+    /// The name a source line writes for a type: `Module.Path.name`, or the
+    /// bare name for a global type.
+    fn dotted_type_name(&self, name: &TypeName) -> String {
+        match self.module_name(name.module) {
+            Some(path) if !name.module.is_global() => format!("{}.{}", path, name.name),
+            _ => name.name.clone(),
+        }
+    }
+
     /// The raw source form a scope walk built for `function`, present from the
     /// moment that walk noted it.
     pub(crate) fn function_source(&self, function: FunctionId) -> Option<&FunctionSource> {
@@ -3281,15 +3290,29 @@ impl World {
     /// own, when one was noted; there is always one here, since a name can
     /// only reference itself after its declaration recorded that reference.
     ///
-    /// A `TypeDefined` wait that is not self-referential -- some other type
-    /// further down its reference chain never resolving -- is not diagnosed
-    /// here; `None` lets it fall through the way an unrecognized fact kind
-    /// already does.
+    /// A `TypeDefined` wait on a name that no `@type` ever declared is a
+    /// reference to a type that does not exist: nothing can publish the fact,
+    /// so the terminal frontier is where the reference is refused, worded the
+    /// way an unknown local type name is.
+    ///
+    /// A `TypeDefined` wait that is neither -- some other type further down
+    /// its reference chain never resolving -- is not diagnosed here; `None`
+    /// lets it fall through the way an unrecognized fact kind already does.
     fn unresolved_type_issue(&self, name: &TypeName) -> Option<UnresolvedIssue> {
+        let Some(decl) = self.type_decl(name) else {
+            return Some(UnresolvedIssue {
+                key: UnresolvedIssueKey::Type(name.clone()),
+                diagnostic: Diagnostic::error(
+                    codes::RESOLVE_TYPE_ALIAS,
+                    format!("unknown type name `{}`", self.dotted_type_name(name)),
+                    Span::DUMMY,
+                ),
+            });
+        };
         if !self.type_def_refs(name).contains(name) {
             return None;
         }
-        let span = self.type_decl(name).map(|decl| decl.span).unwrap_or(Span::DUMMY);
+        let span = decl.span;
         Some(UnresolvedIssue {
             key: UnresolvedIssueKey::Type(name.clone()),
             diagnostic: Diagnostic::error(

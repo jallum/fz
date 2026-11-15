@@ -1,0 +1,13 @@
+#---
+# purpose: "A @spec that names a type its module does not define is refused with a diagnostic that names the type, rather than left waiting"
+# expect: diagnostic
+# diagnostic.code: resolve/type-alias
+#---
+defmodule Main do
+  @spec name(atom()) :: String.nope()
+  def name(module), do: Atom.to_string(module)
+
+  def main(), do: IO.inspect(name(Foo.Bar))
+end
+
+Main.main()
