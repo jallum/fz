@@ -635,6 +635,28 @@ pub extern "C" fn fz_alloc_continuation(process: *mut Process, arity: u32, captu
     closure_ref_word_from_bits(bits)
 }
 
+/// The body frame a write goes to: `frame` itself when it is young, else a copy
+/// of it at the heap tip. A collection keeps its survivors in old blocks, and a
+/// write into one that names a younger object is invisible to the next minor
+/// collection; the copy is young, and the frame it replaces is dead. Every
+/// slot and kind byte is copied, so the copy resumes where the original would
+/// have. Compiled code asks only when the frame lies outside the tip block;
+/// a frame parked alone in a young block of its own is answered as it is.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_frame_for_write(process: *mut Process, frame: u64) -> u64 {
+    let src = closure_addr_from_ref_word(frame, "fz_frame_for_write frame");
+    let process = unsafe { &mut *process };
+    if process.heap.is_young(src) {
+        return frame;
+    }
+    let count = unsafe { crate::any_value::closure_captured_count(src) };
+    process.frame_copies += 1;
+    let bits = process.heap.alloc_continuation_slots(1, count);
+    let dst = closure_addr_from_tagged(bits).expect("copied frame bits");
+    unsafe { std::ptr::copy_nonoverlapping(src, dst, crate::any_value::closure_size_for_count(count)) };
+    closure_ref_word_from_bits(bits)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_code_ref(closure_ref_word: u64) -> u64 {
     let addr = closure_addr_from_ref_word(closure_ref_word, "fz_closure_code_ref closure");

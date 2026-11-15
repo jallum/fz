@@ -1,6 +1,7 @@
 //! Terminator emission for fz IR blocks.
 
 use super::*;
+use crate::compiler2::artifact::{BodyFrame, FrameRole};
 use crate::compiler2::{NativeBody, NativeEntryAbi};
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{
@@ -73,9 +74,8 @@ fn emit_native_continuation_tail_delivery<M: cranelift_module::Module>(
         extra_params,
         args.len()
     );
-    assert_eq!(
-        args.len(),
-        callee_param_reprs.len(),
+    assert!(
+        is_frame_member(env, callee_sid) || args.len() == callee_param_reprs.len(),
         "continuation callee {} logical arg count must match published param reprs",
         callee_sid
     );
@@ -98,14 +98,7 @@ fn emit_native_continuation_tail_delivery<M: cranelift_module::Module>(
         mid_flight_arg_shapes.push(MidFlightArgShape::Value(repr));
     }
 
-    let semantic_cap_vars = args.iter().skip(extra_params).copied().collect::<Vec<_>>();
-    let semantic_cap_bindings = semantic_cap_vars
-        .iter()
-        .enumerate()
-        .map(|(i, arg)| closure_capture_for_var_as(body, var_env, arg.0, callee_param_reprs[extra_params + i]))
-        .collect::<Vec<_>>();
-    let payload = ContinuationPayload::from_parts(env, callee_sid, semantic_cap_bindings, vec![], vec![]);
-    let self_arg = payload.emit_value(body, cont_param);
+    let self_arg = hand_continuation_on(body, env, var_env, cont_param, callee_sid, &args[extra_params..]);
     delivered_args.push(self_arg);
     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
 
@@ -123,27 +116,75 @@ fn emit_native_continuation_tail_delivery<M: cranelift_module::Module>(
     body.b.ins().return_call_indirect(sig_ref, code, &delivered_args);
 }
 
+/// The continuation a call site hands its callee: the body frame it resumes
+/// in when it is a member of the running frame (the frame is pointed at it),
+/// else a closure built here.
+fn is_frame_member(env: &CodegenEnv<'_>, sid: u32) -> bool {
+    matches!(
+        env.body_native(sid).frame,
+        Some(BodyFrame {
+            role: FrameRole::Member,
+            ..
+        })
+    )
+}
+
+/// A member of the running frame is handed exactly the frame: it is pointed at
+/// the member's code and travels as the continuation.
+fn hand_frame_on<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    cont_sid: u32,
+    captured: &[Var],
+) -> ir::Value {
+    let [frame] = captured else {
+        panic!(
+            "a frame member is handed exactly its frame, got {} value(s)",
+            captured.len()
+        );
+    };
+    let frame = var_env.get(&frame.0).expect("unbound body frame").value();
+    let cont_fid = *env.fn_ids.get(&cont_sid).expect("cont fn_id missing");
+    let code = fn_addr(body.jmod, cont_fid, body.b);
+    body.frame_resume_at(frame, code);
+    frame
+}
+
+fn hand_continuation_on<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    cont_param: ir::Value,
+    cont_sid: u32,
+    captured: &[Var],
+) -> ir::Value {
+    if is_frame_member(env, cont_sid) {
+        return hand_frame_on(body, env, var_env, cont_sid, captured);
+    }
+    ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, captured).emit_value(body, cont_param)
+}
+
 struct ContinuationPayload {
     cont_fid: FuncId,
     semantic_cap_bindings: Vec<ClosureCapture>,
-    physical_ref_captures: Vec<ir::Value>,
-    materialization_ref_captures: Vec<ir::Value>,
+    empty_slots: usize,
 }
 
 impl ContinuationPayload {
-    fn from_parts(
-        env: &CodegenEnv<'_>,
-        cont_sid: u32,
-        semantic_cap_bindings: Vec<ClosureCapture>,
-        physical_ref_captures: Vec<ir::Value>,
-        materialization_ref_captures: Vec<ir::Value>,
-    ) -> Self {
+    fn from_parts(env: &CodegenEnv<'_>, cont_sid: u32, semantic_cap_bindings: Vec<ClosureCapture>) -> Self {
         let cont_fid = *env.fn_ids.get(&cont_sid).expect("cont fn_id missing");
+        let empty_slots = match env.body_native(cont_sid).frame {
+            Some(BodyFrame {
+                role: FrameRole::Root,
+                slots,
+            }) => slots as usize - 1 - semantic_cap_bindings.len(),
+            _ => 0,
+        };
         Self {
             cont_fid,
             semantic_cap_bindings,
-            physical_ref_captures,
-            materialization_ref_captures,
+            empty_slots,
         }
     }
 
@@ -166,31 +207,20 @@ impl ContinuationPayload {
                 closure_capture_for_var_as(body, var_env, cv.0, repr)
             })
             .collect();
-        Self::from_parts(env, cont_sid, cap_bindings, vec![], vec![])
+        Self::from_parts(env, cont_sid, cap_bindings)
     }
 
-    fn ref_captures(&self) -> Vec<ir::Value> {
-        self.physical_ref_captures
-            .iter()
-            .chain(&self.materialization_ref_captures)
-            .copied()
-            .collect()
-    }
-}
-
-impl ContinuationPayload {
     fn emit_value<M: cranelift_module::Module>(
         &self,
         body: &mut CodegenFn<'_, '_, M>,
         cont_param: ir::Value,
     ) -> ir::Value {
-        let ref_captures = self.ref_captures();
         build_cont_closure(
             body,
             cont_param,
             self.cont_fid,
             &self.semantic_cap_bindings,
-            &ref_captures,
+            self.empty_slots,
         )
     }
 }
@@ -310,7 +340,7 @@ fn emit_try<M: cranelift_module::Module>(
         .iter()
         .map(|cv| closure_capture_for_var(body, var_env, cv.0))
         .collect();
-    let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings, vec![], vec![]);
+    let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings);
     let template = payload.emit_value(body, cont_param);
     let process = body.process_arg();
     runtime_call!(body, fz_try_push, [process, template]);
@@ -572,8 +602,14 @@ fn emit_call_term<M: cranelift_module::Module>(
     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
     let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
     let mut native_args = body.coerce_call_args(args, callee_param_reprs, var_env);
-    let payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
-    native_args.push(payload.emit_value(body, cont_param));
+    native_args.push(hand_continuation_on(
+        body,
+        env,
+        var_env,
+        cont_param,
+        cont_sid,
+        &continuation.captured,
+    ));
     body.b.ins().return_call(callee_fref, &native_args);
     Ok(())
 }
@@ -758,8 +794,7 @@ fn emit_call_closure<M: cranelift_module::Module>(
         .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
         .collect();
     let cont_sid = resolve_cont_sid(env, blk);
-    let cont_payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
-    let cf = cont_payload.emit_value(body, cont_param);
+    let cf = hand_continuation_on(body, env, var_env, cont_param, cont_sid, &continuation.captured);
     // Load body address from the closure and
     // Tail-CC indirect-call with closure-target sig
     // `(args..., self, cont) -> i64 tail` (all-ValueRef params).
@@ -975,7 +1010,7 @@ fn build_park_record<M: cranelift_module::Module>(
     };
     for (i, c) in clauses.iter().enumerate() {
         let cont_sid = resolve_body_sid(c.body);
-        let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone(), vec![], vec![]);
+        let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone());
         let cl_ptr = payload.emit_value(body, cont_param);
         body.b.ins().stack_store(cl_ptr, bodies_slot, (i * 8) as i32);
         if let Some(slot) = bound_counts_slot {
@@ -995,7 +1030,7 @@ fn build_park_record<M: cranelift_module::Module>(
     let (after_deadline_v, after_cont_v) = match after {
         Some(a) => {
             let cont_sid = resolve_body_sid(a.body);
-            let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings, vec![], vec![]);
+            let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings);
             let cl_ptr = payload.emit_value(body, cont_param);
             let unboxed = body.as_raw_i64(var_env, a.timeout.0);
             (unboxed, cl_ptr)

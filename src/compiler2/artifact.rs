@@ -1046,6 +1046,28 @@ pub(crate) struct NativeBody {
     /// Concrete extern marshal classes keyed by CPS/native extern site.
     pub extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
     pub effects: EffectSummary,
+    /// The body frame this continuation runs in, if it runs in one.
+    pub frame: Option<BodyFrame>,
+}
+
+/// A continuation's place in its body's frame: the one record that holds every
+/// value of the body that lives across a call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BodyFrame {
+    pub role: FrameRole,
+    /// Slot 0 holds the continuation the body returns to; the body's values
+    /// fill the rest.
+    pub slots: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrameRole {
+    /// Every descriptor of this continuation is built with all the frame's
+    /// slots; its own captures fill the first of them.
+    Root,
+    /// Built at exactly one site, inside its builder's frame, this
+    /// continuation receives that frame and reads its values from it.
+    Member,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

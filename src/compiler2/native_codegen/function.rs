@@ -81,8 +81,10 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     let EntryHarnessOut {
         mut var_env,
         cont_param,
+        self_ref,
     } = build_entry_harness(&mut body, env, f, this_spec_id, is_cont_fn, entry_cl);
 
+    body.cache.own_continuation = self_ref;
     {
         let (if_only, all_used) = classify_var_uses(f);
         body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();

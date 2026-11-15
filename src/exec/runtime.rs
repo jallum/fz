@@ -87,6 +87,7 @@ pub struct ExitRecord {
     pub reduction_yields: u64,
     pub failed: bool,
     pub dtors_dispatched: u64,
+    pub frame_copies: u64,
 }
 
 /// Raise `event` on the telemetry bus as the typed raw event hosts attach to.
@@ -428,6 +429,7 @@ impl ProcessExitCapture {
                     reduction_yields: process.reduction_yields,
                     failed: process.ended_in_failure(),
                     dtors_dispatched: process.dtors_dispatched,
+                    frame_copies: process.frame_copies,
                 });
             },
         );

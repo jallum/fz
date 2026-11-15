@@ -362,3 +362,20 @@ fn a_major_collection_follows_the_old_chains_and_a_minor_does_not() {
     assert_ne!(heap.mso_old_head, 0);
     assert_ne!(heap.resource_old_head, 0);
 }
+
+/// A minor collection looks inside every young object, so a write into one is
+/// safe wherever it sits: in the tip, or in the block a huge object is parked
+/// alone in. Only the tip is the range `[block_start, bump_top)` that compiled
+/// code can test inline.
+#[test]
+fn a_huge_object_parked_alone_is_young_though_it_lies_outside_the_tip() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let small = heap.alloc(16);
+    let huge = heap.alloc(1 << 20);
+
+    assert!(heap.is_young(small));
+    assert!(heap.is_young(huge), "a parked block is young");
+    let in_tip = |p: *mut u8| heap.block_start <= p && p < heap.bump_top;
+    assert!(in_tip(small));
+    assert!(!in_tip(huge), "the huge object does not move the tip");
+}

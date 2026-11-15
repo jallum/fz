@@ -686,6 +686,24 @@ alongside the function body:</p>
 normal <code>fz_resume</code> path. The Tail-CC sibling reloads captures into
 the callee's native ABI and tail-calls the loop body.</p>
 
+<h3>A long body shares one frame</h3>
+
+<p>A function that calls sixteen or more times and holds values across the calls
+runs its calls' continuations in one heap frame instead of one frame each. The
+first continuation is built with a slot for every value the body holds; each
+later one is handed the same frame, so a value is written once and read where it
+is used, and the program's code and frames grow with the number of calls. A
+step that resumes does not give such a frame back, because the steps after it
+still read it. When a value is last used its slot is cleared, so the frame does
+not keep a dead list alive.</p>
+
+<p>A collection keeps the frame in an old block, and a write into an old object
+that names a young one would hide the young object from the next minor
+collection. So before every write the step checks that the frame is in the
+newest block; if it is not and the frame is old, the frame is copied to the tip
+and the write goes to the copy. Each process counts these copies in its
+<code>frame_copies</code> telemetry.</p>
+
 <!-- ─────────────────────────────── 6. ROOTS ─────────────────────────────── -->
 <h2 id="roots">6. GC roots and the MSO sweep</h2>
 

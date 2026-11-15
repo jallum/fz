@@ -1,0 +1,140 @@
+//! A body frame's slots, read and written where they are.
+//!
+//! A body frame is a heap continuation closure that a chain of continuations
+//! runs in. Slot `i` is capture `i`; slot 0 is the outer continuation.
+//!
+//! A frame a collection kept lives in an old block, and a write into it that
+//! names a younger object would be invisible to the next minor collection. So
+//! every write first asks whether the frame is in the tip block, the one block
+//! no collection has kept: if not, the runtime answers the frame itself when it
+//! is young (a frame too large for the tip is parked alone in a young block) and
+//! a copy at the tip when it is old, and the write goes to the answer. A write
+//! answers the frame to use from then on.
+
+use super::closure::CaptureStores;
+use super::*;
+use crate::fz_ir::FrameLane;
+use cranelift_codegen::ir::{self, InstBuilder, MemFlags, condcodes::IntCC, types};
+use cranelift_module::Module;
+use fz_runtime::any_value::{AnyValueRefPacking, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, NIL_ATOM_ID, ValueKind};
+use fz_runtime::heap::INLINE_ALLOC_LAYOUT;
+use fz_runtime::ir_runtime::fz_frame_for_write;
+use fz_runtime::process_abi::PROCESS_HEAP_OFFSET;
+
+fn lane_to_repr(lane: FrameLane) -> ArgRepr {
+    match lane {
+        FrameLane::Ref => ArgRepr::ValueRef,
+        FrameLane::Int => ArgRepr::RawInt,
+        FrameLane::Float => ArgRepr::RawF64,
+        FrameLane::Atom => ArgRepr::RawAtom,
+    }
+}
+
+impl<M: Module> CodegenFn<'_, '_, M> {
+    /// Points the frame at `code`, the continuation that next runs in it. The
+    /// code address is no heap reference, so the write is safe in an old frame.
+    pub(super) fn frame_resume_at(&mut self, frame: ir::Value, code: ir::Value) {
+        let address = self.frame_address(frame);
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), code, address, CLOSURE_CODE_OFFSET);
+    }
+
+    /// The value in `slot` of the frame.
+    pub(super) fn frame_load(&mut self, frame: ir::Value, slot: u32, lane: FrameLane) -> CodegenValue {
+        self.closure_capture_as_binding(frame, slot as usize, lane_to_repr(lane))
+    }
+
+    /// Writes `capture` into the empty `slot` of a frame `width` slots wide and
+    /// answers the frame to use from here on.
+    pub(super) fn frame_store(
+        &mut self,
+        frame: ir::Value,
+        width: u32,
+        slot: u32,
+        capture: ClosureCapture,
+    ) -> ir::Value {
+        let frame = self.frame_in_tip_or_copy(frame);
+        let address = self.frame_address(frame);
+        let stores = CaptureStores::new(address, width as usize);
+        let idx = slot as usize;
+        match capture {
+            ClosureCapture::RefWord(word) => stores.store_ref_word(self, idx, word),
+            ClosureCapture::RawInt(raw) => stores.store_raw(self, idx, raw, ValueKind::INT),
+            ClosureCapture::RawAtom(raw) => stores.store_raw(self, idx, raw, ValueKind::ATOM),
+            ClosureCapture::RawF64(float) => {
+                let bits = self.b.ins().bitcast(types::I64, MemFlags::new(), float);
+                stores.store_raw(self, idx, bits, ValueKind::FLOAT);
+            }
+        }
+        frame
+    }
+
+    /// Overwrites a dead boxed slot with the nil atom, so the object it held is
+    /// no longer reachable through the frame, and answers the frame to use from
+    /// here on. A slot holding a scalar-kinded value is left whole: a live ref
+    /// to a scalar names its own slot and is read through it.
+    pub(super) fn frame_clear(&mut self, frame: ir::Value, width: u32, slot: u32) -> ir::Value {
+        let frame = self.frame_in_tip_or_copy(frame);
+        let address = self.frame_address(frame);
+        let stores = CaptureStores::new(address, width as usize);
+        let kind_offset = CLOSURE_CAPTURES_OFFSET + (width as usize * 8 + slot as usize) as i32;
+        let kind = self
+            .b
+            .ins()
+            .uload8(types::I64, MemFlags::trusted(), address, kind_offset);
+        let named = self.kind_names_its_slot(kind);
+        let clear = self.b.create_block();
+        let done = self.b.create_block();
+        self.b.ins().brif(named, done, &[], clear, &[]);
+        self.b.switch_to_block(clear);
+        self.b.seal_block(clear);
+        let nil = self.b.ins().iconst(types::I64, i64::from(NIL_ATOM_ID));
+        stores.store_raw(self, slot as usize, nil, ValueKind::ATOM);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+        self.b.seal_block(done);
+        frame
+    }
+
+    fn frame_address(&mut self, frame: ir::Value) -> ir::Value {
+        self.b
+            .ins()
+            .band_imm(frame, AnyValueRefPacking::current().address_mask() as i64)
+    }
+
+    /// `frame` when its object lies in the tip block, `[block_start,
+    /// bump_top)`; else the runtime answers the frame to write, which is the
+    /// frame itself when it is young and a copy at the tip when it is old.
+    fn frame_in_tip_or_copy(&mut self, frame: ir::Value) -> ir::Value {
+        let flags = MemFlags::trusted();
+        let layout = INLINE_ALLOC_LAYOUT;
+        let field = |offset: usize| PROCESS_HEAP_OFFSET + offset as i32;
+        let process = self.process_arg();
+        let start = self.b.ins().load(types::I64, flags, process, field(layout.block_start));
+        let top = self.b.ins().load(types::I64, flags, process, field(layout.bump_top));
+        let address = self.frame_address(frame);
+        let offset = self.b.ins().isub(address, start);
+        let filled = self.b.ins().isub(top, start);
+        let young = self.b.ins().icmp(IntCC::UnsignedLessThan, offset, filled);
+        let keep = self.b.create_block();
+        let copy = self.b.create_block();
+        let done = self.b.create_block();
+        let result = self.b.append_block_param(done, types::I64);
+        self.b.ins().brif(young, keep, &[], copy, &[]);
+
+        self.b.switch_to_block(copy);
+        self.b.seal_block(copy);
+        self.b.set_cold_block(copy);
+        let copied = runtime_call1!(self, fz_frame_for_write, [process, frame]);
+        self.b.ins().jump(done, &[copied.into()]);
+
+        self.b.switch_to_block(keep);
+        self.b.seal_block(keep);
+        self.b.ins().jump(done, &[frame.into()]);
+
+        self.b.switch_to_block(done);
+        self.b.seal_block(done);
+        result
+    }
+}

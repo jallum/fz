@@ -89,6 +89,7 @@ pub const SHARED_BIN_THRESHOLD_BYTES: usize = 64;
 /// counters).
 #[derive(Clone, Copy, Debug)]
 pub struct InlineAllocLayout {
+    pub block_start: usize,
     pub bump_top: usize,
     pub block_end: usize,
     pub alloc_count: usize,
@@ -99,6 +100,7 @@ pub struct InlineAllocLayout {
 }
 
 pub const INLINE_ALLOC_LAYOUT: InlineAllocLayout = InlineAllocLayout {
+    block_start: std::mem::offset_of!(Heap, block_start),
     bump_top: std::mem::offset_of!(Heap, bump_top),
     block_end: std::mem::offset_of!(Heap, block_end),
     alloc_count: std::mem::offset_of!(Heap, alloc_count),
