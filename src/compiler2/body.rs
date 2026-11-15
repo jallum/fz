@@ -1064,7 +1064,6 @@ pub enum LoweredStep {
     Map {
         value: ValueId,
         entries: Vec<(LoweredMapKey, ValueId)>,
-        quoted_span: Option<Span>,
     },
     /// `%{base | k: v, ...}`. `value` is the updated map when `ok`, which is
     /// false when `base` lacks one of the keys. `rewrite` says whether the

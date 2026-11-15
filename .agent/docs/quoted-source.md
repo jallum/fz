@@ -213,8 +213,8 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   `DefineFunction` time. `DefineFunction` itself only derives the surface and
   publishes it.
 - Diagnostics resolve exact versions through the World-held `SourceMap`.
-  Quoted macro errors must retain the originating call span; a generated
-  span is reserved for diagnostics with no user construct to locate.
+  A fault in code a macro quoted is reported at the call that expanded it; a
+  generated span is reserved for diagnostics with no user construct to locate.
 - The noted function-source fact must carry enough callable surface to keep
   pre-definition name resolution honest. Today that explicitly includes the
   variadic bit, because lowering may need callable matching before
@@ -250,8 +250,9 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   version and byte range resolve in the authoritative `SourceMap`; malformed
   metadata is an error, while a missing key is explicit source absence and
   remains `Span::DUMMY`. Source-less generated nodes are never stamped from a
-  parent. A macro's quoted fragment therefore remains attributed to its
-  definition text even when a different caller publishes or decodes it.
+  parent. A node a `quote` builds has no `__fz_span__`: quoted code has no
+  place of its own, and takes the span of the macro call that expands it
+  (see [macro-expansion.md](macro-expansion.md#where-expanded-code-is-reported)).
 - `__fz_namespace_id__`: transport-only namespace handle; not semantic
   content, skipped by `semantically_eq`.
 - `__fz_bound__`: the exact callable a quoted call was resolved to, as that

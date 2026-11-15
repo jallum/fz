@@ -1,0 +1,6 @@
+error[resolve/unknown-import]: module `String` does not export `nope/1`
+  --> fixtures/01313_an_error_in_code_a_macro_quoted_is_reported_at_the_call.fz:11:5
+   |
+11 |     Mac.bad("x")
+   |     ^^^^^^^^^^^^
+   |

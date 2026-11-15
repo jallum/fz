@@ -118,7 +118,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01260-01279` | fz-xxd                            | in use through `01264` |
 | `01280-01289` | fz-968                            | in use through `01280` |
 | `01290-01299` | fz-t93                            | in use through `01292` |
-| `01300-01319` | fz-3sy                            | in use through `01312` |
+| `01300-01319` | fz-3sy                            | in use through `01314` |
 | `01320-01339` | fz-nml                            | in use through `01339` |
 | `01340-01359` | fz-9zq                            | in use through `01343` |
 

@@ -1,0 +1,19 @@
+#---
+# purpose: a fault in code a macro quoted is reported under the call that expanded it, the line the reader wrote, not under the quote
+# expect: diagnostic
+#---
+defmodule Mac do
+  defmacro bad(x) do
+    quote do: String.nope(unquote(x))
+  end
+end
+
+defmodule Caller do
+  require Mac
+
+  def run() do
+    Mac.bad("x")
+  end
+end
+
+def main(), do: Caller.run()

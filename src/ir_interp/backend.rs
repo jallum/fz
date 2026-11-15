@@ -1805,20 +1805,13 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 value,
                 entries,
                 in_key_order,
-                quoted_span,
             } => {
                 let proc = runtime.cur_proc();
-                let capacity = entries.len() + usize::from(quoted_span.is_some());
-                let mut dest = fz_map_dest_begin(proc, capacity as u32);
+                let mut dest = fz_map_dest_begin(proc, entries.len() as u32);
                 for (key, item) in entries {
                     let key = env_get(transport, proc, env, *key)?;
                     let item = env_get(transport, proc, env, *item)?;
                     dest = interp_map_dest_put(proc, dest, key, item, "backend map")?;
-                }
-                if let Some(span) = quoted_span {
-                    let span = quoted_span_metadata(runtime, *span)?;
-                    let key = AnyValue::Atom(runtime.node.intern_atom(crate::compiler2::META_SPAN_KEY));
-                    dest = interp_map_dest_put(proc, dest, key, span, "quoted AST metadata")?;
                 }
                 let map = if *in_key_order {
                     fz_map_dest_publish(proc, dest)
@@ -3713,19 +3706,6 @@ fn encode_direct_callable_captures(
         encode_transport_layout(transport, program, proc, capture, layout, lanes)?;
     }
     Ok(())
-}
-
-/// The `__meta__` span map a quoted AST node carries, built as every map
-/// literal is.
-fn quoted_span_metadata(runtime: &IrInterpRuntime, span: crate::source::Span) -> Result<AnyValue, String> {
-    let proc = runtime.cur_proc();
-    let entries = crate::compiler2::quoted_span_entries(span);
-    let mut dest = fz_map_dest_begin(proc, entries.len() as u32);
-    for (key, value) in entries {
-        let key = AnyValue::Atom(runtime.node.intern_atom(key));
-        dest = interp_map_dest_put(proc, dest, key, AnyValue::Int(value), "quoted span metadata")?;
-    }
-    interp_value_from_ref_word(fz_map_dest_freeze(proc, dest), "quoted span metadata")
 }
 
 /// `base` with each of `entries` replacing a key it has, or the miss when it

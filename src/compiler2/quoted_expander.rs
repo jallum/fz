@@ -973,10 +973,10 @@ fn stamp_meta_ordinal(
 /// As in Elixir: a node a macro's result carries with no location of its own
 /// takes the macro call's location. A node that already has one -- unquoted
 /// user code the macro merely relayed, or something an earlier expansion
-/// already stamped -- keeps it. `defmodule`/`defprotocol`/`defimpl` are the
-/// motivating case: each rebuilds its own `Fz.Compiler.define(...)` argument
-/// from destructured parameters, so the tuple this produces has no span of
-/// its own token to point at, even though the call the user wrote does.
+/// already stamped -- keeps it. Every node a `quote` builds is one with no
+/// location, and so is a node a macro builds by hand: `defmodule`,
+/// `defprotocol` and `defimpl` each rebuild their `Fz.Compiler.define(...)`
+/// argument from destructured parameters.
 ///
 /// A `quote` call's own arguments are left untouched: `expand_ast_call`
 /// already treats a `quote` node as its own boundary, complete without

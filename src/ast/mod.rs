@@ -1,6 +1,6 @@
 use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::parser::lexer::Token;
-use crate::source::{Span, SpanOrigin};
+use crate::source::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleTarget {
@@ -183,24 +183,15 @@ pub enum VarContext {
 /// Wraps an AST node with the source span that produced it. Every Expr
 /// and Pattern reference in the AST is `Spanned<…>`; the outer enum
 /// values themselves are unwrapped so pattern matching stays clean.
-///
-/// `origin` defaults to `Source` for source-produced nodes. Macro expansion
-/// stamps `SpanOrigin::Expanded` so a downstream diagnostic can show
-/// "expanded from `<macro>` at <macro_call>".
 #[derive(Debug, Clone)]
 pub struct Spanned<T> {
     pub node: T,
     pub span: Span,
-    pub origin: SpanOrigin,
 }
 
 impl<T> Spanned<T> {
     pub fn new(node: T, span: Span) -> Self {
-        Self {
-            node,
-            span,
-            origin: SpanOrigin::Source,
-        }
+        Self { node, span }
     }
 
     /// Synthesize a Spanned with no source position. Used by tests and by
@@ -209,7 +200,6 @@ impl<T> Spanned<T> {
         Self {
             node,
             span: Span::DUMMY,
-            origin: SpanOrigin::Source,
         }
     }
 }

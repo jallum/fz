@@ -912,12 +912,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                     retention: *retention,
                 },
             ),
-            LoweredStep::Map {
-                value,
-                entries,
-                quoted_span,
-            } => {
-                let in_key_order = quoted_span.is_none().then(|| entries_in_key_order(entries)).flatten();
+            LoweredStep::Map { value, entries } => {
+                let in_key_order = entries_in_key_order(entries);
                 self.step_or_omitted_when_absent(
                     *value,
                     BackendStep::Map {
@@ -925,7 +921,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                         in_key_order: in_key_order.is_some(),
                         entries: in_key_order
                             .unwrap_or_else(|| entries.iter().map(|(key, value)| (key.value, *value)).collect()),
-                        quoted_span: *quoted_span,
                     },
                 )
             }

@@ -1320,36 +1320,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     value,
                     entries,
                     in_key_order,
-                    quoted_span,
                 } => {
-                    if quoted_span.is_some() {
-                        self.ensure_quoted_span_atoms();
-                    }
-                    let (mut map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Capacity(
-                        entries.len() + usize::from(quoted_span.is_some()),
-                    )));
+                    let (mut map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Capacity(entries.len())));
                     for (key, item) in entries {
                         let key = self.env_runtime_var(ctx, executable, env, *key);
                         let value = self.env_runtime_var(ctx, executable, env, *item);
                         map = ctx.emit_map_put(map, key, value);
-                    }
-                    if let Some(span) = quoted_span {
-                        let (mut span_map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Capacity(3)));
-                        for (key, value) in super::super::source::quoted_span_entries(*span) {
-                            let (key, _) = ctx.emit_let(Prim::Const(Const::Atom(
-                                *self.atom_ids.get(key).expect("quoted metadata atom registered"),
-                            )));
-                            let (value, _) = ctx.emit_let(Prim::Const(Const::Int(value)));
-                            span_map = ctx.emit_map_put(span_map, key, value);
-                        }
-                        let (span_map, _) = ctx.emit_let(Prim::DestMapFreeze(span_map));
-                        let (key, _) = ctx.emit_let(Prim::Const(Const::Atom(
-                            *self
-                                .atom_ids
-                                .get(super::super::source::META_SPAN_KEY)
-                                .expect("quoted metadata atom registered"),
-                        )));
-                        map = ctx.emit_map_put(map, key, span_map);
                     }
                     let (var, _) = ctx.emit_let(if *in_key_order {
                         Prim::DestMapPublish(map)
@@ -4612,19 +4588,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
 
     fn atom_id(&self, name: &str) -> u32 {
         *self.atom_ids.get(name).expect("required atom should be interned")
-    }
-
-    fn ensure_quoted_span_atoms(&mut self) {
-        for atom in [
-            super::super::source::META_SPAN_KEY,
-            super::super::source::META_SPAN_START_KEY,
-            super::super::source::META_SPAN_LENGTH_KEY,
-            super::super::source::META_SPAN_VERSION_KEY,
-        ] {
-            if !self.atom_ids.contains_key(atom) {
-                self.atom_ids.insert(AtomName::from(atom), self.atom_ids.len() as u32);
-            }
-        }
     }
 
     fn native_callable_boundary_for_construction(

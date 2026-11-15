@@ -1,0 +1,7 @@
+#---
+# purpose: `raise` is a library macro, so raising a module nothing defines is reported under the raise the program wrote, not inside Kernel
+# expect: diagnostic
+#---
+def main() do
+  raise MyApp.NotThere, "x"
+end

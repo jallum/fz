@@ -319,21 +319,18 @@ end
 }
 
 #[test]
-fn macro_expansion_retains_definition_and_caller_source_versions_per_node() {
+fn quoted_nodes_take_the_place_of_the_call_and_arguments_keep_their_own() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(tel);
-    let definition_owner = compiler.submit_code(CodeSubmission {
+    compiler.submit_code(CodeSubmission {
         name: Some("definition.fz".into()),
         text: "defmodule Helpers do\n  defmacro inc(x) do\n    quote do: unquote(x) + 1\n  end\nend\n".into(),
     });
+    let caller_text = "require Helpers\ndef main(), do: Helpers.inc(40 + 1)\n";
     let caller_owner = compiler.submit_code(CodeSubmission {
         name: Some("caller.fz".into()),
-        text: "require Helpers\ndef main(), do: Helpers.inc(40 + 1)\n".into(),
+        text: caller_text.into(),
     });
-    let definition_version = compiler
-        .world()
-        .source_version(definition_owner)
-        .expect("macro definition version");
     let caller_version = compiler
         .world()
         .source_version(caller_owner)
@@ -362,11 +359,29 @@ fn macro_expansion_retains_definition_and_caller_source_versions_per_node() {
     let crate::ast::Expr::BinOp(_, left, right) = &surface.clauses[0].body.node else {
         panic!("macro result should be the quoted addition");
     };
+    let written = |span: crate::source::Span| {
+        assert_eq!(
+            span.source_version, caller_version,
+            "every node is placed in the caller's file"
+        );
+        &caller_text[span.start as usize..span.end as usize]
+    };
 
-    assert_eq!(surface.clauses[0].body.span.source_version, definition_version);
-    assert_eq!(left.span.source_version, caller_version);
-    assert_eq!(right.span.source_version, definition_version);
-    assert_ne!(surface.clauses[0].body.span.source_version, left.span.source_version);
+    assert_eq!(
+        written(surface.clauses[0].body.span),
+        "Helpers.inc(40 + 1)",
+        "the quoted addition is placed at the call that expanded it"
+    );
+    assert_eq!(
+        written(left.span),
+        "40 + 1",
+        "the argument the caller wrote keeps its own place"
+    );
+    assert_eq!(
+        written(right.span),
+        "Helpers.inc(40 + 1)",
+        "the quoted literal is placed at the call too"
+    );
 }
 
 #[test]
@@ -765,5 +780,94 @@ fn a_macro_reads_an_empty_command_line_while_the_program_reads_its_own() {
         compiler.run_root_interp(root),
         Ok(2),
         "the macro saw no arguments (0 * 10) and the program saw both (+ 2)"
+    );
+}
+
+/// The code and underlined source text of the first diagnostic a program
+/// that must not compile reports, with the name of the file it points into.
+fn first_diagnostic(text: &str) -> (&'static str, String, String) {
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = crate::telemetry::Capture::new();
+    diagnostics.install(&tel, &["fz", "diag"]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("caller.fz".into()),
+        text: text.into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(compiler.run_root_interp(root).is_err(), "the program must not compile");
+    let events = diagnostics.events();
+    let diagnostic = events
+        .iter()
+        .find_map(|event| event.diagnostic.as_ref())
+        .expect("a failed compile reports a diagnostic");
+    let span = diagnostic.primary.span;
+    let source_map = compiler.world().source_map();
+    let source_map = source_map.borrow();
+    let name = source_map
+        .name(span.source_version)
+        .expect("the span names a source")
+        .to_string();
+    let text = &source_map.code(span.source_version).bytes;
+    (
+        diagnostic.code.0,
+        name,
+        text[span.start as usize..span.end as usize].to_string(),
+    )
+}
+
+#[test]
+fn a_fault_in_quoted_code_is_reported_at_the_call_that_expanded_it() {
+    let (code, file, underlined) =
+        first_diagnostic("defmacro bad(x) do\n  quote do: String.nope(unquote(x))\nend\ndef main(), do: bad(\"x\")\n");
+    assert_eq!(code, crate::diag::codes::RESOLVE_UNKNOWN_IMPORT.0);
+    assert_eq!(
+        (file.as_str(), underlined.as_str()),
+        ("caller.fz", "bad(\"x\")"),
+        "quoted code has no place of its own: the reader wrote the call, not the quote"
+    );
+}
+
+#[test]
+fn an_unbound_name_in_quoted_code_is_reported_at_the_call_that_expanded_it() {
+    let (code, _, underlined) =
+        first_diagnostic("defmacro bad(x) do\n  quote do: unquote(x) + missing\nend\ndef main(), do: bad(1)\n");
+    assert_eq!(code, crate::diag::codes::LOWER_UNBOUND.0);
+    assert_eq!(underlined, "bad(1)");
+}
+
+#[test]
+fn a_fault_in_an_argument_the_caller_wrote_stays_under_the_argument() {
+    let (code, _, underlined) = first_diagnostic(
+        "defmacro pass(x) do\n  quote do: IO.inspect(unquote(x))\nend\ndef main(), do: pass(String.nope(1))\n",
+    );
+    assert_eq!(code, crate::diag::codes::RESOLVE_UNKNOWN_IMPORT.0);
+    assert_eq!(
+        underlined, "String.nope",
+        "an unquoted argument is the caller's own source and keeps its own place"
+    );
+}
+
+#[test]
+fn a_fault_quoted_by_a_macro_another_macro_called_is_reported_at_the_call_the_program_wrote() {
+    let (code, _, underlined) = first_diagnostic(
+        "defmacro inner(x) do\n  quote do: String.nope(unquote(x))\nend\ndefmacro outer(x) do\n  quote do: inner(unquote(x))\nend\ndef main(), do: outer(1)\n",
+    );
+    assert_eq!(code, crate::diag::codes::RESOLVE_UNKNOWN_IMPORT.0);
+    assert_eq!(underlined, "outer(1)");
+}
+
+#[test]
+fn raising_a_module_nothing_defines_is_reported_at_the_raise() {
+    let (_, file, underlined) = first_diagnostic("def main() do\n  raise MyApp.NotThere, \"x\"\nend\n");
+    assert_eq!(
+        (file.as_str(), underlined.as_str()),
+        ("caller.fz", "raise MyApp.NotThere, \"x\""),
+        "`raise` is a library macro; its quote is not a line the reader wrote"
     );
 }
