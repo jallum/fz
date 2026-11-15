@@ -96,6 +96,64 @@ fn completion_claims_belong_directly_to_the_job_that_read_their_ground() {
     );
 }
 
+/// The sources a run records for its callees' input slots stand on everything
+/// the run read, which is what the job's own answer does: they are facts of
+/// that answer, not publishers of their own holding a second copy of every
+/// read. Compiled on the production path; each completion is checked as it
+/// lands.
+#[test]
+fn incoming_input_slots_are_answers_of_the_job_that_recorded_them() {
+    use crate::compiler2::drive::DerivationKey;
+    use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, JobCompletion, RootSubmission};
+    use std::cell::RefCell;
+
+    let tel = ConfiguredTelemetry::new();
+    let strays = Rc::new(RefCell::new(Vec::<String>::new()));
+    let slots_seen = Rc::new(Cell::new(0_u64));
+    let (stray_sink, slot_count) = (Rc::clone(&strays), Rc::clone(&slots_seen));
+    tel.attach_raw_event2::<World, JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, world, completion| {
+            let slots = world
+                .work_graph
+                .output_keys(&completion.job)
+                .filter(|key| matches!(key.fact(), Some(FactKey::IncomingInputSlot(_))));
+            for slot in slots {
+                slot_count.set(slot_count.get() + 1);
+                for publisher in world.work_graph.facts().publishers(slot) {
+                    if publisher.job == completion.job && publisher.key != DerivationKey::Job {
+                        stray_sink.borrow_mut().push(format!("{publisher:?}"));
+                    }
+                }
+            }
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("incoming_input_slots.fz".into()),
+        text: "def inc(x), do: x + 1\n\
+               def twice(x), do: inc(inc(x))\n\
+               def main(), do: twice(Enum.sum([1, 2, 3]))\n"
+            .into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(8));
+
+    assert!(slots_seen.get() > 0, "the compile recorded incoming input slots");
+    let strays = strays.borrow();
+    assert!(
+        strays.is_empty(),
+        "{} incoming input slots are published by a derivation other than their job's own, e.g. {:?}",
+        strays.len(),
+        strays.first()
+    );
+}
+
 /// The demand fact a body that forwards NOTHING and returns none of its own
 /// inputs publishes: what its own clauses ask about its inputs is the whole of
 /// what anything asks about them, so both dispatch halves of `InputDemand`

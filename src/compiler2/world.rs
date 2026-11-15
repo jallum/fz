@@ -214,6 +214,10 @@ pub(crate) struct JobCompletion {
     pub(crate) step: fz_engine::AppliedStep<Job, DependencyKey>,
     pub(crate) activation_input_changed: HashSet<ActivationKey>,
     pub(crate) rebased: bool,
+    /// How many derivations the completion filed with the work graph.
+    pub(crate) derivations: u64,
+    /// The reads those derivations handed the work graph, counted per derivation.
+    pub(crate) reads_handed: u64,
 }
 
 impl std::ops::Deref for JobCompletion {
@@ -697,15 +701,17 @@ impl World {
         let mut outputs = effects.outputs;
         let mut changed = effects.changed;
         let contribution_derivations = if waits.is_empty() {
-            runtime_demand_contribution_derivations(
+            let sends = split_runtime_demand_sends(
                 &job,
-                &reads,
                 effects.send_reads,
                 runtime_demand_input_outputs,
                 &runtime_demand_input_changed,
-                incoming.output_keys,
-                &incoming.changed_keys,
-            )
+            );
+            outputs.extend(sends.on_the_run);
+            changed.extend(sends.on_the_run_changed);
+            outputs.extend(incoming.output_keys.into_iter().map(FactKey::IncomingInputSlot));
+            changed.extend(incoming.changed_keys.into_iter().map(FactKey::IncomingInputSlot));
+            sends.apart
         } else {
             outputs.extend(incoming.output_keys.into_iter().map(FactKey::IncomingInputSlot));
             outputs.extend(
@@ -737,21 +743,21 @@ impl World {
                 _ => None,
             })
             .collect();
+        let derivations = reached
+            .into_iter()
+            .chain(contribution_derivations)
+            .chain([fz_engine::DerivationEffects {
+                publisher: super::drive::Derivation::of(job.clone(), super::drive::DerivationKey::Job),
+                reads,
+                outputs: outputs.into_iter().map(DependencyKey::Fact).collect(),
+                changed: changed.into_iter().map(DependencyKey::Fact).collect(),
+            }])
+            .collect::<Vec<_>>();
+        let derivation_count = derivations.len() as u64;
+        let reads_handed = derivations.iter().map(|derivation| derivation.reads.len() as u64).sum();
         let step = self.work_graph.complete_ordered_with_external(
             &job,
-            CompletionEffects {
-                derivations: reached
-                    .into_iter()
-                    .chain(contribution_derivations)
-                    .chain([fz_engine::DerivationEffects {
-                        publisher: super::drive::Derivation::of(job.clone(), super::drive::DerivationKey::Job),
-                        reads,
-                        outputs: outputs.into_iter().map(DependencyKey::Fact).collect(),
-                        changed: changed.into_iter().map(DependencyKey::Fact).collect(),
-                    }])
-                    .collect(),
-                waits,
-            },
+            CompletionEffects { derivations, waits },
             external,
             &self.types,
         );
@@ -762,6 +768,8 @@ impl World {
             step,
             activation_input_changed,
             rebased,
+            derivations: derivation_count,
+            reads_handed,
         }
     }
 
@@ -3120,54 +3128,49 @@ fn preserved_analysis_claims(job: &Job, previous_output_keys: &OrderedSet<FactKe
         .collect()
 }
 
-/// When a run concludes, the demand it sends to each callee and the sources
-/// it records for each input slot are answers of their own. A send stands on
-/// the reads the run names for it, or on everything the run read when it
-/// names none, so a caller's demand on a callee need not rest on that
-/// callee's reply, and an acyclic program's demand settles as it is published
-/// instead of waiting for the drain to break a read cycle.
-fn runtime_demand_contribution_derivations(
+/// The demand a concluded run sends to its callees, split by what each send
+/// stands on.
+struct RuntimeDemandSends {
+    /// Sends that name no reads: they stand on everything the run read, which
+    /// is what the run's own answer does, so they are facts of that answer.
+    on_the_run: Vec<FactKey>,
+    on_the_run_changed: Vec<FactKey>,
+    /// Sends that name the reads they stand on: answers of their own, so a
+    /// caller's demand on a callee need not rest on that callee's reply and an
+    /// acyclic program's demand settles as it is published instead of waiting
+    /// for the drain to break a read cycle.
+    apart: Vec<fz_engine::DerivationEffects<super::drive::Derivation, DependencyKey>>,
+}
+
+fn split_runtime_demand_sends(
     job: &Job,
-    run_reads: &HashSet<FactUse<DependencyKey>>,
     mut send_reads: HashMap<ExecutableKey, Vec<FactUse<FactKey>>>,
     sends: impl IntoIterator<Item = ExecutableKey>,
     sends_changed: &HashSet<ExecutableKey>,
-    slots: impl IntoIterator<Item = InputSlot>,
-    slots_changed: &HashSet<InputSlot>,
-) -> Vec<fz_engine::DerivationEffects<super::drive::Derivation, DependencyKey>> {
-    let derivation = |key: super::drive::DerivationKey,
-                      reads: HashSet<FactUse<DependencyKey>>,
-                      fact: FactKey,
-                      changed: bool| fz_engine::DerivationEffects {
-        publisher: super::drive::Derivation::of(job.clone(), key),
-        reads,
-        outputs: vec![DependencyKey::Fact(fact.clone())],
-        changed: changed.then_some(DependencyKey::Fact(fact)).into_iter().collect(),
+) -> RuntimeDemandSends {
+    let mut split = RuntimeDemandSends {
+        on_the_run: Vec::new(),
+        on_the_run_changed: Vec::new(),
+        apart: Vec::new(),
     };
-    let mut derivations = Vec::new();
     for callee in sends {
-        let reads = send_reads.remove(&callee).map_or_else(
-            || run_reads.clone(),
-            |reads| reads.into_iter().map(fact_dependency).collect(),
-        );
+        let fact = FactKey::RuntimeDemandInput(callee.clone());
         let changed = sends_changed.contains(&callee);
-        derivations.push(derivation(
-            super::drive::DerivationKey::Executable(callee.clone()),
-            reads,
-            FactKey::RuntimeDemandInput(callee),
-            changed,
-        ));
+        let Some(reads) = send_reads.remove(&callee) else {
+            if changed {
+                split.on_the_run_changed.push(fact.clone());
+            }
+            split.on_the_run.push(fact);
+            continue;
+        };
+        split.apart.push(fz_engine::DerivationEffects {
+            publisher: super::drive::Derivation::of(job.clone(), super::drive::DerivationKey::Executable(callee)),
+            reads: reads.into_iter().map(fact_dependency).collect(),
+            outputs: vec![DependencyKey::Fact(fact.clone())],
+            changed: changed.then_some(DependencyKey::Fact(fact)).into_iter().collect(),
+        });
     }
-    for slot in slots {
-        let changed = slots_changed.contains(&slot);
-        derivations.push(derivation(
-            super::drive::DerivationKey::InputSlot(slot.clone()),
-            run_reads.clone(),
-            FactKey::IncomingInputSlot(slot),
-            changed,
-        ));
-    }
-    derivations
+    split
 }
 
 /// Drop repeats, keep the order the job emitted them in.

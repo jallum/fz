@@ -2017,6 +2017,10 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "rebased");
         out.push(':');
         out.push_str(if completion.rebased { "true" } else { "false" });
+        out.push_str(",\"derivations\":");
+        push_u64(out, completion.derivations);
+        out.push_str(",\"reads_handed\":");
+        push_u64(out, completion.reads_handed);
         write_applied_step_body(out, &completion.step);
     } else if let Some(world) = opaque.downcast_ref::<crate::compiler2::World>() {
         let (codes, roots) = world.telemetry_counts();

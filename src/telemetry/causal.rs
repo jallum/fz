@@ -203,6 +203,8 @@ const STATE_FIELDS: &[&str] = &[
     "opaque_type",
     "rebased",
     "runtime_demand_evaluations",
+    "derivations",
+    "reads_handed",
     "changed",
     "wakes",
     "movements",

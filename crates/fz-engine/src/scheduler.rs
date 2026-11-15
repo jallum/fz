@@ -682,13 +682,18 @@ where
             .flat_map(|publisher| self.deps.output_keys(publisher).iter())
     }
 
-    /// Every fact use this job read, across every answer it owns.
-    pub fn reads(&self, job: &P::Run) -> impl Iterator<Item = &FactUse<F>> {
+    /// Every answer this job owns with the reads it stands on, in emission
+    /// order.
+    pub fn derivation_reads(&self, job: &P::Run) -> impl Iterator<Item = (&P, &HashSet<FactUse<F>>)> {
         self.deps
             .derivations_of(job)
             .iter()
-            .filter_map(|publisher| self.deps.reads(publisher))
-            .flatten()
+            .filter_map(|publisher| Some((publisher, self.deps.reads(publisher)?)))
+    }
+
+    /// Every fact use this job read, across every answer it owns.
+    pub fn reads(&self, job: &P::Run) -> impl Iterator<Item = &FactUse<F>> {
+        self.derivation_reads(job).flat_map(|(_, reads)| reads)
     }
 
     pub fn has_dependency_consumers(&self, key: &F) -> bool {

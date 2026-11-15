@@ -740,7 +740,7 @@ fn job_span_is_the_clock_and_work_graph_applied_is_the_completion_owner() {
 
 /// The identity portion of a `work_graph.applied` completion object — its
 /// `"kind"` plus id fields — with the non-identity fields (`opaque_type`,
-/// `rebased`, and the applied-step batches) stripped out. Lets a test
+/// `rebased`, the derivation volume, and the applied-step batches) stripped out. Lets a test
 /// compare "this job" (as `wakes[].job` renders it) against "this
 /// completion" (as the top-level `JobCompletion` opaque body renders it)
 /// even though the two renderers include a different set of surrounding
@@ -748,7 +748,16 @@ fn job_span_is_the_clock_and_work_graph_applied_is_the_completion_owner() {
 fn completion_job_identity(completion: &serde_json::Value) -> serde_json::Value {
     fact_identity(
         completion,
-        &["opaque_type", "rebased", "changed", "wakes", "movements", "blocked"],
+        &[
+            "opaque_type",
+            "rebased",
+            "derivations",
+            "reads_handed",
+            "changed",
+            "wakes",
+            "movements",
+            "blocked",
+        ],
     )
 }
 
