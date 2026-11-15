@@ -233,7 +233,11 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // another matches is asked for twice, whole and then matched, so the functions between them
 // derive their demand once more: `JSON.decode/1` and its helpers, `String.take_bytes/2`,
 // `String.graphemes/1`, `Kernel.inspect/1`.
-const DERIVATIONS: u64 = 18_405;
+// 18_405 -> 18_410 derivations, and more reads: `JSON.encode/1` writes into one
+// accumulator, and its pass is the helpers `encode_into`, `key_into`, `string_into`, `walk`,
+// `walk_scalar` and `append_run` in place of `encode_binary!` and `encode_key!`, so the
+// distiller derives demand for more functions.
+const DERIVATIONS: u64 = 18_410;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -242,7 +246,8 @@ const DERIVATIONS: u64 = 18_405;
 // `Protocol.UndefinedError`, which override `message/1`, file one derivation
 // for it, not two.
 // 111_880 -> 112_107: the 227 reads of the demand derived once more.
-const READS_HANDED: u64 = 112_107;
+// 112_107 -> 112_127: the reads of the encoder's helpers.
+const READS_HANDED: u64 = 112_127;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the

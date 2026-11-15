@@ -1,0 +1,21 @@
+#---
+# purpose: JSON.encode! writes a string and every nested value into one growing buffer, so the off-heap buffers and bytes it allocates do not grow with the number of bytes or values, and it boxes no scalar per byte
+#---
+defmodule Cost do
+  # {output size, off-heap buffers, off-heap bytes, boxed scalars} allocated by one encode.
+  def of(value) do
+    before = Process.heap_alloc_stats()
+    out = JSON.encode!(value)
+    after_ = Process.heap_alloc_stats()
+    {byte_size(out), after_[:shared_bin_allocs] - before[:shared_bin_allocs], after_[:shared_bin_bytes] - before[:shared_bin_bytes], after_[:scalar_box_allocs] - before[:scalar_box_allocs]}
+  end
+
+  def record(i), do: %{id: i, name: "name number " <> Integer.to_string(i), note: "a \"quoted\" note\nwith a newline", tags: ["x", "y"]}
+end
+
+def main() do
+  IO.inspect({:ascii, Cost.of(String.duplicate("a", 1000))})
+  IO.inspect({:wide, Cost.of(String.duplicate("世", 333))})
+  IO.inspect({:escaped, Cost.of(String.duplicate("\"", 500))})
+  IO.inspect({:records, Cost.of(for i <- 1..100, do: Cost.record(i))})
+end
