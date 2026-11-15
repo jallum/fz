@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.212"
+  ],
   "blocks": [],
   "created": "2026-11-15T02:44:27Z",
   "description": "Step 3 of the fz-sc8.197 page. A table in the extern lowering (native_codegen/prim.rs): fz_op_{add,sub,mul}_ii as overflow-checked add/sub/mul, fz_op_{lt,lte,gt,gte,eq,neq}_ii as compares. Measured in a spike on #592: distiller no measurable change, byte walk -1.2%, index walk -3.0%; overflow output identical. The interpreter and the JIT must agree (three-path parity).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Integer arithmetic and comparison externs are emitted as instructions",
   "type": "task",
-  "updated_at": "2026-11-15T02:44:27Z"
+  "updated_at": "2026-11-15T02:44:30Z"
 }
