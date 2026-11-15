@@ -1656,3 +1656,43 @@ fn a_macro_run_makes_no_allocation_per_atom_the_node_holds() {
         "a node holding {NODE_ATOMS} atoms made {crowded} allocations against {bare} for an empty one"
     );
 }
+
+/// A thin function reference is one object for the run: materializing the
+/// same function twice yields the same word, it is a literal (read-only
+/// program data), and a collection and a send both leave it where it is.
+#[test]
+fn a_function_reference_materializes_to_one_literal_closure() {
+    use fz_runtime::any_value::ClosureDenotationId;
+    let denotation = ClosureDenotationId::user(0);
+    let mut sender = IrInterpRuntime::fresh_with_atoms(Vec::new()).take_process(1).unwrap();
+    let sender_ptr: *mut Process = &mut sender;
+    let fn_ref = AnyValue::FnRef(FnId(5), 1, denotation);
+
+    let first = fn_ref.as_any_value_ref(sender_ptr).unwrap();
+    let second = fn_ref.as_any_value_ref(sender_ptr).unwrap();
+    assert_eq!(first.raw_word(), second.raw_word(), "one object per function");
+    assert!(first.is_literal(), "it is read-only program data");
+    assert_ne!(
+        first.raw_word(),
+        AnyValue::FnRef(FnId(6), 1, denotation)
+            .as_any_value_ref(sender_ptr)
+            .unwrap()
+            .raw_word(),
+        "another function is another object"
+    );
+
+    let mut roots = [first];
+    sender.heap.collect(&mut roots);
+    assert_eq!(roots[0].raw_word(), first.raw_word(), "a collection leaves it in place");
+
+    let mut receiver = Process::with_node(
+        std::rc::Rc::clone(&sender.node),
+        std::rc::Rc::new(std::cell::RefCell::new(fz_runtime::heap::SchemaRegistry::new())),
+        2,
+        1000,
+    );
+    let view = sender.heap.view();
+    let mut forwarding = Default::default();
+    let copied = fz_runtime::heap::deep_copy_any_value_ref(first, &view, &mut receiver.heap, &mut forwarding);
+    assert_eq!(copied.raw_word(), first.raw_word(), "a send shares it");
+}

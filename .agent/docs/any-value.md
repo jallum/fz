@@ -54,8 +54,10 @@ owns packing, projection, and the platform difference behind the word.
   An int, float, pid or reference `AnyValue` has no address; `ref_word()` panics on one because
   it needs object-local storage before it can become a ref. An atom needs none:
   `ref_word()` answers `AnyValueRef::atom(id)`. The interpreter's
-  temporary `FnRef` view materializes a closure before a public boundary and
-  returns its tagged ref word; the heap object's raw storage address is not a ref.
+  temporary `FnRef` view materializes, before a public boundary, the node's one
+  static closure for its function (`Node::static_closure`, keyed by denotation,
+  arity and `FnId`) and returns its literal ref word; the object's raw storage
+  address is not a ref.
 - **Container object-local metadata**: each heap object stores payload words
   plus its own kind bytes (see Container Storage). This is *not* a reusable
   `{value, kind}` carrier — there is no public value model other than the ref.

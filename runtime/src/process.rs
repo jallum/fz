@@ -8,7 +8,7 @@
 //! register, the interpreter threads it as a parameter — so there is no
 //! ambient current-process and two schedulers can be live at once.
 
-use crate::any_value::ClosureDenotationId;
+use crate::any_value::{ClosureDenotationId, ValueKind, closure_header_word};
 use crate::function_denotation::FunctionDenotation;
 use crate::term_hash::name_hash;
 use std::cell::RefCell;
@@ -430,7 +430,18 @@ pub struct Node {
     /// directly, so the interior mutability stays an implementation detail.
     atoms: RefCell<AtomTable>,
     closure_denotations: RefCell<HashMap<ClosureDenotationId, ClosureOrigin>>,
+    static_closures: RefCell<HashMap<StaticClosureKey, Box<StaticClosure>>>,
 }
+
+/// What a zero-capture closure's header and code word say; one object exists
+/// per key.
+type StaticClosureKey = (ClosureDenotationId, u16, u64);
+
+/// A zero-capture closure outside every process heap: the header word and the
+/// code word, the whole of a heap closure with no captures. 16-aligned like a
+/// heap object.
+#[repr(C, align(16))]
+struct StaticClosure([u64; 2]);
 
 /// What the node keeps for a closure's denotation: its source origin, and the
 /// hash of that origin, computed once at registration.
@@ -444,6 +455,7 @@ impl Node {
         Self {
             atoms: RefCell::new(AtomTable::new(atoms)),
             closure_denotations: RefCell::new(HashMap::new()),
+            static_closures: RefCell::new(HashMap::new()),
         }
     }
 
@@ -512,6 +524,25 @@ impl Node {
                 .expect("registered denotation")
                 .origin,
         )
+    }
+
+    /// The one read-only closure with no captures that carries `code_word` as
+    /// its code, under `denotation` and `arity`. It lives as long as the node,
+    /// outside every process heap, and its ref carries the literal bit: a
+    /// collection leaves it in place and a deep copy shares it. Asking again
+    /// returns the same ref.
+    pub fn static_closure(&self, denotation: ClosureDenotationId, arity: u16, code_word: u64) -> AnyValueRef {
+        let mut table = self.static_closures.borrow_mut();
+        let object = table.entry((denotation, arity, code_word)).or_insert_with(|| {
+            let mut object = Box::new(StaticClosure([0; 2]));
+            object.0[0] = closure_header_word(denotation, 0, 0, arity);
+            object.0[1] = code_word;
+            object
+        });
+        let addr = &mut object.0 as *mut [u64; 2] as *mut u8;
+        AnyValueRef::from_heap_object(ValueKind::CLOSURE, addr)
+            .expect("a boxed object has an address")
+            .literal()
     }
 
     /// Intern an atom into the node-global table, returning its id.
