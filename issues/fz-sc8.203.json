@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-14T16:57:50Z",
-  "description": "A closure carried with differently instantiated surfaces gets two interned ids that are mutually subtype and render alike. canon_test's canon_is_faithful_over_the_full_arena_of_both_target_fixtures counts them as duplicate ids: 00567's ceiling is 15 (one pair inherited by the widened key %{1: atom}); 00420's is 142 after fz-sc8.176.\n\nMeasured at fz-sc8.176 (FZ_DUPS probe printing each class with more than one id): every duplicate class in 00420 carries a closure -- bare closures (closure[main/0#lambda@N/1]()), unions of closures, and arrows holding them ((list(int), {empty_list(), int}, closure[Enum.take_every/2#lambda@0/2](int)) -\u003e r0). .176 raised the ceiling 122 -\u003e 142 because a non-recursive key collapses an unasked list to its class, so each Enum *_while/*_every/*_positive wrapper gets a key arrow beside its evidence arrow, and each such arrow inherits its closure's pair.\n\nTarget: one id per type at the interning boundary, so both ceilings fall toward zero. First step: find where the second id is minted (closure_lit intersected with its surface vs the literal alone is the suspect) by printing both ids' descriptors for one 00420 pair.\n\nAcceptance: 00420 and 00567 ceilings lowered to what remains, with the cause; suite passes on all three paths.",
+  "description": "Every duplicate class counted by canon_test's ceilings (00420: 142, 00567: 15) is one closure literal whose arrow surface is read back. The views are minted (the closure's own variables), addressed (a key's positional variables, a2_p0) and instantiated (a contract's view). func_clause_empty compares literals by brand and captures, so the views are one set and separate ids.\n\nMeasured at develop c7edccd4a (full suite + 869-fixture job census):\n- Intern every literal at its minted surface: 00420 duplicate classes 108 -\u003e 5; 29 lib tests fail (callable_value_clauses and contract application read the instantiated surface).\n- Literal inclusion compares surfaces: 108 -\u003e 1; fixture 01143 and the distiller fail on all three paths (minted and addressed views of one value become different types); compile work 383,088 -\u003e 383,429 jobs (+0.09%).\n- Fold (args) -\u003e any into fun: keys read those parameters back (axis_test pins it); type and canon tests fail.\n\nOutcome: the ids cost identity, not work. canon_test's ceiling docs state the cause and the evidence. No pin moves. PR #594.",
   "id": "fz-sc8.203",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
   "status": "open",
-  "title": "A closure type is interned once, whatever surface it is carried with",
+  "title": "A closure type's duplicate ids are the views its readers take back out",
   "type": "bug",
-  "updated_at": "2026-11-14T16:57:50Z"
+  "updated_at": "2026-11-15T02:36:23Z"
 }
