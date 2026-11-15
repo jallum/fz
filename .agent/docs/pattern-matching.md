@@ -599,7 +599,8 @@ compiles. Fixtures `01304` through `01308` are the cases.
 `<<..., rest :: binary>>` binds `rest` as the subject's source binary and the
 bit position the fields before it end at. When `rest` is demanded `Matched`
 (only matched again or measured with `byte_size`), no binary is built: the next
-clause's reads and dispatch start at that position, and a use that needs a
-binary makes it whole. Interp, JIT and AOT agree. A `rest :: binary` that
+clause's reads and dispatch start at that position, a rest a dispatch matches
+is held in its state as the same cursor, and a use that needs a binary makes it
+whole. Interp, JIT and AOT agree. A `rest :: binary` that
 follows a field that ends between bytes matches whatever remains, as
 `bs_field_end` has no alignment check for a last binary segment.

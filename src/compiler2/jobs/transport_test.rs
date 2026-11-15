@@ -317,7 +317,7 @@ mod tests {
         let any = world.types_mut().any();
         let nothing = world.intern_shape(ShapeDescr::Nothing);
         let atom_lane = value_lane_shape(&mut world, atom);
-        let any_lane_id = value_lane(&mut world, any);
+        let any_lane_id = world.intern_value_lane(any);
         let any_lane = world.intern_shape(ShapeDescr::Lane(any_lane_id));
         let child = TransportLayout {
             structural: any_lane,
@@ -352,8 +352,8 @@ mod tests {
         let any = world.types_mut().any();
         let tuple_ty = world.types_mut().tuple(&[atom]);
         let nothing = world.intern_shape(ShapeDescr::Nothing);
-        let int_lane = value_lane(&mut world, int);
-        let any_lane = value_lane(&mut world, any);
+        let int_lane = world.intern_value_lane(int);
+        let any_lane = world.intern_value_lane(any);
         let mismatched = world.intern_shape(ShapeDescr::Tuple(Box::new([TransportLayout {
             structural: nothing,
             carrier: TransportCarrier::ValueRef(int_lane),
@@ -372,7 +372,7 @@ mod tests {
         let mut world = World::new();
         let int = world.types_mut().int();
         let tuple_ty = world.types_mut().tuple(&[int]);
-        let lane = value_lane(&mut world, int);
+        let lane = world.intern_value_lane(int);
         let scalar = world.intern_shape(ShapeDescr::Lane(lane));
         let structural_child = TransportLayout::structural(scalar);
         let carried_child = TransportLayout {

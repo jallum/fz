@@ -34,7 +34,6 @@ fn stub_activation_key(_types: &mut Types, input: Vec<super::types::Ty>) -> (Roo
     (root, function, activation)
 }
 
-#[derive(Default)]
 struct TestTransportShapes {
     transport: TransportStore,
 }
@@ -113,6 +112,12 @@ fn backend_program_rejects_duplicate_construction_owners() {
 }
 
 impl TestTransportShapes {
+    fn new(types: &mut Types) -> Self {
+        Self {
+            transport: TransportStore::new(types),
+        }
+    }
+
     fn scalar_shape(&mut self, ty: Ty) -> (ShapeId, LaneId) {
         let lane = self.transport.interners_mut().intern_lane(LaneDescr {
             ty,
@@ -128,7 +133,7 @@ fn compiler2_native_program_contract_test_shapes_use_one_interner() {
     let mut types = Types::new();
     let int = types.int();
     let float = types.float();
-    let mut shapes = TestTransportShapes::default();
+    let mut shapes = TestTransportShapes::new(&mut types);
     let (int_shape, _) = shapes.scalar_shape(int);
     let (float_shape, _) = shapes.scalar_shape(float);
 
@@ -170,7 +175,7 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     let mut types = Types::new();
     let int = types.int();
     let (_root, _, activation) = stub_activation_key(&mut types, vec![int]);
-    let mut shapes = TestTransportShapes::default();
+    let mut shapes = TestTransportShapes::new(&mut types);
     let (return_shape, _) = shapes.scalar_shape(int);
     let executable = ExecutableKey {
         activation,
@@ -319,7 +324,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
     let mut types = Types::new();
     let int = types.int();
     let (_, _, activation) = stub_activation_key(&mut types, vec![int]);
-    let mut shapes = TestTransportShapes::default();
+    let mut shapes = TestTransportShapes::new(&mut types);
     let (return_shape, _) = shapes.scalar_shape(int);
     let executable = ExecutableKey {
         activation,

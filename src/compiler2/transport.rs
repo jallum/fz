@@ -477,14 +477,29 @@ impl<W: Copy> BoundValue<W> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct TransportStore {
     interners: TransportInterners,
+    binary_cursor: ShapeId,
 }
 
 impl TransportStore {
-    pub fn new() -> Self {
-        Self::default()
+    /// A store that already holds the shape of a binary taken apart, so a
+    /// reader of a finished store, which cannot intern, still has it.
+    pub fn new(types: &mut Types) -> Self {
+        let mut interners = TransportInterners::default();
+        let binary = types.str_t();
+        let binary_cursor = interners.intern_cursor(types, binary);
+        Self {
+            interners,
+            binary_cursor,
+        }
+    }
+
+    /// The shape of a matched binary rest held as a source and a bit position:
+    /// the cursor of the type every binary field reads as.
+    pub fn binary_cursor(&self) -> ShapeId {
+        self.binary_cursor
     }
 
     pub fn interners(&self) -> &TransportInterners {
@@ -661,6 +676,24 @@ impl TransportInterners {
 
     pub fn intern_lane(&mut self, descr: LaneDescr) -> LaneId {
         self.lanes.intern(descr)
+    }
+
+    /// The one-word lane a value of `ty` travels in.
+    pub fn intern_value_lane(&mut self, types: &mut Types, ty: Ty) -> LaneId {
+        let ty = types.value_lane_repr(ty);
+        self.intern_lane(LaneDescr {
+            ty,
+            class: TransportClass::Value,
+        })
+    }
+
+    /// A binary taken apart travels as its source and the bit position its
+    /// rest starts at.
+    pub fn intern_cursor(&mut self, types: &mut Types, source_ty: Ty) -> ShapeId {
+        let source = self.intern_value_lane(types, source_ty);
+        let int = types.int();
+        let position = self.intern_value_lane(types, int);
+        self.intern_shape(ShapeDescr::Cursor { source, position })
     }
 
     pub fn lane(&self, id: LaneId) -> &LaneDescr {

@@ -4149,8 +4149,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             let value = if !consumed {
                 None
             } else if self.is_rest_read(&field) {
-                state.rests.insert(*field_subject, (subject_var, pos));
-                None
+                Some(NativeBoundValue::Transport {
+                    shape: self.world.binary_cursor_shape(),
+                    lanes: vec![subject_var, pos],
+                })
             } else {
                 Some(NativeBoundValue::Runtime(self.emit_bit_read(
                     ctx,
@@ -4268,9 +4270,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         state: &mut DispatchState,
         subject: SubjectId,
     ) -> Result<(Var, Option<Var>), FatalError> {
-        if let Some((source, position)) = state.rests.get(&subject) {
-            return Ok((*source, Some(*position)));
-        }
         if let NativeBoundValue::Transport { shape, lanes } = self.dispatch_subject_value(ctx, plan, state, subject)?
             && matches!(self.world.shape(*shape), ShapeDescr::Cursor { .. })
             && let [source, position] = lanes.as_slice()
@@ -4430,7 +4429,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     format!("dispatch subject {subject:?} carries no runtime value"),
                 ));
             }
-            NativeBoundValue::Transport { shape, lanes } => self.materialize_transport_value(ctx, *shape, lanes)?,
+            NativeBoundValue::Transport { shape, lanes } => {
+                let (shape, lanes) = (*shape, lanes.clone());
+                let var = self.materialize_transport_value(ctx, shape, &lanes)?;
+                // A cursor stays a cursor, so a later bit question still reads
+                // from its position; the binary built for it is remembered per
+                // block by `make_cursor_whole`.
+                if matches!(self.world.shape(shape), ShapeDescr::Cursor { .. }) {
+                    return Ok(var);
+                }
+                var
+            }
         };
         state.values.insert(subject, NativeBoundValue::Runtime(var));
         Ok(var)
@@ -4462,11 +4471,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         subject: SubjectId,
     ) -> Result<(), FatalError> {
         if state.values.contains_key(&subject) {
-            return Ok(());
-        }
-        if let Some((source, position)) = state.rests.remove(&subject) {
-            let whole = self.make_cursor_whole(ctx, source, position);
-            state.values.insert(subject, NativeBoundValue::Runtime(whole));
             return Ok(());
         }
         let Some(subject_data) = plan.graph.subjects.get(subject.0 as usize) else {
@@ -5656,11 +5660,6 @@ struct DispatchState {
     forwarded_args: Vec<Var>,
     bindings: DispatchBindings<Var>,
     values: HashMap<SubjectId, NativeBoundValue>,
-    /// The rests a bitstring region has matched and nothing has yet made into a
-    /// binary: the source binary and the position each starts at. A rest stays
-    /// here until something needs it whole, so a branch that never reads it
-    /// builds nothing, and a match over it starts at its position.
-    rests: HashMap<SubjectId, (Var, Var)>,
     /// The subjects the winning outcome reads, beyond what the decision asks.
     /// A bitstring field outside both is checked for fit and never built.
     outcome_reads: Vec<SubjectId>,
@@ -5673,7 +5672,6 @@ impl DispatchState {
             forwarded_args,
             bindings,
             values: HashMap::default(),
-            rests: HashMap::default(),
             outcome_reads: Vec::new(),
         }
     }
