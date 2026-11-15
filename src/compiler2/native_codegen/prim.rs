@@ -24,14 +24,14 @@ use fz_runtime::any_value::{
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::{
-    fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_bs_begin, fz_bs_field_spec, fz_bs_finalize,
-    fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_int_float_cmp, fz_list_cons_any,
-    fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin, fz_map_dest_begin_update,
-    fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_dest_put_ref, fz_map_get_atom_key_ref,
-    fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_map_named_schema_ref, fz_matcher_map_get_ref,
-    fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref,
-    fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref, fz_try_pop, fz_value_cmp_raw_const,
-    fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_bs_begin, fz_bs_field_end, fz_bs_field_spec,
+    fz_bs_finalize, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_int_float_cmp,
+    fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
+    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_dest_put_ref,
+    fz_map_get_atom_key_ref, fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_map_named_schema_ref,
+    fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int,
+    fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref, fz_try_pop,
+    fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::ir_runtime::{fz_box_opaque_for_any, fz_unbox_opaque};
 use fz_runtime::procbin::{
@@ -610,7 +610,10 @@ enum MatchExtent {
     Rest,
     /// No extent: an unsized `binary` or `bits` field that is not the last.
     Never,
-    /// A float or UTF field, which the runtime refuses when it reads.
+    /// A `utf8` field: its bytes say how wide it is, so only the runtime that
+    /// reads them can say where it ends (`BitFieldEnd`).
+    Bytes,
+    /// A `utf16` or `utf32` field, which the runtime refuses when it reads.
     Unsupported,
 }
 
@@ -633,6 +636,28 @@ fn emit_match_field_size<M: cranelift_module::Module>(
         }
     };
     Some(body.b.ins().uextend(types::I64, narrow))
+}
+
+/// The operands the runtime's field functions take: the field's packed spec and
+/// its size, which is 0 when the field names none.
+fn emit_runtime_field_operands<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    field: &BitMatchField,
+) -> (ir::Value, ir::Value) {
+    let size_value = match emit_match_field_size(body, var_env, &field.size) {
+        Some(size) => body.b.ins().ireduce(types::I32, size),
+        None => body.b.ins().iconst(types::I32, 0),
+    };
+    let field_spec = fz_bs_field_spec(
+        encode_bit_type(field.ty),
+        field.size.is_some() as u32,
+        field.unit.unwrap_or(default_unit_for(field.ty)),
+        encode_endian(field.endian),
+        field.signed as u32,
+        field.is_last as u32,
+    );
+    (body.b.ins().iconst(types::I64, field_spec as i64), size_value)
 }
 
 fn match_field_extent<M: cranelift_module::Module>(
@@ -659,7 +684,8 @@ fn match_field_extent<M: cranelift_module::Module>(
             (None, true) => MatchExtent::Rest,
             (None, false) => MatchExtent::Never,
         },
-        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => MatchExtent::Unsupported,
+        BitType::Utf8 => MatchExtent::Bytes,
+        BitType::Utf16 | BitType::Utf32 => MatchExtent::Unsupported,
     }
 }
 
@@ -854,6 +880,7 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
             let fits = match match_field_extent(body, var_env, field) {
                 MatchExtent::Never => body.b.ins().iconst(types::I8, 0),
                 MatchExtent::Rest | MatchExtent::Unsupported => body.b.ins().iconst(types::I8, 1),
+                MatchExtent::Bytes => panic!("BitFieldFits is asked of a utf8 field: its end is BitFieldEnd's"),
                 MatchExtent::Bits(total) => {
                     let end = body.b.ins().iadd(pos, total);
                     let within = body.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, end, bit_len);
@@ -884,36 +911,33 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
             };
             LowerOut::RawI64(body.b.ins().iadd(pos, total))
         }
+        Prim::BitFieldEnd { source, pos, field } => {
+            let source_ref = body.tagged_var(var_env, source.0);
+            let pos = body.as_raw_i64(var_env, pos.0);
+            let (field_spec, size_value) = emit_runtime_field_operands(body, var_env, field);
+            LowerOut::RawI64(runtime_call1!(
+                body,
+                fz_bs_field_end,
+                [field_spec, size_value, pos, source_ref]
+            ))
+        }
         Prim::BitReadField { source, pos, field } => {
             let source_ref = body.tagged_var(var_env, source.0);
             let pos = body.as_raw_i64(var_env, pos.0);
-            let size_value = match emit_match_field_size(body, var_env, &field.size) {
-                Some(size) => body.b.ins().ireduce(types::I32, size),
-                None => body.b.ins().iconst(types::I32, 0),
-            };
-            let field_spec = fz_bs_field_spec(
-                encode_bit_type(field.ty),
-                field.size.is_some() as u32,
-                field.unit.unwrap_or(default_unit_for(field.ty)),
-                encode_endian(field.endian),
-                field.signed as u32,
-                field.is_last as u32,
-            );
-            let field_spec = body.b.ins().iconst(types::I64, field_spec as i64);
-            match field.ty {
-                BitType::Integer => LowerOut::RawI64(runtime_call1!(
+            let (field_spec, size_value) = emit_runtime_field_operands(body, var_env, field);
+            if field.ty.reads_as_integer() {
+                LowerOut::RawI64(runtime_call1!(
                     body,
                     fz_bs_read_int_ref,
                     [source_ref, pos, field_spec, size_value]
-                )),
-                _ => {
-                    let process = body.process_arg();
-                    LowerOut::ValueRef(runtime_call1!(
-                        body,
-                        fz_bs_read_binary_ref,
-                        [process, source_ref, pos, field_spec, size_value]
-                    ))
-                }
+                ))
+            } else {
+                let process = body.process_arg();
+                LowerOut::ValueRef(runtime_call1!(
+                    body,
+                    fz_bs_read_binary_ref,
+                    [process, source_ref, pos, field_spec, size_value]
+                ))
             }
         }
         _ => unreachable!("lower_bit_match_prim: not a bit match prim"),
@@ -1319,6 +1343,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::BitReadByteInt { .. }
         | Prim::BitFieldFits { .. }
         | Prim::BitFieldNext { .. }
+        | Prim::BitFieldEnd { .. }
         | Prim::BitReadField { .. } => lower_bit_match_prim(body, var_env, prim, dest_var),
         Prim::MakeFnRef(_, fn_id) => lower_make_fn_ref(body, env, *fn_id),
         Prim::MakeClosure(_, fn_id, captured) => lower_make_closure(body, env, var_env, *fn_id, captured),

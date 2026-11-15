@@ -2071,13 +2071,12 @@ fn eval_steps<T: Telemetry + ?Sized>(
                         pos,
                         field_spec,
                         size_value,
-                        spec.ty == crate::ast::BitType::Integer,
+                        spec.ty.reads_as_integer(),
                     )?;
                     env.insert(*value, BackendBoundValue::Runtime(read));
                 }
                 if let Some(next) = next {
-                    let bit_len = fz_runtime::ir_runtime::fz_bs_bit_len_ref(source_ref);
-                    let end = fz_runtime::ir_runtime::bs_field_end(field_spec, size_value, pos, bit_len)
+                    let end = fz_runtime::ir_runtime::bs_field_end(field_spec, size_value, pos, source_ref)
                         .ok_or_else(|| "a clause body reads a bitstring field its dispatch proved".to_string())?;
                     env.insert(*next, BackendBoundValue::Runtime(AnyValue::Int(end as i64)));
                 }

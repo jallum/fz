@@ -368,7 +368,9 @@ width or the first byte offset at which that prefix becomes impossible. The
 whole-binary `fz_bitstring_valid_utf8` folds that decision over the input;
 `fz_bitstring_utf8_prefix` exposes one decision to `Utf8.next/1`, which returns
 a branded codepoint or the original suffix beginning at the offending byte.
-Parsers consume that suffix to recover a source offset. They do not carry a
+A `<<c :: utf8, rest :: binary>>` match segment reaches the same decision
+through `bs_field_end` (the segment's end, or a miss) and `utf8_scalar_at`
+(the scalar it binds) on every path. Parsers consume that suffix to recover a source offset. They do not carry a
 second UTF-8 table or validate a whole document before its syntax is parsed.
 
 **UTF-8 scalar encoding** — owner `encode_utf8` (`runtime/src/bitstr.rs`),

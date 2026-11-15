@@ -259,6 +259,14 @@ pub(crate) enum BitstringFieldKind {
     Utf32,
 }
 
+impl BitstringFieldKind {
+    /// A match binds this field's value as an integer: an `integer`'s bits, or
+    /// the scalar value a `utf8` field decodes.
+    pub(crate) fn reads_as_integer(self) -> bool {
+        matches!(self, BitstringFieldKind::Integer | BitstringFieldKind::Utf8)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum BitstringFieldSize {
     Literal(u32),

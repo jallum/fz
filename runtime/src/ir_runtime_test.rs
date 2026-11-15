@@ -371,6 +371,48 @@ fn utf8_prefix_accepts_every_unicode_scalar() {
 }
 
 #[test]
+fn utf8_scalar_at_reads_every_unicode_scalar_at_any_bit_offset() {
+    let mut buffer = [0; 4];
+    for scalar in 0..=char::MAX as u32 {
+        let Some(codepoint) = char::from_u32(scalar) else {
+            continue;
+        };
+        let encoded = codepoint.encode_utf8(&mut buffer).as_bytes();
+        let bits = encoded.len() as u64 * 8;
+        assert_eq!(utf8_scalar_at(encoded, 0, bits), Some((scalar, bits)), "U+{scalar:04X}");
+    }
+    // U+00E9 (C3 A9) written after three bits of padding.
+    let unaligned = [0b0001_1000, 0b0111_0101, 0b0010_0000];
+    assert_eq!(utf8_scalar_at(&unaligned, 3, 19), Some((0xe9, 16)));
+    assert_eq!(
+        utf8_scalar_at(&unaligned, 3, 18),
+        None,
+        "a truncated bit is a truncated sequence"
+    );
+}
+
+#[test]
+fn utf8_scalar_at_misses_what_elixir_rejects() {
+    let rejected: &[&[u8]] = &[
+        &[],
+        &[0x80],
+        &[0xc0, 0x80],
+        &[0xe0, 0x80, 0x80],
+        &[0xed, 0xa0, 0x80],
+        &[0xf4, 0x90, 0x80, 0x80],
+        &[0xf8, 0x88, 0x80, 0x80, 0x80],
+        &[0xe2, 0x82],
+    ];
+    for bytes in rejected {
+        assert_eq!(
+            utf8_scalar_at(bytes, 0, bytes.len() as u64 * 8),
+            None,
+            "bytes={bytes:?}"
+        );
+    }
+}
+
+#[test]
 fn fz_bitstring_utf8_prefix_exposes_width_or_encoded_error_offset() {
     with_process(|process| {
         let cases: &[(&[u8], i64)] = &[
