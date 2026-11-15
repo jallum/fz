@@ -1238,10 +1238,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                                 executable,
                                 env,
                                 *value,
-                                NativeBoundValue::Transport {
-                                    shape,
-                                    lanes: lanes.into(),
-                                },
+                                NativeBoundValue::Transport { shape, lanes },
                             );
                         }
                     } else {
@@ -1409,7 +1406,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             *value,
                             NativeBoundValue::Transport {
                                 shape,
-                                lanes: smallvec::SmallVec::new(),
+                                lanes: Vec::new(),
                             },
                         );
                     }
@@ -1482,7 +1479,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             *value,
                             NativeBoundValue::Transport {
                                 shape,
-                                lanes: capture_lanes.into(),
+                                lanes: capture_lanes,
                             },
                         );
                     }
@@ -1583,7 +1580,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             let shape = value_shape(executable, *value);
                             let bound = NativeBoundValue::Transport {
                                 shape,
-                                lanes: smallvec::smallvec![source, pos],
+                                lanes: vec![source, pos],
                             };
                             bind_local_value(ctx, executable, env, *value, bound);
                         } else {
@@ -3142,10 +3139,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let end = lane_index.checked_add(width).ok_or(FatalError)?;
                 let lanes = params.get(*lane_index..end).ok_or(FatalError)?.to_vec();
                 *lane_index = end;
-                Ok(NativeBoundValue::Transport {
-                    shape,
-                    lanes: lanes.into(),
-                })
+                Ok(NativeBoundValue::Transport { shape, lanes })
             }
         }
     }
@@ -5070,7 +5064,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             ShapeDescr::Lane(_) => NativeBoundValue::Runtime(first_lane()?),
             ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) | ShapeDescr::Cursor { .. } => NativeBoundValue::Transport {
                 shape: field.structural,
-                lanes: field_lanes.iter().copied().collect(),
+                lanes: field_lanes.to_vec(),
             },
         })
     }
