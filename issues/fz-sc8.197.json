@@ -39,11 +39,15 @@
     {
       "text": "X3 result (develop c7edccd4a, release, switch FZ_SPIKE_GUARDCMP in a throwaway worktree; two edits: guard_expr_from_ast and walk_guard_calls).\n- == and != in guards routed to Kernel.==/!=: builds; small probe output identical; distiller stdout identical; run 27.75G vs 27.76G instructions (no change); compile 16.17G -\u003e 16.30G (+0.8%); binary +16,560 bytes. Prediction 2 held (under 1%).\n- \u003c \u003c= \u003e \u003e= routed to Kernel: refused, 'compiler2 guard helper cycle detected: \u003c/2 -\u003e \u003c/2' at Kernel.fz:1168. Prediction 1 held for the ordering family, not for equality (its last clause calls the extern fz_op_eq, no self reference).\n- Cause of the cycle: the last clause is 'compare(left, right) \u003c 0'; a guard helper is reified untyped, so the inner \u003c (integer \u003c integer) names the whole function again. A body does not have this problem because it selects the clause by type. Typed extern heads give the guard the same selection.\n- Also read: a body already sends all eleven operators to Kernel (direct_operator_name in jobs/body.rs); a guard sends five (arithmetic_function). The two tables are one question asked twice.",
       "timestamp": "2026-11-15T02:10:45Z"
+    },
+    {
+      "text": "X4 typed heads (the first half of an extern head). Typed clause heads already exist ('def is_integer(_ :: integer), do: true'). Experiment: rewrite the 48 Kernel clauses of the form 'def left OP right when is_T(left) and is_U(right), do: fz_op_*(...)' as 'def (left :: T) OP (right :: U), do: fz_op_*(...)'. Predictions before the run: (1) it builds and distiller stdout is identical; (2) compile instructions fall by 0.5% or more (no is_integer/is_float guard helpers to plan); (3) run instructions within 0.3%; (4) with FZ_SPIKE_GUARDCMP=all the cycle on \u003c/2 remains, because the helper is still reified without argument types.",
+      "timestamp": "2026-11-15T02:11:38Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Arithmetic on known integers does not go through a continuation",
   "type": "task",
-  "updated_at": "2026-11-15T02:10:45Z"
+  "updated_at": "2026-11-15T02:11:38Z"
 }
