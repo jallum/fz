@@ -1,0 +1,49 @@
+#---
+# purpose: "a rest that a closure captures, a continuation holds across a call that allocates, or a message carries is the binary it stands for after the heap has moved"
+# kind: run
+# oracle: 01183_a_rest_held_across_a_collection_or_a_message_is_the_binary_it_stands_for.oracle.exs
+# oracle.stamp: f540363751bb04a4
+#---
+#
+# A rest is the binary it is read from and a bit position. A collection moves
+# the binary and leaves the position alone, so a rest kept in a closure or in
+# a frame that outlives allocation still reads from the right byte.
+defmodule Held do
+  def churn(0, acc), do: length(acc)
+  def churn(n, acc), do: churn(n - 1, [{n, n} | Enum.take(acc, 3)])
+
+  # The rest is captured by a closure that runs after the churn.
+  def reader(<<_, rest :: binary>>), do: fn -> rest end
+  def reader(_), do: fn -> :none end
+
+  # The rest is live in a continuation across a call that allocates.
+  def across(<<head, rest :: binary>>) do
+    churn(20_000, [])
+    {head, rest}
+  end
+
+  # The rest is read after the churn, in the walk that holds it.
+  def walk_across(<<head, rest :: binary>>, sum) do
+    churn(200, [])
+    walk_across(rest, sum + head)
+  end
+
+  def walk_across(<<>>, sum), do: sum
+
+  # The rest is sent to another process and sent back.
+  def echo(<<_, rest :: binary>>) do
+    parent = self()
+    pid = spawn(fn -> receive do msg -> send(parent, {:got, msg}) end end)
+    send(pid, rest)
+    receive do {:got, msg} -> msg end
+  end
+end
+
+bytes = String.duplicate("0123456789", 20)
+reader = Held.reader(bytes)
+Held.churn(20_000, [])
+IO.inspect(reader.() === String.slice(bytes, 1, 199))
+IO.inspect(Held.across(bytes) === {?0, String.slice(bytes, 1, 199)})
+IO.inspect(Held.walk_across(bytes, 0))
+IO.inspect(Held.echo("hello"))
+IO.inspect(Held.echo(bytes) === String.slice(bytes, 1, 199))

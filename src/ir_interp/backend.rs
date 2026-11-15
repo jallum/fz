@@ -1033,8 +1033,59 @@ fn step_extern_executable(
             );
         }
     }
-    let value = call_lowered_extern(runtime, signature, extern_marshals, args)?;
+    let words = extern_argument_words(executable, signature, args)?;
+    let value = call_lowered_extern(runtime, signature, extern_marshals, &words)?;
     continue_after_extern(runtime, transport, program, value, continuations)
+}
+
+/// A dispatch input in the form it is held: a cursor stays a cursor, so the
+/// dispatch asks of it what it can without the binary being made, and every
+/// other value is the word it is.
+fn held_or_whole(
+    transport: &TransportStore,
+    proc: *mut Process,
+    env: &Frame,
+    value: ValueId,
+) -> Result<BackendBoundValue, String> {
+    match env_get_value(env, value)? {
+        held @ BackendBoundValue::Transport { shape, .. }
+            if matches!(transport.interners().shape(*shape), ShapeDescr::Cursor { .. }) =>
+        {
+            Ok(held.clone())
+        }
+        _ => env_get(transport, proc, env, value).map(BackendBoundValue::Runtime),
+    }
+}
+
+/// The words an extern receives. An input that arrives as two lanes is a
+/// cursor, which a `binary_cursor` parameter takes as its source and position;
+/// a whole binary there is itself at position 0. Every other input is its one
+/// lane.
+fn extern_argument_words(
+    executable: &BackendExecutable,
+    signature: &crate::compiler2::LoweredExtern,
+    lanes: &[AnyValue],
+) -> Result<Vec<AnyValue>, String> {
+    let mut remaining = lanes.iter().copied();
+    let mut words = Vec::with_capacity(lanes.len());
+    for input in executable.abi.semantic_inputs.iter() {
+        let own = remaining.by_ref().take(input.layout.reprs.len()).collect::<Vec<_>>();
+        let wire = signature.params.get(input.semantic_index);
+        match (wire, own.as_slice()) {
+            (Some(crate::fz_ir::ExternTy::BinaryCursor), [whole]) => words.extend([*whole, AnyValue::Int(0)]),
+            (_, [word]) => words.push(*word),
+            (Some(crate::fz_ir::ExternTy::BinaryCursor), [source, position]) => words.extend([*source, *position]),
+            _ => {
+                return Err(format!(
+                    "extern `{}` argument {} arrives in {} lanes, which its wire type does not read",
+                    signature.symbol,
+                    input.semantic_index,
+                    own.len()
+                ));
+            }
+        }
+    }
+    Ok(words)
 }
 
 fn raise_unmatched_entry(
@@ -1243,17 +1294,17 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         .chain(args.iter().map(|arg| arg.value))
                         .enumerate()
                         .map(|(index, input)| {
-                            let value = if dispatch.plan.required_input(index) {
-                                env_get(transport, runtime.cur_proc(), &env, input).map_err(|error| {
+                            let bound = if dispatch.plan.required_input(index) {
+                                held_or_whole(transport, runtime.cur_proc(), &env, input).map_err(|error| {
                                     format!(
                                         "backend dispatch call requires input {index} value {}: {error}",
                                         input.as_u32()
                                     )
                                 })?
                             } else {
-                                interp_nil_value()
+                                BackendBoundValue::Runtime(interp_nil_value())
                             };
-                            Ok(Some(BackendBoundValue::Runtime(value)))
+                            Ok(Some(bound))
                         })
                         .collect::<Result<Vec<_>, String>>()?;
                     let values = dispatch_values(
@@ -2054,11 +2105,13 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 spec,
             } => {
                 let proc = runtime.cur_proc();
-                let source_ref = env_get(transport, proc, env, *source)?.as_ref_word(proc)?;
-                let pos = env_get(transport, proc, env, *pos)?
+                let (source_value, base) = bit_source_and_base(transport, proc, env, *source)?;
+                let source_ref = source_value.as_ref_word(proc)?;
+                let relative = env_get(transport, proc, env, *pos)?
                     .as_i64()
                     .ok_or_else(|| "bitstring position must be an integer".to_string())?
                     as u64;
+                let pos = base + relative;
                 let (size_present, size_value) = backend_bit_size_value(transport, proc, env, &spec.size)?;
                 let field_spec = fz_runtime::ir_runtime::fz_bs_field_spec(
                     backend_bit_type_tag(spec.ty),
@@ -2069,25 +2122,64 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     next.is_none() as u32,
                 );
                 if let Some(value) = value {
-                    let read = interp_read_bit_field(
-                        proc,
-                        source_ref,
-                        pos,
-                        field_spec,
-                        size_value,
-                        spec.ty.reads_as_integer(),
-                    )?;
-                    env.insert(*value, BackendBoundValue::Runtime(read));
+                    let is_rest = next.is_none()
+                        && spec.size.is_none()
+                        && matches!(spec.ty, crate::ast::BitType::Binary | crate::ast::BitType::Bits);
+                    let cursor_shape = executable
+                        .abi
+                        .value_layouts
+                        .get(value)
+                        .map(|layout| layout.structural)
+                        .filter(|shape| matches!(transport.interners().shape(*shape), ShapeDescr::Cursor { .. }));
+                    let bound = match cursor_shape {
+                        Some(shape) if is_rest => BackendBoundValue::Transport {
+                            shape,
+                            lanes: vec![source_value, AnyValue::Int(pos as i64)],
+                        },
+                        _ => BackendBoundValue::Runtime(interp_read_bit_field(
+                            proc,
+                            source_ref,
+                            pos,
+                            field_spec,
+                            size_value,
+                            spec.ty.reads_as_integer(),
+                        )?),
+                    };
+                    env.insert(*value, bound);
                 }
                 if let Some(next) = next {
                     let end = fz_runtime::ir_runtime::bs_field_end(field_spec, size_value, pos, source_ref)
                         .ok_or_else(|| "a clause body reads a bitstring field its dispatch proved".to_string())?;
-                    env.insert(*next, BackendBoundValue::Runtime(AnyValue::Int(end as i64)));
+                    env.insert(*next, BackendBoundValue::Runtime(AnyValue::Int((end - base) as i64)));
                 }
             }
         }
     }
     Ok(())
+}
+
+/// The binary a match reads and the bit position its reads are counted from:
+/// the source and position of a cursor, or a whole binary and zero.
+fn bit_source_and_base(
+    transport: &TransportStore,
+    proc: *mut Process,
+    env: &Frame,
+    source: ValueId,
+) -> Result<(AnyValue, u64), String> {
+    match env_get_value(env, source)? {
+        BackendBoundValue::Transport { shape, lanes }
+            if matches!(transport.interners().shape(*shape), ShapeDescr::Cursor { .. }) =>
+        {
+            let [source, position] = lanes.as_slice() else {
+                return Err("a cursor has a source and a position".to_string());
+            };
+            let position = position
+                .as_i64()
+                .ok_or_else(|| "a cursor position must be an integer".to_string())?;
+            Ok((*source, position as u64))
+        }
+        held => Ok((materialize_backend_value(transport, proc, held)?, 0)),
+    }
 }
 
 fn rebuild_backend_list_from_source(
@@ -3015,6 +3107,10 @@ pub(super) fn materialize_transport_value(
             .first()
             .copied()
             .ok_or_else(|| format!("backend transport shape {shape:?} has no runtime lane")),
+        ShapeDescr::Cursor { .. } => match lanes {
+            [source, position] => materialize_cursor(proc, *source, *position),
+            _ => Err(format!("backend cursor {shape:?} has {} lanes, not two", lanes.len())),
+        },
         ShapeDescr::Tuple(_) => {
             let fields = transport_field_views(transport, shape, lanes)?;
             make_tuple_on_proc(
@@ -3043,6 +3139,23 @@ pub(super) fn materialize_transport_value(
             Err("direct-only callable transport has no published runtime environment".into())
         }
     }
+}
+
+/// The binary a cursor stands for: the rest of its source from the position.
+pub(super) fn materialize_cursor(proc: *mut Process, source: AnyValue, position: AnyValue) -> Result<AnyValue, String> {
+    let position = position
+        .as_i64()
+        .ok_or_else(|| "a cursor position must be an integer".to_string())? as u64;
+    let source_ref = source.as_ref_word(proc)?;
+    let rest = fz_runtime::ir_runtime::fz_bs_field_spec(
+        backend_bit_type_tag(crate::ast::BitType::Binary),
+        0,
+        backend_default_bit_unit(crate::ast::BitType::Binary),
+        backend_endian_tag(crate::ast::Endian::Big),
+        0,
+        1,
+    );
+    interp_read_bit_field(proc, source_ref, position, rest, 0, false)
 }
 
 fn encode_call_args(
@@ -3192,6 +3305,20 @@ fn encode_runtime_value(
             lanes.push(materialize_backend_value(transport, proc, value)?);
             Ok(())
         }
+        ShapeDescr::Cursor { .. } => {
+            match value {
+                BackendBoundValue::Transport { shape, lanes: held }
+                    if matches!(transport.interners().shape(*shape), ShapeDescr::Cursor { .. }) =>
+                {
+                    lanes.extend(held.iter().copied());
+                }
+                BackendBoundValue::Runtime(source) => lanes.extend([*source, AnyValue::Int(0)]),
+                BackendBoundValue::Absent | BackendBoundValue::Transport { .. } => {
+                    return Err("a cursor layout was handed a value that is neither a binary nor a cursor".to_string());
+                }
+            }
+            Ok(())
+        }
         ShapeDescr::Tuple(fields) => {
             let tuple_fields = tuple_field_values_for_encoding(transport, proc, value, fields)?;
             for (field_value, field_layout) in tuple_fields.iter().zip(fields.iter().copied()) {
@@ -3238,7 +3365,7 @@ fn encode_transport_layout(
             }
             Ok(())
         }
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => {
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) | ShapeDescr::Cursor { .. } => {
             encode_runtime_value(transport, program, proc, value, shape, lanes)
         }
     }
@@ -3284,7 +3411,7 @@ fn decode_transport_layout(
             let value = next_runtime_lane(args, lane_index)?;
             Ok(BackendBoundValue::Runtime(value))
         }
-        ShapeDescr::Callable(_) | ShapeDescr::Tuple(_) => {
+        ShapeDescr::Callable(_) | ShapeDescr::Tuple(_) | ShapeDescr::Cursor { .. } => {
             let width = transport.interners().shape_width(shape);
             let lanes = take_runtime_lanes(args, lane_index, width)?;
             decode_backend_value_from_lanes(transport, shape, lanes)
@@ -3337,7 +3464,7 @@ fn decode_backend_value_from_lanes(
                 .first()
                 .ok_or_else(|| format!("backend scalar transport shape {shape:?} has no runtime lane"))?,
         ),
-        ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => BackendBoundValue::Transport {
+        ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) | ShapeDescr::Cursor { .. } => BackendBoundValue::Transport {
             shape,
             lanes: lanes.to_vec(),
         },

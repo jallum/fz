@@ -2807,8 +2807,8 @@ fn call_target_summary(
     }
 }
 
-fn callee_extern_params(world: &World, function: FunctionId) -> Option<usize> {
-    world.extern_wire(function).map(|signature| signature.params.len())
+fn callee_extern_params(world: &World, function: FunctionId) -> Option<Vec<crate::fz_ir::ExternTy>> {
+    world.extern_wire(function).map(|signature| signature.params)
 }
 
 fn value_ty(values: &SemanticValues, value: ValueId) -> Option<Ty> {

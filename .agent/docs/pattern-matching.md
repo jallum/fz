@@ -593,3 +593,13 @@ unused bindings of each clause, judged on its own, and emits them through
 `emit_warning_once`. Only a lowered function warns: a function the program
 never reaches is never lowered, where Elixir warns for every function it
 compiles. Fixtures `01304` through `01308` are the cases.
+
+## A rest that is only matched is a cursor
+
+`<<..., rest :: binary>>` binds `rest` as the subject's source binary and the
+bit position the fields before it end at. When `rest` is demanded `Matched`
+(only matched again or measured with `byte_size`), no binary is built: the next
+clause's reads and dispatch start at that position, and a use that needs a
+binary makes it whole. Interp, JIT and AOT agree. A `rest :: binary` that
+follows a field that ends between bytes matches whatever remains, as
+`bs_field_end` has no alignment check for a last binary segment.

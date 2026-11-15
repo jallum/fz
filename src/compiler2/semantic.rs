@@ -96,9 +96,9 @@ pub struct CallTargetSummary {
     /// compiler-owned. Provider boundaries do not name a compiler2 activation.
     pub activation: Option<ActivationKey>,
     pub activation_inputs: Option<Vec<Ty>>,
-    /// Fixed positional inputs consumed by an extern body; absent for ordinary
-    /// executables and provider boundaries.
-    pub extern_params: Option<usize>,
+    /// The wire type of each fixed positional input an extern body consumes;
+    /// absent for ordinary executables and provider boundaries.
+    pub extern_params: Option<Vec<crate::fz_ir::ExternTy>>,
     /// `None` means the callee has produced no return evidence yet — an
     /// honest snapshot mid-ascent. Settledness guarantees resolution before
     /// consumers read; at the fixpoint a still-`None` return *is* the empty
@@ -405,7 +405,7 @@ fn extend_missing<T: Ord + Clone>(set: &mut BTreeSet<T>, other: &BTreeSet<T>) {
 
 /// AXIS 1 — how much of a value's *data representation* a consumer needs.
 ///
-/// A pure join-semilattice: `Ignore` is bottom, `Whole` is the absorbing top,
+/// A pure join-semilattice: `Ignore` is bottom, `Matched` is the absorbing top,
 /// and `TupleFields` joins pointwise. The field vector is a PREFIX — a consumer
 /// that reads field 0 names one field, and one that reads field 1 names two, so
 /// the vectors two consumers of one tuple state are rarely the same length.
@@ -418,11 +418,21 @@ fn extend_missing<T: Ord + Clone>(set: &mut BTreeSet<T>, other: &BTreeSet<T>) {
 /// A field reading is bounded: one that asks for more than
 /// `TUPLE_LANE_BUDGET` lanes is `Whole`. Every producer of the value hears
 /// the same demand, so none of them leaves out a field the box needs.
+///
+/// `Matched` says that somebody takes a binary apart with a match. It sits
+/// above `Whole`: a binary that is matched here and needed whole there still
+/// travels as a source and a position, and the use that needs it whole makes
+/// it one. A value that is not a proven binary reads `Matched` as `Whole`, and
+/// so does every consumer that has no cursor to offer, which is why the join
+/// of `Matched` with a tuple reading keeps `Matched`: the two lanes of a
+/// cursor exist only for a type that is a binary, and the tuple reading is
+/// then about a value this one is not.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum ShapeDemand {
     #[default]
     Ignore,
     Whole,
+    Matched,
     TupleFields(Vec<RuntimeDemand>),
 }
 
@@ -440,6 +450,12 @@ impl ShapeDemand {
         matches!(self, Self::Ignore)
     }
 
+    /// Whether the consumer reads the value's own representation, by holding
+    /// it or by matching it: a callable read this way has escaped.
+    pub fn reads_the_value(&self) -> bool {
+        matches!(self, Self::Whole | Self::Matched)
+    }
+
     /// This demand read against a tuple of `arity` fields: one demand per
     /// field, in order.
     ///
@@ -452,7 +468,7 @@ impl ShapeDemand {
     pub fn field_prefix(&self, arity: usize) -> Option<Vec<RuntimeDemand>> {
         let mut fields = match self {
             Self::TupleFields(fields) => fields.clone(),
-            Self::Whole => vec![RuntimeDemand::whole(); arity],
+            Self::Whole | Self::Matched => vec![RuntimeDemand::whole(); arity],
             Self::Ignore => return None,
         };
         fields.resize_with(arity, RuntimeDemand::ignore);
@@ -486,6 +502,8 @@ impl ShapeDemand {
         match self {
             Self::Ignore => 0,
             Self::Whole => 1,
+            // A cursor: the source binary and a position.
+            Self::Matched => 2,
             Self::TupleFields(fields) => fields
                 .iter()
                 .map(|field| field.shape.lanes().max(usize::from(field.is_callable())))
@@ -501,6 +519,8 @@ impl ShapeDemand {
     fn join_assign(&mut self, other: &Self) {
         match (&mut *self, other) {
             (_, Self::Ignore) => self.normalize(),
+            (Self::Matched, _) => {}
+            (_, Self::Matched) => *self = Self::Matched,
             (Self::Whole, _) => {}
             (Self::Ignore, _) => *self = other.clone().normalized(),
             (_, Self::Whole) => *self = Self::Whole,
@@ -546,6 +566,15 @@ impl RuntimeDemand {
     pub fn whole() -> Self {
         Self {
             shape: ShapeDemand::Whole,
+            callable: CallableDemand::default(),
+        }
+    }
+
+    /// A binary that a match takes apart: the whole value where something
+    /// needs it, and a source and a position everywhere else.
+    pub fn matched() -> Self {
+        Self {
+            shape: ShapeDemand::Matched,
             callable: CallableDemand::default(),
         }
     }

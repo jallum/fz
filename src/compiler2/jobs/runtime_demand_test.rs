@@ -473,3 +473,172 @@ mod tests {
         );
     }
 }
+
+/// What a binary is asked to be, as the answers of a whole program say it.
+mod binary_demand {
+    use super::*;
+    use crate::compiler2::{ExecutableNeed, World};
+    use crate::telemetry::ConfiguredTelemetry;
+
+    /// The input demands of every executable of the function called `name`,
+    /// after the program has settled its backend product.
+    fn input_demands_of(source: &str, name: &str) -> Vec<Vec<ShapeDemand>> {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        world.submit_code(Some("binary_demand.fz".to_string()), source.to_string());
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        let mut sessions = crate::compiler2::pull::ProductSessions::default();
+        crate::compiler2::product_drive::drive_retained_root_backend_product(
+            &mut world,
+            &tel,
+            &mut sessions,
+            root,
+            None,
+        )
+        .expect("the program should settle its backend product");
+        world
+            .runtime_demand_facts()
+            .filter(|(key, _)| world.function_surface(key.activation.function).name == name)
+            .map(|(_, demand)| demand.input_demands.iter().map(|d| d.shape.clone()).collect())
+            .collect()
+    }
+
+    fn only_input(source: &str, name: &str, index: usize) -> ShapeDemand {
+        let all = input_demands_of(source, name);
+        assert_eq!(all.len(), 1, "one executable of {name}: {all:?}");
+        all[0][index].clone()
+    }
+
+    /// A binary that is only read from the front is matched: the consumer
+    /// takes it apart and never holds it.
+    #[test]
+    fn a_binary_that_is_only_matched_is_asked_matched() {
+        let demand = only_input(
+            "def count(<<_, rest::binary>>, n), do: count(rest, n + 1)\n\
+             def count(<<>>, n), do: n\n\
+             def main(), do: count(\"hello world\", 0)\n",
+            "count",
+            0,
+        );
+        assert_eq!(demand, ShapeDemand::Matched);
+    }
+
+    /// A matcher in another function asks its caller the same thing: the
+    /// caller hands the binary on and need not hold it whole either.
+    #[test]
+    fn a_binary_passed_to_a_matcher_in_another_function_is_asked_matched() {
+        let demand = only_input(
+            "def first(<<b, _::binary>>), do: b\n\
+             def pass(bytes), do: first(bytes)\n\
+             def main(), do: pass(\"hello\")\n",
+            "pass",
+            0,
+        );
+        assert_eq!(demand, ShapeDemand::Matched);
+    }
+
+    /// A binary whose only use is its byte count is asked matched: the count
+    /// is arithmetic on a cursor, so the binary need not be made.
+    #[test]
+    fn a_binary_that_is_only_measured_is_asked_matched() {
+        let demand = only_input(
+            "def measure(bytes), do: byte_size(bytes)\n\
+             def main(), do: measure(\"hello\")\n",
+            "measure",
+            0,
+        );
+        assert_eq!(demand, ShapeDemand::Matched);
+    }
+
+    /// A binary that is matched and also kept is still asked matched: a
+    /// cursor makes the whole binary where the kept use needs it, so the
+    /// matching reads keep their cheap form.
+    #[test]
+    fn a_binary_that_is_matched_and_stored_is_asked_matched() {
+        let demand = only_input(
+            "def keep(<<b, _::binary>> = bytes), do: {b, bytes}\n\
+             def main(), do: keep(\"hello\")\n",
+            "keep",
+            0,
+        );
+        assert_eq!(demand, ShapeDemand::Matched);
+    }
+
+    /// A function with a tuple clause and a binary clause asks Matched of
+    /// every executable, tuple-typed or binary-typed: the ask is made per
+    /// clause set, and the join of a field read with a match is Matched. What
+    /// the ask means is left to the input's type, which makes a cursor only of
+    /// a proven binary.
+    #[test]
+    fn a_tuple_or_binary_function_asks_matched_of_both_its_executables() {
+        let asked: Vec<ShapeDemand> = input_demands_of(
+            "def take({a, _}), do: a\n\
+             def take(<<b, _::binary>>), do: b\n\
+             def main(), do: take(\"hello\") + take({1, 2})\n",
+            "take",
+        )
+        .into_iter()
+        .map(|inputs| inputs[0].clone())
+        .collect();
+        assert_eq!(asked, vec![ShapeDemand::Matched; 2]);
+    }
+
+    /// The shape each executable of the function called `name` takes its first
+    /// input in, after the program has settled its backend product.
+    fn first_input_shapes_of(source: &str, name: &str) -> Vec<crate::compiler2::transport::ShapeDescr> {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        world.submit_code(Some("binary_demand.fz".to_string()), source.to_string());
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        let mut sessions = crate::compiler2::pull::ProductSessions::default();
+        let program = crate::compiler2::product_drive::drive_retained_root_backend_product(
+            &mut world,
+            &tel,
+            &mut sessions,
+            root,
+            None,
+        )
+        .expect("the program should settle its backend product");
+        program
+            .executables()
+            .iter()
+            .filter(|executable| world.function_surface(executable.key.activation.function).name == name)
+            .map(|executable| world.shape(executable.abi.semantic_inputs[0].layout.structural).clone())
+            .collect()
+    }
+
+    /// A value that may be a binary or a tuple, taken apart as a binary by one
+    /// clause and by its tuple fields by another, is asked matched, and travels
+    /// as the one value it is: a cursor is made only of a type that is proven
+    /// to be a binary, so the clause that reads fields never meets one.
+    #[test]
+    fn a_value_that_is_a_binary_or_a_tuple_is_matched_and_travels_whole() {
+        let source = "def take({a, _}), do: a\n\
+                      def take(<<b, _::binary>>), do: b\n\
+                      def either(n), do: if(n > 1, do: \"hello\", else: {1, 2})\n\
+                      def main(), do: take(either(Process.heap_alloc_stats()[:procbin_allocs]))\n";
+        assert_eq!(only_input(source, "take", 0), ShapeDemand::Matched);
+        let shapes = first_input_shapes_of(source, "take");
+        assert!(!shapes.is_empty(), "the union is taken by an executable");
+        for shape in shapes {
+            assert!(
+                matches!(shape, crate::compiler2::transport::ShapeDescr::Lane(_)),
+                "a binary-or-tuple travels as one value lane, not {shape:?}"
+            );
+        }
+    }
+
+    /// A binary field of a one-shape return that its reader only matches is
+    /// asked matched of the producer.
+    #[test]
+    fn a_matched_field_of_a_one_shape_return_is_asked_matched_of_its_producer() {
+        let demand = only_input(
+            "def split(<<a, rest::binary>>), do: {a, rest}\n\
+             def sum({a, <<b, _::binary>>}), do: a + b\n\
+             def main(), do: sum(split(\"hello\"))\n",
+            "split",
+            0,
+        );
+        assert_eq!(demand, ShapeDemand::Matched);
+    }
+}

@@ -1109,18 +1109,20 @@ pub extern "C" fn fz_binary_to_atom(process: *mut Process, ref_word: u64) -> u64
     box_scalar_for_any(process, id as u64, ValueKind::ATOM)
 }
 
-/// The number of BYTES in a binary. Refuses a partial bitstring, which has no
-/// byte size.
+/// The number of BYTES in the binary that starts `bit_pos` bits into `ref_word`'s
+/// bitstring: the whole binary at position zero, the rest of it from a cursor.
+/// Refuses a partial bitstring, which has no byte size.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bitstring_byte_size(ref_word: u64) -> i64 {
+pub extern "C" fn fz_bitstring_byte_extent(ref_word: u64, bit_pos: u64) -> i64 {
     let Some(p) = bitstring_like_word(ref_word) else {
         panic!("byte_size expects a binary");
     };
     let bit_len = unsafe { bitstring_bit_len(p) };
-    if !bit_len.is_multiple_of(8) {
+    let extent = bit_len - bit_pos;
+    if !extent.is_multiple_of(8) {
         panic!("byte_size expects a byte-aligned binary");
     }
-    (bit_len / 8) as i64
+    (extent / 8) as i64
 }
 
 /// The size of a `binary` segment whose value is a pinned binary: that binary's
@@ -1616,7 +1618,8 @@ pub extern "C" fn fz_bs_read_int_ref(source_ref: u64, pos: u64, field_spec: u64,
     }
 }
 
-/// Read the `binary` or `bits` field at bit `pos` as a new binary. The caller
+/// Read the `binary` or `bits` field at bit `pos` as a binary: the source
+/// itself when the field is all of it, and a new binary otherwise. The caller
 /// has proved the field fits (`bs_field_end` answers `Some`).
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_read_binary_ref(
@@ -1638,6 +1641,10 @@ pub extern "C" fn fz_bs_read_binary_ref(
     let end = field_end(field_spec, size_value, pos, bytes, bit_len)
         .unwrap_or_else(|| panic!("fz_bs_read_binary_ref: the field at bit {pos} does not fit"));
     let (pos, end, bit_len) = (pos as usize, end as usize, bit_len as usize);
+    // A field that spans the whole source is the source.
+    if pos == 0 && end == bit_len {
+        return source_ref;
+    }
     let needed_bits = end - pos;
     let heap = unsafe { &mut (*process).heap };
     // A byte-aligned TAIL of a shared binary is another view of the same bytes,

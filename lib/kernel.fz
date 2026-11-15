@@ -1354,10 +1354,10 @@ defmodule Kernel do
 
   """
   @spec byte_size(any) :: integer
-  def byte_size(bytes) when is_binary(bytes), do: fz_bitstring_byte_size(bytes)
+  def byte_size(bytes) when is_binary(bytes), do: fz_bitstring_byte_extent(bytes)
   def byte_size(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a bitstring\n"})
 
-  extern "C" defp fz_bitstring_byte_size(any) :: integer
+  extern "C" defp fz_bitstring_byte_extent(binary_cursor) :: integer
 
   @doc """
   Returns the number of entries in `map`.

@@ -519,6 +519,9 @@ impl ProgramCanon<'_> {
                 format!("shape{{{}}}", fields.join(", "))
             }
             ShapeDescr::Callable(callable) => format!("callable({})", self.callable(*callable)),
+            ShapeDescr::Cursor { source, position } => {
+                format!("cursor({}, {})", self.lane(*source), self.lane(*position))
+            }
         }
         .into();
         self.shapes.insert(id, Arc::clone(&text));
@@ -627,6 +630,7 @@ impl ProgramCanon<'_> {
         match demand {
             ShapeDemand::Ignore => "ignore".to_string(),
             ShapeDemand::Whole => "whole".to_string(),
+            ShapeDemand::Matched => "matched".to_string(),
             ShapeDemand::TupleFields(fields) => {
                 let fields: Vec<String> = fields.iter().map(|field| self.demand(field)).collect();
                 format!("fields({})", fields.join(", "))

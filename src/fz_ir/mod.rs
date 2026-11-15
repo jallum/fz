@@ -327,6 +327,33 @@ pub enum ExternTy {
     /// guaranteed trailing NUL (libc `open(path, flags)` style). Relies
     /// on the +1-NUL invariant from [[fz-wu9]].
     CString,
+    /// A binary taken from some bit position: the callee receives two words,
+    /// the binary's reference word and the bit position its view starts at. The
+    /// caller hands over a cursor (source and position) or a whole binary
+    /// (position 0), so the callee never needs the view built.
+    BinaryCursor,
+}
+
+impl ExternTy {
+    /// How many words a parameter of this type occupies in the C signature.
+    pub fn wire_words(self) -> usize {
+        match self {
+            ExternTy::BinaryCursor => 2,
+            _ => 1,
+        }
+    }
+
+    /// The C-signature classes a parameter list occupies: a `binary_cursor` is
+    /// a reference word followed by a bit position.
+    pub fn wire_classes(params: &[ExternTy]) -> Vec<ExternTy> {
+        params
+            .iter()
+            .flat_map(|ty| match ty {
+                ExternTy::BinaryCursor => vec![ExternTy::Any, ExternTy::I64],
+                other => vec![*other],
+            })
+            .collect()
+    }
 }
 
 /// The physical result supplied by one foreign call.
@@ -655,6 +682,12 @@ pub enum Prim {
         pos: Var,
         field: BitMatchField,
     },
+    /// The sum of two bit positions, as raw integers: a position counted from
+    /// the start of a match, moved to where the match begins in its binary.
+    BitPositionAdd(Var, Var),
+    /// The difference of two bit positions, as raw integers: an absolute
+    /// position, counted again from where a match begins.
+    BitPositionSub(Var, Var),
     /// The position just after `field`, which starts at bit `pos` of `source`,
     /// or -1 when the binary does not hold it. The runtime reads the bytes, for
     /// a field whose width they decide: a `utf8` field.
@@ -678,6 +711,15 @@ pub enum Prim {
     BitReadByteInt {
         base: Var,
         byte_offset: u32,
+        bytes: u8,
+    },
+    /// The unsigned big-endian integer of `bytes` bytes that starts at bit
+    /// `pos` past `base`, a `BitstringBase`. The position is known only when the
+    /// program runs and need not fall on a byte boundary. The field is known to
+    /// fit.
+    BitReadByteIntAt {
+        base: Var,
+        pos: Var,
         bytes: u8,
     },
     /// The `try` body completed: pop the process's innermost handler.
@@ -821,6 +863,14 @@ impl Prim {
             }
             Prim::BitReadByteInt { base, .. } => {
                 used.insert(*base);
+            }
+            Prim::BitReadByteIntAt { base, pos, .. } => {
+                used.insert(*base);
+                used.insert(*pos);
+            }
+            Prim::BitPositionAdd(a, b) | Prim::BitPositionSub(a, b) => {
+                used.insert(*a);
+                used.insert(*b);
             }
             Prim::BitFieldFits { pos, bit_len, field } => {
                 used.insert(*pos);
@@ -1599,8 +1649,13 @@ impl fmt::Display for Prim {
                 byte_offset,
                 bytes,
             } => write!(f, "bit_read_byte_int({}, {}, {})", base, byte_offset, bytes),
+            Prim::BitReadByteIntAt { base, pos, bytes } => {
+                write!(f, "bit_read_byte_int_at({}, {}, {})", base, pos, bytes)
+            }
             Prim::BitFieldFits { pos, bit_len, .. } => write!(f, "bit_field_fits({}, {})", pos, bit_len),
             Prim::BitFieldNext { pos, .. } => write!(f, "bit_field_next({})", pos),
+            Prim::BitPositionAdd(a, b) => write!(f, "bit_position_add({}, {})", a, b),
+            Prim::BitPositionSub(a, b) => write!(f, "bit_position_sub({}, {})", a, b),
             Prim::BitFieldEnd { source, pos, .. } => write!(f, "bit_field_end({}, {})", source, pos),
             Prim::BitReadField { source, pos, .. } => write!(f, "bit_read_field({}, {})", source, pos),
             Prim::PopHandler => write!(f, "pop_handler"),

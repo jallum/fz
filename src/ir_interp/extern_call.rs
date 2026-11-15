@@ -58,6 +58,11 @@ fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy, fz_abi: bool) 
                 );
             }
         }),
+        ExternTy::BinaryCursor => {
+            return Err(
+                "`binary_cursor` is two arguments, the binary and its position, before it is marshalled".to_string(),
+            );
+        }
         ExternTy::Binary | ExternTy::CString if fz_abi => ArgWord::Int(value.extern_arg_ref_word(proc)?),
         ExternTy::Binary => ArgWord::Int((unsafe { fz_binary_as_ptr(value.extern_arg_ref_word(proc)?) }) as u64),
         ExternTy::CString => ArgWord::Int((unsafe { fz_binary_as_cstring(value.extern_arg_ref_word(proc)?) }) as u64),
@@ -130,11 +135,12 @@ pub(super) fn call_fixed_extern(
     // Arity is enforced where the call is lowered; this guards the transmute
     // below against a caller that bypassed lowering, where `zip` would
     // silently truncate.
-    if args.len() != signature.params.len() {
+    let words: usize = signature.params.iter().map(|ty| ty.wire_words()).sum();
+    if args.len() != words {
         return Err(format!(
-            "extern `{}` declares {} parameter(s) but was called with {} argument(s)",
+            "extern `{}` declares {} argument word(s) but was called with {}",
             signature.symbol,
-            signature.params.len(),
+            words,
             args.len()
         ));
     }
@@ -146,8 +152,14 @@ pub(super) fn call_fixed_extern(
     if fz_abi {
         raw_args.push(ArgWord::Int(runtime.cur_proc() as u64));
     }
-    for (value, ty) in args.iter().zip(signature.params.iter().copied()) {
-        raw_args.push(marshal_arg(runtime.cur_proc(), *value, ty, fz_abi)?);
+    let mut values = args.iter().copied();
+    for ty in signature.params.iter().copied() {
+        for wire in ExternTy::wire_classes(&[ty]) {
+            let value = values
+                .next()
+                .expect("argument words were counted against the parameters");
+            raw_args.push(marshal_arg(runtime.cur_proc(), value, wire, fz_abi)?);
+        }
     }
     // `dispatch_fn_*` transmute to a concrete fn type, so the interpreter has a
     // ceiling the backend does not. Reported here, where the declaration is
@@ -259,6 +271,10 @@ fn call_variadic_extern(
         ExternTy::Unit => Ok(ExternCallValue::Scalar(interp_nil_value())),
         ExternTy::Never => Err(format!("extern `{}` declared Never returned", signature.symbol)),
         ExternTy::F64 => unreachable!("a float-returning variadic extern is refused above"),
+        ExternTy::BinaryCursor => Err(format!(
+            "extern `{}` returns `binary_cursor`, a parameter-only type",
+            signature.symbol
+        )),
     }
 }
 
@@ -405,6 +421,9 @@ unsafe fn call_declared_return(
         ExternReturn::Scalar(ExternTy::Any | ExternTy::Binary | ExternTy::CString) => {
             let value = unsafe { dispatch_fn_returning_int(fp, raw_args) };
             interp_value_from_extern_ref_word(value).map(ExternCallValue::Scalar)
+        }
+        ExternReturn::Scalar(ExternTy::BinaryCursor) => {
+            Err("`binary_cursor` stands only as a parameter, never as a result".to_string())
         }
         ExternReturn::Checked(lane, failure) => {
             let fields = [*lane, ExternTy::Bool];

@@ -1003,7 +1003,12 @@ The whole binary is simply the suffix at offset&nbsp;0.</p>
   defp walk(&lt;&lt;_c, rest :: binary&gt;&gt;, n), do: walk(rest, n + 1)
 </pre>
 
-<p>so <code>rest</code> becomes another stub over the <em>same</em> bytes at
+<p>so <code>rest</code> is not built at all while it is only matched and
+measured: it travels as a <strong>cursor</strong>, the source binary plus the
+bit position the rest starts at, and each step moves the position.
+<code>byte_size(rest)</code> is the source's length minus that position. Only a
+use that needs a real binary (storing it, sending it) makes it whole, and then
+<code>rest</code> becomes another stub over the <em>same</em> bytes at
 offset&nbsp;+1, and nothing is copied. Suffixes at or below the 64-byte
 threshold are still copied into an inline bitstring: at that size a copy is
 smaller than a stub, and it keeps a short tail from pinning a long buffer
