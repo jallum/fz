@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-sc8.224",
-    "fz-sc8.234"
+    "fz-sc8.234",
+    "fz-sc8.237"
   ],
   "blocks": [
     "fz-sc8.144"
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Macro.escape/1 turns a value into the quoted code that rebuilds it",
   "type": "feature",
-  "updated_at": "2026-11-15T18:34:33Z"
+  "updated_at": "2026-11-15T23:27:30Z"
 }
