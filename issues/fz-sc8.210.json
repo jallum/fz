@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T00:30:09Z",
   "created": "2026-11-15T00:17:53Z",
   "description": "Every collection walks the young off-heap chain twice: mso_unreached_closures (runtime/src/procbin.rs) visits every stub to find resource stubs whose destructor closure must be forwarded, then mso_sweep visits every stub again. In the distiller almost every stub is a ProcBin (18.2M dead per 32,000 lines); the two walks are 2.6% and 2.5% of the release full-log profile and 5% and 6% of a plain binary walk.\nChange: resource stubs are linked on their own chain (young and old), so the destructor search walks only resources and the binary chain is walked once by the sweep. Proposed on the fz-sc8.184 page (step 1) and not built.\nSignal: runtime tests for resources and binaries still pass; a test asserts a collection of a heap holding only binary stubs visits each once (count exposed through GcStats / the fz.runtime.gc event). Re-profile the distiller: mso_unreached_closures absent.\nCoordination: Type System (fz-9x7.5) spikes in Heap::bump in runtime/src/heap/imp.rs; tell them before landing.",
   "id": "fz-sc8.210",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A collection walks the dead binary stubs once, not twice",
   "type": "task",
-  "updated_at": "2026-11-15T00:17:53Z"
+  "updated_at": "2026-11-15T00:30:09Z"
 }
