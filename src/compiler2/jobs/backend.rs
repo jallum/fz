@@ -9,7 +9,6 @@ use std::rc::Rc;
 
 use crate::diag::Diagnostic;
 use crate::diag::codes;
-use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{LastResort, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, ProjectionKind, Region, SubjectSource};
 use crate::fz_ir::SlotStore;
@@ -28,7 +27,7 @@ use super::super::body::{
     CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBitFieldSpec, LoweredBody, LoweredEntry,
     LoweredMapKey, LoweredStep, LoweredTail, ValueId,
 };
-use super::super::drive::{FactKey, Job};
+use super::super::drive::{FactKey, Job, emit_job_diagnostic};
 use super::super::identity::{ActivationKey, ExecutableKey, ModuleId, RootId};
 use super::super::pull::{ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait};
 use super::super::transport::{
@@ -1469,8 +1468,7 @@ fn incomplete_backend_program(
         format!("compiler2 backend lowering for root {}: {}", root_id.as_u32(), message),
         Span::DUMMY,
     );
-    emit_through(tel, std::slice::from_ref(&diagnostic));
-    FatalError
+    emit_job_diagnostic(tel, diagnostic)
 }
 
 #[cfg(test)]

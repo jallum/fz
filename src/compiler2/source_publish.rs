@@ -17,7 +17,7 @@ use crate::source::{SourceMap, Span};
 use crate::telemetry::TelemetryExt as _;
 
 use super::code::SourceOwner;
-use super::drive::{DerivationKey, FactKey, JobDerivation, JobEffects, current_uses};
+use super::drive::{DerivationKey, FactKey, JobDerivation, JobEffects, current_uses, emit_job_diagnostic};
 use super::identity::{
     DeclaredCallableKind, FunctionId, FunctionSource, ModuleId, NotedTypeDecl, ProtocolImplSource, TypeName,
 };
@@ -25,9 +25,9 @@ use super::module_interface::{InterfaceCallableKind, InterfaceRequester, ModuleI
 use super::namespace::{Namespace, NamespaceSymbol};
 use super::protocol::ProtocolCallbackImpl;
 use super::quoted_expander::{
-    ExpandedScopeFragment, QuotedExpansionCtx, emit_internal_surface_error, emit_job_diagnostic,
-    emit_surface_read_error, expand_item_macro_fragment, item_macro_expanded_to_a_non_definition,
-    item_macro_not_defmacro, read_compiler_fragment_root,
+    ExpandedScopeFragment, QuotedExpansionCtx, emit_internal_surface_error, emit_surface_read_error,
+    expand_item_macro_fragment, item_macro_expanded_to_a_non_definition, item_macro_not_defmacro,
+    read_compiler_fragment_root,
 };
 use super::quoted_surface::{
     CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, OverridableForm, ProtocolImplForm,

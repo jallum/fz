@@ -22,7 +22,7 @@ use crate::ground_value::GroundValue;
 use super::super::body::LoweredExtern;
 use super::super::code::SourceOwner;
 use super::super::contract::FunctionContract;
-use super::super::drive::{FactKey, JobEffects, current_uses};
+use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic};
 use super::super::identity::{FunctionId, FunctionSource};
 use super::super::structdef::StructDef;
 use super::super::world::World;
@@ -60,7 +60,7 @@ pub(super) fn derive_function_contract(
             Ok(spec) => vec![spec],
             Err(ExternContractError::NotAnExtern) => Vec::new(),
             Err(refusal @ ExternContractError::WireSpellingInsideType { .. }) => {
-                emit_job_diagnostic(tel, refusal.diagnostic(&surface.name, surface.name_span));
+                emit_through(tel, &[refusal.diagnostic(&surface.name, surface.name_span)]);
                 Vec::new()
             }
         }
@@ -107,16 +107,16 @@ pub(super) fn derive_function_contract(
     for spec in &specs {
         match world.resolve_spec_decl(source.namespace, spec) {
             Ok(resolved) => contract.push(resolved),
-            Err(error) => emit_job_diagnostic(
+            Err(error) => emit_through(
                 tel,
-                Diagnostic::error(
+                &[Diagnostic::error(
                     codes::RESOLVE_TYPE_ALIAS,
                     format!(
                         "compiler2 could not resolve function contract for `{}`: {}",
                         surface.name, error.msg
                     ),
                     error.span,
-                ),
+                )],
             ),
         }
     }
@@ -209,8 +209,7 @@ fn extern_abi_error(tel: &impl crate::telemetry::Telemetry, surface: &FunctionSu
     emit_job_diagnostic(
         tel,
         Diagnostic::error(codes::LOWER_UNSUPPORTED, message, surface.name_span),
-    );
-    FatalError
+    )
 }
 
 /// An extern has no body of its own, so its declared types and bounds come
@@ -448,10 +447,6 @@ fn publish_contract(
             .collect(),
         ..JobEffects::default()
     }
-}
-
-fn emit_job_diagnostic(tel: &impl crate::telemetry::Telemetry, diagnostic: Diagnostic) {
-    emit_through(tel, &[diagnostic]);
 }
 
 #[cfg(test)]

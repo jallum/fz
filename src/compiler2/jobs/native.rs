@@ -6,6 +6,7 @@
 //! and extern marshal facts are all derived once here instead of being
 //! rediscovered by shared codegen.
 
+use super::super::drive::emit_job_diagnostic;
 use super::super::identity::{ExecutableKey, FunctionId};
 use super::super::transport::TransportPosition;
 use crate::compiler2::ValueMap;
@@ -21,7 +22,6 @@ use std::sync::Arc;
 use crate::ast::BitType;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
-use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
     FieldTerm, GuardExtern, LastResort, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp,
     guard_body_subjects,
@@ -6243,8 +6243,7 @@ fn incomplete_native_program(
         format!("compiler2 native lowering for root {}: {}", root_id.as_u32(), message),
         Span::DUMMY,
     );
-    emit_through(tel, std::slice::from_ref(&diagnostic));
-    FatalError
+    emit_job_diagnostic(tel, diagnostic)
 }
 
 fn dispatch_bit_type(kind: crate::dispatch_matrix::BitstringFieldKind) -> crate::ast::BitType {

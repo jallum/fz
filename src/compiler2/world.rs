@@ -29,7 +29,7 @@ use super::body::{LoweredBody, LoweredBodyMap, LoweredExtern};
 use super::code::{CodeMap, CodeState, QuotedCodeSource};
 use super::contract::{FunctionContract, FunctionContractMap};
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
-use super::drive::{DependencyKey, fact_dependency};
+use super::drive::{DependencyKey, emit_job_diagnostic, fact_dependency};
 use super::drive::{ExecutionContext, FactKey, Job, JobEffects, UseCollector, WorkGraph};
 use super::identity::{
     ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
@@ -3176,11 +3176,6 @@ impl World {
             ),
         })
     }
-}
-
-fn emit_job_diagnostic(tel: &impl Telemetry, diagnostic: Diagnostic) -> FatalError {
-    emit_through(tel, std::slice::from_ref(&diagnostic));
-    FatalError
 }
 
 /// The claims a NON-rebased `AnalyzeActivation` conclusion keeps standing

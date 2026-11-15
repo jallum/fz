@@ -1,12 +1,11 @@
 use fz_runtime::any_value::{AnyValueRef, ValueKind};
 
-use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::modules::identity::ModuleName;
 use crate::source::{SourceMap, Span};
 use crate::telemetry::TelemetryExt as _;
 
-use super::drive::{FactKey, JobEffects, ProductAddress};
+use super::drive::{FactKey, JobEffects, ProductAddress, emit_job_diagnostic};
 use super::identity::{FunctionId, ModuleId};
 use super::jobs::is_guard_expr;
 use super::namespace::NamespaceSymbol;
@@ -1308,14 +1307,6 @@ pub(crate) fn emit_macro_expanded(
     output: &QuotedSourceRoot,
 ) {
     tel.raw_event3(&["fz", "compiler2", "macro", "expanded"], world, function, output);
-}
-
-pub(crate) fn emit_job_diagnostic(
-    tel: &impl crate::telemetry::Telemetry,
-    diagnostic: Diagnostic,
-) -> fz_engine::FatalError {
-    emit_through(tel, std::slice::from_ref(&diagnostic));
-    fz_engine::FatalError
 }
 
 /// Route a failed surface read to the right diagnostic: a user-coded error

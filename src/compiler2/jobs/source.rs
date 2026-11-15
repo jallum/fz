@@ -1,12 +1,11 @@
 use std::rc::Rc;
 
 use super::super::code::SourceOwner;
-use super::super::drive::{FactKey, JobEffects, current_uses};
+use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic};
 use super::super::identity::{FunctionId, FunctionSource, ModuleId, ModuleSourceKind};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::quoted_expander::{
-    ExpandedRoot, ExpandedValue, QuotedExpansionCtx, emit_internal_surface_error, emit_job_diagnostic,
-    emit_surface_read_error,
+    ExpandedRoot, ExpandedValue, QuotedExpansionCtx, emit_internal_surface_error, emit_surface_read_error,
 };
 use super::super::quoted_surface::{is_function_definition_head, read_compiler_fragment_surface, read_scope_surface};
 use super::super::scope::ScopeSnapshot;

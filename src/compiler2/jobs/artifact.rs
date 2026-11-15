@@ -10,7 +10,6 @@ use std::rc::Rc;
 
 use crate::diag::Diagnostic;
 use crate::diag::codes;
-use crate::diag::driver::emit_through;
 use crate::extern_contract::extern_ty_from_name;
 use crate::parser::lexer::Tok;
 use crate::source::Span;
@@ -26,7 +25,7 @@ use super::super::body::{
     LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId,
 };
 use super::super::callsite_dispatch::{CallDestinations, call_destinations};
-use super::super::drive::FactKey;
+use super::super::drive::{FactKey, emit_job_diagnostic};
 use super::super::executable_facts::ExecutableFacts;
 use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
 use super::super::pull::{
@@ -1864,8 +1863,7 @@ fn call_reaches_no_target(
         ),
         Span::DUMMY,
     );
-    emit_through(tel, std::slice::from_ref(&diagnostic));
-    FatalError
+    emit_job_diagnostic(tel, diagnostic)
 }
 
 /// A variadic argument carries an integer or a pointer and nothing else.
@@ -1892,8 +1890,7 @@ fn incomplete_semantic_plan(
         format!("compiler2 materialization for root {}: {}", root_id.as_u32(), message),
         Span::DUMMY,
     );
-    emit_through(tel, std::slice::from_ref(&diagnostic));
-    FatalError
+    emit_job_diagnostic(tel, diagnostic)
 }
 
 #[cfg(test)]

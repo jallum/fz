@@ -9,7 +9,6 @@ use crate::fast_hash::{HashMap, HashSet};
 use std::collections::{BTreeMap, BTreeSet, hash_map::Entry};
 
 use crate::ast::{BinOp, UnOp};
-use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::LastResort;
 use crate::ground_value::GroundValue;
@@ -23,7 +22,7 @@ use super::super::body::{
 };
 use super::super::contract::AppliedFunctionContract;
 use super::super::dispatch_reachability::{ReachedEdges, calculate_dispatch_reachability};
-use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, current_uses};
+use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, current_uses, emit_job_diagnostic};
 use super::super::identity::{ActivationKey, FunctionId, ModuleId, Raised, function_id_of_closure_target};
 use super::super::module_interface::InterfaceRequester;
 use super::super::protocol::ProtocolCallbackImpl;
@@ -1638,10 +1637,7 @@ fn listed_module_callees(
             world.note_module_reference_expectation(module, requester.clone());
             let callee = world
                 .module_public_function(module, function, arity, requester.clone())
-                .map_err(|diagnostic| {
-                    emit_through(tel, std::slice::from_ref(&*diagnostic));
-                    FatalError
-                })?;
+                .map_err(|diagnostic| emit_job_diagnostic(tel, *diagnostic))?;
             Ok((world.types_mut().atom_lit(&atom), callee))
         })
         .collect()
@@ -1729,11 +1725,10 @@ fn emit_never_a_module(
 ) -> FatalError {
     let shown = world.types().display_for_diag(&module_ty);
     let message = format!("call to `{function}/{arity}` on a value of type `{shown}`, which is never a module");
-    emit_through(
+    emit_job_diagnostic(
         tel,
-        &[Diagnostic::error(codes::MODULE_VALUE_CALL, message, span).with_label("a module is an atom")],
-    );
-    FatalError
+        Diagnostic::error(codes::MODULE_VALUE_CALL, message, span).with_label("a module is an atom"),
+    )
 }
 
 fn emit_atom_names_no_module(
@@ -1743,16 +1738,15 @@ fn emit_atom_names_no_module(
     arity: usize,
     span: Span,
 ) -> FatalError {
-    emit_through(
+    emit_job_diagnostic(
         tel,
-        &[Diagnostic::error(
+        Diagnostic::error(
             codes::MODULE_VALUE_CALL,
             format!("call to `{function}/{arity}` on the atom `:{atom}`, which names no module"),
             span,
         )
-        .with_label("an atom that starts with `Elixir.` needs a module path after it")],
-    );
-    FatalError
+        .with_label("an atom that starts with `Elixir.` needs a module path after it"),
+    )
 }
 
 /// Merge one path's observed value types into the activation's published
@@ -2502,9 +2496,9 @@ fn emit_spec_violation(
         .collect::<Vec<_>>()
         .join(", ");
     let domain = domain_rows.join(" | ");
-    emit_through(
+    emit_job_diagnostic(
         tel,
-        &[Diagnostic::error(
+        Diagnostic::error(
             codes::SPEC_VIOLATION,
             format!(
                 "call to `{}/{}` violates its @spec for arguments ({observed}); the declared domain is ({domain})",
@@ -2513,9 +2507,8 @@ fn emit_spec_violation(
             ),
             span,
         )
-        .with_label("no declared @spec accepts these arguments")],
-    );
-    FatalError
+        .with_label("no declared @spec accepts these arguments"),
+    )
 }
 
 /// A column is open when its observed type still carries a type variable that
