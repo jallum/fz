@@ -9665,7 +9665,7 @@ fn compiler2_native_program_routes_post_receive_resumes_through_delivered_contin
     );
 
     let program = native.last(root_id).program;
-    let receive_body_adapter_fns = program
+    let receive_body_continuation_fns = program
         .module
         .fns
         .iter()
@@ -9690,47 +9690,28 @@ fn compiler2_native_program_routes_post_receive_resumes_through_delivered_contin
         .collect::<HashSet<_>>();
 
     assert_eq!(
-        receive_body_adapter_fns.len(),
-        6,
-        "each receive clause body callsite should get its own delivered-call lane adapter",
+        receive_body_continuation_fns.len(),
+        2,
+        "the six receive-arm calls converge on one delivered post-receive resume per receive site",
     );
-    let mut receive_body_resume_fns = HashSet::default();
-    for adapter_fn in receive_body_adapter_fns {
+    for resume_fn in receive_body_continuation_fns {
         let body = program
             .bodies
             .iter()
-            .find(|body| body.fn_id == adapter_fn)
-            .unwrap_or_else(|| panic!("native body for receive adapter {adapter_fn:?}"));
-        let function = program.module.fn_by_id(adapter_fn);
+            .find(|body| body.fn_id == resume_fn)
+            .unwrap_or_else(|| panic!("native body for receive resume {resume_fn:?}"));
         assert!(
             matches!(body.entry_abi, NativeEntryAbi::Continuation { .. }),
-            "code reached from a receive-arm call must be published as a delivered continuation, not a local direct entry: fn={adapter_fn:?} origin={:?} abi={:?}",
+            "code reached from a receive-arm call must be published as a delivered continuation, not a local direct entry: fn={resume_fn:?} origin={:?} abi={:?}",
             body.origin,
             body.entry_abi,
         );
+        let name = &program.module.fn_by_id(resume_fn).name;
         assert!(
-            function.name.starts_with("deliver_lanes__"),
-            "receive-arm calls should first enter the explicit delivered-call lane adapter: fn={adapter_fn:?} name={}",
-            function.name,
+            name.contains("__resume_"),
+            "receive-arm calls continue directly into the post-receive resume entry: fn={resume_fn:?} name={name}",
         );
-        let target = function
-            .blocks
-            .iter()
-            .find_map(|block| match &block.terminator {
-                IrTerm::TailCall {
-                    callee: crate::fz_ir::DirectCallTarget::Local(target),
-                    ..
-                } => Some(*target),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("receive adapter {adapter_fn:?} should tail-call the shared resume entry"));
-        receive_body_resume_fns.insert(target);
     }
-    assert_eq!(
-        receive_body_resume_fns.len(),
-        2,
-        "the six receive-arm adapters should converge into one delivered post-receive resume per receive site",
-    );
 }
 
 #[test]
@@ -10062,18 +10043,12 @@ end
     );
 
     let program = native.last(root_id).program;
-    let adapter = program
-        .bodies
-        .iter()
-        .find(|body| {
-            program.module.fn_by_id(body.fn_id).name.starts_with("deliver_lanes__")
-                && matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 1 })
-        })
-        .expect("the non-tail float call should first enter a callee-return lane adapter");
-    assert_eq!(
-        adapter.param_reprs[0],
-        AbiValueRepr::RawF64,
-        "the delivered-call adapter must expose the callee's physical RawF64 return lane",
+    assert!(
+        !program
+            .bodies
+            .iter()
+            .any(|body| program.module.fn_by_id(body.fn_id).name.starts_with("deliver_lanes__")),
+        "the non-tail float call continues straight into its resume entry"
     );
 
     let continuation = program
@@ -10098,7 +10073,7 @@ end
 }
 
 #[test]
-fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lanes() {
+fn compiler2_native_program_delivers_exact_callee_return_lanes_straight_to_resume_entries() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
     native.install(&tel);
@@ -10178,29 +10153,18 @@ fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lane
     assert_eq!(count_resume.layout.carrier, TransportCarrier::Absent);
 
     let program = native.last(root_id).program;
-    let adapter = program
-        .bodies
-        .iter()
-        .find(|body| {
+    assert!(
+        program.bodies.iter().any(|body| {
             let function = program.module.fn_by_id(body.fn_id);
             let NativeBodyOrigin::Continuation { owner } = body.origin else {
                 return false;
             };
-            function.name.starts_with("deliver_lanes__")
+            function.name.contains("__resume_")
                 && program.module.fn_by_id(owner).name.starts_with("count__")
                 && matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 1 })
                 && body.param_reprs == [AbiValueRepr::RawInt]
-        })
-        .expect("the native adapter should expose the same exact delivered integer lane");
-
-    assert!(
-        program
-            .module
-            .fn_by_id(adapter.fn_id)
-            .blocks
-            .iter()
-            .any(|block| matches!(block.terminator, IrTerm::TailCall { .. })),
-        "the adapter should tail-deliver the reconstructed value to the original resume entry",
+        }),
+        "the count call continues straight into a resume entry that takes the exact delivered integer lane",
     );
 }
 
@@ -15875,6 +15839,72 @@ def main(), do: spin({iterations}, 0)
         (yields_often.live_count, yields_often.bytes_used),
         (never_yields.live_count, never_yields.bytes_used),
         "every yield frame was given back when its loop resumed"
+    );
+}
+
+/// A call whose result already has the layout its resume entry takes builds
+/// one heap frame, the entry's own. `depth` makes two such calls per level
+/// (`n - 1` and the recursive call), so a level costs two continuation frames
+/// and the program lowers no `deliver_lanes` forwarding continuation.
+#[test]
+fn compiler2_a_call_whose_result_fits_its_resume_entry_builds_one_frame() {
+    let continuation_allocs_for = |depth: u32| {
+        exit_after_running(&format!(
+            r#"
+def depth(0), do: 0
+def depth(n), do: 1 + depth(n - 1)
+
+def main() do
+  first = Process.heap_alloc_stats()[:continuation_allocs]
+  reached = depth({depth})
+  last = Process.heap_alloc_stats()[:continuation_allocs]
+  if reached == {depth}, do: last - first, else: -1
+end
+"#
+        ))
+        .halt_value
+    };
+    let shallow = continuation_allocs_for(10);
+    let deep = continuation_allocs_for(20);
+
+    assert_eq!(
+        deep - shallow,
+        2 * 10,
+        "each extra level builds one frame for `n - 1` and one for the recursive call"
+    );
+    let clif = lowered_clif_text(
+        r#"
+def depth(0), do: 0
+def depth(n), do: 1 + depth(n - 1)
+
+def main(), do: depth(20)
+"#,
+    );
+    assert!(
+        !clif.contains("deliver_lanes"),
+        "no call needs a forwarding continuation when its result already has the entry's layout:\n{clif}"
+    );
+}
+
+/// A call whose result the resume entry does not read (the entry takes no
+/// lanes while the callee returns one) keeps a `deliver_lanes` continuation
+/// that adapts the returned lanes to the entry.
+#[test]
+fn compiler2_a_call_whose_result_layout_differs_from_its_resume_entry_keeps_a_shim() {
+    let clif = lowered_clif_text(
+        r#"
+def classify(0), do: :zero
+def classify(_), do: :other
+
+def main() do
+  assert(classify(0) == :zero, "zero")
+  assert(classify(7) == :other, "other")
+end
+"#,
+    );
+    assert!(
+        clif.contains("deliver_lanes"),
+        "a result the entry ignores is adapted by a delivery continuation:\n{clif}"
     );
 }
 

@@ -2710,6 +2710,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             ));
         };
 
+        // A source that already has the entry's layout needs no adapter: the
+        // entry is the continuation, and the call builds one frame, not two.
+        if let BackendEntryOrigin::DeliveredResume { layout, .. } = &entry.origin
+            && layout.layout == source.layout
+        {
+            return self.entry_continuation(ctx, executable, entries, entry_fns, entry_id, env);
+        }
+
         let (source_tys, source_reprs) = (source.layout.tys.to_vec(), source.layout.reprs.to_vec());
         if source_tys.len() != source_reprs.len() {
             return Err(incomplete_native_program(
