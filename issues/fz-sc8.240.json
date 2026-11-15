@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T23:47:21Z",
+  "description": "Found building fz-sc8.237. def kind(b) when byte_size(b) \u003e 1, do: byte_size(b) with kind(:a) somewhere is refused at compile time: 'spec/violation: call to byte_size/1 violates its @spec for arguments (:a); the declared domain is (bitstring)', pointing at the body call. Elixir compiles and runs it: byte_size(:a) in the guard fails the clause, so the body never sees :a. A guard function given a value outside its domain makes the guard false (since fz-rs7.4), so the clause body runs only for arguments inside the domain of every guard call that must succeed; the body should be typed with the argument narrowed to that domain, as an is_* guard already narrows. Same for bit_size/1 (fixture 01198 keeps bit_size out of its guarded bodies for this reason). Related: fz-ep5.4 (type predicates recognised from guards), fz-qbh (one admission rule). Done when: an oracle fixture with guarded bodies calling byte_size/bit_size/map_size/tuple_size on the guarded argument, applied to a non-matching value, matches Elixir on interp, run and build.",
+  "id": "fz-sc8.240",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A guard that calls a function narrows its argument to that function's domain for the clause body",
+  "type": "bug",
+  "updated_at": "2026-11-15T23:47:21Z"
+}
