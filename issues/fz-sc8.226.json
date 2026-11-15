@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T15:04:54Z",
+  "description": "Elixir escapes a remote capture (\u0026Kernel.+/2) as itself and accepts it as a struct default. Start by finding whether an fz capture value keeps its module, name and arity at run time; then escape it and drop the refusal Macro.escape gives it. Deferred from fz-sc8.144 with the user's approval.",
+  "id": "fz-sc8.226",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "Macro.escape writes a remote capture as \u0026M.f/a",
+  "type": "feature",
+  "updated_at": "2026-11-15T15:04:54Z"
+}
