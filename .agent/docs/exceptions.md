@@ -12,7 +12,7 @@ failed process, and the exit status that follows.
 ## The primitive
 
 `Kernel.panic/1`, `Kernel.throw/1` and `Kernel.exit/1` are the raise
-primitives, one per kind. Each wraps an `extern "fz" defp ... :: never` whose
+primitives, one per kind; `:erlang.error/1` is `panic/1` under Elixir's name. Each wraps an `extern "fz" defp ... :: never` whose
 physical export is `fz_runtime::failure::fz_panic(process, value_ref)`,
 `fz_throw(process, value_ref)` or `fz_exit(process, value_ref)`; each is `raise`
 with its fixed kind (`error`, `throw`, `exit`). Nothing in Kernel takes a kind

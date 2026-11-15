@@ -1,0 +1,33 @@
+#---
+# purpose: ":erlang.error/1 raises its value: rescue sees an ErlangError holding it, catch :error sees the value itself, and an exception struct is raised as that exception"
+# oracle: 01382_erlang_error_raises_its_value_as_an_erlang_error.oracle.exs
+# oracle.stamp: 5c8688e7b31cc7a5
+#---
+defmodule Main do
+  def rescued(reason) do
+    try do
+      :erlang.error(reason)
+    rescue
+      e in ErlangError -> {:erlang_error, e.original}
+      e in ArgumentError -> {:argument_error, e.message}
+    end
+  end
+
+  def caught(reason) do
+    try do
+      :erlang.error(reason)
+    catch
+      kind, value -> {kind, value}
+    end
+  end
+
+  def main() do
+    IO.inspect(rescued(:boom))
+    IO.inspect(rescued({:stop, [1, 2]}))
+    IO.inspect(rescued(%ArgumentError{message: "bad"}))
+    IO.inspect(caught(:boom))
+    IO.inspect(caught({:stop, 1}))
+  end
+end
+
+Main.main()
