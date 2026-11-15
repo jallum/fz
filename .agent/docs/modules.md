@@ -181,7 +181,8 @@ paths.
 notation (`fz_float_to_fixed_binary`, rounded from the exact value with a tie
 going away from zero). Any other option or an out-of-range `n` has no clause.
 It also defines `raise/3`, which raises `reason` again as the kind it is
-given (`:error`, `:throw` or `:exit`) and ignores the stacktrace.
+given (`:error`, `:throw` or `:exit`) and ignores the stacktrace. `error/1` raises
+`reason` with the kind `:error`, as `Kernel.panic/1` does (`01382`).
 
 `lib/binary.fz` defines `:binary` with `copy/1`, `copy/2` and
 `referenced_byte_size/1`. `copy/2` is the extern `fz_binary_copy`, which builds
