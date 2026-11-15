@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T14:25:12Z",
+  "description": "A function body made of N statements of the form `if n == i, do: f(n)` makes one activation analysis take about 2x longer per added statement.\n\n## Reproduce\n\n    def f(x), do: [x]\n    def main() do\n      n = length(System.argv()) + 100\n      if n == 0, do: f(n)\n      if n == 1, do: f(n)\n      ...            # N statements\n      :ok\n    end\n\n`fz2 interp` at develop 4f8b72ea4 (debug build, opt-level 1):\n\n| N  | wall   | jobs |\n|----|--------|------|\n| 8  | 0.12 s | 852  |\n| 10 | 0.12 s | 852  |\n| 12 | 0.32 s | 852  |\n| 14 | 1.64 s | 852  |\n| 16 | 5.90 s | 852  |\n\nAn earlier measurement had 20 statements at 40 s. It reproduced before the exceptions work landed, so it is not caused by it.\n\n## What is known\n\n- The job count does not move with N. The time is inside single jobs: in the N=16 trace the longest spans are all `AnalyzeActivation` of `main` (function_id 1, arrow 15), about 0.6 to 0.9 s each, run several times.\n- So the growth is in the body walk of one activation, not in scheduling.\n\n## What is not known\n\nWhich part of the walk doubles. Candidates to separate by experiment: each `if` without `else` joining two environments that are then both carried forward (2^N paths), or the narrowing of `n` by each `n == i` test producing a type whose size doubles.\n\n## Done when\n\nThe table above is linear in N, with a test that pins the cost of one activation analysis against N.",
+  "id": "fz-295",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Analysing a function with N sequential if statements costs about twice as much per added statement",
+  "type": "bug",
+  "updated_at": "2026-11-15T14:25:12Z"
+}
