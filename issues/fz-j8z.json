@@ -5,12 +5,12 @@
   ],
   "blocks": [],
   "created": "2026-11-15T15:57:37Z",
-  "description": "Found 2026-11-15 (bitstring split experiments). On fz-nml.11 31823421d both are 'lower/unbound: unresolved direct runtime callee'. fz-rs7.7 recorded them as absent and out of its scope. Elixir: bit_size/1 takes a bitstring and returns its bit count (guard-safe); binary_part/3 takes a binary, start and length (negative length counts back), raises ArgumentError out of range, guard-safe. bit_size's domain is bitstring, so this lands after fz-sc8.30 (the bitstring/binary split). binary_part of a large binary should return a view (fz-nml.1), not a copy. Acceptance: oracle fixture covering bodies and guards, partial bitstrings for bit_size, the negative-length and out-of-range cases for binary_part, three paths.",
+  "description": "Found 2026-11-15 (bitstring split experiments). On fz-nml.11 31823421d both are 'lower/unbound: unresolved direct runtime callee'. fz-rs7.7 recorded them as absent and out of its scope. Elixir: bit_size/1 takes a bitstring and returns its bit count (guard-safe); binary_part/3 takes a binary, start and length (negative length counts back), raises ArgumentError out of range, guard-safe. bit_size's domain is bitstring, so this lands after fz-sc8.30 (the bitstring/binary split). binary_part of a large binary should return a view (fz-nml.1), not a copy. Acceptance: oracle fixture covering bodies and guards, partial bitstrings for bit_size, the negative-length and out-of-range cases for binary_part, three paths.\n\nbit_size/1 moved to fz-sc8.237 (2026-11-15), which Macro.escape (fz-sc8.225) needs first; this ticket keeps binary_part/3.",
   "id": "fz-j8z",
   "labels": [],
   "priority": 3,
   "status": "open",
-  "title": "Kernel has bit_size/1 and binary_part/3, in bodies and guards, as in Elixir",
+  "title": "Kernel has binary_part/3, in bodies and guards, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-15T15:57:38Z"
+  "updated_at": "2026-11-15T23:29:40Z"
 }
