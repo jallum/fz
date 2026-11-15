@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T23:27:25Z",
+  "description": "Found investigating fz-sc8.225. Native registers every struct_schemas entry at load (native_codegen/driver.rs); interp registers a schema only the first time ProgramStep::Struct builds that struct (ir_interp/backend.rs, also register_exception and ir_interp/value.rs). So a map that spells S (e.g. Map.put(%{a: 1, b: [2]}, :__struct__, S)) printed before the first %S{} is built prints as a map on interp and as %S{...} on run and build. Register the program's schemas once at load on interp; construction stops registering. Done when: a fixture prints such a map before the first %S{} and matches Elixir on all three paths, and construction sites no longer call register_schema. Proposal: https://claude.ai/artifact/N14ZzKaX8vUSfrX4Uxx58t (ticket C).",
+  "id": "fz-sc8.239",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "Interp registers a program's struct schemas at load, as native does",
+  "type": "bug",
+  "updated_at": "2026-11-15T23:27:25Z"
+}
