@@ -5,7 +5,7 @@
     "fz-9zq.2"
   ],
   "created": "2026-11-15T18:35:11Z",
-  "description": "When a group join or merge (Groups::join / merge, crates/fz-engine/src/groups.rs) puts a job that holds a standing Concluded wait into the group that owns the waited fact, is_concluded_for becomes true for that job, but nothing wakes it. A Concluded waiter is woken only by a conclusion FactChange, and a join emits none. The blocked job then keeps the group from ever closing, and the drain ends in internal/unresolved-wait.\nFound under the fz-9zq.2 fact-backed call-pattern probe on fixture 01006 (scratch 9zq_2/r/report.md, round 3):\n- f370 parks on Concluded ReturnType(f371) from outside group 2;\n- a read-time partners() join merges its group into group 2;\n- f370 is never woken.\nThe stall reproduces at 9db393fac, daf7278c4 and e81f9ed52, so it predates fz-t93.20/.21.\nReproducer: scratch 9zq_2/r/group_merge_wake_test.rs fails on develop 1c6798024. The wait is unsatisfied before the join and satisfied after it, yet the job never runs. Whether develop reaches this join shape without the probe is unverified (probably latent).\nFix sites to choose between on the proposal page: re-evaluate the merged members' standing Concluded waits at join/merge, or treat a join as a conclusion change for the facts that became intra-group. Paper first.",
+  "description": "Fix proposal page: /Users/j5n/Workspace/fz-t93.24.html (record moved jobs in Groups at join/merge; the completion step wakes the moved blocked jobs whose waits are now satisfied, through the shared wake_satisfied_waiters logic).\n\nWhen a group join or merge (Groups::join / merge, crates/fz-engine/src/groups.rs) puts a job that holds a standing Concluded wait into the group that owns the waited fact, is_concluded_for becomes true for that job, but nothing wakes it. A Concluded waiter is woken only by a conclusion FactChange, and a join emits none. The blocked job then keeps the group from ever closing, and the drain ends in internal/unresolved-wait.\nFound under the fz-9zq.2 fact-backed call-pattern probe on fixture 01006 (scratch 9zq_2/r/report.md, round 3):\n- f370 parks on Concluded ReturnType(f371) from outside group 2;\n- a read-time partners() join merges its group into group 2;\n- f370 is never woken.\nThe stall reproduces at 9db393fac, daf7278c4 and e81f9ed52, so it predates fz-t93.20/.21.\nReproducer: scratch 9zq_2/r/group_merge_wake_test.rs fails on develop 1c6798024. The wait is unsatisfied before the join and satisfied after it, yet the job never runs. Whether develop reaches this join shape without the probe is unverified (probably latent).\nFix sites to choose between on the proposal page: re-evaluate the merged members' standing Concluded waits at join/merge, or treat a join as a conclusion change for the facts that became intra-group. Paper first.",
   "id": "fz-t93.24",
   "labels": [],
   "parent": "fz-t93",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "[BUG] A group join wakes the members whose Concluded waits it satisfies",
   "type": "bug",
-  "updated_at": "2026-11-15T18:35:11Z"
+  "updated_at": "2026-11-15T18:36:16Z"
 }
