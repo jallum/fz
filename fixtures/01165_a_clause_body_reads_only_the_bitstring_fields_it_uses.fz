@@ -18,10 +18,9 @@
 # would be the step's only allocation.
 #
 # The allocation count is the total, which includes continuation frames. On the
-# native paths each step of `skip`, `guarded` and `used` builds two (one for the
-# call that adds 1 to the count, one that delivers its result) on top of the
-# view, so they count 3; `unused` builds six frames per step and no view, so it
-# counts 6. The interpreter builds no
+# native paths each step of `skip`, `guarded` and `used` builds one (the call
+# that adds to the count) on top of the view, so they count 2; `unused` builds
+# three frames per step and no view, so it counts 3. The interpreter builds no
 # frames and counts the views alone: 1, 1, 1 and 0.
 #
 # The last cases pin the values when unread fields sit before and between read

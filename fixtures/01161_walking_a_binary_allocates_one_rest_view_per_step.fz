@@ -10,9 +10,9 @@
 # step count, then allocations and struct allocations per step.
 #
 # The allocation count is the total, which includes continuation frames. On the
-# native paths each step builds two: one for the call that adds 1 to the count
-# and one that delivers its result. So a step counts 3 there (the view and two
-# frames); the interpreter builds no frames and counts 1.
+# native paths each step builds one: the frame for the call that adds 1 to the
+# count, which resumes straight into the step's continuation. So a step counts 2
+# there (the view and one frame); the interpreter builds no frames and counts 1.
 defmodule P do
   def go(b), do: walk(b, 0)
   defp walk(<<_c, r :: binary>>, n), do: walk(r, n + 1)
