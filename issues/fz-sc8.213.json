@@ -7,9 +7,15 @@
   "id": "fz-sc8.213",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "No longer blocked by fz-sc8.212 (parked). The splice (emit_extern_call) knows which extern it emits; the instruction table keys on that. Measured on top of the splice: distiller no change, p1b -1.2%, p2b -3.0%.",
+      "timestamp": "2026-11-15T03:32:26Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Integer arithmetic and comparison externs are emitted as instructions",
   "type": "task",
-  "updated_at": "2026-11-15T03:32:24Z"
+  "updated_at": "2026-11-15T03:32:26Z"
 }
