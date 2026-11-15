@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T14:13:24Z",
   "created": "2026-11-15T13:57:03Z",
   "description": "Why: a slice of a large binary keeps the large buffer alive. With fz-nml.1 (#614), every whole-byte slice is a view, and send shares views across processes (deep_copy retains and freezes the SharedBin, as BEAM does). OTP's answer is to let the program choose: binary:referenced_byte_size/1 reports the size of the buffer a binary references, and binary:copy/1 detaches a slice from it (see ../otp/lib/stdlib/src/binary.erl, copy/1 and referenced_byte_size/1, and the notes there on when copying helps). fz has no :binary module. Elixir's String.duplicate/2 is :binary.copy(subject, n) (../elixir/lib/elixir/lib/string.ex:1858).\n\nWhat:\n- lib/binary.fz: defmodule :binary, registered in src/modules/runtime_library.rs next to erlang.fz. It is a thin, guarded fz surface over runtime intrinsics, following lib/erlang.fz and Kernel.byte_size/1:\n  - copy(subject) is copy(subject, 1).\n  - copy(subject, n), for a binary and an integer n \u003e= 0, is extern \"fz\" defp fz_binary_copy(binary, integer) :: binary. It always makes a new binary, even for n = 1, as OTP does.\n  - referenced_byte_size(binary) is an extern that returns the referenced buffer's byte count. For a ProcBin that is its SharedBin's bytes_len; for an inline heap bitstring it is its own size.\n  - Any other argument raises ArgumentError with Elixir's badarg wording (oracle-checked).\n- Runtime: fz_binary_copy writes the n repetitions straight into one freshly allocated buffer, with no staging Vec. Heap::alloc_bitstring becomes the special case of a fill-based allocator (allocate len bytes, then let the caller fill them), so the inline/shared choice stays in one place.\n- String.duplicate/2 becomes :binary.copy(s, n), and its doubling helpers (doubled/3) are deleted.\n- Docs: .agent/docs/any-value.md (views and referenced size) and externs.md, if it lists the intrinsics.\n\nAcceptance:\n- Oracle fixture 01338 (fz-nml block) prints exactly what Elixir does: the OTP doc example (A = :binary.copy(\u003c\u003c1\u003e\u003e, 1000); \u003c\u003cb::binary-10, c::binary\u003e\u003e = A; {byte_size, referenced_byte_size} of a, b, c), copy of a large slice whose referenced size equals its byte size, copy/2 with n = 0, 1 and 3, String.duplicate cases, and badarg for non-binaries and negative n.\n- Allocation fixture 01339: :binary.copy(s, n) on a large s allocates one buffer of n * byte_size(s) shared bytes (Process.heap_alloc_stats shared_bin_bytes delta), and String.duplicate allocates the same.\n- Passes on all three paths; workspace gate at opt-level 1; pins move only by measured falls.\n\nBase: develop (does not wait on #613). On develop, middle slices are still copies, so referenced_byte_size equals byte_size more often. The fixtures must hold both before and after fz-nml.1.",
   "id": "fz-nml.11",
   "labels": [],
   "parent": "fz-nml",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": ":binary.copy/1,2 and :binary.referenced_byte_size/1 work as in OTP on interp, run and build",
   "type": "task",
-  "updated_at": "2026-11-15T13:57:03Z"
+  "updated_at": "2026-11-15T14:13:24Z"
 }
