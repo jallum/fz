@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-t93.7.3"
+    "fz-t93.7.3",
+    "fz-t93.7.4"
   ],
   "blocks": [],
   "created": "2026-11-15T15:52:27Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Generic callable construction is a group fact",
   "type": "task",
-  "updated_at": "2026-11-15T15:52:30Z"
+  "updated_at": "2026-11-15T15:52:31Z"
 }
