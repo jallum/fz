@@ -3842,12 +3842,13 @@ fn a_long_body_copies_its_frame_forward_when_a_collection_kept_it() {
     }
 }
 
-/// The body frame holds a four-hundred-thousand-element list until the step
+/// The body frame holds a forty-thousand-element list until the step
 /// that measures it, and the step after clears the slot. The collections that
 /// follow copy what the program still uses and not the list: none of the last
-/// fifty copies more than 480,544 bytes, the same most the program copies with
-/// no shared frame. A frame that kept the list would have every collection
-/// after it copy the list's 6.4 MB too: the most is then 6,880,576.
+/// fifty copies more than 48,576 bytes, a three-thousand-element list of `g`'s
+/// and little else. When the program's last expression still reads the list,
+/// the collections after it copy the list's 640,000 bytes too: the most is
+/// then 672,656.
 fn a_list_the_body_no_longer_uses_is_not_kept_by_its_frame() {
     let fixture = FixtureCase::new("fixtures/01256_a_list_the_body_no_longer_uses_is_not_kept_by_its_frame.fz");
     for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Build, "build")] {
@@ -3855,8 +3856,7 @@ fn a_list_the_body_no_longer_uses_is_not_kept_by_its_frame() {
         let tail = &events[events.len().saturating_sub(50)..];
         assert_eq!(
             tail.iter().map(|e| e.copied_bytes).max(),
-            // 480_544 -> 480_576: the entry's call of `main` returns to a 32-byte continuation.
-            Some(480_576),
+            Some(48_576),
             "{label}: the most bytes one of the last fifty collections copied"
         );
     }
