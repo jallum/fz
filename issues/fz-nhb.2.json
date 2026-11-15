@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T20:39:49Z",
   "created": "2026-11-15T20:14:27Z",
   "description": "## Why\n`for _ \u003c- 1..3 do IO.inspect(:x) end` fails: parse/expected-token: unexpected item without a newline: Underscore. So does `IO.inspect not true` (Not); Elixir runs both. `for _x \u003c- ...` and `{_, b} \u003c- ...` parse. Found in fixture 01115's oracle twin.\n\nThe cause: `Parser::starts_no_parens_arg` (src/compiler2/frontdoor.rs) is a hand list of tokens that may begin a no-parens argument, a second answer to the question `parse_prefix` (same file) already answers. It lacks Underscore, Not, Caret and Percent, which parse_prefix accepts. (A sigil is not an expression in fz at all, with or without parentheses: parse_prefix has no Sigil arm. That is a separate feature.)\n\n## What changes\nOne answer to \"may this token begin an expression\": the no-parens argument test reads the same token set parse_prefix accepts. The only exception is the spacing rule that tells unary from binary `-`/`+`.\n\n## Signal\nA new oracle fixture (01381) runs `for _ \u003c- 1..3` and `IO.inspect not true`, plus the pin and struct forms, and matches Elixir on all three paths. Related but distinct: fz-sc8.91.",
   "id": "fz-nhb.2",
   "labels": [],
   "parent": "fz-nhb",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A no-parens call argument starts with any token an expression starts with",
   "type": "bug",
-  "updated_at": "2026-11-15T20:29:01Z"
+  "updated_at": "2026-11-15T20:39:49Z"
 }
