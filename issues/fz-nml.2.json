@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-nml.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-nml.6"
+  ],
   "created": "2026-11-15T03:53:50Z",
   "description": "Now: fz_binary_concat (ir_runtime.rs:1354) copies both sides into a temporary Vec, then into a new binary. acc \u003c\u003e \"x\" x1,000 = 936 shared bins, 498,420 shared bytes; x2,000 = 1,998,920 (x4, quadratic). Change: SharedBin carries capacity and written length; when a's view ends at the written end and capacity holds b, claim the room by compare-and-swap on the written length, write b, return a longer view; else allocate with doubling room and write each side once (no Vec). Predicted: x1,000 \u003c= 5 shared bins, \u003c= 2,100 shared bytes; x2,000 / x1,000 ratio \u003c= 2.1. Needs S1 (without a stored length, growing a buffer lengthens existing views). Proposal page: /Users/j5n/Workspace/fz-json-garbage.html (approved 2026-11-14). Worktree ../fz-json, base bd3edae98.",
   "id": "fz-nml.2",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "a \u003c\u003e b appends into a's spare room when a ends where its buffer's bytes end",
   "type": "task",
-  "updated_at": "2026-11-15T03:53:52Z"
+  "updated_at": "2026-11-15T03:53:53Z"
 }
