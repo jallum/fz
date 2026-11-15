@@ -2932,6 +2932,11 @@ impl World {
         let mut issues = Vec::from_iter(cycle.map(|cycle| self.definition_cycle_issue(cycle)));
         for wait in waits {
             let fact = wait.fact.fact();
+            // A job parked on several facts stays parked until all of them
+            // are answered, so its standing waits include the answered ones.
+            if self.has_fact(fact) {
+                continue;
+            }
             if cycle.is_some_and(|cycle| self.stalled_by(cycle, fact)) {
                 continue;
             }

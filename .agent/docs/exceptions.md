@@ -331,6 +331,17 @@ head spelled with `in` is seen as `in`. Any other head is Elixir's diagnostic
 invalid "rescue" clause. The clause should match on an alias, a variable or be in the "var in [alias]" format. Got: %{}
 ```
 
+Each name a clause takes keeps the span it was written at
+(`RescueClause::exceptions`), and is a reference to that module's struct:
+`collect_local_dispatch_requirements` records it with
+`record_struct_reference`, with no fields, as it does a struct literal. A
+clause that names a module nothing defines is `resolve/unknown-module`, and
+one that names a module with no struct is `resolve/not-a-struct`, each under
+the name (fixtures `01315`, `01316`). Elixir warns for both; fz compiles the
+whole program at once, so such a clause can never match and is refused. A
+struct that is not an exception is accepted, as in Elixir. Matching itself is
+on the name's atom (`rescue_arms`).
+
 A `try` with only a `do` block is `missing :catch/:rescue/:after option in
 "try"`; a repeated section is `duplicate "rescue" clauses given for "try"`; a
 `rescue` section that is not clauses is `invalid "rescue" block in "try", it

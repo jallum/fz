@@ -784,7 +784,7 @@ fn rescue_shape(clause: &crate::ast::RescueClause) -> (Option<String>, Vec<Strin
         clause
             .exceptions
             .iter()
-            .map(|exception| exception.atom_name())
+            .map(|exception| exception.node.atom_name())
             .collect(),
     )
 }

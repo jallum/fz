@@ -1,0 +1,7 @@
+error[resolve/not-a-struct]: module `Plain` is not a struct
+  --> fixtures/01316_a_rescue_clause_that_names_a_module_with_no_struct_is_refused_at_the_name.fz:9:10
+   |
+9 |     e in Plain -> dbg(e)
+   |          ^^^^^
+   |
+

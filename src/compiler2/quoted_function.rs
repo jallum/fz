@@ -1081,6 +1081,10 @@ fn split_guarded_heads(
     Ok((args, Some(guard)))
 }
 
+/// What a rescue head says: the variable it binds, if any, and the
+/// exceptions it takes, each with the span of its name.
+type RescueHead = (Option<Spanned<Var>>, Vec<Spanned<ModuleName>>);
+
 /// The head of a rescue clause: `e`, `_`, `Alias`, `[A, B]`, `e in Alias` or
 /// `e in [A, B]`. Anything else is refused with Elixir's words and the head
 /// as the user wrote it.
@@ -1088,7 +1092,7 @@ fn decode_rescue_head(
     cursor: &QuotedSourceCursor,
     clause_span: Span,
     sources: &SourceMap,
-) -> Result<(Option<Spanned<Var>>, Vec<ModuleName>), QuotedSourceError> {
+) -> Result<RescueHead, QuotedSourceError> {
     let invalid = |span: Span| {
         invalid_try(
             span,
@@ -1101,7 +1105,7 @@ fn decode_rescue_head(
     if cursor.is_list_like() {
         return Ok((
             None,
-            rescue_aliases(cursor, sources)?.ok_or_else(|| invalid(clause_span))?,
+            rescue_aliases(cursor, clause_span, sources)?.ok_or_else(|| invalid(clause_span))?,
         ));
     }
     let Some(node) = cursor.ast_node(sources)? else {
@@ -1115,18 +1119,16 @@ fn decode_rescue_head(
         ));
     }
     if is_alias(cursor, sources)? {
-        return Ok((None, vec![alias_from_args(&node.tail.list_items()?)?]));
+        return Ok((None, vec![rescue_alias(cursor, span, sources)?]));
     }
     let Some((left, right)) = rescue_in_operands(&node)? else {
         return Err(invalid(span));
     };
     let binding = rescue_binding(&left, span, sources)?.ok_or_else(|| invalid(span))?;
     let exceptions = if right.is_list_like() {
-        rescue_aliases(&right, sources)?
+        rescue_aliases(&right, span, sources)?
     } else if is_alias(&right, sources)? {
-        Some(vec![alias_from_args(
-            &expect_ast_node(&right, "rescue alias", sources)?.tail.list_items()?,
-        )?])
+        Some(vec![rescue_alias(&right, span, sources)?])
     } else {
         None
     };
@@ -1175,18 +1177,30 @@ fn rescue_binding(
 /// The aliases of a `[A, B]` rescue list; `None` when an item is not an alias.
 fn rescue_aliases(
     cursor: &QuotedSourceCursor,
+    clause_span: Span,
     sources: &SourceMap,
-) -> Result<Option<Vec<ModuleName>>, QuotedSourceError> {
+) -> Result<Option<Vec<Spanned<ModuleName>>>, QuotedSourceError> {
     let mut aliases = Vec::new();
     for item in cursor.list_items()? {
         if !is_alias(&item, sources)? {
             return Ok(None);
         }
-        aliases.push(alias_from_args(
-            &expect_ast_node(&item, "rescue alias", sources)?.tail.list_items()?,
-        )?);
+        aliases.push(rescue_alias(&item, clause_span, sources)?);
     }
     Ok((!aliases.is_empty()).then_some(aliases))
+}
+
+/// One rescued name with the span it was written at.
+fn rescue_alias(
+    cursor: &QuotedSourceCursor,
+    clause_span: Span,
+    sources: &SourceMap,
+) -> Result<Spanned<ModuleName>, QuotedSourceError> {
+    let node = expect_ast_node(cursor, "rescue alias", sources)?;
+    Ok(Spanned::new(
+        alias_from_args(&node.tail.list_items()?)?,
+        node.span.unwrap_or(clause_span),
+    ))
 }
 
 fn source_text(sources: &SourceMap, span: Span) -> String {
