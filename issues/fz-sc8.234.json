@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.225"
+  ],
   "created": "2026-11-15T18:34:33Z",
   "description": "A quoted node's metadata is a map in fz (`%{__fz_span__: ...}`), and Elixir's is a keyword list. A macro that returns a node written as Elixir writes it, `{:%{}, [], [a: 1]}`, fails with `internal/post-resolution-leftover: span fallback stamping failed: invalid any value ref: ExpectedTag` (stamp_meta_span in quoted_expander.rs assumes a map). Macro.escape returns `[]` metadata, so it needs this. Decision (user, option 1): metadata becomes a keyword list everywhere, as in Elixir; the span is an entry of that list. Done when: every reader and writer of quoted metadata uses the keyword list, a macro returning `[]`-metadata nodes expands on interp/run/build (fixture), `quote` output matches Elixir apart from the span entry, and the docs describe the keyword list.",
   "id": "fz-sc8.234",
