@@ -55,11 +55,15 @@
     {
       "text": "X5 instructions instead of C calls (user's direction: reduce +/2 on two integers to an instruction). Base #592 + narrow spike; switch FZ_SPIKE_INTRINSIC=1 emits fz_op_{add,sub,mul}_ii as an overflow-checked add/sub/mul and fz_op_{lt,lte,gt,gte,eq,neq}_ii as a compare. Predictions before the run: distiller 22.15G -\u003e between 21.95G and 22.10G (under 1%: about 9.6M such calls at 10-15 instructions each); byte walk p1b 66.8G -\u003e 61-64G; index walk larger in proportion; stdout identical; overflow still raises ArithmeticError with the same text.",
       "timestamp": "2026-11-15T02:28:51Z"
+    },
+    {
+      "text": "X5 result (#592 + narrow, release, stdout identical, overflow output identical to the unchanged compiler).\nDistiller: narrow 22.15G -\u003e narrow+instructions 22.13-22.17G (no measurable change; predicted 0.2-0.9% lower: missed). Instructions without narrow: 24.10-24.13G vs 24.15G off (-0.1%).\nByte walk p1b: 66.8G -\u003e 66.0G (-1.2%; predicted 61-64G: missed). Index walk p2b: 72.3G -\u003e 70.1G (-3.0%).\nMeaning: the C call itself costs about 5 instructions per operation. What is expensive is the continuation around the call (8.3% of the distiller, 31% of the byte walk on #592), not the call. Turning the extern into an instruction is worth about 0.1% on the distiller unless the split is removed too.",
+      "timestamp": "2026-11-15T02:29:40Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Arithmetic on known integers does not go through a continuation",
   "type": "task",
-  "updated_at": "2026-11-15T02:28:51Z"
+  "updated_at": "2026-11-15T02:29:40Z"
 }
