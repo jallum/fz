@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-11-14T11:46:20Z",
-  "description": "IO.puts(Integer.to_string(byte_size(String.duplicate(\"x\", 100000)))) prints 'fatal runtime error: stack overflow, aborting' on run and exits 139 on build; interp prints 100000. Present on develop f822f0f84 as well as on the fz-sc8.183 stack. 50,000 works. Elixir has no such limit. Not yet investigated: whether String.duplicate recurses non-tail in lib, or whether any deep non-tail recursion overflows. Repro: scratchpad/lit/crash2.fz.",
+  "description": "IO.puts(Integer.to_string(byte_size(String.duplicate(\"x\", 100000)))) prints 'fatal runtime error: stack overflow, aborting' on run and exits 139 on build; interp prints 100000. Present on develop f822f0f84 as well as on the fz-sc8.183 stack. 50,000 works. Elixir has no such limit. Not yet investigated: whether String.duplicate recurses non-tail in lib, or whether any deep non-tail recursion overflows. Repro: scratchpad/lit/crash2.fz.\n\nThe same definition is also quadratic in time and memory. lib/string.fz:657 is def duplicate(s, n), do: s \u003c\u003e duplicate(s, n - 1): each \u003c\u003e copies a binary of 8·k bytes, so String.duplicate(\"abcdefgh\", 16000) copies 1,024,063,712 bytes off-heap (15,992 shared binaries) at a 1.17 GB peak RSS. One fix serves both: build the result in one pass of known size.",
   "id": "fz-sc8.193",
   "labels": [],
   "parent": "fz-sc8",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "String.duplicate/2 of 100,000 overflows the native stack on run and build",
   "type": "bug",
-  "updated_at": "2026-11-14T19:25:24Z"
+  "updated_at": "2026-11-15T01:25:56Z"
 }
