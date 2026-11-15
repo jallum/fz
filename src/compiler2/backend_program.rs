@@ -15,6 +15,7 @@ use super::identity::{ExecutableKey, ModuleId};
 use super::shared_order::SharedOrder;
 use super::transport::TransportPosition;
 use super::types::Types;
+use crate::literal_term::LiteralTerm;
 use fz_engine::SemanticOrd;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +23,8 @@ pub struct BackendSchema {
     pub module: ModuleId,
     pub name: Rc<fz_runtime::module_name::ModuleName>,
     pub fields: Rc<Vec<String>>,
+    /// What each field holds when nothing sets it, in the order of `fields`.
+    pub defaults: Rc<Vec<LiteralTerm>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +98,7 @@ pub struct BackendProgram {
     atom_owners: SharedOrder<AtomName, AtomOwners>,
     wrapper_owners: SharedOrder<Rc<TransportPosition>, WrapperOwners>,
     schemas: SharedOrder<ModuleId, Rc<BackendSchema>>,
+    struct_defaults: SharedOrder<Rc<fz_runtime::module_name::ModuleName>, Rc<Vec<LiteralTerm>>>,
     boxed_contract: boxed_contract::BoxedContracts,
 }
 
@@ -130,6 +134,14 @@ impl BackendProgram {
             .map(Rc::as_ref)
     }
 
+    /// The default of each field of the struct `name`, in the order
+    /// `schema` gives its fields.
+    pub(crate) fn struct_defaults(&self, name: &fz_runtime::module_name::ModuleName) -> Option<&Vec<LiteralTerm>> {
+        self.struct_defaults
+            .lookup(name, &|left, right| left.cmp(right.as_ref()))
+            .map(Rc::as_ref)
+    }
+
     pub(crate) fn empty(entry: ExecutableKey) -> Self {
         Self {
             entry,
@@ -140,6 +152,7 @@ impl BackendProgram {
             atom_owners: SharedOrder::default(),
             wrapper_owners: SharedOrder::default(),
             schemas: SharedOrder::default(),
+            struct_defaults: SharedOrder::default(),
             boxed_contract: boxed_contract::BoxedContracts::default(),
         }
     }
@@ -367,10 +380,13 @@ impl BackendProgram {
     pub(crate) fn replace_schema(&mut self, module: ModuleId, next: Option<Rc<BackendSchema>>) {
         if let Some(previous) = self.schemas.remove(&module, &ModuleId::cmp) {
             self.struct_schemas.remove(&previous.name, &Rc::cmp);
+            self.struct_defaults.remove(&previous.name, &Rc::cmp);
         }
         if let Some(schema) = next {
             self.struct_schemas
                 .insert(Rc::clone(&schema.name), Rc::clone(&schema.fields), &Rc::cmp);
+            self.struct_defaults
+                .insert(Rc::clone(&schema.name), Rc::clone(&schema.defaults), &Rc::cmp);
             self.schemas.insert(module, schema, &ModuleId::cmp);
         }
     }

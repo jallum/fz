@@ -355,11 +355,13 @@ the pair is physical only: no fz tuple is built, and no declaration spells it.
   `defexception`, is `resolve/not-an-exception`.
 - `extern_failure` resolves the alias with `World::module_alias_atom`,
   the call a body makes for `raise(KeyError, ...)`, so alias and import scope
-  apply alike, and builds `LastResort::declared` from the struct's definition
-  (`declared_failure_fields`): every field the exception declares, in its
-  order, `message` holding the declared text and each other field its default
-  (a `LiteralTerm`, `src/literal_term.rs`: a scalar, or a list, tuple or map
-  of them), or `nil` when it has none. `checked_return` then makes
+  apply alike, checks that the struct's `__exception__` default is `true`, and
+  builds `LastResort::declared`, which sets `message` to the declared text.
+  The raised struct is completed as every last resort's is
+  (`LastResort::struct_fields`, [exceptions](exceptions.md)): every field the
+  exception declares, in its order, each other field holding its default (a
+  `LiteralTerm`, `src/literal_term.rs`: a scalar, or a list, tuple or map of
+  them), or `nil` when it has none. `checked_return` then makes
   the contract's return `ExternReturn::Checked(lane, LastResort)`. It refuses
   a non-`C` ABI and any result other than `integer` or `float`. Like the other
   ABI checks it runs for an extern that is called, and for an `extern "fz"` in

@@ -1,0 +1,80 @@
+#---
+# purpose: "A failure the compiler raises is a struct of its exception's module: a division by zero, a failed match, a case, a function and a cond with no clause, a boolean operator given a non-boolean, and a call that finds no function each inspect as %Mod{...} with no struct of that module built before"
+#---
+defmodule Shape do
+  def area({:square, side}), do: side * side
+end
+
+def div(a, b), do: a / b
+
+def pick(n) do
+  case n do
+    1 -> :one
+  end
+end
+
+def choose(n) do
+  cond do
+    n == 1 -> :one
+  end
+end
+
+def both(a, b), do: a and b
+
+def call(module), do: module.area({:square, 2})
+
+# The first element of a list that also holds an atom the types cannot name:
+# its type is the argument's joined with atom.
+def opaque(x), do: Enum.at([x, String.to_atom("a")], 0)
+
+def main() do
+  n = length(System.argv())
+
+  try do
+    div(1, n)
+  rescue
+    e -> IO.inspect(e)
+  end
+
+  try do
+    {:ok, _} = {:no, n}
+  rescue
+    e -> IO.inspect(e)
+  end
+
+  try do
+    pick(n)
+  rescue
+    e -> IO.inspect(e)
+  end
+
+  try do
+    Shape.area({:circle, n})
+  rescue
+    e -> IO.inspect(e)
+  end
+
+  try do
+    choose(n)
+  rescue
+    e -> IO.inspect(e)
+  end
+
+  try do
+    both(n, true)
+  rescue
+    e -> IO.inspect(e)
+  end
+
+  try do
+    call(String.to_atom("nowhere"))
+  rescue
+    e -> IO.inspect(e)
+  end
+
+  try do
+    call(opaque(n))
+  rescue
+    e -> IO.inspect(e)
+  end
+end

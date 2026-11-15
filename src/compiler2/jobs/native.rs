@@ -11,7 +11,6 @@ use super::super::identity::{ExecutableKey, FunctionId};
 use super::super::transport::TransportPosition;
 use crate::compiler2::ValueMap;
 use crate::literal_term::LiteralTerm;
-use std::borrow::Cow;
 
 use crate::fast_hash::{HashMap, HashSet};
 
@@ -23,8 +22,8 @@ use crate::ast::BitType;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::dispatch_matrix::pattern::{
-    FieldTerm, GuardExtern, LastResort, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp,
-    guard_body_subjects,
+    GuardExtern, LastResort, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp,
+    RaisedField, guard_body_subjects,
 };
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
@@ -828,14 +827,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 origin: BranchOrigin::ClauseDispatch,
             });
             ctx.current_block = raise_b;
-            let LastResort::Exception { exception, fields } = failure else {
-                return Err(incomplete_native_program(
-                    self.telemetry,
-                    self.root_id,
-                    format!("extern `{}` declares a failure that raises nothing", signature.symbol),
-                ));
-            };
-            self.emit_raise(ctx, exception, fields, None);
+            self.emit_raise(ctx, failure, None)?;
             ctx.current_block = value_b;
             return Ok(value);
         }
@@ -3175,17 +3167,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 format!("a dispatch with no last resort reached its fail in {:?}", ctx.origin),
             ));
         };
-        let (exception, fields) = match last_resort {
-            LastResort::Exception { exception, fields } => (exception, fields),
-            LastResort::Reraise => {
-                let kind = state.dispatch_inputs.first().ok_or(FatalError)?;
-                let kind = self.materialize_native_value(ctx, None, kind)?;
-                let value = state.dispatch_inputs.get(1).ok_or(FatalError)?;
-                let value = self.materialize_native_value(ctx, None, value)?;
-                ctx.set_term(Term::Reraise { kind, value });
-                return Ok(());
-            }
-        };
+        if matches!(last_resort, LastResort::Reraise) {
+            let kind = state.dispatch_inputs.first().ok_or(FatalError)?;
+            let kind = self.materialize_native_value(ctx, None, kind)?;
+            let value = state.dispatch_inputs.get(1).ok_or(FatalError)?;
+            let value = self.materialize_native_value(ctx, None, value)?;
+            ctx.set_term(Term::Reraise { kind, value });
+            return Ok(());
+        }
         let subject = match last_resort.consumed_inputs() {
             0 => None,
             _ => {
@@ -3193,8 +3182,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 Some(self.materialize_native_value(ctx, None, input)?)
             }
         };
-        self.emit_raise(ctx, exception, fields, subject);
-        Ok(())
+        self.emit_raise(ctx, last_resort, subject)
     }
 
     /// Whether control that enters `entry` can deliver a value to the
@@ -3240,27 +3228,47 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         false
     }
 
-    /// Ends the block raising `exception` built from `fields`, with `subject`
-    /// as the value of each field that carries the plan's subject.
+    /// Ends the block raising the struct `failure` builds: each field its
+    /// exception declares, holding what the failure sets or the field's
+    /// default, with `subject` as the value of a field that carries the plan's
+    /// subject.
     fn emit_raise(
         &mut self,
         ctx: &mut NativeFnCtx,
-        exception: &str,
-        fields: &[(Cow<'static, str>, FieldTerm)],
+        failure: &LastResort,
         subject: Option<Var>,
-    ) {
-        let (exception, _) = ctx.emit_let(Prim::Const(Const::Atom(self.atom_id(exception))));
-        let mut terms = Vec::with_capacity(2 * fields.len());
-        for (name, term) in fields {
-            let (key, _) = ctx.emit_let(Prim::Const(Const::Atom(self.atom_id(name))));
-            let value = match term {
-                FieldTerm::Subject => subject.expect("a field that carries the subject has one to carry"),
-                FieldTerm::Literal(term) => self.literal_var(ctx, term),
-            };
-            terms.extend([key, value]);
-        }
-        let (fields, _) = ctx.emit_let(Prim::MakeList(terms, None, None));
-        ctx.set_term(Term::Raise { exception, fields });
+    ) -> Result<(), FatalError> {
+        let program = self.program;
+        let raised = failure.exception().and_then(|exception| {
+            let module = fz_runtime::module_name::ModuleName::from_atom_name(exception)?;
+            let declared = program.schema(&module)?;
+            let defaults = program.struct_defaults(&module)?;
+            Some((module, failure.struct_fields(declared, defaults)))
+        });
+        let (module, fields) = match raised {
+            Some((module, Ok(fields))) => (module, fields),
+            Some((_, Err(reason))) => return Err(incomplete_native_program(self.telemetry, self.root_id, reason)),
+            None => {
+                return Err(incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!("a failure raises {failure:?}, whose struct the program lacks"),
+                ));
+            }
+        };
+        let fields = fields
+            .into_iter()
+            .map(|(name, held)| {
+                let value = match held {
+                    RaisedField::Subject => subject.expect("a field that carries the subject has one to carry"),
+                    RaisedField::Literal(term) => self.literal_var(ctx, term),
+                };
+                (name.to_string(), value)
+            })
+            .collect();
+        let (value, _) = ctx.emit_let(Prim::MakeStruct { module, fields });
+        ctx.set_term(Term::Raise { value });
+        Ok(())
     }
 
     /// Builds `term` and answers the value it is.

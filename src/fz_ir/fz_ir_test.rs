@@ -199,16 +199,13 @@ fn term_tail_call() {
 }
 
 #[test]
-fn term_raise_pretty_prints_the_exception_and_its_fields() {
+fn term_raise_pretty_prints_the_value_it_raises() {
     let mut b = FnBuilder::new(FnId(5), "top");
     let entry = b.block(vec![]);
-    let exception = b.let_(entry, Prim::Const(Const::Atom(0)));
-    let key = b.let_(entry, Prim::Const(Const::Atom(1)));
-    let subject = b.let_(entry, Prim::Const(Const::Int(3)));
-    let fields = b.let_(entry, Prim::MakeList(vec![key, subject], None, None));
-    b.set_terminator(entry, Term::Raise { exception, fields });
+    let value = b.let_(entry, Prim::Const(Const::Int(3)));
+    b.set_terminator(entry, Term::Raise { value });
     let s = format!("{}", b.build());
-    assert!(s.contains("raise v0 v3"), "{s}");
+    assert!(s.contains("raise v0"), "{s}");
 }
 
 #[test]

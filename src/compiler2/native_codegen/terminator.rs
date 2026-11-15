@@ -11,7 +11,7 @@ use cranelift_codegen::ir::TrapCode;
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_module::FuncId;
-use fz_runtime::failure::{fz_raise, fz_raise_undefined_function, fz_reraise};
+use fz_runtime::failure::{fz_panic, fz_raise_undefined_function, fz_reraise};
 use fz_runtime::ir_runtime::{
     fz_receive_park_matched, fz_try_push, fz_yield_mid_flight_report, fz_yield_slow_path_begin,
 };
@@ -265,7 +265,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module>(
         Term::If {
             cond, then_b, else_b, ..
         } => emit_if(body, var_env, block_map, caller_fn_id, blk.id, cond, then_b, else_b),
-        Term::Raise { exception, fields } => emit_raise(body, var_env, *exception, *fields),
+        Term::Raise { value } => emit_raise(body, var_env, *value),
         Term::Reraise { kind, value } => emit_reraise(body, var_env, *kind, *value),
         Term::RaiseUndefined {
             receiver,
@@ -469,19 +469,17 @@ fn emit_if<M: cranelift_module::Module>(
     Ok(())
 }
 
-/// `Term::Raise` is a decision's last resort: the process raises its
-/// exception through the one raise route, and what follows is what follows
-/// any raise.
+/// `Term::Raise` is a decision's last resort: the process raises the
+/// exception the block built, through the one raise route, and what follows
+/// is what follows any raise.
 fn emit_raise<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    exception: Var,
-    fields: Var,
+    value: Var,
 ) -> Result<(), CodegenError> {
-    let exception = body.any_ref_for_var(var_env, exception.0);
-    let fields = body.any_ref_for_var(var_env, fields.0);
+    let value = body.any_ref_for_var(var_env, value.0);
     let process = body.process_arg();
-    runtime_call!(body, fz_raise, [process, exception, fields]);
+    runtime_call!(body, fz_panic, [process, value]);
     continue_after_raise(body);
     Ok(())
 }

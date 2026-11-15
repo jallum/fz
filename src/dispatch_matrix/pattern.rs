@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 pub(crate) mod last_resort;
 pub(crate) mod source;
-pub(crate) use last_resort::{FieldTerm, LastResort};
+pub(crate) use last_resort::{FieldTerm, LastResort, RaisedField, atom_name};
 pub(crate) use source::{PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

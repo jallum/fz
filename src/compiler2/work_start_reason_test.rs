@@ -367,7 +367,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // exceptions, each a module of its own that `defexception` builds, so three more
         // files are scoped, their modules defined, and the `raise` and `defexception` macros
         // become executable facts.
-        (2687, 14, 39, 262),
+        // (2687, 14, 39, 262) -> (2692, 15, 42, 262): a function head that can miss raises a
+        // struct of `FunctionClauseError`, so the executable waits for that module's
+        // declaration: its file is scoped and its module defined. A program `fz2` runs
+        // defines it already, for the handler of an uncaught raise.
+        (2692, 15, 42, 262),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -467,7 +471,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
         // 1055 -> 1076: the library exception modules and the two macros that build and raise
         // them publish changed revisions of their own.
-        1076,
+        // 1076 -> 1078: `FunctionClauseError`'s module is defined (see the source census
+        // above), and its definition starts again when its source is indexed and when it
+        // is scoped.
+        1078,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -540,7 +547,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 439 -> 438: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
         // 438 -> 450: the same exception modules and macros wait on their prerequisites.
-        450,
+        // 450 -> 453: the other three of the five steps that define `FunctionClauseError`
+        // start as prerequisites of a waiter.
+        453,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(

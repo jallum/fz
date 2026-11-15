@@ -20,6 +20,25 @@ fn with_process<R>(f: impl FnOnce(&mut Process) -> R) -> R {
     f(&mut process)
 }
 
+/// Registers the struct of the exception `module` with its `fields` and the
+/// mark every exception carries, as a program does before it raises one.
+fn declare(process: &Process, module: &str, fields: &[&str]) {
+    let module = crate::module_name::ModuleName::from_atom_name(module).expect("a module's atom");
+    let fields = ["__exception__"].iter().chain(fields).map(|field| field.to_string());
+    process
+        .heap
+        .register_schema(crate::heap::Schema::named_struct(module, fields));
+}
+
+fn declare_undefined_call_exceptions(process: &Process) {
+    declare(process, "Elixir.ArgumentError", &["message"]);
+    declare(
+        process,
+        "Elixir.UndefinedFunctionError",
+        &["module", "function", "arity", "reason", "message"],
+    );
+}
+
 fn atom(process: &Process, name: &str) -> AnyValue {
     AnyValue::atom(process.node.intern_atom(name))
 }
@@ -532,6 +551,7 @@ fn recording(f: impl FnOnce(&mut Process)) -> (Vec<String>, bool) {
 #[test]
 fn a_raise_with_no_handler_prints_the_message_the_exception_carries() {
     let (lines, failed) = recording(|process| {
+        declare(process, "Elixir.ArgumentError", &["message"]);
         let name = atom(process, "Elixir.ArgumentError");
         let message = binary(process, "argument error");
         raise_exception(process, name, &[("message", message)]);
@@ -547,13 +567,14 @@ fn a_raise_with_no_handler_prints_the_message_the_exception_carries() {
 #[test]
 fn a_raise_with_no_handler_and_no_message_prints_the_exception_as_a_value() {
     let (lines, failed) = recording(|process| {
+        declare(process, "Elixir.MatchError", &["term"]);
         let name = atom(process, "Elixir.MatchError");
         raise_exception(process, name, &[("term", AnyValue::Int(7))]);
     });
     assert!(failed);
     assert_eq!(
         lines,
-        ["** (ErlangError) Erlang error: %{__exception__: true, __struct__: MatchError, term: 7}"],
+        ["** (ErlangError) Erlang error: %MatchError{term: 7}"],
         "the words belong to the module, which the runtime does not ask"
     );
 }
@@ -567,12 +588,19 @@ fn delivered_exception(process: &mut Process, raise: impl FnOnce(&mut Process)) 
 }
 
 #[test]
-fn a_raised_exception_carries_the_fields_it_was_given_and_no_others() {
+fn a_raised_exception_is_a_struct_of_its_module_holding_the_fields_it_was_given() {
     with_observed_process(|process, _| {
+        declare(process, "Elixir.CaseClauseError", &["term"]);
         let name = atom(process, "Elixir.CaseClauseError");
         let exception = delivered_exception(process, |process| {
             raise_exception(process, name, &[("term", AnyValue::Int(3))]);
         });
+        let module = crate::module_name::ModuleName::from_atom_name("Elixir.CaseClauseError").expect("a module");
+        let raised = process.heap.box_any_value_ref(exception);
+        assert!(
+            process.heap.has_struct_layout_of(raised, &module),
+            "the raised value is laid out as the struct its module declares"
+        );
         assert_eq!(exception_name(process, exception), Some(name));
         assert_eq!(
             exception_field(process, exception, "term"),
@@ -588,23 +616,22 @@ fn a_raised_exception_carries_the_fields_it_was_given_and_no_others() {
 }
 
 #[test]
-fn the_raise_export_reads_each_field_as_a_key_then_its_value() {
+#[should_panic(expected = "is raised before its struct is registered")]
+fn an_exception_whose_struct_nothing_registered_cannot_be_raised() {
     with_observed_process(|process, _| {
+        let name = atom(process, "Elixir.CaseClauseError");
+        raise_exception(process, name, &[("term", AnyValue::Int(3))]);
+    });
+}
+
+#[test]
+#[should_panic(expected = "is raised with no `term`")]
+fn an_exception_is_raised_with_every_field_its_module_declares() {
+    with_observed_process(|process, _| {
+        declare(process, "Elixir.BadBooleanError", &["term", "operator"]);
         let name = atom(process, "Elixir.BadBooleanError");
-        let (term, operator, or) = (atom(process, "term"), atom(process, "operator"), atom(process, "or"));
-        let mut fields = crate::any_value::EMPTY_LIST_BITS;
-        for value in [or, operator, AnyValue::Int(1), term] {
-            fields = process.heap.alloc_list_cons_slot(value, fields);
-        }
-        let fields = AnyValue::decode_tagged_heap_bits(fields).expect("a list");
-        let exception = delivered_exception(process, |process| {
-            let name = process.heap.box_any_value_ref(name).raw_word();
-            let fields = process.heap.box_any_value_ref(fields).raw_word();
-            fz_raise(process, name, fields);
-        });
-        assert_eq!(exception_name(process, exception), Some(name));
-        assert_eq!(exception_field(process, exception, "term"), Some(AnyValue::Int(1)));
-        assert_eq!(exception_field(process, exception, "operator"), Some(or));
+        let or = atom(process, "or");
+        raise_exception(process, name, &[("operator", or), ("left", AnyValue::Int(1))]);
     });
 }
 
@@ -615,6 +642,7 @@ fn undefined_function_raise(
     arity: i64,
     module_is_defined: bool,
 ) -> (AnyValue, String) {
+    declare_undefined_call_exceptions(process);
     process.push_handler(Handler::Interpreter);
     let function = atom(process, function);
     raise_undefined_function(process, receiver, function, arity, module_is_defined);
@@ -699,6 +727,7 @@ fn the_extern_raise_finds_the_receiver_among_the_modules_that_lack_the_function(
         let (receiver, function) = (word(process, square), word(process, nope));
         let modules = modules.raw_word();
 
+        declare_undefined_call_exceptions(process);
         fz_raise_undefined_function(process, receiver, function, 0, modules);
 
         let raised = process.raised.expect("the raise waits in the process");

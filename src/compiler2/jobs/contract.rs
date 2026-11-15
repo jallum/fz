@@ -24,7 +24,6 @@ use super::super::code::SourceOwner;
 use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic};
 use super::super::identity::{FunctionId, FunctionSource};
-use super::super::structdef::StructDef;
 use super::super::world::World;
 use super::body::record_struct_reference;
 use crate::literal_term::LiteralTerm;
@@ -314,7 +313,8 @@ fn extern_failure(
     let def = world
         .struct_def(module)
         .expect("a contract waits for the struct its declared failure names");
-    let Some(fields) = declared_failure_fields(def, &raises.message) else {
+    let marked = LiteralTerm::Ground(GroundValue::Bool(true));
+    if def.defaults.get(EXCEPTION_FIELD) != Some(&marked) {
         emit_job_diagnostic(
             tel,
             Diagnostic::error(
@@ -324,31 +324,8 @@ fn extern_failure(
             ),
         );
         return Err(FatalError);
-    };
-    Ok(Some(LastResort::declared(exception, fields)))
-}
-
-/// The fields of the struct a declared failure raises, in the order the
-/// exception declares them: `message` holds the declaration's text and every
-/// other field its default. The `__exception__` mark is the runtime's to set.
-/// `None` when `defstruct` declared the struct, not `defexception`.
-fn declared_failure_fields(def: &StructDef, message: &str) -> Option<Vec<(String, LiteralTerm)>> {
-    const NIL: LiteralTerm = LiteralTerm::Ground(GroundValue::Nil);
-    let marked = LiteralTerm::Ground(GroundValue::Bool(true));
-    (def.defaults.get(EXCEPTION_FIELD) == Some(&marked)).then(|| {
-        def.fields
-            .iter()
-            .filter(|field| *field != EXCEPTION_FIELD)
-            .map(|field| {
-                let value = if field == MESSAGE_FIELD {
-                    LiteralTerm::Ground(GroundValue::Binary(message.as_bytes().to_vec()))
-                } else {
-                    def.defaults.get(field).cloned().unwrap_or(NIL)
-                };
-                (field.clone(), value)
-            })
-            .collect()
-    })
+    }
+    Ok(Some(LastResort::declared(exception, &raises.message)))
 }
 
 /// The return of an extern that declares `raises:`. A failure travels as the

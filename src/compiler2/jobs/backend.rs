@@ -9,10 +9,13 @@ use std::rc::Rc;
 
 use crate::diag::Diagnostic;
 use crate::diag::codes;
-use crate::dispatch_matrix::pattern::{LastResort, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
+use crate::dispatch_matrix::pattern::{
+    LastResort, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr, atom_name,
+};
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, ProjectionKind, Region, SubjectSource};
 use crate::fz_ir::SlotStore;
 use crate::ground_value::GroundValue;
+use crate::literal_term::LiteralTerm;
 use crate::source::Span;
 use fz_runtime::module_name::{ModuleName, STRUCT_MODULE_FIELD};
 use fz_runtime::process::AtomName;
@@ -180,6 +183,9 @@ pub(crate) fn produce_root_backend_product(
     PullOutcome::Produced(ProductValue::RootBackendProduct(Rc::new(program)))
 }
 
+/// What a struct's field holds when its declaration gives it no default.
+const NIL: LiteralTerm = LiteralTerm::Ground(GroundValue::Nil);
+
 pub(crate) fn produce_struct_schema(
     world: &World,
     context: &mut ProductReadContext<'_>,
@@ -189,11 +195,18 @@ pub(crate) fn produce_struct_schema(
     if !context.read_fact(world, fact.clone()) {
         return PullOutcome::wait_on_fact(fact);
     }
+    let def = world.struct_def(module).expect("a settled struct has its definition");
     PullOutcome::Produced(ProductValue::StructSchema(Rc::new(
         super::super::backend_program::BackendSchema {
             module,
             name: Rc::new(world.module_name(module).expect("reachable struct name").clone()),
-            fields: Rc::new(world.struct_def_fields(module).expect("settled schema").to_vec()),
+            fields: Rc::new(def.fields.clone()),
+            defaults: Rc::new(
+                def.fields
+                    .iter()
+                    .map(|field| def.defaults.get(field).cloned().unwrap_or(NIL))
+                    .collect(),
+            ),
         },
     )))
 }
@@ -305,9 +318,31 @@ pub(crate) fn produce_backend_executable_product(
         atom_names: Box::default(),
         boxed_apply_requirements,
     };
-    let mut atoms = Vec::new();
-    collect_executable_atoms(world, &backend, &mut HashSet::default(), &mut atoms);
-    backend.atom_names = atoms.iter().map(|atom| AtomName::from(atom.as_str())).collect();
+    let mut names = ExecutableNames::default();
+    collect_executable_atoms(world, &backend, &mut names);
+    let mut waits = Vec::new();
+    for exception in std::mem::take(&mut names.raised) {
+        let name = ModuleName::from_atom_name(&exception).expect("an exception's atom names a module");
+        let module = world.reference_module(name);
+        let defined = FactUse::settled(FactKey::StructDefined(module));
+        if !context.read_fact(world, defined.clone()) {
+            waits.push(PullWait::Fact(defined));
+            continue;
+        }
+        context.include_product(ProductKey::StructSchema(module));
+        let def = world.struct_def(module).expect("a settled struct has its definition");
+        for default in def.fields.iter().map(|field| def.defaults.get(field).unwrap_or(&NIL)) {
+            default.each_ground(&mut |value| {
+                if let Some(atom) = atom_name(value) {
+                    push_atom(&mut names, atom);
+                }
+            });
+        }
+    }
+    if !waits.is_empty() {
+        return PullOutcome::Waiting(waits);
+    }
+    backend.atom_names = names.atoms.iter().map(|atom| AtomName::from(atom.as_str())).collect();
     for edge in backend.abi.call_edges.values() {
         for callee in symbolic_call_edge_callees(edge.target()) {
             context.include_product(ProductKey::BackendExecutable(callee.clone()));
@@ -1198,29 +1233,51 @@ fn lower_entry_origin(executable: &AbiReadyExecutable, entry_index: usize, entry
     }
 }
 
-fn collect_executable_atoms(
-    world: &mut World,
-    executable: &BackendExecutable,
-    seen: &mut HashSet<String>,
-    atoms: &mut Vec<String>,
-) {
+/// What an executable's code names: the atoms it writes, in the order it
+/// first writes each, and the exception modules whose struct it builds when
+/// it raises.
+#[derive(Default)]
+struct ExecutableNames {
+    seen: HashSet<String>,
+    atoms: Vec<String>,
+    raised: Vec<String>,
+}
+
+impl ExecutableNames {
+    /// Notes what `failure` raises: the atoms its fields write and the module
+    /// whose struct it builds.
+    fn raise(&mut self, failure: &LastResort) {
+        for atom in failure.atoms() {
+            push_atom(self, atom);
+        }
+        self.raises(failure.exception());
+    }
+
+    fn raises<'a>(&mut self, exceptions: impl IntoIterator<Item = &'a str>) {
+        for exception in exceptions {
+            if !self.raised.iter().any(|raised| raised == exception) {
+                self.raised.push(exception.to_string());
+            }
+        }
+    }
+}
+
+fn collect_executable_atoms(world: &mut World, executable: &BackendExecutable, names: &mut ExecutableNames) {
     if let Some(dispatch) = &executable.abi.materialized.entry_dispatch {
-        collect_dispatch_atoms(world, dispatch.plan(), seen, atoms);
+        collect_dispatch_atoms(world, dispatch.plan(), names);
     }
     match &executable.body {
         BackendBody::Extern { signature } => {
             if let crate::fz_ir::ExternReturn::Checked(_, failure) = &signature.ret {
-                for atom in failure.atoms() {
-                    push_atom(seen, atoms, atom);
-                }
+                names.raise(failure);
             }
         }
         BackendBody::Clauses { clauses, entries, .. } => {
             for clause in clauses {
-                collect_step_atoms(world, &clause.projections, seen, atoms);
+                collect_step_atoms(world, &clause.projections, names);
             }
             for entry in entries {
-                collect_entry_atoms(world, entry, seen, atoms);
+                collect_entry_atoms(world, entry, names);
             }
         }
     }
@@ -1244,24 +1301,22 @@ fn slot_of(fields: &[String], field: &str) -> Option<u32> {
     fields.iter().position(|name| name == field).map(|slot| slot as u32)
 }
 
-fn collect_entry_atoms(world: &mut World, entry: &BackendEntry, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
-    collect_step_atoms(world, &entry.steps, seen, atoms);
-    collect_tail_atoms(world, &entry.tail, seen, atoms);
+fn collect_entry_atoms(world: &mut World, entry: &BackendEntry, names: &mut ExecutableNames) {
+    collect_step_atoms(world, &entry.steps, names);
+    collect_tail_atoms(world, &entry.tail, names);
 }
 
-fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
+fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], names: &mut ExecutableNames) {
     for step in steps {
         match step {
             BackendStep::Const { literal, .. } => {
-                collect_literal_atoms(literal, seen, atoms);
+                collect_literal_atoms(literal, names);
             }
             BackendStep::FieldAccess { field, .. } | BackendStep::StructSlot { field, .. } => {
-                if seen.insert(field.clone()) {
-                    atoms.push(field.clone());
-                }
+                push_atom(names, field);
             }
             BackendStep::RequireMapValue { key, .. } => {
-                collect_literal_atoms(key, seen, atoms);
+                collect_literal_atoms(key, names);
             }
             BackendStep::Omitted { .. }
             | BackendStep::Tuple { .. }
@@ -1284,18 +1339,18 @@ fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut Hash
     }
 }
 
-fn collect_tail_atoms(world: &mut World, tail: &BackendTail, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
+fn collect_tail_atoms(world: &mut World, tail: &BackendTail, names: &mut ExecutableNames) {
     match tail {
         BackendTail::DirectCall { target, .. } => {
             for callee in target.callees() {
-                collect_undefined_function_atoms(callee, seen, atoms);
+                collect_undefined_function_atoms(callee, names);
             }
             if let CallEdge::Dispatch(dispatch) = target {
-                collect_dispatch_atoms(world, &dispatch.plan, seen, atoms);
+                collect_dispatch_atoms(world, &dispatch.plan, names);
             }
         }
-        BackendTail::Dispatch { dispatch, .. } => collect_dispatch_atoms(world, &dispatch.plan, seen, atoms),
-        BackendTail::Receive(receive) => collect_dispatch_atoms(world, &receive.dispatch, seen, atoms),
+        BackendTail::Dispatch { dispatch, .. } => collect_dispatch_atoms(world, &dispatch.plan, names),
+        BackendTail::Receive(receive) => collect_dispatch_atoms(world, &receive.dispatch, names),
         BackendTail::Value { .. }
         | BackendTail::Unreachable
         | BackendTail::ClosureCall { .. }
@@ -1306,68 +1361,54 @@ fn collect_tail_atoms(world: &mut World, tail: &BackendTail, seen: &mut HashSet<
 
 /// The raise of a call that found no function names the function and tells
 /// the modules that lack it from the atoms that name no module.
-fn collect_undefined_function_atoms(
-    callee: &CallTarget<ExecutableKey>,
-    seen: &mut HashSet<String>,
-    atoms: &mut Vec<String>,
-) {
+fn collect_undefined_function_atoms(callee: &CallTarget<ExecutableKey>, names: &mut ExecutableNames) {
     let CallTarget::Undefined(undefined) = callee else {
         return;
     };
-    push_atom(seen, atoms, &undefined.function);
+    names.raises(["Elixir.UndefinedFunctionError", "Elixir.ArgumentError"]);
+    push_atom(names, &undefined.function);
     for module in &undefined.modules_without {
-        push_atom(seen, atoms, module);
+        push_atom(names, module);
     }
 }
 
-fn collect_literal_atoms(literal: &GroundValue, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
+fn collect_literal_atoms(literal: &GroundValue, names: &mut ExecutableNames) {
     if let GroundValue::Atom(name) = literal {
-        push_atom(seen, atoms, name);
+        push_atom(names, name);
     }
 }
 
-fn collect_dispatch_atoms(
-    world: &mut World,
-    plan: &PatternDispatchPlan<Ty>,
-    seen: &mut HashSet<String>,
-    atoms: &mut Vec<String>,
-) {
+fn collect_dispatch_atoms(world: &mut World, plan: &PatternDispatchPlan<Ty>, names: &mut ExecutableNames) {
     for prepared in &plan.prepared_keys {
-        collect_dispatch_const_atoms(prepared, seen, atoms);
+        collect_dispatch_const_atoms(prepared, names);
     }
-    for atom in plan
-        .last_resort
-        .iter()
-        .filter(|_| plan.can_fail())
-        .flat_map(LastResort::atoms)
-    {
-        push_atom(seen, atoms, atom);
+    if let Some(failure) = plan.last_resort.as_ref().filter(|_| plan.can_fail()) {
+        names.raise(failure);
     }
     for subject in &plan.graph.subjects {
         match &subject.source {
             SubjectSource::Input { .. } => {}
             SubjectSource::Projection(projection) => {
                 if let ProjectionKind::MapValue { key } = &projection.kind {
-                    collect_dispatch_const_atoms(key, seen, atoms);
+                    collect_dispatch_const_atoms(key, names);
                 }
                 if let ProjectionKind::StructField(field) = &projection.kind {
-                    push_atom(seen, atoms, field);
+                    push_atom(names, field);
                 }
             }
         }
     }
     for guard in &plan.guards {
-        collect_guard_atoms(world, guard, seen, atoms);
+        collect_guard_atoms(world, guard, names);
     }
-    collect_dispatch_graph_atoms(world, plan, plan.graph.root, seen, atoms);
+    collect_dispatch_graph_atoms(world, plan, plan.graph.root, names);
 }
 
 fn collect_dispatch_graph_atoms(
     world: &mut World,
     plan: &PatternDispatchPlan<Ty>,
     node_id: crate::dispatch_matrix::GraphNodeId,
-    seen: &mut HashSet<String>,
-    atoms: &mut Vec<String>,
+    names: &mut ExecutableNames,
 ) {
     let Some(node) = plan.graph.node(node_id) else {
         return;
@@ -1379,21 +1420,21 @@ fn collect_dispatch_graph_atoms(
             on_match,
             on_miss,
         } => {
-            collect_region_atoms(world, &predicate.region, seen, atoms);
-            collect_dispatch_graph_atoms(world, plan, on_match.target, seen, atoms);
-            collect_dispatch_graph_atoms(world, plan, on_miss.target, seen, atoms);
+            collect_region_atoms(world, &predicate.region, names);
+            collect_dispatch_graph_atoms(world, plan, on_match.target, names);
+            collect_dispatch_graph_atoms(world, plan, on_miss.target, names);
         }
     }
 }
 
-fn collect_region_atoms(world: &mut World, region: &Region<Ty>, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
+fn collect_region_atoms(world: &mut World, region: &Region<Ty>, names: &mut ExecutableNames) {
     match region {
         Region::Equal(ComparisonValue::Const(value)) | Region::MapKeyPresent { key: value } => {
-            collect_dispatch_const_atoms(value, seen, atoms);
+            collect_dispatch_const_atoms(value, names);
         }
         Region::Type(ty) => {
             for atom in world.types().atom_literals(ty) {
-                push_atom(seen, atoms, &atom);
+                push_atom(names, &atom);
             }
         }
         Region::Equal(ComparisonValue::Pinned(_))
@@ -1405,55 +1446,45 @@ fn collect_region_atoms(world: &mut World, region: &Region<Ty>, seen: &mut HashS
     }
 }
 
-fn collect_guard_atoms(
-    world: &mut World,
-    expr: &PatternGuardExpr<Ty>,
-    seen: &mut HashSet<String>,
-    atoms: &mut Vec<String>,
-) {
+fn collect_guard_atoms(world: &mut World, expr: &PatternGuardExpr<Ty>, names: &mut ExecutableNames) {
     match expr {
-        PatternGuardExpr::Const(value) => collect_dispatch_const_atoms(value, seen, atoms),
-        PatternGuardExpr::Unary { expr, .. } => collect_guard_atoms(world, expr, seen, atoms),
+        PatternGuardExpr::Const(value) => collect_dispatch_const_atoms(value, names),
+        PatternGuardExpr::Unary { expr, .. } => collect_guard_atoms(world, expr, names),
         PatternGuardExpr::Binary { lhs, rhs, .. } => {
-            collect_guard_atoms(world, lhs, seen, atoms);
-            collect_guard_atoms(world, rhs, seen, atoms);
+            collect_guard_atoms(world, lhs, names);
+            collect_guard_atoms(world, rhs, names);
         }
         PatternGuardExpr::Dispatch { inputs, dispatch, .. } => {
             for input in inputs {
-                collect_guard_atoms(world, input, seen, atoms);
+                collect_guard_atoms(world, input, names);
             }
-            collect_guard_dispatch_atoms(world, dispatch, seen, atoms);
+            collect_guard_dispatch_atoms(world, dispatch, names);
         }
         PatternGuardExpr::Extern { args, .. } => {
             for arg in args {
-                collect_guard_atoms(world, arg, seen, atoms);
+                collect_guard_atoms(world, arg, names);
             }
         }
         PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) | PatternGuardExpr::Fails => {}
     }
 }
 
-fn collect_guard_dispatch_atoms(
-    world: &mut World,
-    dispatch: &PatternGuardDispatch<Ty>,
-    seen: &mut HashSet<String>,
-    atoms: &mut Vec<String>,
-) {
-    collect_dispatch_atoms(world, &dispatch.plan, seen, atoms);
+fn collect_guard_dispatch_atoms(world: &mut World, dispatch: &PatternGuardDispatch<Ty>, names: &mut ExecutableNames) {
+    collect_dispatch_atoms(world, &dispatch.plan, names);
     for body in &dispatch.bodies {
-        collect_guard_atoms(world, body, seen, atoms);
+        collect_guard_atoms(world, body, names);
     }
 }
 
-fn collect_dispatch_const_atoms(value: &GroundValue, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
+fn collect_dispatch_const_atoms(value: &GroundValue, names: &mut ExecutableNames) {
     if let GroundValue::Atom(name) = value {
-        push_atom(seen, atoms, name);
+        push_atom(names, name);
     }
 }
 
-fn push_atom(seen: &mut HashSet<String>, atoms: &mut Vec<String>, name: &str) {
-    if seen.insert(name.to_string()) {
-        atoms.push(name.to_string());
+fn push_atom(names: &mut ExecutableNames, name: &str) {
+    if names.seen.insert(name.to_string()) {
+        names.atoms.push(name.to_string());
     }
 }
 

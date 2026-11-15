@@ -874,9 +874,8 @@ pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
             IrTerm::Return(var) => {
                 other_uses.insert(*var);
             }
-            IrTerm::Raise { exception, fields } => {
-                other_uses.insert(*exception);
-                other_uses.insert(*fields);
+            IrTerm::Raise { value } => {
+                other_uses.insert(*value);
             }
             IrTerm::Reraise { kind, value } => {
                 other_uses.insert(*kind);

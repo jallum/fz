@@ -87,9 +87,8 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
         Term::Return(a) => {
             used.insert(*a);
         }
-        Term::Raise { exception, fields } => {
-            used.insert(*exception);
-            used.insert(*fields);
+        Term::Raise { value } => {
+            used.insert(*value);
         }
         Term::Reraise { kind, value } => {
             used.insert(*kind);
