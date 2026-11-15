@@ -15,11 +15,15 @@
     {
       "text": "The 10% fz_mark_published_ref_aliased in the spike profile is explained: Prim::Share emits it unless the value's kind is known not to be a list (native_codegen/prim.rs); it only marks list spines. The spike's source lane was an untyped AnyRef. A real cursor lane is a known binary, so the call is not emitted.",
       "timestamp": "2026-11-15T00:40:54Z"
+    },
+    {
+      "text": "Walkthrough notes 1 (census of lib/json.fz against the page's rule 'any other use joins to Whole'):\n- The body IR already carries a match as (source, pos): LoweredStep::BitstringRead {value, next, source, pos, spec}; the rest r::binary is one such read. A cursor is that pair left unbuilt. Demand for reads is noted in runtime_demand.rs (BitstringRead arm ~2168 notes source Whole when value is live; note_clause_matcher_demands ~2321).\n- The absorbing rule does NOT serve the decoder. string/3's hot clause passes r on, but cold clauses use the same parameter whole: {:error, b} (escapes as any), and run_join does byte_size(s) - byte_size(b). Under 'Whole absorbs', b is Whole and the per-byte rest stays.\n- So the rule has to be: a binary that some consumer matches travels as a cursor; a consumer that needs the binary makes it whole at that use (pos == 0 gives the source itself, no allocation). byte_size / bit_size / comparison with a literal are answered from the cursor without building.\n- Risk of that rule: a cursor used whole at k sites on one path allocates k stubs where today it allocates 1. Needs a measurement, and a dedupe within one body.\n- Returns: {:ok, v, r} | {:error, any} flows through array_item/object_key/object_value whose second clause passes the tuple on whole (other -\u003e other). If that boxes the tuple today, r is made whole once per JSON value (per token, not per byte). To verify: how a union-of-tuples return is demanded today.\n- Pairs that already work as nested demand: digits returns {acc, b} matched by fraction({whole, \u003c\u003c\".\", r\u003e\u003e}) -\u003e TupleFields([Whole, Matched]).\nStill to read before the walkthrough: transport layout_from_demand, dispatch bit reads at a base position (lower_bitstring_region), interp path.",
+      "timestamp": "2026-11-15T01:06:26Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Proposal: a rest view of a binary costs the collector nothing when it dies",
   "type": "task",
-  "updated_at": "2026-11-15T00:40:54Z"
+  "updated_at": "2026-11-15T01:06:26Z"
 }
