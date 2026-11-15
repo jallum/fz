@@ -59,11 +59,15 @@
     {
       "text": "X5 result (#592 + narrow, release, stdout identical, overflow output identical to the unchanged compiler).\nDistiller: narrow 22.15G -\u003e narrow+instructions 22.13-22.17G (no measurable change; predicted 0.2-0.9% lower: missed). Instructions without narrow: 24.10-24.13G vs 24.15G off (-0.1%).\nByte walk p1b: 66.8G -\u003e 66.0G (-1.2%; predicted 61-64G: missed). Index walk p2b: 72.3G -\u003e 70.1G (-3.0%).\nMeaning: the C call itself costs about 5 instructions per operation. What is expensive is the continuation around the call (8.3% of the distiller, 31% of the byte walk on #592), not the call. Turning the extern into an instruction is worth about 0.1% on the distiller unless the split is removed too.",
       "timestamp": "2026-11-15T02:29:40Z"
+    },
+    {
+      "text": "X1 and X2(a) results (builder, old base #585; I re-read the dumps and telemetry: executable counts 1375/1375/1329 and define_function 10,214/9,126/9,034 confirmed).\nX1: unreferenced executables are not dropped today. With forwarder calls rewritten to the extern and unreachable forwarders dropped: 49 forwarders found, 282 call sites rewritten, 46 dropped (prediction 35-45: one over), 3 remain (compare, reached only as dispatch-edge arms). Run instructions equal narrow (24.96-24.98G vs 24.95G; prediction held). Binary 4,444,072 -\u003e 4,440,952. Compile instructions of fz2 build: off 27.31-27.36G, narrow 24.50G (-10%), xhead 24.55G: the compile saving comes from narrow (fewer continuation functions: define_function 10,214 -\u003e 9,126), not from dropping forwarders. Jobs naming a dropped specialisation: 260 of 12,855 (2.0%), 3.6% with function-keyed jobs, as an upper bound (prediction 2-4% held).\nFound: 40 of 1,375 executables are unreachable in the unchanged program and are compiled anyway.\nX2(a): 30 leaf loops, 10 execute. Full log: 38.6M entries, 11.1M iterations, longest run 12,892 (reverse_list), median run 0. skip_ws is entered 34.4M times and iterates 222,411 times: it is almost always a call that returns at once. digits: 3.58M entries, 9.1M iterations, longest 10. Prediction (max no more than longest line, median under 20) held.\nX2(b) bail variant: not built (stopped after the user's direction to drop the wider rule). Rule B stays rejected on the memory result.\nDirection from the user: replace calls with inlined fragments instead of the prompt rule. Page rewritten as version 3 on that basis.",
+      "timestamp": "2026-11-15T02:32:12Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Arithmetic on known integers does not go through a continuation",
   "type": "task",
-  "updated_at": "2026-11-15T02:29:40Z"
+  "updated_at": "2026-11-15T02:32:12Z"
 }
