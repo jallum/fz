@@ -21,13 +21,11 @@
 
 use super::Heap;
 use super::block_pool::{Block, pick_block_capacity, pool_alloc};
-use crate::procbin::{BinRef, MsoStub, mso_release_chain, mso_set_next};
-use crate::resource::ResourceStub;
+use crate::procbin::{mso_release_chain, mso_set_next};
 
 /// What `begin_gift` records so `end_gift` can cut the segment: the tip to
 /// restore, the gift block's start (the tip while the copy has not
-/// overflowed), the allocation count at that moment, and the stubs each chain
-/// had.
+/// overflowed), the allocation count at that moment, and the chain's head.
 pub(super) struct GiftWindow {
     pub(super) saved_tip: Block,
     block_start: *mut u8,
@@ -35,12 +33,11 @@ pub(super) struct GiftWindow {
     /// it when the window closes.
     measured_bytes: usize,
     alloc_count: u64,
-    binaries: WindowChain,
-    resources: WindowChain,
+    offheap: WindowChain,
 }
 
-/// One chain of an open gift window: its head when the window opened, and the
-/// first stub pushed onto it since, or 0 if none was. That stub's `mso_next`
+/// The chain of an open gift window: its head when the window opened, and the
+/// first object pushed onto it since, or 0 if none was. That object's `mso_next`
 /// is the seam where the gift's prefix meets whatever chain it is spliced
 /// onto.
 #[derive(Clone, Copy)]
@@ -65,11 +62,11 @@ impl WindowChain {
 
     /// Cut the stubs pushed since the window opened off `head`, restoring the
     /// head the window saved.
-    fn cut<S: MsoStub>(self, head: &mut u64) -> SegmentChain {
+    fn cut(self, head: &mut u64) -> SegmentChain {
         let cut = if self.oldest == 0 {
             SegmentChain::EMPTY
         } else {
-            mso_set_next::<S>(self.oldest, 0);
+            mso_set_next(self.oldest, 0);
             SegmentChain {
                 head: *head,
                 oldest: self.oldest,
@@ -80,7 +77,7 @@ impl WindowChain {
     }
 }
 
-/// A detached chain of stubs of one kind: its head, and the oldest stub, whose
+/// A detached chain of off-heap objects: its head, and the oldest, whose
 /// link is 0 until the chain is spliced onto another.
 #[derive(Clone, Copy)]
 struct SegmentChain {
@@ -92,26 +89,25 @@ impl SegmentChain {
     const EMPTY: SegmentChain = SegmentChain { head: 0, oldest: 0 };
 
     /// Splice this chain ahead of `onto` and return the combined chain's head.
-    fn splice_onto<S: MsoStub>(self, onto: u64) -> u64 {
+    fn splice_onto(self, onto: u64) -> u64 {
         if self.head == 0 {
             return onto;
         }
-        mso_set_next::<S>(self.oldest, onto);
+        mso_set_next(self.oldest, onto);
         self.head
     }
 }
 
 /// A detached run of heap storage with no reference into any heap. It holds
 /// the one block the copy filled (by start, fill and capacity), the off-heap
-/// stubs it pushed (a binary chain and a resource chain, each ending in 0) and
+/// objects it pushed (one chain of BinRefs and resource stubs, ending in 0) and
 /// how many objects it allocated. `Heap::graft` adopts all of it; dropping an
 /// un-grafted segment releases the block and every stub's off-heap
 /// reference, so an orphan leaks nothing.
 pub struct GiftSegment {
     /// `None` only for the segment of a copy that allocated nothing.
     block: Option<Block>,
-    binaries: SegmentChain,
-    resources: SegmentChain,
+    offheap: SegmentChain,
     objects: u64,
 }
 
@@ -122,8 +118,7 @@ impl GiftSegment {
     pub fn empty() -> Self {
         GiftSegment {
             block: None,
-            binaries: SegmentChain::EMPTY,
-            resources: SegmentChain::EMPTY,
+            offheap: SegmentChain::EMPTY,
             objects: 0,
         }
     }
@@ -138,23 +133,16 @@ impl GiftSegment {
         usize::from(self.block.is_some())
     }
 
-    /// The head of the segment's own binary chain, or 0 when the copy made no
-    /// binary stub.
+    /// The head of the segment's own off-heap chain, or 0 when the copy made
+    /// no BinRef or resource stub.
     pub fn mso_head(&self) -> u64 {
-        self.binaries.head
-    }
-
-    /// The head of the segment's own resource chain, or 0 when the copy made
-    /// no resource stub.
-    pub fn resource_head(&self) -> u64 {
-        self.resources.head
+        self.offheap.head
     }
 }
 
 impl Drop for GiftSegment {
     fn drop(&mut self) {
-        mso_release_chain::<BinRef>(self.binaries.head);
-        mso_release_chain::<ResourceStub>(self.resources.head);
+        mso_release_chain(self.offheap.head);
         if let Some(block) = self.block.take() {
             block.release();
         }
@@ -176,8 +164,7 @@ impl Heap {
             block_start: start,
             measured_bytes,
             alloc_count: self.alloc_count,
-            binaries: WindowChain::open(self.mso_head),
-            resources: WindowChain::open(self.resource_head),
+            offheap: WindowChain::open(self.mso_head),
         });
         self.install_block(Block {
             start,
@@ -204,21 +191,19 @@ impl Heap {
             window.measured_bytes,
             "gift copy allocated a different number of bytes than it was measured at: the measure and the copy disagree"
         );
-        let binaries = window.binaries.cut::<BinRef>(&mut self.mso_head);
-        let resources = window.resources.cut::<ResourceStub>(&mut self.resource_head);
+        let offheap = window.offheap.cut(&mut self.mso_head);
         let objects = self.alloc_count - window.alloc_count;
         self.alloc_count = window.alloc_count;
         self.install_block(window.saved_tip);
         GiftSegment {
             block: Some(block),
-            binaries,
-            resources,
+            offheap,
             objects,
         }
     }
 
     /// Take ownership of a segment: its block joins this heap's old blocks, its
-    /// stub prefixes are spliced ahead of this heap's old chains.
+    /// off-heap prefix is spliced ahead of this heap's old chain.
     /// The gift is packed and fully live, like the heap after a collection, so
     /// its fill raises `live_baseline` rather than counting as allocation.
     pub fn graft(&mut self, mut segment: GiftSegment) {
@@ -226,10 +211,8 @@ impl Heap {
             self.live_baseline += block.fill();
             self.old_blocks.push(block);
         }
-        self.mso_old_head = segment.binaries.splice_onto::<BinRef>(self.mso_old_head);
-        self.resource_old_head = segment.resources.splice_onto::<ResourceStub>(self.resource_old_head);
-        segment.binaries = SegmentChain::EMPTY;
-        segment.resources = SegmentChain::EMPTY;
+        self.mso_old_head = segment.offheap.splice_onto(self.mso_old_head);
+        segment.offheap = SegmentChain::EMPTY;
         self.old_objects += segment.objects;
     }
 
@@ -239,25 +222,14 @@ impl Heap {
         self.gift.is_some()
     }
 
-    /// Make `bits` the head of the binary chain and return the previous head,
-    /// which the caller writes into the new stub's `mso_next` link. An open
-    /// gift window remembers the first stub pushed through it.
+    /// Make `bits` the head of the off-heap chain and return the previous head,
+    /// which the caller writes into the new object's `mso_next` link. An open
+    /// gift window remembers the first object pushed through it.
     pub(crate) fn mso_push(&mut self, bits: u64) -> u64 {
         let previous = self.mso_head;
         self.mso_head = bits;
         if let Some(window) = &mut self.gift {
-            window.binaries.note_push(bits);
-        }
-        previous
-    }
-
-    /// Make `bits` the head of the resource chain; the counterpart of
-    /// `mso_push` for a resource stub.
-    pub(crate) fn resource_push(&mut self, bits: u64) -> u64 {
-        let previous = self.resource_head;
-        self.resource_head = bits;
-        if let Some(window) = &mut self.gift {
-            window.resources.note_push(bits);
+            window.offheap.note_push(bits);
         }
         previous
     }

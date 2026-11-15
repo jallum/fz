@@ -144,11 +144,11 @@ block of the measured bytes below the table, a table entry within it, and an
 exact block above it. The copy allocates through
 `alloc_kind` into that block and cannot overflow it. `Heap::end_gift` asserts
 the block's fill is exactly the measured bytes, turns the block and the MSO
-stubs produced since the window opened (a binary chain and a resource chain)
+objects produced since the window opened (one chain of BinRefs and resource stubs)
 into a `GiftSegment` of exactly one block, restores the saved tip, and puts
 `live_count` back. Allocation statistics stay with the heap that did the
 copying. `Heap::graft` on another heap adopts the segment; dropping an
-un-grafted segment releases its block and its stubs' off-heap references. A
+un-grafted segment releases its block and its objects' off-heap references. A
 collection asserts that no window is open. Cross-process send is the window's user: `sched::gift_copy` measures a
 message, or a match's bound values, and copies it inside one, and the segment travels to the
 receiver on its `in_queue` (see [scheduler](scheduler-zero-arg-closures.md)).
@@ -161,8 +161,8 @@ does, once it reaches the baseline. Its list cells are shared from birth
 (`link_list_tail` marks each cell copied inside a window), so no cell of an old
 block is rewritten in place to point at a younger value. A minor collection
 leaves the gift where it is and only a major collection copies the live data
-out of it; the gift's binary prefix splices onto the old BinRef chain (`mso_old_head`) and
-its resource prefix onto the old resource chain (`resource_old_head`).
+out of it; the gift's off-heap prefix, BinRefs and resource stubs on one chain, splices onto
+the old chain (`mso_old_head`).
 
 A collection is minor or major (`Heap::next_generation`). A minor collection's
 from-space is the young blocks, so old blocks stay where they are and a

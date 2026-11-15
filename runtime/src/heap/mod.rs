@@ -160,20 +160,19 @@ pub struct Heap {
     /// Total allocation requests made by kind since the last explicit
     /// process/user-code reset. Unlike `alloc_count`, GC never rewrites this.
     alloc_stats: HeapAllocStats,
-    /// Intrusive MSO ("Mixed Set / Off-heap") chain of the young BinRefs:
-    /// tagged head bits for a singly-linked list of the BinRefs allocated since
-    /// the last collection; each entry's `mso_next` slot stores the previous
-    /// tagged chain entry. Binary views are on no chain. Resource stubs keep
-    /// their own chains (`resource_head`, `resource_old_head`), so a walk over
-    /// one chain meets one kind of object.
+    /// Intrusive MSO ("Mixed Set / Off-heap") chain of the young off-heap
+    /// objects: tagged head bits for a singly-linked list of the BinRefs and
+    /// resource stubs allocated since the last collection; each entry's
+    /// `mso_next` slot stores the previous tagged chain entry, and its kind tag
+    /// names which of the two it is. Binary views are on no chain.
     /// The post-Cheney sweep (`procbin::mso_sweep`) moves each survivor onto
     /// `mso_old_head` and releases the rest; `Heap::drop` calls
     /// `procbin::mso_drop_all` before pool reclaim so SharedBin references are
     /// balanced.
     pub mso_head: u64,
-    /// The chain of the old BinRefs: those a collection kept and those gifts
-    /// brought. A minor sweep never walks it, so an old BinRef is found dead by
-    /// a major collection.
+    /// The chain of the old off-heap objects: those a collection kept and those
+    /// gifts brought. A minor sweep never walks it, so an old BinRef or resource
+    /// stub is found dead by a major collection.
     pub mso_old_head: u64,
     /// Binary views made since the last collection, by site; a collection
     /// reports them and starts the count again.
@@ -181,11 +180,6 @@ pub struct Heap {
     /// BinRefs made since the last collection, by site; a collection reports
     /// them and starts the count again.
     pub binrefs_made: StubCounts,
-    /// The chain of the young resource stubs: those allocated since the last
-    /// collection.
-    pub resource_head: u64,
-    /// The chain of the old resource stubs, kept like `mso_old_head`.
-    pub resource_old_head: u64,
     /// Pending dtor invocations. When the MSO sweep finds a Resource stub
     /// whose off-heap refcount transitioned to zero, it enqueues
     /// `(closure_bits, payload_ref)` here instead of running fz code from

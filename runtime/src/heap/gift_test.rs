@@ -692,10 +692,10 @@ fn a_grafted_gift_raises_the_baseline_and_the_receiver_collects_after_allocating
     assert_eq!(receiver.live_baseline, 1600, "allocation leaves the baseline alone");
 }
 
-/// A gift that holds both kinds of stub carries each on its own chain, and
-/// graft splices each onto the receiver's old chain of the same kind.
+/// A gift that holds both kinds of off-heap object carries them on one chain,
+/// newest first, and graft splices that chain onto the receiver's old chain.
 #[test]
-fn a_gift_keeps_binary_and_resource_stubs_on_their_own_chains() {
+fn a_gift_carries_binary_and_resource_stubs_on_one_chain() {
     let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4]);
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
@@ -714,12 +714,11 @@ fn a_gift_keeps_binary_and_resource_stubs_on_their_own_chains() {
         ValueKind::RESOURCE,
     );
     let segment = sender.end_gift();
-    assert_eq!((sender.mso_head, sender.resource_head), (0, 0));
-    assert_eq!(segment.mso_head(), binary);
-    assert_eq!(segment.resource_head(), resource);
+    assert_eq!(sender.mso_head, 0);
+    assert_eq!(segment.mso_head(), resource);
+    assert_eq!(chain_from(segment.mso_head()), vec![resource, binary]);
 
     receiver.graft(segment);
-    assert_eq!(chain_from(receiver.mso_old_head), vec![binary]);
-    assert_eq!(chain_from(receiver.resource_old_head), vec![resource]);
-    assert_eq!((receiver.mso_head, receiver.resource_head), (0, 0));
+    assert_eq!(chain_from(receiver.mso_old_head), vec![resource, binary]);
+    assert_eq!(receiver.mso_head, 0);
 }

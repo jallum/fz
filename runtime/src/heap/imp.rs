@@ -132,8 +132,6 @@ impl Heap {
             mso_old_head: 0,
             stubs_made: StubCounts::default(),
             binrefs_made: StubCounts::default(),
-            resource_head: 0,
-            resource_old_head: 0,
             pending_dtors: VecDeque::new(),
         }
     }
@@ -1511,7 +1509,7 @@ impl Heap {
 
         drop(schemas);
 
-        // The MSO sweep walks the intrusive chains of the from-space: survivors
+        // The MSO sweep walks the intrusive chain of the from-space: survivors
         // are rewritten to their to-space copies and move to the old chain, and
         // dead entries drop their off-heap reference. It must run before the
         // from-space is released because it reads from-space stubs (their
@@ -1584,7 +1582,7 @@ impl Heap {
         self.alloc_count = 0;
     }
 
-    /// Release every stub on the MSO chains as a process exit does: nothing is
+    /// Release every object on the MSO chain as a process exit does: nothing is
     /// live, so every resource whose last reference this heap held queues its
     /// destructor on `pending_dtors`. Allocates no to-space.
     pub fn release_resources_at_exit(&mut self) {

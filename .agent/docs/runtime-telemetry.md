@@ -103,7 +103,7 @@ freed the resource at a yield or park or the exit swept it (see
 `list_retention_hits`. There is no separate destructor event; a destructor
 dispatched mid-life is visible on the exit record of the process that ran it,
 and the `fz.runtime.gc` event of the collection that freed it precedes it. A
-minor collection examines only the young MSO chains, so a resource stub that
+minor collection examines only the young MSO chain, so a resource stub that
 became old is found dead by the next major collection, whose event has
 `generation` `"major"`; a resource that dies young is found by the next
 collection of either kind.
@@ -307,10 +307,9 @@ major collection's from-space is every block (`Heap::next_generation`):
 - `blocks_after`: old blocks the heap holds once the pass finished, every block
   holding data a collection kept or a gift brought; the fresh empty tip is not
   counted.
-- `stub_visits`: off-heap chain links the pass followed. Every BinRef on a chain
-  the pass examines is visited once by the sweep (a view is not on a chain): the young chain for
-  a minor pass, the young and old chains for a major pass. A resource stub is
-  also visited once more by the destructor search. Summed by `generation`, it
+- `stub_visits`: off-heap chain links the pass followed. Every BinRef and resource
+  stub on a chain the pass examines is visited once by the sweep (a view is not on a chain): the young chain for
+  a minor pass, the young and old chains for a major pass. Summed by `generation`, it
   says whether the sweep's cost lies in minors or in majors.
 - `stubs_made`, `binrefs_made` and `stubs_survived`: objects keyed by the site
   that made the binary object, every site present (0 when none), always in this order:

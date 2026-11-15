@@ -114,14 +114,13 @@ fn the_final_release_returns_the_destructor_closure_word_and_the_raw_payload() {
 }
 
 #[test]
-fn alloc_resource_pushes_into_the_resource_chain() {
+fn alloc_resource_pushes_into_the_off_heap_chain() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let rs = alloc_resource(&mut heap, resource());
     let tagged = heap_object_word(rs.as_raw() as *const u8, ValueKind::RESOURCE);
     assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::RESOURCE));
     assert_eq!(object_size(tagged), RESOURCE_STUB_SIZE);
-    assert_eq!(heap.resource_head, tagged);
-    assert_eq!(heap.mso_head, 0, "a resource is not on the binary chain");
+    assert_eq!(heap.mso_head, tagged);
     assert_eq!(rs.mso_next(), 0);
     assert_eq!(rs.payload(), PAYLOAD);
     assert_eq!(rs.destructor(), DESTRUCTOR);
@@ -136,7 +135,7 @@ fn a_dead_unclaimed_resource_queues_its_destructor_and_raw_payload() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     alloc_resource(&mut heap, resource());
     heap.collect_tagged(&mut null_mut());
-    assert_eq!(heap.resource_head, 0, "dead Resource swept from MSO");
+    assert_eq!(heap.mso_head, 0, "dead Resource swept from MSO");
     assert_eq!(heap.pending_dtors, [(DESTRUCTOR, PAYLOAD)]);
 }
 
@@ -246,16 +245,15 @@ fn resource_forwarding_marker_through_gc() {
     assert_ne!(to, from);
     assert_eq!(unsafe { ResourceStub::from_raw(to).shared_raw() }, shared);
     assert_eq!(
-        heap.resource_old_head,
+        heap.mso_old_head,
         heap_object_word(to as *const u8, ValueKind::RESOURCE)
     );
-    assert_eq!(heap.resource_head, 0);
-    assert_eq!(heap.mso_old_head, 0);
+    assert_eq!(heap.mso_head, 0);
     assert!(heap.pending_dtors.is_empty());
 }
 
 #[test]
-fn binrefs_and_resources_keep_separate_chains() {
+fn binrefs_and_resources_interleave_on_one_chain() {
     use crate::heap::StubSite;
     use crate::procbin::{SharedBinHandle, alloc_buffer_view};
     let first_bin = SharedBinHandle::from_bytes(&[1, 2, 3]);
@@ -280,12 +278,11 @@ fn binrefs_and_resources_keep_separate_chains() {
         let pb2_bits = pb2.binref().word();
         let pb1_bits = pb1.binref().word();
         let rs1_bits = heap_object_word(rs1.as_raw(), ValueKind::RESOURCE);
-        assert_eq!(heap.mso_head, pb2_bits);
-        assert_eq!(pb2.binref().mso_next(), pb1_bits);
+        assert_eq!(heap.mso_head, rs2_bits);
+        assert_eq!(rs2.mso_next(), pb2_bits);
+        assert_eq!(pb2.binref().mso_next(), rs1_bits);
+        assert_eq!(rs1.mso_next(), pb1_bits);
         assert_eq!(pb1.binref().mso_next(), 0);
-        assert_eq!(heap.resource_head, rs2_bits);
-        assert_eq!(rs2.mso_next(), rs1_bits);
-        assert_eq!(rs1.mso_next(), 0);
     }
     for bin in [first_bin, second_bin] {
         assert_eq!(

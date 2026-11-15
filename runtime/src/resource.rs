@@ -2,8 +2,8 @@
 //!
 //! Structurally a copy of `procbin.rs`: an off-heap refcounted object
 //! (`Resource`) with an on-heap stub (`ValueKind::RESOURCE`)
-//! threaded into the per-heap intrusive resource chain, which is separate
-//! from the binary chain. The MSO sweep handles retain/release across GC
+//! threaded into the per-heap intrusive off-heap chain, the one that holds
+//! BinRefs too. The MSO sweep handles retain/release across GC
 //! exactly the same way it does for BinRef.
 //!
 //! Divergence from `SharedBin`/`BinRef`:
@@ -378,12 +378,12 @@ impl ResourceStub {
 
 /// Allocate a strict 16-byte Resource stub on `heap`, taking ownership of the
 /// Resource reference encapsulated in `handle`. The new stub is pushed onto
-/// `heap.resource_head`, the young resource chain, as the new chain head.
+/// `heap.mso_head`, the young off-heap chain, as the new chain head.
 pub fn alloc_resource(heap: &mut Heap, handle: ResourceHandle) -> ResourceStub {
     let p = heap.alloc_kind(HeapAllocKind::Resource, RESOURCE_STUB_SIZE);
     let rs = unsafe { ResourceStub::from_raw(p) };
     rs.shared_raw_set(handle.into_raw());
-    let previous_head = heap.resource_push(heap_object_word(p, ValueKind::RESOURCE));
+    let previous_head = heap.mso_push(heap_object_word(p, ValueKind::RESOURCE));
     rs.mso_next_set(previous_head);
     rs
 }

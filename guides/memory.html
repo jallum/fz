@@ -469,7 +469,7 @@ bump path and fills the block without overflowing it. <code>Heap::end_gift</code
 asserts the block's fill is exactly the measured bytes, turns the block into a
 <code>GiftSegment</code> and puts
 the saved tip back with its free space intact. The segment carries that one
-block (with its fill), the prefixes of the binary and resource MSO chains that the window produced,
+block (with its fill), the prefix of the MSO chain that the window produced (BinRefs and Resources together),
 and the number of objects allocated. The heap's allocation statistics stay with
 it, its <code>live_count</code> goes back to what it was. A collection cannot
 run while a window is open.</p>
@@ -485,23 +485,22 @@ and every stub's off-heap reference.</p>
 
 <h3>The MSO chains</h3>
 
-<p>Each heap carries intrusive linked lists of every BinRef and Resource it
-owns: one list for BinRefs and one for Resources, so a walk over a list meets
-one kind of stub. The head pointers live on the heap (<code>mso_head</code> for
-BinRefs, <code>resource_head</code> for Resources); the "next"
-link lives inside each stub: BinRef uses offset +8, Resource uses offset +32.
+<p>Each heap carries one intrusive linked list of every BinRef and Resource it
+owns, as OTP keeps one off-heap list for ProcBins and magic binaries alike; the
+kind tag of each link says which of the two it names. The head pointers live on
+the heap (<code>mso_head</code> for the young list, <code>mso_old_head</code>
+for the old); the "next" link lives at offset +8 inside each stub, BinRef and
+Resource alike.
 A binary view is on no chain: many views of one buffer share the one BinRef.
 "MSO" is the historical BEAM name — "Mixed Set / Off-heap" — for the list of
 objects whose real bytes live elsewhere.</p>
 
 <div class="aside">
 The MSO chains are a "things to clean up later" list. Every time the heap
-makes a BinRef or Resource, it adds the stub to the chain of its kind. After each GC,
-we walk the chains to figure out which stubs survived and which need to release
-their off-heap payload. Each kind's chain is split by age: <code>mso_head</code>
-and <code>resource_head</code> hold
-stubs made since the last collection; <code>mso_old_head</code> and
-<code>resource_old_head</code> hold the
+makes a BinRef or Resource, it adds the stub to the chain. After each GC,
+we walk the chain to figure out which stubs survived and which need to release
+their off-heap payload. The chain is split by age: <code>mso_head</code>
+holds stubs made since the last collection; <code>mso_old_head</code> holds the
 ones a collection already kept, plus the ones that arrived in gifts. See
 <a href="#shared-zone">§9</a> for the details.
 </div>
@@ -771,8 +770,8 @@ transient roots and writes the forwarded refs back.</p>
 <h3>MSO sweep — keeping shared-zone refcounts honest</h3>
 
 <p>After Cheney's BFS scan completes and before from-space is freed, the GC
-walks the MSO chains of the from-space once: a minor walks only the young
-chains, a major walks the old chains too. Each entry is a BinRef or Resource stub that
+walks the MSO chain of the from-space once: a minor walks only the young
+chain, a major walks the old chain too. Each entry is a BinRef or Resource stub that
 <em>was</em> in from-space. The forwarding marker Cheney writes into word 0 of
 every copied stub is the entire liveness signal. A live view reaches its BinRef
 through word 0, so a BinRef is copied once however many views name it, and a
@@ -782,27 +781,27 @@ after a collection and when a process exits (an exit is not collected; it is
 the same walk with nothing live and no to-space):</p>
 
 <pre>
-  for each kind in (BinRef, Resource):     <span class="note">// the kind's chain names the kind</span>
-    cur = young head of the kind            <span class="note">// a major also walks the old head</span>
-    new_head = null
-    while cur != null:
-        marker = read u64 at addr_of(cur)+0
-        next = read_mso_next(cur)           <span class="note">// from-space link survives</span>
-        if low4(marker) != 0:
-            new_addr = strip_low4(marker)   <span class="note">// to-space copy</span>
-            link new_addr into new_head     <span class="note">// survived; rejoin the chain</span>
-        else:
-            release_payload(cur)            <span class="note">// dead MSO stub; drop its ref;</span>
+  cur = young head                          <span class="note">// a major also walks the old head</span>
+  new_head = null
+  while cur != null:
+      kind = kind_tag(cur)                  <span class="note">// BinRef or Resource</span>
+      marker = read u64 at addr_of(cur)+0
+      next = read_mso_next(cur)             <span class="note">// from-space link survives</span>
+      if low4(marker) != 0:
+          new_addr = strip_low4(marker)     <span class="note">// to-space copy</span>
+          link new_addr into new_head       <span class="note">// survived; rejoin the chain</span>
+      else:
+          release_payload(cur)              <span class="note">// dead MSO stub; drop its ref;</span>
                                             <span class="note">// a Resource's last ref queues (destructor, payload)</span>
-        cur = next
-    young head of the kind = null
-    old head of the kind = new_head         <span class="note">// survivors are old</span>
+      cur = next
+  young head = null
+  old head = new_head                       <span class="note">// survivors are old</span>
 </pre>
 
 <p>A minor sweep is O(young BinRefs and resource stubs), so a young view of an old
 BinRef costs it nothing; a major sweep is O(all stubs on this heap),
-not O(heap size). A gift's MSO prefixes are spliced onto <code>mso_old_head</code> and
-<code>resource_old_head</code> when it is grafted, so a minor never revisits it. A dead old Resource therefore
+not O(heap size). A gift's MSO prefix is spliced onto <code>mso_old_head</code>
+when it is grafted, so a minor never revisits it. A dead old Resource therefore
 queues its destructor at the next major collection, and a young one at the next
 minor.</p>
 
@@ -981,7 +980,7 @@ buffer and every value names it through a view:</p>
 </pre>
 
 <p>The BinRef holds the heap's one retain of the SharedBin and is the only
-binary object on the <code>mso_head</code> chains. BinView refs use the
+binary object on the <code>mso_head</code> chain. BinView refs use the
 heap-object <code>TAG_BINVIEW</code> kind and BinRefs <code>TAG_BINREF</code>.
 The <code>binref</code> word is the one pointer in a view the collector follows;
 <code>bytes_ptr</code> points outside any heap arena and is never traced.</p>

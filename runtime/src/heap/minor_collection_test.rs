@@ -348,10 +348,61 @@ fn a_collection_walks_the_binary_and_resource_stubs_once_each() {
     assert_eq!(heap.collect(&mut []).stub_visits, (binaries + resources) as u64);
 }
 
-/// A minor collection follows only the young chains; a major collection also
-/// follows the old chains, where each kind of survivor sits.
+/// One chain holds both kinds, interleaved as they were allocated, and one
+/// sweep decides each: a dead BinRef releases its buffer, a dead unclaimed
+/// resource queues (destructor, payload) newest first, and each survivor is
+/// relinked onto the old chain in its own kind.
 #[test]
-fn a_major_collection_follows_the_old_chains_and_a_minor_does_not() {
+fn one_sweep_decides_interleaved_binrefs_and_resources() {
+    let buffers = [
+        SharedBinHandle::from_bytes(&[1; 8]),
+        SharedBinHandle::from_bytes(&[2; 8]),
+        SharedBinHandle::from_bytes(&[3; 8]),
+    ];
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut views = Vec::new();
+    let mut resources = Vec::new();
+    for (payload, buffer) in (1u64..).zip(&buffers) {
+        views.push(alloc_buffer_view(&mut heap, buffer.clone(), 64, StubSite::FilledBuffer));
+        resources.push(alloc_resource(&mut heap, ResourceHandle::new(payload, TEST_DESTRUCTOR)));
+    }
+    let mut roots = [
+        root_of(heap_object_word(views[1].as_raw(), ValueKind::BINVIEW)),
+        root_of(heap_object_word(resources[1].as_raw(), ValueKind::RESOURCE)),
+    ];
+
+    let stats = heap.collect(&mut roots);
+
+    assert_eq!(stats.generation, Generation::Minor);
+    assert_eq!(stats.stub_visits, 6, "one visit per off-heap object");
+    let released = |buffer: &SharedBinHandle| unsafe { (*buffer.as_raw()).refcount.load(Ordering::Relaxed) };
+    assert_eq!(
+        [&buffers[0], &buffers[1], &buffers[2]].map(released),
+        [1, 2, 1],
+        "only the live buffer keeps the heap's reference"
+    );
+    assert_eq!(
+        heap.pending_dtors,
+        [(TEST_DESTRUCTOR, 3), (TEST_DESTRUCTOR, 1)],
+        "the dead resources queued, newest first; the live one did not"
+    );
+    let old = heap.mso_old_head;
+    assert_eq!(heap_kind_from_tagged(old), Some(ValueKind::BINREF));
+    let binref = unsafe { crate::procbin::BinRef::from_raw(crate::any_value::heap_word_addr(old)) };
+    assert_eq!(heap_kind_from_tagged(binref.mso_next()), Some(ValueKind::RESOURCE));
+    assert_eq!(
+        unsafe { crate::resource::ResourceStub::from_raw(crate::any_value::heap_word_addr(binref.mso_next())) }
+            .mso_next(),
+        0,
+        "the survivors are the whole old chain"
+    );
+    assert_eq!(heap.mso_head, 0);
+}
+
+/// A minor collection follows only the young chain; a major collection also
+/// follows the old chain, where both kinds of survivor sit.
+#[test]
+fn a_major_collection_follows_the_old_chain_and_a_minor_does_not() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let pb = alloc_buffer_view(
         &mut heap,
@@ -369,18 +420,13 @@ fn a_major_collection_follows_the_old_chains_and_a_minor_does_not() {
     let first = heap.collect(&mut roots);
     assert_eq!(first.generation, Generation::Minor);
     assert_eq!(first.stub_visits, 2, "one sweep link per stub");
-    assert_ne!(heap.mso_old_head, 0, "the binary survivor is on the old binary chain");
-    assert_ne!(
-        heap.resource_old_head, 0,
-        "the resource survivor is on the old resource chain"
-    );
-    assert_eq!((heap.mso_head, heap.resource_head), (0, 0));
+    assert_ne!(heap.mso_old_head, 0, "both survivors are on the one old chain");
+    assert_eq!(heap.mso_head, 0);
 
     let second = heap.collect(&mut roots);
     assert_eq!(second.generation, Generation::Major);
-    assert_eq!(second.stub_visits, 2, "the major collection follows the old chains");
+    assert_eq!(second.stub_visits, 2, "the major collection follows the old chain");
     assert_ne!(heap.mso_old_head, 0);
-    assert_ne!(heap.resource_old_head, 0);
 }
 
 /// A minor collection looks inside every young object, so a write into one is
