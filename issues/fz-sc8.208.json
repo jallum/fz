@@ -7,9 +7,15 @@
   "id": "fz-sc8.208",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Step 0 spike result (throwaway worktree, build path only, behind a switch, nothing landed; patch kept in session scratch as cursor/spike-cursor.patch + spike_cursor.rs).\nWalk over 168 MB: 27.2 -\u003e 15.7 ns/byte (predicted ~14); 129.7G -\u003e 85.1G instructions; 32 -\u003e 0 bytes allocated per byte; from-space collected 5.66 GB -\u003e 24 MB; collections 125,829 -\u003e 10,912 (predicted \u003c10: every scheduler yield collects, each copying 64-128 bytes).\nRemaining walk cost: acc + c through a continuation (fz-sc8.197) ~58% of samples; fz_mark_published_ref_aliased 10%, unexplained.\nDecoder under the spike: 6% MORE instructions (28.8G -\u003e 30.6G on 32,000 lines), output identical. The spike converts binary\u003c-\u003ecursor at each function's edge; it applied only to skip_ws/digits/fraction_digits/exponent_digits (short loops), not to val/string/object/array, whose rest goes to another function or returns in {:ok, v, rest}.\nDesign consequences: (1) the cursor must cross calls and returns or it is a loss on the decoder, so a per-function conversion must not land alone; (2) a parameter typed binary|cursor travels boxed and gains nothing: the cursor must be the parameter's one layout, chosen by demand; (3) the position advance must be inline arithmetic, not a Kernel.+ call (that made the walk slower: 150G instructions).",
+      "timestamp": "2026-11-15T00:40:22Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Proposal: a rest view of a binary costs the collector nothing when it dies",
   "type": "task",
-  "updated_at": "2026-11-14T23:37:01Z"
+  "updated_at": "2026-11-15T00:40:22Z"
 }
