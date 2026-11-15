@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-afu.15"
+    "fz-afu.15",
+    "fz-t93.18"
   ],
   "blocks": [
     "fz-t93.5"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "A function is recursive exactly when its derivation's cycle group is cyclic",
   "type": "task",
-  "updated_at": "2026-11-15T03:39:38Z"
+  "updated_at": "2026-11-15T03:39:43Z"
 }
