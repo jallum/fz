@@ -35,11 +35,15 @@
     {
       "text": "X3 becomes a run. Reading found: arithmetic in a guard is already a call to the Kernel function (guard_expr_from_ast sends + - * / % and unary minus through guard_call_expr, which reifies the Kernel clauses as a helper plan ending in guard_extern). The six comparisons and and/or/not are separate operators with their own lowering in three places (jobs/native.rs, native_codegen/receive.rs, ir_interp/dispatch_exec.rs). Also found: fz_op_add_ii and friends are ordinary runtime functions reached by a C call, not inline instructions.\nExperiment: behind a switch, send the six comparisons in guards through guard_call_expr like arithmetic. Predictions written before the run: (1) the build is refused or does not settle, because the last clause of Kernel.\u003c/2 is 'compare(left, right) \u003c 0', so the helper for \u003c refers to itself; == may have the same shape. (2) If it does build, distiller stdout is identical and run-time instructions rise by under 1% (an untyped guard comparison becomes a helper dispatch plus a C call where today it is an inline compare).",
       "timestamp": "2026-11-15T02:07:43Z"
+    },
+    {
+      "text": "X3 result (develop c7edccd4a, release, switch FZ_SPIKE_GUARDCMP in a throwaway worktree; two edits: guard_expr_from_ast and walk_guard_calls).\n- == and != in guards routed to Kernel.==/!=: builds; small probe output identical; distiller stdout identical; run 27.75G vs 27.76G instructions (no change); compile 16.17G -\u003e 16.30G (+0.8%); binary +16,560 bytes. Prediction 2 held (under 1%).\n- \u003c \u003c= \u003e \u003e= routed to Kernel: refused, 'compiler2 guard helper cycle detected: \u003c/2 -\u003e \u003c/2' at Kernel.fz:1168. Prediction 1 held for the ordering family, not for equality (its last clause calls the extern fz_op_eq, no self reference).\n- Cause of the cycle: the last clause is 'compare(left, right) \u003c 0'; a guard helper is reified untyped, so the inner \u003c (integer \u003c integer) names the whole function again. A body does not have this problem because it selects the clause by type. Typed extern heads give the guard the same selection.\n- Also read: a body already sends all eleven operators to Kernel (direct_operator_name in jobs/body.rs); a guard sends five (arithmetic_function). The two tables are one question asked twice.",
+      "timestamp": "2026-11-15T02:10:45Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Arithmetic on known integers does not go through a continuation",
   "type": "task",
-  "updated_at": "2026-11-15T02:07:43Z"
+  "updated_at": "2026-11-15T02:10:45Z"
 }
