@@ -16,11 +16,15 @@
     {
       "text": "Survey done (read-only, branch fz-sc8.197/splice). Facts that shape the design: extern is parsed by its own parser (frontdoor.rs parse_extern_item): defp only, identifier names only, options are the fixed sequence raises:/message:, the C symbol is always the fz name (extern_symbol_from_name); an extern item is its own one-form group with zero clauses (BodyShape::Extern, about 30 branches); @spec already parses infix heads; typed heads become row preconditions (surface_pattern_rows); a caller keys a callee activation and the callee's analysis picks reachable clauses (calculate_dispatch_reachability over the EntryDispatch fact). lib: 24 functions are only forwarders (35 clauses), 28 mix forwarders with ordinary clauses (about 58 forwarder clauses + 2 that swap arguments), about 95 forwarder clauses in all. README.md and guides/externs.html show 'extern \"C\" def' which the parser rejects.\nDesign in two stages. Stage 1, surface: an extern head is a clause of its function group whose parameters are typed by the declaration and whose body is a call to a hidden private extern named by as:. Everything downstream is unchanged. Signal: backend dump identical to today's for the converted lib (the X4 method).\nStage 2, selection: at a call site, when the argument types select exactly one clause and it is an extern head, the call resolves to the extern itself; no activation of the forwarder exists. Experiment E-select before building, predictions written now: distiller jobs fall 2-3.6% (of 12,855), executables fall by 46 or more (of 1,375), fz2 build instructions fall 0.5-3%, run instructions within noise (0.2%) of the splice, stdout identical, and BackendExecutable::forwards_to finds no spliced site left that goes through a forwarder except the two swapped clauses.",
       "timestamp": "2026-11-15T03:20:39Z"
+    },
+    {
+      "text": "E-select RESULT (spike behind FZ_SPIKE_SELECT in resolve_function_call; patch scratch select/spike-select.patch; distiller on #600). Builder figures, then my re-run.\nJobs 12,824 -\u003e 12,505 (-2.49%; predicted -2 to -3.6%: HIT). Executables 1,370 -\u003e 1,280 (-90; predicted -46 or more: HIT; 49 are forwarders, 41 not accounted for). fz2 build instructions -0.83 to -1.31% over three pairs; my re-run 19.484G -\u003e 19.281G (-1.04%) (predicted -0.5 to -3%: HIT, low end). Run instructions -0.05/-0.07%; my re-run 22.146G -\u003e 22.157G (+0.05%) (predicted within 0.2%: HIT). Stdout identical to reference (mine too).\n209 call sites selected. 5 forwarders remain: Kernel.\u003c\u003e with an any argument (run-time test remains; correct), String.Chars.{Float,Integer}.to_string via the protocol path (semantic.rs ~2094 calls prepare_function_call directly), one lambda.\nNot checked by the spike: the lowered tail still names the function, so static call edges/demand/transport still read the forwarder; AnalyzeActivation +8 and DeriveRecursive +12 not traced; no tests run.",
+      "timestamp": "2026-11-15T03:27:33Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A clause can be declared as the extern it is (extern heads)",
   "type": "task",
-  "updated_at": "2026-11-15T03:20:39Z"
+  "updated_at": "2026-11-15T03:27:33Z"
 }
