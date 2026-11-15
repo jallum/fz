@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-15T14:33:33Z",
-  "description": "BLOCKED on the bitstring/binary type split (proposal page pending). Builder work is held uncommitted in ../fz-nml13 (branch fz-nml.13 on fz-nml.11): is_bitstring as a Kernel type test, fixture 01360 (block 01360-01379 claimed for fz-nml), and 01338's \u003c\u003c1::3\u003e\u003e wording cases. Finding: fz has one binary type that holds bitstrings of any bit length, so is_binary(\u003c\u003c1::3\u003e\u003e) is true and byte_size(\u003c\u003c1::3\u003e\u003e) type-checks then panics. A runtime is_binary breaks guard narrowing (64 fixtures red), so the holistic fix is in the data model: bitstring is the broad type and binary (whole bytes) its subtype, as in Elixir. Rebuild .13 on that split; no fz_bitstring_is_binary in :binary guards. The distiller pin rose (18334,111796) -\u003e (18335,111802) with the held work; not authorized.",
+  "description": "Proposal /Users/j5n/Workspace/fz-bitstring-split.html S4. Rebuild on fz-sc8.30 (the bitstring/binary split) and #628. Held work in ../fz-nml13 (branch fz-nml.13 on old fz-nml.11 07984e81e; rebase onto 31823421d or develop once #628 lands): :binary.copy and referenced_byte_size guard with is_binary / is_bitstring directly (no fz_bitstring_is_binary); subject_complaint gets Elixir's 'is a bitstring (expected a binary)' wording; 01338 gains the \u003c\u003c1::3\u003e\u003e cases and matches Elixir. Kernel is_bitstring and fixture 01360 move to fz-sc8.30. The held distiller pin rise (18335,111802) is not authorized; re-measure after the split.",
   "id": "fz-nml.13",
   "labels": [],
   "parent": "fz-nml",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "is_bitstring/1 is a guard, and :binary raises Elixir's 'is a bitstring' wording",
   "type": "task",
-  "updated_at": "2026-11-15T14:52:06Z"
+  "updated_at": "2026-11-15T15:57:11Z"
 }
