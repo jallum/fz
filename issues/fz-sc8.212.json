@@ -4,7 +4,6 @@
     "fz-sc8.197"
   ],
   "blocks": [
-    "fz-sc8.213",
     "fz-sc8.214"
   ],
   "created": "2026-11-15T02:44:27Z",
@@ -26,5 +25,5 @@
   "status": "open",
   "title": "A clause can be declared as the extern it is (extern heads)",
   "type": "task",
-  "updated_at": "2026-11-15T03:27:33Z"
+  "updated_at": "2026-11-15T03:32:24Z"
 }
