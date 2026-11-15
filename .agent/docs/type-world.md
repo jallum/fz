@@ -48,6 +48,32 @@ and confirmed by comparing against the arena. The structural kernel (`dnf`,
 `conj`, `bits`, `emptiness`, `sigs`) is private; callers work through
 `Ty` and the `Types` methods.
 
+## What a handle settles once
+
+A `Ty`'s descriptor never changes and its children are interned before it, so the
+facts that follow from the descriptor and its children's facts are computed once,
+in `Types::intern`, into one byte per type (`types/attrs.rs`, read through
+`TyCtx::attrs`): `has_vars`, `has_open_vars`, `mentions_closure_literal`,
+`path_free` (no list, callable or variable at any depth, so no structural address
+is minted below it) and `literal_blind`. `Types::has_vars`, `has_open_vars` and
+`is_literal_blind` are byte reads. An attribute is a function of the descriptor and
+its children's attributes only; world state such as closure registration never
+feeds one, because it would go stale where the descriptor does not.
+
+A walker that maps a `Ty` to a value memoizes per handle in a `TyMemo`
+(`types/memo.rs`, used through `Types::memoized`): `value_lane_repr`,
+`structural_surface`, `runtime_reading`, `widen_literals` and the transport
+layer's `whole_value_lanes`. A walker that only reads children visits each
+handle once (`Types::reachable`). Every walk over a descriptor's child types asks
+`Descr::children` / `Descr::map_children` (`types/children.rs`), which name each
+child with its `ChildRole`, so no walker restates the five axes. The cost of
+a walk over a type that shares its parts, such as `{t, t}` nested k deep, is k
+handles, not 2^k leaves; `types/walker_cost_test.rs` pins it as descriptor reads.
+A walker that depends on context asks the attribute first and returns its input
+when nothing below can matter (`convergence_class_at` on a `path_free` type).
+`collect_protocol_domain_obligations` still walks positive signatures only, by its
+own contract.
+
 ## Preserve an identity before constructing a descriptor
 
 The interner is the only persistence boundary for a descriptor whose outer

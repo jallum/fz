@@ -5,9 +5,11 @@
 
 mod addressed;
 mod arrow_match;
+mod attrs;
 mod axis;
 mod bits;
 mod canon;
+mod children;
 pub(crate) mod clash;
 mod closure_surface_var;
 mod conj;
@@ -15,6 +17,7 @@ mod descr;
 mod dnf;
 mod emptiness;
 mod format;
+mod memo;
 mod order;
 mod sigs;
 
@@ -38,6 +41,8 @@ use crate::runtime_type_predicate::{
 use super::protocol::ProtocolDomainObligation;
 use crate::types::{ClosureTypes as SharedClosureTypes, RenderTypes as SharedRenderTypes, Types as SharedTypes};
 use bits::BasicBits;
+use children::ChildRole;
+use memo::TyMemo;
 
 pub use crate::types::{
     BuiltinOpaque, CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Sigma, TypeVarId,
@@ -151,13 +156,16 @@ pub struct Types {
     binary_type_operations: BinaryTypeOperationResults,
     /// Memoized `value_lane_repr`: the transport-lane representative of a type.
     /// A derived fact about each type, computed once rather than on every lane.
-    value_lane_reprs: HashMap<Ty, Ty>,
+    value_lane_reprs: TyMemo<Ty>,
     /// Memoized `structural_surface`: each type read with its protocol-domain
     /// markers as `any`.
-    structural_surfaces: HashMap<Ty, Ty>,
+    structural_surfaces: TyMemo<Ty>,
     /// Memoized `runtime_reading`: each type with its brands erased.
-    runtime_readings: HashMap<Ty, Ty>,
-    literal_widenings: HashMap<Ty, Ty>,
+    runtime_readings: TyMemo<Ty>,
+    /// Memoized `widen_literals`: each type with its finite atom sets widened.
+    literal_widenings: TyMemo<Ty>,
+    /// Memoized lane count of a whole value, read by the transport layer.
+    whole_value_lane_counts: TyMemo<usize>,
     /// Memoized `fold_self_nested_closures`: each type read under the lambdas
     /// whose captures it sits inside.
     self_nested_closure_folds: HashMap<(Ty, Vec<FnId>), Ty>,
@@ -236,6 +244,8 @@ impl Default for Types {
 struct TypeInterner {
     /// The one stored copy of every interned descriptor, by id.
     arena: Vec<Descr>,
+    /// The attributes of each `arena` entry, settled when it was interned.
+    attrs: Vec<attrs::TyAttrs>,
     /// The ids of `arena`, found by the hash of the descriptor each names and
     /// confirmed by comparing against `arena`. The seed belongs to this
     /// interner alone and the table is never iterated, so no order is
@@ -273,6 +283,7 @@ struct InterningWork {
     inserted: usize,
     /// Counted through a shared `TyCtx`, which only borrows the interner.
     tuple_emptiness_steps: std::cell::Cell<usize>,
+    descr_reads: std::cell::Cell<usize>,
 }
 
 #[derive(Default)]
@@ -365,12 +376,15 @@ pub(crate) struct ComparisonCacheStats {
 #[derive(Clone, Copy)]
 pub(super) struct TyCtx<'a> {
     arena: &'a [Descr],
+    attrs: &'a [attrs::TyAttrs],
     /// The address reverse table (path per address id), so display can render a
     /// structural address as `a1_0`/`r0`. Empty for the interner-internal ctx,
     /// which only resolves descriptors and never renders.
     addresses: &'a [Vec<addressed::AddrStep>],
     #[cfg(test)]
     tuple_emptiness_steps: &'a std::cell::Cell<usize>,
+    #[cfg(test)]
+    descr_reads: &'a std::cell::Cell<usize>,
 }
 
 impl<'a> TyCtx<'a> {
@@ -379,7 +393,14 @@ impl<'a> TyCtx<'a> {
         self.tuple_emptiness_steps.set(self.tuple_emptiness_steps.get() + 1);
     }
 
+    /// The facts about `t` settled when it was interned.
+    fn attrs(&self, t: &Ty) -> attrs::TyAttrs {
+        self.attrs[t.0 as usize]
+    }
+
     fn descr(&self, t: &Ty) -> &'a Descr {
+        #[cfg(test)]
+        self.descr_reads.set(self.descr_reads.get() + 1);
         self.arena
             .get(t.0 as usize)
             .unwrap_or_else(|| panic!("unknown interned type id {}", t.0))
@@ -418,6 +439,7 @@ impl TypeInterner {
         let raw = self.arena.len();
         assert!(u32::try_from(raw).is_ok(), "type interner exhausted ids");
         let ty = Ty(raw as u32);
+        self.attrs.push(attrs::attrs_of(&self.attrs, &d));
         self.arena.push(d);
         let (arena, hasher) = (&self.arena, &self.hasher);
         self.index
@@ -460,9 +482,12 @@ impl TypeInterner {
     fn ctx(&self) -> TyCtx<'_> {
         TyCtx {
             arena: &self.arena,
+            attrs: &self.attrs,
             addresses: &[],
             #[cfg(test)]
             tuple_emptiness_steps: &self.work.tuple_emptiness_steps,
+            #[cfg(test)]
+            descr_reads: &self.work.descr_reads,
         }
     }
 
@@ -634,10 +659,11 @@ impl Types {
             core,
             comparisons: RefCell::default(),
             binary_type_operations: BinaryTypeOperationResults::default(),
-            value_lane_reprs: HashMap::default(),
-            structural_surfaces: HashMap::default(),
-            runtime_readings: HashMap::default(),
-            literal_widenings: HashMap::default(),
+            value_lane_reprs: TyMemo::default(),
+            structural_surfaces: TyMemo::default(),
+            runtime_readings: TyMemo::default(),
+            literal_widenings: TyMemo::default(),
+            whole_value_lane_counts: TyMemo::default(),
             self_nested_closure_folds: HashMap::default(),
             activation_key_arrows: HashMap::default(),
             address_vars: HashMap::default(),
@@ -936,9 +962,12 @@ impl Types {
     }
 
     fn assert_activation_origins_registered(&self, root: Ty) {
-        self.activation_reachable(root, |ty| {
+        if !self.ctx().attrs(&root).mentions_closure_literal() {
+            return;
+        }
+        self.reachable(root, |ty| {
             let d = self.descr(&ty);
-            for sig in d.funcs.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+            for sig in d.funcs.iter().flat_map(|conj| conj.sigs()) {
                 if let Some(lit) = &sig.lit
                     && let Some(fn_id) = lit.fn_id
                 {
@@ -952,7 +981,10 @@ impl Types {
         });
     }
 
-    fn activation_reachable(&self, root: Ty, mut visit: impl FnMut(Ty)) -> HashSet<Ty> {
+    /// Every type reachable from `root` through any child position, each
+    /// visited once: the cost is the number of distinct handles, however large
+    /// the tree they unfold to.
+    fn reachable(&self, root: Ty, mut visit: impl FnMut(Ty)) -> HashSet<Ty> {
         let mut pending = vec![root];
         let mut seen = HashSet::default();
         while let Some(ty) = pending.pop() {
@@ -960,30 +992,7 @@ impl Types {
                 continue;
             }
             visit(ty);
-            let d = self.descr(&ty);
-            for sig in d.tuples.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
-                pending.extend(sig.elems.iter().copied());
-            }
-            for sig in d.lists.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
-                pending.extend(sig.elem);
-            }
-            for sig in d
-                .resources
-                .iter()
-                .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
-            {
-                pending.push(sig.payload);
-            }
-            for sig in d.funcs.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
-                pending.extend(sig.args.iter().copied());
-                pending.push(sig.ret);
-                if let Some(lit) = &sig.lit {
-                    pending.extend(lit.captures.iter().copied());
-                }
-            }
-            for sig in d.maps.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
-                pending.extend(sig.fields.values().copied());
-            }
+            pending.extend(self.descr(&ty).children().map(|(child, _)| child));
         }
         seen
     }
@@ -1104,9 +1113,12 @@ impl Types {
     fn ctx(&self) -> TyCtx<'_> {
         TyCtx {
             arena: &self.interner.arena,
+            attrs: &self.interner.attrs,
             addresses: &self.address_paths,
             #[cfg(test)]
             tuple_emptiness_steps: &self.interner.work.tuple_emptiness_steps,
+            #[cfg(test)]
+            descr_reads: &self.interner.work.descr_reads,
         }
     }
 
@@ -1147,26 +1159,27 @@ impl Types {
     /// the same lane, so destination-passing folds instead of re-materializing.
     /// Memoized — a derived fact about the type, not recomputed per lane.
     pub fn value_lane_repr(&mut self, ty: Ty) -> Ty {
-        if let Some(&cached) = self.value_lane_reprs.get(&ty) {
-            return cached;
-        }
-        let any = self.any();
-        let list_top = self.list(any);
-        let repr = if !self.is_empty(&ty) && self.is_subtype(&ty, &list_top) {
-            list_top
-        } else if self.descr(&ty).is_pure_callable() {
-            // A callable value is one word — a code pointer or a closure ref —
-            // regardless of its signature, identity, or captures. Collapse every
-            // callable to one lane, exactly as lists collapse to `list(any)`, so
-            // two representations of the same callable (e.g. an opaque join of
-            // same-signature functions, addressed vs not) never split across
-            // lanes (fz-hwn.27.12). The contract stays out-of-band in boundaries.
-            self.intern(Descr::fun_top())
-        } else {
-            ty
-        };
-        self.value_lane_reprs.insert(ty, repr);
-        repr
+        self.memoized(
+            |t| &mut t.value_lane_reprs,
+            ty,
+            |t| {
+                let any = t.any();
+                let list_top = t.list(any);
+                if !t.is_empty(&ty) && t.is_subtype(&ty, &list_top) {
+                    list_top
+                } else if t.descr(&ty).is_pure_callable() {
+                    // A callable value is one word — a code pointer or a closure ref —
+                    // regardless of its signature, identity, or captures. Collapse every
+                    // callable to one lane, exactly as lists collapse to `list(any)`, so
+                    // two representations of the same callable (e.g. an opaque join of
+                    // same-signature functions, addressed vs not) never split across
+                    // lanes (fz-hwn.27.12). The contract stays out-of-band in boundaries.
+                    t.intern(Descr::fun_top())
+                } else {
+                    ty
+                }
+            },
+        )
     }
 
     /// The type read for the values it admits: every protocol-domain marker
@@ -1175,13 +1188,14 @@ impl Types {
     /// implement the protocol) is a separate fact, `protocol_domain_obligations`;
     /// the surface is what a call may be refined against. Memoized.
     pub(crate) fn structural_surface(&mut self, ty: Ty) -> Ty {
-        if let Some(&cached) = self.structural_surfaces.get(&ty) {
-            return cached;
-        }
-        let descr = structural_surface(self, ty);
-        let surface = self.intern(descr);
-        self.structural_surfaces.insert(ty, surface);
-        surface
+        self.memoized(
+            |t| &mut t.structural_surfaces,
+            ty,
+            |t| {
+                let descr = structural_surface(t, ty);
+                t.intern(descr)
+            },
+        )
     }
 
     /// Every type the arena holds, in mint order.
@@ -1211,7 +1225,7 @@ impl Types {
 
     #[cfg(test)]
     pub(crate) fn activation_reachable_tys(&self, root: Ty) -> HashSet<Ty> {
-        self.activation_reachable(root, |_| {})
+        self.reachable(root, |_| {})
     }
 
     /// The two identity inventories demand-formula evaluation must leave
@@ -1232,6 +1246,13 @@ impl Types {
             inserted: work.inserted,
             tuple_emptiness_steps: work.tuple_emptiness_steps.get(),
         }
+    }
+
+    /// Descriptors read through a [`TyCtx`] so far: the cost of any walk over
+    /// interned types, however it is written.
+    #[cfg(test)]
+    pub(crate) fn descr_reads(&self) -> usize {
+        self.interner.work.descr_reads.get()
     }
 
     #[cfg(test)]
@@ -1787,6 +1808,9 @@ impl Types {
     /// callable captured into a closure the body builds would be typed by
     /// every caller's arguments at once.
     fn convergence_class_at(&mut self, a: &Ty, path: &[AddrStep], reach: ClassReach, collapse: KeyCollapse) -> Ty {
+        if self.ctx().attrs(a).path_free() {
+            return *a;
+        }
         let descr = self.descr(a);
         if descr.is_pure_list_family() {
             let mut child = path.to_vec();
@@ -2527,60 +2551,13 @@ impl Types {
     /// Whether one declares a struct is the world's to say.
     pub(crate) fn struct_modules(&self, roots: impl IntoIterator<Item = Ty>) -> BTreeSet<ModuleName> {
         let mut modules = BTreeSet::new();
-        let mut seen = HashSet::default();
         for root in roots {
-            self.collect_struct_modules(root, &mut seen, &mut modules);
+            self.reachable(root, |ty| {
+                let records = self.descr(&ty).maps.iter().flat_map(|conj| conj.sigs());
+                modules.extend(records.filter_map(|sig| sig_struct(self.ctx(), sig)));
+            });
         }
         modules
-    }
-
-    fn collect_struct_modules(&self, ty: Ty, seen: &mut HashSet<Ty>, modules: &mut BTreeSet<ModuleName>) {
-        if !seen.insert(ty) {
-            return;
-        }
-        let descr = self.descr(&ty);
-        for conj in &descr.tuples {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                for elem in &sig.elems {
-                    self.collect_struct_modules(*elem, seen, modules);
-                }
-            }
-        }
-        for conj in &descr.lists {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                if let Some(elem) = sig.elem {
-                    self.collect_struct_modules(elem, seen, modules);
-                }
-            }
-        }
-        for conj in &descr.resources {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                self.collect_struct_modules(sig.payload, seen, modules);
-            }
-        }
-        for conj in &descr.funcs {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                for arg in &sig.args {
-                    self.collect_struct_modules(*arg, seen, modules);
-                }
-                self.collect_struct_modules(sig.ret, seen, modules);
-                if let Some(lit) = &sig.lit {
-                    for capture in &lit.captures {
-                        self.collect_struct_modules(*capture, seen, modules);
-                    }
-                }
-            }
-        }
-        for conj in &descr.maps {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                if let Some(module) = sig_struct(self.ctx(), sig) {
-                    modules.insert(module);
-                }
-                for field in sig.fields.values() {
-                    self.collect_struct_modules(*field, seen, modules);
-                }
-            }
-        }
     }
 
     fn collect_protocol_domain_obligations(
@@ -2942,7 +2919,7 @@ impl Types {
     /// variables of a closure literal. This is the syntactic question substitution
     /// and addressing ask: is there a variable here to rewrite?
     pub fn has_vars(&self, a: &Ty) -> bool {
-        has_vars(self.ctx(), self.descr(a), false)
+        self.ctx().attrs(a).has_vars()
     }
 
     /// True when `a` mentions a type variable that evidence still has to solve.
@@ -2952,7 +2929,7 @@ impl Types {
     /// never has to settle to be a runtime shape. Variables a closure
     /// captures, and every variable outside a closure literal's arrow, are open.
     pub fn has_open_vars(&self, a: &Ty) -> bool {
-        has_vars(self.ctx(), self.descr(a), true)
+        self.ctx().attrs(a).has_open_vars()
     }
 
     /// True when every value of `a` is a callable and nothing else. A callable
@@ -2974,7 +2951,7 @@ impl Types {
     /// their denotations compare.
     pub fn free_var_ids(&self, a: &Ty) -> BTreeSet<TypeVarId> {
         let mut ids = BTreeSet::new();
-        collect_free_vars(self.ctx(), self.descr(a), &mut ids);
+        self.reachable(*a, |ty| ids.extend(self.descr(&ty).vars.values.iter().copied()));
         ids
     }
 
@@ -2996,8 +2973,12 @@ impl Types {
     /// only in the nested arrow's signature absorb each other.
     pub fn lit_arrow_shapes(&self, a: &Ty) -> Vec<LitArrowShape> {
         let mut shapes = Vec::new();
-        let mut seen = HashSet::default();
-        collect_lit_arrow_shapes(self.ctx(), a, &mut seen, &mut shapes);
+        self.reachable(*a, |ty| {
+            let literals = self.descr(&ty).funcs.iter().flat_map(|conj| conj.sigs());
+            for (sig, lit) in literals.filter_map(|sig| sig.lit.as_ref().map(|lit| (sig, lit))) {
+                shapes.push((lit.fn_id, lit.captures.clone(), sig.args.clone(), sig.ret));
+            }
+        });
         shapes.sort();
         shapes.dedup();
         shapes
@@ -3398,20 +3379,21 @@ impl Types {
     /// as `binary` and `{utf8, int}` as `{binary, int}`; the values that
     /// reach a test are those of this reading. Memoized.
     pub fn runtime_reading(&mut self, a: &Ty) -> Ty {
-        if let Some(&cached) = self.runtime_readings.get(a) {
-            return cached;
-        }
-        let descr = runtime_reading(self, *a);
-        let reading = self.intern(descr);
-        self.runtime_readings.insert(*a, reading);
-        reading
+        self.memoized(
+            |t| &mut t.runtime_readings,
+            *a,
+            |t| {
+                let descr = runtime_reading(t, *a);
+                t.intern(descr)
+            },
+        )
     }
 
     /// Whether no literal can tell this type from its widening: it names no
     /// specific atom at any depth. This is `widen_literals(a) == a`, answered
     /// without interning.
     pub fn is_literal_blind(&self, a: &Ty) -> bool {
-        literal_blind(self, self.descr(a))
+        self.ctx().attrs(a).literal_blind()
     }
 
     /// The input types of an arrow, when the type is one pure arrow.
@@ -3431,14 +3413,16 @@ impl Types {
     /// literal family there is to widen. Idempotent, monotone, and it
     /// distributes over union. Memoized.
     pub fn widen_literals(&mut self, a: &Ty) -> Ty {
-        if let Some(&cached) = self.literal_widenings.get(a) {
-            return cached;
-        }
-        let descr = widen_literals(self, *a);
-        let widened = self.intern(descr);
-        self.literal_widenings.insert(*a, widened);
-        self.literal_widenings.insert(widened, widened);
-        widened
+        self.memoized(
+            |t| &mut t.literal_widenings,
+            *a,
+            |t| {
+                let descr = widen_literals(t, *a);
+                let widened = t.intern(descr);
+                t.literal_widenings.remember(widened, widened);
+                widened
+            },
+        )
     }
 }
 
@@ -4342,141 +4326,6 @@ where
     }
 }
 
-/// Collect every type-var id `d` mentions, mirroring `has_vars`' recursion:
-/// the same axes, the same structural children, including a closure literal's
-/// captures.
-fn collect_free_vars(cx: TyCtx<'_>, d: &Descr, ids: &mut BTreeSet<TypeVarId>) {
-    ids.extend(d.vars.values.iter().copied());
-    for c in &d.tuples {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for t in &sig.elems {
-                collect_free_vars(cx, cx.descr(t), ids);
-            }
-        }
-    }
-    for c in &d.lists {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            if let Some(t) = sig.elem {
-                collect_free_vars(cx, cx.descr(&t), ids);
-            }
-        }
-    }
-    for c in &d.resources {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            collect_free_vars(cx, cx.descr(&sig.payload), ids);
-        }
-    }
-    for c in &d.funcs {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for t in &sig.args {
-                collect_free_vars(cx, cx.descr(t), ids);
-            }
-            collect_free_vars(cx, cx.descr(&sig.ret), ids);
-            if let Some(lit) = sig.lit.as_ref() {
-                for t in &lit.captures {
-                    collect_free_vars(cx, cx.descr(t), ids);
-                }
-            }
-        }
-    }
-    for c in &d.maps {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for t in sig.fields.values() {
-                collect_free_vars(cx, cx.descr(t), ids);
-            }
-        }
-    }
-}
-
-/// Collect every closure-literal arrow reachable from `t`, mirroring
-/// `collect_free_vars`' recursion: the same axes, the same structural
-/// children, plus a literal's own captures.
-///
-/// `seen` is a cycle guard, not a memo -- an interned type may be its own
-/// descendant (a recursive list element, a closure captured in its own
-/// capture vector), and revisiting one adds nothing the first visit did not.
-fn collect_lit_arrow_shapes(cx: TyCtx<'_>, t: &Ty, seen: &mut HashSet<Ty>, shapes: &mut Vec<LitArrowShape>) {
-    if !seen.insert(*t) {
-        return;
-    }
-    let d = cx.descr(t);
-    for c in &d.tuples {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for e in &sig.elems {
-                collect_lit_arrow_shapes(cx, e, seen, shapes);
-            }
-        }
-    }
-    for c in &d.lists {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            if let Some(e) = sig.elem {
-                collect_lit_arrow_shapes(cx, &e, seen, shapes);
-            }
-        }
-    }
-    for c in &d.resources {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            collect_lit_arrow_shapes(cx, &sig.payload, seen, shapes);
-        }
-    }
-    for c in &d.funcs {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            if let Some(lit) = sig.lit.as_ref() {
-                shapes.push((lit.fn_id, lit.captures.clone(), sig.args.clone(), sig.ret));
-                for capture in &lit.captures {
-                    collect_lit_arrow_shapes(cx, capture, seen, shapes);
-                }
-            }
-            for arg in &sig.args {
-                collect_lit_arrow_shapes(cx, arg, seen, shapes);
-            }
-            collect_lit_arrow_shapes(cx, &sig.ret, seen, shapes);
-        }
-    }
-    for c in &d.maps {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for field in sig.fields.values() {
-                collect_lit_arrow_shapes(cx, field, seen, shapes);
-            }
-        }
-    }
-}
-
-/// Whether `d` mentions a type variable. With `closure_arrows_are_binders`, the
-/// argument and result slots of a closure-literal arrow are not walked: their
-/// variables belong to the closure. Captures are values and are always walked.
-fn has_vars(cx: TyCtx<'_>, d: &Descr, closure_arrows_are_binders: bool) -> bool {
-    let walk = |t: &Ty| has_vars(cx, cx.descr(t), closure_arrows_are_binders);
-    if !d.vars.values.is_empty() {
-        return true;
-    }
-    d.tuples
-        .iter()
-        .any(|c| c.pos.iter().chain(c.neg.iter()).any(|sig| sig.elems.iter().any(&walk)))
-        || d.lists.iter().any(|c| {
-            c.pos
-                .iter()
-                .chain(c.neg.iter())
-                .any(|sig| sig.elem.is_some_and(|t| walk(&t)))
-        })
-        || d.resources
-            .iter()
-            .any(|c| c.pos.iter().chain(c.neg.iter()).any(|sig| walk(&sig.payload)))
-        || d.funcs.iter().any(|c| {
-            c.pos.iter().chain(c.neg.iter()).any(|sig| {
-                let own_binder = closure_arrows_are_binders && sig.lit.is_some();
-                (!own_binder && (sig.args.iter().any(&walk) || walk(&sig.ret)))
-                    || sig.lit.as_ref().is_some_and(|lit| lit.captures.iter().any(&walk))
-            })
-        })
-        || d.maps.iter().any(|c| {
-            c.pos
-                .iter()
-                .chain(c.neg.iter())
-                .any(|sig| sig.fields.values().any(&walk))
-        })
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RuntimeEnvelopePolarity {
     Positive,
@@ -4845,7 +4694,7 @@ fn reads_closure_identity(demand: &KeyDemand<'_>, slot: usize) -> bool {
 /// literal with no captures has nothing left to say once its brand is gone, so
 /// it erases to the bare arrow it always did.
 fn erase_closure_identity(t: &mut Types, a: Ty) -> Ty {
-    if !mentions_closure_literal(t.ctx(), t.descr(&a)) {
+    if !t.ctx().attrs(&a).mentions_closure_literal() {
         return t.unchanged(a);
     }
     let base = t.descr(&a).clone();
@@ -4873,37 +4722,6 @@ fn erase_closure_identity(t: &mut Types, a: Ty) -> Ty {
     t.intern(erased)
 }
 
-/// Whether a closure literal occurs at any depth, in a position the walk of
-/// [`has_vars`] reaches: the types a closure literal's signature and captures
-/// name are children like any other.
-fn mentions_closure_literal(cx: TyCtx<'_>, d: &Descr) -> bool {
-    let walk = |t: &Ty| mentions_closure_literal(cx, cx.descr(t));
-    d.tuples
-        .iter()
-        .any(|c| c.pos.iter().chain(c.neg.iter()).any(|sig| sig.elems.iter().any(&walk)))
-        || d.lists.iter().any(|c| {
-            c.pos
-                .iter()
-                .chain(c.neg.iter())
-                .any(|sig| sig.elem.is_some_and(|t| walk(&t)))
-        })
-        || d.resources
-            .iter()
-            .any(|c| c.pos.iter().chain(c.neg.iter()).any(|sig| walk(&sig.payload)))
-        || d.funcs.iter().any(|c| {
-            c.pos
-                .iter()
-                .chain(c.neg.iter())
-                .any(|sig| sig.lit.is_some() || sig.args.iter().any(&walk) || walk(&sig.ret))
-        })
-        || d.maps.iter().any(|c| {
-            c.pos
-                .iter()
-                .chain(c.neg.iter())
-                .any(|sig| sig.fields.values().any(&walk))
-        })
-}
-
 /// `enclosing` holds every lambda whose captures the type sits inside, sorted.
 /// A clause with a closure of one of them is cut to `fun`; any other closure
 /// keeps its captures, read under its own lambda added to `enclosing`.
@@ -4912,34 +4730,6 @@ fn fold_self_nested_closures(t: &mut Types, a: Ty, enclosing: &[FnId]) -> Descr 
     if folded.looks_empty() {
         return folded;
     }
-    for conj in &mut folded.tuples {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.elems = sig
-                .elems
-                .iter()
-                .map(|ty| t.fold_self_nested_closures_under(ty, enclosing))
-                .collect();
-        }
-    }
-    for conj in &mut folded.lists {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.elem = sig.elem.map(|ty| t.fold_self_nested_closures_under(&ty, enclosing));
-        }
-    }
-    for conj in &mut folded.resources {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.payload = t.fold_self_nested_closures_under(&sig.payload, enclosing);
-        }
-    }
-    for conj in &mut folded.maps {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.fields = sig
-                .fields
-                .iter()
-                .map(|(k, v)| (k.clone(), t.fold_self_nested_closures_under(v, enclosing)))
-                .collect();
-        }
-    }
     for conj in &mut folded.funcs {
         let self_nested =
             conj.pos.iter().filter_map(|sig| sig.lit.as_ref()).any(|lit| {
@@ -4947,64 +4737,21 @@ fn fold_self_nested_closures(t: &mut Types, a: Ty, enclosing: &[FnId]) -> Descr 
             });
         if self_nested {
             *conj = Conj::top();
-            continue;
         }
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            let Some(lit) = sig.lit.take() else {
-                continue;
-            };
-            let named = lit.fn_id.filter(|_| lit.kind == CallableValueKind::Closure);
+    }
+    folded.map_children(&mut |ty, role| match role {
+        ChildRole::Value | ChildRole::StructModule => t.fold_self_nested_closures_under(&ty, enclosing),
+        ChildRole::Surface | ChildRole::LiteralSurface => ty,
+        ChildRole::Capture { kind, fn_id } => {
             let mut inside = enclosing.to_vec();
-            if let Some(fn_id) = named {
+            if let Some(fn_id) = fn_id.filter(|_| kind == CallableValueKind::Closure) {
                 inside.push(fn_id);
                 inside.sort();
             }
-            let captures = lit
-                .captures
-                .iter()
-                .map(|capture| t.fold_self_nested_closures_under(capture, &inside))
-                .collect();
-            sig.lit = Some(ClosureLit {
-                kind: lit.kind,
-                fn_id: lit.fn_id,
-                captures,
-            });
+            t.fold_self_nested_closures_under(&ty, &inside)
         }
-    }
+    });
     folded
-}
-
-fn literal_blind(t: &Types, d: &Descr) -> bool {
-    let nested = |ty: &Ty| literal_blind(t, t.descr(ty));
-    d.looks_empty()
-        || (d.atoms.is_none() || d.atoms.is_any())
-            && d.tuples.iter().all(|conj| {
-                conj.pos
-                    .iter()
-                    .chain(conj.neg.iter())
-                    .all(|sig| sig.elems.iter().all(nested))
-            })
-            && d.lists.iter().all(|conj| {
-                conj.pos
-                    .iter()
-                    .chain(conj.neg.iter())
-                    .all(|sig| sig.elem.iter().all(nested))
-            })
-            && d.resources
-                .iter()
-                .all(|conj| conj.pos.iter().chain(conj.neg.iter()).all(|sig| nested(&sig.payload)))
-            && d.maps.iter().all(|conj| {
-                conj.pos
-                    .iter()
-                    .chain(conj.neg.iter())
-                    .all(|sig| sig.fields.iter().all(|(_, value)| nested(value)))
-            })
-            && d.funcs.iter().all(|conj| {
-                conj.pos
-                    .iter()
-                    .chain(conj.neg.iter())
-                    .all(|sig| sig.lit.iter().all(|lit| lit.captures.iter().all(nested)))
-            })
 }
 
 /// Every finite atom set widened to `atom`, at any depth a value can sit in:
@@ -5017,52 +4764,10 @@ fn widen_literals(t: &mut Types, a: Ty) -> Descr {
         return base;
     }
     let mut widened = base;
-    for conj in &mut widened.tuples {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.elems = sig.elems.iter().map(|ty| t.widen_literals(ty)).collect();
-        }
-    }
-    for conj in &mut widened.lists {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.elem = sig.elem.map(|ty| t.widen_literals(&ty));
-        }
-    }
-    for conj in &mut widened.resources {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.payload = t.widen_literals(&sig.payload);
-        }
-    }
-    for conj in &mut widened.maps {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.fields = sig
-                .fields
-                .iter()
-                .map(|(k, v)| {
-                    (
-                        k.clone(),
-                        if is_struct_module_key(k) {
-                            *v
-                        } else {
-                            t.widen_literals(v)
-                        },
-                    )
-                })
-                .collect();
-        }
-    }
-    for conj in &mut widened.funcs {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            let Some(lit) = sig.lit.take() else {
-                continue;
-            };
-            let captures = lit.captures.iter().map(|capture| t.widen_literals(capture)).collect();
-            sig.lit = Some(ClosureLit {
-                kind: lit.kind,
-                fn_id: lit.fn_id,
-                captures,
-            });
-        }
-    }
+    widened.map_children(&mut |ty, role| match role {
+        ChildRole::Value | ChildRole::Capture { .. } => t.widen_literals(&ty),
+        ChildRole::StructModule | ChildRole::Surface | ChildRole::LiteralSurface => ty,
+    });
     if !widened.atoms.is_none() && !widened.atoms.is_any() {
         widened.atoms = FiniteSet::any();
     }
@@ -5301,33 +5006,13 @@ fn map_recursive_inputs(t: &mut Types, d: Descr, f: fn(&mut Types, Ty) -> Descr)
     })
 }
 
+/// `d` with each child type but a closure's captures replaced by what `f`
+/// makes of it.
 fn map_recursive_inputs_with(t: &mut Types, mut d: Descr, f: &mut impl FnMut(&mut Types, Ty) -> Ty) -> Descr {
-    for conj in &mut d.tuples {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.elems = sig.elems.iter().map(|ty| f(t, *ty)).collect();
-        }
-    }
-    for conj in &mut d.lists {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.elem = sig.elem.map(|ty| f(t, ty));
-        }
-    }
-    for conj in &mut d.resources {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.payload = f(t, sig.payload);
-        }
-    }
-    for conj in &mut d.funcs {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.args = sig.args.iter().map(|ty| f(t, *ty)).collect();
-            sig.ret = f(t, sig.ret);
-        }
-    }
-    for conj in &mut d.maps {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.fields = sig.fields.iter().map(|(k, v)| (k.clone(), f(t, *v))).collect();
-        }
-    }
+    d.map_children(&mut |ty, role| match role {
+        ChildRole::Capture { .. } => ty,
+        _ => f(t, ty),
+    });
     d
 }
 
@@ -5341,3 +5026,9 @@ mod projection_test;
 #[cfg(test)]
 #[path = "rewrite_test.rs"]
 mod rewrite_test;
+
+#[cfg(test)]
+mod attrs_test;
+
+#[cfg(test)]
+mod walker_cost_test;

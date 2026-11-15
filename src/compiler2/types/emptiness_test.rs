@@ -23,7 +23,7 @@ fn a_descriptor_names_only_types_interned_before_it() {
     let _ = (meet, spread);
 
     for ty in t.interned_tys() {
-        let reachable = t.activation_reachable(ty, |_| {});
+        let reachable = t.reachable(ty, |_| {});
         assert!(
             reachable.iter().all(|named| named.as_u32() <= ty.as_u32()),
             "type {} names a type interned after it, so deciding its emptiness would not descend",
