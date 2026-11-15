@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-9zq.1",
     "fz-afu.15"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Compile work does not depend on the agenda's pop order",
   "type": "task",
-  "updated_at": "2026-11-14T17:41:01Z"
+  "updated_at": "2026-11-15T03:40:39Z"
 }
