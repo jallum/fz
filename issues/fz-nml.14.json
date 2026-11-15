@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.30"
+  ],
   "blocks": [],
   "created": "2026-11-15T15:57:11Z",
   "description": "Proposal /Users/j5n/Workspace/fz-bitstring-split.html S2. After fz-sc8.30 a binary clause proves whole bytes, so: String.Chars for BitString becomes two clauses (to_string(s :: binary), fallback raising Protocol.UndefinedError; protocol target named BitString as Elixir, world.rs:3482, string_chars.fz:15-17); JSON encode_into(v, acc) when is_binary(v) replaces the alignment argument and its 0 clause (json.fz:211, 237-238); delete fz_bitstring_is_binary (ir_runtime.rs:1137-1145), its two extern decls (string_chars.fz:72, json.fz:234), externs.md:77, and the 'type system does not draw this line' comments (ir_runtime.rs:1137-1142, string_chars.fz:57-62, fixtures2/behavior/to_string_bitstring_panics.fz). Acceptance: 01151 Protocol.UndefinedError fields unchanged; fixtures2 to_string_bitstring_panics and json_encode_non_byte_aligned unchanged (or updated to Elixir's raise, stated in the PR); no caller of the deleted fn remains; pins only fall.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The library stops asking at runtime whether a bitstring is a binary",
   "type": "task",
-  "updated_at": "2026-11-15T15:57:11Z"
+  "updated_at": "2026-11-15T15:57:12Z"
 }
