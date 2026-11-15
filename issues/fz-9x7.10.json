@@ -7,9 +7,15 @@
   "id": "fz-9x7.10",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "develop push CI at e81f9ed52 (run 43724531150) passes the coverage step: the fixture-matrix binary reports 3614 passed, 0 failed, against 3610 passed, 4 failed at 4f8b72ea4 (run 43723309628), so all four tests that exceeded 20 s of CPU there now fit. PR #633 (fz-sc8.227) cuts 01254/01294 instructions about 10% but leaves cycles flat (peer's measurement); the margin under the limit at e81f9ed52 is not measured.",
+      "timestamp": "2026-11-15T15:30:48Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Fixtures 01254 and 01294 fit the coverage job's 20 s CPU limit on the interpreter",
   "type": "bug",
-  "updated_at": "2026-11-15T14:42:10Z"
+  "updated_at": "2026-11-15T15:30:48Z"
 }
