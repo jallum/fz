@@ -1,0 +1,29 @@
+#---
+# purpose: "the metadata of quoted code is a keyword list: a macro may return nodes whose metadata is [], a macro's argument carries a list, and a run-time quote builds a list"
+# oracle: self
+# oracle.stamp: 0ef2c8ad0f889c3b
+#---
+defmodule Shapes do
+  defmacro map_node(), do: {:%{}, [], [a: 1]}
+  defmacro tuple_node(), do: {:{}, [], [1, 2, 3]}
+  defmacro call_node(), do: {:double, [], [21]}
+  defmacro meta_of_argument_is_a_list(x), do: is_list(elem(x, 1))
+end
+
+defmodule Use do
+  require Shapes
+  def double(n), do: n * 2
+  def go() do
+    IO.inspect(Shapes.map_node())
+    IO.inspect(Shapes.tuple_node())
+    IO.inspect(Shapes.call_node())
+    IO.inspect(Shapes.meta_of_argument_is_a_list(double(1)))
+    IO.inspect(is_list(elem(quote(do: foo(1)), 1)))
+  end
+end
+
+defmodule Main do
+  def main(), do: Use.go()
+end
+
+Main.main()

@@ -3,8 +3,8 @@
 #---
 defmacro pair(a, b) do
   [
-{:def, %{}, [{:first, %{}, []}, [{:do, a}]]},
-{:def, %{}, [{:second, %{}, []}, [{:do, b}]]}
+{:def, [], [{:first, [], []}, [{:do, a}]]},
+{:def, [], [{:second, [], []}, [{:do, b}]]}
   ]
 end
 

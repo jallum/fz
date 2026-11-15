@@ -986,6 +986,9 @@ struct QuoteLowerer<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Tel
     /// how many have been taken so far.
     splices: &'q [Spanned<Expr>],
     next_splice: usize,
+    /// The metadata key atoms this quote has pushed. The quote's steps are one
+    /// straight-line sequence, so a key pushed once serves every later node.
+    meta_keys: HashMap<&'static str, ValueId>,
 }
 
 impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
@@ -1003,6 +1006,7 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
             steps,
             splices,
             next_splice: 0,
+            meta_keys: HashMap::default(),
         }
     }
 
@@ -1163,15 +1167,7 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
             fields.push(self.module_path(path.segments().iter()));
         }
         let identity = self.push_tuple(fields);
-        let key = self.lowerer.push_const(
-            self.steps,
-            GroundValue::Atom(super::super::source::META_MODULE_KEY.into()),
-        );
-        let key = LoweredMapKey {
-            value: key,
-            literal: Some(GroundValue::Atom(super::super::source::META_MODULE_KEY.into())),
-        };
-        let meta = self.push_meta(vec![(key, identity)]);
+        let meta = self.push_meta(Some(identity), None);
         self.push_tuple(vec![head, meta, tail])
     }
 
@@ -1189,37 +1185,43 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
             .lowerer
             .push_const(self.steps, GroundValue::Atom(spelling.to_string()));
         let tail = self.push_list(args, None);
-        let entries = self.bound_callable_entries(bound);
-        let meta = self.push_meta(entries);
+        let meta = self.push_meta(None, bound);
         self.push_tuple(vec![head, meta, tail])
-    }
-
-    fn bound_callable_entries(&mut self, bound: Option<FunctionId>) -> Vec<(LoweredMapKey, ValueId)> {
-        let Some(function) = bound else {
-            return Vec::new();
-        };
-        let literal = GroundValue::Atom(super::super::source::META_BOUND_CALLABLE_KEY.to_string());
-        let key = self.lowerer.push_const(self.steps, literal.clone());
-        let coordinate = self
-            .lowerer
-            .push_const(self.steps, GroundValue::Int(i64::from(function.as_u32())));
-        vec![(
-            LoweredMapKey {
-                value: key,
-                literal: Some(literal),
-            },
-            coordinate,
-        )]
     }
 
     fn push_ast_node(&mut self, head: ValueId, tail: ValueId) -> ValueId {
-        let meta = self.push_meta(Vec::new());
+        let meta = self.push_meta(None, None);
         self.push_tuple(vec![head, meta, tail])
     }
 
-    fn push_meta(&mut self, entries: Vec<(LoweredMapKey, ValueId)>) -> ValueId {
-        let value = self.lowerer.fresh_value();
-        self.steps.push(ExprStep::Map { value, entries });
+    /// The node's metadata keyword list, in the order
+    /// `QuotedSourceBuilder::meta` writes it. A quoted node carries no span: it
+    /// takes the span of the macro call that expands it.
+    fn push_meta(&mut self, module: Option<ValueId>, bound: Option<FunctionId>) -> ValueId {
+        let mut entries = Vec::new();
+        if let Some(identity) = module {
+            entries.push(self.push_meta_entry(super::super::source::META_MODULE_KEY, identity));
+        }
+        if let Some(function) = bound {
+            let coordinate = self
+                .lowerer
+                .push_const(self.steps, GroundValue::Int(i64::from(function.as_u32())));
+            entries.push(self.push_meta_entry(super::super::source::META_BOUND_CALLABLE_KEY, coordinate));
+        }
+        self.push_list(entries, None)
+    }
+
+    fn push_meta_entry(&mut self, key: &'static str, value: ValueId) -> ValueId {
+        let key = self.meta_key(key);
+        self.push_tuple(vec![key, value])
+    }
+
+    fn meta_key(&mut self, key: &'static str) -> ValueId {
+        if let Some(value) = self.meta_keys.get(key) {
+            return *value;
+        }
+        let value = self.lowerer.push_const(self.steps, GroundValue::Atom(key.to_string()));
+        self.meta_keys.insert(key, value);
         value
     }
 

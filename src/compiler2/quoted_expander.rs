@@ -881,7 +881,11 @@ fn stamp_hygiene(
             && node.meta.hygiene_ordinal()?.is_none()
         {
             let builder = owner.builder();
-            let meta = stamp_meta_ordinal(&builder, &node.meta, ordinal)?;
+            let meta = builder.meta_put(
+                &node.meta,
+                super::source::META_HYGIENE_KEY,
+                builder.int(i64::from(ordinal)),
+            )?;
             return builder.tuple(&[node.head.root(), meta, node.tail.root()]);
         }
         let head = stamp_hygiene(owner, &node.head, function, ordinal, sources)?;
@@ -957,23 +961,6 @@ where
     Ok(out)
 }
 
-fn stamp_meta_ordinal(
-    builder: &super::source::QuotedSourceBuilder,
-    meta: &QuotedSourceCursor,
-    ordinal: u32,
-) -> Result<AnyValueRef, QuotedSourceError> {
-    let mut entries = meta
-        .map_entries()?
-        .into_iter()
-        .map(|(key, value)| (key.root(), value.root()))
-        .collect::<Vec<_>>();
-    entries.push((
-        builder.atom(super::source::META_HYGIENE_KEY),
-        builder.int(i64::from(ordinal)),
-    ));
-    builder.map(&entries)
-}
-
 /// As in Elixir: a node a macro's result carries with no location of its own
 /// takes the macro call's location. A node that already has one -- unquoted
 /// user code the macro merely relayed, or something an earlier expansion
@@ -999,7 +986,11 @@ fn stamp_span_fallback(
         if is_quote_call(&node)? {
             if node.span.is_none() {
                 let builder = owner.builder();
-                let meta = stamp_meta_span(&builder, &node.meta, macro_call_span)?;
+                let meta = builder.meta_put(
+                    &node.meta,
+                    super::source::META_SPAN_KEY,
+                    builder.span(&macro_call_span)?,
+                )?;
                 return builder.tuple(&[node.head.root(), meta, node.tail.root()]);
             }
             return Ok(cursor.root());
@@ -1008,7 +999,11 @@ fn stamp_span_fallback(
         let tail = stamp_span_fallback(owner, &node.tail, macro_call_span, sources)?;
         if node.span.is_none() {
             let builder = owner.builder();
-            let meta = stamp_meta_span(&builder, &node.meta, macro_call_span)?;
+            let meta = builder.meta_put(
+                &node.meta,
+                super::source::META_SPAN_KEY,
+                builder.span(&macro_call_span)?,
+            )?;
             return builder.tuple(&[head, meta, tail]);
         }
         if head == node.head.root() && tail == node.tail.root() {
@@ -1049,20 +1044,6 @@ fn stamp_span_fallback(
         }
         _ => Ok(cursor.root()),
     }
-}
-
-fn stamp_meta_span(
-    builder: &super::source::QuotedSourceBuilder,
-    meta: &QuotedSourceCursor,
-    span: Span,
-) -> Result<AnyValueRef, QuotedSourceError> {
-    let mut entries = meta
-        .map_entries()?
-        .into_iter()
-        .map(|(key, value)| (key.root(), value.root()))
-        .collect::<Vec<_>>();
-    entries.push((builder.atom(super::source::META_SPAN_KEY), builder.span(&span)?));
-    builder.map(&entries)
 }
 
 /// Whether `node` is a `quote(...)` call, the same shape `expand_ast_call`

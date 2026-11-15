@@ -9,7 +9,7 @@
 # compiler-shaped AST. Source production expands the item macro, applies the
 # returned compiler fragment, and later code calls the generated function.
 defmacro make_answer() do
-  {:def, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
+  {:def, [], [{:answer, [], []}, [{:do, 42}]]}
 end
 
 make_answer()

@@ -1031,7 +1031,7 @@ fn standalone_drive_owns_the_prefix_before_a_nested_root_product_session() {
 
     compiler.submit_code(CodeSubmission {
         name: Some("unrelated_before_nested_product.fz".to_string()),
-        text: "defmacro define_answer() do\n  {:def, %{}, [{:answer, %{}, []}, [{:do, 9}]]}\nend\ndefine_answer()\n"
+        text: "defmacro define_answer() do\n  {:def, [], [{:answer, [], []}, [{:do, 9}]]}\nend\ndefine_answer()\n"
             .to_string(),
     });
     let before_drive = compiler.world().work_start_tally();

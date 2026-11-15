@@ -2700,7 +2700,10 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // 1524 -> 1494 settled products, all changed: `String.Chars`' binary impl no longer
         // asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers
         // need no second `bitstring` activation.
-        (1494, 1494, 1494, 0, 8, 0),
+        // 1494 -> 1500 settled products, all changed: quoted metadata is a keyword list, so the
+        // `panic` calls `Kernel.raise/1` and `Kernel.defexception/1` quote build a tuple inside a
+        // list where they built a map, and each of those values is asked for its transport once.
+        (1500, 1500, 1500, 0, 8, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(

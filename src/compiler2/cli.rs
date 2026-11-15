@@ -386,7 +386,7 @@ fn plural_count(count: usize, singular: &str, plural: &str) -> String {
 /// `Fz.Compiler.define` path every other definition takes.
 const TEST_MACRO_PRELUDE_SOURCE: &str = "\
 defmacro test(name_atom, [do: body]) do
-  source = {:def, %{}, [{name_atom, %{}, []}, [{:do, body}]]}
+  source = {:def, [], [{name_atom, [], []}, [{:do, body}]]}
   quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
 end
 ";

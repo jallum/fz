@@ -2,7 +2,7 @@
 # purpose: an item macro's spliced fn belongs to the module it was spliced into
 #---
 defmacro make_const(name, value) do
-  {:def, %{}, [{name, %{}, []}, [{:do, value}]]}
+  {:def, [], [{name, [], []}, [{:do, value}]]}
 end
 
 defmodule Constants do

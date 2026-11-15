@@ -2726,7 +2726,7 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
     // compiler-shaped AST literal fixtures2/00124 uses for `{:def, ...}`),
     // and `quoted_surface::build_form` recognizes the `:defstruct` head the
     // same way it would from source. When that macro's body writes the
-    // fields as a literal (no `__fz_span__` key in its `meta` map), every
+    // fields as a literal (no `__fz_span__` entry in its `meta` list), every
     // expansion gets `Span::DUMMY` (the validated AST read's no-span result)
     // -- so invoking the SAME macro twice in one module
     // produces two `StructDef`s that are not just same-span but
@@ -2744,7 +2744,7 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
         Some("struct_macro_emitted_duplicate_defstruct.fz".to_string()),
         concat!(
             "defmacro make_struct(fields) do\n",
-            "  {:defstruct, %{}, [fields]}\n",
+            "  {:defstruct, [], [fields]}\n",
             "end\n",
             "\n",
             "defmodule Point do\n",

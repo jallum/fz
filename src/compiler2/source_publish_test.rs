@@ -372,7 +372,7 @@ fn source_publication_expands_item_macros_as_scope_fragments() {
         Some("item-macro.fz".to_string()),
         r#"
 defmacro make_answer() do
-  source = {:def, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
+  source = {:def, [], [{:answer, [], []}, [{:do, 42}]]}
 
   quote do
     Fz.Compiler.define(
@@ -434,7 +434,7 @@ fn source_publication_accepts_raw_compiler_fragments_from_item_macros() {
         Some("item-macro-raw-fragment.fz".to_string()),
         r#"
 defmacro make_answer() do
-  {:def, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
+  {:def, [], [{:answer, [], []}, [{:do, 42}]]}
 end
 
 make_answer()

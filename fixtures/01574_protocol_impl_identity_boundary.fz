@@ -12,7 +12,7 @@ defmacro self_val_after_display_edit(x) do
 end
 
 defmacro self_struct(x) do
-  {:"%", %{}, [__CALLER__.module, {:"%{}", %{}, [{:x, x}]}]}
+  {:"%", [], [__CALLER__.module, {:"%{}", [], [{:x, x}]}]}
 end
 
 defmodule Decoy do

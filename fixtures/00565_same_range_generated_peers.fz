@@ -2,7 +2,7 @@
 # purpose: two macro-generated lambdas minted from the same source range order independently of function allocation
 #---
 defmacro deferred(x) do
-  {:fn, %{}, [{:"->", %{}, [[], x]}]}
+  {:fn, [], [{:"->", [], [[], x]}]}
 end
 def main() do
   left = deferred(20)

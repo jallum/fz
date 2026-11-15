@@ -369,7 +369,33 @@ impl QuotedSourceBuilder {
         if let Some(ordinal) = meta.hygiene_ordinal {
             entries.push((self.atom(META_HYGIENE_KEY), self.int(i64::from(ordinal))));
         }
-        self.map(&entries)
+        self.keyword_list(&entries)
+    }
+
+    /// A keyword list: `[{key, value}, …]` in the given order.
+    pub fn keyword_list(&self, entries: &[(AnyValueRef, AnyValueRef)]) -> Result<AnyValueRef, QuotedSourceError> {
+        let pairs = entries
+            .iter()
+            .map(|(key, value)| self.tuple(&[*key, *value]))
+            .collect::<Result<SmallVec<[AnyValueRef; META_ENTRY_CAPACITY]>, _>>()?;
+        self.list(&pairs)
+    }
+
+    /// `Keyword.put`: `meta` without any `key` entry, with `{key, value}`
+    /// in front.
+    pub(crate) fn meta_put(
+        &self,
+        meta: &QuotedSourceCursor,
+        key: &str,
+        value: AnyValueRef,
+    ) -> Result<AnyValueRef, QuotedSourceError> {
+        let mut entries = vec![(self.atom(key), value)];
+        for (entry_key, entry_value) in meta.meta_entries()? {
+            if entry_key.atom_name()? != key {
+                entries.push((entry_key.root(), entry_value.root()));
+            }
+        }
+        self.keyword_list(&entries)
     }
 
     pub fn ast_node(
@@ -633,10 +659,7 @@ impl QuotedSourceCursor {
     }
 
     pub(crate) fn module_denotation(&self) -> Result<Option<ModuleDenotation>, QuotedSourceError> {
-        if self.root.tag() != ValueKind::MAP {
-            return Ok(None);
-        }
-        let Some(value) = self.map_value(META_MODULE_KEY)? else {
+        let Some(value) = self.meta_value(META_MODULE_KEY)? else {
             return Ok(None);
         };
         let fields = value.tuple_items()?;
@@ -664,10 +687,7 @@ impl QuotedSourceCursor {
     /// coordinate is only meaningful in the world that stamped it; the world
     /// is asked to confirm it before anything is lowered against it.
     pub(crate) fn bound_callable(&self) -> Result<Option<FunctionId>, QuotedSourceError> {
-        if self.root.tag() != ValueKind::MAP {
-            return Ok(None);
-        }
-        let Some(value) = self.map_value(META_BOUND_CALLABLE_KEY)? else {
+        let Some(value) = self.meta_value(META_BOUND_CALLABLE_KEY)? else {
             return Ok(None);
         };
         let coordinate = u32::try_from(value.int_value()?).map_err(|_| {
@@ -679,10 +699,7 @@ impl QuotedSourceCursor {
     /// The expansion ordinal stamped on a macro- or sugar-generated
     /// variable's meta. `None` on a variable a user wrote themselves.
     pub(crate) fn hygiene_ordinal(&self) -> Result<Option<u32>, QuotedSourceError> {
-        if self.root.tag() != ValueKind::MAP {
-            return Ok(None);
-        }
-        let Some(value) = self.map_value(META_HYGIENE_KEY)? else {
+        let Some(value) = self.meta_value(META_HYGIENE_KEY)? else {
             return Ok(None);
         };
         let ordinal =
@@ -853,6 +870,36 @@ impl QuotedSourceCursor {
         )
     }
 
+    /// Every `{key, value}` entry of a metadata keyword list, in list order.
+    /// Metadata of any other shape is refused.
+    pub(crate) fn meta_entries(&self) -> Result<Vec<(Self, Self)>, QuotedSourceError> {
+        if self.root.tag() != ValueKind::LIST {
+            return Err(QuotedSourceError::new("quoted metadata must be a keyword list"));
+        }
+        self.list_iter()
+            .map(|entry| {
+                let entry = entry?;
+                if entry.root.tag() != ValueKind::STRUCT {
+                    return Err(QuotedSourceError::new("quoted metadata must be a keyword list"));
+                }
+                match entry.tuple_items()?.as_slice() {
+                    [key, value] if key.root.tag() == ValueKind::ATOM => Ok((key.clone(), value.clone())),
+                    _ => Err(QuotedSourceError::new("quoted metadata must be a keyword list")),
+                }
+            })
+            .collect()
+    }
+
+    /// `Keyword.get` on metadata: the value of the first `key_name` entry.
+    pub(crate) fn meta_value(&self, key_name: &str) -> Result<Option<Self>, QuotedSourceError> {
+        for (key, value) in self.meta_entries()? {
+            if key.atom_name()? == key_name {
+                return Ok(Some(value));
+            }
+        }
+        Ok(None)
+    }
+
     /// The value under the atom key `key_name`. Entries are read in map order
     /// and reading stops at the match, so a lookup builds no entry list.
     pub fn map_value(&self, key_name: &str) -> Result<Option<Self>, QuotedSourceError> {
@@ -908,7 +955,7 @@ impl QuotedSourceCursor {
 }
 
 fn span_from_meta(meta: &QuotedSourceCursor, sources: &SourceMap) -> Result<Option<Span>, QuotedSourceError> {
-    let Some(span_map) = meta.map_value(META_SPAN_KEY)? else {
+    let Some(span_map) = meta.meta_value(META_SPAN_KEY)? else {
         return Ok(None);
     };
     let read_u32 = |key| -> Result<u32, QuotedSourceError> {
@@ -978,6 +1025,8 @@ fn list_eq(
     let mut left = a;
     let mut right = b;
     loop {
+        left = past_span_entries(pa, left)?;
+        right = past_span_entries(pb, right)?;
         let (left_empty, right_empty) = (left.is_empty_list(), right.is_empty_list());
         if left_empty || right_empty {
             return Ok(left_empty == right_empty);
@@ -992,25 +1041,40 @@ fn list_eq(
     }
 }
 
-/// Map entries minus the non-semantic metadata keys (span + namespace-id).
-/// The map's order includes metadata inside composite keys. Erasing that
-/// metadata can change order, so callers match the projected content.
-fn included_map_entries(
-    proc: &Process,
-    value: AnyValueRef,
-) -> Result<Vec<(AnyValueRef, AnyValueRef)>, QuotedSourceError> {
-    let addr = value.map_addr().map_err(QuotedSourceError::from)?;
-    let mut entries = Vec::new();
-    for (key_ref, value_ref) in unsafe { map_entries_refs(addr) } {
-        if key_ref.tag() == ValueKind::ATOM {
-            let atom_name = render_atom_name(proc, key_ref.load_atom().map_err(QuotedSourceError::from)? as u32)?;
-            if atom_name == META_SPAN_KEY {
-                continue;
-            }
+/// The list from its first element that is not a `{:__fz_span__, _}`
+/// metadata entry. A span is provenance, not meaning, so equality skips it.
+fn past_span_entries(proc: &Process, mut list: AnyValueRef) -> Result<AnyValueRef, QuotedSourceError> {
+    while !list.is_empty_list() {
+        let head = proc.heap.read_list_head_ref(list).map_err(QuotedSourceError::from)?;
+        if !is_span_entry(proc, head)? {
+            break;
         }
-        entries.push((key_ref, value_ref));
+        list = proc.heap.read_list_tail_ref(list).map_err(QuotedSourceError::from)?;
     }
-    Ok(entries)
+    Ok(list)
+}
+
+fn is_span_entry(proc: &Process, value: AnyValueRef) -> Result<bool, QuotedSourceError> {
+    if value.tag() != ValueKind::STRUCT {
+        return Ok(false);
+    }
+    let layout = struct_layout(proc, value)?;
+    if layout.identity != fz_runtime::heap::SchemaIdentity::Tuple(2) {
+        return Ok(false);
+    }
+    let key = proc
+        .heap
+        .read_struct_field_ref(value, layout.offsets[0])
+        .map_err(QuotedSourceError::from)?;
+    is_atom_named(proc, key, META_SPAN_KEY)
+}
+
+/// A map's entries, in its own order. That order includes the spans inside
+/// composite keys, and erasing them can change it, so callers match the
+/// span-erased content.
+fn map_entries_of(value: AnyValueRef) -> Result<Vec<(AnyValueRef, AnyValueRef)>, QuotedSourceError> {
+    let addr = value.map_addr().map_err(QuotedSourceError::from)?;
+    Ok(unsafe { map_entries_refs(addr) })
 }
 
 fn map_eq(
@@ -1020,8 +1084,8 @@ fn map_eq(
     b: AnyValueRef,
     horizon: Horizon,
 ) -> Result<bool, QuotedSourceError> {
-    let left = included_map_entries(pa, a)?;
-    let mut right = included_map_entries(pb, b)?;
+    let left = map_entries_of(a)?;
+    let mut right = map_entries_of(b)?;
     if left.len() != right.len() {
         return Ok(false);
     }

@@ -89,8 +89,8 @@ fn stamp_after_rewriting(text: &str) -> Option<String> {
     let rewritten_node = call.cursor().ast_node(&sources).expect("node").expect("call");
     rewritten_node
         .meta
-        .map_value(super::super::source::META_FROM_OPERATOR_KEY)
-        .expect("meta is a map")
+        .meta_value(super::super::source::META_FROM_OPERATOR_KEY)
+        .expect("meta is a keyword list")
         .map(|stamp| stamp.atom_name().expect("the stamp is an atom").to_string())
 }
 
