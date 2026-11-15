@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-t93.5"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-t93.7"
   ],
@@ -16,5 +14,5 @@
   "status": "closed",
   "title": "Transport shapes are engine derivations",
   "type": "task",
-  "updated_at": "2026-11-15T03:39:29Z"
+  "updated_at": "2026-11-15T03:39:42Z"
 }
