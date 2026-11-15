@@ -23,11 +23,15 @@
     {
       "text": "Walkthrough notes 2 (page is version 2):\n- Probe (#585 base, release): loop/item over a 1,048,576-byte binary with v returning {:ok, 1, r} | {:error, b} allocates 1,048,576 tuples (struct_allocs), also when both consumer clauses destructure. A two-shape tuple return is boxed today, so its rest must be whole: one stub per token. One-shape returns ({acc, b} from digits) travel as fields.\n- Layout hook: layout_from_demand (jobs/transport.rs ~2581) matches on ShapeDemand; ShapeDescr has Nothing | Lane | Tuple | Callable; a Cursor variant is two lanes whose boxing is a suffix binary, not a tuple. ShapeDescr::Tuple is handled in jobs/native.rs, jobs/transport.rs, canon.rs, ir_interp/backend.rs (16 sites in native+interp).\n- Dispatch hook: lower_bitstring_region (jobs/native.rs ~3764) reads BitstringBitLen(subject) and starts pos at Const 0; with a cursor subject it starts at the position lane.\n- Per input line of h32000 (first 4000 lines): 418 bytes, 30.4 strings (270 bytes), 7.9 numbers, 27.3 values, 6.05 objects, 2.06 arrays. Predicted stubs per line: ~560 today -\u003e ~140 (4 per string: returned rest, run slice, two byte_size in run_join) -\u003e ~80 with byte_size answered from the cursor.\n- Join rule proposed: Matched join Whole = Matched (whole made at the use; pos 0 gives the source); Matched join TupleFields = Whole. Awaiting the user's decision.",
       "timestamp": "2026-11-15T01:08:32Z"
+    },
+    {
+      "text": "Experiment E-count (running; predictions written before the data): execution counters on every site that builds a binary field through the runtime, in the built distiller on 32,000 lines, split rest / non-rest and by function.\n Q1: rest reads are 400-450 per input line (418 bytes per line; one rest per byte matched), non-rest binary reads about 30-60 per line.\n Q2: under the version 1 rule (any whole use cancels the cursor) the rests that go are only those in functions with no whole use of the parameter (digits, fraction_digits, exponent_digits, skip_ws): under 10% of executed rest reads.\n Q3: under the version 2 rule (whole made at the use) at least 85% of executed rest reads go: everything in string/3's plain-byte clause and the number loops; what stays is about one per token.\n Q4: string/3's plain-byte clause alone is over half of all executed rest reads.\nIf Q2 is wrong (v1 already removes most), the simpler absorbing rule is enough and version 2's trade-off is not needed.",
+      "timestamp": "2026-11-15T01:30:14Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Proposal: a rest view of a binary costs the collector nothing when it dies",
   "type": "task",
-  "updated_at": "2026-11-15T01:08:32Z"
+  "updated_at": "2026-11-15T01:30:14Z"
 }
