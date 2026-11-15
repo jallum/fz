@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-t93.20"
+  ],
   "blocks": [],
   "created": "2026-11-15T13:28:30Z",
   "description": "Step of fz-t93, after fz-t93.20 (T1). Page: /Users/j5n/Workspace/fz-t93.20.html (https://claude.ai/artifact/H1Xvm68Ef53dVDH2ThFhiC), section T2. Research: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_20/e2/report.md.\n\nFinding (develop d032c7368, distiller): the drain re-certifies the same cone every round. Across the 6 large certifications, 19.0k of 97.8k certified outputs were first-time; certifications 2-5 each certified ~16.4k outputs of which 4-156 were new and 0-4 had moved revision. Cone facts were certified 24,893 times for 7,306 distinct facts. Mechanism: a certification wakes a few waiters (24 in the run); a woken waiter dirties its claims, an unquiet wave flips its whole cycle (~59k pops), and the next drain has no memory of the certificate.\n\nDesign to probe: the certificate is an object; a new read entering the cone or a publisher in it moving revokes it, and re-granting costs the delta. Constraints: fz-229 (the cone is dynamic; static-SCC condensation is unsound), fz-afu.15 S1-S5 (a woken waiter still dirties its claims before it runs; retention may skip only the repeated walk and flips). Rough research bound 4-6% of the run, unproven. Paper first: predictions before probes. Bar: byte-identical output, wakes unchanged, pin falls lowered, rises to the user.",

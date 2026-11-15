@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-t93.22"
+  ],
   "created": "2026-11-15T03:39:12Z",
   "description": "Step of fz-t93 (plan: /Users/j5n/Workspace/fz-next.html, E2). Drain arbitration's 7 passes cost 1.26G, 8% of the distiller run (develop c7edccd4a, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_6/round5.md). Buys: up to 8% instructions; how much is recoverable is unknown. Paper first: name which pass decides what and which passes re-ask a question whose answer did not change; predictions before any probe.",
   "id": "fz-t93.20",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A drain certifies each publisher once, and a readiness change nobody waits on skips the heap",
   "type": "task",
-  "updated_at": "2026-11-15T13:28:29Z"
+  "updated_at": "2026-11-15T13:28:30Z"
 }
