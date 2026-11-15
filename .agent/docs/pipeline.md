@@ -1179,6 +1179,17 @@ Cargo or scan dependency archives. `FZ_AOT_RUNTIME_STATICLIB` may name an
 absolute, existing prebuilt archive for packaging outside that build tree. The
 caller owns target/profile ABI compatibility for an override.
 
+Every JIT module, the native backend's (`JitBackend::new`) and the
+interpreter's variadic trampolines alike, comes from `jit_builder()`
+(`src/compiler2/native_codegen/clif.rs`). It places the module's code and data
+inside one reservation of `JIT_ARENA_BYTES` (2 GiB) through cranelift's
+`ArenaMemoryProvider`. JIT code addresses its own data with a signed 32-bit
+pc-relative distance, so everything inside one such span is in reach. The system
+allocator, left to place each function and data object on its own, puts a
+large function gigabytes away from its data. The reservation is address space
+only; pages are committed as the module writes them. A module's JIT memory is
+never freed.
+
 | Native-codegen question | Published answer |
 | --- | --- |
 | lowered module | `NativeProgram.module` |

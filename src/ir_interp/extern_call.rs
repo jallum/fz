@@ -1,13 +1,13 @@
 use super::*;
 use crate::compiler2::LoweredExtern;
-use crate::compiler2::native_codegen::{ExternLane, emit_fn_body, emit_variadic_c_call, host_isa};
+use crate::compiler2::native_codegen::{ExternLane, emit_fn_body, emit_variadic_c_call, jit_builder};
 use crate::dispatch_matrix::pattern::GuardExtern;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{Linkage, Module, default_libcall_names};
+use cranelift_jit::JITModule;
+use cranelift_module::{Linkage, Module};
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::symbol_lookup::fz_extern_symbol_addr;
 use std::ffi::CString;
@@ -289,9 +289,8 @@ pub(super) struct VariadicTrampolines {
 
 impl VariadicTrampolines {
     pub(super) fn new() -> Self {
-        let builder = JITBuilder::with_isa(host_isa(), default_libcall_names());
         Self {
-            module: JITModule::new(builder),
+            module: JITModule::new(jit_builder()),
             fbctx: FunctionBuilderContext::new(),
             generated: HashMap::default(),
         }
