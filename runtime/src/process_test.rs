@@ -402,3 +402,55 @@ fn collect_forwards_a_delivered_handler() {
     assert_eq!(list_head(captured_list(moved)), 21);
     assert_eq!(stats.root_heap_edges, 1, "the delivered handler is the only root");
 }
+
+/// A thin callable is one object: asking the node for the same code under the
+/// same header twice returns the same word, and a different code word is a
+/// different object.
+#[test]
+fn a_node_keeps_one_static_closure_per_header_and_code_word() {
+    let node = Node::empty();
+    let denotation = ClosureDenotationId::user(0);
+
+    let first = node.static_closure(denotation, 1, 7);
+    assert_eq!(first.raw_word(), node.static_closure(denotation, 1, 7).raw_word());
+    assert_ne!(first.raw_word(), node.static_closure(denotation, 1, 8).raw_word());
+    assert_ne!(first.raw_word(), node.static_closure(denotation, 2, 7).raw_word());
+}
+
+/// The static closure reads exactly as a heap closure with no captures does:
+/// kind, arity, zero captures, its code word, 16-aligned, and a literal ref
+/// so the collector and deep copy treat it as read-only program data.
+#[test]
+fn a_static_closure_reads_as_a_literal_closure_with_no_captures() {
+    let node = Node::empty();
+    let word = node.static_closure(ClosureDenotationId::user(0), 3, 42);
+
+    assert!(word.is_literal());
+    assert_eq!(word.tag(), ValueKind::CLOSURE);
+    let addr = word.storage_addr();
+    assert_eq!(addr as usize % 16, 0);
+    unsafe {
+        assert_eq!(crate::any_value::closure_arity(addr), 3);
+        assert_eq!(crate::any_value::closure_captured_count(addr), 0);
+        assert_eq!(crate::any_value::closure_fn_ptr(addr), 42);
+    }
+}
+
+/// A collection leaves a literal closure where it is, and a deep copy shares
+/// it instead of copying: every holder sees the one object.
+#[test]
+fn a_collection_leaves_a_static_closure_in_place_and_a_deep_copy_shares_it() {
+    let node = Rc::new(Node::empty());
+    let word = node.static_closure(ClosureDenotationId::user(0), 0, 9);
+    let mut process = Process::with_node(Rc::clone(&node), Rc::new(RefCell::new(SchemaRegistry::new())), 1, 1000);
+
+    let mut roots = [word];
+    process.heap.collect(&mut roots);
+    assert_eq!(roots[0].raw_word(), word.raw_word(), "a collection does not move it");
+
+    let mut receiver = Process::with_node(node, Rc::new(RefCell::new(SchemaRegistry::new())), 2, 1000);
+    let view = process.heap.view();
+    let mut forwarding = Default::default();
+    let copied = crate::heap::deep_copy_any_value_ref(word, &view, &mut receiver.heap, &mut forwarding);
+    assert_eq!(copied.raw_word(), word.raw_word(), "a send shares it");
+}

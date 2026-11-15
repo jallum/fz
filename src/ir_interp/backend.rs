@@ -3929,12 +3929,11 @@ fn run_pending_dtor<T: Telemetry + ?Sized>(
 ) -> Result<(), String> {
     let closure_ref = AnyValueRef::from_raw_word(closure_bits)
         .map_err(|err| format!("backend dtor drain: invalid closure ref {closure_bits:#x}: {err:?}"))?;
-    let closure = RuntimeAnyValue::heap_ptr(
-        closure_ref
-            .closure_addr()
-            .map_err(|err| format!("backend dtor drain: ref is not a closure: {err:?}"))?,
-        ValueKind::CLOSURE,
-    );
+    closure_ref
+        .closure_addr()
+        .map_err(|err| format!("backend dtor drain: ref is not a closure: {err:?}"))?;
+    let closure = RuntimeAnyValue::from_ref(closure_ref)
+        .map_err(|err| format!("backend dtor drain: invalid closure ref: {err:?}"))?;
     let (fn_id, captures) = unpack_pending_dtor_closure(closure)?;
     let payload = interp_value_from_ref_word(payload_ref, "backend dtor drain payload")?;
     let (target, args) =

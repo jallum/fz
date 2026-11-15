@@ -481,7 +481,11 @@ A thin function reference (a `MakeFnRef`, a function value with no captures) is
 the same kind of object: one read-only data object per zero-capture callable
 boundary (`fz_static_closure_<boundary id>`), emitted once, whose code pointer is
 the boundary's function. Every process of the program, on the JIT and under AOT,
-holds the same address. The interpreter has no such objects.
+holds the same address. The interpreter's equivalent is `Node::static_closure`:
+one 16-byte object per (denotation, arity, `FnId`), owned by the `Node` for the
+run, laid out as a heap closure with no captures (header word, `FnId` as the
+code word), referenced through a literal ref. Materializing the same function
+twice answers the same word.
 
 These objects are not in any process heap. The collector and deep copy
 recognize them by the literal bit every reference to one carries (see

@@ -5,7 +5,6 @@ use crate::runtime_type_predicate::RuntimeTypePredicate;
 use fz_runtime::any_value::debug::render_value;
 use fz_runtime::any_value::{
     AnyValue as RuntimeAnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
-    closure_addr_from_tagged,
 };
 use fz_runtime::heap::Schema;
 use fz_runtime::ir_runtime::{
@@ -73,11 +72,9 @@ impl AnyValue {
         arity: u16,
         denotation: fz_runtime::any_value::ClosureDenotationId,
     ) -> Result<RuntimeAnyValue, String> {
-        let heap = &mut unsafe { &mut *proc }.heap;
-        let bits = heap.alloc_closure_slots(denotation, arity, 0, 0);
-        let p = closure_addr_from_tagged(bits).expect("new fn ref closure ptr");
-        unsafe { std::ptr::write(p.add(8) as *mut u64, fn_id.0 as u64) };
-        Ok(RuntimeAnyValue::heap_ptr(p, ValueKind::CLOSURE))
+        let node = &unsafe { &*proc }.node;
+        let word = node.static_closure(denotation, arity, fn_id.0 as u64);
+        Ok(RuntimeAnyValue::HeapRef(word))
     }
 
     /// The heap ref this value holds, if it holds one. A collection forwards
