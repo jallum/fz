@@ -307,6 +307,11 @@ major collection's from-space is every block (`Heap::next_generation`):
 - `blocks_after`: old blocks the heap holds once the pass finished, every block
   holding data a collection kept or a gift brought; the fresh empty tip is not
   counted.
+- `stub_visits`: off-heap stub chain links the pass followed. Every ProcBin stub
+  on a chain the pass examines is visited once by the sweep: the young chain for
+  a minor pass, the young and old chains for a major pass. A resource stub is
+  also visited once more by the destructor search. Summed by `generation`, it
+  says whether the sweep's cost lies in minors or in majors.
 
 `GcStats` carries more (object counts, root and per-container edge
 counts); `Heap::collect` and `Process::collect` return all of it to their

@@ -219,7 +219,7 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
             let stats = &collection.stats;
             write!(
                 out,
-                "\"pid\":{},\"boundary\":\"{}\",\"generation\":\"{}\",\"copied_bytes\":{},\"live_bytes\":{},\"from_space_capacity_bytes\":{},\"blocks_released\":{},\"blocks_after\":{}",
+                "\"pid\":{},\"boundary\":\"{}\",\"generation\":\"{}\",\"copied_bytes\":{},\"live_bytes\":{},\"from_space_capacity_bytes\":{},\"blocks_released\":{},\"blocks_after\":{},\"stub_visits\":{}",
                 collection.pid,
                 collection.boundary.as_str(),
                 stats.generation.as_str(),
@@ -227,7 +227,8 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
                 stats.live_bytes,
                 stats.from_space_capacity_bytes,
                 stats.blocks_released,
-                stats.blocks_after
+                stats.blocks_after,
+                stats.stub_visits
             )
             .unwrap();
         }
