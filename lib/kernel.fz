@@ -20,7 +20,7 @@ defmodule Kernel do
       `length/1`, `elem/2`, `hd/1` and `tl/1`, the numeric functions `abs/1`,
       `round/1`, `trunc/1`, `floor/1` and `ceil/1`, and the type tests `is_integer/1`,
       `is_float/1`, `is_binary/1`, `is_bitstring/1`, `is_list/1`, `is_map/1`, `is_tuple/1`,
-      `is_atom/1`, `is_boolean/1`, `is_pid/1`, `is_reference/1`, `is_nil/1`,
+      `is_atom/1`, `is_boolean/1`, `is_pid/1`, `is_reference/1`, `is_function/1`, `is_function/2`, `is_nil/1`,
       `is_struct/1` and `is_struct/2`, all of which a guard may call
     * `match?/2`, a macro answering whether a value matches a pattern
 
@@ -1619,6 +1619,44 @@ defmodule Kernel do
   @spec is_reference(any) :: boolean
   def is_reference(_ :: ref), do: true
   def is_reference(_), do: false
+
+  @doc """
+  Returns `true` when `term` is a function.
+
+  ## Examples
+
+      Kernel.is_function(fn x -> x end)
+      #=> true
+
+      Kernel.is_function(1)
+      #=> false
+
+  """
+  @spec is_function(any) :: boolean
+  def is_function(_ :: fun), do: true
+  def is_function(_), do: false
+
+  @doc """
+  Returns `true` when `term` is a function that takes `arity` arguments.
+  Raises `ArgumentError` when `arity` is not a non-negative integer, whatever
+  `term` is.
+
+  ## Examples
+
+      Kernel.is_function(fn x -> x end, 1)
+      #=> true
+
+      Kernel.is_function(fn x -> x end, 2)
+      #=> false
+
+  """
+  @spec is_function(any, any) :: boolean
+  def is_function(_, arity) when not is_integer(arity), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 2nd argument: not an integer\n")
+  def is_function(_, arity) when arity < 0, do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 2nd argument: out of range\n")
+  def is_function(term :: fun, arity), do: fz_function_arity(term) == arity
+  def is_function(_, _), do: false
+
+  extern "fz" defp fz_function_arity(fun) :: integer
 
   @doc """
   Returns `true` when `term` is `true` or `false`.

@@ -1,0 +1,30 @@
+#---
+# purpose: "outside a guard, is_function/2 checks its arity before its value, as in Elixir: an arity that is not an integer raises ArgumentError naming it as not an integer, and a negative one as out of range, whatever the value"
+# oracle: self
+# oracle.stamp: e4a4871e84235eef
+#---
+defmodule Main do
+  def attempt(f, arity) do
+    try do
+      is_function(f, arity)
+    rescue
+      e in ArgumentError -> Exception.message(e)
+    end
+  end
+
+  def main() do
+    me = self()
+    send(me, {fn -> 1 end, -1})
+    send(me, {:a, :b})
+    send(me, {fn -> 1 end, :b})
+    send(me, {:a, -1})
+    send(me, {fn -> 1 end, 0})
+    receive do {f, a} -> IO.inspect(attempt(f, a)) end
+    receive do {f, a} -> IO.inspect(attempt(f, a)) end
+    receive do {f, a} -> IO.inspect(attempt(f, a)) end
+    receive do {f, a} -> IO.inspect(attempt(f, a)) end
+    receive do {f, a} -> IO.inspect(attempt(f, a)) end
+  end
+end
+
+Main.main()

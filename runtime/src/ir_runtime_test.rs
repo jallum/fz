@@ -1370,3 +1370,24 @@ fn byte_extent_rounds_a_partial_last_byte_up() {
         assert_eq!(fz_bitstring_byte_extent(partial, 11), 0);
     });
 }
+
+#[test]
+fn a_function_reports_the_number_of_arguments_it_takes_not_counting_its_captures() {
+    with_process(|process| {
+        let process_ptr = process as *mut Process;
+        let none = process
+            .heap
+            .alloc_closure(crate::any_value::ClosureDenotationId::user(0), 0, 0, 0, 0x1234, &[]);
+        let two_with_a_capture = process.heap.alloc_closure(
+            crate::any_value::ClosureDenotationId::user(1),
+            2,
+            1,
+            0,
+            0x1234,
+            &[AnyValue::int(9)],
+        );
+
+        assert_eq!(fz_function_arity(process_ptr, none), 0);
+        assert_eq!(fz_function_arity(process_ptr, two_with_a_capture), 2);
+    });
+}

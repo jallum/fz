@@ -25,8 +25,8 @@
 use crate::any_value::debug::{Limit, render_value, render_with_limit};
 use crate::any_value::{
     AnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, ValueKind, binview_addr_from_tagged,
-    closure_addr_from_tagged, closure_captured_count, closure_denotation, closure_fn_ptr, closure_halt_kind,
-    map_addr_from_tagged, object_size, struct_is_shared, struct_schema_id,
+    closure_addr_from_tagged, closure_arity, closure_captured_count, closure_denotation, closure_fn_ptr,
+    closure_halt_kind, map_addr_from_tagged, object_size, struct_is_shared, struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -1848,6 +1848,13 @@ fn tuple_arity_of(process: *mut Process, value: AnyValueRef) -> Option<usize> {
         crate::heap::SchemaIdentity::Tuple(arity) => Some(arity),
         _ => None,
     }
+}
+
+/// The number of arguments a function takes. Its captures are not arguments.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_function_arity(_process: *mut Process, function_ref_word: u64) -> i64 {
+    let addr = closure_addr_from_tagged(function_ref_word).expect("fz_function_arity: a function");
+    i64::from(unsafe { closure_arity(addr) })
 }
 
 /// The number of fields of a tuple; -1 for any other value, so a caller checks

@@ -128,7 +128,10 @@ entry and the structural arm are proven concordant by
 `a_structural_map_type_resolves_to_the_same_ty_as_a_hand_built_exact_map`.
 `tuple` is the nullary name for the tuple top, every tuple of every arity
 (`Types::tuple_top`); `tuple(T)` is an arity error, so `{T, U}` is the only
-fixed-arity spelling.
+fixed-arity spelling. `fun` is the nullary name for the function top, every
+function of every arity (`Types::fun_top`), and `function` is the same type, as
+in Elixir's typespecs; `fun(T)` is an arity error, so an arrow `(T) -> U` is
+the only spelling of a signature.
 
 ## Where it lives
 

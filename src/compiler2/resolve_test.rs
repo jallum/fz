@@ -332,6 +332,43 @@ fn bare_tuple_resolves_to_the_tuple_top() {
     assert!(t.is_subtype(&pair, &ty), "`{{T, U}}` is a tuple");
 }
 
+/// `fun` is the top of the function axis, every function of every arity, and
+/// `function` is the same type, as in Elixir's typespecs.
+#[test]
+fn fun_and_function_resolve_to_the_function_top() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+
+    let fun = resolve(&tel, &mut world, "fun").expect("`fun` is a builtin constructor name");
+    let function = resolve(&tel, &mut world, "function").expect("`function` is a builtin constructor name");
+
+    let t = world.types_mut();
+    assert_eq!(fun, t.fun_top());
+    assert_eq!(function, fun, "`function` is `fun`");
+    let unary = {
+        let any = t.any();
+        t.arrow(&[any], any)
+    };
+    let binary = {
+        let any = t.any();
+        t.arrow(&[any, any], any)
+    };
+    assert!(t.is_subtype(&unary, &fun), "a one-argument function is a function");
+    assert!(t.is_subtype(&binary, &fun), "a two-argument function is a function");
+}
+
+/// An arrow is the only spelling of a function's signature; `fun` takes no
+/// arguments, as `tuple` does.
+#[test]
+fn applied_fun_reports_the_uniform_arity_error() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+
+    let error = resolve(&tel, &mut world, "fun(any)").expect_err("nullary `fun` applied should fail");
+
+    assert_eq!(error.msg, "expected 0 type argument(s), got 1 `fun`");
+}
+
 /// `{T, U}` is the only fixed-arity spelling; `tuple` takes no arguments, as `map` does.
 #[test]
 fn applied_tuple_reports_the_uniform_arity_error() {

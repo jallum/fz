@@ -91,9 +91,10 @@ struct ConstructorEntry {
 }
 
 /// The single authoritative source for every builtin type-constructor name:
-/// the fifteen nullary scalars (including `map` and `tuple`, the
-/// fully-unconstrained "any map" and "any tuple" types — the named
-/// counterparts to the structural `%{k => v}` and `{T, U}` syntax) plus the
+/// the seventeen nullary scalars (including `map`, `tuple` and `fun`, the
+/// fully-unconstrained "any map", "any tuple" and "any function" types — the
+/// named counterparts to the structural `%{k => v}`, `{T, U}` and `(T) -> U`
+/// syntax — and `function`, which is `fun`, as in Elixir) plus the
 /// two parametric constructors, `list` (0 or 1 type argument —
 /// `list()`/`list(any)` and `[T]` mint the identical `Ty`) and `resource`
 /// (0 or 1 type argument, defaulting the payload to `any`).
@@ -118,6 +119,8 @@ const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "resource", arity: Arity::Range(0, 1), build: |t, a| { let inner = a.first().copied().unwrap_or_else(|| t.any()); t.resource(inner) } },
     ConstructorEntry { name: "map",      arity: Arity::Fixed(0), build: |t, _| t.map_top() },
     ConstructorEntry { name: "tuple",    arity: Arity::Fixed(0), build: |t, _| t.tuple_top() },
+    ConstructorEntry { name: "fun",      arity: Arity::Fixed(0), build: |t, _| t.fun_top() },
+    ConstructorEntry { name: "function", arity: Arity::Fixed(0), build: |t, _| t.fun_top() },
 ];
 
 fn find_constructor(name: &str) -> Option<&'static ConstructorEntry> {
