@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-nhb.4"
+  ],
   "created": "2026-11-15T20:14:28Z",
   "description": "## Why\n`:erlang.error(:boom)` fails to resolve (resolve/unknown-import: module :erlang does not export error/1). Elixir code raises a plain value with it, and fz's panic/1 already has its semantics (ErlangError when rescued, the raw value under catch :error). Four oracle fixtures can only become their own oracle once it exists: 00705, 00819, 00846, 00847.\n\n## What changes\n:erlang.error/1 is exported and behaves exactly as panic/1 on every path. Whether panic/1 then remains is not decided here.\n\n## Signal\nThe four fixtures, rewritten to call :erlang.error, print their goldens on run, interp and build.",
   "id": "fz-nhb.3",

@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-nhb.3"
+  ],
   "blocks": [],
   "created": "2026-11-15T20:14:28Z",
   "description": "## Why\nEach oracle fixture is two programs, the .fz and a hand translation .oracle.exs; nothing checks they mean the same. Most fixtures are already valid Elixir modulo habits (bare def main, dbg, panic).\n\n## What changes\n- fixture-metadata + tests/fixture_matrix.rs: `oracle: self` runs `elixir \u003cfixture\u003e \u003cargs\u003e` on the fixture. The stamp hashes the fixture source with its oracle.stamp line removed (one stripping function beside with_oracle_stamp).\n- Abort oracle: Elixir exits 1, its stderr contains expected.stderr, its stdout equals expected.txt. fz abort paths compare stdout with expected.txt for oracle fixtures. abort_stderr_goldens_are_in_oracle_output is deleted; abort goldens lose the banner line via ORACLE=regen.\n- 434 fixtures (fixtures/ + fixtures2/behavior/) rewritten: bare def/defp/defmacro/@attr blocks wrapped in defmodule Main (+ Main.main() when there is a main), dbg( -\u003e IO.inspect(, panic( -\u003e :erlang.error(, header oracle: self; their .oracle.exs deleted. 35 twins remain, each for a named fz-only feature.\n- Unit tests that read converted fixtures by path look up Main-qualified names; two falling pins are lowered (00562 inventory 48-\u003e47, stream activations 136-\u003e135); diagnostics goldens of 00707/00838 get the moved line.\n- .agent/docs/fixtures.md oracle section rewritten.\n\n## Signal\n.oracle.exs count 469 -\u003e 35; matrix trial names/counts unchanged; ORACLE=check passes; default run starts Elixir 0 times; no pin or golden rises.",
