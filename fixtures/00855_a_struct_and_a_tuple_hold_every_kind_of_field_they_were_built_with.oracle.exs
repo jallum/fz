@@ -1,5 +1,5 @@
 defmodule Sample do
-  defstruct [:count, :ratio, :unit, :big, :none, :items, :empty, :label, :inner, :pair, :table, :fixed, :other]
+  defstruct [:count, :ratio, :unit, :big, :none, :items, :empty, :label, :inner, :pair, :step, :table, :fixed, :other]
 end
 
 defmodule Inner do
@@ -20,7 +20,8 @@ defmodule Oracle do
       empty: [],
       label: "n" <> Integer.to_string(n),
       inner: %Inner{depth: n + 100},
-      pair: {n, :pair, fn x -> x + n end},
+      pair: {n, :pair},
+      step: fn x -> x + n end,
       table: %{n => "value"},
       fixed: {:always, "same", [1, 2]},
       other: opaque(n * 7)
@@ -48,9 +49,8 @@ defmodule Oracle do
     IO.inspect(s.empty)
     IO.inspect(s.label)
     IO.inspect(s.inner)
-    {first, tag, step} = s.pair
-    IO.inspect({first, tag})
-    IO.inspect(step.(1000))
+    IO.inspect(s.pair)
+    IO.inspect(s.step.(1000))
     IO.inspect(s.table)
     IO.inspect(s.fixed)
     IO.inspect(s.other)
