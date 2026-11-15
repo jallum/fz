@@ -19,9 +19,9 @@ use crate::any_value::{
     closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot, closure_capture_set,
     closure_capture_value, closure_header_word, closure_header_write, closure_size_for_count, heap_object_word,
     list_addr_from_tagged, map_addr_from_tagged, map_count, map_destination_header_word, map_destination_state,
-    map_entry, map_header_word, map_key, map_key_in_arrays, map_keys_ptr, map_pack_tag, map_size_for_count,
-    map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot, struct_field_raw_slot, struct_header_word,
-    struct_schema_id, struct_size_for_payload,
+    map_entry, map_header_word, map_key, map_key_in_arrays, map_key_kind, map_keys_ptr, map_pack_tag,
+    map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_value_kind, map_values_ptr, struct_field_kind_slot,
+    struct_field_raw_slot, struct_header_word, struct_schema_id, struct_size_for_payload,
 };
 use crate::procbin::{
     DeadResource, SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep, mso_unreached_closures,
@@ -31,7 +31,7 @@ use crate::term::{NumericMode, TermComparator};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::mem::size_of;
-use std::ptr::{copy_nonoverlapping, read, write, write_bytes};
+use std::ptr::{copy, copy_nonoverlapping, read, write, write_bytes};
 use std::rc::Rc;
 use std::slice::from_raw_parts;
 
@@ -655,15 +655,16 @@ impl Heap {
             MapLayout::Entries(dest) => dest,
             MapLayout::Trie(root) => return Some(map_bits_ref(heap_object_word(root, ValueKind::MAP))),
         };
-        let (_, filled, kind) = unsafe { map_destination_state(dest) };
+        let (capacity, filled, kind) = unsafe { map_destination_state(dest) };
         match kind {
-            MapDestinationKind::Build => {
+            MapDestinationKind::Build if filled > MAP_FLAT_MAX => {
                 let mut entries: Vec<_> = (0..filled).map(|i| unsafe { map_entry(dest, i) }).collect();
-                let count = self.normalize_map_entries(&mut entries);
-                if count > MAP_FLAT_MAX {
-                    return Some(map_bits_ref(self.alloc_bulk_map_entries(&entries[..count])));
-                }
-                self.write_ordered_map_entries(dest, count, entries.into_iter().take(count));
+                return Some(map_bits_ref(self.publish_normalized_map_entries(&mut entries)));
+            }
+            MapDestinationKind::Build => {
+                let count = self.normalize_destination_entries(dest, capacity, filled);
+                self.compact_destination_entries(dest, capacity, count);
+                self.publish_entries_in_place(dest, count);
             }
             MapDestinationKind::Update if filled > MAP_FLAT_MAX => {
                 let entries: Vec<_> = (0..filled).map(|i| unsafe { map_entry(dest, i) }).collect();
@@ -690,6 +691,57 @@ impl Heap {
         }
         self.publish_entries_in_place(dest, filled);
         entries_map_ref(dest)
+    }
+
+    /// Sort the first `filled` entries of the build destination at `dest`,
+    /// laid out for `capacity`, by strict structural key where they stand,
+    /// and merge equal keys, the last value winning. Answers how many leading
+    /// entries remain. Entries move as the words and kind tags they are
+    /// stored as; only keys are decoded, to be compared. The sort is stable,
+    /// so of equal keys the last put is the last one met.
+    fn normalize_destination_entries(&self, dest: *mut u8, capacity: usize, filled: usize) -> usize {
+        let schemas = self.schemas.borrow();
+        let comparator = TermComparator::new(&self.node, &schemas);
+        let entries = unsafe { StoredEntries::of_destination(dest, capacity) };
+        let key = |i| unsafe { entries.key(i) };
+        for i in 1..filled {
+            let moving = unsafe { entries.read(i) };
+            let moving_key = key(i);
+            let mut j = i;
+            while j > 0 && comparator.compare(key(j - 1), moving_key, NumericMode::Strict).is_gt() {
+                unsafe { entries.write(j, entries.read(j - 1)) };
+                j -= 1;
+            }
+            unsafe { entries.write(j, moving) };
+        }
+        let mut kept = 0;
+        for i in 1..filled {
+            if comparator.equal(key(i), key(kept), NumericMode::Strict) {
+                unsafe { entries.take_value(i, kept) };
+            } else {
+                kept += 1;
+                unsafe { entries.write(kept, entries.read(i)) };
+            }
+        }
+        if filled == 0 { 0 } else { kept + 1 }
+    }
+
+    /// Move the first `count` entries of the build destination at `dest`
+    /// from its `capacity` layout to a `count`-entry layout, where they
+    /// stand. Every array starts no later than it did, so each moves down.
+    fn compact_destination_entries(&mut self, dest: *mut u8, capacity: usize, count: usize) {
+        if count == capacity {
+            return;
+        }
+        unsafe {
+            write_bytes(map_tag_ptr(dest).add(count), 0, map_tag_bytes_len(count) - count);
+            copy(map_keys_ptr(dest, capacity), map_keys_ptr(dest, count), count);
+            copy(map_values_ptr(dest, capacity), map_values_ptr(dest, count), count);
+            write(
+                dest as *mut u64,
+                map_destination_header_word(count, count, MapDestinationKind::Build),
+            );
+        }
     }
 
     /// Make the first `filled` entries of the destination at `dest` the
@@ -1564,6 +1616,82 @@ impl Drop for Heap {
         }
         for block in self.young_blocks.drain(..).chain(self.old_blocks.drain(..)) {
             block.release();
+        }
+    }
+}
+
+/// One entry as it is stored: its kind tag, key word and value word.
+#[derive(Clone, Copy)]
+struct StoredEntry {
+    tag: u8,
+    key: u64,
+    value: u64,
+}
+
+/// The kind tags, keys and values of a flat map's entries, read and written
+/// as stored.
+struct StoredEntries {
+    tags: *mut u8,
+    keys: *mut u64,
+    values: *mut u64,
+}
+
+impl StoredEntries {
+    /// # Safety
+    ///
+    /// `dest` must be a map destination laid out for `capacity` entries.
+    unsafe fn of_destination(dest: *mut u8, capacity: usize) -> Self {
+        unsafe {
+            Self {
+                tags: map_tag_ptr(dest),
+                keys: map_keys_ptr(dest, capacity),
+                values: map_values_ptr(dest, capacity),
+            }
+        }
+    }
+
+    /// # Safety
+    ///
+    /// Entry `i` must be written.
+    unsafe fn key(&self, i: usize) -> AnyValue {
+        unsafe { map_key_in_arrays(self.keys, self.tags, i) }
+    }
+
+    /// # Safety
+    ///
+    /// Entry `i` must be in bounds.
+    unsafe fn read(&self, i: usize) -> StoredEntry {
+        unsafe {
+            StoredEntry {
+                tag: read(self.tags.add(i)),
+                key: read(self.keys.add(i)),
+                value: read(self.values.add(i)),
+            }
+        }
+    }
+
+    /// # Safety
+    ///
+    /// Entry `i` must be in bounds.
+    unsafe fn write(&self, i: usize, entry: StoredEntry) {
+        unsafe {
+            write(self.tags.add(i), entry.tag);
+            write(self.keys.add(i), entry.key);
+            write(self.values.add(i), entry.value);
+        }
+    }
+
+    /// Give entry `to` the value of entry `from`, keeping its key.
+    ///
+    /// # Safety
+    ///
+    /// Both entries must be in bounds.
+    unsafe fn take_value(&self, from: usize, to: usize) {
+        unsafe {
+            let from = self.read(from);
+            let tag = self.tags.add(to);
+            write(tag, map_pack_tag(map_key_kind(read(tag)), map_value_kind(from.tag)));
+            write(self.values.add(to), from.value);
         }
     }
 }

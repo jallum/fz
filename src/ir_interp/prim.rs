@@ -1,10 +1,7 @@
 use super::value::{
     AnyValue, HeapRef, interp_is_list_cons, interp_nil_value, interp_value_from_ref_word, with_value_ref,
 };
-use fz_runtime::ir_runtime::{
-    fz_list_head_ref, fz_list_tail_ref, fz_map_get_ref, fz_map_put_atom, fz_map_put_float, fz_map_put_int,
-    fz_map_put_ref,
-};
+use fz_runtime::ir_runtime::{fz_list_head_ref, fz_list_tail_ref, fz_map_get_ref};
 use fz_runtime::process::Process;
 
 pub(super) fn interp_list_cons(
@@ -24,33 +21,6 @@ pub(super) fn interp_list_cons(
         .alloc_list_cons_any(head, tail)
         .map_err(|err| format!("{context}: cannot allocate list cons: {err:?}"))?;
     Ok(AnyValue::Ref(HeapRef::new(list)?))
-}
-
-pub(super) fn interp_map_put(
-    proc: *mut Process,
-    map_bits: u64,
-    key: AnyValue,
-    value: AnyValue,
-    context: &str,
-) -> Result<u64, String> {
-    with_value_ref(proc, key, context, |key_ref| match value {
-        AnyValue::Int(value) => Ok::<u64, String>(fz_map_put_int(proc, map_bits, key_ref, value)),
-        AnyValue::Float(value) => Ok::<u64, String>(fz_map_put_float(proc, map_bits, key_ref, value)),
-        AnyValue::Opaque(kind, word) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_map_put_opaque(
-            proc,
-            map_bits,
-            key_ref,
-            word,
-            kind.tag() as u64,
-        )),
-        AnyValue::Atom(value) => Ok::<u64, String>(fz_map_put_atom(proc, map_bits, key_ref, value as u64)),
-        AnyValue::Null | AnyValue::EmptyList | AnyValue::FnRef(..) | AnyValue::Ref(_) => {
-            let value_ref = value
-                .as_ref_word(proc)
-                .map_err(|err| format!("{context}: cannot create value ref: {err}"))?;
-            Ok(fz_map_put_ref(proc, map_bits, key_ref, value_ref))
-        }
-    })?
 }
 
 pub(super) fn interp_list_head(proc: *mut Process, value: AnyValue) -> Result<AnyValue, String> {
