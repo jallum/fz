@@ -236,6 +236,12 @@ macro receive operator heads such as
 `def (left :: integer) + (right :: integer), do: left + right` without a
 definition-only operand parser.
 
+A no-parens call argument may begin with any token an expression begins with:
+`Tok::starts_expression` (`src/parser/lexer.rs`) is the one set, and a unit test
+pins it to what the prefix parser accepts. Only the tokens that are also infix
+operators read spacing: `f -1` and `f +1` are calls while `f - 1` is binary,
+and `f %Point{}` is a call while `f % 4` is the modulus.
+
 ## Special forms are ordinary calls
 
 `if`, `case`, `cond`, `with`, `receive`, `quote`, and `unquote` are plain
