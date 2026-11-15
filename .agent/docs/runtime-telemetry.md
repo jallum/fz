@@ -320,8 +320,9 @@ its baseline to its fill.
 The same file pins fixture 00910 (`interp`: the parent's park at 48 bytes;
 `run`: its park at 288 bytes) and fixture 00911 (`interp`:
 the parent's park at 0 bytes; `run`: the child's park at 288 bytes, then the
-parent collected on 21 of its 64 yields while it builds the list, five of them
-major, and once at its park mid-run, at 208 bytes). The
+parent collected on 22 of its 64 yields while it builds the list, five of them
+major; its park mid-run finds the heap under its threshold and does not
+collect). The
 run-ended equality is pinned for both fixtures on `run`, `interp` and `build`.
 `sched_core_test.rs` pins the `Collection` that `end_quantum` observes, that a
 halting process is not collected, and the exit it observes and the destructors it dispatches.

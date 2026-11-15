@@ -15845,6 +15845,63 @@ def main(), do: rebuild([1, 2])
     assert_eq!((run.attempts, run.reused), (1, 1));
 }
 
+/// A loop that carries a raw int through a yield keeps the int in a raw slot of
+/// the yield's frame, not behind a box built after the frame. The frame is the
+/// newest heap object when the loop resumes, and a raw capture names no slot of
+/// its own frame, so the resume gives it back: a loop that yields many
+/// times leaves the heap as it found it, the same objects and bytes as a loop
+/// that never yields.
+#[test]
+fn compiler2_a_yield_frame_of_raw_captures_is_given_back_when_the_loop_resumes() {
+    let spin = |iterations: u32| {
+        exit_after_running(&format!(
+            r#"
+def spin(0, i), do: i
+def spin(n, i), do: spin(n - 1, i + n)
+
+def main(), do: spin({iterations}, 0)
+"#
+        ))
+    };
+    let never_yields = spin(10);
+    let yields_often = spin(1_000_000);
+
+    assert_eq!(
+        never_yields.reduction_yields, 0,
+        "ten iterations stay inside one quantum"
+    );
+    assert!(
+        yields_often.reduction_yields >= 100,
+        "a million iterations yield many times: {yields_often:?}"
+    );
+    assert_eq!(
+        (yields_often.live_count, yields_often.bytes_used),
+        (never_yields.live_count, never_yields.bytes_used),
+        "every yield frame was given back when its loop resumed"
+    );
+}
+
+fn exit_after_running(source: &str) -> crate::exec::runtime::ExitRecord {
+    let tel = ConfiguredTelemetry::new();
+    let exits = ProcessExitCapture::new();
+    exits.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("raw_yield_captures.fz".to_string()),
+        text: source.to_string(),
+    });
+    compiler
+        .run_root_jit(root_id)
+        .unwrap_or_else(|error| panic!("the raw-capture loop should run end-to-end: {error}"));
+    exits.last().expect("runtime process exit telemetry")
+}
+
 struct ListRetentionRun {
     constructions: u64,
     physical_captures: u64,

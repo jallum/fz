@@ -669,11 +669,20 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
             let mut args = Vec::with_capacity(arg_shapes.iter().map(MidFlightArgShape::abi_arity).sum());
             let mut shim_cache = CodegenCache::default();
             let mut cg = CodegenFn::new(b, m, &mut shim_cache);
+            let mut ref_slots: Vec<usize> = Vec::new();
             for (i, arg_shape) in arg_shapes.iter().enumerate() {
-                let value_ref = cg.closure_capture_ref_at(self_bits, i);
-                arg_shape.replay_from_capture(&mut cg, CodegenValue::AnyRef(value_ref), &mut args);
+                match arg_shape {
+                    MidFlightArgShape::Value(repr @ (ArgRepr::RawInt | ArgRepr::RawF64 | ArgRepr::RawAtom)) => {
+                        let binding = cg.closure_capture_as_binding(self_bits, i, *repr);
+                        arg_shape.replay_from_capture(&mut cg, binding, &mut args);
+                    }
+                    MidFlightArgShape::Value(_) | MidFlightArgShape::HeapRef => {
+                        let value_ref = cg.closure_capture_ref_at(self_bits, i);
+                        ref_slots.push(i);
+                        arg_shape.replay_from_capture(&mut cg, CodegenValue::AnyRef(value_ref), &mut args);
+                    }
+                }
             }
-            let ref_slots: Vec<usize> = (0..arg_shapes.len()).collect();
             release_resumed_frame(&mut cg, self_bits, &ref_slots, arg_shapes.len());
             let mut callee_sig = Signature::new(CallConv::Tail);
             for arg_shape in arg_shapes {

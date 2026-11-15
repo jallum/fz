@@ -3910,11 +3910,16 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
     // the continuation frames a quantum builds that resume under a newer cons
     // cell stay on the heap until a collection, so a quantum allocates several
     // times the bytes of the cells that survive and the heap is due on most of
-    // its yields (the parent's yields are 64; it is collected on 21 of them).
+    // its yields (the parent's yields are 64; it is collected on 22 of them).
     // Each minor collection copies what was allocated since the last one;
     // those whose old bytes passed twice what the last major collection left
     // are major and copy everything live. The child is collected once, as it
-    // parks (288 bytes), and the parent once more at a park mid-run (208).
+    // parks (288 bytes). The parent's park mid-run, where it waits for the
+    // next ball, collects only if the heap is due there, and due is a margin of
+    // a few hundred bytes: a yield frame that carries a raw int keeps its int
+    // in a raw slot and is given back on resume, so a yield leaves no box and no
+    // frame behind, the heap is due a yield later, and the park finds it
+    // under its threshold.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
     assert_eq!(
         collections_as_tuples(&events),
@@ -3939,17 +3944,17 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
             (1, "yield", 192_192),
             (1, "yield", 38_464),
             (1, "yield", 38_464),
-            (1, "yield", 38_464),
-            (1, "yield", 48_096),
+            (1, "yield", 51_264),
             (1, "yield", 64_048),
             (1, "yield", 320_128),
             (1, "yield", 64_048),
-            (1, "park", 208),
-            (1, "yield", 32_160),
+            (1, "yield", 80_048),
+            (1, "yield", 48_160),
+            (1, "yield", 96),
             (1, "yield", 96),
             (1, "yield", 96),
         ],
-        "run: the child's park, then the parent's collected yields and its mid-run park"
+        "run: the child's park, then the parent's collected yields; its mid-run park is under the threshold"
     );
 }
 
