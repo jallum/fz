@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-t93.8"
+  ],
   "blocks": [],
   "created": "2026-11-15T02:06:21Z",
   "description": "Two fixtures write into the process working directory, so files leak into worktrees and parallel lanes share one path.\n- 00252 creates fz-variadic-open-test.tmp and never deletes it (found as an untracked file in a research worktree).\n- 00775 writes 00775_take.tmp at one cwd-relative path that every lane (interp/compiled/jit) uses, so concurrent lanes race on the same file.\nGoal: each fixture that touches the filesystem works in a directory of its own (per run, per lane) and leaves nothing behind. Signal: after a full fixture_matrix run, git status in the worktree shows no new files; lanes no longer share a path. Found 2026-11-14 during fz-t93.3 research (H4).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Fixtures that touch files use a temporary directory of their own",
   "type": "bug",
-  "updated_at": "2026-11-15T02:06:21Z"
+  "updated_at": "2026-11-15T02:06:26Z"
 }
