@@ -67,18 +67,20 @@ impl JoinContribution for IncomingInputSources {
         Self::default()
     }
 
-    fn join_assign(&mut self, other: &Self, types: &mut Types) {
+    fn join_assign(&mut self, other: &Self, types: &mut Types) -> bool {
         if other.0.is_empty() || self == other {
-            return;
+            return false;
         }
         if self.0.is_empty() {
             self.0 = Rc::clone(&other.0);
-            return;
+            return true;
         }
         let merged = self.merged_with(other, types);
-        if merged.len() != self.0.len() {
+        let grew = merged.len() != self.0.len();
+        if grew {
             self.0 = merged.into();
         }
+        grew
     }
 }
 

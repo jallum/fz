@@ -280,6 +280,19 @@ only on real content movement (equal joins and equal withdrawals are quiet),
 and `ContentMovement` determines whether subscribers ascend or rebase. The
 revision pair records that content moved; it cannot say in which direction.
 
+`ContributionMap` spends work in proportion to what changed.
+`JoinContribution::join_assign` answers whether the value it joined into
+changed, and every implementation answers it. A publisher's entry that did not
+change ends `apply` there: the key's contributors are not folded again and
+nothing is compared, because the aggregate is a function of the contributors.
+An `EXACT` join widens the aggregate in place and uses the same answer. A fold
+that does run goes through `JoinContribution::join_all`, which
+`ActivationInputAlternatives` overrides to rebuild its rows once instead of
+after every contributor, checking `ACTIVATION_INPUT_ROW_BUDGET` after each so
+a fold collapses at the same contributor it would one join at a time.
+`ContributionReplace::refolds` counts the keys a conclusion folded again; the
+activation-input count is `activation_input_refolds` on `JobCompletion`.
+
 ### Retraction and preservation
 
 Retraction-by-omission is sound only where a publisher's silence about a key is
@@ -376,7 +389,8 @@ published instead of waiting for the drain to break a read cycle. While the run
 waits, the sends and slots stay with the job's own derivation and extend like
 any other claim. Each `work_graph.applied` completion event carries
 `derivations` and `reads_handed` (reads counted per derivation), the volume the
-World takes per completion.
+World takes per completion, and `activation_input_refolds`, the activation-input
+keys whose contributors the completion folded again.
 
 Source-publisher jobs follow this rule with typed `SourceOwner` keys; exact
 text provenance stays in `SourceVersion` spans rather than becoming a second

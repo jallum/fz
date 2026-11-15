@@ -751,6 +751,7 @@ fn completion_job_identity(completion: &serde_json::Value) -> serde_json::Value 
         &[
             "opaque_type",
             "rebased",
+            "activation_input_refolds",
             "derivations",
             "reads_handed",
             "changed",

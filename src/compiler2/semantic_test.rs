@@ -850,6 +850,69 @@ mod tests {
         );
     }
 
+    /// `join_assign` says whether the value it joined into changed, so a store
+    /// can tell an entry that stood still from one that grew.
+    #[test]
+    fn activation_input_joins_report_whether_they_changed() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let atom_a = world.types_mut().atom_lit("a");
+        let atom_b = world.types_mut().atom_lit("b");
+        let union = world.types_mut().union(atom_a, atom_b);
+
+        let mut columns = vec![atom_a];
+        assert!(
+            !columns.join_assign(&vec![atom_a], world.types_mut()),
+            "an equal input is not news"
+        );
+        assert!(
+            columns.join_assign(&vec![atom_b], world.types_mut()),
+            "a wider input is"
+        );
+        assert_eq!(columns, vec![union]);
+        assert!(
+            !columns.join_assign(&vec![atom_a], world.types_mut()),
+            "a narrower input is not"
+        );
+
+        let mut rows = ActivationInputAlternatives::bottom();
+        assert!(!rows.join_assign(&ActivationInputAlternatives::bottom(), world.types_mut()));
+        assert!(rows.join_assign(&ActivationInputAlternatives::from_row(vec![atom_a]), world.types_mut()));
+        assert!(!rows.join_assign(&ActivationInputAlternatives::from_row(vec![atom_a]), world.types_mut()));
+        assert!(rows.join_assign(&ActivationInputAlternatives::from_row(vec![atom_b]), world.types_mut()));
+        assert!(
+            rows.join_assign(&ActivationInputAlternatives::from_row(vec![union]), world.types_mut()),
+            "a row that covers the standing rows replaces them",
+        );
+        assert!(
+            !rows.join_assign(&ActivationInputAlternatives::from_row(vec![atom_b]), world.types_mut()),
+            "a row the standing rows already cover is not news",
+        );
+    }
+
+    /// Folding every contributor at once settles on the rows that joining them
+    /// one at a time does, including when the row budget collapses them.
+    #[test]
+    fn folding_contributors_at_once_matches_joining_them_one_by_one() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let atoms = (0..ACTIVATION_INPUT_ROW_BUDGET + 3)
+            .map(|index| {
+                let first = world.types_mut().atom_lit(&format!("a{index}"));
+                let second = world.types_mut().atom_lit(&format!("b{}", index % 2));
+                ActivationInputAlternatives::from_row(vec![first, second])
+            })
+            .collect::<Vec<_>>();
+        for count in [1, 2, ACTIVATION_INPUT_ROW_BUDGET, atoms.len()] {
+            let mut one_by_one = ActivationInputAlternatives::bottom();
+            for value in &atoms[..count] {
+                one_by_one.join_assign(value, world.types_mut());
+            }
+            let at_once = ActivationInputAlternatives::join_all(world.types_mut(), atoms[..count].iter());
+            assert_eq!(at_once, one_by_one, "{count} contributors");
+        }
+    }
+
     #[test]
     fn rebased_activation_input_conclusion_preserves_prior_publisher_frontier() {
         let tel = ConfiguredTelemetry::new();

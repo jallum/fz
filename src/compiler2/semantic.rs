@@ -623,6 +623,17 @@ impl RuntimeDemand {
         self.callable.join_assign(&other.callable);
     }
 
+    /// [`Self::join_assign`], answering whether this demand became a different
+    /// one.
+    fn widen_by(&mut self, other: &Self) -> bool {
+        let joined = self.join(other);
+        let changed = joined != *self;
+        if changed {
+            *self = joined;
+        }
+        changed
+    }
+
     /// Ground this demand's callable dispatch surfaces (and those of any tuple
     /// fields) to the concrete runtime shapes, dropping phantom polymorphic
     /// templates when the same carried demand already names a concrete
@@ -806,19 +817,29 @@ impl JoinContribution for TargetDemandContribution {
         Self::default()
     }
 
-    fn join_assign(&mut self, other: &Self, _ctx: &mut Types) {
+    fn join_assign(&mut self, other: &Self, _ctx: &mut Types) -> bool {
+        let mut changed = false;
         if let Some(other_return) = &other.return_demand {
             match &mut self.return_demand {
-                Some(current) => current.join_assign(other_return),
-                None => self.return_demand = Some(other_return.clone()),
+                Some(current) => changed |= current.widen_by(other_return),
+                None => {
+                    self.return_demand = Some(other_return.clone());
+                    changed = true;
+                }
             }
         }
         for (index, demand) in &other.input_demands {
-            self.input_demands
-                .entry(*index)
-                .and_modify(|current| current.join_assign(demand))
-                .or_insert_with(|| demand.clone());
+            match self.input_demands.entry(*index) {
+                std::collections::hash_map::Entry::Occupied(mut current) => {
+                    changed |= current.get_mut().widen_by(demand);
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(demand.clone());
+                    changed = true;
+                }
+            }
         }
+        changed
     }
 }
 
@@ -1000,8 +1021,22 @@ pub trait JoinContribution: Clone + PartialEq {
     const EXACT: bool = false;
     /// The empty aggregate: the join of zero contributors (lattice bottom).
     fn bottom() -> Self;
-    /// Monotone join: `self ⊔= other`.
-    fn join_assign(&mut self, other: &Self, ctx: &mut Self::Ctx);
+    /// Monotone join: `self ⊔= other`. Answers whether `self` changed, so a
+    /// store never recomputes from an entry that stood still.
+    fn join_assign(&mut self, other: &Self, ctx: &mut Self::Ctx) -> bool;
+    /// The join of every value, in the order given: `bottom` joined with each.
+    /// A join that can fold many values more cheaply than one at a time
+    /// overrides it.
+    fn join_all<'a>(ctx: &mut Self::Ctx, values: impl Iterator<Item = &'a Self>) -> Self
+    where
+        Self: 'a,
+    {
+        let mut joined = Self::bottom();
+        for value in values {
+            joined.join_assign(value, ctx);
+        }
+        joined
+    }
     /// Semantic equality for scheduler dirtiness. Some joins preserve a stable
     /// representative even when equivalent type handles differ.
     fn equivalent(&self, other: &Self, _ctx: &Self::Ctx) -> bool {
@@ -1038,12 +1073,14 @@ impl<K, P, V> Default for ContributionMap<K, P, V> {
     }
 }
 
-/// A conclusion/extension's effect: the publisher's new output-key frontier and
-/// the keys whose joined aggregate moved.
+/// A conclusion/extension's effect: the publisher's new output-key frontier,
+/// the keys whose joined aggregate moved, and how many keys had every
+/// contributor folded again to find out.
 #[derive(Debug)]
 pub struct ContributionReplace<K> {
     pub output_keys: HashSet<K>,
     pub changed_keys: HashSet<K>,
+    pub refolds: u64,
 }
 
 impl<K> Default for ContributionReplace<K> {
@@ -1051,6 +1088,7 @@ impl<K> Default for ContributionReplace<K> {
         Self {
             output_keys: HashSet::default(),
             changed_keys: HashSet::default(),
+            refolds: 0,
         }
     }
 }
@@ -1173,7 +1211,7 @@ impl ActivationInputAlternatives {
     /// never be: a polymorphic template row absorbing its exact ground
     /// siblings would erase the very correlation this type preserves, which is
     /// why the free-var-set conjunct is not negotiable.
-    fn insert_row(&mut self, types: &Types, row: ActivationInputRow) {
+    fn insert_row(&mut self, types: &Types, row: ActivationInputRow) -> bool {
         if !self.rows.is_empty() {
             assert_eq!(
                 self.rows[0].columns.len(),
@@ -1186,18 +1224,19 @@ impl ActivationInputAlternatives {
             .iter()
             .any(|existing| existing.columns.equivalent(&row.columns, types))
         {
-            return;
+            return false;
         }
         if self
             .rows
             .iter()
             .any(|standing| types.row_dominates(&row.columns, &standing.columns))
         {
-            return;
+            return false;
         }
         self.rows
             .retain(|standing| !types.row_dominates(&standing.columns, &row.columns));
         self.rows.push(row);
+        true
     }
 
     /// Restore the row-set form: surviving incomparable rows in the type
@@ -1232,16 +1271,46 @@ impl JoinContribution for ActivationInputAlternatives {
 
     /// Antichain union. Rows never cross-pollinate columns; the join is row
     /// insertion under `insert_row`'s equivalence and dominance judgements,
-    /// then one canonical rebuild.
-    fn join_assign(&mut self, other: &Self, types: &mut Types) {
+    /// then one canonical rebuild when a row went in.
+    fn join_assign(&mut self, other: &Self, types: &mut Types) -> bool {
         if self.rows.is_empty() {
             self.clone_from(other);
-            return;
+            return !other.rows.is_empty();
         }
+        let mut changed = false;
         for row in &other.rows {
-            self.insert_row(types, row.clone());
+            changed |= self.insert_row(types, row.clone());
         }
-        self.rebuild(types);
+        if changed {
+            self.rebuild(types);
+        }
+        changed
+    }
+
+    /// The same rows `join_assign` would settle on, rebuilt once at the end
+    /// instead of after every value. The row budget is still checked after each
+    /// value, so a fold that outgrows it collapses at the same value it would
+    /// one rebuild at a time.
+    fn join_all<'a>(types: &mut Types, values: impl Iterator<Item = &'a Self>) -> Self {
+        let mut joined = Self::bottom();
+        let mut unsorted = false;
+        for value in values {
+            if joined.rows.is_empty() {
+                joined.clone_from(value);
+                continue;
+            }
+            for row in &value.rows {
+                unsorted |= joined.insert_row(types, row.clone());
+            }
+            if joined.rows.len() > ACTIVATION_INPUT_ROW_BUDGET {
+                joined.rebuild(types);
+                unsorted = false;
+            }
+        }
+        if unsorted {
+            joined.rebuild(types);
+        }
+        joined
     }
 
     fn equivalent(&self, other: &Self, types: &Types) -> bool {
@@ -1252,6 +1321,14 @@ impl JoinContribution for ActivationInputAlternatives {
                 .zip(&other.rows)
                 .all(|(left, right)| left.columns.equivalent(&right.columns, types))
     }
+}
+
+/// What applying one entry to one key did.
+struct Applied {
+    /// The key's joined aggregate moved.
+    moved: bool,
+    /// Every contributor was folded again to find out.
+    refolded: bool,
 }
 
 /// One publisher's entry for a key in a conclusion's `next` map.
@@ -1427,16 +1504,7 @@ where
                 .map(|key| (key, SlotEntry::Withdraw)),
         );
         touched.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
-        let mut changed_keys = HashSet::default();
-        for (key, entry) in touched {
-            if self.apply(ctx, &key, &publisher, entry, !rebased) {
-                changed_keys.insert(key);
-            }
-        }
-        ContributionReplace {
-            output_keys: next_output_keys,
-            changed_keys,
-        }
+        self.apply_each(ctx, &publisher, touched, !rebased, next_output_keys)
     }
 
     /// Replace this publisher's complete frontier and each listed value.
@@ -1465,16 +1533,11 @@ where
         ordered_next.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
         let mut output_keys = previous_output_keys;
         output_keys.extend(ordered_next.iter().map(|(key, _)| key.clone()));
-        let mut changed_keys = HashSet::default();
-        for (key, value) in ordered_next {
-            if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
-                changed_keys.insert(key);
-            }
-        }
-        ContributionReplace {
-            output_keys,
-            changed_keys,
-        }
+        let entries = ordered_next
+            .into_iter()
+            .map(|(key, value)| (key, SlotEntry::Upsert(value)))
+            .collect();
+        self.apply_each(ctx, &publisher, entries, true, output_keys)
     }
 
     /// The waiting-completion arm: listed keys gain (or widen) this publisher's
@@ -1487,15 +1550,37 @@ where
         let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
         let mut ordered_next = next.into_iter().collect::<Vec<_>>();
         ordered_next.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
+        let entries = ordered_next
+            .into_iter()
+            .map(|(key, value)| (key, SlotEntry::Upsert(value)))
+            .collect();
+        self.apply_each(ctx, &publisher, entries, true, next_output_keys)
+    }
+
+    /// Apply a publisher's entries in the order given, collecting the keys
+    /// whose aggregate moved and the keys that had every contributor folded
+    /// again to learn it.
+    fn apply_each(
+        &mut self,
+        ctx: &mut V::Ctx,
+        publisher: &P,
+        entries: Vec<(K, SlotEntry<V>)>,
+        join: bool,
+        output_keys: HashSet<K>,
+    ) -> ContributionReplace<K> {
         let mut changed_keys = HashSet::default();
-        for (key, value) in ordered_next {
-            if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
+        let mut refolds = 0;
+        for (key, entry) in entries {
+            let applied = self.apply(ctx, &key, publisher, entry, join);
+            refolds += u64::from(applied.refolded);
+            if applied.moved {
                 changed_keys.insert(key);
             }
         }
         ContributionReplace {
-            output_keys: next_output_keys,
+            output_keys,
             changed_keys,
+            refolds,
         }
     }
 
@@ -1504,7 +1589,7 @@ where
     /// bottom is reported so a multi-publisher retraction is observed; a sole
     /// publisher's retraction is reported too, though the fact table neutralizes
     /// it through the vanished publisher set.
-    fn apply(&mut self, ctx: &mut V::Ctx, key: &K, publisher: &P, entry: SlotEntry<V>, join: bool) -> bool {
+    fn apply(&mut self, ctx: &mut V::Ctx, key: &K, publisher: &P, entry: SlotEntry<V>, join: bool) -> Applied {
         if !self.slots.contains_key(key) {
             let empty = ContributionSlot {
                 contributors: Vec::new(),
@@ -1516,12 +1601,21 @@ where
         let had_contributors = !slot.contributors.is_empty();
         match entry {
             SlotEntry::Upsert(value) if V::EXACT && join => {
-                let old_joined = had_contributors.then(|| slot.joined.clone());
-                slot.joined.join_assign(&value, ctx);
+                let widened = slot.joined.join_assign(&value, ctx);
                 upsert_contribution(ctx, &mut slot.contributors, publisher, value, true);
-                return !old_joined.is_some_and(|old| old.equivalent(&slot.joined, ctx));
+                return Applied {
+                    moved: widened || !had_contributors,
+                    refolded: false,
+                };
             }
-            SlotEntry::Upsert(value) => upsert_contribution(ctx, &mut slot.contributors, publisher, value, join),
+            SlotEntry::Upsert(value) => {
+                if !upsert_contribution(ctx, &mut slot.contributors, publisher, value, join) {
+                    return Applied {
+                        moved: false,
+                        refolded: false,
+                    };
+                }
+            }
             SlotEntry::Withdraw => {
                 if let Ok(index) = find_contributor(ctx, &slot.contributors, publisher) {
                     slot.contributors.remove(index);
@@ -1535,14 +1629,14 @@ where
         // interned `Ty`s. `SemanticOrd` (not raw ids) is the order because a
         // `Job` embeds an `ActivationKey` arrow, and two runs can number an
         // equal arrow differently.
-        let joined = join_contributions(ctx, slot.contributors.iter().map(|(_, value)| value));
+        let joined = V::join_all(ctx, slot.contributors.iter().map(|(_, value)| value));
         let moved = !(had_contributors && slot.joined.equivalent(&joined, ctx));
         if slot.contributors.is_empty() {
             self.slots.remove(key);
         } else if moved {
             slot.joined = joined;
         }
-        moved
+        Applied { moved, refolded: true }
     }
 }
 
@@ -1694,18 +1788,32 @@ impl CallSiteSummary {
     }
 }
 
-/// Install one publisher's contribution into a key's contributor table. `join`
-/// widens the publisher's prior entry (the within-epoch ascent); without it the
-/// entry replaces (the rebase path).
-fn upsert_contribution<P, V>(ctx: &mut V::Ctx, contributors: &mut Vec<(P, V)>, publisher: &P, value: V, join: bool)
+/// Install one publisher's contribution into a key's contributor table and
+/// answer whether the publisher's entry changed. `join` widens the publisher's
+/// prior entry (the within-epoch ascent); without it the entry replaces (the
+/// rebase path).
+fn upsert_contribution<P, V>(
+    ctx: &mut V::Ctx,
+    contributors: &mut Vec<(P, V)>,
+    publisher: &P,
+    value: V,
+    join: bool,
+) -> bool
 where
     P: Clone + Eq + SemanticOrd<V::Ctx>,
     V: JoinContribution,
 {
     match find_contributor(ctx, contributors, publisher) {
         Ok(index) if join => contributors[index].1.join_assign(&value, ctx),
-        Ok(index) => contributors[index].1 = value,
-        Err(index) => contributors.insert(index, (publisher.clone(), value)),
+        Ok(index) => {
+            let changed = contributors[index].1 != value;
+            contributors[index].1 = value;
+            changed
+        }
+        Err(index) => {
+            contributors.insert(index, (publisher.clone(), value));
+            true
+        }
     }
 }
 
@@ -1724,19 +1832,6 @@ where
     found
 }
 
-/// Join every contributor into the key's aggregate. The join of zero
-/// contributors is `V::bottom`.
-fn join_contributions<'a, V>(ctx: &mut V::Ctx, contributors: impl Iterator<Item = &'a V>) -> V
-where
-    V: JoinContribution + 'a,
-{
-    let mut joined = V::bottom();
-    for value in contributors {
-        joined.join_assign(value, ctx);
-    }
-    joined
-}
-
 impl JoinContribution for Vec<Ty> {
     type Ctx = Types;
 
@@ -1747,23 +1842,25 @@ impl JoinContribution for Vec<Ty> {
     /// Pointwise union over a shared arity. Bottom (the empty vector) seeds
     /// from the first contributor; thereafter every contributor carries the
     /// same arity.
-    fn join_assign(&mut self, other: &Self, types: &mut Types) {
+    fn join_assign(&mut self, other: &Self, types: &mut Types) -> bool {
         if self.is_empty() {
             self.clone_from(other);
-            return;
+            return !other.is_empty();
         }
         assert_eq!(
             self.len(),
             other.len(),
             "one activation cannot receive contributions with different arities",
         );
+        let mut changed = false;
         for (current, next) in self.iter_mut().zip(other.iter()) {
-            *current = if *current == *next || types.is_equivalent(current, next) {
-                *current
-            } else {
-                types.union(*current, *next)
-            };
+            if *current != *next && !types.is_equivalent(current, next) {
+                let joined = types.union(*current, *next);
+                changed |= joined != *current;
+                *current = joined;
+            }
         }
+        changed
     }
 
     fn equivalent(&self, other: &Self, types: &Types) -> bool {
@@ -1782,8 +1879,8 @@ impl JoinContribution for RuntimeDemand {
         RuntimeDemand::ignore()
     }
 
-    fn join_assign(&mut self, other: &Self, _ctx: &mut ()) {
-        *self = RuntimeDemand::join(self, other);
+    fn join_assign(&mut self, other: &Self, _ctx: &mut ()) -> bool {
+        self.widen_by(other)
     }
 }
 
