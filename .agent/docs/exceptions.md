@@ -2,7 +2,7 @@
 
 A raise takes one route on every execution path: `raise` in
 `runtime/src/failure.rs`, entered through `fz_panic`, `fz_throw`, `fz_exit`,
-`fz_reraise`, `fz_raise` or `fz_raise_undefined_function`. This doc covers
+`fz_reraise` or `fz_raise_undefined_function`. This doc covers
 that route end to end: the primitive and the three kinds of raise, the handler
 stack a `try` pushes, how a raise reaches the nearest handler on each path,
 what `try` with `rescue` and `catch` lowers to, what the compiler knows a
@@ -20,9 +20,12 @@ from a program. The compiler continues a raise a handler was delivered through
 `fz_reraise(process, kind_ref, value_ref)`, which reads the kind from the atom
 the handler received and is `raise` with it; a kind the runtime never delivers
 panics, as a fault in the compiler.
-`raise_exception(process, name, fields)` builds the exception map
-`%{__struct__: name, __exception__: true, ..fields}` and is `raise` with kind
-`error`. There is one route behind all of them, which:
+`raise_exception(process, name, fields)` builds a struct of the exception
+module `name` and is `raise` with kind `error`. It allocates in the layout of
+the module's registered schema, takes every field the module declares but
+`__exception__` (which it sets to `true`), and panics if the schema is not
+registered or a field is not given. There is one route behind all of them,
+which:
 
 1. reports the raise to the execution context's raise observer, `ExecCtx.raise`
    (kind, exception name, handler depth);
@@ -56,9 +59,9 @@ beside `panic/1`. Outside `assert` and `refute`, the library calls `panic/1`
 with a value that is no exception only where Elixir itself raises a raw Erlang
 error (`JSON.encode!/1` of an invalid UTF-8 binary).
 
-`fz_raise(process, name, fields)` is the entry compiled code calls for an
-exception the compiler builds itself (a decision that runs out of clauses,
-below): `fields` is a list holding each field's atom key and then its value.
+An exception the compiler raises itself (a decision that runs out of clauses,
+below) is built by the compiled code as a struct, with the prim a
+`%Mod{...}` literal uses, and raised through `fz_panic`.
 
 `Kernel.inspect/1` renders a value as `dbg` does, as a binary, for the messages
 that show one; a map prints as `%{a: 1}`, as in Elixir. `Kernel.inspect/2`
@@ -126,8 +129,8 @@ is by kind, whatever it holds).
 - **Native code (run and build).** After a call to a `never` extern,
   `lower_extern_generic` emits `continue_after_raise`
   (`native_codegen/prim.rs`); `Term::Raise`, which lowering emits at a decision's
-  arm of last resort, calls `fz_raise` with the exception's atom and the list of
-  its fields, and then the same; `Term::Reraise`, which lowering emits
+  arm of last resort after a `Prim::MakeStruct` of the exception, calls
+  `fz_panic` with that struct, and then the same; `Term::Reraise`, which lowering emits
   at a handler's arm of last resort, calls `fz_reraise` with the plan's first
   two inputs and then the same.
   The raising frame returns 0, as a yield does, and every frame above it
@@ -153,8 +156,9 @@ is by kind, whatever it holds).
   when the process has diverged (`Process::diverged`: failed, or a raise is
   waiting), and an error naming the broken contract when it has not.
   A decision's arm of last resort calls `raise_last_resort`, which raises the
-  plan's exception through `failure::raise_exception` with the fields the plan
-  lists, and continues in `after_panic`. `after_panic` (`ir_interp/backend.rs`) takes `Process::raised`, pops the
+  plan's exception through `failure::raise_exception` with the fields of its
+  struct, after registering the struct's schema with the process's heap
+  (`register_exception`), and continues in `after_panic`. `after_panic` (`ir_interp/backend.rs`) takes `Process::raised`, pops the
   continuation frames above the handler frame, and runs the handler entry with
   the three values as its params. With no raise waiting, the raise route has
   already failed the process: the step becomes `BackendRunStep::Failed`, and
@@ -505,10 +509,23 @@ exception its arm of last resort raises: `PatternDispatchPlan.last_resort`, a
 `LastResort` (`src/dispatch_matrix/pattern/last_resort.rs`) set when the plan's
 rows are built (`SourcePatternRows::raising`). `=` is a decision like the others:
 its pattern is a one-row plan. `LastResort::Exception` names the exception's
-module and lists every field of its struct with what each holds (`FieldTerm`:
-the plan's subject, or a `LiteralTerm`: a value written out in full). Reaching the plan's fail
-builds that struct and raises it through `fz_runtime::failure::raise_exception`,
-so the raise goes to the nearest handler, a `rescue` around the decision
+module and lists the fields the failure sets with what each holds (`FieldTerm`:
+the plan's subject, or a `LiteralTerm`: a value written out in full).
+`LastResort::struct_fields` completes it against the module's declaration:
+every declared field in order, holding what the failure sets or the field's
+default, `__exception__` among them; a failure that sets a field the module
+does not declare is an error that names the field. The declaration reaches the
+backends in the program's schema: `BackendSchema` carries each field's default
+(`BackendProgram::struct_defaults`), and `produce_backend_executable_product`
+waits for `StructDefined` of every exception module its code raises (each
+failing plan's, an extern's declared failure, and `UndefinedFunctionError` and
+`ArgumentError` for a call that can find no function) and includes that
+module's `StructSchema`. Reaching the plan's fail builds that struct and
+raises it: native code with `Prim::MakeStruct` and `Term::Raise` (`emit_raise`,
+`src/compiler2/jobs/native.rs`), the interpreter through
+`fz_runtime::failure::raise_exception`. The raised value is the same struct a
+`%Mod{...}` literal builds on each path, so it inspects as `%Mod{...}`
+(fixture `01311`). The raise goes to the nearest handler, a `rescue` around the decision
 catches it, and uncaught it prints the line its module words and ends the
 process as any error does.
 
@@ -669,7 +686,7 @@ union replacing the last.
 
 - `runtime/src/failure.rs` — `RaiseKind`, `EXCEPTION_FIELD`, `failure_line`,
   `exit_status`, `fz_panic`, `fz_throw`, `fz_exit`, `fz_fail`, `reraise`,
-  `fz_reraise`, `raise_exception`, `raise_undefined_function`, `fz_raise`,
+  `fz_reraise`, `raise_exception`, `raise_undefined_function`,
   `fz_raise_undefined_function`, `STDERR_FAULT_HOOK`.
 - `lib/exception.fz` — `Exception.message/1`, `__uncaught__/1`,
   `__format_message_with_term__/2`; `lib/exceptions/` — the built-in exception

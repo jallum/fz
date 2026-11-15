@@ -239,12 +239,7 @@ fn a_guard_extern_may_carry_floats_and_declare_a_checked_failure() {
     let overflow = || {
         LastResort::declared(
             "Elixir.ArithmeticError".to_string(),
-            vec![(
-                "message".to_string(),
-                crate::literal_term::LiteralTerm::Ground(crate::ground_value::GroundValue::Binary(
-                    b"bad argument in arithmetic expression".to_vec(),
-                )),
-            )],
+            "bad argument in arithmetic expression",
         )
     };
     let admitted = [

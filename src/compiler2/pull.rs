@@ -1932,6 +1932,11 @@ impl ProductSessions {
         );
     }
 
+    /// Whether `scope`'s session is on the stack of drives right now.
+    pub(crate) fn is_driving(&self, scope: ProductScope) -> bool {
+        self.active_scopes.contains_key(&scope)
+    }
+
     pub(crate) fn take(&mut self, scope: ProductScope, work_starts: WorkLedger) -> (Rc<RefCell<PullSession>>, bool) {
         assert!(
             self.active_scopes.insert(scope, ActiveRootProduct::default()).is_none(),

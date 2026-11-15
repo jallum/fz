@@ -4,7 +4,9 @@
 //! of its own: a function head in `FunctionClauseError`, `=` in `MatchError`,
 //! `case` in `CaseClauseError` and so on. A plan carries that exception from
 //! the moment it is built, so each backend lowers a `Fail` the same way for
-//! every construct: build the exception from its fields and raise it.
+//! every construct: build the struct of the exception's module and raise it.
+//! A last resort names only the fields it sets; the module's declaration gives
+//! the rest, in its order, each holding its default.
 
 use std::borrow::Cow;
 
@@ -21,8 +23,6 @@ pub enum FieldTerm {
 }
 
 impl FieldTerm {
-    const NIL: Self = Self::Literal(LiteralTerm::Ground(GroundValue::Nil));
-
     fn atom(name: impl Into<String>) -> Self {
         Self::Literal(LiteralTerm::Ground(GroundValue::Atom(name.into())))
     }
@@ -32,17 +32,27 @@ impl FieldTerm {
     }
 }
 
-/// What a plan does at a `Fail`: raise an exception carrying the fields
-/// Elixir gives it, or continue a raise that arrived. The exception's module
-/// words its message from those fields when one is asked for.
+/// What a raised struct holds in one field of its declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RaisedField<'a> {
+    /// The plan's subject, its first input.
+    Subject,
+    /// A value written out in full: one the last resort sets, or the
+    /// field's default.
+    Literal(&'a LiteralTerm),
+}
+
+/// What a plan does at a `Fail`: raise a struct of an exception's module, or
+/// continue a raise that arrived. The exception's module words its message
+/// from its fields when one is asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LastResort {
     /// Raise a new exception.
     Exception {
         /// The exception module's atom, such as `Elixir.MatchError`.
         exception: Cow<'static, str>,
-        /// Every field of the exception's struct, in the order it declares
-        /// them, with what each holds.
+        /// The fields this failure sets, with what each holds. Every other
+        /// field of the exception's struct holds its default.
         fields: Vec<(Cow<'static, str>, FieldTerm)>,
     },
     /// Continue the raise a handler was delivered, with the plan's first two
@@ -58,16 +68,15 @@ impl LastResort {
         Self::raising(
             "Elixir.FunctionClauseError",
             vec![
-                ("module", module.map_or(FieldTerm::NIL, FieldTerm::atom)),
                 ("function", FieldTerm::atom(function)),
                 (
                     "arity",
                     FieldTerm::Literal(LiteralTerm::Ground(GroundValue::Int(i64::from(arity)))),
                 ),
-                ("kind", FieldTerm::NIL),
-                ("args", FieldTerm::NIL),
-                ("clauses", FieldTerm::NIL),
-            ],
+            ]
+            .into_iter()
+            .chain(module.map(|module| ("module", FieldTerm::atom(module))))
+            .collect(),
         )
     }
 
@@ -81,12 +90,7 @@ impl LastResort {
     pub(crate) fn protocol_undefined(protocol: String) -> Self {
         Self::raising(
             "Elixir.Protocol.UndefinedError",
-            vec![
-                ("protocol", FieldTerm::atom(protocol)),
-                ("value", FieldTerm::Subject),
-                ("message", FieldTerm::NIL),
-                ("description", FieldTerm::text("")),
-            ],
+            vec![("protocol", FieldTerm::atom(protocol)), ("value", FieldTerm::Subject)],
         )
     }
 
@@ -120,10 +124,7 @@ impl LastResort {
 
     /// `not` was given something other than a boolean.
     pub(crate) fn argument_error() -> Self {
-        Self::raising(
-            "Elixir.ArgumentError",
-            vec![("message", FieldTerm::text("argument error"))],
-        )
+        Self::raising("Elixir.ArgumentError", Vec::new())
     }
 
     /// Nothing in a handler's clauses takes the raise it was delivered, so it
@@ -140,20 +141,51 @@ impl LastResort {
         }
     }
 
-    /// Every atom the raised exception is built from: its module's, each
-    /// field's key, and each atom a field's value writes.
+    /// Every atom the fields this failure sets write.
     pub(crate) fn atoms(&self) -> impl Iterator<Item = &str> {
         let mut atoms = Vec::new();
-        if let Self::Exception { exception, fields } = self {
-            atoms.push(exception.as_ref());
-            for (key, term) in fields {
-                atoms.push(key.as_ref());
+        if let Self::Exception { fields, .. } = self {
+            for (_, term) in fields {
                 if let FieldTerm::Literal(literal) = term {
                     literal.each_ground(&mut |value| atoms.extend(atom_name(value)));
                 }
             }
         }
         atoms.into_iter()
+    }
+
+    /// What each field of the raised struct holds, given the fields its
+    /// exception declares in order and the default of each: what this
+    /// failure sets, or the default. A failure that sets a field the
+    /// exception does not declare has no struct to raise, and the error
+    /// names the field.
+    pub(crate) fn struct_fields<'a>(
+        &'a self,
+        declared: &'a [String],
+        defaults: &'a [LiteralTerm],
+    ) -> Result<Vec<(&'a str, RaisedField<'a>)>, String> {
+        let Self::Exception { exception, fields } = self else {
+            return Err("a re-raise builds no struct".to_string());
+        };
+        if let Some((stray, _)) = fields
+            .iter()
+            .find(|(name, _)| !declared.iter().any(|field| field == name))
+        {
+            return Err(format!("exception `{exception}` declares no field `{stray}`"));
+        }
+        Ok(declared
+            .iter()
+            .zip(defaults)
+            .map(|(field, default)| {
+                let set = fields.iter().find(|(name, _)| name == field);
+                let held = match set {
+                    Some((_, FieldTerm::Subject)) => RaisedField::Subject,
+                    Some((_, FieldTerm::Literal(value))) => RaisedField::Literal(value),
+                    None => RaisedField::Literal(default),
+                };
+                (field.as_str(), held)
+            })
+            .collect())
     }
 
     /// How many of the plan's leading inputs the last resort reads: the
@@ -167,14 +199,11 @@ impl LastResort {
     }
 
     /// The failure an extern declares with `raises:`: a struct of the
-    /// exception it names, each field holding what `fields` gives it.
-    pub fn declared(exception: String, fields: Vec<(String, LiteralTerm)>) -> Self {
+    /// exception it names, whose `message` is the declaration's text.
+    pub fn declared(exception: String, message: &str) -> Self {
         Self::Exception {
             exception: Cow::Owned(exception),
-            fields: fields
-                .into_iter()
-                .map(|(name, value)| (Cow::Owned(name), FieldTerm::Literal(value)))
-                .collect(),
+            fields: vec![(Cow::Borrowed("message"), FieldTerm::text(message))],
         }
     }
 
@@ -194,7 +223,7 @@ impl LastResort {
 }
 
 /// The atom `value` is at run time: `nil`, `true` and `false` are atoms.
-fn atom_name(value: &GroundValue) -> Option<&str> {
+pub(crate) fn atom_name(value: &GroundValue) -> Option<&str> {
     match value {
         GroundValue::Atom(name) => Some(name),
         GroundValue::Nil => Some("nil"),

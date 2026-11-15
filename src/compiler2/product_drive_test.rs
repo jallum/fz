@@ -1474,7 +1474,10 @@ fn a_struct_used_only_by_pruned_control_does_not_enter_the_root_artifact() {
     });
     assert_eq!(compiler.run_root_interp(root), Ok(7));
     assert!(
-        compiler.retained_backend_program(root).struct_schemas.is_empty(),
+        compiler
+            .retained_backend_program(root)
+            .schema(&module_name("Spare"))
+            .is_none(),
         "a struct present only in an eliminated typed clause must not survive through unpruned value types"
     );
 }

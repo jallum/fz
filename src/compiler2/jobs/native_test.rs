@@ -267,7 +267,7 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
         generated: Vec::new(),
     };
     // A pair whose second field is not 7 raises, so the executable names the
-    // exception and its fields among its atoms.
+    // atoms the raised struct's fields write among its atoms.
     let raised = executable
         .abi
         .materialized
@@ -275,9 +275,36 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
         .as_ref()
         .and_then(|dispatch| dispatch.plan().last_resort.as_ref())
         .expect("the clause head raises when nothing matches");
-    executable.atom_names = raised.atoms().map(AtomName::from).collect();
+    executable.atom_names = raised.atoms().chain(["nil", "true"]).map(AtomName::from).collect();
+    let raised = raised.exception().expect("the clause head raises an exception");
+    let raised = fz_runtime::module_name::ModuleName::from_atom_name(raised).expect("an exception's module");
     let executable = Rc::new(executable);
     let mut program = BackendProgram::empty(key);
+    // The program carries the struct the clause head raises, as declared by
+    // `FunctionClauseError`.
+    let declared = [
+        "__exception__",
+        "module",
+        "function",
+        "arity",
+        "kind",
+        "args",
+        "clauses",
+    ];
+    let unset = crate::literal_term::LiteralTerm::Ground(crate::ground_value::GroundValue::Nil);
+    let marked = crate::literal_term::LiteralTerm::Ground(crate::ground_value::GroundValue::Bool(true));
+    let mut defaults = vec![unset; declared.len()];
+    defaults[0] = marked;
+    let module = world.reference_module(raised.clone());
+    program.replace_schema(
+        module,
+        Some(Rc::new(crate::compiler2::backend_program::BackendSchema {
+            module,
+            name: Rc::new(raised),
+            fields: Rc::new(declared.map(str::to_string).to_vec()),
+            defaults: Rc::new(defaults),
+        })),
+    );
     program.add_executable(executable.clone(), world.types());
     let telemetry = NullTelemetry;
     let mut lowerer = NativeLowerer::new(&mut world, &telemetry, root, &program).expect("test native lowerer");

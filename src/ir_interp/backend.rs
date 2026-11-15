@@ -20,7 +20,7 @@ use crate::compiler2::{
     ControlDestination, ExecutableDispatch, UndefinedFunction, ValueId,
 };
 use crate::compiler2::{ExecutableKey, FunctionId, RunFailure};
-use crate::dispatch_matrix::pattern::{FieldTerm, LastResort};
+use crate::dispatch_matrix::pattern::{LastResort, RaisedField};
 use crate::exec::runtime::emit_runtime_event;
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::CallableShape;
@@ -39,7 +39,7 @@ use fz_runtime::ir_runtime::{
     fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref, fz_struct_module,
     fz_struct_reuse_or_copy, fz_struct_store_ref,
 };
-use fz_runtime::module_name::STRUCT_MODULE_FIELD;
+use fz_runtime::module_name::{ModuleName, STRUCT_MODULE_FIELD};
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
 use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Handler, Process, ProcessState};
 use fz_runtime::sched::{ProbeOutcome, SendProbe, drain_in_queue, gift_match, gift_message, self_send};
@@ -2335,6 +2335,10 @@ fn raise_undefined_function(
             undefined.function, undefined.arity
         )
     })?;
+    for exception in ["Elixir.UndefinedFunctionError", "Elixir.ArgumentError"] {
+        let module = ModuleName::from_atom_name(exception).expect("an exception's atom names a module");
+        register_exception(runtime, program, &module)?;
+    }
     let proc = runtime.cur_proc();
     let receiver = env_get(transport, proc, env, selector)?.value(proc)?;
     let atom = |name: &str| fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(name));
@@ -2459,16 +2463,25 @@ fn raise_last_resort(
             let value = unsafe { &mut *proc }.heap.box_any_value_ref(value).raw_word();
             fz_runtime::failure::reraise(proc, kind, value);
         }
-        LastResort::Exception { exception, fields } => {
-            let mut values = Vec::with_capacity(fields.len());
-            for (name, term) in fields {
-                let value = match term {
-                    FieldTerm::Subject => input(0)?,
-                    FieldTerm::Literal(term) => literal_term_value(runtime, term)?
+        LastResort::Exception { exception, .. } => {
+            let module = ModuleName::from_atom_name(exception)
+                .ok_or_else(|| format!("internal error: `{exception}` names no exception module"))?;
+            let declared = register_exception(runtime, program, &module)?;
+            let defaults = program
+                .struct_defaults(&module)
+                .ok_or_else(|| format!("internal error: exception `{module}` has no defaults"))?;
+            let mut values = Vec::with_capacity(declared.len());
+            for (name, held) in last_resort.struct_fields(declared, defaults)? {
+                if name == fz_runtime::failure::EXCEPTION_FIELD {
+                    continue;
+                }
+                let value = match held {
+                    RaisedField::Subject => input(0)?,
+                    RaisedField::Literal(term) => literal_term_value(runtime, term)?
                         .value(proc)
                         .map_err(|err| format!("exception field `{name}`: {err}"))?,
                 };
-                values.push((name.as_ref(), value));
+                values.push((name, value));
             }
             let exception = fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(exception));
             fz_runtime::failure::raise_exception(proc, exception, &values);
@@ -2478,6 +2491,22 @@ fn raise_last_resort(
         Some(error) => Err(error),
         None => after_panic(runtime, transport, program, continuations),
     }
+}
+
+/// Registers the struct of the exception `module` with the current process's
+/// heap, so the runtime can build one, and answers the fields it declares.
+fn register_exception<'a>(
+    runtime: &mut IrInterpRuntime,
+    program: &'a BackendProgram,
+    module: &ModuleName,
+) -> Result<&'a Vec<String>, String> {
+    let declared = program
+        .schema(module)
+        .ok_or_else(|| format!("internal error: exception `{module}` is raised and the program lacks its struct"))?;
+    unsafe { &mut *runtime.cur_proc() }
+        .heap
+        .register_schema(Schema::named_struct(module.clone(), declared.iter().cloned()));
+    Ok(declared)
 }
 
 /// What follows `fz_panic` in the interpreter. A raise that found a handler

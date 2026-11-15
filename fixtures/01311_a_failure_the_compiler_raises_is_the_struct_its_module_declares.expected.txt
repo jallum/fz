@@ -1,0 +1,8 @@
+%ArithmeticError{message: "bad argument in arithmetic expression"}
+%MatchError{term: {:no, 0}}
+%CaseClauseError{term: 0}
+%FunctionClauseError{module: Shape, function: :area, arity: 1, kind: nil, args: nil, clauses: nil}
+%CondClauseError{}
+%BadBooleanError{term: 0, operator: :and}
+%UndefinedFunctionError{module: :nowhere, function: :area, arity: 1, reason: nil, message: "function :nowhere.area/1 is undefined (module :nowhere is not available)"}
+%ArgumentError{message: "you attempted to apply a function on 0. Modules (the first argument of apply) must always be an atom"}

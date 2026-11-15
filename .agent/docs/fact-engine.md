@@ -753,7 +753,10 @@ runs a job if it yields one; with none, it records the facts it waits on
 (`ProductSessions::defer_waits`) and its drive ends as `Driven::Deferred`, the
 request still standing. A rooted drive that was waiting on a program-scoped
 product drives it again after draining itself, so it defers in turn unless it
-is the outermost. A deferred request set aside by the bare drive's serve loop
+is the outermost. A rooted drive that needs a program-scoped product while
+the program session is itself mid-drive (it is being served from a drain
+beneath that drive) defers too, since the program session answers one
+question at a time (`ProductSessions::is_driving`; fixture `01312`). A deferred request set aside by the bare drive's serve loop
 is queued again when that pass ends, and the bare drain arbitrates once the
 pass moved nothing. Each deferral emits `pull.drive.deferred`.
 

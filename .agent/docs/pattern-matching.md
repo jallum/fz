@@ -468,7 +468,7 @@ table, and the test's doc gives the command.
 
 An extern whose return is `never` fails the guard and is not called. That is
 decided by the declared return, not by a name: `Kernel.raise/2` reaches
-`fz_raise :: never`, so a helper clause
+`fz_panic :: never`, so a helper clause
 `def tuple_size(_), do: raise(ArgumentError, "...")` makes the guard false for a
 non-tuple and raises `ArgumentError` in a body. A call that can only abort is
 one `PatternGuardExpr::Fails` node, made in `guard_expr_from_ast` for an extern

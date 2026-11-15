@@ -15,8 +15,8 @@
 //! the delivered handler in the same quantum or hands the failed process back
 //! to the scheduler.
 //!
-//! An exception is a map in Elixir's struct shape,
-//! `%{__struct__: Name, __exception__: true, ..fields}`. Its words belong to
+//! An exception is a struct whose `__exception__` field is `true`. Its words
+//! belong to
 //! its module, so the line for an uncaught error is rendered by the handler
 //! the compiler places at the bottom of every process, which ends the process
 //! through `fz_fail` with that line. An error that reaches this module with
@@ -29,15 +29,17 @@
 //! `** (throw) <value>` and an exit `** (exit) <reason>`, except an exit whose
 //! reason is a shutdown, which prints nothing.
 //!
-//! `raise_exception` builds an exception from a name and its fields and
-//! raises it as an error. Compiled code reaches it through `fz_raise` when a
-//! decision raises the exception Elixir raises for it.
+//! `raise_exception` builds a struct of an exception's module from its fields
+//! and raises it as an error, for a failure whose exception is chosen as the
+//! process runs. Compiled code builds the struct itself when a decision raises
+//! the exception Elixir raises for it, and raises it through `fz_panic`.
 
 use crate::any_value::debug::render_value;
-use crate::any_value::{AnyValue, AnyValueRef, ValueKind, map_addr_from_tagged};
+use crate::any_value::{AnyValue, AnyValueRef, ValueKind};
 use crate::exec_ctx::ExecCtx;
 use crate::heap::{list_head_ref, list_tail_ref};
 use crate::ir_runtime::{bitstring_like_word, fz_tuple_elem, fz_tuple_size};
+use crate::module_name::ModuleName;
 use crate::park::materialize_outcome_closure;
 use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
 use crate::process::{Handler, Process, Raised};
@@ -450,23 +452,52 @@ fn text(process: *mut Process, text: &str) -> AnyValue {
     process.heap.alloc_bitstring(text.as_bytes(), 8 * text.len() as u64)
 }
 
-/// `%{__struct__: name, __exception__: true, ..fields}` on the process heap, as
-/// a value word.
+/// A struct of the exception module `name` on the process heap, as a value
+/// word: `fields` gives every field the module declares but the
+/// `__exception__` mark, which is `true`. The module's struct is registered
+/// with the heap before anything raises it.
 fn exception(process: *mut Process, name: AnyValue, fields: &[(&str, AnyValue)]) -> u64 {
-    let fields = fields.iter().map(|&(key, value)| (atom(process, key), value)).collect();
-    exception_of(process, name, fields)
-}
-
-/// An exception whose field keys are atoms already.
-fn exception_of(process: *mut Process, name: AnyValue, fields: Vec<(AnyValue, AnyValue)>) -> u64 {
+    let marked = atom(process, "true");
     let process = unsafe { &mut *process };
-    let atom = |name: &str| AnyValue::atom(process.node.intern_atom(name));
-    let mut entries = vec![(atom("__struct__"), name), (atom(EXCEPTION_FIELD), atom("true"))];
-    entries.extend(fields);
-    let bits = process.heap.alloc_map_slots(&entries);
-    let addr = map_addr_from_tagged(bits).expect("an exception is a map");
-    AnyValueRef::from_heap_object(ValueKind::MAP, addr)
-        .expect("an exception map ref")
+    let module = match name {
+        AnyValue::Atom(id) => process.node.atom_name(id),
+        _ => None,
+    };
+    let module = module
+        .and_then(|name| ModuleName::from_atom_name(name.as_str()))
+        .unwrap_or_else(|| panic!("an exception is named by its module's atom, not {name:?}"));
+    let registry = process.heap.schemas_registry();
+    let schema_id = registry
+        .borrow()
+        .named(&module)
+        .unwrap_or_else(|| panic!("exception `{module}` is raised before its struct is registered"));
+    let declared: Vec<Option<String>> = registry
+        .borrow()
+        .get(schema_id)
+        .fields
+        .iter()
+        .map(|field| field.name.clone())
+        .collect();
+    assert_eq!(
+        declared.len(),
+        fields.len() + 1,
+        "exception `{module}` is given each field it declares but `{EXCEPTION_FIELD}`"
+    );
+    let object = process.heap.alloc_struct(schema_id);
+    for (index, field) in declared.iter().enumerate() {
+        let field = field.as_deref().expect("a struct's field has a name");
+        let value = if field == EXCEPTION_FIELD {
+            marked
+        } else {
+            let given = fields.iter().find(|(name, _)| *name == field);
+            given
+                .unwrap_or_else(|| panic!("exception `{module}` is raised with no `{field}`"))
+                .1
+        };
+        unsafe { process.heap.write_field_slot(object, (index * 8) as u32, value) };
+    }
+    AnyValueRef::from_heap_object(ValueKind::STRUCT, object)
+        .expect("an exception struct ref")
         .raw_word()
 }
 
@@ -474,29 +505,6 @@ fn value_from_word(word: u64, context: &str) -> AnyValue {
     AnyValueRef::from_raw_word(word)
         .and_then(AnyValue::from_ref)
         .unwrap_or_else(|error| panic!("{context}: a value ref ({error:?})"))
-}
-
-/// Raise the exception named by the atom `name_ref`. `fields_ref` lists its
-/// fields: each field's atom key, then its value.
-#[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_raise(process: *mut Process, name_ref: u64, fields_ref: u64) {
-    let name = value_from_word(name_ref, "fz_raise name");
-    let mut rest = AnyValueRef::from_raw_word(fields_ref).expect("fz_raise: a list ref");
-    let mut terms = Vec::new();
-    while !rest.is_empty_list() {
-        let head = list_head_ref(rest).and_then(AnyValue::from_ref);
-        terms.push(head.expect("fz_raise: a list of values"));
-        rest = list_tail_ref(rest).expect("fz_raise: a list tail");
-    }
-    let entries = terms
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|&[key, value]| (key, value))
-        .collect();
-    let exception = exception_of(process, name, entries);
-    raise(process, RaiseKind::Error, exception);
 }
 
 /// Raise for a call `receiver.function(..)` that reached no function.

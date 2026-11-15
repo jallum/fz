@@ -1031,12 +1031,9 @@ pub enum Term {
     /// Native/codegen-facing return whose payload is already split into the
     /// transport lanes required by the current function's return seam.
     ReturnLanes(Vec<Var>),
-    /// The process raises the exception named by the atom `exception`.
-    /// `fields` is the list of its fields: each field's atom key, then its
-    /// value. The process ends.
+    /// The process raises `value` as an error. The process ends.
     Raise {
-        exception: Var,
-        fields: Var,
+        value: Var,
     },
     /// The process continues the raise a handler was delivered: `kind` is the
     /// atom the handler received for its kind, `value` the raised value. The
@@ -1728,7 +1725,7 @@ impl fmt::Display for Term {
             }
             Term::Return(v) => write!(f, "return {}", v),
             Term::ReturnLanes(lanes) => write!(f, "return_lanes [{}]", fmt_var_list(lanes)),
-            Term::Raise { exception, fields } => write!(f, "raise {exception} {fields}"),
+            Term::Raise { value } => write!(f, "raise {value}"),
             Term::Reraise { kind, value } => write!(f, "reraise {kind} {value}"),
             Term::RaiseUndefined {
                 receiver,

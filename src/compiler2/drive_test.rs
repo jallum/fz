@@ -1278,6 +1278,70 @@ fn entry_dispatch_decides_a_lane_form_tuple_without_reboxing_it() {
     assert_eq!(compiled.run(compiler.telemetry(), program.entry), 6);
 }
 
+#[test]
+fn a_decision_that_fails_builds_the_struct_it_raises_with_no_list_of_its_fields() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("raise_builds_a_struct.fz".into()),
+        text: concat!(
+            "defp some(n), do: if n > 0, do: n, else: 2\n",
+            "defp pick(n) do\n",
+            "  case n do\n",
+            "    1 -> 7\n",
+            "  end\n",
+            "end\n",
+            "def main(), do: pick(some(1))\n",
+        )
+        .into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    settle_native_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "a case that can fail should lower natively");
+    let program = native.last(root).program;
+    let raising = program
+        .module
+        .fns
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .filter_map(|block| match &block.terminator {
+            crate::fz_ir::Term::Raise { value } => Some((block, *value)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(!raising.is_empty(), "the case's miss raises");
+    for (block, raised) in raising {
+        let built = block.stmts.iter().find_map(|stmt| match stmt {
+            IrStmt::Let(var, IrPrim::MakeStruct { module, fields }) if *var == raised => Some((module, fields)),
+            _ => None,
+        });
+        let (module, fields) = built.expect("the raised value is a struct the block builds");
+        assert_eq!(module.to_string(), "CaseClauseError");
+        assert_eq!(
+            fields.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+            ["__exception__", "term"],
+            "the struct holds each field its module declares, in the module's order"
+        );
+        assert!(
+            !block
+                .stmts
+                .iter()
+                .any(|stmt| matches!(stmt.prim(), IrPrim::MakeList(..))),
+            "no list of keys and values is built for the runtime to read back"
+        );
+    }
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    assert_eq!(compiled.run(compiler.telemetry(), program.entry), 7);
+}
+
 /// The function an executable entry belongs to, for a name of the form
 /// `<function>__e<index>`.
 ///
@@ -24363,11 +24427,6 @@ fn a_declared_failure_that_names_an_exception_with_no_message_field_is_refused_a
 fn arithmetic_error() -> LastResort {
     LastResort::declared(
         "Elixir.ArithmeticError".to_string(),
-        vec![(
-            "message".to_string(),
-            crate::literal_term::LiteralTerm::Ground(crate::ground_value::GroundValue::Binary(
-                b"bad argument in arithmetic expression".to_vec(),
-            )),
-        )],
+        "bad argument in arithmetic expression",
     )
 }

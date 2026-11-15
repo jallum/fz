@@ -761,6 +761,13 @@ fn drive_scope_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDri
                     // root's session to the program session it just forced
                     // into existence is what lets its own very next rooted
                     // read find the answer instead of asking again.
+                    // The program session answers one question at a time. A
+                    // root that asks while it is mid-drive, from a drain
+                    // beneath that drive, defers: its request stands and is
+                    // served again once the program session is free.
+                    if sessions.is_driving(ProductScope::Program) {
+                        return Ok(Driven::Deferred);
+                    }
                     sessions.observe(&address);
                     driver.link_external(sessions.program_handle());
                     match drive_program_product::<T, E>(world, tel, sessions, scope, address)? {
