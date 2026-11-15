@@ -377,6 +377,9 @@ pub(super) fn lower_function(
         });
     }
 
+    for diagnostic in super::scope::unused_variable_diagnostics(&surface.clauses) {
+        super::super::drive::ExecutionContext::new(world, tel).emit_warning_once(diagnostic);
+    }
     let mut lowerer = Lowerer::new(world, tel, function, &source, &surface);
     let (body, mut outputs, mut changed) = lowerer.lower()?;
     emit_ownership_work(
@@ -2608,8 +2611,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             result: reraised,
         };
 
-        let mut free = HashSet::default();
-        collect_expr_free_names(&after.node, &mut HashSet::default(), &mut free);
+        let free = super::scope::free_names(&after.node);
         let captures = self.capture_values(free, env);
         let value = self.fresh_value();
         steps.push(ExprStep::Try(Box::new(ExprTry {
@@ -2670,9 +2672,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         )?;
         let mut handler_steps = Vec::new();
         let bindings = self.lower_dispatch_bindings(&plan, env, &mut handler_steps)?;
-        let mut free = HashSet::default();
-        collect_rescue_clause_free_names(rescue, &mut HashSet::default(), &mut free);
-        collect_catch_clause_free_names(catch, &mut HashSet::default(), &mut free);
+        let free = super::scope::handler_free_names(rescue, catch);
         let captures = self.capture_values(free, env);
         let arm_blocks = plan
             .outcomes
@@ -2767,7 +2767,10 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             let span = rescue.span;
             let pattern = |pattern: Pattern| Spanned::new(pattern, span);
             let error = pattern(Pattern::Atom(ERROR_KIND.to_string()));
-            let bound = rescue.binding.clone().map(Pattern::Var).unwrap_or(Pattern::Wildcard);
+            let bound = rescue
+                .binding
+                .as_ref()
+                .map_or(Pattern::Wildcard, |binding| Pattern::Var(binding.node.clone()));
             let wrap_row = PatternRow {
                 patterns: vec![error.clone(), pattern(Pattern::Wildcard), pattern(Pattern::Nil)],
                 preconditions: Vec::new(),
@@ -2828,7 +2831,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 let clause = &rescue[clause];
                 if let (true, Some(binding)) = (wraps, &clause.binding) {
                     let wrapped = self.push_erlang_error(raised, &mut steps);
-                    env.insert(binding.clone(), wrapped);
+                    env.insert(binding.node.clone(), wrapped);
                 }
                 &clause.body
             }
@@ -2891,9 +2894,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         steps: &mut Vec<ExprStep>,
     ) {
         let stacktrace = Var::user(crate::ast::STACKTRACE);
-        let mut free = HashSet::default();
-        collect_expr_free_names(&body.node, &mut HashSet::default(), &mut free);
-        if !free.contains(&stacktrace) {
+        if !super::scope::free_names(&body.node).contains(&stacktrace) {
             return;
         }
         let value = self.fresh_value();
@@ -3106,13 +3107,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         after: Option<&AfterClause>,
         env: &HashMap<Var, ValueId>,
     ) -> Vec<ValueId> {
-        let mut free = HashSet::default();
-        let mut bound = HashSet::default();
-        collect_match_clause_free_names(clauses, &mut bound, &mut free);
-        if let Some(after) = after {
-            collect_expr_free_names(&after.timeout.node, &mut HashSet::default(), &mut free);
-            collect_expr_free_names(&after.body.node, &mut HashSet::default(), &mut free);
-        }
+        let free =
+            super::scope::receive_free_names(clauses, after.map(|after| (&after.timeout.node, &after.body.node)));
         let mut captures = free
             .into_iter()
             .filter_map(|name| env.get(&name).copied())
@@ -3168,7 +3164,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             attrs: Vec::new(),
             span,
         };
-        let mut capture_params = lambda_free_names(clauses)
+        let mut capture_params = super::scope::lambda_free_names(clauses)
             .into_iter()
             .filter(|name| env.contains_key(name))
             .collect::<Vec<_>>();
@@ -4690,328 +4686,6 @@ pub(super) fn child_entries(tail: &LoweredTail) -> impl Iterator<Item = ControlE
         .iter()
         .map(|edge| edge.target)
         .chain(beside_the_outcomes.into_iter().flatten())
-}
-
-fn lambda_free_names(clauses: &[LambdaClause]) -> HashSet<Var> {
-    let mut free = HashSet::default();
-    for clause in clauses {
-        let mut bound = HashSet::default();
-        // A pin in a parameter names a value bound before the clause began, so
-        // the lambda has to close over it just like a body reference. Free
-        // names come first, against the empty pre-pattern scope, because the
-        // parameters bind nothing a sibling parameter's pin may reach.
-        for param in &clause.params {
-            collect_pattern_free_names(&param.node, &mut bound, &mut free);
-        }
-        for param in &clause.params {
-            bind_pattern_names(&param.node, &mut bound);
-        }
-        if let Some(guard) = &clause.guard {
-            collect_expr_free_names(&guard.node, &mut bound, &mut free);
-        }
-        collect_expr_free_names(&clause.body.node, &mut bound, &mut free);
-    }
-    free
-}
-
-fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<Var>) {
-    match pattern {
-        Pattern::Var(name) | Pattern::Pinned(name) => {
-            bound.insert(name.clone());
-        }
-        Pattern::Tuple(items) => {
-            for item in items {
-                bind_pattern_names(&item.node, bound);
-            }
-        }
-        Pattern::List(items, tail) => {
-            for item in items {
-                bind_pattern_names(&item.node, bound);
-            }
-            if let Some(tail) = tail {
-                bind_pattern_names(&tail.node, bound);
-            }
-        }
-        Pattern::Both(left, right) => {
-            bind_pattern_names(&left.node, bound);
-            bind_pattern_names(&right.node, bound);
-        }
-        Pattern::Map(entries) => {
-            for (key, value) in entries {
-                bind_pattern_names(&key.node, bound);
-                bind_pattern_names(&value.node, bound);
-            }
-        }
-        Pattern::Struct { fields, .. } => {
-            for (_, value) in fields {
-                bind_pattern_names(&value.node, bound);
-            }
-        }
-        Pattern::Bitstring(fields) => {
-            for field in fields {
-                bind_pattern_names(&field.value.node, bound);
-            }
-        }
-        Pattern::Wildcard
-        | Pattern::Int(_)
-        | Pattern::Float(_)
-        | Pattern::Binary(_)
-        | Pattern::Atom(_)
-        | Pattern::Bool(_)
-        | Pattern::Nil => {}
-    }
-}
-
-fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<Var>, free: &mut HashSet<Var>) {
-    match expr {
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Binary(_)
-        | Expr::Atom(_)
-        | Expr::Bool(_)
-        | Expr::Nil
-        | Expr::Alias(_)
-        | Expr::Module(_)
-        | Expr::BoundFunction(_)
-        | Expr::FnRef { .. }
-        | Expr::CaptureArg(_) => {}
-        // A quote's own text names quoted data, not a real reference to
-        // anything in the enclosing scope. Its `unquote` splices are
-        // ordinary code, already decoded, so they contribute captures like
-        // any other expression.
-        Expr::Quote(_, splices) => {
-            for spliced in splices {
-                collect_expr_free_names(&spliced.node, bound, free);
-            }
-        }
-        Expr::Capture(body) => collect_expr_free_names(&body.node, bound, free),
-        Expr::Var(name) => {
-            if !bound.contains(name) {
-                free.insert(name.clone());
-            }
-        }
-        Expr::List(items, tail) => {
-            for item in items {
-                collect_expr_free_names(&item.node, bound, free);
-            }
-            if let Some(tail) = tail {
-                collect_expr_free_names(&tail.node, bound, free);
-            }
-        }
-        Expr::Tuple(items) => {
-            for item in items {
-                collect_expr_free_names(&item.node, bound, free);
-            }
-        }
-        Expr::Bitstring(fields) => {
-            for field in fields {
-                collect_expr_free_names(&field.value.node, bound, free);
-            }
-        }
-        Expr::Map(entries) => {
-            for (key, value) in entries {
-                collect_expr_free_names(&key.node, bound, free);
-                collect_expr_free_names(&value.node, bound, free);
-            }
-        }
-        Expr::MapUpdate(base, entries) => {
-            collect_expr_free_names(&base.node, bound, free);
-            for (key, value) in entries {
-                collect_expr_free_names(&key.node, bound, free);
-                collect_expr_free_names(&value.node, bound, free);
-            }
-        }
-        Expr::Struct { fields, .. } => {
-            for (_, value) in fields {
-                collect_expr_free_names(&value.node, bound, free);
-            }
-        }
-        Expr::Index(base, key) => {
-            collect_expr_free_names(&base.node, bound, free);
-            collect_expr_free_names(&key.node, bound, free);
-        }
-        Expr::Call(callee, args) | Expr::ClosureCall(callee, args) => {
-            collect_expr_free_names(&callee.node, bound, free);
-            for arg in args {
-                collect_expr_free_names(&arg.node, bound, free);
-            }
-        }
-        Expr::BinOp(_, left, right) => {
-            collect_expr_free_names(&left.node, bound, free);
-            collect_expr_free_names(&right.node, bound, free);
-        }
-        Expr::UnOp(_, expr) | Expr::Ascribe(expr, _) | Expr::Unquote(expr) => {
-            collect_expr_free_names(&expr.node, bound, free)
-        }
-        Expr::If(cond, then_expr, else_expr) => {
-            collect_expr_free_names(&cond.node, bound, free);
-            let mut then_bound = bound.clone();
-            collect_expr_free_names(&then_expr.node, &mut then_bound, free);
-            if let Some(else_expr) = else_expr {
-                let mut else_bound = bound.clone();
-                collect_expr_free_names(&else_expr.node, &mut else_bound, free);
-            }
-        }
-        Expr::Case(subject, clauses) => {
-            if let Some(subject) = subject {
-                collect_expr_free_names(&subject.node, bound, free);
-            }
-            collect_match_clause_free_names(clauses, bound, free);
-        }
-        Expr::Cond(arms) => {
-            for (test, body) in arms {
-                let mut test_bound = bound.clone();
-                collect_expr_free_names(&test.node, &mut test_bound, free);
-                let mut body_bound = bound.clone();
-                collect_expr_free_names(&body.node, &mut body_bound, free);
-            }
-        }
-        Expr::With(bindings, body, else_clauses) => {
-            let saved = bound.clone();
-            for binding in bindings {
-                match binding {
-                    WithBinding::Bare(expr) => collect_expr_free_names(&expr.node, bound, free),
-                    WithBinding::Match(pattern, expr) => {
-                        collect_expr_free_names(&expr.node, bound, free);
-                        collect_pattern_free_names(&pattern.node, bound, free);
-                        bind_pattern_names(&pattern.node, bound);
-                    }
-                }
-            }
-            collect_expr_free_names(&body.node, bound, free);
-            *bound = saved;
-            collect_match_clause_free_names(else_clauses, bound, free);
-        }
-        Expr::Try {
-            body,
-            rescue,
-            catch,
-            else_clauses,
-            after,
-        } => {
-            collect_expr_free_names(&body.node, &mut bound.clone(), free);
-            collect_rescue_clause_free_names(rescue, bound, free);
-            collect_catch_clause_free_names(catch, bound, free);
-            collect_match_clause_free_names(else_clauses, bound, free);
-            if let Some(after) = after {
-                collect_expr_free_names(&after.node, &mut bound.clone(), free);
-            }
-        }
-        Expr::Receive { clauses, after } => {
-            collect_match_clause_free_names(clauses, bound, free);
-            if let Some(after) = after {
-                collect_expr_free_names(&after.timeout.node, bound, free);
-                collect_expr_free_names(&after.body.node, bound, free);
-            }
-        }
-        Expr::Match(pattern, rhs) => {
-            collect_expr_free_names(&rhs.node, bound, free);
-            collect_pattern_free_names(&pattern.node, bound, free);
-            bind_pattern_names(&pattern.node, bound);
-        }
-        Expr::Block(exprs) => {
-            for expr in exprs {
-                collect_expr_free_names(&expr.node, bound, free);
-            }
-        }
-        Expr::Lambda { clauses, .. } => {
-            for clause in clauses {
-                let mut lambda_bound = bound.clone();
-                for param in &clause.params {
-                    bind_pattern_names(&param.node, &mut lambda_bound);
-                }
-                if let Some(guard) = &clause.guard {
-                    collect_expr_free_names(&guard.node, &mut lambda_bound, free);
-                }
-                collect_expr_free_names(&clause.body.node, &mut lambda_bound, free);
-            }
-        }
-    }
-}
-
-fn collect_pattern_free_names(pattern: &Pattern, bound: &mut HashSet<Var>, free: &mut HashSet<Var>) {
-    match pattern {
-        Pattern::Pinned(name) => {
-            if !bound.contains(name) {
-                free.insert(name.clone());
-            }
-        }
-        Pattern::Tuple(items) => {
-            for item in items {
-                collect_pattern_free_names(&item.node, bound, free);
-            }
-        }
-        Pattern::List(items, tail) => {
-            for item in items {
-                collect_pattern_free_names(&item.node, bound, free);
-            }
-            if let Some(tail) = tail {
-                collect_pattern_free_names(&tail.node, bound, free);
-            }
-        }
-        Pattern::Both(left, right) => {
-            collect_pattern_free_names(&left.node, bound, free);
-            collect_pattern_free_names(&right.node, bound, free);
-        }
-        Pattern::Map(entries) => {
-            for (key, value) in entries {
-                collect_pattern_free_names(&key.node, bound, free);
-                collect_pattern_free_names(&value.node, bound, free);
-            }
-        }
-        Pattern::Struct { fields, .. } => {
-            for (_, value) in fields {
-                collect_pattern_free_names(&value.node, bound, free);
-            }
-        }
-        Pattern::Bitstring(fields) => {
-            for field in fields {
-                collect_pattern_free_names(&field.value.node, bound, free);
-            }
-        }
-        Pattern::Wildcard
-        | Pattern::Var(_)
-        | Pattern::Int(_)
-        | Pattern::Float(_)
-        | Pattern::Binary(_)
-        | Pattern::Atom(_)
-        | Pattern::Bool(_)
-        | Pattern::Nil => {}
-    }
-}
-
-fn collect_match_clause_free_names(clauses: &[MatchClause], bound: &mut HashSet<Var>, free: &mut HashSet<Var>) {
-    for clause in clauses {
-        let mut clause_bound = bound.clone();
-        collect_pattern_free_names(&clause.pattern.node, &mut clause_bound, free);
-        bind_pattern_names(&clause.pattern.node, &mut clause_bound);
-        if let Some(guard) = &clause.guard {
-            collect_expr_free_names(&guard.node, &mut clause_bound, free);
-        }
-        collect_expr_free_names(&clause.body.node, &mut clause_bound, free);
-    }
-}
-
-fn collect_rescue_clause_free_names(clauses: &[RescueClause], bound: &mut HashSet<Var>, free: &mut HashSet<Var>) {
-    for clause in clauses {
-        let mut clause_bound = bound.clone();
-        clause_bound.extend(clause.binding.iter().cloned());
-        collect_expr_free_names(&clause.body.node, &mut clause_bound, free);
-    }
-}
-
-fn collect_catch_clause_free_names(clauses: &[CatchClause], bound: &mut HashSet<Var>, free: &mut HashSet<Var>) {
-    for clause in clauses {
-        let mut clause_bound = bound.clone();
-        for pattern in [&clause.kind, &clause.value] {
-            collect_pattern_free_names(&pattern.node, &mut clause_bound, free);
-            bind_pattern_names(&pattern.node, &mut clause_bound);
-        }
-        if let Some(guard) = &clause.guard {
-            collect_expr_free_names(&guard.node, &mut clause_bound, free);
-        }
-        collect_expr_free_names(&clause.body.node, &mut clause_bound, free);
-    }
 }
 
 fn match_rows(clauses: &[MatchClause]) -> Vec<PatternRow<super::super::types::Ty>> {

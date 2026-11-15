@@ -7,7 +7,7 @@ defmodule Contracts do
   end
 
   defimpl Collectable, for: List do
-    def id(value), do: 42
+    def id(_value), do: 42
   end
 end
 defmodule User do

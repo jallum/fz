@@ -1,0 +1,5 @@
+:positive
+:same
+1
+"ab"
+:twice

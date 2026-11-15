@@ -1,7 +1,7 @@
 #---
 # purpose: a closure with no outer references captures nothing
 #---
-def mk(x), do: fn(y) -> y + 1 end
+def mk(_x), do: fn(y) -> y + 1 end
 def main() do
   f = mk(999)
   result = f.(5)

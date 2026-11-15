@@ -8,7 +8,7 @@ end
 
 defimpl P, for: List do
   @spec to_thing(list(integer)) :: atom
-  def to_thing(value), do: :ok
+  def to_thing(_value), do: :ok
 end
 
 def main(), do: P.to_thing([1])

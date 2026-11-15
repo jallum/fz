@@ -6,6 +6,6 @@ def dwrap(x), do: fz_resource_test_print_dtor(x)
 def main() do
   r1 = make_resource(7, &dwrap/1)
   r2 = r1
-  r3 = r2
+  _r3 = r2
   dbg(:before)
 end

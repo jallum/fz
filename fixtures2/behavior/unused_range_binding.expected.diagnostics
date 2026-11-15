@@ -1,0 +1,7 @@
+warning[lower/unused-variable]: variable "range" is unused (if the variable is not meant to be used, prefix it with an underscore)
+  --> fixtures2/behavior/unused_range_binding.fz:3:3
+   |
+3 |   range = 1..5
+   |   ^^^^^
+   |
+

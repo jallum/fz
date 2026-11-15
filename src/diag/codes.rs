@@ -57,6 +57,7 @@ pub const MACRO_OWN_MODULE_ITEM_CALL: DiagCode = DiagCode("macro/own-module-item
 pub const LOWER_UNSUPPORTED: DiagCode = DiagCode("lower/unsupported");
 pub const LOWER_UNBOUND: DiagCode = DiagCode("lower/unbound");
 pub const LOWER_TRY_ELSE_ONLY: DiagCode = DiagCode("lower/try-else-only");
+pub const LOWER_UNUSED_VARIABLE: DiagCode = DiagCode("lower/unused-variable");
 
 // ----- planner (post-.11.24) -----
 

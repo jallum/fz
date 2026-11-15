@@ -443,7 +443,7 @@ pub struct AfterClause {
 #[derive(Debug, Clone)]
 pub struct RescueClause {
     /// The variable the exception is bound to, when the head names one.
-    pub binding: Option<Var>,
+    pub binding: Option<Spanned<Var>>,
     /// The exceptions the clause takes, by module name. Empty takes every
     /// exception, the way a bare variable does.
     pub exceptions: Vec<ModuleName>,

@@ -1088,7 +1088,7 @@ fn decode_rescue_head(
     cursor: &QuotedSourceCursor,
     clause_span: Span,
     sources: &SourceMap,
-) -> Result<(Option<Var>, Vec<ModuleName>), QuotedSourceError> {
+) -> Result<(Option<Spanned<Var>>, Vec<ModuleName>), QuotedSourceError> {
     let invalid = |span: Span| {
         invalid_try(
             span,
@@ -1157,16 +1157,17 @@ fn rescue_binding(
     cursor: &QuotedSourceCursor,
     span: Span,
     sources: &SourceMap,
-) -> Result<Option<Option<Var>>, QuotedSourceError> {
+) -> Result<Option<Option<Spanned<Var>>>, QuotedSourceError> {
     let Some(node) = cursor.ast_node(sources)? else {
         return Ok(None);
     };
     if node.tail.is_list_like() {
         return Ok(None);
     }
-    Ok(match decode_pattern(cursor, Some(span), sources)?.node {
+    let pattern = decode_pattern(cursor, Some(span), sources)?;
+    Ok(match pattern.node {
         Pattern::Wildcard => Some(None),
-        Pattern::Var(var) => Some(Some(var)),
+        Pattern::Var(var) => Some(Some(Spanned::new(var, pattern.span))),
         _ => None,
     })
 }

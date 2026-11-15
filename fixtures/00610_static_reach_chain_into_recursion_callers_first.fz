@@ -15,5 +15,5 @@ def c6(x, junk), do: c7(x, junk)
 def c7(x, junk), do: c8(x, junk)
 def c8(x, junk), do: ping(x, junk)
 def ping(n, junk), do: pong(n, junk)
-def pong(0, junk), do: 0
+def pong(0, _junk), do: 0
 def pong(n, junk), do: ping(n - 1, junk)
