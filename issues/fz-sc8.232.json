@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T18:54:08Z",
   "created": "2026-11-15T16:17:10Z",
   "description": "fz-sc8.227 (#633) held BoundValue::Transport's lanes inline (SmallVec\u003c[W; 4]\u003e). That made every bound value larger, and programs that read no binary slower: at the CI profile (opt-level 1) fixture 01254 on interp went from 52.2G instructions / about 11.1G cycles to 47.7G / about 11.7G, and 01294 from 54.6G / 11.8G to 49.0G / 12.2G. Develop's coverage step is red from 107558626 onward: 01254 and 01294 exceed 20 s CPU on interp.\n\nWith the lanes back in a Vec and the other three changes of fz-sc8.227 kept (ExternTy::wire, extern_argument_words over slices, no pending-rest room until a rest is matched), same profile: 01254 46.9G / about 10.2G cycles, 01294 47.9G / about 10.7G, byte walk 24.8G / 4.9G (5.0G / 23.3G with inline lanes, 5.8G / 30.1G before fz-sc8.227). So the inline lanes bought nothing on the walk and cost 10 to 13% elsewhere.\n\nDone when: BoundValue::Transport.lanes is a Vec again, the three other changes stand, and the coverage step passes 01254 and 01294 on develop's push run.",
   "id": "fz-sc8.232",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 0,
-  "status": "open",
+  "status": "closed",
   "title": "A lane-form value in the interpreter is held in a list, not inline",
   "type": "bug",
-  "updated_at": "2026-11-15T18:46:17Z"
+  "updated_at": "2026-11-15T18:54:08Z"
 }
