@@ -243,7 +243,10 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // such freight share one activation.
         // (47_534, 48_946, 28) -> (47_447, 48_858, 28): `Enum.uniq` asks a map whether it has
         // seen a value, so the distiller no longer compiles a list scan for it.
-        (47_447, 48_858, 28),
+        // (47_447, 48_858, 28) -> (47_803, 49_224, 28): `JSON` reads a number by its grammar
+        // and converts its text with `Float.parse`, so the distiller compiles that grammar and
+        // the parse.
+        (47_803, 49_224, 28),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

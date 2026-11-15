@@ -1,0 +1,45 @@
+{"0", {:ok, 0}}
+{"-0", {:ok, 0}}
+{"01", {:error, {:invalid_byte, 1, 49}}}
+{"-01", {:error, {:invalid_byte, 2, 49}}}
+{"-", {:error, {:unexpected_end, 1}}}
+{"1.", {:error, {:unexpected_end, 2}}}
+{"1e", {:error, {:unexpected_end, 2}}}
+{"1e+", {:error, {:unexpected_end, 3}}}
+{"1E-", {:error, {:unexpected_end, 3}}}
+{".5", {:error, {:invalid_byte, 0, 46}}}
+{"+1", {:error, {:invalid_byte, 0, 43}}}
+{"-1.5e3", {:ok, -1500.0}}
+{"1e5", {:ok, 100000.0}}
+{"1E5", {:ok, 100000.0}}
+{"0e0", {:ok, 0.0}}
+{"-0e0", {:ok, 0.0}}
+{"-0.0", {:ok, -0.0}}
+{"0.1", {:ok, 0.1}}
+{"0.3", {:ok, 0.3}}
+{"1.0", {:ok, 1.0}}
+{"1e23", {:ok, 1.0e23}}
+{"1.7976931348623157e308", {:ok, 1.7976931348623157e308}}
+{"2.2250738585072014e-308", {:ok, 2.2250738585072014e-308}}
+{"5e-324", {:ok, 5.0e-324}}
+{"1e-400", {:ok, 0.0}}
+{"0.12345678901234567890", {:ok, 0.12345678901234568}}
+{"1e400", {:error, {:unexpected_sequence, 0, "1.0e400"}}}
+{"-1e400", {:error, {:unexpected_sequence, 0, "-1.0e400"}}}
+{"1E400", {:error, {:unexpected_sequence, 0, "1.0e400"}}}
+{"1.5e400", {:error, {:unexpected_sequence, 0, "1.5e400"}}}
+{"123456789012345678.5", {:ok, 1.2345678901234568e17}}
+{"9223372036854775807", {:ok, 9223372036854775807}}
+{"-9223372036854775808", {:ok, -9223372036854775808}}
+{"[1,01]", {:error, {:invalid_byte, 4, 49}}}
+{"[1e]", {:error, {:invalid_byte, 3, 93}}}
+{"[1e400]", {:error, {:unexpected_sequence, 1, "1.0e400"}}}
+{" 1e400", {:error, {:unexpected_sequence, 1, "1.0e400"}}}
+{"{\"a\": 1E+400}", {:error, {:unexpected_sequence, 6, "1.0e+400"}}}
+{"{\"a\":1.}", {:error, {:invalid_byte, 7, 125}}}
+{"1.5x", {:error, {:invalid_byte, 3, 120}}}
+{"1ex", {:error, {:invalid_byte, 2, 120}}}
+{"-x", {:error, {:invalid_byte, 1, 120}}}
+{"00", {:error, {:invalid_byte, 1, 48}}}
+{"[-0, 1, 2.5]", {:ok, [0, 1, 2.5]}}
+{"[3, -4.25e-2, 17]", {:ok, [3, -0.0425, 17]}}

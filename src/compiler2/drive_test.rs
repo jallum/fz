@@ -20351,27 +20351,11 @@ type PinnedLadder = (&'static str, &'static [PinnedAscent]);
 /// measured rather than a budget to spend; recursive denotations delete the
 /// table along with the climb. The ladder is a population as much as a height.
 /// `return_tuple_ladder` is the bare case: one activation, seventeen revisions,
-/// widened.
-///
-/// How deep json's recursive value type climbs before widening depends on
-/// when its readers first observe the intermediate rungs: asking a contract
-/// callee's keying facts early lets one more nesting rung be observed, so
-/// `JSON.array/2` and `JSON.array_next/2` each take one extra revision to
-/// settle.
-///
-/// A construction `[v | acc]` is a forwarding edge, so `JSON.array_element/2`
-/// and `JSON.array_item/2` inherit `JSON.array_next/2`'s `ListShape` demand on
-/// `acc` and are keyed per accumulator depth, as `JSON.array_next/2` always was.
+/// widened. `json_roundtrip`'s recursive value type settles within the ceiling,
+/// so its row is empty: a climb there is a regression this table reports.
 const RETURN_LADDERS: &[PinnedLadder] = &[
     ("fixtures2/behavior/return_tuple_ladder.fz", &[("build/1", 17, true)]),
-    (
-        "fixtures2/behavior/json_roundtrip.fz",
-        &[
-            ("JSON.array/2", 6, false),
-            ("JSON.array_element/2", 6, false),
-            ("JSON.array_item/2", 6, false),
-        ],
-    ),
+    ("fixtures2/behavior/json_roundtrip.fz", &[]),
 ];
 
 /// The other four `json_*` fixtures share this one's decode loop and measure the

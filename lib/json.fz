@@ -70,6 +70,11 @@ defmodule JSON do
   pair of escapes, starting at the backslash. A high surrogate without a
   complete following Unicode escape is `unexpected_end`.
 
+  A number is also an `unexpected_sequence` when its value does not fit: a
+  float beyond the double range, or an integer beyond 64 bits. `offset` is
+  where the number starts and `sequence` is its text. Elixir decodes such an
+  integer as a big integer; fz integers are 64-bit, so it is an error here.
+
   ## Examples
 
       JSON.decode("{\\"a\\": 1}")
@@ -83,6 +88,9 @@ defmodule JSON do
 
       JSON.decode("\\"a\\\\uZZZZb\\"")
       #=> {:error, {:unexpected_sequence, 2, "\\\\uZZZZ"}}
+
+      JSON.decode("[1, 1e400]")
+      #=> {:error, {:unexpected_sequence, 4, "1.0e400"}}
 
       JSON.decode(<<34, 255, 34>>)
       #=> {:error, {:invalid_byte, 1, 255}}
@@ -146,9 +154,7 @@ defmodule JSON do
   # starts at the offending byte: the offset is the difference in lengths and
   # the byte is the first one left.
   @spec reason(any, binary) :: any
-  defp reason({:sequence, at, size}, input) do
-    {:unexpected_sequence, offset(at, input), String.take_bytes(at, size)}
-  end
+  defp reason({:sequence, at, bytes}, input), do: {:unexpected_sequence, offset(at, input), bytes}
   defp reason("", input), do: {:unexpected_end, Kernel.byte_size(input)}
   defp reason(rest, input), do: invalid_byte(rest, offset(rest, input))
 
@@ -294,7 +300,7 @@ defmodule JSON do
   defp val(<<"\"", r :: binary>>), do: string(r, r, "")
   defp val(<<"[", r :: binary>>), do: array(skip_ws(r), [])
   defp val(<<"{", r :: binary>>), do: object(skip_ws(r), %{})
-  defp val(<<"-", r :: binary>>), do: negate(number(r))
+  defp val(b = <<"-", _ :: binary>>), do: number(b)
   defp val(b = <<c, _ :: binary>>) when c >= 48 and c <= 57, do: number(b)
   # Once a token starts with `t`, `f` or `n` the decoder is committed to a
   # keyword: it either reads the whole one or runs out, and a token that does
@@ -307,63 +313,101 @@ defmodule JSON do
   defp val(<<110, _r :: binary>>), do: {:error, ""}
   defp val(b), do: {:error, b}
 
-  @spec negate(any) :: any
-  defp negate({:ok, n, r}), do: {:ok, -n, r}
-  defp negate(other), do: other
-
-  # An integer unless a fraction follows, which is how JSON distinguishes them.
+  # A number is read in two steps. The grammar alone finds where it ends:
+  #
+  #     -? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?
+  #
+  # and its value comes from its text. An integer's digits are added up as
+  # they are scanned. A float's text goes to `Float.parse/1`, which rounds
+  # correctly; building a float out of digit arithmetic does not. Every
+  # function here carries `start`, where the number began, so the text is one
+  # slice taken once at the end.
   @spec number(binary) :: any
-  defp number(b), do: fraction(digits(b, 0))
+  defp number(start = <<"-", r :: binary>>), do: integer_lead(start, r, -1)
+  defp number(start), do: integer_lead(start, start, 1)
 
-  @spec digits(binary, integer) :: {integer, binary}
-  defp digits(<<c, r :: binary>>, acc) when c >= 48 and c <= 57, do: digits(r, acc * 10 + (c - 48))
-  defp digits(b, acc), do: {acc, b}
-
-  @spec fraction({integer, binary}) :: any
-  defp fraction({whole, <<".", r :: binary>>}), do: fraction_digits(r, whole, 0, 1)
-  defp fraction({whole, b}), do: exponent(whole, b)
-
-  @spec fraction_digits(binary, integer, integer, integer) :: any
-  defp fraction_digits(<<c, r :: binary>>, whole, num, den) when c >= 48 and c <= 57 do
-    fraction_digits(r, whole, num * 10 + (c - 48), den * 10)
+  @spec integer_lead(binary, binary, integer) :: any
+  defp integer_lead(start, <<"0", r :: binary>>, _sign), do: after_integer(start, r, 0)
+  defp integer_lead(start, <<c, r :: binary>>, sign) when c >= 49 and c <= 57 do
+    integer_digits(start, r, sign * (c - 48), sign)
   end
-  defp fraction_digits(b, whole, num, den), do: exponent(whole + num / den, b)
+  defp integer_lead(_start, b, _sign), do: {:error, b}
 
-  # `1e3`, `1.5E-2`. JSON allows an exponent on an integer too, and the result
-  # is a float either way: `1e3` is `1.0e3`, not `1000`.
-  @spec exponent(integer | float, binary) :: any
-  defp exponent(n, <<"e", r :: binary>>), do: exponent_sign(n, r)
-  defp exponent(n, <<"E", r :: binary>>), do: exponent_sign(n, r)
-  defp exponent(n, b), do: {:ok, n, b}
-
-  @spec exponent_sign(integer | float, binary) :: any
-  defp exponent_sign(n, <<"-", r :: binary>>), do: exponent_digits(n, r, 0, -1)
-  defp exponent_sign(n, <<"+", r :: binary>>), do: exponent_digits(n, r, 0, 1)
-  defp exponent_sign(n, b), do: exponent_digits(n, b, 0, 1)
-
-  @spec exponent_digits(integer | float, binary, integer, integer) :: any
-  defp exponent_digits(n, <<c, r :: binary>>, acc, sign) when c >= 48 and c <= 57 do
-    exponent_digits(n, r, acc * 10 + (c - 48), sign)
+  @spec integer_digits(binary, binary, integer | :overflow, integer) :: any
+  defp integer_digits(start, <<c, r :: binary>>, acc, sign) when c >= 48 and c <= 57 do
+    integer_digits(start, r, integer_step(acc, c - 48, sign), sign)
   end
-  defp exponent_digits(n, b, acc, sign), do: {:ok, scale(n * 1.0, acc, sign), b}
+  defp integer_digits(start, b, acc, _sign), do: after_integer(start, b, acc)
 
-  # One multiply or divide by an exact power of ten, rather than `e` of them.
-  # Scaling step by step accumulates rounding: seven divisions by 10.0 turn
-  # `1.0e-7` into `1.0000000000000002e-7`, a different double that renders
-  # differently. Powers of ten up to 10^22 are exact in a float, so building
-  # the power first and applying it once is correctly rounded over the range
-  # JSON numbers use.
-  @spec scale(float, integer, integer) :: float
-  defp scale(n, 0, _sign), do: n
-  defp scale(n, e, sign), do: apply_scale(n, pow10(e, 1.0), sign)
+  # Integers are 64-bit, so a digit that would carry the value past either end
+  # turns it into `:overflow` instead of raising. The scan still finds where
+  # the number ends, and the whole number is reported.
+  @spec integer_step(integer | :overflow, integer, integer) :: integer | :overflow
+  defp integer_step(:overflow, _d, _sign), do: :overflow
+  defp integer_step(acc, _d, 1) when acc > 922337203685477580, do: :overflow
+  defp integer_step(922337203685477580, d, 1) when d > 7, do: :overflow
+  defp integer_step(acc, d, 1), do: acc * 10 + d
+  defp integer_step(acc, _d, _sign) when acc < -922337203685477580, do: :overflow
+  defp integer_step(-922337203685477580, d, _sign) when d > 8, do: :overflow
+  defp integer_step(acc, d, _sign), do: acc * 10 - d
 
-  @spec apply_scale(float, float, integer) :: float
-  defp apply_scale(n, p, sign) when sign > 0, do: n * p
-  defp apply_scale(n, p, _sign), do: n / p
+  # A digit can only follow the integer part when that part is a lone `0`, so
+  # `01` stops at the `1`.
+  @spec after_integer(binary, binary, integer | :overflow) :: any
+  defp after_integer(_start, b = <<c, _r :: binary>>, _acc) when c >= 48 and c <= 57, do: {:error, b}
+  defp after_integer(start, <<".", r :: binary>>, _acc), do: fraction_first(start, r)
+  defp after_integer(start, <<"e", r :: binary>>, acc), do: exponent_sign(start, r, {:exponent_only, acc})
+  defp after_integer(start, <<"E", r :: binary>>, acc), do: exponent_sign(start, r, {:exponent_only, acc})
+  defp after_integer(start, b, :overflow), do: {:error, {:sequence, start, token(start, b)}}
+  defp after_integer(_start, b, acc), do: {:ok, acc, b}
 
-  @spec pow10(integer, float) :: float
-  defp pow10(0, acc), do: acc
-  defp pow10(e, acc), do: pow10(e - 1, acc * 10.0)
+  @spec fraction_first(binary, binary) :: any
+  defp fraction_first(start, <<c, r :: binary>>) when c >= 48 and c <= 57, do: fraction_digits(start, r)
+  defp fraction_first(_start, b), do: {:error, b}
+
+  @spec fraction_digits(binary, binary) :: any
+  defp fraction_digits(start, <<c, r :: binary>>) when c >= 48 and c <= 57, do: fraction_digits(start, r)
+  defp fraction_digits(start, <<"e", r :: binary>>), do: exponent_sign(start, r, :fraction)
+  defp fraction_digits(start, <<"E", r :: binary>>), do: exponent_sign(start, r, :fraction)
+  defp fraction_digits(start, b), do: float(start, b, :fraction)
+
+  @spec exponent_sign(binary, binary, any) :: any
+  defp exponent_sign(start, <<"-", r :: binary>>, shape), do: exponent_first(start, r, shape)
+  defp exponent_sign(start, <<"+", r :: binary>>, shape), do: exponent_first(start, r, shape)
+  defp exponent_sign(start, b, shape), do: exponent_first(start, b, shape)
+
+  @spec exponent_first(binary, binary, any) :: any
+  defp exponent_first(start, <<c, r :: binary>>, shape) when c >= 48 and c <= 57, do: exponent_digits(start, r, shape)
+  defp exponent_first(_start, b, _shape), do: {:error, b}
+
+  @spec exponent_digits(binary, binary, any) :: any
+  defp exponent_digits(start, <<c, r :: binary>>, shape) when c >= 48 and c <= 57, do: exponent_digits(start, r, shape)
+  defp exponent_digits(start, b, shape), do: float(start, b, shape)
+
+  # Elixir converts an exponent without a fraction as `<integer>.0e<exponent>`.
+  # Two things follow, and fz keeps both: a float out of range reports that
+  # rewritten text (`1E400` is reported as `"1.0e400"`), and an integer part of
+  # zero is converted without its sign, so `-0e0` is `0.0`.
+  @spec float(binary, binary, any) :: any
+  defp float(_start, b, {:exponent_only, 0}), do: {:ok, 0.0, b}
+  defp float(start, b, shape), do: float_value(Float.parse(token(start, b)), start, b, shape)
+
+  @spec float_value({float, binary} | :error, binary, binary, any) :: any
+  defp float_value({f, ""}, _start, b, _shape), do: {:ok, f, b}
+  defp float_value(_error, start, b, :fraction), do: {:error, {:sequence, start, token(start, b)}}
+  defp float_value(_error, start, b, _exponent_only) do
+    text = token(start, b)
+    {:error, {:sequence, start, with_point(text, text)}}
+  end
+
+  @spec with_point(binary, binary) :: binary
+  defp with_point(text, <<c, exponent :: binary>>) when c == 101 or c == 69 do
+    String.take_bytes(text, byte_size(text) - byte_size(exponent) - 1) <> ".0e" <> exponent
+  end
+  defp with_point(text, <<_c, r :: binary>>), do: with_point(text, r)
+
+  @spec token(binary, binary) :: binary
+  defp token(start, rest), do: String.take_bytes(start, byte_size(start) - byte_size(rest))
 
   # `string(start, rest, acc)` scans plain bytes (printable ASCII other than
   # `"` and `\`): `start` is where the current run began and `rest` what is
@@ -426,9 +470,9 @@ defmodule JSON do
   # carries where it started rather than where it stopped. An unknown simple
   # escape is an ordinary invalid_byte and needs none of this.
   @spec unicode(binary, binary, integer | :error, binary) :: any
-  defp unicode(_r, _acc, :error, at), do: {:error, {:sequence, at, 6}}
+  defp unicode(_r, _acc, :error, at), do: {:error, {:sequence, at, String.take_bytes(at, 6)}}
   defp unicode(r, acc, cp, at) when cp >= 0xd800 and cp <= 0xdbff, do: unicode_high(r, acc, cp, at)
-  defp unicode(_r, _acc, cp, at) when cp >= 0xdc00 and cp <= 0xdfff, do: {:error, {:sequence, at, 6}}
+  defp unicode(_r, _acc, cp, at) when cp >= 0xdc00 and cp <= 0xdfff, do: {:error, {:sequence, at, String.take_bytes(at, 6)}}
   defp unicode(r, acc, cp, at), do: unicode_scalar(r, acc, Utf8.from_codepoint(cp), at, 6)
 
   @spec unicode_high(binary, binary, integer, binary) :: any
@@ -438,12 +482,12 @@ defmodule JSON do
   defp unicode_high(_r, _acc, _high, _at), do: {:error, ""}
 
   @spec unicode_low(binary, binary, integer, integer | :error, binary) :: any
-  defp unicode_low(_r, _acc, _high, :error, at), do: {:error, {:sequence, at, 12}}
+  defp unicode_low(_r, _acc, _high, :error, at), do: {:error, {:sequence, at, String.take_bytes(at, 12)}}
   defp unicode_low(r, acc, high, low, at) when low >= 0xdc00 and low <= 0xdfff do
     codepoint = 0x10000 + (high - 0xd800) * 0x400 + (low - 0xdc00)
     unicode_scalar(r, acc, Utf8.from_codepoint(codepoint), at, 12)
   end
-  defp unicode_low(_r, _acc, _high, _low, at), do: {:error, {:sequence, at, 12}}
+  defp unicode_low(_r, _acc, _high, _low, at), do: {:error, {:sequence, at, String.take_bytes(at, 12)}}
 
   @spec unicode_scalar(binary, binary, {:ok, utf8} | {:error, :invalid_codepoint}, binary, integer) :: any
   defp unicode_scalar(r, acc, {:ok, scalar}, _at, _size), do: string(r, r, acc <> Utf8.to_bytes(scalar))
