@@ -1,7 +1,8 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
-    "fz-nml.17"
+    "fz-nml.17",
+    "fz-nml.20"
   ],
   "blocks": [],
   "created": "2026-11-15T17:05:26Z",
@@ -13,5 +14,5 @@
   "status": "in_progress",
   "title": "One off-heap chain: BinRefs and resource stubs share it, as in OTP",
   "type": "task",
-  "updated_at": "2026-11-15T19:55:26Z"
+  "updated_at": "2026-11-15T21:47:38Z"
 }
