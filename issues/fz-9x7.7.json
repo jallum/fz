@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T01:16:18Z",
+  "description": "should_gc's floor is young_bytes \u003e= max(live_baseline, SIZE_TABLE[0]/2) = 512 B once live_baseline collapses; the major trigger's reference uses the same 512 B (next_generation). No measurement justifies it: inherited tip geometry (fz-gl6 d2ecc9d48, fz-sc8.184.3 888ec526f). Measured (/private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/9x7-gc/notes.md round 2): trickle collects at 8,496 of 8,496 yields, each copying \u003c256 B; a parent/child ping-pong collects at ~78% of 320k round trips and runs majors at tiny heaps. A near-empty collection costs ~35-40k instructions (msg ~71k). Floor 4/16/64 KiB: msg instructions -27%/-43%/-55%, enum/dist/maps mean RSS unchanged at 4-16 KiB; spin/trickle instructions only -0.4..-1.2%. Failed the pre-registered rule (2 of 3 near-empty workloads) because only msg gains. Next: an experiment across several message-passing workloads (fan-in, ring, request/reply with payloads) with the rule fixed first; derive the floor from what a collection costs vs the bytes it can reclaim rather than picking a constant.",
+  "id": "fz-9x7.7",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 2,
+  "status": "open",
+  "title": "A process with a nearly empty young generation does not collect at every park or yield",
+  "type": "task",
+  "updated_at": "2026-11-15T01:16:18Z"
+}
