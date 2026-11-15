@@ -7,7 +7,7 @@
     "fz-9zq.5"
   ],
   "created": "2026-11-15T03:40:18Z",
-  "description": "Step R2 of fz-9zq. Buys: Enum.reduce([1,2], :start, fn x, acc -\u003e {x, acc} end) compiles (no ticket before; develop hangs at 4,312 AA / 2,872 keys; probe: 115 AA, {2, {1, :start}}). The paper's call-site rule: per (callee, slot) widened pattern; a covered argument is keyed as the pattern; recursive callees only.\nOpen (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/mu2/round3.md): the probe made the distiller exit 1 with internal/unresolved-wait and raised 00420 AA 741/745 -\u003e 925/846. Hypothesis (unconfirmed): the key was re-keyed without re-keying the evidence. Start by confirming that mechanism.\n\n## BLOCKED BY\n\n- ○ fz-9zq.1 P2 A type that repeats itself folds at the point it grew\nAlso red under R1 (2026-11-15): Enum.reduce([1,2,3], [], fn x, acc -\u003e [{x, acc} | acc] end) hangs on develop (7,758 AA) and under R1 (8,090 AA); same family (scratch mu2/r1/ord/reduce_cons_tuple.fz).",
+  "description": "Step R2 of fz-9zq. Buys: Enum.reduce([1,2], :start, fn x, acc -\u003e {x, acc} end) compiles (no ticket before; develop hangs at 4,312 AA / 2,872 keys; probe: 115 AA, {2, {1, :start}}). The paper's call-site rule: per (callee, slot) widened pattern; a covered argument is keyed as the pattern; recursive callees only.\nOpen (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/mu2/round3.md): the probe made the distiller exit 1 with internal/unresolved-wait and raised 00420 AA 741/745 -\u003e 925/846. Hypothesis (unconfirmed): the key was re-keyed without re-keying the evidence. Start by confirming that mechanism.\nAlso red under R1 (2026-11-15): Enum.reduce([1,2,3], [], fn x, acc -\u003e [{x, acc} | acc] end) hangs on develop (7,758 AA) and under R1 (8,090 AA); same family (scratch mu2/r1/ord/reduce_cons_tuple.fz).",
   "id": "fz-9zq.2",
   "labels": [],
   "parent": "fz-9zq",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "A recursive callee's new call is widened against its previous call",
   "type": "task",
-  "updated_at": "2026-11-15T05:05:49Z"
+  "updated_at": "2026-11-15T05:05:58Z"
 }
