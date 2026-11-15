@@ -73,9 +73,8 @@ code names it by symbol, not by Rust path — and it is then not in the process
 for `dlsym` to find. With it, `fz_extern_symbol_addr` finds fz's own exports
 the same way it finds `sqrt`. The arithmetic and comparison exports stay
 reachable for interpreter execution, JIT resolution, and AOT linking. Not
-exporting by default is what made
-`fz_bitstring_is_binary` resolve on macOS and die on Linux with
-`can't resolve symbol` while the whole six-target local gate was green.
+exporting by default made a runtime function resolve on macOS and die on Linux
+with `can't resolve symbol` while the whole six-target local gate was green.
 
 There is no variadic form of the `fz` ABI: a variadic call's parameter list is
 built per call site from the C rules alone, which leaves nowhere to put the

@@ -11,13 +11,9 @@
 # `Protocol.UndefinedError` with "cannot convert a bitstring to a string" for
 # anything else (elixir/lib/elixir/lib/string/chars.ex:39).
 #
-# fz's type system does not draw that line -- `<<1::4>>` satisfies a
-# `s :: binary` clause head (fz-5xp.42) -- so the impl asks at runtime.
-#
-# Without the check the impl returned `<<1::4>>` unchanged, which violates the
-# protocol's own `:: binary` result type. The damage showed up later and
-# elsewhere: the next `<>` aborted inside `fz_binary_concat` with a
-# byte-alignment assertion, far from the call that actually went wrong.
+# fz draws that line in its types: `<<1::4>>` is a bitstring and not a binary,
+# so the `s :: binary` clause head does not take it and the impl's second
+# clause raises.
 def main() do
   dbg(to_string(<<1::4>>))
 end

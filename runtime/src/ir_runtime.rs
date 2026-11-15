@@ -1132,23 +1132,6 @@ pub extern "C" fn fz_pinned_binary_segment_size(ref_word: u64) -> u32 {
     u32::try_from(bit_len / 8).unwrap_or(u32::MAX)
 }
 
-/// Is this bitstring byte-aligned -- a `binary` rather than a partial
-/// `bitstring`?
-///
-/// `String.Chars` for bitstrings and `JSON.encode!` take a bitstring of any bit
-/// length and turn on this answer -- the value for a binary, a raise for anything
-/// else.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_bitstring_is_binary(ref_word: u64) -> i64 {
-    let Some(p) = bitstring_like_word(ref_word) else {
-        return 0;
-    };
-    if !is_bitstring_like(p) {
-        return 0;
-    }
-    i64::from((unsafe { bitstring_bit_len(p) } as usize).is_multiple_of(8))
-}
-
 fn byte_aligned_binary_slice(word: u64, context: &str) -> (*const u8, usize) {
     let p = bitstring_like_word(word).unwrap_or_else(|| panic!("{context}: expected binary"));
     assert!(is_bitstring_like(p), "{context}: expected binary");
