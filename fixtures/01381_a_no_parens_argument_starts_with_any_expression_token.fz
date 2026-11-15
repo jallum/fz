@@ -1,8 +1,8 @@
 #---
 # purpose: "a no-parens call argument begins with any token an expression begins with, including `not` and a struct literal, and a for pattern may be `_`"
 # kind: run
-# oracle: 01381_a_no_parens_argument_starts_with_any_expression_token.oracle.exs
-# oracle.stamp: a5483cfb1f647922
+# oracle: self
+# oracle.stamp: 7af2445f0ff34691
 #---
 # A no-parens call argument may begin with any token an expression begins
 # with: `not` and a struct literal here, and `_` as a `for` pattern.
