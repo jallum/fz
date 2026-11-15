@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-15T14:44:02Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-3sy",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "An error in code a macro quoted is reported where the macro was called",
   "type": "bug",
-  "updated_at": "2026-11-15T14:44:02Z"
+  "updated_at": "2026-11-15T16:14:25Z"
 }
