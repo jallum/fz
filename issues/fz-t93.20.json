@@ -5,7 +5,7 @@
     "fz-t93.22"
   ],
   "created": "2026-11-15T03:39:12Z",
-  "description": "Step of fz-t93 (plan: /Users/j5n/Workspace/fz-next.html, E2). Drain arbitration's 7 passes cost 1.26G, 8% of the distiller run (develop c7edccd4a, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_6/round5.md). Buys: up to 8% instructions; how much is recoverable is unknown. Paper first: name which pass decides what and which passes re-ask a question whose answer did not change; predictions before any probe.",
+  "description": "Step of fz-t93 (E2), restated 2026-11-15 to T1 on approval of page /Users/j5n/Workspace/fz-t93.20.html (https://claude.ai/artifact/H1Xvm68Ef53dVDH2ThFhiC). The re-certification finding is fz-t93.22 (T2).\n\nT1: (1) quiescent_cone visits each publisher once and returns the publishers it found; certify uses that list instead of re-collecting a HashSet (cone pops 766,771 -\u003e 115,790). (2) A readiness-only FactChange whose fact has no Settled waiter skips the content heap (exact: dispatch only removes waiters). The certify sort stays (it keeps emitted change order deterministic). Delete the stale scan-shaped-drain-pass comment in drive.rs.\n\nMeasured on develop d032c7368 (probe t1.diff, scratch t93_20/e2/): distiller 12.278G -\u003e 12.095G (-1.49%, n=3 interleaved, fz-engine's own A/B), output byte-identical, wakes 24 -\u003e 24, no pin moved in fz-engine / fz2_cli drain-arbiter / distill_telemetry tests.\n\nRed first: a fz-engine test where one publisher publishes many cone facts and is checked once, observed through a walk count added to the drain's quiesced telemetry. Docs: fact-engine.md drain section. Bar: byte-identical output, no pin rises without approval.",
   "id": "fz-t93.20",
   "labels": [],
   "parent": "fz-t93",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A drain certifies each publisher once, and a readiness change nobody waits on skips the heap",
   "type": "task",
-  "updated_at": "2026-11-15T13:28:30Z"
+  "updated_at": "2026-11-15T13:28:43Z"
 }
