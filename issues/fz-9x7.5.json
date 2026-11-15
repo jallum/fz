@@ -9,9 +9,15 @@
   "id": "fz-9x7.5",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Re-measured on c5a03e198 with shim elision (/private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/9x7-gc/notes.md, gc-schedule-spike.patch). RSS at one trace length is dominated by the phase of the geometric major chain (steps of 60-100 MB when a major lands), so single-length RSS comparisons are confounded; judge on a length sweep or a time-integrated measure. Over the 11-length distiller sweep, mean RSS: shim 224, shim+reuse 233, reuse+budget80 207, reuse+budget60 197, s2 (collect at next safe point on budget crossing) 218, s2+budget80 213, base 237. Reuse alone wins clearly on 1M map/filter (RSS 260-\u003e192, 204-\u003e134; minors 48-\u003e15, 46-\u003e13; instructions -11%/-13%). Budget results are non-monotone across 70/80/90 under s2, which points at phase-fitting on one workload. Next experiment: a phase-robust metric (mean/peak over a length sweep) across several workloads, not the distiller alone, before any budget constant moves; S2 contradicts reduction-yielding.md and fails two scheduling pins.",
+      "timestamp": "2026-11-15T00:37:41Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Experiment: a stranded frame's memory is reused",
   "type": "task",
-  "updated_at": "2026-11-14T20:09:32Z"
+  "updated_at": "2026-11-15T00:37:41Z"
 }
