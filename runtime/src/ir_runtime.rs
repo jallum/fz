@@ -38,6 +38,7 @@ use crate::module_name::STRUCT_MODULE_FIELD;
 use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
     ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
+    referenced_byte_len,
 };
 use crate::process::{ClosureRef, Handler, Process};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource, fz_resource_destructor_noop};
@@ -1383,6 +1384,34 @@ pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_r
     let left_view = procbin_addr_from_tagged(left_ref).map(|addr| unsafe { ProcBin::from_raw(addr) });
     let value = unsafe { (&mut *process).heap.alloc_concatenation(left, left_view, right) };
     value.ref_word().raw_word()
+}
+
+/// `:binary.copy/2`: `count` repetitions of the binary, written straight into
+/// the one buffer the result lives in. The caller has checked `count >= 0`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_binary_copy(process: *mut Process, subject_ref: u64, count: i64) -> u64 {
+    let (ptr, len) = byte_aligned_binary_slice(subject_ref, "fz_binary_copy");
+    let subject = unsafe { from_raw_parts(ptr, len) };
+    let count = usize::try_from(count).expect("count is checked by :binary.copy/2");
+    let total = len.checked_mul(count).expect("a copy's size fits in memory");
+    let value = (unsafe { &mut *process })
+        .heap
+        .alloc_bitstring_with(total, (total * 8) as u64, |dest| {
+            if len > 0 {
+                for repetition in dest.chunks_exact_mut(len) {
+                    repetition.copy_from_slice(subject);
+                }
+            }
+        });
+    value.ref_word().raw_word()
+}
+
+/// `:binary.referenced_byte_size/1`: the byte count of the buffer the binary
+/// references, which is its own size unless it is a view of a larger buffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_binary_referenced_size(ref_word: u64) -> i64 {
+    let p = bitstring_like_word(ref_word).expect("fz_binary_referenced_size: expected binary");
+    (unsafe { referenced_byte_len(p) }) as i64
 }
 
 /// Single-shot bitstring allocation from module-interned bytes.

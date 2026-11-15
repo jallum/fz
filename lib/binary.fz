@@ -1,0 +1,73 @@
+defmodule :binary do
+  @moduledoc "The Erlang `:binary` functions that make a copy of a binary or report what it references."
+
+  @doc """
+  Returns a new binary with the bytes of `subject`.
+
+  A binary cut from a large one references the large buffer and keeps it
+  alive. The copy references only its own bytes, so it lets the large buffer
+  go. It is a new binary even though its bytes are the same.
+
+  ## Examples
+
+      :binary.copy("abc")
+      #=> "abc"
+
+  """
+  @spec copy(any) :: binary
+  def copy(subject), do: copy(subject, 1)
+
+  @doc """
+  Returns a new binary of `n` repetitions of `subject`, built in one buffer.
+
+  Raises `ArgumentError` when `subject` is not a binary or `n` is not a
+  non-negative integer.
+
+  ## Examples
+
+      :binary.copy("ab", 3)
+      #=> "ababab"
+
+      :binary.copy("ab", 0)
+      #=> ""
+
+  """
+  @spec copy(any, any) :: binary
+  def copy(subject, n) when is_binary(subject) and is_integer(n) and n >= 0, do: fz_binary_copy(subject, n)
+
+  def copy(subject, n),
+    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> subject_complaint(subject) <> count_complaint(n)})
+
+  @doc """
+  Returns the byte size of the buffer `binary` references.
+
+  A binary that is a view of a larger one references that larger buffer, so
+  its referenced size can exceed its `byte_size/1`. A binary that is not a
+  view references exactly its own bytes. Copying a view with `copy/1` gives
+  a binary that references only itself.
+
+  ## Examples
+
+      :binary.referenced_byte_size("abc")
+      #=> 3
+
+  """
+  @spec referenced_byte_size(any) :: integer
+  def referenced_byte_size(binary) when is_binary(binary), do: fz_binary_referenced_size(binary)
+
+  def referenced_byte_size(binary),
+    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> subject_complaint(binary)})
+
+  @spec subject_complaint(any) :: binary
+  defp subject_complaint(subject) when is_binary(subject), do: ""
+  defp subject_complaint(_), do: "  * 1st argument: not a binary\n"
+
+  @spec count_complaint(any) :: binary
+  defp count_complaint(n) when is_integer(n) and n >= 0, do: ""
+  defp count_complaint(n) when is_integer(n), do: "  * 2nd argument: out of range\n"
+  defp count_complaint(_), do: "  * 2nd argument: not an integer\n"
+
+  extern "fz" defp fz_binary_copy(binary, integer) :: binary
+
+  extern "C" defp fz_binary_referenced_size(any) :: integer
+end

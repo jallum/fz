@@ -153,20 +153,30 @@ pub unsafe extern "C" fn shared_bin_destructor_noop(_p: *mut SharedBin) {}
 /// destructor installed. Bytes are leaked separately as a `Box<[u8]>` so
 /// the destructor can reconstruct both boxes independently.
 pub fn shared_bin_alloc(bytes: &[u8], bit_len: u64) -> *mut SharedBin {
-    shared_bin_alloc_with_room(bytes, bit_len, 0)
+    shared_bin_alloc_with(bytes.len(), bit_len, 0, |dest| dest.copy_from_slice(bytes))
 }
 
 /// Allocate a heap-backed SharedBin holding `bytes` and `spare` more bytes of
-/// room for its owner to append into. Everything past the written bytes is
-/// zero, so the trailing NUL is in place. The trailing NUL is invisible to the
-/// language (bytes_len/bit_len unchanged) and underwrites the c_string extern
-/// marshal contract.
+/// room for its owner to append into.
 pub fn shared_bin_alloc_with_room(bytes: &[u8], bit_len: u64, spare: usize) -> *mut SharedBin {
-    let bytes_len = bytes.len();
+    shared_bin_alloc_with(bytes.len(), bit_len, spare, |dest| dest.copy_from_slice(bytes))
+}
+
+/// Allocate a heap-backed SharedBin of `bytes_len` bytes and `spare` more
+/// bytes of room, and let `fill` write the payload straight into its buffer:
+/// the buffer is the one allocation the binary owns, and nothing is staged and
+/// copied in. Everything past the written bytes is zero, so the trailing NUL is
+/// in place. The trailing NUL is invisible to the language (bytes_len/bit_len
+/// unchanged) and underwrites the c_string extern marshal contract.
+pub fn shared_bin_alloc_with(
+    bytes_len: usize,
+    bit_len: u64,
+    spare: usize,
+    fill: impl FnOnce(&mut [u8]),
+) -> *mut SharedBin {
     let capacity = bytes_len + spare;
-    let mut v: Vec<u8> = vec![0; capacity + 1];
-    v[..bytes_len].copy_from_slice(bytes);
-    let buf: Box<[u8]> = v.into_boxed_slice();
+    let mut buf: Box<[u8]> = vec![0u8; capacity + 1].into_boxed_slice();
+    fill(&mut buf[..bytes_len]);
     let bytes_ptr: *const u8 = Box::leak(buf).as_ptr();
     let bin = Box::new(SharedBin {
         refcount: AtomicUsize::new(1),
@@ -261,6 +271,13 @@ impl SharedBinHandle {
     pub fn from_bytes_with_room(bytes: &[u8], spare: usize) -> Self {
         let p = shared_bin_alloc_with_room(bytes, bytes.len() as u64 * 8, spare);
         Self(NonNull::new(p).expect("shared_bin_alloc_with_room returned null"))
+    }
+
+    /// Allocate a new heap-backed SharedBin of `bytes_len` bytes that `fill`
+    /// writes in place, and wrap the initial refcount.
+    pub fn from_filled(bytes_len: usize, bit_len: u64, fill: impl FnOnce(&mut [u8])) -> Self {
+        let p = shared_bin_alloc_with(bytes_len, bit_len, 0, fill);
+        Self(NonNull::new(p).expect("shared_bin_alloc_with returned null"))
     }
 
     /// Retain `p` and wrap the new reference.
@@ -695,6 +712,20 @@ pub unsafe fn bitstring_byte_ptr(word: u64) -> *const u8 {
         return unsafe { ProcBin::from_raw(addr) }.bytes_ptr();
     }
     unsafe { bitstring_bytes_ptr(addr) }
+}
+
+/// Bytes of the buffer a bitstring-like heap value references: the whole
+/// `SharedBin` for a ProcBin view, however short the view, and the value's own
+/// bytes for an inline bitstring.
+///
+/// # Safety
+/// `word` must be the heap object word of a live Bitstring or ProcBin.
+pub unsafe fn referenced_byte_len(word: u64) -> usize {
+    let addr = heap_word_addr(word);
+    if heap_kind_from_tagged(word) == Some(ValueKind::PROCBIN) {
+        return unsafe { (*ProcBin::from_raw(addr).shared_raw()).bytes_len };
+    }
+    (unsafe { any_bitstring_bit_len(addr) } as usize).div_ceil(8)
 }
 
 /// Compare two bitstring-like heap values by language value, not address.

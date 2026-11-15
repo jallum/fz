@@ -1,0 +1,28 @@
+#---
+# purpose: "binary:copy/2 and String.duplicate/2 write n repetitions of a large binary into one buffer of exactly n * byte_size shared bytes, and copying a view of a large buffer allocates a buffer of the view's own size"
+# kind: run
+#---
+#
+# `shared_bin_bytes` counts the off-heap buffers a process allocates. A copy
+# that built its result by doubling or by concatenation would allocate the
+# intermediate buffers too, and the delta would exceed the result's size.
+def shared_bytes(fun) do
+  before = Process.heap_alloc_stats()
+  result = fun.()
+  after_ = Process.heap_alloc_stats()
+  {byte_size(result), after_[:shared_bin_bytes] - before[:shared_bin_bytes], after_[:shared_bin_allocs] - before[:shared_bin_allocs]}
+end
+
+def main() do
+  s = String.duplicate("abcdefghij", 20)
+  dbg(byte_size(s))
+  dbg(shared_bytes(fn -> :binary.copy(s, 5) end))
+  dbg(shared_bytes(fn -> String.duplicate(s, 5) end))
+  dbg(shared_bytes(fn -> :binary.copy(s, 1) end))
+  dbg(shared_bytes(fn -> :binary.copy(s, 0) end))
+  dbg(shared_bytes(fn -> :binary.copy("ab", 32) end))
+
+  <<_::binary-8, view::binary>> = s
+  dbg(:binary.referenced_byte_size(view))
+  dbg(shared_bytes(fn -> :binary.copy(view) end))
+end
