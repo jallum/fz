@@ -27,11 +27,15 @@
     {
       "text": "Experiment E-count (running; predictions written before the data): execution counters on every site that builds a binary field through the runtime, in the built distiller on 32,000 lines, split rest / non-rest and by function.\n Q1: rest reads are 400-450 per input line (418 bytes per line; one rest per byte matched), non-rest binary reads about 30-60 per line.\n Q2: under the version 1 rule (any whole use cancels the cursor) the rests that go are only those in functions with no whole use of the parameter (digits, fraction_digits, exponent_digits, skip_ws): under 10% of executed rest reads.\n Q3: under the version 2 rule (whole made at the use) at least 85% of executed rest reads go: everything in string/3's plain-byte clause and the number loops; what stays is about one per token.\n Q4: string/3's plain-byte clause alone is over half of all executed rest reads.\nIf Q2 is wrong (v1 already removes most), the simpler absorbing rule is enough and version 2's trade-off is not needed.",
       "timestamp": "2026-11-15T01:30:14Z"
+    },
+    {
+      "text": "E-count result (distiller, 32,000 lines, 20.66 MB = 645 bytes per line; my 418 was the first 4,000 lines only). Binary fields built through the runtime: 21,795,877; rests 20,296,109 (634 per line); non-rest 1,499,768.\n Q1 missed on the absolute (634 per line, predicted 400-450) because of the sample; it is about one rest per input byte as expected.\n Q4 held: JSON.string/3 builds 14,576,217 rests (71.8%); its plain-byte clause alone 13,099,663 (64.5%).\n Q2 held: under the version 1 rule only digits (1,308,642) and skip_ws (32,000) lose their rests: 6.6%. Every other matcher has a clause that uses the parameter whole ({:error, b}) or passes it to one that does.\n Q3 missed: under version 2 the rests still built are about 5.4M (73% removed, predicted 85%): 1,476,554 stored in string's {:ok, run, r}; about 2,953,396 made whole only so run_join can ask byte_size(s) and byte_size(b); about 515,774 at a number's {:ok, n, b}; about 300,000 at object/array ends; about 150,000 at literals. With byte_size answered from the cursor: about 2.44M built, 88% removed (169 -\u003e 76 per line).\n So: the absorbing rule is not enough (6.6%); version 2 is needed; byte_size on a cursor is worth 15 points and belongs in the unit, not after it.",
+      "timestamp": "2026-11-15T01:34:59Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Proposal: a rest view of a binary costs the collector nothing when it dies",
   "type": "task",
-  "updated_at": "2026-11-15T01:30:14Z"
+  "updated_at": "2026-11-15T01:34:59Z"
 }
