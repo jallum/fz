@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T03:04:23Z",
+  "description": "EffectSummary (src/compiler2/artifact.rs: allocates, observable, halts, calls_opaque) is read in production only by the backend dump (effects_text in canon.rs) and a derived equality check. About 190 test sites (pull_test.rs, ownership_test.rs, mutation_test.rs, drive_test.rs and others) use the ExecutableEffects product as their test vehicle, which is what keeps it alive. Choose a product the tests can use that production also needs, move the tests to it, delete EffectSummary, the effects fields, effects_text and the product. Moved out of fz-sc8.197 with the user's approval (2026-11-14); must close before the epic does. Coordinate with fz-engine: fz-t93.7 rewrites artifact scheduling and the pull system these tests exercise.",
+  "id": "fz-sc8.218",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "EffectSummary and the ExecutableEffects product are deleted; the pull tests get another vehicle",
+  "type": "task",
+  "updated_at": "2026-11-15T03:04:23Z"
+}
