@@ -1177,7 +1177,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 self.world.scope_module(protocol_id, self.namespace);
                 Ok(None)
             }
-            ScopeForm::ProtocolImpl(protocol_impl) => self.register_protocol_impl(self.current_module, protocol_impl),
+            ScopeForm::ProtocolImpl(protocol_impl) => self.register_protocol_impl(protocol_impl),
             ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
             ScopeForm::Statement(statement) => self.apply_statement(statement),
             ScopeForm::Struct(def) => {
@@ -1489,7 +1489,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         for (form, definition) in body.forms.iter().zip(definitions) {
             match form {
                 ScopeForm::ProtocolImpl(impl_form) => {
-                    if let Some(blocked) = self.register_protocol_impl(module, impl_form)? {
+                    if let Some(blocked) = self.register_protocol_impl(impl_form)? {
                         return Ok(Some(blocked));
                     }
                 }
@@ -1517,7 +1517,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                             )?;
                             if let Some(ScopeForm::ProtocolImpl(impl_form)) = fragment.forms.first() {
                                 let impl_form = impl_form.clone();
-                                if let Some(blocked) = self.register_protocol_impl(module, &impl_form)? {
+                                if let Some(blocked) = self.register_protocol_impl(&impl_form)? {
                                     return Ok(Some(blocked));
                                 }
                             }
@@ -1826,8 +1826,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
 
     fn resolve_import_module(&mut self, import: &super::quoted_surface::ImportForm) -> ModuleId {
         let path = ModuleName::from_segments(import.path.clone());
-        self.world
-            .resolve_module_name(self.current_module, self.namespace, &path)
+        self.world.resolve_module_name(self.namespace, &path)
     }
 
     fn interface_requester(&self, span: Span) -> InterfaceRequester {
@@ -1865,15 +1864,11 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
     /// undefined protocol must still get a provider entry, so later dispatch
     /// has something to point at rather than nothing. The missing-callback
     /// check that follows is the only part that can wait.
-    fn register_protocol_impl(
-        &mut self,
-        current_module: ModuleId,
-        form: &ProtocolImplForm,
-    ) -> Result<Option<JobEffects>, FatalError> {
-        let protocol = reference_impl_protocol_module(self.world, current_module, self.namespace, &form.protocol);
+    fn register_protocol_impl(&mut self, form: &ProtocolImplForm) -> Result<Option<JobEffects>, FatalError> {
+        let protocol = self.world.resolve_module_name(self.namespace, &form.protocol);
         self.world
             .note_module_reference_expectation(protocol, self.interface_requester(form.span));
-        let target = reference_impl_target_module(self.world, current_module, self.namespace, &form.target);
+        let target = self.world.resolve_module_name(self.namespace, &form.target);
         let impl_module = self.world.reference_protocol_impl_module(protocol, target);
         let source_map = self.world.source_map();
         let body = Rc::new(
@@ -2446,9 +2441,7 @@ fn collect_struct_obligations(
         }
         TypeExpr::StructRecord { module, fields } => {
             let module_name = ModuleName::from_segments(module.clone());
-            let module_id = world
-                .lookup_module_path(scope, &module_name)
-                .unwrap_or_else(|| world.reference_module(module_name));
+            let module_id = world.resolve_module_name(scope, &module_name);
             struct_refs.push(module_id);
             world.note_struct_reference_expectation(module_id, requester.clone());
             for (field, value) in fields {
@@ -2653,24 +2646,6 @@ fn reference_declared_module(world: &mut World, parent: ModuleId, name: &ModuleN
         _ => name.clone(),
     };
     world.reference_module(name)
-}
-
-fn reference_impl_protocol_module(
-    world: &mut World,
-    current_module: ModuleId,
-    head: Namespace,
-    name: &ModuleName,
-) -> ModuleId {
-    world.resolve_module_name(current_module, head, name)
-}
-
-fn reference_impl_target_module(
-    world: &mut World,
-    current_module: ModuleId,
-    head: Namespace,
-    name: &ModuleName,
-) -> ModuleId {
-    world.resolve_module_name(current_module, head, name)
 }
 
 #[cfg(test)]

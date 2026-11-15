@@ -1,2 +1,7 @@
-error[lower/unbound]: compiler2 lowering found unresolved direct runtime callee `Nope.seven/0`
+error[resolve/unknown-module]: module `Nope` is not defined
   --> fixtures/01190_a_macro_that_calls_an_undefined_module_names_that_module.fz:3:9
+   |
+3 |     n = Nope.seven()
+   |         ^^^^^^^^^^^^
+   |
+

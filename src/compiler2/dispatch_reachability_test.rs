@@ -99,7 +99,7 @@ fn reachable_body_ids(plan: &PatternDispatchPlan<Ty>, reachability: &DispatchRea
 #[test]
 fn named_struct_field_constraints_refine_their_exact_root_and_reject_other_families() {
     use crate::compiler2::dispatch::SourcePatternResolver;
-    use crate::compiler2::{ModuleId, Namespace, World};
+    use crate::compiler2::{Namespace, World};
     use crate::dispatch_matrix::pattern::pattern_dispatch_from_source_with_resolver;
     use crate::modules::identity::ModuleName;
 
@@ -110,7 +110,6 @@ fn named_struct_field_constraints_refine_their_exact_root_and_reject_other_famil
     let mut resolver = SourcePatternResolver {
         world: &mut world,
         namespace: Namespace::default(),
-        owner: ModuleId::GLOBAL,
         guard: |_world: &mut World, _callee: &crate::ast::Callee, _arity: usize| Ok(None),
     };
     let plan = pattern_dispatch_from_source_with_resolver(

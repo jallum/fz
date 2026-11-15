@@ -43,7 +43,7 @@ use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
     ModuleReferenceExpectationMap, ReferencingCall,
 };
-use super::namespace::{CallableQualifier, Namespace, NamespaceStore, NamespaceSymbol};
+use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
 use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
     ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap,
@@ -1349,7 +1349,7 @@ impl World {
                 arity,
             }),
             [prefix @ .., leaf] => {
-                let module = self.lookup_module_path(scope, &ModuleName::from_segments(prefix.to_vec()))?;
+                let module = self.resolve_module_name(scope, &ModuleName::from_segments(prefix.to_vec()));
                 Some(TypeName {
                     module,
                     name: leaf.clone(),
@@ -2426,23 +2426,18 @@ impl World {
             })
     }
 
-    /// Where a callable name's qualifier points. This is the one place a
-    /// qualifier is read, so no caller recovers a module from display text.
-    /// An exact reflected module is interned as it stands; an alias path is
-    /// walked through `head`.
+    /// The module a callable name's qualifier names, or `None` when the name
+    /// carries no qualifier and the surrounding namespace decides. This is
+    /// the one place a qualifier is read, so no caller recovers a module from
+    /// display text.
     pub(crate) fn callable_name_qualifier(
         &mut self,
         head: Namespace,
         name: &crate::ast::CallableName,
-    ) -> CallableQualifier {
-        let Some(target) = name.module.as_ref() else {
-            return CallableQualifier::Unqualified;
-        };
-        let module = match target {
-            crate::ast::ModuleTarget::Exact(module) => Some(self.reference_module_denotation(module.clone())),
-            crate::ast::ModuleTarget::Unresolved(path) => self.lookup_module_path(head, path),
-        };
-        module.map_or(CallableQualifier::Unbound, CallableQualifier::Module)
+    ) -> Option<ModuleId> {
+        name.module
+            .as_ref()
+            .map(|target| self.resolve_module_target(head, target))
     }
 
     /// The symbol a call's callee names here. A retained callable answers from
@@ -2466,9 +2461,8 @@ impl World {
         arity: usize,
     ) -> Option<NamespaceSymbol> {
         match self.callable_name_qualifier(head, name) {
-            CallableQualifier::Unqualified => self.lookup_callable_namespace(head, &name.name, arity),
-            CallableQualifier::Module(module) => self.lookup_module_callable(module, &name.name, arity),
-            CallableQualifier::Unbound => None,
+            None => self.lookup_callable_namespace(head, &name.name, arity),
+            Some(module) => self.lookup_module_callable(module, &name.name, arity),
         }
     }
 
@@ -2805,30 +2799,14 @@ impl World {
         struct_value_ty(&self.modules, &mut self.types, module, &schema.fields, &tys)
     }
 
-    pub(crate) fn resolve_module_name(
-        &mut self,
-        current_module: ModuleId,
-        head: Namespace,
-        path: &crate::modules::identity::ModuleName,
-    ) -> ModuleId {
-        if path.segments().len() == 1 {
-            let local = path.last_segment();
-            if let Some(NamespaceSymbol::Module(module)) = self.lookup_namespace(head, local) {
-                return module;
-            }
-            if current_module.is_global() {
-                return self.reference_module(path.clone());
-            }
-            if self
-                .module_name(current_module)
-                .is_some_and(|name| name.last_segment() == local)
-            {
-                return current_module;
-            }
-            return self.reference_module(path.clone());
-        }
-
-        match self.lookup_module_path(head, path) {
+    /// The module a written name means in scope `head`. This is the one
+    /// answer for every position a module name is written in: a value, a
+    /// struct, a call's qualifier, a capture, a type's prefix. As in Elixir,
+    /// the first segment is looked up in scope and the rest are walked from
+    /// what it binds; a first segment nothing binds means the name is the
+    /// root module spelled that way.
+    pub(crate) fn resolve_module_name(&mut self, head: Namespace, path: &ModuleName) -> ModuleId {
+        match self.bound_module_path(head, path) {
             Some(module) => module,
             None => self.reference_module(path.clone()),
         }
@@ -2837,31 +2815,23 @@ impl World {
     /// The atom a module alias is in value position: the full name of the
     /// module it resolves to, under the `Elixir` root (`B` after
     /// `alias Foo.Bar, as: B` is `Elixir.Foo.Bar`).
-    pub(crate) fn module_alias_atom(
-        &mut self,
-        current_module: ModuleId,
-        head: Namespace,
-        alias: &ModuleName,
-    ) -> String {
-        let module = self.resolve_module_name(current_module, head, alias);
+    pub(crate) fn module_alias_atom(&mut self, head: Namespace, alias: &ModuleName) -> String {
+        let module = self.resolve_module_name(head, alias);
         self.module_name(module)
             .expect("a resolved module name is a named module")
             .atom_name()
     }
 
-    pub(crate) fn resolve_module_target(
-        &mut self,
-        owner: ModuleId,
-        head: Namespace,
-        target: &crate::ast::ModuleTarget,
-    ) -> ModuleId {
+    pub(crate) fn resolve_module_target(&mut self, head: Namespace, target: &crate::ast::ModuleTarget) -> ModuleId {
         match target {
-            crate::ast::ModuleTarget::Unresolved(name) => self.resolve_module_name(owner, head, name),
+            crate::ast::ModuleTarget::Unresolved(name) => self.resolve_module_name(head, name),
             crate::ast::ModuleTarget::Exact(module) => self.reference_module_denotation(module.clone()),
         }
     }
 
-    pub(crate) fn lookup_module_path(&mut self, head: Namespace, path: &ModuleName) -> Option<ModuleId> {
+    /// The module `path` names through a binding of its first segment, or
+    /// `None` when nothing in scope binds that segment.
+    fn bound_module_path(&mut self, head: Namespace, path: &ModuleName) -> Option<ModuleId> {
         let mut segments = path.segments().iter();
         let first = segments.next()?;
         let mut module = match self.namespaces.lookup(head, first) {
@@ -3093,6 +3063,9 @@ impl World {
     }
 
     fn unresolved_issue(&self, frontier: &HashSet<FactKey>, fact: &FactKey) -> Option<UnresolvedIssue> {
+        if self.source_defines_what_is_awaited(fact) {
+            return Some(Self::unresolved_internal_issue(fact));
+        }
         match fact {
             FactKey::ModuleIndexed(module) => Some(self.unresolved_module_issue(*module)),
             FactKey::StructDefined(module) => self.unresolved_struct_issue(*module),
@@ -3130,6 +3103,22 @@ impl World {
             | FactKey::RuntimeDemand(_)
             | FactKey::RuntimeDemandInputs(_)
             | FactKey::IncomingInputSlot(_) => Some(Self::unresolved_internal_issue(fact)),
+        }
+    }
+
+    /// Whether `fact` is about a module or a function the source defines. Such
+    /// a thing is not missing: it did not finish, because something it needs
+    /// did not, and that other thing is the fault. `main` calling a module
+    /// nothing defines is not "`main/0` is not defined".
+    fn source_defines_what_is_awaited(&self, fact: &FactKey) -> bool {
+        match fact {
+            FactKey::ModuleIndexed(module) | FactKey::ModuleDefined(module) | FactKey::ModuleInterface(module) => {
+                self.module_has_source_state(*module)
+            }
+            FactKey::FunctionSource(function)
+            | FactKey::ExpandedFunctionSource(function)
+            | FactKey::FunctionDefined(function) => self.function_source(*function).is_some(),
+            _ => false,
         }
     }
 
@@ -3183,7 +3172,8 @@ impl World {
 
     /// The span comes from the first bare `import`/`require` that named
     /// `module` before it resolved (`note_module_reference_expectation`),
-    /// or else from the first place that used it as a struct: the same
+    /// or else from the first place that used it as a struct, or else from
+    /// the first call lowering resolved into it: the same
     /// `.first()`-of-recorded-obligations discipline `unresolved_struct_issue`
     /// uses for `struct_expectations`. A module that stalled without ever
     /// picking up such a reference (e.g. a named root submitted by an
@@ -3192,9 +3182,16 @@ impl World {
     fn unresolved_module_issue(&self, module: ModuleId) -> UnresolvedIssue {
         let imported = self.module_reference_expectations.expectations(module).first();
         let used_as_struct = self.struct_expectations.reference_expectations(module).first();
+        let called = self.module_interface_if_present(module).and_then(|interface| {
+            interface
+                .expectations()
+                .iter()
+                .find_map(|expectation| expectation.requester.as_ref())
+        });
         let span = imported
             .map(|expectation| expectation.requester.span)
             .or(used_as_struct.map(|expectation| expectation.requester.span))
+            .or(called.map(|requester| requester.span))
             .unwrap_or(Span::DUMMY);
         UnresolvedIssue {
             key: UnresolvedIssueKey::Module(module),

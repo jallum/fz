@@ -420,6 +420,44 @@ fn compiler2_world_submitted_module_interface_is_available_without_module_defini
     assert!(world.module_interface_revision(module).is_some());
 }
 
+/// A written module name has one meaning wherever it is written. As in
+/// Elixir, a first segment the scope binds is walked from what it binds, and
+/// a first segment nothing binds names the root module spelled that way —
+/// so a qualifier is always a module, whether or not anything defines it.
+#[test]
+fn a_module_name_nothing_binds_means_the_root_module_of_that_name() {
+    use crate::modules::identity::ModuleName;
+    let name = |segments: &[&str]| ModuleName::from_segments(segments.iter().map(|s| s.to_string()).collect());
+    let mut world = World::new();
+    let geo_pt = world.reference_module(name(&["Geo", "Pt"]));
+    let geo_pt_inner = world.reference_module(name(&["Geo", "Pt", "Inner"]));
+    let root_pt = world.reference_module(name(&["Pt"]));
+    let unbound = Namespace::default();
+
+    assert_eq!(
+        world.resolve_module_name(unbound, &name(&["Geo", "Pt"])),
+        geo_pt,
+        "nothing binds `Geo`, so `Geo.Pt` is the root module of that name"
+    );
+    assert_eq!(
+        world.resolve_module_name(unbound, &name(&["Pt"])),
+        root_pt,
+        "`Pt` alone is the root `Pt`, never a longer name that ends in it"
+    );
+
+    let aliased = world.bind_namespace(unbound, "Pt", NamespaceSymbol::Module(geo_pt));
+    assert_eq!(
+        world.resolve_module_name(aliased, &name(&["Pt"])),
+        geo_pt,
+        "a bound first segment means what it binds"
+    );
+    assert_eq!(
+        world.resolve_module_name(aliased, &name(&["Pt", "Inner"])),
+        geo_pt_inner,
+        "the remaining segments are walked from the bound module"
+    );
+}
+
 #[test]
 fn builtin_protocol_targets_require_the_exact_top_level_source_name() {
     use crate::modules::identity::ModuleName;
