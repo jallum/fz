@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-9zq.1"
+    "fz-9zq.1",
+    "fz-t93.24"
   ],
   "blocks": [
     "fz-9zq.5"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "A recursive callee's new call is widened against its previous call",
   "type": "task",
-  "updated_at": "2026-11-15T16:37:51Z"
+  "updated_at": "2026-11-15T18:35:11Z"
 }
