@@ -1,0 +1,73 @@
+#---
+# purpose: "super in a definition that replaces one marked overridable calls the replaced definition: through a chain of overrides, a default a macro defines, a super a macro writes, a super inside an fn, and a defp override; a call by name inside the replaced definition reaches the one that stands"
+# oracle: 01303_super_calls_the_definition_an_override_replaced.oracle.exs
+# oracle.stamp: a1c3d594f2717e2c
+#---
+defmodule Defaults do
+  defmacro defaults() do
+    [
+      quote do
+        def message(x), do: "default #{x}"
+      end,
+      quote do
+        defoverridable message: 1
+      end
+    ]
+  end
+
+  defmacro from_super(x) do
+    quote do
+      super(unquote(x))
+    end
+  end
+end
+
+defmodule Chain do
+  def g(x), do: x + 1
+  defoverridable g: 1
+  def g(x), do: super(x) * 10
+  defoverridable g: 1
+  def g(x), do: super(x) + 1000
+end
+
+defmodule Mine do
+  import Defaults
+  defaults()
+  def message(x), do: "mine, " <> super(x)
+end
+
+defmodule Written do
+  import Defaults
+  def g(x), do: x + 1
+  defoverridable g: 1
+  def g(x), do: from_super(x) * 2
+end
+
+defmodule Nested do
+  def g(x), do: x + 1
+  defoverridable g: 1
+  def g(x), do: Enum.map([x, x + 1], fn y -> super(y) end)
+end
+
+defmodule Hidden do
+  def g(x), do: {:default, x}
+  defoverridable g: 1
+  defp g(x), do: {:private, super(x)}
+  def reach(x), do: g(x)
+end
+
+defmodule Recurse do
+  def count(0), do: [:done]
+  def count(n), do: [n | count(n - 1)]
+  defoverridable count: 1
+  def count(n), do: [:mine | super(n)]
+end
+
+def main() do
+  dbg(Chain.g(1))
+  dbg(Mine.message(3))
+  dbg(Written.g(1))
+  dbg(Nested.g(1))
+  dbg(Hidden.reach(4))
+  dbg(Recurse.count(2))
+end

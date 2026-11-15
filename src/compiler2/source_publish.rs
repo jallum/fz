@@ -122,22 +122,43 @@ struct LocalCallable {
     /// reach.
     to_come: usize,
     standing: Standing,
+    /// How many of this function's definitions a later one has replaced.
+    replaced: usize,
 }
 
 /// Where a function stands as the walk reaches each of its forms.
-#[derive(Clone, Copy)]
 enum Standing {
     NotDefined,
-    Defined(StandingDefinition),
+    Defined(ReachedDefinition),
     /// Defined, and marked by `defoverridable`: the next definition replaces
     /// this one.
-    Overridable(StandingDefinition),
+    Overridable(ReachedDefinition),
 }
 
-#[derive(Clone, Copy)]
-struct StandingDefinition {
-    is_macro: bool,
-    span: Span,
+impl Standing {
+    /// Marks a defined function overridable, and answers whether it was
+    /// defined.
+    fn mark_overridable(&mut self) -> bool {
+        match std::mem::replace(self, Standing::NotDefined) {
+            Standing::Defined(definition) => {
+                *self = Standing::Overridable(definition);
+                true
+            }
+            unmarked => {
+                *self = unmarked;
+                false
+            }
+        }
+    }
+}
+
+/// A definition the walk has reached, kept with the scope it was reached in
+/// until the walk knows whether it stands or a later definition replaces it.
+/// A replaced definition is still the one its replacement's `super` calls.
+struct ReachedDefinition {
+    function: FunctionForm,
+    namespace: Namespace,
+    owner_module: ModuleId,
 }
 
 struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
@@ -779,6 +800,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                     symbol: kind.namespace_symbol(function),
                     to_come: 0,
                     standing: Standing::NotDefined,
+                    replaced: 0,
                 })
             }
         };
@@ -1147,16 +1169,11 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         function: &FunctionForm,
         context: &FragmentPublicationContext,
     ) -> Result<Option<JobEffects>, FatalError> {
-        if !self.definition_stands(function)? {
+        let Some(namespace) = self.reach_definition(function, context)? else {
             return Ok(None);
-        }
-        let publication = self.define_source_function(
-            self.current_module,
-            context.owner_module,
-            self.namespace,
-            function,
-            context,
-        )?;
+        };
+        let publication =
+            self.define_source_function(self.current_module, context.owner_module, namespace, function, context)?;
         self.callables
             .retain(|callable| callable.function != publication.function);
         if let Some(callable) = publication.callable {
@@ -1165,66 +1182,96 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         Ok(None)
     }
 
-    /// Records that the walk has reached `function`, and answers whether this
-    /// definition is the one that stands. A definition with another still to
-    /// come does not stand: the one to come replaces it or is refused.
-    fn definition_stands(&mut self, function: &FunctionForm) -> Result<bool, FatalError> {
-        let callable = self
-            .local_callables
-            .get_mut(&(function.name.clone(), function.arity))
-            .expect("a definition is reserved before the walk reaches it");
+    /// Records that the walk has reached `function`, and answers the scope
+    /// it stands in, or `None` when it does not stand: a definition with
+    /// another still to come is replaced by it or refused. A definition that
+    /// replaces one marked overridable sees that one as `super`.
+    fn reach_definition(
+        &mut self,
+        function: &FunctionForm,
+        context: &FragmentPublicationContext,
+    ) -> Result<Option<Namespace>, FatalError> {
+        let callable = self.local_callable(&function.name, function.arity);
         callable.to_come = callable
             .to_come
             .checked_sub(1)
             .expect("the walk reaches each definition it counted once");
-        let arrives = StandingDefinition {
-            is_macro: function.is_macro,
-            span: function.span,
+        let namespace = match std::mem::replace(&mut callable.standing, Standing::NotDefined) {
+            Standing::NotDefined => self.namespace,
+            Standing::Overridable(replaced) if replaced.function.is_macro == function.is_macro => {
+                callable.replaced += 1;
+                let ordinal = callable.replaced;
+                self.publish_super(replaced, ordinal, context)?
+            }
+            Standing::Overridable(replaced) => {
+                return Err(emit_job_diagnostic(
+                    self.telemetry,
+                    overridden_as_another_kind(function, &replaced.function),
+                ));
+            }
+            Standing::Defined(first) => {
+                return Err(emit_job_diagnostic(
+                    self.telemetry,
+                    defined_again(function, &first.function),
+                ));
+            }
         };
-        let refusal = match callable.standing {
-            Standing::NotDefined => None,
-            Standing::Overridable(replaced) if replaced.is_macro == arrives.is_macro => None,
-            Standing::Overridable(replaced) => Some(overridden_as_another_kind(function, replaced)),
-            Standing::Defined(first) => Some(
-                Diagnostic::error(
-                    codes::RESOLVE_DUPLICATE_FUNCTION,
-                    format!("`{}/{}` is already defined", function.name, function.arity),
-                    function.span,
-                )
-                .with_secondary(first.span, "first defined here")
-                .with_help("`defoverridable` after the first definition lets a later one replace it"),
-            ),
+        let owner_module = context.owner_module;
+        let callable = self.local_callable(&function.name, function.arity);
+        callable.standing = Standing::Defined(ReachedDefinition {
+            function: function.clone(),
+            namespace,
+            owner_module,
+        });
+        Ok((callable.to_come == 0).then_some(namespace))
+    }
+
+    fn local_callable(&mut self, name: &str, arity: usize) -> &mut LocalCallable {
+        self.local_callables
+            .get_mut(&(name.to_string(), arity))
+            .expect("a definition is reserved before the walk reaches it")
+    }
+
+    /// Publishes a replaced definition as a private function named the way
+    /// Elixir names it, `name (overridable N)`, and answers the walk's scope
+    /// with `super` bound to it, for the definition that replaces it.
+    fn publish_super(
+        &mut self,
+        replaced: ReachedDefinition,
+        ordinal: usize,
+        context: &FragmentPublicationContext,
+    ) -> Result<Namespace, FatalError> {
+        let function = FunctionForm {
+            name: format!("{} (overridable {ordinal})", replaced.function.name),
+            is_private: true,
+            ..replaced.function
         };
-        if let Some(refusal) = refusal {
-            return Err(emit_job_diagnostic(self.telemetry, refusal));
-        }
-        callable.standing = Standing::Defined(arrives);
-        Ok(callable.to_come == 0)
+        let publication = self.define_source_function(
+            self.current_module,
+            replaced.owner_module,
+            replaced.namespace,
+            &function,
+            context,
+        )?;
+        let symbol = declared_callable_kind(function.is_macro).namespace_symbol(publication.function);
+        Ok(self.world.bind_namespace(self.namespace, "super", symbol))
     }
 
     fn mark_overridable(&mut self, overridable: &OverridableForm) -> Result<(), FatalError> {
         for (name, arity) in &overridable.functions {
-            let standing = self
+            let marked = self
                 .local_callables
                 .get_mut(&(name.clone(), *arity))
-                .map(|callable| &mut callable.standing);
-            match standing {
-                Some(standing @ Standing::Defined(_)) => {
-                    let Standing::Defined(definition) = *standing else {
-                        unreachable!("matched above")
-                    };
-                    *standing = Standing::Overridable(definition);
-                }
-                Some(Standing::NotDefined | Standing::Overridable(_)) | None => {
-                    return Err(emit_job_diagnostic(
-                        self.telemetry,
-                        Diagnostic::error(
-                            codes::RESOLVE_OVERRIDABLE,
-                            format!("cannot make function `{name}/{arity}` overridable because it was not defined"),
-                            overridable.span,
-                        ),
-                    ));
-                }
+                .is_some_and(|callable| callable.standing.mark_overridable());
+            if !marked {
+                return Err(emit_job_diagnostic(
+                    self.telemetry,
+                    Diagnostic::error(
+                        codes::RESOLVE_OVERRIDABLE,
+                        format!("cannot make function `{name}/{arity}` overridable because it was not defined"),
+                        overridable.span,
+                    ),
+                ));
             }
         }
         Ok(())
@@ -2216,7 +2263,17 @@ fn module_info_match_clause(
     builder.call("->", meta, &[patterns, body])
 }
 
-fn overridden_as_another_kind(function: &FunctionForm, replaced: StandingDefinition) -> Diagnostic {
+fn defined_again(function: &FunctionForm, first: &FunctionForm) -> Diagnostic {
+    Diagnostic::error(
+        codes::RESOLVE_DUPLICATE_FUNCTION,
+        format!("`{}/{}` is already defined", function.name, function.arity),
+        function.span,
+    )
+    .with_secondary(first.span, "first defined here")
+    .with_help("`defoverridable` after the first definition lets a later one replace it")
+}
+
+fn overridden_as_another_kind(function: &FunctionForm, replaced: &FunctionForm) -> Diagnostic {
     let (was, now) = if replaced.is_macro {
         ("macro", "a function")
     } else {

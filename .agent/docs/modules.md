@@ -297,9 +297,11 @@ declared later in the same scope:
 The clauses of a function that sit together in a body are one definition
 (`read_surface` gathers neighbours of one name and arity into one form). The
 walk keeps, for each function of the module, a `LocalCallable`: its symbol, how
-many of its definitions are reserved and not yet reached, and where it stands
-(`Standing::NotDefined`, `Defined` or `Overridable`). `definition_stands`
-applies the rules as the walk reaches each definition:
+many of its definitions are reserved and not yet reached, how many a later one
+has replaced, and where it stands (`Standing::NotDefined`, `Defined` or
+`Overridable`). A defined or overridable function holds its `ReachedDefinition`:
+the form, the namespace it was reached in and its owner module.
+`reach_definition` applies the rules as the walk reaches each definition:
 
 | The function is | Arrives | Result |
 |---|---|---|
@@ -319,11 +321,23 @@ fragment is reserved, which is when the walk reaches the macro call; a
 replacement that arrives that way, after the default was already published,
 replaces the published source.
 
+A definition that replaces an overridable one sees it as `super`.
+`publish_super` publishes the replaced definition as a private function named
+the way Elixir names it, `name (overridable N)` with `N` counting the
+function's replaced definitions, in the namespace and owner module it was
+reached in. The replacing definition's namespace binds `super` to it, so
+`super(args)` resolves as an ordinary local call, wherever it is written in
+that definition, including in an `fn` and in a macro's expansion. A `super`
+whose arity differs from the function's, or one written in a definition that
+replaces nothing, resolves to nothing and is `lower/unbound`. Each override in
+a chain sees the one before it. The replaced definition's source is noted;
+like any function, nothing lowers it unless `super` calls it.
+
 `defoverridable` is `ScopeForm::Overridable`, read by `build_form`. It takes
 `name: arity` pairs. Clauses of one function separated by another form are a
 second definition and are refused, where Elixir warns and joins them.
-`super` is not supported. Fixture `00872` is the oracle fixture; `00873`
-through `00875` are the refusals.
+Fixtures `00872` and `01303` are the oracle fixtures; `00873` through `00875`
+are the refusals.
 
 A `defstruct` form defines the module's `__struct__/0`. The walk reserves it
 with the body's other names and applies `def __struct__(), do: %__MODULE__{}`
