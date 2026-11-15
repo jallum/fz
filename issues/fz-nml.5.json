@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T03:53:51Z",
+  "description": "Now: each non-ASCII character ends the run; Utf8.next makes a {:ok, cp, rest} tuple and a new binary, and acc \u003c\u003e run \u003c\u003e cp copies the accumulated string twice. 333 x 世: 334 structs, 624 shared bins, 332,280 shared bytes. 333 x \\u4e16: 332,280 shared bytes. Change: a run continues through \u003c\u003cc::utf8, r::binary\u003e\u003e when c \u003e= 128; \\u appends \u003c\u003ccp::utf8\u003e\u003e directly; invalid UTF-8 reaches the failing clause with the byte in hand. Predicted: 世 struct 334 -\u003e 0, shared bytes 332,280 -\u003e 0; \\u shared bytes -\u003e \u003c= 2,100. Deletes Utf8.next/1, Utf8.from_codepoint/1, fz_bitstring_utf8_prefix (+ runtime tests), fixtures2/behavior/utf8_next.fz and utf8_from_codepoint.fz, unicode_scalar and its unreachable :invalid_codepoint arm, run_join's second slice; updates .agent/docs/semantic-authorities.md:369-376; fixes fixture 01164's false header and lowers its pins. Needs S3; measured on S1, S2 and fz-sc8.208. Proposal page: /Users/j5n/Workspace/fz-json-garbage.html (approved 2026-11-14). Worktree ../fz-json, base bd3edae98.",
+  "id": "fz-nml.5",
+  "labels": [],
+  "parent": "fz-nml",
+  "priority": 2,
+  "status": "open",
+  "title": "A JSON string decodes in one pass, and a string without escapes is a view of the input",
+  "type": "task",
+  "updated_at": "2026-11-15T03:53:51Z"
+}
