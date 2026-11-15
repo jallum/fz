@@ -6,6 +6,7 @@ use cranelift_codegen::ir::{self, InstBuilder, Signature, SourceLoc, types};
 use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::settings::{self, Configurable, Flags};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_jit::{ArenaMemoryProvider, JITBuilder};
 use cranelift_module::{FuncId, Module, ModuleError};
 use cranelift_native::builder;
 use fz_runtime::any_value::{AnyValueRefPacking, ValueKind};
@@ -30,6 +31,23 @@ pub(crate) fn host_isa_with(pic: bool) -> Arc<dyn TargetIsa> {
     flag_builder.set("enable_pinned_reg", "true").unwrap();
     let isa_builder = builder().expect("host ISA");
     isa_builder.finish(Flags::new(flag_builder)).expect("isa finish")
+}
+
+/// The span a JIT module's code and data share. JIT code addresses its own
+/// data pc-relative with a signed 32-bit page distance, so a module that keeps
+/// everything inside one span of 2^31 bytes reaches all of it.
+pub(crate) const JIT_ARENA_BYTES: usize = 1 << 31;
+
+/// A builder for a JIT module that places its code and data inside one
+/// reservation of `JIT_ARENA_BYTES`. Left to the system allocator, a large
+/// function's code and its data land in regions gigabytes apart, beyond any
+/// pc-relative reach. The reservation is address space only; memory is
+/// committed as the module writes it.
+pub(crate) fn jit_builder() -> JITBuilder {
+    let mut builder = JITBuilder::with_isa(host_isa(), cranelift_module::default_libcall_names());
+    let arena = ArenaMemoryProvider::new_with_size(JIT_ARENA_BYTES).expect("reserve the JIT module's address space");
+    builder.memory_provider(Box::new(arena));
+    builder
 }
 
 /// Declare `id` in the current function and return its address as an i64.

@@ -1,11 +1,10 @@
 use super::*;
+use crate::compiler2::native_codegen::{host_isa_with, jit_builder};
 use crate::diag::Diagnostics;
 use crate::fast_hash::HashMap;
 use cranelift_codegen::ir::{AbiParam, types};
-use cranelift_codegen::isa::TargetIsa;
-use cranelift_codegen::settings::{Configurable, Flags};
 use cranelift_frontend::FunctionBuilderContext;
-use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_jit::JITModule;
 use cranelift_module::{DataDescription, DataId, Linkage, Module as ClModule};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use fz_runtime::process::Node;
@@ -15,21 +14,6 @@ use object::macho::PLATFORM_MACOS;
 use object::write::MachOBuildVersion;
 use std::rc::Rc;
 use std::sync::Arc;
-
-fn host_isa() -> Arc<dyn TargetIsa> {
-    host_isa_with(false)
-}
-
-fn host_isa_with(pic: bool) -> Arc<dyn TargetIsa> {
-    let mut flag_builder = cranelift_codegen::settings::builder();
-    flag_builder.set("opt_level", "speed").unwrap();
-    flag_builder.set("is_pic", if pic { "true" } else { "false" }).unwrap();
-    flag_builder.set("use_colocated_libcalls", "false").unwrap();
-    flag_builder.set("preserve_frame_pointers", "true").unwrap();
-    flag_builder.set("enable_pinned_reg", "true").unwrap();
-    let isa_builder = cranelift_native::builder().expect("host ISA");
-    isa_builder.finish(Flags::new(flag_builder)).expect("isa finish")
-}
 
 /// Abstracts the JIT/AOT split. The codegen pipeline is shared; the trait
 /// owns every legitimate point of variation — fn linkage, per-program
@@ -73,8 +57,7 @@ pub struct JitBackend {
 
 impl JitBackend {
     pub(crate) fn new() -> Self {
-        let isa = host_isa();
-        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let mut builder = jit_builder();
         #[cfg(test)]
         register_test_symbols(&mut builder);
         // Every symbol the JIT cannot resolve itself -- fz's own runtime
@@ -100,7 +83,7 @@ impl JitBackend {
 /// resource lifecycle tests). They live in this crate's test support, not in
 /// the runtime, so they are the only symbols the JIT is handed by hand.
 #[cfg(test)]
-fn register_test_symbols(builder: &mut JITBuilder) {
+fn register_test_symbols(builder: &mut cranelift_jit::JITBuilder) {
     builder.symbol("_resource_test_dtor", crate::ir_interp::tests_support_test_dtor_addr());
 }
 
@@ -374,3 +357,7 @@ pub struct AotArtifact {
     pub main_symbol: Option<String>,
     pub diagnostics: Diagnostics,
 }
+
+#[cfg(test)]
+#[path = "backend_test.rs"]
+mod tests;
