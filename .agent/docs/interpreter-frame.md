@@ -23,8 +23,9 @@ write rather than corrupting a run. Hand-built test executables carry
 
 ## Entering an entry
 
-`enter_entry` prepares the frame for a target entry in place: it binds the
-entry's delivered parameters and, for a `DeliveredResume` origin, binds the value
+`enter_entry` prepares the frame for a target entry in place: it encodes the
+words the entry is handed into the lanes of the parameters' layouts, binds each
+parameter by decoding its layout from those lanes, and, for a `DeliveredResume` origin, binds the value
 the call returned. Entries reached by a branch, a `Deliver` destination, a
 receive match or a receive `after` continue in the current frame. A return
 pops the continuation and enters its entry with the returned value.

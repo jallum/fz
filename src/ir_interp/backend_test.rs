@@ -398,10 +398,11 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
     let retained = interp_list_cons(sender, AnyValue::Int(1), tail, "source").unwrap();
     let message = interp_list_cons(sender, ignored, retained, "message").unwrap();
     let sender_cons_before = unsafe { &*sender }.heap.alloc_stats_snapshot().list_cons.allocs;
+    let (types, transport) = compiler.world_mut().types_mut_and_transport();
     runtime
         .send_ref(
-            compiler.world_mut().types_mut(),
-            &TransportStore::new(),
+            types,
+            transport,
             &crate::telemetry::ConfiguredTelemetry::new(),
             &program,
             &module,
@@ -409,9 +410,7 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
             message.as_any_value_ref(sender).unwrap(),
         )
         .unwrap();
-    runtime
-        .deliver_in_queue(&TransportStore::new(), &program, receiver_pid)
-        .unwrap();
+    runtime.deliver_in_queue(transport, &program, receiver_pid).unwrap();
     let BackendResumeEntry::Entry { env, .. } = runtime.take_backend_resume(receiver_pid).expect("winning wake") else {
         panic!("direct outcome entry")
     };

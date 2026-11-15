@@ -2797,6 +2797,14 @@ fn cursor_shape(world: &mut World, ty: Ty) -> ShapeId {
     world.intern_shape(ShapeDescr::Cursor { source, position })
 }
 
+/// The layout of a value that arrives whole, in one lane, whatever its readers
+/// ask of it. A decision builds the value it hands an arm and the runtime
+/// builds the ones it hands a receive outcome or a handler, so the entry's
+/// parameter is that one lane.
+pub(super) fn whole_value_layout(world: &mut World, ty: Ty) -> TransportLayout {
+    TransportLayout::structural(value_lane_shape(world, ty))
+}
+
 fn value_lane_shape(world: &mut World, ty: Ty) -> ShapeId {
     let lane = value_lane(world, ty);
     world.intern_shape(ShapeDescr::Lane(lane))

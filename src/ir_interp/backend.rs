@@ -321,9 +321,8 @@ impl IrInterpRuntime {
             continuations,
             ..
         } = park;
-        let entries = entries_for_executable(&executable)?;
         let mut env = env;
-        enter_entry(self, transport, program, entries, &mut env, after_entry, None, &[])?;
+        enter_entry(self, transport, program, &executable, &mut env, after_entry, None, &[])?;
         self.enqueue_backend_local_entry(pid, executable, after_entry, env, continuations)
     }
 
@@ -474,9 +473,8 @@ impl IrInterpRuntime {
             continuations,
             ..
         } = park;
-        let entries = entries_for_executable(&executable)?;
         let mut env = env;
-        enter_entry(self, transport, program, entries, &mut env, target, None, &params)?;
+        enter_entry(self, transport, program, &executable, &mut env, target, None, &params)?;
         self.backend_resume.insert(
             pid,
             BackendResumeEntry::Entry {
@@ -868,18 +866,12 @@ fn continue_backend_value(
         ));
     }
     let executable = frame.executable.as_ref();
-    let BackendBody::Clauses { entries, .. } = &executable.body else {
-        return Err(format!(
-            "backend continuation executable {:?} is not clause-backed",
-            frame.executable.key
-        ));
-    };
     let mut env = frame.env;
     enter_entry(
         runtime,
         transport,
         program,
-        entries,
+        executable,
         &mut env,
         frame.entry,
         Some(value),
@@ -1270,7 +1262,16 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             // entry, so the read waits for a resume that asks for it.
             ControlDestination::Deliver(target) => {
                 let delivered = env.get(*value).cloned();
-                enter_entry(runtime, transport, program, entries, &mut env, *target, delivered, &[])?;
+                enter_entry(
+                    runtime,
+                    transport,
+                    program,
+                    executable,
+                    &mut env,
+                    *target,
+                    delivered,
+                    &[],
+                )?;
                 Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                     executable: executable.clone(),
                     entry: *target,
@@ -1524,7 +1525,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             } else {
                 *else_entry
             };
-            enter_entry(runtime, transport, program, entries, &mut env, target, None, &[])?;
+            enter_entry(runtime, transport, program, executable, &mut env, target, None, &[])?;
             Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                 executable: executable.clone(),
                 entry: target,
@@ -1586,7 +1587,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     }
                 },
             };
-            enter_entry(runtime, transport, program, entries, &mut env, target, None, &params)?;
+            enter_entry(runtime, transport, program, executable, &mut env, target, None, &params)?;
             Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                 executable: executable.clone(),
                 entry: target,
@@ -1615,7 +1616,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             }
             if let Some((mb_idx, target, params)) = hit {
                 unsafe { &mut *runtime.cur_proc() }.mailbox.remove(mb_idx);
-                enter_entry(runtime, transport, program, entries, &mut env, target, None, &params)?;
+                enter_entry(runtime, transport, program, executable, &mut env, target, None, &params)?;
                 return Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                     executable: executable.clone(),
                     entry: target,
@@ -1630,7 +1631,16 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             if let Some(after) = after
                 && timeout_ms == Some(0)
             {
-                enter_entry(runtime, transport, program, entries, &mut env, after.entry, None, &[])?;
+                enter_entry(
+                    runtime,
+                    transport,
+                    program,
+                    executable,
+                    &mut env,
+                    after.entry,
+                    None,
+                    &[],
+                )?;
                 return Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                     executable: executable.clone(),
                     entry: after.entry,
@@ -1663,7 +1673,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 handler: true,
             });
             unsafe { &mut *runtime.cur_proc() }.push_handler(Handler::Interpreter);
-            enter_entry(runtime, transport, program, entries, &mut env, *body, None, &[])?;
+            enter_entry(runtime, transport, program, executable, &mut env, *body, None, &[])?;
             Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                 executable: executable.clone(),
                 entry: *body,
@@ -2228,30 +2238,25 @@ fn enter_entry(
     runtime: &mut IrInterpRuntime,
     transport: &TransportStore,
     program: &BackendProgram,
-    entries: &[BackendEntry],
+    executable: &BackendExecutable,
     env: &mut Frame,
     entry_id: crate::compiler2::ControlEntryId,
     delivered: Option<BackendBoundValue>,
     params: &[(ValueId, AnyValue)],
 ) -> Result<(), String> {
+    let entries = entries_for_executable(executable)?;
     let entry = entries
         .get(entry_id.as_u32() as usize)
         .ok_or_else(|| format!("backend entry {} is out of bounds", entry_id.as_u32()))?;
-    if entry.params.len() != params.len() {
+    if !params.iter().map(|(param, _)| *param).eq(entry.params.iter().copied()) {
         return Err(format!(
-            "backend entry {} expected {} delivered param(s), got {}",
+            "internal error: backend entry {} takes parameters {:?}, was handed {:?}",
             entry_id.as_u32(),
-            entry.params.len(),
-            params.len()
+            entry.params,
+            params.iter().map(|(param, _)| *param).collect::<Vec<_>>()
         ));
     }
-    for (param, value) in params.iter().copied() {
-        assert!(
-            entry.params.contains(&param),
-            "a delivered parameter belongs to its target"
-        );
-        env.insert(param, BackendBoundValue::Runtime(value));
-    }
+    bind_entry_params(runtime.cur_proc(), transport, program, executable, env, entry, params)?;
     match &entry.origin {
         crate::compiler2::BackendEntryOrigin::Clause
         | crate::compiler2::BackendEntryOrigin::Branch
@@ -2272,6 +2277,59 @@ fn enter_entry(
         }
     }
     Ok(())
+}
+
+/// Binds the parameters an entry is handed, each through its layout: the
+/// words handed are encoded into the lanes the layouts describe, and the
+/// entry reads its parameters back out of those lanes.
+fn bind_entry_params(
+    proc: *mut Process,
+    transport: &TransportStore,
+    program: &BackendProgram,
+    executable: &BackendExecutable,
+    env: &mut Frame,
+    entry: &BackendEntry,
+    params: &[(ValueId, AnyValue)],
+) -> Result<(), String> {
+    let mut lanes = Lanes::new();
+    for (param, word) in params {
+        let layout = entry_param_layout(executable, *param)?;
+        encode_transport_layout(
+            transport,
+            program,
+            proc,
+            &BackendBoundValue::Runtime(*word),
+            layout,
+            &mut lanes,
+        )?;
+    }
+    let mut lane_index = 0;
+    for param in &entry.params {
+        let layout = entry_param_layout(executable, *param)?;
+        env.insert(
+            *param,
+            decode_transport_layout(transport, &lanes, layout, &mut lane_index)?,
+        );
+    }
+    if lane_index != lanes.len() {
+        return Err(format!(
+            "internal error: backend entry parameters read {lane_index} lane(s) of the {} handed",
+            lanes.len()
+        ));
+    }
+    Ok(())
+}
+
+fn entry_param_layout(executable: &BackendExecutable, param: ValueId) -> Result<TransportLayout, String> {
+    let layout = executable
+        .abi
+        .value_layouts
+        .get(&param)
+        .ok_or_else(|| format!("internal error: entry parameter {} has no layout", param.as_u32()))?;
+    Ok(TransportLayout {
+        structural: layout.structural,
+        carrier: layout.carrier,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2549,7 +2607,7 @@ fn after_panic(
         runtime,
         transport,
         program,
-        entries,
+        &frame.executable,
         &mut env,
         frame.entry,
         None,
@@ -2650,7 +2708,7 @@ fn publish_backend_capture(proc: *mut Process, value: &BackendBoundValue) -> Res
     })
 }
 
-fn entries_for_executable(executable: &Rc<BackendExecutable>) -> Result<&[BackendEntry], String> {
+fn entries_for_executable(executable: &BackendExecutable) -> Result<&[BackendEntry], String> {
     let BackendBody::Clauses { entries, .. } = &executable.body else {
         return Err(format!("backend executable {:?} is not clause-backed", executable.key));
     };

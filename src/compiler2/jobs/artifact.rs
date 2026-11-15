@@ -39,7 +39,7 @@ use super::super::transport::ShapeDescr;
 use super::super::transport::{ExecutableSymbol, PhysicalLaneSource, TransportPosition};
 use super::super::types::{Ty, Types};
 use super::super::world::World;
-use super::transport::{ClosureCallForm, closure_call_form};
+use super::transport::{ClosureCallForm, closure_call_form, whole_value_layout};
 use fz_engine::FactUse;
 use fz_engine::FatalError;
 use fz_engine::SemanticOrd;
@@ -1713,7 +1713,22 @@ fn build_executable_abi_plan(
             ))
         })
         .collect();
-    let LoweredBody::Clauses { clauses, .. } = &executable.body;
+    let LoweredBody::Clauses { clauses, entries, .. } = &executable.body;
+    for param in entries
+        .iter()
+        .filter(|entry| entry.origin.is_handed_parameters())
+        .flat_map(|entry| entry.params.iter().copied())
+    {
+        let ty = executable
+            .value_types
+            .get(&param)
+            .copied()
+            .unwrap_or_else(|| world.types_mut().any());
+        if !value_layouts.contains_key(&param) {
+            let layout = whole_value_layout(world, ty);
+            value_layouts.insert(param, backend_value_layout(world, layout));
+        }
+    }
     for clause in clauses {
         for (semantic_index, value) in clause.params.iter().copied().enumerate() {
             if let Some(input) = semantic_inputs
@@ -1814,6 +1829,16 @@ fn build_abi_executable(
 /// The typed lanes a layout occupies, and the physical form each travels in.
 /// A carrier lane is always the one public word; a structural lane takes the
 /// form its own type asks for.
+fn backend_value_layout(world: &mut World, layout: TransportLayout) -> BackendValueLayout {
+    let contract = abi_layout_contract(world, layout);
+    BackendValueLayout {
+        structural: layout.structural,
+        carrier: layout.carrier,
+        tys: contract.iter().map(|(ty, _)| *ty).collect(),
+        reprs: contract.iter().map(|(_, repr)| *repr).collect(),
+    }
+}
+
 pub(super) fn abi_layout_contract(world: &mut World, layout: TransportLayout) -> Vec<(Ty, AbiValueRepr)> {
     world
         .layout_physical_lanes(layout)
