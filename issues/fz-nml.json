@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T03:53:49Z",
+  "description": "Goal: no string math, concatenation or copying unless the result needs new bytes; minimal garbage. Runtime: views carry their length (S1), \u003c\u003e appends in place (S2), ::utf8 matches (S3). Library: JSON numbers from their text (S4), one-pass decode (S5), one-pass encode into one buffer (S6), integer boxing at \u003c\u003cc\u003e\u003e (F). Garbage pins count allocs - continuation_allocs. Proposal page: /Users/j5n/Workspace/fz-json-garbage.html (approved 2026-11-14). Worktree ../fz-json, base bd3edae98.",
+  "id": "fz-nml",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Binaries make no garbage they do not need",
+  "type": "epic",
+  "updated_at": "2026-11-15T03:53:49Z"
+}
