@@ -487,7 +487,7 @@ nothing, or an extern that aborts, makes the whole guard false however deeply it
 was called, so `not (map_size(x) == 0)` is false for a non-map. `and` and `or`
 evaluate their right side only when the left leaves it open, in all three
 evaluators. The Kernel functions a guard may call this way are `map_size/1`,
-`tuple_size/1`, `elem/2`, `length/1`, `byte_size/1`, `hd/1`, `tl/1`, `abs/1`,
+`tuple_size/1`, `elem/2`, `length/1`, `bit_size/1`, `byte_size/1`, `hd/1`, `tl/1`, `abs/1`,
 `round/1`, `trunc/1`, `floor/1`, `ceil/1` and the `is_*` type tests; `is_tuple/1`
 is a typed-head helper over `tuple`, like the other type tests, and
 `is_function/1` is one over `fun`. `is_function/2` checks its arity first and

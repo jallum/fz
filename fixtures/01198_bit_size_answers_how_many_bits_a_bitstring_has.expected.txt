@@ -1,0 +1,9 @@
+0
+3
+12
+48
+9
+:long
+:short
+:not_a_bitstring
+"errors were found at the given arguments:\n\n  * 1st argument: not a bitstring\n"

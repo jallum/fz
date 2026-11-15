@@ -16,8 +16,8 @@ defmodule Kernel do
       `inspect/1`, `assert/1`, `assert/2`, `refute/1` and `refute/2`, for
       failing the current process
     * `dbg/1`, `to_string/1`, `div/2`, `rem/2` and `range/3`
-    * the sizes and accessors `byte_size/1`, `map_size/1`, `tuple_size/1`,
-      `length/1`, `elem/2`, `hd/1` and `tl/1`, the numeric functions `abs/1`,
+    * the sizes and accessors `bit_size/1`, `byte_size/1`, `map_size/1`,
+      `tuple_size/1`, `length/1`, `elem/2`, `hd/1` and `tl/1`, the numeric functions `abs/1`,
       `round/1`, `trunc/1`, `floor/1` and `ceil/1`, and the type tests `is_integer/1`,
       `is_float/1`, `is_binary/1`, `is_bitstring/1`, `is_list/1`, `is_map/1`, `is_tuple/1`,
       `is_atom/1`, `is_boolean/1`, `is_pid/1`, `is_reference/1`, `is_function/1`, `is_function/2`, `is_nil/1`,
@@ -1369,6 +1369,25 @@ defmodule Kernel do
   def byte_size(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a bitstring\n"})
 
   extern "C" defp fz_bitstring_byte_extent(binary_cursor) :: integer
+
+  @doc """
+  Returns the number of bits in `bits`: a partial last byte counts only the
+  bits it holds.
+
+  ## Examples
+
+      Kernel.bit_size("hello")
+      #=> 40
+
+      Kernel.bit_size(<<1::3>>)
+      #=> 3
+
+  """
+  @spec bit_size(bitstring) :: integer
+  def bit_size(bits) when is_bitstring(bits), do: fz_bitstring_bit_extent(bits)
+  def bit_size(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a bitstring\n"})
+
+  extern "C" defp fz_bitstring_bit_extent(binary_cursor) :: integer
 
   @doc """
   Returns the number of entries in `map`.

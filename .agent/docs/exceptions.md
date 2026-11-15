@@ -477,7 +477,7 @@ clause that cannot match is left to the decision's own `FunctionClauseError`.
 
 | failure | prints |
 |---|---|
-| `byte_size/1`, `tuple_size/1`, `length/1`, `elem/2` of the wrong kind; `abs/1`, `round/1`, `trunc/1`, `floor/1`, `ceil/1` of a non-number; `hd/1`, `tl/1` of anything but a non-empty list | `** (ArgumentError) errors were found at the given arguments:` then the argument and what is wrong with it |
+| `bit_size/1`, `byte_size/1`, `tuple_size/1`, `length/1`, `elem/2` of the wrong kind; `abs/1`, `round/1`, `trunc/1`, `floor/1`, `ceil/1` of a non-number; `hd/1`, `tl/1` of anything but a non-empty list | `** (ArgumentError) errors were found at the given arguments:` then the argument and what is wrong with it |
 | `map_size/1` of a non-map | `** (BadMapError) expected a map, got:` then the value |
 | `elem/2` with a non-integer index | `** (ArithmeticError) bad argument in arithmetic expression`, as Elixir adds one to the index |
 | `abs/1` of the minimum integer; `round/1`, `trunc/1`, `floor/1`, `ceil/1` of a float outside the 64-bit range (Elixir answers a bignum) | `** (ArithmeticError) bad argument in arithmetic expression` |
