@@ -43,11 +43,15 @@
     {
       "text": "X4 typed heads (the first half of an extern head). Typed clause heads already exist ('def is_integer(_ :: integer), do: true'). Experiment: rewrite the 48 Kernel clauses of the form 'def left OP right when is_T(left) and is_U(right), do: fz_op_*(...)' as 'def (left :: T) OP (right :: U), do: fz_op_*(...)'. Predictions before the run: (1) it builds and distiller stdout is identical; (2) compile instructions fall by 0.5% or more (no is_integer/is_float guard helpers to plan); (3) run instructions within 0.3%; (4) with FZ_SPIKE_GUARDCMP=all the cycle on \u003c/2 remains, because the helper is still reified without argument types.",
       "timestamp": "2026-11-15T02:11:38Z"
+    },
+    {
+      "text": "X4 result (develop c7edccd4a, release). 48 Kernel clauses rewritten from 'when is_T(left) and is_U(right)' to typed heads. Builds; distiller stdout identical. The backend program dump is identical to the guarded form once source offsets are removed (0 differing lines of 96,764); telemetry 220,563 vs 220,566 lines. Compile 16.19-16.27G vs 16.17G and run 27.81G vs 27.76G are therefore noise on an identical program (about 0.2-0.6%; use this as the noise floor). Prediction 1 held, 3 held, 4 held (cycle on \u003c/2 remains with GUARDCMP=all), prediction 2 missed: no compile saving, because a guard of type tests already becomes the same type test as a typed head.\nMeaning: a typed head and a guarded head are already one thing to the compiler. An extern head adds exactly one fact on top of a typed head: the clause has no body of its own, it is the extern.\nCoordination facts received: Type System's #592 (fz-9x7.6) halves continuation allocations on the distiller (74.2M -\u003e 38.1M), so the prompt rule's saving must be re-measured on top of #592 before a decision. Exceptions: a raise does not jump; the raising frame returns 0 and every frame above returns 0 to run_quantum, which resumes the handler from Process::delivered. A plain native frame in between is fine if it returns 0 on seeing its callee diverged (Process::diverged covers failed or a raise waiting); a function owning a try must not be called the new way.",
+      "timestamp": "2026-11-15T02:14:05Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Arithmetic on known integers does not go through a continuation",
   "type": "task",
-  "updated_at": "2026-11-15T02:11:38Z"
+  "updated_at": "2026-11-15T02:14:05Z"
 }
