@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9zq.5"
+  ],
   "blocks": [],
   "created": "2026-11-15T03:40:19Z",
   "description": "Step R6 of fz-9zq. Buys: the language feature (user decision 2026-11-14): @type t :: :start | {integer, t} compiles and checks; deletes the resolve/type-alias self-wait diagnostic and its pin (compiler2_recursive_typedef_deadlocks_on_its_own_definition, drive_test.rs ~19734; fixtures2/behavior/recursive_typedef.fz). How: resolve the SCC of type names as one cluster (resolve.rs:134, jobs/types.rs:18; self-wait jobs/types.rs:35-45, world.rs ~3025) - #217 235db400d as prior art for wiring; @spec admission coinductive subtype vs Rec (contract.rs:384); dispatch/guards unfold one level (exact_tuple_arity types/mod.rs:2743, projection_alternatives :2330, list_element_type :1587); layout boxed self-pointer (transport.rs ShapeId); canon binder rendering (#217 29453341a).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A recursive @type resolves, admits and lays out",
   "type": "task",
-  "updated_at": "2026-11-15T03:40:19Z"
+  "updated_at": "2026-11-15T03:40:22Z"
 }

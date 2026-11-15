@@ -5,7 +5,9 @@
     "fz-9zq.3",
     "fz-9zq.4"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9zq.6"
+  ],
   "created": "2026-11-15T03:40:19Z",
   "description": "Step R5 of fz-9zq. Buys: precision where R1 folds to any (keeps μX. nil|{int,X,X}); the representation R6 needs. Design C (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/mu2/round3.md section 3): Rec(id) leaf is a new Descr axis (like opaques); RecDefs: id -\u003e Ty beside Types, so descend-only holds and the 17 unguarded walkers see a leaf; set operations treat Rec as the top of its heads (today's fold with a name); emptiness carries an in-flight RecId set (one sentence in .agent/docs/set-theoretic-types.md); contractive only; equation clusters committed by partition refinement (Moore/Hopcroft) with committed Rec handles fixed, so id equality = bisimilarity. R1's cycle firings become the equations. Prior art reusable from #217: db9873893 (commit algorithm), 48e6b884b (canonicalizer). Not reusable: 68f38050a, 40e8c94ee (assumed self-naming descriptors).",
   "id": "fz-9zq.5",
@@ -15,5 +17,5 @@
   "status": "open",
   "title": "A recursive type is a named leaf with an equation",
   "type": "task",
-  "updated_at": "2026-11-15T03:40:21Z"
+  "updated_at": "2026-11-15T03:40:22Z"
 }
