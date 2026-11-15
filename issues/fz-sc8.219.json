@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T03:14:32Z",
+  "description": "Fixture 01174's oracle prints `Enum.uniq(%{a: 1, b: 1})` and `Enum.uniq_by(%{a: 1, b: 1}, ...)`. Elixir 1.19.4 / OTP 28 enumerates a small atom-keyed map in an order that is not defined: the same `elixir -e 'IO.inspect(Enum.to_list(%{a: 1, b: 1}))'` printed `[b: 1, a: 1]` once in three runs. CI stays green only because the stored stamp means Elixir never starts; `ORACLE=regen` rewrote 01174's golden to `{[], [b: 1, a: 1], [b: 1]}` on one run, and `ORACLE=check` can fail the same way.\n\nDone when: 01174 enumerates an input whose order Elixir defines (a keyword list, or a map with integer keys), regenerated through the oracle; every other oracle fixture that enumerates an atom-keyed map literal is checked and fixed the same way; two consecutive `ORACLE=check` runs agree.",
+  "id": "fz-sc8.219",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "Fixture 01174's oracle depends on Elixir's order for an atom-keyed map",
+  "type": "bug",
+  "updated_at": "2026-11-15T03:14:32Z"
+}
