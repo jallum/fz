@@ -9,9 +9,15 @@
   "id": "fz-9x7.3",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "DECIDED 2026-11-14 by experiment (/private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/9x7-3: 9x7-3-spike-all-candidates.patch, predictions.md, sweep-results.txt, ret-results.txt, matrix.log). Design: copy-on-old body frames. A chain of \u003e=16 continuations each built by exactly one other shares one heap frame (d7w's construction-site and held-slot analysis); every frame store first checks the frame lies in [block_start, bump_top) and otherwise copies it to the tip (fz_frame_copy_to_tip) and writes there, so no write lands in an object a collection kept. Dead boxed slots are cleared (skipping scalar-kinded slots: a scalar ref names its own slot). Measured: 01253 build 51.4 s/51.2 MB -\u003e ~3 s/3.27 MB, run and build print 501500; distiller and 1M map unchanged (frame-resident entries 133 of 74M); copy ran 1/77/60 times. Rejected by data: linked write-once frames (quadratic chain walk; skip pointers 2.09x size, +25% RSS), a words-based structural rule (keeps short chains that lose their pop: map 301 MB), the last-member release (no-op at T=16). Threshold sweep 0..64: knee at 4 (map) / 8 (distiller), flat 16..64. Clear: dead 10M list held by a frame -\u003e peak 2588 -\u003e 1872 MB, copied 1693 -\u003e 1438 MB; live control and distiller unchanged. Pins: map_atom_order 250/11184 -\u003e 245/11024 (five closures share one frame); a_large_list_passed_back_and_forth yield 32160 -\u003e 32176 (a member that needs no values of its own still carries the shared frame's width: 32 -\u003e 48 B). Poison 2/2, matrix 3440 passed + those 3. Base run of 01253 panics in cranelift-jit PosOverflow at 51 MB of code (fixed by this ticket's size drop).",
+      "timestamp": "2026-11-15T01:23:45Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A long body keeps one frame without writing into a kept object",
   "type": "task",
-  "updated_at": "2026-11-14T19:25:23Z"
+  "updated_at": "2026-11-15T01:23:45Z"
 }
