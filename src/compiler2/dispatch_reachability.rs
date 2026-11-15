@@ -78,9 +78,19 @@ pub(crate) fn calculate_dispatch_reachability(
 pub(crate) struct TestEdges {
     pub(crate) on_match: bool,
     pub(crate) on_miss: bool,
+    /// Some visit of a bitstring test with a `binary` rest proved the rest ends
+    /// on a byte boundary.
+    rest_whole: bool,
+    /// Some visit of that test could not prove it.
+    rest_unproven: bool,
 }
 
 impl TestEdges {
+    /// The test's `binary` rest is whole bytes in every visit that reached it.
+    fn rest_is_whole(self) -> bool {
+        self.rest_whole && !self.rest_unproven
+    }
+
     /// A test no visit decided, or whose subject no visit could carry, says
     /// nothing about its edges, so both stay.
     fn live(self) -> LiveEdges {
@@ -120,6 +130,8 @@ impl ReachedEdges {
             let known = self.tests.entry(*node).or_default();
             known.on_match |= edges.on_match;
             known.on_miss |= edges.on_miss;
+            known.rest_whole |= edges.rest_whole;
+            known.rest_unproven |= edges.rest_unproven;
         }
     }
 
@@ -128,7 +140,8 @@ impl ReachedEdges {
     /// gone. A plan nothing narrows is the very `Rc` it started as.
     pub(crate) fn trimmed(&self, types: &Types) -> Rc<PatternDispatchPlan<Ty>> {
         let live = |node| self.tests.get(&node).copied().unwrap_or_default().live();
-        match self.plan.trimmed(&live, &|ty| types.is_literal_blind(ty)) {
+        let rest_whole = |node| self.tests.get(&node).copied().unwrap_or_default().rest_is_whole();
+        match self.plan.trimmed(&live, &rest_whole, &|ty| types.is_literal_blind(ty)) {
             Some(trimmed) => Rc::new(trimmed),
             None => self.plan.clone(),
         }
@@ -171,7 +184,12 @@ impl ReachabilityCalculator<'_> {
                 self.outcomes.insert(*outcome);
                 self.outcome_inputs.insert((*outcome, state.into_owned().roots));
             }
-            DispatchNode::Test { on_match, on_miss, .. } => {
+            DispatchNode::Test {
+                predicate,
+                on_match,
+                on_miss,
+            } => {
+                self.record_rest_proof(node_id, predicate, &state);
                 let matched = self.apply_proofs(&state, &on_match.evidence.proofs);
                 let missed = self.apply_proofs(&state, &on_miss.evidence.proofs);
                 let edges = self.tests.entry(node_id).or_default();
@@ -185,6 +203,31 @@ impl ReachabilityCalculator<'_> {
                 }
             }
         }
+    }
+
+    /// A bitstring test whose last field is an unsized `binary` rest records
+    /// whether this visit proves the rest whole bytes: the subject is a binary
+    /// and every field before the rest spans whole bytes.
+    fn record_rest_proof(&mut self, node: GraphNodeId, predicate: &RegionPredicate<Ty>, state: &ReachabilityState) {
+        let Region::Bitstring(shape) = &predicate.region else {
+            return;
+        };
+        let Some((last, before)) = shape.fields.split_last() else {
+            return;
+        };
+        let rest = &self.plan.bitstring_extraction(*last).spec;
+        if rest.kind != BitstringFieldKind::Binary || rest.size.is_some() {
+            return;
+        }
+        let prefix_whole = before
+            .iter()
+            .all(|field| self.plan.bitstring_extraction(*field).spec.spans_whole_bytes());
+        let binary = self.types.str_t();
+        let subject = project_subject(self.types, self.plan, &state.roots, predicate.subject);
+        let proven = prefix_whole && self.types.is_subtype(&subject, &binary);
+        let edges = self.tests.entry(node).or_default();
+        edges.rest_whole |= proven;
+        edges.rest_unproven |= !proven;
     }
 
     fn apply_proofs<'s>(
@@ -396,7 +439,7 @@ pub(crate) fn project_subject(
             | BitstringFieldKind::Utf32 => types.int(),
             BitstringFieldKind::Float => types.float(),
             BitstringFieldKind::Binary => types.str_t(),
-            BitstringFieldKind::Bits => types.str_t(),
+            BitstringFieldKind::Bits => types.bitstring(),
         },
     }
 }

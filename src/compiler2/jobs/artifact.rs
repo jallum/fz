@@ -1556,7 +1556,7 @@ fn resolve_auto_variadic_marshal(
     if world.types().is_floating(&arg_ty) {
         return Err(refuse_float_variadic_marshal(tel, root_id));
     }
-    let str_ty = world.types_mut().str_t();
+    let str_ty = world.types_mut().bitstring();
     if world.types().is_subtype(&arg_ty, &str_ty) {
         return Err(incomplete_semantic_plan(
             tel,

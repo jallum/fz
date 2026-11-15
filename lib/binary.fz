@@ -14,7 +14,7 @@ defmodule :binary do
       #=> "abc"
 
   """
-  @spec copy(any) :: binary
+  @spec copy(binary) :: binary
   def copy(subject), do: copy(subject, 1)
 
   @doc """
@@ -32,7 +32,7 @@ defmodule :binary do
       #=> ""
 
   """
-  @spec copy(any, any) :: binary
+  @spec copy(binary, integer) :: binary
   def copy(subject, n) when is_binary(subject) and is_integer(n) and n >= 0, do: fz_binary_copy(subject, n)
 
   def copy(subject, n),
@@ -52,7 +52,7 @@ defmodule :binary do
       #=> 3
 
   """
-  @spec referenced_byte_size(any) :: integer
+  @spec referenced_byte_size(binary) :: integer
   def referenced_byte_size(binary) when is_binary(binary), do: fz_binary_referenced_size(binary)
 
   def referenced_byte_size(binary),
@@ -69,5 +69,5 @@ defmodule :binary do
 
   extern "fz" defp fz_binary_copy(binary, integer) :: binary
 
-  extern "C" defp fz_binary_referenced_size(any) :: integer
+  extern "C" defp fz_binary_referenced_size(bitstring) :: integer
 end

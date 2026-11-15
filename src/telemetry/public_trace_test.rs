@@ -1349,7 +1349,7 @@ const SCENARIOS: [&str; 5] = [
 // The range/map row 79 -> 77 and the predicate row 201 -> 199: a library exception's module words its own message, so the raise
 // carries no `inspect` to build the text.
 // The take/drop/split row 260 -> 258: an exception record nothing asks about keys by its class.
-const POPULATION_BASELINES: [(u64, u64); 3] = [(77, 0), (199, 32), (258, 38)];
+const POPULATION_BASELINES: [(u64, u64); 3] = [(72, 0), (196, 32), (257, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -1605,7 +1605,8 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // 00567 cold 175 -> 177, 00571 cold 530 -> 532 and 00420 cold 678 -> 680: the `raise`
                 // and `defexception` macros that build the library exception a failure raises are
                 // two more bodies.
-                [[177, 0, 0, 1, 4], [532, 0, 0, 1, 4], [680, 0, 0, 1, 4]][fixture_index][scenario],
+                // 00567 cold 177 -> 168: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+                [[168, 0, 0, 1, 4], [528, 0, 0, 1, 4], [678, 0, 0, 1, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1775,7 +1776,8 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // library exception, and the `raise` and `defexception` macros that build it are two more
     // bodies in the call graph.
     // 68 -> 69 DeriveStaticCallees: the same two bodies, less `raise/2`, which is gone.
-    ("fixtures/00567_fz_f98_range_map_converges.fz", 37, 6, 69, 0),
+    // 00567: 37 -> 35 DeriveRecursive evaluations: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 35, 6, 69, 0),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
@@ -1803,7 +1805,8 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // 48/13 -> 50/14 DeriveRecursive: the `raise` and `defexception` macros that build the
     // library exception a failure raises are two more bodies in the call graph.
     // 48 -> 49 DeriveStaticCallees: the same two bodies, less `raise/2`, which is gone.
-    ("fixtures/00571_enum_predicate_search.fz", 50, 14, 49, 0),
+    // 00571: 50 -> 48 DeriveRecursive evaluations: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+    ("fixtures/00571_enum_predicate_search.fz", 48, 14, 49, 0),
     // fz-5xp.6: `Range.count` uses `div/2`, so fewer bodies are extracted.
     // fz-5xp.30: 126 -> 128 component evaluations. The reached arithmetic
     // result/status helpers are ordinary generic calls.
@@ -1860,7 +1863,8 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
         // 18/4 -> 20/5 and 19 -> 20 DeriveStaticCallees: the `raise` and `defexception`
         // macros that build the library exception an arithmetic failure raises are two more
         // bodies in the call graph, less `raise/2`, which is gone.
-        20,
+        // 20 -> 18 DeriveRecursive evaluations: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        18,
         5,
         20,
         0,
@@ -1872,7 +1876,8 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
         // 18/4 -> 20/5 and 19 -> 20 DeriveStaticCallees: the `raise` and `defexception`
         // macros that build the library exception an arithmetic failure raises are two more
         // bodies in the call graph, less `raise/2`, which is gone.
-        20,
+        // 20 -> 18 DeriveRecursive evaluations: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        18,
         5,
         20,
         0,
@@ -1884,7 +1889,8 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
         // 20/4 -> 22/5 and 26 -> 27 DeriveStaticCallees: the `raise` and `defexception`
         // macros that build the library exception an arithmetic failure raises are two more
         // bodies in the call graph, less `raise/2`, which is gone.
-        22,
+        // 22 -> 20 DeriveRecursive evaluations: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        20,
         5,
         27,
         0,
@@ -1896,7 +1902,8 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
         // 20/4 -> 22/5 and 26 -> 27 DeriveStaticCallees: the `raise` and `defexception`
         // macros that build the library exception an arithmetic failure raises are two more
         // bodies in the call graph, less `raise/2`, which is gone.
-        22,
+        // 22 -> 20 DeriveRecursive evaluations: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        20,
         5,
         27,
         0,
@@ -2265,7 +2272,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // recursive key does, so callers that differ only in such freight share one activation.
         // 80 -> 81: `panic/1` and its extern stand where `raise/2` and its extern stood, and
         // `IO.puts/1` is keyed once more for the text an exception's module hands it.
-        activations: lifecycle(81, 81, 0),
+        // 81 -> 76: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        activations: lifecycle(76, 76, 0),
         // fz-kdt.183: 73 -> 74 distinct, 75 -> 76 first appearances,
         // retractions flat -- the recovered activation brings its call edge.
         //
@@ -2284,7 +2292,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 95 -> 94: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
         // 94 -> 92: the raise no longer calls `inspect` to build its text.
-        callsites: lifecycle(92, 92, 0),
+        // 92 -> 87: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        callsites: lifecycle(87, 87, 0),
         // fz-kdt.183: 17 -> 30 shift wakes and 19 -> 127 rebased completions.
         // The RISING row of this landing, and the cause is that `InputDemand`
         // is now a fact that MOVES: the forwarded demand of a function whose
@@ -2383,7 +2392,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // recursive key does, so callers that differ only in such freight share one activation.
         // 206 -> 210: the `defexception` and `raise` macros and `declares_message?/1` are
         // analysed, and `panic/1` with its extern stands where `raise/2` and its extern stood.
-        analyze_evaluations: 210,
+        // 210 -> 197: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        analyze_evaluations: 197,
         analyze_zero_change: 4,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
@@ -2474,7 +2484,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 759 -> 814: each library exception the fixture can raise is a module of its own, built
         // by `defexception` and raised through the `raise` macro; their definitions, bodies and
         // facts are the added evaluations.
-        total_evaluations: 814,
+        // 814 -> 781: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        total_evaluations: 781,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2501,7 +2512,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
         // and its Enum wrappers are keyed once per reducer lambda; no retractions.
         // 202 -> 203: `IO.puts/1` is keyed once more for the text an exception's module hands it.
-        activations: lifecycle(203, 203, 0),
+        // 203 -> 200: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        activations: lifecycle(200, 200, 0),
         // fz-kdt.106: 215 -> 212 distinct (248 -> 245 first appearances,
         // retractions unchanged): the one vanished activation was named from
         // three callsites.
@@ -2522,7 +2534,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // receiver as returned, so `Enum.reduce_while/3` and its Enum wrappers are keyed once
         // per reducer lambda).
         // 258 -> 256: the raise no longer calls `inspect` to build its text.
-        callsites: lifecycle(256, 256, 0),
+        // 256 -> 252: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        callsites: lifecycle(252, 252, 0),
         // fz-kdt.183: 1 -> 5 shift wakes, 2 -> 22 rebased completions.
         // `InputDemand` is a fact that MOVES -- a function whose forwarding
         // cone is still filling in publishes a demand that climbs the lattice,
@@ -2596,7 +2609,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // and a protocol callback counts every input but the receiver as returned, so
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
         // 612 -> 614: the `defexception` and `raise` macros are analysed.
-        analyze_evaluations: 614,
+        // 614 -> 607: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        analyze_evaluations: 607,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -2700,7 +2714,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
         // 1147 -> 1184: the library exception modules this fixture can raise, built by
         // `defexception` and raised through the `raise` macro.
-        total_evaluations: 1184,
+        // 1184 -> 1168: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        total_evaluations: 1168,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -2791,7 +2806,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 262 -> 261: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
         // 261 -> 262: the library exception the fixture's failures raise adds one activation.
-        activations: lifecycle(262, 262, 0),
+        // 262 -> 261: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        activations: lifecycle(261, 261, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -2851,7 +2867,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 429 -> 445: the sixteen new activations bring their edges.
         // 445 -> 443: the raise no longer calls `inspect` to build its text, and an exception
         // record nothing asks about keys by its class.
-        callsites: lifecycle(443, 443, 0),
+        // 443 -> 440: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        callsites: lifecycle(440, 440, 0),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -3027,7 +3044,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // activation.
         // 741 -> 745: the `defexception` and `raise` macros and the functions of the library
         // exception a failure raises are analysed.
-        analyze_evaluations: 745,
+        // 745 -> 740: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        analyze_evaluations: 740,
         analyze_zero_change: 23,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
@@ -3116,7 +3134,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // a recursive key does, so callers that differ only in such freight share one activation.
         // 1697 -> 1736: the library exception modules this fixture can raise, built by
         // `defexception` and raised through the `raise` macro.
-        total_evaluations: 1736,
+        // 1736 -> 1727: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        total_evaluations: 1727,
     },
 ];
 

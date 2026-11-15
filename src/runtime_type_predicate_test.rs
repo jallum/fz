@@ -846,6 +846,48 @@ mod value_membership_tests {
 }
 
 #[cfg(test)]
+mod bitstring_alignment_tests {
+    use super::super::*;
+
+    #[test]
+    fn a_whole_byte_test_admits_binaries_and_no_partial_bitstring() {
+        let test = BitstringAlignment::WHOLE_BYTES;
+        assert!(test.admits(0) && test.admits(8) && test.admits(64));
+        assert!(!test.admits(3) && !test.admits(12));
+        assert!(test.asks_length());
+    }
+
+    #[test]
+    fn a_partial_byte_test_admits_the_bitstrings_that_are_not_binaries() {
+        let test = BitstringAlignment::PARTIAL_BYTE;
+        assert!(test.admits(3) && test.admits(12));
+        assert!(!test.admits(0) && !test.admits(8));
+        assert!(test.asks_length());
+    }
+
+    #[test]
+    fn a_test_that_admits_both_reads_only_the_tag() {
+        let test = BitstringAlignment::ANY;
+        assert!(test.admits(0) && test.admits(3));
+        assert!(!test.asks_length());
+        assert!(!BitstringAlignment::NONE.asks_length());
+    }
+
+    #[test]
+    fn containment_and_overlap_follow_the_two_lengths() {
+        let (whole, partial, any) = (
+            BitstringAlignment::WHOLE_BYTES,
+            BitstringAlignment::PARTIAL_BYTE,
+            BitstringAlignment::ANY,
+        );
+        assert!(any.contains_all(whole) && any.contains_all(partial));
+        assert!(!whole.contains_all(any) && !whole.contains_all(partial));
+        assert!(whole.overlaps(any) && !whole.overlaps(partial));
+        assert!(!BitstringAlignment::NONE.overlaps(any));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::super::*;
 
@@ -863,7 +905,7 @@ mod tests {
             RuntimeTestAxis::NamedStructs => predicate.named_structs = FiniteSet::any(),
             RuntimeTestAxis::OtherStructs => predicate.allow_other_structs = true,
             RuntimeTestAxis::Maps => predicate.maps = true,
-            RuntimeTestAxis::Binaries => predicate.binaries = true,
+            RuntimeTestAxis::Binaries => predicate.bitstrings = BitstringAlignment::ANY,
             RuntimeTestAxis::Callables => predicate.callables = CallableShapes::any(),
             RuntimeTestAxis::Resources => predicate.resources = true,
             RuntimeTestAxis::Opaques => predicate.opaques = FiniteSet::any(),

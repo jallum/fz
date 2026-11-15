@@ -83,6 +83,10 @@ pub(super) trait RuntimeTestEmitter<'f> {
     fn kind_evidence(&self, value: Self::Value) -> KindEvidence;
     fn kind_flag(&mut self, value: Self::Value, kind: ValueKind) -> Result<ir::Value, CodegenError>;
 
+    /// The bit length of a bitstring value. Only asked under a guard that has
+    /// established the value IS a bitstring.
+    fn bitstring_bit_len(&mut self, value: Self::Value) -> Result<ir::Value, CodegenError>;
+
     fn raw_int(&mut self, value: Self::Value) -> Result<ir::Value, CodegenError>;
     fn raw_float_bits(&mut self, value: Self::Value) -> Result<ir::Value, CodegenError>;
     fn raw_atom(&mut self, value: Self::Value) -> Result<ir::Value, CodegenError>;
@@ -262,7 +266,18 @@ fn emit_axis<'f, E: RuntimeTestEmitter<'f>>(
                     Some(prev) => e.builder().ins().bor(prev, next),
                 });
             }
-            Ok(flag.expect("BINARY_REPRS is never empty"))
+            let is_bitstring = flag.expect("BINARY_REPRS is never empty");
+            let admitted = predicate.bitstrings;
+            if !admitted.asks_length() {
+                return Ok(Some(is_bitstring));
+            }
+            let whole_bytes = admitted.whole_bytes;
+            guarded(e, is_bitstring, move |e| {
+                let bit_len = e.bitstring_bit_len(value)?;
+                let partial_bits = e.builder().ins().band_imm(bit_len, 7);
+                let cc = if whole_bytes { IntCC::Equal } else { IntCC::NotEqual };
+                Ok(e.builder().ins().icmp_imm(cc, partial_bits, 0))
+            })
         }
         RuntimeTestAxis::Resources => e.kind_flag(value, ValueKind::RESOURCE),
         RuntimeTestAxis::Opaques => {

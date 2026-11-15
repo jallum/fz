@@ -9,7 +9,7 @@ use crate::fast_hash::HashMap;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use crate::ast::{BinOp, BitType, Endian, TypeExprBody, UnOp};
+use crate::ast::{BinOp, BitSizeKnowledge, BitType, Endian, TypeExprBody, UnOp};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 use crate::ground_value::GroundValue;
@@ -137,6 +137,21 @@ pub struct LoweredBitFieldSpec {
     pub endian: Endian,
     pub signed: bool,
     pub unit: Option<u32>,
+}
+
+impl LoweredBitFieldSpec {
+    /// The bits a construction segment adds beyond the whole bytes it adds
+    /// (`crate::ast::bit_remainder`). `source_is_binary` says whether the value
+    /// written into an unsized `bits` segment is a binary.
+    pub fn bit_remainder(&self, source_is_binary: bool) -> Option<u64> {
+        let size = match &self.size {
+            None => BitSizeKnowledge::Absent,
+            Some(LoweredBitSize::Literal(size)) => BitSizeKnowledge::Literal(*size),
+            Some(LoweredBitSize::Value(_)) => BitSizeKnowledge::Runtime,
+            Some(LoweredBitSize::ByteSizeOf(_)) => BitSizeKnowledge::ByteSizeOf,
+        };
+        crate::ast::bit_remainder(self.ty, size, self.unit, source_is_binary)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -69,7 +69,9 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // 826 -> 828: a text that one caller matches and another holds whole is asked for twice,
         // whole and then matched, so `Kernel.inspect/1` and `Kernel.fz_inspect/1` are each walked once more
         // for the uncaught-raise handler's indenting.
-        runtime_demand_walks: 828,
+        // 828 -> 826: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run
+        // time, so its result stays `binary` and callers need no second `bitstring` activation.
+        runtime_demand_walks: 826,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -106,7 +108,10 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // raise, so the banner and the `message/1` of each exception the fixture can raise are
         // walked too.
         // 246 -> 247: the same cause; this fixture walks `Kernel.inspect/1` once more.
-        runtime_demand_walks: 247,
+        // 247 -> 242: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at
+        // run time, so its result stays `binary` and callers need no second `bitstring`
+        // activation.
+        runtime_demand_walks: 242,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -2319,23 +2324,26 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // What the program can raise is final only once every body has been analysed,
             // so the bottom handler and the banner it calls settle here, with the two
             // program-wide facts they read.
-            ("Activation", 64),
-            ("ActivationAnalyzed", 68),
-            ("ActivationInputs", 66),
-            ("CallSiteSummary", 126),
-            ("CallSiteTargets", 126),
+            // 64 -> 62 (and every fact below that follows an activation): `String.Chars`'
+            // binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result
+            // stays `binary` and callers need no second `bitstring` activation.
+            ("Activation", 62),
+            ("ActivationAnalyzed", 66),
+            ("ActivationInputs", 64),
+            ("CallSiteSummary", 123),
+            ("CallSiteTargets", 123),
             // fz-sc8.64: 26 -> 28. Kernel's failure heads now reach `raise/2`
             // and `fz_raise/2` where they reached `panic/1` and `fz_panic/1`;
             // each of the pair has one more parameter than its predecessor
             // (`raise/2` two, `panic/1` one), so each publishes one more
             // slot.
-            ("IncomingInputSlot", 91),
+            ("IncomingInputSlot", 87),
             ("NameableModules", 1),
             ("Raisable", 1),
-            ("ReturnType", 68),
-            ("RuntimeDemand", 58),
-            ("RuntimeDemandInput", 53),
-            ("RuntimeDemandInputs", 58),
+            ("ReturnType", 66),
+            ("RuntimeDemand", 56),
+            ("RuntimeDemandInput", 51),
+            ("RuntimeDemandInputs", 56),
             // Readiness transitions fell because no result-decoding function
             // publishes facts.
         ]),
@@ -2543,17 +2551,21 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // A text that one caller matches and another holds whole is asked for twice, whole
             // and then matched: `Kernel.inspect/1` and `Kernel.fz_inspect/1` are each evaluated
             // once more, content-caused: 882 -> 884.
-            evaluations: 884,
-            runtime_demand_evaluations: 119,
-            initial: 639,
-            content_caused: 245,
+            // 884 -> 864: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at
+            // run time, so its result stays `binary` and callers need no second `bitstring`
+            // activation.
+            evaluations: 864,
+            runtime_demand_evaluations: 115,
+            initial: 623,
+            content_caused: 241,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 799,
-            unchanged_outputs: 85,
+            changed_outputs: 778,
+            // unchanged_outputs 85 -> 86: `String.Chars`' binary impl is selected for any bitstring, so its shared activation is typed `bitstring` with two clauses, and a caller that holds a `binary` gets its own `String.Chars.Binary.to_string(binary)` activation with the raise clause trimmed.
+            unchanged_outputs: 86,
             already_pending: 9,
-            blocked_completions: 231,
+            blocked_completions: 227,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2571,9 +2583,10 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.ran),
         BTreeMap::from([
-            ("blocked_waiter_expansion", 138),
-            ("changed_revision_wake", 536),
-            ("gate_expansion", 209),
+            // 138 -> 140: `String.Chars`' binary impl is selected for any bitstring, so its shared activation is typed `bitstring` with two clauses, and a caller that holds a `binary` gets its own `String.Chars.Binary.to_string(binary)` activation with the raise clause trimmed.
+            ("blocked_waiter_expansion", 140),
+            ("changed_revision_wake", 521),
+            ("gate_expansion", 202),
             ("ignition", 1),
         ]),
         "{fixture}: the jobs run, by the reason that queued each"
@@ -2581,10 +2594,11 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.already_pending),
         BTreeMap::from([
-            ("activation_published", 44),
+            // 44 -> 45: `String.Chars`' binary impl is selected for any bitstring, so its shared activation is typed `bitstring` with two clauses, and a caller that holds a `binary` gets its own `String.Chars.Binary.to_string(binary)` activation with the raise clause trimmed.
+            ("activation_published", 45),
             ("blocked_waiter_expansion", 4),
             ("changed_revision_wake", 9),
-            ("gate_expansion", 37),
+            ("gate_expansion", 36),
         ]),
         "{fixture}: requests that found their job already queued"
     );
@@ -2614,13 +2628,13 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             wake_records("applied", &["completion"]),
             wake_records("dependencies_moved", &["step"])
         ),
-        (568, 12),
+        (553, 12),
         "{fixture}: wake records of the completions, and of the external changes between them"
     );
     assert_eq!(
         ledger.requested(fz_engine::WorkStart::ChangedRevisionWake),
-        // The 580 above and the one wake the arbiter's own step records.
-        581,
+        // The 565 above and the one wake the arbiter's own step records.
+        566,
         "{fixture}: every wake record is one request at the door"
     );
     let products = report.product_totals();
@@ -2683,7 +2697,10 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // function settles a product.
         // 10 -> 8 cache hits: a settle wakes only the pending reader directly
         // above it, so the readers above that one are not re-requested.
-        (1524, 1524, 1524, 0, 8, 0),
+        // 1524 -> 1494 settled products, all changed: `String.Chars`' binary impl no longer
+        // asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers
+        // need no second `bitstring` activation.
+        (1494, 1494, 1494, 0, 8, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(
@@ -2786,7 +2803,9 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
         // fz-sc8.37: 15 -> 16. Kernel defines `&&`, `||` and `!` as macros.
         // fz-sc8.64: 16 -> 18, the same `raise/2` and `fz_raise/2` pair.
         // 18 -> 14, the same dropped decoding functions.
-        77,
+        // 77 -> 76: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run
+        // time, so its result stays `binary` and callers need no second `bitstring` activation.
+        76,
         "every called function plans its own entry dispatch",
     );
 }

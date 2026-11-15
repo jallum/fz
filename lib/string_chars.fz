@@ -54,22 +54,10 @@ defimpl String.Chars, for: Atom do
 end
 
 defimpl String.Chars, for: Binary do
-  # fz's `binary` type does not require byte alignment -- `<<1::4>>` satisfies
-  # a `s :: binary` clause head -- so whether a given bitstring is actually a
-  # byte-aligned binary can only be answered at runtime, here.
-  #
-  # The protocol's result is declared `binary`: letting a partial bitstring
-  # through would mean the next `<>` aborts the process with a byte-alignment
-  # assertion far from here.
-  def to_string(s) do
-    if fz_bitstring_is_binary(s) == 1 do
-      s
-    else
-      raise(%Protocol.UndefinedError{protocol: String.Chars, value: s, description: "cannot convert a bitstring to a string"})
-    end
-  end
-
-  extern "C" defp fz_bitstring_is_binary(any) :: integer
+  # The impl receives any bitstring. A binary converts to itself; a bitstring
+  # whose bit length is not a whole number of bytes has no string form.
+  def to_string(s :: binary), do: s
+  def to_string(s), do: raise(%Protocol.UndefinedError{protocol: String.Chars, value: s, description: "cannot convert a bitstring to a string"})
 end
 
 defimpl String.Chars, for: Integer do

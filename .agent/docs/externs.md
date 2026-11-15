@@ -129,9 +129,7 @@ value as a float. All of them are total, so each also keeps a trailing
 `any`/`any` clause: equality and identity call the ref-carrying `fz_op_eq`,
 `fz_op_neq`, `fz_op_identical` or `fz_op_not_identical`, and an ordering calls
 `Kernel.compare/2`, whose `fz_value_cmp_ref` answers by the total term order.
-The orderings' `binary`/`binary` clauses are commented out in `Kernel`, because
-the runtime test a `binary` clause compiles to proves only "bitstring" and
-cannot be seated ahead of a catch-all; the `fz_op_lt_bb`, `fz_op_lte_bb`,
+The orderings' `binary`/`binary` clauses are commented out in `Kernel`; the `fz_op_lt_bb`, `fz_op_lte_bb`,
 `fz_op_gt_bb` and `fz_op_gte_bb` declarations they call stay, so restoring a
 clause is the uncomment.
 
@@ -257,10 +255,11 @@ One table in `src/extern_contract.rs` names every source spelling of a wire
 type. Each row carries the `ExternTy` the spelling means, whether a declared
 parameter takes its lane from the spelling (`binary`, `cstring`, `c_int`,
 `unit`, `nil`) or from its semantic type through `ty_to_extern_ty` (everything
-else, so an alias or a constraint can widen it), and, for a wire-only spelling
+else, so an alias or a constraint can widen it; `atom` and `bitstring` read as
+`Any`, so their word passes through unchanged), and, for a wire-only spelling
 the type system has no type for, the semantic spelling the contract is
 rewritten to before the type checker sees it: `cstring` to `binary`, `c_int` to
-`integer`, `unit` to `nil`.
+`integer`, `unit` to `nil`, `binary_cursor` to `bitstring`.
 
 A wire-only spelling names one lane, and a lane is a whole register, so it
 stands only as a whole parameter or result. Written inside a larger type,

@@ -128,6 +128,7 @@ pub trait Types {
     }
     fn map(&mut self, fields: &[(MapKey, Self::Ty)]) -> Self::Ty;
     fn str_t(&mut self) -> Self::Ty;
+    fn bitstring(&mut self) -> Self::Ty;
     fn map_top(&mut self) -> Self::Ty;
     fn tuple_top(&mut self) -> Self::Ty;
     fn is_tuple_type(&self, a: &Self::Ty) -> bool;

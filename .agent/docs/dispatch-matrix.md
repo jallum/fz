@@ -495,6 +495,16 @@ every runtime test: on the native doors a binary over 64 bytes matched no
 bitstring pattern and no `case` clause, silently, with control falling to the
 next clause (fz-5xp.57).
 
+The binaries axis asks about length as well as kind, through
+`BitstringAlignment`: `binary` tests the tag and `bit_len % 8 == 0`, `bitstring
+and not binary` tests the tag and `bit_len % 8 != 0`, and a test that admits
+both reads only the tag. The interpreter reads the length off the value; a
+cursor answers with its source's bit length less its position. The native doors
+read it through the `bitstring_bit_len` method of the shared emitter, which the
+compiled-body door answers with `emit_binary_bit_len` and the receive door with
+`fz_bs_bit_len_ref`. A `bitstring` pattern region tests the tag alone, because
+it tests a pattern and not the type.
+
 Each axis carries an `AxisPrecision`, which is what a SEAT may read from
 deciding it:
 
@@ -505,7 +515,7 @@ deciding it:
 | ints, floats | separating | presence bits: one representation, so no admitted body can misread what arrives — brands are runtime-erased by construction (fz-bsx), and restoring numeric singletons to the lattice would re-open this row |
 | pids and references (opaques) | separating | presence bits like ints: the value's kind says which of the two it is, so no admitted body can misread what arrives |
 | lists | per position | empty-or-cons, plus the first element's own question — as separating as two head questions are DISJOINT |
-| named/other structs, maps, binaries, resources | erasing | a schema id or a kind, never the contents |
+| named/other structs, maps, binaries, resources | erasing | a schema id or a kind, never the contents (a binaries test also reads the bit length, never the bytes) |
 | tuples | per position | as separating as the positions' own sub-tests |
 
 A named struct and a tuple are both `ValueKind::STRUCT`, and the three struct

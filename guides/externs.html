@@ -118,6 +118,7 @@ expects</em> (and vice versa for returns).</p>
 <tr><td class="cls">float</td><td class="shape">raw <code>f64</code></td><td>float</td><td class="note">Use the float payload directly.</td></tr>
 <tr><td class="cls">boolean</td><td class="shape">raw <code>uint64_t</code></td><td>true or false</td><td class="note">A returned zero is false and any nonzero word is true; source arguments use 0 or 1. This is not C <code>_Bool</code> and not an fz atom id.</td></tr>
 <tr><td class="cls">any</td><td class="shape">raw <code>u64</code></td><td>any value ref</td><td class="note">For one-word C boundaries that intentionally operate on opaque fz values.</td></tr>
+<tr><td class="cls">bitstring</td><td class="shape">raw <code>u64</code></td><td>any bitstring, whole bytes or not</td><td class="note">Like <code>any</code>, the value ref passes through unchanged, and the type checker holds the argument to a bitstring. For helpers that accept a bitstring of any bit length.</td></tr>
 <tr><td class="cls">binary</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Pointer to the binary's bytes. No NUL guarantee.</td></tr>
 <tr><td class="cls">c_string</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Same pointer, but with a guaranteed trailing zero byte.</td></tr>
 <tr><td class="cls">nil</td><td class="shape">(no return value)</td><td>nil</td><td class="note">For C functions that return <code>void</code>.</td></tr>
@@ -564,8 +565,10 @@ prototype in the C header.
       when we need it.)</li>
   <li><strong>Non-byte-aligned bitstrings can't be passed.</strong>
       <code>&lt;&lt;1::1, 0::1&gt;&gt;</code> is a 2-bit bitstring; there's no
-      <code>*const u8</code> that represents it cleanly. The runtime
-      raises an arg exception if you try.</li>
+      <code>*const u8</code> that represents it cleanly. A bitstring the type
+      checker knows is not a binary is refused at compile time; one that arrives
+      as <code>any</code> reaches the runtime, which prints an argument error and
+      aborts the process.</li>
 <li><strong>Guards can call externs of three classes.</strong> A guard
       may call an extern whose parameters are integers, floats or reference
       words and whose return is an integer, a float, a boolean, a reference

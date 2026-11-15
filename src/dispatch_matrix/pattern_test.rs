@@ -386,7 +386,7 @@ fn a_plan_carries_the_exception_its_rows_raise_through_every_rebuild() {
     assert_eq!(plan.last_resort, Some(LastResort::case_clause()));
 
     let trimmed = plan
-        .trimmed(&|_| crate::dispatch_matrix::LiveEdges::Match, &|_| false)
+        .trimmed(&|_| crate::dispatch_matrix::LiveEdges::Match, &|_| false, &|_| false)
         .expect("a narrowed test trims the plan");
     assert_eq!(
         trimmed.last_resort, plan.last_resort,

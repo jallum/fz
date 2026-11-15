@@ -720,6 +720,11 @@ impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmit
         emit_receive_value_kind_flag(self.body, value, kind)
     }
 
+    fn bitstring_bit_len(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+        let value_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
+        Ok(runtime_call1!(self.body, fz_bs_bit_len_ref, [value_ref]))
+    }
+
     fn raw_int(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
         receive_value_int(self.body, value)
     }
@@ -1075,7 +1080,7 @@ fn emit_bitstring_test<M: cranelift_module::Module>(
         let field = &extraction.spec;
         let (size_present, size_value) = emit_dispatch_bit_size(body, ctx, field, state)?;
         let field_spec = fz_bs_field_spec(
-            dispatch_bit_type_tag(field.kind),
+            dispatch_bit_type_tag(field.runtime_kind()),
             size_present,
             field.unit.unwrap_or(default_dispatch_bit_unit(field.kind)),
             dispatch_endian_tag(field.endian),

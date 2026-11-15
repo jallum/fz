@@ -2597,7 +2597,7 @@ fn layout_from_demand<T: crate::telemetry::Telemetry>(
     if demand.is_callable() {
         return callable_layout_from_demand(world, reads, ty, demand);
     }
-    if demand.shape == ShapeDemand::Matched && world.types().is_binary(&ty) {
+    if demand.shape == ShapeDemand::Matched && world.types().is_bitstring(&ty) {
         return RecipeLayout::Exact(TransportLayout::structural(world.intern_cursor_shape(ty)));
     }
     let (field_tys, field_demands) = match &demand.shape {

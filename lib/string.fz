@@ -616,7 +616,7 @@ defmodule String do
 
   """
   @spec upcase(binary) :: binary
-  def upcase(s), do: fz_binary_upcase(s)
+  def upcase(s :: binary), do: fz_binary_upcase(s)
 
   extern "fz" defp fz_binary_upcase(any) :: binary
 
@@ -636,7 +636,7 @@ defmodule String do
 
   """
   @spec downcase(binary) :: binary
-  def downcase(s), do: fz_binary_downcase(s)
+  def downcase(s :: binary), do: fz_binary_downcase(s)
 
   extern "fz" defp fz_binary_downcase(any) :: binary
 

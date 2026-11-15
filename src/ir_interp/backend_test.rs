@@ -771,6 +771,7 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
                 _ => crate::dispatch_matrix::LiveEdges::Both,
             },
             &|_| false,
+            &|_| false,
         )
         .expect("the arity question is settled by the parameter's shape");
     let dispatch = ExecutableDispatch::new(Rc::new(plan), vec![0]);

@@ -1,0 +1,24 @@
+{:text, :bitstring, :binary, {true, true}}
+{:bytes, :bitstring, :binary, {true, true}}
+{:empty, :bitstring, :binary, {true, true}}
+{:sixteen_bits, :bitstring, :binary, {true, true}}
+{:three_bits, :bitstring, :other, {true, false}}
+{:one_bit, :bitstring, :other, {true, false}}
+{:byte_and_four_bits, :bitstring, :other, {true, false}}
+{:atom, :other, :other, {false, false}}
+{:integer, :other, :other, {false, false}}
+{:list, :other, :other, {false, false}}
+{:tuple, :other, :other, {false, false}}
+[:other, :binary_clause, :other]
+{false, true, 1}
+{1, 2, 2, 0}
+:no_match
+:no_match
+:no_match
+{:matched, <<2>>}
+{false, true, 2}
+{true, true, 1}
+{true, true, 1}
+{false, true, 2}
+:function_clause_error
+"ABC"

@@ -853,7 +853,7 @@ fn exact_tuple_arity_agrees_with_the_runtime_predicate() {
             && predicate.named_structs.is_none()
             && !predicate.allow_other_structs
             && !predicate.maps
-            && !predicate.binaries
+            && predicate.bitstrings.is_none()
             && predicate.callables.is_none()
             && !predicate.resources)
             .then_some(arity)
@@ -5547,7 +5547,7 @@ fn interning_a_new_descriptor_stores_it_once() {
 
     assert_eq!(t.descr(&ty), &descr);
     assert_eq!(
-        allocations, 4,
+        allocations, 3,
         "a new entry allocates the growth of the arena and the index; the descriptor moves into the arena and no copy of it is made"
     );
 }
@@ -5727,4 +5727,75 @@ fn instantiating_a_list_of_variables_substitutes_through_nested_slots() {
         t.tuple(&[inner, atom])
     };
     assert_eq!(t.instantiate(&nested, &sigma), expected);
+}
+
+#[test]
+fn each_bitstring_bit_and_their_union_display_as_elixir_spells_them() {
+    let mut t = Types::new();
+    let binary = t.str_t();
+    let partial = t.bitstring_no_binary();
+    let bitstring = t.bitstring();
+    let int = t.int();
+    assert_eq!(t.display(&binary), "binary");
+    assert_eq!(t.display(&partial), "bitstring and not binary");
+    assert_eq!(t.display(&bitstring), "bitstring");
+    let both = t.union(binary, partial);
+    assert_eq!(t.display(&both), "bitstring");
+    let int_or_partial = t.union(int, partial);
+    assert_eq!(t.display(&int_or_partial), "int | bitstring and not binary");
+}
+
+#[test]
+fn a_binary_is_a_bitstring_and_a_bitstring_is_not_always_a_binary() {
+    let mut t = Types::new();
+    let binary = t.str_t();
+    let partial = t.bitstring_no_binary();
+    let bitstring = t.bitstring();
+    assert!(t.is_subtype(&binary, &bitstring));
+    assert!(t.is_subtype(&partial, &bitstring));
+    assert!(!t.is_subtype(&bitstring, &binary));
+    assert!(t.is_disjoint(&binary, &partial), "the two bits share no value");
+    assert!(t.is_bitstring(&binary) && t.is_bitstring(&partial) && t.is_bitstring(&bitstring));
+    let int = t.int();
+    assert!(!t.is_bitstring(&int));
+}
+
+#[test]
+fn a_bitstring_without_its_binaries_is_the_bitstring_that_is_not_a_binary() {
+    let mut t = Types::new();
+    let binary = t.str_t();
+    let bitstring = t.bitstring();
+    let partial = t.bitstring_no_binary();
+    assert_eq!(t.difference(bitstring, binary), partial);
+    assert_eq!(t.difference(bitstring, partial), binary);
+}
+
+#[test]
+fn a_bit_length_types_the_bitstring_built_to_it() {
+    let mut t = Types::new();
+    let binary = t.str_t();
+    let partial = t.bitstring_no_binary();
+    let bitstring = t.bitstring();
+    assert_eq!(t.bitstring_of_len(Some(0)), binary);
+    assert_eq!(t.bitstring_of_len(Some(24)), binary);
+    assert_eq!(t.bitstring_of_len(Some(3)), partial);
+    assert_eq!(t.bitstring_of_len(Some(12)), partial);
+    assert_eq!(t.bitstring_of_len(None), bitstring);
+}
+
+#[test]
+fn the_runtime_test_of_each_bitstring_type_asks_exactly_its_bit_lengths() {
+    let mut t = Types::new();
+    let binary = t.str_t();
+    let partial = t.bitstring_no_binary();
+    let bitstring = t.bitstring();
+    assert_eq!(
+        t.runtime_type_predicate(&binary).bitstrings,
+        BitstringAlignment::WHOLE_BYTES
+    );
+    assert_eq!(
+        t.runtime_type_predicate(&partial).bitstrings,
+        BitstringAlignment::PARTIAL_BYTE
+    );
+    assert_eq!(t.runtime_type_predicate(&bitstring).bitstrings, BitstringAlignment::ANY);
 }

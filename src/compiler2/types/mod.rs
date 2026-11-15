@@ -35,7 +35,7 @@ use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::finite_set::FiniteSet;
 use crate::fz_ir::FnId;
 use crate::runtime_type_predicate::{
-    CallableShape, CallableShapes, ListShape, ListShapes, RuntimeTypePredicate, TupleShapes,
+    BitstringAlignment, CallableShape, CallableShapes, ListShape, ListShapes, RuntimeTypePredicate, TupleShapes,
 };
 
 use super::protocol::ProtocolDomainObligation;
@@ -227,6 +227,7 @@ struct CoreTypes {
     atom: Ty,
     empty_list: Ty,
     str_t: Ty,
+    bitstring: Ty,
     map_top: Ty,
     tuple_top: Ty,
     pid: Ty,
@@ -648,6 +649,7 @@ impl Types {
             atom: interner.intern(Descr::atom_top()),
             empty_list: interner.intern(Descr::empty_list()),
             str_t: interner.intern(Descr::str_t()),
+            bitstring: interner.intern(Descr::bitstring()),
             map_top: interner.intern(Descr::map_top()),
             tuple_top: interner.intern(Descr::tuple_top()),
             pid: interner.intern(Descr::builtin_opaque(BuiltinOpaque::Pid)),
@@ -1519,10 +1521,31 @@ impl Types {
         self.core.str_t
     }
 
-    /// Whether every value of `ty` is a binary or bitstring, and `ty` admits
-    /// at least one.
-    pub fn is_binary(&self, ty: &Ty) -> bool {
-        !self.is_empty(ty) && self.is_subtype(ty, &self.core.str_t)
+    /// Every bitstring: the binaries and the bitstrings that are not binaries.
+    pub fn bitstring(&mut self) -> Ty {
+        self.core.bitstring
+    }
+
+    /// The bitstrings that are not binaries.
+    pub fn bitstring_no_binary(&mut self) -> Ty {
+        self.intern(Descr::bitstring_no_binary())
+    }
+
+    /// The type of a bitstring built to `bit_len` bits: a binary when that is a
+    /// whole number of bytes, a bitstring that is not a binary when it is not,
+    /// and any bitstring when the length is not known.
+    pub fn bitstring_of_len(&mut self, bit_len: Option<u64>) -> Ty {
+        match bit_len {
+            Some(bits) if bits.is_multiple_of(8) => self.core.str_t,
+            Some(_) => self.bitstring_no_binary(),
+            None => self.core.bitstring,
+        }
+    }
+
+    /// Whether every value of `ty` is a bitstring, and `ty` admits at least
+    /// one.
+    pub fn is_bitstring(&self, ty: &Ty) -> bool {
+        !self.is_empty(ty) && self.is_subtype(ty, &self.core.bitstring)
     }
 
     pub fn map_top(&mut self) -> Ty {
@@ -2690,7 +2713,14 @@ impl Types {
             // exactly where every tuple does.
             allow_other_structs: dnf::is_dnf_top(&descr.tuples),
             maps: widen_non_structs || plain_maps,
-            binaries: widen_non_structs || descr.basic.contains_all(BasicBits::BINARY),
+            bitstrings: if widen_non_structs {
+                BitstringAlignment::ANY
+            } else {
+                BitstringAlignment {
+                    whole_bytes: descr.basic.contains_all(BasicBits::BINARY),
+                    partial_byte: descr.basic.contains_all(BasicBits::BITSTRING_NO_BINARY),
+                }
+            },
             callables: if widen_non_structs {
                 CallableShapes::any()
             } else {
@@ -2743,7 +2773,7 @@ impl Types {
         let (plain_maps, tagged_structs) = runtime_type_predicate_map_modules(self.ctx(), descr);
         let only_tuples = !descr.basic.contains_all(BasicBits::INT)
             && !descr.basic.contains_all(BasicBits::FLOAT)
-            && !descr.basic.contains_all(BasicBits::BINARY)
+            && descr.basic.intersect(BasicBits::BITSTRING).is_empty()
             && descr.atoms.is_none()
             && runtime_type_predicate_list_shapes(descr).is_none()
             && runtime_type_predicate_named_structs(descr, tagged_structs).is_none()
@@ -3513,6 +3543,10 @@ impl SharedTypes for Types {
 
     fn str_t(&mut self) -> Self::Ty {
         Types::str_t(self)
+    }
+
+    fn bitstring(&mut self) -> Self::Ty {
+        Types::bitstring(self)
     }
 
     fn map_top(&mut self) -> Self::Ty {

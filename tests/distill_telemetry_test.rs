@@ -242,7 +242,8 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // decoder's second pass are no longer compiled for decoding.
 // 18_335 -> 18_334: `String.duplicate/2` is `:binary.copy/2`, so the doubling helper is no
 // longer compiled.
-const DERIVATIONS: u64 = 18_334;
+// 18_334 -> 18_340: `Kernel.byte_size` narrows an `any` argument to `bitstring`, so `fz_bitstring_byte_extent/1` and `JSON.offset/2` each take one more activation.
+const DERIVATIONS: u64 = 18_340;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -254,7 +255,8 @@ const DERIVATIONS: u64 = 18_334;
 // 112_107 -> 112_127: the reads of the encoder's helpers.
 // 112_127 -> 111_800: the reads the one-pass decoder no longer derives.
 // 111_800 -> 111_796: the same fall as `DERIVATIONS`.
-const READS_HANDED: u64 = 111_796;
+// 111_796 -> 111_800: the same rise as `DERIVATIONS`.
+const READS_HANDED: u64 = 111_800;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
@@ -299,7 +301,10 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // a multi-byte character with the `utf8` segment and appends `<<codepoint :: utf8>>`
         // for a `\u` escape, so the distiller no longer compiles `Utf8.next`'s result handling
         // or `Utf8.from_codepoint` for decoding.
-        (48_664, 50_522, 66),
+        // (48_664, 50_522, 66) -> (48_666, 50_524, 66): `Kernel.byte_size` narrows an `any`
+        // argument to `bitstring`, so `fz_bitstring_byte_extent/1` and `JSON.offset/2` each take
+        // one more activation.
+        (48_666, 50_524, 66),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

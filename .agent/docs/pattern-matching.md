@@ -601,6 +601,19 @@ bit position the fields before it end at. When `rest` is demanded `Matched`
 (only matched again or measured with `byte_size`), no binary is built: the next
 clause's reads and dispatch start at that position, a rest a dispatch matches
 is held in its state as the same cursor, and a use that needs a binary makes it
-whole. Interp, JIT and AOT agree. A `rest :: binary` that
-follows a field that ends between bytes matches whatever remains, as
-`bs_field_end` has no alignment check for a last binary segment.
+whole. Interp, JIT and AOT agree. A sizeless last
+`binary` segment holds whole bytes, so a `rest :: binary` that starts or ends
+between bytes does not match: `field_end` in the runtime and the `Rest` arm of
+native `BitFieldFits` both ask whether the bits that remain are a multiple of 8.
+When the activation proves the rest whole, neither asks: the subject's type is a
+subtype of `binary` and every field before the rest spans whole bytes (a sized
+field whose size times unit is a multiple of 8, a `size(n)` field whose unit is a
+multiple of 8, or a `utf8` field). `DispatchGraph::trimmed` records that in the
+rest field's `rest_proven_whole`, `BitstringFieldShape::runtime_kind` then
+answers `Bits`, and the interp dispatch, the native dispatch and the native
+receive read that kind. Reachability decides it from every visit of the
+bitstring test, so one visit that cannot prove it (an `any` or `bitstring`
+subject) leaves the test in place.
+A last `bits` segment takes whatever remains, and the value it binds is typed
+`bitstring`. A cursor stands for the bitstring that remains from its position,
+and `is_binary(rest)` answers whether those bits are whole bytes.

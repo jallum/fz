@@ -91,6 +91,7 @@ impl WireSpelling {
 const WIRE_SPELLINGS: &[WireSpelling] = &[
     WireSpelling::from_semantic_type("any", ExternTy::Any),
     WireSpelling::from_semantic_type("atom", ExternTy::Any),
+    WireSpelling::from_semantic_type("bitstring", ExternTy::Any),
     WireSpelling::from_semantic_type("boolean", ExternTy::Bool),
     WireSpelling::from_semantic_type("integer", ExternTy::I64),
     WireSpelling::from_semantic_type("float", ExternTy::F64),
@@ -100,7 +101,7 @@ const WIRE_SPELLINGS: &[WireSpelling] = &[
     WireSpelling::wire_only("c_int", ExternTy::I32, "integer"),
     WireSpelling::wire_only("c_string", ExternTy::CString, "binary"),
     WireSpelling::wire_only("unit", ExternTy::Unit, "nil"),
-    WireSpelling::wire_only("binary_cursor", ExternTy::BinaryCursor, "binary"),
+    WireSpelling::wire_only("binary_cursor", ExternTy::BinaryCursor, "bitstring"),
 ];
 
 fn wire_spelling(name: &str) -> Option<&'static WireSpelling> {

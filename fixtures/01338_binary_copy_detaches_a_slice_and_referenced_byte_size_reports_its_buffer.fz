@@ -1,7 +1,7 @@
 #---
 # purpose: "binary:copy/1,2 builds a new binary that references exactly its own bytes, referenced_byte_size/1 reports the buffer a binary references, and a bad argument raises the ArgumentError Elixir raises"
 # oracle: oracle.exs
-# oracle.stamp: 937491b2b61eebd5
+# oracle.stamp: eeaab594c7c580e1
 #---
 defmodule Probe do
   def attempt(fun) do
@@ -51,12 +51,15 @@ def main() do
   IO.inspect(String.duplicate("ab", 3))
   IO.inspect(byte_size(String.duplicate("héllo", 40)))
 
-  IO.inspect(Probe.attempt(fn -> :binary.copy(1) end))
-  IO.inspect(Probe.attempt(fn -> :binary.copy(:a, 2) end))
+  # Each function's spec takes a binary (and an integer count), so an argument
+  # proven to be something else is refused at compile time. `hd([1, ""])` may be
+  # a binary, so these calls compile and the bad value is refused when it runs.
+  IO.inspect(Probe.attempt(fn -> :binary.copy(hd([1, ""])) end))
+  IO.inspect(Probe.attempt(fn -> :binary.copy(hd([:a, ""]), 2) end))
   IO.inspect(Probe.attempt(fn -> :binary.copy("a", -1) end))
-  IO.inspect(Probe.attempt(fn -> :binary.copy("a", :x) end))
-  IO.inspect(Probe.attempt(fn -> :binary.copy("a", 2.5) end))
-  IO.inspect(Probe.attempt(fn -> :binary.copy(1, -1) end))
-  IO.inspect(Probe.attempt(fn -> :binary.referenced_byte_size(:a) end))
+  IO.inspect(Probe.attempt(fn -> :binary.copy("a", hd([:x, 0])) end))
+  IO.inspect(Probe.attempt(fn -> :binary.copy("a", hd([2.5, 0])) end))
+  IO.inspect(Probe.attempt(fn -> :binary.copy(hd([1, ""]), -1) end))
+  IO.inspect(Probe.attempt(fn -> :binary.referenced_byte_size(hd([:a, ""])) end))
   IO.inspect(Probe.attempt(fn -> String.duplicate("a", -1) end))
 end

@@ -159,7 +159,7 @@ runs <em>after</em> the structural tests for that clause have passed:</p>
 itself: arithmetic, comparisons, boolean
 connectives, simple field access, calls to user-defined guard
 helpers, and the Kernel guard functions (<code>is_integer</code>,
-<code>is_binary</code>, <code>is_list</code>, <code>is_map</code>,
+<code>is_binary</code>, <code>is_bitstring</code>, <code>is_list</code>, <code>is_map</code>,
 <code>is_atom</code>, <code>is_float</code>, <code>is_boolean</code>,
 <code>is_nil</code>, <code>is_tuple</code>, <code>map_size</code>,
 <code>tuple_size</code>, <code>byte_size</code>, <code>length</code>,
@@ -268,6 +268,22 @@ side of <code>++</code> must be a literal list; <code>a ++ rest</code> is a
 compile error. All of these report <code>parse/concat-pattern-operand</code>.
 Writing the call out, <code>Kernel.&lt;&gt;("a", rest)</code>, is not a
 pattern either.</p>
+
+<h3>Binaries and bitstrings</h3>
+
+<p>A bitstring is a binary only when its bit length is a whole number of
+bytes, as in Elixir: <code>&lt;&lt;1, 2&gt;&gt;</code> is one and
+<code>&lt;&lt;1::3&gt;&gt;</code> is not, so <code>is_binary</code> is false for
+it and <code>is_bitstring</code> is true for both. A <code>rest :: binary</code>
+holds whole bytes, so it matches only where the bits that remain are a multiple
+of 8; <code>&lt;&lt;_::3, rest::binary&gt;&gt;</code> does not match
+<code>&lt;&lt;1, 2&gt;&gt;</code>, and <code>&lt;&lt;_::8, rest::binary&gt;&gt;</code>
+does not match <code>&lt;&lt;1, 2::3&gt;&gt;</code>. When the matched value is known to be a
+binary and the fields before the rest are whole bytes, the compiler leaves that
+test out, because the rest cannot end between bytes. A <code>rest :: bits</code>
+takes whatever remains and binds a bitstring. <code>byte_size</code> counts the
+bytes that hold a bitstring, so <code>byte_size(&lt;&lt;1::3&gt;&gt;)</code>
+is <code>1</code>.</p>
 
 <!-- ─────────────────────────────── 4 ─────────────────────────────── -->
 <h2 id="share">4. We destructure once</h2>

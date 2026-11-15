@@ -111,7 +111,7 @@ A name in type position first checks a single table before anything else runs:
 `resolve.rs`'s `CONSTRUCTORS`, a `&[ConstructorEntry]` mapping a builtin name to
 its arity and its `Types`-minting function. This is the one authoritative
 source for every builtin type-constructor name — scalars (`integer`, `boolean`,
-`atom`, `map`, `tuple`, …) and the two parametric constructors (`list`, `resource`)
+`atom`, `binary`, `bitstring`, `map`, `tuple`, …) and the two parametric constructors (`list`, `resource`)
 alike — and `classify_name` (`resolve.rs`) tries it before checking bound type
 variables or the `TypeDefined` namespace. There is no separate nullary-only
 table and no inline special-casing for parametric names: `list`/`list(T)` and

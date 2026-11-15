@@ -65,6 +65,7 @@ fn a_projection_kind_names_its_demand_step() {
             endian: BitstringEndian::Big,
             signed: false,
             unit: None,
+            rest_proven_whole: false,
         },
         is_last: true,
     });

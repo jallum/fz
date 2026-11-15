@@ -3238,16 +3238,16 @@ pub(super) fn materialize_transport_value(
     }
 }
 
-/// The binary a cursor stands for: the rest of its source from the position.
+/// The bitstring a cursor stands for: the rest of its source from the position.
 pub(super) fn materialize_cursor(proc: *mut Process, source: AnyValue, position: AnyValue) -> Result<AnyValue, String> {
     let position = position
         .as_i64()
         .ok_or_else(|| "a cursor position must be an integer".to_string())? as u64;
     let source_ref = source.as_ref_word(proc)?;
     let rest = fz_runtime::ir_runtime::fz_bs_field_spec(
-        backend_bit_type_tag(crate::ast::BitType::Binary),
+        backend_bit_type_tag(crate::ast::BitType::Bits),
         0,
-        backend_default_bit_unit(crate::ast::BitType::Binary),
+        backend_default_bit_unit(crate::ast::BitType::Bits),
         backend_endian_tag(crate::ast::Endian::Big),
         0,
         1,

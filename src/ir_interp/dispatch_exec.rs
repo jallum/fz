@@ -948,7 +948,7 @@ impl<'a> Dispatch<'a> {
                 return false;
             };
             let field_spec = fz_bs_field_spec(
-                dispatch_bit_type_tag(field.kind),
+                dispatch_bit_type_tag(field.runtime_kind()),
                 size_present,
                 field.unit.unwrap_or(default_dispatch_bit_unit(field.kind)),
                 dispatch_endian_tag(field.endian),
@@ -1057,9 +1057,25 @@ impl TypeTest<'_> {
             BackendBoundValue::Transport { shape, lanes } => (*shape, lanes),
         };
         if is_cursor_shape(transport, shape) {
-            // A cursor stands for a binary, and a type predicate asks of a
-            // binary only whether binaries are admitted, never its bytes.
-            return Ok(predicate.binaries);
+            // A cursor stands for the bitstring that remains from its
+            // position, and a type predicate asks of one only its length.
+            let admitted = predicate.bitstrings;
+            if !admitted.asks_length() {
+                return Ok(!admitted.is_none());
+            }
+            let [source, position] = lanes.as_slice() else {
+                return Err(DispatchStop::broken("a cursor has a source and a position".to_string()));
+            };
+            let Some(position) = position.as_i64() else {
+                return Err(DispatchStop::broken("a cursor position must be an integer".to_string()));
+            };
+            let source_word = source
+                .value(self.runtime.cur_proc())
+                .ok()
+                .and_then(RuntimeAnyValue::heap_object_word)
+                .ok_or_else(|| DispatchStop::broken("a cursor source must be a bitstring".to_string()))?;
+            let source_bits = unsafe { bitstring_bit_len(source_word) };
+            return Ok(admitted.admits(source_bits - position as u64));
         }
         let Some(arity) = transport.interners().tuple_arity(shape) else {
             return Err(DispatchStop::broken(format!(

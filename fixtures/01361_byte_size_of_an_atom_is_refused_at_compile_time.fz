@@ -1,0 +1,6 @@
+#---
+# purpose: byte_size/1's spec takes a bitstring; an argument proven to be an atom is rejected with a spec/violation diagnostic on every path
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+def main(), do: byte_size(:x)
