@@ -7,9 +7,15 @@
   "id": "fz-sc8.197",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Spike result (throwaway worktree ../fz-sc8-197 on #585 + uniq + names, build path, switch FZ_SPIKE_ARITH; patch in session scratch arith197/spike-arith.patch, 1 file, jobs/native.rs). I re-ran the binaries.\nRule: a delivered direct call whose callee is an extern, or a one-clause forwarder with no dispatch and no steps that tail-calls an extern with the same parameters, is emitted as the extern call inline (Prim::Extern), its checked-failure branch into emit_raise, and a transfer to the resume entry, which EntryFns::for_entries then makes a block of the caller. No continuation is built.\nInstructions retired, off -\u003e on: byte walk 129.7G -\u003e 72.7G (27.8 -\u003e 15.7 ns/byte); index walk 192.4G -\u003e 72.4G (37.5 -\u003e 12.9 ns/byte); distiller 32,000 lines 28.80G -\u003e 24.95G (-13.4%), stdout identical, user time 1.39 -\u003e 1.06 s in one back-to-back pair. Predictions (19 ns, 15 ns, \u003c=27G) all held or were beaten.\nReduction yields on the byte walk fell 125,829 -\u003e 83,886: the removed call was a reduction.\nNot done in the spike: machine add/sub/compare inline (still calls fz_op_add_ii, 2% of samples); interp; the rule is derived twice (at for_entries and at emission); stack trace no longer has the Kernel.+ frame (message unchanged).",
+      "timestamp": "2026-11-15T01:12:47Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Arithmetic on known integers does not go through a continuation",
   "type": "task",
-  "updated_at": "2026-11-14T13:27:43Z"
+  "updated_at": "2026-11-15T01:12:47Z"
 }
