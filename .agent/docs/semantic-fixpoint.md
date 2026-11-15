@@ -605,6 +605,17 @@ caller's return from being published as the join of both. The precise caller
 evidence remains in `ActivationInputs(key)`, so clause reachability is decided
 by evidence, not by downstream code rebuilding a more precise key.
 
+A record is coarse at the key where demand finds it unread. A position both
+axes leave at `Ignore` that is itself a record -- a struct or a map literal's
+field set -- keys as the map class (`convergence_collapse_ignored_leaf`), on
+both key paths, so `%Point{x: 1}` and `%Size{w: 2.0}` handed to a body that
+never reads them share one activation. A record nested inside freight
+structure keeps its fields. A key whose every input is already its own key
+skips demand (`Types::probe_keys_as_itself`), and a ground record counts as
+its own key there: collapsing it only where demand was going to be derived
+anyway saves activations, while deriving demand for a record's sake costs
+more than it saves.
+
 So today:
 
 ```text

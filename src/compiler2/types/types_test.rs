@@ -502,6 +502,56 @@ fn a_returned_callable_keeps_its_brand_on_both_key_paths() {
 }
 
 #[test]
+fn a_record_nothing_asks_about_keys_by_its_class_not_its_fields() {
+    let mut t = Types::new();
+    let int = t.int();
+    let float = t.float();
+    let any = t.any();
+    let point = t.struct_map(&module_name("Point"), &[(MapKey::Atom("x".to_string()), int)]);
+    let size = t.struct_map(&module_name("Size"), &[(MapKey::Atom("w".to_string()), float)]);
+    let entry = t.map_literal(&[(MapKey::Atom("k".to_string()), int)]);
+    let key = |t: &mut Types, input: Ty, recursive: bool, demand: DispatchDemand| {
+        let arrow = t.arrow(&[input], any);
+        let mask = [demand];
+        let keyed = t.activation_key_arrow(
+            arrow,
+            recursive,
+            &KeyDemand {
+                local: &mask,
+                forwarded: &mask,
+                returned: &[],
+                consumes_callable_identity: false,
+            },
+        );
+        t.descr(&keyed).pure_arrow().expect("a key is an arrow").args[0]
+    };
+
+    for recursive in [false, true] {
+        let unread_point = key(&mut t, point, recursive, DispatchDemand::Ignore);
+        assert_eq!(
+            unread_point,
+            key(&mut t, size, recursive, DispatchDemand::Ignore),
+            "two structs a body never reads share one key (recursive: {recursive})"
+        );
+        assert_eq!(
+            unread_point,
+            key(&mut t, entry, recursive, DispatchDemand::Ignore),
+            "an unread struct and an unread map key alike: the key is the map class (recursive: {recursive})"
+        );
+        assert_ne!(
+            key(&mut t, point, recursive, DispatchDemand::Whole),
+            key(&mut t, size, recursive, DispatchDemand::Whole),
+            "a body that reads its record keys each struct apart (recursive: {recursive})"
+        );
+    }
+
+    assert!(
+        t.probe_keys_as_itself(&point, 0),
+        "a ground record is its own key without asking demand, which costs more than the collapse saves"
+    );
+}
+
+#[test]
 fn a_non_recursive_key_collapses_freight_but_bounds_nothing() {
     let mut t = Types::new();
     let int = t.int();
