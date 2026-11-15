@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T20:14:27Z",
+  "description": "## Goal\nA fixture whose source is valid Elixir is its own oracle: Elixir runs the very file fz runs, so fz == Elixir is checked on the same bytes, and the hand-written .oracle.exs twin is gone.\n\n## Current state (measured at develop 641243c0e)\n469 oracle pairs (386 in fixtures/, 83 in fixtures2/behavior/). Under a mechanical rewrite (bare defs wrapped in defmodule Main + Main.main(), dbg( -\u003e IO.inspect(, panic( -\u003e :erlang.error(), 430 pass on Elixir and on run/interp/build; 434 once :erlang.error/1 exists. 35 keep twins for named fz-only features.\n\n## Proposal\nPage ../fz-self-oracle.html (approved 2026-11-15). Decisions: abort oracle = Elixir exit 1 + stderr contains expected.stderr + stdout == expected.txt, and fz abort paths compare stdout for oracle fixtures; test-coupled fixtures are converted and their tests updated; fixtures2/behavior is converted too; wrapper module is Main.",
+  "id": "fz-nhb",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Fixtures are their own Elixir oracle",
+  "type": "epic",
+  "updated_at": "2026-11-15T20:14:27Z"
+}
