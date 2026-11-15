@@ -1,0 +1,27 @@
+#---
+# purpose: a binary built from raw integer segments (a byte, several bytes, a sized integer, a utf8 scalar) allocates no scalar box on any path, and its bytes are unchanged
+#---
+defmodule Build do
+  def copy_one(<<c, rest :: binary>>, n), do: copy_one(rest, n + byte_size(<<c>>))
+  def copy_one(<<>>, n), do: n
+
+  def rebuild(<<c, rest :: binary>>, acc), do: rebuild(rest, <<acc :: binary, c>>)
+  def rebuild(<<>>, acc), do: acc
+
+  def pair(<<a, b, _ :: binary>>), do: <<b, a, a + b>>
+  def sized(<<a, b, _ :: binary>>), do: <<(a * 256 + b) :: 16, a :: size(4), b :: little-size(16)>>
+  def scalar(<<a, _ :: binary>>), do: <<(a + 200) :: utf8, a :: utf16, a :: utf32>>
+end
+
+def main() do
+  s = "abc"
+  before = Process.heap_alloc_stats()
+  one = Build.copy_one(s, 0)
+  two = Build.rebuild(s, <<>>)
+  three = Build.pair(s)
+  four = Build.sized(s)
+  five = Build.scalar(s)
+  after_stats = Process.heap_alloc_stats()
+  dbg({one, two, three, four, five})
+  dbg(after_stats[:scalar_box_allocs] - before[:scalar_box_allocs])
+end

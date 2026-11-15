@@ -24,8 +24,8 @@ use crate::runtime_type_predicate::{
 };
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, TRUE_ATOM_ID, ValueKind, struct_schema_id};
 use fz_runtime::ir_runtime::{
-    bs_field_end, fz_bs_begin, fz_bs_bit_len_ref, fz_bs_field_spec, fz_bs_finalize, fz_bs_write_field_ref,
-    fz_list_head_ref, fz_list_tail_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref,
+    bs_field_end, fz_bs_begin, fz_bs_bit_len_ref, fz_bs_field_spec, fz_bs_finalize, fz_bs_write_int, fz_list_head_ref,
+    fz_list_tail_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref,
 };
 use fz_runtime::procbin::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
 use fz_runtime::process::Process;
@@ -1199,15 +1199,14 @@ pub(super) fn dispatch_const_to_value(proc: *mut Process, module: &Module, c: &G
 fn utf8_binary_const_value(proc: *mut Process, bytes: &[u8]) -> Option<AnyValue> {
     fz_bs_begin(proc);
     for byte in bytes {
-        fz_bs_write_field_ref(
+        fz_bs_write_int(
             proc,
-            AnyValue::Int(i64::from(*byte)).as_ref_word(proc).ok()?,
+            i64::from(*byte),
             dispatch_bit_type_tag(BitstringFieldKind::Integer),
             1,
             8,
             1,
             dispatch_endian_tag(BitstringEndian::Big),
-            0,
         );
     }
     interp_value_from_ref_word(fz_bs_finalize(proc), "dispatch utf8 guard literal").ok()
