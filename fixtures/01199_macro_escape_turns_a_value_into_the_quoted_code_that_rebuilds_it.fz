@@ -1,0 +1,59 @@
+#---
+# purpose: "Macro.escape/1 turns a value into the quoted code that rebuilds it, as in Elixir: atoms, numbers, binaries, 2-tuples and lists are their own code with each element escaped, a longer or shorter tuple is {:{}, [], elements}, a map or struct is {:%{}, [], pairs} in Map.to_list order, a bitstring that is not a binary is its leading bits and its binary rest; a macro unquotes an escaped value to rebuild it; a reference or a function, alone or nested, raises ArgumentError"
+# oracle: self
+# oracle.stamp: ced1c21871662f88
+#---
+defmodule Pt do
+  defstruct x: 0, y: [1]
+end
+
+defmodule Table do
+  defmacro constant() do
+    value = %{1 => {1, 2, 3}, "b" => [x: <<1, 2::4>>], {:c} => {:ok, %{"k" => {}}}}
+    quote do: unquote(Macro.escape(value))
+  end
+end
+
+defmodule Main do
+  require Table
+
+  def refusal(value) do
+    try do
+      Macro.escape(value)
+    rescue
+      e in ArgumentError -> {:refused, String.starts_with?(Exception.message(e), "cannot escape #")}
+    end
+  end
+
+  def main() do
+    IO.inspect(Macro.escape(:a))
+    IO.inspect(Macro.escape(nil))
+    IO.inspect(Macro.escape(-2))
+    IO.inspect(Macro.escape(1.5))
+    IO.inspect(Macro.escape("hi"))
+    IO.inspect(Macro.escape({1, 2}))
+    IO.inspect(Macro.escape({1, 2, 3}))
+    IO.inspect(Macro.escape({}))
+    IO.inspect(Macro.escape({1}))
+    IO.inspect(Macro.escape([1, {2, 3, 4}, [a: {5}]]))
+    IO.inspect(Macro.escape([]))
+    IO.inspect(Macro.escape(%{}))
+    IO.inspect(Macro.escape(%{2 => 1, 1 => {1, 2, 3}}))
+    IO.inspect(Macro.escape(%{{1, 2, 3} => [x: 1], "k" => %{1 => 2}}))
+    IO.inspect(Macro.escape(%Pt{}))
+    {:<<>>, [], [lead, rest]} = Macro.escape(<<1::3>>)
+    IO.inspect(lead)
+    IO.inspect(rest)
+    {:<<>>, [], [lead, rest]} = Macro.escape(<<1, 2::4>>)
+    IO.inspect(lead)
+    IO.inspect(rest)
+    IO.inspect(Table.constant())
+    IO.inspect(Table.constant() == %{1 => {1, 2, 3}, "b" => [x: <<1, 2::4>>], {:c} => {:ok, %{"k" => {}}}})
+    IO.inspect(refusal(make_ref()))
+    IO.inspect(refusal(fn -> 1 end))
+    IO.inspect(refusal([1, {2, fn x -> x end}]))
+    IO.inspect(refusal(%{a: make_ref()}))
+  end
+end
+
+Main.main()
