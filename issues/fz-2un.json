@@ -5,13 +5,14 @@
     "fz-75e",
     "fz-t93.10"
   ],
+  "closed_at": "2026-11-15T05:57:19Z",
   "created": "2026-11-13T22:13:40Z",
   "description": "fz2 run, and the in-process JIT in tests, panics in cranelift-jit-0.131.3 src/compiled_blob.rs:225 with 'called Result::unwrap() on an Err value: TryFromIntError(NegOverflow)'.\n\nWhich relocation: line 225 is Reloc::Aarch64AdrPrelPgHi21, the adrp half of an adrp+add pair that points at a data object. Cranelift computes the page distance as i32::try_from(...).unwrap(), so it accepts only ±2 GB, although the instruction itself reaches ±4 GB. Calls are not affected: Arm64Call goes through a veneer when the target is out of range.\n\nWhy the distance varies: JitBackend::new (src/ir_codegen/backend.rs:77) builds JITModule without a memory_provider, so cranelift uses its default SystemMemoryProvider. That provider puts code, read-only data and writable data in three separate allocations from the system allocator, and nothing keeps them within 2 GB of each other. cranelift-jit also offers ArenaMemoryProvider::new_with_size, which reserves one contiguous region for all three.\n\nHistory:\n- First seen on the 1,000-sequential-call program (def f(x), do: x + 1; a1 = f(1) .. a1000 = f(1000); print the sum) with a spike budget on develop ff4a75ada. It failed every time then, when each resume step held a flat copy of every live value and the code was large.\n- That program is now fixture 01253 (fz-9x7.3, b0874c4a5). It passes alone and passed a full fixture_matrix on develop b0874c4a5 (3478/3478).\n- fz-c2 saw it fail once in the full workspace gate on bd3edae98 (fz-sc8.197, which does not touch JIT memory). So it is intermittent, and it depends on where the process's allocator puts the three allocations.\n\nNot yet done:\n- A deterministic repro (force the data allocation more than 2 GB from the code allocation).\n- The fix: give JITModule an ArenaMemoryProvider, and decide its reserve size and what frees each module's memory. Today nothing calls free_memory.",
   "id": "fz-2un",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A JIT data reference panics when the code and its data land more than 2 GB apart",
   "type": "bug",
-  "updated_at": "2026-11-15T04:17:39Z"
+  "updated_at": "2026-11-15T05:57:19Z"
 }
