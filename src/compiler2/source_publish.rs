@@ -1344,7 +1344,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         // agree with the first. That content-independence matters because a
         // macro invoked twice from a literal (non-`unquote`) `defstruct`
         // template carries no source span of its own (the validated AST read
-        // returns absent provenance for a meta map without `__fz_span__`),
+        // returns absent provenance for metadata without a `__fz_span__` entry),
         // so two macro-emitted defstructs in one module compare
         // span-and-fields-EQUAL whenever the macro's argument happens to
         // repeat the same fields -- exactly the case the fields-comparison

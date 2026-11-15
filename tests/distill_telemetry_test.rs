@@ -313,7 +313,10 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // (48_664, 50_522, 66) -> (48_666, 50_524, 66): `Kernel.byte_size` narrows an `any`
         // argument to `bitstring`, so `fz_bitstring_byte_extent/1` and `JSON.offset/2` each take
         // one more activation.
-        (48_666, 50_524, 66),
+        // (48_666, 50_524, 66) -> (48_666, 50_530, 66): quoted metadata is a keyword list, so the
+        // `panic` calls `Kernel.raise/1` and `Kernel.defexception/1` quote build a tuple inside a
+        // list where they built a map, and each of those values is asked for its transport once.
+        (48_666, 50_530, 66),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

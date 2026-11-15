@@ -34,7 +34,7 @@ fn quote_uses_raw_two_tuples_and_ast_nodes_for_every_other_tuple_arity() {
             "  two = quote do: {:one, :two}\n",
             "  three = quote do: {:one, :two, :three}\n",
             "  case {zero, one, two, three} do\n",
-            "    {{:\"{}\", %{}, []}, {:\"{}\", %{}, [:one]}, {:one, :two}, {:\"{}\", %{}, [:one, :two, :three]}} -> quote do: identity(42)\n",
+            "    {{:\"{}\", _, []}, {:\"{}\", _, [:one]}, {:one, :two}, {:\"{}\", _, [:one, :two, :three]}} -> quote do: identity(42)\n",
             "    _ -> quote do: identity(0)\n",
             "  end\n",
             "end\n",
@@ -53,7 +53,7 @@ fn quote_preserves_keyword_tuples_in_a_generated_function_definition() {
         concat!(
             "defmacro make_answer() do\n",
             "  do_clause = quote do: {:do, 42}\n",
-            "  source = {:def, %{}, [{:answer, %{}, []}, [do_clause]]}\n",
+            "  source = {:def, [], [{:answer, [], []}, [do_clause]]}\n",
             "  quote do\n",
             "    Fz.Compiler.define(unquote(source), unquote(__CALLER__))\n",
             "  end\n",

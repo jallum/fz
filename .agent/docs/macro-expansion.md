@@ -506,7 +506,7 @@ to run the macro.
 
 ```text
 defmacro make_answer() do
-  {:def, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
+  {:def, [], [{:answer, [], []}, [{:do, 42}]]}
 end
 
 make_answer()

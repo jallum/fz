@@ -51,10 +51,11 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   runtime publisher; reads use stored entries directly (`map_entries_refs`
   walks a trie once), with no compiler sort and no dependence on the order. Independently allocated equal composite
   keys occupy one entry, so structural addresses do not depend on allocation.
-- Quoted equality erases diagnostic metadata, including metadata nested inside
-  composite keys. Runtime order includes that data, so it cannot order this
-  different relation; semantic map equality retains content matching without
-  adding another sort or comparator.
+- Quoted equality erases diagnostic metadata: a `{:__fz_span__, _}` element of
+  a list is not compared, wherever the list is, including metadata nested
+  inside composite map keys. Runtime map order includes that data, so it
+  cannot order this different relation; semantic map equality retains content
+  matching without adding another sort or comparator.
 - Tuple arity and named struct identity come from `SchemaIdentity`. The
   `TupleN` spelling is display only and is never decoded into an identity.
 
@@ -78,7 +79,9 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
 ## Source Shape
 
 - AST nodes are Elixir-shaped 3-tuples:
-  `{head, meta_map, tail}`.
+  `{head, meta, tail}`. `meta` is a keyword list, as in Elixir, and `[]` when
+  a node carries nothing: `{:%{}, [], [a: 1]}` is the map `%{a: 1}`. Metadata
+  of any other shape is refused at the read boundary.
 - Untrusted readers obtain that structure only through
   `QuotedSourceCursor::ast_node(&SourceMap)`. That boundary validates the
   node's own optional span and returns it with the node, so nested wrappers
@@ -92,7 +95,8 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   head is a local name whatever it spells, so `{:"Foo.bar", meta, args}` calls
   a local function literally named `Foo.bar` and is never split into a module
   and a name. Elixir reads the same shape the same way.
-- Variables use `tail = lexical_context_map`.
+- A variable's `tail` is its context: `nil`, a macro's `FunctionId`, or the
+  atom `generated`.
 - Module aliases use `{:__aliases__, meta, [:Foo, :Bar]}`. Decoding reads one
   as `Expr::Alias` carrying its segments as a `ModuleName`; in value position
   it is the module's atom (see [modules](modules.md)).
@@ -240,32 +244,43 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
 
 ## Private Metadata Keys
 
+Metadata is a keyword list. `QuotedSourceBuilder::meta` is its one writer from
+the typed `QuotedSourceMetadata`, writing the entries below in this order.
+Quote lowering (`jobs/body.rs`, `push_meta`) builds the same list at run time
+from ordinary list, tuple and map-literal steps. Readers use
+`QuotedSourceCursor::meta_value` (`Keyword.get`), and a stamp added after
+construction uses `QuotedSourceBuilder::meta_put` (`Keyword.put`: the key's
+old entry goes and the new one is put first).
+
 - `__fz_module__`: exact portable module denotation on a reflected alias;
   semantic content, compared by `semantically_eq`.
-- `__fz_lexical__`: stable lexical context; semantic content, compared by
-  `semantically_eq`.
-- `__fz_span__`: diagnostic-only span payload; not semantic content, skipped
+- `__fz_span__`: diagnostic-only span payload, the map
+  `%{start: _, length: _, source_version: _}`; not semantic content, skipped
   by `semantically_eq`. Self-describing: it carries the exact originating
   `SourceVersion` alongside `start`/`length`. Readers accept it only when that
   version and byte range resolve in the authoritative `SourceMap`; malformed
-  metadata is an error, while a missing key is explicit source absence and
+  metadata is an error, while a missing entry is explicit source absence and
   remains `Span::DUMMY`. Source-less generated nodes are never stamped from a
   parent. A node a `quote` builds has no `__fz_span__`: quoted code has no
   place of its own, and takes the span of the macro call that expands it
   (see [macro-expansion.md](macro-expansion.md#where-expanded-code-is-reported)).
-- `__fz_namespace_id__`: transport-only namespace handle; not semantic
-  content, skipped by `semantically_eq`.
+- `__fz_from_brackets__`: `true` on the callee the front door builds for
+  `lhs[key]` (see Source Shape).
+- `__fz_hygiene__`: the expansion ordinal the hygiene walk gives a macro- or
+  sugar-generated variable; absent on a variable the user wrote.
+- `__fz_from_operator__`: the operator atom on a `<>` or `++` call the
+  expander made from that operator (see Source Shape).
 - `__fz_bound__`: the exact callable a quoted call was resolved to, as that
   function's coordinate in the world that stamped it; semantic content,
   compared by `semantically_eq`. Quote lowering classifies a call once, where
   the quote is written, and stamps the result here. The head atom beside it
   stays the spelling the call was written with: display data that no later
-  stage reads to choose a target. Decoding turns the key into
+  stage reads to choose a target. Decoding turns the entry into
   `Expr::BoundFunction`, and every reader asks the world about the retained
   function rather than the head: expansion asks whether it is a macro
   (`World::retained_callable_symbol`), and body lowering confirms the
   coordinate, the supplied arity, and that it is a function before calling it.
-  A call the quote's own context cannot classify carries no key and is
+  A call the quote's own context cannot classify carries no entry and is
   classified where it is inserted.
 
   This key lives among the visible entries, so a macro building raw AST can
@@ -281,8 +296,6 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   source.
 - `ScopeSnapshot` is the one scope projection carrier:
   `{module_id, namespace_head, function_id?}`.
-- `World::scope_lexical_context` derives quoted lexical metadata from that
-  snapshot.
 - `World::project_module_value` and `World::project_env_value` project the
   `module` field of an env and `__ENV__` as Fz-shaped values from the same
   snapshot. `__MODULE__` in a body is the module's atom
@@ -302,9 +315,6 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   alias displaying `A.B.C` still addresses its exact `(A, B.C)` or `(A.B, C)`
   owner even when a separate named module `A.B.C` exists. Source publication
   itself continues to use the live `ScopeSnapshot` for definition ownership.
-- The namespace id carried in quoted metadata is transport only; it helps jobs
-  and tests line contexts back up with the live namespace chain, but it is not
-  semantic identity.
 
 ## Publication Authority
 

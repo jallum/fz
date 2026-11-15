@@ -220,7 +220,7 @@ fn run_macro_program(text: String) -> Result<i64, RunFailure> {
 
 fn run_macro_with_span_metadata(span_entries: &str) -> Result<i64, RunFailure> {
     run_macro_program(format!(
-        "def answer(), do: 42\ndefmacro forged() do\n  {{:answer, %{{__fz_span__: %{{{span_entries}}}}}, []}}\nend\ndef main(), do: forged()\n"
+        "def answer(), do: 42\ndefmacro forged() do\n  {{:answer, [__fz_span__: %{{{span_entries}}}], []}}\nend\ndef main(), do: forged()\n"
     ))
 }
 
@@ -246,8 +246,8 @@ fn macro_expansion_rejects_malformed_nested_cond_clause_provenance() {
         run_macro_program(
             r#"
 defmacro forged() do
-  clause = {:"->", %{__fz_span__: %{start: -1, length: 1, source_version: 0}}, [[true], 42]}
-  {:cond, %{}, [[{:do, [clause]}]]}
+  clause = {:"->", [__fz_span__: %{start: -1, length: 1, source_version: 0}], [[true], 42]}
+  {:cond, [], [[{:do, [clause]}]]}
 end
 
 def main(), do: forged()
@@ -265,8 +265,8 @@ fn macro_expansion_rejects_malformed_nested_remote_callee_provenance() {
         run_macro_program(
             r#"
 defmacro forged() do
-  callee = {:., %{__fz_span__: %{start: -1, length: 1, source_version: 0}}, [{:__aliases__, %{}, [:Kernel]}, :+]}
-  {callee, %{}, [20, 22]}
+  callee = {:., [__fz_span__: %{start: -1, length: 1, source_version: 0}], [{:__aliases__, [], [:Kernel]}, :+]}
+  {callee, [], [20, 22]}
 end
 
 def main(), do: forged()
@@ -288,16 +288,16 @@ fn source_less_item_macro_output_round_trips_without_fabricated_provenance() {
         name: Some("source-less-item-macro.fz".into()),
         text: r#"
 defmacro make_answer() do
-  generated = {:generated, %{}, nil}
-  quoted = {:quote, %{}, [[{:do, generated}]]}
-  source = {:def, %{}, [{:answer, %{}, []}, [{:do, quoted}]]}
+  generated = {:generated, [], nil}
+  quoted = {:quote, [], [[{:do, generated}]]}
+  source = {:def, [], [{:answer, [], []}, [{:do, quoted}]]}
   quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
 end
 
 make_answer()
 def main() do
   {_, meta, _} = answer()
-  if meta == %{}, do: 42, else: 0
+  if meta == [], do: 42, else: 0
 end
 "#
         .into(),
@@ -389,7 +389,7 @@ fn repeated_macro_generated_lambdas_keep_distinct_structural_occurrences() {
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     let text = r#"
 defmacro deferred(x) do
-  {:fn, %{}, [{:"->", %{}, [[], x]}]}
+  {:fn, [], [{:"->", [], [[], x]}]}
 end
 
 def main() do

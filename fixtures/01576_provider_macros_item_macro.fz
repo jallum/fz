@@ -16,7 +16,7 @@
 defmodule Provider.Macros do
   defmacro make_answer() do
     body = quote do: Provider.helper(41)
-    {:def, %{}, [{:answer, %{}, []}, [{:do, body}]]}
+    {:def, [], [{:answer, [], []}, [{:do, body}]]}
   end
 end
 

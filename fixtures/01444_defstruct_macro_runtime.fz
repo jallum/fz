@@ -12,7 +12,7 @@
 # macro-emitted structs -- so `Point`, entirely defined through
 # `make_struct/1`, must still construct and field-access correctly end to end.
 defmacro make_struct(fields) do
-  {:defstruct, %{}, [fields]}
+  {:defstruct, [], [fields]}
 end
 
 defmodule Point do

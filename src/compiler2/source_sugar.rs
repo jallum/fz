@@ -168,14 +168,7 @@ fn operator_meta(
     node: &QuotedAstNode,
     op: &str,
 ) -> Result<AnyValueRef, QuotedSourceError> {
-    let mut entries = node
-        .meta
-        .map_entries()?
-        .into_iter()
-        .map(|(key, value)| (key.root(), value.root()))
-        .collect::<Vec<_>>();
-    entries.push((builder.atom(META_FROM_OPERATOR_KEY), builder.atom(op)));
-    builder.map(&entries)
+    builder.meta_put(&node.meta, META_FROM_OPERATOR_KEY, builder.atom(op))
 }
 
 fn range_parts(

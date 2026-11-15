@@ -32,16 +32,18 @@ fn collect_tokens(cursor: &QuotedSourceCursor, tokens: &mut Vec<String>) {
             }
         }
         ValueKind::STRUCT => {
-            for item in cursor.tuple_items().expect("tuple items") {
-                collect_tokens(&item, tokens);
+            let items = cursor.tuple_items().expect("tuple items");
+            let operator_stamp =
+                matches!(items.as_slice(), [key, _] if key.atom_name().as_deref() == Ok(META_FROM_OPERATOR_KEY));
+            let items = if operator_stamp { &items[..1] } else { &items[..] };
+            for item in items {
+                collect_tokens(item, tokens);
             }
         }
         ValueKind::MAP => {
             for (key, value) in cursor.map_entries().expect("map entries") {
                 collect_tokens(&key, tokens);
-                if key.atom_name().as_deref() != Ok(META_FROM_OPERATOR_KEY) {
-                    collect_tokens(&value, tokens);
-                }
+                collect_tokens(&value, tokens);
             }
         }
         ValueKind::BITSTRING | ValueKind::BINVIEW => {
@@ -152,7 +154,7 @@ fn malformed_module_reference_metadata_is_rejected_without_interning() {
         let meta = builder
             .root(
                 builder
-                    .map(&[(builder.atom(super::source::META_MODULE_KEY), value)])
+                    .keyword_list(&[(builder.atom(super::source::META_MODULE_KEY), value)])
                     .unwrap(),
             )
             .unwrap();
@@ -171,8 +173,8 @@ fn encoded_ast_with_span(start: i64, length: i64, source_version: i64) -> Quoted
         ])
         .expect("encoded span map");
     let meta = builder
-        .map(&[(builder.atom(META_SPAN_KEY), span)])
-        .expect("encoded metadata map");
+        .keyword_list(&[(builder.atom(META_SPAN_KEY), span)])
+        .expect("encoded metadata");
     let node = builder
         .tuple(&[builder.atom("node"), meta, builder.nil()])
         .expect("encoded AST node");
@@ -224,7 +226,7 @@ fn quoted_span_decoder_rejects_overflow_and_explicit_absence() {
 fn absent_quoted_span_metadata_is_not_malformed() {
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
-    let meta = builder.map(&[]).expect("empty metadata");
+    let meta = builder.list(&[]).expect("empty metadata");
     let node = builder
         .tuple(&[builder.atom("node"), meta, builder.nil()])
         .expect("source-less AST node");
@@ -711,7 +713,8 @@ fn list_iterator_reports_a_non_list_once_and_stops() {
 }
 
 /// A map of `count` atom keys `k00`, `k01`, ... bound to their index, plus a
-/// span entry of `span`, big enough that the runtime publishes it as a trie.
+/// `meta` entry whose metadata carries the span `span`, big enough that the
+/// runtime publishes it as a trie.
 fn wide_map_root(count: i64, span: i64, last_value: i64) -> QuotedSourceRoot {
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
@@ -721,7 +724,10 @@ fn wide_map_root(count: i64, span: i64, last_value: i64) -> QuotedSourceRoot {
             (builder.atom(&format!("k{index:02}")), builder.int(value))
         })
         .collect();
-    entries.push((builder.atom(META_SPAN_KEY), builder.int(span)));
+    let meta = builder
+        .keyword_list(&[(builder.atom(META_SPAN_KEY), builder.int(span))])
+        .expect("metadata");
+    entries.push((builder.atom("meta"), meta));
     let map = builder.map(&entries).expect("wide map");
     assert!(
         unsafe { fz_runtime::any_value::map_header_is_trie(map.map_addr().expect("map") as *const u8) },
@@ -738,13 +744,13 @@ fn a_map_wider_than_one_array_reads_every_entry_once_and_by_atom_key() {
     assert_eq!(entries.len(), 41);
     let mut read: Vec<_> = entries
         .iter()
+        .filter(|(key, _)| key.atom_name().as_deref() != Ok("meta"))
         .map(|(key, value)| {
             (
                 key.atom_name().expect("atom key").to_string(),
                 value.int_value().expect("int"),
             )
         })
-        .filter(|(name, _)| name != META_SPAN_KEY)
         .collect();
     read.sort();
     let expected: Vec<_> = (0..40).map(|index| (format!("k{index:02}"), index)).collect();
@@ -755,10 +761,112 @@ fn a_map_wider_than_one_array_reads_every_entry_once_and_by_atom_key() {
 }
 
 #[test]
-fn semantic_equality_of_wide_maps_ignores_the_span_entry_and_sees_a_changed_value() {
+fn semantic_equality_of_wide_maps_ignores_spans_in_their_values_and_sees_a_changed_value() {
     let a = wide_map_root(40, 7, 39);
     let b = wide_map_root(40, 900, 39);
     let c = wide_map_root(40, 7, -1);
-    assert!(a.semantically_eq(&b, Horizon::Full), "the span entry is not semantic");
+    assert!(a.semantically_eq(&b, Horizon::Full), "a span is not semantic");
     assert!(!a.semantically_eq(&c, Horizon::Full), "a value is");
+}
+
+#[test]
+fn metadata_is_a_keyword_list_in_the_order_the_builder_writes_it() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let mut sources = crate::source::SourceMap::new();
+    let version = sources.add_code(Some("keyword-meta.fz"), "abc");
+    let meta = builder
+        .meta(&QuotedSourceMetadata {
+            span: Some(Span::new(version, 0, 2)),
+            hygiene_ordinal: Some(3),
+            ..Default::default()
+        })
+        .unwrap();
+    let root = builder.root(meta).unwrap();
+    let keys: Vec<String> = root
+        .cursor()
+        .meta_entries()
+        .unwrap()
+        .iter()
+        .map(|(key, _)| key.atom_name().unwrap().to_string())
+        .collect();
+    assert_eq!(keys, [META_SPAN_KEY, super::source::META_HYGIENE_KEY]);
+    let nothing = builder
+        .root(builder.meta(&QuotedSourceMetadata::default()).unwrap())
+        .unwrap();
+    assert!(
+        nothing.cursor().root().is_empty_list(),
+        "no metadata is `[]`, as in Elixir"
+    );
+}
+
+#[test]
+fn meta_put_replaces_the_key_and_puts_it_first_as_keyword_put_does() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let meta = builder
+        .keyword_list(&[(builder.atom("a"), builder.int(1)), (builder.atom("b"), builder.int(2))])
+        .unwrap();
+    let meta = builder.root(meta).unwrap();
+    let put = builder.meta_put(&meta.cursor(), "b", builder.int(3)).unwrap();
+    let put = builder.root(put).unwrap();
+    let entries: Vec<(String, i64)> = put
+        .cursor()
+        .meta_entries()
+        .unwrap()
+        .iter()
+        .map(|(key, value)| (key.atom_name().unwrap().to_string(), value.int_value().unwrap()))
+        .collect();
+    assert_eq!(entries, [("b".to_string(), 3), ("a".to_string(), 1)]);
+    assert_eq!(put.cursor().meta_value("a").unwrap().unwrap().int_value(), Ok(1));
+    assert!(put.cursor().meta_value("c").unwrap().is_none());
+}
+
+#[test]
+fn metadata_that_is_not_a_keyword_list_is_refused_not_read_as_empty() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let map = builder.map(&[]).unwrap();
+    let not_a_pair = builder.list(&[builder.atom("a")]).unwrap();
+    for meta in [map, not_a_pair] {
+        let node = builder.tuple(&[builder.atom("node"), meta, builder.nil()]).unwrap();
+        let root = builder.root(node).unwrap();
+        let error = root
+            .cursor()
+            .ast_node(&crate::source::SourceMap::default())
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("quoted metadata must be a keyword list"),
+            "{error}"
+        );
+        assert!(builder.root(meta).unwrap().cursor().hygiene_ordinal().is_err());
+    }
+}
+
+#[test]
+fn two_nodes_that_differ_only_in_span_are_equal_and_in_another_entry_are_not() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let mut sources = crate::source::SourceMap::new();
+    let version = sources.add_code(Some("keyword-meta-eq.fz"), "abcdef");
+    let node = |start: u32, ordinal: u32| {
+        let meta = builder
+            .meta(&QuotedSourceMetadata {
+                span: Some(Span::new(version, start, start + 1)),
+                hygiene_ordinal: Some(ordinal),
+                ..Default::default()
+            })
+            .unwrap();
+        builder
+            .root(builder.tuple(&[builder.atom("x"), meta, builder.nil()]).unwrap())
+            .unwrap()
+    };
+    assert!(
+        node(0, 1).semantically_eq(&node(4, 1), Horizon::Full),
+        "a span is provenance"
+    );
+    assert!(
+        !node(0, 1).semantically_eq(&node(0, 2), Horizon::Full),
+        "hygiene is meaning"
+    );
 }

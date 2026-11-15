@@ -228,7 +228,7 @@ fn compiler2_frontdoor_threads_spans_through_nested_modules() {
     // nested import's position threaded through correctly (it sits on line 4).
     let start = import
         .meta
-        .map_value("__fz_span__")
+        .meta_value("__fz_span__")
         .expect("nested import span lookup")
         .expect("nested import span")
         .map_value("start")
@@ -1629,7 +1629,7 @@ fn compiler2_frontdoor_parses_keyword_list_macro_heads() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "macro-heads.fz",
-        "defmacro test(name_atom, [do: body]) do\n  {:def, %{}, [{name_atom, %{}, []}, [{:do, body}]]}\nend\n\ndefmacro switching_macro(list, a, do: block) do\n  block\nend\n",
+        "defmacro test(name_atom, [do: body]) do\n  {:def, [], [{name_atom, [], []}, [{:do, body}]]}\nend\n\ndefmacro switching_macro(list, a, do: block) do\n  block\nend\n",
         &tel,
     )
     .expect("keyword list macro heads parse");

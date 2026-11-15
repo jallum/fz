@@ -1148,7 +1148,7 @@ fn rescue_in_operands(
     if node.head.root().tag() == fz_runtime::any_value::ValueKind::ATOM {
         return Ok((node.head.atom_name()? == "in").then(|| (first.clone(), second.clone())));
     }
-    let stamped_in = match node.meta.map_value(META_FROM_OPERATOR_KEY)? {
+    let stamped_in = match node.meta.meta_value(META_FROM_OPERATOR_KEY)? {
         Some(stamp) => stamp.atom_name()? == "in",
         None => false,
     };
@@ -2550,7 +2550,7 @@ fn is_alias(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<bool, Qu
 pub(super) fn is_bracket_access_callee(head_node: &QuotedAstNode) -> Result<bool, QuotedSourceError> {
     let Some(value) = head_node
         .meta
-        .map_value(crate::compiler2::source::META_FROM_BRACKETS_KEY)?
+        .meta_value(crate::compiler2::source::META_FROM_BRACKETS_KEY)?
     else {
         return Ok(false);
     };

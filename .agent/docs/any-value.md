@@ -592,7 +592,7 @@ the survivors move down to the layout of the smaller count
 (`compact_destination_entries`) before they are published in place. A
 destination of more than `MAP_FLAT_MAX` entries is published as a trie from
 its normalized entries. The interpreter and native code build every map
-literal this way, the metadata map of a quoted AST node included.
+literal this way.
 
 A single update of a flat map copies the array of at most 32 entries; an update
 of a trie copies one path (below). Use bulk operations when touching several

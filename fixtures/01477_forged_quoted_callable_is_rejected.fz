@@ -19,7 +19,7 @@
 # entries settles.
 #
 defmacro forge(x) do
-  {:a, %{__fz_bound__: 4000000000}, [x]}
+  {:a, [__fz_bound__: 4000000000], [x]}
 end
 
 def main() do

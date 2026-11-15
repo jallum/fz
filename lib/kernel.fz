@@ -288,7 +288,7 @@ defmodule Kernel do
 
   """
   defmacro apply(module, function, args) when is_atom(function) and is_list(args) do
-    {{:".", %{}, [module, function]}, %{}, args}
+    {{:".", [], [module, function]}, [], args}
   end
 
   defmacro apply(_module, _function, _args) do

@@ -58,7 +58,7 @@ fn submissions_return_stable_owners_backed_by_exact_immutable_versions() {
 fn a_quoted_node_carries_no_place_of_its_own_in_interpreter_and_native_execution() {
     let source = r#"def main() do
   {_, meta, _} = quote do: 40 + 2
-  if Map.has_key?(meta, :__fz_span__), do: 1, else: 0
+  if Keyword.has_key?(meta, :__fz_span__), do: 1, else: 0
 end
 "#;
     let telemetry = ConfiguredTelemetry::new();

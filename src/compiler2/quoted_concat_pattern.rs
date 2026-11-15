@@ -47,7 +47,7 @@ pub(super) fn concat_operands(
     let spelling = if node.head.root().tag() == ValueKind::ATOM {
         node.head.atom_name()?
     } else {
-        match node.meta.map_value(META_FROM_OPERATOR_KEY)? {
+        match node.meta.meta_value(META_FROM_OPERATOR_KEY)? {
             Some(stamp) => stamp.atom_name()?,
             None => return Ok(None),
         }

@@ -2,7 +2,7 @@
 # purpose: an item-level macro that returns a compiler-shaped fn AST splices a callable function definition
 #---
 defmacro make_const(name, value) do
-  {:def, %{}, [{name, %{}, []}, [{:do, value}]]}
+  {:def, [], [{name, [], []}, [{:do, value}]]}
 end
 
 make_const(:answer, 42)
