@@ -2,6 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T15:30:48Z",
+  "close_reason": "done: coverage step passes on develop at e81f9ed52 (run 43724531150)",
   "created": "2026-11-15T14:42:10Z",
   "description": "develop push CI at 4f8b72ea4 (run 43723309628, after fz-rgk made the limit CPU time) fails the coverage step on four tests, three of them from this epic, each \"fz2 exceeded 20s of CPU\":\n\n- matrix::01254_a_long_body_copies_its_frame_forward_when_a_collection_kept_it::interp\n- a_long_body_copies_its_frame_forward_when_a_collection_kept_it (the --log-telemetry test over the same fixture, tests/fixture_matrix.rs)\n- matrix::01294_enum_filter_over_four_hundred_thousand_elements_does_not_overflow_the_stack::interp\n\nLocally at opt-level 1, `fz2 interp` uses 3.1 s of CPU on 01254 and 3.5 s on 01294; the coverage build is about six times slower. Same class as fz-9x7.9 (fixture 01256).\n\nDone when: the coverage step passes on develop for these tests.",
   "id": "fz-9x7.10",
@@ -14,7 +16,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Fixtures 01254 and 01294 fit the coverage job's 20 s CPU limit on the interpreter",
   "type": "bug",
   "updated_at": "2026-11-15T15:30:48Z"
