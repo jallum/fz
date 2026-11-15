@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T14:34:08Z",
+  "description": "tests/exception_cost_test.rs says an exception type costs 40 jobs \"and now and then one to three more\" without saying why. The calculation is now known and should be written down and pinned.\n\nMeasured at develop 4f8b72ea4 with the test's own program (n exception types, each raised once): jobs(n) = 875 + 40n + e.\n\nThe 40: the raise site f_i/1 is 15 jobs, E_i.exception/1 is 7, E_i.message/1 is 16 (three activations), DefineModule is 1, and one more analysis of Exception.message/1.\n\nThe extra e is 0 through six types and between 1 and 5 after, and does not grow (checked through 26 types). Kernel.panic/1 keeps one input row per exception type that reaches it. Past ACTIVATION_INPUT_ROW_BUDGET (8) rows the rows widen to one joined row, a union of the structs with their literal atoms widened. That union is ground, so it keys Kernel.fz_panic/1 as itself where each single struct keyed it as `map`: panic/1 is analysed once more and fz_panic/1 gets a second activation. The union has 9 members at 7 types, 17 at 15, 25 at 23.\n\nDone when: the test asserts 40 exactly below the budget and the bound on e above it, and .agent/docs/exceptions.md states the calculation.",
+  "id": "fz-3sy.29",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 3,
+  "status": "open",
+  "title": "The per-exception-type compile cost is documented as a calculation and pinned exactly",
+  "type": "task",
+  "updated_at": "2026-11-15T14:34:08Z"
+}
