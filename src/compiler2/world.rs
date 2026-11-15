@@ -34,7 +34,7 @@ use super::drive::{ExecutionContext, FactKey, Job, JobEffects, UseCollector, Wor
 use super::identity::{
     ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
     FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NameableModules,
-    NotedTypeDecl, RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
+    NotedTypeDecl, Raisable, Raised, RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{BodyKeying, BodyKeyingMap, InputDemand, InputDemandMap, StaticCalleeMap};
@@ -75,6 +75,7 @@ use fz_engine::OrderedSet;
 use fz_engine::UnresolvedWait;
 use fz_engine::{CompletionEffects, FatalError, WorkStart};
 use fz_runtime::any_value::AnyValueRef;
+use fz_runtime::failure::{EXCEPTION_FIELD, RaiseKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum UnresolvedIssueKey {
@@ -159,6 +160,7 @@ pub struct World {
     protocol_dispatches: ProtocolDispatchMap,
     protocol_impl_providers: ProtocolImplProviderMap,
     nameable_modules: NameableModules,
+    raisable: Raisable,
     activations: ActivationMap,
     activation_inputs: ActivationInputMap<Job>,
     callsites: CallSiteMap,
@@ -333,6 +335,7 @@ impl World {
             protocol_dispatches: ProtocolDispatchMap::new(),
             protocol_impl_providers: ProtocolImplProviderMap::new(),
             nameable_modules: NameableModules::default(),
+            raisable: Raisable::default(),
             activations: ActivationMap::new(),
             activation_inputs: ActivationInputMap::new(),
             callsites: CallSiteMap::new(),
@@ -1446,6 +1449,69 @@ impl World {
     /// Every module a value can name, in the order each was first noted.
     pub(crate) fn nameable_modules(&self) -> impl Iterator<Item = ModuleId> + '_ {
         self.nameable_modules.modules()
+    }
+
+    /// Records that a raise of `kind` can hand a handler `raised`, and that
+    /// a value can name an exception's module: a raised exception is asked
+    /// for its message through it. The facts this is news to join `changed`.
+    pub(crate) fn note_raisable(&mut self, kind: RaiseKind, raised: Raised, changed: &mut Vec<FactKey>) {
+        if let Raised::Exception(module) = raised
+            && self.note_nameable_module(module)
+        {
+            changed.push(FactKey::NameableModules);
+        }
+        if self.raisable.note(kind, raised) {
+            changed.push(FactKey::Raisable);
+        }
+    }
+
+    /// The type of what a raise of `kind` hands a handler: a struct of each
+    /// exception module the program can raise, its fields left open, and
+    /// `any` once some raise hands over another value. `None` while the
+    /// program raises nothing of that kind.
+    pub(crate) fn raisable_ty(&mut self, kind: RaiseKind) -> Option<Ty> {
+        let of_kind = self.raisable.of(kind);
+        if of_kind.is_empty() {
+            return None;
+        }
+        if of_kind.anything_else() {
+            return Some(self.types.any());
+        }
+        let exceptions = of_kind.exceptions().collect::<Vec<_>>();
+        let none = self.types.none();
+        Some(exceptions.into_iter().fold(none, |so_far, module| {
+            let exception = self.exception_ty(module);
+            self.types.union(so_far, exception)
+        }))
+    }
+
+    /// What a value of `ty` is when raised: an exception of each module it
+    /// lists when it is surely one of them, and otherwise anything.
+    pub(crate) fn raised_by(&mut self, ty: &Ty) -> Vec<Raised> {
+        let Some(listed) = self.types.listed_structs(ty) else {
+            return vec![Raised::Anything];
+        };
+        let modules = listed
+            .into_iter()
+            .map(|name| self.reference_module(name))
+            .collect::<Vec<_>>();
+        let none = self.types.none();
+        let exceptions = modules.iter().fold(none, |so_far, module| {
+            let exception = self.exception_ty(*module);
+            self.types.union(so_far, exception)
+        });
+        if self.types.is_subtype(ty, &exceptions) {
+            modules.into_iter().map(Raised::Exception).collect()
+        } else {
+            vec![Raised::Anything]
+        }
+    }
+
+    /// A struct of `module` that says it is an exception, its other fields
+    /// left open.
+    fn exception_ty(&mut self, module: ModuleId) -> Ty {
+        let is_exception = self.types.bool_lit(true);
+        self.struct_value_ty(module, &[EXCEPTION_FIELD.to_string()], &[is_exception])
     }
 
     /// The qualified tag a nominal `@type` (`refines` / `opaque`) brands under.
@@ -2822,6 +2888,7 @@ impl World {
             | FactKey::ProtocolDispatch(_)
             | FactKey::ProtocolImplProviders(_)
             | FactKey::NameableModules
+            | FactKey::Raisable
             | FactKey::FunctionContract(_)
             | FactKey::LoweredBody(_)
             | FactKey::GuardDispatch(_)
@@ -2940,7 +3007,7 @@ impl World {
                     codes::RESOLVE_UNKNOWN_FUNCTION,
                     format!(
                         "function `{}/{}` is not defined",
-                        function_ref.display_name(),
+                        self.function_the_program_wrote(function_ref),
                         function_ref.arity
                     ),
                     Span::DUMMY,
@@ -3813,10 +3880,31 @@ impl World {
         )
     }
 
+    /// The name the program would have written for `function`: its entry exists
+    /// when `main/0` does, so a missing entry is a missing `main/0`.
+    fn function_the_program_wrote(&self, function: &FunctionRef) -> String {
+        if function.is_named(super::source_publish::PROGRAM_ENTRY) && function.arity == 0 {
+            return "main".to_string();
+        }
+        function.display_name()
+    }
+
+    /// The function whose defining file also defines `function`: a program's
+    /// entry is published by the file that has `main/0`, and every other
+    /// function by the file that writes it.
+    fn function_whose_home_defines(&mut self, function: FunctionId) -> FunctionId {
+        let reference = self.function_ref(function);
+        if reference.is_named(super::source_publish::PROGRAM_ENTRY) && reference.arity == 0 {
+            return self.reference_function(ModuleId::GLOBAL, "main", 0);
+        }
+        function
+    }
+
     pub(crate) fn demand_function_scope(&mut self, function: FunctionId) -> Result<Vec<FactKey>, Box<Diagnostic>> {
         let module = self.function_module(function);
         if module.is_global() {
-            let function_ref = self.function_ref(function).clone();
+            let defined_with = self.function_whose_home_defines(function);
+            let function_ref = self.function_ref(defined_with).clone();
             let mut certain_homes = Vec::new();
             let mut opaque_candidates = Vec::new();
             let mut pending = Vec::new();

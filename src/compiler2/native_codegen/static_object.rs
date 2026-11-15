@@ -1,5 +1,6 @@
 //! Read-only data objects a program emits once and every process shares: static
-//! struct literals, static closures and halt continuations.
+//! struct literals, static closures, halt continuations and the templates of
+//! `try` handlers that capture nothing and never return.
 //!
 //! An object is plain bytes laid out like its heap twin, a header word first,
 //! plus the addresses the linker or JIT fills in. It is 16-byte aligned so its
@@ -10,7 +11,9 @@ use super::*;
 use cranelift_codegen::ir::{self, InstBuilder, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
-use fz_runtime::any_value::{AnyValueRefPacking, ClosureDenotationId, closure_header_word, closure_size_for_count};
+use fz_runtime::any_value::{
+    AnyValue, AnyValueRefPacking, ClosureDenotationId, closure_capture_set, closure_header_word, closure_size_for_count,
+};
 
 /// An address stored into an object's bytes.
 #[derive(Clone, Copy)]
@@ -63,6 +66,24 @@ pub(crate) fn define_static_closure<M: Module>(
     let mut bytes = vec![0u8; closure_size_for_count(0)];
     let header = closure_header_word(denotation, 0, halt_kind as u16, arity as u16);
     bytes[0..8].copy_from_slice(&header.to_le_bytes());
+    define_read_only_object(jmod, name, bytes, &[(8, StaticAddress::Function(code))])
+}
+
+/// Define the continuation template of a `try` handler that captures nothing
+/// and never returns. A template's one fixed capture is the continuation the
+/// handler returns to; this handler has none to return to, so the slot holds
+/// `nil` and the whole template is constant.
+pub(crate) fn define_static_handler_template<M: Module>(
+    jmod: &mut M,
+    name: &str,
+    arity: u32,
+    code: FuncId,
+) -> Result<DataId, CodegenError> {
+    let mut bytes = vec![0u8; closure_size_for_count(1)];
+    let header = closure_header_word(ClosureDenotationId::INTERNAL, 1, 0, arity as u16);
+    bytes[0..8].copy_from_slice(&header.to_le_bytes());
+    // SAFETY: `bytes` is a closure of one capture whose header is written.
+    unsafe { closure_capture_set(bytes.as_mut_ptr(), 0, AnyValue::nil_atom()) };
     define_read_only_object(jmod, name, bytes, &[(8, StaticAddress::Function(code))])
 }
 

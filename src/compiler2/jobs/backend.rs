@@ -1200,11 +1200,10 @@ fn collect_executable_atoms(
     }
     match &executable.body {
         BackendBody::Extern { signature } => {
-            if let Some(exception) = match &signature.ret {
-                crate::fz_ir::ExternReturn::Checked(_, failure) => failure.exception(),
-                _ => None,
-            } {
-                push_atom(seen, atoms, exception);
+            if let crate::fz_ir::ExternReturn::Checked(_, failure) = &signature.ret {
+                for atom in failure.atoms() {
+                    push_atom(seen, atoms, atom);
+                }
             }
         }
         BackendBody::Clauses { clauses, entries, .. } => {
@@ -1327,13 +1326,13 @@ fn collect_dispatch_atoms(
     for prepared in &plan.prepared_keys {
         collect_dispatch_const_atoms(prepared, seen, atoms);
     }
-    if let Some(exception) = plan
+    for atom in plan
         .last_resort
-        .as_ref()
+        .iter()
         .filter(|_| plan.can_fail())
-        .and_then(LastResort::exception)
+        .flat_map(LastResort::atoms)
     {
-        push_atom(seen, atoms, exception);
+        push_atom(seen, atoms, atom);
     }
     for subject in &plan.graph.subjects {
         match &subject.source {

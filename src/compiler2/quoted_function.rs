@@ -161,6 +161,7 @@ pub(crate) fn derive_function_surface(
         extern_constraints: Vec::new(),
         variadic: false,
         extern_raises: None,
+        extern_delivers: None,
         attrs,
         span: group_span,
     })
@@ -209,6 +210,13 @@ fn decode_extern_fn(
         }),
         None => None,
     };
+    let extern_delivers = match details.map_value("delivers")? {
+        Some(kind) => Some(
+            fz_runtime::failure::RaiseKind::from_name(kind.atom_name()?.as_str())
+                .ok_or_else(|| QuotedSourceError::new("quoted extern `delivers` expects :error, :throw or :exit"))?,
+        ),
+        None => None,
+    };
     let span = node.span.unwrap_or(Span::DUMMY);
 
     let extern_param_tokens = params
@@ -233,6 +241,7 @@ fn decode_extern_fn(
         extern_constraints,
         variadic,
         extern_raises,
+        extern_delivers,
         attrs,
         span,
     })

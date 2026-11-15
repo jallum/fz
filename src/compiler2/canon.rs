@@ -40,7 +40,7 @@ use crate::fast_hash::HashMap;
 use std::sync::Arc;
 
 use crate::dispatch_matrix::pattern::{
-    LastResort, MessageSubject, PatternDispatchOutcome, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr,
+    FieldTerm, LastResort, PatternDispatchOutcome, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr,
     PatternPinnedInput,
 };
 use crate::dispatch_matrix::{
@@ -1547,17 +1547,13 @@ impl ProgramCanon<'_> {
             plan.prepared_keys.iter().map(ground).collect::<Vec<_>>(),
         );
         match &plan.last_resort {
-            Some(LastResort::Exception {
-                exception,
-                message,
-                subject,
-            }) => {
-                let showing = match subject {
-                    MessageSubject::Absent => "",
-                    MessageSubject::Shown => " showing input 0",
-                    MessageSubject::ShownWithKind => " showing input 0 and its kind",
-                };
-                out.put(&format!("raises {exception} {message:?}{showing}"));
+            Some(LastResort::Exception { exception, fields }) => {
+                let fields = fields
+                    .iter()
+                    .map(|(name, term)| format!("{name}: {}", field_term(term)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.put(&format!("raises {exception} {{{fields}}}"));
             }
             Some(LastResort::Reraise) => out.put("reraises input 0 as kind, input 1 as value"),
             None => {}
@@ -1770,6 +1766,15 @@ fn bitstring_field(field: &BitstringFieldShape) -> String {
 /// A ground literal, rendered exactly. A float is rendered by its BITS: the
 /// carrier stores bits (`GroundValue::Float(u64)`), and a decimal rendering
 /// would fold values the artifact keeps apart.
+fn field_term(term: &FieldTerm) -> String {
+    match term {
+        FieldTerm::Subject => "input 0".to_string(),
+        FieldTerm::Atom(name) => format!(":{name}"),
+        FieldTerm::Int(value) => value.to_string(),
+        FieldTerm::Text(text) => format!("{text:?}"),
+    }
+}
+
 fn ground(value: &GroundValue) -> String {
     match value {
         GroundValue::Int(value) => value.to_string(),

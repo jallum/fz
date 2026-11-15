@@ -44,6 +44,9 @@ pub struct FunctionSurface {
     pub variadic: bool,
     /// What the extern's `raises:` tail declares, when its result can fail.
     pub extern_raises: Option<ExternRaises>,
+    /// The kind an extern's `delivers:` tail declares, when calling it hands
+    /// its first argument to the nearest handler.
+    pub extern_delivers: Option<fz_runtime::failure::RaiseKind>,
     pub attrs: Vec<Attribute>,
     pub span: Span,
 }

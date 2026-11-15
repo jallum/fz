@@ -1,31 +1,46 @@
 @type keyword() :: [{atom, any}]
 @type keyword(t) :: [{atom, t}]
 
+alias ArgumentError
+alias ArithmeticError
 alias Atom
+alias BadBooleanError
+alias BadMapError
+alias CaseClauseError
 alias Collectable
+alias CondClauseError
 alias Enum
 alias Enumerable
+alias ErlangError
 alias Exception
 alias File
 alias File.Stream
 alias Float
+alias FunctionClauseError
 alias IO
 alias Integer
 alias JSON
 alias Kernel
+alias KeyError
 alias Keyword
 alias List
 alias Map
 alias MapSet
+alias MatchError
 alias OptionParser
 alias Process
+alias Protocol
 alias Range
+alias RuntimeError
 alias Stream
 alias String
 alias String.Chars
 alias System
+alias TryClauseError
 alias Tuple
+alias UndefinedFunctionError
 alias Utf8
+alias WithClauseError
 
 import Kernel, only: [
   +: 1,

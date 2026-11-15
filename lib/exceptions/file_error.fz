@@ -1,0 +1,9 @@
+defmodule File.Error do
+  defexception [:reason, :path, action: ""]
+
+  def message(%{action: "remove directory", reason: :eexist, path: path}),
+    do: "could not remove directory " <> inspect(path) <> ": directory is not empty"
+
+  def message(%{action: action, reason: reason, path: path}),
+    do: "could not #{action} " <> inspect(path) <> ": " <> File.format_error(reason)
+end

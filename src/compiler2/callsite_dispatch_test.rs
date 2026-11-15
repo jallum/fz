@@ -288,7 +288,7 @@ fn a_one_target_call_that_can_miss_tests_its_receiver_and_raises_at_a_miss() {
         targets: vec![target.clone()],
         return_ty: None,
     };
-    let can_miss = summary(Some(LastResort::protocol_undefined("P")));
+    let can_miss = summary(Some(LastResort::protocol_undefined("Elixir.P".to_string())));
     assert!(can_miss.is_decision());
     assert!(!summary(None).is_decision());
 

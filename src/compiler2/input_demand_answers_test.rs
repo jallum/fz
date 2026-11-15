@@ -272,7 +272,9 @@ fn enum_take_derives_input_demand_proportionally() {
         // Kernel's arithmetic and compare cone derives its input demand once
         // per program: (45, 146, 6) -> (76, 247, 8).
         // (76, 247, 8) -> (75, 244, 8): no result-decoding function derives input demand.
-        (75, 244, 8)
+        // (75, 244, 8) -> (76, 247, 8): the `defexception` macro's `declares_message?/1` derives
+        // its input demand.
+        (76, 247, 8)
     );
 }
 

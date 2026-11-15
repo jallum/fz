@@ -167,7 +167,11 @@ fn a_caller_outside_a_ring_of_three_reads_its_return_type_once_at_the_final_revi
 /// took an unfinished step of it would key activations of its own and each of
 /// those would climb in turn. The climb runs inside its group and `main`'s
 /// three decodes wait for it to close.
-const NESTED_DECODERS_ANALYSES: u64 = 151;
+///
+/// 151 -> 154: a failure raises a library exception, so the group also analyses the
+/// `defexception` and `raise` macros, `declares_message?/1` and `IO.puts`, and no longer
+/// analyses `inspect` and `Binary.to_string` to build the failure's text.
+const NESTED_DECODERS_ANALYSES: u64 = 154;
 /// The distinct activations of `array_value`: one for each shape of accumulator
 /// the decoders pass it, however many steps the climb takes.
 const NESTED_DECODERS_ARRAY_VALUE_ACTIVATIONS: usize = 2;

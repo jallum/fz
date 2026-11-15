@@ -1,0 +1,6 @@
+defmodule BadBooleanError do
+  defexception [:term, :operator]
+
+  def message(%{term: term, operator: operator}),
+    do: Exception.__format_message_with_term__("expected a boolean on left-side of \"#{operator}\", got:", term)
+end

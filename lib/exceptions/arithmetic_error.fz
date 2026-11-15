@@ -1,0 +1,3 @@
+defmodule ArithmeticError do
+  defexception message: "bad argument in arithmetic expression"
+end

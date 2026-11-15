@@ -1,0 +1,10 @@
+#---
+# purpose: "a thrown value is caught and returned; nothing in the program can raise an error, so the handler that reports an uncaught one is never compiled"
+#---
+def main() do
+  try do
+    throw(:done)
+  catch
+    :throw, value -> value
+  end
+end

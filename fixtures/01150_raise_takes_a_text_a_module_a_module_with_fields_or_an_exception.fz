@@ -1,0 +1,35 @@
+#---
+# purpose: "raise of a text is a RuntimeError; of a module, that module's exception/1 over its fields or its text; of an exception struct, that struct; of anything else, an ArgumentError"
+# oracle: 01150_raise_takes_a_text_a_module_a_module_with_fields_or_an_exception.oracle.exs
+# oracle.stamp: 8aaf93b40681f3dd
+#---
+def show(f) do
+  try do
+    f.()
+  rescue
+    e -> [e.__struct__, Exception.message(e)]
+  end
+end
+
+def all() do
+  show(fn -> raise "plain text" end) ++
+    show(fn -> raise ArgumentError end) ++
+    show(fn -> raise ArgumentError, "with a text" end) ++
+    show(fn -> raise KeyError, key: :a, term: [b: 1] end) ++
+    show(fn -> raise(%KeyError{key: :c, term: 7}) end) ++
+    show(fn -> raise RuntimeError, message: "by field" end) ++
+    show(fn -> raise ArithmeticError end) ++
+    show(fn -> raise(nominated(), "through a variable") end) ++
+    show(fn -> raise(not_an_exception()) end) ++
+    show(fn -> raise_missing(:d) end)
+end
+
+def not_an_exception(), do: 42
+
+def raise_missing(key), do: raise(KeyError, key: key)
+
+def nominated(), do: ArgumentError
+
+def main() do
+  Enum.each(all(), fn r -> dbg(r) end)
+end

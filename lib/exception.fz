@@ -12,4 +12,84 @@ defmodule Exception do
   """
   @spec message(any) :: any
   def message(exception), do: exception.__struct__.message(exception)
+
+  @doc """
+  Ends the current process the way an error nothing rescued ends it, printing
+  the line Elixir prints: the exception's name and its message. A value that
+  is not an exception is shown as an `ErlangError`.
+  """
+  @spec __uncaught__(any) :: never
+  def __uncaught__(%{__exception__: true, __struct__: module} = exception) when is_atom(module), do: banner(module, exception)
+  def __uncaught__(reason), do: banner(ErlangError, %ErlangError{original: reason})
+
+  @spec banner(atom, any) :: never
+  defp banner(module, exception), do: fz_fail("** (" <> inspect(module) <> ") " <> message(exception))
+
+  extern "fz" defp fz_fail(binary) :: never
+
+  @doc """
+  Returns `lead`, a blank line, and `term` as `inspect/1` shows it, indented
+  by four spaces: the shape of the messages that show the value they are
+  about.
+
+      Exception.__format_message_with_term__("expected a map, got:", 1)
+      #=> "expected a map, got:\n\n    1\n"
+
+  """
+  @spec __format_message_with_term__(binary, any) :: binary
+  def __format_message_with_term__(lead, term), do: lead <> "\n\n    " <> __inspect_indented__(term) <> "\n"
+
+  @doc """
+  Returns `term` as `inspect/1` shows it, with every line after the first
+  indented by four spaces.
+
+      Exception.__inspect_indented__(1)
+      #=> "1"
+
+  """
+  @spec __inspect_indented__(any) :: binary
+  def __inspect_indented__(term), do: indented(inspect(term), "")
+
+  @spec indented(binary, binary) :: binary
+  defp indented(<<>>, done), do: done
+  defp indented(<<"\n", rest::binary>>, done), do: indented(rest, done <> "\n    ")
+  defp indented(<<byte, rest::binary>>, done), do: indented(rest, <<done::binary, byte>>)
+
+  @doc """
+  Returns the text that names a function: its module, its name and its
+  arity. A function written with `fn` is named after the function its source
+  sits in, and a function outside any module by its name and arity alone.
+
+      Exception.format_mfa(Enum, :map, 2)
+      #=> "Enum.map/2"
+
+      Exception.format_mfa(Enum, :"-map/2-fun-0-", 1)
+      #=> "anonymous fn/1 in Enum.map/2"
+
+  """
+  @spec format_mfa(atom, atom, integer) :: binary
+  def format_mfa(module, function, arity), do: named(inspect(module) <> ".", Atom.to_string(function), function, arity)
+
+  @doc """
+  Returns the text that names a function outside any module: its name and
+  its arity.
+
+      Exception.__format_fa__(:main, 0)
+      #=> "main/0"
+
+  """
+  @spec __format_fa__(atom, integer) :: binary
+  def __format_fa__(function, arity), do: named("", Atom.to_string(function), function, arity)
+
+  @spec named(binary, binary, atom, integer) :: binary
+  defp named(within, "-" <> lambda, _function, arity), do: "anonymous fn/#{arity} in " <> within <> enclosing(lambda, "")
+  defp named(within, _name, function, arity), do: within <> "#{called(inspect(function))}/#{arity}"
+
+  @spec enclosing(binary, binary) :: binary
+  defp enclosing("-fun-" <> _occurrence, name), do: name
+  defp enclosing(<<byte, rest::binary>>, name), do: enclosing(rest, <<name::binary, byte>>)
+
+  @spec called(binary) :: binary
+  defp called(":" <> name), do: name
+  defp called(name), do: name
 end

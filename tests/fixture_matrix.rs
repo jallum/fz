@@ -3710,7 +3710,10 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     assert_eq!(events.len(), 19, "run: one gc event per collection");
     assert_eq!(
         events.iter().map(|e| e.copied_bytes).sum::<usize>(),
-        2_680_080,
+        // 2_680_080 -> 2_680_272: a process's entry calls its body inside the handler that words
+        // an uncaught raise, so the continuation that call returns to, 32 bytes, is live in six
+        // of the collections.
+        2_680_272,
         "run: the bytes every collection copied"
     );
 
@@ -3844,7 +3847,7 @@ fn a_long_body_copies_its_frame_forward_when_a_collection_kept_it() {
 /// follow copy what the program still uses and not the list: none of the last
 /// fifty copies more than 480,544 bytes, the same most the program copies with
 /// no shared frame. A frame that kept the list would have every collection
-/// after it copy the list's 6.4 MB too: the most is then 6,880,544.
+/// after it copy the list's 6.4 MB too: the most is then 6,880,576.
 fn a_list_the_body_no_longer_uses_is_not_kept_by_its_frame() {
     let fixture = FixtureCase::new("fixtures/01256_a_list_the_body_no_longer_uses_is_not_kept_by_its_frame.fz");
     for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Build, "build")] {
@@ -3852,7 +3855,8 @@ fn a_list_the_body_no_longer_uses_is_not_kept_by_its_frame() {
         let tail = &events[events.len().saturating_sub(50)..];
         assert_eq!(
             tail.iter().map(|e| e.copied_bytes).max(),
-            Some(480_544),
+            // 480_544 -> 480_576: the entry's call of `main` returns to a 32-byte continuation.
+            Some(480_576),
             "{label}: the most bytes one of the last fifty collections copied"
         );
     }
@@ -3913,7 +3917,7 @@ fn many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_mis
     }
 
     // The interpreter collects the parent once, as it parks (48 bytes live).
-    // The JIT collects it once as it parks (288 bytes, which include the
+    // The JIT collects it once as it parks (320 bytes, which include the
     // closures its park record holds); the parent's exit after grafting 99
     // gifts is not a collection. Neither path collects a child.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
@@ -3925,7 +3929,7 @@ fn many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_mis
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
     assert_eq!(
         collections_as_tuples(&events),
-        vec![(1, "park", 288)],
+        vec![(1, "park", 320)],
         "run: the parent's park only; its exit is not collected"
     );
 }
@@ -3986,21 +3990,23 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
     assert_eq!(
         collections_as_tuples(&events),
         vec![
-            (2, "park", 288),
-            (1, "yield", 32_192),
-            (1, "yield", 64_192),
+            // Each entry's call of its body returns to a 32-byte continuation, live in the child's
+            // park and in the parent's collections that copy its oldest values.
+            (2, "park", 320),
+            (1, "yield", 32_224),
+            (1, "yield", 64_224),
             (1, "yield", 32_064),
             (1, "yield", 32_064),
             (1, "yield", 32_064),
-            (1, "yield", 192_192),
+            (1, "yield", 192_224),
             (1, "yield", 32_064),
             (1, "yield", 64_064),
             (1, "yield", 32_064),
             (1, "yield", 64_048),
-            (1, "yield", 320_128),
+            (1, "yield", 320_160),
             (1, "yield", 64_048),
             (1, "park", 208),
-            (1, "yield", 42_784),
+            (1, "yield", 42_816),
             (1, "yield", 48),
             (1, "yield", 48),
         ],

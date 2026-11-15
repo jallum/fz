@@ -1,0 +1,18 @@
+#---
+# purpose: "a raise of KeyError with fields is rescued by name and its fields are read; the program names no other exception"
+# oracle: 01152_a_program_that_raises_one_exception_compiles_that_exception.oracle.exs
+# oracle.stamp: bcab207c26d029f1
+#---
+def missing(key) do
+  try do
+    raise KeyError, key: key, term: [:held]
+  rescue
+    e in KeyError -> [e.key, e.term, e.message, Exception.message(e)]
+  end
+end
+
+def all(), do: missing(:wanted)
+
+def main() do
+  Enum.each(all(), fn r -> dbg(r) end)
+end

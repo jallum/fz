@@ -355,8 +355,8 @@ fn compiler_service_define_inside_a_function_body_has_no_source_publication_auth
     );
     assert_eq!(
         capture.count(&["fz", "compiler2", "compiler_service", "define"]),
-        1,
-        "only the literal main/0 source publication should cross the compiler-service boundary",
+        2,
+        "only the literal main/0 source publication and the program entry that wraps it should cross the compiler-service boundary",
     );
 }
 

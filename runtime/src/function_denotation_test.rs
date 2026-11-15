@@ -173,16 +173,17 @@ fn elixir_names_a_lambda_after_the_named_function_its_source_sits_in() {
     let outer = lambda(Arc::clone(&owner), 1);
     let inner = lambda(Arc::clone(&outer), 2);
 
-    assert_eq!(owner.elixir_name(), "M.g/0");
-    assert_eq!(outer.elixir_name(), "anonymous fn/1 in M.g/0");
+    let in_m = |name: &str| (Some("Elixir.M".to_string()), name.to_string());
+    assert_eq!(owner.elixir_module_and_name(), in_m("g"));
+    assert_eq!(outer.elixir_module_and_name(), in_m("-g/0-fun-0-"));
     assert_eq!(
-        inner.elixir_name(),
-        "anonymous fn/2 in M.g/0",
+        inner.elixir_module_and_name(),
+        in_m("-g/0-fun-0-"),
         "a nested lambda is still named after the def around it"
     );
     assert_eq!(
-        named("main").elixir_name(),
-        "main/0",
+        named("main").elixir_module_and_name(),
+        (None, "main".to_string()),
         "a function outside any module has no module to name"
     );
 }

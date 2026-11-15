@@ -156,8 +156,10 @@ pub(super) fn plan_entry_dispatch(
         });
     }
 
-    let source_patterns = entry_source_patterns(world, tel, function, &source, &surface)?
-        .raising(LastResort::function_clause(&world.function_ref(function).elixir_name()));
+    let denotation = world.function_ref(function);
+    let (module, name) = denotation.elixir_module_and_name();
+    let no_clause = LastResort::function_clause(module, name, denotation.arity as u32);
+    let source_patterns = entry_source_patterns(world, tel, function, &source, &surface)?.raising(no_clause);
     let namespace = source.namespace;
     let fn_span = surface.span;
     let mut resolver = super::super::dispatch::SourcePatternResolver {

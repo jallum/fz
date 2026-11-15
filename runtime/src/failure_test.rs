@@ -530,81 +530,81 @@ fn recording(f: impl FnOnce(&mut Process)) -> (Vec<String>, bool) {
 }
 
 #[test]
-fn a_raise_panics_with_the_exception_elixir_raises() {
+fn a_raise_with_no_handler_prints_the_message_the_exception_carries() {
     let (lines, failed) = recording(|process| {
-        let name = atom(process, "Elixir.CondClauseError");
-        raise_exception(process, name, "no cond clause evaluated to a truthy value");
+        let name = atom(process, "Elixir.ArgumentError");
+        let message = binary(process, "argument error");
+        raise_exception(process, name, &[("message", message)]);
     });
     assert!(failed, "a raise fails the process through the panic route");
     assert_eq!(
         lines,
-        ["** (CondClauseError) no cond clause evaluated to a truthy value"],
-        "the exception prints as Elixir prints it"
+        ["** (ArgumentError) argument error"],
+        "no module can be asked here, so the words the exception carries are printed"
     );
 }
 
 #[test]
-fn the_raise_exports_take_value_words_and_reach_the_same_route() {
+fn a_raise_with_no_handler_and_no_message_prints_the_exception_as_a_value() {
     let (lines, failed) = recording(|process| {
         let name = atom(process, "Elixir.MatchError");
-        let name = process.heap.box_any_value_ref(name).raw_word();
-        let lead = binary(process, "no match of right hand side value:");
-        let term = process.heap.box_any_value_ref(AnyValue::Int(7)).raw_word();
-        fz_raise_showing(process, name, lead.ref_word().raw_word(), term);
-    });
-    assert!(failed);
-    assert_eq!(lines, ["** (MatchError) no match of right hand side value:\n\n    7\n"]);
-}
-
-#[test]
-fn a_plain_raise_export_carries_its_message_unchanged() {
-    let (lines, failed) = recording(|process| {
-        let name = atom(process, "Elixir.ArgumentError");
-        let name = process.heap.box_any_value_ref(name).raw_word();
-        let message = binary(process, "argument error");
-        fz_raise(process, name, message.ref_word().raw_word());
-    });
-    assert!(failed);
-    assert_eq!(lines, ["** (ArgumentError) argument error"]);
-}
-
-#[test]
-fn a_raise_showing_a_term_prints_the_lead_a_blank_line_and_the_term_indented() {
-    let (lines, failed) = recording(|process| {
-        let name = atom(process, "Elixir.TryClauseError");
-        let term = atom(process, "unexpected");
-        raise_exception_showing(process, name, "no try clause matching:", term);
+        raise_exception(process, name, &[("term", AnyValue::Int(7))]);
     });
     assert!(failed);
     assert_eq!(
         lines,
-        ["** (TryClauseError) no try clause matching:\n\n    :unexpected\n"],
-        "the banner is Elixir's three lines"
+        ["** (ErlangError) Erlang error: %{__exception__: true, __struct__: MatchError, term: 7}"],
+        "the words belong to the module, which the runtime does not ask"
     );
 }
 
+/// The fields of the exception a raise delivered to an interpreter handler.
+fn delivered_exception(process: &mut Process, raise: impl FnOnce(&mut Process)) -> AnyValue {
+    process.push_handler(Handler::Interpreter);
+    raise(process);
+    let raised = process.raised.expect("the raise waits in the process");
+    AnyValue::from_ref(raised.value).expect("exception")
+}
+
 #[test]
-fn a_raise_showing_a_term_delivers_an_exception_carrying_the_term_and_the_banner() {
+fn a_raised_exception_carries_the_fields_it_was_given_and_no_others() {
     with_observed_process(|process, _| {
-        process.push_handler(Handler::Interpreter);
         let name = atom(process, "Elixir.CaseClauseError");
-
-        raise_exception_showing(process, name, "no case clause matching:", AnyValue::Int(3));
-
-        let raised = process.raised.expect("the raise waits in the process");
-        let exception = AnyValue::from_ref(raised.value).expect("exception");
+        let exception = delivered_exception(process, |process| {
+            raise_exception(process, name, &[("term", AnyValue::Int(3))]);
+        });
         assert_eq!(exception_name(process, exception), Some(name));
         assert_eq!(
             exception_field(process, exception, "term"),
             Some(AnyValue::Int(3)),
             "the subject is the exception's term, as in Elixir"
         );
-        let message = exception_field(process, exception, "message").expect("message");
         assert_eq!(
-            binary_text(message).as_deref(),
-            Some("no case clause matching:\n\n    3\n"),
-            "the message is the whole banner"
+            exception_field(process, exception, "message"),
+            None,
+            "the message is computed by the module, not stored"
         );
+    });
+}
+
+#[test]
+fn the_raise_export_reads_each_field_as_a_key_then_its_value() {
+    with_observed_process(|process, _| {
+        let name = atom(process, "Elixir.BadBooleanError");
+        let (term, operator, or) = (atom(process, "term"), atom(process, "operator"), atom(process, "or"));
+        let mut fields = crate::any_value::EMPTY_LIST_BITS;
+        for value in [or, operator, AnyValue::Int(1), term] {
+            fields = process.heap.alloc_list_cons_slot(value, fields);
+        }
+        let fields = AnyValue::decode_tagged_heap_bits(fields).expect("a list");
+        let exception = delivered_exception(process, |process| {
+            let name = process.heap.box_any_value_ref(name).raw_word();
+            let fields = process.heap.box_any_value_ref(fields).raw_word();
+            fz_raise(process, name, fields);
+        });
+        assert_eq!(exception_name(process, exception), Some(name));
+        assert_eq!(exception_field(process, exception, "term"), Some(AnyValue::Int(1)));
+        assert_eq!(exception_field(process, exception, "operator"), Some(or));
     });
 }
 
@@ -736,57 +736,4 @@ fn a_halt_reports_its_status_and_ends_the_process_past_every_handler_without_a_l
         assert_eq!(process.handlers.len(), 1, "no handler is searched, so none is consumed");
         assert!(process.raised.is_none() && !process.has_delivered_handler());
     });
-}
-
-/// A named struct as a value, with no fields.
-fn named_struct(process: &mut Process, name: &str) -> AnyValue {
-    let module = crate::module_name::ModuleName::from_segments(name.split('.').map(str::to_string).collect());
-    let schema = process.heap.register_schema(Schema::named_struct(module, []));
-    AnyValue::heap_ptr(process.heap.alloc_struct(schema), ValueKind::STRUCT)
-}
-
-#[test]
-fn a_value_is_named_by_its_kind_the_way_elixir_names_it_to_a_protocol() {
-    with_process(|process| {
-        let list_bits = process
-            .heap
-            .alloc_list_cons_slot(AnyValue::Int(1), crate::any_value::EMPTY_LIST_BITS);
-        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("list addr");
-        let list = AnyValue::from_ref(AnyValueRef::from_heap_object(ValueKind::LIST, list_addr).expect("list ref"))
-            .expect("list value");
-        let tuple = pair(process, AnyValue::Int(1), AnyValue::Int(2));
-        let map = map(process, &[("a", AnyValue::Int(1))]);
-        let text = binary(process, "text");
-        let struct_value = named_struct(process, "Geo.Point");
-        let ok = atom(process, "ok");
-        let process: *mut Process = process;
-        let cases = [
-            (AnyValue::Int(1), "Integer"),
-            (AnyValue::float(1.5), "Float"),
-            (ok, "Atom"),
-            (AnyValue::EmptyList, "List"),
-            (list, "List"),
-            (map, "Map"),
-            (tuple, "Tuple"),
-            (text, "BitString"),
-            (struct_value, "Geo.Point (a struct)"),
-        ];
-        for (value, expected) in cases {
-            assert_eq!(kind_name(process, value), expected);
-        }
-    });
-}
-
-#[test]
-fn a_raise_naming_the_kind_prints_elixirs_protocol_undefined_banner() {
-    let (lines, failed) = recording(|process| {
-        let name = atom(process, "Elixir.Protocol.UndefinedError");
-        let term = AnyValue::float(1.5);
-        raise_exception_naming_kind(process, name, "protocol Sizer not implemented for ", term);
-    });
-    assert!(failed);
-    assert_eq!(
-        lines,
-        ["** (Protocol.UndefinedError) protocol Sizer not implemented for Float\n\nGot value:\n\n    1.5\n"]
-    );
 }

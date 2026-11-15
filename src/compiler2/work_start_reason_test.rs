@@ -228,11 +228,13 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     // fz-5xp.30: 3 -> 2. One generic arithmetic helper path reaches its
     // result/status fact directly, rather than becoming a macro-definition
     // consumer; the retained consumers still take both exact dependencies.
-    assert_eq!(macro_definition_consumers.borrow().len(), 2);
+    // 2 -> 4: the arithmetic failure the fixture can reach raises a library
+    // exception, so the `raise` and `defexception` macros are consumed too.
+    assert_eq!(macro_definition_consumers.borrow().len(), 4);
     assert_eq!(
         *macro_definition_consumers.borrow(),
         *macro_product_consumers.borrow(),
-        "the two macro consumers resume on their definition and then on their exact retained content"
+        "the macro consumers resume on their definition and then on their exact retained content"
     );
     assert_eq!(
         *source_work.borrow(),
@@ -361,7 +363,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // (2653, 11, 28, 262) -> (2649, 11, 28, 261): a non-recursive key collapses structure
         // nothing asks about to its class, as a recursive key does, so callers that differ only in
         // such freight share one activation.
-        (2649, 11, 28, 261),
+        // (2649, 11, 28, 261) -> (2687, 14, 39, 262): the fixture's failures raise library
+        // exceptions, each a module of its own that `defexception` builds, so three more
+        // files are scoped, their modules defined, and the `raise` and `defexception` macros
+        // become executable facts.
+        (2687, 14, 39, 262),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -459,7 +465,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 995 -> 1055: a returned callable keeps its brand in its function's key, and a
         // protocol callback counts every input but the receiver as returned, so
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
-        1055,
+        // 1055 -> 1076: the library exception modules and the two macros that build and raise
+        // them publish changed revisions of their own.
+        1076,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -531,7 +539,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // and its Enum wrappers are keyed once per reducer lambda.
         // 439 -> 438: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
-        438,
+        // 438 -> 450: the same exception modules and macros wait on their prerequisites.
+        450,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -599,7 +608,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // (624, 626, [24, 262, 82, 258, 0]) -> (622, 624, [24, 261, 82, 257, 0]): a non-recursive
         // key collapses structure nothing asks about to its class, as a recursive key does, so
         // callers that differ only in such freight share one activation.
-        (622, 624, [24, 261, 82, 257, 0]),
+        // (622, 624, [24, 261, 82, 257, 0]) -> (623, 625, [24, 262, 82, 257, 0]): the library
+        // exception a failure raises adds one activation, whose runtime demand is derived.
+        (623, 625, [24, 262, 82, 257, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
@@ -619,7 +630,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // and its Enum wrappers are keyed once per reducer lambda.
         // 334 -> 333: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
-        333,
+        // 333 -> 334: one key for the library exception a failure raises.
+        334,
         "the demand frontier retains every ordinary generic helper key",
     );
     assert_eq!(
@@ -748,7 +760,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // and its Enum wrappers are keyed once per reducer lambda.
         // 742 -> 741: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
-        741,
+        // 741 -> 745: the `defexception` and `raise` macros and the functions of the library
+        // exception a failure raises are analysed.
+        745,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();
@@ -774,7 +788,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // and its Enum wrappers are keyed once per reducer lambda.
         // 262 -> 261: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
-        261,
+        // 261 -> 262: the library exception a failure raises adds one activation.
+        262,
         "the demand frontier's distinct activations, deduplicated across repeats",
     );
 

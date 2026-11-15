@@ -1,0 +1,38 @@
+defmodule UndefinedFunctionError do
+  defexception [:module, :function, :arity, :reason, :message]
+
+  def message(%{message: nil, reason: reason, module: module, function: function, arity: arity}),
+    do: undefined(reason, module, function, arity)
+
+  def message(%{message: message}), do: message
+
+  @spec undefined(any, any, any, any) :: binary
+  defp undefined(nil, module, nil, _arity), do: "undefined function" <> alias_hint(module)
+  defp undefined(nil, module, _function, nil), do: "undefined function" <> alias_hint(module)
+  defp undefined(nil, nil, function, arity), do: "function " <> Exception.format_mfa(nil, function, arity) <> " is undefined"
+
+  defp undefined(:"module could not be loaded", module, function, arity),
+    do: "function " <> Exception.format_mfa(module, function, arity) <> " is undefined (module #{inspect(module)} is not available)" <> alias_hint(module)
+
+  defp undefined(:"function not exported", module, function, arity),
+    do: "function " <> Exception.format_mfa(module, function, arity) <> " is undefined or private"
+
+  defp undefined(:"undefined local", nil, function, arity),
+    do: "function #{function}/#{arity} is undefined (there is no such import)"
+
+  defp undefined(reason, module, function, arity) when reason != nil,
+    do: "function " <> Exception.format_mfa(module, function, arity) <> " is undefined (#{reason})" <> alias_hint(module)
+
+  @spec alias_hint(atom) :: binary
+  defp alias_hint(module), do: undotted_alias_hint(Atom.to_string(module))
+
+  @spec undotted_alias_hint(binary) :: binary
+  defp undotted_alias_hint("Elixir." <> name), do: missing_alias_hint(String.contains?(name, "."))
+  defp undotted_alias_hint(_name), do: ""
+
+  @spec missing_alias_hint(boolean) :: binary
+  defp missing_alias_hint(true), do: ""
+
+  defp missing_alias_hint(false),
+    do: ". Make sure the module name is correct and has been specified in full (or that an alias has been defined)"
+end

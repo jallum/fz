@@ -1669,14 +1669,29 @@ impl Types {
     /// is exactly one. Whether that module declares a struct is the world's
     /// to say.
     pub fn sole_struct(&self, a: &Ty) -> Option<ModuleName> {
+        match self.listed_structs(a)?.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        }
+    }
+
+    /// The modules the values of `a` name under `__struct__`, each once in
+    /// the order first met, when every value of `a` is a map that names one.
+    /// The empty type lists none.
+    pub fn listed_structs(&self, a: &Ty) -> Option<Vec<ModuleName>> {
         let cx = self.ctx();
         let descr = self.descr(a);
         if !descr.admits_only_maps() {
             return None;
         }
-        let mut structs = descr.maps.iter().map(|conj| conj_struct(cx, conj));
-        let first = structs.next()??;
-        structs.all(|module| module.as_ref() == Some(&first)).then_some(first)
+        let mut listed = Vec::new();
+        for conj in &descr.maps {
+            let module = conj_struct(cx, conj)?;
+            if !listed.contains(&module) {
+                listed.push(module);
+            }
+        }
+        Some(listed)
     }
 
     pub fn map_known_keys(&self, a: &Ty) -> Vec<MapKey> {

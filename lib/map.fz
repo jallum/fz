@@ -289,7 +289,7 @@ defmodule Map do
   """
   @spec key_error(any, any) :: never
   def key_error(container, key),
-    do: raise(KeyError, "key " <> Kernel.inspect(key) <> " not found in:\n\n    " <> Kernel.inspect(container) <> "\n")
+    do: raise(%KeyError{key: key, term: container})
 
   @doc """
   Aborts with the `KeyError` for `%{map | ...}` naming a key `map` lacks:
@@ -303,7 +303,7 @@ defmodule Map do
   """
   @spec update_key_error(any, [any]) :: never
   def update_key_error(map, keys),
-    do: raise(KeyError, "key " <> Kernel.inspect(first_missing_key(map, keys)) <> " not found")
+    do: raise(%KeyError{key: first_missing_key(map, keys)})
 
   @spec first_missing_key(any, [any]) :: any
   defp first_missing_key(map, [key | keys]), do: first_missing_key(map, key, keys, fz_map_has_key(map, key))
@@ -462,7 +462,7 @@ defmodule Map do
   """
   @spec has_key?(any, any) :: boolean
   def has_key?(map, key) when is_map(map), do: fz_map_has_key(map, key)
-  def has_key?(map, _key), do: raise(BadMapError, "expected a map, got:\n\n    " <> Kernel.inspect(map) <> "\n")
+  def has_key?(map, _key), do: raise(%BadMapError{term: map})
 
   extern "fz" defp fz_map_has_key(any, any) :: boolean
 

@@ -1,0 +1,35 @@
+#---
+# purpose: "a rescued FunctionClauseError, CondClauseError and BadBooleanError each carry Elixir's fields and word Elixir's message from them"
+# oracle: 00893_a_rescued_clause_error_carries_the_fields_elixir_gives_it.oracle.exs
+# oracle.stamp: a1582209a2625869
+#---
+defmodule Shapes do
+  def only_one(1), do: :one
+end
+
+defp two(), do: 2
+defp word(), do: :maybe
+
+def main() do
+  try do
+    Shapes.only_one(two())
+  rescue
+    e in FunctionClauseError ->
+      dbg({e.module, e.function, e.arity})
+      dbg(Exception.message(e))
+  end
+  try do
+    cond do
+      two() == 1 -> :one
+    end
+  rescue
+    e in CondClauseError -> dbg(Exception.message(e))
+  end
+  try do
+    word() and true
+  rescue
+    e in BadBooleanError ->
+      dbg({e.term, e.operator})
+      dbg(Exception.message(e))
+  end
+end

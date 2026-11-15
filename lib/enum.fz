@@ -1088,7 +1088,7 @@ defmodule Enum do
   def min_max(enumerable), do: {min(enumerable), max(enumerable)}
 
   @spec empty_error() :: never
-  defp empty_error(), do: raise(Enum.EmptyError, "empty error")
+  defp empty_error(), do: raise(%Enum.EmptyError{message: "empty error"})
 
   @spec extreme([a], integer, () -> b) :: a | b
   defp extreme([], _want, empty_fallback), do: empty_fallback.()
@@ -1297,10 +1297,7 @@ defmodule Enum do
   @spec fetch_result({:ok, a} | :error, Enumerable.t(a), integer) :: a
   defp fetch_result({:ok, value}, _enumerable, _index), do: value
   defp fetch_result(:error, enumerable, index) do
-    raise(
-      Enum.OutOfBoundsError,
-      "out of bounds error at position #{index} when traversing enumerable #{Kernel.inspect(enumerable)}"
-    )
+    raise(%Enum.OutOfBoundsError{index: index, enumerable: enumerable})
   end
 
   @doc """

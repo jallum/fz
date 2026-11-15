@@ -181,7 +181,7 @@ defmodule OptionParser do
 
   @spec split_last([binary], binary, binary | nil) :: [binary]
   defp split_last([], _maybe_integer, _value),
-    do: raise(ArgumentError, "expected binary argument in <> operator but got: nil")
+    do: raise(%ArgumentError{message: "expected binary argument in <> operator but got: nil"})
 
   defp split_last(dashed, maybe_integer, value) do
     reversed = Enum.reverse(dashed)
@@ -334,11 +334,11 @@ defmodule OptionParser do
   defp reject_undefined_options([{:aliases, _} | rest]), do: reject_undefined_options(rest)
 
   defp reject_undefined_options([{key, _} | _rest]),
-    do: raise(ArgumentError, "OptionParser.parse/2 does not define the #{Kernel.inspect(key)} option")
+    do: raise(%ArgumentError{message: "OptionParser.parse/2 does not define the #{Kernel.inspect(key)} option"})
 
   @spec strict_switches(keyword | nil) :: keyword
   defp strict_switches(nil),
-    do: raise(ArgumentError, "OptionParser.parse/2 requires the :strict option: parsing without it is not defined")
+    do: raise(%ArgumentError{message: "OptionParser.parse/2 requires the :strict option: parsing without it is not defined"})
 
   defp strict_switches(switches), do: switches
 
@@ -362,12 +362,12 @@ defmodule OptionParser do
   @spec validated_kinds([atom]) :: [atom]
   defp validated_kinds(kinds) do
     if Enum.member?(kinds, :regex) do
-      raise(ArgumentError, "the :regex switch type is not defined")
+      raise(%ArgumentError{message: "the :regex switch type is not defined"})
     end
 
     case kinds -- switch_types() do
       [] -> kinds
-      invalid -> raise(ArgumentError, "invalid switch types/modifiers: " <> Enum.map_join(invalid, ", ", fn kind -> Kernel.inspect(kind) end))
+      invalid -> raise(%ArgumentError{message: "invalid switch types/modifiers: " <> Enum.map_join(invalid, ", ", fn kind -> Kernel.inspect(kind) end)})
     end
   end
 end

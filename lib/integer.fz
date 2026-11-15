@@ -82,5 +82,5 @@ defmodule Integer do
 
   @spec too_wide() :: never
   defp too_wide(),
-    do: raise(ArgumentError, "Integer.parse/1 cannot represent an integer wider than 64 bits: fz has no bignums")
+    do: raise(%ArgumentError{message: "Integer.parse/1 cannot represent an integer wider than 64 bits: fz has no bignums"})
 end

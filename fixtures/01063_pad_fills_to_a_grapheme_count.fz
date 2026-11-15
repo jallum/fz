@@ -22,27 +22,27 @@ def main() do
   try do
     String.pad_leading("abc", -1)
   rescue
-    e -> dbg({e.__struct__, e.message})
+    e -> dbg({e.__struct__, Exception.message(e)})
   end
   try do
     String.pad_trailing("abc", -1, "x")
   rescue
-    e -> dbg({e.__struct__, e.message})
+    e -> dbg({e.__struct__, Exception.message(e)})
   end
   try do
     String.pad_leading("abc", 5, "")
   rescue
-    e -> dbg({e.__struct__, e.message})
+    e -> dbg({e.__struct__, Exception.message(e)})
   end
   try do
     String.pad_trailing("abc", 5, [])
   rescue
-    e -> dbg({e.__struct__, e.message})
+    e -> dbg({e.__struct__, Exception.message(e)})
   end
   try do
     String.pad_leading("a", 3, ["x", 1])
   rescue
-    e -> dbg({e.__struct__, e.message})
+    e -> dbg({e.__struct__, Exception.message(e)})
   end
   dbg(String.pad_leading("a", 2, ["x", 1]))
 end

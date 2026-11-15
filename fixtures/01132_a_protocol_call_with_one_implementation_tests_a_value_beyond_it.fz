@@ -7,7 +7,7 @@ def join_ints_and_a_tuple() do
   try do
     Enum.join([1, {2, 3}], " ")
   rescue
-    e -> e.message
+    e -> Exception.message(e)
   end
 end
 
@@ -15,7 +15,7 @@ def join_binaries_and_a_tuple() do
   try do
     Enum.join(["x", {1, 2}], " ")
   rescue
-    e -> e.message
+    e -> Exception.message(e)
   end
 end
 

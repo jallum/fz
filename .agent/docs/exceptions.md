@@ -2,12 +2,12 @@
 
 A raise takes one route on every execution path: `raise` in
 `runtime/src/failure.rs`, entered through `fz_panic`, `fz_throw`, `fz_exit`,
-`fz_reraise`, `fz_raise`, `fz_raise_showing` or `fz_raise_naming_kind`. This doc
-covers that route end to end: the primitive and the three kinds of raise, the
-handler stack a `try` pushes, how a raise reaches the nearest handler on each
-path, what `try` with `rescue` and `catch` lowers to, the line an uncaught raise
-prints, how each driver ends a failed process, and the exit status that
-follows.
+`fz_reraise`, `fz_raise` or `fz_raise_undefined_function`. This doc covers
+that route end to end: the primitive and the three kinds of raise, the handler
+stack a `try` pushes, how a raise reaches the nearest handler on each path,
+what `try` with `rescue` and `catch` lowers to, what the compiler knows a
+handler can receive, the line an uncaught raise prints, how each driver ends a
+failed process, and the exit status that follows.
 
 ## The primitive
 
@@ -20,8 +20,8 @@ from a program. The compiler continues a raise a handler was delivered through
 `fz_reraise(process, kind_ref, value_ref)`, which reads the kind from the atom
 the handler received and is `raise` with it; a kind the runtime never delivers
 panics, as a fault in the compiler.
-`raise_exception(process, name, message)` and `raise_exception_showing(process,
-name, lead, term)` each build an exception map and are `raise` with kind
+`raise_exception(process, name, fields)` builds the exception map
+`%{__struct__: name, __exception__: true, ..fields}` and is `raise` with kind
 `error`. There is one route behind all of them, which:
 
 1. reports the raise to the execution context's raise observer, `ExecCtx.raise`
@@ -36,15 +36,29 @@ The export returns so each caller can continue the way its path continues
 after a call that cannot return. Nothing after a panic runs in the raising
 code.
 
-`Kernel.raise/1` and `Kernel.raise/2` are the door every library failure takes.
-`raise(name, message)` is `extern "fz" defp fz_raise(any, any) :: never`, whose
-physical export `fz_runtime::failure::fz_raise` calls `raise_exception`, which
-raises the exception map
-`%{__struct__: name, __exception__: true, message: message}`;
-`raise(message)` is `raise(RuntimeError, message)`. Both are imported into every
-namespace by `lib/runtime.fz`, beside `panic/1`. Outside `assert` and `refute`,
-the library calls `panic/1` only where Elixir itself raises a raw Erlang error
-(`JSON.encode!/1` of an invalid UTF-8 binary).
+`Kernel.raise/1` and `Kernel.raise/2` are Elixir's macros, written in
+`lib/kernel.fz`, and every one of their forms is a `panic` of an exception
+struct:
+
+| written | expands to |
+|---|---|
+| `raise "text"` | `panic(%RuntimeError{message: "text"})` |
+| `raise Mod` | `panic(Mod.exception([]))` |
+| `raise %Mod{...}` | `panic(%Mod{...})` |
+| `raise value`, any other expression | `panic(Kernel.to_exception(value))` |
+| `raise Mod, attributes` | `panic(Mod.exception(attributes))` |
+
+`Kernel.to_exception/1` decides at run time what the macro could not read off
+the source: a binary is a `RuntimeError`, an exception is itself, an atom is
+`module.exception([])`, and anything else is the `ArgumentError` Elixir raises
+for it. Both macros are imported into every namespace by `lib/runtime.fz`,
+beside `panic/1`. Outside `assert` and `refute`, the library calls `panic/1`
+with a value that is no exception only where Elixir itself raises a raw Erlang
+error (`JSON.encode!/1` of an invalid UTF-8 binary).
+
+`fz_raise(process, name, fields)` is the entry compiled code calls for an
+exception the compiler builds itself (a decision that runs out of clauses,
+below): `fields` is a list holding each field's atom key and then its value.
 
 `Kernel.inspect/1` renders a value as `dbg` does, as a binary, for the messages
 that show one; a map prints as `%{a: 1}`, as in Elixir. `Kernel.inspect/2`
@@ -112,8 +126,8 @@ is by kind, whatever it holds).
 - **Native code (run and build).** After a call to a `never` extern,
   `lower_extern_generic` emits `continue_after_raise`
   (`native_codegen/prim.rs`); `Term::Raise`, which lowering emits at a decision's
-  arm of last resort, calls `fz_raise` (or `fz_raise_showing` when the message
-  shows the subject, `fz_raise_naming_kind` when it also names the subject's kind) and then the same; `Term::Reraise`, which lowering emits
+  arm of last resort, calls `fz_raise` with the exception's atom and the list of
+  its fields, and then the same; `Term::Reraise`, which lowering emits
   at a handler's arm of last resort, calls `fz_reraise` with the plan's first
   two inputs and then the same.
   The raising frame returns 0, as a yield does, and every frame above it
@@ -139,9 +153,8 @@ is by kind, whatever it holds).
   when the process has diverged (`Process::diverged`: failed, or a raise is
   waiting), and an error naming the broken contract when it has not.
   A decision's arm of last resort calls `raise_last_resort`, which raises the
-  plan's exception through `failure::raise_exception`, or
-  `failure::raise_exception_showing` with the subject, and continues in
-  `after_panic`. `after_panic` (`ir_interp/backend.rs`) takes `Process::raised`, pops the
+  plan's exception through `failure::raise_exception` with the fields the plan
+  lists, and continues in `after_panic`. `after_panic` (`ir_interp/backend.rs`) takes `Process::raised`, pops the
   continuation frames above the handler frame, and runs the handler entry with
   the three values as its params. With no raise waiting, the raise route has
   already failed the process: the step becomes `BackendRunStep::Failed`, and
@@ -180,6 +193,52 @@ the try's own handler was popped, so the same try never catches it. The
 `BackendTail::Try { body, handler }` tail and `ControlEntryOrigin::Handler`
 carry this to the backend; `Term::Try { handler, captures, body }` and
 `Prim::PopHandler` carry it to native code.
+
+## What a handler can receive
+
+A handler's three params cross the raise route, so their types are not read
+off the `try` body. The compiler keeps one fact about the whole program
+instead: `FactKey::Raisable`, held as `Raisable` (`src/compiler2/identity.rs`),
+which records for each `RaiseKind` the exception modules a raise of that kind
+can hand over and whether it can also hand over any other value. It only
+grows. `World::raisable_ty(kind)` reads it as a type: `None` while the program
+raises nothing of that kind, the union of one struct per exception module with
+only `__exception__: true` known, or `any` once some raise of that kind hands
+over a value that is not surely an exception.
+
+Each activation's analysis publishes what it can raise (`raises_of`,
+`src/compiler2/jobs/semantic.rs`), through `World::note_raisable`:
+
+| the activation | raises |
+|---|---|
+| has a decision the types leave able to fail, or a protocol call that can miss | `error`, the plan's `LastResort` exception |
+| has a call on a module value that can reach no function | `error`, `UndefinedFunctionError` and `ArgumentError` |
+| is an extern declared `raises: Mod` | `error`, `Mod` |
+| is an extern declared `delivers: kind` (`fz_panic`, `fz_throw`, `fz_exit`) | `kind`, what the type of its first argument says (`World::raised_by`) |
+
+`World::raised_by` reads an argument type through `Types::listed_structs`: a
+type that is surely one of some structs, each flagged `__exception__: true`,
+raises those exceptions; any other type raises anything. The fields are not
+kept, because a field can hold another exception. `fz_reraise` adds nothing: it
+continues a raise that an entry above already recorded.
+
+`World::note_raisable` also makes an exception's module one a value can name
+(`FactKey::NameableModules`, see [modules](modules.md)), because an exception
+is asked for its message through its module.
+
+`LoweredTail::Try` is analysed against the fact. The handler entry is analysed
+once for each kind the fact holds, with its params typed `(the kind's atom,
+World::raisable_ty(kind), any)`, and the results join the body's. A kind the
+program never raises is not analysed, so a `try` in a program that raises
+nothing is its body alone, and a clause for `:error` costs nothing in a program
+that only throws. The analysis reads `FactKey::Raisable`, so a raise published
+later re-runs it.
+
+`Drive::program_entry` (`src/compiler2/drive_harness.rs`) roots a test at the
+entry the CLI runs. `a_program_that_raises_nothing_compiles_no_handler`,
+`a_program_that_only_throws_compiles_no_error_handling` and
+`the_uncaught_banner_calls_only_the_exceptions_the_program_can_raise`
+(`src/compiler2/drive_test.rs`) pin the three cases.
 
 ## `after` and `else`
 
@@ -308,8 +367,33 @@ ignores its second argument.
 
 ## The line
 
-With no handler, `failure_line` prints what Elixir prints for an uncaught
-raise, without the stacktrace:
+An uncaught raise prints what Elixir prints for it, without the stacktrace.
+
+An error is caught before it is uncaught. The function a program starts in is
+`__entry__/0`, published with the program's source (`build_program_entry`,
+`src/compiler2/source_publish.rs`), and `Kernel.spawn` wraps the spawned
+function the same way:
+
+```fz
+def __entry__() do
+  try do
+    main()
+  catch
+    :error, reason -> Exception.__uncaught__(reason)
+  end
+end
+```
+
+`Exception.__uncaught__/1` (`lib/exception.fz`) words the line in fz. An
+exception is asked for its message through its own module, a value that is no
+exception is wrapped in `%ErlangError{original: value}` first, and the line
+`** (Name) message` goes to `fz_fail`, which fails the process with status 1
+and hands the line to the fault sink. A throw and an exit pass the clause, reach
+no handler, and are worded by the runtime.
+
+With no handler at all, `failure_line` (`runtime/src/failure.rs`) words the
+raise. An error reaches it only where no entry wraps the code: a macro
+expansion, which the interpreter runs directly.
 
 | kind and value | line |
 |---|---|
@@ -329,9 +413,8 @@ into named exceptions (`:badarith` becomes `ArithmeticError`); fz does not, so
 the library raises the named exception itself, and `rescue e in ErlangError`
 takes a raw reason and `e.original` is the reason.
 
-A showing exception (a decision's miss that shows its value, above) is a map with
-`term` beside `message`: the line prints the message, `e.term` is the value
-itself.
+An exception that shows a value (a decision's miss, below) carries the value
+in `term`, and its module's `message/1` renders it.
 
 ## Declaring an exception
 
@@ -342,7 +425,7 @@ module:
 | function | does |
 |---|---|
 | `exception(fields)`, a list | `struct!(__MODULE__, fields)` |
-| `exception(message)`, a binary, when `fields` has `:message` | `exception(message: message)` |
+| `exception(message)`, a binary, when `fields` has `:message` | `%__MODULE__{message: message}` |
 | `message(exception)`, when `fields` has `:message` | the `message` field |
 
 Both are marked `defoverridable`, so a `def` of the same name and arity
@@ -354,9 +437,9 @@ raises a map of that struct's module, so `rescue e in Mod` takes it and
 `Exception.message/1` (`lib/exception.fz`) is `e.__struct__.message(e)`, a
 call on a module value. The modules it can reach are the ones `e`'s type
 names, so on an `e` bound by `rescue e in Mod` it is `Mod.message(e)`. A
-bare `rescue e` gives `e` every exception the body can raise, the library's
-among them; their modules are not declared, and the call is refused with
-`resolve/unknown-module`.
+bare `rescue e` gives `e` what the program can raise as an error (above): the
+call reaches those exceptions' modules, or every module a value can name when
+some raise hands over a value that is not surely an exception.
 
 `is_exception/1` (`Kernel`) is true for a map whose `__struct__` is an atom
 and whose `__exception__` is `true`. Its clauses are a map pattern and a
@@ -367,9 +450,15 @@ Fixture `00882` agrees with Elixir on interp, run and build.
 
 ## The library's exceptions
 
-Every library failure raises the exception, with the message, Elixir does.
-`Kernel.raise/2` is the only caller of the primitive; a clause that cannot
-match is left to the decision's own `FunctionClauseError`.
+The built-in exceptions are library modules, one file each under
+`lib/exceptions/`, declared with `defexception` and carrying the fields
+Elixir's carry. Each words its own `message/1`; the ones that show a value
+share `Exception.__format_message_with_term__/2`. A module is defined when
+something names it, so a program compiles the exceptions it can raise and none
+of the others (`a_program_defines_only_the_exception_modules_it_can_raise`).
+
+Every library failure raises the exception, with the message, Elixir does. A
+clause that cannot match is left to the decision's own `FunctionClauseError`.
 
 | failure | prints |
 |---|---|
@@ -415,11 +504,13 @@ Every decision is a dispatch plan, and a plan that can fail carries the
 exception its arm of last resort raises: `PatternDispatchPlan.last_resort`, a
 `LastResort` (`src/dispatch_matrix/pattern/last_resort.rs`) set when the plan's
 rows are built (`SourcePatternRows::raising`). `=` is a decision like the others:
-its pattern is a one-row plan. Reaching the plan's fail raises the exception
-through `fz_runtime::failure::raise_exception`, or `raise_exception_showing` when
-the message shows the subject, which raise the exception map as `raise/2` does, so the raise goes to the nearest handler, a `rescue`
-around the decision catches it, and with no handler it prints the same line and
-ends the process the same way.
+its pattern is a one-row plan. `LastResort::Exception` names the exception's
+module and lists every field of its struct with what each holds (`FieldTerm`:
+the plan's subject, an atom, an integer or a text). Reaching the plan's fail
+builds that struct and raises it through `fz_runtime::failure::raise_exception`,
+so the raise goes to the nearest handler, a `rescue` around the decision
+catches it, and uncaught it prints the line its module words and ends the
+process as any error does.
 
 | decision | prints |
 |---|---|
@@ -435,10 +526,11 @@ ends the process the same way.
 | `not` on a non-boolean | `** (ArgumentError) argument error` |
 
 A message that shows a value is Elixir's multi-line form: the lead, a blank
-line, and the value rendered by dbg and indented four spaces
-(`failure::raise_exception_showing`), and the exception carries the value itself in
-its `term` field, as Elixir's `CaseClauseError`, `MatchError`, `WithClauseError`,
-`TryClauseError` and `BadBooleanError` do. The value is the plan's input 0.
+line, and the value rendered by `inspect` and indented four spaces
+(`Exception.__format_message_with_term__/2`), and the exception carries the
+value itself in its `term` field, as Elixir's `CaseClauseError`, `MatchError`,
+`WithClauseError`, `TryClauseError` and `BadBooleanError` do. The value is the
+plan's input 0.
 
 A `with` whose binding fails without an `else`, and a `receive`, have no last
 resort: the first yields the value, the second waits for another message.
@@ -547,12 +639,18 @@ the raise. `Process::ended_in_failure` and
 
 ## Where it lives
 
-- `runtime/src/failure.rs` — `RaiseKind`, `failure_line`, `exit_status`,
-  `fz_panic`, `fz_throw`, `fz_exit`, `reraise`, `fz_reraise`,
-  `raise_exception`, `raise_exception_showing`,
-  `raise_exception_naming_kind`, `raise_undefined_function`, `fz_raise`,
-  `fz_raise_showing`, `fz_raise_naming_kind`, `fz_raise_undefined_function`,
-  `STDERR_FAULT_HOOK`.
+- `runtime/src/failure.rs` — `RaiseKind`, `EXCEPTION_FIELD`, `failure_line`,
+  `exit_status`, `fz_panic`, `fz_throw`, `fz_exit`, `fz_fail`, `reraise`,
+  `fz_reraise`, `raise_exception`, `raise_undefined_function`, `fz_raise`,
+  `fz_raise_undefined_function`, `STDERR_FAULT_HOOK`.
+- `lib/exception.fz` — `Exception.message/1`, `__uncaught__/1`,
+  `__format_message_with_term__/2`; `lib/exceptions/` — the built-in exception
+  modules.
+- `src/compiler2/source_publish.rs` — `PROGRAM_ENTRY`, `build_program_entry`.
+- `src/compiler2/identity.rs` — `Raisable`, `Raised`; `src/compiler2/world.rs`
+  — `note_raisable`, `raisable_ty`, `raised_by`;
+  `src/compiler2/jobs/semantic.rs` — `raises_of` and the `LoweredTail::Try`
+  analysis.
 - `src/dispatch_matrix/pattern/last_resort.rs` — `LastResort`.
 - `runtime/src/process.rs` — `Handler`, `Raised`, `handlers`, `raised`,
   `delivered`, `raises_delivered`, `exit_status`, `push_handler`, `pop_handler`,
@@ -560,9 +658,9 @@ the raise. `Process::ended_in_failure` and
 - `runtime/src/ir_runtime.rs` — `fz_try_push`, `fz_try_pop`.
 - `runtime/src/process_abi.rs` — `PROCESS_DELIVERED_OFFSET`, read by
   `continue_after_raise`.
-- `lib/kernel.fz` — `panic/1`, `raise/1`, `raise/2`, `inspect/1`, `throw/1`,
-  `exit/1`, `reraise/2`; `lib/runtime.fz` lists the raise
-  functions for auto-import.
+- `lib/kernel.fz` — `panic/1`, `raise/1`, `raise/2`, `to_exception/1`,
+  `defexception/1`, `inspect/1`, `throw/1`, `exit/1`, `reraise/2`;
+  `lib/runtime.fz` lists the raise functions for auto-import.
 - `src/ast/mod.rs` — `Expr::Try`, `RescueClause`, `CatchClause`, `STACKTRACE`.
 - `src/compiler2/quoted_function.rs` — `decode_try`, `decode_rescue_head`,
   `decode_catch_clauses`; `decode_expr` and `decode_pattern` for
@@ -592,3 +690,8 @@ the raise. `Process::ended_in_failure` and
   the two refusals, and a macro that quotes it.
 - `fixtures/00848` and `fixtures/00850` — a rescued decision's exception name,
   `term` and message.
+- `fixtures/01150` through `fixtures/01152` — the forms of `raise`, the fields
+  the library's exceptions carry, and a program that names one exception.
+- `fixtures/00890` through `fixtures/00892` — a program that only throws, an
+  uncaught library exception worded by its module, and one handler receiving
+  each kind.

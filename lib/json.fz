@@ -134,11 +134,13 @@ defmodule JSON do
 
   """
   @spec decode!(binary) :: any
-  def decode!(input), do: decode_result(decode(input))
+  def decode!(input), do: decode_result(decode(input), input)
 
-  @spec decode_result({:ok, any} | {:error, any}) :: any
-  defp decode_result({:ok, v}), do: v
-  defp decode_result({:error, reason}), do: raise(JSON.DecodeError, decode_message(reason))
+  @spec decode_result({:ok, any} | {:error, any}, binary) :: any
+  defp decode_result({:ok, v}, _input), do: v
+
+  defp decode_result({:error, reason}, input),
+    do: raise(%JSON.DecodeError{message: decode_message(reason), data: input, offset: Kernel.elem(reason, 1)})
 
   @spec decode_message(any) :: binary
   defp decode_message({:unexpected_end, at}),
@@ -211,23 +213,18 @@ defmodule JSON do
   defp unsupported_value(v) do
     raise(
       Protocol.UndefinedError,
-      "protocol JSON.Encoder not implemented for #{type_name(v)}, the protocol must be explicitly implemented.\n\n" <>
+      protocol: JSON.Encoder,
+      value: v,
+      description:
+        "the protocol must be explicitly implemented.\n\n" <>
         "If you have a struct, you can derive the implementation specifying which fields should be encoded to JSON:\n\n" <>
         "    @derive {JSON.Encoder, only: [....]}\n    defstruct ...\n\n" <>
         "It is also possible to encode all fields, although this should be used carefully to avoid accidentally leaking private information when new fields are added:\n\n" <>
         "    @derive JSON.Encoder\n    defstruct ...\n\n" <>
         "Finally, if you don't own the struct you want to encode to JSON, you may use Protocol.derive/3 placed outside of any module:\n\n" <>
-        "    Protocol.derive(JSON.Encoder, NameOfTheStruct, only: [...])\n    Protocol.derive(JSON.Encoder, NameOfTheStruct)\n\n" <>
-        "Got value:\n\n    #{Kernel.inspect(v)}\n"
+        "    Protocol.derive(JSON.Encoder, NameOfTheStruct, only: [...])\n    Protocol.derive(JSON.Encoder, NameOfTheStruct)"
     )
   end
-
-  @spec type_name(any) :: binary
-  defp type_name(v) when is_tuple(v), do: "Tuple"
-  defp type_name(v) when is_pid(v), do: "PID"
-  defp type_name(v) when is_reference(v), do: "Reference"
-  defp type_name(_v :: resource), do: "Reference"
-  defp type_name(_v), do: "Function"
 
   @spec encode_binary!(binary, {:ok, utf8} | {:error, :invalid_utf8}) :: binary
   defp encode_binary!(_v, {:ok, string}), do: "\"" <> escape(string, "") <> "\""
@@ -238,7 +235,7 @@ defmodule JSON do
   # What Elixir's encoder fails with: a function clause for a bitstring that
   # is not a binary, otherwise the first offending byte as a raw Erlang error.
   @spec invalid_utf8(binary, integer) :: never
-  defp invalid_utf8(_v, 0), do: raise(FunctionClauseError, "no function clause matching in :elixir_json.encode_binary/1")
+  defp invalid_utf8(_v, 0), do: raise(%FunctionClauseError{module: :elixir_json, function: :encode_binary, arity: 1})
   defp invalid_utf8(v, _aligned), do: invalid_utf8_at(Utf8.next(v))
 
   @spec invalid_utf8_at({:ok, utf8, binary} | {:error, binary} | nil) :: never
@@ -281,7 +278,7 @@ defmodule JSON do
   defp encode_key!(key) when is_integer(key), do: encode!(Integer.to_string(key))
   defp encode_key!(key) when is_float(key), do: encode!(Float.to_string(key))
   defp encode_key!(key),
-    do: raise(Protocol.UndefinedError, "protocol String.Chars not implemented for #{type_name(key)}\n\nGot value:\n\n    #{Kernel.inspect(key)}\n")
+    do: raise(%Protocol.UndefinedError{protocol: String.Chars, value: key})
 
   @spec skip_ws(binary) :: binary
   defp skip_ws(<<" ", r :: binary>>), do: skip_ws(r)

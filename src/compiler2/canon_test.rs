@@ -543,7 +543,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // is emitted code.
             // An activation key names only the literals a use can tell
             // apart, so fewer activations are emitted: 50 -> 46.
-            44,
+            // 44 -> 42: an exception record nothing asks about keys by its class, so the
+            // functions that carry one are emitted once.
+            42,
         ),
         (
             567, // fz_f98_range_map_converges
@@ -556,7 +558,10 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // 79 -> 77: a non-recursive key collapses structure nothing asks about to its class, as
             // a recursive key does, so callers that differ only in such freight share one
             // activation.
-            77,
+            // 77 -> 75: an arithmetic failure raises a library exception whose module words its
+            // own message, so the raise no longer carries `inspect` and its extern to build
+            // the text: `panic` and its extern stand where `raise/2` and its extern stood.
+            75,
         ),
         (
             569, // enum_map_family
@@ -577,7 +582,12 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         ),
         // fz-sc8.8: 36 -> 54. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart: 54 -> 52.
-        (562, 50), // mailbox_closure_each
+        (
+            562, // mailbox_closure_each
+            // 50 -> 48: an exception record nothing asks about keys by its class, so the
+            // functions that carry one are emitted once.
+            48,
+        ),
         (
             563, // mailbox_closure_reduce
             // fz-xxd.11: 46 -> 47. `Kernel.fz_send/2` held two blended
@@ -589,7 +599,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-sc8.8: 47 -> 65. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
             // An activation key names only the literals a use can tell
             // apart, so fewer activations are emitted: 65 -> 63.
-            61,
+            // 61 -> 59: an exception record nothing asks about keys by its class, so the
+            // functions that carry one are emitted once.
+            59,
         ),
         (
             570, // actor_ring
@@ -597,7 +609,10 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // reachable `==` clauses emit: `fz_op_eq_ii`, `fz_op_eq_fi` and
             // the `any`/`any` `fz_op_eq`.
             // 31 -> 29: no executable decodes an arithmetic extern's result.
-            29,
+            // 29 -> 113: `spawn/1` runs its callable under the handler that words a raise
+            // nothing caught, so a program that spawns emits the banner and the `message/1`
+            // of each exception it can raise.
+            113,
         ),
         (
             571, // enum_predicate_search
@@ -609,7 +624,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // in its function's key, and a protocol callback counts every input but the
             // receiver as returned, so `Enum.reduce_while/3` and its Enum wrappers are keyed
             // once per reducer lambda.
-            199,
+            // 199 -> 197: a library exception's module words its own message, so the raise
+            // no longer carries `inspect` and its extern to build the text.
+            197,
         ),
         (
             420, // enum_take_drop_split, over both a list and a range
@@ -635,7 +652,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // 259 -> 258: a non-recursive key collapses structure nothing asks about to its class,
             // as a recursive key does, so callers that differ only in such freight share one
             // activation.
-            258,
+            // 258 -> 256: an exception record nothing asks about keys by its class, so the
+            // functions that carry one are emitted once.
+            256,
         ),
     ] {
         let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);

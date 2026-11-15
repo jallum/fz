@@ -18,7 +18,7 @@ use crate::compiler2::{
     ControlDestination, ExecutableDispatch, UndefinedFunction, ValueId,
 };
 use crate::compiler2::{ExecutableKey, FunctionId, RunFailure};
-use crate::dispatch_matrix::pattern::{LastResort, MessageSubject};
+use crate::dispatch_matrix::pattern::{FieldTerm, LastResort};
 use crate::exec::runtime::emit_runtime_event;
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::CallableShape;
@@ -2341,7 +2341,7 @@ fn raise_last_resort(
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     let proc = runtime.cur_proc();
-    let input = |index: usize| -> Result<_, String> {
+    let input = move |index: usize| -> Result<_, String> {
         let input = inputs
             .get(index)
             .ok_or_else(|| format!("internal error: a last resort reads input {index}, which the plan lacks"))?;
@@ -2353,21 +2353,21 @@ fn raise_last_resort(
             let value = unsafe { &mut *proc }.heap.box_any_value_ref(value).raw_word();
             fz_runtime::failure::reraise(proc, kind, value);
         }
-        LastResort::Exception {
-            exception,
-            message,
-            subject,
-        } => {
-            let exception = fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(exception));
-            match subject {
-                MessageSubject::Absent => fz_runtime::failure::raise_exception(proc, exception, message),
-                MessageSubject::Shown => {
-                    fz_runtime::failure::raise_exception_showing(proc, exception, message, input(0)?)
-                }
-                MessageSubject::ShownWithKind => {
-                    fz_runtime::failure::raise_exception_naming_kind(proc, exception, message, input(0)?)
-                }
+        LastResort::Exception { exception, fields } => {
+            let atom = |name: &str| fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(name));
+            let mut values = Vec::with_capacity(fields.len());
+            for (name, term) in fields {
+                let value = match term {
+                    FieldTerm::Subject => input(0)?,
+                    FieldTerm::Atom(name) => atom(name),
+                    FieldTerm::Int(value) => fz_runtime::any_value::AnyValue::Int(*value),
+                    FieldTerm::Text(text) => unsafe { &mut *proc }
+                        .heap
+                        .alloc_bitstring(text.as_bytes(), 8 * text.len() as u64),
+                };
+                values.push((*name, value));
             }
+            fz_runtime::failure::raise_exception(proc, atom(exception), &values);
         }
     }
     match runtime.take_callback_error() {

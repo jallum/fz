@@ -1,0 +1,6 @@
+defmodule File.LinkError do
+  defexception [:reason, :existing, :new, action: ""]
+
+  def message(%{action: action, new: new, existing: existing, reason: reason}),
+    do: "could not #{action} from " <> inspect(new) <> " to " <> inspect(existing) <> ": " <> File.format_error(reason)
+end

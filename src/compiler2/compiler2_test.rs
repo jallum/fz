@@ -1313,6 +1313,7 @@ fn def_and_defp_bounce_through_definition_macros_and_preserve_visibility() {
     assert_eq!(
         defined_names,
         HashMap::from_iter([
+            ("__entry__".to_string(), 1),
             ("__info__".to_string(), 1),
             ("generated".to_string(), 1),
             ("main".to_string(), 1),
@@ -1320,7 +1321,7 @@ fn def_and_defp_bounce_through_definition_macros_and_preserve_visibility() {
             ("private".to_string(), 1),
             ("public".to_string(), 1),
         ]),
-        "the compiler-service boundary should publish each grouped definition plus the module's synthesized metadata function"
+        "the compiler-service boundary should publish each grouped definition plus the module's synthesized metadata function and the program entry"
     );
 
     let math = compiler

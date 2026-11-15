@@ -1,0 +1,75 @@
+defmodule Oracle do
+  def caught(f) do
+    try do
+      f.()
+    rescue
+      e -> e
+    end
+  end
+
+  def key_error() do
+    e = caught(fn -> Map.fetch!(%{a: 1}, :b) end)
+    [e.__struct__, e.key, e.term, e.message, Exception.message(e)]
+  end
+
+  def keyword_key_error() do
+    e = caught(fn -> Keyword.fetch!([a: 1], :b) end)
+    [e.__struct__, e.key, e.term, Exception.message(e)]
+  end
+
+  def bad_map() do
+    e = caught(fn -> Map.fetch!(:not_a_map, :b) end)
+    [e.__struct__, e.term, Exception.message(e)]
+  end
+
+  def arithmetic() do
+    e = caught(fn -> div(1, zero()) end)
+    [e.__struct__, e.message, Exception.message(e)]
+  end
+
+  def zero(), do: 0
+
+  def argument() do
+    e = caught(fn -> hd(Enum.drop([1], 1)) end)
+    [e.__struct__, e.message]
+  end
+
+  def empty_error() do
+    e = caught(fn -> Enum.max(Enum.drop([1], 1)) end)
+    [e.__struct__, e.message, Exception.message(e)]
+  end
+
+  def out_of_bounds() do
+    e = caught(fn -> Enum.fetch!([1, 2], 5) end)
+    [e.__struct__, Exception.message(e)]
+  end
+
+  def bitstring_to_string() do
+    e = caught(fn -> to_string(<<5::3>>) end)
+    [e.__struct__, e.protocol, e.value, e.description, Exception.message(e)]
+  end
+
+  def json_error() do
+    e = caught(fn -> JSON.decode!("[1, }") end)
+    [e.__struct__, Exception.message(e)]
+  end
+
+  def file_error() do
+    e = caught(fn -> File.read!("/no/such/file/anywhere") end)
+    [e.__struct__, e.path, e.action]
+  end
+
+  def all() do
+    key_error() ++
+      keyword_key_error() ++
+      bad_map() ++
+      arithmetic() ++
+      argument() ++
+      empty_error() ++ out_of_bounds() ++ bitstring_to_string() ++ json_error() ++ file_error()
+  end
+  def run() do
+    Enum.each(all(), fn r -> IO.inspect(r) end)
+  end
+end
+
+Oracle.run()

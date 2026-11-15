@@ -1336,7 +1336,10 @@ const SCENARIOS: [&str; 5] = [
 // The range/map row 81 -> 79 and the take/drop/split row 261 -> 260: a non-recursive key collapses
 // structure nothing asks about to its class, as a recursive key does, so callers that differ only
 // in such freight share one activation.
-const POPULATION_BASELINES: [(u64, u64); 3] = [(79, 0), (201, 32), (260, 38)];
+// The range/map row 79 -> 77 and the predicate row 201 -> 199: a library exception's module words its own message, so the raise
+// carries no `inspect` to build the text.
+// The take/drop/split row 260 -> 258: an exception record nothing asks about keys by its class.
+const POPULATION_BASELINES: [(u64, u64); 3] = [(77, 0), (199, 32), (258, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -1589,7 +1592,10 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // 00567 cold 178 -> 175 and 00420 cold 680 -> 678: a non-recursive key collapses
                 // structure nothing asks about to its class, as a recursive key does, so callers
                 // that differ only in such freight share one activation.
-                [[175, 0, 0, 1, 4], [530, 0, 0, 1, 4], [678, 0, 0, 1, 4]][fixture_index][scenario],
+                // 00567 cold 175 -> 177, 00571 cold 530 -> 532 and 00420 cold 678 -> 680: the `raise`
+                // and `defexception` macros that build the library exception a failure raises are
+                // two more bodies.
+                [[177, 0, 0, 1, 4], [532, 0, 0, 1, 4], [680, 0, 0, 1, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1755,7 +1761,11 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // 29 -> 36 DeriveRecursive evaluations, 7 -> 5 concluded nothing.
     // One more DeriveStaticCallees evaluation: 68 -> 69, for a function reached
     // with an atom argument.
-    ("fixtures/00567_fz_f98_range_map_converges.fz", 35, 5, 68, 0),
+    // 35/5 -> 37/6 DeriveRecursive: the arithmetic failure this fixture can reach raises a
+    // library exception, and the `raise` and `defexception` macros that build it are two more
+    // bodies in the call graph.
+    // 68 -> 69 DeriveStaticCallees: the same two bodies, less `raise/2`, which is gone.
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 37, 6, 69, 0),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
@@ -1780,7 +1790,10 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // 31/11 -> 49/13: a row that carries an atom is no longer its own key, so
     // the lambdas and step helpers it reaches derive their recursion before
     // their first activation is keyed, and read their static callees: 37 -> 49.
-    ("fixtures/00571_enum_predicate_search.fz", 48, 13, 48, 0),
+    // 48/13 -> 50/14 DeriveRecursive: the `raise` and `defexception` macros that build the
+    // library exception a failure raises are two more bodies in the call graph.
+    // 48 -> 49 DeriveStaticCallees: the same two bodies, less `raise/2`, which is gone.
+    ("fixtures/00571_enum_predicate_search.fz", 50, 14, 49, 0),
     // fz-5xp.6: `Range.count` uses `div/2`, so fewer bodies are extracted.
     // fz-5xp.30: 126 -> 128 component evaluations. The reached arithmetic
     // result/status helpers are ordinary generic calls.
@@ -1822,7 +1835,10 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // 106 -> 115 DeriveStaticCallees evaluations, same cause.
     // Kernel's arithmetic and compare cone derives once per program:
     // 80 -> 83 DeriveRecursive evaluations.
-    ("fixtures/00420_enum_take_drop_split.fz", 82, 15, 114, 0),
+    // 82/15 -> 84/16 DeriveRecursive: the `raise` and `defexception` macros that build the
+    // library exception a failure raises are two more bodies in the call graph.
+    // 114 -> 115 DeriveStaticCallees: `declares_message?/1`, which `defexception` calls.
+    ("fixtures/00420_enum_take_drop_split.fz", 84, 16, 115, 0),
     // 00607-00610 pin the shared-reach shape directly. Four callers (p1-p4)
     // share one call chain of depth eight. The chain's reach is one program
     // product that every caller waits on, so a run that changes nothing is one
@@ -1831,36 +1847,48 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
         "fixtures/00607_static_reach_shared_chain_callees_first.fz",
         // Kernel's arithmetic and compare cone derives once per program:
         // 16 -> 19 DeriveRecursive evaluations.
-        18,
-        4,
-        19,
+        // 18/4 -> 20/5 and 19 -> 20 DeriveStaticCallees: the `raise` and `defexception`
+        // macros that build the library exception an arithmetic failure raises are two more
+        // bodies in the call graph, less `raise/2`, which is gone.
+        20,
+        5,
+        20,
         0,
     ),
     (
         "fixtures/00608_static_reach_shared_chain_callers_first.fz",
         // Kernel's arithmetic and compare cone derives once per program:
         // 16 -> 19 DeriveRecursive evaluations.
-        18,
-        4,
-        19,
+        // 18/4 -> 20/5 and 19 -> 20 DeriveStaticCallees: the `raise` and `defexception`
+        // macros that build the library exception an arithmetic failure raises are two more
+        // bodies in the call graph, less `raise/2`, which is gone.
+        20,
+        5,
+        20,
         0,
     ),
     (
         "fixtures/00609_static_reach_chain_into_recursion_callees_first.fz",
         // Kernel's arithmetic and compare cone derives once per program:
         // 18 -> 21 DeriveRecursive evaluations.
-        20,
-        4,
-        26,
+        // 20/4 -> 22/5 and 26 -> 27 DeriveStaticCallees: the `raise` and `defexception`
+        // macros that build the library exception an arithmetic failure raises are two more
+        // bodies in the call graph, less `raise/2`, which is gone.
+        22,
+        5,
+        27,
         0,
     ),
     (
         "fixtures/00610_static_reach_chain_into_recursion_callers_first.fz",
         // Kernel's arithmetic and compare cone derives once per program:
         // 18 -> 21 DeriveRecursive evaluations.
-        20,
-        4,
-        26,
+        // 20/4 -> 22/5 and 26 -> 27 DeriveStaticCallees: the `raise` and `defexception`
+        // macros that build the library exception an arithmetic failure raises are two more
+        // bodies in the call graph, less `raise/2`, which is gone.
+        22,
+        5,
+        27,
         0,
     ),
 ];
@@ -2225,7 +2253,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 86 -> 84.
         // 82 -> 80: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
-        activations: lifecycle(80, 80, 0),
+        // 80 -> 81: `panic/1` and its extern stand where `raise/2` and its extern stood, and
+        // `IO.puts/1` is keyed once more for the text an exception's module hands it.
+        activations: lifecycle(81, 81, 0),
         // fz-kdt.183: 73 -> 74 distinct, 75 -> 76 first appearances,
         // retractions flat -- the recovered activation brings its call edge.
         //
@@ -2243,7 +2273,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // An activation key names only the literals a use can tell apart: 99 -> 98.
         // 95 -> 94: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
-        callsites: lifecycle(94, 94, 0),
+        // 94 -> 92: the raise no longer calls `inspect` to build its text.
+        callsites: lifecycle(92, 92, 0),
         // fz-kdt.183: 17 -> 30 shift wakes and 19 -> 127 rebased completions.
         // The RISING row of this landing, and the cause is that `InputDemand`
         // is now a fact that MOVES: the forwarded demand of a function whose
@@ -2340,7 +2371,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // An activation key names only the literals a use can tell apart: 221 -> 219.
         // 210 -> 206: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
-        analyze_evaluations: 206,
+        // 206 -> 210: the `defexception` and `raise` macros and `declares_message?/1` are
+        // analysed, and `panic/1` with its extern stands where `raise/2` and its extern stood.
+        analyze_evaluations: 210,
         analyze_zero_change: 4,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
@@ -2428,7 +2461,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // be folded.
         // 763 -> 759: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
-        total_evaluations: 759,
+        // 759 -> 814: each library exception the fixture can raise is a module of its own, built
+        // by `defexception` and raised through the `raise` macro; their definitions, bodies and
+        // facts are the added evaluations.
+        total_evaluations: 814,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2454,7 +2490,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 191 -> 202: a returned callable keeps its brand in its function's key, and a protocol
         // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
         // and its Enum wrappers are keyed once per reducer lambda; no retractions.
-        activations: lifecycle(202, 202, 0),
+        // 202 -> 203: `IO.puts/1` is keyed once more for the text an exception's module hands it.
+        activations: lifecycle(203, 203, 0),
         // fz-kdt.106: 215 -> 212 distinct (248 -> 245 first appearances,
         // retractions unchanged): the one vanished activation was named from
         // three callsites.
@@ -2474,7 +2511,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // its brand in its function's key, and a protocol callback counts every input but the
         // receiver as returned, so `Enum.reduce_while/3` and its Enum wrappers are keyed once
         // per reducer lambda).
-        callsites: lifecycle(258, 258, 0),
+        // 258 -> 256: the raise no longer calls `inspect` to build its text.
+        callsites: lifecycle(256, 256, 0),
         // fz-kdt.183: 1 -> 5 shift wakes, 2 -> 22 rebased completions.
         // `InputDemand` is a fact that MOVES -- a function whose forwarding
         // cone is still filling in publishes a demand that climbs the lattice,
@@ -2547,7 +2585,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // (568, 17) -> (612, 28): a returned callable keeps its brand in its function's key,
         // and a protocol callback counts every input but the receiver as returned, so
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
-        analyze_evaluations: 612,
+        // 612 -> 614: the `defexception` and `raise` macros are analysed.
+        analyze_evaluations: 614,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -2649,7 +2688,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 1103 -> 1147: a returned callable keeps its brand in its function's key, and a
         // protocol callback counts every input but the receiver as returned, so
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
-        total_evaluations: 1147,
+        // 1147 -> 1184: the library exception modules this fixture can raise, built by
+        // `defexception` and raised through the `raise` macro.
+        total_evaluations: 1184,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -2739,7 +2780,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // and its Enum wrappers are keyed once per reducer lambda; no retractions.
         // 262 -> 261: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
-        activations: lifecycle(261, 261, 0),
+        // 261 -> 262: the library exception the fixture's failures raise adds one activation.
+        activations: lifecycle(262, 262, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -2797,7 +2839,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-sc8.8: 417 -> 437. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart: 437 -> 435.
         // 429 -> 445: the sixteen new activations bring their edges.
-        callsites: lifecycle(445, 445, 0),
+        // 445 -> 443: the raise no longer calls `inspect` to build its text, and an exception
+        // record nothing asks about keys by its class.
+        callsites: lifecycle(443, 443, 0),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -2971,7 +3015,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // (742, 23) -> (741, 23): a non-recursive key collapses structure nothing asks about to its
         // class, as a recursive key does, so callers that differ only in such freight share one
         // activation.
-        analyze_evaluations: 741,
+        // 741 -> 745: the `defexception` and `raise` macros and the functions of the library
+        // exception a failure raises are analysed.
+        analyze_evaluations: 745,
         analyze_zero_change: 23,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
@@ -3058,7 +3104,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
         // 1698 -> 1697: a non-recursive key collapses structure nothing asks about to its class, as
         // a recursive key does, so callers that differ only in such freight share one activation.
-        total_evaluations: 1697,
+        // 1697 -> 1736: the library exception modules this fixture can raise, built by
+        // `defexception` and raised through the `raise` macro.
+        total_evaluations: 1736,
     },
 ];
 
@@ -3105,7 +3153,9 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
                 executable_fact_work.changed_outputs
             ),
             // fz-sc8.37: (2, 2, 2) -> (3, 3, 3). Kernel defines `&&`, `||` and `!` as macros.
-            (3, 3, 3),
+            // (3, 3, 3) -> (6, 6, 6): each library exception the fixture can raise is a module
+            // of its own, defined when the raise is reached.
+            (6, 6, 6),
             "{fixture}: the total is the World fact producers that replaced the product formula: \
              {executable_fact_work:?}",
         );

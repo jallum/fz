@@ -19,7 +19,7 @@ def describe(value) do
   try do
     Sizer.size(value)
   rescue
-    e -> e.message
+    e -> Exception.message(e)
   end
 end
 

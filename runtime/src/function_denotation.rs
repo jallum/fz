@@ -114,14 +114,21 @@ impl FunctionDenotation {
         }
     }
 
-    /// The name Elixir's messages give this function: `M.f/1` for a named
-    /// one, and `anonymous fn/1 in M.g/0` for a lambda, which Elixir places in
-    /// the named function its source sits in, however deeply it is nested.
-    pub fn elixir_name(&self) -> String {
+    /// The module atom and the function name Elixir gives this function in
+    /// an exception: `f` in `Elixir.M` for a named one, and `-g/0-fun-0-` for
+    /// a lambda, which Elixir places in the named function its source sits
+    /// in, however deeply it is nested. A function outside any module has no
+    /// module atom.
+    pub fn elixir_module_and_name(&self) -> (Option<String>, String) {
+        let owner = self.lexical_owner();
+        let FunctionOrigin::Named { module, name } = &owner.origin else {
+            unreachable!("a lexical owner is a named function")
+        };
+        let module = module.as_ref().map(ModuleDenotation::atom_name);
         match &self.origin {
-            FunctionOrigin::Named { .. } => self.label(),
-            FunctionOrigin::Generated { .. } => {
-                format!("anonymous fn/{} in {}", self.arity, self.lexical_owner().label())
+            FunctionOrigin::Named { .. } => (module, name.clone()),
+            FunctionOrigin::Generated { occurrence, .. } => {
+                (module, format!("-{name}/{}-fun-{}-", owner.arity, occurrence.as_u32()))
             }
         }
     }

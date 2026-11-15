@@ -1,5 +1,6 @@
 use crate::dispatch_matrix::demand::DispatchDemand;
 
+use super::identity::Raised;
 use super::keying::{BodyKeying, InputDemand};
 use super::types::ClosureTarget;
 use super::{
@@ -12,6 +13,7 @@ use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 use fz_engine::DriveOutcome;
 use fz_engine::FactUse;
+use fz_runtime::failure::{EXCEPTION_FIELD, RaiseKind};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -2342,4 +2344,140 @@ fn noting_an_interface_expectation_on_a_module_without_an_interface_creates_one(
 
     assert_eq!(world.module_interface(module).expectations().len(), 1);
     assert!(world.module_interface(module).callables().is_empty());
+}
+
+fn named_module(world: &mut World, name: &str) -> ModuleId {
+    world.reference_module(crate::modules::identity::ModuleName::from_segments(vec![name.into()]))
+}
+
+/// A struct of `module` flagged as an exception, carrying `fields` besides.
+fn exception_of(world: &mut World, module: ModuleId, fields: &[(&str, super::types::Ty)]) -> super::types::Ty {
+    let flag = world.types_mut().bool_lit(true);
+    let (mut names, mut tys): (Vec<String>, Vec<_>) = fields.iter().map(|(name, ty)| (name.to_string(), *ty)).unzip();
+    names.push(EXCEPTION_FIELD.to_string());
+    tys.push(flag);
+    world.struct_value_ty(module, &names, &tys)
+}
+
+/// The raisable fact only grows, so a raise already recorded changes nothing
+/// and wakes no reader. An exception is asked for its message through its
+/// module, so recording one also makes that module one a value can name.
+#[test]
+fn a_raise_is_news_once_and_makes_its_exception_nameable() {
+    let mut world = World::new();
+    let key_error = named_module(&mut world, "KeyError");
+
+    let mut changed = Vec::new();
+    world.note_raisable(RaiseKind::Error, Raised::Exception(key_error), &mut changed);
+    assert_eq!(changed, [FactKey::NameableModules, FactKey::Raisable]);
+    assert!(world.nameable_modules().any(|module| module == key_error));
+
+    let mut changed = Vec::new();
+    world.note_raisable(RaiseKind::Error, Raised::Exception(key_error), &mut changed);
+    assert_eq!(changed, [], "the same raise again is not news");
+
+    let mut changed = Vec::new();
+    world.note_raisable(RaiseKind::Throw, Raised::Anything, &mut changed);
+    assert_eq!(changed, [FactKey::Raisable], "a thrown value names no module");
+    let mut changed = Vec::new();
+    world.note_raisable(RaiseKind::Throw, Raised::Anything, &mut changed);
+    assert_eq!(changed, []);
+}
+
+/// Each kind of raise is its own answer: a handler clause for a kind the
+/// program never raises has nothing to run on. Within a kind the answer is
+/// one open struct per exception, until some raise hands over a value no
+/// exception accounts for and the answer is `any`.
+#[test]
+fn a_kind_hands_a_handler_its_exceptions_until_something_else_is_raised() {
+    let mut world = World::new();
+    let key_error = named_module(&mut world, "KeyError");
+    let argument_error = named_module(&mut world, "ArgumentError");
+    let mut changed = Vec::new();
+    for kind in RaiseKind::ALL {
+        assert_eq!(world.raisable_ty(kind), None, "nothing is raised yet");
+    }
+
+    world.note_raisable(RaiseKind::Error, Raised::Exception(key_error), &mut changed);
+    world.note_raisable(RaiseKind::Error, Raised::Exception(argument_error), &mut changed);
+    let a_key_error = exception_of(&mut world, key_error, &[]);
+    let an_argument_error = exception_of(&mut world, argument_error, &[]);
+    let either = world.types_mut().union(a_key_error, an_argument_error);
+    assert_eq!(world.raisable_ty(RaiseKind::Error), Some(either));
+    assert_eq!(world.raisable_ty(RaiseKind::Throw), None, "an error is not a throw");
+    assert_eq!(world.raisable_ty(RaiseKind::Exit), None, "an error is not an exit");
+
+    world.note_raisable(RaiseKind::Error, Raised::Anything, &mut changed);
+    let any = world.types_mut().any();
+    assert_eq!(world.raisable_ty(RaiseKind::Error), Some(any));
+}
+
+/// A raised value is recorded by the exception modules it surely belongs to,
+/// with no memory of its fields: a field can hold another exception, and a
+/// fact that kept it would grow with every wrapping. A value that might not
+/// be an exception is recorded as anything.
+#[test]
+fn a_raised_value_is_an_exception_only_when_it_surely_is_one() {
+    let mut world = World::new();
+    let key_error = named_module(&mut world, "KeyError");
+    let erlang_error = named_module(&mut world, "ErlangError");
+    let point = named_module(&mut world, "Point");
+    let int = world.types_mut().int();
+
+    let a_key_error = exception_of(&mut world, key_error, &[("key", int)]);
+    assert_eq!(world.raised_by(&a_key_error), [Raised::Exception(key_error)]);
+
+    let wrapped = exception_of(&mut world, erlang_error, &[("original", a_key_error)]);
+    assert_eq!(
+        world.raised_by(&wrapped),
+        [Raised::Exception(erlang_error)],
+        "the wrapped exception is a field, not a second raise"
+    );
+
+    let either = world.types_mut().union(a_key_error, wrapped);
+    let raised = world.raised_by(&either);
+    assert_eq!(raised.len(), 2, "each exception once: {raised:?}");
+    for module in [key_error, erlang_error] {
+        assert!(raised.contains(&Raised::Exception(module)), "{raised:?}");
+    }
+
+    let a_point = world.struct_value_ty(point, &["x".to_string()], &[int]);
+    assert_eq!(
+        world.raised_by(&a_point),
+        [Raised::Anything],
+        "a struct that is not flagged is no exception"
+    );
+    let or_int = world.types_mut().union(a_key_error, int);
+    assert_eq!(world.raised_by(&or_int), [Raised::Anything]);
+    let any = world.types_mut().any();
+    assert_eq!(world.raised_by(&any), [Raised::Anything]);
+    let none = world.types_mut().none();
+    assert_eq!(world.raised_by(&none), [], "a call nothing reaches raises nothing");
+}
+
+/// `delivers:` reaches the function's surface as the kind it names.
+#[test]
+fn an_extern_that_delivers_carries_its_kind() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("delivers.fz".to_string()),
+        "extern \"fz\" defp fz_throw(any) :: never, delivers: :throw\nextern \"C\" defp abs(c_int) :: c_int\n"
+            .to_string(),
+    );
+    assert!(matches!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+    let delivers = |world: &mut World, name: &str| {
+        let function = world.reference_function(ModuleId::GLOBAL, name, 1);
+        assert!(world.demand(Job::DefineFunction(function)));
+        assert!(matches!(
+            super::drive::ExecutionContext::new(world, &tel).drive(),
+            DriveOutcome::Resolved
+        ));
+        world.function_definition(function).1.extern_delivers
+    };
+    assert_eq!(delivers(&mut world, "fz_throw"), Some(RaiseKind::Throw));
+    assert_eq!(delivers(&mut world, "abs"), None);
 }

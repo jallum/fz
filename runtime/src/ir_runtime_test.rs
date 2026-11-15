@@ -1065,9 +1065,6 @@ fn a_pid_and_a_reference_render_in_elixir_shapes() {
             "[#PID<0.7.0>, #Reference<0.0.3.9>]",
             "a cons cell holds a pid or a reference in its own kind"
         );
-
-        assert_eq!(crate::any_value::debug::kind_name(process_ptr, pid), "PID");
-        assert_eq!(crate::any_value::debug::kind_name(process_ptr, reference), "Reference");
     });
 }
 

@@ -596,6 +596,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             return Ok(ScopePublication::Blocked(blocked));
         }
         self.publish_script_main()?;
+        self.publish_program_entry()?;
         if let Some(blocked) = self.publish_module_info()? {
             return Ok(ScopePublication::Blocked(self.blocked_effects(blocked)));
         }
@@ -627,6 +628,35 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             &function,
             &context,
         )?;
+        if let Some(callable) = publication.callable {
+            self.callables.push(callable);
+        }
+        Ok(())
+    }
+
+    /// A submitted file that has a `main/0`, written or made from its top-level
+    /// expressions, also gets the entry its first process starts in.
+    fn publish_program_entry(&mut self) -> Result<(), FatalError> {
+        let has_main = self.local_callables.contains_key(&("main".to_string(), 0))
+            || self
+                .callables
+                .iter()
+                .any(|callable| callable.matches_name_arity("main", 0));
+        if !self.is_script_scope() || !has_main {
+            return Ok(());
+        }
+        let function = build_program_entry().map_err(|error| {
+            emit_internal_surface_error(self.telemetry, format!("program entry synthesis failed: {error}"))
+        })?;
+        let main = self
+            .world
+            .reference_function(self.current_module, "main".to_string(), 0);
+        let namespace = self
+            .world
+            .bind_namespace(self.namespace, "main".to_string(), NamespaceSymbol::Function(main));
+        let context = FragmentPublicationContext::module_surface(self.current_module);
+        let publication =
+            self.define_source_function(self.current_module, self.current_module, namespace, &function, &context)?;
         if let Some(callable) = publication.callable {
             self.callables.push(callable);
         }
@@ -2030,6 +2060,50 @@ fn build_script_main(statements: &[StatementForm], span: Span) -> Result<Functio
         is_private: false,
         variadic: false,
         span,
+    })
+}
+
+/// The function a program's first process starts in.
+pub(crate) const PROGRAM_ENTRY: &str = "__entry__";
+
+/// `main/0` under the handler that renders an error nothing rescued:
+///
+/// ```text
+/// def __entry__() do
+///   try do
+///     main()
+///   catch
+///     :error, reason -> Exception.__uncaught__(reason)
+///   end
+/// end
+/// ```
+fn build_program_entry() -> Result<FunctionForm, QuotedSourceError> {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let meta = QuotedSourceMetadata::default();
+    let reason = builder.variable(&Var::user("reason"), &meta)?;
+    let exception = builder.alias(&meta, &["Exception"])?;
+    let uncaught = builder.call(".", &meta, &[exception, builder.atom("__uncaught__")])?;
+    let rendered = builder.call_callee(uncaught, &meta, &[reason])?;
+    let caught = builder.call(
+        "->",
+        &meta,
+        &[builder.list(&[builder.atom("error"), reason])?, rendered],
+    )?;
+    let clauses = builder.list(&[
+        builder.keyword("do", builder.call("main", &meta, &[])?)?,
+        builder.keyword("catch", builder.list(&[caught])?)?,
+    ])?;
+    let body = builder.call("try", &meta, &[clauses])?;
+    let clause = def_clause(&builder, &meta, PROGRAM_ENTRY, &[], body)?;
+    Ok(FunctionForm {
+        source: builder.root(builder.list(&[clause])?)?,
+        name: PROGRAM_ENTRY.to_string(),
+        arity: 0,
+        is_macro: false,
+        is_private: false,
+        variadic: false,
+        span: Span::DUMMY,
     })
 }
 

@@ -1,0 +1,5 @@
+defmodule WithClauseError do
+  defexception [:term]
+
+  def message(%{term: term}), do: Exception.__format_message_with_term__("no with clause matching:", term)
+end

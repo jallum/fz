@@ -1,0 +1,5 @@
+{Shapes, :only_one, 1}
+"no function clause matching in Shapes.only_one/1"
+"no cond clause evaluated to a truthy value"
+{:maybe, :and}
+"expected a boolean on left-side of \"and\", got:\n\n    :maybe\n"

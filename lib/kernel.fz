@@ -45,7 +45,7 @@ defmodule Kernel do
   @spec panic(any) :: never
   def panic(reason), do: fz_panic(reason)
 
-  extern "fz" defp fz_panic(any) :: never
+  extern "fz" defp fz_panic(any) :: never, delivers: :error
 
   @doc """
   Returns `value` as the text Elixir's `inspect/1` gives it: `dbg/1`,
@@ -86,12 +86,12 @@ defmodule Kernel do
     do: checked_inspect_options(rest, opts)
 
   defp checked_inspect_options([{:limit, _} | _], _),
-    do: raise(ArgumentError, "inspect/2 limit: must be a non-negative integer or :infinity")
+    do: raise(%ArgumentError{message: "inspect/2 limit: must be a non-negative integer or :infinity"})
 
   defp checked_inspect_options([{key, _} | _], _),
-    do: raise(ArgumentError, "inspect/2 does not support option " <> inspect(key))
+    do: raise(%ArgumentError{message: "inspect/2 does not support option " <> inspect(key)})
 
-  defp checked_inspect_options(_, _), do: raise(ArgumentError, "inspect/2 options must be a keyword list")
+  defp checked_inspect_options(_, _), do: raise(%ArgumentError{message: "inspect/2 options must be a keyword list"})
 
   extern "fz" defp fz_inspect_with(any, any) :: binary
 
@@ -112,7 +112,7 @@ defmodule Kernel do
   @spec throw(any) :: never
   def throw(value), do: fz_throw(value)
 
-  extern "fz" defp fz_throw(any) :: never
+  extern "fz" defp fz_throw(any) :: never, delivers: :throw
 
   @doc """
   Ends the current process with `reason`: the nearest `catch :exit, reason`
@@ -133,7 +133,7 @@ defmodule Kernel do
   @spec exit(any) :: never
   def exit(reason), do: fz_exit(reason)
 
-  extern "fz" defp fz_exit(any) :: never
+  extern "fz" defp fz_exit(any) :: never, delivers: :exit
 
   @doc """
   Raises the exception `exception` again. The stacktrace is accepted for
@@ -149,27 +149,77 @@ defmodule Kernel do
   def reraise(exception, _stacktrace), do: panic(exception)
 
   @doc """
-  Raises a `RuntimeError` with `message`.
+  Raises an exception.
+
+  A text raises a `RuntimeError` with that message. A module raises what
+  its `exception/1` builds from no fields. An exception is raised as it is.
+  Any other value raises an `ArgumentError`.
+
+  ## Examples
 
       raise "boom"
       # ** (RuntimeError) boom
+
+      raise ArgumentError
+      # ** (ArgumentError) argument error
+
   """
-  @spec raise(binary) :: never
-  def raise(message), do: raise(RuntimeError, message)
+  defmacro raise(message) when is_binary(message) do
+    quote do: panic(%RuntimeError{message: unquote(message)})
+  end
+
+  defmacro raise({:__aliases__, _, _} = module) do
+    quote do: panic(unquote(module).exception([]))
+  end
+
+  defmacro raise({:"%", _, _} = exception) do
+    quote do: panic(unquote(exception))
+  end
+
+  defmacro raise(value) do
+    quote do: panic(Kernel.to_exception(unquote(value)))
+  end
 
   @doc """
-  Raises the exception `name` with `message`: the raise is
-  `%{__struct__: name, __exception__: true, message: message}`, and the
-  nearest `rescue` that takes it receives it. With none the current process
-  fails.
+  Raises what `exception.exception(attributes)` builds: `exception` is a
+  module declared with `defexception`, and `attributes` is a message or a
+  keyword list of its fields.
+
+  ## Examples
 
       raise ArgumentError, "bad"
       # ** (ArgumentError) bad
-  """
-  @spec raise(atom, binary) :: never
-  def raise(name, message), do: fz_raise(name, message)
 
-  extern "fz" defp fz_raise(any, any) :: never
+      raise KeyError, key: :a, term: %{}
+      # ** (KeyError) key :a not found in:
+      #
+      #     %{}
+
+  """
+  defmacro raise(exception, attributes) do
+    quote do: panic(unquote(exception).exception(unquote(attributes)))
+  end
+
+  @doc """
+  Returns the exception `raise/1` raises for `value`, when `value` is known
+  only as the program runs.
+
+  ## Examples
+
+      Kernel.to_exception("boom")
+      #=> %RuntimeError{message: "boom"}
+
+      Kernel.to_exception(42).message
+      #=> "raise/1 and reraise/2 expect a module name, string or exception as the first argument, got: 42"
+
+  """
+  @spec to_exception(any) :: any
+  def to_exception(message) when is_binary(message), do: %RuntimeError{message: message}
+  def to_exception(%{__struct__: module, __exception__: true} = exception) when is_atom(module), do: exception
+  def to_exception(module) when is_atom(module), do: module.exception([])
+
+  def to_exception(value),
+    do: %ArgumentError{message: "raise/1 and reraise/2 expect a module name, string or exception as the first argument, got: " <> inspect(value)}
 
   @doc """
   Answers `left` when it is truthy, and `right` otherwise.
@@ -268,7 +318,7 @@ defmodule Kernel do
 
   """
   defmacro defexception(fields) do
-    fields = [__exception__: true] ++ fields
+    fields = [{:__exception__, true} | fields]
 
     if declares_message?(fields) do
       quote do
@@ -277,7 +327,7 @@ defmodule Kernel do
         def message(exception), do: exception.message
         defoverridable message: 1
 
-        def exception(message) when is_binary(message), do: exception(message: message)
+        def exception(message) when is_binary(message), do: %__MODULE__{message: message}
         def exception(fields) when is_list(fields), do: struct!(__MODULE__, fields)
         defoverridable exception: 1
       end
@@ -420,17 +470,18 @@ defmodule Kernel do
 
   """
   @spec struct!(any, any) :: any
+  def struct!(module, fields) when is_atom(module) and is_list(fields), do: put_declared_fields!(fields, module.__struct__())
   def struct!(module, fields) when is_atom(module), do: Enum.reduce(fields, module.__struct__(), &put_declared_field!/2)
   def struct!(base, fields), do: Enum.reduce(fields, base, &replace_field!/2)
+
+  @spec put_declared_fields!([{any, any}], any) :: any
+  defp put_declared_fields!([], base), do: base
+  defp put_declared_fields!([field | rest], base), do: put_declared_fields!(rest, put_declared_field!(field, base))
 
   @spec put_declared_field!({any, any}, any) :: any
   defp put_declared_field!({:__struct__, _}, base), do: base
 
-  defp put_declared_field!({key, value}, base) do
-    if Map.has_key?(base, key),
-      do: Map.put(base, key, value),
-      else: raise(KeyError, "key " <> inspect(key) <> " not found")
-  end
+  defp put_declared_field!({key, value}, base), do: %{base | key => value}
 
   @spec replace_field!({any, any}, any) :: any
   defp replace_field!({:__struct__, _}, base), do: base
@@ -549,7 +600,15 @@ defmodule Kernel do
 
   """
   @spec spawn(() -> any) :: pid
-  def spawn(fun), do: fz_spawn(fun)
+  def spawn(fun) do
+    fz_spawn(fn ->
+      try do
+        fun.()
+      catch
+        :error, reason -> Exception.__uncaught__(reason)
+      end
+    end)
+  end
 
   extern "fz" defp fz_spawn(() -> any) :: pid
 
@@ -578,7 +637,7 @@ defmodule Kernel do
   """
   @spec send(pid, t) :: t when t: any
   def send(pid, msg) when is_pid(pid), do: fz_send(pid, msg)
-  def send(_pid, _msg), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: invalid destination\n")
+  def send(_pid, _msg), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: invalid destination\n"})
 
   extern "fz" defp fz_send(pid, t) :: t when t: any
 
@@ -652,7 +711,7 @@ defmodule Kernel do
   # be missed. The default clause returns `never`, so it adds nothing to the
   # result type.
   @spec arithmetic_error() :: never
-  defp arithmetic_error(), do: raise(ArithmeticError, "bad argument in arithmetic expression")
+  defp arithmetic_error(), do: raise(%ArithmeticError{message: "bad argument in arithmetic expression"})
 
   @doc """
   Concatenates two binaries.
@@ -723,7 +782,7 @@ defmodule Kernel do
   @spec abs(float) :: float
   def abs(x) when is_integer(x), do: fz_op_abs_i(x)
   def abs(x) when is_float(x), do: fz_op_abs_f(x)
-  def abs(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
+  def abs(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a number\n"})
 
   extern "C" defp fz_op_abs_i(integer) :: integer,
     raises: ArithmeticError,
@@ -749,7 +808,7 @@ defmodule Kernel do
   @spec round(float) :: integer
   def round(x) when is_integer(x), do: x
   def round(x) when is_float(x), do: fz_op_round_f(x)
-  def round(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
+  def round(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a number\n"})
 
   extern "C" defp fz_op_round_f(float) :: integer,
     raises: ArithmeticError,
@@ -771,7 +830,7 @@ defmodule Kernel do
   @spec trunc(float) :: integer
   def trunc(x) when is_integer(x), do: x
   def trunc(x) when is_float(x), do: fz_op_trunc_f(x)
-  def trunc(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
+  def trunc(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a number\n"})
 
   extern "C" defp fz_op_trunc_f(float) :: integer,
     raises: ArithmeticError,
@@ -793,7 +852,7 @@ defmodule Kernel do
   @spec floor(float) :: integer
   def floor(x) when is_integer(x), do: x
   def floor(x) when is_float(x), do: fz_op_floor_f(x)
-  def floor(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
+  def floor(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a number\n"})
 
   extern "C" defp fz_op_floor_f(float) :: integer,
     raises: ArithmeticError,
@@ -815,7 +874,7 @@ defmodule Kernel do
   @spec ceil(float) :: integer
   def ceil(x) when is_integer(x), do: x
   def ceil(x) when is_float(x), do: fz_op_ceil_f(x)
-  def ceil(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a number\n")
+  def ceil(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a number\n"})
 
   extern "C" defp fz_op_ceil_f(float) :: integer,
     raises: ArithmeticError,
@@ -835,7 +894,7 @@ defmodule Kernel do
   """
   @spec hd(any) :: any
   def hd(list) when is_list(list) and fz_list_is_cons(list), do: fz_list_head_ref(list)
-  def hd(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a nonempty list\n")
+  def hd(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a nonempty list\n"})
 
   @doc """
   Returns `list` without its first element.
@@ -851,7 +910,7 @@ defmodule Kernel do
   """
   @spec tl(any) :: any
   def tl(list) when is_list(list) and fz_list_is_cons(list), do: fz_list_tail_ref(list)
-  def tl(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a nonempty list\n")
+  def tl(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a nonempty list\n"})
 
   extern "C" defp fz_list_is_cons(any) :: boolean
   extern "C" defp fz_list_head_ref(any) :: any
@@ -1296,7 +1355,7 @@ defmodule Kernel do
   """
   @spec byte_size(any) :: integer
   def byte_size(bytes) when is_binary(bytes), do: fz_bitstring_byte_size(bytes)
-  def byte_size(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a bitstring\n")
+  def byte_size(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a bitstring\n"})
 
   extern "C" defp fz_bitstring_byte_size(any) :: integer
 
@@ -1317,7 +1376,7 @@ defmodule Kernel do
   """
   @spec map_size(any) :: integer
   def map_size(map) when is_map(map), do: fz_map_count(map)
-  def map_size(map), do: raise(BadMapError, "expected a map, got:\n\n    " <> inspect(map) <> "\n")
+  def map_size(map), do: raise(%BadMapError{term: map})
 
   extern "fz" defp fz_map_count(any) :: integer
 
@@ -1338,7 +1397,7 @@ defmodule Kernel do
   """
   @spec tuple_size(any) :: integer
   def tuple_size(tuple) when is_tuple(tuple), do: fz_tuple_size(tuple)
-  def tuple_size(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a tuple\n")
+  def tuple_size(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a tuple\n"})
 
   extern "fz" defp fz_tuple_size(any) :: integer
 
@@ -1359,8 +1418,8 @@ defmodule Kernel do
   def elem(tuple, index) when is_tuple(tuple) and is_integer(index) and index >= 0 and index < tuple_size(tuple),
     do: fz_tuple_elem(tuple, index)
 
-  def elem(tuple, index) when is_tuple(tuple) and is_integer(index), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: out of range\n")
-  def elem(_, index) when is_integer(index), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 2nd argument: not a tuple\n")
+  def elem(tuple, index) when is_tuple(tuple) and is_integer(index), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: out of range\n"})
+  def elem(_, index) when is_integer(index), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 2nd argument: not a tuple\n"})
   def elem(_, _), do: arithmetic_error()
 
   extern "fz" defp fz_tuple_elem(any, integer) :: any
@@ -1382,11 +1441,11 @@ defmodule Kernel do
   """
   @spec length(any) :: integer
   def length(list) when is_list(list), do: proper_length(fz_list_length(list))
-  def length(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a list\n")
+  def length(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a list\n"})
 
   @spec proper_length(integer) :: integer
   defp proper_length(count) when count >= 0, do: count
-  defp proper_length(_), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a list\n")
+  defp proper_length(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a list\n"})
 
   extern "C" defp fz_list_length(any) :: integer
 

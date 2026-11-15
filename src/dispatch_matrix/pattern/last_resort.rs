@@ -4,36 +4,39 @@
 //! of its own: a function head in `FunctionClauseError`, `=` in `MatchError`,
 //! `case` in `CaseClauseError` and so on. A plan carries that exception from
 //! the moment it is built, so each backend lowers a `Fail` the same way for
-//! every construct: build the exception and raise it.
+//! every construct: build the exception from its fields and raise it.
 
 use std::borrow::Cow;
 
-/// What a last resort's message says about the subject, the plan's first
-/// input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MessageSubject {
-    /// Nothing: the message is fixed.
-    Absent,
-    /// The message is a lead, then the subject on a line of its own.
-    Shown,
-    /// The message is a lead that ends with the name of the subject's kind,
-    /// then the subject on a line of its own after `Got value:`.
-    ShownWithKind,
+/// What one field of a raised exception holds.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum FieldTerm {
+    /// The plan's subject, its first input.
+    Subject,
+    /// An atom, by name.
+    Atom(Cow<'static, str>),
+    /// An integer.
+    Int(i64),
+    /// A binary of text.
+    Text(String),
 }
 
-/// What a plan does at a `Fail`: raise an exception worded the way Elixir
-/// words it, or continue a raise that arrived.
+impl FieldTerm {
+    const NIL: Self = Self::Atom(Cow::Borrowed("nil"));
+}
+
+/// What a plan does at a `Fail`: raise an exception carrying the fields
+/// Elixir gives it, or continue a raise that arrived. The exception's module
+/// words its message from those fields when one is asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LastResort {
     /// Raise a new exception.
     Exception {
         /// The exception module's atom, such as `Elixir.MatchError`.
         exception: Cow<'static, str>,
-        /// The whole message, or the lead of a message that goes on to show
-        /// the subject.
-        message: String,
-        /// What the message goes on to say about the plan's subject.
-        subject: MessageSubject,
+        /// Every field of the exception's struct, in the order it declares
+        /// them, with what each holds.
+        fields: Vec<(&'static str, FieldTerm)>,
     },
     /// Continue the raise a handler was delivered, with the plan's first two
     /// inputs as its kind and value.
@@ -41,64 +44,79 @@ pub enum LastResort {
 }
 
 impl LastResort {
-    /// No head of `function` takes the arguments. `function` is the name
-    /// Elixir gives it, such as `M.f/1` or `anonymous fn/1 in M.g/0`.
-    pub(crate) fn function_clause(function: &str) -> Self {
-        Self::fixed(
+    /// No head of the function takes the arguments. `module` is the atom of
+    /// the module that defines it, when one does, and `function` the name
+    /// Elixir gives it: its own, or `-f/1-fun-0-` for a lambda inside `f/1`.
+    pub(crate) fn function_clause(module: Option<String>, function: String, arity: u32) -> Self {
+        Self::raising(
             "Elixir.FunctionClauseError",
-            format!("no function clause matching in {function}"),
+            vec![
+                (
+                    "module",
+                    module.map_or(FieldTerm::NIL, |module| FieldTerm::Atom(Cow::Owned(module))),
+                ),
+                ("function", FieldTerm::Atom(Cow::Owned(function))),
+                ("arity", FieldTerm::Int(i64::from(arity))),
+                ("kind", FieldTerm::NIL),
+                ("args", FieldTerm::NIL),
+                ("clauses", FieldTerm::NIL),
+            ],
         )
     }
 
     /// The left side of `=` does not match the right.
     pub(crate) fn match_error() -> Self {
-        Self::showing("Elixir.MatchError", "no match of right hand side value:")
+        Self::about_the_subject("Elixir.MatchError")
     }
 
-    /// No implementation of `protocol` takes the receiver, which the message
-    /// shows after naming its kind, as Elixir's `Protocol.UndefinedError` does.
-    pub(crate) fn protocol_undefined(protocol: &str) -> Self {
-        Self::Exception {
-            exception: Cow::Borrowed("Elixir.Protocol.UndefinedError"),
-            message: format!("protocol {protocol} not implemented for "),
-            subject: MessageSubject::ShownWithKind,
-        }
+    /// No implementation of the protocol whose atom is `protocol` takes the
+    /// receiver.
+    pub(crate) fn protocol_undefined(protocol: String) -> Self {
+        Self::raising(
+            "Elixir.Protocol.UndefinedError",
+            vec![
+                ("protocol", FieldTerm::Atom(Cow::Owned(protocol))),
+                ("value", FieldTerm::Subject),
+                ("message", FieldTerm::NIL),
+                ("description", FieldTerm::Text(String::new())),
+            ],
+        )
     }
 
     /// No clause of a `case` matches.
     pub(crate) fn case_clause() -> Self {
-        Self::showing("Elixir.CaseClauseError", "no case clause matching:")
+        Self::about_the_subject("Elixir.CaseClauseError")
     }
 
     /// No condition of a `cond` is truthy.
     pub(crate) fn cond_clause() -> Self {
-        Self::fixed(
-            "Elixir.CondClauseError",
-            "no cond clause evaluated to a truthy value".to_string(),
-        )
+        Self::raising("Elixir.CondClauseError", Vec::new())
     }
 
     /// A `with` clause failed and no `else` clause matches what it returned.
     pub(crate) fn with_clause() -> Self {
-        Self::showing("Elixir.WithClauseError", "no with clause matching:")
+        Self::about_the_subject("Elixir.WithClauseError")
     }
 
     /// No `else` clause of a `try` matches the value its body produced.
     pub(crate) fn try_clause() -> Self {
-        Self::showing("Elixir.TryClauseError", "no try clause matching:")
+        Self::about_the_subject("Elixir.TryClauseError")
     }
 
     /// The left side of `and` or `or` is not a boolean.
-    pub(crate) fn bad_boolean(operator: &str) -> Self {
-        Self::showing(
+    pub(crate) fn bad_boolean(operator: &'static str) -> Self {
+        Self::raising(
             "Elixir.BadBooleanError",
-            &format!("expected a boolean on left-side of \"{operator}\", got:"),
+            vec![
+                ("term", FieldTerm::Subject),
+                ("operator", FieldTerm::Atom(Cow::Borrowed(operator))),
+            ],
         )
     }
 
     /// `not` was given something other than a boolean.
     pub(crate) fn argument_error() -> Self {
-        Self::fixed("Elixir.ArgumentError", "argument error".to_string())
+        Self::declared("Elixir.ArgumentError".to_string(), "argument error".to_string())
     }
 
     /// Nothing in a handler's clauses takes the raise it was delivered, so it
@@ -115,26 +133,29 @@ impl LastResort {
         }
     }
 
-    /// The message, or its lead when the subject follows, for a last resort
-    /// that raises an exception.
-    #[cfg(test)]
-    pub(crate) fn message(&self) -> Option<&str> {
-        match self {
-            Self::Exception { message, .. } => Some(message),
-            Self::Reraise => None,
-        }
+    /// Every atom the raised exception is built from: its module's, each
+    /// field's key, and each field value that is an atom.
+    pub(crate) fn atoms(&self) -> impl Iterator<Item = &str> {
+        let (exception, fields) = match self {
+            Self::Exception { exception, fields } => (Some(exception.as_ref()), fields.as_slice()),
+            Self::Reraise => (None, [].as_slice()),
+        };
+        let of_fields = fields.iter().flat_map(|(key, term)| {
+            let value = match term {
+                FieldTerm::Atom(name) => Some(name.as_ref()),
+                FieldTerm::Subject | FieldTerm::Int(_) | FieldTerm::Text(_) => None,
+            };
+            std::iter::once(*key).chain(value)
+        });
+        exception.into_iter().chain(of_fields)
     }
 
     /// How many of the plan's leading inputs the last resort reads: the
-    /// subject a message shows, or the kind and value a re-raise continues
-    /// with.
+    /// subject an exception carries, or the kind and value a re-raise
+    /// continues with.
     pub(crate) fn consumed_inputs(&self) -> usize {
         match self {
-            Self::Exception {
-                subject: MessageSubject::Shown | MessageSubject::ShownWithKind,
-                ..
-            } => 1,
-            Self::Exception { .. } => 0,
+            Self::Exception { fields, .. } => usize::from(fields.iter().any(|(_, term)| *term == FieldTerm::Subject)),
             Self::Reraise => 2,
         }
     }
@@ -144,25 +165,19 @@ impl LastResort {
     pub fn declared(exception: String, message: String) -> Self {
         Self::Exception {
             exception: Cow::Owned(exception),
-            message,
-            subject: MessageSubject::Absent,
+            fields: vec![("message", FieldTerm::Text(message))],
         }
     }
 
-    fn fixed(exception: &'static str, message: String) -> Self {
+    fn raising(exception: &'static str, fields: Vec<(&'static str, FieldTerm)>) -> Self {
         Self::Exception {
             exception: Cow::Borrowed(exception),
-            message,
-            subject: MessageSubject::Absent,
+            fields,
         }
     }
 
-    fn showing(exception: &'static str, lead: &str) -> Self {
-        Self::Exception {
-            exception: Cow::Borrowed(exception),
-            message: lead.to_string(),
-            subject: MessageSubject::Shown,
-        }
+    fn about_the_subject(exception: &'static str) -> Self {
+        Self::raising(exception, vec![("term", FieldTerm::Subject)])
     }
 }
 

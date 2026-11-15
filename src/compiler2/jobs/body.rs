@@ -2846,25 +2846,31 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         })
     }
 
-    /// `%ErlangError{original: raised}`: how a raised non-exception value
-    /// presents itself to a rescue clause.
+    /// `%ErlangError{original: raised}`, every field of the struct present:
+    /// how a raised non-exception value presents itself to a rescue clause.
     fn push_erlang_error(&mut self, raised: ValueId, steps: &mut Vec<ExprStep>) -> ValueId {
         let module = self.push_const(steps, GroundValue::Atom(ERLANG_ERROR.to_string()));
         let flag = self.push_const(steps, GroundValue::Bool(true));
-        let entries = [("__struct__", module), ("__exception__", flag), ("original", raised)]
-            .into_iter()
-            .map(|(key, value)| {
-                let literal = GroundValue::Atom(key.to_string());
-                let key = self.push_const(steps, literal.clone());
-                (
-                    LoweredMapKey {
-                        value: key,
-                        literal: Some(literal),
-                    },
-                    value,
-                )
-            })
-            .collect();
+        let no_reason = self.push_const(steps, GroundValue::Nil);
+        let entries = [
+            ("__struct__", module),
+            (fz_runtime::failure::EXCEPTION_FIELD, flag),
+            ("original", raised),
+            ("reason", no_reason),
+        ]
+        .into_iter()
+        .map(|(key, value)| {
+            let literal = GroundValue::Atom(key.to_string());
+            let key = self.push_const(steps, literal.clone());
+            (
+                LoweredMapKey {
+                    value: key,
+                    literal: Some(literal),
+                },
+                value,
+            )
+        })
+        .collect();
         let value = self.fresh_value();
         steps.push(ExprStep::Map {
             value,
@@ -3157,6 +3163,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             extern_ret_tokens: crate::ast::TypeExprBody(Vec::new()),
             extern_constraints: Vec::new(),
             extern_raises: None,
+            extern_delivers: None,
             variadic: false,
             attrs: Vec::new(),
             span,

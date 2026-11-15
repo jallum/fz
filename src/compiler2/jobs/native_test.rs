@@ -206,7 +206,9 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
             }],
         )
         .raising(crate::dispatch_matrix::pattern::LastResort::function_clause(
-            "unwrap_tuple/1",
+            None,
+            "unwrap_tuple".to_string(),
+            1,
         )),
     )
     .unwrap();
@@ -265,16 +267,15 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
         generated: Vec::new(),
     };
     // A pair whose second field is not 7 raises, so the executable names the
-    // exception among its atoms.
+    // exception and its fields among its atoms.
     let raised = executable
         .abi
         .materialized
         .entry_dispatch
         .as_ref()
         .and_then(|dispatch| dispatch.plan().last_resort.as_ref())
-        .and_then(crate::dispatch_matrix::pattern::LastResort::exception)
         .expect("the clause head raises when nothing matches");
-    executable.atom_names = Box::from([AtomName::from(raised)]);
+    executable.atom_names = raised.atoms().map(AtomName::from).collect();
     let executable = Rc::new(executable);
     let mut program = BackendProgram::empty(key);
     program.add_executable(executable.clone(), world.types());
@@ -622,4 +623,75 @@ fn a_delivered_call_to_a_callee_that_is_more_than_an_extern_keeps_its_continuati
         }),
         "run's one call that is not an extern is its only call with a continuation"
     );
+}
+
+/// Whether each `try` in the functions named `prefix` has a handler that can
+/// never hand a value back.
+fn handlers_diverge(program: &crate::fz_ir::Module, prefix: &str) -> Vec<bool> {
+    program
+        .fns
+        .iter()
+        .filter(|function| function.name.starts_with(prefix))
+        .flat_map(|function| &function.blocks)
+        .filter_map(|block| match &block.terminator {
+            crate::fz_ir::Term::Try { handler_diverges, .. } => Some(*handler_diverges),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A handler that ends by raising again can never return to the function
+/// that installed it, so its `try` is marked and needs no heap continuation.
+/// A handler that produces a value is resumed like any other continuation.
+#[test]
+fn a_try_knows_whether_its_handler_can_hand_a_value_back() {
+    use crate::compiler2::drive_harness::NativeProgramCapture;
+    use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
+    use crate::telemetry::ConfiguredTelemetry;
+
+    let source = "\
+def risky(x), do: if x > 0, do: raise(\"no\"), else: x
+
+def recovers(x) do
+  try do
+    risky(x)
+  rescue
+    _ -> :recovered
+  end
+end
+
+def gives_up(x) do
+  try do
+    risky(x)
+  rescue
+    _ -> exit(:gave_up)
+  end
+end
+
+def main() do
+  n = length(System.argv())
+  dbg(recovers(n))
+  gives_up(n)
+end
+";
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("handlers.fz".into()),
+        text: source.into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Native)
+        .expect("native product should settle");
+    let program = native.last(root).program;
+    assert_eq!(handlers_diverge(&program.module, "recovers__"), [false]);
+    assert_eq!(handlers_diverge(&program.module, "gives_up__"), [true]);
 }

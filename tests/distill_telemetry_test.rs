@@ -246,7 +246,11 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // (47_447, 48_858, 28) -> (47_803, 49_224, 28): `JSON` reads a number by its grammar
         // and converts its text with `Float.parse`, so the distiller compiles that grammar and
         // the parse.
-        (47_803, 49_224, 28),
+        // (47_803, 49_224, 28) -> (48_886, 50_745, 65): the program's entry wraps `main` in the
+        // handler that words an uncaught raise, so the compile also covers the exception modules
+        // the distiller can raise and the banner that prints them, and each `defexception` in
+        // those modules expands in a drive of its own.
+        (48_886, 50_745, 65),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

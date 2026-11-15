@@ -20,6 +20,7 @@ use fz_runtime::exec_ctx::Argv;
 
 use super::dump::{DumpKind, DumpSpec, FileRequestedOutput, max_requested_stage, parse_dump_spec};
 use super::quoted_surface::{MacroCallForm, ScopeForm, ScopeSurface, read_module_body_surface, read_scope_surface};
+use super::source_publish::PROGRAM_ENTRY;
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootId, RootSubmission, RunFailure, parse_quoted_program};
 
 // Keep the frontdoor drive budget aligned with the slowest fixture path budget;
@@ -749,7 +750,7 @@ fn load_main_root(
     path: &Path,
     diagnostic_status: &DiagnosticStatus,
 ) -> Result<(Compiler2<ConfiguredTelemetry>, RootId), CliError> {
-    load_root(tel, path, None, "main".to_string(), 0, diagnostic_status)
+    load_root(tel, path, None, PROGRAM_ENTRY.to_string(), 0, diagnostic_status)
 }
 
 fn load_root(
@@ -781,7 +782,7 @@ fn configured_compiler(
 }
 
 fn submit_main_root_from_path(compiler: &mut Compiler2<ConfiguredTelemetry>, path: &Path) -> Result<RootId, CliError> {
-    submit_root_from_path(compiler, path, None, "main".to_string(), 0)
+    submit_root_from_path(compiler, path, None, PROGRAM_ENTRY.to_string(), 0)
 }
 
 fn submit_root_from_path(

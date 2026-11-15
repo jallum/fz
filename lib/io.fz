@@ -68,7 +68,7 @@ defmodule IO do
   end
 
   @spec to_chardata(any) :: binary
-  defp to_chardata(list) when is_list(list), do: raise(ArgumentError, "IO over chardata lists is not built")
+  defp to_chardata(list) when is_list(list), do: raise(%ArgumentError{message: "IO over chardata lists is not built"})
   defp to_chardata(other), do: Kernel.to_string(other)
 
   extern "fz" defp fz_io_write(binary) :: unit

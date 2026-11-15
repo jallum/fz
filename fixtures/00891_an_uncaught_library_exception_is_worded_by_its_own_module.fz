@@ -1,0 +1,7 @@
+#---
+# purpose: "a KeyError the library raises and nothing rescues ends the program with Elixir's banner, worded by KeyError's own message/1"
+# expect: abort
+#---
+def main() do
+  IO.puts(Map.fetch!(%{a: "x"}, :b))
+end

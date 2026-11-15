@@ -1,0 +1,23 @@
+defmodule FunctionClauseError do
+  defexception [:module, :function, :arity, :kind, :args, :clauses]
+
+  def message(%{function: nil}), do: "no function clause matches"
+
+  def message(%{module: nil, function: function, arity: arity}),
+    do: "no function clause matching in " <> Exception.__format_fa__(function, arity)
+
+  def message(%{module: module, function: function, arity: arity, args: args}),
+    do: "no function clause matching in " <> Exception.format_mfa(module, function, arity) <> given(module, function, arity, args)
+
+  @spec given(atom, atom, integer, any) :: binary
+  defp given(_module, _function, _arity, nil), do: ""
+
+  defp given(module, function, arity, args),
+    do: "\n\nThe following arguments were given to " <> Exception.format_mfa(module, function, arity) <> ":\n" <> numbered(args, 1)
+
+  @spec numbered([any], integer) :: binary
+  defp numbered([], _position), do: ""
+
+  defp numbered([arg | rest], position),
+    do: "\n    # #{position}\n    " <> Exception.__inspect_indented__(arg) <> "\n" <> numbered(rest, position + 1)
+end

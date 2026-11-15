@@ -65,10 +65,7 @@ defimpl String.Chars, for: Binary do
     if fz_bitstring_is_binary(s) == 1 do
       s
     else
-      raise(
-        Protocol.UndefinedError,
-        "protocol String.Chars not implemented for BitString, cannot convert a bitstring to a string\n\nGot value:\n\n    " <> Kernel.inspect(s) <> "\n"
-      )
+      raise(%Protocol.UndefinedError{protocol: String.Chars, value: s, description: "cannot convert a bitstring to a string"})
     end
   end
 

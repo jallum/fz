@@ -2,6 +2,10 @@
 # purpose: "A float-valued extern declared with raises: returns its value when the result is finite and raises the named exception when it is not"
 # expect: abort
 #---
+defmodule MyApp.NotFinite do
+  defexception [:message]
+end
+
 extern "C" defp fz_op_div_ff(float, float) :: float,
   raises: MyApp.NotFinite,
   message: "the quotient is not finite"

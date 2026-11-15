@@ -36,6 +36,7 @@ use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use fz_engine::DriveOutcome;
 use fz_engine::FactUse;
+use fz_runtime::failure::RaiseKind;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -4140,13 +4141,14 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
             })
             .collect::<Vec<_>>(),
         vec![
+            ("__entry__", 0, "<top-level>", "__entry__", "function", 1),
             ("append", 2, "<top-level>", "append", "function", 2),
             ("foo", 0, "<top-level>", "foo", "function", 1),
             ("main", 0, "<top-level>", "main", "function", 1),
             ("partition", 4, "<top-level>", "partition", "function", 3),
             ("qsort", 1, "<top-level>", "qsort", "function", 2),
         ],
-        "scoping should note the expected user-defined top-level function surfaces once compiler definition macros are filtered out"
+        "scoping should note the expected user-defined top-level function surfaces and the program entry once compiler definition macros are filtered out"
     );
 
     assert!(
@@ -4169,8 +4171,8 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
     );
     assert_eq!(
         names.len(),
-        5,
-        "scoping should note one user function-source fact per top-level function"
+        6,
+        "scoping should note one user function-source fact per top-level function and one for the program entry"
     );
     assert!(
         capture
@@ -4872,8 +4874,8 @@ fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
 
     assert_eq!(
         sorted_strings(modules.defined_names()),
-        vec!["Kernel".to_string(), "Process".to_string()],
-        "runtime root should define only the reached runtime modules"
+        vec!["ArgumentError".to_string(), "Kernel".to_string(), "Process".to_string()],
+        "runtime root should define only the reached runtime modules, the exception it can raise among them"
     );
     assert!(
         !outputs
@@ -7933,10 +7935,15 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
                 .map(|member| member.target.activation.function)
         })
         .collect::<HashSet<_>>();
+    let uncaught_guard_id = generated_functions_owned_by(&functions, spawn_id)
+        .into_iter()
+        .next()
+        .expect("spawn/1 wraps its callable in a lambda")
+        .function_id;
     assert_eq!(
         callable_targets,
-        HashSet::from_iter([child_id]),
-        "native closure values should resolve to the one closed callable boundary for child/0",
+        HashSet::from_iter([child_id, uncaught_guard_id]),
+        "native closure values should resolve to child/0 and to the lambda spawn/1 wraps it in, which words a raise nothing caught",
     );
 
     let compiled = jit_compile_native_program(&mut compiler, &program);
@@ -22828,6 +22835,145 @@ fn a_guard_function_asks_for_nothing_an_aborting_calls_arguments_name() {
     );
 }
 
+/// The modules whose name ends in `Error` that a settled drive defined.
+fn defined_exceptions(settled: &Settled) -> Vec<String> {
+    let mut exceptions = settled
+        .modules()
+        .defined_names()
+        .into_iter()
+        .filter(|name| name.ends_with("Error"))
+        .collect::<Vec<_>>();
+    exceptions.sort();
+    exceptions
+}
+
+/// What a raise of each kind hands a handler in a settled drive, in the order
+/// error, throw, exit.
+fn raisable_tys(settled: &mut Settled) -> [Option<Ty>; 3] {
+    let world = settled.compiler_mut().world_mut();
+    RaiseKind::ALL.map(|kind| world.raisable_ty(kind))
+}
+
+/// The module of every function a settled drive analysed a call to.
+fn called_modules(settled: &Settled) -> Vec<String> {
+    let mut modules = Vec::new();
+    for record in settled.callsites().all() {
+        for target in record.summary.targets {
+            let SelectedCallee::Function(function) = target.callee else {
+                continue;
+            };
+            let module = settled
+                .modules()
+                .qualified_name(settled.world().function_ref(function).module);
+            if !modules.contains(&module) {
+                modules.push(module);
+            }
+        }
+    }
+    modules
+}
+
+/// The built-in exceptions are library modules, defined when something names
+/// them. An uncaught exception is asked for its message through its module, so
+/// a program defines the exceptions it can raise: here the `KeyError` it
+/// writes and the five the library code it reaches can raise, and none of the
+/// other sixteen.
+#[test]
+fn a_program_defines_only_the_exception_modules_it_can_raise() {
+    let settled = Drive::fixture(1152).settle();
+    assert_eq!(
+        defined_exceptions(&settled),
+        [
+            "ArgumentError",
+            "ArithmeticError",
+            "FunctionClauseError",
+            "KeyError",
+            "Protocol.UndefinedError",
+            "UndefinedFunctionError"
+        ]
+    );
+}
+
+/// A program that raises nothing has no handler to compile: the `try` its
+/// entry wraps `main/0` in is analysed as its body alone, and the module that
+/// words an uncaught failure is never defined.
+#[test]
+fn a_program_that_raises_nothing_compiles_no_handler() {
+    let mut settled = Drive::fixture(575).program_entry().settle();
+    assert_eq!(raisable_tys(&mut settled), [None, None, None]);
+    assert!(
+        !called_modules(&settled).contains(&"Exception".to_string()),
+        "nothing reaches the uncaught-failure banner"
+    );
+}
+
+/// A handler is analysed once for each kind of raise the program can make. A
+/// program that only throws runs its `catch :throw` clause, and the clause
+/// that reports an uncaught error has no raise to run on.
+#[test]
+fn a_program_that_only_throws_compiles_no_error_handling() {
+    let mut settled = Drive::fixture(890).program_entry().settle();
+    let any = settled.compiler_mut().world_mut().types_mut().any();
+    assert_eq!(
+        raisable_tys(&mut settled),
+        [None, Some(any), None],
+        "a thrown atom is no exception, and nothing raises an error or exits"
+    );
+    assert!(
+        !called_modules(&settled).contains(&"Exception".to_string()),
+        "the entry's `catch :error` clause is never analysed"
+    );
+}
+
+/// The banner for an uncaught exception asks the exception's module for its
+/// message. The handler is analysed on the exceptions the program can raise,
+/// so that call chooses among exactly their modules: it reaches no module
+/// that merely exists, and it has no arm for a module with no `message/1`.
+#[test]
+fn the_uncaught_banner_calls_only_the_exceptions_the_program_can_raise() {
+    let mut settled = Drive::fixture(891).program_entry().settle();
+    let any = settled.compiler_mut().world_mut().types_mut().any();
+    let [error, throw, exit] = raisable_tys(&mut settled);
+    let error = error.expect("the program can raise an error");
+    assert_ne!(error, any, "every error this program raises is a known exception");
+    let mut raisable = settled
+        .world()
+        .types()
+        .listed_structs(&error)
+        .expect("each is a struct")
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    raisable.sort();
+    assert!(raisable.contains(&"KeyError".to_string()), "{raisable:?}");
+    assert_eq!([throw, exit], [None, None]);
+
+    let message = settled.functions().id_in_module("Exception", "message", 1);
+    let targets = settled
+        .callsites()
+        .all()
+        .into_iter()
+        .filter(|record| record.key.activation.function == message)
+        .flat_map(|record| record.summary.targets)
+        .map(|target| target.callee)
+        .collect::<Vec<_>>();
+    assert!(!targets.is_empty(), "the banner's message call is reached");
+    let mut owners = Vec::new();
+    for callee in &targets {
+        let SelectedCallee::Function(function) = callee else {
+            panic!("the call reaches only functions that exist: {callee:?}");
+        };
+        let owner = settled
+            .modules()
+            .qualified_name(settled.world().function_ref(*function).module);
+        if !owners.contains(&owner) {
+            owners.push(owner);
+        }
+    }
+    owners.sort();
+    assert_eq!(owners, raisable);
+}
+
 /// Captures the primary span of the last `[fz, diag, error]` diagnostic seen.
 /// `Capture` durably owns its events, which strips the opaque `Diagnostic`
 /// payload (opaque values are not durable) -- so a span assertion needs a
@@ -23717,7 +23863,8 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
         activations.values().map(BTreeSet::len).sum::<usize>(),
         // 140 -> 138: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
-        138,
+        // 138 -> 136: an exception record nothing asks about keys by its class.
+        136,
         "activations of the whole program"
     );
 }

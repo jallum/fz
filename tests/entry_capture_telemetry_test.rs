@@ -59,16 +59,21 @@ fn requests_for_sequential_calls(calls: usize) -> (String, usize) {
     measured
 }
 
+/// The entry captures a program requests whatever its body holds: the entry's
+/// own handler and the banner that words an uncaught raise.
+const FIXED_ENTRY_CAPTURES: usize = 98;
+
 #[test]
-fn a_body_of_n_sequential_calls_requests_two_n_plus_six_entry_captures() {
-    for (calls, expected) in [(3, 12), (308, 622)] {
+fn each_sequential_call_adds_two_entry_captures() {
+    for calls in [3, 308] {
         let (stdout, requests) = requests_for_sequential_calls(calls);
         let sum: usize = (1..=calls).map(|i| i + 1).sum();
         assert_eq!(stdout.trim(), sum.to_string(), "the program computes the sum");
         assert_eq!(
-            requests, expected,
+            requests,
+            2 * calls + FIXED_ENTRY_CAPTURES,
             "EntryCapture requests for {calls} sequential calls whose results stay live: an entry \
-             reached from one entry reuses its capture layouts, so the count is 2N+6, not N^2/2"
+             reached from one entry reuses its capture layouts, so each call adds two, not N/2"
         );
     }
 }
