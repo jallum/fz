@@ -899,15 +899,20 @@ fn jsonl_emits_return_type_revisions() {
 
     let widened = trace.events_named(&["fz", "compiler2", "return_type", "widened"]);
     assert!(
-        !widened.is_empty(),
-        "a return that grows a tuple spine every round runs past the widening budget, so the stream must show the widening"
+        widened.is_empty(),
+        "a return that grows a tuple spine every round folds at its first repeat, so the budget never fires: {widened:?}"
     );
+    let folded = trace.events_named(&["fz", "compiler2", "type", "clash_folded"]);
+    assert_eq!(folded.len(), 1, "the stream shows the one fold that ended the ladder");
+    let fold = &folded[0];
+    assert_eq!(fold.metadata["kind"], "cycle", "the tuple came back to its ancestor");
     assert!(
-        widened.iter().all(|event| event.semantic["ascents"]
-            .as_u64()
-            .is_some_and(|ascents| ascents > u64::from(crate::compiler2::RETURN_WIDENING_BUDGET))),
-        "widening only happens past the budget"
+        matches!(fold.metadata["site"].as_str(), Some("return" | "evidence")),
+        "the event names the site that folded: {}",
+        fold.metadata
     );
+    assert!(fold.metadata["path"].is_string() && fold.metadata["function_id"].is_u64());
+    assert!(fold.measurements["ancestor_depth"].is_u64() && fold.measurements["path_len"].is_u64());
 }
 
 /// Splits one activation's ascent counters into epochs. The counter resets to

@@ -364,13 +364,18 @@ handle equality, so representative-only changes do not dirty the scheduler.
 (`ActivationMap::define_return`) joins each round's evidence by union (which
 preserves closure identities), reports `changed=false` for equal joins, and
 only a rebased publisher replaces — within an epoch the return can only
-ascend, which is what makes the iteration converge on every schedule. Past a per-epoch
+ascend, which is what makes the iteration converge on every schedule. Before the
+join stores, the clash rule folds a type that repeats itself at the slot where
+it grew (`Types::clash_fold`, [`type-specialization`](type-specialization.md#the-clash-rule));
+the same fold runs on each activation's evidence rows in
+`World::normalize_contributions`. Past a per-epoch
 budget of strict ascents (`RETURN_WIDENING_BUDGET`, a total since the last
 rebase — not a consecutive-ascent delay, which spurious quiet wakes could
 starve) the join widens the growing spine (`convergence_class`, then `any`),
 emitting `fz.compiler2.return_type.widened` only when the operator actually
 coarsened the stored value; corpus programs converge in a few rungs and never
-meet it. `CallSiteSummary` snapshots carry
+meet it, and the clash fold ends the ladders that nest a constructor in
+itself before it is reached. `CallSiteSummary` snapshots carry
 `return_ty: Option<Ty>` — honest mid-ascent records whose `None` reads, behind
 the settled gate, as "provably never returns" (`settled_return`).
 

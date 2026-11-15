@@ -1,0 +1,16 @@
+#---
+# purpose: "A recursion that wraps its argument in a list on every call compiles: the repeated list folds where it grew, and the budget never fires"
+# root: main/0
+# oracle: oracle.exs
+# oracle.stamp: 5d90ca452a6ebb86
+# assert.metric.return_type.widened: 0
+# assert.metric.type.clash_folded: 1
+#---
+defmodule Wrap do
+  def g(acc, 0), do: acc
+  def g(acc, n), do: g([acc], n - 1)
+end
+
+def main() do
+  IO.inspect(Wrap.g([], 3))
+end

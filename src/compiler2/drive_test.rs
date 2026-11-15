@@ -19964,19 +19964,26 @@ fn compiler2_unproductive_deepening_settles_at_bottom_without_widening() {
 }
 
 #[test]
-fn compiler2_productive_deepening_terminates_by_widening() {
+fn compiler2_productive_deepening_terminates_by_a_cycle_fold() {
     // def deep(0), do: []
     // def deep(n), do: [deep(n - 1)]
     // Every round produces REAL evidence one list deeper — the true value is
     // the recursive type μt.([] | list(t)), which the lattice cannot
-    // express, so the precise ascent provably never lands. Termination must
-    // come from the widening operator, not from a timeout.
+    // express, so the precise ascent provably never lands. Termination comes
+    // from the clash fold: the type that repeats itself folds at the slot where
+    // it grew, and the widening budget never has to fire.
     let tel = ConfiguredTelemetry::new();
     let widened = Rc::new(Cell::new(false));
     let widened_sink = Rc::clone(&widened);
     tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
         &["fz", "compiler2", "return_type", "widened"],
         move |_, _, _, _, _| widened_sink.set(true),
+    );
+    let folded = Rc::new(Cell::new(false));
+    let folded_sink = Rc::clone(&folded);
+    tel.attach(
+        &["fz", "compiler2", "type", "clash_folded"],
+        Box::new(move |_: &crate::telemetry::handler::Event<'_, '_, '_>| folded_sink.set(true)),
     );
     let mut world = crate::compiler2::World::new();
     world.submit_code(
@@ -19994,23 +20001,33 @@ fn compiler2_productive_deepening_terminates_by_widening() {
         "the productive deepening program must converge",
     );
     assert!(
-        widened.get(),
-        "termination of a true divergent ascent must come from widening",
+        folded.get(),
+        "termination of a true divergent ascent comes from the clash fold"
+    );
+    assert!(
+        !widened.get(),
+        "the widening budget never fires on a type that repeats itself"
     );
 }
 
-#[test]
-fn compiler2_tuple_return_ladder_revises_once_per_nesting_level() {
-    // def build(0), do: :start
-    // def build(n), do: {n, build(n - 1)}
-    // The true return is the recursive type mu t.(:start | {integer, t}). The
-    // lattice cannot name it, so every round joins one more level of nesting and
-    // the stored return climbs a ladder — {integer, :start}, then
-    // {integer, :start | {integer, :start}}, and so on — until the widening
-    // budget tops it out at `any`. Each rung re-analyzes the activation and
-    // revises its return. The counts below are that ladder as it stands, taken
-    // through the product pull every door makes, and they measure what recursive
-    // denotations remove rather than a target to keep.
+/// What one cold compile of a tuple-ladder program costs through the product
+/// pull every door makes.
+///
+/// These are whole-compile totals, not the ladder's own round counter. A rebase
+/// resets `ActivationSlot::ascents` to zero and starts the climb again, and
+/// every revision in the new epoch still fires `return_type.defined`, so a
+/// warm or re-driven world counts the epochs together while `ascents` does not.
+#[derive(Debug, PartialEq, Eq)]
+struct TupleLadderCosts {
+    build_analyses: Vec<u64>,
+    build_return_revisions: Vec<u64>,
+    main_analyses: Vec<u64>,
+    main_return_revisions: Vec<u64>,
+    widened: bool,
+    clash_folds: u64,
+}
+
+fn tuple_ladder_costs(file_name: &str, source: &str) -> TupleLadderCosts {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -20019,6 +20036,12 @@ fn compiler2_tuple_return_ladder_revises_once_per_nesting_level() {
     tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
         &["fz", "compiler2", "return_type", "widened"],
         move |_, _, _, _, _| widened_sink.set(true),
+    );
+    let clash_folds = Rc::new(Cell::new(0u64));
+    let clash_sink = Rc::clone(&clash_folds);
+    tel.attach(
+        &["fz", "compiler2", "type", "clash_folded"],
+        Box::new(move |_: &crate::telemetry::handler::Event<'_, '_, '_>| clash_sink.set(clash_sink.get() + 1)),
     );
     let revisions: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::default()));
     let revision_sink = Rc::clone(&revisions);
@@ -20033,11 +20056,7 @@ fn compiler2_tuple_return_ladder_revises_once_per_nesting_level() {
         move |_, _, _, _, activation| *analysis_sink.borrow_mut().entry(activation.clone()).or_default() += 1,
     );
 
-    let (mut compiler, root) = submit_main_root(
-        tel,
-        "return_tuple_ladder.fz",
-        include_str!("../../fixtures2/behavior/return_tuple_ladder.fz"),
-    );
+    let (mut compiler, root) = submit_main_root(tel, file_name, source);
     compiler
         .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
         .expect("the tuple ladder reaches a backend program");
@@ -20050,98 +20069,69 @@ fn compiler2_tuple_return_ladder_revises_once_per_nesting_level() {
             .collect::<Vec<_>>()
     };
     let build = function_id(&functions, "build", 1);
-    assert_eq!(
-        counts_for(&analyses.borrow(), build),
-        vec![TUPLE_LADDER_BUILD_ANALYSES],
-        "build/1 has one activation, re-analyzed once per rung of the ladder",
-    );
-    assert_eq!(
-        counts_for(&revisions.borrow(), build),
-        vec![TUPLE_LADDER_BUILD_RETURN_REVISIONS],
-        "each rung revises the activation's return with one more level of nesting",
-    );
-    // The caller pays for the ladder without climbing one. `main/0` sees a new
-    // argument type for `dbg/1` on every rung, so it is re-analyzed as often as
-    // `build/1` is, while its own return — what `dbg/1` gives back — moves
-    // twice. Re-analysis and ascent are separate costs and only one of them is
-    // the ladder.
     let main = function_id(&functions, "main", 0);
+    TupleLadderCosts {
+        build_analyses: counts_for(&analyses.borrow(), build),
+        build_return_revisions: counts_for(&revisions.borrow(), build),
+        main_analyses: counts_for(&analyses.borrow(), main),
+        main_return_revisions: counts_for(&revisions.borrow(), main),
+        widened: widened.get(),
+        clash_folds: clash_folds.get(),
+    }
+}
+
+const TUPLE_LADDER_SOURCE: &str = include_str!("../../fixtures2/behavior/return_tuple_ladder.fz");
+
+#[test]
+fn compiler2_tuple_return_ladder_ends_at_its_first_repeat() {
+    // def build(0), do: :start
+    // def build(n), do: {n, build(n - 1)}
+    // The true return is the recursive type mu t.(:start | {integer, t}), which
+    // the lattice cannot name. The return climbs `:start`, `{int, :start}`,
+    // `{int, :start | {int, :start}}`; that third rung gives the slot a tuple
+    // its ancestor `{int, _}` already is, so the clash fold names the slot
+    // `any` and the ladder stops at the first repeat, not at the widening
+    // budget. The caller pays only for the rungs that exist: `main/0` is
+    // re-analyzed when `build/1`'s concluded return moves.
+    let costs = tuple_ladder_costs("return_tuple_ladder.fz", TUPLE_LADDER_SOURCE);
     assert_eq!(
-        counts_for(&analyses.borrow(), main),
-        vec![TUPLE_LADDER_MAIN_ANALYSES],
-        "main/0 is re-analyzed once per rung, because each rung retypes its argument",
-    );
-    assert_eq!(
-        counts_for(&revisions.borrow(), main),
-        vec![TUPLE_LADDER_MAIN_RETURN_REVISIONS],
-        "main/0's own return does not climb: it is not the recursive one",
-    );
-    assert!(
-        widened.get(),
-        "the ladder never lands on its own denotation, so it ends at the widening budget",
+        costs,
+        TupleLadderCosts {
+            build_analyses: vec![TUPLE_LADDER_BUILD_ANALYSES],
+            build_return_revisions: vec![TUPLE_LADDER_BUILD_RETURN_REVISIONS],
+            main_analyses: vec![TUPLE_LADDER_MAIN_ANALYSES],
+            main_return_revisions: vec![TUPLE_LADDER_MAIN_RETURN_REVISIONS],
+            widened: false,
+            clash_folds: 1,
+        },
+        "the ladder ends at the repeat the clash fold names, and the budget never fires",
     );
 }
 
-/// What `return_tuple_ladder.fz` costs today, through the product pull, on one
-/// cold compile. `RETURN_WIDENING_BUDGET` is 8 strict ascents before the join
-/// widens the growing spine and twice that before it stores `any`; the ladder
-/// climbs past both, so `build/1`'s one activation is analyzed 19 times and its
-/// return revised 17, and `main/0` is re-analyzed 21 times for a return that
-/// moves twice.
-///
-/// These are whole-compile totals, not the ladder's own round counter. A rebase
-/// resets `ActivationSlot::ascents` to zero and starts the climb again, and
-/// every revision in the new epoch still fires `return_type.defined`, so a
-/// warm or re-driven world counts the epochs together while `ascents` does not.
+#[test]
+fn compiler2_tuple_return_ladder_cost_does_not_depend_on_the_ladders_length() {
+    // The depth the program recurses to is a run-time number; the type ladder
+    // is one rung per nesting the analysis meets, and the fold ends it at the
+    // first repeat. Recursing to 9 costs what recursing to 3 does.
+    let short = tuple_ladder_costs("ladder_3.fz", TUPLE_LADDER_SOURCE);
+    let long = tuple_ladder_costs("ladder_9.fz", &TUPLE_LADDER_SOURCE.replace("build(3)", "build(9)"));
+    assert_ne!(TUPLE_LADDER_SOURCE.replace("build(3)", "build(9)"), TUPLE_LADDER_SOURCE);
+    assert_eq!(long, short);
+}
+
 // build/1's first run has one of Kernel.-/2's clauses still unknown, and a
 // caller that reads only a callee's concluded return publishes nothing on
 // that run, so the run that publishes `:start` is the one that reads its
 // own return as bottom, one analysis after the run that observes the
-// unknown clause. The climb above it still carries seventeen revisions.
-const TUPLE_LADDER_BUILD_ANALYSES: u64 = 20;
-const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 17;
-// fz-afu.10: 22 -> 21. `dbg/1`'s first activation now re-runs only after its
-// callee `fz_dbg_value/1` has been analyzed, so it publishes its return once
-// instead of first publishing an intermediate one, and `main/0` hears one
-// `dbg/1` return change instead of two.
-// fz-afu.13: 21 -> 22. A need starts its producer the moment it is recorded
-// instead of waiting for a later drain to discover it, moving one of
-// build/1's ladder revisions earlier relative to main/0's own re-analysis
-// and so changing which rung main/0 observes once more.
+// unknown clause.
+const TUPLE_LADDER_BUILD_ANALYSES: u64 = 6;
+const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 3;
 // main/0 re-keys its call to `dbg/1` on build/1's concluded return, so it
 // is re-analyzed only when that concluded return moves, not on every one
 // of build/1's intermediate rungs.
 const TUPLE_LADDER_MAIN_ANALYSES: u64 = 5;
-// main/0 re-keys its call to `dbg/1` on `build/1`'s CURRENT return every time
-// it is re-analyzed, so a `dbg/1` activation that settles for one rung is
-// usually stale by the time main/0 reads it again -- `build/1` has already
-// climbed past it. Only once `build/1` stops moving (the ladder has widened
-// to `any`) does a `dbg/1` activation survive long enough for main/0 to
-// observe its settled return, so main/0's own return crosses `None -> Some`
-// exactly once no matter how many rungs precede it (fz-xxd.3, re-measured;
-// this constant was pinned at 2 for a fold that never happened -- lowered
-// with the same measured 1 both before and after the fix). Before fz-xxd.3
-// the count was already 1, for an unrelated reason: `fz_dbg_value`'s
-// declared, un-instantiated return (`a0`) never varied by row, so the first
-// `dbg/1` key to settle already carried that constant, wrong answer. After
-// fz-xxd.3, `dbg/1`'s return equals its own argument, so main/0's one
-// crossing now carries the correct converged answer (`any`, matching
-// `build/1`'s own settled return) instead of the leaked declared variable.
-// fz-afu.13: 1 -> 2. Confirmed via `return_type.defined`'s own `World`
-// argument (`activation_return`, canon-displayed): main/0's first publish is
-// `:start`, landing right after `dbg/1`'s own first, narrowest publish of the
-// same answer; its second and final publish is `any`, landing right after
-// `dbg/1`'s own final, widened-top publish once `build/1`'s ladder stops
-// moving. `dbg/1` revises fifteen more times in between (the same ladder as
-// build/1), but main/0 re-keys its call on build/1's CURRENT return each time
-// it is re-analyzed, so every one of those middle rungs is already stale by
-// the time main/0 reads it again -- same mechanism the paragraph above this
-// one describes for the pre-fz-afu.13 one-crossing count, now crossing a
-// second time because a need starting at record time, not drain time, lets
-// main/0 observe dbg/1's cold first answer before dbg/1 has climbed past it.
-// main/0 reads only dbg/1's concluded return, so it never observes dbg/1's
-// cold first, narrowest publish, only the final, widened-top one once
-// build/1's ladder stops moving.
+// main/0 reads only dbg/1's concluded return, so its own return crosses
+// `None -> Some` once, when build/1's ladder stops moving.
 const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 1;
 
 #[test]
@@ -20354,14 +20344,14 @@ type PinnedLadder = (&'static str, &'static [PinnedAscent]);
 /// Every activation that climbs past that ceiling in the two fixtures below,
 /// measured through the product pull on one cold compile.
 ///
-/// This is the ladder as it stands on the compiler the doors run, a defect
-/// measured rather than a budget to spend; recursive denotations delete the
-/// table along with the climb. The ladder is a population as much as a height.
-/// `return_tuple_ladder` is the bare case: one activation, seventeen revisions,
-/// widened. `json_roundtrip`'s recursive value type settles within the ceiling,
-/// so its row is empty: a climb there is a regression this table reports.
+/// No activation of either fixture climbs past the ceiling: a type that
+/// repeats itself folds at the point it grew, so `return_tuple_ladder`'s one
+/// activation settles in three revisions and `json_roundtrip`'s recursive value
+/// type settles within the ceiling too. A climb in either is a regression this
+/// table reports, and the `type.clash_folded` event names the fold that ended
+/// the ladder it would otherwise have climbed.
 const RETURN_LADDERS: &[PinnedLadder] = &[
-    ("fixtures2/behavior/return_tuple_ladder.fz", &[("build/1", 17, true)]),
+    ("fixtures2/behavior/return_tuple_ladder.fz", &[]),
     ("fixtures2/behavior/json_roundtrip.fz", &[]),
 ];
 

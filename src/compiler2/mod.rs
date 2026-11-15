@@ -95,11 +95,6 @@ pub(crate) use pull::{ProductKey, ProductScope, PullSession};
 pub(crate) use reach::ReachKey;
 pub use scope::ScopeSnapshot;
 pub(crate) use semantic::CallableConstructionTargetKey;
-/// The widening budget is the fixpoint's own constant; nothing outside
-/// `semantic` acts on it, and only the telemetry tests read it — to check that
-/// a widening event can only appear past it.
-#[cfg(test)]
-pub(crate) use semantic::RETURN_WIDENING_BUDGET;
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteResolution, CallSiteSummary,
     CallTargetSummary, CallableDemand, CallableFlowFact, CallableSurface, ContributionMap, ContributionReplace,

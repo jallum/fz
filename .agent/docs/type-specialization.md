@@ -258,15 +258,12 @@ its literals widened (`ClassReach::Returned`). That class is a recursive key's;
 a non-recursive key has no ascent to bound and keeps a returned position as the
 evidence states it. The return carries that callable
 out, so a key that dropped its identity would publish, to every caller, one
-return holding every callable that reached it. The depth
-cap applies to LIST families only: `Types::convergence_class_at` checks
-`ADDRESS_COLLAPSE_DEPTH` inside its `is_pure_list_family` branch, so a tuple,
-map or resource nest at a returned position recurses uncapped and is bounded
-only by the type that arrives. Every program built to exercise that already
-fails to terminate at base for fz-kdt.177's reason, so the uncapped case is a
-reading of the code rather than a measured divergence. Folding the two axes
-would have to raise a returned position to `Whole`, which has no collapse at
-all.
+return holding every callable that reached it. `Types::convergence_class_at`
+carries no depth bound of its own: a list, tuple, map or resource nest at a
+returned position recurses on the type that arrives, and what stops a nest from
+growing is the clash fold ([the clash rule](#the-clash-rule)), which cuts the
+type that repeats itself before it reaches the key. Folding the two axes would
+have to raise a returned position to `Whole`, which has no collapse at all.
 
 Positions the RECURSION supplies are found as a LEAST FIXPOINT: a position is
 supplied when a self-call hands it a value the caller held nowhere, or held only
@@ -378,11 +375,12 @@ still forwards its arguments (fz-kdt.214).
 Termination is a theorem, not a property of lucky inputs. Four facts carry it:
 numeric literal chains cannot exist (the lattice has no numeric singletons —
 see [`set-theoretic-types`](set-theoretic-types.md)); atom chains are bounded
-by the program's finite atom set; and structural deepening is cut by the
-return join's widening operator (`ActivationMap::define_return`,
-`RETURN_WIDENING_BUDGET`): past N strict ascents of one activation's return
-within an epoch the growing spine collapses via `convergence_class`, past 2N
-it tops out at `any`. The fourth fact covers the callable slot, which the others
+by the program's finite atom set; and structural deepening is cut where it
+repeats ([the clash rule](#the-clash-rule)), with the return join's widening
+operator (`ActivationMap::define_return`, `RETURN_WIDENING_BUDGET`) behind it
+for the ladders no ancestor can cover: past N strict ascents of one
+activation's return within an epoch the growing spine collapses via
+`convergence_class`, past 2N it tops out at `any`. The fourth fact covers the callable slot, which the others
 do not reach: no activation key holds a closure of a lambda inside the captures
 of a closure of the same lambda (`Types::fold_self_nested_closures`, applied
 first in `derive_activation_key_arrow` to every slot, `Whole` included). Where
@@ -425,22 +423,21 @@ documentation.
 `return_ladders_are_pinned_per_activation` in `drive_test.rs` is the pin. It
 pulls two fixtures through that product path and compares, per activation, every
 return revised more than five times against a table of (function label,
-revisions, widened), asserting nothing else in those compiles climbs or widens.
+revisions, widened). The table is empty for both fixtures: no activation of
+either climbs past the ceiling, and nothing in those compiles widens.
 
 `return_tuple_ladder.fz` is the bare reproducer: `def build(n), do: {n,
-build(n - 1)}` has one activation, analyzed 19 times, with a return revised 17
-times that ends at the widening budget. Its caller pays too, without climbing:
-`main/0` is re-analyzed 22 times because each rung retypes the argument it hands
-`dbg/1`, while its own return moves twice. Re-analysis and ascent are separate
-costs and only one of them is the ladder.
+build(n - 1)}` has one activation, analyzed 6 times, with a return revised 3
+times; the third rung repeats the tuple the first holds, the clash rule folds it,
+and the ladder ends there rather than at the widening budget.
+`compiler2_tuple_return_ladder_cost_does_not_depend_on_the_ladders_length`
+compiles the program recursing to 3 and to 9 and finds the same counts. Its
+caller does not climb: `main/0` is re-analyzed 5 times, once when `build/1`'s
+concluded return moves, and its own return moves once.
 
-`json_roundtrip.fz` is the goal program and shows the same defect at scale:
-thirty-one activations past the ceiling, of which `JSON.array_item/2` and
-`JSON.array_next/2` supply a dozen each — one per level of the recursive value
-type — and five reach seventeen and widen (`JSON.value/1`, `JSON.val/1`,
-`JSON.decode/1`, `JSON.array/2`, `JSON.array_element/2`). The other four `json_*`
-fixtures share its decode loop and measure the same climb, so pinning the goal
-program pins them too.
+`json_roundtrip.fz` is the goal program: no activation of it climbs past the
+ceiling. The other four `json_*` fixtures share its decode loop, so pinning the
+goal program pins them too.
 
 Two companions fail from opposite ends. `behavior/recursive_typedef.fz` declares
 the type the ladder is reaching for, `@type t :: :start | {integer, t}`, and
@@ -448,8 +445,9 @@ stalls before any return can climb: `DeriveTypeDef(t)` waits on the
 `TypeDefined(t)` it alone produces, and `World::unresolved_issue` reports that
 self-reference as a `resolve/type-alias` diagnostic at the `@type` declaration.
 `behavior/return_tuple_accumulator.fz` grows the same nesting in an argument
-instead, so each rung keys a new activation with a fresh budget and the drive
-does not terminate, which is why that fixture is deferred.
+instead, so each rung would key a new activation with a fresh budget; the
+evidence row of each rung repeats the standing row's tuple, the clash rule folds
+the accumulator column where it grew, and the program compiles and runs.
 
 These counts are whole-compile totals on one cold compile, not the ladder's own
 round counter. `ActivationSlot::ascents` resets to zero when an activation is
@@ -488,6 +486,40 @@ Because evidence only ascends between ground shifts (the return store joins by
 union; descent requires a rebased publisher — see
 [`fact-engine`](fact-engine.md)), a transient low read can never freeze or
 flap a caller's return: re-derivations join upward and equal joins are quiet.
+
+### The clash rule
+
+A function that wraps its argument and calls itself (`f(x) = f({x})`) hands the
+analysis a type one level deeper on every pass. `Types::clash_fold(old, new)`
+(`types/clash.rs`) is the widening that ends it, the clash rule of Van Hentenryck,
+Cortesi and Le Charlier (PLDI'94): compare the previous iterate with the new one
+slot by slot, and fold to `any` the slot that gained a constructor one of its own
+ancestors already has.
+
+- A node's HEAD is its constructor kind. A tuple's head carries its arity and
+  the atom in first position; a map's carries its key set (a struct's module key
+  is not a slot).
+- A node CLASHES when its set of heads grew. It folds only when an ancestor's
+  heads already cover it. A new head under a head that does not cover it is
+  ordinary growth, as is the first rung out of a bare leaf: a clash at the root
+  has no ancestor and never folds.
+- The fold's `kind` is `cycle` when the node's values lie inside the covering
+  ancestor's and `replace` when the ancestor covers its heads but not all its
+  values.
+
+Detection is a read-only walk over `&Types` that builds a plan of cut points and
+interns nothing; only a non-empty plan takes `&mut Types` to rebuild the nodes on
+the folded paths. A call is cheap to reject: it returns at once when the iterates
+are equal or either holds no tuple, list, resource or map, and only then asks
+whether the new iterate is a subtype of the old. Folding is idempotent.
+
+Two sites run it. The EVIDENCE site (`World::normalize_contributions`) folds each
+column of a contribution against the activation's standing row. The RETURN site
+(`ActivationMap::define_return`) folds the joined return against the previous
+one. Each fold emits `fz.compiler2.type.clash_folded` (see
+[`telemetry`](telemetry.md)). The widening budget stays behind the rule for
+leaf-only ladders (a ladder that grows atom by atom), which no ancestor can
+cover; `Types::convergence_class_at` carries no depth cap of its own.
 
 ### The ascent ladder, and where it may not climb
 

@@ -1313,6 +1313,10 @@ impl ActivationMap {
             };
         }
         slot.ascents += 1;
+        let joined = match slot.return_ty {
+            Some(previous) => types.clash_fold(previous, joined).unwrap_or(joined),
+            None => joined,
+        };
         let stored = if slot.ascents > 2 * RETURN_WIDENING_BUDGET {
             types.any()
         } else if slot.ascents > RETURN_WIDENING_BUDGET {

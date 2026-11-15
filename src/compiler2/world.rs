@@ -66,6 +66,7 @@ use super::transport::{
     TransportStore,
 };
 use super::typedef::{TypeDef, TypeDefMap};
+use super::types::clash::ClashFold;
 use super::types::{ClosureTarget, KeyDemand, MapKey, Ty, Types};
 use super::work_start::{WorkLedger, WorkStartReason, WorkStartTally};
 use crate::ir_interp::AnyValue as RuntimeValue;
@@ -137,6 +138,32 @@ pub(crate) struct LiteralWidening {
     pub(crate) after: Ty,
 }
 
+/// Where in the fixpoint a clash fold fired.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClashSite {
+    /// An activation's standing evidence row met a new contribution.
+    Evidence,
+    /// An activation's previous return met the next round's.
+    Return,
+}
+
+impl ClashSite {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            ClashSite::Evidence => "evidence",
+            ClashSite::Return => "return",
+        }
+    }
+}
+
+/// One clash fold, with the function whose evidence or return it folded.
+#[derive(Clone, Debug)]
+pub(crate) struct ClashReport {
+    pub(crate) site: ClashSite,
+    pub(crate) function: FunctionId,
+    pub(crate) fold: ClashFold,
+}
+
 pub struct World {
     code: CodeMap,
     modules: ModuleMap,
@@ -197,6 +224,9 @@ pub struct World {
     /// reports -- the same split `warning_diagnostics` uses.
     widened_literal_slots: HashSet<LiteralWidening>,
     unreported_literal_slots: Vec<LiteralWidening>,
+    /// Clash folds the fixpoint made and the execution context has not yet
+    /// reported -- the same producer/drain split as the literal widenings.
+    unreported_clash_folds: Vec<ClashReport>,
     /// Readiness steps the drain arbiter produced since the last flush
     /// (`drive::settle_quiescent`). `World` owns the mutation; the execution
     /// context observes it — the same split `warning_diagnostics` uses, and
@@ -361,6 +391,7 @@ impl World {
             warning_diagnostics: Vec::new(),
             widened_literal_slots: HashSet::default(),
             unreported_literal_slots: Vec::new(),
+            unreported_clash_folds: Vec::new(),
             quiescence_steps: Vec::new(),
             work_graph: WorkGraph::new(),
             #[cfg(test)]
@@ -960,6 +991,7 @@ impl World {
             // the rows under one key cannot grow a tower the key has cut.
             self.types.address_inputs(&mut normalized);
             self.types.fold_self_nested_closures_in_inputs(&mut normalized);
+            self.fold_clashes_against_standing_row(&activation, &mut normalized);
             let normalized = if self
                 .body_keying(activation.function)
                 .is_some_and(|keying| keying.recursive)
@@ -987,6 +1019,20 @@ impl World {
             }
         }
         next
+    }
+
+    /// Fold each column of a new contribution where it repeats the type the
+    /// activation's standing row already holds in that column.
+    fn fold_clashes_against_standing_row(&mut self, activation: &ActivationKey, columns: &mut [Ty]) {
+        let Some(standing) = self.activation_inputs.get(activation) else {
+            return;
+        };
+        for (column, own) in columns.iter_mut().zip(standing.joined()) {
+            if let Some(folded) = self.types.clash_fold(*own, *column) {
+                *column = folded;
+            }
+        }
+        self.report_clash_folds(ClashSite::Evidence, activation.function);
     }
 
     /// The targets this callsite NAMED. A callsite the walk never reached and
@@ -2645,6 +2691,18 @@ impl World {
         }
     }
 
+    /// Move the folds `Types` noted into the report queue, naming the site
+    /// and function they fired for.
+    fn report_clash_folds(&mut self, site: ClashSite, function: FunctionId) {
+        let folds = self.types.take_clash_folds();
+        self.unreported_clash_folds
+            .extend(folds.into_iter().map(|fold| ClashReport { site, function, fold }));
+    }
+
+    pub(crate) fn take_clash_folds(&mut self) -> Vec<ClashReport> {
+        std::mem::take(&mut self.unreported_clash_folds)
+    }
+
     pub(crate) fn take_literal_widenings(&mut self) -> Vec<LiteralWidening> {
         std::mem::take(&mut self.unreported_literal_slots)
     }
@@ -3526,7 +3584,9 @@ impl World {
         evidence: Option<Ty>,
     ) -> super::semantic::ReturnDefine {
         let rebased = self.work_graph.rebased(&Job::AnalyzeActivation(key.clone()));
-        self.activations.define_return(&mut self.types, key, evidence, rebased)
+        let outcome = self.activations.define_return(&mut self.types, key, evidence, rebased);
+        self.report_clash_folds(ClashSite::Return, key.function);
+        outcome
     }
 
     pub fn define_callsite_summary(

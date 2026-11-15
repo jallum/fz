@@ -56,6 +56,7 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
         self.emit_job_completion(&completion);
         self.emit_activation_input_budget_collapses();
         self.emit_literal_widenings();
+        self.emit_clash_folds();
         completion
     }
 
@@ -163,6 +164,29 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
             &crate::measurements! { collapses: collapses },
             &crate::telemetry::Metadata::new(),
         );
+    }
+
+    /// Report each clash fold the fixpoint made: a type that repeated itself
+    /// was folded to `any` at the slot where it grew. `site` says whether an
+    /// evidence row or a return folded, `kind` whether the type came back to
+    /// its ancestor (`cycle`) or the ancestor only shares its shape
+    /// (`replace`), and `path` is the slot path from the folded type's root.
+    fn emit_clash_folds(&mut self) {
+        for report in self.world.take_clash_folds() {
+            self.telemetry.dispatch(
+                &["fz", "compiler2", "type", "clash_folded"],
+                &crate::measurements! {
+                    ancestor_depth: report.fold.ancestor_depth as u64,
+                    path_len: report.fold.path.len() as u64,
+                },
+                &crate::metadata! {
+                    site: report.site.label(),
+                    kind: report.fold.kind.label(),
+                    path: report.fold.path_label(),
+                    function_id: u64::from(report.function.as_u32()),
+                },
+            );
+        }
     }
 
     /// Report each slot whose activation key named a kind where its evidence

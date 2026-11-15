@@ -64,14 +64,10 @@ pub(crate) struct InputDemand {
     /// `Whole` here means "this value is the return", so the key keeps its
     /// ground CLASS: list families normalise to `list(elem)` with the element
     /// kept at every depth, and callable brands still erase.
-    /// `Types::convergence_class_at` caps depth at `ADDRESS_COLLAPSE_DEPTH`
-    /// for LIST families only -- the cap is checked inside its
-    /// `is_pure_list_family` branch, so a tuple, map or resource nest at a
-    /// returned position recurses uncapped and is bounded only by the type
-    /// that arrives. Every program built to exercise that (a self-nesting or
-    /// mutually nesting accumulator) already fails to terminate at base for
-    /// fz-kdt.177's reason, so the uncapped case is a reading of the code, not
-    /// a measured divergence. Joining the two axes into one mask would have to
+    /// `Types::convergence_class_at` has no depth cap: a list, tuple, map or
+    /// resource nest at a returned position recurses on the type that arrives,
+    /// and the clash fold (`Types::clash_fold`) has already cut any type that
+    /// repeats itself. Joining the two axes into one mask would have to
     /// raise a returned position to `Whole`, which has no collapse at all
     /// (fz-kdt.200) -- so they stay two.
     pub(crate) returned: Vec<DispatchDemand>,

@@ -317,6 +317,27 @@ path that could return a count to its caller, `push_row`, produced none of the
 store makes it per-`World` by construction, so an undrained collapse dies with
 the `World` that produced it instead of leaking into the next reader.
 
+`[fz, compiler2, type, clash_folded]` is public (allowlisted in
+`is_public_compiler2_trace_event`). It fires from
+`ExecutionContext::complete_job`, once per slot a clash fold cut: a type that
+repeated itself was folded to `any` at the slot where it grew (see
+[the clash rule](type-specialization.md#the-clash-rule)).
+`measurements.ancestor_depth` is the depth of the covering ancestor, root 0;
+`measurements.path_len` is the length of the slot path from the folded type's
+root. `metadata.site` is `evidence` (an activation's standing input row met a
+new contribution, `World::normalize_contributions`) or `return` (an
+activation's previous return met the next round's, `ActivationMap::define_return`);
+`metadata.kind` is `cycle` (the node's values lie among the ancestor's) or
+`replace` (the ancestor covers the node's functors but not all its values);
+`metadata.path` is the `.`-separated slot indices; `metadata.function_id` is
+the function whose row or return folded. The folds reach the emitter by the
+producer/drain split `activation_inputs.budget_collapsed` uses: `Types::clash_fold`
+notes each fold in `Types::clash_folds`, the `World` method that called it moves
+them into its report queue with the site and function (`report_clash_folds`),
+and `ExecutionContext` drains the queue with `World::take_clash_folds`. A
+fixture asserts the count as `# assert.metric.type.clash_folded: N`. A run that
+folds nothing dispatches nothing.
+
 `[fz, compiler2, work_graph, applied]` is public. Every
 `ExecutionContext::complete_job` call routes through `emit_job_completion`
 (`drive.rs`), carrying the raw `JobCompletion` under

@@ -25,26 +25,37 @@ struct EvaluatedFixture {
     metrics: BTreeMap<String, u64>,
 }
 
-#[derive(Default)]
-struct ReturnWideningCounter {
+/// Counts the events of one name that reach the telemetry bus.
+struct EventCounter {
+    name: &'static [&'static str],
     count: Arc<Mutex<u64>>,
 }
 
-impl ReturnWideningCounter {
+impl EventCounter {
+    fn new(name: &'static [&'static str]) -> Self {
+        Self {
+            name,
+            count: Arc::default(),
+        }
+    }
+
     fn handler(&self) -> Box<dyn Handler> {
         let count = Arc::clone(&self.count);
+        let name = self.name;
         Box::new(move |event: &Event<'_, '_, '_>| {
-            if event.name == ["fz", "compiler2", "return_type", "widened"] {
-                let mut count = count.lock().expect("return widening counter lock");
-                *count += 1;
+            if event.name == name {
+                *count.lock().expect("event counter lock") += 1;
             }
         })
     }
 
     fn get(&self) -> u64 {
-        *self.count.lock().expect("return widening counter lock")
+        *self.count.lock().expect("event counter lock")
     }
 }
+
+const RETURN_WIDENED: &[&str] = &["fz", "compiler2", "return_type", "widened"];
+const CLASH_FOLDED: &[&str] = &["fz", "compiler2", "type", "clash_folded"];
 
 fn discover_contract_fixtures() -> Vec<ContractFixture> {
     let filter = std::env::var("FIXTURE2_CONTRACT_FILTER").ok();
@@ -93,8 +104,10 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
         .unwrap_or_else(|| panic!("fixture {} is missing `root:`", fixture.name));
 
     let tel = ConfiguredTelemetry::new();
-    let widened = ReturnWideningCounter::default();
-    tel.attach(&["fz", "compiler2", "return_type", "widened"], widened.handler());
+    let widened = EventCounter::new(RETURN_WIDENED);
+    let clash_folded = EventCounter::new(CLASH_FOLDED);
+    tel.attach(widened.name, widened.handler());
+    tel.attach(clash_folded.name, clash_folded.handler());
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
@@ -142,6 +155,7 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
     metrics.insert("semantic.callsites".to_string(), facts.len() as u64);
     metrics.insert("call_edges.count".to_string(), facts.len() as u64);
     metrics.insert("return_type.widened".to_string(), widened.get());
+    metrics.insert("type.clash_folded".to_string(), clash_folded.get());
 
     EvaluatedFixture {
         facts,

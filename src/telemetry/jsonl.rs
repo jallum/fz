@@ -1315,6 +1315,7 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "job"]
             | ["fz", "compiler2", "work_graph", "applied"]
             | ["fz", "compiler2", "activation_inputs", "budget_collapsed"]
+            | ["fz", "compiler2", "type", "clash_folded"]
             | ["fz", "compiler2", "work_graph", "quiesced"]
             | ["fz", "compiler2", "work_graph", "dependencies_moved"]
             | ["fz", "compiler2", "native_program", "list_retention"]
