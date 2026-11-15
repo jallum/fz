@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T18:35:11Z",
+  "description": "fz-9zq.4 (#639) replaced seven hand-copied five-axis traversals with Descr::children / map_children (types/children.rs). These still walk the axes by hand: clash.rs and addressed.rs (they carry state), canon/format (they render text), and collect_protocol_domain_obligations (positive signatures only; documented in type-world.md). For each, decide on paper whether it can use the shared child walk with its state threaded through (for example, a ChildRole filter for positive-only), or whether it asks a different question and stays separate, documented why. One question, one implementation.",
+  "id": "fz-9zq.9",
+  "labels": [],
+  "parent": "fz-9zq",
+  "priority": 2,
+  "status": "open",
+  "title": "Stateful type traversals share the Descr child walk",
+  "type": "task",
+  "updated_at": "2026-11-15T18:35:11Z"
+}
