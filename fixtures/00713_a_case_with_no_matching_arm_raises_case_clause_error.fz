@@ -1,14 +1,18 @@
 #---
 # purpose: "a case no arm matches raises CaseClauseError showing the value"
 # expect: abort
-# oracle: 00713_a_case_with_no_matching_arm_raises_case_clause_error.oracle.exs
-# oracle.stamp: 61f109c2b754e9ef
+# oracle: self
+# oracle.stamp: e797ba01c449c99c
 #---
-defp fetch(), do: {:error, 2}
+defmodule Main do
+  defp fetch(), do: {:error, 2}
 
-def main() do
-  result = case fetch() do
-    {:ok, n} -> n
+  def main() do
+    result = case fetch() do
+      {:ok, n} -> n
+    end
+    IO.inspect(result)
   end
-  dbg(result)
 end
+
+Main.main()

@@ -1,8 +1,12 @@
 #---
 # purpose: a function whose name holds a non-ASCII letter is defined and called
-# oracle: 01203_a_function_may_be_named_with_non_ascii_letters.oracle.exs
-# oracle.stamp: 19225fba28c91a44
+# oracle: self
+# oracle.stamp: 0c102f7cd5fdb341
 #---
-def naïve(x), do: x * 2
+defmodule Main do
+  def naïve(x), do: x * 2
 
-def main(), do: dbg(naïve(21))
+  def main(), do: IO.inspect(naïve(21))
+end
+
+Main.main()

@@ -1,7 +1,7 @@
 #---
 # purpose: "swapping the two Enum.reduce/3 statements does not move either published return"
-# oracle: oracle.exs
-# oracle.stamp: 5176b0676cd0b241
+# oracle: self
+# oracle.stamp: a4b558565886e6ed
 #---
 #
 # The statement-order twin of `reduce_users_key_apart_by_element.fz`. Its
@@ -9,7 +9,11 @@
 # return `List.reduce_step/3` published depended on which user the fixpoint
 # analysed first (fz-kdt.190), so the same program written the other way round
 # is a different measurement, not a duplicate.
-def main() do
-  dbg(Enum.reduce(["a", "b"], [], fn (x, acc) -> [x <> "!" | acc] end))
-  dbg(Enum.reduce([1, 2], [], fn (x, acc) -> [x + 200 | acc] end))
+defmodule Main do
+  def main() do
+    IO.inspect(Enum.reduce(["a", "b"], [], fn (x, acc) -> [x <> "!" | acc] end))
+    IO.inspect(Enum.reduce([1, 2], [], fn (x, acc) -> [x + 200 | acc] end))
+  end
 end
+
+Main.main()

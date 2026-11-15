@@ -1,11 +1,15 @@
 #---
 # purpose: "raise with a message fails the process with a RuntimeError, which prints its one line on stderr and exits 1"
 # expect: abort
-# oracle: 00702_raise_with_a_message_raises_a_runtime_error.oracle.exs
-# oracle.stamp: 13ba7340f0a45150
+# oracle: self
+# oracle.stamp: 0925a376975cf16e
 #---
-def main() do
-  dbg(:before)
-  raise "boom"
-  dbg(:never_printed)
+defmodule Main do
+  def main() do
+    IO.inspect(:before)
+    raise "boom"
+    IO.inspect(:never_printed)
+  end
 end
+
+Main.main()

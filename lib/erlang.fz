@@ -24,6 +24,25 @@ defmodule :erlang do
   extern "fz" defp fz_float_to_fixed_binary(float, integer) :: binary
 
   @doc """
+  Raises `reason` with the kind `:error`, as `panic/1` does. A `rescue`
+  sees an exception unchanged and any other value as an `ErlangError`
+  whose `original` is that value; `catch :error, value` sees the value
+  itself.
+
+  ## Examples
+
+      try do
+        :erlang.error(:boom)
+      rescue
+        e in ErlangError -> e.original
+      end
+      #=> :boom
+
+  """
+  @spec error(any) :: never
+  def error(reason), do: panic(reason)
+
+  @doc """
   Raises again what a `catch kind, reason` clause caught, with the same
   kind: `:error`, `:throw` or `:exit`. The stacktrace is accepted for
   Erlang's sake and ignored: fz carries no stacktraces.

@@ -1,7 +1,7 @@
 #---
 # purpose: "defstruct takes a default per field, in a bracketed list or as bare keywords; a struct literal fills each field it omits from its default, a field with no default is nil, and a given field wins over its default"
-# oracle: 00859_a_struct_literal_fills_the_fields_it_omits_from_the_declared_defaults.oracle.exs
-# oracle.stamp: fd768286e49a07ce
+# oracle: self
+# oracle.stamp: dfae2cd3b0cd79eb
 #---
 #
 # A default is a literal written in the declaration. Every literal that
@@ -18,22 +18,26 @@ defmodule Nest do
   defstruct meta: %{k: [1, 2]}, flag: true, none: nil, empty: []
 end
 
-def suit(%Card{suit: suit}), do: suit
+defmodule Main do
+  def suit(%Card{suit: suit}), do: suit
 
-def main() do
-  dbg(%Card{})
-  dbg(%Card{name: "ace", rank: 14})
-  dbg(%Card{tags: [], suit: :hearts})
-  dbg(suit(%Card{}))
-  c = %Card{name: "two"}
-  dbg(%{c | ratio: 2.5})
-  dbg(c.tags)
-  dbg(%Conf{})
-  dbg(%Conf{path: "p", modes: []})
-  dbg(%Conf{}.label)
-  dbg(%Conf{}.pair)
-  dbg(%Nest{})
-  dbg(%Nest{meta: %{}})
-  dbg(%Nest{}.meta.k)
-  dbg(%Nest{} == %Nest{flag: true})
+  def main() do
+    IO.inspect(%Card{})
+    IO.inspect(%Card{name: "ace", rank: 14})
+    IO.inspect(%Card{tags: [], suit: :hearts})
+    IO.inspect(suit(%Card{}))
+    c = %Card{name: "two"}
+    IO.inspect(%{c | ratio: 2.5})
+    IO.inspect(c.tags)
+    IO.inspect(%Conf{})
+    IO.inspect(%Conf{path: "p", modes: []})
+    IO.inspect(%Conf{}.label)
+    IO.inspect(%Conf{}.pair)
+    IO.inspect(%Nest{})
+    IO.inspect(%Nest{meta: %{}})
+    IO.inspect(%Nest{}.meta.k)
+    IO.inspect(%Nest{} == %Nest{flag: true})
+  end
 end
+
+Main.main()

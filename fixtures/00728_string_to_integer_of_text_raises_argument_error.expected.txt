@@ -1,4 +1,0 @@
-** (ArgumentError) errors were found at the given arguments:
-
-  * 1st argument: not a textual representation of an integer
-

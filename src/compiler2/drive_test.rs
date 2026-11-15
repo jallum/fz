@@ -14418,13 +14418,12 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
     dispatching.dedup();
     assert_eq!(
         dispatching,
-        // fz-sc8.37: `["Kernel.===/2"]` -> `["Kernel.===/2", "main/0"]`. `not in`
-        // lowers to a `case` with a halting miss arm, so `dbg(not m)` receives a
-        // result typed as the literal union `false | true` and `dbg` dispatches
-        // per literal.
-        ["Kernel.===/2", "main/0"],
+        // `not in` lowers to a `case` with a halting miss arm, so `IO.inspect(x not in map)`
+        // receives a result typed as the literal union `false | true` and
+        // `IO.inspect` dispatches per literal.
+        ["Kernel.===/2", "Main.main/0"],
         "each protocol receiver should settle to a direct impl rather than lower a dispatch edge; the two \
-         multi-target callsites left are `main/0`'s `dbg` over a `case` result, and one inside `===`, whose `any`/`any` clause serves every non-numeric pair \
+         multi-target callsites left are `Main.main/0`'s `IO.inspect` over a `case` result, and one inside `===`, whose `any`/`any` clause serves every non-numeric pair \
          at once and calls an extern that is keyed per operand type",
     );
 }
@@ -20494,7 +20493,7 @@ fn tuple_ladder_costs(file_name: &str, source: &str) -> TupleLadderCosts {
             .collect::<Vec<_>>()
     };
     let build = function_id(&functions, "build", 1);
-    let main = function_id(&functions, "main", 0);
+    let main = module_function_id(&functions, "Main", "main", 0);
     TupleLadderCosts {
         build_analyses: counts_for(&analyses.borrow(), build),
         build_return_revisions: counts_for(&revisions.borrow(), build),
@@ -22444,7 +22443,7 @@ fn call_tails_of(program: &BackendProgram, world: &crate::compiler2::World, labe
 #[test]
 fn a_call_on_one_module_is_a_direct_call_keyed_by_the_module() {
     let settled = Drive::fixture(864).dump_stage(super::dump::DumpStage::Backend);
-    let calls = call_tails_of(&settled.backend_program(), settled.world(), "pick/1");
+    let calls = call_tails_of(&settled.backend_program(), settled.world(), "Main.pick/1");
     assert_eq!(calls.len(), 2, "one executable of pick/1 per module passed: {calls:#?}");
     for call in &calls {
         let BackendTail::DirectCall {
@@ -22468,7 +22467,7 @@ fn a_call_on_one_module_is_a_direct_call_keyed_by_the_module() {
 #[test]
 fn a_call_on_one_of_two_modules_dispatches_on_the_module_and_passes_only_the_arguments() {
     let settled = Drive::fixture(865).dump_stage(super::dump::DumpStage::Backend);
-    let calls = call_tails_of(&settled.backend_program(), settled.world(), "pick/1");
+    let calls = call_tails_of(&settled.backend_program(), settled.world(), "Main.pick/1");
     let [
         BackendTail::DirectCall {
             target: CallEdge::Dispatch(dispatch),
@@ -22493,7 +22492,7 @@ fn a_call_on_one_of_two_modules_dispatches_on_the_module_and_passes_only_the_arg
 #[test]
 fn a_call_on_any_atom_dispatches_over_the_modules_that_have_the_function_and_keeps_a_miss() {
     let settled = Drive::fixture(867).dump_stage(super::dump::DumpStage::Backend);
-    let calls = call_tails_of(&settled.backend_program(), settled.world(), "sides_of/1");
+    let calls = call_tails_of(&settled.backend_program(), settled.world(), "Main.sides_of/1");
     let on_a_module = calls
         .iter()
         .filter(|call| matches!(call, BackendTail::DirectCall { selector: Some(_), .. }))
@@ -22570,7 +22569,7 @@ fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
 const SUPPLIED_ACCUMULATOR_PROGRAMS: &[(&str, &str, &str, usize)] = &[
     (
         "three accumulators, each handed to a call in the base clause",
-        "go/4",
+        "Main.go/4",
         include_str!("../../fixtures/01075_three_accumulators_split_a_list_by_threshold.fz"),
         2,
     ),
@@ -22643,7 +22642,7 @@ fn compiler2_two_seeds_of_different_element_types_keep_their_returns_apart() {
         .executables()
         .iter()
         .filter(|executable| {
-            crate::compiler2::canon::function_label(world, executable.key.activation.function) == "go/2"
+            crate::compiler2::canon::function_label(world, executable.key.activation.function) == "Main.go/2"
         })
         .map(|executable| {
             world
@@ -22714,11 +22713,11 @@ fn compiler2_two_seeds_of_a_directly_returned_accumulator_key_their_users_apart(
             .collect()
     };
     assert_eq!(
-        activations_of("go/2").len(),
+        activations_of("Main.go/2").len(),
         2,
         "one go/2 activation per outside seed, whichever way the accumulator is returned"
     );
-    let tellers = activations_of("tell/1");
+    let tellers = activations_of("Main.tell/1");
     assert_eq!(
         tellers.len(),
         2,
@@ -24280,7 +24279,9 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
         // recursive key does, so callers that differ only in such freight share one activation.
         // 138 -> 136: an exception record nothing asks about keys by its class.
         // 136 -> 133: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        133,
+        // 133 -> 132: the fixture calls `IO.inspect` where it called `dbg` (two fewer activations)
+        // inside `Main`, whose root script calls `Main.main/0` (one more).
+        132,
         "activations of the whole program"
     );
 }
@@ -24400,7 +24401,7 @@ fn a_request_queued_behind_a_parked_job_is_served_at_the_drain() {
     compiler.submit_code(CodeSubmission {
         name: None,
         text: include_str!("../../fixtures/01069_a_request_queued_behind_a_parked_job_is_served_at_the_drain.fz")
-            .replace("dbg(by_name(spans()))", "length(by_name(spans()))"),
+            .replace("IO.inspect(by_name(spans()))", "length(by_name(spans()))"),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,

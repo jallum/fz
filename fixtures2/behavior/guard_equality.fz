@@ -1,7 +1,7 @@
 #---
 # purpose: "`==` means the same thing in a guard as in an expression, and matching stays strict"
-# oracle: oracle.exs
-# oracle.stamp: d5ff4a8ba8b108dc
+# oracle: self
+# oracle.stamp: 0c776f7d4078de5a
 #---
 #
 # # guard_equality
@@ -32,43 +32,52 @@
 #
 # Both halves are pinned below, because fixing the guard by widening everything
 # would be just as wrong as the bug.
-defp same?(a, b) when a == b, do: :equal
-defp same?(_a, _b), do: :different
+defmodule Main do
+  defp same?(a, b) when a == b, do: :equal
 
-defp differs?(a, b) when a != b, do: :differs
-defp differs?(_a, _b), do: :same
+  defp same?(_a, _b), do: :different
 
-defp pick(1), do: :matched_int
-defp pick(1.0), do: :matched_float
-defp pick(_x), do: :no_match
+  defp differs?(a, b) when a != b, do: :differs
 
-defp pinned(a, b) when a == b, do: :pinned_equal
-defp pinned(_a, _b), do: :pinned_different
+  defp differs?(_a, _b), do: :same
 
-def main() do
-  # the operator, in a guard
-  dbg(same?(1, 1.0))
-  dbg(same?(1, 1))
-  dbg(same?(1.0, 1))
-  dbg(same?(2, 1.0))
-  dbg(same?(:a, :a))
-  dbg(same?("x", "x"))
-  dbg(same?([1], [1.0]))
+  defp pick(1), do: :matched_int
 
-  # the operator, in an expression -- the same answers
-  dbg(1 == 1.0)
-  dbg(1 === 1.0)
-  dbg(2 == 1.0)
-  dbg([1] == [1.0])
+  defp pick(1.0), do: :matched_float
 
-  # negation in a guard
-  dbg(differs?(1, 1.0))
-  dbg(differs?(1, 2))
+  defp pick(_x), do: :no_match
 
-  # MATCHING stays strict: a float never matches an integer literal
-  dbg(pick(1))
-  dbg(pick(1.0))
-  dbg(pick(2))
+  defp pinned(a, b) when a == b, do: :pinned_equal
 
-  dbg(pinned(1, 1.0))
+  defp pinned(_a, _b), do: :pinned_different
+
+  def main() do
+    # the operator, in a guard
+    IO.inspect(same?(1, 1.0))
+    IO.inspect(same?(1, 1))
+    IO.inspect(same?(1.0, 1))
+    IO.inspect(same?(2, 1.0))
+    IO.inspect(same?(:a, :a))
+    IO.inspect(same?("x", "x"))
+    IO.inspect(same?([1], [1.0]))
+
+    # the operator, in an expression -- the same answers
+    IO.inspect(1 == 1.0)
+    IO.inspect(1 === 1.0)
+    IO.inspect(2 == 1.0)
+    IO.inspect([1] == [1.0])
+
+    # negation in a guard
+    IO.inspect(differs?(1, 1.0))
+    IO.inspect(differs?(1, 2))
+
+    # MATCHING stays strict: a float never matches an integer literal
+    IO.inspect(pick(1))
+    IO.inspect(pick(1.0))
+    IO.inspect(pick(2))
+
+    IO.inspect(pinned(1, 1.0))
+  end
 end
+
+Main.main()

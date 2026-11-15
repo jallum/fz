@@ -1,8 +1,8 @@
 #---
 # purpose: "a rest that starts between bytes, or that is empty, reads and compares as the bitstring it stands for"
 # kind: run
-# oracle: 01182_a_rest_that_starts_between_bytes_or_at_the_end_reads_as_a_binary_does.oracle.exs
-# oracle.stamp: f93d20a419260933
+# oracle: self
+# oracle.stamp: e830175af684b996
 #---
 #
 # A rest is the binary it is read from and a bit position, and the position is

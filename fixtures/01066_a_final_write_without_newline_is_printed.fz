@@ -1,9 +1,13 @@
 #---
 # purpose: "Output from IO.write with no trailing newline is flushed when the program ends"
-# oracle: 01066_a_final_write_without_newline_is_printed.oracle.exs
-# oracle.stamp: 124e100e9be80dea
+# oracle: self
+# oracle.stamp: d16cfb21b5d92f47
 #---
-def main() do
-  IO.puts("first line")
-  IO.write("no newline")
+defmodule Main do
+  def main() do
+    IO.puts("first line")
+    IO.write("no newline")
+  end
 end
+
+Main.main()

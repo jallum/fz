@@ -1,7 +1,7 @@
 #---
 # purpose: "A dispatch arm is never seated ahead of a sibling holding elements its own surface does not name"
-# oracle: oracle.exs
-# oracle.stamp: ea5e24354d2cc238
+# oracle: self
+# oracle.stamp: 65a87b6c81a57c65
 #---
 #
 # fz-kdt.129 / fz-kdt.131. All three calls reach one
@@ -32,8 +32,12 @@
 #
 # fz-kdt.131 still owns the population one rung wider: a pair whose heads
 # OVERLAP while neither surface contains the other, which no seat can reach.
-def main() do
-  dbg(Enum.all?([:ok, :ok]))
-  dbg(Enum.empty?([:ok, :ok]))
-  dbg(Enum.all?([1, 2]))
+defmodule Main do
+  def main() do
+    IO.inspect(Enum.all?([:ok, :ok]))
+    IO.inspect(Enum.empty?([:ok, :ok]))
+    IO.inspect(Enum.all?([1, 2]))
+  end
 end
+
+Main.main()

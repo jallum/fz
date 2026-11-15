@@ -1,8 +1,12 @@
 #---
 # purpose: "A for in the body of another for collects a list per outer element"
-# oracle: 01010_a_for_nested_in_the_body_of_another_for.oracle.exs
-# oracle.stamp: 67fbcd0f384c7642
+# oracle: self
+# oracle.stamp: 9421da2f0ee1e6eb
 #---
-def main() do
-  dbg(for x <- [1, 2, 3], do: (for y <- [x, x * 10], do: y + 1))
+defmodule Main do
+  def main() do
+    IO.inspect(for x <- [1, 2, 3], do: (for y <- [x, x * 10], do: y + 1))
+  end
 end
+
+Main.main()

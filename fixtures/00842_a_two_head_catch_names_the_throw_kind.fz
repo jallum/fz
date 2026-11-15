@@ -1,20 +1,24 @@
 #---
 # purpose: "catch :throw, value is the two-head spelling of the one-head catch, and a throw from a called function reaches it"
-# oracle: 00842_a_two_head_catch_names_the_throw_kind.oracle.exs
-# oracle.stamp: 210d87a98cd57520
+# oracle: self
+# oracle.stamp: 6188ab6fc28d0bd1
 #---
-def find(items) do
-  case items do
-    [] -> :none
-    [first | _] -> throw({:first, first})
+defmodule Main do
+  def find(items) do
+    case items do
+      [] -> :none
+      [first | _] -> throw({:first, first})
+    end
+  end
+
+  def main() do
+    result = try do
+      find([7, 8])
+    catch
+      :throw, {:first, value} -> value
+    end
+    IO.inspect(result)
   end
 end
 
-def main() do
-  result = try do
-    find([7, 8])
-  catch
-    :throw, {:first, value} -> value
-  end
-  dbg(result)
-end
+Main.main()

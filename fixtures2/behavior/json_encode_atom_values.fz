@@ -1,11 +1,15 @@
 #---
 # purpose: "JSON.encode!/1 renders an atom value as the JSON string of its name"
-# oracle: json_encode_atom_values.oracle.exs
-# oracle.stamp: 7827ca62f86e899a
+# oracle: self
+# oracle.stamp: 371c70bce0801f37
 #---
-def main() do
-  dbg(JSON.encode!(:foo))
-  dbg(JSON.encode!([:a, :b]))
-  dbg(JSON.encode!(%{k: :v}))
-  dbg(JSON.encode!(:"with space"))
+defmodule Main do
+  def main() do
+    IO.inspect(JSON.encode!(:foo))
+    IO.inspect(JSON.encode!([:a, :b]))
+    IO.inspect(JSON.encode!(%{k: :v}))
+    IO.inspect(JSON.encode!(:"with space"))
+  end
 end
+
+Main.main()

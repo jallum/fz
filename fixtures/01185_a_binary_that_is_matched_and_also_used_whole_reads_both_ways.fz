@@ -1,8 +1,8 @@
 #---
 # purpose: "a binary that one clause takes apart and another keeps whole, or that shares a function with a tuple clause, answers every clause as it does whole"
 # kind: run
-# oracle: 01185_a_binary_that_is_matched_and_also_used_whole_reads_both_ways.oracle.exs
-# oracle.stamp: 3e6f5a1481530493
+# oracle: self
+# oracle.stamp: ac4d1b44c23ca848
 #---
 #
 # A match reads a binary from a position without making it whole. The clauses

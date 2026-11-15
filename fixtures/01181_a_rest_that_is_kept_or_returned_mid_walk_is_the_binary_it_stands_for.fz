@@ -1,8 +1,8 @@
 #---
 # purpose: "a rest that a walk keeps in a tuple or a list, returns, or hands back unchanged is the binary it stands for, whole and equal to what a copy would hold"
 # kind: run
-# oracle: 01181_a_rest_that_is_kept_or_returned_mid_walk_is_the_binary_it_stands_for.oracle.exs
-# oracle.stamp: a27a01e452b705b6
+# oracle: self
+# oracle.stamp: 493c4aed2f7ff054
 #---
 #
 # A binary that is only taken apart travels as the binary it is read from and

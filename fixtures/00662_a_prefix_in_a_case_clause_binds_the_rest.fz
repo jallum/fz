@@ -1,83 +1,87 @@
 #---
 # purpose: "a literal prefix before <> in a case clause matches a binary that starts with it and binds the remainder, with a guard, nested in a tuple, or against a non-binary subject, as in Elixir"
-# oracle: 00662_a_prefix_in_a_case_clause_binds_the_rest.oracle.exs
-# oracle.stamp: eb6b1949312df9e4
+# oracle: self
+# oracle.stamp: 01139e2be4b0dc8c
 #---
-def option(s) do
-  case s do
-    "--" <> rest -> {:long, rest}
-    "-" <> rest -> {:short, rest}
-    _ -> :operand
+defmodule Main do
+  def option(s) do
+    case s do
+      "--" <> rest -> {:long, rest}
+      "-" <> rest -> {:short, rest}
+      _ -> :operand
+    end
+  end
+
+  def guarded(s) do
+    case s do
+      "--" <> rest when rest != "" -> {:long, rest}
+      "--" <> _ -> :bare_dashes
+      _ -> :operand
+    end
+  end
+
+  def nested(pair) do
+    case pair do
+      {:ok, "id:" <> id} -> {:id, id}
+      {:ok, other} -> {:other, other}
+      {:error, "e:" <> reason} -> {:error, reason}
+      _ -> :unknown
+    end
+  end
+
+  def whole_literals(s) do
+    case s do
+      "a" <> "b" -> :ab
+      "a" <> "bc" -> :abc
+      _ -> :no
+    end
+  end
+
+  def chained(s) do
+    case s do
+      "a" <> "b" <> rest -> rest
+      _ -> :no
+    end
+  end
+
+  def utf8(s) do
+    case s do
+      "é✓" <> rest -> rest
+      _ -> :no
+    end
+  end
+
+  def empty_prefix(s) do
+    case s do
+      "" <> rest -> rest
+    end
+  end
+
+  def main() do
+    IO.inspect(option("--verbose"))
+    IO.inspect(option("-v"))
+    IO.inspect(option("file"))
+    IO.inspect(option(7))
+    IO.inspect(guarded("--x"))
+    IO.inspect(guarded("--"))
+    IO.inspect(guarded("x"))
+    IO.inspect(nested({:ok, "id:42"}))
+    IO.inspect(nested({:ok, "name"}))
+    IO.inspect(nested({:error, "e:boom"}))
+    IO.inspect(nested({:error, "boom"}))
+    IO.inspect(nested(:nope))
+    IO.inspect(whole_literals("ab"))
+    IO.inspect(whole_literals("abc"))
+    IO.inspect(whole_literals("abcd"))
+    IO.inspect(whole_literals("a"))
+    IO.inspect(whole_literals(:ab))
+    IO.inspect(chained("abz"))
+    IO.inspect(chained("a"))
+    IO.inspect(utf8("é✓!"))
+    IO.inspect(utf8("é"))
+    IO.inspect(empty_prefix("anything"))
+    IO.inspect(empty_prefix(""))
   end
 end
 
-def guarded(s) do
-  case s do
-    "--" <> rest when rest != "" -> {:long, rest}
-    "--" <> _ -> :bare_dashes
-    _ -> :operand
-  end
-end
-
-def nested(pair) do
-  case pair do
-    {:ok, "id:" <> id} -> {:id, id}
-    {:ok, other} -> {:other, other}
-    {:error, "e:" <> reason} -> {:error, reason}
-    _ -> :unknown
-  end
-end
-
-def whole_literals(s) do
-  case s do
-    "a" <> "b" -> :ab
-    "a" <> "bc" -> :abc
-    _ -> :no
-  end
-end
-
-def chained(s) do
-  case s do
-    "a" <> "b" <> rest -> rest
-    _ -> :no
-  end
-end
-
-def utf8(s) do
-  case s do
-    "é✓" <> rest -> rest
-    _ -> :no
-  end
-end
-
-def empty_prefix(s) do
-  case s do
-    "" <> rest -> rest
-  end
-end
-
-def main() do
-  dbg(option("--verbose"))
-  dbg(option("-v"))
-  dbg(option("file"))
-  dbg(option(7))
-  dbg(guarded("--x"))
-  dbg(guarded("--"))
-  dbg(guarded("x"))
-  dbg(nested({:ok, "id:42"}))
-  dbg(nested({:ok, "name"}))
-  dbg(nested({:error, "e:boom"}))
-  dbg(nested({:error, "boom"}))
-  dbg(nested(:nope))
-  dbg(whole_literals("ab"))
-  dbg(whole_literals("abc"))
-  dbg(whole_literals("abcd"))
-  dbg(whole_literals("a"))
-  dbg(whole_literals(:ab))
-  dbg(chained("abz"))
-  dbg(chained("a"))
-  dbg(utf8("é✓!"))
-  dbg(utf8("é"))
-  dbg(empty_prefix("anything"))
-  dbg(empty_prefix(""))
-end
+Main.main()

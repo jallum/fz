@@ -1,33 +1,37 @@
 #---
 # purpose: ":erlang.raise/3 raises a reason again as an error, a throw or an exit, whichever kind it is given"
-# oracle: 01172_erlang_raise_raises_again_with_the_kind_it_is_given.oracle.exs
-# oracle.stamp: 6d708f44288612b6
+# oracle: self
+# oracle.stamp: 22b870e3b1baca3c
 #---
-def main() do
-  again = fn kind, reason ->
-    try do
+defmodule Main do
+  def main() do
+    again = fn kind, reason ->
       try do
-        :erlang.raise(kind, reason, [])
+        try do
+          :erlang.raise(kind, reason, [])
+        catch
+          caught_kind, caught -> :erlang.raise(caught_kind, caught, __STACKTRACE__)
+        end
       catch
-        caught_kind, caught -> :erlang.raise(caught_kind, caught, __STACKTRACE__)
+        outer_kind, outer -> {outer_kind, outer}
       end
-    catch
-      outer_kind, outer -> {outer_kind, outer}
     end
-  end
 
-  dbg(again.(:throw, :ball))
-  dbg(again.(:exit, :stop))
-  dbg(again.(:error, :reason))
+    IO.inspect(again.(:throw, :ball))
+    IO.inspect(again.(:exit, :stop))
+    IO.inspect(again.(:error, :reason))
 
-  rescued = try do
-    try do
-      raise ArgumentError, "worse"
+    rescued = try do
+      try do
+        raise ArgumentError, "worse"
+      rescue
+        e in ArgumentError -> :erlang.raise(:error, e, __STACKTRACE__)
+      end
     rescue
-      e in ArgumentError -> :erlang.raise(:error, e, __STACKTRACE__)
+      e in ArgumentError -> {:rescued, e.message}
     end
-  rescue
-    e in ArgumentError -> {:rescued, e.message}
+    IO.inspect(rescued)
   end
-  dbg(rescued)
 end
+
+Main.main()

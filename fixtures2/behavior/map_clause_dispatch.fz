@@ -1,7 +1,7 @@
 #---
 # purpose: "a map pattern selects a clause on every door, in function heads and in case"
-# oracle: oracle.exs
-# oracle.stamp: f2a3324203fa891c
+# oracle: self
+# oracle.stamp: 4ff042422dfce635
 #---
 #
 # # map_clause_dispatch
@@ -32,36 +32,44 @@
 #     question rather than the `map_key` one;
 #   * the same shapes in `case`, which reaches the same dispatch;
 #   * a map with non-atom keys, and one with more keys than the pattern names.
-def main() do
-  dbg(kind(%{tag: :a, value: 7}))
-  dbg(kind(%{tag: :b}))
-  dbg(kind(%{tag: :b, extra: 1}))
-  dbg(kind(%{other: 1}))
-  dbg(kind(%{}))
-  dbg(kind(42))
-  dbg(kind([1, 2]))
+defmodule Main do
+  def main() do
+    IO.inspect(kind(%{tag: :a, value: 7}))
+    IO.inspect(kind(%{tag: :b}))
+    IO.inspect(kind(%{tag: :b, extra: 1}))
+    IO.inspect(kind(%{other: 1}))
+    IO.inspect(kind(%{}))
+    IO.inspect(kind(42))
+    IO.inspect(kind([1, 2]))
 
-  dbg(lookup(%{"name" => "ada", "age" => 36}))
-  dbg(lookup(%{"age" => 36}))
+    IO.inspect(lookup(%{"name" => "ada", "age" => 36}))
+    IO.inspect(lookup(%{"age" => 36}))
 
-  dbg(described(%{tag: :a, value: 9}))
-  dbg(described(%{value: 9}))
-  dbg(described(:not_a_map))
-end
+    IO.inspect(described(%{tag: :a, value: 9}))
+    IO.inspect(described(%{value: 9}))
+    IO.inspect(described(:not_a_map))
+  end
 
-defp kind(%{tag: :a, value: v}), do: {:a, v}
-defp kind(%{tag: :b}), do: :b
-defp kind(%{}), do: :some_map
-defp kind(_other), do: :not_a_map
+  defp kind(%{tag: :a, value: v}), do: {:a, v}
 
-defp lookup(%{"name" => name}), do: {:named, name}
-defp lookup(%{}), do: :anonymous
+  defp kind(%{tag: :b}), do: :b
 
-defp described(subject) do
-  case subject do
-    %{tag: :a, value: v} -> {:case_a, v}
-    %{value: v} -> {:case_value, v}
-    %{} -> :case_map
-    _other -> :case_other
+  defp kind(%{}), do: :some_map
+
+  defp kind(_other), do: :not_a_map
+
+  defp lookup(%{"name" => name}), do: {:named, name}
+
+  defp lookup(%{}), do: :anonymous
+
+  defp described(subject) do
+    case subject do
+      %{tag: :a, value: v} -> {:case_a, v}
+      %{value: v} -> {:case_value, v}
+      %{} -> :case_map
+      _other -> :case_other
+    end
   end
 end
+
+Main.main()

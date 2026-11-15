@@ -1,10 +1,14 @@
 #---
 # purpose: "a non-ASCII argument arrives byte for byte, spaces inside a single argument preserved, as in Elixir"
-# oracle: 00659_a_non_ascii_argument_keeps_its_bytes.oracle.exs
-# oracle.stamp: 8b04a88c0f3d8007
 # args: "é ü" ü
+# oracle: self
+# oracle.stamp: 5b3295d48e414190
 #---
-def main() do
-  dbg(System.argv())
-  dbg(Enum.map(System.argv(), fn arg -> byte_size(arg) end))
+defmodule Main do
+  def main() do
+    IO.inspect(System.argv())
+    IO.inspect(Enum.map(System.argv(), fn arg -> byte_size(arg) end))
+  end
 end
+
+Main.main()

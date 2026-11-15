@@ -1,7 +1,7 @@
 #---
 # purpose: "A tuple position that holds a list is a question too, so nested list shapes route the call"
-# oracle: oracle.exs
-# oracle.stamp: a6b52f13348b9f7c
+# oracle: self
+# oracle.stamp: 7ceb743172e13374
 #---
 #
 # fz-kdt.138. The tuple test carries one sub-predicate per position
@@ -48,94 +48,107 @@
 # narrow-first order asks a question the blind position could get wrong, and
 # that is the order written here. The other three pairs are disjoint, so both
 # their orders print the same two lines, which is the claim those twins carry.
-def kind({:a, [h | _]}) when is_integer(h), do: 1
-def kind({:a, [h | _]}) when h == :ok or h == :err, do: 2
+defmodule Main do
+  def kind({:a, [h | _]}) when is_integer(h), do: 1
 
-def dnik({:a, [h | _]}) when h == :ok or h == :err, do: 2
-def dnik({:a, [h | _]}) when is_integer(h), do: 1
+  def kind({:a, [h | _]}) when h == :ok or h == :err, do: 2
 
-def axis({:a, [h | _]}) when is_integer(h), do: 1
-def axis({:a, n}) when is_integer(n), do: 2
+  def dnik({:a, [h | _]}) when h == :ok or h == :err, do: 2
 
-def sixa({:a, n}) when is_integer(n), do: 2
-def sixa({:a, [h | _]}) when is_integer(h), do: 1
+  def dnik({:a, [h | _]}) when is_integer(h), do: 1
 
-def size({:a, []}), do: 1
-def size({:a, [h | _]}) when is_integer(h), do: 2
+  def axis({:a, [h | _]}) when is_integer(h), do: 1
 
-def deep({:a, {:b, [h | _]}}) when is_integer(h), do: 1
-def deep({:a, {:b, [h | _]}}) when h == :ok or h == :err, do: 2
+  def axis({:a, n}) when is_integer(n), do: 2
 
-def peed({:a, {:b, [h | _]}}) when h == :ok or h == :err, do: 2
-def peed({:a, {:b, [h | _]}}) when is_integer(h), do: 1
+  def sixa({:a, n}) when is_integer(n), do: 2
 
-def twin({[a | _], [b | _]}) when is_integer(a) and (b == :ok or b == :err), do: 1
-def twin({[a | _], [b | _]}) when (a == :ok or a == :err) and is_integer(b), do: 2
+  def sixa({:a, [h | _]}) when is_integer(h), do: 1
 
-def niwt({[a | _], [b | _]}) when (a == :ok or a == :err) and is_integer(b), do: 2
-def niwt({[a | _], [b | _]}) when is_integer(a) and (b == :ok or b == :err), do: 1
+  def size({:a, []}), do: 1
 
-def pick_head(n) do
-  if n > 0 do
-    {:a, [n, n]}
-  else
-    {:a, [:ok, :err]}
+  def size({:a, [h | _]}) when is_integer(h), do: 2
+
+  def deep({:a, {:b, [h | _]}}) when is_integer(h), do: 1
+
+  def deep({:a, {:b, [h | _]}}) when h == :ok or h == :err, do: 2
+
+  def peed({:a, {:b, [h | _]}}) when h == :ok or h == :err, do: 2
+
+  def peed({:a, {:b, [h | _]}}) when is_integer(h), do: 1
+
+  def twin({[a | _], [b | _]}) when is_integer(a) and (b == :ok or b == :err), do: 1
+
+  def twin({[a | _], [b | _]}) when (a == :ok or a == :err) and is_integer(b), do: 2
+
+  def niwt({[a | _], [b | _]}) when (a == :ok or a == :err) and is_integer(b), do: 2
+
+  def niwt({[a | _], [b | _]}) when is_integer(a) and (b == :ok or b == :err), do: 1
+
+  def pick_head(n) do
+    if n > 0 do
+      {:a, [n, n]}
+    else
+      {:a, [:ok, :err]}
+    end
+  end
+
+  def pick_axis(n) do
+    if n > 0 do
+      {:a, [n, n]}
+    else
+      {:a, n}
+    end
+  end
+
+  def pick_size(n) do
+    if n > 0 do
+      {:a, []}
+    else
+      {:a, [n]}
+    end
+  end
+
+  def pick_deep(n) do
+    if n > 0 do
+      {:a, {:b, [n, n]}}
+    else
+      {:a, {:b, [:ok, :err]}}
+    end
+  end
+
+  def pick_twin(n) do
+    if n > 0 do
+      {[n, n], [:ok, :err]}
+    else
+      {[:ok, :err], [n, n]}
+    end
+  end
+
+  def main() do
+    IO.inspect(kind(pick_head(1)))
+    IO.inspect(kind(pick_head(0)))
+    IO.inspect(dnik(pick_head(1)))
+    IO.inspect(dnik(pick_head(0)))
+
+    IO.inspect(axis(pick_axis(1)))
+    IO.inspect(axis(pick_axis(0)))
+    IO.inspect(sixa(pick_axis(1)))
+    IO.inspect(sixa(pick_axis(0)))
+
+    IO.inspect(size(pick_size(1)))
+    IO.inspect(size(pick_size(0)))
+
+    IO.inspect(deep(pick_deep(1)))
+    IO.inspect(deep(pick_deep(0)))
+    IO.inspect(peed(pick_deep(1)))
+    IO.inspect(peed(pick_deep(0)))
+
+    IO.inspect(twin(pick_twin(1)))
+    IO.inspect(twin(pick_twin(0)))
+    IO.inspect(niwt(pick_twin(1)))
+    IO.inspect(niwt(pick_twin(0)))
   end
 end
 
-def pick_axis(n) do
-  if n > 0 do
-    {:a, [n, n]}
-  else
-    {:a, n}
-  end
-end
-
-def pick_size(n) do
-  if n > 0 do
-    {:a, []}
-  else
-    {:a, [n]}
-  end
-end
-
-def pick_deep(n) do
-  if n > 0 do
-    {:a, {:b, [n, n]}}
-  else
-    {:a, {:b, [:ok, :err]}}
-  end
-end
-
-def pick_twin(n) do
-  if n > 0 do
-    {[n, n], [:ok, :err]}
-  else
-    {[:ok, :err], [n, n]}
-  end
-end
-
-def main() do
-  dbg(kind(pick_head(1)))
-  dbg(kind(pick_head(0)))
-  dbg(dnik(pick_head(1)))
-  dbg(dnik(pick_head(0)))
-
-  dbg(axis(pick_axis(1)))
-  dbg(axis(pick_axis(0)))
-  dbg(sixa(pick_axis(1)))
-  dbg(sixa(pick_axis(0)))
-
-  dbg(size(pick_size(1)))
-  dbg(size(pick_size(0)))
-
-  dbg(deep(pick_deep(1)))
-  dbg(deep(pick_deep(0)))
-  dbg(peed(pick_deep(1)))
-  dbg(peed(pick_deep(0)))
-
-  dbg(twin(pick_twin(1)))
-  dbg(twin(pick_twin(0)))
-  dbg(niwt(pick_twin(1)))
-  dbg(niwt(pick_twin(0)))
-end
+Main.main()

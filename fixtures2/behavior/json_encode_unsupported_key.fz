@@ -1,10 +1,14 @@
 #---
 # purpose: "JSON.encode!/1 of an object key with no string representation aborts with Protocol.UndefinedError"
 # expect: abort
-# oracle: json_encode_unsupported_key.oracle.exs
-# oracle.stamp: 4e7983b252548aac
+# oracle: self
+# oracle.stamp: bd926cdf78224a62
 #---
-def main() do
-  key = {:tuple, 1}
-  JSON.encode!(%{key => "x"})
+defmodule Main do
+  def main() do
+    key = {:tuple, 1}
+    JSON.encode!(%{key => "x"})
+  end
 end
+
+Main.main()

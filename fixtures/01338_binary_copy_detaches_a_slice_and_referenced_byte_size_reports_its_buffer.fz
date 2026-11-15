@@ -1,7 +1,7 @@
 #---
 # purpose: "binary:copy/1,2 builds a new binary that references exactly its own bytes, referenced_byte_size/1 reports the buffer a binary references, and a bad argument raises the ArgumentError Elixir raises"
-# oracle: oracle.exs
-# oracle.stamp: eeaab594c7c580e1
+# oracle: self
+# oracle.stamp: 664c6f6080036656
 #---
 defmodule Probe do
   def attempt(fun) do
@@ -13,53 +13,57 @@ defmodule Probe do
   end
 end
 
-def main() do
-  # The OTP documentation example: a head of ten bytes is copied, the larger
-  # tail still references the buffer it was cut from.
-  a = :binary.copy(<<1>>, 1000)
-  IO.inspect({byte_size(a), :binary.referenced_byte_size(a)})
-  <<b::binary-10, c::binary>> = a
-  IO.inspect({byte_size(b), :binary.referenced_byte_size(b)})
-  IO.inspect({byte_size(c), :binary.referenced_byte_size(c)})
+defmodule Main do
+  def main() do
+    # The OTP documentation example: a head of ten bytes is copied, the larger
+    # tail still references the buffer it was cut from.
+    a = :binary.copy(<<1>>, 1000)
+    IO.inspect({byte_size(a), :binary.referenced_byte_size(a)})
+    <<b::binary-10, c::binary>> = a
+    IO.inspect({byte_size(b), :binary.referenced_byte_size(b)})
+    IO.inspect({byte_size(c), :binary.referenced_byte_size(c)})
 
-  # Copying a large slice detaches it: it references exactly its own bytes.
-  big = :binary.copy("0123456789", 100)
-  <<_::binary-5, tail::binary>> = big
-  IO.inspect({byte_size(tail), :binary.referenced_byte_size(tail)})
-  detached = :binary.copy(tail)
-  IO.inspect({byte_size(detached), :binary.referenced_byte_size(detached)})
-  IO.inspect(detached == tail)
+    # Copying a large slice detaches it: it references exactly its own bytes.
+    big = :binary.copy("0123456789", 100)
+    <<_::binary-5, tail::binary>> = big
+    IO.inspect({byte_size(tail), :binary.referenced_byte_size(tail)})
+    detached = :binary.copy(tail)
+    IO.inspect({byte_size(detached), :binary.referenced_byte_size(detached)})
+    IO.inspect(detached == tail)
 
-  # A middle slice longer than a small binary is a view too.
-  <<_::binary-5, middle::binary-100, _::binary>> = big
-  IO.inspect({byte_size(middle), :binary.referenced_byte_size(middle)})
-  middle_copy = :binary.copy(middle)
-  IO.inspect({byte_size(middle_copy), :binary.referenced_byte_size(middle_copy)})
-  IO.inspect(middle_copy == middle)
+    # A middle slice longer than a small binary is a view too.
+    <<_::binary-5, middle::binary-100, _::binary>> = big
+    IO.inspect({byte_size(middle), :binary.referenced_byte_size(middle)})
+    middle_copy = :binary.copy(middle)
+    IO.inspect({byte_size(middle_copy), :binary.referenced_byte_size(middle_copy)})
+    IO.inspect(middle_copy == middle)
 
-  IO.inspect(:binary.copy("ab", 0))
-  IO.inspect(:binary.copy("ab", 1))
-  IO.inspect(:binary.copy("ab", 3))
-  IO.inspect(:binary.copy(""))
-  IO.inspect(:binary.copy("", 5))
-  IO.inspect(byte_size(:binary.copy("abc", 30)))
-  IO.inspect(:binary.referenced_byte_size(""))
-  IO.inspect(:binary.referenced_byte_size("short"))
+    IO.inspect(:binary.copy("ab", 0))
+    IO.inspect(:binary.copy("ab", 1))
+    IO.inspect(:binary.copy("ab", 3))
+    IO.inspect(:binary.copy(""))
+    IO.inspect(:binary.copy("", 5))
+    IO.inspect(byte_size(:binary.copy("abc", 30)))
+    IO.inspect(:binary.referenced_byte_size(""))
+    IO.inspect(:binary.referenced_byte_size("short"))
 
-  IO.inspect(String.duplicate("ab", 0))
-  IO.inspect(String.duplicate("ab", 1))
-  IO.inspect(String.duplicate("ab", 3))
-  IO.inspect(byte_size(String.duplicate("héllo", 40)))
+    IO.inspect(String.duplicate("ab", 0))
+    IO.inspect(String.duplicate("ab", 1))
+    IO.inspect(String.duplicate("ab", 3))
+    IO.inspect(byte_size(String.duplicate("héllo", 40)))
 
-  # Each function's spec takes a binary (and an integer count), so an argument
-  # proven to be something else is refused at compile time. `hd([1, ""])` may be
-  # a binary, so these calls compile and the bad value is refused when it runs.
-  IO.inspect(Probe.attempt(fn -> :binary.copy(hd([1, ""])) end))
-  IO.inspect(Probe.attempt(fn -> :binary.copy(hd([:a, ""]), 2) end))
-  IO.inspect(Probe.attempt(fn -> :binary.copy("a", -1) end))
-  IO.inspect(Probe.attempt(fn -> :binary.copy("a", hd([:x, 0])) end))
-  IO.inspect(Probe.attempt(fn -> :binary.copy("a", hd([2.5, 0])) end))
-  IO.inspect(Probe.attempt(fn -> :binary.copy(hd([1, ""]), -1) end))
-  IO.inspect(Probe.attempt(fn -> :binary.referenced_byte_size(hd([:a, ""])) end))
-  IO.inspect(Probe.attempt(fn -> String.duplicate("a", -1) end))
+    # Each function's spec takes a binary (and an integer count), so an argument
+    # proven to be something else is refused at compile time. `hd([1, ""])` may be
+    # a binary, so these calls compile and the bad value is refused when it runs.
+    IO.inspect(Probe.attempt(fn -> :binary.copy(hd([1, ""])) end))
+    IO.inspect(Probe.attempt(fn -> :binary.copy(hd([:a, ""]), 2) end))
+    IO.inspect(Probe.attempt(fn -> :binary.copy("a", -1) end))
+    IO.inspect(Probe.attempt(fn -> :binary.copy("a", hd([:x, 0])) end))
+    IO.inspect(Probe.attempt(fn -> :binary.copy("a", hd([2.5, 0])) end))
+    IO.inspect(Probe.attempt(fn -> :binary.copy(hd([1, ""]), -1) end))
+    IO.inspect(Probe.attempt(fn -> :binary.referenced_byte_size(hd([:a, ""])) end))
+    IO.inspect(Probe.attempt(fn -> String.duplicate("a", -1) end))
+  end
 end
+
+Main.main()

@@ -1,35 +1,40 @@
 #---
 # purpose: "an exception the library raises is rescued by the name Elixir gives it, and its message is Elixir's"
-# oracle: 00849_a_library_exception_is_rescued_by_its_elixir_name.oracle.exs
-# oracle.stamp: 591c04222f4c56ae
+# oracle: self
+# oracle.stamp: 8c7f65be9ebc9c3a
 #---
-defp zero(), do: 0
-defp empty(), do: []
+defmodule Main do
+  defp zero(), do: 0
 
-def main() do
-  try do
-    Map.fetch!(%{}, :k)
-  rescue
-    e in KeyError -> dbg(e.__struct__)
+  defp empty(), do: []
+
+  def main() do
+    try do
+      Map.fetch!(%{}, :k)
+    rescue
+      e in KeyError -> IO.inspect(e.__struct__)
+    end
+    try do
+      div(1, zero())
+    rescue
+      e in ArithmeticError ->
+        IO.inspect(e.__struct__)
+        IO.inspect(e.message)
+    end
+    try do
+      tuple_size(:x)
+    rescue
+      e in ArgumentError -> IO.inspect(e.__struct__)
+    end
+    try do
+      Enum.max(empty())
+    rescue
+      e in Enum.EmptyError ->
+        IO.inspect(e.__struct__)
+        IO.inspect(e.message)
+    end
+    IO.inspect(:done)
   end
-  try do
-    div(1, zero())
-  rescue
-    e in ArithmeticError ->
-      dbg(e.__struct__)
-      dbg(e.message)
-  end
-  try do
-    tuple_size(:x)
-  rescue
-    e in ArgumentError -> dbg(e.__struct__)
-  end
-  try do
-    Enum.max(empty())
-  rescue
-    e in Enum.EmptyError ->
-      dbg(e.__struct__)
-      dbg(e.message)
-  end
-  dbg(:done)
 end
+
+Main.main()

@@ -1,22 +1,26 @@
 #---
 # purpose: "a rescue-only try does not take a throw or an exit, even with a bare variable head; both reach the outer catch"
-# oracle: 00845_a_rescue_alone_lets_a_throw_and_an_exit_through.oracle.exs
-# oracle.stamp: bd6de65878ee0ebe
+# oracle: self
+# oracle.stamp: bf572ef3509a32af
 #---
-def attempt(f) do
-  try do
+defmodule Main do
+  def attempt(f) do
     try do
-      f.()
-    rescue
-      e -> {:rescued, e}
+      try do
+        f.()
+      rescue
+        e -> {:rescued, e}
+      end
+    catch
+      kind, value -> {kind, value}
     end
-  catch
-    kind, value -> {kind, value}
+  end
+
+  def main() do
+    IO.inspect(attempt(fn () -> throw(:ball) end))
+    IO.inspect(attempt(fn () -> exit(:leaving) end))
+    IO.inspect(attempt(fn () -> raise "oops" end) |> elem(0))
   end
 end
 
-def main() do
-  dbg(attempt(fn () -> throw(:ball) end))
-  dbg(attempt(fn () -> exit(:leaving) end))
-  dbg(attempt(fn () -> raise "oops" end) |> elem(0))
-end
+Main.main()

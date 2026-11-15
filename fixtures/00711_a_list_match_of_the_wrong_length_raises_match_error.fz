@@ -1,11 +1,15 @@
 #---
 # purpose: "= against a list of another length raises MatchError showing the value"
 # expect: abort
-# oracle: 00711_a_list_match_of_the_wrong_length_raises_match_error.oracle.exs
-# oracle.stamp: 16186084cde36df9
+# oracle: self
+# oracle.stamp: eadf470eaa0be371
 #---
-def main() do
-  dbg(:before)
-  [a, b] = [1]
-  dbg({a, b})
+defmodule Main do
+  def main() do
+    IO.inspect(:before)
+    [a, b] = [1]
+    IO.inspect({a, b})
+  end
 end
+
+Main.main()

@@ -1,7 +1,7 @@
 #---
 # purpose: "a closure delivered by the mailbox is invoked, and the work after that call still runs"
-# oracle: oracle.exs
-# oracle.stamp: 4b8e17002b86dc5c
+# oracle: self
+# oracle.stamp: 91e804b66eac897e
 #---
 #
 # fz-kdt.130. A lambda sent through the mailbox reaches the receiving process as
@@ -14,13 +14,17 @@
 # The first invoke is the witness shape, inside the receive arm; the rest prove
 # control came back past the receive and that a mailbox-delivered callable can
 # be invoked more than once.
-def main() do
-  send(self(), fn (n) -> n + 1 end)
-  send(self(), fn (n) -> n + 1 end)
-  receive do
-    f -> dbg(f.(10))
+defmodule Main do
+  def main() do
+    send(self(), fn (n) -> n + 1 end)
+    send(self(), fn (n) -> n + 1 end)
+    receive do
+      f -> IO.inspect(f.(10))
+    end
+    g = receive do h -> h end
+    IO.inspect(g.(20))
+    IO.inspect(g.(30))
   end
-  g = receive do h -> h end
-  dbg(g.(20))
-  dbg(g.(30))
 end
+
+Main.main()

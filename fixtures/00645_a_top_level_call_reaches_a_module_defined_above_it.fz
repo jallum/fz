@@ -1,13 +1,13 @@
 #---
 # purpose: "A top-level call to a module defined above it runs: the module is defined once, and the call is a statement of main/0"
 # kind: run
-# oracle: 00645_a_top_level_call_reaches_a_module_defined_above_it.oracle.exs
-# oracle.stamp: 8c55f82ebcff97ee
+# oracle: self
+# oracle.stamp: e00c5abd3c535574
 #---
 defmodule M do
-  def go(a), do: dbg(a)
+  def go(a), do: IO.inspect(a)
 end
 
 M.go(1)
-dbg(:between)
+IO.inspect(:between)
 M.go(2)

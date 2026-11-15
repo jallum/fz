@@ -39,6 +39,9 @@ fixtures/<NNNNN>_<name>.expected.<path>.stderr
 fixtures/<NNNNN>_<name>.oracle.exs
 ```
 
+A `.oracle.exs` exists only for a fixture whose program is not Elixir: one
+that tests fz-only syntax or library (see the oracle section).
+
 `fixtures2/behavior/<name>.fz` and its sidecars follow the same shape, minus
 the number: `fixtures2` predates the numbering requirement.
 
@@ -65,8 +68,10 @@ only the keys below:
   nowhere and surfaces as an ignored trial carrying the rationale.
 - `defer.<path>:` — optional per-path deferral, where `<path>` is `run`,
   `interp`, or `build`.
-- `oracle:` — relative path to a sibling Elixir twin whose stdout owns
-  `expected.txt`.
+- `oracle:` — `self` when the fixture's source is an Elixir program: Elixir
+  runs the fixture file itself, and its output owns `expected.txt`. Otherwise
+  the relative path to a sibling Elixir twin, for a fixture whose program is
+  not Elixir.
 - `oracle.stamp:` — 16 lowercase hex digits, only with `oracle`: the stamp of
   the pair Elixir last confirmed (see the oracle section). Written by
   `ORACLE=regen`, never by hand.
@@ -122,7 +127,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01320-01339` | fz-nml                            | in use through `01339` |
 | `01340-01359` | fz-9zq                            | in use through `01343` |
 | `01360-01379` | fz-sc8                            | in use through `01362` |
-| `01380-01399` | fz-nhb                            | in use through `01381` |
+| `01380-01399` | fz-nhb                            | in use through `01382` |
 
 A fixture orders its processes with messages and never by a timing margin: an
 `after` timeout is `0` when mail is already in the mailbox or nothing is
@@ -200,10 +205,10 @@ A fixture flips that contract to pin a *negative* claim:
 - `expect: abort` — a run-time abort: the main process fails. The path passes
   when the process exits *1* and its stderr **contains** the `expected.stderr`
   golden as a substring. A substring (not exact match) keeps per-path prefixes
-  and absolute source paths out of the pin. An abort fixture's oracle prints
-  Elixir's `** (Name) message` line with `Exception.format_banner/3`, so
-  `expected.txt` holds the line Elixir prints and `expected.stderr` the line fz
-  prints.
+  and absolute source paths out of the pin. An abort fixture with an oracle
+  also compares its stdout with `expected.txt`, the stdout Elixir printed
+  before the same failure; Elixir's stderr must contain the same
+  `expected.stderr` line.
 - `expect: diagnostic` — a compile-time rejection. Same nonzero-exit
   requirement, but when the fixture declares `diagnostic.code`, the matrix
   reruns the path with telemetry and asserts a `["fz","diag","error"]` event
@@ -306,20 +311,46 @@ These `actual.*` files are gitignored.
 
 ### The Elixir oracle
 
-A fixture that declares `oracle: oracle.exs` makes "matches Elixir" mechanical.
-The single static trial `oracle_goldens_match_elixir` checks every oracle pair
-against the real `elixir` binary: the script's stdout must equal
-`expected.txt`. For a successful fixture, the per-path matrix trials
-independently reproduce that same golden, so `fz == Elixir` holds
-transitively. For an `expect: abort` fixture, the oracle instead makes a silent
-assertion that Elixir rejects the input; each fz path independently proves
-rejection through `expected.stderr`. That pins the shared boundary without
-claiming byte-identical exception text between the two runtimes.
+A fixture that declares an `oracle` makes "matches Elixir" mechanical. The
+single static trial `oracle_goldens_match_elixir` runs each oracle fixture's
+Elixir program under the real `elixir` binary, with Elixir's logger silenced
+(`--erl "-logger level none"`): the report the logger prints on stdout when a
+spawned process crashes races the program's exit and is not program output.
+
+**`oracle: self`** is the form for every fixture whose source is an Elixir
+program: Elixir runs the very file fz runs, with the same `args:`. Such a
+fixture keeps its functions inside modules, as Elixir requires: a program with
+a `main` writes `defmodule Main do ... def main() ... end` followed by
+`Main.main()`, or writes its top-level statements in script form. It prints
+with `IO.inspect`, not `dbg` (Elixir's `dbg` also prints the source and its
+location), and raises a plain value with `:erlang.error/1`.
+
+**A twin** (`oracle: <file>.exs`) is kept only for a fixture whose source is
+not valid Elixir or whose output Elixir does not share: typed parameters,
+`extern`, the `%` operator, a free type variable or a function type in a
+`@spec`, a guard that calls a `defp`, a top-level call to a later `def`,
+fz-only library functions (`assert/2`, `range/3`, `compare/2`, `Utf8`, ...),
+`__MODULE__` outside a module, an `Enumerable` that implements fz's
+`reduce_while`, a macro that unquotes a map, or `dbg`'s own rendering. The twin is the Elixir program whose output the fixture
+must match; for an `expect: abort` fixture it also fails uncaught.
+
+**A successful fixture**: Elixir exits 0 and its normalized stdout equals
+`expected.txt`. The per-path matrix trials independently reproduce that same
+golden, so `fz == Elixir` holds transitively.
+
+**An `expect: abort` fixture**: Elixir's own uncaught failure is the oracle,
+whichever form the oracle takes. Elixir exits 1, its stderr contains `expected.stderr`
+(for an uncaught throw, Elixir's first stderr line is fz's banner,
+`** (throw) {:ball, 1}`), and its stdout equals `expected.txt`. The fz paths
+compare their stdout with the same `expected.txt`, so an aborting program's
+output is checked against Elixir as a successful one's is.
 
 **The stamp.** The header's `oracle.stamp` is a 64-bit FNV-1a, written as 16
 lowercase hex digits (`fz_fixture_metadata::oracle_stamp`), over the oracle
-script bytes, a 0 byte, the `expected.txt` bytes on disk (empty when the file
-is absent), a 0 byte, and each `args:` token followed by a 0 byte. It detects
+program bytes, a 0 byte, the `expected.txt` bytes on disk (empty when the file
+is absent), a 0 byte, and each `args:` token followed by a 0 byte. For `oracle: self` the program
+bytes are the fixture source with its `oracle.stamp` line removed, since a
+stamp cannot hash itself. It detects
 that a pair changed since Elixir last confirmed it; it is not a security
 boundary.
 
@@ -361,7 +392,7 @@ A fixture pins its claim in the most direct medium for what it tests.
 1. **In-language assertion** — `assert(expr == expected, "why")` / `refute`.
    The program checks itself and aborts on failure, so the claim is verified on
    every path with no golden file. The default for behavioural claims.
-2. **Rendering golden** — `dbg(x)` + `expected.txt`, when the rendered string
+2. **Rendering golden** — `IO.inspect(x)` + `expected.txt`, when the rendered string
    itself is the artifact (how a value prints). The matrix canonicalizes a
    closure's process-local numeric denotation to `id` (`#fn<id/arity>`), so a
    golden can pin its stable form and declared arity without depending on
@@ -516,16 +547,16 @@ v` (`00842`), a guard on the kind (`00843`), `catch :exit, r` and the one-head
 catch that does not take an exit (`00844`), `catch :error, r` binding the raw
 value (`00846`), a rescue-only `try` that lets a throw and an exit through
 (`00845`), a miss that re-raises with its original kind (`00847`), and
-`reraise/2` (`00807`). The oracles use atoms, integers and tuples of them, whose
-dbg rendering is Elixir's `inspect`. Uncaught: `00808` (throw) and `00809`
+`reraise/2` (`00807`). The fixtures print atoms, integers and tuples of them,
+whose rendering is Elixir's `inspect`. Uncaught: `00808` (throw) and `00809`
 (exit) are `expect: abort` whose `.expected.stderr` is the `** (throw)` or
-`** (exit)` line, and whose `.expected.txt` is Elixir's banner from
-`Exception.format_banner/3`; `00810` and `00811` are success fixtures that
+`** (exit)` line, which Elixir's uncaught failure also prints first on its
+stderr; `00810` and `00811` are success fixtures that
 `exit(:normal)` and `exit(:shutdown)` from main, pinning status 0 with nothing
 printed (the matrix pins exit 0 and an empty stderr), and `00812` throws in a
 spawned process, whose `.expected.diagnostics` holds the line fz prints on
-stderr (Elixir logs an `ErlangError` wrapping `{:nocatch, ...}`, which the
-oracle silences). `00813` and `00814` are `expect: diagnostic`
+stderr (Elixir logs an `ErlangError` wrapping `{:nocatch, ...}`, which the oracle
+silences). `00813` and `00814` are `expect: diagnostic`
 (`parse/invalid-try`) for a `catch` clause of three heads and a `catch` section
 that is not clauses. The statuses the matrix cannot pin, such as
 `exit({:shutdown, 7})`, are pinned in `exec/runtime_test.rs` and

@@ -1,19 +1,23 @@
 #---
 # purpose: "a try with rescue and after: the rescue handles the raise, the after runs exactly once, on both the raising and the completing path"
-# oracle: 00803_rescue_and_after_together_rescue_once_and_run_after_once.oracle.exs
-# oracle.stamp: 3867cc402cf18014
+# oracle: self
+# oracle.stamp: dde564f2530eea88
 #---
-def attempt(f) do
-  try do
-    f.()
-  rescue
-    e in ArgumentError -> {:rescued, e.message}
-  after
-    dbg(:after)
+defmodule Main do
+  def attempt(f) do
+    try do
+      f.()
+    rescue
+      e in ArgumentError -> {:rescued, e.message}
+    after
+      IO.inspect(:after)
+    end
+  end
+
+  def main() do
+    IO.inspect(attempt(fn () -> raise ArgumentError, "bad" end))
+    IO.inspect(attempt(fn () -> :fine end))
   end
 end
 
-def main() do
-  dbg(attempt(fn () -> raise ArgumentError, "bad" end))
-  dbg(attempt(fn () -> :fine end))
-end
+Main.main()

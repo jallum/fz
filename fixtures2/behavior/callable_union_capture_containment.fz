@@ -1,7 +1,7 @@
 #---
 # purpose: "a construction whose capture type is a union is admitted only by a test that CONTAINS it, never one it merely overlaps"
-# oracle: oracle.exs
-# oracle.stamp: 0d1e58cca4829411
+# oracle: self
+# oracle.stamp: 0f4eed910ce479e2
 #---
 #
 # fz-kdt.167, the witness. `f` is chosen by a `case` on a value that came out
@@ -31,12 +31,16 @@ defmodule P do
   def mk(c), do: fn (n) -> n + c end
 end
 
-def main() do
-  send(self(), 1)
-  a = receive do v -> v end
-  f = case a > 0 do
-    true -> P.mk(a)
-    _ -> P.mk(0.5)
+defmodule Main do
+  def main() do
+    send(self(), 1)
+    a = receive do v -> v end
+    f = case a > 0 do
+      true -> P.mk(a)
+      _ -> P.mk(0.5)
+    end
+    IO.inspect(P.run(f, 10))
   end
-  dbg(P.run(f, 10))
 end
+
+Main.main()

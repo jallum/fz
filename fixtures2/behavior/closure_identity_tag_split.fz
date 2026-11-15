@@ -1,7 +1,7 @@
 #---
 # purpose: "A dispatch that splits on a tag still routes each call to the lambda it was handed"
-# oracle: oracle.exs
-# oracle.stamp: b767e92a03e311ab
+# oracle: self
+# oracle.stamp: 6c762634f555cb6d
 #---
 #
 # fz-kdt.126. `run/3` only FORWARDS its callable, so its arrow position
@@ -21,9 +21,13 @@ defmodule P do
   def run(f, x, t), do: twice(f, x, t)
 end
 
-def main() do
-  dbg(P.run(fn (n) -> n + 1 end, 10, :a))
-  dbg(P.run(fn (n) -> n * 3 end, 10, :b))
-  dbg(P.run(fn (n) -> n + 1 end, 10, :b))
-  dbg(P.run(fn (n) -> n * 3 end, 10, :a))
+defmodule Main do
+  def main() do
+    IO.inspect(P.run(fn (n) -> n + 1 end, 10, :a))
+    IO.inspect(P.run(fn (n) -> n * 3 end, 10, :b))
+    IO.inspect(P.run(fn (n) -> n + 1 end, 10, :b))
+    IO.inspect(P.run(fn (n) -> n * 3 end, 10, :a))
+  end
 end
+
+Main.main()

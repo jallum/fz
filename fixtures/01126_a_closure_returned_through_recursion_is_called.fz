@@ -1,13 +1,17 @@
 #---
 # purpose: "A recursive call that returns a closure delivers it to its caller in the carrier the callee sent it in, so the caller can call it"
 # kind: run
-# oracle: 01126_a_closure_returned_through_recursion_is_called.oracle.exs
-# oracle.stamp: 38ceb3b4bd47e80d
+# oracle: self
+# oracle.stamp: 98244ae3c7240251
 #---
 defmodule M do
   def h(0), do: fn x -> x end
   def h(n), do: h(n - 1).(1)
 end
-def main() do
-  dbg(M.h(1))
+defmodule Main do
+  def main() do
+    IO.inspect(M.h(1))
+  end
 end
+
+Main.main()

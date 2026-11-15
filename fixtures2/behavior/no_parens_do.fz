@@ -1,7 +1,7 @@
 #---
 # purpose: A do/end block on a no-parens call becomes a trailing do: keyword arg.
-# oracle: oracle.exs
-# oracle.stamp: ac4477ec27396fc2
+# oracle: self
+# oracle.stamp: fd330072ba8289f5
 #---
 #
 # A `do … end` block trailing a no-parens call collapses into the call's final
@@ -9,24 +9,28 @@
 # calls `run/2` with `1` and `[do: 2]`; `only_block do 42 end` has no positional
 # arguments and calls `only_block/1` with `[do: 42]`. Destructuring `opts` proves
 # the `:do` keyword and its value reach the callee end to end.
-def run(a, opts) do
-  dbg a
-  [{k, v}] = opts
-  dbg k
-  dbg v
+defmodule Main do
+  def run(a, opts) do
+    IO.inspect a
+    [{k, v}] = opts
+    IO.inspect k
+    IO.inspect v
+  end
+
+  def only_block(opts) do
+    [{k, v}] = opts
+    IO.inspect k
+    IO.inspect v
+  end
+
+  def main() do
+    run 1 do
+      2
+    end
+    only_block do
+      42
+    end
+  end
 end
 
-def only_block(opts) do
-  [{k, v}] = opts
-  dbg k
-  dbg v
-end
-
-def main() do
-  run 1 do
-    2
-  end
-  only_block do
-    42
-  end
-end
+Main.main()

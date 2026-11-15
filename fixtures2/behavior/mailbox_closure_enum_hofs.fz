@@ -1,7 +1,7 @@
 #---
 # purpose: "map and filter keep working when the function they are given arrived through the mailbox"
-# oracle: oracle.exs
-# oracle.stamp: 3a93b8863246239d
+# oracle: self
+# oracle.stamp: ebc32e0c9e75fbb4
 #---
 #
 # fz-kdt.152's companions. These two higher-order calls reach the mailbox
@@ -9,14 +9,18 @@
 # fz-kdt.130 let an unnamed callable be called at all. They are pinned here
 # because they are the neighbours of the reduce shape that DID break: any later
 # change to what a callable input physically carries has to leave them alone.
-def main() do
-  send(self(), fn (x) -> x + 1 end)
-  bump = receive do f -> f end
-  dbg(Enum.map([1, 2, 3], bump))
+defmodule Main do
+  def main() do
+    send(self(), fn (x) -> x + 1 end)
+    bump = receive do f -> f end
+    IO.inspect(Enum.map([1, 2, 3], bump))
 
-  send(self(), fn (x) -> x > 1 end)
-  big = receive do f -> f end
-  dbg(Enum.filter([1, 2, 3], big))
+    send(self(), fn (x) -> x > 1 end)
+    big = receive do f -> f end
+    IO.inspect(Enum.filter([1, 2, 3], big))
 
-  dbg(Enum.reduce(Enum.map([1, 2, 3], bump), 0, fn (x, acc) -> acc + x end))
+    IO.inspect(Enum.reduce(Enum.map([1, 2, 3], bump), 0, fn (x, acc) -> acc + x end))
+  end
 end
+
+Main.main()

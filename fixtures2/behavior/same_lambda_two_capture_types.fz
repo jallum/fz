@@ -1,7 +1,7 @@
 #---
 # purpose: "one lambda closed over an int and over a float are two constructions, and the forwarder routes each to the body its captures were stored for"
-# oracle: oracle.exs
-# oracle.stamp: d9af732dc47ffb72
+# oracle: self
+# oracle.stamp: b0d1b145f06e29c6
 #---
 #
 # fz-kdt.127. `P.run/2` forwards its callable, so its activation key erases the
@@ -23,9 +23,13 @@ defmodule Q do
   def mk(c), do: fn (n) -> n + c end
 end
 
-def main() do
-  dbg(P.run(P.mk(1), 10))
-  dbg(P.run(P.mk(0.5), 10))
-  dbg(Q.run(Q.mk(0.5), 10))
-  dbg(Q.run(Q.mk(1), 10))
+defmodule Main do
+  def main() do
+    IO.inspect(P.run(P.mk(1), 10))
+    IO.inspect(P.run(P.mk(0.5), 10))
+    IO.inspect(Q.run(Q.mk(0.5), 10))
+    IO.inspect(Q.run(Q.mk(1), 10))
+  end
 end
+
+Main.main()

@@ -1,9 +1,13 @@
 #---
 # purpose: "Enum.into a map collects a keyword list"
-# oracle: 00796_enum_into_a_map_collects_a_keyword_list.oracle.exs
-# oracle.stamp: 7cef575f040eedab
+# oracle: self
+# oracle.stamp: 1af71616be031a5a
 #---
-def main() do
-  m = Enum.into([a: 1, b: 2], %{})
-  dbg(Enum.sort(Map.to_list(m)))
+defmodule Main do
+  def main() do
+    m = Enum.into([a: 1, b: 2], %{})
+    IO.inspect(Enum.sort(Map.to_list(m)))
+  end
 end
+
+Main.main()

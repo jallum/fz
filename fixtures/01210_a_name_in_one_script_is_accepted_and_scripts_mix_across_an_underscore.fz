@@ -1,11 +1,15 @@
 #---
 # purpose: a name drawn from a single script, with digits and underscores, is accepted, and an underscore lets scripts mix
-# oracle: 01210_a_name_in_one_script_is_accepted_and_scripts_mix_across_an_underscore.oracle.exs
-# oracle.stamp: 856e223460f0f665
+# oracle: self
+# oracle.stamp: a459123da2289910
 #---
-def main() do
-  привет_1 = 40
-  日本あア = 1
-  hello_мир = 1
-  dbg({привет_1 + 日本あア + hello_мир, :привет, :日本, [ключ: 1]})
+defmodule Main do
+  def main() do
+    привет_1 = 40
+    日本あア = 1
+    hello_мир = 1
+    IO.inspect({привет_1 + 日本あア + hello_мир, :привет, :日本, [ключ: 1]})
+  end
 end
+
+Main.main()

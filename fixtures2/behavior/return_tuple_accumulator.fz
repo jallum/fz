@@ -1,7 +1,7 @@
 #---
 # purpose: "a tail recursion that grows a tuple accumulator: each rung is a new activation"
-# oracle: oracle.exs
-# oracle.stamp: 465902b24fa5268a
+# oracle: self
+# oracle.stamp: f5370d69f09ab22f
 #---
 #
 # The accumulator variant of `return_tuple_ladder`. Here the nesting grows in an
@@ -9,9 +9,14 @@
 # wider accumulator type and keys a new activation. Each rung's evidence row
 # repeats the standing row's tuple under it, so the clash rule folds the
 # accumulator where it grew and the rungs stop at the first repeat.
-def build(0, acc), do: acc
-def build(n, acc), do: build(n - 1, {n, acc})
+defmodule Main do
+  def build(0, acc), do: acc
 
-def main() do
-  dbg(build(3, :start))
+  def build(n, acc), do: build(n - 1, {n, acc})
+
+  def main() do
+    IO.inspect(build(3, :start))
+  end
 end
+
+Main.main()

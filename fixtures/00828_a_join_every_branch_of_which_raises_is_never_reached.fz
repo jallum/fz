@@ -1,18 +1,22 @@
 #---
 # purpose: "an if both of whose branches raise never reaches its join: the raise prints its line and the process exits 1"
 # expect: abort
-# oracle: 00828_a_join_every_branch_of_which_raises_is_never_reached.oracle.exs
-# oracle.stamp: 4559b6ddf88d6971
+# oracle: self
+# oracle.stamp: 26660b4dbac90014
 #---
-def pick(x) do
-  v = if x > 0 do
-    raise ArgumentError, "positive"
-  else
-    raise ArgumentError, "not positive"
+defmodule Main do
+  def pick(x) do
+    v = if x > 0 do
+      raise ArgumentError, "positive"
+    else
+      raise ArgumentError, "not positive"
+    end
+    IO.inspect(v)
   end
-  dbg(v)
+
+  def main() do
+    pick(0)
+  end
 end
 
-def main() do
-  pick(0)
-end
+Main.main()

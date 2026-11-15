@@ -1,7 +1,7 @@
 #---
 # purpose: "a zero-arity clause may carry a guard, and the guard decides it"
-# oracle: oracle.exs
-# oracle.stamp: 45ac6072e2fe7437
+# oracle: self
+# oracle.stamp: 78e2ea9a5b7853ec
 #---
 #
 # # guard_zero_arity
@@ -11,13 +11,19 @@
 # reads nothing of its inputs through that subject, and the compiler must not
 # ask a caller for an argument that does not exist: the guard is decided on
 # its own terms, and the clause it guards is chosen or skipped like any other.
-def main() do
-  dbg(pick())
-  dbg(fallback())
+defmodule Main do
+  def main() do
+    IO.inspect(pick())
+    IO.inspect(fallback())
+  end
+
+  defp pick() when 1 > 0, do: :guarded
+
+  defp pick(), do: :plain
+
+  defp fallback() when 1 > 2, do: :guarded
+
+  defp fallback(), do: :plain
 end
 
-defp pick() when 1 > 0, do: :guarded
-defp pick(), do: :plain
-
-defp fallback() when 1 > 2, do: :guarded
-defp fallback(), do: :plain
+Main.main()

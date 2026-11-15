@@ -1,16 +1,20 @@
 #---
 # purpose: "OptionParser.parse/2 gives a strict integer switch its value from the next token (--top 5) or after the first = (--top=5), and keeps the positionals around it in order"
-# oracle: 00758_a_switch_takes_its_value_from_the_next_token_or_after_an_equals.oracle.exs
-# oracle.stamp: 5a789342eec2ebae
 # args: --top 5 f
+# oracle: self
+# oracle.stamp: 281fc333153cfccc
 #---
-def main() do
-  dbg(OptionParser.parse(System.argv(), strict: [top: :integer]))
-  dbg(OptionParser.parse(["--top=5", "f"], strict: [top: :integer]))
-  dbg(OptionParser.parse(["f", "--top", "5", "g"], strict: [top: :integer]))
-  dbg(OptionParser.parse(["--top", "-5"], strict: [top: :integer]))
-  dbg(OptionParser.parse(["--top", "007"], strict: [top: :integer]))
-  dbg(OptionParser.parse(["--top=+5"], strict: [top: :integer]))
-  dbg(OptionParser.parse(["--top=5=6"], strict: [top: :string]))
-  dbg(OptionParser.parse([], strict: [top: :integer]))
+defmodule Main do
+  def main() do
+    IO.inspect(OptionParser.parse(System.argv(), strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["--top=5", "f"], strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["f", "--top", "5", "g"], strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["--top", "-5"], strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["--top", "007"], strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["--top=+5"], strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["--top=5=6"], strict: [top: :string]))
+    IO.inspect(OptionParser.parse([], strict: [top: :integer]))
+  end
 end
+
+Main.main()
