@@ -65,8 +65,15 @@ syn = { version = "2", features = ["full", "visit"] }
 name = "fixture_matrix"
 harness = false
 
+# Line tables keep file:line in panics and backtraces. Full debug info would
+# be copied into every test binary and dominate the size of each worktree's
+# target directory.
 [profile.dev]
 opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [profile.release]
 opt-level = 3
