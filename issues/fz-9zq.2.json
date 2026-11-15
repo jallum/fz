@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9zq.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9zq.5"
+  ],
   "created": "2026-11-15T03:40:18Z",
   "description": "Step R2 of fz-9zq. Buys: Enum.reduce([1,2], :start, fn x, acc -\u003e {x, acc} end) compiles (no ticket before; develop hangs at 4,312 AA / 2,872 keys; probe: 115 AA, {2, {1, :start}}). The paper's call-site rule: per (callee, slot) widened pattern; a covered argument is keyed as the pattern; recursive callees only.\nOpen (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/mu2/round3.md): the probe made the distiller exit 1 with internal/unresolved-wait and raised 00420 AA 741/745 -\u003e 925/846. Hypothesis (unconfirmed): the key was re-keyed without re-keying the evidence. Start by confirming that mechanism.",
   "id": "fz-9zq.2",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A recursive callee's new call is widened against its previous call",
   "type": "task",
-  "updated_at": "2026-11-15T03:40:20Z"
+  "updated_at": "2026-11-15T03:40:21Z"
 }
