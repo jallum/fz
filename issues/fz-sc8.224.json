@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.225"
+  ],
   "created": "2026-11-15T15:04:53Z",
   "description": "fz has no is_function (no lib definition, no guard). Elixir's Kernel.is_function/1 and /2 (arity) are guards. Needed by Macro.escape to refuse a closure. Done when: both are guards and functions, match Elixir on interp/run/build for closures, captures (local and remote) and non-functions, via an oracle fixture.",
   "id": "fz-sc8.224",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "is_function/1 and is_function/2 answer whether a value is a function",
   "type": "feature",
-  "updated_at": "2026-11-15T15:04:53Z"
+  "updated_at": "2026-11-15T15:04:54Z"
 }
