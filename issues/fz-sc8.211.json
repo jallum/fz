@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T00:17:54Z",
+  "description": "lib/string.fz: duplicate(s, n) is s \u003c\u003e duplicate(s, n - 1), so the result is rebuilt n times and n copies of a k-byte string copy k*n*n/2 bytes; it is also body-recursive n deep. String.duplicate(\"abcdefghij\", 2_000_000) on PR #585's build was killed after about 16 s of CPU. Elixir's String.duplicate is :binary.copy, one copy.\nChange: build by doubling (duplicate(s, n) = half \u003c\u003e half, plus s when n is odd), so the bytes copied are about twice the result and the depth is log n; or a runtime copy primitive if doubling measures poorly.\nSignal: an oracle fixture duplicates to several megabytes on interp, run and build and checks size and content against Elixir; allocation bytes pinned near twice the result.",
+  "id": "fz-sc8.211",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "String.duplicate copies each byte a bounded number of times",
+  "type": "bug",
+  "updated_at": "2026-11-15T00:17:54Z"
+}
