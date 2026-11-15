@@ -37,11 +37,15 @@
     {
       "text": "User approved the page (version 2 with counts) on 2026-11-14: join rule v2 (Matched joined with Whole is Matched; Matched joined with TupleFields is Whole), byte_size answered from the cursor inside this unit, and two-shape returns as fields filed as fz-sc8.220. Base: PR #600 (the splice), because byte_size on a cursor needs byte_size inline at the call site. Worktree ../fz-sc8-183, branch fz-sc8.208/cursor.",
       "timestamp": "2026-11-15T03:18:41Z"
+    },
+    {
+      "text": "Result (PR #613, head c526ef067, against develop 3fc210db8). Predicted: rests built per line fall from 634 to 76 distiller-wide. Measured in the JSON-decode probe (2,000 lines): off-heap binaries built per line 350.6 -\u003e 39.4; continuation allocations per line ~254, unchanged. Distiller on 32,000 lines: instructions 22.88G -\u003e 17.67G (-22.8%), peak memory 277 MB -\u003e 227 MB, stdout identical. NOT met: cycles and user time did not fall (3.91G -\u003e 4.00G cycles, 0.96 -\u003e 0.98 s user, machine load ~26, inside the spread). Per-byte walk probe: 67.4G -\u003e 20.2G instructions, 2.25 s -\u003e 0.86 s user. Deviation from the page: Matched absorbs TupleFields (page said the join is Whole). Limit: a rest bound by a case arm is not a cursor. Found in review: a cursor at position 0 made whole allocated a new view in native code; fixed by 'a rest that spans its whole source is the source', pinned by fixture 01187.",
+      "timestamp": "2026-11-15T05:08:51Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A binary that is only taken apart travels as its source and a position",
   "type": "task",
-  "updated_at": "2026-11-15T03:53:54Z"
+  "updated_at": "2026-11-15T05:08:51Z"
 }
