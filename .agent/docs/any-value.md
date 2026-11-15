@@ -502,7 +502,15 @@ ends in `Prim::DestMapPublish` (`Heap::map_destination_publish`), which
 publishes the entries where they stand; a debug build asserts the order. For
 example, `%{b: f(), a: g(), b: h()}` calls `f`, `g` and `h` in that order and
 puts `a` then `b`, with `h`'s value. A literal with any other key keeps its
-source order and ends in the freeze, which sorts.
+source order and ends in the freeze. A flat build destination is sorted where
+it stands (`Heap::normalize_destination_entries`): entries move as the tag
+byte and key and value words they are stored as, and only keys are decoded,
+to be compared. A repeated key keeps its first slot and its last value, and
+the survivors move down to the layout of the smaller count
+(`compact_destination_entries`) before they are published in place. A
+destination of more than `MAP_FLAT_MAX` entries is published as a trie from
+its normalized entries. The interpreter and native code build every map
+literal this way, quoted-AST span metadata included.
 
 A single update of a flat map copies the array of at most 32 entries; an update
 of a trie copies one path (below). Use bulk operations when touching several

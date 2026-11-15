@@ -4,7 +4,7 @@ use std::rc::Rc;
 use super::binop::{eval_binop, eval_unop, unpack_callable, unpack_closure};
 use super::dispatch_exec::{Dispatch, DispatchInputs, DispatchSource, dispatch_values};
 use super::extern_call::{ExternCallValue, call_lowered_extern};
-use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get, interp_map_put};
+use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get};
 use super::value::{
     AnyValue, HeapRef, interp_bool_value, interp_empty_list_value, interp_named_field, interp_nil_value,
     interp_read_bit_field, interp_value_from_ref_word, with_value_ref,
@@ -33,7 +33,7 @@ use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
 use fz_runtime::heap::{GcStats, Schema};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_dest_begin,
-    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_empty,
+    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts,
     fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_copy, fz_struct_get_field_ref, fz_struct_module,
     fz_struct_store_ref,
 };
@@ -1740,66 +1740,30 @@ fn eval_steps<T: Telemetry + ?Sized>(
             ProgramStep::Map {
                 value,
                 entries,
-                in_key_order: true,
-                ..
+                in_key_order,
+                quoted_span,
             } => {
                 let proc = runtime.cur_proc();
-                let mut dest = fz_map_dest_begin(proc, entries.len() as u32);
+                let capacity = entries.len() + usize::from(quoted_span.is_some());
+                let mut dest = fz_map_dest_begin(proc, capacity as u32);
                 for (key, item) in entries {
                     let key = env_get(transport, proc, env, *key)?;
                     let item = env_get(transport, proc, env, *item)?;
                     dest = interp_map_dest_put(proc, dest, key, item, "backend map")?;
                 }
-                env.insert(
-                    *value,
-                    BackendBoundValue::Runtime(interp_value_from_ref_word(
-                        fz_map_dest_publish(proc, dest),
-                        "backend map",
-                    )?),
-                );
-            }
-            ProgramStep::Map {
-                value,
-                entries,
-                quoted_span,
-                in_key_order: false,
-            } => {
-                let mut map_bits = if entries.is_empty() || quoted_span.is_some() {
-                    fz_map_empty(runtime.cur_proc())
-                } else {
-                    0
-                };
-                for (key, item) in entries {
-                    map_bits = interp_map_put(
-                        runtime.cur_proc(),
-                        map_bits,
-                        env_get(transport, runtime.cur_proc(), env, *key)?,
-                        env_get(transport, runtime.cur_proc(), env, *item)?,
-                        "backend map",
-                    )?;
-                }
                 if let Some(span) = quoted_span {
-                    let mut span_bits = fz_map_empty(runtime.cur_proc());
-                    for (key, value) in crate::compiler2::quoted_span_entries(*span) {
-                        span_bits = interp_map_put(
-                            runtime.cur_proc(),
-                            span_bits,
-                            AnyValue::Atom(runtime.node.intern_atom(key)),
-                            AnyValue::Int(value),
-                            "quoted span metadata",
-                        )?;
-                    }
-                    map_bits = interp_map_put(
-                        runtime.cur_proc(),
-                        map_bits,
-                        AnyValue::Atom(runtime.node.intern_atom(crate::compiler2::META_SPAN_KEY)),
-                        interp_value_from_ref_word(span_bits, "quoted span metadata")?,
-                        "quoted AST metadata",
-                    )?;
+                    let span = quoted_span_metadata(runtime, *span)?;
+                    let key = AnyValue::Atom(runtime.node.intern_atom(crate::compiler2::META_SPAN_KEY));
+                    dest = interp_map_dest_put(proc, dest, key, span, "quoted AST metadata")?;
                 }
+                let map = if *in_key_order {
+                    fz_map_dest_publish(proc, dest)
+                } else {
+                    fz_map_dest_freeze(proc, dest)
+                };
                 env.insert(
                     *value,
-                    BackendBoundValue::Runtime(interp_value_from_ref_word(map_bits, "backend map")?),
+                    BackendBoundValue::Runtime(interp_value_from_ref_word(map, "backend map")?),
                 );
             }
             ProgramStep::MapUpdate {
@@ -3524,6 +3488,19 @@ fn encode_direct_callable_captures(
         encode_transport_layout(transport, program, proc, capture, layout, lanes)?;
     }
     Ok(())
+}
+
+/// The `__meta__` span map a quoted AST node carries, built as every map
+/// literal is.
+fn quoted_span_metadata(runtime: &IrInterpRuntime, span: crate::source::Span) -> Result<AnyValue, String> {
+    let proc = runtime.cur_proc();
+    let entries = crate::compiler2::quoted_span_entries(span);
+    let mut dest = fz_map_dest_begin(proc, entries.len() as u32);
+    for (key, value) in entries {
+        let key = AnyValue::Atom(runtime.node.intern_atom(key));
+        dest = interp_map_dest_put(proc, dest, key, AnyValue::Int(value), "quoted span metadata")?;
+    }
+    interp_value_from_ref_word(fz_map_dest_freeze(proc, dest), "quoted span metadata")
 }
 
 /// `base` with each of `entries` replacing a key it has, or the miss when it

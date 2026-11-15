@@ -3053,6 +3053,37 @@ fn a_destination_filled_in_key_order_publishes_the_bytes_a_sorted_one_does() {
 }
 
 #[test]
+fn a_destination_with_a_repeated_key_publishes_the_map_its_last_values_make() {
+    // A literal whose keys arrive at run time can repeat one, so its
+    // destination holds more entries than the map it publishes: the entries
+    // are sorted and merged where they stand and moved down to the smaller
+    // layout, giving the bytes a map built from the same entries has.
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let [a, b, c] = ["a", "b", "c"].map(|name| AnyValue::atom(h.node.intern_atom(name)));
+    let puts = [
+        (c, AnyValue::int(3)),
+        (a, AnyValue::int(1)),
+        (c, AnyValue::float(2.5)),
+        (b, AnyValue::int(2)),
+    ];
+
+    let built = h.alloc_map_destination(puts.len());
+    for (key, value) in puts {
+        unsafe { h.map_destination_put(built, key, value) };
+    }
+    let built = h.map_destination_freeze(built).expect("a build publishes");
+    let built = built.map_addr().expect("map");
+    let expected = map_addr_from_tagged(h.alloc_map_slots(&puts)).expect("map");
+
+    let bytes = |map: *mut u8| unsafe { std::slice::from_raw_parts(map.cast_const(), map_size_for_count(3)) };
+    assert_eq!(
+        bytes(built),
+        bytes(expected),
+        "one entry per key, in key order, the last value kept"
+    );
+}
+
+#[test]
 fn map_publication_orders_keys_and_keeps_the_last_value_of_a_repeated_key_at_every_size() {
     // Lists shorter than, equal to and longer than the stack buffer all give
     // the same map: keys ascending, one entry per key, the last value kept.
