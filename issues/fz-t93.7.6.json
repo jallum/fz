@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T15:52:28Z",
+  "description": "Step 6 of fz-t93.7. Deletes the AbiExecutable product (3,465 requests). Predicted +1.0% (+0.4..+2). Bar: distiller instructions within the stated prediction; stdout byte-identical; fixture_matrix green; every pin that rises is listed with its mechanism and reported for approval before it is raised. Measured base e81f9ed52 and the per-step model: scratch t93_7/m/report.md; decision page /Users/j5n/Workspace/fz-t93.7-measured.html.",
+  "id": "fz-t93.7.6",
+  "labels": [],
+  "parent": "fz-t93.7",
+  "priority": 2,
+  "status": "open",
+  "title": "An ABI is a derived fact",
+  "type": "task",
+  "updated_at": "2026-11-15T15:52:28Z"
+}
