@@ -1,0 +1,9 @@
+#---
+# purpose: "Macro.escape/1 refuses a PID with ArgumentError and lists the values it can escape: a PID made while compiling names no process in the built program. Elixir escapes a PID as itself, so this fixture has no oracle"
+# expect: abort
+#---
+defmodule Main do
+  def main(), do: Macro.escape({:owner, self()})
+end
+
+Main.main()

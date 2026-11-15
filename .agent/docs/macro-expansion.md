@@ -442,6 +442,14 @@ It:
 The returned root is therefore still rooted in the same quoted-source heap as
 the input carrier root.
 
+A value the macro computes enters the returned code through `Macro.escape/1`
+(`lib/macro.fz`), an ordinary lib function the macro body calls. It answers the
+quoted code that rebuilds the value, in Elixir's shapes: a tuple that is not a
+pair is `{:{}, [], elements}`, a map is `{:%{}, [], pairs}` in `Map.to_list`
+order, and a bitstring that is not a binary is a `<<>>` of its leading
+`rem(bit_size, 8)` bits and its binary rest. A PID, a reference or a function,
+at any depth, raises `ArgumentError`: it names nothing in the compiled program.
+
 ### Where expanded code is reported
 
 A `quote` writes no span on the nodes it builds (`QuoteLowerer::push_meta`,

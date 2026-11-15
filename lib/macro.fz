@@ -1,0 +1,56 @@
+defmodule Macro do
+  @moduledoc """
+  Works with quoted code, as Elixir's `Macro` does.
+
+  `escape/1` is the only function defined. The rest of Elixir's `Macro`
+  (`to_string/1`, `expand/2`, `prewalk/2` and the others) and the options of
+  `escape/2` are not defined.
+  """
+
+  @doc """
+  Returns the quoted code that rebuilds `value`.
+
+  A macro computes values while it runs; to put one into the code it returns,
+  it escapes it. Atoms, numbers and binaries are their own code, and so are
+  2-tuples and lists, with each element escaped. Any other tuple is
+  `{:{}, [], elements}`. A map is `{:%{}, [], pairs}`, its pairs in
+  `Map.to_list/1` order with each key and value escaped, and a struct is
+  escaped as the map it is. A bitstring that is not a binary is its leading
+  `rem(bit_size(value), 8)` bits as an integer, then the rest as a binary.
+
+  A PID, a reference and a function name nothing in the compiled program, so
+  each raises `ArgumentError`, wherever it is inside `value`.
+
+  ## Examples
+
+      Macro.escape({1, 2, 3})
+      #=> {:{}, [], [1, 2, 3]}
+
+      Macro.escape(%{a: [1]})
+      #=> {:%{}, [], [a: [1]]}
+
+      Macro.escape([ok: {1, 2}])
+      #=> [ok: {1, 2}]
+
+  """
+  @spec escape(any) :: any
+  def escape(value) when is_atom(value) or is_integer(value) or is_float(value) or is_binary(value), do: value
+  def escape(value) when is_bitstring(value), do: escape_bits(value, rem(bit_size(value), 8))
+  def escape({first, second}), do: {escape(first), escape(second)}
+  def escape(value) when is_tuple(value), do: {:{}, [], escape_each(Tuple.to_list(value))}
+  def escape(value) when is_list(value), do: escape_each(value)
+  def escape(value) when is_map(value), do: {:%{}, [], escape_each(Map.to_list(value))}
+
+  def escape(value) do
+    raise(ArgumentError, "cannot escape #{inspect(value)}. The supported values are: lists, tuples, maps, atoms, numbers and bitstrings")
+  end
+
+  @spec escape_each([any]) :: [any]
+  defp escape_each(values), do: Enum.map(values, fn value -> escape(value) end)
+
+  @spec escape_bits(bitstring, integer) :: tuple
+  defp escape_bits(bits, lead) do
+    <<head::size(lead), rest::binary>> = bits
+    {:<<>>, [], [{:"::", [], [head, {:size, [], [lead]}]}, {:"::", [], [rest, {:binary, [], nil}]}]}
+  end
+end

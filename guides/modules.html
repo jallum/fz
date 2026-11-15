@@ -474,6 +474,12 @@ of Elixir's <code>MapSet</code> (<code>union</code>, <code>intersection</code>,
 <code>equal?</code>, <code>filter</code>, <code>reject</code>, <code>new/2</code>,
 <code>symmetric_difference</code>) is not built.</p>
 
+<p><code>Macro</code> (<code>lib/macro.fz</code>) has <code>escape/1</code>,
+which turns a value into the quoted code that rebuilds it (see the macros
+guide). A PID, a reference or a function raises <code>ArgumentError</code>.
+<code>escape/2</code> and the rest of Elixir's <code>Macro</code> are not
+built.</p>
+
 <p><code>Tuple</code> (<code>lib/tuple.fz</code>) has <code>to_list/1</code>,
 written over <code>elem/2</code> and <code>tuple_size/1</code>; a non-tuple
 raises <code>ArgumentError</code>. The rest of Elixir's <code>Tuple</code>

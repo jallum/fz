@@ -68,6 +68,23 @@ build, inspect, and hand back. <code>unquote</code> is the one place inside a
 quote where you drop back into "evaluate this now" instead of "quote this."
 </div>
 
+<p>What <code>unquote</code> splices in has to be code. Numbers, atoms,
+binaries, lists and pairs are code already, but a value a macro computes may
+not be: a map or a three-element tuple is not the code that builds it.
+<code>Macro.escape/1</code> turns any such value into the code that rebuilds
+it:</p>
+
+<pre><span class="kw">defmacro</span> table() <span class="kw">do</span>
+  value = %{<span class="num">1</span> =&gt; {<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>}}
+  <span class="kw">quote</span> <span class="kw">do</span>: unquote(Macro.escape(value))
+<span class="kw">end</span>
+
+Macro.escape({<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>})  <span class="com"># {:{}, [], [1, 2, 3]}</span></pre>
+
+<p>A PID, a reference or a function can't be escaped: none of them means
+anything in the compiled program, so <code>Macro.escape</code> raises
+<code>ArgumentError</code>.</p>
+
 <!-- ─────────────────────────────── 3 ─────────────────────────────── -->
 <h2 id="defmacro">3. defmacro, step by step</h2>
 
