@@ -1,4 +1,5 @@
 use super::*;
+use crate::compiler2::drive_harness::Drive;
 use crate::compiler2::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId};
 use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::transport::{LaneDescr, TransportClass};
@@ -515,13 +516,14 @@ def main(), do: pick(3)
         .map(|name| name.split_once("__e").expect("executable-named").1)
         .map(|rest| rest.split_once("__").map_or("", |(_, suffix)| suffix))
         .collect::<BTreeSet<_>>();
-    // e1 resumes after `x > 0`; e3 is the join both `if` arms deliver to, so
-    // it keeps its function. The `case` arm (e4) and the join only that arm
-    // delivers to (e5) live inside e3.
+    // `x > 0` is an extern the entry calls itself, so the entry that resumes
+    // after it (e1) is a block of the entry's function. e3 is the join both
+    // `if` arms deliver to, so it keeps its function. The `case` arm (e4) and
+    // the join only that arm delivers to (e5) live inside e3.
     assert_eq!(
         pick,
-        BTreeSet::from(["", "resume_1", "resume_3"]),
-        "pick lowers to its entry, the comparison's resume and the two-armed join: {names:?}"
+        BTreeSet::from(["", "resume_3"]),
+        "pick lowers to its entry and the two-armed join: {names:?}"
     );
     let join = program
         .module
@@ -535,4 +537,89 @@ def main(), do: pick(3)
     };
     let arm = goto_target(join.block(join.entry)).expect("the case decision enters its arm by Goto");
     goto_target(arm).expect("the arm delivers its tuple to the join only it reaches by Goto");
+}
+
+fn native_fn_names(program: &crate::compiler2::artifact::NativeProgram) -> Vec<&str> {
+    program
+        .module
+        .fns
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect()
+}
+
+fn fns_of_executable<'p>(
+    program: &'p crate::compiler2::artifact::NativeProgram,
+    function: &str,
+) -> Vec<&'p crate::fz_ir::FnIr> {
+    let prefix = format!("{function}__e");
+    program
+        .module
+        .fns
+        .iter()
+        .filter(|candidate| {
+            candidate
+                .name
+                .strip_prefix(&prefix)
+                .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+        })
+        .collect()
+}
+
+/// `P.f` adds in a position that is not its tail and `P.g` multiplies in one.
+/// Kernel's `+` and `*` are each a clause that only calls an extern, so each
+/// caller is one function: it calls the extern itself and continues in the
+/// entry that resumes it, with no function for that entry and no call.
+#[test]
+fn a_delivered_call_to_a_forwarder_of_an_extern_is_the_extern_inline_in_its_caller() {
+    let settled = Drive::fixture(1177).dump_stage(crate::compiler2::dump::DumpStage::Native);
+    let program = settled.native_program();
+    let names = native_fn_names(&program);
+    for caller in ["f", "g"] {
+        let fns = fns_of_executable(&program, caller);
+        let [function] = fns.as_slice() else {
+            panic!("{caller} is one function, with no resume function of its own: {names:?}");
+        };
+        let calls_nothing = function
+            .blocks
+            .iter()
+            .all(|block| !matches!(block.terminator, Term::Call { .. } | Term::CallClosure { .. }));
+        assert!(
+            calls_nothing,
+            "{caller} reaches its extern without a call and its continuation"
+        );
+        let calls_extern = function.blocks.iter().flat_map(|block| &block.stmts).any(|stmt| {
+            matches!(
+                stmt,
+                crate::fz_ir::Stmt::Let(_, Prim::Extern(..)) | crate::fz_ir::Stmt::LetMany(_, Prim::Extern(..))
+            )
+        });
+        assert!(calls_extern, "{caller} calls its extern inline");
+    }
+}
+
+/// `L.run` calls `P.f`, which is two entries and a call and not an extern, so
+/// that call keeps its resume function: only a callee that is nothing but an
+/// extern is spliced.
+#[test]
+fn a_delivered_call_to_a_callee_that_is_more_than_an_extern_keeps_its_continuation() {
+    let settled = Drive::fixture(1177).dump_stage(crate::compiler2::dump::DumpStage::Native);
+    let program = settled.native_program();
+    let run = fns_of_executable(&program, "run");
+    assert!(
+        run.iter().any(|function| function.name.contains("__resume_")),
+        "the call to P.f resumes in a function of its own: {:?}",
+        native_fn_names(&program)
+    );
+    assert!(
+        run.iter().all(|function| {
+            function
+                .blocks
+                .iter()
+                .filter(|block| matches!(block.terminator, Term::Call { .. }))
+                .count()
+                <= 1
+        }),
+        "run's one call that is not an extern is its only call with a continuation"
+    );
 }

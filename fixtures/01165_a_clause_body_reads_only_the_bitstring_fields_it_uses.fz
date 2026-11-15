@@ -17,11 +17,11 @@
 # `unused` calls `first` on the whole binary each step, so a view of the rest
 # would be the step's only allocation.
 #
-# The allocation count is the total, which includes continuation frames. On the
-# native paths each step of `skip`, `guarded` and `used` builds one (the call
-# that adds to the count) on top of the view, so they count 2; `unused` builds
-# three frames per step and no view, so it counts 3. The interpreter builds no
-# frames and counts the views alone: 1, 1, 1 and 0.
+# The allocation count is the total, which includes continuation frames. The
+# additions are externs a step calls itself, so they build no frame: `skip`,
+# `guarded` and `used` count the view alone, 1 each. `unused` builds one frame
+# per step, for its call to `first`, and no view, so it counts 1 on the native
+# paths; the interpreter builds no frames and counts 0.
 #
 # The last cases pin the values when unread fields sit before and between read
 # ones: the position still advances past a field nothing reads.

@@ -3823,12 +3823,12 @@ fn a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown() {
 /// an object no minor collection looks inside, so the write goes to a copy at
 /// the heap tip. The fixture's twenty calls each build and drop a
 /// thirty-thousand-element list, so collections run while the frame is live and
-/// five steps find it old. The interpreter has no frames and copies none.
+/// four steps find it old. The interpreter has no frames and copies none.
 fn a_long_body_copies_its_frame_forward_when_a_collection_kept_it() {
     let fixture = FixtureCase::new("fixtures/01254_a_long_body_copies_its_frame_forward_when_a_collection_kept_it.fz");
     for (path, label, copies) in [
-        (FixtureMatrixPath::Run, "run", 5),
-        (FixtureMatrixPath::Build, "build", 5),
+        (FixtureMatrixPath::Run, "run", 4),
+        (FixtureMatrixPath::Build, "build", 4),
         (FixtureMatrixPath::Interp, "interp", 0),
     ] {
         assert_eq!(

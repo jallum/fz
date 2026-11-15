@@ -447,12 +447,31 @@ decides, once per executable, where each entry lives (`EntryFns::for_entries`
 in `src/compiler2/jobs/native.rs`, counting `BackendTail::transfers`):
 
 - An entry whose only way in is a single direct transfer -- an `if` arm, a
-  decision's outcome or miss, or the join one value delivers to -- is a block
-  of the function that makes that transfer. The transfer is a `Goto` carrying
+  decision's outcome or miss, the join one value delivers to, or the entry a
+  spliced call resumes (below) -- is a block of the function that makes that
+  transfer. The transfer is a `Goto` carrying
   the same arguments a call would; the block's parameters follow the entry's
   signature, and the entry's steps and tail are lowered into it before that
   function is finished. A dispatch graph that reaches one outcome from several
   leaves reaches the same block.
+- A delivered direct call whose callee is nothing but an extern is spliced: the
+  callee is the extern itself, or one clause with no entry dispatch, no
+  projections and no steps whose tail is a direct call that passes the clause's
+  parameters in order to an extern with no entry dispatch
+  (`BackendExecutable::forwards_to`, `NativeLowerer::spliced_extern`). The
+  caller then contains the extern call (`emit_extern_call`, the same code the
+  extern's own function runs, so a declared failure raises from the caller),
+  binds its one result to the resume entry's input and transfers to the resume
+  entry. The call builds no continuation and names no callee, and the resume
+  entry is reached by a direct transfer, so `EntryFns::for_entries` counts the
+  spliced call's transfer as `EntryTransfer::Direct`. `n + 1` over integers is
+  such a call: `Kernel.+` is one clause that passes both parameters to
+  `fz_op_add_ii`. A clause that reorders its parameters (`Kernel.+` for a float
+  on the left and an integer on the right) and a call whose callee asks an entry
+  dispatch are not spliced and stay calls. A call in tail position
+  (`ControlDestination::Return`) is not delivered and stays a tail call. The
+  splice is a native lowering choice; the backend program and the interpreter,
+  which runs it as it stands, are unchanged.
 - Every other entry is a function of its own: a join several transfers reach,
   the entry a call's return resumes, and the entries the runtime enters from a
   `receive` (its outcomes, its timeout, and the entry its value continues in).

@@ -1178,6 +1178,40 @@ pub struct BackendExecutable {
     pub(crate) boxed_apply_requirements: Box<[super::backend_program::boxed_contract::BoxedApplyRequirement]>,
 }
 
+impl BackendExecutable {
+    /// The callee this executable does nothing but call: one clause with no
+    /// entry dispatch, no projections and no steps, whose tail is a direct
+    /// call that passes the clause's parameters in order and returns the
+    /// callee's result as it comes.
+    pub fn forwards_to(&self) -> Option<&ExecutableKey> {
+        let BackendBody::Clauses { clauses, entries, .. } = &self.body else {
+            return None;
+        };
+        let [clause] = clauses.as_slice() else { return None };
+        let entry = &entries[clause.entry.as_u32() as usize];
+        if self.abi.materialized.entry_dispatch.is_some() || !clause.projections.is_empty() || !entry.steps.is_empty() {
+            return None;
+        }
+        let BackendTail::DirectCall {
+            target:
+                CallEdge::Direct(DirectCallEdge {
+                    callee: CallTarget::Local(callee),
+                    return_flow: BackendReturnFlow::Tail,
+                    ..
+                }),
+            args,
+            dest: ControlDestination::Return,
+            ..
+        } = &entry.tail
+        else {
+            return None;
+        };
+        let passes_parameters_in_order = args.len() == clause.params.len()
+            && args.iter().zip(&clause.params).all(|(arg, param)| arg.value == *param);
+        passes_parameters_in_order.then_some(callee)
+    }
+}
+
 #[cfg(test)]
 impl BackendExecutable {
     /// Hand-built test executables have no lowering to count their values, so they get room for every id a test names.

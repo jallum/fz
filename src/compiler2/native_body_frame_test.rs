@@ -107,13 +107,9 @@ fn compiler2_a_thousand_sequential_calls_run_in_one_frame_and_compile_to_a_small
     );
 
     assert_eq!(run.exit.halt_value, 501500, "the sum of f(1)..f(1000)");
+    assert_eq!(run.roots, [1000], "one frame holds the thousand results");
     assert_eq!(
-        run.roots,
-        [1001],
-        "one frame holds the thousand results and the outer continuation"
-    );
-    assert_eq!(
-        run.members, 1983,
+        run.members, 984,
         "every other continuation of the body runs in that frame"
     );
     assert_eq!(run.exit.frame_copies, 0, "nothing collects, so the frame is never old");

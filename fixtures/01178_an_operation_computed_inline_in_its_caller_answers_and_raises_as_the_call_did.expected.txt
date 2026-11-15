@@ -1,0 +1,6 @@
+15
+{:sum, 3.5}
+{:sum, 3.5}
+{6, 2}
+7
+{:rescued, "bad argument in arithmetic expression"}

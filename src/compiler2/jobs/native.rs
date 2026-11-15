@@ -253,7 +253,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 match &executable.body {
                     BackendBody::Extern { signature } => self.lower_extern_executable(index, executable, signature),
                     BackendBody::Clauses { clauses, entries, .. } => {
-                        let mut entry_fns = EntryFns::for_entries(entries);
+                        let mut entry_fns =
+                            EntryFns::for_entries(entries, |tail| self.spliced_extern_of_tail(tail).is_some());
                         if executable.abi.materialized.entry_dispatch.is_some() {
                             self.lower_clause_dispatch_executable(index, executable, clauses, entries, &mut entry_fns)?;
                         } else {
@@ -783,6 +784,22 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             executable.abi.effects,
         );
         let params = ctx.entry_params(executable.key.activation.inputs(self.world.types()));
+        let result = self.emit_extern_call(&mut ctx, index, signature, &params)?;
+        ctx.set_term(Term::Return(result));
+        self.finish_native_fn(ctx);
+        Ok(())
+    }
+
+    /// Calls extern executable `index` on `params`. A declared failure raises
+    /// from here, so control goes on in the block where the call succeeded,
+    /// and the result is the call's value.
+    fn emit_extern_call(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        index: usize,
+        signature: &LoweredExtern,
+        params: &[Var],
+    ) -> Result<Var, FatalError> {
         let mut extern_args = Vec::with_capacity(params.len());
         for (arg_index, param) in params.iter().copied().enumerate() {
             let arg = if arg_index < signature.params.len() {
@@ -801,7 +818,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let prim = Prim::Extern(callsite, extern_id, extern_args);
         if let ExternReturn::Checked(_, failure) = &signature.ret {
             let (values, stmt_idx) = ctx.emit_let_many(2, prim);
-            register_extern_marshals(&mut ctx, stmt_idx, marshal_plan);
+            register_extern_marshals(ctx, stmt_idx, marshal_plan);
             let (value, failed) = (values[0], values[1]);
             let raise_b = ctx.builder.block(vec![]);
             let value_b = ctx.builder.block(vec![]);
@@ -819,24 +836,16 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     format!("extern `{}` declares a failure that raises nothing", signature.symbol),
                 ));
             };
-            self.emit_raise(&mut ctx, exception, message, None);
+            self.emit_raise(ctx, exception, message, None);
             ctx.current_block = value_b;
-            ctx.set_term(Term::Return(value));
-            self.finish_native_fn(ctx);
-            return Ok(());
+            return Ok(value);
         }
         let (value, stmt_idx) = ctx.emit_let(prim);
-        register_extern_marshals(&mut ctx, stmt_idx, marshal_plan);
-        let result = if matches!(signature.ret, ExternReturn::Scalar(ExternTy::Unit | ExternTy::Never)) {
-            let (nil, _) = ctx.emit_let(Prim::Const(Const::Nil));
-            let _ = value;
-            nil
-        } else {
-            value
-        };
-        ctx.set_term(Term::Return(result));
-        self.finish_native_fn(ctx);
-        Ok(())
+        register_extern_marshals(ctx, stmt_idx, marshal_plan);
+        if matches!(signature.ret, ExternReturn::Scalar(ExternTy::Unit | ExternTy::Never)) {
+            return Ok(ctx.emit_let(Prim::Const(Const::Nil)).0);
+        }
+        Ok(value)
     }
 
     fn lower_clause_dispatch_executable(
@@ -1972,6 +1981,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         if let CallTarget::Undefined(undefined) = callee {
             return self.raise_undefined_function(ctx, executable, env, undefined, selector);
         }
+        if let Some(spliced) = self.spliced_extern(callee, dest, return_flow) {
+            return self.lower_spliced_extern(ctx, executable, entries, entry_fns, env, &spliced, args);
+        }
         let (callee, call_args) = self.native_direct_call_target_and_args(ctx, executable, env, callee, args)?;
         self.emit_native_direct_call_tail(
             ctx,
@@ -1984,6 +1996,76 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             dest,
             return_flow,
         )
+    }
+
+    fn spliced_extern_of_tail(&self, tail: &BackendTail) -> Option<SplicedExtern> {
+        let BackendTail::DirectCall {
+            target: CallEdge::Direct(direct),
+            dest,
+            ..
+        } = tail
+        else {
+            return None;
+        };
+        self.spliced_extern(&direct.callee, dest, &direct.return_flow)
+    }
+
+    /// The extern a delivered call is, when the callee is nothing but that
+    /// extern: the call then needs no callee and no continuation, only the
+    /// extern's one result lane handed to the entry that resumes the caller.
+    fn spliced_extern(
+        &self,
+        callee: &CallTarget<ExecutableKey>,
+        dest: &ControlDestination,
+        return_flow: &BackendReturnFlow,
+    ) -> Option<SplicedExtern> {
+        let (ControlDestination::Deliver(resume), BackendReturnFlow::Deliver { .. }) = (dest, return_flow) else {
+            return None;
+        };
+        let CallTarget::Local(callee) = callee else { return None };
+        let types = self.world.types();
+        let callee = &self.program.executables()[self.program.executable_index(callee, types)?];
+        let behind = self
+            .program
+            .executable_index(callee.forwards_to().unwrap_or(&callee.key), types)?;
+        let target = &self.program.executables()[behind];
+        let is_extern_without_dispatch = matches!(target.body, BackendBody::Extern { .. })
+            && callee.abi.materialized.entry_dispatch.is_none()
+            && target.abi.materialized.entry_dispatch.is_none();
+        is_extern_without_dispatch.then_some(SplicedExtern {
+            extern_index: behind,
+            resume: *resume,
+        })
+    }
+
+    /// Calls the extern in this function and continues in the resume entry,
+    /// which is a block of this function whenever this is its only way in.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_spliced_extern(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &mut EntryFns,
+        env: &ValueEnv,
+        spliced: &SplicedExtern,
+        args: &[super::super::artifact::BackendCallArg],
+    ) -> Result<(), FatalError> {
+        let program = self.program;
+        let target = &program.executables()[spliced.extern_index];
+        let BackendBody::Extern { signature } = &target.body else {
+            unreachable!("a spliced call reaches an extern executable")
+        };
+        let lanes = self.call_lanes(ctx, executable, env, spliced.extern_index, args)?;
+        let result = self.emit_extern_call(ctx, spliced.extern_index, signature, &lanes)?;
+        let entry = &entries[spliced.resume.as_u32() as usize];
+        let input = entry.origin.input_value().ok_or(FatalError)?;
+        let delivered = self.decode_runtime_value_for_layout(&target.abi.return_layout.layout, &[result], &mut 0)?;
+        let mut resumed = env.clone();
+        bind_local_value(ctx, executable, &mut resumed, input, delivered);
+        let resume_args = self.entry_call_args_from_value(ctx, executable, entries, spliced.resume, &resumed, input)?;
+        self.transfer_to_entry(ctx, executable, entries, entry_fns, spliced.resume, resume_args);
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2097,6 +2179,67 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }
     }
 
+    /// The lanes executable `callee` receives for a call's `args`, each
+    /// encoded to the layout the callee declares for its input.
+    fn call_lanes(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        env: &ValueEnv,
+        callee: usize,
+        args: &[super::super::artifact::BackendCallArg],
+    ) -> Result<Vec<Var>, FatalError> {
+        let callee_executable = &self.program.executables()[callee];
+        let mut lanes = Vec::new();
+        for (semantic_index, arg) in args.iter().enumerate() {
+            let Some(target_input) = callee_executable
+                .abi
+                .semantic_inputs
+                .iter()
+                .find(|input| input.semantic_index == semantic_index)
+            else {
+                continue;
+            };
+            if target_input.layout.reprs.is_empty() {
+                continue;
+            }
+            let local = env_local_value(env, arg.value)?;
+            if !matches!(
+                target_input.layout.carrier,
+                super::super::pull::TransportCarrier::ValueRef(_)
+            ) {
+                self.encode_runtime_value_for_layout(
+                    ctx,
+                    executable,
+                    Some(arg.value),
+                    local,
+                    &target_input.layout,
+                    &mut lanes,
+                )?;
+            } else {
+                let value = self.materialize_native_value(
+                    ctx,
+                    executable.abi.materialized.value_types.get(&arg.value).copied(),
+                    local,
+                )?;
+                lanes.push(value);
+            }
+        }
+        if lanes.len() != callee_executable.abi.param_reprs.len() {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "native direct call emitted {} arguments for target {:?}, which declares {}",
+                    lanes.len(),
+                    callee_executable.key,
+                    callee_executable.abi.param_reprs.len(),
+                ),
+            ));
+        }
+        Ok(lanes)
+    }
+
     fn native_direct_call_target_and_args(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -2111,54 +2254,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     .program
                     .executable_index(callee, self.world.types())
                     .ok_or(FatalError)?;
-                let callee_executable = &self.program.executables()[callee];
-                let mut lanes = Vec::new();
-                for (semantic_index, arg) in args.iter().enumerate() {
-                    let Some(target_input) = callee_executable
-                        .abi
-                        .semantic_inputs
-                        .iter()
-                        .find(|input| input.semantic_index == semantic_index)
-                    else {
-                        continue;
-                    };
-                    if target_input.layout.reprs.is_empty() {
-                        continue;
-                    }
-                    let local = env_local_value(env, arg.value)?;
-                    if !matches!(
-                        target_input.layout.carrier,
-                        super::super::pull::TransportCarrier::ValueRef(_)
-                    ) {
-                        self.encode_runtime_value_for_layout(
-                            ctx,
-                            executable,
-                            Some(arg.value),
-                            local,
-                            &target_input.layout,
-                            &mut lanes,
-                        )?;
-                    } else {
-                        let value = self.materialize_native_value(
-                            ctx,
-                            executable.abi.materialized.value_types.get(&arg.value).copied(),
-                            local,
-                        )?;
-                        lanes.push(value);
-                    }
-                }
-                if lanes.len() != callee_executable.abi.param_reprs.len() {
-                    return Err(incomplete_native_program(
-                        self.telemetry,
-                        self.root_id,
-                        format!(
-                            "native direct call emitted {} arguments for target {:?}, which declares {}",
-                            lanes.len(),
-                            callee_executable.key,
-                            callee_executable.abi.param_reprs.len(),
-                        ),
-                    ));
-                }
+                let lanes = self.call_lanes(ctx, executable, env, callee, args)?;
                 Ok((DirectCallTarget::Local(self.executable_fns[callee]), lanes))
             }
             CallTarget::ProviderBoundary(function) => Ok((
@@ -4778,6 +4874,12 @@ fn same_entry_capture_contract(left: &BackendEntryCapture, right: &BackendEntryC
     left.value == right.value && left.layout == right.layout
 }
 
+/// A delivered call that is the extern behind its callee.
+struct SplicedExtern {
+    extern_index: usize,
+    resume: ControlEntryId,
+}
+
 /// How one executable's entries become native code. An entry whose only way
 /// in is a single direct transfer is a block of the function that makes that
 /// transfer; every other entry is a function of its own, emitted once.
@@ -4789,10 +4891,18 @@ struct EntryFns {
 }
 
 impl EntryFns {
-    fn for_entries(entries: &[BackendEntry]) -> Self {
+    /// `is_spliced` says which tails are calls that continue in this function
+    /// instead of returning to it: their resume entry is reached by a direct
+    /// transfer like any other.
+    fn for_entries(entries: &[BackendEntry], is_spliced: impl Fn(&BackendTail) -> bool) -> Self {
         let mut incoming: HashMap<ControlEntryId, Vec<EntryTransfer>> = HashMap::default();
         for entry in entries {
+            let spliced = is_spliced(&entry.tail);
             for (target, transfer) in entry.tail.transfers() {
+                let transfer = match transfer {
+                    EntryTransfer::CallReturn if spliced => EntryTransfer::Direct,
+                    other => other,
+                };
                 incoming.entry(target).or_default().push(transfer);
             }
         }
