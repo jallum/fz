@@ -1,0 +1,58 @@
+#---
+# purpose: "A list the body no longer uses is not kept alive by the body's frame"
+#---
+#
+# Twenty sequential calls share one body frame. The body then builds a
+# large list, measures it, and never uses it again, so its frame slot is
+# cleared at the next step and the collections that follow do not copy the list.
+# The pinned fact is the bytes those collections copy.
+def f(x), do: x + 1
+
+def g(x), do: length(Enum.to_list(1..30000)) + x
+
+def main() do
+  p1 = f(1)
+  p2 = f(2)
+  p3 = f(3)
+  p4 = f(4)
+  p5 = f(5)
+  p6 = f(6)
+  p7 = f(7)
+  p8 = f(8)
+  p9 = f(9)
+  p10 = f(10)
+  p11 = f(11)
+  p12 = f(12)
+  p13 = f(13)
+  p14 = f(14)
+  p15 = f(15)
+  p16 = f(16)
+  p17 = f(17)
+  p18 = f(18)
+  p19 = f(19)
+  p20 = f(20)
+  big = Enum.to_list(1..400000)
+  k = f(0)
+  n = length(big)
+  c1 = g(1)
+  c2 = g(2)
+  c3 = g(3)
+  c4 = g(4)
+  c5 = g(5)
+  c6 = g(6)
+  c7 = g(7)
+  c8 = g(8)
+  c9 = g(9)
+  c10 = g(10)
+  c11 = g(11)
+  c12 = g(12)
+  c13 = g(13)
+  c14 = g(14)
+  c15 = g(15)
+  c16 = g(16)
+  c17 = g(17)
+  c18 = g(18)
+  c19 = g(19)
+  c20 = g(20)
+  IO.inspect(p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9 + p10 + p11 + p12 + p13 + p14 + p15 + p16 + p17 + p18 + p19 + p20 + c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8 + c9 + c10 + c11 + c12 + c13 + c14 + c15 + c16 + c17 + c18 + c19 + c20 + k + n)
+end

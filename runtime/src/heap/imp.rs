@@ -1242,6 +1242,13 @@ impl Heap {
         self.live_baseline + self.young_bytes()
     }
 
+    /// Whether `object` lies in a young block: the tip, the tip a gift window
+    /// set aside, or a parked block. A minor collection looks inside every
+    /// young object and inside no old one.
+    pub fn is_young(&self, object: *mut u8) -> bool {
+        super::ref_io::ptr_in_ranges(object, self.young_ranges())
+    }
+
     /// A write into an object that already exists is sound only while the
     /// object is young. A minor collection does not look inside old objects, so
     /// an old object must never come to hold a pointer to a young one. Checked
@@ -1249,7 +1256,7 @@ impl Heap {
     #[inline]
     pub(super) fn assert_written_object_is_young(&self, object: *mut u8) {
         debug_assert!(
-            super::ref_io::ptr_in_ranges(object, self.young_ranges()),
+            self.is_young(object),
             "a write into an object a collection has already kept"
         );
     }

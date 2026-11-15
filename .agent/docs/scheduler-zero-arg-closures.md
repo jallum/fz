@@ -394,6 +394,40 @@ captures is the newest object at resume and is given back. Only a capture whose
 type is an integer, a float or an atom is raw (`AbiValueRepr::for_ty`); an `any`
 or `int | float` capture is a `ValueRef`.
 
+### Shared body frames
+
+A body that calls many times is cut into one continuation per call, and each
+resume would otherwise carry every value still live across it, so the code and
+the frames grow with the square of the calls. `native_body_frame::frame_bodies`
+instead lets a chain of continuations share one heap frame. A continuation joins
+a chain when it is built at exactly one site, by another continuation of the
+chain, nothing else enters it (a direct call, closure, protocol, `try` handler
+or `receive` does), and at least `MIN_CHAIN` (16) continuations precede it.
+The chain's root is built with a slot for every value the chain holds
+(`BodyFrame { role: Root, slots }`); each member (`role: Member`) is handed the
+frame itself: its builder writes the values new at the site with
+`Prim::FrameStore`, clears the boxed slots whose values die there
+(`Prim::FrameClear`), points the frame's code at the member
+(`frame_resume_at`), and the member reads what it uses with `Prim::FrameLoad`.
+
+A body frame is never released at a resume: later members still read it, so the
+entry harness skips `release_resumed_frame` (the pop, and the poison under
+`poison_dead_frames`) for every continuation that runs in one. A collection
+reclaims the frame once the chain is done. The poison fixtures include two long
+bodies (01253, 01255) so a release of a shared frame fails loudly.
+
+A frame a collection kept lives in an old block, and a store into it that names a
+younger object would be invisible to the next minor collection. Every frame
+store and clear therefore first tests that the frame lies in the tip block,
+`[block_start, bump_top)`, and otherwise calls `fz_frame_for_write`, which
+answers the frame itself when it is young (a frame too large for the tip is
+parked alone in a young block) and a copy at the tip when it is old; the store
+goes to the answer, which the rest of the step uses. `Process::frame_copies`
+counts the copies and the `process_exited` event reports it. A clear overwrites
+a dead boxed slot with the nil atom so the frame does not keep the value
+reachable; a slot whose kind is scalar is left whole, because a live ref to a
+scalar names its own slot.
+
 The `poison_dead_frames` cargo feature builds a compiler that poisons a
 releasable frame (null code pointer, kind bytes 0xB, raw words
 `0xDEAD000000000008`) instead of giving it back, and

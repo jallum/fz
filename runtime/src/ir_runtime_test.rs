@@ -1028,3 +1028,61 @@ fn a_pid_and_a_reference_render_in_elixir_shapes() {
         assert_eq!(crate::any_value::debug::kind_name(process_ptr, reference), "Reference");
     });
 }
+
+/// A body frame of `slots` capture slots, its first slot holding `value`, and
+/// the reference word that names it.
+fn body_frame_holding(process: &mut Process, slots: usize, value: i64) -> u64 {
+    let bits = process.heap.alloc_continuation_slots(1, slots);
+    let address = closure_addr_from_tagged(bits).expect("frame address");
+    let frame = AnyValueRef::from_heap_object(ValueKind::CLOSURE, address)
+        .expect("frame ref")
+        .raw_word();
+    unsafe { crate::any_value::closure_capture_set(address, 1, AnyValue::int(value)) };
+    frame
+}
+
+fn first_capture(frame: u64) -> i64 {
+    let address = closure_addr_from_ref_word(frame, "test frame");
+    unsafe { crate::any_value::closure_capture_value(address, 1) }.raw() as i64
+}
+
+/// A write goes into a frame young enough for the next minor collection to look
+/// inside, and the frame is answered as it is: the tip block's frame, and a
+/// frame too large for the tip, which sits alone in a parked young block.
+#[test]
+fn a_body_frame_in_a_young_block_is_written_where_it_is() {
+    with_process(|process| {
+        let in_tip = body_frame_holding(process, 4, 7);
+        let parked_alone = body_frame_holding(process, 16_000, 8);
+
+        assert_eq!(fz_frame_for_write(process, in_tip), in_tip);
+        assert_eq!(fz_frame_for_write(process, parked_alone), parked_alone);
+        assert_eq!(process.frame_copies, 0);
+    });
+}
+
+/// A collection keeps a frame in an old block. A write into it would name a
+/// young object from an object the next minor collection does not look inside,
+/// so the write goes to a copy at the tip that holds everything the frame did.
+#[test]
+fn a_body_frame_a_collection_kept_is_copied_to_the_tip_before_a_write() {
+    with_process(|process| {
+        let frame = body_frame_holding(process, 4, 7);
+        let mut roots = [AnyValueRef::from_raw_word(frame).expect("frame root")];
+        process.heap.collect(&mut roots);
+        let kept = roots[0].raw_word();
+        let kept_address = closure_addr_from_ref_word(kept, "kept frame");
+        assert!(
+            !process.heap.is_young(kept_address),
+            "the collection kept the frame old"
+        );
+
+        let written = fz_frame_for_write(process, kept);
+
+        let written_address = closure_addr_from_ref_word(written, "written frame");
+        assert_ne!(written, kept);
+        assert!(process.heap.is_young(written_address), "the copy is at the tip");
+        assert_eq!(first_capture(written), 7, "the copy holds what the frame held");
+        assert_eq!(process.frame_copies, 1);
+    });
+}

@@ -12,6 +12,8 @@ pub(crate) struct EntryHarnessOut {
     /// The caller's continuation: the signature's trailing i64, or for a
     /// continuation fn the outer continuation read from its frame.
     pub(super) cont_param: ir::Value,
+    /// A continuation fn's own closure (the frame it runs in).
+    pub(super) self_ref: Option<ir::Value>,
 }
 
 pub(crate) fn build_entry_harness<M: ClModule>(
@@ -27,20 +29,29 @@ pub(crate) fn build_entry_harness<M: ClModule>(
     let mut var_env: HashMap<u32, CodegenValue> = HashMap::default();
     let params: Vec<ir::Value> = body.b.block_params(entry_cl).to_vec();
     let my_param_reprs = &param_reprs[this_spec_id as usize];
+    let mut self_ref = None;
     let cont_param = if is_cont_fn {
         let continuation_extra_count = continuation_entry_extra_count(env.body_native(this_spec_id));
-        harness_cont_fn(
+        let in_frame = env.body_native(this_spec_id).frame.is_some();
+        let (outer, own) = harness_cont_fn(
             body,
             entry_blk,
             &params,
             my_param_reprs,
             continuation_extra_count,
+            in_frame,
             &mut var_env,
-        )
+        );
+        self_ref = Some(own);
+        outer
     } else {
         harness_plain_native(body.b, entry_blk, &params, my_param_reprs, &mut var_env)
     };
-    EntryHarnessOut { var_env, cont_param }
+    EntryHarnessOut {
+        var_env,
+        cont_param,
+        self_ref,
+    }
 }
 
 /// Cont fn entry harness:
@@ -64,16 +75,19 @@ pub(crate) fn build_entry_harness<M: ClModule>(
 /// native lowering reconstructs it explicitly in the body with `Prim::MakeTuple`.
 ///
 /// Every capture and the outer continuation are read into registers first,
-/// then the frame is released (see `release_resumed_frame`). Returns the outer
-/// continuation, which is the fn's `cont_param`.
+/// then the frame is released (see `release_resumed_frame`), unless the frame
+/// is a body frame (`in_frame`): other continuations of the body still read it,
+/// so it is never released at a resume. Returns the outer continuation, which
+/// is the fn's `cont_param`, and the frame the fn runs in.
 fn harness_cont_fn<M: ClModule>(
     body: &mut CodegenFn<'_, '_, M>,
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
     my_param_reprs: &[ArgRepr],
     extras_count: usize,
+    in_frame: bool,
     var_env: &mut HashMap<u32, CodegenValue>,
-) -> ir::Value {
+) -> (ir::Value, ir::Value) {
     let mut param_cursor = 0;
     for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {
         let repr = my_param_reprs[i];
@@ -86,6 +100,9 @@ fn harness_cont_fn<M: ClModule>(
         let binding = body.closure_capture_as_binding(self_val, capture_idx, my_param_reprs[repr_idx]);
         var_env.insert(p.0, binding);
     }
+    if in_frame {
+        return (body.outer_cont_ref(self_val), self_val);
+    }
     let slot_count = 1 + entry_blk.params.len() - extras_count;
     let ref_slots: Vec<usize> = (extras_count..entry_blk.params.len())
         .filter(|&i| my_param_reprs[i] == ArgRepr::ValueRef)
@@ -93,11 +110,11 @@ fn harness_cont_fn<M: ClModule>(
         .collect();
     if outer_cont_read_after_release() {
         release_resumed_frame(body, self_val, &ref_slots, slot_count);
-        return body.outer_cont_ref(self_val);
+        return (body.outer_cont_ref(self_val), self_val);
     }
     let outer_cont = body.outer_cont_ref(self_val);
     release_resumed_frame(body, self_val, &ref_slots, slot_count);
-    outer_cont
+    (outer_cont, self_val)
 }
 
 /// Plain native fn entry harness.

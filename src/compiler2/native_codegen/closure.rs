@@ -4,8 +4,8 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
 use fz_runtime::any_value::{
     AnyValueRefPacking, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, CLOSURE_FLAGS_CAPTURED_MASK,
-    CLOSURE_LAYOUT_FLAGS_SHIFT, ClosureDenotationId, TAG_CLOSURE, TaggedRefArch, ValueKind, closure_header_word,
-    closure_size_for_count,
+    CLOSURE_LAYOUT_FLAGS_SHIFT, ClosureDenotationId, NIL_ATOM_ID, TAG_CLOSURE, TaggedRefArch, ValueKind,
+    closure_header_word, closure_size_for_count,
 };
 use fz_runtime::heap::INLINE_ALLOC_LAYOUT;
 use fz_runtime::process_abi::PROCESS_HEAP_OFFSET;
@@ -23,9 +23,9 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     outer_cont: ir::Value,
     cont_fid: FuncId,
     cap_bindings: &[ClosureCapture],
-    extra_ref_captures: &[ir::Value],
+    empty_slots: usize,
 ) -> ir::Value {
-    let count = cap_bindings.len() + extra_ref_captures.len() + 1;
+    let count = cap_bindings.len() + empty_slots + 1;
     let code_addr = fn_addr(body.jmod, cont_fid, body.b);
     let closure_ref = place_cont_closure(body, count, code_addr);
     let address = body
@@ -34,7 +34,7 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
         .band_imm(closure_ref, AnyValueRefPacking::current().address_mask() as i64);
     let stores = CaptureStores::new(address, count);
     stores.store_ref_word(body, 0, outer_cont);
-    store_user_captures(cap_bindings, extra_ref_captures, |idx, capture| match capture {
+    store_user_captures(cap_bindings, |idx, capture| match capture {
         ClosureCapture::RefWord(word) => stores.store_ref_word(body, idx, word),
         ClosureCapture::RawInt(raw) => stores.store_raw(body, idx, raw, ValueKind::INT),
         ClosureCapture::RawF64(raw) => {
@@ -43,6 +43,10 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
         }
         ClosureCapture::RawAtom(raw) => stores.store_raw(body, idx, raw, ValueKind::ATOM),
     });
+    let nil = body.b.ins().iconst(types::I64, i64::from(NIL_ATOM_ID));
+    for idx in count - empty_slots..count {
+        stores.store_raw(body, idx, nil, ValueKind::ATOM);
+    }
     closure_ref
 }
 
@@ -106,13 +110,13 @@ fn place_cont_closure<M: cranelift_module::Module>(
 }
 
 /// Stores into the capture slots and kind bytes of one closure being built.
-struct CaptureStores {
+pub(super) struct CaptureStores {
     address: ir::Value,
     count: usize,
 }
 
 impl CaptureStores {
-    fn new(address: ir::Value, count: usize) -> Self {
+    pub(super) fn new(address: ir::Value, count: usize) -> Self {
         Self { address, count }
     }
 
@@ -124,7 +128,7 @@ impl CaptureStores {
         CLOSURE_CAPTURES_OFFSET + (self.count * 8 + idx) as i32
     }
 
-    fn store_raw<M: cranelift_module::Module>(
+    pub(super) fn store_raw<M: cranelift_module::Module>(
         &self,
         body: &mut CodegenFn<'_, '_, M>,
         idx: usize,
@@ -143,7 +147,7 @@ impl CaptureStores {
     /// and every other kind's is its payload. The slot read is branch-free: a
     /// ref that names no slot reads the closure's own header, and that word
     /// goes unused.
-    fn store_ref_word<M: cranelift_module::Module>(
+    pub(super) fn store_ref_word<M: cranelift_module::Module>(
         &self,
         body: &mut CodegenFn<'_, '_, M>,
         idx: usize,
@@ -174,15 +178,12 @@ impl CaptureStores {
 /// and invoke `store` for each one at its target slot index. Slot 0 is reserved
 /// for the synthetic outer cont and must be written by the caller before
 /// invoking this helper; user captures begin at index 1.
-fn store_user_captures<F>(cap_bindings: &[ClosureCapture], extra_ref_captures: &[ir::Value], mut store: F)
+fn store_user_captures<F>(cap_bindings: &[ClosureCapture], mut store: F)
 where
     F: FnMut(usize, ClosureCapture),
 {
     for (i, &capture) in cap_bindings.iter().enumerate() {
         store(i + 1, capture);
-    }
-    for (i, &extra) in extra_ref_captures.iter().enumerate() {
-        store(cap_bindings.len() + 1 + i, ClosureCapture::RefWord(extra));
     }
 }
 

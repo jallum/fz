@@ -86,6 +86,9 @@ pub(crate) struct StaticStructRef {
 ///   the tagged form is never materialised and brif consumes the i1 directly.
 #[derive(Default)]
 pub(crate) struct CodegenCache {
+    /// A continuation's own descriptor, which is the body frame it runs in
+    /// when it runs in one.
+    pub(super) own_continuation: Option<ir::Value>,
     /// Cranelift values for small integer/atom constants, keyed by
     /// (block, value) so entries from sibling blocks are never reused.
     pub(super) const_cache: HashMap<(ir::Block, i64), ir::Value>,

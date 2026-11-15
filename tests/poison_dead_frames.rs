@@ -17,8 +17,9 @@ const FZ2_BIN: &str = env!("CARGO_BIN_EXE_fz2");
 /// Programs whose native paths cover each way a continuation resumes: a map
 /// and a filter that build two hundred thousand pending frames each, a try/rescue, a receive
 /// that parks and is woken by a matching reply, a large list passed between
-/// two processes, and a tail loop that yields on its reduction budget.
-const FIXTURES: [&str; 7] = [
+/// two processes, a tail loop that yields on its reduction budget, and two long bodies whose
+/// steps share one frame that no step may release.
+const FIXTURES: [&str; 9] = [
     "fixtures/01293_enum_map_over_two_hundred_thousand_elements_does_not_overflow_the_stack",
     "fixtures/01294_enum_filter_over_four_hundred_thousand_elements_does_not_overflow_the_stack",
     "fixtures/00803_rescue_and_after_together_rescue_once_and_run_after_once",
@@ -26,6 +27,8 @@ const FIXTURES: [&str; 7] = [
     "fixtures/00241_pinned_ref_receive",
     "fixtures/00911_two_processes_pass_a_large_list_back_and_forth_and_each_message_crosses_in_one_gift",
     "fixtures2/behavior/fib_tailrec",
+    "fixtures/01253_a_thousand_sequential_calls_sum_their_results",
+    "fixtures/01255_a_body_frame_is_not_given_back_while_later_steps_still_read_it",
 ];
 
 fn source(stem: &str) -> PathBuf {

@@ -262,6 +262,14 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run,
         ),
         (
+            "a_long_body_copies_its_frame_forward_when_a_collection_kept_it",
+            a_long_body_copies_its_frame_forward_when_a_collection_kept_it,
+        ),
+        (
+            "a_list_the_body_no_longer_uses_is_not_kept_by_its_frame",
+            a_list_the_body_no_longer_uses_is_not_kept_by_its_frame,
+        ),
+        (
             "a_receiver_parked_on_a_pinned_list_is_collected_on_every_path_and_still_matches",
             a_receiver_parked_on_a_pinned_list_is_collected_on_every_path_and_still_matches,
         ),
@@ -3808,6 +3816,56 @@ fn a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown() {
             "{label}: the run returned every block it took, including the gifts still queued on the parked child"
         );
     }
+}
+
+/// A long body's steps share one frame. A collection keeps the frame in an
+/// old block, and the next step's write into it would name a young object from
+/// an object no minor collection looks inside, so the write goes to a copy at
+/// the heap tip. The fixture's twenty calls each build and drop a
+/// thirty-thousand-element list, so collections run while the frame is live and
+/// five steps find it old. The interpreter has no frames and copies none.
+fn a_long_body_copies_its_frame_forward_when_a_collection_kept_it() {
+    let fixture = FixtureCase::new("fixtures/01254_a_long_body_copies_its_frame_forward_when_a_collection_kept_it.fz");
+    for (path, label, copies) in [
+        (FixtureMatrixPath::Run, "run", 5),
+        (FixtureMatrixPath::Build, "build", 5),
+        (FixtureMatrixPath::Interp, "interp", 0),
+    ] {
+        assert_eq!(
+            frame_copies_for_fixture(&fixture, path, label),
+            copies,
+            "{label}: body frames copied to the tip"
+        );
+    }
+}
+
+/// The body frame holds a four-hundred-thousand-element list until the step
+/// that measures it, and the step after clears the slot. The collections that
+/// follow copy what the program still uses and not the list: none of the last
+/// fifty copies more than 480,544 bytes, the same most the program copies with
+/// no shared frame. A frame that kept the list would have every collection
+/// after it copy the list's 6.4 MB too: the most is then 6,880,544.
+fn a_list_the_body_no_longer_uses_is_not_kept_by_its_frame() {
+    let fixture = FixtureCase::new("fixtures/01256_a_list_the_body_no_longer_uses_is_not_kept_by_its_frame.fz");
+    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Build, "build")] {
+        let events = gc_events_for_fixture(&fixture, path, label);
+        let tail = &events[events.len().saturating_sub(50)..];
+        assert_eq!(
+            tail.iter().map(|e| e.copied_bytes).max(),
+            Some(480_544),
+            "{label}: the most bytes one of the last fifty collections copied"
+        );
+    }
+}
+
+/// The body frames the fixture's exiting processes report having copied to the
+/// heap tip.
+fn frame_copies_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> usize {
+    telemetry_log_for_fixture(fixture, path, label)
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"process_exited\"]"))
+        .map(|line| required_json_u64_field(line, "frame_copies", "process_exited event"))
+        .sum()
 }
 
 /// `(pid, boundary, copied_bytes)` of every collection, in emission order.

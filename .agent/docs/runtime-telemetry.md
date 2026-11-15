@@ -74,13 +74,15 @@ signature:    (&PidId, &Process)
 `ExitRecord` is the test-side projection: `{ pid, halt_value: i64, live_count:
 usize, bytes_used: usize, list_retention_attempts: u64,
 list_retention_hits: u64, raises_delivered: u64, reduction_yields: u64,
-failed: bool, dtors_dispatched: u64 }`. `failed` is
+failed: bool, dtors_dispatched: u64, frame_copies: u64 }`. `failed` is
 `Process::ended_in_failure`: whether the process ended through an uncaught raise
 with a non-zero exit status (see [exceptions](exceptions.md)); an exit with a
 shutdown reason of status 0 ends a process without failing it. A failed
 process's `halt_value` is not a return value. `raises_delivered` counts the
 raises a handler took in this process, and `reduction_yields` the times its
-reduction budget ran out and it yielded to the scheduler. `ProcessExitCapture`
+reduction budget ran out and it yielded to the scheduler. `frame_copies` counts the
+shared body frames a store copied to the heap tip because a collection had kept
+them (see [scheduler-zero-arg-closures](scheduler-zero-arg-closures.md)). `ProcessExitCapture`
 builds it during dispatch by reading the live process. `write_line` reads the
 same fields when it renders the event, nested under
 `"process":{"opaque_type":"fz_runtime::process::Process",...}` with `failed` as

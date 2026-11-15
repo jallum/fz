@@ -117,6 +117,7 @@ fn inventory_fixture(count: u32) -> NativeProgram {
             value_types: HashMap::default(),
             extern_marshals: HashMap::default(),
             effects: EffectSummary::default(),
+            frame: None,
         });
     }
     NativeProgram {

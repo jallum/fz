@@ -247,7 +247,7 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
 fn write_process_exited(out: &mut String, process: &Process) {
     write!(
         out,
-        "\"pid\":{},\"process\":{{\"opaque_type\":\"{}\",\"live_count\":{},\"bytes_used\":{},\"list_retention_attempts\":{},\"list_retention_hits\":{},\"raises_delivered\":{},\"reduction_yields\":{},\"dtors_dispatched\":{},\"halt_value\":{},\"failed\":{}}}",
+        "\"pid\":{},\"process\":{{\"opaque_type\":\"{}\",\"live_count\":{},\"bytes_used\":{},\"list_retention_attempts\":{},\"list_retention_hits\":{},\"raises_delivered\":{},\"reduction_yields\":{},\"dtors_dispatched\":{},\"frame_copies\":{},\"halt_value\":{},\"failed\":{}}}",
         process.pid,
         std::any::type_name::<Process>(),
         process.heap.live_count(),
@@ -257,6 +257,7 @@ fn write_process_exited(out: &mut String, process: &Process) {
         process.raises_delivered,
         process.reduction_yields,
         process.dtors_dispatched,
+        process.frame_copies,
         process.halt_value,
         process.failed
     )

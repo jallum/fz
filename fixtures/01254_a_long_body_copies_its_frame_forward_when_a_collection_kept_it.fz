@@ -1,0 +1,33 @@
+#---
+# purpose: "A body that calls twenty times while collections run keeps its one frame by copying it forward"
+#---
+#
+# Twenty sequential calls hold every result in one body frame. Each call builds
+# and drops a thirty-thousand-element list, so collections run while the frame
+# is live. A collection keeps the frame in an old block, and the next write
+# into it copies it to the heap tip first; the copies are counted per process.
+def g(x), do: length(Enum.to_list(1..30000)) + x
+
+def main() do
+  a1 = g(1)
+  a2 = g(2)
+  a3 = g(3)
+  a4 = g(4)
+  a5 = g(5)
+  a6 = g(6)
+  a7 = g(7)
+  a8 = g(8)
+  a9 = g(9)
+  a10 = g(10)
+  a11 = g(11)
+  a12 = g(12)
+  a13 = g(13)
+  a14 = g(14)
+  a15 = g(15)
+  a16 = g(16)
+  a17 = g(17)
+  a18 = g(18)
+  a19 = g(19)
+  a20 = g(20)
+  IO.inspect(a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + a10 + a11 + a12 + a13 + a14 + a15 + a16 + a17 + a18 + a19 + a20)
+end
