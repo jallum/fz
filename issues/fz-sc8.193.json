@@ -4,14 +4,16 @@
     "fz-9x7.1"
   ],
   "blocks": [],
+  "closed_at": "2026-11-15T04:05:51Z",
+  "close_reason": "Fixed by fz-9x7.1 (273197fd5, PR #585): continuations live on the heap, so the deep recursion no longer overflows the native stack. Fixture 01295 runs String.duplicate at 100,000 on all three paths.",
   "created": "2026-11-14T11:46:20Z",
   "description": "IO.puts(Integer.to_string(byte_size(String.duplicate(\"x\", 100000)))) prints 'fatal runtime error: stack overflow, aborting' on run and exits 139 on build; interp prints 100000. Present on develop f822f0f84 as well as on the fz-sc8.183 stack. 50,000 works. Elixir has no such limit. Not yet investigated: whether String.duplicate recurses non-tail in lib, or whether any deep non-tail recursion overflows. Repro: scratchpad/lit/crash2.fz.",
   "id": "fz-sc8.193",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "String.duplicate/2 of 100,000 overflows the native stack on run and build",
   "type": "bug",
-  "updated_at": "2026-11-15T01:26:42Z"
+  "updated_at": "2026-11-15T04:05:51Z"
 }
