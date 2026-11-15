@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T13:44:48Z",
   "created": "2026-11-15T13:15:13Z",
   "description": "develop was red on the distiller pin: DERIVATIONS measured 18_326 against 18_324 since fz-3sy.19 (c79f7d42d). KeyError and Protocol.UndefinedError override message/1, and DefineModule filed a separate DerivationKey::Function derivation for the replaced default `message (overridable 1)/1`. publish_super runs while the walk reaches the replacing definition, from the same ground, and the replacing definition's derivation follows it with the same reads: the two are one answer. Fix (chosen over an on-demand job, which measured the same at three new concepts): the replaced source is an output of the replacing definition's derivation (LocalCallable::superseded). Done when: DERIVATIONS 18_324, READS_HANDED lowered 111_888 -\u003e 111_880, 01303 still matches Elixir on interp/run/build, and a drive test shows an override files the same derivations as a plain definition.",
   "id": "fz-3sy.28",
   "labels": [],
   "parent": "fz-3sy",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A replaced overridable definition's source is part of the answer of the definition that replaces it",
   "type": "bug",
-  "updated_at": "2026-11-15T13:38:28Z"
+  "updated_at": "2026-11-15T13:44:48Z"
 }
