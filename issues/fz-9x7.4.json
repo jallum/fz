@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9x7.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9x7.6"
+  ],
   "created": "2026-11-14T19:25:22Z",
   "description": "A loop that yields mid-flight captures its next-iteration arguments in a frame. The yield path boxed every raw int, float and atom (value_as_any_ref in emit_back_edge_yield_check) after the frame was allocated, so a 16-byte box sat above the frame and the frame was never the newest heap object when the loop resumed; and the resume body read every slot through a ref word and counted every slot as a ref slot, so a scalar slot pinned the frame even at the heap tip.\n\nWhat lands: the yield path stores raw ints, floats and atoms straight into the frame's raw slots (store_closure_capture_i64/f64/atom, terminator.rs); the mid-flight continuation bodies (emit_mid_flight_cont_bodies, driver.rs) read those slots raw and only ValueRef and HeapRef slots are ref slots. A yield frame of raw captures is then given back when it resumes as the newest object. Test: compiler2_a_yield_frame_of_raw_captures_is_given_back_when_the_loop_resumes (drive_test.rs): a million-iteration int loop leaves the heap at (2 objects, 64 bytes), the same as a ten-iteration loop; before the change: (13, 432). Neither half alone passes: resume side only (13, 432), yield side only (7, 336).\n\nFindings. (1) Only a captured int, float or atom has a raw form: AbiValueRepr::for_ty (compiler2/artifact.rs) maps is_floating to RawF64, is_integer to RawInt, subtype-of-atom to RawAtom, everything else to ValueRef. A capture typed any or int|float is therefore a ValueRef and cannot be raw; its frame still pins when its ref names its own slot. The 2.48M scalar pins on the 32k distiller trace are ValueRef captures holding scalars, not raw ones. Mid-flight frames pinned at the tip on the distiller are 130 of 24,622, all ValueRef shapes. (2) Re-boxing a pinned ValueRef scalar at resume (spike: pop the frame, write fresh 16-byte boxes at the tip) was measured and dropped. Distiller 32k: kept frames 11.99M to 9.81M, minor collections 290 to 276, user time 3.49/3.85/3.61 s vs 3.61/3.88/3.85 s (no gain), peak RSS 251.4 to 251.8 MB. Full trace: minor 1466 to 1399, user 17.32/21.15 s vs 18.57/20.58 s, peak RSS 1.263-1.277 GB to 1.297-1.300 GB (+3%). The boxes are real allocations the pinned frame did not need.",
   "id": "fz-9x7.4",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A value the yield path captures raw does not keep its frame",
   "type": "task",
-  "updated_at": "2026-11-15T00:29:59Z"
+  "updated_at": "2026-11-15T00:37:40Z"
 }
