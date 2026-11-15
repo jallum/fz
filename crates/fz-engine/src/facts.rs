@@ -148,6 +148,15 @@ impl<F> FactChange<F> {
         self.concluded_movement
     }
 
+    /// A change whose only possible audience is a `Settled` waiter: no content
+    /// moved, no `Concluded` reader hears anything, and the fact did not appear.
+    pub(crate) fn is_readiness_only(&self) -> bool {
+        self.content_movement.is_none()
+            && self.concluded_movement.is_none()
+            && !(self.old_revision.is_none() && self.new_revision.is_some())
+            && !(self.conclusion_changed() && self.new_concluded)
+    }
+
     pub fn readiness_changed(&self) -> bool {
         self.old_settled != self.new_settled
     }

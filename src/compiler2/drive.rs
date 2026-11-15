@@ -1191,9 +1191,7 @@ impl World {
     /// `HashMap`, so its iteration order is a per-process `RandomState`
     /// artifact; the drain is already a barrier holding the full candidate
     /// list, and ordering it by the keys' own `Ord` (pure data, no rendering)
-    /// pins the arbitration order deterministically. The scan-shaped drain
-    /// pass itself is fz-kdt.46's remaining target: the edge-triggered form
-    /// arbitrates the exact wait a completion left standing instead.
+    /// pins the arbitration order deterministically.
     pub(crate) fn settle_quiescent_waits(&mut self, sessions: Option<&super::pull::ProductSessions>) {
         let mut facts = self
             .work_graph

@@ -531,6 +531,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
                 .collect(),
             wakes: Vec::<fz_engine::Wake<crate::compiler2::Job, DependencyKey>>::new(),
             blocked: keys.into_iter().map(FactUse::settled).collect(),
+            publishers_checked: 0,
         };
         let mut body = String::new();
         write_applied_step_body(&mut body, &step);
@@ -585,6 +586,7 @@ fn fact_dependency_steps_preserve_the_existing_causal_json_shape() {
             },
         }],
         blocked: vec![FactUse::settled(key)],
+        publishers_checked: 0,
     };
     let mut body = String::new();
     write_applied_step_body(&mut body, &step);
@@ -690,6 +692,7 @@ fn product_movements_are_public_causal_events() {
                 settled: true,
             },
         }],
+        publishers_checked: 0,
     };
     telemetry.raw_event1(&["fz", "compiler2", "work_graph", "dependencies_moved"], &step);
     drop(telemetry);

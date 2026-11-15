@@ -323,6 +323,10 @@ pub struct AppliedStep<J, F> {
     /// own cause and admission (see `Wake`).
     pub wakes: Vec<Wake<J, F>>,
     pub blocked: Vec<FactUse<F>>,
+    /// How many publishers the drain arbiter's cone walks checked for
+    /// dirtiness or an open group; zero for every step that is not an
+    /// arbitration.
+    pub publishers_checked: usize,
 }
 
 /// What draining a wave of fact changes produced: the wakes it caused, in wake
@@ -623,6 +627,7 @@ where
             movements,
             wakes,
             blocked: Vec::new(),
+            publishers_checked: 0,
         }
     }
 
@@ -995,6 +1000,7 @@ where
             movements,
             wakes,
             blocked,
+            publishers_checked: 0,
         }
     }
 
@@ -1060,7 +1066,13 @@ where
         let mut wakes = Vec::new();
         let mut moved_keys = Vec::new();
         let mut pending_changes = FactChangeQueue::new(ctx);
-        pending_changes.extend(changes);
+        for change in changes {
+            if self.reaches_no_one(&change) {
+                moved_keys.push(change.key);
+            } else {
+                pending_changes.extend(std::iter::once(change));
+            }
+        }
         // Dependents can append more movements while this wave drains, so the
         // typed minimum is selected again at every pop.
         while let Some(change) = pending_changes.pop() {
@@ -1141,6 +1153,18 @@ where
         (wakes, movements)
     }
 
+    /// Whether dispatching this change can wake nothing and enqueue nothing:
+    /// it moves readiness only, and no job waits for the fact to settle.
+    ///
+    /// The bypass is exact because dispatch only removes waiters. A wake takes
+    /// the waiter out of the index and enqueues its job; no step of dispatch
+    /// adds a wait or a subscription. So a change with no `Settled` waiter on
+    /// its fact cannot gain one during the wave, and the typed minimum would
+    /// pop it, find nothing to wake, and record only its key as moved.
+    fn reaches_no_one(&self, change: &FactChange<F>) -> bool {
+        change.is_readiness_only() && !self.deps.has_waiter(&FactUse::settled(change.key.clone()))
+    }
+
     /// The drain arbiter.
     ///
     /// Counting alone can never finalize a CYCLE. Take `A <-> B`, each fact
@@ -1179,9 +1203,10 @@ where
         F: SemanticOrd<Ctx>,
     {
         let mut changes = Vec::new();
+        let mut publishers_checked = 0;
         if self.agenda.is_empty() {
             for fact in facts {
-                self.settle_quiescent_fact(fact, &mut changes, external, ctx);
+                self.settle_quiescent_fact(fact, &mut changes, &mut publishers_checked, external, ctx);
             }
         }
         let (wakes, movements) = self.dispatch_changes(changes.clone(), external, ctx);
@@ -1190,6 +1215,7 @@ where
             movements,
             wakes,
             blocked: Vec::new(),
+            publishers_checked,
         }
     }
 
@@ -1197,6 +1223,7 @@ where
         &mut self,
         fact: &F,
         changes: &mut Vec<FactChange<F>>,
+        publishers_checked: &mut usize,
         external: &impl ExternalDependencyStates<F>,
         ctx: &Ctx,
     ) where
@@ -1206,19 +1233,13 @@ where
         if self.facts.is_quiet(fact) || !self.facts.is_locally_settled(fact) {
             return;
         }
-        let Some(cone) = self.quiescent_cone(fact, external) else {
+        let Some(mut publishers) = self.quiescent_cone(fact, publishers_checked, external) else {
             return;
         };
         // The walk proved every unquiet fact in the cone final by the same
-        // argument, so certify them all: leaving the members unfinal would
-        // re-arbitrate each at a later drain and wake their readers again.
-        let mut publishers = cone
-            .iter()
-            .flat_map(|key| self.facts.publishers(key))
-            .cloned()
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
+        // argument, so certify their publishers: leaving the members unfinal
+        // would re-arbitrate each at a later drain and wake their readers
+        // again. The sort keeps the emitted change order deterministic.
         publishers.sort_by(|left, right| left.semantic_cmp(right, ctx));
         for publisher in publishers {
             let keys = self.deps.output_keys(&publisher);
@@ -1236,18 +1257,26 @@ where
         }
     }
 
-    /// The unquiet facts beneath this one, when nothing there can still move;
-    /// `None` when something can. The walk follows every publisher's reads
-    /// down to quiet ground and stops on a dirty publisher or an unsettled
-    /// external product. A dirty publisher is a job that has not re-run since
-    /// its own ground moved, or one still waiting for a fact nobody has
-    /// produced yet; either way the facts above it are clean only because
-    /// that run has not happened. A quiet fact ends the walk: nothing beneath
-    /// a quiet fact moves. A cycle of clean publishers is therefore final, and
-    /// a partial accumulation over an undiscovered layer is not.
-    fn quiescent_cone(&self, fact: &F, external: &impl ExternalDependencyStates<F>) -> Option<Vec<F>> {
+    /// The distinct publishers of the unquiet facts beneath this one, when
+    /// nothing there can still move; `None` when something can. Each publisher
+    /// is checked once, however many of its facts the cone holds. The walk
+    /// follows every publisher's reads down to quiet ground and stops on a
+    /// dirty publisher or an unsettled external product. A dirty publisher is a
+    /// job that has not re-run since its own ground moved, or one still waiting
+    /// for a fact nobody has produced yet; either way the facts above it are
+    /// clean only because that run has not happened. A quiet fact ends the
+    /// walk: nothing beneath a quiet fact moves. A cycle of clean publishers is
+    /// therefore final, and a partial accumulation over an undiscovered layer
+    /// is not.
+    fn quiescent_cone(
+        &self,
+        fact: &F,
+        publishers_checked: &mut usize,
+        external: &impl ExternalDependencyStates<F>,
+    ) -> Option<Vec<P>> {
         let mut pending = vec![fact];
         let mut seen = HashSet::default();
+        let mut walked = HashSet::default();
         let mut cone = Vec::new();
         while let Some(key) = pending.pop() {
             if !seen.insert(key) {
@@ -1265,8 +1294,12 @@ where
             if !self.facts.is_locally_settled(key) {
                 return None;
             }
-            cone.push(key.clone());
             for publisher in self.facts.publishers(key) {
+                if !walked.insert(publisher) {
+                    continue;
+                }
+                cone.push(publisher.clone());
+                *publishers_checked += 1;
                 if self.groups.borrow().is_in_open_group(publisher.run()) {
                     return None;
                 }

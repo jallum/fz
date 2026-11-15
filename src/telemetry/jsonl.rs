@@ -1816,6 +1816,8 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         opaque.downcast_ref::<fz_engine::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>>()
     {
         write_applied_step_body(out, step);
+        out.push_str(",\"publishers_checked\":");
+        push_u64(out, step.publishers_checked as u64);
     } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::ActivationKey>() {
         write_activation_key(out, key);
     } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::CallSiteKey>() {

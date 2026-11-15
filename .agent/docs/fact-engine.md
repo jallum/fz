@@ -568,12 +568,15 @@ driver presents that set to the arbiter atomically; serially arbitrating the
 members would turn one semantic barrier into multiple public readiness steps.
 Arbitration starts only from those requested facts, but the walk that proves
 one of them final visits every unquiet fact in its transitive read ground, and
-the same argument proves each of those final too. The scheduler certifies the
-whole walked cone together, not only the fact that was asked — leaving a
-proven member uncertified would only re-arbitrate it at a later drain and wake
-its readers again. For each certified fact's exact publishers, the scheduler
-records quiescent certification while retaining the actual unquiet-read count,
-and clears that publisher's unfinal claims through its existing output
+the same argument proves each of those final too. The walk checks each publisher
+once, however many of its facts the cone holds (a publisher is dirty or in an
+open group, or it is not), and returns the distinct publishers it checked. The
+scheduler certifies the whole walked cone together, not only the fact that was
+asked — leaving a proven member uncertified would only re-arbitrate it at a
+later drain and wake its readers again. It certifies those publishers in
+semantic order, which fixes the order of the emitted changes; for each, the
+scheduler records quiescent certification while retaining the actual
+unquiet-read count, and clears that publisher's unfinal claims through its existing output
 frontier.
 Other publishers of a shared output still control their own claims. Ordinary
 quiet propagation carries the resulting readiness edges to readers.
@@ -590,7 +593,18 @@ Drain finality is optimistic in exactly the way settledness has always been
 optimistic: a reader that acts on it may see the cone move again later, and it
 re-wakes through the normal movement path. The flips are published as
 `fz.compiler2.work_graph.quiesced` (`.agent/docs/telemetry.md`) so the settled
-bit never changes without an event on the stream to name it.
+bit never changes without an event on the stream to name it. The event's step
+carries `publishers_checked`, the number of publishers the arbitration's cone
+walks checked, so a walk that revisits publishers shows up as a count above the
+distinct publishers certified.
+
+Dispatching a wave sends a readiness-only change (no content or concluded
+movement, the fact not newly present, no new conclusion) whose fact has no
+`Settled` waiter straight to the moved keys, without the typed queue. The
+bypass is exact because dispatch only removes waiters: a wake takes the waiter
+out and enqueues its job, and nothing in a wave adds a wait, so a fact with no
+`Settled` waiter cannot gain one before its change would pop. The change still
+appears in `changed` and its key in `movements`.
 
 ## Wake order is not correctness, but it is reproducibility
 
