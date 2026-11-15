@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T15:05:16Z",
+  "description": "The cursor (fz-sc8.208) made the interpreter slower wherever a binary is walked. Release `fz2 interp`, before the cursor (92cead0b2) against develop 9db393fac: a byte walk over 1.3 MB 17.86G -\u003e 24.70G instructions; 2,000 JSON.decode calls 6.48G -\u003e 8.32G; fixtures 01254 36.51G -\u003e 41.94G and 01294 37.34G -\u003e 44.48G, which puts them over the coverage job's 20 s CPU limit on interp (fz-9x7.10), so develop's push CI is red. Native run and build are unaffected.\n\nThree causes, each confirmed by experiment on the cursor commit:\n- `call_fixed_extern` (src/ir_interp/extern_call.rs) builds a Vec per parameter per call through `ExternTy::wire_classes(\u0026[ty])`.\n- `extern_argument_words` (src/ir_interp/backend.rs) builds the word Vec and one more Vec per input per call.\n- `BoundValue::Transport` (src/compiler2/transport.rs) holds its lanes in a Vec, so a cursor, two words, is allocated, cloned and freed on every step.\n\nWith all three removed: byte walk 19.10G, JSON.decode 7.32G, 01254 37.60G, 01294 38.86G. A remainder of 3 to 13% is not located.\n\nDone when: the three per-step allocations are gone; interp instructions on the byte-walk and JSON.decode probes are measured against develop built in the same environment; 01254 and 01294 pass the coverage step.",
+  "id": "fz-sc8.227",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "A walked binary passed in the interpreter allocates nothing per step",
+  "type": "bug",
+  "updated_at": "2026-11-15T15:05:16Z"
+}
