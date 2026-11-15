@@ -332,7 +332,13 @@ a call on a module value, and replace the fields they are given with
 interp, run and build.
 
 A non-private function or macro becomes a `ModuleInterfaceCallable`; `defp`
-functions stay callable in-module but out of the interface. Non-global
+functions stay callable in-module but out of the interface. A qualified call
+`M.f(...)` resolves through `World::module_public_function`: once `M`'s
+interface is known it answers from the interface, and a name the interface
+does not export (a `defp` among them) is `resolve/unknown-import` at the call's
+span; before then the call records an expectation that `define_module` checks
+when `M` is defined. Fixtures `01300` (call after the module) and `01301`
+(call before it) are the refusals. Non-global
 modules that do not define `__info__/1` get a synthesized ordinary function
 source for their callable interface. The pass returns the finished namespace head
 plus the callable interface, which `define_module` freezes onto the module slot.

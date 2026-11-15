@@ -1,0 +1,11 @@
+#---
+# purpose: "A qualified call to a defp from outside its module is refused: the module does not export it"
+# expect: diagnostic
+# diagnostic.code: resolve/unknown-import
+#---
+defmodule Hidden do
+  def shown(x), do: g(x)
+  defp g(x), do: {:private, x}
+end
+
+def main(), do: dbg(Hidden.g(1))

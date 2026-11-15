@@ -3853,14 +3853,9 @@ fn compiler2_import_of_undefined_module_diagnoses_at_the_import_site() {
 
 #[test]
 fn compiler2_dotted_call_to_a_name_a_settled_module_does_not_export_diagnoses_at_the_call_site() {
-    // The function-export sibling: `Math.subtract/2` is referenced only
-    // *after* `Math`'s own interface has already settled (with just
-    // `add/2`), so `validate_module_interface_expectations` -- which runs
-    // once, inside Math's own interface-defining job -- never sees this
-    // late obligation. It survives unvalidated to the terminal frontier,
-    // exercising `unresolved_function_issue`'s `Export` fallback, which now
-    // reads the `InterfaceExpectation` `resolve_runtime_function` recorded
-    // for `subtract/2` instead of emitting `Span::DUMMY`.
+    // The function-export sibling: `Math.subtract/2` is named after `Math`'s
+    // interface has settled with only `add/2`, so the call is checked against
+    // that interface where it is lowered and refused there, at its own span.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
@@ -3891,8 +3886,8 @@ fn compiler2_dotted_call_to_a_name_a_settled_module_does_not_export_diagnoses_at
     });
     let outcome = compiler.drive();
     assert!(
-        matches!(outcome, DriveOutcome::Unresolved { .. }),
-        "calling an export Math never defines should terminate unresolved, not resolve or panic, got {outcome:?}",
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "calling an export Math never defines should stop the compile at the call, got {outcome:?}",
     );
 
     let diagnostic = capture
@@ -11065,9 +11060,10 @@ fn compiler2_unknown_extern_abi_is_a_lower_diagnostic() {
         name: Some("unknown_extern_abi.fz".to_string()),
         text: r#"defmodule Weird do
   extern "rust" defp some_symbol(integer) :: integer
+  def call(x), do: some_symbol(x)
 end
 
-def main(), do: Weird.some_symbol(1)
+def main(), do: Weird.call(1)
 "#
         .to_string(),
     });
@@ -11198,9 +11194,10 @@ fn compiler2_fz_abi_is_reserved_to_the_runtime_library() {
         name: Some("foreign_fz_abi.fz".to_string()),
         text: r#"defmodule Weird do
   extern "fz" defp fz_op_add_ii(integer, integer) :: integer
+  def add(a, b), do: fz_op_add_ii(a, b)
 end
 
-def main(), do: Weird.fz_op_add_ii(2, 3)
+def main(), do: Weird.add(2, 3)
 "#
         .to_string(),
     });

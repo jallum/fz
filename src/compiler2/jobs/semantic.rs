@@ -1559,7 +1559,12 @@ fn listed_module_callees(
             };
             let module = world.reference_module(name);
             world.note_module_reference_expectation(module, requester.clone());
-            let callee = world.module_public_function(module, function, arity, requester.clone());
+            let callee = world
+                .module_public_function(module, function, arity, requester.clone())
+                .map_err(|diagnostic| {
+                    emit_through(tel, std::slice::from_ref(&*diagnostic));
+                    FatalError
+                })?;
             Ok((world.types_mut().atom_lit(&atom), callee))
         })
         .collect()

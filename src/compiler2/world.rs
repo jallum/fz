@@ -1859,29 +1859,36 @@ impl World {
         function
     }
 
-    /// The public function `name/arity` of `module`: the one its interface
-    /// exports when the interface is known, and otherwise a reference the
-    /// interface is expected to answer, recorded with the site that asked.
+    /// The public function `name/arity` of `module`. Once the module's
+    /// interface is known, it is the function the interface exports, and a
+    /// name it does not export -- a `defp` among them -- is refused here, at the
+    /// site that asked. Before then it is a reference the interface is expected
+    /// to answer, checked when the module is defined.
     pub(crate) fn module_public_function(
         &mut self,
         module: ModuleId,
         name: &str,
         arity: usize,
         requester: InterfaceRequester,
-    ) -> FunctionId {
-        if let Some(function) = self
-            .module_interface_if_present(module)
-            .and_then(|interface| interface.public_function_with_name_arity(name, arity))
-        {
-            return function;
-        }
-        self.reference_module_interface_callable(
-            module,
-            name.to_string(),
+    ) -> Result<FunctionId, Box<Diagnostic>> {
+        let expectation = InterfaceExpectation {
+            name: name.to_string(),
             arity,
-            InterfaceCallableKind::PublicFunction,
-            Some(requester),
-        )
+            kind: InterfaceCallableKind::PublicFunction,
+            requester: Some(requester),
+        };
+        if self.module_interface_revision(module).is_some() {
+            return self
+                .module_interface(module)
+                .callables()
+                .iter()
+                .find(|callable| expectation.matches_callable(callable))
+                .map(|callable| callable.function)
+                .ok_or_else(|| Box::new(self.unexported_diagnostic(module, &expectation)));
+        }
+        let function = self.reference_function(module, name.to_string(), arity);
+        self.note_module_interface_expectation(module, expectation);
+        Ok(function)
     }
 
     pub(crate) fn module_name(&self, module: ModuleId) -> Option<&ModuleName> {
@@ -2958,27 +2965,11 @@ impl World {
         let module_name = self
             .module_denotation(function_ref.module)
             .expect("referenced function modules should have reverse names");
-        // The span comes from the `InterfaceExpectation` `resolve_runtime_function`
-        // recorded for this exact `(name, arity)` when the call was lowered
-        // (`reference_module_interface_callable`). `validate_module_interface_expectations`
-        // normally catches this mismatch the moment the module's own interface
-        // settles; this arm is reached only when the expectation was recorded
-        // *after* that validation already ran, so it survives unvalidated to
-        // the terminal frontier -- the same late-obligation shape
-        // `unresolved_struct_issue` handles for `struct_expectations`.
-        let span = self
-            .module_interface_if_present(function_ref.module)
-            .and_then(|interface| {
-                interface
-                    .expectations()
-                    .iter()
-                    .find(|expectation| {
-                        expectation.name == function_ref.name() && expectation.arity == function_ref.arity
-                    })
-                    .and_then(|expectation| expectation.requester.as_ref())
-                    .map(|requester| requester.span)
-            })
-            .unwrap_or(Span::DUMMY);
+        // A qualified call is checked against a defined module's interface
+        // where it is lowered, and one lowered earlier is checked when the
+        // module is defined, so a function still unresolved here was named
+        // by no call: there is no site to point at.
+        let span = Span::DUMMY;
         Some(UnresolvedIssue {
             key: UnresolvedIssueKey::Export(function),
             diagnostic: Diagnostic::error(
@@ -3607,6 +3598,12 @@ impl World {
                 .iter()
                 .any(|callable| expectation.matches_callable(callable))
         })?;
+        Some(self.unexported_diagnostic(id, expectation))
+    }
+
+    /// `module` does not export what `expectation` asked of it, reported at the
+    /// site that asked.
+    fn unexported_diagnostic(&self, id: ModuleId, expectation: &InterfaceExpectation) -> Diagnostic {
         let module_name = self
             .module_denotation(id)
             .map(ToString::to_string)
@@ -3621,7 +3618,7 @@ impl World {
                 module_name, expectation.name, expectation.arity
             ),
         };
-        Some(Diagnostic::error(
+        Diagnostic::error(
             codes::RESOLVE_UNKNOWN_IMPORT,
             message,
             expectation
@@ -3629,7 +3626,7 @@ impl World {
                 .as_ref()
                 .map(|requester| requester.span)
                 .unwrap_or(Span::DUMMY),
-        ))
+        )
     }
 
     pub fn note_type_decl(&mut self, name: &TypeName, decl: NotedTypeDecl) -> bool {
