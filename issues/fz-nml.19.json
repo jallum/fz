@@ -4,14 +4,15 @@
   "blocks": [
     "fz-nml.20"
   ],
+  "closed_at": "2026-11-15T22:00:54Z",
   "created": "2026-11-15T21:47:37Z",
   "description": "Approved 2026-11-15 (/Users/j5n/Workspace/fz-resource-destructors.html, ticket A). Native lowers every zero-capture callable as MakeFnRef to a read-only static closure (driver.rs define_zero_capture_closures, native_codegen/value.rs static_closure_ref; prim.rs refuses a zero-capture MakeClosure); its ref carries the literal bit, so GC never moves it (gc/forward.rs) and deep_copy shares it (deep_copy.rs:38). The interpreter instead heap-allocates a fresh closure on every AnyValue::FnRef materialization (src/ir_interp/value.rs materialize_fn_ref). Change: the interpreter owns one closure per FnId (same object layout as a heap closure: denotation, arity, code word, zero captures), allocated off-heap for the run's lifetime, 16-aligned, and referenced with AnyValueRef::literal(). materialize_fn_ref returns that word. Tests (sibling _test.rs): materializing the same FnId twice yields the same word; the word is_literal; a collection leaves it in place; a send shares it. Pins: interp heap/alloc pins fall where fn refs materialize and are lowered; any rise stops and is reported with its mechanism. Docs: .agent/docs interp value representation.",
   "id": "fz-nml.19",
   "labels": [],
   "parent": "fz-nml",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A thin callable is one static closure in the interpreter too",
   "type": "task",
-  "updated_at": "2026-11-15T21:47:38Z"
+  "updated_at": "2026-11-15T22:00:54Z"
 }
