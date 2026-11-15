@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-15T01:25:51Z",
-  "description": "should_gc counts on-heap young bytes only. A process that makes large binaries (over SHARED_BIN_THRESHOLD_BYTES = 64, runtime/src/heap/mod.rs:83) puts a 32-byte ProcBin stub on the heap and the bytes off-heap (Heap::alloc_bitstring, runtime/src/heap/imp.rs:855). The dead stubs, and so the off-heap bytes, are freed only at a collection, which those 32-byte stubs alone rarely trigger.\nMeasured on c5a03e198 and develop: String.duplicate(\"abcdefgh\", 16000) makes 15,992 shared binaries totalling 1,024,063,712 bytes with zero fz.runtime.gc events and a 1.17 GB peak RSS (GC heap a few MB). Peak RSS 34 MB / 100 MB / 1117 MB at 8/32/128 KB of input. Repro: /private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/9x7-gc/repro/binwalk.fz, dup.fz, bwstats.fz.\nBEAM counts referenced off-heap binary bytes as virtual heap and collects when it overflows. Experiment first, with predictions: count live stub bytes into the trigger; measure peak RSS on the repro and the distiller and instructions on the suite. Interacts with fz-9x7.7 (minimum young size) and fz-sc8.208 (binary views).",
+  "description": "should_gc counts on-heap young bytes only. A process that makes large binaries (over SHARED_BIN_THRESHOLD_BYTES = 64, runtime/src/heap/mod.rs:83) puts a 32-byte ProcBin stub on the heap and the bytes off-heap (Heap::alloc_bitstring, runtime/src/heap/imp.rs:855). The dead stubs, and so the off-heap bytes, are freed only at a collection, which those 32-byte stubs alone rarely trigger.\nMeasured on c5a03e198 and develop: String.duplicate(\"abcdefgh\", 16000) makes 15,992 shared binaries totalling 1,024,063,712 bytes with zero fz.runtime.gc events and a 1.17 GB peak RSS (GC heap a few MB). Peak RSS 34 MB / 100 MB / 1117 MB at 8/32/128 KB of input. Repro: /private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/9x7-gc/repro/binwalk.fz, dup.fz, bwstats.fz.\nBEAM counts referenced off-heap binary bytes as virtual heap and collects when it overflows. Experiment first, with predictions: count live stub bytes into the trigger; measure peak RSS on the repro and the distiller and instructions on the suite. Interacts with fz-9x7.7 (minimum young size) and fz-sc8.208 (binary views).\n\nThe measurement above used the quadratic String.duplicate that develop replaced in PR #588 (a939d32e8), so most of those bytes were its intermediate results. The trigger gap still holds by construction, but the numbers must be re-measured on develop with a repro that makes dead large binaries directly, and again after fz-sc8.208 lands (about 560 -\u003e 140 stubs per distiller line).",
   "id": "fz-9x7.8",
   "labels": [],
   "parent": "fz-9x7",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Off-heap binary bytes count toward the collection trigger",
   "type": "bug",
-  "updated_at": "2026-11-15T01:25:51Z"
+  "updated_at": "2026-11-15T01:26:42Z"
 }
