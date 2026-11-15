@@ -101,7 +101,7 @@ freed the resource at a yield or park or the exit swept it (see
 `list_retention_hits`. There is no separate destructor event; a destructor
 dispatched mid-life is visible on the exit record of the process that ran it,
 and the `fz.runtime.gc` event of the collection that freed it precedes it. A
-minor collection examines only the young MSO chain, so a resource stub that
+minor collection examines only the young MSO chains, so a resource stub that
 became old is found dead by the next major collection, whose event has
 `generation` `"major"`; a resource that dies young is found by the next
 collection of either kind.

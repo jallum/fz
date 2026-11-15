@@ -102,6 +102,10 @@ pub struct GcStats {
     /// Bytes the heap holds once the collection finishes: what earlier
     /// collections kept and what this one copied.
     pub live_bytes: u64,
+    /// Chain links the collection followed: each off-heap stub it examined,
+    /// once for the destructor search over resource stubs and once for the
+    /// sweep.
+    pub stub_visits: u64,
     /// Capacity of the from-space blocks.
     pub from_space_capacity_bytes: u64,
     /// Blocks of the from-space the collection released.

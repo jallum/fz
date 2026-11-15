@@ -285,15 +285,19 @@ quantum on the JIT and AOT paths, in every state. It reads how the quantum ended
 process (`Process::quantum_end`, a `Disposition`: runnable means `Requeue`, `Blocked`
 means `Parked`, anything else means `Exited`), collects when `Heap::should_gc` holds and the
 process did not exit, clears the quantum's yield reasons, and, for a halted process,
-marks it `Exited` without collecting it and releases every stub on its MSO chain
+marks it `Exited` without collecting it and releases every stub on its MSO chains
 with `Heap::release_resources_at_exit`, since nothing is live. Nothing a
 collection would forward is read after the exit, so the heap is released as it
-stands. The sweep (`procbin::mso_sweep`) decides each stub the same way
+stands. ProcBin stubs and Resource stubs keep separate chains (`mso_head` and
+`mso_old_head` for binaries, `resource_head` and `resource_old_head` for
+resources). The sweep (`procbin::mso_sweep`) decides each stub, once, the same way
 after a collection and at exit: a survivor is relinked, a dead ProcBin releases
 its SharedBin, and a dead Resource whose last reference this was queues
 `(closure, payload)` on `heap.pending_dtors`. A collection first forwards the
-destructor closure of every unreached, unclaimed stub, with what it captures, so
-the closure outlives the from-space.
+destructor closure of every unreached, unclaimed resource stub, with what it
+captures, so the closure outlives the from-space; that search walks only the
+resource chains. `GcStats::stub_visits` counts the chain links a collection
+followed in both walks; it is not published on `fz.runtime.gc`.
 
 `end_quantum` then drains `pending_dtors` oldest first, calling
 `Scheduler::run_destructor` for each and counting it in

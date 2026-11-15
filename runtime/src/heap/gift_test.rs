@@ -7,7 +7,7 @@ use crate::any_value::{
     list_addr_from_tagged, procbin_addr_from_tagged, struct_addr_from_tagged, struct_size_for_payload,
 };
 use crate::procbin::{PROCBIN_BYTES, ProcBin, SharedBinHandle, alloc_procbin};
-use crate::resource::ResourceStub;
+use crate::resource::{RESOURCE_STUB_SIZE, ResourceHandle, ResourceStub, alloc_resource, fz_resource_destructor_noop};
 use crate::sync::Ordering;
 use std::cell::RefCell;
 use std::ptr::null_mut;
@@ -628,4 +628,35 @@ fn a_grafted_gift_raises_the_baseline_and_the_receiver_collects_after_allocating
     let _ = receiver.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
     assert!(receiver.should_gc(), "1600 allocated bytes reach the baseline");
     assert_eq!(receiver.live_baseline, 1600, "allocation leaves the baseline alone");
+}
+
+/// A gift that holds both kinds of stub carries each on its own chain, and
+/// graft splices each onto the receiver's old chain of the same kind.
+#[test]
+fn a_gift_keeps_binary_and_resource_stubs_on_their_own_chains() {
+    let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32);
+    let reg = fresh_registry();
+    let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
+    let mut receiver = Heap::new(SIZE_TABLE[0], reg);
+
+    sender.begin_gift(PROCBIN_BYTES + RESOURCE_STUB_SIZE);
+    let binary = procbin_word(&alloc_procbin(&mut sender, witness, 0));
+    let resource = heap_object_word(
+        alloc_resource(
+            &mut sender,
+            ResourceHandle::new(1, fz_resource_destructor_noop),
+            AnyValue::nil_atom(),
+        )
+        .as_raw(),
+        ValueKind::RESOURCE,
+    );
+    let segment = sender.end_gift();
+    assert_eq!((sender.mso_head, sender.resource_head), (0, 0));
+    assert_eq!(segment.mso_head(), binary);
+    assert_eq!(segment.resource_head(), resource);
+
+    receiver.graft(segment);
+    assert_eq!(chain_from(receiver.mso_old_head), vec![binary]);
+    assert_eq!(chain_from(receiver.resource_old_head), vec![resource]);
+    assert_eq!((receiver.mso_head, receiver.resource_head), (0, 0));
 }
