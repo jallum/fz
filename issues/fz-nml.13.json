@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-15T14:33:33Z",
-  "description": "Why: fz has is_binary/1 but no is_bitstring/1 (Kernel lists it in Elixir; it is a guard). Without it, a library cannot tell a non-byte-aligned bitstring from a non-binary, so :binary.copy(\u003c\u003c1::3\u003e\u003e) says 'not a binary' where Elixir says '1st argument: is a bitstring (expected a binary)' (fz-nml.11, PR #628).\nInvestigate first: how is_binary is resolved as a guard and type test (src/runtime_type_predicate.rs Binaries axis, compiler2 types is_binary), and whether fz's type world distinguishes bitstring from binary. Add is_bitstring/1 by the same authority as is_binary, not as a second mechanism; on all three paths, in guards and in bodies.\nAcceptance: an oracle fixture in a free fixture block shows is_bitstring and is_binary over binaries, bitstrings and non-bitstrings, matching Elixir; lib/binary.fz's complaint uses it, and 01338's oracle gains the \u003c\u003c1::3\u003e\u003e case.",
+  "description": "BLOCKED on the bitstring/binary type split (proposal page pending). Builder work is held uncommitted in ../fz-nml13 (branch fz-nml.13 on fz-nml.11): is_bitstring as a Kernel type test, fixture 01360 (block 01360-01379 claimed for fz-nml), and 01338's \u003c\u003c1::3\u003e\u003e wording cases. Finding: fz has one binary type that holds bitstrings of any bit length, so is_binary(\u003c\u003c1::3\u003e\u003e) is true and byte_size(\u003c\u003c1::3\u003e\u003e) type-checks then panics. A runtime is_binary breaks guard narrowing (64 fixtures red), so the holistic fix is in the data model: bitstring is the broad type and binary (whole bytes) its subtype, as in Elixir. Rebuild .13 on that split; no fz_bitstring_is_binary in :binary guards. The distiller pin rose (18334,111796) -\u003e (18335,111802) with the held work; not authorized.",
   "id": "fz-nml.13",
   "labels": [],
   "parent": "fz-nml",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "is_bitstring/1 is a guard, and :binary raises Elixir's 'is a bitstring' wording",
   "type": "task",
-  "updated_at": "2026-11-15T14:33:33Z"
+  "updated_at": "2026-11-15T14:52:06Z"
 }
