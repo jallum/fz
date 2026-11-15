@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9zq.1"
+  ],
   "blocks": [],
   "created": "2026-11-15T05:05:50Z",
   "description": "Finding from fz-9zq.1 research: R1 treats an arrow as a leaf, so closure towers (f01130, sc8_100, t3) still need fold_self_nested_closures (types/mod.rs). Proposal: give the clash rule an Arrow(fn_id) head whose slots are the captures, so one rule covers closure towers and fold_self_nested_closures is deleted. Unprobed. Paper first: predictions on f01130/sc8_100/t3 and ordinary closure code, then probe.",
