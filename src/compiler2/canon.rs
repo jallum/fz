@@ -1770,9 +1770,24 @@ fn bitstring_field(field: &BitstringFieldShape) -> String {
 fn field_term(term: &FieldTerm) -> String {
     match term {
         FieldTerm::Subject => "input 0".to_string(),
-        FieldTerm::Atom(name) => format!(":{name}"),
-        FieldTerm::Int(value) => value.to_string(),
-        FieldTerm::Text(text) => format!("{text:?}"),
+        FieldTerm::Literal(term) => literal(term),
+    }
+}
+
+fn literal(term: &crate::literal_term::LiteralTerm) -> String {
+    use crate::literal_term::LiteralTerm;
+    let all = |items: &[LiteralTerm]| items.iter().map(literal).collect::<Vec<_>>().join(", ");
+    match term {
+        LiteralTerm::Ground(value) => ground(value),
+        LiteralTerm::List(items) => format!("[{}]", all(items)),
+        LiteralTerm::Tuple(items) => format!("{{{}}}", all(items)),
+        LiteralTerm::Map(entries) => {
+            let entries: Vec<String> = entries
+                .iter()
+                .map(|(key, value)| format!("{} => {}", literal(key), literal(value)))
+                .collect();
+            format!("%{{{}}}", entries.join(", "))
+        }
     }
 }
 

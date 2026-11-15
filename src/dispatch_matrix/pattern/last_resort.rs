@@ -8,21 +8,28 @@
 
 use std::borrow::Cow;
 
+use crate::ground_value::GroundValue;
+use crate::literal_term::LiteralTerm;
+
 /// What one field of a raised exception holds.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FieldTerm {
     /// The plan's subject, its first input.
     Subject,
-    /// An atom, by name.
-    Atom(Cow<'static, str>),
-    /// An integer.
-    Int(i64),
-    /// A binary of text.
-    Text(String),
+    /// A value written out in full.
+    Literal(LiteralTerm),
 }
 
 impl FieldTerm {
-    const NIL: Self = Self::Atom(Cow::Borrowed("nil"));
+    const NIL: Self = Self::Literal(LiteralTerm::Ground(GroundValue::Nil));
+
+    fn atom(name: impl Into<String>) -> Self {
+        Self::Literal(LiteralTerm::Ground(GroundValue::Atom(name.into())))
+    }
+
+    fn text(text: impl Into<String>) -> Self {
+        Self::Literal(LiteralTerm::Ground(GroundValue::Binary(text.into().into_bytes())))
+    }
 }
 
 /// What a plan does at a `Fail`: raise an exception carrying the fields
@@ -36,7 +43,7 @@ pub enum LastResort {
         exception: Cow<'static, str>,
         /// Every field of the exception's struct, in the order it declares
         /// them, with what each holds.
-        fields: Vec<(&'static str, FieldTerm)>,
+        fields: Vec<(Cow<'static, str>, FieldTerm)>,
     },
     /// Continue the raise a handler was delivered, with the plan's first two
     /// inputs as its kind and value.
@@ -51,12 +58,12 @@ impl LastResort {
         Self::raising(
             "Elixir.FunctionClauseError",
             vec![
+                ("module", module.map_or(FieldTerm::NIL, FieldTerm::atom)),
+                ("function", FieldTerm::atom(function)),
                 (
-                    "module",
-                    module.map_or(FieldTerm::NIL, |module| FieldTerm::Atom(Cow::Owned(module))),
+                    "arity",
+                    FieldTerm::Literal(LiteralTerm::Ground(GroundValue::Int(i64::from(arity)))),
                 ),
-                ("function", FieldTerm::Atom(Cow::Owned(function))),
-                ("arity", FieldTerm::Int(i64::from(arity))),
                 ("kind", FieldTerm::NIL),
                 ("args", FieldTerm::NIL),
                 ("clauses", FieldTerm::NIL),
@@ -75,10 +82,10 @@ impl LastResort {
         Self::raising(
             "Elixir.Protocol.UndefinedError",
             vec![
-                ("protocol", FieldTerm::Atom(Cow::Owned(protocol))),
+                ("protocol", FieldTerm::atom(protocol)),
                 ("value", FieldTerm::Subject),
                 ("message", FieldTerm::NIL),
-                ("description", FieldTerm::Text(String::new())),
+                ("description", FieldTerm::text("")),
             ],
         )
     }
@@ -107,16 +114,16 @@ impl LastResort {
     pub(crate) fn bad_boolean(operator: &'static str) -> Self {
         Self::raising(
             "Elixir.BadBooleanError",
-            vec![
-                ("term", FieldTerm::Subject),
-                ("operator", FieldTerm::Atom(Cow::Borrowed(operator))),
-            ],
+            vec![("term", FieldTerm::Subject), ("operator", FieldTerm::atom(operator))],
         )
     }
 
     /// `not` was given something other than a boolean.
     pub(crate) fn argument_error() -> Self {
-        Self::declared("Elixir.ArgumentError".to_string(), "argument error".to_string())
+        Self::raising(
+            "Elixir.ArgumentError",
+            vec![("message", FieldTerm::text("argument error"))],
+        )
     }
 
     /// Nothing in a handler's clauses takes the raise it was delivered, so it
@@ -134,20 +141,19 @@ impl LastResort {
     }
 
     /// Every atom the raised exception is built from: its module's, each
-    /// field's key, and each field value that is an atom.
+    /// field's key, and each atom a field's value writes.
     pub(crate) fn atoms(&self) -> impl Iterator<Item = &str> {
-        let (exception, fields) = match self {
-            Self::Exception { exception, fields } => (Some(exception.as_ref()), fields.as_slice()),
-            Self::Reraise => (None, [].as_slice()),
-        };
-        let of_fields = fields.iter().flat_map(|(key, term)| {
-            let value = match term {
-                FieldTerm::Atom(name) => Some(name.as_ref()),
-                FieldTerm::Subject | FieldTerm::Int(_) | FieldTerm::Text(_) => None,
-            };
-            std::iter::once(*key).chain(value)
-        });
-        exception.into_iter().chain(of_fields)
+        let mut atoms = Vec::new();
+        if let Self::Exception { exception, fields } = self {
+            atoms.push(exception.as_ref());
+            for (key, term) in fields {
+                atoms.push(key.as_ref());
+                if let FieldTerm::Literal(literal) = term {
+                    literal.each_ground(&mut |value| atoms.extend(atom_name(value)));
+                }
+            }
+        }
+        atoms.into_iter()
     }
 
     /// How many of the plan's leading inputs the last resort reads: the
@@ -160,24 +166,41 @@ impl LastResort {
         }
     }
 
-    /// The failure an extern declares with `raises:`: the exception it names,
-    /// raised with the message the declaration gives.
-    pub fn declared(exception: String, message: String) -> Self {
+    /// The failure an extern declares with `raises:`: a struct of the
+    /// exception it names, each field holding what `fields` gives it.
+    pub fn declared(exception: String, fields: Vec<(String, LiteralTerm)>) -> Self {
         Self::Exception {
             exception: Cow::Owned(exception),
-            fields: vec![("message", FieldTerm::Text(message))],
+            fields: fields
+                .into_iter()
+                .map(|(name, value)| (Cow::Owned(name), FieldTerm::Literal(value)))
+                .collect(),
         }
     }
 
     fn raising(exception: &'static str, fields: Vec<(&'static str, FieldTerm)>) -> Self {
         Self::Exception {
             exception: Cow::Borrowed(exception),
-            fields,
+            fields: fields
+                .into_iter()
+                .map(|(name, term)| (Cow::Borrowed(name), term))
+                .collect(),
         }
     }
 
     fn about_the_subject(exception: &'static str) -> Self {
         Self::raising(exception, vec![("term", FieldTerm::Subject)])
+    }
+}
+
+/// The atom `value` is at run time: `nil`, `true` and `false` are atoms.
+fn atom_name(value: &GroundValue) -> Option<&str> {
+    match value {
+        GroundValue::Atom(name) => Some(name),
+        GroundValue::Nil => Some("nil"),
+        GroundValue::Bool(true) => Some("true"),
+        GroundValue::Bool(false) => Some("false"),
+        GroundValue::Int(_) | GroundValue::Float(_) | GroundValue::Binary(_) | GroundValue::Utf8Binary(_) => None,
     }
 }
 

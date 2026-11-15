@@ -11,8 +11,9 @@ use crate::source::{SourceMap, Span};
 
 use super::quoted_function::decode_standalone_expr;
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
-use super::structdef::{LiteralTerm, StructDef};
+use super::structdef::StructDef;
 use super::token_payload;
+use crate::literal_term::LiteralTerm;
 
 #[derive(Debug, Clone)]
 pub struct ScopeSurface {

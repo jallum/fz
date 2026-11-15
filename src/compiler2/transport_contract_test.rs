@@ -190,7 +190,14 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // `is_float`) defines that helper so the guard can be folded into a type
 // question; each helper adds a definition, a source expansion and two guard
 // reifications, and each function whose guard calls one is planned twice.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 213;
+// 213 -> 245: Kernel's arithmetic externs declare `raises: ArithmeticError`,
+// and an extern's contract reads that exception's struct to build what it
+// raises. This harness roots `main` with no handler for an uncaught raise, so
+// the contract is what defines `ArithmeticError` here: its source is indexed
+// and scoped, its module and `defexception` are defined and expanded, and the
+// arithmetic chain's waiters run again once the struct is there. A program
+// run by `fz2` defines the struct for the banner and its count is unchanged.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 245;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {

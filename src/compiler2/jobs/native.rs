@@ -9,6 +9,8 @@
 use super::super::identity::{ExecutableKey, FunctionId};
 use super::super::transport::TransportPosition;
 use crate::compiler2::ValueMap;
+use crate::literal_term::LiteralTerm;
+use std::borrow::Cow;
 
 use crate::fast_hash::{HashMap, HashSet};
 
@@ -3177,7 +3179,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         &mut self,
         ctx: &mut NativeFnCtx,
         exception: &str,
-        fields: &[(&'static str, FieldTerm)],
+        fields: &[(Cow<'static, str>, FieldTerm)],
         subject: Option<Var>,
     ) {
         let (exception, _) = ctx.emit_let(Prim::Const(Const::Atom(self.atom_id(exception))));
@@ -3186,18 +3188,46 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             let (key, _) = ctx.emit_let(Prim::Const(Const::Atom(self.atom_id(name))));
             let value = match term {
                 FieldTerm::Subject => subject.expect("a field that carries the subject has one to carry"),
-                FieldTerm::Atom(atom) => ctx.emit_let(Prim::Const(Const::Atom(self.atom_id(atom)))).0,
-                FieldTerm::Int(value) => ctx.emit_let(Prim::Const(Const::Int(*value))).0,
-                FieldTerm::Text(text) => {
-                    let bytes = text.as_bytes().to_vec();
-                    let bit_len = 8 * bytes.len() as u64;
-                    ctx.emit_let(Prim::ConstBitstring(bytes, bit_len)).0
-                }
+                FieldTerm::Literal(term) => self.literal_var(ctx, term),
             };
             terms.extend([key, value]);
         }
         let (fields, _) = ctx.emit_let(Prim::MakeList(terms, None, None));
         ctx.set_term(Term::Raise { exception, fields });
+    }
+
+    /// Builds `term` and answers the value it is.
+    fn literal_var(&self, ctx: &mut NativeFnCtx, term: &LiteralTerm) -> Var {
+        let mut all =
+            |items: &[LiteralTerm]| -> Vec<Var> { items.iter().map(|item| self.literal_var(ctx, item)).collect() };
+        let prim = match term {
+            LiteralTerm::Ground(value) => self.ground_prim(value),
+            LiteralTerm::List(items) => Prim::MakeList(all(items), None, None),
+            LiteralTerm::Tuple(items) => Prim::MakeTuple(all(items)),
+            LiteralTerm::Map(entries) => {
+                let (mut map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Capacity(entries.len())));
+                for (key, value) in entries {
+                    let (key, value) = (self.literal_var(ctx, key), self.literal_var(ctx, value));
+                    map = ctx.emit_map_put(map, key, value);
+                }
+                Prim::DestMapFreeze(map)
+            }
+        };
+        ctx.emit_let(prim).0
+    }
+
+    /// The constant that is `value`. `nil`, `true` and `false` are atoms.
+    fn ground_prim(&self, value: &GroundValue) -> Prim {
+        match value {
+            GroundValue::Int(value) => Prim::Const(Const::Int(*value)),
+            GroundValue::Float(bits) => Prim::Const(Const::Float(f64::from_bits(*bits))),
+            GroundValue::Atom(name) => Prim::Const(Const::Atom(self.atom_id(name))),
+            GroundValue::Nil => Prim::Const(Const::Atom(self.atom_id("nil"))),
+            GroundValue::Bool(value) => Prim::Const(Const::Atom(self.atom_id(if *value { "true" } else { "false" }))),
+            GroundValue::Binary(bytes) | GroundValue::Utf8Binary(bytes) => {
+                Prim::ConstBitstring(bytes.clone(), 8 * bytes.len() as u64)
+            }
+        }
     }
 
     fn lower_dispatch_node(

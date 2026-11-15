@@ -3,7 +3,15 @@ use crate::dispatch_matrix::pattern::LastResort;
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 
 fn failure() -> LastResort {
-    LastResort::declared("Elixir.ArithmeticError".to_string(), "bad argument".to_string())
+    LastResort::declared(
+        "Elixir.ArithmeticError".to_string(),
+        vec![(
+            "message".to_string(),
+            crate::literal_term::LiteralTerm::Ground(crate::ground_value::GroundValue::Binary(
+                b"bad argument".to_vec(),
+            )),
+        )],
+    )
 }
 
 #[test]

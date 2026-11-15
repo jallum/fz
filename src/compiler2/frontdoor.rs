@@ -683,7 +683,7 @@ impl<'t> FrontDoorParser<'t> {
     }
 
     fn parse_extern_exception(&mut self) -> Result<AnyValueRef, FrontDoorError> {
-        let meta = self.meta(self.cur_span())?;
+        let start = self.cur_span();
         if !matches!(self.peek(), Tok::Upper(_)) {
             let got = describe_token(self.peek());
             return Err(self.error(format!(
@@ -691,6 +691,7 @@ impl<'t> FrontDoorParser<'t> {
             )));
         }
         let path = self.parse_upper_path("raises")?;
+        let meta = self.meta(start.merge(self.prev_span()))?;
         self.builder
             .alias(&meta, &segments_ref(&path))
             .map_err(FrontDoorError::from)

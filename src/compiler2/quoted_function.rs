@@ -199,15 +199,16 @@ fn decode_extern_fn(
     let ret = required_map_tokens(details, "return", sources)?;
     let variadic = required_map_bool(details, "variadic")?;
     let constraints = optional_map_keyword_tokens(details, "when", sources)?;
+    let span = node.span.unwrap_or(Span::DUMMY);
     let extern_raises = match details.map_value("raises")? {
-        Some(exception) => Some(crate::function_surface::ExternRaises {
-            exception: ModuleName::from_segments(
-                expect_ast_node(&exception, "extern exception", sources)?
-                    .tail
-                    .list_atom_names()?,
-            ),
-            message: required_map_utf8(details, "message")?,
-        }),
+        Some(exception) => {
+            let exception = expect_ast_node(&exception, "extern exception", sources)?;
+            Some(crate::function_surface::ExternRaises {
+                exception: ModuleName::from_segments(exception.tail.list_atom_names()?),
+                span: exception.span.unwrap_or(span),
+                message: required_map_utf8(details, "message")?,
+            })
+        }
         None => None,
     };
     let extern_delivers = match details.map_value("delivers")? {
@@ -217,7 +218,6 @@ fn decode_extern_fn(
         ),
         None => None,
     };
-    let span = node.span.unwrap_or(Span::DUMMY);
 
     let extern_param_tokens = params
         .into_iter()

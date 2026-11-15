@@ -340,16 +340,32 @@ the pair is physical only: no fz tuple is built, and no declaration spells it.
   alias. The tail takes one option, `raises:` or `delivers:` (below)
   (`parse_extern_option`). The parts ride the
   quoted extern map as `raises` and `message`, and `decode_extern_fn` carries
-  them on `FunctionSurface::extern_raises` as `ExternRaises`.
-- `derive_function_contract` resolves the alias with `World::module_alias_atom`,
+  them on `FunctionSurface::extern_raises` as `ExternRaises`, with the span of
+  the alias.
+- A declared failure is the struct literal `%Alias{message: "text"}`, and the
+  alias must name an exception. `derive_function_contract` refers to the
+  struct the way a body that wrote that literal does
+  (`reference_declared_exception` calls `record_struct_reference`,
+  `src/compiler2/jobs/body.rs`), at the alias's span, and waits for
+  `StructDefined`. The reports a struct literal gets are therefore the ones
+  `raises:` gets, at the alias: a name nothing defines is
+  `resolve/unknown-module`, a module with no struct is `resolve/not-a-struct`,
+  and an exception that declares no `message` field is
+  `resolve/unknown-struct-field`. A struct that `defstruct` declared, not
+  `defexception`, is `resolve/not-an-exception`.
+- `extern_failure` resolves the alias with `World::module_alias_atom`,
   the call a body makes for `raise(KeyError, ...)`, so alias and import scope
-  apply alike, and builds `LastResort::declared`. `checked_return` then makes
+  apply alike, and builds `LastResort::declared` from the struct's definition
+  (`declared_failure_fields`): every field the exception declares, in its
+  order, `message` holding the declared text and each other field its default
+  (a `LiteralTerm`, `src/literal_term.rs`: a scalar, or a list, tuple or map
+  of them), or `nil` when it has none. `checked_return` then makes
   the contract's return `ExternReturn::Checked(lane, LastResort)`. It refuses
   a non-`C` ABI and any result other than `integer` or `float`. Like the other
   ABI checks it runs for an extern that is called, and for an `extern "fz"` in
   user code the ABI reservation above is reported first.
 - The native wrapper (`lower_extern_executable`) branches on the `failed` lane:
-  the failing edge is `Term::Raise` with the declared atom and message, the
+  the failing edge is `Term::Raise` with the declared atom and fields, the
   edge every decision's last resort already ends in, and the other edge returns
   the value. The atom is interned by `collect_executable_atoms`. A caller
   therefore tail-calls the wrapper; no continuation or decoder stands between it
@@ -367,8 +383,9 @@ the pair is physical only: no fz tuple is built, and no declaration spells it.
 Kernel's arithmetic externs (`+ - * / % div rem`, `negate`, over integer and
 float operands) are declared this way, so a failed operation, an overflow or a
 zero divisor, raises `ArithmeticError` with Elixir's message. A user declaration
-names any exception: `raises: MyApp.DivisionByZero` raises that module's atom,
-`Elixir.MyApp.DivisionByZero`, from a declaration of the same symbol.
+names any exception: `raises: MyApp.DivisionByZero` raises that module's
+struct from a declaration of the same symbol, so with `defexception [:message,
+code: 7]` a handler reads `e.code` as `7`.
 
 ### A call that delivers its argument
 

@@ -56,6 +56,8 @@ pub struct FunctionSurface {
 #[derive(Debug, Clone)]
 pub struct ExternRaises {
     pub exception: crate::modules::identity::ModuleName,
+    /// Where the declaration writes the exception's name.
+    pub span: Span,
     pub message: String,
 }
 

@@ -161,7 +161,13 @@ fn a_recursive_pair_sends_demand_out_of_the_cycle_once() {
     );
     // fz-sc8.37: 19 -> 20. Kernel defines `&&`, `||` and `!` as macros.
     // 20 -> 12: the arithmetic chain is the operator and its extern wrapper.
-    assert_eq!((work.runs, work.shift_wakes), (12, 0));
+    // 12 -> 15: the arithmetic extern declares `raises: ArithmeticError`,
+    // and its contract reads that exception's struct. This harness roots
+    // `main` with no handler for an uncaught raise, so nothing else has
+    // defined the struct, and three more demand derivations run while the
+    // contract waits for it. A program run by `fz2` defines the struct for
+    // the banner, and its job count is unchanged.
+    assert_eq!((work.runs, work.shift_wakes), (15, 0));
 }
 
 /// A cycle made of closure calls, which the static call graph cannot see:
@@ -192,5 +198,11 @@ fn a_self_call_sends_demand_down_from_its_own_answer() {
     );
     // fz-sc8.37: 17 -> 18. Kernel defines `&&`, `||` and `!` as macros.
     // 18 -> 10: the arithmetic chain is the operator and its extern wrapper.
-    assert_eq!((work.runs, work.shift_wakes), (10, 0));
+    // 10 -> 13: the arithmetic extern declares `raises: ArithmeticError`,
+    // and its contract reads that exception's struct. This harness roots
+    // `main` with no handler for an uncaught raise, so nothing else has
+    // defined the struct, and three more demand derivations run while the
+    // contract waits for it. A program run by `fz2` defines the struct for
+    // the banner, and its job count is unchanged.
+    assert_eq!((work.runs, work.shift_wakes), (13, 0));
 }

@@ -2935,7 +2935,32 @@ impl World {
         {
             issues.retain(|issue| !matches!(issue.key, UnresolvedIssueKey::Internal(_)));
         }
+        self.drop_undefined_prefixes(&mut issues);
         issues
+    }
+
+    /// `A.B` is looked for inside `A`, so a name nothing defines stalls on its
+    /// prefix as well. The source wrote `A.B`: the prefix it never wrote is
+    /// not a second fault.
+    fn drop_undefined_prefixes(&self, issues: &mut Vec<UnresolvedIssue>) {
+        let undefined: Vec<&[String]> = issues
+            .iter()
+            .filter_map(|issue| match issue.key {
+                UnresolvedIssueKey::Module(module) => self.module_name(module).map(ModuleName::segments),
+                _ => None,
+            })
+            .collect();
+        issues.retain(|issue| match issue.key {
+            UnresolvedIssueKey::Module(module) if issue.diagnostic.primary.span.is_dummy() => {
+                !self.module_name(module).is_some_and(|prefix| {
+                    let prefix = prefix.segments();
+                    undefined
+                        .iter()
+                        .any(|name| name.len() > prefix.len() && name.starts_with(prefix))
+                })
+            }
+            _ => true,
+        });
     }
 
     fn unresolved_issue(&self, frontier: &HashSet<FactKey>, fact: &FactKey) -> Option<UnresolvedIssue> {
@@ -2997,15 +3022,15 @@ impl World {
     /// A `StructDefined(module)` wait that survives to the terminal frontier
     /// means the drive drained without that fact publishing — so `%module{}`
     /// named something that never produces a `defstruct`. If the module is
-    /// still wholly unresolved, its own module-not-defined issue speaks (return
-    /// `None` here to avoid double-reporting); if it settled (a plain
+    /// still wholly unresolved, the fault is that it is not defined, reported
+    /// where it was used as a struct; if it settled (a plain
     /// `defmodule`, a builtin/runtime module) but carries no `defstruct`, then
     /// `%module{}` is a real user error — reported at the referencing span the
     /// obligation carries, turning what would otherwise be a silent stall into
     /// a terminating diagnostic.
     fn unresolved_struct_issue(&self, module: ModuleId) -> Option<UnresolvedIssue> {
         if self.module_defined_revision(module).is_none() && !self.is_runtime_module(module) {
-            return None;
+            return Some(self.unresolved_module_issue(module));
         }
         let span = self
             .struct_expectations
@@ -3029,18 +3054,18 @@ impl World {
 
     /// The span comes from the first bare `import`/`require` that named
     /// `module` before it resolved (`note_module_reference_expectation`),
-    /// the same `.first()`-of-recorded-obligations discipline
-    /// `unresolved_struct_issue` uses for `struct_expectations`. A module
-    /// that stalled without ever picking up such a reference (e.g. a named
-    /// root submitted by an external caller, not a source reference) has
-    /// none recorded, and falls back to `Span::DUMMY` -- there genuinely is
-    /// no reference site to name.
+    /// or else from the first place that used it as a struct: the same
+    /// `.first()`-of-recorded-obligations discipline `unresolved_struct_issue`
+    /// uses for `struct_expectations`. A module that stalled without ever
+    /// picking up such a reference (e.g. a named root submitted by an
+    /// external caller, not a source reference) has none recorded, and falls
+    /// back to `Span::DUMMY` -- there genuinely is no reference site to name.
     fn unresolved_module_issue(&self, module: ModuleId) -> UnresolvedIssue {
-        let span = self
-            .module_reference_expectations
-            .expectations(module)
-            .first()
+        let imported = self.module_reference_expectations.expectations(module).first();
+        let used_as_struct = self.struct_expectations.reference_expectations(module).first();
+        let span = imported
             .map(|expectation| expectation.requester.span)
+            .or(used_as_struct.map(|expectation| expectation.requester.span))
             .unwrap_or(Span::DUMMY);
         UnresolvedIssue {
             key: UnresolvedIssueKey::Module(module),

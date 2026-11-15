@@ -14,6 +14,7 @@ pub mod ground_value;
 mod ir_codegen;
 mod ir_dce;
 mod ir_interp;
+pub mod literal_term;
 mod modules;
 mod parser;
 mod runtime_type_predicate;

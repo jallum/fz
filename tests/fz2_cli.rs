@@ -2574,7 +2574,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         by_reason(ledger.already_pending),
         BTreeMap::from([
             ("activation_published", 44),
-            ("blocked_waiter_expansion", 5),
+            ("blocked_waiter_expansion", 4),
             ("changed_revision_wake", 9),
             ("gate_expansion", 37),
         ]),

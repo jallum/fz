@@ -1,0 +1,3 @@
+3
+{"cannot divide by zero", nil, 7, :check_the_divisor, "no quotient", [:math, :integer], {1, 2.5}, %{limits: [0, 1], retry: false}}
+7

@@ -1,4 +1,6 @@
 use std::borrow::Cow;
+
+use crate::literal_term::LiteralTerm;
 use std::rc::Rc;
 
 use super::binop::{eval_binop, eval_unop, unpack_callable, unpack_closure};
@@ -2356,20 +2358,18 @@ fn raise_last_resort(
             fz_runtime::failure::reraise(proc, kind, value);
         }
         LastResort::Exception { exception, fields } => {
-            let atom = |name: &str| fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(name));
             let mut values = Vec::with_capacity(fields.len());
             for (name, term) in fields {
                 let value = match term {
                     FieldTerm::Subject => input(0)?,
-                    FieldTerm::Atom(name) => atom(name),
-                    FieldTerm::Int(value) => fz_runtime::any_value::AnyValue::Int(*value),
-                    FieldTerm::Text(text) => unsafe { &mut *proc }
-                        .heap
-                        .alloc_bitstring(text.as_bytes(), 8 * text.len() as u64),
+                    FieldTerm::Literal(term) => literal_term_value(runtime, term)?
+                        .value(proc)
+                        .map_err(|err| format!("exception field `{name}`: {err}"))?,
                 };
-                values.push((*name, value));
+                values.push((name.as_ref(), value));
             }
-            fz_runtime::failure::raise_exception(proc, atom(exception), &values);
+            let exception = fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(exception));
+            fz_runtime::failure::raise_exception(proc, exception, &values);
         }
     }
     match runtime.take_callback_error() {
@@ -3553,6 +3553,33 @@ fn publish_runtime_value(proc: *mut Process, value: AnyValue) -> Result<AnyValue
         fz_mark_published_ref_aliased(proc, value_ref.raw().raw_word()),
         "backend continuation capture",
     )
+}
+
+/// Builds `term` on the current process's heap.
+fn literal_term_value(runtime: &mut IrInterpRuntime, term: &LiteralTerm) -> Result<AnyValue, String> {
+    const CONTEXT: &str = "literal term";
+    let proc = runtime.cur_proc();
+    match term {
+        LiteralTerm::Ground(value) => literal_value(runtime, value),
+        LiteralTerm::List(items) => items.iter().rev().try_fold(interp_empty_list_value(), |tail, item| {
+            interp_list_cons(proc, literal_term_value(runtime, item)?, tail, CONTEXT)
+        }),
+        LiteralTerm::Tuple(items) => {
+            let items = items
+                .iter()
+                .map(|item| literal_term_value(runtime, item))
+                .collect::<Result<_, _>>()?;
+            make_tuple_on_proc(proc, items)
+        }
+        LiteralTerm::Map(entries) => {
+            let mut dest = fz_map_dest_begin(proc, entries.len() as u32);
+            for (key, value) in entries {
+                let (key, value) = (literal_term_value(runtime, key)?, literal_term_value(runtime, value)?);
+                dest = interp_map_dest_put(proc, dest, key, value, CONTEXT)?;
+            }
+            interp_value_from_ref_word(fz_map_dest_freeze(proc, dest), CONTEXT)
+        }
+    }
 }
 
 fn literal_value(
