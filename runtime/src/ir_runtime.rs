@@ -1098,18 +1098,20 @@ pub extern "C" fn fz_binary_to_atom(process: *mut Process, ref_word: u64) -> u64
     box_scalar_for_any(process, id as u64, ValueKind::ATOM)
 }
 
-/// The number of BYTES in a binary. Refuses a partial bitstring, which has no
-/// byte size.
+/// The number of BYTES in the binary that starts `bit_pos` bits into `ref_word`'s
+/// bitstring: the whole binary at position zero, the rest of it from a cursor.
+/// Refuses a partial bitstring, which has no byte size.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bitstring_byte_size(ref_word: u64) -> i64 {
+pub extern "C" fn fz_bitstring_byte_extent(ref_word: u64, bit_pos: u64) -> i64 {
     let Some(p) = bitstring_like_word(ref_word) else {
         panic!("byte_size expects a binary");
     };
     let bit_len = unsafe { bitstring_bit_len(p) };
-    if !bit_len.is_multiple_of(8) {
+    let extent = bit_len - bit_pos;
+    if !extent.is_multiple_of(8) {
         panic!("byte_size expects a byte-aligned binary");
     }
-    (bit_len / 8) as i64
+    (extent / 8) as i64
 }
 
 /// The size of a `binary` segment whose value is a pinned binary: that binary's
@@ -1378,13 +1380,8 @@ pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_r
     let (right_ptr, right_len) = byte_aligned_binary_slice(right_ref, "fz_binary_concat right");
     let left = unsafe { from_raw_parts(left_ptr, left_len) };
     let right = unsafe { from_raw_parts(right_ptr, right_len) };
-    let mut bytes = Vec::with_capacity(left_len + right_len);
-    bytes.extend_from_slice(left);
-    bytes.extend_from_slice(right);
-
-    let value = (unsafe { &mut *process })
-        .heap
-        .alloc_bitstring(&bytes, ((left_len + right_len) * 8) as u64);
+    let left_view = procbin_addr_from_tagged(left_ref).map(|addr| unsafe { ProcBin::from_raw(addr) });
+    let value = unsafe { (&mut *process).heap.alloc_concatenation(left, left_view, right) };
     value.ref_word().raw_word()
 }
 
@@ -1411,14 +1408,15 @@ pub extern "C" fn fz_alloc_bitstring_const(process: *mut Process, ptr: u64, byte
 /// then the new ProcBin's lifetime release brings it back to 1 (anchor
 /// preserved). The noop destructor never runs in practice.
 ///
-/// `static_sharedbin` is the address of the 40-byte SharedBin struct
+/// `static_sharedbin` is the address of the 48-byte SharedBin struct
 /// emitted into `.data` by codegen, with bytes_ptr and destructor
 /// relocations resolved by the linker.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_procbin_from_static(process: *mut Process, static_sharedbin: u64) -> u64 {
     let sb = static_sharedbin as *mut SharedBin;
     let handle = unsafe { SharedBinHandle::retain_from_raw(sb) };
-    let pb = alloc_procbin(&mut (unsafe { &mut *process }).heap, handle, 0);
+    let bit_len = handle.bit_len();
+    let pb = alloc_procbin(&mut (unsafe { &mut *process }).heap, handle, 0, bit_len);
     heap_ref_word(ValueKind::PROCBIN, pb.as_raw() as *const u8)
 }
 
@@ -1605,7 +1603,8 @@ pub extern "C" fn fz_bs_read_int_ref(source_ref: u64, pos: u64, field_spec: u64,
     }
 }
 
-/// Read the `binary` or `bits` field at bit `pos` as a new binary. The caller
+/// Read the `binary` or `bits` field at bit `pos` as a binary: the source
+/// itself when the field is all of it, and a new binary otherwise. The caller
 /// has proved the field fits (`bs_field_end` answers `Some`).
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_read_binary_ref(
@@ -1627,21 +1626,22 @@ pub extern "C" fn fz_bs_read_binary_ref(
     let end = field_end(field_spec, size_value, pos, bytes, bit_len)
         .unwrap_or_else(|| panic!("fz_bs_read_binary_ref: the field at bit {pos} does not fit"));
     let (pos, end, bit_len) = (pos as usize, end as usize, bit_len as usize);
+    // A field that spans the whole source is the source.
+    if pos == 0 && end == bit_len {
+        return source_ref;
+    }
     let needed_bits = end - pos;
     let heap = unsafe { &mut (*process).heap };
-    // A byte-aligned TAIL of a shared binary is another view of the same bytes,
-    // not a copy. This is the step every byte scanner performs, and copying it
-    // is what made scanning quadratic. Only a suffix qualifies, which is exactly
-    // what `<<_c, rest :: binary>>` asks for; `Heap::alloc_bitstring_suffix`
-    // decides whether the view is worth a stub.
-    let tail_of_shared = pos.is_multiple_of(8)
-        && end == bit_len
-        && needed_bits.is_multiple_of(8)
-        && procbin_addr_from_tagged(bs_bits).is_some();
-    let value = if tail_of_shared {
+    // A byte-aligned field of a shared binary is another view of the same
+    // bytes, not a copy. Byte scanners and field extractors take one per step,
+    // and copying them is what made scanning quadratic;
+    // `Heap::alloc_bitstring_slice` decides whether the view is worth a stub.
+    let slice_of_shared =
+        pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) && procbin_addr_from_tagged(bs_bits).is_some();
+    let value = if slice_of_shared {
         let src = unsafe { ProcBin::from_raw(procbin_addr_from_tagged(bs_bits).expect("procbin source")) };
         let offset = src.byte_offset() + (pos / 8) as u64;
-        unsafe { heap.alloc_bitstring_suffix(src.shared_raw(), offset) }
+        unsafe { heap.alloc_bitstring_slice(src.shared_raw(), offset, (needed_bits / 8) as u64) }
     } else if pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) {
         // Byte-aligned is the overwhelmingly common case and is a slice copy
         // rather than a walk over individual bits.

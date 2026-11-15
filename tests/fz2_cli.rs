@@ -66,7 +66,10 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // 677 -> 675: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
         // 675 -> 826: the same cause as `00567_fz_f98_range_map_converges` below.
-        runtime_demand_walks: 826,
+        // 826 -> 828: a text that one caller matches and another holds whole is asked for twice,
+        // whole and then matched, so `Kernel.inspect/1` and `Kernel.fz_inspect/1` are each walked once more
+        // for the uncaught-raise handler's indenting.
+        runtime_demand_walks: 828,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -81,7 +84,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // key, and a protocol callback counts every input but the receiver as returned, so
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
         // 527 -> 669: the same cause as `00567_fz_f98_range_map_converges` below.
-        runtime_demand_walks: 669,
+        // 669 -> 671: the same cause.
+        runtime_demand_walks: 671,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -101,7 +105,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // 172 -> 246: the program's entry wraps `main` in the handler that words an uncaught
         // raise, so the banner and the `message/1` of each exception the fixture can raise are
         // walked too.
-        runtime_demand_walks: 246,
+        // 246 -> 247: the same cause; this fixture walks `Kernel.inspect/1` once more.
+        runtime_demand_walks: 247,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -2535,14 +2540,17 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // The program's entry wraps `main` in the handler that words an uncaught raise, so
             // the banner and the `message/1` of each exception the fixture can raise are part
             // of the compile: 213 -> 882 evaluations, every one initial or content-caused.
-            evaluations: 882,
-            runtime_demand_evaluations: 117,
+            // A text that one caller matches and another holds whole is asked for twice, whole
+            // and then matched: `Kernel.inspect/1` and `Kernel.fz_inspect/1` are each evaluated
+            // once more, content-caused: 882 -> 884.
+            evaluations: 884,
+            runtime_demand_evaluations: 119,
             initial: 639,
-            content_caused: 243,
+            content_caused: 245,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 797,
+            changed_outputs: 799,
             unchanged_outputs: 85,
             already_pending: 9,
             blocked_completions: 231,
@@ -2564,7 +2572,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         by_reason(ledger.ran),
         BTreeMap::from([
             ("blocked_waiter_expansion", 138),
-            ("changed_revision_wake", 534),
+            ("changed_revision_wake", 536),
             ("gate_expansion", 209),
             ("ignition", 1),
         ]),
@@ -2582,7 +2590,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     );
     assert_eq!(
         by_reason(ledger.reparked),
-        BTreeMap::from([("changed_revision_wake", 35)]),
+        BTreeMap::from([("changed_revision_wake", 36)]),
         "{fixture}: started jobs the pop gate parked again without running"
     );
     for reason in fz::compiler2::WorkStartReason::TELEMETRY_ORDER {
@@ -2606,13 +2614,13 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             wake_records("applied", &["completion"]),
             wake_records("dependencies_moved", &["step"])
         ),
-        (565, 12),
+        (568, 12),
         "{fixture}: wake records of the completions, and of the external changes between them"
     );
     assert_eq!(
         ledger.requested(fz_engine::WorkStart::ChangedRevisionWake),
-        // The 577 above and the one wake the arbiter's own step records.
-        578,
+        // The 580 above and the one wake the arbiter's own step records.
+        581,
         "{fixture}: every wake record is one request at the door"
     );
     let products = report.product_totals();

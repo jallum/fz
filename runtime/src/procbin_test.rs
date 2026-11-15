@@ -1,6 +1,6 @@
 use super::*;
 use crate::any_value::object_size;
-use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
+use crate::heap::{Heap, SHARED_BIN_THRESHOLD_BYTES, SIZE_TABLE, SchemaRegistry};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::slice::from_raw_parts;
@@ -211,7 +211,8 @@ fn alloc_procbin_pushes_into_mso_chain() {
     let (handle, drops) = observed_bin();
     {
         let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-        let pb = alloc_procbin(&mut h, handle, 0);
+        let handle_bits = handle.bit_len();
+        let pb = alloc_procbin(&mut h, handle, 0, handle_bits);
         let tagged = heap_object_word(pb.as_raw() as *const u8, ValueKind::PROCBIN);
         assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::PROCBIN));
         assert_eq!(object_size(tagged), PROCBIN_BYTES);
@@ -229,9 +230,12 @@ fn mso_chain_threads_through_procbins_and_frees_every_entry() {
     let (first, first_drops) = observed_bin();
     let (second, second_drops) = observed_bin();
     let (third, third_drops) = observed_bin();
-    let pb1 = alloc_procbin(&mut h, first, 0);
-    let pb2 = alloc_procbin(&mut h, second, 0);
-    let pb3 = alloc_procbin(&mut h, third, 0);
+    let first_bits = first.bit_len();
+    let pb1 = alloc_procbin(&mut h, first, 0, first_bits);
+    let second_bits = second.bit_len();
+    let pb2 = alloc_procbin(&mut h, second, 0, second_bits);
+    let third_bits = third.bit_len();
+    let pb3 = alloc_procbin(&mut h, third, 0, third_bits);
     let pb1_bits = heap_object_word(pb1.as_raw() as *const u8, ValueKind::PROCBIN);
     let pb2_bits = heap_object_word(pb2.as_raw() as *const u8, ValueKind::PROCBIN);
     let pb3_bits = heap_object_word(pb3.as_raw() as *const u8, ValueKind::PROCBIN);
@@ -252,7 +256,8 @@ fn mso_chain_threads_through_procbins_and_frees_every_entry() {
 fn unrooted_shared_bin_is_freed_once_by_gc_not_again_by_heap_drop() {
     let (handle, drops) = observed_bin();
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-    alloc_procbin(&mut heap, handle, 0);
+    let handle_bits = handle.bit_len();
+    alloc_procbin(&mut heap, handle, 0, handle_bits);
     heap.collect_tagged(&mut std::ptr::null_mut());
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     assert_eq!(heap.mso_head, 0);
@@ -265,7 +270,8 @@ fn copied_shared_bin_is_freed_only_when_the_last_heap_releases_it() {
     let (handle, drops) = observed_bin();
     let mut source = Heap::new(SIZE_TABLE[0], fresh_registry());
     let mut destination = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let pb = alloc_procbin(&mut source, handle, 0);
+    let handle_bits = handle.bit_len();
+    let pb = alloc_procbin(&mut source, handle, 0, handle_bits);
     crate::heap::deep_copy_slot(
         AnyValue::heap_ptr(pb.as_raw(), ValueKind::PROCBIN),
         &source.view(),
@@ -283,18 +289,18 @@ fn copied_shared_bin_is_freed_only_when_the_last_heap_releases_it() {
     assert_eq!(Arc::strong_count(&drops), 1);
 }
 
-// ===== suffix views ==========================================================
+// ===== views ==========================================================
 
 /// A tail of a shared binary is another view of the SAME bytes: same
 /// SharedBin, pointer advanced by the offset, length shortened. Nothing is
 /// copied, which is the whole point — a scanner takes one of these per byte.
 #[test]
-fn a_suffix_stub_views_the_parents_bytes_rather_than_copying_them() {
+fn a_view_stub_names_the_parents_bytes_rather_than_copying_them() {
     let bytes: Vec<u8> = (0..200u8).collect();
     let handle = SharedBinHandle::from_bytes(&bytes, 200 * 8);
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let whole = alloc_procbin(&mut h, handle.clone(), 0);
-    let tail = alloc_procbin(&mut h, handle, 70);
+    let whole = alloc_procbin(&mut h, handle.clone(), 0, handle.bit_len());
+    let tail = alloc_procbin(&mut h, handle, 70, (200 - 70) * 8);
 
     assert_eq!(
         whole.shared_raw(),
@@ -316,7 +322,7 @@ fn a_suffix_inherits_the_parents_trailing_nul() {
     let bytes: Vec<u8> = vec![b'x'; 200];
     let handle = SharedBinHandle::from_bytes(&bytes, 200 * 8);
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let tail = alloc_procbin(&mut h, handle, 199);
+    let tail = alloc_procbin(&mut h, handle, 199, 8);
     assert_eq!(tail.bytes_len(), 1);
     assert_eq!(unsafe { *tail.bytes_ptr().add(tail.bytes_len()) }, 0);
 }
@@ -328,8 +334,8 @@ fn a_suffix_keeps_the_shared_bytes_alive_after_the_whole_binary_is_gone() {
     let (handle, drops) = observed_bin();
     let mut whole_heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let mut tail_heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-    alloc_procbin(&mut whole_heap, handle.clone(), 0);
-    let tail = alloc_procbin(&mut tail_heap, handle.clone(), 4);
+    alloc_procbin(&mut whole_heap, handle.clone(), 0, handle.bit_len());
+    let tail = alloc_procbin(&mut tail_heap, handle.clone(), 4, handle.bit_len() - 4 * 8);
     drop(handle);
     drop(whole_heap);
     assert_eq!(
@@ -349,7 +355,7 @@ fn gc_preserves_a_suffixs_offset() {
     let bytes: Vec<u8> = (0..200u8).collect();
     let handle = SharedBinHandle::from_bytes(&bytes, 200 * 8);
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let tail = alloc_procbin(&mut h, handle, 70);
+    let tail = alloc_procbin(&mut h, handle, 70, (200 - 70) * 8);
     let mut roots =
         [crate::any_value::AnyValueRef::from_heap_object(ValueKind::PROCBIN, tail.as_raw()).expect("procbin ref")];
     h.collect(&mut roots);
@@ -467,4 +473,242 @@ mod loom_tests {
             assert!(flag.load(LoomOrdering::SeqCst), "destructor must fire on last release");
         });
     }
+}
+
+/// A window in the middle of a buffer is a view too: the stub's own length, not
+/// the distance to the buffer's end, says where it stops.
+#[test]
+fn a_middle_slice_is_a_view_with_its_own_length() {
+    let bytes: Vec<u8> = (0..200u8).collect();
+    let handle = SharedBinHandle::from_bytes(&bytes, 200 * 8);
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let middle = alloc_procbin(&mut h, handle, 70, 100 * 8);
+
+    assert_eq!(middle.byte_offset(), 70);
+    assert_eq!(middle.bit_len(), 100 * 8);
+    assert_eq!(middle.bytes_len(), 100);
+    assert_eq!(unsafe { from_raw_parts(middle.bytes_ptr(), 100) }, &bytes[70..170]);
+    assert!(!middle.ends_at_buffer_end());
+}
+
+/// `Heap::alloc_bitstring_slice` shares the bytes of a slice above the
+/// threshold and copies one at or below it, wherever in the buffer it sits.
+#[test]
+fn a_slice_above_the_threshold_is_a_view_and_below_it_a_copy() {
+    let bytes: Vec<u8> = (0..200u8).collect();
+    let handle = SharedBinHandle::from_bytes(&bytes, 200 * 8);
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let (big, small) = unsafe {
+        (
+            h.alloc_bitstring_slice(handle.as_raw(), 10, 100),
+            h.alloc_bitstring_slice(handle.as_raw(), 10, SHARED_BIN_THRESHOLD_BYTES as u64),
+        )
+    };
+    assert_eq!(big.kind(), ValueKind::PROCBIN);
+    assert_eq!(small.kind(), ValueKind::BITSTRING);
+    let word = big.heap_object_word().unwrap();
+    assert_eq!(unsafe { bitstring_bit_len(word) }, 100 * 8);
+    assert_eq!(
+        unsafe { from_raw_parts(bitstring_byte_ptr(word), 100) },
+        &bytes[10..110]
+    );
+}
+
+/// A copy to another heap names the same window, not the buffer's whole tail.
+#[test]
+fn a_deep_copy_of_a_middle_slice_keeps_its_length() {
+    let bytes: Vec<u8> = (0..200u8).collect();
+    let handle = SharedBinHandle::from_bytes(&bytes, 200 * 8);
+    let mut source = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut destination = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let middle = alloc_procbin(&mut source, handle, 70, 100 * 8);
+    let copied = crate::heap::deep_copy_slot(
+        AnyValue::heap_ptr(middle.as_raw(), ValueKind::PROCBIN),
+        &source.view(),
+        &mut destination,
+        &mut crate::heap::AddressMap::default(),
+    );
+    let copy = unsafe { ProcBin::from_raw(copied.heap_addr().unwrap()) };
+    assert_eq!((copy.byte_offset(), copy.bytes_len()), (70, 100));
+    assert_eq!(unsafe { from_raw_parts(copy.bytes_ptr(), 100) }, &bytes[70..170]);
+}
+
+/// Cheney moves the stub; its length moves with it.
+#[test]
+fn gc_preserves_a_middle_slices_length() {
+    let bytes: Vec<u8> = (0..200u8).collect();
+    let handle = SharedBinHandle::from_bytes(&bytes, 200 * 8);
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let middle = alloc_procbin(&mut h, handle, 70, 100 * 8);
+    let mut roots =
+        [crate::any_value::AnyValueRef::from_heap_object(ValueKind::PROCBIN, middle.as_raw()).expect("procbin ref")];
+    h.collect(&mut roots);
+    let moved = unsafe { ProcBin::from_raw(roots[0].procbin_addr().expect("survivor")) };
+    assert_eq!((moved.byte_offset(), moved.bytes_len()), (70, 100));
+    assert_eq!(unsafe { from_raw_parts(moved.bytes_ptr(), 100) }, &bytes[70..170]);
+}
+
+// ===== Concatenation appends into spare room =================================
+
+fn concat(heap: &mut Heap, left: AnyValue, right: &[u8]) -> ProcBin {
+    let view = left.heap_addr().map(|addr| unsafe { ProcBin::from_raw(addr) });
+    let left_bytes = unsafe {
+        let word = left.heap_object_word().unwrap();
+        from_raw_parts(bitstring_byte_ptr(word), bitstring_bit_len(word) as usize / 8)
+    };
+    let joined = unsafe { heap.alloc_concatenation(left_bytes, view, right) };
+    unsafe {
+        ProcBin::from_raw(
+            joined
+                .heap_addr()
+                .expect("a concatenation above the threshold is a ProcBin"),
+        )
+    }
+}
+
+fn as_value(pb: ProcBin) -> AnyValue {
+    AnyValue::heap_ptr(pb.as_raw(), ValueKind::PROCBIN)
+}
+
+fn view_bytes(pb: &ProcBin) -> &[u8] {
+    unsafe { from_raw_parts(pb.bytes_ptr(), pb.bytes_len()) }
+}
+
+fn first_view(heap: &mut Heap) -> ProcBin {
+    let head = heap.alloc_bitstring(&[b'a'; 100], 100 * 8);
+    concat(heap, head, b"b")
+}
+
+/// A concatenation whose left side ends where its buffer's written bytes end
+/// writes into the buffer's room: the result is a longer view of the same
+/// buffer, and the old view keeps its bytes and length.
+#[test]
+fn appending_into_spare_room_returns_a_longer_view_of_the_same_buffer() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let first = first_view(&mut heap);
+    let first_bytes = view_bytes(&first).to_vec();
+    let second = concat(&mut heap, as_value(first), b"cd");
+    assert_eq!(second.shared_raw(), first.shared_raw());
+    assert_eq!(second.bytes_ptr(), first.bytes_ptr());
+    assert_eq!(second.bytes_len(), 103);
+    assert_eq!(&view_bytes(&second)[100..], b"bcd");
+    assert_eq!(first.bytes_len(), 101);
+    assert_eq!(view_bytes(&first), first_bytes.as_slice());
+}
+
+/// The old view no longer ends at its buffer's end, so its C string is a
+/// terminated copy; the new view ends there and goes to C as it is.
+#[test]
+fn after_an_append_the_old_views_c_string_is_a_terminated_copy() {
+    let mut process = crate::process::Process::new(fresh_registry());
+    let first = first_view(&mut process.heap);
+    let second = concat(&mut process.heap, as_value(first), b"cd");
+    assert!(second.ends_at_buffer_end());
+    assert!(!first.ends_at_buffer_end());
+    unsafe {
+        let old = crate::extern_binary::fz_binary_as_cstring(&mut process, as_value(first).ref_word().raw_word());
+        assert_ne!(old, first.bytes_ptr(), "the old view is copied");
+        assert_eq!(*old.add(101), 0, "the copy is NUL-terminated");
+        assert_eq!(from_raw_parts(old, 101), view_bytes(&first));
+        let new = crate::extern_binary::fz_binary_as_cstring(&mut process, as_value(second).ref_word().raw_word());
+        assert_eq!(new, second.bytes_ptr());
+        assert_eq!(*new.add(103), 0);
+    }
+}
+
+/// A buffer made reachable from another heap is never appended to again.
+#[test]
+fn a_buffer_that_crossed_to_another_heap_is_never_appended_to() {
+    let mut source = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut destination = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let first = first_view(&mut source);
+    let copied = crate::heap::deep_copy_slot(
+        as_value(first),
+        &source.view(),
+        &mut destination,
+        &mut crate::heap::AddressMap::default(),
+    );
+    assert_eq!(unsafe { (*first.shared_raw()).spare() }, 0);
+    let second = concat(&mut source, as_value(first), b"cd");
+    assert_ne!(
+        second.shared_raw(),
+        first.shared_raw(),
+        "a frozen buffer is not written"
+    );
+    let copy = unsafe { ProcBin::from_raw(copied.heap_addr().unwrap()) };
+    assert_eq!(copy.bytes_len(), 101);
+    assert_eq!(view_bytes(&copy), view_bytes(&first));
+}
+
+/// Room too small for the right side means a new buffer, with the left side
+/// and the right side each written once.
+#[test]
+fn a_buffer_without_enough_room_gives_a_new_buffer_with_room_to_grow() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut current = first_view(&mut heap);
+    let first_buffer = current.shared_raw();
+    let spare = unsafe { (*first_buffer).spare() };
+    assert_eq!(spare, 101, "a result of 101 bytes gets as much room again");
+    let big = vec![b'z'; spare + 1];
+    current = concat(&mut heap, as_value(current), &big);
+    assert_ne!(current.shared_raw(), first_buffer);
+    assert_eq!(current.bytes_len(), 101 + spare + 1);
+    assert_eq!(unsafe { (*current.shared_raw()).spare() }, current.bytes_len());
+    assert_eq!(&view_bytes(&current)[..100], &[b'a'; 100][..]);
+    assert_eq!(&view_bytes(&current)[101..], big.as_slice());
+}
+
+/// Only a view that ends at the written end appends; an earlier view of the
+/// same buffer gets a copy.
+#[test]
+fn a_view_that_ends_before_the_written_end_does_not_append() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let first = first_view(&mut heap);
+    let second = concat(&mut heap, as_value(first), b"cd");
+    let sibling = concat(&mut heap, as_value(first), b"XY");
+    assert_ne!(sibling.shared_raw(), second.shared_raw());
+    assert_eq!(&view_bytes(&second)[100..], b"bcd");
+    assert_eq!(&view_bytes(&sibling)[100..], b"bXY");
+}
+
+/// Buffers that no concatenation allocated have no room: a plain copy of
+/// bytes, and the static buffers the compiler bakes.
+#[test]
+fn a_buffer_no_concatenation_allocated_has_no_spare_room() {
+    let handle = SharedBinHandle::from_bytes(&[7; 200], 200 * 8);
+    assert_eq!(unsafe { (*handle.as_raw()).spare() }, 0);
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let whole = alloc_procbin(&mut heap, handle, 0, 200 * 8);
+    let longer = concat(&mut heap, as_value(whole), b"x");
+    assert_ne!(longer.shared_raw(), whole.shared_raw());
+    assert_eq!(whole.bytes_len(), 200);
+}
+
+/// The compiler writes a zero where `room` lives, and a zero means no room.
+#[test]
+fn a_static_buffer_with_a_zero_room_word_has_no_spare_room() {
+    unsafe extern "C" fn noop(_: *mut SharedBin) {}
+    static PAYLOAD: [u8; 8] = [1; 8];
+    let sb = SharedBin {
+        refcount: AtomicUsize::new(1),
+        bit_len: 64,
+        bytes_ptr: PAYLOAD.as_ptr(),
+        bytes_len: 8,
+        destructor: noop,
+        room: 0,
+    };
+    assert_eq!(sb.spare(), 0);
+    assert_eq!(SHARED_BIN_ROOM_OFFSET, 40);
+    assert_eq!(SHARED_BIN_BYTES, SHARED_BIN_ROOM_OFFSET + size_of::<usize>());
+}
+
+/// A concatenated buffer is freed whole by the last release, whatever its
+/// room, written bytes or frozen state were.
+#[test]
+fn a_concatenated_buffer_is_freed_whole_whether_or_not_it_was_frozen() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let first = first_view(&mut heap);
+    let second = concat(&mut heap, as_value(first), b"cd");
+    unsafe { shared_bin_freeze(second.shared_raw()) };
+    drop(heap); // releases both stubs; the allocator tests flag a wrong size under miri/asan
 }

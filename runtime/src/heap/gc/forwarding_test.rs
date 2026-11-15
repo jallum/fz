@@ -250,7 +250,8 @@ fn a_procbin_stub_over_bytes_that_read_like_a_marker_survives_a_collection() {
     bytes[0] = 8;
     bytes[8] = 1;
     let handle = SharedBinHandle::from_bytes(&bytes, bytes.len() as u64 * 8);
-    let stub = alloc_procbin(&mut heap, handle, 0);
+    let handle_bits = handle.bit_len();
+    let stub = alloc_procbin(&mut heap, handle, 0, handle_bits);
     let (old, shared) = (stub.as_raw(), stub.shared_raw());
     let moved = collect_one(&mut heap, ValueKind::PROCBIN, old).procbin_addr().unwrap();
     assert_ne!(moved, old);

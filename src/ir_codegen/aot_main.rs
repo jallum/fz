@@ -213,7 +213,7 @@ pub(crate) struct BsConstSyms {
 ///   offset 16..24  bytes_ptr — relocation to the bytes payload symbol
 ///   offset 24..32  bytes_len (LE u64)
 ///   offset 32..40  destructor — function-address relocation to noop
-///   offset 40..48  padding to the type's 16-byte alignment
+///   offset 40..48  room = 0: no capacity beyond the bytes, so nothing appends
 ///
 /// The alignment is not cosmetic and must match `SharedBin`'s: a ProcBin
 /// stub carries this address in the word the collector overwrites with a
@@ -239,6 +239,7 @@ pub(crate) fn define_static_sharedbin<M: ClModule>(
     // bytes_ptr at 16..24 — zero placeholder; relocation patches at link.
     buf[24..32].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
     // destructor at 32..40 — zero placeholder; function-addr reloc patches.
+    // room at 40..48 stays zero (SHARED_BIN_ROOM_OFFSET).
     let mut desc = DataDescription::new();
     desc.define(buf.into_boxed_slice());
     desc.set_align(16);

@@ -111,7 +111,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01060-01079` | fz-sc8 (stack #274)               | in use through `01078` |
 | `01080-01099` | fz-348 / fz-rs7                   | full                   |
 | `01100-01119` | fz-rs7                            | in use through `01115` |
-| `01120-01199` | fz-sc8                            | in use through `01179` |
+| `01120-01199` | fz-sc8                            | in use through `01187` |
 | `01200-01229` | fz-iqp                            | in use through `01229` |
 | `01230-01249` | fz-rba                            | in use through `01232` |
 | `01250-01259` | fz-75e / fz-d7w / fz-9x7.3        | in use through `01256` |
@@ -119,7 +119,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01280-01289` | fz-968                            | in use through `01280` |
 | `01290-01299` | fz-t93                            | in use through `01292` |
 | `01300-01319` | fz-3sy                            | in use through `01310` |
-| `01320-01339` | fz-nml                            | in use through `01335` |
+| `01320-01339` | fz-nml                            | in use through `01337` |
 | `01340-01359` | fz-9zq                            | in use through `01343` |
 
 A fixture orders its processes with messages and never by a timing margin: an

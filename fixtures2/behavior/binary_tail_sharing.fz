@@ -10,18 +10,17 @@
 # than as a single number: the same walk over 160 bytes and over 320 bytes must
 # cost the same, because neither one copies.
 #
-# Two counters per walk:
+# Two counters per walk, both 0:
 #
 #   * `:shared_bin_bytes` -- off-heap binary buffers allocated. Copying a tail
 #     shows up here and nowhere else, which is exactly why the counter exists: a
 #     ProcBin stub costs the same whether its bytes were copied or shared, so
 #     the stub counters cannot tell the two apart. Both walks must report 0.
 #
-#   * `:bitstring_bytes` -- on-heap bitstring bytes. NOT zero, and that is
-#     deliberate: a suffix at or below the 64-byte threshold is still copied
-#     inline, because at that size a copy is smaller than a stub and it keeps a
-#     short tail from pinning a long buffer alive. The residue is bounded by the
-#     threshold, so it too is the same for both walks.
+#   * `:bitstring_bytes` -- on-heap bitstring bytes. Also 0: a rest is the
+#     binary it is read from and the bit position it starts at, so no step
+#     builds a tail, short or long. Both walks report the same, which is the
+#     comparison the fixture makes.
 #
 # Before this, every step copied the whole remainder: scanning n bytes copied
 # n + (n-1) + ... bytes, and the two lines below differed by about 4x. Decoding

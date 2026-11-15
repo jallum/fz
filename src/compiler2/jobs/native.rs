@@ -141,7 +141,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             extern_decls.push(ExternDecl {
                 id,
                 symbol: signature.symbol.clone(),
-                params: signature.params.clone(),
+                params: ExternTy::wire_classes(&signature.params),
                 variadic: signature.variadic,
                 ret: signature.ret.clone(),
                 abi: signature.abi,
@@ -784,7 +784,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             return_reprs,
             executable.abi.effects,
         );
-        let params = ctx.entry_params(executable.key.activation.inputs(self.world.types()));
+        let lane_tys = executable
+            .abi
+            .semantic_inputs
+            .iter()
+            .flat_map(|input| input.layout.tys.iter().copied())
+            .collect::<Vec<_>>();
+        let params = ctx.entry_params(lane_tys.iter());
         let result = self.emit_extern_call(&mut ctx, index, signature, &params)?;
         ctx.set_term(Term::Return(result));
         self.finish_native_fn(ctx);
@@ -801,15 +807,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         signature: &LoweredExtern,
         params: &[Var],
     ) -> Result<Var, FatalError> {
-        let mut extern_args = Vec::with_capacity(params.len());
-        for (arg_index, param) in params.iter().copied().enumerate() {
-            let arg = if arg_index < signature.params.len() {
-                ExternArg::fixed(param, signature.params[arg_index])
-            } else {
-                ExternArg::auto(param)
-            };
-            extern_args.push(arg);
-        }
+        let extern_args = self.extern_arguments(ctx, index, signature, params)?;
         let extern_id = *self
             .extern_ids
             .get(&index)
@@ -847,6 +845,52 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             return Ok(ctx.emit_let(Prim::Const(Const::Nil)).0);
         }
         Ok(value)
+    }
+
+    /// The extern arguments for the lanes its executable received. A
+    /// `binary_cursor` parameter is the source and position of a cursor, or a
+    /// whole binary at position 0, so the binary itself is never made; every
+    /// other input is its one lane, marshalled as its wire type says.
+    fn extern_arguments(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        index: usize,
+        signature: &LoweredExtern,
+        lanes: &[Var],
+    ) -> Result<Vec<ExternArg>, FatalError> {
+        let program = self.program;
+        let inputs = &program.executables()[index].abi.semantic_inputs;
+        let mut remaining = lanes.iter().copied();
+        let mut arguments = Vec::with_capacity(inputs.len());
+        for input in inputs.iter() {
+            let width = input.layout.reprs.len();
+            let own = remaining.by_ref().take(width).collect::<Vec<_>>();
+            let wire = signature.params.get(input.semantic_index).copied();
+            match (wire, own.as_slice()) {
+                (Some(ExternTy::BinaryCursor), [source, position]) => {
+                    arguments.push(ExternArg::fixed(*source, ExternTy::Any));
+                    arguments.push(ExternArg::fixed(*position, ExternTy::I64));
+                }
+                (Some(ExternTy::BinaryCursor), [whole]) => {
+                    let from_the_start = ctx.emit_let(Prim::Const(Const::Int(0))).0;
+                    arguments.push(ExternArg::fixed(*whole, ExternTy::Any));
+                    arguments.push(ExternArg::fixed(from_the_start, ExternTy::I64));
+                }
+                (Some(wire), [word]) => arguments.push(ExternArg::fixed(*word, wire)),
+                (None, [word]) => arguments.push(ExternArg::auto(*word)),
+                _ => {
+                    return Err(incomplete_native_program(
+                        self.telemetry,
+                        self.root_id,
+                        format!(
+                            "extern `{}` argument {} arrives in {width} lanes, which its wire type does not read",
+                            signature.symbol, input.semantic_index
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(arguments)
     }
 
     fn lower_clause_dispatch_executable(
@@ -1521,9 +1565,16 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     pos,
                     spec,
                 } => {
-                    let source = self.env_runtime_var(ctx, executable, env, *source);
-                    let pos_bits = known_positions.get(pos).copied();
-                    let pos = self.env_runtime_var(ctx, executable, env, *pos);
+                    let (source, base) = self.bit_source(ctx, executable, env, *source)?;
+                    let relative_bits = known_positions.get(pos).copied();
+                    let relative = self.env_runtime_var(ctx, executable, env, *pos);
+                    let (pos, start) = match base {
+                        Some(base) => (
+                            self.emit_cursor_position(ctx, base, relative),
+                            FieldStart::PastCursor(relative_bits),
+                        ),
+                        None => (relative, FieldStart::from_first_bit(relative_bits)),
+                    };
                     let field = BitMatchField {
                         ty: spec.ty,
                         size: lower_bit_size_ir(self.world, &spec.size, env)?,
@@ -1533,14 +1584,24 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         is_last: next.is_none(),
                     };
                     if let Some(value) = value {
-                        let value_var = self.emit_bit_read(ctx, &mut bases, source, pos, pos_bits, &field);
-                        self.bind_runtime_value(ctx, executable, env, *value, value_var);
+                        if self.is_rest_read(&field) && value_layout_is_cursor(self.world, executable, *value) {
+                            let shape = value_shape(executable, *value);
+                            let bound = NativeBoundValue::Transport {
+                                shape,
+                                lanes: vec![source, pos],
+                            };
+                            bind_local_value(ctx, executable, env, *value, bound);
+                        } else {
+                            let value_var = self.emit_bit_read(ctx, &mut bases, source, pos, start, &field);
+                            self.bind_runtime_value(ctx, executable, env, *value, value_var);
+                        }
                     }
                     if let Some(next) = next {
-                        if let Some(next_bits) = pos_bits.zip(field.static_bits()).map(|(at, extent)| at + extent) {
+                        if let Some(next_bits) = relative_bits.zip(field.static_bits()).map(|(at, extent)| at + extent)
+                        {
                             known_positions.insert(*next, next_bits);
                         }
-                        let next_var = self.emit_bit_next(ctx, source, pos, field);
+                        let next_var = self.emit_step_next(ctx, source, base, pos, relative, field);
                         self.bind_runtime_value(ctx, executable, env, *next, next_var);
                     }
                 }
@@ -3081,7 +3142,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         match self.world.shape(shape) {
             ShapeDescr::Nothing => Ok(NativeBoundValue::Absent),
             ShapeDescr::Lane(_) => Ok(NativeBoundValue::Runtime(next_runtime_lane(params, lane_index)?)),
-            ShapeDescr::Callable(_) | ShapeDescr::Tuple(_) => {
+            ShapeDescr::Callable(_) | ShapeDescr::Tuple(_) | ShapeDescr::Cursor { .. } => {
                 let width = self.world.shape_width(shape);
                 let end = lane_index.checked_add(width).ok_or(FatalError)?;
                 let lanes = params.get(*lane_index..end).ok_or(FatalError)?.to_vec();
@@ -3742,7 +3803,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let mut extern_args = Vec::with_capacity(args.len());
         for (arg, ty) in args.iter().zip(&extern_fn.params) {
             let var = self.lower_guard_expr(ctx, plan, state, arg, fail)?;
-            extern_args.push(ExternArg::fixed(var, *ty));
+            if *ty == ExternTy::BinaryCursor {
+                // A guard holds the binary whole: its view starts at 0.
+                let from_the_start = ctx.emit_let(Prim::Const(Const::Int(0))).0;
+                extern_args.push(ExternArg::fixed(var, ExternTy::Any));
+                extern_args.push(ExternArg::fixed(from_the_start, ExternTy::I64));
+            } else {
+                extern_args.push(ExternArg::fixed(var, *ty));
+            }
         }
         let extern_id = self.guard_extern_id(extern_fn);
         let callsite = ctx.fresh_callsite();
@@ -3807,7 +3875,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         self.extern_decls.push(ExternDecl {
             id,
             symbol: extern_fn.symbol.clone(),
-            params: extern_fn.params.clone(),
+            params: ExternTy::wire_classes(&extern_fn.params),
             variadic: false,
             ret: extern_fn.ret.clone(),
             abi: extern_fn.abi,
@@ -3959,7 +4027,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         shape: &crate::dispatch_matrix::BitstringShape,
         state: &mut DispatchState,
     ) -> Result<RegionOutcome, FatalError> {
-        let subject_var = self.dispatch_subject_var(ctx, plan, state, subject)?;
+        let (subject_var, cursor_position) = self.dispatch_bit_source(ctx, plan, state, subject)?;
         let fail_b = ctx.builder.block(vec![]);
 
         // The length is read straight out of the object, and the same read of
@@ -3977,9 +4045,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         });
         ctx.current_block = read_b;
 
-        let (mut pos, _) = ctx.emit_let(Prim::Const(Const::Int(0)));
-        ctx.value_types.insert(pos, int);
-        let mut pos_bits = Some(0);
+        let (mut pos, mut start) = match cursor_position {
+            Some(position) => (position, FieldStart::PastCursor(Some(0))),
+            None => {
+                let (zero, _) = ctx.emit_let(Prim::Const(Const::Int(0)));
+                ctx.value_types.insert(zero, int);
+                (zero, FieldStart::Fixed(0))
+            }
+        };
         let mut bases = BitstringBases::default();
         let field_count = shape.fields.len();
         for (index, field_subject) in shape.fields.iter().enumerate() {
@@ -4003,24 +4076,38 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             });
             ctx.current_block = next_b;
             let consumed = plan.graph.asks(*field_subject) || state.outcome_reads.contains(field_subject);
-            let value = consumed.then(|| self.emit_bit_read(ctx, &mut bases, subject_var, pos, pos_bits, &field));
+            let value = if !consumed {
+                None
+            } else if self.is_rest_read(&field) {
+                state.rests.insert(*field_subject, (subject_var, pos));
+                None
+            } else {
+                Some(NativeBoundValue::Runtime(self.emit_bit_read(
+                    ctx,
+                    &mut bases,
+                    subject_var,
+                    pos,
+                    start,
+                    &field,
+                )))
+            };
             // The last field has no successor unless the pattern must also end
             // there; a field that reads to the end of the binary ends at its end.
             let reads_to_end = field.size.is_none() && matches!(field.ty, BitType::Binary | BitType::Bits);
             if reads_to_end {
                 pos = bit_len;
-                pos_bits = None;
+                start = FieldStart::Unknown;
             } else if let Some(end) = utf8_end {
                 pos = end;
-                pos_bits = None;
+                start = start.advanced_by(None);
             } else if index + 1 < field_count || shape.require_done {
                 pos = self.emit_bit_next(ctx, subject_var, pos, field.clone());
-                pos_bits = pos_bits.zip(field.static_bits()).map(|(at, extent)| at + extent);
+                start = start.advanced_by(field.static_bits());
             }
             // A later field's `size(len)` reads this one, and the read happens
             // in this block, so it is available for the rest of the loop.
             if let Some(value) = value {
-                state.values.insert(*field_subject, NativeBoundValue::Runtime(value));
+                state.values.insert(*field_subject, value);
             }
         }
 
@@ -4041,29 +4128,116 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         Ok(RegionOutcome::Matched { missed: fail_b })
     }
 
+    /// Where the field after `field` starts, counted from the start of the
+    /// match as every step position is. `pos` is the field's absolute position
+    /// and `relative` the same position counted from the start of the match;
+    /// they differ by `base` when the match reads a cursor.
+    fn emit_step_next(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        source: Var,
+        base: Option<Var>,
+        pos: Var,
+        relative: Var,
+        field: BitMatchField,
+    ) -> Var {
+        match (field.ty, base) {
+            (BitType::Utf8, Some(base)) => {
+                let end = self.emit_bit_next(ctx, source, pos, field);
+                self.emit_position_prim(ctx, Prim::BitPositionSub(end, base))
+            }
+            (BitType::Utf8, None) => self.emit_bit_next(ctx, source, pos, field),
+            _ => self.emit_bit_next(ctx, source, relative, field),
+        }
+    }
+
+    /// Whether `field` is the rest of a binary: a `binary` or `bits` field with
+    /// no size, which reads to the end.
+    fn is_rest_read(&self, field: &BitMatchField) -> bool {
+        field.is_last && field.size.is_none() && matches!(field.ty, BitType::Binary | BitType::Bits)
+    }
+
+    /// The binary a match reads and the position it starts at, which is
+    /// `Some` when the value is a cursor and `None` when it is a whole binary
+    /// and the match starts at its first bit.
+    fn bit_source(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        env: &ValueEnv,
+        source: ValueId,
+    ) -> Result<(Var, Option<Var>), FatalError> {
+        if let Some(NativeBoundValue::Transport { shape, lanes }) = env.value(source)
+            && matches!(self.world.shape(*shape), ShapeDescr::Cursor { .. })
+            && let [source, position] = lanes.as_slice()
+        {
+            return Ok((*source, Some(*position)));
+        }
+        Ok((self.env_runtime_var(ctx, executable, env, source), None))
+    }
+
+    /// The absolute bit position of `relative`, a position counted from the
+    /// start of a match that began at `base`.
+    fn emit_cursor_position(&mut self, ctx: &mut NativeFnCtx, base: Var, relative: Var) -> Var {
+        self.emit_position_prim(ctx, Prim::BitPositionAdd(base, relative))
+    }
+
+    fn emit_position_prim(&mut self, ctx: &mut NativeFnCtx, prim: Prim) -> Var {
+        let (position, _) = ctx.emit_let(prim);
+        let int = self.world.types_mut().int();
+        ctx.value_types.insert(position, int);
+        position
+    }
+
+    /// The binary a bitstring region reads and the position it starts at: the
+    /// source and position of a cursor, or the whole binary the subject is.
+    fn dispatch_bit_source(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        subject: SubjectId,
+    ) -> Result<(Var, Option<Var>), FatalError> {
+        if let Some((source, position)) = state.rests.get(&subject) {
+            return Ok((*source, Some(*position)));
+        }
+        if let NativeBoundValue::Transport { shape, lanes } = self.dispatch_subject_value(ctx, plan, state, subject)?
+            && matches!(self.world.shape(*shape), ShapeDescr::Cursor { .. })
+            && let [source, position] = lanes.as_slice()
+        {
+            return Ok((*source, Some(*position)));
+        }
+        Ok((self.dispatch_subject_var(ctx, plan, state, subject)?, None))
+    }
+
     /// The value of `field` at bit `pos` of `source`, which the caller has seen
     /// fit. An integer field is a raw integer.
     ///
-    /// `pos_bits` is `pos` when it is known without running the program. A
-    /// whole-byte integer field at a known whole-byte position is a load from
-    /// the binary's address; every other field is read by the runtime.
+    /// `start` is what the program text says of where the field starts. A
+    /// whole-byte integer field that starts a whole number of bytes from the
+    /// first bit, or from a cursor's position, is a load from the binary's
+    /// address; every other field is read by the runtime.
     fn emit_bit_read(
         &mut self,
         ctx: &mut NativeFnCtx,
         bases: &mut BitstringBases,
         source: Var,
         pos: Var,
-        pos_bits: Option<u64>,
+        start: FieldStart,
         field: &BitMatchField,
     ) -> Var {
-        let prim = match (pos_bits, field.whole_byte_integer_width()) {
-            (Some(at), Some(bytes)) if at % 8 == 0 => {
+        let prim = match (start, field.whole_byte_integer_width()) {
+            (FieldStart::Fixed(at), Some(bytes)) if at % 8 == 0 => {
                 let base = self.bitstring_base(ctx, bases, source);
                 Prim::BitReadByteInt {
                     base,
                     byte_offset: (at / 8) as u32,
                     bytes,
                 }
+            }
+            (FieldStart::PastCursor(Some(offset)), Some(bytes)) if offset % 8 == 0 => {
+                let base = self.bitstring_base(ctx, bases, source);
+                Prim::BitReadByteIntAt { base, pos, bytes }
             }
             _ => Prim::BitReadField {
                 source,
@@ -4218,6 +4392,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         subject: SubjectId,
     ) -> Result<(), FatalError> {
         if state.values.contains_key(&subject) {
+            return Ok(());
+        }
+        if let Some((source, position)) = state.rests.remove(&subject) {
+            let whole = self.make_cursor_whole(ctx, source, position);
+            state.values.insert(subject, NativeBoundValue::Runtime(whole));
             return Ok(());
         }
         let Some(subject_data) = plan.graph.subjects.get(subject.0 as usize) else {
@@ -4523,6 +4702,57 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         Ok(var)
     }
 
+    /// The two lanes a value travels in when its layout is a cursor: a cursor
+    /// passed on as is, or a whole binary, which is a cursor at position zero.
+    fn cursor_lanes(&mut self, ctx: &mut NativeFnCtx, value: &NativeBoundValue) -> Result<(Var, Var), FatalError> {
+        match value {
+            NativeBoundValue::Transport { shape, lanes }
+                if matches!(self.world.shape(*shape), ShapeDescr::Cursor { .. }) =>
+            {
+                match lanes.as_slice() {
+                    [source, position] => Ok((*source, *position)),
+                    _ => Err(FatalError),
+                }
+            }
+            NativeBoundValue::Runtime(source) => {
+                let int = self.world.types_mut().int();
+                let (position, _) = ctx.emit_let(Prim::Const(Const::Int(0)));
+                ctx.value_types.insert(position, int);
+                Ok((*source, position))
+            }
+            NativeBoundValue::Absent | NativeBoundValue::Transport { .. } => Err(FatalError),
+        }
+    }
+
+    /// The binary a cursor stands for: the source when the position is zero,
+    /// otherwise the suffix stub the runtime allocates. A cursor made whole in
+    /// this block is not made again in it.
+    fn make_cursor_whole(&mut self, ctx: &mut NativeFnCtx, source: Var, position: Var) -> Var {
+        if let Some((block, whole)) = ctx.whole_cursors.get(&(source, position))
+            && *block == ctx.current_block
+        {
+            return *whole;
+        }
+        let rest = BitMatchField {
+            ty: BitType::Binary,
+            size: None,
+            endian: crate::ast::Endian::Big,
+            signed: false,
+            unit: None,
+            is_last: true,
+        };
+        let (whole, _) = ctx.emit_let(Prim::BitReadField {
+            source,
+            pos: position,
+            field: rest,
+        });
+        if let Some(ty) = ctx.value_types.get(&source).copied() {
+            ctx.value_types.insert(whole, ty);
+        }
+        ctx.whole_cursors.insert((source, position), (ctx.current_block, whole));
+        whole
+    }
+
     fn materialize_transport_value(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -4548,6 +4778,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     ),
                 )
             }),
+            ShapeDescr::Cursor { .. } => {
+                let [source, position] = lanes else {
+                    return Err(incomplete_native_program(
+                        self.telemetry,
+                        self.root_id,
+                        format!(
+                            "native cursor {shape:?} has {} lanes, not two, in {:?}",
+                            lanes.len(),
+                            ctx.origin
+                        ),
+                    ));
+                };
+                Ok(self.make_cursor_whole(ctx, *source, *position))
+            }
             ShapeDescr::Tuple(fields) => {
                 let mut vars = Vec::with_capacity(fields.len());
                 for field in self.transport_field_views(shape, lanes)? {
@@ -4810,7 +5054,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         Ok(match self.world.shape(field.structural) {
             ShapeDescr::Nothing => NativeBoundValue::Absent,
             ShapeDescr::Lane(_) => NativeBoundValue::Runtime(first_lane()?),
-            ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => NativeBoundValue::Transport {
+            ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) | ShapeDescr::Cursor { .. } => NativeBoundValue::Transport {
                 shape: field.structural,
                 lanes: field_lanes.to_vec(),
             },
@@ -4843,6 +5087,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     .and_then(|value_id| executable.abi.materialized.value_types.get(&value_id).copied())
                     .unwrap_or_else(|| self.world.lane(*lane).ty);
                 lanes.push(self.materialize_native_value(ctx, Some(ty), value)?);
+                Ok(())
+            }
+            ShapeDescr::Cursor { .. } => {
+                let (source, position) = self.cursor_lanes(ctx, value)?;
+                lanes.extend([source, position]);
                 Ok(())
             }
             ShapeDescr::Tuple(fields) => {
@@ -4983,7 +5232,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 self.encode_tuple_fields(ctx, executable, value, shape, arity, lanes)
             }
             ShapeDescr::Callable(_) => self.encode_runtime_value(ctx, executable, value_id, value, shape, lanes),
-            ShapeDescr::Nothing | ShapeDescr::Lane(_) => {
+            ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Cursor { .. } => {
                 self.encode_runtime_value(ctx, executable, value_id, value, shape, lanes)
             }
         }
@@ -5327,6 +5576,11 @@ struct DispatchState {
     forwarded_args: Vec<Var>,
     bindings: DispatchBindings<Var>,
     values: HashMap<SubjectId, NativeBoundValue>,
+    /// The rests a bitstring region has matched and nothing has yet made into a
+    /// binary: the source binary and the position each starts at. A rest stays
+    /// here until something needs it whole, so a branch that never reads it
+    /// builds nothing, and a match over it starts at its position.
+    rests: HashMap<SubjectId, (Var, Var)>,
     /// The subjects the winning outcome reads, beyond what the decision asks.
     /// A bitstring field outside both is checked for fit and never built.
     outcome_reads: Vec<SubjectId>,
@@ -5339,6 +5593,7 @@ impl DispatchState {
             forwarded_args,
             bindings,
             values: HashMap::default(),
+            rests: HashMap::default(),
             outcome_reads: Vec::new(),
         }
     }
@@ -5376,6 +5631,9 @@ struct NativeFnCtx {
     /// Entries reached as blocks and not yet lowered, with their block and
     /// the parameters the block binds.
     pending_entry_blocks: VecDeque<(ControlEntryId, BlockId, Vec<Var>)>,
+    /// The whole binary a cursor was made into, with the block that made it:
+    /// the same cursor asked again in that block is not made again.
+    whole_cursors: HashMap<(Var, Var), (BlockId, Var)>,
 }
 
 impl NativeFnCtx {
@@ -5406,6 +5664,7 @@ impl NativeFnCtx {
             effects,
             entry_blocks: HashMap::default(),
             pending_entry_blocks: VecDeque::new(),
+            whole_cursors: HashMap::default(),
         }
     }
 
@@ -5500,6 +5759,42 @@ fn executable_input_tys(executable: &BackendExecutable) -> Vec<Ty> {
         .collect()
 }
 
+/// What the program text says of where a bitstring field starts.
+#[derive(Debug, Clone, Copy)]
+enum FieldStart {
+    /// This many bits from the first bit of the binary.
+    Fixed(u64),
+    /// Past the position of a cursor, by this many bits when the text says.
+    PastCursor(Option<u64>),
+    /// Somewhere only the running program knows.
+    Unknown,
+}
+
+impl FieldStart {
+    fn from_first_bit(bits: Option<u64>) -> Self {
+        bits.map_or(Self::Unknown, Self::Fixed)
+    }
+
+    /// The start of the field after one that spans `extent` bits, when the
+    /// text says how many.
+    fn advanced_by(self, extent: Option<u64>) -> Self {
+        match (self, extent) {
+            (Self::Fixed(at), Some(extent)) => Self::Fixed(at + extent),
+            (Self::PastCursor(Some(offset)), Some(extent)) => Self::PastCursor(Some(offset + extent)),
+            (Self::PastCursor(_), _) => Self::PastCursor(None),
+            (Self::Fixed(_) | Self::Unknown, _) => Self::Unknown,
+        }
+    }
+}
+
+fn value_layout_is_cursor(world: &World, executable: &BackendExecutable, value: ValueId) -> bool {
+    executable
+        .abi
+        .value_layouts
+        .get(&value)
+        .is_some_and(|layout| matches!(world.shape(layout.structural), ShapeDescr::Cursor { .. }))
+}
+
 fn value_shape(executable: &BackendExecutable, value: ValueId) -> ShapeId {
     executable
         .abi
@@ -5512,7 +5807,7 @@ fn value_shape(executable: &BackendExecutable, value: ValueId) -> ShapeId {
 fn callable_id_for_shape(world: &World, shape: ShapeId) -> Result<CallableId, FatalError> {
     match world.shape(shape) {
         ShapeDescr::Callable(callable) => Ok(*callable),
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Tuple(_) => Err(FatalError),
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Tuple(_) | ShapeDescr::Cursor { .. } => Err(FatalError),
     }
 }
 
@@ -5851,9 +6146,10 @@ fn mark_ignored_lanes_for_demand(
                     }
                     Ok(())
                 }
-                ShapeDemand::Whole => skip_runtime_lanes(world, vars, shape, lane_index),
+                ShapeDemand::Whole | ShapeDemand::Matched => skip_runtime_lanes(world, vars, shape, lane_index),
             }
         }
+        ShapeDescr::Cursor { .. } => skip_runtime_lanes(world, vars, shape, lane_index),
         ShapeDescr::Callable(_callable) => {
             let capture_lanes = world.shape_width(shape);
             if demand.is_ignore() {

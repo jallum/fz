@@ -1,6 +1,8 @@
 use super::*;
 use crate::any_value::ValueKind;
-use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
+use crate::heap::SchemaRegistry;
+use crate::procbin::{SharedBinHandle, alloc_procbin};
+use crate::process::Process;
 use std::cell::RefCell;
 use std::env::{current_exe, var};
 use std::process::{Command, exit};
@@ -15,7 +17,8 @@ fn fresh_registry() -> Rc<RefCell<SchemaRegistry>> {
 /// byte at `bytes_len` reads as 0 via the c_string helper.
 #[test]
 fn ptr_and_cstring_on_inline_bitstring() {
-    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut process = Process::new(fresh_registry());
+    let h = &mut process.heap;
     let payload = b"/tmp/fz-fixture";
     let p = h
         .alloc_bitstring(payload, (payload.len() as u64) * 8)
@@ -30,7 +33,7 @@ fn ptr_and_cstring_on_inline_bitstring() {
         let read = from_raw_parts(bp, payload.len());
         assert_eq!(read, payload);
 
-        let cs = fz_binary_as_cstring(v);
+        let cs = fz_binary_as_cstring(&mut process, v);
         assert!(!cs.is_null());
         assert_eq!(*cs.add(payload.len()), 0, "trailing NUL must be reachable");
     }
@@ -40,7 +43,8 @@ fn ptr_and_cstring_on_inline_bitstring() {
 /// helpers still work and the NUL is reachable.
 #[test]
 fn ptr_and_cstring_on_procbin() {
-    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut process = Process::new(fresh_registry());
+    let h = &mut process.heap;
     // Large enough to cross SHARED_BIN_THRESHOLD_BYTES.
     let payload: Vec<u8> = (0..4096u32).map(|i| (i & 0xff) as u8).collect();
     let p = h
@@ -55,8 +59,47 @@ fn ptr_and_cstring_on_procbin() {
         let read = from_raw_parts(bp, payload.len());
         assert_eq!(read, payload.as_slice());
 
-        let cs = fz_binary_as_cstring(v);
+        let cs = fz_binary_as_cstring(&mut process, v);
         assert_eq!(*cs.add(payload.len()), 0);
+    }
+}
+
+fn view_word(process: &mut Process, bytes: &[u8], offset: u64, len: u64) -> u64 {
+    let handle = SharedBinHandle::from_bytes(bytes, bytes.len() as u64 * 8);
+    let view = alloc_procbin(&mut process.heap, handle, offset, len * 8);
+    AnyValueRef::from_heap_object(ValueKind::PROCBIN, view.as_raw())
+        .expect("procbin ref")
+        .raw_word()
+}
+
+/// A view that ends where its buffer ends has the buffer's NUL right after
+/// it, so C gets the very bytes the view names and nothing is copied.
+#[test]
+fn cstring_of_a_tail_view_points_into_the_shared_buffer() {
+    let mut process = Process::new(fresh_registry());
+    let bytes: Vec<u8> = (1..=200u8).collect();
+    let v = view_word(&mut process, &bytes, 150, 50);
+    let before = process.heap.alloc_stats_snapshot().procbin.allocs;
+    unsafe {
+        let cs = fz_binary_as_cstring(&mut process, v);
+        assert_eq!(cs, fz_binary_as_ptr(v), "a tail needs no copy");
+        assert_eq!(from_raw_parts(cs, 51), &[&bytes[150..], &[0u8][..]].concat()[..]);
+    }
+    assert_eq!(process.heap.alloc_stats_snapshot().procbin.allocs, before);
+}
+
+/// A view that ends before its buffer does has the next byte of the parent
+/// after it, not a NUL, so the c_string is a NUL-terminated copy of exactly
+/// the view's bytes.
+#[test]
+fn cstring_of_a_middle_view_is_a_nul_terminated_copy_of_the_slice() {
+    let mut process = Process::new(fresh_registry());
+    let bytes: Vec<u8> = (1..=200u8).collect();
+    let v = view_word(&mut process, &bytes, 50, 100);
+    unsafe {
+        let cs = fz_binary_as_cstring(&mut process, v);
+        assert_ne!(cs, fz_binary_as_ptr(v), "a middle view has no NUL after it");
+        assert_eq!(from_raw_parts(cs, 101), &[&bytes[50..150], &[0u8][..]].concat()[..]);
     }
 }
 

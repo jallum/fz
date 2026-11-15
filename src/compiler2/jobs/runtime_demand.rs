@@ -25,6 +25,7 @@ use super::super::world::World;
 use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::dispatch_matrix::{ProjectionKind, SubjectId, SubjectSource};
+use crate::fz_ir::ExternTy;
 use crate::telemetry::Telemetry;
 use fz_engine::FactUse;
 use fz_engine::FatalError;
@@ -1222,7 +1223,7 @@ fn derive_executable_runtime_demand(
                 signature
                     .params
                     .get(index)
-                    .map(|_| RuntimeDemand::whole())
+                    .map(|wire| extern_param_demand(*wire))
                     .unwrap_or_else(|| facts.boundary_demand(*ty))
             })
             .collect();
@@ -1312,6 +1313,15 @@ fn derive_executable_runtime_demand(
         demand: out,
         call_return_demands,
         callable_flows,
+    }
+}
+
+/// What an extern asks of an argument: a `binary_cursor` is read from a position, so a
+/// cursor will do, and every other wire type takes the value whole.
+fn extern_param_demand(wire: ExternTy) -> RuntimeDemand {
+    match wire {
+        ExternTy::BinaryCursor => RuntimeDemand::matched(),
+        _ => RuntimeDemand::whole(),
     }
 }
 
@@ -2177,7 +2187,7 @@ pub(super) fn propagate_steps_reverse(
                 let value_live = !take_live_demand(live, *value).is_ignore();
                 let next_live = next.is_some_and(|next| !take_live_demand(live, next).is_ignore());
                 if value_live {
-                    note_live_demand(facts, out, live, *source, RuntimeDemand::whole());
+                    note_live_demand(facts, out, live, *source, RuntimeDemand::matched());
                 }
                 if value_live || next_live {
                     note_live_demand(facts, out, live, *pos, RuntimeDemand::whole());
@@ -2251,7 +2261,8 @@ fn handed_to_arm_demand(
 
 /// What reading `subject` with `demand` asks of the input it is carved out
 /// of. A tuple field is read as the fields up to it, as a `TupleField` step
-/// reads it; every other projection reads its source whole.
+/// reads it, a bitstring field is read as a match reads it, and every other
+/// projection reads its source whole.
 fn input_demand_through_subject(
     plan: &PatternDispatchPlan<Ty>,
     mut subject: SubjectId,
@@ -2268,6 +2279,7 @@ fn input_demand_through_subject(
                             fields[index as usize] = demand;
                             RuntimeDemand::tuple_fields(fields)
                         }
+                        ProjectionKind::BitstringField(_) => RuntimeDemand::matched(),
                         _ => RuntimeDemand::whole(),
                     };
                 }
@@ -2321,7 +2333,7 @@ fn note_clause_matcher_demands(
                 note_live_demand(facts, out, live, *source, demand);
             }
             LoweredStep::BitstringRead { source, pos, spec, .. } => {
-                let demand = boundary_value_demand(facts, *source, RuntimeDemand::whole());
+                let demand = boundary_value_demand(facts, *source, RuntimeDemand::matched());
                 note_live_demand(facts, out, live, *source, demand);
                 note_live_demand(facts, out, live, *pos, RuntimeDemand::whole());
                 if let Some(size) = spec
@@ -2407,7 +2419,7 @@ fn closure_capture_boundary_demand(
     demand: &RuntimeDemand,
     closure: &CallableDemand,
 ) -> RuntimeDemand {
-    if demand.shape == ShapeDemand::Whole
+    if demand.shape.reads_the_value()
         && !demand.is_callable()
         && value_is_callable(facts, capture)
         && let Some(direct) = direct_only_capture_callable_demand(facts, capture, closure)
@@ -2665,14 +2677,14 @@ fn local_target_input_demands<'a>(
             vec![RuntimeDemand::ignore(); target.surface_inputs.len()].into()
         }
         super::super::semantic::SelectedCallee::Function(_) => {
-            if let Some(extern_params) = target.extern_params {
+            if let Some(extern_params) = &target.extern_params {
                 return target
                     .surface_inputs
                     .iter()
                     .enumerate()
                     .map(|(index, ty)| {
-                        if index < extern_params {
-                            RuntimeDemand::whole()
+                        if let Some(wire) = extern_params.get(index) {
+                            extern_param_demand(*wire)
                         } else {
                             facts.boundary_demand(*ty)
                         }
@@ -2722,7 +2734,7 @@ fn value_is_callable(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> bool {
 /// through unchanged. There is no re-grounding from the value's type: the
 /// callable axis is never erased by a shape join, so nothing needs recovering.
 fn boundary_demand_escapes(facts: &RuntimeDemandFacts<'_>, value: ValueId, demand: &RuntimeDemand) -> bool {
-    demand.shape == ShapeDemand::Whole && !demand.is_callable() && value_is_callable(facts, value)
+    demand.shape.reads_the_value() && !demand.is_callable() && value_is_callable(facts, value)
 }
 
 fn boundary_value_demand(facts: &RuntimeDemandFacts<'_>, value: ValueId, mut demand: RuntimeDemand) -> RuntimeDemand {

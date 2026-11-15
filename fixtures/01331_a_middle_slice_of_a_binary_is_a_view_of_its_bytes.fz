@@ -1,0 +1,40 @@
+#---
+# purpose: a byte-aligned field taken from anywhere in a large binary is a view of its bytes, so slicing and JSON-decoding copy no shared bytes, and a view handed to C as a c_string still ends at its own last byte
+#---
+extern "C" defp libc::strlen(c_string) :: integer
+
+defmodule Slice do
+  def middle(<<_ :: binary-size(250), run :: binary-size(500), _ :: binary>>), do: run
+  def tail(<<_ :: binary-size(900), rest :: binary>>), do: rest
+
+  def decode(doc) do
+    {:ok, value} = JSON.decode(doc)
+    value
+  end
+
+  # The off-heap bytes a function copied while it ran.
+  def shared_bytes_copied(f) do
+    before = Process.heap_alloc_stats()
+    result = f.()
+    after_ = Process.heap_alloc_stats()
+    {result, after_[:shared_bin_bytes] - before[:shared_bin_bytes]}
+  end
+end
+
+def main() do
+  source = String.duplicate("abcdefghij", 100)
+
+  {middle, copied} = Slice.shared_bytes_copied(fn -> Slice.middle(source) end)
+  IO.inspect({byte_size(middle), middle == String.duplicate("abcdefghij", 50), copied})
+
+  {tail, copied} = Slice.shared_bytes_copied(fn -> Slice.tail(source) end)
+  IO.inspect({byte_size(tail), tail == String.duplicate("abcdefghij", 10), copied})
+
+  document = "\"" <> String.duplicate("a", 1000) <> "\""
+  {decoded, copied} = Slice.shared_bytes_copied(fn -> Slice.decode(document) end)
+  IO.inspect({byte_size(decoded), decoded == String.duplicate("a", 1000), copied})
+
+  # A C string stops at the NUL after its last byte. A middle view has the
+  # parent's next byte there, so C must be handed a terminated copy.
+  IO.inspect({libc::strlen(middle), libc::strlen(tail)})
+end

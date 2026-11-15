@@ -1,0 +1,53 @@
+{:ok, "世界"}
+{:ok, "ab世cd"}
+{:ok, "é"}
+{:ok, "aé"}
+{:ok, "éa"}
+{:ok, "😀😀😀"}
+{:ok, "a€b😀c世d"}
+{:ok, "é\n世"}
+{:ok, "\n世\n"}
+{:ok, "世A世"}
+{:ok, "世\"世\\世"}
+{:ok, "\t世é\t"}
+{:ok, "世界"}
+{:ok, "éx"}
+{:ok, <<0, 127, 194, 128, 223, 191, 224, 160, 128, 239, 191, 191>>}
+{:ok, "😀"}
+{:ok, "a😀b世"}
+{:ok, "𐀀􏿿"}
+{:ok, "世世世😀é"}
+{:error, {:unexpected_end, 8}}
+{:error, {:unexpected_sequence, 1, "\\ude00"}}
+{:error, {:unexpected_sequence, 5, "\\ude00"}}
+{:error, {:unexpected_end, 12}}
+{:error, {:unexpected_sequence, 1, "\\ud83d\\u0041"}}
+{:error, {:unexpected_sequence, 1, "\\ud83d\\ud83d"}}
+{:error, {:unexpected_end, 1}}
+{:error, {:unexpected_end, 4}}
+{:error, {:unexpected_end, 6}}
+{:error, {:unexpected_end, 4}}
+{:error, {:invalid_byte, 3, 34}}
+{:error, {:unexpected_end, 3}}
+{:error, {:unexpected_end, 2}}
+{:error, {:invalid_byte, 2, 160}}
+{:error, {:invalid_byte, 1, 192}}
+{:error, {:invalid_byte, 1, 128}}
+{:error, {:invalid_byte, 2, 144}}
+{:error, {:invalid_byte, 4, 255}}
+{:error, {:unexpected_end, 9}}
+{:error, {:invalid_byte, 4, 34}}
+{:error, {:invalid_byte, 7, 65}}
+{:error, {:invalid_byte, 14, 255}}
+{:ok, %{"aé" => ["😀", "😀"], "世" => "é"}}
+{63, true}
+{64, true}
+{65, true}
+{63, true}
+{66, true}
+{999, true}
+{80, true}
+{84, true}
+{88, true}
+{1332, true}
+{200, true}

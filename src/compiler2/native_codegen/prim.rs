@@ -35,7 +35,7 @@ use fz_runtime::ir_runtime::{
 };
 use fz_runtime::ir_runtime::{fz_box_opaque_for_any, fz_unbox_opaque};
 use fz_runtime::procbin::{
-    PROCBIN_BYTE_OFFSET_OFFSET, PROCBIN_SHARED_OFFSET, SHARED_BIN_BIT_LEN_OFFSET, SHARED_BIN_BYTES_PTR_OFFSET,
+    PROCBIN_BIT_LEN_OFFSET, PROCBIN_BYTE_OFFSET_OFFSET, PROCBIN_SHARED_OFFSET, SHARED_BIN_BYTES_PTR_OFFSET,
 };
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
@@ -428,7 +428,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             //     `fz_alloc_bitstring_const(ptr, byte_len, bit_len)` —
             //     runtime allocates an inline strict bitstring.
             //   * Above threshold: emit a bytes-payload symbol and a
-            //     40-byte static SharedBin symbol in `.data` (refcount=1
+            //     48-byte static SharedBin symbol in `.data` (refcount=1
             //     anchor, relocs for bytes_ptr + noop destructor) and
             //     call `fz_alloc_procbin_from_static(static_ptr)`.
             let above_threshold = bytes.len() > SHARED_BIN_THRESHOLD_BYTES;
@@ -767,8 +767,8 @@ fn load_word<M: cranelift_module::Module>(
         .load(types::I64, MemFlags::trusted(), address, offset as i32)
 }
 
-/// The bit length of a binary, read from its header or from its ProcBin's
-/// `SharedBin` less the bytes its view skips; `NOT_A_BINARY` for any other value.
+/// The bit length of a binary, read from its header or from its ProcBin's own
+/// length; `NOT_A_BINARY` for any other value.
 fn emit_binary_bit_len<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     source_ref: ir::Value,
@@ -781,13 +781,7 @@ fn emit_binary_bit_len<M: cranelift_module::Module>(
             let header = load_word(body, addr, 0);
             body.b.ins().ushr_imm(header, BITSTRING_BIT_LEN_SHIFT as i64)
         },
-        |body, addr| {
-            let shared = load_word(body, addr, PROCBIN_SHARED_OFFSET);
-            let total_bits = load_word(body, shared, SHARED_BIN_BIT_LEN_OFFSET);
-            let skipped = load_word(body, addr, PROCBIN_BYTE_OFFSET_OFFSET);
-            let skipped_bits = body.b.ins().ishl_imm(skipped, 3);
-            body.b.ins().isub(total_bits, skipped_bits)
-        },
+        |body, addr| load_word(body, addr, PROCBIN_BIT_LEN_OFFSET),
     )
 }
 
@@ -874,6 +868,11 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
             let base = body.as_raw_i64(var_env, base.0);
             LowerOut::RawI64(emit_big_endian_load(body, base, *byte_offset, *bytes))
         }
+        Prim::BitReadByteIntAt { base, pos, bytes } => {
+            let base = body.as_raw_i64(var_env, base.0);
+            let pos = body.as_raw_i64(var_env, pos.0);
+            LowerOut::RawI64(emit_int_read_at_bit(body, base, pos, *bytes))
+        }
         Prim::BitFieldFits { pos, bit_len, field } => {
             let pos = body.as_raw_i64(var_env, pos.0);
             let bit_len = body.as_raw_i64(var_env, bit_len.0);
@@ -911,6 +910,14 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
             };
             LowerOut::RawI64(body.b.ins().iadd(pos, total))
         }
+        Prim::BitPositionAdd(a, b) => {
+            let (a, b) = (body.as_raw_i64(var_env, a.0), body.as_raw_i64(var_env, b.0));
+            LowerOut::RawI64(body.b.ins().iadd(a, b))
+        }
+        Prim::BitPositionSub(a, b) => {
+            let (a, b) = (body.as_raw_i64(var_env, a.0), body.as_raw_i64(var_env, b.0));
+            LowerOut::RawI64(body.b.ins().isub(a, b))
+        }
         Prim::BitFieldEnd { source, pos, field } => {
             let source_ref = body.tagged_var(var_env, source.0);
             let pos = body.as_raw_i64(var_env, pos.0);
@@ -942,6 +949,47 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
         }
         _ => unreachable!("lower_bit_match_prim: not a bit match prim"),
     })
+}
+
+/// A whole-byte integer field at a runtime bit position, loaded from the
+/// binary's bytes at `base`. On a byte boundary the field is the `bytes` bytes
+/// there; off it, the field sits inside the `bytes + 1` bytes that cover it,
+/// shifted down past the bits before it. The field is known to fit, so both
+/// loads stay inside the binary.
+fn emit_int_read_at_bit<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    base: ir::Value,
+    pos: ir::Value,
+    bytes: u8,
+) -> ir::Value {
+    let byte_pos = body.b.ins().ushr_imm(pos, 3);
+    let address = body.b.ins().iadd(base, byte_pos);
+    let bit_in_byte = body.b.ins().band_imm(pos, 7);
+    let on_boundary = body.b.ins().icmp_imm(IntCC::Equal, bit_in_byte, 0);
+    let aligned_b = body.b.create_block();
+    let straddling_b = body.b.create_block();
+    let join_b = body.b.create_block();
+    body.b.append_block_param(join_b, types::I64);
+    body.b.ins().brif(on_boundary, aligned_b, &[], straddling_b, &[]);
+
+    body.b.switch_to_block(aligned_b);
+    body.b.seal_block(aligned_b);
+    let aligned = emit_big_endian_load(body, address, 0, bytes);
+    body.b.ins().jump(join_b, &[BlockArg::Value(aligned)]);
+
+    body.b.switch_to_block(straddling_b);
+    body.b.seal_block(straddling_b);
+    let covering = emit_big_endian_load(body, address, 0, bytes + 1);
+    let eight = body.b.ins().iconst(types::I64, 8);
+    let drop_bits = body.b.ins().isub(eight, bit_in_byte);
+    let shifted = body.b.ins().ushr(covering, drop_bits);
+    let mask = (1_u64 << (u32::from(bytes) * 8)) - 1;
+    let straddling = body.b.ins().band_imm(shifted, mask as i64);
+    body.b.ins().jump(join_b, &[BlockArg::Value(straddling)]);
+
+    body.b.switch_to_block(join_b);
+    body.b.seal_block(join_b);
+    body.b.block_params(join_b)[0]
 }
 
 /// `fz_abi` selects what a declared parameter type MEANS.
@@ -982,14 +1030,15 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
         ExternTy::Binary | ExternTy::CString if fz_abi => body.tagged_var(var_env, var.0),
         ExternTy::CString => {
             let bits = body.tagged_var(var_env, var.0);
-            runtime_call1!(body, fz_binary_as_cstring, [bits])
+            let process = body.process_arg();
+            runtime_call1!(body, fz_binary_as_cstring, [process, bits])
         }
         ExternTy::Binary => {
             let bits = body.tagged_var(var_env, var.0);
             runtime_call1!(body, fz_binary_as_ptr, [bits])
         }
         ExternTy::Any => body.tagged_var(var_env, var.0),
-        ExternTy::Unit | ExternTy::Never => {
+        ExternTy::Unit | ExternTy::Never | ExternTy::BinaryCursor => {
             return Err(CodegenError::new(format!(
                 "{:?} is not a valid extern argument marshal class",
                 ty
@@ -1089,6 +1138,7 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => Ok(LowerOut::ValueRef(raw)),
         ExternTy::F64 => unreachable!("a float-returning variadic extern is refused above"),
         ExternTy::Unit | ExternTy::Never => unreachable!("a lane-less return produced no result"),
+        ExternTy::BinaryCursor => unreachable!("`binary_cursor` stands only as a parameter"),
     }
 }
 
@@ -1341,8 +1391,11 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::BitstringBase(..)
         | Prim::IsNotBinary(..)
         | Prim::BitReadByteInt { .. }
+        | Prim::BitReadByteIntAt { .. }
         | Prim::BitFieldFits { .. }
         | Prim::BitFieldNext { .. }
+        | Prim::BitPositionAdd(..)
+        | Prim::BitPositionSub(..)
         | Prim::BitFieldEnd { .. }
         | Prim::BitReadField { .. } => lower_bit_match_prim(body, var_env, prim, dest_var),
         Prim::MakeFnRef(_, fn_id) => lower_make_fn_ref(body, env, *fn_id),
@@ -2189,6 +2242,7 @@ fn lower_extern_generic<M: cranelift_module::Module>(
             // it. A wildcard here would silently do it again to the next
             // variant added; `returns_value` already excluded these two.
             ExternTy::Unit | ExternTy::Never => unreachable!("a non-returning extern took the returns_value path"),
+            ExternTy::BinaryCursor => unreachable!("`binary_cursor` stands only as a parameter"),
         });
     }
     if body.cache.used_vars.contains(&dest_var.0) {

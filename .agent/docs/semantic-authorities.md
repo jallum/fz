@@ -331,9 +331,14 @@ language order.
 **Inline or shared storage** — owner `Heap::alloc_bitstring`, which returns the
 VALUE rather than a pointer the caller re-classifies (fz-5xp.45). Two other
 readings of the threshold remain and are different questions:
-`alloc_bitstring_suffix` asks whether a VIEW is worth a stub, and native codegen
+`alloc_bitstring_slice` asks whether a VIEW is worth a stub, and native codegen
 asks what to EMIT for a constant bitstring, which it must answer at compile time
 with no heap to ask.
+
+**Appending to a binary** — owner `Heap::alloc_concatenation`: a `<>` whose left
+side ends where its buffer's written bytes end writes into the buffer's spare
+room, and only the owning process may (`shared_bin_freeze` closes the buffer
+before any cross-process copy).
 
 **Where a symbol lives** — owner `fz_extern_symbol_addr`
 (`runtime/src/symbol_lookup.rs`), for fz's own exports and foreign ones
@@ -365,21 +370,25 @@ step with the runtime.
 **UTF-8 validity and prefix errors** — owner `utf8_prefix`
 (`runtime/src/ir_runtime.rs`). It recognizes one codepoint as either a valid
 width or the first byte offset at which that prefix becomes impossible. The
-whole-binary `fz_bitstring_valid_utf8` folds that decision over the input;
-`fz_bitstring_utf8_prefix` exposes one decision to `Utf8.next/1`, which returns
-a branded codepoint or the original suffix beginning at the offending byte.
+whole-binary `fz_bitstring_valid_utf8` folds that decision over the input.
 A `<<c :: utf8, rest :: binary>>` match segment reaches the same decision
 through `bs_field_end` (the segment's end, or a miss) and `utf8_scalar_at`
-(the scalar it binds) on every path. Parsers consume that suffix to recover a source offset. They do not carry a
-second UTF-8 table or validate a whole document before its syntax is parsed.
+(the scalar it binds) on every path, and is how fz code decodes UTF-8: the
+`JSON` decoder and encoder walk a string with it and never build a codepoint
+they do not need. `fz_bitstring_utf8_prefix` exposes one decision to
+`Utf8.next/1`, which returns a branded codepoint or the original suffix
+beginning at the offending byte. Code calls `Utf8.next/1` only where a
+`utf8` match has already failed and it needs to know where: `JSON` asks it on
+its failure path to report the offending byte, or the end of input when a
+sequence is cut short. Parsers consume that suffix to recover a source
+offset. They do not carry a second UTF-8 table or validate a whole document
+before its syntax is parsed.
 
 **UTF-8 scalar encoding** — owner `encode_utf8` (`runtime/src/bitstr.rs`),
-reached by an fz `<<codepoint :: utf8>>` segment. `Utf8.from_codepoint/1` is
-the checked public constructor: it excludes negatives, the UTF-16 surrogate
-hole, and values above U+10FFFF before invoking that segment, then brands the
-result. A format parser such as `JSON` owns its format-specific scalar syntax
-(including joining a UTF-16 surrogate pair) and hands the resulting integer to
-this constructor; it does not carry another UTF-8 encoder.
+reached by an fz `<<codepoint :: utf8>>` segment. A format parser such as
+`JSON` owns its format-specific scalar syntax (including joining a UTF-16
+surrogate pair, and rejecting a lone surrogate) and appends
+`<<codepoint :: utf8>>` to its output; it does not carry another UTF-8 encoder.
 
 **Text** — `String` (`lib/string.fz`) is plain fz over
 binaries, and declares three primitives of its own: `to_atom/1`, which reaches

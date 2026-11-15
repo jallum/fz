@@ -229,7 +229,18 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
     spend
 }
 
-const DERIVATIONS: u64 = 18_324;
+// 18_324 -> 18_405 derivations, and 227 more reads: a binary that one user holds whole and
+// another matches is asked for twice, whole and then matched, so the functions between them
+// derive their demand once more: `JSON.decode/1` and its helpers, `String.take_bytes/2`,
+// `String.graphemes/1`, `Kernel.inspect/1`.
+// 18_405 -> 18_410 derivations, and more reads: `JSON.encode/1` writes into one
+// accumulator, and its pass is the helpers `encode_into`, `key_into`, `string_into`, `walk`,
+// `walk_scalar` and `append_run` in place of `encode_binary!` and `encode_key!`, so the
+// distiller derives demand for more functions.
+// 18_410 -> 18_335 derivations, and fewer reads: a `JSON` string decodes in one pass with
+// the `utf8` segment, so `Utf8.next`'s result handling, `Utf8.from_codepoint` and the
+// decoder's second pass are no longer compiled for decoding.
+const DERIVATIONS: u64 = 18_335;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -237,7 +248,10 @@ const DERIVATIONS: u64 = 18_324;
 // the definition that replaces it, so `KeyError` and
 // `Protocol.UndefinedError`, which override `message/1`, file one derivation
 // for it, not two.
-const READS_HANDED: u64 = 111_880;
+// 111_880 -> 112_107: the 227 reads of the demand derived once more.
+// 112_107 -> 112_127: the reads of the encoder's helpers.
+// 112_127 -> 111_800: the reads the one-pass decoder no longer derives.
+const READS_HANDED: u64 = 111_800;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
@@ -278,7 +292,11 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // (49_041, 50_908, 66) -> (49_044, 50_911, 66): code after a map update's key check
         // reads the update's own value rather than the check's result, so that value is
         // carried through the check and its transport is asked for once more per carry.
-        (49_044, 50_911, 66),
+        // (49_044, 50_911, 66) -> (48_664, 50_522, 66): a `JSON` string is one pass that matches
+        // a multi-byte character with the `utf8` segment and appends `<<codepoint :: utf8>>`
+        // for a `\u` escape, so the distiller no longer compiles `Utf8.next`'s result handling
+        // or `Utf8.from_codepoint` for decoding.
+        (48_664, 50_522, 66),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

@@ -163,6 +163,13 @@ pub enum ShapeDescr {
     Lane(LaneId),
     Tuple(Box<[TransportLayout]>),
     Callable(CallableId),
+    /// A binary that is only taken apart: the binary it is read from and the
+    /// bit position its remaining bytes start at. The first lane is a binary
+    /// the collector traces; the second is a raw count it never reads.
+    Cursor {
+        source: LaneId,
+        position: LaneId,
+    },
 }
 
 impl ShapeDescr {
@@ -512,7 +519,7 @@ impl TransportInterners {
             ShapeDescr::Tuple(fields) => fields
                 .iter()
                 .any(|field| self.shape_contains_callable(field.structural)),
-            ShapeDescr::Nothing | ShapeDescr::Lane(_) => false,
+            ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Cursor { .. } => false,
         }
     }
 
@@ -520,6 +527,7 @@ impl TransportInterners {
         match self.shape(shape) {
             ShapeDescr::Nothing => 0,
             ShapeDescr::Lane(_) => 1,
+            ShapeDescr::Cursor { .. } => 2,
             ShapeDescr::Tuple(fields) => fields.iter().copied().map(|field| self.layout_width(field)).sum(),
             ShapeDescr::Callable(callable) => self
                 .callable(*callable)
@@ -572,6 +580,15 @@ impl TransportInterners {
                 lane: *lane,
                 source: PhysicalLaneSource::Structural,
             }),
+            ShapeDescr::Cursor { source, position } => {
+                for lane in [*source, *position] {
+                    lanes.push(PhysicalLane {
+                        structural: shape,
+                        lane,
+                        source: PhysicalLaneSource::Structural,
+                    });
+                }
+            }
             ShapeDescr::Tuple(fields) => {
                 for field in fields.iter().copied() {
                     self.push_layout_physical_lanes(field, lanes);
@@ -607,7 +624,7 @@ impl TransportInterners {
         match self.shape(shape) {
             ShapeDescr::Tuple(fields) => Some(fields),
             ShapeDescr::Callable(callable) => Some(&self.callable(*callable).capture_layouts),
-            ShapeDescr::Nothing | ShapeDescr::Lane(_) => None,
+            ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Cursor { .. } => None,
         }
     }
 
@@ -634,7 +651,7 @@ impl TransportInterners {
     pub fn tuple_arity(&self, shape: ShapeId) -> Option<usize> {
         match self.shape(shape) {
             ShapeDescr::Tuple(fields) => Some(fields.len()),
-            ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => None,
+            ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) | ShapeDescr::Cursor { .. } => None,
         }
     }
 

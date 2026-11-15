@@ -1,0 +1,55 @@
+"\"\""
+"\"plain ascii ~\""
+true
+"[]"
+"{}"
+"[[],{},\"\"]"
+"\"\\\"quoted\\\"\""
+"\"a\\\"b\""
+"\"ab\\\"\""
+"\"\\\"\""
+"\"\\\\\""
+"\"\\\\\\\\\""
+"\"a\\\\b\\\"c\\\\\""
+"\"\\n\""
+"\"\\ttab\\tmiddle\\t\""
+"\"line\\r\\nbreak\\b\\f\""
+"\"\\u0000\\u0001\\u001FA\\u001F\""
+"\"x\\u001By\""
+"\"é\""
+"\"é\\\"é\""
+"\"\\n世界\""
+"\"世界\\n\""
+"\"a€b\\\\c😀d\\\"\""
+"\"😀😀😀\""
+"\"世世世世世世世世世世世世世世世世世世世世世世世世世世世世世世世世世世世世世世世世\\\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\néééééééééééééééééééééééééééééééééééééééé\""
+"\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\""
+"[1,[2,[3,[4,[]]]],\"s\",null,true,false,1.5]"
+"{\"a\":[{\"b\":[{}]},\"c\\\"d\"],\"e\":{\"f\":{\"g\":\"h\\n\"}}}"
+"[{\"id\":1,\"name\":\"ann \\\"a\\\"\"},{\"id\":2,\"name\":\"bo\\\\b\"}]"
+"{\"list\":[{},[],\"\"],\"text\":\"é\\n\"}"
+"{\"a\":1}"
+"{\"nil\":1}"
+"{\"true\":1}"
+"{\"false\":1}"
+"{\"42\":1}"
+"{\"-45\":1}"
+"{\"2.5\":1}"
+"{\"a\\\"b\":1}"
+"{\"é\\n\":1}"
+"{\"k\":{\"j\":1}}"
+"[\"ok\",\"with space\",null,true,false]"
+{:invalid_byte, 255}
+{:invalid_byte, 255}
+{:invalid_byte, 65}
+{:invalid_byte, 65}
+:unexpected_end
+:unexpected_end
+{:invalid_byte, 160}
+{:invalid_byte, 192}
+{:invalid_byte, 144}
+{:invalid_byte, 128}
+{:invalid_byte, 128}
+:unexpected_end
+:unexpected_end
+:unexpected_end

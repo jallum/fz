@@ -1,0 +1,42 @@
+#---
+# purpose: a binary grown by <> in a loop allocates a few buffers with room to grow instead of one per step, and a binary that was sent to another process is never written into afterwards
+#---
+defmodule Grow do
+  def append(acc, 0), do: acc
+  def append(acc, n), do: append(acc <> "x", n - 1)
+
+  # The off-heap buffers and bytes allocated while growing a binary from "" by `n` bytes.
+  def buffers_allocated(n) do
+    before = Process.heap_alloc_stats()
+    grown = append("", n)
+    after_ = Process.heap_alloc_stats()
+    {byte_size(grown), after_[:shared_bin_allocs] - before[:shared_bin_allocs], after_[:shared_bin_bytes] - before[:shared_bin_bytes]}
+  end
+
+  # The child holds the binary it was sent until told to report it.
+  def child(parent) do
+    receive do
+      held ->
+        receive do
+          :report -> send(parent, {byte_size(held), held == String.duplicate("x", 200)})
+        end
+    end
+  end
+end
+
+def main() do
+  IO.inspect(Grow.buffers_allocated(1000))
+  IO.inspect(Grow.buffers_allocated(2000))
+
+  # Sent and then appended to: the sender's append must not touch the buffer
+  # the child holds.
+  me = self()
+  child = spawn(fn () -> Grow.child(me) end)
+  sent = Grow.append("", 200)
+  send(child, sent)
+  longer = sent <> "Z"
+  send(child, :report)
+  receive do
+    {size, intact} -> IO.inspect({size, intact, byte_size(sent), byte_size(longer)})
+  end
+end
