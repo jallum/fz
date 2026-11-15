@@ -2,8 +2,8 @@
 
 use super::block_pool::{Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pool_alloc, round_up_16};
 use super::gc::{
-    CopiedObject, FromSpace, cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
-    cheney_trace_struct, forward_any_value_ref_root, forward_heap_value,
+    CopiedObject, FromSpace, cheney_trace_binview, cheney_trace_closure, cheney_trace_list, cheney_trace_map,
+    cheney_trace_resource, cheney_trace_struct, forward_any_value_ref_root, forward_heap_value,
 };
 use super::map_view::destination_layout;
 use super::ref_io::{
@@ -24,8 +24,8 @@ use crate::any_value::{
     struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id, struct_size_for_payload,
 };
 use crate::procbin::{
-    DeadResource, ProcBin, SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep, mso_unreached_closures,
-    shared_bin_append,
+    BinView, DeadResource, SharedBinHandle, alloc_buffer_view, alloc_view, mso_drop_all, mso_sweep,
+    mso_unreached_closures, shared_bin_append,
 };
 use crate::process::Node;
 use crate::term::{NumericMode, TermComparator};
@@ -132,6 +132,7 @@ impl Heap {
             mso_head: 0,
             mso_old_head: 0,
             stubs_made: StubCounts::default(),
+            binrefs_made: StubCounts::default(),
             resource_head: 0,
             resource_old_head: 0,
             pending_dtors: VecDeque::new(),
@@ -903,8 +904,8 @@ impl Heap {
     ///
     /// Payloads larger than `SHARED_BIN_THRESHOLD_BYTES` route
     /// through the shared zone: a SharedBin is allocated off-heap and the
-    /// per-process heap gets a tagged ProcBin stub referencing
-    /// it. Render and bit-match dispatch via
+    /// per-process heap gets a BinRef holding it and a tagged
+    /// view of it. Render and bit-match dispatch via
     /// `bitstring_bit_len` / `bitstring_byte_ptr`.
     ///
     /// Returns the VALUE, kind included. The storage choice is
@@ -912,11 +913,11 @@ impl Heap {
     /// could disagree with what was actually allocated.
     pub fn alloc_bitstring_with(&mut self, byte_len: usize, bit_len: u64, fill: impl FnOnce(&mut [u8])) -> AnyValue {
         if byte_len > SHARED_BIN_THRESHOLD_BYTES {
-            let handle = SharedBinHandle::from_filled(byte_len, bit_len, fill);
+            let handle = SharedBinHandle::from_filled(byte_len, fill);
             self.alloc_stats.record_shared_bin(byte_len as u64);
             return AnyValue::heap_ptr(
-                alloc_procbin(self, handle, 0, bit_len, StubSite::FilledBuffer).as_raw(),
-                ValueKind::PROCBIN,
+                alloc_buffer_view(self, handle, bit_len, StubSite::FilledBuffer).as_raw(),
+                ValueKind::BINVIEW,
             );
         }
         self.alloc_inline_bitstring(byte_len, bit_len, fill)
@@ -942,7 +943,7 @@ impl Heap {
     }
 
     /// The binary `left <> right`, where `left` is the whole-byte value
-    /// `left_bytes`, viewed through `left_view` when it is a ProcBin.
+    /// `left_bytes`, viewed through `left_view` when it is a BinView.
     ///
     /// When `left` ends where its buffer's written bytes end and the buffer has
     /// room for `right` (only a buffer a concatenation allocated, and not yet
@@ -955,21 +956,26 @@ impl Heap {
     ///
     /// # Safety
     /// `left_bytes` and `right` must be live byte slices that stay valid for
-    /// the call, and `left_view`, if present, the ProcBin `left_bytes` views.
+    /// the call, and `left_view`, if present, the BinView `left_bytes` views.
     pub unsafe fn alloc_concatenation(
         &mut self,
         left_bytes: &[u8],
-        left_view: Option<ProcBin>,
+        left_view: Option<BinView>,
         right: &[u8],
     ) -> AnyValue {
-        if let Some(view) = left_view.filter(ProcBin::ends_at_buffer_end) {
+        if let Some(view) = left_view.filter(BinView::ends_at_buffer_end) {
             let shared = view.shared_raw();
             if right.len() <= unsafe { &*shared }.spare() {
                 unsafe { shared_bin_append(shared, right) };
-                let handle = unsafe { SharedBinHandle::retain_from_raw(shared) };
                 let bit_len = (left_bytes.len() + right.len()) as u64 * 8;
-                let p = alloc_procbin(self, handle, view.byte_offset(), bit_len, StubSite::AppendedInPlace).as_raw();
-                return AnyValue::heap_ptr(p, ValueKind::PROCBIN);
+                let longer = alloc_view(
+                    self,
+                    view.binref(),
+                    view.bytes_ptr(),
+                    bit_len,
+                    StubSite::AppendedInPlace,
+                );
+                return AnyValue::heap_ptr(longer.as_raw(), ValueKind::BINVIEW);
             }
         }
         let total = left_bytes.len() + right.len();
@@ -987,22 +993,23 @@ impl Heap {
         }
         self.alloc_stats.record_shared_bin((total * 2) as u64);
         AnyValue::heap_ptr(
-            alloc_procbin(self, handle, 0, total as u64 * 8, StubSite::GrownBuffer).as_raw(),
-            ValueKind::PROCBIN,
+            alloc_buffer_view(self, handle, total as u64 * 8, StubSite::GrownBuffer).as_raw(),
+            ValueKind::BINVIEW,
         )
     }
 
     /// Allocate the whole-byte slice `[byte_offset, byte_offset + byte_len)` of
-    /// an existing `SharedBin`, returning it as a value.
+    /// the window `parent` views, returning it as a value. `byte_offset` counts from
+    /// the window's first byte.
     ///
     /// Above `SHARED_BIN_THRESHOLD_BYTES` the slice SHARES the parent's
-    /// bytes: a new stub retains the same SharedBin at its own offset and
-    /// length, and nothing is copied. That is what stops a byte scanner
-    /// being quadratic, and what makes taking a field out of a large binary
-    /// cost a stub rather than the field.
+    /// bytes: a new view names the parent's BinRef at its own first byte and
+    /// length, and nothing is copied or retained. That is what stops a byte
+    /// scanner being quadratic, and what makes taking a field out of a large
+    /// binary cost a view rather than the field.
     ///
     /// At or below the threshold the bytes are copied into an inline
-    /// bitstring. Copying is cheaper than a stub at that size, and it keeps
+    /// bitstring. Copying is cheaper than a view at that size, and it keeps
     /// a small slice from pinning a large buffer alive.
     ///
     /// This is the one place the inline/shared choice is made for a slice,
@@ -1011,25 +1018,18 @@ impl Heap {
     ///
     /// # Safety
     ///
-    /// `shared` must point at a live `SharedBin` the caller holds a
-    /// reference edge to for the duration of the call.
-    pub unsafe fn alloc_bitstring_slice(
-        &mut self,
-        shared: *mut SharedBin,
-        byte_offset: u64,
-        byte_len: u64,
-    ) -> AnyValue {
-        let (buf_ptr, buf_bytes) = unsafe { ((*shared).bytes_ptr, (*shared).bytes_len) };
+    /// `parent` must be a live view on this heap.
+    pub unsafe fn alloc_bitstring_slice(&mut self, parent: BinView, byte_offset: u64, byte_len: u64) -> AnyValue {
         assert!(
-            (byte_offset + byte_len) as usize <= buf_bytes,
-            "bitstring slice [{byte_offset}, +{byte_len}) runs past the shared buffer"
+            (byte_offset + byte_len) as usize <= parent.bytes_len(),
+            "bitstring slice [{byte_offset}, +{byte_len}) runs past the window it slices"
         );
+        let first = unsafe { parent.bytes_ptr().add(byte_offset as usize) };
         if byte_len as usize > SHARED_BIN_THRESHOLD_BYTES {
-            let handle = unsafe { SharedBinHandle::retain_from_raw(shared) };
-            let p = alloc_procbin(self, handle, byte_offset, byte_len * 8, StubSite::WindowOfBuffer).as_raw();
-            return AnyValue::heap_ptr(p, ValueKind::PROCBIN);
+            let window = alloc_view(self, parent.binref(), first, byte_len * 8, StubSite::WindowOfBuffer);
+            return AnyValue::heap_ptr(window.as_raw(), ValueKind::BINVIEW);
         }
-        let slice = unsafe { from_raw_parts(buf_ptr.add(byte_offset as usize), byte_len as usize) };
+        let slice = unsafe { from_raw_parts(first, byte_len as usize) };
         self.alloc_bitstring(slice, byte_len * 8)
     }
 
@@ -1483,6 +1483,7 @@ impl Heap {
             from_space_capacity_bytes: from_blocks.iter().map(|block| block.capacity as u64).sum(),
             blocks_released: from_blocks.len() as u64,
             stubs_made: std::mem::take(&mut self.stubs_made),
+            binrefs_made: std::mem::take(&mut self.binrefs_made),
             ..GcStats::default()
         };
         let schemas_handle = self.schemas.clone();
@@ -1664,7 +1665,8 @@ fn cheney_scan(
             ValueKind::MAP => cheney_trace_map(copied.ptr, from_space, heap, schemas, copied_objects, stats),
             ValueKind::CLOSURE => cheney_trace_closure(copied.ptr, from_space, heap, schemas, copied_objects, stats),
             ValueKind::STRUCT => cheney_trace_struct(copied.ptr, from_space, heap, schemas, copied_objects, stats),
-            ValueKind::BITSTRING | ValueKind::PROCBIN => {}
+            ValueKind::BITSTRING | ValueKind::BINREF => {}
+            ValueKind::BINVIEW => cheney_trace_binview(copied.ptr, from_space, heap, schemas, copied_objects, stats),
             ValueKind::RESOURCE => cheney_trace_resource(copied.ptr, from_space, heap, schemas, copied_objects, stats),
             kind => panic!("Cheney scan: invalid copied object kind {kind:?}"),
         }
@@ -1683,7 +1685,7 @@ impl Drop for Heap {
     fn drop(&mut self) {
         // release every SharedBin held via the intrusive MSO
         // chain. Order matters: must run before pool_free below, since
-        // mso_drop_all walks ProcBin payloads in the heap's blocks.
+        // mso_drop_all walks BinRef payloads in the heap's blocks.
         mso_drop_all(self);
         // Release blocks: pooled capacities go back to the pool (§6.6) so the
         // next spawn pulls from it with no per-spawn malloc; exact blocks go

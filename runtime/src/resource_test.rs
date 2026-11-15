@@ -326,38 +326,36 @@ fn resource_forwarding_marker_through_gc() {
 }
 
 #[test]
-fn procbins_and_resources_keep_separate_chains() {
+fn binrefs_and_resources_keep_separate_chains() {
     use crate::heap::StubSite;
-    use crate::procbin::{SharedBinHandle, alloc_procbin};
+    use crate::procbin::{SharedBinHandle, alloc_buffer_view};
     let (first, first_drops) = observed_resource();
     let (second, second_drops) = observed_resource();
-    let first_bin = SharedBinHandle::from_bytes(&[1, 2, 3], 24);
-    let second_bin = SharedBinHandle::from_bytes(&[4, 5], 16);
+    let first_bin = SharedBinHandle::from_bytes(&[1, 2, 3]);
+    let second_bin = SharedBinHandle::from_bytes(&[4, 5]);
     {
         let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-        let pb1 = alloc_procbin(
+        let pb1 = alloc_buffer_view(
             &mut heap,
             first_bin.clone(),
-            0,
-            first_bin.bit_len(),
+            first_bin.bytes_len() as u64 * 8,
             StubSite::FilledBuffer,
         );
         let rs1 = alloc_resource(&mut heap, first, AnyValue::nil_atom());
-        let pb2 = alloc_procbin(
+        let pb2 = alloc_buffer_view(
             &mut heap,
             second_bin.clone(),
-            0,
-            second_bin.bit_len(),
+            second_bin.bytes_len() as u64 * 8,
             StubSite::FilledBuffer,
         );
         let rs2 = alloc_resource(&mut heap, second, AnyValue::nil_atom());
         let rs2_bits = heap_object_word(rs2.as_raw(), ValueKind::RESOURCE);
-        let pb2_bits = heap_object_word(pb2.as_raw(), ValueKind::PROCBIN);
-        let pb1_bits = heap_object_word(pb1.as_raw(), ValueKind::PROCBIN);
+        let pb2_bits = pb2.binref().word();
+        let pb1_bits = pb1.binref().word();
         let rs1_bits = heap_object_word(rs1.as_raw(), ValueKind::RESOURCE);
         assert_eq!(heap.mso_head, pb2_bits);
-        assert_eq!(pb2.mso_next(), pb1_bits);
-        assert_eq!(pb1.mso_next(), 0);
+        assert_eq!(pb2.binref().mso_next(), pb1_bits);
+        assert_eq!(pb1.binref().mso_next(), 0);
         assert_eq!(heap.resource_head, rs2_bits);
         assert_eq!(rs2.mso_next(), rs1_bits);
         assert_eq!(rs1.mso_next(), 0);

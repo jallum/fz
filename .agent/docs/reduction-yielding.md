@@ -161,7 +161,7 @@ does, once it reaches the baseline. Its list cells are shared from birth
 (`link_list_tail` marks each cell copied inside a window), so no cell of an old
 block is rewritten in place to point at a younger value. A minor collection
 leaves the gift where it is and only a major collection copies the live data
-out of it; the gift's binary prefix splices onto the old binary chain (`mso_old_head`) and
+out of it; the gift's binary prefix splices onto the old BinRef chain (`mso_old_head`) and
 its resource prefix onto the old resource chain (`resource_old_head`).
 
 A collection is minor or major (`Heap::next_generation`). A minor collection's

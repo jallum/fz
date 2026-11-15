@@ -461,7 +461,7 @@ One subtle but important lifetime rule lives here:
   not running an ordinary throwaway runtime task
 - when that borrowed backend entry completes, compiler2 must keep the process
   alive exactly as a quoted-source heap carrier
-- ordinary backend-task exit cleanup such as deferred procbin teardown is
+- ordinary backend-task exit cleanup such as deferred binview teardown is
   therefore wrong on this path, because a returned quoted root may still point
   at long shared-binary payloads nested inside the source graph
 

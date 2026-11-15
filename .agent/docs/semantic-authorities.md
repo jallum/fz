@@ -189,7 +189,7 @@ bounds check is emitted arithmetic (`BitFieldFits`, `BitFieldNext`), and
 `BitReadField` cannot miss: `fz_bs_read_int_ref` returns a raw int and
 `fz_bs_read_binary_ref` a binary view. Native code reads a whole-byte field
 without the runtime. `BitstringBitLen` and `BitstringBase` branch inline on the
-two binary representations (inline bitstring, ProcBin over a `SharedBin`;
+two binary representations (inline bitstring, a view through a `BinRef` over a `SharedBin`;
 layout constants in `runtime/src/procbin.rs` and `any_value.rs`) through
 `emit_by_binary_representation`, which reads the reference's own kind bits. That
 is also the region's "is this a binary" test: `BitstringBitLen` answers
@@ -326,7 +326,7 @@ language order.
 
 **Binary representation** — owner `ValueKind::BINARY_REPRS`
 (`runtime/src/any_value.rs`). Inline `Bitstring` below
-`SHARED_BIN_THRESHOLD_BYTES`, shared-buffer `ProcBin` above it.
+`SHARED_BIN_THRESHOLD_BYTES`, shared-buffer view above it.
 
 **Inline or shared storage** — owner `Heap::alloc_bitstring`, which returns the
 VALUE rather than a pointer the caller re-classifies (fz-5xp.45). Two other

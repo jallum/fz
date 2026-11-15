@@ -63,7 +63,8 @@ inspected through the <code>AnyValueRef</code> API.</p>
 <p><code>AnyValueRef</code> uses the runtime <code>ValueKind</code> tag values:
 <code>0</code> Null, <code>1</code> List, <code>2</code> Map,
 <code>3</code> Struct, <code>4</code> Closure, <code>5</code> Bitstring,
-<code>6</code> ProcBin, <code>7</code> Resource, <code>13</code> Int,
+<code>6</code> BinView (a binary view), <code>7</code> Resource,
+<code>8</code> BinRef, <code>13</code> Int,
 <code>14</code> Float, and <code>15</code> Atom. The empty list is a
 null-address List ref. The tag lives at bit 56 on arm64/TBI and bit 57 on
 x86_64; callers use the API rather than those bit positions directly.</p>
@@ -90,8 +91,9 @@ because the container layout already says where the stamp lives.
     <tr><td class="tag">0x3</td><td>Struct</td><td>heap</td><td>tuple/struct; 8-byte prefix (schema_id in the high 32 bits)</td></tr>
     <tr><td class="tag">0x4</td><td>Closure</td><td>heap</td><td>8-byte prefix (denotation in the high 32 bits; flags and arity above four clear bits in the low 32); captures carry their own kind bytes</td></tr>
     <tr><td class="tag">0x5</td><td>Bitstring</td><td>heap</td><td>small inline; 8-byte prefix (bit_len above four clear bits)</td></tr>
-    <tr><td class="tag">0x6</td><td>ProcBin</td><td>heap</td><td>32 bytes total (shared_ptr + mso_next + byte_offset)</td></tr>
+    <tr><td class="tag">0x6</td><td>BinView</td><td>heap</td><td>binary view: 24 bytes of fields in a 32-byte slot (BinRef + bytes_ptr + bit_len)</td></tr>
     <tr><td class="tag">0x7</td><td>Resource</td><td>heap</td><td>off-heap handles with destructors</td></tr>
+    <tr><td class="tag">0x8</td><td>BinRef</td><td>heap</td><td>16 bytes (shared_ptr + mso_next); the heap's one reference to a SharedBin</td></tr>
     <tr><td class="tag">0xD</td><td>Int</td><td>immediate</td><td>container-local scalar tag; payload is raw <code>i64</code></td></tr>
     <tr><td class="tag">0xE</td><td>Float</td><td>immediate</td><td>container-local scalar tag; payload is raw <code>f64::to_bits()</code></td></tr>
     <tr><td class="tag">0xF</td><td>Atom</td><td>immediate</td><td>container-local scalar tag; payload is raw atom id (32-bit, zero-extended)</td></tr>
@@ -122,7 +124,7 @@ object, it overwrites one marker word of the from-space copy with
 low nibble as "already forwarded". The marker word is word 1 (the link) of a
 list cons and word 0 of every other kind, and each kind lays that word out so a
 live value has a clear low nibble: a struct, closure, bitstring or map header
-keeps four clear bits below its fields, and a ProcBin or Resource keeps a
+keeps four clear bits below its fields, and a binary view, BinRef or Resource keeps a
 16-aligned pointer there. One read decides; no second word is consulted.</p>
 
 <p>Objects the program carries in read-only data (static structs, static
@@ -367,8 +369,12 @@ of that tail. In <code>fixtures/quicksort</code>, the native paths pin
   <li><strong>Bitstring:</strong> offset 0 header <code>bit_len &lt;&lt;
   4</code>; offset 8 the bytes and one trailing zero byte, padded to 16-byte
   alignment.</li>
-  <li><strong>ProcBin:</strong> offset 0 <code>shared_ptr</code>; offset 8
-  <code>mso_next</code>; offset 16 <code>byte_offset</code>; 32 bytes total.</li>
+  <li><strong>BinView (a binary view):</strong> offset 0 tagged pointer to its
+  heap's BinRef (traced by the collector); offset 8 <code>bytes_ptr</code>;
+  offset 16 <code>bit_len</code>; 24 bytes of fields in a 32-byte slot.</li>
+  <li><strong>BinRef:</strong> offset 0 <code>shared_ptr</code>; offset 8
+  <code>mso_next</code> with the creating site in its low nibble; 16 bytes
+  total.</li>
   <li><strong>Resource:</strong> offset 0 <code>resource_ptr</code>; offset 8
   resource discriminator; offset 16 destructor closure payload; offset 24
   destructor closure kind byte plus padding; offset 32 <code>mso_next</code>;
@@ -417,7 +423,8 @@ has its own prefix and size function.</p>
     <tr><td>closure, 0 captures</td><td class="size">16 bytes</td><td>denotation/arity/flags header + fn_ptr</td></tr>
     <tr><td>closure, n captures</td><td class="size">align16(16 + n×8 + align8(n))</td><td>raw captures + one kind byte per capture</td></tr>
     <tr><td>bitstring (small, inline)</td><td class="size">align16(8 + ⌈bits/8⌉ + 1)</td><td>bit_len header + bytes + trailing zero</td></tr>
-    <tr><td>ProcBin (large bin stub)</td><td class="size">32 bytes</td><td>8 shared_ptr + 8 mso_next + 8 byte_offset</td></tr>
+    <tr><td>BinView (binary view)</td><td class="size">32 bytes</td><td>8 BinRef pointer + 8 bytes_ptr + 8 bit_len (+ 8 slot padding)</td></tr>
+    <tr><td>BinRef</td><td class="size">16 bytes</td><td>8 shared_ptr + 8 mso_next</td></tr>
     <tr><td>Resource</td><td class="size">48 bytes</td><td>resource ptr + discriminator + destructor closure + mso_next</td></tr>
   </tbody>
 </table>
@@ -425,8 +432,8 @@ has its own prefix and size function.</p>
 <p>Ordinary large objects — tuples with many fields and maps with many entries
 — live on the process heap and grow into bigger blocks as needed. Bitstrings
 above <code>SHARED_BIN_THRESHOLD_BYTES</code> (64 bytes) <em>don't</em>
-live on the process heap. Instead the heap carries a 32-byte <strong>ProcBin</strong>
-stub that points into the <a href="#shared-zone">shared zone</a>.</p>
+live on the process heap. Instead the heap carries a 32-byte <strong>BinView</strong>
+view that names a 16-byte <strong>BinRef</strong>, which points into the <a href="#shared-zone">shared zone</a>.</p>
 
 <h3>Block pool and block capacities</h3>
 
@@ -479,17 +486,18 @@ and every stub's off-heap reference.</p>
 
 <h3>The MSO chains</h3>
 
-<p>Each heap carries intrusive linked lists of every ProcBin and Resource it
-owns: one list for ProcBins and one for Resources, so a walk over a list meets
+<p>Each heap carries intrusive linked lists of every BinRef and Resource it
+owns: one list for BinRefs and one for Resources, so a walk over a list meets
 one kind of stub. The head pointers live on the heap (<code>mso_head</code> for
-ProcBins, <code>resource_head</code> for Resources); the "next"
-link lives inside each stub: ProcBin uses offset +8, Resource uses offset +32.
+BinRefs, <code>resource_head</code> for Resources); the "next"
+link lives inside each stub: BinRef uses offset +8, Resource uses offset +32.
+A binary view is on no chain: many views of one buffer share the one BinRef.
 "MSO" is the historical BEAM name — "Mixed Set / Off-heap" — for the list of
 objects whose real bytes live elsewhere.</p>
 
 <div class="aside">
 The MSO chains are a "things to clean up later" list. Every time the heap
-makes a ProcBin or Resource, it adds the stub to the chain of its kind. After each GC,
+makes a BinRef or Resource, it adds the stub to the chain of its kind. After each GC,
 we walk the chains to figure out which stubs survived and which need to release
 their off-heap payload. Each kind's chain is split by age: <code>mso_head</code>
 and <code>resource_head</code> hold
@@ -765,15 +773,17 @@ transient roots and writes the forwarded refs back.</p>
 
 <p>After Cheney's BFS scan completes and before from-space is freed, the GC
 walks the MSO chains of the from-space once: a minor walks only the young
-chains, a major walks the old chains too. Each entry is a ProcBin or Resource stub that
+chains, a major walks the old chains too. Each entry is a BinRef or Resource stub that
 <em>was</em> in from-space. The forwarding marker Cheney writes into word 0 of
-every copied stub is the entire liveness signal — no separate
+every copied stub is the entire liveness signal. A live view reaches its BinRef
+through word 0, so a BinRef is copied once however many views name it, and a
+BinRef no live view names is unreached — no separate
 bookkeeping. One function, <code>procbin::mso_sweep</code>, decides every stub,
 after a collection and when a process exits (an exit is not collected; it is
 the same walk with nothing live and no to-space):</p>
 
 <pre>
-  for each kind in (ProcBin, Resource):     <span class="note">// the kind's chain names the kind</span>
+  for each kind in (BinRef, Resource):     <span class="note">// the kind's chain names the kind</span>
     cur = young head of the kind            <span class="note">// a major also walks the old head</span>
     new_head = null
     while cur != null:
@@ -790,7 +800,8 @@ the same walk with nothing live and no to-space):</p>
     old head of the kind = new_head         <span class="note">// survivors are old</span>
 </pre>
 
-<p>A minor sweep is O(young stubs); a major sweep is O(all stubs on this heap),
+<p>A minor sweep is O(young BinRefs and resource stubs), so a young view of an old
+BinRef costs it nothing; a major sweep is O(all stubs on this heap),
 not O(heap size). A gift's MSO prefixes are spliced onto <code>mso_old_head</code> and
 <code>resource_old_head</code> when it is grafted, so a minor never revisits it. A dead old Resource therefore
 queues its destructor at the next major collection, and a young one at the next
@@ -800,7 +811,7 @@ minor.</p>
 Its closure lives in the from-space that is about to be released, so before the
 sweep the collector forwards the closure of every unreached, unclaimed Resource
 stub, along with whatever the closure captures. That search walks only the
-Resource chains, so binary stubs are visited once, by the sweep. The sweep then queues
+Resource chains, so BinRefs are visited once, by the sweep. The sweep then queues
 <code>(closure, payload)</code> on <code>heap.pending_dtors</code> for the
 resource whose last reference it dropped. A stub that a forwarded closure
 captures is reached by that, so it survives until a later collection. A process
@@ -881,26 +892,29 @@ the call on every path. A self-sent list the sender can still reach is
 therefore already published when it enters the mailbox, and a later rewrite of
 one of its cells allocates a fresh cell instead.</p>
 
-<h3>ProcBin — bytes are shared, not copied</h3>
+<h3>BinView — bytes are shared, not copied</h3>
 
-<p>When <code>deep_copy_any_value_ref</code> reaches a ProcBin (a stub pointing into
-the <a href="#shared-zone">shared zone</a>), it does not copy the bytes.
-Instead:</p>
+<p>When <code>deep_copy_any_value_ref</code> reaches a BinView (a view whose
+BinRef points into the <a href="#shared-zone">shared zone</a>), it does not copy
+the bytes. Instead:</p>
 
 <pre>
-  shared_bin_retain(src.shared_ptr)        <span class="note">// atomic ++ on refcount</span>
-  dst_proc_bin = dst_heap.alloc_procbin(src.shared_ptr, src.byte_offset)
-  forwarding[src] = dst_proc_bin
+  shared_bin_retain(src.binref.shared_ptr)  <span class="note">// atomic ++ on refcount</span>
+  dst_binref = alloc_binref(dst_heap, shared_ptr)
+  dst_view = alloc_view(dst_heap, dst_binref, src.bytes_ptr, src.bit_len)
+  forwarding[src] = dst_view
 </pre>
 
-<p>The gift gets a fresh 32-byte ProcBin viewing the same suffix of the same
-SharedBin, and the receiver's heap adopts it with the segment. The SharedBin's refcount is now one higher. The bytes themselves
+<p>The gift gets a fresh 16-byte BinRef and a 32-byte BinView viewing the same
+window of the same SharedBin, and the receiver's heap adopts them with the
+segment. The SharedBin's refcount is now one higher. The bytes themselves
 never move. A 1 MiB binary sent to 100 receivers exists once in memory, with
 101 references to it (sender + 100 receivers).</p>
 
 <div class="aside">
-A ProcBin is a library card. Sending it doesn't photocopy the book — it just
-hands out another card to the same book on the same shelf.
+A BinRef is a library card and a BinView is a bookmark in the book it names.
+Sending one doesn't photocopy the book — it just hands out another card and a
+bookmark for the same book on the same shelf.
 </div>
 
 <!-- ─────────────────────────────── 9. SHARED ZONE ─────────────────────────────── -->
@@ -917,19 +931,19 @@ destructor runs and the memory goes back to the system allocator.</p>
 <pre>
   struct SharedBin {           <span class="note">// 40 bytes of fields, 48 with alignment padding</span>
     refcount:   AtomicUsize,                    <span class="note">// 0..8</span>
-    bit_len:    u64,                            <span class="note">// 8..16  (length in bits)</span>
-    bytes_ptr:  *const u8,                      <span class="note">// 16..24 → separate Box&lt;[u8]&gt;</span>
-    bytes_len:  usize,                          <span class="note">// 24..32</span>
-    destructor: fn(*mut SharedBin),             <span class="note">// 32..40</span>
+    bytes_ptr:  *const u8,                      <span class="note">// 8..16  → separate Box&lt;[u8]&gt;</span>
+    bytes_len:  usize,                          <span class="note">// 16..24</span>
+    destructor: fn(*mut SharedBin),             <span class="note">// 24..32</span>
+    room:       usize,                          <span class="note">// 32..40 capacity and frozen flag</span>
   }
 </pre>
 
 <p>The struct is <strong>16-byte aligned</strong>, the same as everything on
-the process heap, and that is load-bearing rather than cosmetic. A ProcBin keeps
+the process heap, and that is load-bearing rather than cosmetic. A BinRef keeps
 this address in its first word, and the first word is also where the collector
 writes a forwarding marker — a pointer with a set low nibble. At 8-byte
 alignment about half of all SharedBin addresses have a set low nibble, so a
-perfectly live ProcBin would read as <em>already forwarded</em>: the sweep
+perfectly live BinRef would read as <em>already forwarded</em>: the sweep
 would take the SharedBin itself for a relocated stub and write into it.
 Aligning to 16 means no real address can ever be mistaken for a marker.</p>
 
@@ -945,31 +959,42 @@ independently. The destructor field is set at allocation time:</p>
   so it never actually fires.</li>
 </ul>
 
-<h3>How a process points at one — ProcBin</h3>
+<h3>How a process points at one — BinRef and BinView</h3>
 
 <p>A process can't hold a raw <code>*mut SharedBin</code> directly; the GC
-wouldn't know what to do with it. Instead, each reference goes through a
-small heap object:</p>
+wouldn't know what to do with it. Instead, each heap holds one small object per
+buffer and every value names it through a view:</p>
 
 <pre>
-  ProcBin (32 bytes, lives on the process heap):
+  BinRef (16 bytes, one per buffer per heap):
+
+  ┌───────────────────┬───────────────────┐
+  │  shared_ptr (8)   │  mso_next (8)     │
+  │  → SharedBin      │  → next BinRef    │
+  └───────────────────┴───────────────────┘
+
+  BinView (24 bytes of fields in a 32-byte slot, one per value):
 
   ┌───────────────────┬───────────────────┬───────────────────┬─────────┐
-  │  shared_ptr (8)   │  mso_next (8)     │  byte_offset (8)  │ pad (8) │
-  │  → SharedBin      │  → next MSO stub  │  suffix start     │         │
+  │  binref (8)       │  bytes_ptr (8)    │  bit_len (8)      │ pad (8) │
+  │  → this heap's    │  window's first   │  window's length  │         │
+  │    BinRef         │  byte             │  in bits          │         │
   └───────────────────┴───────────────────┴───────────────────┴─────────┘
 </pre>
 
-<p>ProcBin refs use the heap-object <code>TAG_PROCBIN</code> kind. The
-<code>shared_ptr</code> field points outside any heap arena, so the collector
-treats the ProcBin as a raw payload object with no fz value children.</p>
+<p>The BinRef holds the heap's one retain of the SharedBin and is the only
+binary object on the <code>mso_head</code> chains. BinView refs use the
+heap-object <code>TAG_BINVIEW</code> kind and BinRefs <code>TAG_BINREF</code>.
+The <code>binref</code> word is the one pointer in a view the collector follows;
+<code>bytes_ptr</code> points outside any heap arena and is never traced.</p>
 
-<p>The <code>mso_next</code> link at +8 makes ProcBins their own intrusive
-linked list. When a ProcBin survives, Cheney writes only a forwarding marker
-(to-space address with a set low nibble) at +0; +8 is left intact so the MSO
-sweep can continue through the from-space chain. The surviving
-<code>shared_ptr</code> is read from the to-space copy, while a dead ProcBin's
-<code>shared_ptr</code> is still read from +0 in from-space.</p>
+<p>The <code>mso_next</code> link at +8 of a BinRef makes BinRefs their own
+intrusive linked list. When a BinRef survives, Cheney writes only a forwarding
+marker (to-space address with a set low nibble) at +0; +8 is left intact so the
+MSO sweep can continue through the from-space chain. A live view's traced
+<code>binref</code> word is rewritten to the BinRef's to-space copy, which is
+made once however many views name it. A minor collection leaves an old BinRef
+where it is, so a young view of an old BinRef reads the buffer unchanged.</p>
 
 <h3>Allocation policy</h3>
 
@@ -978,8 +1003,8 @@ the storage based on size:</p>
 
 <pre>
   if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {   <span class="note">// = 64</span>
-      shared_ptr = shared_bin_alloc(bytes, bit_len);
-      return self.alloc_procbin(shared_ptr, 0);   <span class="note">// whole binary</span>
+      shared_ptr = shared_bin_alloc(bytes);
+      return self.alloc_buffer_view(shared_ptr, bit_len);   <span class="note">// BinRef + whole-binary view</span>
   }
   // small: inline TAG_BITSTRING object on the process heap
 </pre>
@@ -992,12 +1017,12 @@ looking at — the behaviour is identical.</p>
 
 <h3>Matching a tail copies nothing</h3>
 
-<p>A ProcBin doesn't name "the shared binary" — it names a byte-aligned
-<strong>suffix</strong> of one. Alongside <code>shared_ptr</code> it carries a
-<code>byte_offset</code>, and its length is whatever remains after that offset.
-The whole binary is simply the suffix at offset&nbsp;0.</p>
+<p>A BinView doesn't name "the shared binary" — it names a byte-aligned
+<strong>window</strong> of one: its own <code>bytes_ptr</code> and
+<code>bit_len</code>. The whole binary is simply the window at the buffer's
+start spanning it.</p>
 
-<p>That is what makes a byte scanner cheap. This clause asks for a suffix:</p>
+<p>That is what makes a byte scanner cheap. This clause asks for a tail:</p>
 
 <pre>
   defp walk(&lt;&lt;_c, rest :: binary&gt;&gt;, n), do: walk(rest, n + 1)
@@ -1008,11 +1033,11 @@ measured: it travels as a <strong>cursor</strong>, the source binary plus the
 bit position the rest starts at, and each step moves the position.
 <code>byte_size(rest)</code> is the source's length minus that position. Only a
 use that needs a real binary (storing it, sending it) makes it whole, and then
-<code>rest</code> becomes another stub over the <em>same</em> bytes at
-offset&nbsp;+1, and nothing is copied. Suffixes at or below the 64-byte
-threshold are still copied into an inline bitstring: at that size a copy is
-smaller than a stub, and it keeps a short tail from pinning a long buffer
-alive.</p>
+<code>rest</code> becomes another view over the <em>same</em> bytes one
+byte further on, naming the same BinRef, and nothing is copied. Tails at or
+below the 64-byte threshold are still copied into an inline bitstring: at that
+size a copy is smaller than a view, and it keeps a short tail from pinning a
+long buffer alive.</p>
 
 <p>Without this, each step copied the whole remainder, so scanning
 <em>n</em> bytes copied <em>n</em> + (<em>n</em>−1) + … bytes. Decoding a
@@ -1020,13 +1045,12 @@ alive.</p>
 document once.</p>
 
 <div class="box green">
-<strong>Why a suffix and not any window.</strong><br>
+<strong>The trailing NUL.</strong><br>
 Every shared buffer is allocated with one extra zero byte, so a binary can be
-handed to C as a NUL-terminated string without copying. A suffix ends exactly
-where that NUL is, so it inherits the guarantee; an arbitrary window in the
-middle would not. So a window in the middle cannot be built:
-<code>alloc_procbin</code> takes an offset and <em>derives</em> the length,
-rather than accepting one.
+handed to C as a NUL-terminated string without copying. A window that ends where
+the buffer's written bytes end has that NUL right after it; any other window has
+the parent's next byte there, and handing it to C copies it into a fresh binary
+first (<code>BinView::ends_at_buffer_end</code> tells the two apart).
 </div>
 
 <h3>Lifetime — retain, release, sweep</h3>
@@ -1034,15 +1058,15 @@ rather than accepting one.
 <p>Three operations move the refcount:</p>
 
 <ul>
-  <li><strong>Allocate</strong> a new SharedBin (refcount = 1). The newly
-  allocated ProcBin is the sole reference.</li>
+  <li><strong>Allocate</strong> a new SharedBin (refcount = 1). The BinRef
+  made with it is the sole reference; views of it take none.</li>
   <li><strong>Send</strong> across processes: <code>deep_copy_any_value_ref</code>
-  retains the shared_ptr (refcount ++) and allocates a fresh ProcBin in the
-  sender's gift window; the receiver adopts it when it grafts the segment.
+  retains the shared_ptr (refcount ++) and allocates a fresh BinRef and BinView
+  in the sender's gift window; the receiver adopts it when it grafts the segment.
   Bytes don't move.</li>
-  <li><strong>Die</strong>: either a ProcBin fails to survive a GC (refcount
-  −− in the <a href="#roots">MSO sweep</a>), or the entire heap is dropped
-  (every ProcBin still on <code>mso_head</code> is released by
+  <li><strong>Die</strong>: either a BinRef fails to survive a GC (no live view
+  names it; refcount −− in the <a href="#roots">MSO sweep</a>), or the entire
+  heap is dropped (every BinRef still on <code>mso_head</code> is released by
   <code>Heap::drop</code> before the blocks return to the pool).</li>
 </ul>
 
@@ -1062,8 +1086,8 @@ is no central registry to contend on.
 <h3>Object size on the process heap</h3>
 
 <p>Because binaries above 64 bytes go off-heap, the process heap deals only
-with small inline objects, cons cells, tuples, maps, closures, resources, and
-ProcBin stubs — in practice well under the table's last entry (~7 MiB).
+with small inline objects, cons cells, tuples, maps, closures, resources,
+BinRefs and BinView views — in practice well under the table's last entry (~7 MiB).
 When an allocation no longer fits, the heap installs a tip one table step up;
 an object larger than that step gets a parked block of its own, exact when it
 is larger than the whole table (see <a href="#pressure">§3</a>).</p>
@@ -1136,7 +1160,7 @@ map allocated by an earlier stats call.</p>
 keys use the pattern <code>:K_allocs</code> and <code>:K_bytes</code>, where
 <code>K</code> is one of <code>list_cons</code>, <code>struct</code>,
 <code>closure</code>, <code>continuation</code>, <code>map</code>,
-<code>bitstring</code>, <code>procbin</code>, <code>shared_bin</code>,
+<code>bitstring</code>, <code>binview</code>, <code>binref</code>, <code>shared_bin</code>,
 <code>scalar_box</code>, <code>resource</code>, or <code>other</code>. Heap
 object bytes are 16-byte aligned request sizes. The <code>closure</code> row
 counts closures a program makes; the <code>continuation</code> row counts the
@@ -1147,8 +1171,8 @@ resumes as the newest heap object is given back and stays counted.</p>
 <p><code>:shared_bin_allocs</code> and <code>:shared_bin_bytes</code> count the
 off-heap byte buffers behind large binaries, and are deliberately NOT part of
 <code>:allocs</code> / <code>:bytes</code> — those bytes never live on the
-process heap. They are the counters that tell copying from sharing: a ProcBin
-stub costs the same either way, so without them a binary copied byte for byte
+process heap. They are the counters that tell copying from sharing: a BinView
+view costs the same either way, so without them a binary copied byte for byte
 looks identical to one that shares an existing buffer.</p>
 
 <div class="aside">

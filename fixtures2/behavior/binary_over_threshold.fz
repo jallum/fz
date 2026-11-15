@@ -7,7 +7,7 @@
 # # binary_over_threshold
 #
 # A binary above `SHARED_BIN_THRESHOLD_BYTES` (64) is held as a shared-buffer
-# ProcBin rather than an inline Bitstring. That is a storage decision. It was
+# BinView rather than an inline Bitstring. That is a storage decision. It was
 # also, silently, a semantic one:
 #
 #     defp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
@@ -16,7 +16,7 @@
 #     64 bytes:  interp 64   run 64
 #     65 bytes:  interp 65   run 0     <-- matched nothing
 #
-# On the native doors the Binaries axis asked `kind == BITSTRING`, so a ProcBin
+# On the native doors the Binaries axis asked `kind == BITSTRING`, so a BinView
 # answered NO to every runtime type test and the bitstring region was never
 # reached. The value fell through to the next clause with no diagnostic.
 #

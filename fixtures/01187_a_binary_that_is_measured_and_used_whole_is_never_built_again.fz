@@ -21,7 +21,7 @@ defmodule Whole do
   def sizes(_long, _short, 0, total), do: total
   def sizes(long, short, n, total), do: sizes(long, short, n - 1, total + byte_size(long) + byte_size(short))
 
-  def binaries(stats), do: stats[:procbin_allocs] + stats[:bitstring_allocs] + stats[:shared_bin_allocs]
+  def binaries(stats), do: stats[:binview_allocs] + stats[:bitstring_allocs] + stats[:shared_bin_allocs]
 end
 
 long = String.duplicate("x", 1000)

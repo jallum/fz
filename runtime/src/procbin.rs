@@ -1,4 +1,4 @@
-//! Sealed procbin / off-heap binary abstraction.
+//! Sealed off-heap binary abstraction.
 //!
 //! This module owns the entire off-heap binary story:
 //!
@@ -7,13 +7,19 @@
 //!     time. Heap-allocated bins use `shared_bin_destructor_heap`; future
 //!     compiler-baked static bins use `shared_bin_destructor_noop`.
 //!   * `SharedBinHandle` — Arc-shaped owning wrapper. `Drop` releases.
-//!   * `ProcBin` — `#[repr(transparent)]` newtype over the per-heap
-//!     `u8*` stub. All offset arithmetic for ProcBin payload lives
-//!     here; outside this module no code reads ProcBin layout directly.
-//!   * `alloc_procbin` — safe constructor. Consumes a `SharedBinHandle`
-//!     (refcount ownership transfers in), pushes the new ProcBin onto the
-//!     heap's intrusive MSO chain via the `mso_next` link inside the
-//!     ProcBin payload.
+//!   * `BinRef` — the one object per shared buffer per heap that holds the
+//!     buffer's reference. It is the only binary object on the heap's sweep
+//!     chains, and no language value is a `BinRef`.
+//!   * `BinView` — `#[repr(transparent)]` newtype over the per-heap `u8*`
+//!     object a binary value points at: a window onto the bytes of a buffer,
+//!     reached through its heap's `BinRef`. A view holds no reference and is on
+//!     no chain; the collector traces it like any heap object. All offset
+//!     arithmetic for both layouts lives here; outside this module no code
+//!     reads them directly.
+//!   * `alloc_binref`, `alloc_view`, `alloc_buffer_view` — the safe
+//!     constructors. A `BinRef` takes ownership of a `SharedBinHandle`'s
+//!     reference and is pushed onto the heap's intrusive MSO chain through the
+//!     `mso_next` link inside its payload.
 //!   * MSO sweep + drop — post-Cheney sweep walks the binary chains
 //!     (`Heap::mso_head`, `Heap::mso_old_head`) and the resource chains
 //!     (`Heap::resource_head`, `Heap::resource_old_head`), rewriting
@@ -40,7 +46,7 @@ use std::ptr::{NonNull, copy_nonoverlapping, read, slice_from_raw_parts_mut, wri
 /// invoked exactly once when the refcount transitions to zero, with the
 /// SharedBin pointer as its argument.
 ///
-/// 16-ALIGNED ON PURPOSE. A ProcBin stub holds this address in word 0, and
+/// 16-ALIGNED ON PURPOSE. A BinRef holds this address in word 0, and
 /// that word is also where the Cheney collector writes its forwarding
 /// marker, which is told from a live pointer by a set low nibble. Sharing the
 /// heap's own 16-alignment invariant is what makes a real pointer and a
@@ -54,8 +60,10 @@ use std::ptr::{NonNull, copy_nonoverlapping, read, slice_from_raw_parts_mut, wri
 /// single: every path that makes a buffer reachable from another process
 /// freezes it first (`shared_bin_freeze`), on the owner's thread, and a
 /// frozen buffer is never written again. Until then every view of it lives on
-/// the owner's heap, so `bytes_len` and `bit_len` change with no concurrent
-/// reader, and `bytes_ptr` never moves.
+/// the owner's heap, so `bytes_len` changes with no concurrent reader, and
+/// `bytes_ptr` never moves. The buffer holds whole bytes and says nothing of
+/// how many bits of the last one a value uses: a view's own `bit_len` is the
+/// one authority on a value's length.
 ///
 /// `room` holds the buffer's capacity (the bytes it can hold ahead of the
 /// trailing NUL) in its low bits and `ROOM_FROZEN` above them. The spare room
@@ -65,16 +73,15 @@ use std::ptr::{NonNull, copy_nonoverlapping, read, slice_from_raw_parts_mut, wri
 #[repr(C, align(16))]
 pub struct SharedBin {
     pub refcount: AtomicUsize,                            // offset 0..8
-    pub bit_len: u64,                                     // offset 8..16
-    pub bytes_ptr: *const u8,                             // offset 16..24
-    pub bytes_len: usize,                                 // offset 24..32
-    pub destructor: unsafe extern "C" fn(*mut SharedBin), // offset 32..40
-    pub room: usize,                                      // offset 40..48
+    pub bytes_ptr: *const u8,                             // offset 8..16
+    pub bytes_len: usize,                                 // offset 16..24
+    pub destructor: unsafe extern "C" fn(*mut SharedBin), // offset 24..32
+    pub room: usize,                                      // offset 32..40
 }
 
-/// 48 bytes of fields, which is the 16-byte alignment above.
+/// 40 bytes of fields, padded to 48 by the 16-byte alignment above.
 /// `define_static_sharedbin` emits this many bytes for the compiler-baked
-/// copies, with `room` zero.
+/// copies, with `room` zero and the padding zero.
 pub const SHARED_BIN_BYTES: usize = 48;
 
 /// Set in `SharedBin::room` once the buffer has been made reachable from
@@ -86,18 +93,24 @@ const _: () = {
     assert!(align_of::<SharedBin>() == 16);
 };
 
-/// The bits of a stub's link word that hold its site.
+/// The bits of a BinRef's link word that hold its site.
 const SITE_MASK: u64 = 0xF;
 const _: () = assert!(StubSite::ALL.len() <= SITE_MASK as usize + 1);
 
-/// Where a ProcBin stub keeps its `SharedBin` pointer, in bytes from the stub.
-pub const PROCBIN_SHARED_OFFSET: usize = 0;
-/// Where a ProcBin stub keeps the byte offset of its view, in bytes from the stub.
-pub const PROCBIN_BYTE_OFFSET_OFFSET: usize = 16;
-/// Where a ProcBin stub keeps the bit length of its view, in bytes from the stub.
-pub const PROCBIN_BIT_LEN_OFFSET: usize = 24;
-/// Where a `SharedBin` keeps the address of its bytes.
-pub const SHARED_BIN_BYTES_PTR_OFFSET: usize = std::mem::offset_of!(SharedBin, bytes_ptr);
+/// Where a BinRef keeps its `SharedBin` pointer, in bytes from the BinRef.
+pub const BINREF_SHARED_OFFSET: usize = 0;
+/// Where a BinRef keeps the link to the next BinRef on its chain, in bytes from
+/// the BinRef.
+const BINREF_LINK_OFFSET: usize = 8;
+/// Where a binary view keeps the tagged pointer to its BinRef, in bytes from the
+/// view.
+pub const BINVIEW_BINREF_OFFSET: usize = 0;
+/// Where a binary view keeps the address of its first byte, in bytes from the
+/// view.
+pub const BINVIEW_BYTES_PTR_OFFSET: usize = 8;
+/// Where a binary view keeps the bit length of its window, in bytes from the
+/// view.
+pub const BINVIEW_BIT_LEN_OFFSET: usize = 16;
 /// Where a `SharedBin` keeps its capacity and frozen flag. A compiler-baked
 /// static buffer holds 0 here.
 pub const SHARED_BIN_ROOM_OFFSET: usize = std::mem::offset_of!(SharedBin, room);
@@ -156,35 +169,29 @@ pub unsafe extern "C" fn shared_bin_destructor_noop(_p: *mut SharedBin) {}
 /// Allocate a fresh heap-backed SharedBin with refcount = 1 and the heap
 /// destructor installed. Bytes are leaked separately as a `Box<[u8]>` so
 /// the destructor can reconstruct both boxes independently.
-pub fn shared_bin_alloc(bytes: &[u8], bit_len: u64) -> *mut SharedBin {
-    shared_bin_alloc_with(bytes.len(), bit_len, 0, |dest| dest.copy_from_slice(bytes))
+pub fn shared_bin_alloc(bytes: &[u8]) -> *mut SharedBin {
+    shared_bin_alloc_with(bytes.len(), 0, |dest| dest.copy_from_slice(bytes))
 }
 
 /// Allocate a heap-backed SharedBin holding `bytes` and `spare` more bytes of
 /// room for its owner to append into.
-pub fn shared_bin_alloc_with_room(bytes: &[u8], bit_len: u64, spare: usize) -> *mut SharedBin {
-    shared_bin_alloc_with(bytes.len(), bit_len, spare, |dest| dest.copy_from_slice(bytes))
+pub fn shared_bin_alloc_with_room(bytes: &[u8], spare: usize) -> *mut SharedBin {
+    shared_bin_alloc_with(bytes.len(), spare, |dest| dest.copy_from_slice(bytes))
 }
 
 /// Allocate a heap-backed SharedBin of `bytes_len` bytes and `spare` more
 /// bytes of room, and let `fill` write the payload straight into its buffer:
 /// the buffer is the one allocation the binary owns, and nothing is staged and
 /// copied in. Everything past the written bytes is zero, so the trailing NUL is
-/// in place. The trailing NUL is invisible to the language (bytes_len/bit_len
+/// in place. The trailing NUL is invisible to the language (bytes_len
 /// unchanged) and underwrites the c_string extern marshal contract.
-pub fn shared_bin_alloc_with(
-    bytes_len: usize,
-    bit_len: u64,
-    spare: usize,
-    fill: impl FnOnce(&mut [u8]),
-) -> *mut SharedBin {
+pub fn shared_bin_alloc_with(bytes_len: usize, spare: usize, fill: impl FnOnce(&mut [u8])) -> *mut SharedBin {
     let capacity = bytes_len + spare;
     let mut buf: Box<[u8]> = vec![0u8; capacity + 1].into_boxed_slice();
     fill(&mut buf[..bytes_len]);
     let bytes_ptr: *const u8 = Box::leak(buf).as_ptr();
     let bin = Box::new(SharedBin {
         refcount: AtomicUsize::new(1),
-        bit_len,
         bytes_ptr,
         bytes_len,
         destructor: shared_bin_destructor_heap,
@@ -224,7 +231,6 @@ pub unsafe fn shared_bin_append(p: *mut SharedBin, bytes: &[u8]) {
         );
     }
     bin.bytes_len += bytes.len();
-    bin.bit_len = bin.bytes_len as u64 * 8;
     // The byte after the new end is still zero: the buffer is zeroed beyond
     // its written bytes and only appends write there.
 }
@@ -265,22 +271,22 @@ pub struct SharedBinHandle(NonNull<SharedBin>);
 
 impl SharedBinHandle {
     /// Allocate a new heap-backed SharedBin and wrap the initial refcount.
-    pub fn from_bytes(bytes: &[u8], bit_len: u64) -> Self {
-        let p = shared_bin_alloc(bytes, bit_len);
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let p = shared_bin_alloc(bytes);
         Self(NonNull::new(p).expect("shared_bin_alloc returned null"))
     }
 
     /// Allocate a new heap-backed SharedBin holding `bytes` with `spare` bytes
     /// of room after them, and wrap the initial refcount.
     pub fn from_bytes_with_room(bytes: &[u8], spare: usize) -> Self {
-        let p = shared_bin_alloc_with_room(bytes, bytes.len() as u64 * 8, spare);
+        let p = shared_bin_alloc_with_room(bytes, spare);
         Self(NonNull::new(p).expect("shared_bin_alloc_with_room returned null"))
     }
 
     /// Allocate a new heap-backed SharedBin of `bytes_len` bytes that `fill`
     /// writes in place, and wrap the initial refcount.
-    pub fn from_filled(bytes_len: usize, bit_len: u64, fill: impl FnOnce(&mut [u8])) -> Self {
-        let p = shared_bin_alloc_with(bytes_len, bit_len, 0, fill);
+    pub fn from_filled(bytes_len: usize, fill: impl FnOnce(&mut [u8])) -> Self {
+        let p = shared_bin_alloc_with(bytes_len, 0, fill);
         Self(NonNull::new(p).expect("shared_bin_alloc_with returned null"))
     }
 
@@ -315,9 +321,6 @@ impl SharedBinHandle {
         p
     }
 
-    pub fn bit_len(&self) -> u64 {
-        unsafe { (*self.as_raw()).bit_len }
-    }
     pub fn bytes_ptr(&self) -> *const u8 {
         unsafe { (*self.as_raw()).bytes_ptr }
     }
@@ -338,66 +341,63 @@ impl Drop for SharedBinHandle {
     }
 }
 
-// ===== ProcBin newtype ======================================================
+// ===== BinRef and BinView ===================================================
 
-/// Per-heap stub naming a byte-aligned window of a `SharedBin`'s bytes.
-/// `PROCBIN_BYTES` total:
-///   offset 0..8    shared_ptr:  *mut SharedBin
-///   offset 8..16   mso_next:    u64 tagged MSO link, or 0, with the site
-///                               that made the stub in its low nibble
-///   offset 16..24  byte_offset: u64 first byte of this stub's view
-///   offset 24..32  bit_len:     u64 length of this stub's view in bits
-///
-/// A whole binary is the window at offset 0 spanning the buffer. Slicing
-/// allocates another stub over the SAME SharedBin, which is what makes
-/// `<<_c, rest :: binary>>` and `<<_ :: binary-size(n), field :: binary, _ :: binary>>`
-/// copy nothing.
-///
-/// The buffer carries one invisible trailing NUL after its last byte. A
-/// window that ends where the buffer ends (`ends_at_buffer_end`) has that NUL
-/// right after it; any other window does not, and a C string over it needs a
-/// copy.
-///
-/// Cheney forwarding overwrites offset 0 with a forwarding marker.
-/// Offset 8 is preserved in from-space, so MSO sweep reads `mso_next` from the
-/// old stub and `shared_ptr` from the to-space copy if the stub survived.
-/// Size of a ProcBin stub in bytes. The single authority: allocation, GC
+/// Size of a BinRef in bytes. The single authority: allocation, GC copying and
+/// `object_size` all read it here.
+pub const BINREF_BYTES: usize = 16;
+
+/// Size of the slot a binary view occupies: its 24 bytes of fields, rounded up
+/// to the heap's 16-byte object granule. The single authority: allocation, GC
 /// copying and `object_size` all read it here.
-pub const PROCBIN_BYTES: usize = 32;
+pub const BINVIEW_BYTES: usize = 32;
 
+/// The one object per shared buffer per heap: it holds the heap's single
+/// reference to the buffer and is the only binary object on the sweep chains.
+/// `BINREF_BYTES` total:
+///   offset 0..8    shared_ptr: *mut SharedBin
+///   offset 8..16   mso_next:   u64 tagged MSO link, or 0, with the site that
+///                              made the BinRef in its low nibble
+///
+/// No language value is a BinRef; binary views point at it, and the collector
+/// reaches it only through them. A BinRef no view reaches is dead, and the sweep
+/// that finds it dead releases its reference.
+///
+/// Cheney forwarding overwrites offset 0 with a forwarding marker. Offset 8 is
+/// preserved in from-space, so MSO sweep reads `mso_next` from the old BinRef
+/// and `shared_ptr` from the to-space copy if the BinRef survived.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct ProcBin(NonNull<u8>);
+pub struct BinRef(NonNull<u8>);
 
-impl ProcBin {
+impl BinRef {
     /// # Safety
-    /// `p` must point at a live strict ProcBin object.
+    /// `p` must point at a live BinRef object.
     pub unsafe fn from_raw(p: *mut u8) -> Self {
         debug_assert!(!p.is_null());
-        Self(NonNull::new(p).expect("ProcBin::from_raw: null"))
+        Self(NonNull::new(p).expect("BinRef::from_raw: null"))
     }
 
     pub fn as_raw(&self) -> *mut u8 {
         self.0.as_ptr()
     }
 
-    pub fn shared_raw(&self) -> *mut SharedBin {
-        unsafe { read(self.as_raw().add(PROCBIN_SHARED_OFFSET) as *const *mut SharedBin) }
+    /// The heap object word of this BinRef: what a view stores to name it.
+    pub(crate) fn word(&self) -> u64 {
+        heap_object_word(self.as_raw(), ValueKind::BINREF)
     }
 
-    fn shared_raw_set(&self, p: *mut SharedBin) {
-        unsafe {
-            write(self.as_raw().add(PROCBIN_SHARED_OFFSET) as *mut *mut SharedBin, p);
-        }
+    pub fn shared_raw(&self) -> *mut SharedBin {
+        unsafe { read(self.as_raw().add(BINREF_SHARED_OFFSET) as *const *mut SharedBin) }
     }
 
     fn link_word(&self) -> u64 {
-        unsafe { read((self.as_raw() as *const u8).add(8) as *const u64) }
+        unsafe { read(self.as_raw().add(BINREF_LINK_OFFSET) as *const u64) }
     }
 
-    /// The tagged link to the next stub on the chain, or 0. Heap objects are
-    /// 16-byte aligned, so a link's low nibble is free: it holds the stub's
-    /// site, which a copy of the stub carries along.
+    /// The tagged link to the next BinRef on the chain, or 0. Heap objects are
+    /// 16-byte aligned, so a link's low nibble is free: it holds the BinRef's
+    /// site, which a copy of the BinRef carries along.
     pub fn mso_next(&self) -> u64 {
         self.link_word() & !SITE_MASK
     }
@@ -406,53 +406,112 @@ impl ProcBin {
         debug_assert_eq!(next & SITE_MASK, 0, "a chain link is a 16-byte aligned heap word");
         let site = self.link_word() & SITE_MASK;
         unsafe {
-            write(self.as_raw().add(8) as *mut u64, next | site);
+            write(self.as_raw().add(BINREF_LINK_OFFSET) as *mut u64, next | site);
         }
     }
 
-    /// What made this stub.
+    /// What made this BinRef.
     pub fn site(&self) -> StubSite {
         StubSite::from_code((self.link_word() & SITE_MASK) as u8)
     }
 
-    fn site_set(&self, site: StubSite) {
+    fn init(&self, shared: *mut SharedBin, site: StubSite) {
         unsafe {
-            write(self.as_raw().add(8) as *mut u64, u64::from(site.code()));
+            write(self.as_raw().add(BINREF_SHARED_OFFSET) as *mut *mut SharedBin, shared);
+            write(
+                self.as_raw().add(BINREF_LINK_OFFSET) as *mut u64,
+                u64::from(site.code()),
+            );
         }
     }
+}
 
-    /// First byte of this stub's view into the shared buffer.
-    pub fn byte_offset(&self) -> u64 {
-        unsafe { read(self.as_raw().add(PROCBIN_BYTE_OFFSET_OFFSET) as *const u64) }
+/// The object a binary value above the inline threshold points at: a
+/// byte-aligned window of a `SharedBin`'s bytes, reached through its heap's
+/// BinRef. `BINVIEW_BYTES` total, of which the first 24 are fields:
+///   offset 0..8    binref:    u64 tagged pointer to this heap's BinRef
+///   offset 8..16   bytes_ptr: address of the window's first byte
+///   offset 16..24  bit_len:   u64 length of the window in bits
+///
+/// A view holds no reference and sits on no chain: it is an ordinary heap
+/// object whose one child edge is its `binref`. A whole binary is the window at
+/// the buffer's first byte spanning the buffer. Slicing allocates another view
+/// over the SAME BinRef, which is what makes `<<_c, rest :: binary>>` and
+/// `<<_ :: binary-size(n), field :: binary, _ :: binary>>` copy nothing and
+/// retain nothing. A buffer never moves, so `bytes_ptr` stays valid for as long
+/// as any view of it lives.
+///
+/// The buffer carries one invisible trailing NUL after its last byte. A window
+/// that ends where the buffer ends (`ends_at_buffer_end`) has that NUL right
+/// after it; any other window does not, and a C string over it needs a copy.
+///
+/// Cheney forwarding overwrites offset 0 with a forwarding marker; a live
+/// `binref` word is a tagged pointer with a clear low nibble, so the two are
+/// told apart the way every marker is.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct BinView(NonNull<u8>);
+
+impl BinView {
+    /// # Safety
+    /// `p` must point at a live strict BinView object.
+    pub unsafe fn from_raw(p: *mut u8) -> Self {
+        debug_assert!(!p.is_null());
+        Self(NonNull::new(p).expect("BinView::from_raw: null"))
     }
 
-    fn byte_offset_set(&self, offset: u64) {
-        unsafe {
-            write(self.as_raw().add(PROCBIN_BYTE_OFFSET_OFFSET) as *mut u64, offset);
-        }
+    pub fn as_raw(&self) -> *mut u8 {
+        self.0.as_ptr()
     }
 
-    pub fn bit_len(&self) -> u64 {
-        unsafe { read(self.as_raw().add(PROCBIN_BIT_LEN_OFFSET) as *const u64) }
+    /// The tagged pointer to this view's BinRef.
+    pub(crate) fn binref_word(&self) -> u64 {
+        unsafe { read(self.as_raw().add(BINVIEW_BINREF_OFFSET) as *const u64) }
     }
 
-    fn bit_len_set(&self, bit_len: u64) {
-        unsafe {
-            write(self.as_raw().add(PROCBIN_BIT_LEN_OFFSET) as *mut u64, bit_len);
-        }
+    pub(crate) fn binref_word_set(&self, word: u64) {
+        unsafe { write(self.as_raw().add(BINVIEW_BINREF_OFFSET) as *mut u64, word) }
+    }
+
+    /// The BinRef that holds the reference to this view's buffer.
+    pub fn binref(&self) -> BinRef {
+        let word = self.binref_word();
+        debug_assert_eq!(heap_kind_from_tagged(word), Some(ValueKind::BINREF));
+        unsafe { BinRef::from_raw(heap_word_addr(word)) }
+    }
+
+    pub fn shared_raw(&self) -> *mut SharedBin {
+        self.binref().shared_raw()
     }
 
     pub fn bytes_ptr(&self) -> *const u8 {
-        unsafe { (*self.shared_raw()).bytes_ptr.add(self.byte_offset() as usize) }
+        unsafe { read(self.as_raw().add(BINVIEW_BYTES_PTR_OFFSET) as *const *const u8) }
+    }
+
+    pub fn bit_len(&self) -> u64 {
+        unsafe { read(self.as_raw().add(BINVIEW_BIT_LEN_OFFSET) as *const u64) }
+    }
+
+    fn init(&self, binref: BinRef, bytes_ptr: *const u8, bit_len: u64) {
+        unsafe {
+            write(self.as_raw().add(BINVIEW_BINREF_OFFSET) as *mut u64, binref.word());
+            write(self.as_raw().add(BINVIEW_BYTES_PTR_OFFSET) as *mut *const u8, bytes_ptr);
+            write(self.as_raw().add(BINVIEW_BIT_LEN_OFFSET) as *mut u64, bit_len);
+        }
     }
 
     pub fn bytes_len(&self) -> usize {
         (self.bit_len() as usize).div_ceil(8)
     }
 
+    /// First byte of this view's window, counted from the start of its buffer.
+    pub fn byte_offset(&self) -> usize {
+        self.bytes_ptr() as usize - unsafe { (*self.shared_raw()).bytes_ptr } as usize
+    }
+
     /// True when the buffer's invisible trailing NUL follows this view's last byte.
     pub fn ends_at_buffer_end(&self) -> bool {
-        self.byte_offset() as usize + self.bytes_len() == unsafe { (*self.shared_raw()).bytes_len }
+        self.byte_offset() + self.bytes_len() == unsafe { (*self.shared_raw()).bytes_len }
     }
 }
 
@@ -460,39 +519,50 @@ impl ProcBin {
 
 use crate::heap::{Generation, Heap, HeapAllocKind, StubCounts, StubSite};
 
-/// Allocate a ProcBin stub on `heap` viewing `bit_len` bits of `handle`'s
-/// bytes from `byte_offset`, taking ownership of the SharedBin reference
-/// encapsulated in `handle`. The new ProcBin is pushed onto `heap.mso_head`,
-/// the young binary chain, as the new chain head.
-///
-/// A whole binary is `(0, handle.bit_len())`. `site` names what is making the
-/// stub; the heap counts it and the stub remembers it.
-pub fn alloc_procbin(
-    heap: &mut Heap,
-    handle: SharedBinHandle,
-    byte_offset: u64,
-    bit_len: u64,
-    site: StubSite,
-) -> ProcBin {
-    assert!(
-        byte_offset as usize + (bit_len as usize).div_ceil(8) <= handle.bytes_len(),
-        "ProcBin view [{byte_offset}, +{bit_len} bits) runs past the shared buffer"
-    );
-    let p = heap.alloc_kind(HeapAllocKind::ProcBin, PROCBIN_BYTES);
-    let pb = unsafe { ProcBin::from_raw(p) };
-    pb.site_set(site);
-    heap.stubs_made.record(site);
-    pb.shared_raw_set(handle.into_raw());
-    pb.byte_offset_set(byte_offset);
-    pb.bit_len_set(bit_len);
-    let previous_head = heap.mso_push(heap_object_word(p, ValueKind::PROCBIN));
-    pb.mso_next_set(previous_head);
-    pb
+/// Allocate a BinRef on `heap`, taking ownership of the SharedBin reference
+/// encapsulated in `handle`. The new BinRef is pushed onto `heap.mso_head`, the
+/// young binary chain, as the new chain head. `site` names what is making the
+/// BinRef; the heap counts it and the BinRef remembers it.
+pub fn alloc_binref(heap: &mut Heap, handle: SharedBinHandle, site: StubSite) -> BinRef {
+    let p = heap.alloc_kind(HeapAllocKind::BinRef, BINREF_BYTES);
+    let binref = unsafe { BinRef::from_raw(p) };
+    binref.init(handle.into_raw(), site);
+    heap.binrefs_made.record(site);
+    let previous_head = heap.mso_push(binref.word());
+    binref.mso_next_set(previous_head);
+    binref
 }
 
-/// A stub that lives on an MSO chain. The stub's type is its chain's kind:
-/// binary stubs and resource stubs keep separate chains, so a walk over one
-/// chain names the kind once and never inspects a link to learn it.
+/// Allocate a view on `heap` of `bit_len` bits of `binref`'s buffer starting at
+/// `bytes_ptr`. It takes no reference and joins no chain; `site` names what is
+/// making the view and the heap counts it.
+/// A view only ever points at a BinRef of its own heap.
+pub fn alloc_view(heap: &mut Heap, binref: BinRef, bytes_ptr: *const u8, bit_len: u64, site: StubSite) -> BinView {
+    let shared = unsafe { &*binref.shared_raw() };
+    let first = (bytes_ptr as usize).wrapping_sub(shared.bytes_ptr as usize);
+    assert!(
+        first.saturating_add((bit_len as usize).div_ceil(8)) <= shared.bytes_len,
+        "BinView [{first}, +{bit_len} bits) lies outside the shared buffer"
+    );
+    let p = heap.alloc_kind(HeapAllocKind::BinView, BINVIEW_BYTES);
+    let view = unsafe { BinView::from_raw(p) };
+    view.init(binref, bytes_ptr, bit_len);
+    heap.stubs_made.record(site);
+    view
+}
+
+/// Allocate a BinRef for `handle`'s buffer and a view of its first `bit_len`
+/// bits, side by side: the buffer enters the heap here. `site` names what made
+/// both.
+pub fn alloc_buffer_view(heap: &mut Heap, handle: SharedBinHandle, bit_len: u64, site: StubSite) -> BinView {
+    let bytes_ptr = handle.bytes_ptr();
+    let binref = alloc_binref(heap, handle, site);
+    alloc_view(heap, binref, bytes_ptr, bit_len, site)
+}
+
+/// An object on an MSO chain. The object's type is its chain's kind: BinRefs
+/// and resource stubs keep separate chains, so a walk over one chain names the
+/// kind once and never inspects a link to learn it.
 pub(crate) trait MsoStub: Copy {
     /// The heap object kind every link of this stub's chains carries.
     const KIND: ValueKind;
@@ -506,11 +576,11 @@ pub(crate) trait MsoStub: Copy {
     fn release(&self);
 }
 
-impl MsoStub for ProcBin {
-    const KIND: ValueKind = ValueKind::PROCBIN;
+impl MsoStub for BinRef {
+    const KIND: ValueKind = ValueKind::BINREF;
 
     unsafe fn at(addr: *mut u8) -> Self {
-        unsafe { ProcBin::from_raw(addr) }
+        unsafe { BinRef::from_raw(addr) }
     }
 
     fn link(&self) -> u64 {
@@ -617,7 +687,7 @@ pub(crate) fn mso_unreached_closures(heap: &Heap, generation: Generation, visits
 /// A stub carrying a forwarding marker survived: it is relinked to its
 /// to-space copy, on the old chain of its kind, which a minor sweep leaves
 /// otherwise untouched and a major sweep rebuilds. Any other stub is dead and
-/// drops its off-heap reference. A dead ProcBin releases its SharedBin
+/// drops its off-heap reference. A dead BinRef releases its SharedBin
 /// synchronously. A dead Resource whose last reference this was returns a
 /// `DeadResource`, unless it was claimed; its destructor is fz code and runs
 /// at the scheduler boundary, never inside the sweep. `closure_of` yields the
@@ -636,13 +706,13 @@ pub fn mso_sweep(
     survived: &mut StubCounts,
 ) -> Vec<DeadResource> {
     let mut dead = Vec::new();
-    heap.mso_old_head = sweep_chains::<ProcBin>(
+    heap.mso_old_head = sweep_chains::<BinRef>(
         heap.mso_head,
         heap.mso_old_head,
         generation,
         visits,
-        |pb| unsafe { shared_bin_release(pb.shared_raw()) },
-        |pb| survived.record(pb.site()),
+        |binref| unsafe { shared_bin_release(binref.shared_raw()) },
+        |binref| survived.record(binref.site()),
     );
     heap.resource_old_head = sweep_chains::<ResourceStub>(
         heap.resource_head,
@@ -703,8 +773,8 @@ fn sweep_chains<S: MsoStub>(
 /// Drop every stub on the young and old chains, releasing each off-heap
 /// reference. Called from `Heap::drop` before pool reclaim.
 pub fn mso_drop_all(heap: &mut Heap) {
-    mso_release_chain::<ProcBin>(heap.mso_head);
-    mso_release_chain::<ProcBin>(heap.mso_old_head);
+    mso_release_chain::<BinRef>(heap.mso_head);
+    mso_release_chain::<BinRef>(heap.mso_old_head);
     mso_release_chain::<ResourceStub>(heap.resource_head);
     mso_release_chain::<ResourceStub>(heap.resource_old_head);
     heap.mso_head = 0;
@@ -714,7 +784,7 @@ pub fn mso_drop_all(heap: &mut Heap) {
 }
 
 /// Release every stub on the chain of `S` stubs that starts at `head_bits`:
-/// each ProcBin drops its SharedBin reference and each Resource stub drops its
+/// each BinRef drops its SharedBin reference and each Resource stub drops its
 /// Resource reference. The chain's memory is left to its owner.
 pub(crate) fn mso_release_chain<S: MsoStub>(head_bits: u64) {
     let mut cur_bits = head_bits;
@@ -729,7 +799,7 @@ pub(crate) fn mso_release_chain<S: MsoStub>(head_bits: u64) {
 //
 // fz bitstrings live in one of two storage modes:
 //   * `ValueKind::BITSTRING` -- inline payload: bit length at +0, bytes at +8.
-//   * `ValueKind::PROCBIN` -- *mut SharedBin at +0; bytes + bit_len off-heap.
+//   * `ValueKind::BINVIEW` -- a BinView: bytes pointer at +8, bit length at +16.
 //
 // The helpers below take a heap object word, whose kind says which mode.
 
@@ -741,11 +811,11 @@ pub fn is_bitstring_like(word: u64) -> bool {
 /// Bit length of a bitstring-like heap value.
 ///
 /// # Safety
-/// `word` must be the heap object word of a live Bitstring or ProcBin.
+/// `word` must be the heap object word of a live Bitstring or BinView.
 pub unsafe fn bitstring_bit_len(word: u64) -> u64 {
     let addr = heap_word_addr(word);
-    if heap_kind_from_tagged(word) == Some(ValueKind::PROCBIN) {
-        return unsafe { ProcBin::from_raw(addr) }.bit_len();
+    if heap_kind_from_tagged(word) == Some(ValueKind::BINVIEW) {
+        return unsafe { BinView::from_raw(addr) }.bit_len();
     }
     unsafe { any_bitstring_bit_len(addr) }
 }
@@ -753,25 +823,25 @@ pub unsafe fn bitstring_bit_len(word: u64) -> u64 {
 /// Byte pointer to the underlying bitstring payload.
 ///
 /// # Safety
-/// `word` must be the heap object word of a live Bitstring or ProcBin.
+/// `word` must be the heap object word of a live Bitstring or BinView.
 pub unsafe fn bitstring_byte_ptr(word: u64) -> *const u8 {
     let addr = heap_word_addr(word);
-    if heap_kind_from_tagged(word) == Some(ValueKind::PROCBIN) {
-        return unsafe { ProcBin::from_raw(addr) }.bytes_ptr();
+    if heap_kind_from_tagged(word) == Some(ValueKind::BINVIEW) {
+        return unsafe { BinView::from_raw(addr) }.bytes_ptr();
     }
     unsafe { bitstring_bytes_ptr(addr) }
 }
 
 /// Bytes of the buffer a bitstring-like heap value references: the whole
-/// `SharedBin` for a ProcBin view, however short the view, and the value's own
+/// `SharedBin` for a BinView, however short the view, and the value's own
 /// bytes for an inline bitstring.
 ///
 /// # Safety
-/// `word` must be the heap object word of a live Bitstring or ProcBin.
+/// `word` must be the heap object word of a live Bitstring or BinView.
 pub unsafe fn referenced_byte_len(word: u64) -> usize {
     let addr = heap_word_addr(word);
-    if heap_kind_from_tagged(word) == Some(ValueKind::PROCBIN) {
-        return unsafe { (*ProcBin::from_raw(addr).shared_raw()).bytes_len };
+    if heap_kind_from_tagged(word) == Some(ValueKind::BINVIEW) {
+        return unsafe { (*BinView::from_raw(addr).shared_raw()).bytes_len };
     }
     (unsafe { any_bitstring_bit_len(addr) } as usize).div_ceil(8)
 }
@@ -779,7 +849,7 @@ pub unsafe fn referenced_byte_len(word: u64) -> usize {
 /// Compare two bitstring-like heap values by language value, not address.
 ///
 /// # Safety
-/// Both words must be the heap object words of live Bitstring or ProcBin objects.
+/// Both words must be the heap object words of live Bitstring or BinView objects.
 pub unsafe fn bitstring_like_eq(ap: u64, bp: u64) -> bool {
     let a_bits = unsafe { bitstring_bit_len(ap) };
     let b_bits = unsafe { bitstring_bit_len(bp) };

@@ -10,6 +10,7 @@ use crate::any_value::{
     map_keys_ptr, map_node_child_count, map_node_children_ptr, map_node_entry_count, map_tag_ptr, map_value_kind,
     map_values_ptr, share_struct, struct_field_kind_slot, struct_field_raw_slot, struct_schema_id,
 };
+use crate::procbin::BinView;
 use crate::resource::ResourceStub;
 use std::ptr::{read, write};
 
@@ -79,6 +80,25 @@ pub fn cheney_trace_struct(
             stats.struct_scalar_slots += 1;
         }
     }
+}
+
+/// A view's one child edge is its BinRef. Forwarding it copies the BinRef the
+/// first time any view reaches it, and every later view of that buffer in the
+/// same heap finds it already forwarded, so each live BinRef is copied once.
+/// A BinRef an earlier collection kept is not in from-space and stays where it
+/// is.
+pub fn cheney_trace_binview(
+    obj: *mut u8,
+    from_space: &FromSpace,
+    heap: &mut Heap,
+    schemas: &SchemaRegistry,
+    copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
+) {
+    let view = unsafe { BinView::from_raw(obj) };
+    let binref = AnyValue::decode_tagged_heap_bits(view.binref_word()).expect("a view names its BinRef");
+    let forwarded = forward_heap_value(binref, from_space, heap, schemas, copied_objects, stats);
+    view.binref_word_set(forwarded.heap_object_word().expect("a forwarded BinRef"));
 }
 
 pub fn cheney_trace_resource(

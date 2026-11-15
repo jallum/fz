@@ -21,7 +21,7 @@
 
 use super::Heap;
 use super::block_pool::{Block, pick_block_capacity, pool_alloc};
-use crate::procbin::{MsoStub, ProcBin, mso_release_chain, mso_set_next};
+use crate::procbin::{BinRef, MsoStub, mso_release_chain, mso_set_next};
 use crate::resource::ResourceStub;
 
 /// What `begin_gift` records so `end_gift` can cut the segment: the tip to
@@ -153,7 +153,7 @@ impl GiftSegment {
 
 impl Drop for GiftSegment {
     fn drop(&mut self) {
-        mso_release_chain::<ProcBin>(self.binaries.head);
+        mso_release_chain::<BinRef>(self.binaries.head);
         mso_release_chain::<ResourceStub>(self.resources.head);
         if let Some(block) = self.block.take() {
             block.release();
@@ -204,7 +204,7 @@ impl Heap {
             window.measured_bytes,
             "gift copy allocated a different number of bytes than it was measured at: the measure and the copy disagree"
         );
-        let binaries = window.binaries.cut::<ProcBin>(&mut self.mso_head);
+        let binaries = window.binaries.cut::<BinRef>(&mut self.mso_head);
         let resources = window.resources.cut::<ResourceStub>(&mut self.resource_head);
         let objects = self.alloc_count - window.alloc_count;
         self.alloc_count = window.alloc_count;
@@ -226,7 +226,7 @@ impl Heap {
             self.live_baseline += block.fill();
             self.old_blocks.push(block);
         }
-        self.mso_old_head = segment.binaries.splice_onto::<ProcBin>(self.mso_old_head);
+        self.mso_old_head = segment.binaries.splice_onto::<BinRef>(self.mso_old_head);
         self.resource_old_head = segment.resources.splice_onto::<ResourceStub>(self.resource_old_head);
         segment.binaries = SegmentChain::EMPTY;
         segment.resources = SegmentChain::EMPTY;

@@ -14,7 +14,7 @@
 #
 #   * `:shared_bin_bytes` -- off-heap binary buffers allocated. Copying a tail
 #     shows up here and nowhere else, which is exactly why the counter exists: a
-#     ProcBin stub costs the same whether its bytes were copied or shared, so
+#     BinView stub costs the same whether its bytes were copied or shared, so
 #     the stub counters cannot tell the two apart. Both walks must report 0.
 #
 #   * `:bitstring_bytes` -- on-heap bitstring bytes. Also 0: a rest is the

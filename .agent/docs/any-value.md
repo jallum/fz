@@ -3,7 +3,7 @@
 ## The Idea
 
 Every fz value — integer, float, atom, pid, reference, list, map, tuple/struct,
-closure, bitstring, ProcBin, resource — is handled at runtime boundaries as one opaque
+closure, bitstring, binary view, resource — is handled at runtime boundaries as one opaque
 word:
 
 ```text
@@ -25,7 +25,7 @@ Pid ref      -> u64 process id          Struct ref   -> tuple/struct object
 Reference ref -> u64 counter word
 Atom ref     == the atom id itself
                                         Closure ref  -> closure object
-                                        Bitstring/ProcBin ref -> binary object
+                                        Bitstring/binary-view ref -> binary object
                                         Resource ref -> resource object
 ```
 
@@ -92,9 +92,9 @@ builds copies those values into fresh containers before publishing them.
 
 `fz_binary_concat` validates byte-aligned binary inputs and builds `left <> right`
 through `Heap::alloc_concatenation`, which returns the VALUE. When `left` is a
-`ProcBin` that ends where its buffer's written bytes end and the buffer has spare
+binary view that ends where its buffer's written bytes end and the buffer has spare
 room for `right`, `right` is written into that room and the result is a new
-stub over the same buffer, longer than `left`; `left` is not copied and keeps
+view over the same buffer, longer than `left`; `left` is not copied and keeps
 its own length. Otherwise a result at or below `SHARED_BIN_THRESHOLD_BYTES` (64)
 is an inline `Bitstring`, and a larger one gets a new `SharedBin` with room for
 as many bytes again, each side written once. A loop of `acc <> x` therefore
@@ -118,16 +118,32 @@ codegen asks what to EMIT for a constant bitstring — a static `SharedBin`
 symbol or a call to the inline allocator — which it must decide at compile time
 with no heap to ask.
 
-### A ProcBin names a window
+### A view names a window of a buffer through its heap's BinRef
 
-A `ProcBin` stub is not "the shared binary"; it is a byte-aligned *window* of
-one. It carries a `byte_offset` (stub word 16) and its own `bit_len` (stub word
-24), so the window may start and stop anywhere on a byte boundary of the
-buffer. The whole binary is the window at offset 0 spanning the buffer. Several
-stubs over the same `SharedBin` at different offsets and lengths are the normal
-case, each owning its own reference edge. `PROCBIN_BYTE_OFFSET_OFFSET` and
-`PROCBIN_BIT_LEN_OFFSET` in `procbin.rs` are the one statement of that layout;
-native codegen reads the length straight from the stub.
+A binary above the inline threshold is two kinds of heap object, as in OTP's
+`BinView` and sub-binary split. A `BinRef` (`ValueKind::BINREF`, 16 bytes) is the
+heap's one reference to a `SharedBin`: word 0 holds the `SharedBin` address and
+word 8 the link of the sweep chain (`mso_head`, `mso_old_head`), with the
+`StubSite` that made it in the link's low nibble. It is the only binary object
+on those chains and holds the one atomic retain. A `BinView`
+(`ValueKind::BINVIEW`, 24 bytes of fields in a 32-byte slot) is the value:
+
+```text
+offset  0  tagged pointer to its heap's BinRef (the collector traces it)
+offset  8  bytes_ptr: the window's first byte
+offset 16  bit_len: the window's length in bits
+```
+
+A view is a byte-aligned *window*: it may start and stop anywhere on a byte
+boundary of the buffer, and the whole binary is the window at the buffer's
+start spanning it. Its byte offset is derived (`bytes_ptr` less the buffer's
+`bytes_ptr`). Many views of one buffer in one heap name one `BinRef`: a window
+or an in-place append makes only a view; a fresh buffer makes a `BinRef` and a
+view; a message copy makes the receiver its own `BinRef` and view per copied
+view, retaining the buffer once. A `SharedBin` does not store a bit length: the
+view's `bit_len` is the only authority. `BINREF_*` and `BINVIEW_*_OFFSET` in
+`procbin.rs` are the one statement of that layout; native codegen reads the
+base with one load of `bytes_ptr` and the length at offset 16.
 
 A match that takes a binary apart does not ask for a slice at all when the
 rest stays inside the compiler's own code. Its demand is `Matched` (see
@@ -145,22 +161,22 @@ point with `fz_bs_read_binary_ref`. A rest that spans its whole source is the
 source, so a binary that was only measured, a cursor at position 0, comes
 back as itself and builds nothing. Past position 0, any byte-aligned binary field of a shared source, whether
 `<<_c, rest :: binary>>` or `<<_ :: binary-size(n), field :: binary, _ :: binary>>`,
-asks `Heap::alloc_bitstring_slice` for a view: another stub over the same bytes
+asks `Heap::alloc_bitstring_slice` for a view: another view over the same bytes
 at its own offset and length instead of a copy. It decides whether the view is
-worth a stub, copying slices at or below `SHARED_BIN_THRESHOLD_BYTES` so a short
+worth a view object, copying slices at or below `SHARED_BIN_THRESHOLD_BYTES` so a short
 slice cannot pin a long buffer. A walk that only matches and measures allocates
 no binary at all; one that makes each rest whole copies at most that short tail
 per step, where a copy per step would cost n + (n-1) + … bytes.
 
 `:binary.referenced_byte_size/1` reports the buffer a binary references.
 `fz_binary_referenced_size` answers the whole `SharedBin`'s written `bytes_len`
-(not its spare room) for a ProcBin whatever its offset and length, and the
+(not its spare room) for a view whatever its offset and length, and the
 binary's own size for an inline bitstring. `:binary.copy/1` makes a binary that
 references only itself, which is how a program detaches a view from the large
 buffer it keeps alive.
 
 The buffer carries one invisible trailing NUL after its last byte. A window that
-ends where the buffer ends (`ProcBin::ends_at_buffer_end`) has that NUL right
+ends where the buffer ends (`BinView::ends_at_buffer_end`) has that NUL right
 after it, so `fz_binary_as_cstring` hands it to C as it is. Any other window has
 the parent's next byte there, and `fz_binary_as_cstring` copies it into a fresh
 binary on the calling process's heap, which is terminated. That is the one place
@@ -168,8 +184,7 @@ a view pays for its NUL; `fz_binary_as_ptr` promises no NUL and never copies.
 
 ### Spare room belongs to one process
 
-A `SharedBin` has a capacity and a written length (`bytes_len`; `bit_len` is
-eight times it for a buffer a concatenation grew). The word at
+A `SharedBin` has a capacity and a written length (`bytes_len`). The word at
 `SHARED_BIN_ROOM_OFFSET` holds the capacity, with a frozen flag in its top bit;
 the spare room is the capacity less `bytes_len`, and zero once frozen. Buffers
 that no concatenation allocated (`shared_bin_alloc`, the compiler-baked static
@@ -180,7 +195,7 @@ Only the process that owns a buffer appends to it. A view that ends where the
 written bytes end is handed to C as a string with no copy because the byte after
 it is a NUL; another process writing there would replace that NUL under a call
 in progress. So every path that makes a buffer reachable from another process
-freezes it first, on the sender's thread: `deep_copy_any_value`'s `ProcBin` arm
+freezes it first, on the sender's thread: `deep_copy_any_value`'s view arm
 calls `shared_bin_freeze`, and every cross-process copy goes through it
 (`gift_copy` for a message or a spawned closure's bound values, and the spawn
 paths in `aot_shim.rs`, `ir_interp/backend.rs` and `exec/runtime.rs`). An
@@ -190,8 +205,8 @@ not.
 
 Copied bytes are counted. `HeapAllocStats::shared_bin` records off-heap binary
 buffers, separately from `total` because they are not heap bytes and do not move
-under Cheney. Without it, copying is invisible: a stub costs the same whether
-its bytes were freshly copied or shared, so the stub counters alone cannot tell
+under Cheney. Without it, copying is invisible: a view costs the same whether
+its bytes were freshly copied or shared, so the view counters alone cannot tell
 the two apart.
 
 **Typed fast reads** are fused helpers for callers the typer already proved the
@@ -287,12 +302,12 @@ continuation arguments, and typed closure capture slots.
 
 ```text
 0  Null        4  Closure       7  Resource      14 Float
-1  List        5  Bitstring     13 Int           15 Atom
-2  Map          6  ProcBin
+1  List        5  Bitstring     8  BinRef        15 Atom
+2  Map         6  BinView       13 Int
 3  Struct
 ```
 
-`8`, `11` and `12` are unused; `ValueKind::new` rejects them. The empty list is `List` with a
+`11` and `12` are unused; `ValueKind::new` rejects them. The empty list is `List` with a
 null address (`AnyValueRef::empty_list`). Object storage also uses an
 `EMPTY_LIST` tail sentinel (`0x8`, an address inside the OS-reserved unmapped
 page 0, distinct from `nil`), but that sentinel is internal list-tail
@@ -537,7 +552,7 @@ list, nested-map, and binary keys collide even when separately allocated.
 Integer and float kinds remain distinct recursively; numeric ordering compares
 exact mathematical values before using kind to break strict ties. Signed float
 zeros are distinct strict keys but equal under widening comparison. Equal binary
-bits share identity across inline and ProcBin storage. Named schemas retain
+bits share identity across inline and view storage. Named schemas retain
 typed module segments, and tuples use typed arity, so display collisions never
 alias identities. AOT transports the same segments without a rendered-name bridge.
 Resource keys retain the generative ID in their existing off-heap owner.
@@ -587,7 +602,7 @@ Elixir's atom-key iteration may differ because it uses VM identity.
 `term_hash` (`runtime/src/term_hash.rs`) is the one hash, and it agrees with
 strict key equality: equal keys hash equal in every representation. Ints and
 floats hash under different tags, a float by its bits; a bitstring by bit
-length and content, whether inline, a ProcBin or a ProcBin view, with the bits
+length and content, whether inline or a view, with the bits
 past its length left out; a tuple by arity and fields; a map as a sum over its
 entries, so a flat map, a trie and a named struct spelling the same entries
 hash alike; a pid, ref or resource by its word. An atom hashes by its name's
@@ -839,7 +854,7 @@ copy:   every reachable object moves as a unit
 follow: only heap-shaped payload words become child roots
 ```
 
-Heap-object refs (`Map, List, Struct, Closure, Bitstring, ProcBin, Resource`)
+Heap-object refs (`Map, List, Struct, Closure, Bitstring, BinView, BinRef, Resource`)
 are followed as edges. An int or float ref points at a payload word, not a child
 object; a scalar payload can *look* like an address, but the kind byte is the
 authority, so scalars are never chased. When an int or float ref sits in a
@@ -849,20 +864,22 @@ followed. An atom ref has no payload to copy: GC and deep copy leave it as it is
 like `null`, and a measuring pass charges it nothing.
 
 Off-heap binaries and resources have their own atomic reference counts. A
-32-byte `ProcBin` stub owns one edge to a `SharedBin`; a resource stub owns one
-edge to a `Resource`. Both off-heap objects are 16-ALIGNED, the same invariant
-the process heap keeps, and for the same reason: a stub holds the address in
-word 0, and word 0 is where Cheney writes a forwarding marker — a pointer with a
-set low nibble. At 8-byte alignment half of those addresses have a set nibble
-and a live stub would read as forwarded, so the sweep would write into the
-object it is releasing. Alignment is what keeps a live pointer and a marker
+16-byte `BinRef` owns one edge to a `SharedBin`, and a binary view names its
+heap's `BinRef` without owning an edge; a resource stub owns one edge to a
+`Resource`. Both off-heap objects are 16-ALIGNED, the same invariant the process
+heap keeps, and for the same reason: a stub or view holds the address in word 0,
+and word 0 is where Cheney writes a forwarding marker — a pointer with a set low
+nibble. At 8-byte alignment half of those addresses have a set nibble and a live
+object would read as forwarded, so the sweep would write into the object it is
+releasing. Alignment is what keeps a live pointer and a marker
 distinguishable by construction.
 
 The marker is the only use of the low nibble. Each kind names one marker word —
 word 1 of a list cons, word 0 of every other kind — whose live value has a clear
 low nibble, so "low nibble set" is the whole forwarding test: one read, no
-confirming word (`runtime/src/heap/gc/forwarding.rs`). Copying a stub into another heap retains
-one edge. Moving it during GC preserves that edge; sweeping an unreachable stub
+confirming word (`runtime/src/heap/gc/forwarding.rs`). Copying a view into another heap makes that heap its own `BinRef`, which retains
+one edge. Cheney copies a live view and traces its `BinRef`, copied and forwarded
+once; moving a `BinRef` during GC preserves its edge; sweeping an unreachable `BinRef` or resource stub
 or dropping its heap releases it. An immediate last release invokes the
 allocation's destructor and reclaims its storage. Deferred resource release
 reclaims the wrapper and returns its payload for later destructor dispatch,

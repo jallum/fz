@@ -422,7 +422,7 @@ fn decode_expr(
                 span,
             ))
         }
-        fz_runtime::any_value::ValueKind::BITSTRING | fz_runtime::any_value::ValueKind::PROCBIN => {
+        fz_runtime::any_value::ValueKind::BITSTRING | fz_runtime::any_value::ValueKind::BINVIEW => {
             Ok(Spanned::new(Expr::Binary(cursor.raw_bytes()?), span))
         }
         fz_runtime::any_value::ValueKind::LIST => decode_list_expr(occurrences, cursor, span, sources),
@@ -635,7 +635,7 @@ pub(super) fn decode_pattern(
                 span,
             ))
         }
-        fz_runtime::any_value::ValueKind::BITSTRING | fz_runtime::any_value::ValueKind::PROCBIN => {
+        fz_runtime::any_value::ValueKind::BITSTRING | fz_runtime::any_value::ValueKind::BINVIEW => {
             Ok(Spanned::new(Pattern::Binary(cursor.raw_bytes()?), span))
         }
         fz_runtime::any_value::ValueKind::LIST => decode_list_pattern(cursor, span, sources),
@@ -2079,7 +2079,7 @@ fn apply_bit_spec_modifier(
             Ok(())
         }
         fz_runtime::any_value::ValueKind::ATOM => apply_bit_modifier_name(spec, &cursor.atom_name()?, field_span),
-        fz_runtime::any_value::ValueKind::BITSTRING | fz_runtime::any_value::ValueKind::PROCBIN => {
+        fz_runtime::any_value::ValueKind::BITSTRING | fz_runtime::any_value::ValueKind::BINVIEW => {
             apply_bit_modifier_name(spec, &cursor.utf8_binary_text()?, field_span)
         }
         // Reachable from valid source: a bitstring segment's `::` modifier is
@@ -2088,7 +2088,7 @@ fn apply_bit_spec_modifier(
         // including `nil`/`[]`), or a bare 2-element tuple literal
         // (`<<x :: {1, 2}>>` -- Elixir represents exactly-2-tuples as a raw
         // struct rather than wrapping them in a `{}` call node) all land here
-        // with none of INT/ATOM/BITSTRING/PROCBIN. Every other modifier shape
+        // with none of INT/ATOM/BITSTRING/BINVIEW. Every other modifier shape
         // (calls, atoms with args, N-tuples with N != 2) is caught earlier by
         // the `ast_node()` arm above. This is a plain user typo, not an
         // internal-compiler-bug shape. None of these literal kinds carry their

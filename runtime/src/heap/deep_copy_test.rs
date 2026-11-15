@@ -8,7 +8,7 @@ use crate::any_value::{
     closure_size_for_count, list_addr_from_tagged, map_addr_from_tagged, map_size_for_count, struct_size_for_payload,
 };
 use crate::heap::StubSite;
-use crate::procbin::{PROCBIN_BYTES, SharedBinHandle, alloc_procbin};
+use crate::procbin::{BINREF_BYTES, BINVIEW_BYTES, SharedBinHandle, alloc_buffer_view};
 use crate::resource::{RESOURCE_STUB_SIZE, ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 use crate::sched::gift_copy;
 use std::cell::RefCell;
@@ -167,17 +167,16 @@ fn a_closure_measures_itself_and_what_it_captures() {
 }
 
 #[test]
-fn a_procbin_stub_measures_the_stub_and_not_the_shared_bytes() {
+fn a_view_measures_its_view_and_its_binref_and_not_the_shared_bytes() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let stub = alloc_procbin(
+    let stub = alloc_buffer_view(
         &mut sender,
-        SharedBinHandle::from_bytes(&[7; 4096], 4096 * 8),
-        0,
+        SharedBinHandle::from_bytes(&[7; 4096]),
         4096 * 8,
         StubSite::FilledBuffer,
     );
-    let bytes = measured_equals_copied(&mut sender, &[heap_ref(ValueKind::PROCBIN, stub.as_raw())]);
-    assert_eq!(bytes, PROCBIN_BYTES);
+    let bytes = measured_equals_copied(&mut sender, &[heap_ref(ValueKind::BINVIEW, stub.as_raw())]);
+    assert_eq!(bytes, BINVIEW_BYTES + BINREF_BYTES);
 }
 
 #[test]
@@ -234,16 +233,15 @@ fn a_mixed_message_measures_what_it_copies() {
     let mut sender = Heap::new(SIZE_TABLE[0], reg);
     let list = int_list(&mut sender, EMPTY_LIST, 0..40);
     let list_value = heap_value(ValueKind::LIST, list_addr_from_tagged(list).expect("addr"));
-    let stub = alloc_procbin(
+    let stub = alloc_buffer_view(
         &mut sender,
-        SharedBinHandle::from_bytes(&[1; 200], 1600),
-        0,
+        SharedBinHandle::from_bytes(&[1; 200]),
         1600,
         StubSite::FilledBuffer,
     );
     let map_bits = sender.alloc_map_slots(&[(
         AnyValue::atom(sender.node.intern_atom("k")),
-        heap_value(ValueKind::PROCBIN, stub.as_raw()),
+        heap_value(ValueKind::BINVIEW, stub.as_raw()),
     )]);
     let pair_p = sender.alloc_struct(pair);
     unsafe {

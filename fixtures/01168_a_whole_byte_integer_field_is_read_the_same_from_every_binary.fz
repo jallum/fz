@@ -1,12 +1,12 @@
 #---
-# purpose: a byte-aligned unsigned big-endian integer field reads the same from an inline binary, a ProcBin and a view with an offset, and every other field kind still reads right
+# purpose: a byte-aligned unsigned big-endian integer field reads the same from an inline binary, a BinView and a view with an offset, and every other field kind still reads right
 # kind: run
 #---
 #
 # Native code resolves the matched binary to an address once and loads a
 # whole-byte field from it; each other field is read by the runtime. Every
 # function below runs on a short inline binary, on a binary large enough to be
-# a ProcBin, and on a ProcBin view that starts partway into its bytes.
+# a BinView, and on a BinView view that starts partway into its bytes.
 defmodule P do
   def one(<<a, _r :: binary>>), do: a
   def one(_other), do: :miss

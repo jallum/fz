@@ -3,20 +3,39 @@
 
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, EMPTY_LIST, ValueKind, heap_kind_from_tagged, heap_object_word, heap_word_addr,
-    list_addr_from_tagged, procbin_addr_from_tagged, struct_addr_from_tagged, struct_size_for_payload,
+    AnyValue, AnyValueRef, EMPTY_LIST, ValueKind, binview_addr_from_tagged, heap_kind_from_tagged, heap_object_word,
+    heap_word_addr, list_addr_from_tagged, struct_addr_from_tagged, struct_size_for_payload,
 };
 use crate::heap::StubSite;
-use crate::procbin::{PROCBIN_BYTES, ProcBin, SharedBinHandle, alloc_procbin};
+use crate::procbin::{
+    BINREF_BYTES, BINVIEW_BYTES, BinRef, BinView, SharedBinHandle, alloc_binref, alloc_buffer_view, alloc_view,
+};
 use crate::resource::{RESOURCE_STUB_SIZE, ResourceHandle, ResourceStub, alloc_resource, fz_resource_destructor_noop};
 use crate::sync::Ordering;
 use std::cell::RefCell;
 use std::ptr::null_mut;
 use std::rc::Rc;
 
+/// A view of `bit_len` bits that starts `byte_offset` bytes into a buffer that
+/// enters the heap with it, as a buffer does when a message copy brings it.
+fn window_of_new_buffer(
+    heap: &mut Heap,
+    handle: SharedBinHandle,
+    byte_offset: usize,
+    bit_len: u64,
+    site: StubSite,
+) -> BinView {
+    let first = unsafe { handle.bytes_ptr().add(byte_offset) };
+    let binref = alloc_binref(heap, handle, site);
+    alloc_view(heap, binref, first, bit_len, site)
+}
+
 fn fresh_registry() -> Rc<RefCell<SchemaRegistry>> {
     Rc::new(RefCell::new(SchemaRegistry::new()))
 }
+
+/// A fresh buffer's two objects: its BinRef and its view.
+const NEW_BUFFER_BYTES: usize = BINREF_BYTES + BINVIEW_BYTES;
 
 fn shared_refs(handle: &SharedBinHandle) -> usize {
     unsafe { (*handle.as_raw()).refcount.load(Ordering::Relaxed) }
@@ -38,8 +57,9 @@ fn heap_ref(bits: u64) -> AnyValueRef {
         .expect("heap root ref")
 }
 
-fn procbin_word(pb: &ProcBin) -> u64 {
-    heap_object_word(pb.as_raw() as *const u8, ValueKind::PROCBIN)
+/// The chain word of the BinRef a view names: the one binary object on a chain.
+fn binref_word(pb: &BinView) -> u64 {
+    pb.binref().word()
 }
 
 /// The mso chain from `head` as tagged words, head first.
@@ -49,7 +69,7 @@ fn chain_from(head: u64) -> Vec<u64> {
     while cur_bits != 0 {
         let addr = heap_word_addr(cur_bits);
         let next = match heap_kind_from_tagged(cur_bits) {
-            Some(ValueKind::PROCBIN) => unsafe { ProcBin::from_raw(addr).mso_next() },
+            Some(ValueKind::BINREF) => unsafe { BinRef::from_raw(addr).mso_next() },
             Some(ValueKind::RESOURCE) => unsafe { ResourceStub::from_raw(addr).mso_next() },
             kind => panic!("unexpected MSO kind {kind:?}"),
         };
@@ -164,20 +184,19 @@ fn end_gift_restores_the_senders_tip_and_leaves_its_earlier_allocations_untouche
 #[test]
 fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
     pool_drain_for_test();
-    let witness = SharedBinHandle::from_bytes(&[0xaa; 8], 64);
+    let witness = SharedBinHandle::from_bytes(&[0xaa; 8]);
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
     let mut receiver = Heap::new(SIZE_TABLE[0], reg);
 
-    sender.begin_gift(PROCBIN_BYTES);
-    let pb = alloc_procbin(
+    sender.begin_gift(NEW_BUFFER_BYTES);
+    let pb = alloc_buffer_view(
         &mut sender,
         witness.clone(),
-        0,
-        witness.bit_len(),
+        witness.bytes_len() as u64 * 8,
         StubSite::FilledBuffer,
     );
-    let gifted = procbin_word(&pb);
+    let gifted = binref_word(&pb);
     let segment = sender.end_gift();
     assert_eq!(sender.mso_head, 0, "the stub left the sender's chain");
     assert_eq!(segment.mso_head(), gifted);
@@ -186,12 +205,12 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
     receiver.graft(segment);
     assert_eq!(mso_old_chain(&receiver), vec![gifted]);
     assert_eq!(mso_chain(&receiver), Vec::<u64>::new());
-    let mut root = gifted as *mut u8;
+    let mut root = heap_object_word(pb.as_raw() as *const u8, ValueKind::BINVIEW) as *mut u8;
     assert_eq!(pool_total_cached_blocks(), 0);
     let stats = receiver.collect_tagged(&mut root);
 
     assert_eq!(stats.generation, Generation::Minor);
-    let kept = procbin_addr_from_tagged(root as u64).expect("procbin root");
+    let kept = binview_addr_from_tagged(root as u64).expect("binview root");
     assert_eq!(
         kept,
         pb.as_raw(),
@@ -202,7 +221,7 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
         vec![gifted],
         "the chain still names the stub in the adopted block"
     );
-    assert_eq!(unsafe { ProcBin::from_raw(kept) }.shared_raw(), witness.as_raw());
+    assert_eq!(unsafe { BinView::from_raw(kept) }.shared_raw(), witness.as_raw());
     assert_eq!(shared_refs(&witness), 2, "the refcount is unchanged by the collection");
     assert_eq!(
         pool_total_cached_blocks(),
@@ -221,47 +240,45 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
 
 #[test]
 fn graft_splices_each_gifts_mso_prefix_ahead_of_the_receivers_old_chain() {
-    let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32);
+    let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4]);
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
     let mut receiver = Heap::new(SIZE_TABLE[0], reg);
-    let sender_own = procbin_word(&alloc_procbin(
+    let sender_own = binref_word(&alloc_buffer_view(
         &mut sender,
         witness.clone(),
-        0,
-        witness.bit_len(),
+        witness.bytes_len() as u64 * 8,
         StubSite::FilledBuffer,
     ));
-    let receiver_own = procbin_word(&alloc_procbin(
+    let receiver_own = binref_word(&alloc_buffer_view(
         &mut receiver,
         witness.clone(),
-        0,
-        witness.bit_len(),
+        witness.bytes_len() as u64 * 8,
         StubSite::FilledBuffer,
     ));
 
-    sender.begin_gift(2 * PROCBIN_BYTES);
-    let older = procbin_word(&alloc_procbin(
+    sender.begin_gift(2 * NEW_BUFFER_BYTES);
+    let older = binref_word(&window_of_new_buffer(
         &mut sender,
         witness.clone(),
         1,
-        witness.bit_len() - 8,
+        witness.bytes_len() as u64 * 8 - 8,
         StubSite::FilledBuffer,
     ));
-    let newer = procbin_word(&alloc_procbin(
+    let newer = binref_word(&window_of_new_buffer(
         &mut sender,
         witness.clone(),
         2,
-        witness.bit_len() - 2 * 8,
+        witness.bytes_len() as u64 * 8 - 2 * 8,
         StubSite::FilledBuffer,
     ));
     let segment = sender.end_gift();
-    sender.begin_gift(PROCBIN_BYTES);
-    let latest = procbin_word(&alloc_procbin(
+    sender.begin_gift(NEW_BUFFER_BYTES);
+    let latest = binref_word(&window_of_new_buffer(
         &mut sender,
         witness.clone(),
         3,
-        witness.bit_len() - 3 * 8,
+        witness.bytes_len() as u64 * 8 - 3 * 8,
         StubSite::FilledBuffer,
     ));
     let later_segment = sender.end_gift();
@@ -464,16 +481,15 @@ fn an_empty_segment_grafts_as_a_no_op_and_never_touches_the_pool() {
 #[test]
 fn dropping_an_ungrafted_segment_returns_its_blocks_and_releases_its_stubs() {
     pool_drain_for_test();
-    let witness = SharedBinHandle::from_bytes(&[0x55; 16], 128);
+    let witness = SharedBinHandle::from_bytes(&[0x55; 16]);
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
     let pooled_before = pool_outstanding_blocks();
 
-    sender.begin_gift(PROCBIN_BYTES + 32);
-    let _ = alloc_procbin(
+    sender.begin_gift(NEW_BUFFER_BYTES + 32);
+    let _ = alloc_buffer_view(
         &mut sender,
         witness.clone(),
-        0,
-        witness.bit_len(),
+        witness.bytes_len() as u64 * 8,
         StubSite::FilledBuffer,
     );
     let _ = sender.alloc(32);
@@ -677,17 +693,16 @@ fn a_grafted_gift_raises_the_baseline_and_the_receiver_collects_after_allocating
 /// graft splices each onto the receiver's old chain of the same kind.
 #[test]
 fn a_gift_keeps_binary_and_resource_stubs_on_their_own_chains() {
-    let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32);
+    let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4]);
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
     let mut receiver = Heap::new(SIZE_TABLE[0], reg);
 
-    sender.begin_gift(PROCBIN_BYTES + RESOURCE_STUB_SIZE);
-    let witness_bits = witness.bit_len();
-    let binary = procbin_word(&alloc_procbin(
+    sender.begin_gift(NEW_BUFFER_BYTES + RESOURCE_STUB_SIZE);
+    let witness_bits = witness.bytes_len() as u64 * 8;
+    let binary = binref_word(&alloc_buffer_view(
         &mut sender,
         witness,
-        0,
         witness_bits,
         StubSite::FilledBuffer,
     ));

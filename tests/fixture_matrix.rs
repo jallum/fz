@@ -3812,8 +3812,8 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     // allocates about 224 KB of which about 12.9 KB survive. The child is
     // collected on 18 of its yields, more than the 7 it was when its
     // continuations lived on the stack. The parent is collected once as it
-    // parks on its receive (912 bytes: the values the parked receive holds,
-    // among them the heap-stats maps the fixture binds, each of 34 entries, plus the closures and
+    // parks on its receive (976 bytes: the values the parked receive holds,
+    // among them the heap-stats maps the fixture binds, each of 36 entries, plus the closures and
     // continuation frames its park record holds). The gifts it grafts
     // afterwards raise its baseline to its fill, so it is not collected again,
     // and the child's exit is not a collection.
@@ -3830,15 +3830,19 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
         // 2_680_080 -> 2_680_272: a process's entry calls its body inside the handler that words
         // an uncaught raise, so the continuation that call returns to, 32 bytes, is live in six
         // of the collections.
-        2_680_272,
+        // 2_680_272 -> 2_680_304: a process's heap stats count BinRefs as their own object kind,
+        // so the stats maps the fixture keeps live hold two more keys. A map of more than 32
+        // entries is a hash trie whose node sizes follow its keys' hashes; with these 36 keys
+        // the live maps copy 32 bytes more.
+        2_680_304,
         "run: the bytes every collection copied"
     );
 
     // The interpreter never yields, so the child builds and sends its whole
     // log inside one quantum and is never collected: it exits without a
-    // collection. The parent is collected as it parks (864 bytes, the
+    // collection. The parent is collected as it parks (896 bytes, the
     // values its parked receive holds, among them the heap-stats maps the
-    // fixture binds, each of 34 entries and so not a flat map: the JIT's 912
+    // fixture binds, each of 36 entries and so not a flat map: the JIT's 976
     // also counts the closures its park record holds); the gifts it grafts afterwards are baseline, so
     // it is not collected again.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
@@ -3850,7 +3854,8 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     );
     assert_eq!(
         events.iter().map(|e| e.copied_bytes).sum::<usize>(),
-        864,
+        // 864 -> 896: the same two heap-stats keys, through the same hash trie, as the `run` path.
+        896,
         "interp: only the parent's park copies anything"
     );
 }

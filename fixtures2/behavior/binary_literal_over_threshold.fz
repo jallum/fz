@@ -14,7 +14,7 @@
 #     one big literal, matched         ->  exit 0
 #     TWO big literals, both matched   ->  exit 138
 #
-# A forwarding marker is a set low nibble. A ProcBin stub keeps its
+# A forwarding marker is a set low nibble. A BinView stub keeps its
 # SharedBin's address in word 0, and word 0 is where the collector writes its
 # marker -- so a SharedBin sitting at an address with a set low nibble makes a
 # LIVE stub read as forwarded. The sweep then took the SharedBin itself for a

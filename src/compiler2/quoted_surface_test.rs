@@ -511,7 +511,7 @@ end
     };
 
     derive_function_surface(&function.source, &code.source_map().borrow())
-        .expect("nested grouped function source should still decode long procbin-backed @doc payloads");
+        .expect("nested grouped function source should still decode long binview-backed @doc payloads");
 }
 
 #[test]

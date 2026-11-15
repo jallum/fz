@@ -209,14 +209,14 @@ pub(crate) struct BsConstSyms {
 /// Emit a static `SharedBin` symbol in `.data`, `SHARED_BIN_BYTES` wide:
 ///
 ///   offset  0..8   refcount = 1 (LE u64, anchor — never decremented to 0)
-///   offset  8..16  bit_len (LE u64)
-///   offset 16..24  bytes_ptr — relocation to the bytes payload symbol
-///   offset 24..32  bytes_len (LE u64)
-///   offset 32..40  destructor — function-address relocation to noop
-///   offset 40..48  room = 0: no capacity beyond the bytes, so nothing appends
+///   offset  8..16  bytes_ptr — relocation to the bytes payload symbol
+///   offset 16..24  bytes_len (LE u64)
+///   offset 24..32  destructor — function-address relocation to noop
+///   offset 32..40  room = 0: no capacity beyond the bytes, so nothing appends
+///   offset 40..48  padding to the 16-byte alignment, zero
 ///
-/// The alignment is not cosmetic and must match `SharedBin`'s: a ProcBin
-/// stub carries this address in the word the collector overwrites with a
+/// The alignment is not cosmetic and must match `SharedBin`'s: a BinRef
+/// carries this address in the word the collector overwrites with a
 /// forwarding marker, and a marker is a set low nibble, so a live pointer's
 /// low nibble must be clear.
 ///
@@ -226,7 +226,6 @@ pub(crate) fn define_static_sharedbin<M: ClModule>(
     jmod: &mut M,
     bytes_id: DataId,
     bytes: &[u8],
-    bit_len: u64,
     idx: usize,
 ) -> Result<DataId, CodegenError> {
     let sb_name = format!(".fz_bs_sb_{}", idx);
@@ -235,19 +234,19 @@ pub(crate) fn define_static_sharedbin<M: ClModule>(
         .map_err(|e| CodegenError::new(format!("declare {}: {}", sb_name, e)))?;
     let mut buf = vec![0u8; SHARED_BIN_BYTES];
     buf[0..8].copy_from_slice(&1u64.to_le_bytes());
-    buf[8..16].copy_from_slice(&bit_len.to_le_bytes());
-    // bytes_ptr at 16..24 — zero placeholder; relocation patches at link.
-    buf[24..32].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
-    // destructor at 32..40 — zero placeholder; function-addr reloc patches.
-    // room at 40..48 stays zero (SHARED_BIN_ROOM_OFFSET).
+    // bytes_ptr at 8..16 — zero placeholder; relocation patches at link.
+    buf[16..24].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+    // destructor at 24..32 — zero placeholder; function-addr reloc patches.
+    // room at 32..40 stays zero (SHARED_BIN_ROOM_OFFSET).
+    // padding at 40..48 stays zero.
     let mut desc = DataDescription::new();
     desc.define(buf.into_boxed_slice());
     desc.set_align(16);
     let bytes_gv = jmod.declare_data_in_data(bytes_id, &mut desc);
-    desc.write_data_addr(16, bytes_gv, 0);
+    desc.write_data_addr(8, bytes_gv, 0);
     let dtor_id = runtime_fn_id!(jmod, shared_bin_destructor_noop(_));
     let dtor_fref = jmod.declare_func_in_data(dtor_id, &mut desc);
-    desc.write_function_addr(32, dtor_fref);
+    desc.write_function_addr(24, dtor_fref);
     jmod.define_data(sb_id, &desc)
         .map_err(|e| CodegenError::new(format!("define {}: {}", sb_name, e)))?;
     Ok(sb_id)

@@ -206,7 +206,7 @@ fn push_binary_literal(
     fields: &mut Vec<BitField<Spanned<Pattern>>>,
 ) -> Result<(), QuotedSourceError> {
     match operand.root().tag() {
-        ValueKind::BITSTRING | ValueKind::PROCBIN => {
+        ValueKind::BITSTRING | ValueKind::BINVIEW => {
             let literal = Spanned::new(Pattern::Binary(operand.raw_bytes()?), call_span);
             fields.push(binary_segment(literal));
             Ok(())
@@ -370,7 +370,7 @@ fn render_literal(operand: &QuotedSourceCursor, sources: &SourceMap) -> String {
             "nil" | "true" | "false" => name.to_string(),
             _ => format!(":{name}"),
         }),
-        ValueKind::BITSTRING | ValueKind::PROCBIN => operand
+        ValueKind::BITSTRING | ValueKind::BINVIEW => operand
             .raw_bytes()
             .map(|bytes| format!("{:?}", String::from_utf8_lossy(&bytes))),
         _ if root.is_empty_list() || root.tag() == ValueKind::LIST => operand.list_items().map(|items| {

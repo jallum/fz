@@ -21,8 +21,8 @@
 //! byte-aligned binary. They predate the process-aware `fz_panic` path and do
 //! not participate in its execution-context fault channel.
 
-use crate::any_value::{AnyValueRef, procbin_addr_from_tagged};
-use crate::procbin::{ProcBin, bitstring_bit_len, bitstring_byte_ptr};
+use crate::any_value::{AnyValueRef, binview_addr_from_tagged};
+use crate::procbin::{BinView, bitstring_bit_len, bitstring_byte_ptr};
 use crate::process::Process;
 use std::process::abort;
 use std::slice::from_raw_parts;
@@ -71,10 +71,10 @@ pub unsafe extern "C" fn fz_binary_as_ptr(v: u64) -> *const u8 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_binary_as_cstring(process: *mut Process, v: u64) -> *const u8 {
     let bytes = unsafe { coerce_binary_ptr(v) };
-    let Some(addr) = procbin_addr_from_tagged(v) else {
+    let Some(addr) = binview_addr_from_tagged(v) else {
         return bytes;
     };
-    let view = unsafe { ProcBin::from_raw(addr) };
+    let view = unsafe { BinView::from_raw(addr) };
     if view.ends_at_buffer_end() {
         return bytes;
     }

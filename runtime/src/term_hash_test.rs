@@ -6,11 +6,25 @@ use crate::function_denotation::FunctionDenotation;
 use crate::heap::StubSite;
 use crate::heap::{Heap, Schema};
 use crate::module_name::ModuleName;
-use crate::procbin::{SharedBinHandle, alloc_procbin};
+use crate::procbin::{BinView, SharedBinHandle, alloc_binref, alloc_buffer_view, alloc_view};
 use crate::term::NumericMode;
 use std::cmp::Ordering;
 use std::rc::Rc;
 use std::sync::Arc;
+
+/// A view of `bit_len` bits that starts `byte_offset` bytes into a buffer that
+/// enters the heap with it, as a buffer does when a message copy brings it.
+fn window_of_new_buffer(
+    heap: &mut Heap,
+    handle: SharedBinHandle,
+    byte_offset: usize,
+    bit_len: u64,
+    site: StubSite,
+) -> BinView {
+    let first = unsafe { handle.bytes_ptr().add(byte_offset) };
+    let binref = alloc_binref(heap, handle, site);
+    alloc_view(heap, binref, first, bit_len, site)
+}
 
 /// A deterministic stream of numbers: the same seed makes the same terms.
 struct Rng(u64);
@@ -190,7 +204,7 @@ impl World {
     }
 
     /// Up to eleven bytes over a three-letter alphabet, sometimes with a last
-    /// partial byte. The variant is a ProcBin, or a ProcBin view past a
+    /// partial byte. The variant is a view of a whole buffer, or a view past a
     /// prefix, with ones in the bits beyond the length.
     fn binary(&mut self, rng: &mut Rng, variant: bool) -> AnyValue {
         let len = rng.below(12) as usize;
@@ -214,20 +228,19 @@ impl World {
         match representation {
             0 => self.heap.alloc_bitstring(&bytes, bit_len),
             1 => {
-                let handle = SharedBinHandle::from_bytes(&bytes, bit_len);
-                let handle_bits = handle.bit_len();
+                let handle = SharedBinHandle::from_bytes(&bytes);
                 AnyValue::heap_ptr(
-                    alloc_procbin(&mut self.heap, handle, 0, handle_bits, StubSite::FilledBuffer).as_raw(),
-                    ValueKind::PROCBIN,
+                    alloc_buffer_view(&mut self.heap, handle, bit_len, StubSite::FilledBuffer).as_raw(),
+                    ValueKind::BINVIEW,
                 )
             }
             _ => {
                 let mut padded = b"xyz".to_vec();
                 padded.extend_from_slice(&bytes);
-                let handle = SharedBinHandle::from_bytes(&padded, bit_len + 24);
+                let handle = SharedBinHandle::from_bytes(&padded);
                 AnyValue::heap_ptr(
-                    alloc_procbin(&mut self.heap, handle, 3, bit_len, StubSite::FilledBuffer).as_raw(),
-                    ValueKind::PROCBIN,
+                    window_of_new_buffer(&mut self.heap, handle, 3, bit_len, StubSite::FilledBuffer).as_raw(),
+                    ValueKind::BINVIEW,
                 )
             }
         }

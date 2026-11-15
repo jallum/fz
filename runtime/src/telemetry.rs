@@ -233,6 +233,8 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
             .unwrap();
             out.push_str(",\"stubs_made\":");
             stats.stubs_made.write_json(out);
+            out.push_str(",\"binrefs_made\":");
+            stats.binrefs_made.write_json(out);
             out.push_str(",\"stubs_survived\":");
             stats.stubs_survived.write_json(out);
         }

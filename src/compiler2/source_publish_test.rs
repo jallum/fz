@@ -255,7 +255,7 @@ fn compiler_service_define_groups_single_function_source_before_define_function(
 }
 
 #[test]
-fn compiler_service_define_preserves_long_doc_procbin_payloads() {
+fn compiler_service_define_preserves_long_doc_binview_payloads() {
     let source = r#"
 @doc "Removes the first matching left-side item for each item in the right list."
 @spec subtract([a], [a]) :: [a]
@@ -285,7 +285,7 @@ def subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
             super::super::drive::ExecutionContext::new(&mut direct_world, &tel).drive(),
             DriveOutcome::Resolved
         ),
-        "raw grouped compiler fragments should decode long procbin-backed @doc payloads"
+        "raw grouped compiler fragments should decode long binview-backed @doc payloads"
     );
 
     let mut service_world = World::new();
@@ -311,7 +311,7 @@ def subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
             super::super::drive::ExecutionContext::new(&mut service_world, &tel).drive(),
             DriveOutcome::Resolved
         ),
-        "Fz.Compiler.define should preserve long procbin-backed @doc payloads across the compiler-service boundary"
+        "Fz.Compiler.define should preserve long binview-backed @doc payloads across the compiler-service boundary"
     );
 }
 

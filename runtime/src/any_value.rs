@@ -23,10 +23,14 @@ pub const TAG_STRUCT: u64 = 0x3;
 pub const TAG_CLOSURE: u64 = 0x4;
 /// Heap inline bitstring; bit length prefix plus padded bytes.
 pub const TAG_BITSTRING: u64 = 0x5;
-/// Heap ProcBin stub; shared binary pointer plus MSO next link.
-pub const TAG_PROCBIN: u64 = 0x6;
+/// Heap binary view: a window onto a shared buffer, through its heap's BinRef.
+pub const TAG_BINVIEW: u64 = 0x6;
 /// Heap resource stub; resource pointer plus MSO next link.
 pub const TAG_RESOURCE: u64 = 0x7;
+/// Heap BinRef: the one object per shared buffer per heap that holds the
+/// buffer's reference and sits on the sweep chain. No language value is a
+/// BinRef; only a binary view points at one.
+pub const TAG_BINREF: u64 = 0x8;
 /// Side-band immediate tag for raw process-id slots.
 pub const TAG_KIND_PID: u64 = 0x9;
 /// Side-band immediate tag for raw reference-counter slots.
@@ -76,8 +80,9 @@ impl ValueKind {
     pub const STRUCT: Self = Self(TAG_STRUCT as u8);
     pub const CLOSURE: Self = Self(TAG_CLOSURE as u8);
     pub const BITSTRING: Self = Self(TAG_BITSTRING as u8);
-    pub const PROCBIN: Self = Self(TAG_PROCBIN as u8);
+    pub const BINVIEW: Self = Self(TAG_BINVIEW as u8);
     pub const RESOURCE: Self = Self(TAG_RESOURCE as u8);
+    pub const BINREF: Self = Self(TAG_BINREF as u8);
     pub const PID: Self = Self(TAG_KIND_PID as u8);
     pub const REF: Self = Self(TAG_KIND_REF as u8);
     pub const INT: Self = Self(TAG_KIND_INT as u8);
@@ -86,8 +91,10 @@ impl ValueKind {
 
     pub const fn new(tag: u8) -> Option<Self> {
         match tag as u64 {
-            TAG_NULL | TAG_LIST | TAG_MAP | TAG_STRUCT | TAG_CLOSURE | TAG_BITSTRING | TAG_PROCBIN | TAG_RESOURCE
-            | TAG_KIND_PID | TAG_KIND_REF | TAG_KIND_INT | TAG_KIND_FLOAT | TAG_KIND_ATOM => Some(Self(tag)),
+            TAG_NULL | TAG_LIST | TAG_MAP | TAG_STRUCT | TAG_CLOSURE | TAG_BITSTRING | TAG_BINVIEW | TAG_RESOURCE
+            | TAG_BINREF | TAG_KIND_PID | TAG_KIND_REF | TAG_KIND_INT | TAG_KIND_FLOAT | TAG_KIND_ATOM => {
+                Some(Self(tag))
+            }
             _ => None,
         }
     }
@@ -97,7 +104,7 @@ impl ValueKind {
     }
 
     pub const fn is_heap(self) -> bool {
-        self.0 >= TAG_LIST as u8 && self.0 <= TAG_RESOURCE as u8
+        (self.0 >= TAG_LIST as u8 && self.0 <= TAG_RESOURCE as u8) || self.0 == TAG_BINREF as u8
     }
 
     pub const fn is_scalar(self) -> bool {
@@ -114,10 +121,10 @@ impl ValueKind {
     /// a shared-buffer view above it -- and every question of the form
     /// "is this a binary" is a question about both. Asking about
     /// `BITSTRING` alone made every binary over 64 bytes answer NO.
-    pub const BINARY_REPRS: [Self; 2] = [Self::BITSTRING, Self::PROCBIN];
+    pub const BINARY_REPRS: [Self; 2] = [Self::BITSTRING, Self::BINVIEW];
 
     pub const fn is_binary_repr(self) -> bool {
-        matches!(self, Self::BITSTRING | Self::PROCBIN)
+        matches!(self, Self::BITSTRING | Self::BINVIEW)
     }
 }
 
@@ -398,8 +405,8 @@ impl AnyValueRef {
         self.heap_addr(ValueKind::BITSTRING)
     }
 
-    pub fn procbin_addr(self) -> Result<*mut u8, AnyValueRefError> {
-        self.heap_addr(ValueKind::PROCBIN)
+    pub fn binview_addr(self) -> Result<*mut u8, AnyValueRefError> {
+        self.heap_addr(ValueKind::BINVIEW)
     }
 
     pub fn resource_addr(self) -> Result<*mut u8, AnyValueRefError> {
@@ -561,7 +568,7 @@ impl AnyValue {
 }
 
 // Bitstring storage dispatchers live in `crate::procbin`.
-// `any_value.rs` does not own bitstring layout; render uses the procbin
+// `any_value.rs` does not own bitstring layout; render uses the binview
 // helpers like every other read site.
 
 // Closure `flags` packing. Low 14 bits hold captured_count; high 2 bits hold
@@ -886,7 +893,8 @@ pub fn object_size_with_struct_payload(heap_word: u64, mut struct_payload_size: 
             ValueKind::STRUCT => size_of_struct(addr, &mut struct_payload_size),
             ValueKind::CLOSURE => size_of_closure(addr),
             ValueKind::BITSTRING => size_of_bitstring(addr),
-            ValueKind::PROCBIN => size_of_procbin(addr),
+            ValueKind::BINVIEW => size_of_binview(addr),
+            ValueKind::BINREF => size_of_binref(addr),
             ValueKind::RESOURCE => size_of_resource(addr),
             _ => unreachable!("heap_kind_from_tagged yields heap kinds"),
         }
@@ -914,8 +922,12 @@ unsafe fn size_of_bitstring(_addr: *const u8) -> usize {
     bitstring_size_for_bit_len(unsafe { bitstring_bit_len(_addr) })
 }
 
-unsafe fn size_of_procbin(_addr: *const u8) -> usize {
-    crate::procbin::PROCBIN_BYTES
+unsafe fn size_of_binview(_addr: *const u8) -> usize {
+    crate::procbin::BINVIEW_BYTES
+}
+
+unsafe fn size_of_binref(_addr: *const u8) -> usize {
+    crate::procbin::BINREF_BYTES
 }
 
 unsafe fn size_of_resource(_addr: *const u8) -> usize {
@@ -1308,8 +1320,8 @@ pub unsafe fn bitstring_bytes_ptr(addr: *const u8) -> *const u8 {
 }
 
 #[inline]
-pub fn procbin_addr_from_tagged(bits: u64) -> Option<*mut u8> {
-    addr_of_kind(bits, ValueKind::PROCBIN)
+pub fn binview_addr_from_tagged(bits: u64) -> Option<*mut u8> {
+    addr_of_kind(bits, ValueKind::BINVIEW)
 }
 
 #[inline]
@@ -1528,8 +1540,9 @@ pub mod debug {
 
     use super::{
         AnyValue, AnyValueRef, EMPTY_LIST, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
-        bitstring_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_denotation, list_addr_from_tagged,
-        map_addr_from_tagged, map_entries, procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id,
+        binview_addr_from_tagged, bitstring_addr_from_tagged, closure_addr_from_tagged, closure_arity,
+        closure_denotation, list_addr_from_tagged, map_addr_from_tagged, map_entries, struct_addr_from_tagged,
+        struct_schema_id,
     };
     use crate::heap::{FieldKind, SchemaIdentity};
     use crate::module_name::{alias_spelling, is_alias_namespace_atom};
@@ -1725,7 +1738,7 @@ pub mod debug {
             if struct_addr_from_tagged(bits).is_some() {
                 return self.struct_value(bits);
             }
-            if bitstring_addr_from_tagged(bits).is_some() || procbin_addr_from_tagged(bits).is_some() {
+            if bitstring_addr_from_tagged(bits).is_some() || binview_addr_from_tagged(bits).is_some() {
                 return self.bitstring(bits);
             }
             // An empty list reaches here two ways: as the `EMPTY_LIST` sentinel,
@@ -1884,7 +1897,7 @@ pub mod debug {
 
         fn bitstring(&mut self, bits: u64) -> String {
             assert!(
-                procbin_addr_from_tagged(bits).is_some() || bitstring_addr_from_tagged(bits).is_some(),
+                binview_addr_from_tagged(bits).is_some() || bitstring_addr_from_tagged(bits).is_some(),
                 "bitstring expects a bitstring-like heap word"
             );
             let bit_len = unsafe { bitstring_bit_len(bits) } as usize;

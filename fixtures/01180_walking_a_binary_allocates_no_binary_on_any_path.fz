@@ -17,7 +17,7 @@ defmodule Walk do
   def remaining(<<_, rest :: binary>>, n), do: remaining(rest, n + byte_size(rest))
   def remaining(<<>>, n), do: n
 
-  def binaries(stats), do: stats[:procbin_allocs] + stats[:bitstring_allocs] + stats[:shared_bin_allocs]
+  def binaries(stats), do: stats[:binview_allocs] + stats[:bitstring_allocs] + stats[:shared_bin_allocs]
 end
 
 line = String.duplicate("x", 10000)

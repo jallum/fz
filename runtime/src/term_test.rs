@@ -8,11 +8,25 @@ use crate::heap::AddressMap;
 use crate::heap::StubSite;
 use crate::heap::{Heap, Schema, deep_copy_slot};
 use crate::module_name::ModuleName;
-use crate::procbin::{SharedBinHandle, alloc_procbin};
+use crate::procbin::{BinView, SharedBinHandle, alloc_binref, alloc_buffer_view, alloc_view};
 use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
+
+/// A view of `bit_len` bits that starts `byte_offset` bytes into a buffer that
+/// enters the heap with it, as a buffer does when a message copy brings it.
+fn window_of_new_buffer(
+    heap: &mut Heap,
+    handle: SharedBinHandle,
+    byte_offset: usize,
+    bit_len: u64,
+    site: StubSite,
+) -> BinView {
+    let first = unsafe { handle.bytes_ptr().add(byte_offset) };
+    let binref = alloc_binref(heap, handle, site);
+    alloc_view(heap, binref, first, bit_len, site)
+}
 
 thread_local! {
     pub(super) static COMPARISON_CALLS: Cell<usize> = const { Cell::new(0) };
@@ -162,14 +176,8 @@ fn bitstrings_compare_bits_independently_of_storage_and_padding() {
     let node = Rc::new(Node::empty());
     let mut heap = Heap::with_node(1024, Rc::clone(&schemas), Rc::clone(&node));
     let inline = heap.alloc_bitstring(b"a", 8);
-    let shared = alloc_procbin(
-        &mut heap,
-        SharedBinHandle::from_bytes(b"a", 8),
-        0,
-        8,
-        StubSite::FilledBuffer,
-    );
-    let shared = AnyValue::heap_ptr(shared.as_raw(), ValueKind::PROCBIN);
+    let shared = alloc_buffer_view(&mut heap, SharedBinHandle::from_bytes(b"a"), 8, StubSite::FilledBuffer);
+    let shared = AnyValue::heap_ptr(shared.as_raw(), ValueKind::BINVIEW);
     let padded = heap.alloc_bitstring(&[0b1011_1111], 3);
     let clean = heap.alloc_bitstring(&[0b1010_0000], 3);
     let lower = heap.alloc_bitstring(&[0b1000_0000], 3);
@@ -486,37 +494,35 @@ impl Pool {
     }
 
     /// Binaries of every representation over a few contents: inline, whole
-    /// ProcBin, ProcBin viewed from an offset, whole bytes and partial
+    /// BinView, BinView viewed from an offset, whole bytes and partial
     /// trailing bytes whose padding bits differ.
     fn add_bitstrings(&mut self) {
         let contents: [&[u8]; 4] = [b"", b"a", b"abc", b"0123456789abcdefghijklmnopqrstuvwxyz0123"];
         for bytes in contents {
             let bits = 8 * bytes.len() as u64;
             self.values.push(self.heap.alloc_bitstring(bytes, bits));
-            let shared = alloc_procbin(
+            let shared = alloc_buffer_view(
                 &mut self.heap,
-                SharedBinHandle::from_bytes(bytes, bits),
-                0,
+                SharedBinHandle::from_bytes(bytes),
                 bits,
                 StubSite::FilledBuffer,
             );
             self.values
-                .push(AnyValue::heap_ptr(shared.as_raw(), ValueKind::PROCBIN));
+                .push(AnyValue::heap_ptr(shared.as_raw(), ValueKind::BINVIEW));
         }
-        let framed = SharedBinHandle::from_bytes(b"xxabc", 40);
-        let view = alloc_procbin(&mut self.heap, framed, 2, 24, StubSite::FilledBuffer);
-        self.values.push(AnyValue::heap_ptr(view.as_raw(), ValueKind::PROCBIN));
+        let framed = SharedBinHandle::from_bytes(b"xxabc");
+        let view = window_of_new_buffer(&mut self.heap, framed, 2, 24, StubSite::FilledBuffer);
+        self.values.push(AnyValue::heap_ptr(view.as_raw(), ValueKind::BINVIEW));
         for (bytes, bits) in [(0b1011_1111u8, 3), (0b1010_0000, 3), (0b1000_0000, 3), (0b1010_0000, 4)] {
             self.values.push(self.heap.alloc_bitstring(&[bytes], bits));
-            let shared = alloc_procbin(
+            let shared = alloc_buffer_view(
                 &mut self.heap,
-                SharedBinHandle::from_bytes(&[bytes], bits),
-                0,
+                SharedBinHandle::from_bytes(&[bytes]),
                 bits,
                 StubSite::FilledBuffer,
             );
             self.values
-                .push(AnyValue::heap_ptr(shared.as_raw(), ValueKind::PROCBIN));
+                .push(AnyValue::heap_ptr(shared.as_raw(), ValueKind::BINVIEW));
         }
         self.values.push(self.heap.alloc_bitstring(&[0xff, 0b1010_0000], 11));
     }
@@ -670,23 +676,22 @@ fn binaries_are_equal_by_bit_length_then_bits() {
     let whole = pool.heap.alloc_bitstring(&[0b1010_0000], 8);
     let three = pool.heap.alloc_bitstring(&[0b1010_0000], 3);
     let three_padded = pool.heap.alloc_bitstring(&[0b1011_1111], 3);
-    let three_shared = alloc_procbin(
+    let three_shared = alloc_buffer_view(
         &mut pool.heap,
-        SharedBinHandle::from_bytes(&[0b1010_1010], 3),
-        0,
+        SharedBinHandle::from_bytes(&[0b1010_1010]),
         3,
         StubSite::FilledBuffer,
     );
-    let three_shared = AnyValue::heap_ptr(three_shared.as_raw(), ValueKind::PROCBIN);
+    let three_shared = AnyValue::heap_ptr(three_shared.as_raw(), ValueKind::BINVIEW);
     let different_third_bit = pool.heap.alloc_bitstring(&[0b1000_0000], 3);
-    let framed = alloc_procbin(
+    let framed = window_of_new_buffer(
         &mut pool.heap,
-        SharedBinHandle::from_bytes(b"xab", 24),
+        SharedBinHandle::from_bytes(b"xab"),
         1,
         16,
         StubSite::FilledBuffer,
     );
-    let framed = AnyValue::heap_ptr(framed.as_raw(), ValueKind::PROCBIN);
+    let framed = AnyValue::heap_ptr(framed.as_raw(), ValueKind::BINVIEW);
     let ab = pool.heap.alloc_bitstring(b"ab", 16);
     let registry = pool.schemas.borrow();
     let cmp = TermComparator::new(&pool.node, &registry);

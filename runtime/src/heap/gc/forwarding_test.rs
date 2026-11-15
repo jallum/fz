@@ -9,7 +9,7 @@ use crate::any_value::{
 use crate::heap::SHARED_BIN_THRESHOLD_BYTES;
 use crate::heap::StubSite;
 use crate::heap::{Heap, SIZE_TABLE, Schema, SchemaRegistry};
-use crate::procbin::{SharedBinHandle, alloc_procbin};
+use crate::procbin::{SharedBinHandle, alloc_buffer_view};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -46,7 +46,7 @@ fn a_marker_is_the_target_with_a_set_nibble_and_decodes_back_to_the_target() {
         ValueKind::CLOSURE,
         ValueKind::MAP,
         ValueKind::BITSTRING,
-        ValueKind::PROCBIN,
+        ValueKind::BINVIEW,
         ValueKind::RESOURCE,
     ] {
         unsafe { std::ptr::write_bytes(from_p, 0, 16) };
@@ -69,7 +69,7 @@ fn the_predicate_reads_only_the_kinds_marker_word() {
         ValueKind::CLOSURE,
         ValueKind::MAP,
         ValueKind::BITSTRING,
-        ValueKind::PROCBIN,
+        ValueKind::BINVIEW,
         ValueKind::RESOURCE,
     ] {
         assert_eq!(
@@ -245,18 +245,18 @@ fn an_inline_bitstring_whose_bytes_read_like_a_marker_survives_a_collection() {
 }
 
 #[test]
-fn a_procbin_stub_over_bytes_that_read_like_a_marker_survives_a_collection() {
+fn a_binview_over_bytes_that_read_like_a_marker_survives_a_collection() {
     let mut heap = Heap::new(SIZE_TABLE[0], registry());
     let mut bytes = vec![0u8; SHARED_BIN_THRESHOLD_BYTES + 1];
     bytes[0] = 8;
     bytes[8] = 1;
-    let handle = SharedBinHandle::from_bytes(&bytes, bytes.len() as u64 * 8);
-    let handle_bits = handle.bit_len();
-    let stub = alloc_procbin(&mut heap, handle, 0, handle_bits, StubSite::FilledBuffer);
+    let handle = SharedBinHandle::from_bytes(&bytes);
+    let handle_bits = handle.bytes_len() as u64 * 8;
+    let stub = alloc_buffer_view(&mut heap, handle, handle_bits, StubSite::FilledBuffer);
     let (old, shared) = (stub.as_raw(), stub.shared_raw());
-    let moved = collect_one(&mut heap, ValueKind::PROCBIN, old).procbin_addr().unwrap();
+    let moved = collect_one(&mut heap, ValueKind::BINVIEW, old).binview_addr().unwrap();
     assert_ne!(moved, old);
-    let moved = unsafe { crate::procbin::ProcBin::from_raw(moved) };
+    let moved = unsafe { crate::procbin::BinView::from_raw(moved) };
     assert_eq!(moved.shared_raw(), shared);
     assert_eq!(moved.bit_len(), bytes.len() as u64 * 8);
 }

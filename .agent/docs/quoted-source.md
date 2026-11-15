@@ -447,7 +447,7 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
 - `QuotedSourceRoot` retains the owning `QuotedSourceHeap` by `Rc`, so the
   heap outlives the `AnyValueRef`.
 - The raw `AnyValueRef` is never treated as durable without its heap owner.
-- Runtime bitstring/procbin readers operate on heap-object words
+- Runtime bitstring/binview readers operate on heap-object words
   (`AnyValueRef::heap_object_word()`), not `AnyValueRef::raw_word()`.
 - Quoted graphs are built bottom-up on an immutable heap, so they are acyclic
   by construction. The semantic walk treats unsupported runtime-only value

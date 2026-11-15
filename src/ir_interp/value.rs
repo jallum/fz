@@ -290,7 +290,7 @@ pub(super) fn interp_value_from_ref(value: AnyValueRef, context: &str) -> Result
                 as u32,
         ),
         // Every remaining tag is a heap kind (list, map, struct, closure,
-        // bitstring, procbin, resource) — `HeapRef::new` is the one place
+        // bitstring, binview, resource) — `HeapRef::new` is the one place
         // that knows the boundary, so it draws it here too rather than a
         // second enumeration of the same tags.
         _ => AnyValue::Ref(HeapRef::new(value).map_err(|err| format!("{context}: {err}"))?),

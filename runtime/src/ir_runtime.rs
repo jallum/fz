@@ -24,9 +24,9 @@
 
 use crate::any_value::debug::{Limit, render_value, render_with_limit};
 use crate::any_value::{
-    AnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, ValueKind, closure_addr_from_tagged,
-    closure_captured_count, closure_denotation, closure_fn_ptr, closure_halt_kind, map_addr_from_tagged, object_size,
-    procbin_addr_from_tagged, struct_is_shared, struct_schema_id,
+    AnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, ValueKind, binview_addr_from_tagged,
+    closure_addr_from_tagged, closure_captured_count, closure_denotation, closure_fn_ptr, closure_halt_kind,
+    map_addr_from_tagged, object_size, struct_is_shared, struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -37,7 +37,7 @@ use crate::heap::{AllocStat, StubSite, closure_capture_ref, list_head_ref, list_
 use crate::module_name::STRUCT_MODULE_FIELD;
 use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
-    ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
+    BinView, SharedBin, SharedBinHandle, alloc_buffer_view, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
     referenced_byte_len,
 };
 use crate::process::{ClosureRef, Handler, Process};
@@ -134,7 +134,8 @@ pub extern "C" fn fz_process_heap_alloc_stats(process: *mut Process) -> u64 {
     alloc_stat_entries(process, &mut entries, "continuation", snapshot.continuation);
     alloc_stat_entries(process, &mut entries, "map", snapshot.map);
     alloc_stat_entries(process, &mut entries, "bitstring", snapshot.bitstring);
-    alloc_stat_entries(process, &mut entries, "procbin", snapshot.procbin);
+    alloc_stat_entries(process, &mut entries, "binview", snapshot.binview);
+    alloc_stat_entries(process, &mut entries, "binref", snapshot.binref);
     alloc_stat_entries(process, &mut entries, "shared_bin", snapshot.shared_bin);
     alloc_stat_entries(process, &mut entries, "scalar_box", snapshot.scalar_box);
     alloc_stat_entries(process, &mut entries, "resource", snapshot.resource);
@@ -672,7 +673,7 @@ pub extern "C" fn fz_closure_halt_kind_ref(closure_ref_word: u64) -> u32 {
 
 // ===== Bitstring cluster =====
 
-/// `word` itself when it is the heap object word of a Bitstring or ProcBin.
+/// `word` itself when it is the heap object word of a Bitstring or BinView.
 pub(crate) fn bitstring_like_word(word: u64) -> Option<u64> {
     is_bitstring_like(word).then_some(word)
 }
@@ -1165,7 +1166,7 @@ fn byte_aligned_binary_slice(word: u64, context: &str) -> (*const u8, usize) {
 /// Allocate `text` on the process heap as an fz binary.
 ///
 /// The to-string primitives and `fz_inspect` all end here, so the choice between an inline
-/// bitstring and a shared procbin is made once rather than per primitive.
+/// bitstring and a shared binview is made once rather than per primitive.
 fn alloc_text(process: *mut Process, text: &str) -> u64 {
     let bytes = text.as_bytes();
     let value = (unsafe { &mut *process })
@@ -1381,7 +1382,7 @@ pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_r
     let (right_ptr, right_len) = byte_aligned_binary_slice(right_ref, "fz_binary_concat right");
     let left = unsafe { from_raw_parts(left_ptr, left_len) };
     let right = unsafe { from_raw_parts(right_ptr, right_len) };
-    let left_view = procbin_addr_from_tagged(left_ref).map(|addr| unsafe { ProcBin::from_raw(addr) });
+    let left_view = binview_addr_from_tagged(left_ref).map(|addr| unsafe { BinView::from_raw(addr) });
     let value = unsafe { (&mut *process).heap.alloc_concatenation(left, left_view, right) };
     value.ref_word().raw_word()
 }
@@ -1419,7 +1420,7 @@ pub extern "C" fn fz_binary_referenced_size(ref_word: u64) -> i64 {
 /// Replaces the begin/write-per-field/finalize sequence for the common
 /// case of an all-constant byte-literal bitstring (e.g. `<<1, 2, ..., 70>>`).
 /// `ptr` points at a static byte payload baked into the module; the runtime
-/// copies through `Heap::alloc_bitstring`, which picks inline / ProcBin /
+/// copies through `Heap::alloc_bitstring`, which picks inline / BinView /
 /// SharedBin storage by length.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_bitstring_const(process: *mut Process, ptr: u64, byte_len: u64, bit_len: u64) -> u64 {
@@ -1431,28 +1432,27 @@ pub extern "C" fn fz_alloc_bitstring_const(process: *mut Process, ptr: u64, byte
     value.ref_word().raw_word()
 }
 
-/// Allocate a ProcBin on the current heap referencing a
+/// Allocate a BinRef and a view on the current heap referencing a
 /// compiler-baked static SharedBin in `.data`. The static SharedBin's
 /// refcount anchor (initial value 1) is kept; we retain to climb to 2,
-/// then the new ProcBin's lifetime release brings it back to 1 (anchor
+/// then the new BinRef's lifetime release brings it back to 1 (anchor
 /// preserved). The noop destructor never runs in practice.
 ///
 /// `static_sharedbin` is the address of the 48-byte SharedBin struct
 /// emitted into `.data` by codegen, with bytes_ptr and destructor
-/// relocations resolved by the linker.
+/// relocations resolved by the linker. `bit_len` is the literal's length in
+/// bits: the buffer holds whole bytes, and the view says how many bits count.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_procbin_from_static(process: *mut Process, static_sharedbin: u64) -> u64 {
+pub extern "C" fn fz_alloc_binview_from_static(process: *mut Process, static_sharedbin: u64, bit_len: u64) -> u64 {
     let sb = static_sharedbin as *mut SharedBin;
     let handle = unsafe { SharedBinHandle::retain_from_raw(sb) };
-    let bit_len = handle.bit_len();
-    let pb = alloc_procbin(
+    let pb = alloc_buffer_view(
         &mut (unsafe { &mut *process }).heap,
         handle,
-        0,
         bit_len,
         StubSite::StaticLiteral,
     );
-    heap_ref_word(ValueKind::PROCBIN, pb.as_raw() as *const u8)
+    heap_ref_word(ValueKind::BINVIEW, pb.as_raw() as *const u8)
 }
 
 fn decode_bit_type(t: u32) -> BitType {
@@ -1670,13 +1670,12 @@ pub extern "C" fn fz_bs_read_binary_ref(
     // A byte-aligned field of a shared binary is another view of the same
     // bytes, not a copy. Byte scanners and field extractors take one per step,
     // and copying them is what made scanning quadratic;
-    // `Heap::alloc_bitstring_slice` decides whether the view is worth a stub.
+    // `Heap::alloc_bitstring_slice` decides whether the view is worth a view object.
     let slice_of_shared =
-        pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) && procbin_addr_from_tagged(bs_bits).is_some();
+        pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) && binview_addr_from_tagged(bs_bits).is_some();
     let value = if slice_of_shared {
-        let src = unsafe { ProcBin::from_raw(procbin_addr_from_tagged(bs_bits).expect("procbin source")) };
-        let offset = src.byte_offset() + (pos / 8) as u64;
-        unsafe { heap.alloc_bitstring_slice(src.shared_raw(), offset, (needed_bits / 8) as u64) }
+        let src = unsafe { BinView::from_raw(binview_addr_from_tagged(bs_bits).expect("binview source")) };
+        unsafe { heap.alloc_bitstring_slice(src, (pos / 8) as u64, (needed_bits / 8) as u64) }
     } else if pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) {
         // Byte-aligned is the overwhelmingly common case and is a slice copy
         // rather than a walk over individual bits.
@@ -2670,7 +2669,7 @@ fn utf8_byte_in(bytes: &[u8], index: usize, min: u8, max: u8) -> Result<(), usiz
 ///
 /// # Safety
 /// The caller must pass a tagged heap pointer that points at a
-/// bitstring-like heap object (`Bitstring`/`Heapbin`/`ProcBin`/
+/// bitstring-like heap object (`Bitstring`/`Heapbin`/`BinView`/
 /// `SharedBin`). Anything else triggers a panic via
 /// `bitstring_bit_len`/`bitstring_byte_ptr`.
 #[unsafe(no_mangle)]
@@ -2741,7 +2740,7 @@ pub extern "C" fn fz_matcher_map_get_ref(process: *mut Process, map_ref_word: u6
 
 /// Selective-receive matcher comparison against a
 /// constant byte literal. Returns 1 if `val_bits` points at a
-/// bitstring-like heap value (Bitstring or ProcBin) whose bit-length is
+/// bitstring-like heap value (Bitstring or BinView) whose bit-length is
 /// `byte_len * 8` and whose bytes equal the slice
 /// `bytes_ptr[..byte_len]`. Returns 0 otherwise (including non-bitstring
 /// inputs).
