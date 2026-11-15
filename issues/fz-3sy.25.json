@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-3sy.9"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-3sy",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "An extern whose raises: names a module that is not defined is a compile error",
   "type": "bug",
-  "updated_at": "2026-11-14T23:35:54Z"
+  "updated_at": "2026-11-15T05:43:24Z"
 }
