@@ -434,9 +434,10 @@ pub struct AfterClause {
 pub struct RescueClause {
     /// The variable the exception is bound to, when the head names one.
     pub binding: Option<Spanned<Var>>,
-    /// The exceptions the clause takes, by module name. Empty takes every
-    /// exception, the way a bare variable does.
-    pub exceptions: Vec<ModuleName>,
+    /// The exceptions the clause takes, by module name, each with the span
+    /// of the name as written. Empty takes every exception, the way a bare
+    /// variable does.
+    pub exceptions: Vec<Spanned<ModuleName>>,
     pub body: Spanned<Expr>,
     /// Span of the whole clause: `head -> body`.
     pub span: Span,

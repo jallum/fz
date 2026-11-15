@@ -1,0 +1,15 @@
+#---
+# purpose: a rescue clause that names a module with no struct can never match; it is reported under the name as a struct literal of that module is
+# expect: diagnostic
+#---
+defmodule Plain do
+  def x(), do: 1
+end
+
+def main() do
+  try do
+    raise ArgumentError, "x"
+  rescue
+    e in Plain -> dbg(e)
+  end
+end

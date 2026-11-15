@@ -14955,6 +14955,73 @@ fn a_call_to_a_function_a_dotted_module_lacks_names_the_function() {
     );
 }
 
+fn rescuing(head: &str) -> String {
+    format!(
+        "defmodule Plain do\n  def x(), do: 1\nend\ndefmodule Point do\n  defstruct [:x]\nend\n\
+         def main() do\n  try do\n    raise ArgumentError, \"x\"\n  rescue\n    {head} -> 1\n    _ -> 2\n  end\nend\n"
+    )
+}
+
+/// A rescue clause takes exceptions by their struct, so a name that is no
+/// struct can never match. A misspelt exception is how such a clause gets
+/// written, and it is refused under the name, as a struct literal's is.
+#[test]
+fn a_rescue_clause_that_names_no_struct_is_refused_at_the_name() {
+    for (head, code, message, underlined) in [
+        (
+            "_e in MyApp.NotThere",
+            codes::RESOLVE_UNKNOWN_MODULE,
+            "module `MyApp.NotThere` is not defined",
+            "MyApp.NotThere",
+        ),
+        (
+            "_e in Plain",
+            codes::RESOLVE_NOT_A_STRUCT,
+            "module `Plain` is not a struct",
+            "Plain",
+        ),
+        (
+            "_e in [ArgumentError, Nope]",
+            codes::RESOLVE_UNKNOWN_MODULE,
+            "module `Nope` is not defined",
+            "Nope",
+        ),
+        (
+            "Nope",
+            codes::RESOLVE_UNKNOWN_MODULE,
+            "module `Nope` is not defined",
+            "Nope",
+        ),
+    ] {
+        assert_eq!(
+            diagnostics_of_a_failed_compile(&rescuing(head)),
+            vec![(code.0, message.to_string(), underlined.to_string())],
+            "rescue {head}"
+        );
+    }
+}
+
+/// A struct that is no exception can never be raised either, but Elixir says
+/// nothing about rescuing one, and neither does fz.
+#[test]
+fn a_rescue_clause_that_names_a_struct_compiles_whether_or_not_it_is_an_exception() {
+    for head in ["_e in Point", "_e in [KeyError, ArgumentError]", "ArgumentError"] {
+        let tel = ConfiguredTelemetry::new();
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("app.fz".to_string()),
+            text: rescuing(head),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        assert!(compiler.run_root_interp(root).is_ok(), "rescue {head}");
+    }
+}
+
 #[test]
 fn compiler2_submit_module_root_without_code_reports_one_unknown_module_diag() {
     let tel = ConfiguredTelemetry::new();

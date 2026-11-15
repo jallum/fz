@@ -584,6 +584,20 @@ fn collect_local_dispatch_requirements(
                 )?;
             }
             for clause in rescue {
+                for exception in &clause.exceptions {
+                    let module = world.resolve_module_name(namespace, &exception.node);
+                    record_struct_reference(
+                        world,
+                        tel,
+                        owner_module,
+                        owner,
+                        module,
+                        std::iter::empty(),
+                        exception.span,
+                        reads,
+                        waits,
+                    )?;
+                }
                 collect_local_dispatch_requirements(
                     world,
                     tel,
@@ -736,10 +750,10 @@ fn collect_local_dispatch_requirements(
             }
         }
         Expr::Struct { module, fields } => {
+            let module = world.resolve_module_target(namespace, module);
             record_struct_reference(
                 world,
                 tel,
-                namespace,
                 owner_module,
                 owner,
                 module,
@@ -795,10 +809,10 @@ pub(super) fn collect_local_pattern_requirements(
 ) -> Result<(), FatalError> {
     match &pattern.node {
         Pattern::Struct { module, fields } => {
+            let module = world.resolve_module_target(namespace, module);
             record_struct_reference(
                 world,
                 tel,
-                namespace,
                 owner_module,
                 owner,
                 module,
@@ -880,24 +894,20 @@ pub(super) fn collect_local_pattern_requirements(
 /// is unknown until `StructDefined(Mod)` publishes, so the caller must wait
 /// rather than guess an order from the literal/pattern's own field list.
 ///
-/// Module resolution mirrors `Lowerer`'s struct lowering exactly (same
-/// `resolve_module_target` call against the same `namespace`),
-/// so the module identity this pre-pass records obligations/waits against is
-/// always the module the later `Lowerer` pass will actually consume.
+/// `module_id` is the module the name resolves to in the reference's own
+/// namespace, the same one the later `Lowerer` pass consumes.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn record_struct_reference<'a>(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
-    namespace: Namespace,
     owner_module: ModuleId,
     owner: SourceOwner,
-    module: &crate::ast::ModuleTarget,
+    module_id: ModuleId,
     fields: impl Iterator<Item = &'a str>,
     span: Span,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(), FatalError> {
-    let module_id = world.resolve_module_target(namespace, module);
     let requester = InterfaceRequester {
         owner,
         module: owner_module,
@@ -2779,7 +2789,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 continue;
             }
             for exception in &rescue.exceptions {
-                let atom = self.world.module_alias_atom(self.namespace, exception);
+                let atom = self.world.module_alias_atom(self.namespace, &exception.node);
                 let wraps = atom == ERLANG_ERROR;
                 arms.push(HandlerArm::rescue(
                     PatternRow {

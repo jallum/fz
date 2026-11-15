@@ -1,0 +1,11 @@
+#---
+# purpose: a rescue clause takes exceptions by their struct, so one that names a module nothing defines can never match; it is reported under the name, in a list as well
+# expect: diagnostic
+#---
+def main() do
+  try do
+    raise ArgumentError, "x"
+  rescue
+    e in [ArgumentError, MyApp.NotThere] -> dbg(e)
+  end
+end

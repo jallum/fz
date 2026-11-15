@@ -811,6 +811,10 @@ cause (a module, struct, function, type) become the diagnostic that names it,
 and every other kind becomes `internal/unresolved-wait`, so a stalled wait is
 never dropped.
 
+A job parked on several facts stays parked until all of them are answered,
+so the standing waits include facts that have since been published. The
+report skips those: only an unanswered fact is a stall.
+
 A wait on a module or a function the source defines is the compiler's own
 wait (`World::source_defines_what_is_awaited`): the thing is not missing, it
 did not finish because something it needs did not. `main` calling a module

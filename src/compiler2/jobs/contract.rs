@@ -6,7 +6,7 @@
 
 use crate::fast_hash::{HashMap, HashSet};
 
-use crate::ast::{Attribute, ModuleTarget};
+use crate::ast::Attribute;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
@@ -282,13 +282,13 @@ fn reference_declared_exception(
     reads: &mut Vec<FactKey>,
 ) -> Result<HashSet<FactKey>, FatalError> {
     let mut waits = HashSet::default();
+    let module = world.resolve_module_name(source.namespace, &raises.exception);
     record_struct_reference(
         world,
         tel,
-        source.namespace,
         source.owner_module,
         source.owner,
-        &ModuleTarget::Unresolved(raises.exception.clone()),
+        module,
         [MESSAGE_FIELD].into_iter(),
         raises.span,
         reads,
