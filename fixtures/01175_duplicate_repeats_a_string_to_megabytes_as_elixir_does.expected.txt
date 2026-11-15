@@ -1,0 +1,5 @@
+{20000010, "abcdefghijab", "fghijabcdefg", "ijabcdefghij"}
+true
+["", "ab", "abab", "ababab", "abababab", "ababababab"]
+{"", "x", "ééé"}
+true
