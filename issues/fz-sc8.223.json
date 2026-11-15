@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.144"
+  ],
   "created": "2026-11-15T15:04:53Z",
   "description": "A macro of another module that calls M.seven() while M's body expands it stalls: the compile-time run M's walk waits on needs ModuleInterface(M) (remote call) or FunctionDefined(M.f) (local), which only M's walk produces. The stall frontier words it as unrelated failures: 'module `M` is not defined', 'function `main/0` is not defined', 'module `Helper` does not export `make/0`'. Elixir: '** (UndefinedFunctionError) function M.seven/0 is undefined (function not available) ... expanding macro: Helper.make/0'. Probe: scratchpad s144/p/back.fz (Helper.make calls M.seven; M imports Helper, defines seven/0, then calls make()). Done when: the stall frontier recognises a definition-time run that waits on the module whose walk waits on it, and reports one diagnostic naming the called function and that the module is still being defined, on interp/run/build; refusal fixture for the macro case.",
   "id": "fz-sc8.223",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Code that runs while a module is being defined and calls into it is refused in Elixir's words",
   "type": "bug",
-  "updated_at": "2026-11-15T15:04:53Z"
+  "updated_at": "2026-11-15T15:04:54Z"
 }
