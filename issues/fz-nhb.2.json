@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T20:14:27Z",
+  "description": "## Why\n```\nfor _ \u003c- 1..3 do\n  IO.inspect(:x)\nend\n```\nfails with parse/expected-token: unexpected item without a newline: Underscore at 1:5. Elixir prints :x three times. Found in fixture 01115's oracle twin. Related but distinct: fz-sc8.91 (a def head whose operands are both underscores).\n\n## What changes\nAn underscore is a generator pattern in a for comprehension, as any other pattern is.\n\n## Signal\nA new fixture with the program above passes on all three paths, oracle-checked.",
+  "id": "fz-nhb.2",
+  "labels": [],
+  "parent": "fz-nhb",
+  "priority": 2,
+  "status": "open",
+  "title": "for _ \u003c- range do ... end parses",
+  "type": "bug",
+  "updated_at": "2026-11-15T20:14:27Z"
+}
