@@ -4,14 +4,16 @@
     "fz-9x7.4"
   ],
   "blocks": [],
+  "closed_at": "2026-11-15T04:05:34Z",
+  "close_reason": "Merged to develop as 20bc3f7d5 (PR #592)",
   "created": "2026-11-15T00:37:40Z",
   "description": "Every delivered call went through a deliver_lanes__* shim (deliver_entry_continuation_for_source, src/compiler2/jobs/native.rs). The shim is a continuation whose body is one TailCall into the __resume_N entry with the same captures, so each continuation built two identical heap frames, and each shim jump spent a reduction. On the distiller 1,312 of 1,326 shims are pure forwarders. When the entry's DeliveredResume layout equals the delivered source layout (the transport plan's settled endpoints, compared as resolve_return_flow already does for Tail), the call site's continuation is the entry continuation itself.\nMeasured (spike /private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/9x7-4/shim-spike.patch on c5a03e198): continuation allocs 74.2M -\u003e 38.1M on the distiller 32k trace; user time 2.86 -\u003e 2.61 s; distiller compile 3.07 -\u003e 1.87 s; binary 6.13 -\u003e 4.94 MB; full trace retired instructions 420.4G (base) -\u003e 407.9G. Peak RSS at a single trace length can be higher or lower: it steps up by 60-100 MB when a major lands, and fewer reductions shift that phase. Over an 11-length sweep (16k-41k lines) mean RSS is 224 MB vs base 237 MB (/private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/9x7-gc/notes.md). Young overshoot at collection is ~1% of budget for every variant (hypothesis 'longer quanta overshoot' refuted).\nPins (all from the removed frame or the removed reduction): 01161/01163 3-\u003e2, 01164 1024-\u003e1015, 01165 rows 3-\u003e2 and 6-\u003e2, quicksort {103,5408}-\u003e{52,2720}, map_atom_order 250-\u003e143, a_matched_reply collected yields 25-\u003e18, a_large_list yield sizes.\nAcceptance: full gate + poison test green; the 14 non-identity shims stay; a test pins one frame per continuation for a delivered call.",
   "id": "fz-9x7.6",
   "labels": [],
   "parent": "fz-9x7",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A call whose result already has its resume entry's layout continues straight into that entry",
   "type": "task",
-  "updated_at": "2026-11-15T00:37:40Z"
+  "updated_at": "2026-11-15T04:05:34Z"
 }
