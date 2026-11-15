@@ -4,6 +4,7 @@
     "fz-t93.6"
   ],
   "blocks": [
+    "fz-t93.4",
     "fz-xcu"
   ],
   "created": "2026-11-14T04:26:08Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Artifacts are root-scoped engine derivations; the pull system is gone",
   "type": "task",
-  "updated_at": "2026-11-14T04:26:36Z"
+  "updated_at": "2026-11-15T01:06:26Z"
 }
