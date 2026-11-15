@@ -4,14 +4,15 @@
     "fz-afu.15"
   ],
   "blocks": [],
+  "closed_at": "2026-11-15T02:06:09Z",
   "created": "2026-11-14T13:13:31Z",
   "description": "Scheduler::enqueue / Agenda::enqueue is the one door every request passes. Today only wake requests record whether they started a job or found it already pending (WakeDisposition::Coalesced); a demand that finds its job already queued returns false and is not counted; a job queued and then parked again at the pop gate (pop_runnable: missing gates or concluded answers) is not counted by reason. The fz2_cli work pins' wakes field (tests/fz2_cli.rs ~2470, fixture 00181 = 130) sums Enqueued and Coalesced wake records, and its comment says it is not a count of jobs run; the comment is a ticket-number history.\n\nCount at the door, by WorkStart reason: requested = started + already_pending; started = ran + reparked (ran is the existing WorkStartTally charged at record_run_start). Pins assert work (runs, evaluations) separately from churn (already_pending, reparked); the mixed wakes field and its history comment go.\n\nProof: on 00181 the split adds back to today's 130 (after fz-afu.15: 133, the three new records already_pending, runs 204 unchanged). Telemetry events carry the new counts (jsonl). Docs: .agent/docs/fact-engine.md describes the three counts.",
   "id": "fz-t93.15",
   "labels": [],
   "parent": "fz-t93",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Every request to queue a job is counted as started, already pending, or parked again",
   "type": "task",
-  "updated_at": "2026-11-14T15:32:01Z"
+  "updated_at": "2026-11-15T02:06:09Z"
 }
