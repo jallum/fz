@@ -21,7 +21,7 @@
   ],
   "priority": 3,
   "status": "open",
-  "title": "Experiment: a stranded frame's memory is reused",
+  "title": "A frame the pop misses gives its memory to the next runtime allocation that fits",
   "type": "task",
   "updated_at": "2026-11-15T01:16:17Z"
 }
