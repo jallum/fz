@@ -6,13 +6,13 @@
   ],
   "blocks": [],
   "created": "2026-11-14T04:26:07Z",
-  "description": "ExecutableEffects(E) and CallableConstruction(position) become engine derivations whose group concludes together. Deletes pull.rs pending_strong_component (16,005 calls on the distiller, 651 closed searches over 389 distinct pairs, groups up to 101), the pending-record cycle evidence, and with it the 168 missed cycles (records dropped by settle Wake 123 / Invalidate 39 / both 6). Predict: dumps identical; missed cycles 0.",
+  "description": "ExecutableEffects(E) and CallableConstruction(position) become engine derivations whose group concludes together. Deletes pull.rs pending_strong_component (16,005 calls on the distiller, 651 closed searches over 389 distinct pairs, groups up to 101), the pending-record cycle evidence, and with it the 168 missed cycles (records dropped by settle Wake 123 / Invalidate 39 / both 6). Predict: dumps identical; missed cycles 0.\n\nSpiked 2026-11-14 on e47d83e40 (scratchpad t93_4/findings.md, spike.diff, tests_spike.log; ExecutableEffects only): dumps and outputs identical, but +1.0% distiller instructions (12.44G -\u003e 12.58G, n=5) and +3,345 DeriveExecutableEffects jobs. An engine job's product wait on a same-root product deadlocks today's driver: the active drive's scope parks the request until the drive ends, the drive waits on the job. The spike needed a take_parked nested-drive bridge (1,103 extra drives) and still failed macro_product_test ('runtime demand with no ready producer') and a public_trace scenario ('product movement outside a session'). Premise correction: pending_strong_component's calls and missed cycles are mostly Reach (8,776 calls, 155 of 155 missed cycles after ExecutableEffects moves; CallableConstruction 3,471 calls, 0 missed). So this step cannot delete pending_strong_component alone. Reordered AFTER fz-t93.7: once Materialized is a derivation, the wait is an ordinary fact wait and needs no bridge.",
   "id": "fz-t93.4",
   "labels": [],
   "parent": "fz-t93",
   "priority": 2,
-  "status": "in_progress",
+  "status": "open",
   "title": "Recursive product groups are engine derivations",
   "type": "task",
-  "updated_at": "2026-11-15T01:06:26Z"
+  "updated_at": "2026-11-15T01:06:27Z"
 }
