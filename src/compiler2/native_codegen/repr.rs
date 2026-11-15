@@ -80,6 +80,7 @@ impl ExternLane for ExternTy {
             | ExternTy::Bool
             | ExternTy::Any
             | ExternTy::Binary
+            | ExternTy::BinaryCursor
             | ExternTy::CString => Some(types::I64),
             ExternTy::Unit | ExternTy::Never => None,
         }

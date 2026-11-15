@@ -626,7 +626,7 @@ fn demand_contains_callable(demand: &RuntimeDemand) -> bool {
     demand.is_callable()
         || match &demand.shape {
             ShapeDemand::TupleFields(fields) => fields.iter().any(demand_contains_callable),
-            ShapeDemand::Ignore | ShapeDemand::Whole => false,
+            ShapeDemand::Ignore | ShapeDemand::Whole | ShapeDemand::Matched => false,
         }
 }
 
@@ -710,7 +710,7 @@ fn project_generic_owner_node(
                 );
             }
         }
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) => {}
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Cursor { .. } => {}
     }
 }
 
@@ -785,7 +785,7 @@ fn record_generic_owner_facts(
                 record_generic_owner_facts(world, facts, field.structural, field_ty, field_demand, publication);
             }
         }
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) => {}
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Cursor { .. } => {}
     }
 }
 
@@ -862,7 +862,7 @@ fn callee_supplies_target_captures(world: &mut World, callee: TransportLayout, t
                 _ => descr.capture_layouts.len(),
             }
         }
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Tuple(_) => 0,
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Tuple(_) | ShapeDescr::Cursor { .. } => 0,
     };
     held == world.activation_capture_count(target)
 }
@@ -1103,7 +1103,7 @@ fn evaluate_transport_recipe(
                             RecipeLayout::Exact(derived_transport_layout(world, ty, demand, &[]))
                         }
                     }
-                    ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => {
+                    ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) | ShapeDescr::Cursor { .. } => {
                         RecipeLayout::Exact(derived_transport_layout(world, ty, demand, &[]))
                     }
                 },
@@ -2017,7 +2017,8 @@ fn produce_named_transport_position(
 /// crossing it travels as a single boxed reference instead of unboxed lanes.
 ///
 /// Two boundaries are one word wide:
-/// - an `any`-typed extern slot holding a tuple or callable;
+/// - an `any`-typed extern slot holding a tuple or callable, and an extern's
+///   return holding a binary that a caller only takes apart;
 /// - the return of the root's entry executable when the host asks for its
 ///   value, because the driver hands that one word to the halt continuation.
 ///
@@ -2030,13 +2031,15 @@ fn position_requires_value_ref(
     layout: TransportLayout,
 ) -> bool {
     let is_tuple = matches!(world.shape(layout.structural), ShapeDescr::Tuple(_));
+    let is_cursor = matches!(world.shape(layout.structural), ShapeDescr::Cursor { .. });
     let composite = is_tuple || matches!(world.shape(layout.structural), ShapeDescr::Callable(_));
     match position {
         TransportPosition::ExecutableInput { semantic_index, .. } => extern_wire
             .and_then(|signature| signature.params.get(*semantic_index))
             .is_some_and(|param| *param == crate::fz_ir::ExternTy::Any && composite),
         TransportPosition::ExecutableReturn { .. } => {
-            extern_wire.is_some_and(|signature| signature.ret == crate::fz_ir::ExternTy::Any && composite)
+            extern_wire
+                .is_some_and(|signature| (signature.ret == crate::fz_ir::ExternTy::Any && composite) || is_cursor)
                 || (is_tuple && is_root_value_entry(world, executable))
         }
         _ => false,
@@ -2129,6 +2132,10 @@ fn shape_carries(world: &mut World, shape: ShapeId, ty: Ty) -> bool {
                     })
         }
         ShapeDescr::Callable(_) => true,
+        &ShapeDescr::Cursor { source, .. } => {
+            let source_ty = world.lane(source).ty;
+            world.types().is_subtype(&ty, &source_ty)
+        }
     }
 }
 
@@ -2590,11 +2597,14 @@ fn layout_from_demand<T: crate::telemetry::Telemetry>(
     if demand.is_callable() {
         return callable_layout_from_demand(world, reads, ty, demand);
     }
+    if demand.shape == ShapeDemand::Matched && world.types().is_binary(&ty) {
+        return RecipeLayout::Exact(TransportLayout::structural(cursor_shape(world, ty)));
+    }
     let (field_tys, field_demands) = match &demand.shape {
         ShapeDemand::Ignore => {
             return RecipeLayout::Exact(TransportLayout::structural(world.intern_shape(ShapeDescr::Nothing)));
         }
-        ShapeDemand::Whole | ShapeDemand::TupleFields(_) => {
+        ShapeDemand::Whole | ShapeDemand::Matched | ShapeDemand::TupleFields(_) => {
             let Some(field_tys) = decomposed_field_tys(world, ty, demand) else {
                 return RecipeLayout::Exact(TransportLayout::structural(value_lane_shape(world, ty)));
             };
@@ -2717,7 +2727,10 @@ fn boundary_resolution_symbols_for_flow_surfaces(
 /// reference, as a value of an inexact tuple type does.
 fn decomposed_field_tys(world: &mut World, ty: Ty, demand: &RuntimeDemand) -> Option<Vec<Ty>> {
     let fields = exact_tuple_field_tys(world, ty)?;
-    if matches!(demand.shape, ShapeDemand::Whole) && !demand.is_callable() && !fits_lane_budget(world, &fields) {
+    if matches!(demand.shape, ShapeDemand::Whole | ShapeDemand::Matched)
+        && !demand.is_callable()
+        && !fits_lane_budget(world, &fields)
+    {
         return None;
     }
     Some(fields)
@@ -2761,6 +2774,15 @@ fn whole_value_lanes(world: &mut World, ty: Ty) -> usize {
 fn exact_tuple_field_tys(world: &mut World, ty: Ty) -> Option<Vec<Ty>> {
     let arity = world.types().exact_tuple_arity(&ty)?;
     Some(tuple_field_tys(world, ty, arity))
+}
+
+/// A binary taken apart travels as its source and the bit position its rest
+/// starts at.
+fn cursor_shape(world: &mut World, ty: Ty) -> ShapeId {
+    let source = value_lane(world, ty);
+    let int = world.types_mut().int();
+    let position = value_lane(world, int);
+    world.intern_shape(ShapeDescr::Cursor { source, position })
 }
 
 fn value_lane_shape(world: &mut World, ty: Ty) -> ShapeId {

@@ -1,0 +1,15 @@
+"defghij"
+true
+""
+:short
+true
+:not_a_binary
+{97, "bcdefghij", ["bcdefghij", "bcdefghij"]}
+{102, "ghij", ["ghij", "ghij"]}
+{122, "", ["", ""]}
+:empty
+~c"hello"
+{99, 100, "efghij", 6}
+""
+true
+50

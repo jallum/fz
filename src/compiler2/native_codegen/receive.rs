@@ -1329,7 +1329,8 @@ fn fail_guard<M: cranelift_module::Module>(body: &mut DispatchBody<'_, '_, M>, f
 /// A call to an extern, made from the receive matcher.
 ///
 /// The matcher holds its values as refs or raw words, so the call carries three
-/// classes of operand: an integer, a float, and a reference word. A result is
+/// classes of operand: an integer, a float, and a reference word; a binary that
+/// a `binary_cursor` parameter reads is a reference word and a position. A result is
 /// one of those or a boolean word, answered as the atom `true` or `false`. The
 /// guard's extern was admitted on that rule where the node was made, so no
 /// other class reaches here. A checked return's failure leaves through `fail`: the clause does not
@@ -1357,6 +1358,14 @@ fn emit_guard_extern<M: cranelift_module::Module>(
             }
             ExternTy::F64 => (types::F64, receive_value_float(body, value)?),
             ExternTy::Any => (types::I64, emit_receive_value_ref(body, ctx, value)?),
+            ExternTy::BinaryCursor => {
+                // A guard holds the binary whole: its view starts at 0.
+                let whole = emit_receive_value_ref(body, ctx, value)?;
+                let from_the_start = body.b.ins().iconst(types::I64, 0);
+                sig.params.push(ir::AbiParam::new(types::I64));
+                call_args.push(whole);
+                (types::I64, from_the_start)
+            }
             other => {
                 return Err(CodegenError::new(format!(
                     "guard extern `{}` has a {other:?} parameter, which the receive matcher does not carry",

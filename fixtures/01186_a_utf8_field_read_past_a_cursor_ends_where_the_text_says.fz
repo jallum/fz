@@ -1,0 +1,40 @@
+#---
+# purpose: "a utf8 field read from a rest ends where its bytes say, and the walk goes on from there"
+# kind: run
+# oracle: 01186_a_utf8_field_read_past_a_cursor_ends_where_the_text_says.oracle.exs
+# oracle.stamp: 6e93d37d4bc474f3
+#---
+#
+# A rest that is only taken apart travels as the binary it is read from and the
+# bit position it starts at. A utf8 field is as wide as its first byte says, so
+# where the next field starts is read out of the binary. These walks read
+# one scalar, two, and one after a lead byte, at each width, and stop at
+# an invalid or truncated sequence.
+defmodule Scalars do
+  def decode(bytes), do: decode(bytes, [])
+  defp decode(<<c :: utf8, rest :: binary>>, acc), do: decode(rest, [{c} | acc])
+  defp decode(<<>>, acc), do: Enum.reverse(acc)
+  defp decode(rest, acc), do: {Enum.reverse(acc), byte_size(rest)}
+
+  def pairs(bytes), do: pairs(bytes, [])
+  defp pairs(<<a :: utf8, b :: utf8, rest :: binary>>, acc), do: pairs(rest, [{a + b} | acc])
+  defp pairs(rest, acc), do: {Enum.reverse(acc), byte_size(rest)}
+
+  def after_lead(bytes), do: after_lead(bytes, [])
+  defp after_lead(<<_, c :: utf8, rest :: binary>>, acc), do: after_lead(rest, [{c, byte_size(rest)} | acc])
+  defp after_lead(rest, acc), do: {Enum.reverse(acc), byte_size(rest)}
+
+  def total(bytes), do: total(bytes, 0)
+  defp total(<<c :: utf8, rest :: binary>>, acc), do: total(rest, acc + c)
+  defp total(_, acc), do: acc
+end
+
+IO.inspect(Scalars.decode("aé€😀z"))
+IO.inspect(Scalars.decode(""))
+IO.inspect(Scalars.decode(<<97, 0xC3, 98>>))
+IO.inspect(Scalars.decode(<<97, 0xE2, 0x82>>))
+IO.inspect(Scalars.pairs("aé€😀zq"))
+IO.inspect(Scalars.pairs("aé€"))
+IO.inspect(Scalars.after_lead("1a2é3€4😀"))
+IO.inspect(Scalars.after_lead("1a2"))
+IO.inspect(Scalars.total(String.duplicate("aé€😀", 500)))

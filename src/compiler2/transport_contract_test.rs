@@ -6186,7 +6186,7 @@ fn shape_matches_surface_input_ty(world: &mut World, shape: ShapeId, ty: Ty) -> 
             })
         }
         ShapeDescr::Callable(_) => world.types().arrow_result(&ty).is_some(),
-        ShapeDescr::Nothing => false,
+        ShapeDescr::Nothing | ShapeDescr::Cursor { .. } => false,
     }
 }
 
@@ -6345,7 +6345,7 @@ fn shape_contains_callable(world: &World, shape: ShapeId) -> bool {
     match shape_descr(world, shape) {
         ShapeDescr::Callable(_) => true,
         ShapeDescr::Tuple(items) => items.iter().any(|item| shape_contains_callable(world, item.structural)),
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) => false,
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Cursor { .. } => false,
     }
 }
 
@@ -6355,7 +6355,7 @@ fn first_callable_in_shape(world: &World, shape: ShapeId) -> Option<super::trans
         ShapeDescr::Tuple(items) => items
             .iter()
             .find_map(|item| first_callable_in_shape(world, item.structural)),
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) => None,
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Cursor { .. } => None,
     }
 }
 

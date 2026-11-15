@@ -2,7 +2,7 @@ use std::cell::OnceCell;
 use std::slice::from_raw_parts;
 
 use super::backend::{
-    backend_callable_identity, decode_field, env_get, field_spans_for, materialize_transport_value,
+    backend_callable_identity, decode_field, env_get, field_spans_for, materialize_cursor, materialize_transport_value,
     transport_field_view,
 };
 use super::extern_call::{ExternCallValue, call_fixed_extern};
@@ -337,6 +337,11 @@ fn materialize_prepared_key(proc: *mut Process, module: &Module, key: &GroundVal
 /// program published as nothing.
 struct DispatchExecState {
     values: Vec<Option<BackendBoundValue>>,
+    /// The rests a bitstring question has matched and nothing has yet made into
+    /// a binary: the source binary and the bit position each starts at. A rest
+    /// stays here until a subject read asks for it whole, so a branch that
+    /// never reads it builds nothing.
+    rests: Vec<Option<(AnyValue, u64)>>,
     journal: Vec<SubjectId>,
 }
 
@@ -344,6 +349,7 @@ impl DispatchExecState {
     fn new(subjects: usize) -> Self {
         Self {
             values: vec![None; subjects],
+            rests: vec![None; subjects],
             journal: Vec::new(),
         }
     }
@@ -359,6 +365,15 @@ impl DispatchExecState {
         self.journal.push(subject);
     }
 
+    fn set_rest(&mut self, subject: SubjectId, source: AnyValue, position: u64) {
+        self.rests[subject.0 as usize] = Some((source, position));
+        self.journal.push(subject);
+    }
+
+    fn rest(&self, subject: SubjectId) -> Option<(AnyValue, u64)> {
+        self.rests.get(subject.0 as usize).copied().flatten()
+    }
+
     /// Where the branch a test is about to open begins.
     fn branch(&self) -> usize {
         self.journal.len()
@@ -368,6 +383,7 @@ impl DispatchExecState {
     fn undo(&mut self, branch: usize) {
         for subject in self.journal.drain(branch..) {
             self.values[subject.0 as usize] = None;
+            self.rests[subject.0 as usize] = None;
         }
     }
 }
@@ -512,6 +528,12 @@ impl<'a> Dispatch<'a> {
         if self.state.get(subject).is_some() {
             return Ok(());
         }
+        if let Some((source, position)) = self.state.rest(subject) {
+            let whole = materialize_cursor(self.proc(), source, AnyValue::Int(position as i64))
+                .map_err(DispatchStop::broken)?;
+            self.state.set(subject, BackendBoundValue::Runtime(whole));
+            return Ok(());
+        }
         let plan = self.plan;
         let proc = self.proc();
         let transport = self.operands.transport;
@@ -624,11 +646,8 @@ impl<'a> Dispatch<'a> {
                 };
                 return Ok(unsafe { struct_schema_id(heap) } == interp_tuple_schema_id(self.runtime, *arity as usize));
             }
-            Region::Equal(_)
-            | Region::List(_)
-            | Region::MapKind
-            | Region::MapKeyPresent { .. }
-            | Region::Bitstring(_) => {}
+            Region::Bitstring(shape) => return self.bitstring_region_hit(subject, shape),
+            Region::Equal(_) | Region::List(_) | Region::MapKind | Region::MapKeyPresent { .. } => {}
         }
         // What is left wants the whole value, so it is built once here and the
         // region says what to ask of it.
@@ -663,16 +682,46 @@ impl<'a> Dispatch<'a> {
                 }
                 Ok(true)
             }
-            Region::Bitstring(shape) => {
-                let Ok(value) = word.value(self.proc()) else {
-                    return Ok(false);
-                };
-                Ok(self.read_bitstring(value, shape))
-            }
-            Region::Type(_) | Region::TupleArity(_) | Region::Guard(_) => {
-                unreachable!("a type, arity or guard question fetches for itself and answers above")
+            Region::Type(_) | Region::TupleArity(_) | Region::Guard(_) | Region::Bitstring(_) => {
+                unreachable!("a type, arity, guard or bitstring question fetches for itself and answers above")
             }
         }
+    }
+
+    /// A bitstring question reads the subject where it is: a cursor is read
+    /// from its position without being made whole, and a whole binary from its
+    /// first bit.
+    fn bitstring_region_hit(&mut self, subject: SubjectId, shape: &BitstringShape) -> Result<bool, DispatchStop> {
+        if !self.resolved(subject)? {
+            return Ok(false);
+        }
+        let held = required(self.state.get(subject))?;
+        let (source, start) = match held {
+            BackendBoundValue::Transport { shape, lanes }
+                if matches!(
+                    self.operands.transport.interners().shape(*shape),
+                    crate::compiler2::transport::ShapeDescr::Cursor { .. }
+                ) =>
+            {
+                let [source, position] = lanes.as_slice() else {
+                    return Err(DispatchStop::broken("a cursor has a source and a position".to_string()));
+                };
+                let Some(position) = position.as_i64() else {
+                    return Err(DispatchStop::broken("a cursor position must be an integer".to_string()));
+                };
+                (*source, position as u64)
+            }
+            _ => {
+                let Some(word) = self.subject_value(subject)? else {
+                    return Ok(false);
+                };
+                (word, 0)
+            }
+        };
+        let Ok(value) = source.value(self.proc()) else {
+            return Ok(false);
+        };
+        Ok(self.read_bitstring(value, source, start, shape))
     }
 
     /// The subject's runtime word, or `None` where it cannot be produced and the
@@ -789,8 +838,12 @@ impl<'a> Dispatch<'a> {
             PatternGuardExpr::Fails => return Err(DispatchStop::NoMatch),
             PatternGuardExpr::Extern { extern_fn, args } => {
                 let mut values = Vec::with_capacity(args.len());
-                for arg in args {
+                for (arg, ty) in args.iter().zip(&extern_fn.params) {
                     values.push(self.eval_guard(arg)?);
+                    if *ty == crate::fz_ir::ExternTy::BinaryCursor {
+                        // A guard holds the binary whole: its view starts at 0.
+                        values.push(AnyValue::Int(0));
+                    }
                 }
                 match call_fixed_extern(self.runtime, (&**extern_fn).into(), &values).map_err(DispatchStop::Broken)? {
                     ExternCallValue::Scalar(value) => value,
@@ -854,7 +907,7 @@ impl<'a> Dispatch<'a> {
     /// Walk a bitstring subject field by field, checking that each fits. A
     /// field's value is built and bound only when a question or the winning
     /// outcome reads it.
-    fn read_bitstring(&mut self, value: RuntimeAnyValue, shape: &BitstringShape) -> bool {
+    fn read_bitstring(&mut self, value: RuntimeAnyValue, source: AnyValue, start: u64, shape: &BitstringShape) -> bool {
         let Some(value_bits) = value.heap_object_word() else {
             return false;
         };
@@ -865,7 +918,7 @@ impl<'a> Dispatch<'a> {
         let proc = self.proc();
         let source_ref = value.ref_word().raw_word();
         let bit_len = fz_bs_bit_len_ref(source_ref);
-        let mut pos = 0;
+        let mut pos = start;
         for field_subject in &shape.fields {
             let extraction = plan.bitstring_extraction(*field_subject);
             let field = &extraction.spec;
@@ -883,7 +936,14 @@ impl<'a> Dispatch<'a> {
             let Some(end) = bs_field_end(field_spec, size_value, pos, source_ref) else {
                 return false;
             };
-            if plan.graph.asks(*field_subject) || self.outcome_reads.contains(field_subject) {
+            let is_rest = extraction.is_last
+                && field.size.is_none()
+                && matches!(field.kind, BitstringFieldKind::Binary | BitstringFieldKind::Bits);
+            if is_rest && !plan.graph.asks(*field_subject) {
+                if self.outcome_reads.contains(field_subject) {
+                    self.state.set_rest(*field_subject, source, pos);
+                }
+            } else if plan.graph.asks(*field_subject) || self.outcome_reads.contains(field_subject) {
                 let Ok(extracted) = interp_read_bit_field(
                     proc,
                     source_ref,
@@ -970,6 +1030,14 @@ impl TypeTest<'_> {
             }
             BackendBoundValue::Transport { shape, lanes } => (*shape, lanes),
         };
+        if matches!(
+            transport.interners().shape(shape),
+            crate::compiler2::transport::ShapeDescr::Cursor { .. }
+        ) {
+            // A cursor stands for a binary, and a type predicate asks of a
+            // binary only whether binaries are admitted, never its bytes.
+            return Ok(predicate.binaries);
+        }
         let Some(arity) = transport.interners().tuple_arity(shape) else {
             return Err(DispatchStop::broken(format!(
                 "backend type test cannot read lane-form {shape:?}"

@@ -108,6 +108,18 @@ formula waits: a callee that has not answered is never read as bottom (see
 capture/input contributions wait until every non-self target is present. Equal answers move no revision and wake no reader. The input sub-fact
 is a revisioned view of the one stored `ExecutableRuntimeDemand`, not a cloned
 value or a second producer.
+A binary has a demand of its own, `Matched`, above `Whole` (`Ignore` <
+`TupleFields` < `Whole` < `Matched`, `Matched` absorbing). It says the binary is
+taken apart by a match, or measured through a `binary_cursor` extern parameter
+(`byte_size` is `fz_bitstring_byte_extent`, declared with it), and lowers to `ShapeDescr::Cursor`: a source lane and a raw
+bit-position lane. A value that is not a proven binary, and any consumer with no
+cursor to offer, reads `Matched` as `Whole`. A bit read at a runtime position
+that is a whole number of bytes past the cursor is the inline
+`Prim::BitReadByteIntAt`; other offsets read through the runtime. A step position
+is counted from the start of its match; `Prim::BitPositionAdd` and
+`Prim::BitPositionSub` move it to and from the match's place in the cursor's
+binary. A bitstring region keeps a rest it matched as a source and position until
+something reads it whole; an outcome argument is always handed to its arm whole.
 Tuple-field demand may stop at its highest observed index. Transport applies
 that prefix to the exact tuple type and emits `Nothing` for omitted trailing
 positions, so a partial four-tuple remains a four-field structural layout

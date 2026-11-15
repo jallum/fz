@@ -282,7 +282,8 @@ impl<TypeHandle> GuardCallee<TypeHandle> {
 }
 
 /// An extern a guard calls. Every parameter is one of the classes all three
-/// guard evaluators can carry: an integer, a float, or a reference word. The
+/// guard evaluators can carry: an integer, a float, a reference word, or a
+/// binary whose byte count is what the extern receives. The
 /// return is one of those or a boolean, which the guard reads as `true` or
 /// `false`. A return of `never` is the call that fails the guard, and
 /// so is the failure a checked return declares: either way the clause does not
@@ -313,10 +314,12 @@ impl GuardExtern {
         if variadic {
             return Err(refuse("a variadic extern has no fixed argument classes".to_string()));
         }
-        if let Some(param) = params
-            .iter()
-            .find(|ty| !matches!(ty, ExternTy::I64 | ExternTy::Opaque(_) | ExternTy::F64 | ExternTy::Any))
-        {
+        if let Some(param) = params.iter().find(|ty| {
+            !matches!(
+                ty,
+                ExternTy::I64 | ExternTy::Opaque(_) | ExternTy::F64 | ExternTy::Any | ExternTy::BinaryCursor
+            )
+        }) {
             return Err(refuse(format!(
                 "parameter class {param:?} is neither a number nor a reference word"
             )));

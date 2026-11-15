@@ -1,0 +1,43 @@
+#---
+# purpose: a binary that is measured and also used whole on every step of a loop is the binary it was, so the loop allocates no binary on the interpreter, the JIT or a built program
+# kind: run
+#---
+#
+# `byte_size` reads a binary from a position, so a binary it measures travels
+# as itself and position zero. Using that binary whole is then the binary
+# itself, and nothing is built. Each loop runs 10,000 steps; the program prints
+# the result and the binaries allocated across each loop: process binaries,
+# bitstrings and shared buffers.
+defmodule Whole do
+  def same(_a, _b, 0, hits), do: hits
+  def same(a, b, n, hits) do
+    if byte_size(a) == byte_size(b) and a === b do
+      same(a, b, n - 1, hits + 1)
+    else
+      same(a, b, n - 1, hits)
+    end
+  end
+
+  def sizes(_long, _short, 0, total), do: total
+  def sizes(long, short, n, total), do: sizes(long, short, n - 1, total + byte_size(long) + byte_size(short))
+
+  def binaries(stats), do: stats[:procbin_allocs] + stats[:bitstring_allocs] + stats[:shared_bin_allocs]
+end
+
+long = String.duplicate("x", 1000)
+short = "\n"
+
+a = Process.heap_alloc_stats()
+n = Whole.same(long, long, 10000, 0)
+b = Process.heap_alloc_stats()
+dbg({n, Whole.binaries(b) - Whole.binaries(a)})
+
+a = Process.heap_alloc_stats()
+n = Whole.same(short, short, 10000, 0)
+b = Process.heap_alloc_stats()
+dbg({n, Whole.binaries(b) - Whole.binaries(a)})
+
+a = Process.heap_alloc_stats()
+n = Whole.sizes(long, short, 10000, 0)
+b = Process.heap_alloc_stats()
+dbg({n, Whole.binaries(b) - Whole.binaries(a)})

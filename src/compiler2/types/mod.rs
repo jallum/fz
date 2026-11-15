@@ -1498,6 +1498,12 @@ impl Types {
         self.core.str_t
     }
 
+    /// Whether every value of `ty` is a binary or bitstring, and `ty` admits
+    /// at least one.
+    pub fn is_binary(&self, ty: &Ty) -> bool {
+        !self.is_empty(ty) && self.is_subtype(ty, &self.core.str_t)
+    }
+
     pub fn map_top(&mut self) -> Ty {
         self.core.map_top
     }

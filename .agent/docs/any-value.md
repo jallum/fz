@@ -111,12 +111,27 @@ minus that offset. The whole binary is the suffix at offset 0. Several stubs
 over the same `SharedBin` at different offsets are the normal case, each owning
 its own reference edge.
 
-That is what makes matching a tail free. `<<_c, rest :: binary>>` asks for a
-suffix, so `fz_bs_read_binary_ref` hands back another view of the same bytes
-instead of copying them; `Heap::alloc_bitstring_suffix` decides whether the view
-is worth a stub, copying suffixes at or below `SHARED_BIN_THRESHOLD_BYTES` so a
-short tail cannot pin a long buffer. Scanning n bytes copies at most that short
-tail per step, where a copy per step would cost n + (n-1) + … bytes.
+A match that takes a binary apart does not ask for a suffix at all when the
+rest stays inside the compiler's own code. Its demand is `Matched` (see
+`pipeline.md`), and the rest travels as a cursor: `ShapeDescr::Cursor`, two
+lanes -- the source binary (a traced `ValueRef`) and the bit position the rest
+starts at (a raw integer the collector never traces). `<<_c, rest :: binary>>`
+yields (source, position + 8) and builds nothing; reads and clause dispatch on
+the rest start at the position, and `byte_size(rest)` is (bit length of source
+- position) / 8 through the `binary_cursor` extern parameter, also without
+building anything: that wire type is two words, the binary's reference word and
+a bit position, so a cursor passes (source, position) and a whole binary passes
+(binary, 0). A use that needs a real binary -- storing it, sending it,
+passing it to a consumer with no cursor to offer -- makes it whole at that
+point with `fz_bs_read_binary_ref`. A rest that spans its whole source is the
+source, so a binary that was only measured, a cursor at position 0, comes
+back as itself and builds nothing. Past position 0, `<<_c, rest :: binary>>` asks for a
+suffix, `Heap::alloc_bitstring_suffix` hands back another view of the same
+bytes instead of copying them, and it decides whether the view is worth a
+stub, copying suffixes at or below `SHARED_BIN_THRESHOLD_BYTES` so a short tail
+cannot pin a long buffer. A walk that only matches and measures allocates no
+binary at all; one that makes each rest whole copies at most that short tail
+per step, where a copy per step would cost n + (n-1) + … bytes.
 
 Suffix — rather than an arbitrary window — is load-bearing. The buffer carries
 one invisible trailing NUL, so a suffix ends where the NUL is and

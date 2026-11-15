@@ -1,0 +1,38 @@
+#---
+# purpose: a walk that takes a binary apart a byte at a time, and asks the size of what is left, allocates no binary on the interpreter, the JIT or a built program
+# kind: run
+#---
+#
+# A rest that is only taken apart travels as the binary it is read from and the
+# bit position it starts at, so no step builds a binary for it. The walks run
+# over a 10,000-byte binary; the program prints the step count and the binaries
+# allocated across each walk: process binaries, bitstrings and shared buffers.
+defmodule Walk do
+  def count(<<_, rest :: binary>>, n), do: count(rest, n + 1)
+  def count(<<>>, n), do: n
+
+  def sum(<<c, rest :: binary>>, n), do: sum(rest, n + c)
+  def sum(<<>>, n), do: n
+
+  def remaining(<<_, rest :: binary>>, n), do: remaining(rest, n + byte_size(rest))
+  def remaining(<<>>, n), do: n
+
+  def binaries(stats), do: stats[:procbin_allocs] + stats[:bitstring_allocs] + stats[:shared_bin_allocs]
+end
+
+line = String.duplicate("x", 10000)
+
+a = Process.heap_alloc_stats()
+n = Walk.count(line, 0)
+b = Process.heap_alloc_stats()
+dbg({n, Walk.binaries(b) - Walk.binaries(a)})
+
+a = Process.heap_alloc_stats()
+n = Walk.sum(line, 0)
+b = Process.heap_alloc_stats()
+dbg({n, Walk.binaries(b) - Walk.binaries(a)})
+
+a = Process.heap_alloc_stats()
+n = Walk.remaining(line, 0)
+b = Process.heap_alloc_stats()
+dbg({n, Walk.binaries(b) - Walk.binaries(a)})
