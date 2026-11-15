@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T02:44:28Z",
+  "description": "Step 4 of the fz-sc8.197 page. A body sends eleven operators to Kernel (direct_operator_name, jobs/body.rs); a guard sends five (arithmetic_function) and implements the six comparisons itself in jobs/native.rs, native_codegen/receive.rs and ir_interp/dispatch_exec.rs. Measured in a spike: guard == and != through Kernel builds, output identical, run unchanged, compile +0.8%. Remove arithmetic_function and PatternGuardBinOp::{Eq, Neq} from the three evaluators.",
+  "id": "fz-sc8.214",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A guard and a body resolve operators through one table; guard == and != go through Kernel",
+  "type": "task",
+  "updated_at": "2026-11-15T02:44:28Z"
+}
