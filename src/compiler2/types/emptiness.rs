@@ -29,7 +29,13 @@ pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>) -> bool {
             },
         ),
     };
-    let t: Vec<&Descr> = if met.is_empty() {
+    // One positive signature leaves its coordinates as the interned types they
+    // are, and an interned type other than none is inhabited: its clauses were
+    // all kept because none was empty. So a coordinate is empty exactly when it
+    // is none, with no walk below it. A meet of several positives is a fresh
+    // descriptor, which only a walk can judge.
+    let interned_coordinates = met.is_empty();
+    let t: Vec<&Descr> = if interned_coordinates {
         c.pos[0].elems.iter().map(|ty| cx.descr(ty)).collect()
     } else {
         met.iter().collect()
@@ -40,7 +46,11 @@ pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>) -> bool {
         .filter(|n| n.elems.len() == arity)
         .map(|n| n.elems.iter().map(|ty| cx.descr(ty)).collect())
         .collect();
-    phi_tuple(cx, &t, &negs)
+    if interned_coordinates {
+        t.iter().any(|d| d.looks_empty()) || phi_inhabited_tuple(cx, &t, &negs)
+    } else {
+        phi_tuple(cx, &t, &negs)
+    }
 }
 
 /// Is the product `∏t` minus the union of the products `∏n` empty?

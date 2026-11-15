@@ -2757,7 +2757,19 @@ fn fits_lane_budget(world: &mut World, fields: &[Ty]) -> bool {
 
 /// The lanes a whole value of type `ty` travels in: its fields' lanes for an
 /// exact tuple inside the budget, one for anything else.
+///
+/// Memoized per type: a tuple type that shares its fields is counted once per
+/// distinct field type, not once per path to it.
 fn whole_value_lanes(world: &mut World, ty: Ty) -> usize {
+    if let Some(lanes) = world.types_mut().whole_value_lane_counts().get(&ty) {
+        return lanes;
+    }
+    let lanes = count_whole_value_lanes(world, ty);
+    world.types_mut().whole_value_lane_counts().remember(ty, lanes);
+    lanes
+}
+
+fn count_whole_value_lanes(world: &mut World, ty: Ty) -> usize {
     let Some(fields) = exact_tuple_field_tys(world, ty) else {
         return 1;
     };

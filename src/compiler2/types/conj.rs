@@ -22,6 +22,15 @@ impl<T> Conj<T> {
         self.pos.is_empty() && self.neg.is_empty()
     }
 
+    /// Every signature the clause holds, positive then negative.
+    pub(crate) fn sigs(&self) -> impl Iterator<Item = &T> {
+        self.pos.iter().chain(self.neg.iter())
+    }
+
+    pub(crate) fn sigs_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.pos.iter_mut().chain(self.neg.iter_mut())
+    }
+
     /// How many signatures the clause holds, positive then negative.
     pub(crate) fn sig_count(&self) -> usize {
         self.pos.len() + self.neg.len()

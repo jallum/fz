@@ -487,6 +487,24 @@ mod tests {
         );
     }
 
+    /// A tuple that shares its fields is a few type handles and a tree of
+    /// leaves. How many lanes a whole value travels in is a question about each
+    /// handle once, so a doubling tuple is counted in time linear in its depth.
+    #[test]
+    fn counting_the_lanes_of_a_doubling_tuple_visits_each_shared_field_once() {
+        const DEPTH: usize = 20;
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let tower = (0..DEPTH).fold(int, |inner, _| world.types_mut().tuple(&[inner, inner]));
+
+        let before = world.types().descr_reads();
+        let lanes = whole_value_lanes(&mut world, tower);
+        let reads = world.types().descr_reads() - before;
+
+        assert_eq!(lanes, 1, "a tuple past the budget travels as one lane");
+        assert!(reads <= 8 * DEPTH, "{reads} descriptor reads for a tower of {DEPTH}");
+    }
+
     /// A consumer that reads two fields of a wide tuple asks for two lanes,
     /// and the tuple travels as those two fields however many it has.
     #[test]

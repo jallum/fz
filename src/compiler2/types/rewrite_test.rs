@@ -1,6 +1,6 @@
 use super::{
     ClosureLit, ClosureTarget, Descr, FiniteSet, MapKey, RuntimeEnvelopePolarity, RuntimeEnvelopePurpose, Sigma, Ty,
-    TypeVarId, Types, bound_variables_reading, callable_identity_clauses, has_vars, map_recursive_inputs,
+    TypeVarId, Types, bound_variables_reading, callable_identity_clauses, map_recursive_inputs,
     map_recursive_inputs_with, runtime_arrow_sig, runtime_list_sig, runtime_map_sig, runtime_resource_sig,
     runtime_structural_conj, runtime_tuple_sig,
 };
@@ -126,7 +126,7 @@ fn erase_by_copying(t: &mut Types, a: Ty) -> Descr {
 /// taken even where nothing was substituted.
 fn instantiate_by_copying(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
     let mut base = t.descr(&a).clone();
-    if !has_vars(t.ctx(), &base, false) {
+    if !t.has_vars(&a) {
         return base;
     }
     let mut substituted = Descr::none();

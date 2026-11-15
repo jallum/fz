@@ -120,8 +120,8 @@ values and closure-literal captures. The arguments and result of an arrow are
 left alone: they are a function's contract, not a value's literals. It is
 memoised, idempotent (the widened type maps to itself) and monotone, and
 numeric and binary types pass through because the lattice has no numeric or
-binary singletons. `Types::is_literal_blind` is the same traversal as a pure
-predicate -- true exactly when widening changes nothing -- so the plan builder,
+binary singletons. `Types::is_literal_blind` is the same question as a pure
+attribute settled at intern -- true exactly when widening changes nothing -- so the plan builder,
 which holds no mutable calculator, can ask it. The activation key applies the
 widening where no use can tell one literal from another
 ([`type-specialization`](type-specialization.md)).
