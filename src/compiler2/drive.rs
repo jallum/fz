@@ -4,6 +4,8 @@
 //! effects, and the drive loop. Concrete job implementations live under
 //! `compiler2::jobs`.
 
+use crate::diag::Diagnostic;
+use crate::diag::driver::emit_through;
 use crate::fast_hash::HashSet;
 use std::time::{Duration, Instant};
 
@@ -788,6 +790,13 @@ impl JobEffects {
             ..Self::default()
         }
     }
+}
+
+/// A job that cannot go on reports why and fails: the diagnostic reaches
+/// the user through telemetry, and the `FatalError` stops the drive.
+pub(crate) fn emit_job_diagnostic(tel: &impl crate::telemetry::Telemetry, diagnostic: Diagnostic) -> FatalError {
+    emit_through(tel, std::slice::from_ref(&diagnostic));
+    FatalError
 }
 
 pub(crate) fn current_uses<F>(facts: impl IntoIterator<Item = F>) -> Vec<FactUse<F>> {

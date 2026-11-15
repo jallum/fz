@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
+use super::super::drive::emit_job_diagnostic;
 use crate::compiler2::artifact::{
     AbiReadyExecutable, AbiValueRepr, BackendBody, BackendConstructionWrapper, BackendReturnFlow, BackendTail,
     ClosureCallEdge,
@@ -11,7 +12,6 @@ use crate::compiler2::identity::{ExecutableKey, RootId};
 use crate::compiler2::shared_order::SharedOrder;
 use crate::compiler2::transport::TransportPosition;
 use crate::compiler2::types::Types;
-use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::source::Span;
 use crate::telemetry::Telemetry;
@@ -279,8 +279,7 @@ impl BoxedContracts {
             ),
             Span::DUMMY,
         );
-        emit_through(tel, std::slice::from_ref(&diagnostic));
-        Err(FatalError)
+        Err(emit_job_diagnostic(tel, diagnostic))
     }
 }
 

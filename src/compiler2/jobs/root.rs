@@ -1,9 +1,8 @@
 use crate::diag::Diagnostic;
 use crate::diag::codes;
-use crate::diag::driver::emit_through;
 use crate::source::Span;
 
-use super::super::drive::{FactKey, Job, JobEffects, UseCollector, settled_uses};
+use super::super::drive::{FactKey, Job, JobEffects, UseCollector, emit_job_diagnostic, settled_uses};
 use super::super::identity::{ActivationKey, ExecutableKey, RootId, RootKind};
 use super::super::semantic::{RuntimeDemand, TargetDemandContribution};
 use super::super::world::World;
@@ -158,6 +157,5 @@ pub(super) fn seed_activation(
 
 fn emit_root_error(tel: &impl crate::telemetry::Telemetry, span: Span, message: impl Into<String>) -> FatalError {
     let diagnostic = Diagnostic::error(codes::LOWER_UNSUPPORTED, message.into(), span);
-    emit_through(tel, std::slice::from_ref(&diagnostic));
-    FatalError
+    emit_job_diagnostic(tel, diagnostic)
 }

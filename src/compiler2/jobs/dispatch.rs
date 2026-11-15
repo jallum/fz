@@ -9,7 +9,7 @@ use crate::fast_hash::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use super::super::drive::{FactKey, JobEffects, current_uses};
+use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic};
 use super::super::identity::{FunctionId, FunctionSource};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::types::Ty;
@@ -17,7 +17,6 @@ use super::super::world::World;
 use crate::ast::{CallableName, Callee, Expr, Pattern, Spanned, UnOp, Var, VarContext};
 use crate::diag::Diagnostic;
 use crate::diag::codes;
-use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
     GuardCallee, GuardExtern, LastResort, PatternDispatchError, PatternPinnedInput, PatternRow, PatternSubjectRef,
     SourcePatternError, SourcePatternRows, guard_dispatch_from_rows, pattern_dispatch_from_source_with_resolver,
@@ -929,9 +928,4 @@ fn emit_undefined_pins(tel: &impl crate::telemetry::Telemetry, pinned: &[Pattern
 
 fn function_label(def: &FunctionSurface) -> String {
     format!("{}/{}", def.name, def.arity())
-}
-
-fn emit_job_diagnostic(tel: &impl crate::telemetry::Telemetry, diagnostic: Diagnostic) -> FatalError {
-    emit_through(tel, std::slice::from_ref(&diagnostic));
-    FatalError
 }

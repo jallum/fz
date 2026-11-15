@@ -8,9 +8,8 @@
 
 use crate::diag::Diagnostic;
 use crate::diag::codes;
-use crate::diag::driver::emit_through;
 
-use super::super::drive::{FactKey, JobEffects, current_uses};
+use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic};
 use super::super::identity::TypeName;
 use super::super::world::World;
 use fz_engine::FatalError;
@@ -82,9 +81,4 @@ pub(super) fn derive_type_def(
             .collect(),
         ..JobEffects::default()
     })
-}
-
-fn emit_job_diagnostic(tel: &impl crate::telemetry::Telemetry, diagnostic: Diagnostic) -> FatalError {
-    emit_through(tel, &[diagnostic]);
-    FatalError
 }

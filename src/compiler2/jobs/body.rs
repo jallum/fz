@@ -16,7 +16,6 @@ use crate::ast::{
 };
 use crate::diag::Diagnostic;
 use crate::diag::codes;
-use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
     LastResort, PatternBodyId, PatternDispatchError, PatternRow, SourcePatternError, SourcePatternRows,
     pattern_dispatch_from_source, pattern_dispatch_from_source_with_resolver,
@@ -35,7 +34,7 @@ use super::super::body::{
     step_used_values,
 };
 use super::super::code::SourceOwner;
-use super::super::drive::{FactKey, JobEffects, current_uses};
+use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic};
 use super::super::identity::{FunctionId, FunctionSource, ModuleId};
 use super::super::module_interface::{InterfaceCallableKind, InterfaceRequester};
 use super::super::namespace::{CallableQualifier, Namespace, NamespaceSymbol};
@@ -4991,11 +4990,6 @@ fn pattern_name(pattern: &Pattern) -> &'static str {
         Pattern::Both(_, _) => "Both",
         Pattern::Bitstring(_) => "Bitstring",
     }
-}
-
-fn emit_job_diagnostic(tel: &impl crate::telemetry::Telemetry, diagnostic: Diagnostic) -> FatalError {
-    emit_through(tel, std::slice::from_ref(&diagnostic));
-    FatalError
 }
 
 /// The compile-time constant of a literal expression, for positions where
