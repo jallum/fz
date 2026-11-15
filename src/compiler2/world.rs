@@ -244,6 +244,8 @@ pub(crate) struct JobCompletion {
     pub(crate) step: fz_engine::AppliedStep<Job, DependencyKey>,
     pub(crate) activation_input_changed: HashSet<ActivationKey>,
     pub(crate) rebased: bool,
+    /// How many activation-input keys had every contributor folded again.
+    pub(crate) activation_input_refolds: u64,
     /// How many derivations the completion filed with the work graph.
     pub(crate) derivations: u64,
     /// The reads those derivations handed the work graph, counted per derivation.
@@ -680,6 +682,7 @@ impl World {
         let ContributionReplace {
             output_keys: activation_input_outputs,
             changed_keys: activation_input_changed,
+            refolds: activation_input_refolds,
         } = if waits.is_empty() {
             self.conclude_activation_input_contributions(
                 &job,
@@ -697,6 +700,7 @@ impl World {
         let ContributionReplace {
             output_keys: runtime_demand_input_outputs,
             changed_keys: runtime_demand_input_changed,
+            ..
         } = if waits.is_empty() {
             self.runtime_demand_input_contributions.conclude_exact(
                 &mut self.types,
@@ -799,6 +803,7 @@ impl World {
             step,
             activation_input_changed,
             rebased,
+            activation_input_refolds,
             derivations: derivation_count,
             reads_handed,
         }

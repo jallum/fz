@@ -1019,6 +1019,63 @@ fn compiler2_recursive_list_shape_key_accepts_joined_list_family_evidence() {
     );
 }
 
+/// A publisher that sends an input its entry already holds changes nothing, so
+/// no key has its contributors folded again. A publisher that widens its entry
+/// does, once per key. Read off the completion, which is what telemetry renders.
+#[test]
+fn a_repeated_activation_input_contribution_refolds_nothing() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
+    assert!(world.define_body_keying(
+        function,
+        BodyKeying {
+            recursive: false,
+            consumes_callable_identity: true
+        }
+    ));
+    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
+
+    let input_a = world.types_mut().atom_lit("a");
+    let input_b = world.types_mut().atom_lit("b");
+    let input_c = world.types_mut().atom_lit("c");
+    let key = world.activation_key(root, function, &[input_a]);
+    let contribute = |world: &mut World, job: Job, input| {
+        world
+            .complete_job(
+                job,
+                JobEffects {
+                    activation_input_contributions: vec![(key.clone(), vec![input])],
+                    ..JobEffects::default()
+                },
+            )
+            .activation_input_refolds
+    };
+
+    let analysis = Job::AnalyzeActivation(key.clone());
+    assert_eq!(
+        contribute(&mut world, Job::SeedRoot(root), input_a),
+        1,
+        "a new key folds once"
+    );
+    assert_eq!(
+        contribute(&mut world, analysis.clone(), input_b),
+        1,
+        "a new contributor folds once"
+    );
+    assert_eq!(
+        contribute(&mut world, analysis.clone(), input_b),
+        0,
+        "an input the publisher's entry already holds refolds nothing",
+    );
+    assert_eq!(
+        contribute(&mut world, analysis, input_c),
+        1,
+        "a widened entry folds the key's contributors again",
+    );
+}
+
 #[test]
 fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
     let _tel = ConfiguredTelemetry::new();

@@ -352,7 +352,10 @@ identity>, "admission": "started"|"already_pending", "shift": bool}` —
 a job found already pending by two distinct causes in the same `Scheduler::
 complete` call renders as two `Wake` records, not one; `"movements"` is
 the full typed owner-ordered `FactMovement` report, each entry a full identity
-object. The event's `"semantic":{"reads":[...]}` projection reads the
+object. The `JobCompletion` arm also carries `"activation_input_refolds"`, how
+many activation-input keys the completion folded every contributor of again;
+it counts work, not facts, so the causal report lists it with the state
+fields. The event's `"semantic":{"reads":[...]}` projection reads the
 completed job's current `deps.reads` directly from `World.work_graph` and
 typed-sorts the actual `FactUse` keys with `World::types()` before rendering.
 No rendered string determines public event order.

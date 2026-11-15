@@ -2020,6 +2020,8 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "rebased");
         out.push(':');
         out.push_str(if completion.rebased { "true" } else { "false" });
+        out.push_str(",\"activation_input_refolds\":");
+        push_u64(out, completion.activation_input_refolds);
         out.push_str(",\"derivations\":");
         push_u64(out, completion.derivations);
         out.push_str(",\"reads_handed\":");
