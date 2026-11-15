@@ -115,6 +115,26 @@ module a qualified name names. Nothing splits a rendered `Module.function`
 string back into a module and a name: a callable that was already resolved
 travels as the function itself.
 
+## One answer to "which module does this name mean"
+
+`World::resolve_module_name(head, path)` is the one answer, for every position
+a module name is written in: a value, a struct, a call's qualifier, a capture,
+the macro expander's remote-call check, a `defimpl`'s protocol and target, and
+the prefix of a dotted type (`Geo.Pt.t`). The rule is Elixir's:
+
+- the first segment is looked up in scope `head`, and the remaining segments
+  are walked from the module it binds (`alias Foo.Bar` makes `Bar.Baz` mean
+  `Foo.Bar.Baz`; a nested `defmodule Inner` binds `Inner` in its parent);
+- a first segment nothing binds means the name is the root module spelled
+  that way. `Enum.count(x)` needs no alias, and a root `defmodule Geo.Pt` is
+  reached by `Geo.Pt.f()` though nothing binds `Geo`.
+
+The module a name is written inside adds nothing: inside `defmodule Geo.Pt`,
+`Pt` alone is the root module `Pt`, as in Elixir. A qualifier is therefore
+always a module, defined or not. One nothing defines is reported when the wait
+on its definition goes unanswered (`resolve/unknown-module`), not at
+resolution; `lower/unbound` is for an unqualified name nothing binds.
+
 ## A module name is a value
 
 In value position a module alias is an atom, as in Elixir. The decoder turns
@@ -382,12 +402,12 @@ registration happens before named-parent resolution, so a dotted runtime module
 such as `String.Chars` owns and indexes its own source instead of waiting for
 its ordinary `String` parent.
 
-A runtime module is registered in two places: its `RuntimeModuleSource` entry in
-`src/modules/runtime_library.rs`, which names the file under `lib/`, and an
-`alias` line in `lib/runtime.fz`. Without the alias a call such as
-`OptionParser.parse/2` from user code is an unresolved direct runtime callee.
-A module named by a bare atom (`:erlang`, `lib/erlang.fz`) has the registry name
-`":erlang"` and no alias line: `:erlang.f(x)` names its module by the atom, and
+A runtime module is registered in one place: its `RuntimeModuleSource` entry in
+`src/modules/runtime_library.rs`, which names the file under `lib/`. The
+prelude binds no name for it: `OptionParser.parse/2` in user code names the
+root module `OptionParser` as any unbound name does, and the first call pulls
+the source. A module named by a bare atom (`:erlang`, `lib/erlang.fz`) has the
+registry name `":erlang"`: `:erlang.f(x)` names its module by the atom, and
 the first call pulls the source like any other runtime module.
 
 The one place the bootstrap is special is *reading*: `is_bootstrap(code)` (the

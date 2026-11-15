@@ -164,7 +164,6 @@ pub(super) fn plan_entry_dispatch(
     let mut resolver = super::super::dispatch::SourcePatternResolver {
         world,
         namespace,
-        owner: source.owner_module,
         guard: |world: &mut World, callee: &Callee, arity: usize| {
             let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
             Ok(Some(world.guard_callee(callee)))
@@ -405,13 +404,11 @@ fn build_guard_dispatch(
         return Ok(callee);
     }
     let namespace = source.namespace;
-    let owner = source.owner_module;
     let surface = surface.clone();
     stack.push(function);
     let mut resolver = super::super::dispatch::SourcePatternResolver {
         world,
         namespace,
-        owner,
         guard: |world: &mut World, callee: &Callee, arity: usize| {
             let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
             Ok(Some(build_guard_dispatch(world, callee, cache, stack)?))

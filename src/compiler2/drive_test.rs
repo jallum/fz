@@ -14832,6 +14832,129 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
     );
 }
 
+/// Every diagnostic a failed compile of `text` reports: its code, its
+/// message, and the source text its span underlines.
+fn diagnostics_of_a_failed_compile(text: &str) -> Vec<(&'static str, String, String)> {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &["fz", "diag"]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("app.fz".to_string()),
+        text: text.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(compiler.run_root_interp(root).is_err(), "the program must not compile");
+    let source_map = compiler.world().source_map();
+    let source_map = source_map.borrow();
+    capture
+        .events()
+        .iter()
+        .filter_map(|event| event.diagnostic.as_ref())
+        .map(|diagnostic| {
+            let span = diagnostic.primary.span;
+            let underlined = if span.is_dummy() {
+                String::new()
+            } else {
+                let text = &source_map.code(span.source_version).bytes;
+                text[span.start as usize..span.end as usize].to_string()
+            };
+            (diagnostic.code.0, diagnostic.message.clone(), underlined)
+        })
+        .collect()
+}
+
+/// However a call spells a module nothing defines, the compile says one
+/// thing: that module is not defined, under the call that names it. The
+/// function the call sits in is written in the source, so its not finishing
+/// is no second fault.
+#[test]
+fn a_call_on_a_module_nothing_defines_is_the_only_report_and_sits_under_the_call() {
+    let not_defined = |module: &str| format!("module `{module}` is not defined");
+    for (program, module, underlined) in [
+        (
+            "def main() do\n  dbg(MyApp.NotThere.go(1))\nend\n",
+            "MyApp.NotThere",
+            "MyApp.NotThere.go(1)",
+        ),
+        (
+            "def main() do\n  dbg(NotThere.go(1))\nend\n",
+            "NotThere",
+            "NotThere.go(1)",
+        ),
+        (
+            "alias MyApp.NotThere\ndef main() do\n  dbg(NotThere.go(1))\nend\n",
+            "MyApp.NotThere",
+            "NotThere.go(1)",
+        ),
+        (
+            "def main() do\n  f = &MyApp.NotThere.go/1\n  dbg(f.(1))\nend\n",
+            "MyApp.NotThere",
+            "&MyApp.NotThere.go/1",
+        ),
+        (
+            "defmodule MyApp do\n  def x(), do: 1\nend\ndef main() do\n  dbg(MyApp.NotThere.go(1))\nend\n",
+            "MyApp.NotThere",
+            "MyApp.NotThere.go(1)",
+        ),
+        (
+            "def main() do\n  dbg(MyApp.NotThere.go(1))\n  dbg(MyApp.NotThere.go(2))\nend\n",
+            "MyApp.NotThere",
+            "MyApp.NotThere.go(1)",
+        ),
+    ] {
+        assert_eq!(
+            diagnostics_of_a_failed_compile(program),
+            vec![(
+                codes::RESOLVE_UNKNOWN_MODULE.0,
+                not_defined(module),
+                underlined.to_string()
+            )],
+            "{program}"
+        );
+    }
+}
+
+/// A module whose definition could not finish, and the functions that call
+/// into it, are written in the source: only what the source lacks is reported.
+#[test]
+fn a_module_that_imports_one_nothing_defines_reports_only_the_import() {
+    let reports = diagnostics_of_a_failed_compile(
+        "defmodule A do\n  import MyApp.NotThere\n  def go(), do: 1\nend\ndef main() do\n  dbg(A.go())\nend\n",
+    );
+    assert_eq!(
+        reports
+            .iter()
+            .map(|(code, message, _)| (*code, message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(
+            codes::RESOLVE_UNKNOWN_MODULE.0,
+            "module `MyApp.NotThere` is not defined"
+        )],
+    );
+}
+
+/// A module that is defined answers for what it exports: a function it lacks
+/// is reported as that, under the call, and the module is not called missing.
+#[test]
+fn a_call_to_a_function_a_dotted_module_lacks_names_the_function() {
+    assert_eq!(
+        diagnostics_of_a_failed_compile(
+            "defmodule MyApp.Here do\n  def go(x), do: x\nend\ndef main() do\n  dbg(MyApp.Here.nope(1))\nend\n"
+        ),
+        vec![(
+            codes::RESOLVE_UNKNOWN_IMPORT.0,
+            "module `MyApp.Here` does not export `nope/1`".to_string(),
+            "MyApp.Here.nope".to_string()
+        )],
+    );
+}
+
 #[test]
 fn compiler2_submit_module_root_without_code_reports_one_unknown_module_diag() {
     let tel = ConfiguredTelemetry::new();
@@ -19154,8 +19277,8 @@ end
 
     let outcome = compiler.drive();
     assert!(
-        matches!(outcome, DriveOutcome::Fatal { .. }),
-        "dotted require should not create the short Bar alias: {outcome:?}",
+        matches!(outcome, DriveOutcome::Unresolved { .. }),
+        "`require Foo.Bar` binds no short name, so `Bar` is the root module `Bar`, which nothing defines: {outcome:?}",
     );
     assert!(
         capture

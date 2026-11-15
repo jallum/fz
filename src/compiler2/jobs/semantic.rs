@@ -488,8 +488,8 @@ fn raises_of(
     let (source, surface) = world.function_definition(function);
     let delivers = surface.extern_delivers;
     if let Some(raises) = &surface.extern_raises {
-        let (owner, namespace, exception) = (source.owner_module, source.namespace, raises.exception.clone());
-        atoms.push(world.module_alias_atom(owner, namespace, &exception));
+        let (namespace, exception) = (source.namespace, raises.exception.clone());
+        atoms.push(world.module_alias_atom(namespace, &exception));
     }
     let mut raises = atoms
         .into_iter()

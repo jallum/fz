@@ -17,7 +17,7 @@ use crate::dispatch_matrix::pattern::{
 use crate::function_surface::FunctionSurface;
 use crate::source::Span;
 
-use super::identity::{FunctionId, ModuleId};
+use super::identity::FunctionId;
 use super::namespace::Namespace;
 use super::types::Ty;
 use super::world::World;
@@ -129,7 +129,6 @@ pub(crate) fn surface_pattern_rows(
 pub(crate) struct SourcePatternResolver<'a, F> {
     pub(crate) world: &'a mut World,
     pub(crate) namespace: Namespace,
-    pub(crate) owner: ModuleId,
     pub(crate) guard: F,
 }
 
@@ -138,7 +137,7 @@ where
     F: FnMut(&mut World, &Callee, usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError>,
 {
     fn struct_type(&mut self, module: &ModuleTarget, _span: Span) -> Result<Ty, SourcePatternError> {
-        let module_id = self.world.resolve_module_target(self.owner, self.namespace, module);
+        let module_id = self.world.resolve_module_target(self.namespace, module);
         Ok(self.world.struct_value_ty(module_id, &[], &[]))
     }
 
@@ -146,7 +145,7 @@ where
         &mut self,
         alias: &crate::modules::identity::ModuleName,
     ) -> Result<String, SourcePatternError> {
-        Ok(self.world.module_alias_atom(self.owner, self.namespace, alias))
+        Ok(self.world.module_alias_atom(self.namespace, alias))
     }
 
     fn guard_call(&mut self, callee: &Callee, arity: usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {

@@ -308,8 +308,8 @@ fn extern_failure(
     let Some(raises) = surface.extern_raises.as_ref() else {
         return Ok(None);
     };
-    let module = world.resolve_module_name(source.owner_module, source.namespace, &raises.exception);
-    let exception = world.module_alias_atom(source.owner_module, source.namespace, &raises.exception);
+    let module = world.resolve_module_name(source.namespace, &raises.exception);
+    let exception = world.module_alias_atom(source.namespace, &raises.exception);
     let def = world
         .struct_def(module)
         .expect("a contract waits for the struct its declared failure names");

@@ -811,6 +811,18 @@ cause (a module, struct, function, type) become the diagnostic that names it,
 and every other kind becomes `internal/unresolved-wait`, so a stalled wait is
 never dropped.
 
+A wait on a module or a function the source defines is the compiler's own
+wait (`World::source_defines_what_is_awaited`): the thing is not missing, it
+did not finish because something it needs did not. `main` calling a module
+nothing defines reports that module, and not ``function `main/0` is not
+defined``. The compiler's own waits are dropped whenever a wait the source
+explains is in the frontier, and speak as `internal/unresolved-wait` only when
+none is.
+
+`resolve/unknown-module` is reported at the first recorded reference to the
+module: an `import` or `require`, else a use as a struct, else a call that
+lowering resolved into it (`World::unresolved_module_issue`).
+
 Before that, the report looks for a module definition that waits on itself
 (`definition_cycle.rs`). Code that runs while a module is being defined, such as
 a macro its body invokes and everything that macro's compiled program needs,

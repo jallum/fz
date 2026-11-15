@@ -37,7 +37,7 @@ use super::super::code::SourceOwner;
 use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic};
 use super::super::identity::{FunctionId, FunctionSource, ModuleId};
 use super::super::module_interface::{InterfaceCallableKind, InterfaceRequester};
-use super::super::namespace::{CallableQualifier, Namespace, NamespaceSymbol};
+use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::quoted_expander::emit_surface_read_error;
 use super::super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError};
 use super::super::world::World;
@@ -881,7 +881,7 @@ pub(super) fn collect_local_pattern_requirements(
 /// rather than guess an order from the literal/pattern's own field list.
 ///
 /// Module resolution mirrors `Lowerer`'s struct lowering exactly (same
-/// `resolve_module_target` call against the same `owner_module`/`namespace`),
+/// `resolve_module_target` call against the same `namespace`),
 /// so the module identity this pre-pass records obligations/waits against is
 /// always the module the later `Lowerer` pass will actually consume.
 #[allow(clippy::too_many_arguments)]
@@ -897,7 +897,7 @@ pub(super) fn record_struct_reference<'a>(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(), FatalError> {
-    let module_id = world.resolve_module_target(owner_module, namespace, module);
+    let module_id = world.resolve_module_target(namespace, module);
     let requester = InterfaceRequester {
         owner,
         module: owner_module,
@@ -1849,9 +1849,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         context: &str,
     ) -> Result<FunctionId, FatalError> {
         match self.world.callable_name_qualifier(self.namespace, name) {
-            CallableQualifier::Unqualified => self.resolve_runtime_function(&name.name, arity, span, context),
-            CallableQualifier::Module(module) => self.resolve_module_callee(module, &name.name, arity, span),
-            CallableQualifier::Unbound => Err(self.unbound_runtime_function(&name.to_string(), arity, span, context)),
+            None => self.resolve_runtime_function(&name.name, arity, span, context),
+            Some(module) => self.resolve_module_callee(module, &name.name, arity, span),
         }
     }
 
@@ -1982,9 +1981,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
-        let module_id = self
-            .world
-            .resolve_module_target(self.source.owner_module, self.namespace, module);
+        let module_id = self.world.resolve_module_target(self.namespace, module);
         self.name_module_as_value(module_id);
         // `collect_local_dispatch_requirements`'s `Expr::Struct` arm already
         // recorded this literal's field obligations and waited on
@@ -2116,9 +2113,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     }
 
     fn lower_alias(&mut self, alias: &ModuleName, steps: &mut Vec<ExprStep>) -> ValueId {
-        let module = self
-            .world
-            .resolve_module_name(self.source.owner_module, self.namespace, alias);
+        let module = self.world.resolve_module_name(self.namespace, alias);
         let atom = self
             .world
             .module_name(module)
@@ -2784,9 +2779,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 continue;
             }
             for exception in &rescue.exceptions {
-                let atom = self
-                    .world
-                    .module_alias_atom(self.source.owner_module, self.namespace, exception);
+                let atom = self.world.module_alias_atom(self.namespace, exception);
                 let wraps = atom == ERLANG_ERROR;
                 arms.push(HandlerArm::rescue(
                     PatternRow {
@@ -2950,7 +2943,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         let mut resolver = super::super::dispatch::SourcePatternResolver {
             world: self.world,
             namespace,
-            owner: self.source.owner_module,
             guard: |world: &mut World, callee: &Callee, arity: usize| {
                 let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
                 Ok(Some(world.guard_callee(callee)))
@@ -3759,9 +3751,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<(), FatalError> {
-        let module_id = self
-            .world
-            .resolve_module_target(self.source.owner_module, self.namespace, module);
+        let module_id = self.world.resolve_module_target(self.namespace, module);
         // Same invariant as `lower_struct_expr`: `collect_local_pattern_requirements`'s
         // `Pattern::Struct` arm already recorded this pattern's field
         // obligations and waited on `StructDefined(module_id)` before this

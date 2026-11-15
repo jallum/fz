@@ -405,6 +405,13 @@ pub(crate) trait QuotedExpansionCtx {
         })? {
             return Ok(None);
         }
+        // `lhs[key]` is an index the decoder reads off its callee's stamp; it
+        // calls into no module, whatever name the callee spells.
+        if super::quoted_function::is_bracket_access_callee(&head_node).map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted bracket access read failed: {error}"))
+        })? {
+            return Ok(None);
+        }
         let Some((module_cursor, function_cursor)) = head_node.tail.list_pair().map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted remote target read failed: {error}"))
         })?
@@ -440,12 +447,9 @@ pub(crate) trait QuotedExpansionCtx {
         let module = {
             let world = self.world();
             match denotation {
-                Some(module) => Some(world.reference_module_denotation(module)),
-                None => world.lookup_module_path(scope.namespace(), &ModuleName::from_segments(module_path.clone())),
+                Some(module) => world.reference_module_denotation(module),
+                None => world.resolve_module_name(scope.namespace(), &ModuleName::from_segments(module_path.clone())),
             }
-        };
-        let Some(module) = module else {
-            return Ok(None);
         };
         if module == self.current_module() {
             return self.expand_current_module_remote_ast_call(

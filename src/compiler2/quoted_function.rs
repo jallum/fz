@@ -2533,7 +2533,7 @@ fn is_alias(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<bool, Qu
 /// silently replaced by a map index with no diagnostic. The front door stamps
 /// `__fz_from_brackets__` instead, which no source text can produce -- the same
 /// separation Elixir makes with `from_brackets: true`.
-fn is_bracket_access_callee(head_node: &QuotedAstNode) -> Result<bool, QuotedSourceError> {
+pub(super) fn is_bracket_access_callee(head_node: &QuotedAstNode) -> Result<bool, QuotedSourceError> {
     let Some(value) = head_node
         .meta
         .map_value(crate::compiler2::source::META_FROM_BRACKETS_KEY)?
