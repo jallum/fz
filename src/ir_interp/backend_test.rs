@@ -1057,7 +1057,7 @@ fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
     let arity_mismatch_destination = tuple_shape(&mut transport, &[scalar]);
     let value = BackendBoundValue::Transport {
         shape: source,
-        lanes: smallvec::smallvec![AnyValue::Int(1), AnyValue::Int(2), AnyValue::Int(3)],
+        lanes: vec![AnyValue::Int(1), AnyValue::Int(2), AnyValue::Int(3)],
     };
     let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
     let mut process = runtime.take_process(1).expect("test process");
@@ -1095,7 +1095,7 @@ fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
     let source_with_present_discard = tuple_shape(&mut transport, &[scalar, source_inner]);
     let value_with_present_discard = BackendBoundValue::Transport {
         shape: source_with_present_discard,
-        lanes: smallvec::smallvec![AnyValue::Int(99), AnyValue::Int(1), AnyValue::Int(2), AnyValue::Int(3)],
+        lanes: vec![AnyValue::Int(99), AnyValue::Int(1), AnyValue::Int(2), AnyValue::Int(3)],
     };
     let present_discarded = encode_for_layout(&transport, process, &value_with_present_discard, destination)
         .expect("destination Nothing should discard a present source field");

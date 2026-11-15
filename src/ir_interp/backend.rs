@@ -2144,7 +2144,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     let bound = match cursor_shape {
                         Some(shape) if is_rest => BackendBoundValue::Transport {
                             shape,
-                            lanes: smallvec::smallvec![source_value, AnyValue::Int(pos as i64)],
+                            lanes: vec![source_value, AnyValue::Int(pos as i64)],
                         },
                         _ => BackendBoundValue::Runtime(interp_read_bit_field(
                             proc,
@@ -2830,7 +2830,10 @@ fn direct_callable_value(
             lanes.len()
         ));
     }
-    Ok(BackendBoundValue::Transport { shape, lanes })
+    Ok(BackendBoundValue::Transport {
+        shape,
+        lanes: lanes.into_vec(),
+    })
 }
 
 const CONSTRUCTION_WRAPPER_IDENTITY_BASE: u32 = 0x8000_0000;
@@ -3502,7 +3505,7 @@ fn decode_backend_value_from_lanes(
         ),
         ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) | ShapeDescr::Cursor { .. } => BackendBoundValue::Transport {
             shape,
-            lanes: lanes.iter().copied().collect(),
+            lanes: lanes.to_vec(),
         },
     })
 }
@@ -3822,7 +3825,7 @@ fn tuple_step_value(
         }
         return Ok(BackendBoundValue::Transport {
             shape: layout.structural,
-            lanes,
+            lanes: lanes.into_vec(),
         });
     }
     let items = env_values(

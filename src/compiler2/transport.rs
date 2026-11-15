@@ -464,10 +464,7 @@ fn transport_position_rank(position: &TransportPosition) -> u8 {
 pub(crate) enum BoundValue<W> {
     Absent,
     Runtime(W),
-    Transport {
-        shape: ShapeId,
-        lanes: smallvec::SmallVec<[W; 4]>,
-    },
+    Transport { shape: ShapeId, lanes: Vec<W> },
 }
 
 impl<W: Copy> BoundValue<W> {
