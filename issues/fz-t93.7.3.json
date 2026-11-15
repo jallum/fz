@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T15:52:27Z",
+  "description": "Step 3 of fz-t93.7. Deletes the MaterializedExecutable product and its readers; the first product whose waits are all facts. Predicted +0.9% (+0.5..+2); jobs +2.6-3.2k; requests -2.6k. Risk: the job cost of a body-sized job. Bar: distiller instructions within the stated prediction; stdout byte-identical; fixture_matrix green; every pin that rises is listed with its mechanism and reported for approval before it is raised. Measured base e81f9ed52 and the per-step model: scratch t93_7/m/report.md; decision page /Users/j5n/Workspace/fz-t93.7-measured.html.",
+  "id": "fz-t93.7.3",
+  "labels": [],
+  "parent": "fz-t93.7",
+  "priority": 2,
+  "status": "open",
+  "title": "A materialized executable is a derived fact",
+  "type": "task",
+  "updated_at": "2026-11-15T15:52:27Z"
+}
