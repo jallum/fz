@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-nml.16"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-nml",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A view names its buffer through the heap's BinRef: one stub per buffer per heap, as in OTP",
   "type": "task",
-  "updated_at": "2026-11-15T16:24:29Z"
+  "updated_at": "2026-11-15T16:29:29Z"
 }
