@@ -70,8 +70,10 @@ impls sit beside it; its `reduce` walks `MapSet.to_list/1`.
 `List` and `Map`; `MapSet`'s impl sits in `lib/map_set.fz`. Its one callback
 `into/1` returns `{initial, collector}`; `Enum.into/2,3` calls
 `collector.(acc, {:cont, x})` per element and then `collector.(acc, :done)`.
-The collector sends no `:halt` on a raised
-exception, because there is no `try`.
+The reduction runs under a `try`: when it raises, throws or exits, the
+collector is called as `collector.(initial, :halt)` and what was caught goes
+on with its own kind through `:erlang.raise/3`. A `for ... into:`
+comprehension expands to the same form.
 
 ## The owned facts
 

@@ -1,0 +1,4 @@
+{:throw, :ball}
+{:exit, :stop}
+{:error, :reason}
+{:rescued, "worse"}
