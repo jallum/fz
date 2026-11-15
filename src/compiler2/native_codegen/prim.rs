@@ -25,8 +25,8 @@ use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::{
     fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_bs_begin, fz_bs_field_end, fz_bs_field_spec,
-    fz_bs_finalize, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_int_float_cmp,
-    fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
+    fz_bs_finalize, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_bs_write_int,
+    fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
     fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_dest_put_ref,
     fz_map_get_atom_key_ref, fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_map_named_schema_ref,
     fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int,
@@ -382,14 +382,12 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             let process = body.process_arg();
             runtime_call!(body, fz_bs_begin, [process]);
             for f in fields {
-                let value_ref = body.tagged_var(var_env, f.value.0);
                 let ty_tag = body.b.ins().iconst(types::I32, encode_bit_type(f.ty) as i64);
                 let unit = body
                     .b
                     .ins()
                     .iconst(types::I32, f.unit.unwrap_or(default_unit_for(f.ty)) as i64);
                 let endian = body.b.ins().iconst(types::I32, encode_endian(f.endian) as i64);
-                let signed = body.b.ins().iconst(types::I32, f.signed as i64);
                 let (size_present, size_value) = match &f.size {
                     None => (body.b.ins().iconst(types::I32, 0), body.b.ins().iconst(types::I32, 0)),
                     Some(BitSizeIr::Literal(n)) => (
@@ -405,20 +403,21 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                         unreachable!("only a pattern sizes a segment by a pinned binary, never a construction")
                     }
                 };
-                runtime_call!(
-                    body,
-                    fz_bs_write_field_ref,
-                    [
-                        process,
-                        value_ref,
-                        ty_tag,
-                        size_present,
-                        size_value,
-                        unit,
-                        endian,
-                        signed
-                    ]
-                );
+                if f.ty.writes_integer_word() {
+                    let raw = body.as_raw_i64(var_env, f.value.0);
+                    runtime_call!(
+                        body,
+                        fz_bs_write_int,
+                        [process, raw, ty_tag, size_present, size_value, unit, endian]
+                    );
+                } else {
+                    let value_ref = body.tagged_var(var_env, f.value.0);
+                    runtime_call!(
+                        body,
+                        fz_bs_write_field_ref,
+                        [process, value_ref, ty_tag, size_present, size_value, unit, endian]
+                    );
+                }
             }
             let process = body.process_arg();
             LowerOut::ValueRef(runtime_call1!(body, fz_bs_finalize, [process]))

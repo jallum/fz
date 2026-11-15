@@ -34,8 +34,8 @@ use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule}
 use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
 use fz_runtime::heap::{GcStats, Schema};
 use fz_runtime::ir_runtime::{
-    fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_dest_begin,
-    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts,
+    fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_bs_write_int, fz_list_reuse_or_cons_parts,
+    fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts,
     fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref, fz_struct_module,
     fz_struct_reuse_or_copy, fz_struct_store_ref,
 };
@@ -1825,16 +1825,25 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     let item = env_get(transport, runtime.cur_proc(), env, field.value)?;
                     let (size_present, size_value) =
                         backend_bit_size_value(transport, runtime.cur_proc(), env, &field.spec.size)?;
-                    fz_bs_write_field_ref(
-                        runtime.cur_proc(),
-                        item.as_ref_word(runtime.cur_proc())?,
-                        backend_bit_type_tag(field.spec.ty),
-                        size_present,
-                        size_value,
-                        field.spec.unit.unwrap_or(backend_default_bit_unit(field.spec.ty)),
-                        backend_endian_tag(field.spec.endian),
-                        field.spec.signed as u32,
-                    );
+                    let ty = backend_bit_type_tag(field.spec.ty);
+                    let unit = field.spec.unit.unwrap_or(backend_default_bit_unit(field.spec.ty));
+                    let endian = backend_endian_tag(field.spec.endian);
+                    if field.spec.ty.writes_integer_word() {
+                        let raw = item
+                            .as_i64()
+                            .ok_or_else(|| "an integer bit field expects an integer".to_string())?;
+                        fz_bs_write_int(runtime.cur_proc(), raw, ty, size_present, size_value, unit, endian);
+                    } else {
+                        fz_bs_write_field_ref(
+                            runtime.cur_proc(),
+                            item.as_ref_word(runtime.cur_proc())?,
+                            ty,
+                            size_present,
+                            size_value,
+                            unit,
+                            endian,
+                        );
+                    }
                 }
                 env.insert(
                     *value,

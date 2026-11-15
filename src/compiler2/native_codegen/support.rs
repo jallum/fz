@@ -94,7 +94,7 @@ pub(crate) const FALSE_BITS: i64 = FALSE_BITS_RAW as i64;
 // ----- Bitstring runtime fns -----
 //
 // Construction uses a thread-local BitWriter populated across a sequence of
-// `fz_bs_write_field` calls between `fz_bs_begin` and `fz_bs_finalize`. The
+// `fz_bs_write_int` and `fz_bs_write_field_ref` calls between `fz_bs_begin` and `fz_bs_finalize`. The
 // codegen for a single Prim::MakeBitstring emits this whole sequence within
 // one block — no CPS splits between begin and finalize, so per-thread state
 // is safe.

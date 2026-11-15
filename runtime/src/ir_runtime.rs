@@ -681,11 +681,60 @@ pub extern "C" fn fz_bs_begin(process: *mut Process) {
     (unsafe { &mut *process }).bs_builder = Some(BitWriter::new());
 }
 
-/// Write one field into the active builder. Field-type tags match the order
-/// in `BitType`: Integer=0, Float=1, Binary=2, Bits=3, Utf8=4,
-/// Utf16=5, Utf32=6. `size_present` distinguishes None (0) vs Some (1);
+fn builder<'p>(process: *mut Process, caller: &str) -> &'p mut BitWriter {
+    (unsafe { &mut *process })
+        .bs_builder
+        .as_mut()
+        .unwrap_or_else(|| panic!("{caller} called without fz_bs_begin"))
+}
+
+/// Write one integer-valued field into the active builder, the integer handed
+/// over as the raw word it is, so a segment built from an unboxed integer
+/// allocates nothing. `ty_tag` is Integer=0, Utf8=4, Utf16=5 or Utf32=6, in the
+/// order of `BitType`; `size_present` distinguishes None (0) vs Some (1);
 /// `size_value` is in size-units (multiplied by `unit` internally).
-#[allow(clippy::too_many_arguments)]
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bs_write_int(
+    process: *mut Process,
+    raw: i64,
+    ty_tag: u32,
+    size_present: u32,
+    size_value: u32,
+    unit: u32,
+    endian_tag: u32,
+) {
+    let ty = decode_bit_type(ty_tag);
+    let size = if size_present != 0 { Some(size_value) } else { None };
+    let endian = decode_endian(endian_tag);
+    let w = builder(process, "fz_bs_write_int");
+    match ty {
+        BitType::Integer => {
+            // Two's-complement truncation gives the same bit pattern for
+            // signed and unsigned at a fixed width; sign matters only on read.
+            let total = size.unwrap_or(8) * unit;
+            assert!(total <= 64, "integer field too wide: {}", total);
+            let n = raw as u64;
+            let masked = if total < 64 { n & ((1u64 << total) - 1) } else { n };
+            w.write_bits(apply_endian_for_write(masked, total, endian), total as usize);
+        }
+        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
+            let cp = raw as u32;
+            let bytes = match ty {
+                BitType::Utf8 => encode_utf8(cp),
+                BitType::Utf16 => encode_utf16(cp, endian),
+                _ => encode_utf32(cp, endian),
+            };
+            w.write_bytes(&bytes.expect("invalid codepoint"));
+        }
+        BitType::Float | BitType::Binary | BitType::Bits => {
+            panic!("fz_bs_write_int writes an integer, utf8, utf16 or utf32 field")
+        }
+    }
+}
+
+/// Write one binary, bits or float field into the active builder from the
+/// value it names. Field-type tags match `fz_bs_write_int`: Float=1, Binary=2,
+/// Bits=3.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_write_field_ref(
     process: *mut Process,
@@ -695,128 +744,68 @@ pub extern "C" fn fz_bs_write_field_ref(
     size_value: u32,
     unit: u32,
     endian_tag: u32,
-    signed: u32,
 ) {
     let value = any_value_from_ref_word(value_ref, "fz_bs_write_field_ref");
-    fz_bs_write_field_value(
-        process,
-        value,
-        ty_tag,
-        size_present,
-        size_value,
-        unit,
-        endian_tag,
-        signed,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn fz_bs_write_field_value(
-    process: *mut Process,
-    value: AnyValue,
-    ty_tag: u32,
-    size_present: u32,
-    size_value: u32,
-    unit: u32,
-    endian_tag: u32,
-    signed: u32,
-) {
     let ty = decode_bit_type(ty_tag);
     let size = if size_present != 0 { Some(size_value) } else { None };
     let endian = decode_endian(endian_tag);
-    // `signed` is irrelevant on write: two's-complement truncation produces
-    // the same bit pattern for signed and unsigned at fixed width. The flag
-    // is consumed on read (fz_bs_read_int_ref) for sign extension.
-    let _ = signed;
-    {
-        let w = (unsafe { &mut *process })
-            .bs_builder
-            .as_mut()
-            .expect("fz_bs_write_field called without fz_bs_begin");
-        match ty {
-            BitType::Integer => {
-                let n = match value.kind() {
-                    ValueKind::INT => value.raw() as i64,
-                    _ => panic!("integer bit field expects Int"),
-                };
-                let total = size.unwrap_or(8) * unit;
-                assert!(total <= 64, "integer field too wide: {}", total);
-                let masked = if total < 64 {
-                    (n as u64) & ((1u64 << total) - 1)
-                } else {
-                    n as u64
-                };
-                let bswap = apply_endian_for_write(masked, total, endian);
-                w.write_bits(bswap, total as usize);
+    let w = builder(process, "fz_bs_write_field_ref");
+    match ty {
+        BitType::Binary | BitType::Bits => {
+            // Source must be a heap Bitstring (Vec(U8) lands in .11.14;
+            // until then both Binary and Bits read from a Bitstring).
+            let bits = value
+                .heap_object_word()
+                .unwrap_or_else(|| panic!("binary/bits bit field expects heap bitstring"));
+            let p = bitstring_like_word(bits).unwrap_or_else(|| panic!("binary/bits bit field expects heap bitstring"));
+            if !is_bitstring_like(p) {
+                panic!("binary/bits bit field source is not a Bitstring");
             }
-            BitType::Binary | BitType::Bits => {
-                // Source must be a heap Bitstring (Vec(U8) lands in .11.14;
-                // until then both Binary and Bits read from a Bitstring).
-                let bits = value
-                    .heap_object_word()
-                    .unwrap_or_else(|| panic!("binary/bits bit field expects heap bitstring"));
-                let p =
-                    bitstring_like_word(bits).unwrap_or_else(|| panic!("binary/bits bit field expects heap bitstring"));
-                if !is_bitstring_like(p) {
-                    panic!("binary/bits bit field source is not a Bitstring");
-                }
-                let src_bit_len = unsafe { bitstring_bit_len(p) } as usize;
-                let src_bytes_ptr = unsafe { bitstring_byte_ptr(p) };
-                let needed_bits = match (ty, size) {
-                    (BitType::Binary, None) => src_bit_len,
-                    (BitType::Binary, Some(n)) => (n * unit) as usize,
-                    (BitType::Bits, None) => src_bit_len,
-                    (BitType::Bits, Some(n)) => (n * unit) as usize,
-                    _ => unreachable!(),
+            let src_bit_len = unsafe { bitstring_bit_len(p) } as usize;
+            let src_bytes_ptr = unsafe { bitstring_byte_ptr(p) };
+            let needed_bits = match (ty, size) {
+                (BitType::Binary, None) => src_bit_len,
+                (BitType::Binary, Some(n)) => (n * unit) as usize,
+                (BitType::Bits, None) => src_bit_len,
+                (BitType::Bits, Some(n)) => (n * unit) as usize,
+                _ => unreachable!(),
+            };
+            assert!(needed_bits <= src_bit_len, "binary/bits field exceeds source");
+            let src_bytes = unsafe { from_raw_parts(src_bytes_ptr, src_bit_len.div_ceil(8)) };
+            if needed_bits % 8 == 0 && w.bit_len.is_multiple_of(8) {
+                w.bytes.extend_from_slice(&src_bytes[..needed_bits / 8]);
+                w.bit_len += needed_bits;
+            } else {
+                let mut r = BitReader {
+                    bytes: src_bytes,
+                    bit_len: src_bit_len,
+                    pos: 0,
                 };
-                assert!(needed_bits <= src_bit_len, "binary/bits field exceeds source");
-                let src_bytes = unsafe { from_raw_parts(src_bytes_ptr, src_bit_len.div_ceil(8)) };
-                if needed_bits % 8 == 0 && w.bit_len.is_multiple_of(8) {
-                    w.bytes.extend_from_slice(&src_bytes[..needed_bits / 8]);
-                    w.bit_len += needed_bits;
-                } else {
-                    let mut r = BitReader {
-                        bytes: src_bytes,
-                        bit_len: src_bit_len,
-                        pos: 0,
-                    };
-                    for _ in 0..needed_bits {
-                        w.append_bit(r.read_bit().unwrap());
-                    }
+                for _ in 0..needed_bits {
+                    w.append_bit(r.read_bit().unwrap());
                 }
             }
-            BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
-                let cp = match value.kind() {
-                    ValueKind::INT => value.raw() as u32,
-                    _ => panic!("utf field expects integer codepoint"),
-                };
-                let bytes = match ty {
-                    BitType::Utf8 => encode_utf8(cp),
-                    BitType::Utf16 => encode_utf16(cp, endian),
-                    BitType::Utf32 => encode_utf32(cp, endian),
-                    _ => unreachable!(),
-                };
-                let bytes = bytes.expect("invalid codepoint");
-                w.write_bytes(&bytes);
+        }
+        BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
+            panic!("fz_bs_write_field_ref writes a binary, bits or float field")
+        }
+        BitType::Float => {
+            let total = size.unwrap_or(64) * unit;
+            if total != 32 && total != 64 {
+                panic!("float bit field size must be 32 or 64, got {}", total);
             }
-            BitType::Float => {
-                let total = size.unwrap_or(64) * unit;
-                if total != 32 && total != 64 {
-                    panic!("float bit field size must be 32 or 64, got {}", total);
-                }
-                let f = match value.kind() {
-                    ValueKind::FLOAT => f64::from_bits(value.raw()),
-                    ValueKind::INT => value.raw() as i64 as f64,
-                    _ => panic!("float bit field expects Int or Float"),
-                };
-                let raw: u64 = if total == 32 {
-                    (f as f32).to_bits() as u64
-                } else {
-                    f.to_bits()
-                };
-                let raw = apply_endian_for_write(raw, total, endian);
-                w.write_bits(raw, total as usize);
-            }
+            let f = match value.kind() {
+                ValueKind::FLOAT => f64::from_bits(value.raw()),
+                ValueKind::INT => value.raw() as i64 as f64,
+                _ => panic!("float bit field expects Int or Float"),
+            };
+            let raw: u64 = if total == 32 {
+                (f as f32).to_bits() as u64
+            } else {
+                f.to_bits()
+            };
+            let raw = apply_endian_for_write(raw, total, endian);
+            w.write_bits(raw, total as usize);
         }
     }
 }
