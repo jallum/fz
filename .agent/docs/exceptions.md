@@ -637,6 +637,34 @@ the raise. `Process::ended_in_failure` and
 [runtime telemetry](runtime-telemetry.md).
 `exec/runtime_test.rs` observes both on the `run` and `interp` paths.
 
+## What exceptions cost a compile
+
+`tests/exception_cost_test.rs` counts `compiler2.job` spans over programs that
+differ in one thing. A function that neither raises nor handles costs what it
+costs in a program with no raise. A raise site costs 13 jobs and a handler 15.
+
+An exception type that is declared and raised once costs 40:
+
+| what | jobs |
+|---|---|
+| the function that raises it | 15 |
+| its `exception/1` | 7 |
+| its `message/1`, in three activations | 16 |
+| its module's definition | 1 |
+| one more analysis of `Exception.message/1`, which dispatches to every type | 1 |
+
+Past eight types there is a bounded extra of one to five jobs that does not
+grow with the number of types. `Kernel.panic/1` is keyed `(map)` and keeps one
+input row per exception type raised into it. Each row is a struct whose
+`__exception__` field is the literal `true`, so it is not ground and keys the
+extern `fz_panic/1` as `map` too. Past `ACTIVATION_INPUT_ROW_BUDGET`
+(`src/compiler2/semantic.rs`) rows the rows widen to one joined row: the union
+of the structs with `__exception__` widened to `atom`. That union is ground,
+so it keys `fz_panic/1` as itself (`Types::probe_keys_as_itself`): `panic/1` is
+analysed once more and `fz_panic/1` gets a second activation. The joined row
+counts as one row, so the next widening comes eight types later, with a larger
+union replacing the last.
+
 ## Where it lives
 
 - `runtime/src/failure.rs` — `RaiseKind`, `EXCEPTION_FIELD`, `failure_line`,

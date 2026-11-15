@@ -132,17 +132,34 @@ fn each_raise_site_and_handler_costs_a_fixed_number_of_jobs() {
     assert_eq!(jobs_per_unit("handler", handlers, [1, 4, 16]), 15, "per handler");
 }
 
-/// An exception type costs 40 jobs, and now and then one to three more: the
-/// count from one type to sixteen is 913, 953, 993, 1033, 1073, 1113, 1154,
-/// 1197, 1237, 1278, .., 1517. The extra does not grow with the number of
-/// types, so fifteen further types cost between 40 and 41 each.
+/// An exception type costs 40 jobs: 15 for the function that raises it, 7 for
+/// its `exception/1`, 16 for its `message/1`, one to define its module, and one
+/// more analysis of `Exception.message/1`, which dispatches to every type.
 #[test]
-fn each_exception_type_costs_forty_jobs_and_at_most_one_more() {
-    let one = jobs("types1", exception_types(1));
-    let sixteen = jobs("types16", exception_types(16));
-    let added = sixteen - one;
+fn each_exception_type_costs_forty_jobs() {
+    let one = jobs("few_types1", exception_types(1));
+    let six = jobs("few_types6", exception_types(6));
+    assert_eq!(six - one, 5 * 40, "five further exception types");
+}
+
+/// Past eight exception types the program pays a bounded extra that does not
+/// grow with their number. `Kernel.panic/1` keeps one row of inputs for each
+/// type raised into it, up to `ACTIVATION_INPUT_ROW_BUDGET`; past that the rows
+/// widen to one, the union of the types. No single type keys the extern
+/// `panic/1` calls, but their union does, so `panic/1` is analysed once more
+/// and the extern is activated a second time: at most five jobs, however many
+/// types follow.
+#[test]
+fn many_exception_types_cost_a_bounded_extra_for_the_union_raised() {
+    let one = jobs("many_types1", exception_types(1));
+    let extra = |count: usize| jobs(&format!("many_types{count}"), exception_types(count)) - one - (count - 1) * 40;
+    let (sixteen, twenty_six) = (extra(16), extra(26));
     assert!(
-        (15 * 40..=15 * 41).contains(&added),
-        "fifteen further exception types added {added} jobs"
+        (1..=5).contains(&sixteen),
+        "sixteen types cost {sixteen} jobs beyond forty each"
+    );
+    assert!(
+        (1..=5).contains(&twenty_six),
+        "twenty-six types cost {twenty_six} jobs beyond forty each"
     );
 }
