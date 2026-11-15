@@ -20,8 +20,8 @@ use crate::any_value::{
     closure_capture_value, closure_header_word, closure_header_write, closure_size_for_count, heap_object_word,
     list_addr_from_tagged, map_addr_from_tagged, map_count, map_destination_header_word, map_destination_state,
     map_entry, map_header_word, map_key, map_key_in_arrays, map_key_kind, map_keys_ptr, map_pack_tag,
-    map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_value_kind, map_values_ptr, struct_field_kind_slot,
-    struct_field_raw_slot, struct_header_word, struct_schema_id, struct_size_for_payload,
+    map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_value_kind, map_values_ptr, share_struct,
+    struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id, struct_size_for_payload,
 };
 use crate::procbin::{
     DeadResource, SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep, mso_unreached_closures,
@@ -356,10 +356,10 @@ impl Heap {
     }
 
     pub(super) fn publish_contained_parts(&mut self, raw: u64, kind: ValueKind) {
-        if kind == ValueKind::LIST && raw != 0 {
-            let value = AnyValueRef::from_heap_object(kind, raw as *const u8).expect("contained list");
+        if matches!(kind, ValueKind::LIST | ValueKind::STRUCT) && raw != 0 {
+            let value = AnyValueRef::from_heap_object(kind, raw as *const u8).expect("contained value");
             self.mark_published_ref_aliased(value)
-                .expect("published contained list");
+                .expect("published contained value");
         }
     }
 
@@ -1099,7 +1099,7 @@ impl Heap {
     ) -> Result<(), AnyValueRefError> {
         self.assert_written_object_is_young(object);
         let raw = value.storage_raw()?;
-        self.share_list_spine(value)?;
+        self.share(value)?;
         unsafe {
             write(object.add(slot_offset).cast::<u64>(), raw);
             write(object.add(kind_offset), value.tag().tag());
@@ -1142,19 +1142,22 @@ impl Heap {
     }
 
     pub fn mark_published_ref_aliased(&mut self, value: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
-        self.share_list_spine(value)?;
+        self.share(value)?;
         Ok(value)
     }
 
-    /// An aliased cell certifies an entirely shared tail. Publication marks a
-    /// closed spine atomically, and shared cells cannot subsequently relink.
-    /// The count measures newly protected cells without retaining heap state.
-    pub(super) fn share_list_spine(&mut self, value: AnyValueRef) -> Result<usize, AnyValueRefError> {
-        if value.tag() != ValueKind::LIST || value.is_empty_list() {
-            return Ok(0);
+    /// Mark `value` shared: from now on it may have a second holder and is
+    /// never written again. A list marks its spine up to the first cell
+    /// already marked, so an aliased cell certifies an entirely shared tail. A
+    /// struct or tuple marks its header; everything it holds was shared when
+    /// it was stored. Other kinds are never written in place and carry no
+    /// mark. The count is the objects this call newly protected.
+    pub(super) fn share(&mut self, value: AnyValueRef) -> Result<usize, AnyValueRefError> {
+        match value.tag() {
+            ValueKind::LIST if !value.is_empty_list() => Ok(unsafe { ListCons::share_spine(value.list_addr()?) }),
+            ValueKind::STRUCT => Ok(usize::from(unsafe { share_struct(value.struct_addr()?) })),
+            _ => Ok(0),
         }
-
-        Ok(unsafe { ListCons::share_spine(value.list_addr()?) })
     }
 
     /// Retain identical immutable contents without allocation. Changed contents
@@ -1306,7 +1309,7 @@ impl Heap {
     /// an old object must never come to hold a pointer to a young one. Checked
     /// in debug builds.
     #[inline]
-    pub(super) fn assert_written_object_is_young(&self, object: *mut u8) {
+    pub(crate) fn assert_written_object_is_young(&self, object: *mut u8) {
         debug_assert!(
             self.is_young(object),
             "a write into an object a collection has already kept"

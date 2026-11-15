@@ -576,7 +576,7 @@ impl LoweredBody {
         entry: ControlEntryId,
         step: usize,
         source: ValueId,
-        permission: crate::fz_ir::ListRewritePermission,
+        permission: crate::fz_ir::RewritePermission,
     ) {
         let Self::Clauses { entries, tables, .. } = self;
         let LoweredStep::List { retention, .. } = &mut entries[entry.as_u32() as usize].steps[step] else {
@@ -588,23 +588,24 @@ impl LoweredBody {
         retained.insert(position, (step as u32, source));
     }
 
-    /// Narrow or widen what a recorded list retention may do with its source.
-    /// The source is unchanged, so the tables stand.
-    pub(crate) fn set_list_rewrite_permission(
+    /// Narrow or widen what a construction may do with the source it
+    /// rebuilds: a list step's recorded retention, or an update's base. The
+    /// source is unchanged, so the tables stand.
+    pub(crate) fn set_rewrite_permission(
         &mut self,
         entry: ControlEntryId,
         step: usize,
-        permission: crate::fz_ir::ListRewritePermission,
+        permission: crate::fz_ir::RewritePermission,
     ) {
         let Self::Clauses { entries, .. } = self;
-        let LoweredStep::List {
-            retention: Some(retention),
-            ..
-        } = &mut entries[entry.as_u32() as usize].steps[step]
-        else {
-            panic!("a permission belongs to a recorded retention")
-        };
-        retention.permission = permission;
+        match &mut entries[entry.as_u32() as usize].steps[step] {
+            LoweredStep::List {
+                retention: Some(retention),
+                ..
+            } => retention.permission = permission,
+            LoweredStep::MapUpdate { rewrite, .. } => *rewrite = permission,
+            _ => panic!("a permission belongs to a recorded retention or an update"),
+        }
     }
 }
 
@@ -1059,12 +1060,14 @@ pub enum LoweredStep {
         quoted_span: Option<Span>,
     },
     /// `%{base | k: v, ...}`. `value` is the updated map when `ok`, which is
-    /// false when `base` lacks one of the keys.
+    /// false when `base` lacks one of the keys. `rewrite` says whether the
+    /// update may store into `base` itself when nothing else holds it.
     MapUpdate {
         value: ValueId,
         ok: ValueId,
         base: ValueId,
         entries: Vec<(LoweredMapKey, ValueId)>,
+        rewrite: crate::fz_ir::RewritePermission,
     },
     Struct {
         value: ValueId,

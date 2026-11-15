@@ -1033,6 +1033,7 @@ impl ProgramCanon<'_> {
                 ok,
                 base,
                 stores,
+                rewrite,
                 ..
             } => {
                 let name = self.names.value(*value);
@@ -1043,7 +1044,7 @@ impl ProgramCanon<'_> {
                     .map(|store| format!("{}: {}", store.slot, self.names.value(store.value)))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("{name}, {ok} = struct_update {base} {{{slots}}}")
+                format!("{name}, {ok} = struct_update {base} {{{slots}}} {rewrite:?}")
             }
             BackendStep::Struct {
                 value,

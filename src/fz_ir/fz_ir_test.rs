@@ -74,7 +74,7 @@ fn list_retention_source_is_a_traced_construction_operand() {
         Some(tail),
         Some(ListRetention {
             source,
-            permission: ListRewritePermission::RetainOnly,
+            permission: RewritePermission::RetainOnly,
         }),
     );
     let mut used = crate::fast_hash::HashSet::default();

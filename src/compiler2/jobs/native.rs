@@ -1293,6 +1293,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     module,
                     arity,
                     stores,
+                    rewrite,
                 } => {
                     let base = self.env_runtime_var(ctx, executable, env, *base);
                     let stores = stores
@@ -1308,6 +1309,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         module: module.clone(),
                         arity: *arity,
                         stores,
+                        rewrite: *rewrite,
                     });
                     let (ok_var, _) = ctx.emit_let(Prim::Const(Const::True));
                     self.bind_runtime_value(ctx, executable, env, *ok, ok_var);

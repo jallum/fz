@@ -254,6 +254,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_list_a_continuation_captures_stays_rewritable_in_place,
         ),
         (
+            "a_struct_update_rewrites_only_a_base_nothing_else_holds",
+            a_struct_update_rewrites_only_a_base_nothing_else_holds,
+        ),
+        (
             "a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue",
             a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue,
         ),
@@ -3501,6 +3505,60 @@ fn a_list_a_continuation_captures_stays_rewritable_in_place() {
         "a capture does not share its list; the call-site publication of an aliased argument does",
     );
     assert_eq!(stats.runtime_fallback_count(), 1);
+}
+
+/// The struct updates every process of `fixture` made on `path`, and how many
+/// of them stored into their base: `(attempts, hits)` summed over the
+/// processes' exit events.
+fn struct_retention_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath) -> (usize, usize) {
+    let header = parse_header(fixture).unwrap_or_else(|error| panic!("parse fixture header: {error}"));
+    let (out, log) = run_path_logged(fixture, &header, path)
+        .unwrap_or_else(|error| panic!("{path:?} {} with telemetry: {error}", fixture.display_path().display()));
+    assert!(
+        out.status.success(),
+        "{path:?} {} exited {}: {}",
+        fixture.display_path().display(),
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let context = fixture.display_path().display().to_string();
+    log.lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"process_exited\"]"))
+        .map(|line| {
+            (
+                required_json_u64_field(line, "struct_retention_attempts", &context),
+                required_json_u64_field(line, "struct_retention_hits", &context),
+            )
+        })
+        .fold((0, 0), |(attempts, hits), (a, h)| (attempts + a, hits + h))
+}
+
+fn a_struct_update_rewrites_only_a_base_nothing_else_holds() {
+    let fixture = FixtureCase::new(
+        "fixtures/01309_a_struct_update_rewrites_its_base_in_place_only_when_nothing_else_holds_it.fz",
+    );
+
+    // Thirteen struct updates on every path. Natively only the threaded
+    // loop's second and third steps store into their base: its first base is
+    // read-only program data, and every other base is published -- passed to
+    // a call its caller still reads, stored in a tuple, captured, received as
+    // a message, or kept by a collection.
+    for path in [FixtureMatrixPath::Run, FixtureMatrixPath::Build] {
+        assert_eq!(
+            struct_retention_for_fixture(&fixture, path),
+            (13, 2),
+            "{path:?}: only the threaded loop's own copies are rewritten",
+        );
+    }
+
+    // interp builds every literal on the heap, so each loop's first step
+    // rewrites too, and it collects only between quanta, so nothing kept
+    // `kept` before its update.
+    assert_eq!(
+        struct_retention_for_fixture(&fixture, FixtureMatrixPath::Interp),
+        (13, 9),
+        "interp: the literals and the uncollected `kept` are rewritten as well",
+    );
 }
 
 /// One `fz.runtime.send.probe` event as the jsonl log renders it.

@@ -53,3 +53,14 @@ fn heap_offset_matches_process_layout() {
 
     assert_eq!(PROCESS_HEAP_OFFSET, (field - base) as i32);
 }
+
+#[test]
+fn struct_retention_counter_offsets_match_process_layout() {
+    let process = process();
+    let base = (&process as *const Process).addr();
+    let attempts = (&process.struct_retention_attempts as *const u64).addr();
+    let hits = (&process.struct_retention_hits as *const u64).addr();
+
+    assert_eq!(PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET, (attempts - base) as i32);
+    assert_eq!(PROCESS_STRUCT_RETENTION_HITS_OFFSET, (hits - base) as i32);
+}

@@ -1886,6 +1886,7 @@ fn push_step_sources(step: &LoweredStep, value: ValueId, out: &mut PendingValues
             ok,
             base,
             entries,
+            ..
         } if *defined == value || *ok == value => {
             out.extend(std::iter::once(*base).chain(entries.iter().flat_map(|(key, field)| [key.value, *field])))
         }
@@ -2058,6 +2059,7 @@ pub(super) fn propagate_steps_reverse(
                 ok,
                 base,
                 entries,
+                ..
             } => {
                 let value_demand = take_live_demand(live, *value);
                 let ok_demand = take_live_demand(live, *ok);

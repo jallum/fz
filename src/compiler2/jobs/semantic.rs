@@ -660,6 +660,7 @@ fn apply_step_evidence(
             ok,
             base,
             entries,
+            ..
         } => {
             let Some(base_ty) = value_ty(values, *base) else {
                 return Ok(());

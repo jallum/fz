@@ -313,6 +313,25 @@ already has:</p>
 and the program raises <code>KeyError</code> as Elixir does. A struct updated
 this way stays the same struct.</p>
 
+<p>When the compiler knows which struct the base is and every key names one of
+its fields, the update skips the destination and writes the replaced fields
+directly. If nothing else can hold the base, it writes them into the base
+itself. A loop that threads one struct through its updates then rewrites that
+one struct at each step instead of copying it:</p>
+
+<pre>
+  def count(c, 0), do: c
+  def count(c, k), do: count(%{c | n: c.n + 1}, k - 1)   <span class="note">// one store per step</span>
+</pre>
+
+<p>Two answers have to agree. The compiler grants the rewrite only when the
+code after the update never uses the base again. At run time the struct's
+header carries a shared mark, set the moment a second holder could appear:
+when the struct is passed to a call whose caller still reads it, stored into
+a tuple, struct, list or map, captured by a closure, sent as a message, or
+kept by a collection. A marked struct is copied, so anyone still holding it
+reads its old fields.</p>
+
 <p><strong>Return-demand destinations:</strong></p>
 
 <p>Some destinations are selected at call boundaries instead of local literal
@@ -1154,10 +1173,11 @@ old object is mutated to point at a new object, the GC must record it
 pointer write needs an extra store — significant overhead.</p>
 
 <div class="box green">
-fz data is immutable, with one exception the runtime controls: a list cell
-nobody else holds may be reused in place when a list is rebuilt. A collection
-marks every list cell it keeps as shared, and a gift's list cells are marked
-shared when they are copied into it, so a shared cell is never reused. An old
+fz data is immutable, with one exception the runtime controls: a list cell or
+struct nobody else holds may be reused in place when a list is rebuilt or a
+struct updated. A collection marks every list cell and struct it keeps as
+shared, and a gift's are marked shared when they are copied into it, so a
+shared one is never reused. An old
 object therefore never gains a reference to a younger one.
 <strong>No write barriers needed.</strong>
 </div>

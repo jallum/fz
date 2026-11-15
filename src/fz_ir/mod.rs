@@ -598,14 +598,16 @@ pub enum Prim {
     /// key repeated. Nothing is sorted or moved.
     DestMapPublish(Var),
     /// `base`, which the types say is a `module` struct of `arity` fields,
-    /// with each of `stores` replacing a field. In the struct layout that is
-    /// a copy with each value stored in its slot; in the entries layout each
-    /// value is put under its key.
+    /// with each of `stores` replacing a field. In the struct layout each
+    /// value is stored in its slot, of `base` itself when `rewrite` permits
+    /// and nothing else holds it, otherwise of a copy; in the entries layout
+    /// each value is put under its key.
     StructWith {
         base: Var,
         module: ModuleName,
         arity: u32,
         stores: Vec<SlotStore<Var>>,
+        rewrite: RewritePermission,
     },
     /// `m[k]` — bracket access. Returns nil if key absent.
     MapGet(Var, Var),
@@ -1175,11 +1177,11 @@ impl FnIr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ListRetention<V> {
     pub source: V,
-    pub permission: ListRewritePermission,
+    pub permission: RewritePermission,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ListRewritePermission {
+pub enum RewritePermission {
     RetainOnly,
     Rewrite,
 }

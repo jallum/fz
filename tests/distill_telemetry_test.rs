@@ -268,7 +268,10 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // (48_886, 50_745, 65) -> (49_041, 50_908, 66): `Enum.into` runs its reduction under a
         // handler that tells the collector `:halt` and raises again, so the distiller's `into`
         // calls compile that handler and `:erlang.raise/3`.
-        (49_041, 50_908, 66),
+        // (49_041, 50_908, 66) -> (49_044, 50_911, 66): code after a map update's key check
+        // reads the update's own value rather than the check's result, so that value is
+        // carried through the check and its transport is asked for once more per carry.
+        (49_044, 50_911, 66),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

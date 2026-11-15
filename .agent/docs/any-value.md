@@ -645,11 +645,16 @@ destination.
 Where the types say which struct the base is (`Types::sole_struct`) and every
 key is a literal atom naming one of its fields, the update needs no
 destination when the base is in the struct's own layout. It is
-`BackendStep::StructUpdate { base, module, arity, stores }`, which cannot
-miss: `fz_struct_copy` copies the object and `CodegenFn::store_field` stores
-each replaced slot in place, the same stores a construction uses. For
-example, `%{p | y: 5}` with `p` a `Point` of fields `x` and `y` is one copy
-and one store at slot 1. The step asks the layout question a slot read asks.
+`BackendStep::StructUpdate { base, module, arity, stores, rewrite }`, which
+cannot miss. It picks the object to store into, then `CodegenFn::store_field`
+stores each replaced slot in place, the same stores a construction uses. The
+object is the base itself when `rewrite` is `Rewrite` and the base's header
+says it is not shared (see "Shared Lists And Structs"); the update is then the
+stores alone. Otherwise `fz_struct_copy` copies the base. For example,
+`%{p | y: 5}` with `p` a `Point` of fields `x` and `y` is one store at slot 1
+when nothing else holds `p`, and one copy and that store when something may.
+Native code makes the choice inline; the interpreter calls
+`fz_struct_reuse_or_copy`. The step asks the layout question a slot read asks.
 A base in the entries layout takes the update destination, each store's key
 put with its value.
 
@@ -665,7 +670,17 @@ nonfinite payloads before publication. Unfinished maps, internal absence
 (`NULL`), forged nonfinite float payloads, and unregistered atoms also have no
 language comparison semantics and are rejected at comparator entry.
 
-## List Ownership
+## Shared Lists And Structs
+
+A list cell or a struct may be rewritten in place only when two answers agree.
+The compiler's answer is a `RewritePermission` on the construction:
+`can_rewrite` (src/compiler2/jobs/body.rs) grants `Rewrite` when nothing the
+construction stores holds the source, and nothing that can run after it uses
+the source. A map update's key check does not count: it reads the base only
+on the miss arm, where the update wrote nothing, and its verdict `ok` is an
+atom. The runtime's answer is a shared mark on the object: set, it means
+something outside the body may hold the object, which is then never written
+again.
 
 The list link's **alias bit** protects a closed shared spine: a marked cell has
 a marked tail. `ListCons::share_spine` stops at the first marked cell, so repeated
@@ -695,8 +710,8 @@ every internal field write, owns publication. No structural runtime scan is adde
 
 Cross-process send copies into storage the receiver will own: the sender
 copies into a gift window on its own heap (`sched::gift_copy`), and the receiver
-grafts the segment at its next dispatch. Every list cell the copy writes is
-shared from birth, because the grafted segment is old and an old cell is never
+grafts the segment at its next dispatch. Every list cell and struct the copy
+writes is shared from birth, because the grafted segment is old and an old cell is never
 rewritten in place; repeated forwarding hits and copied container fields protect
 receiver-side sharing the same way. The sender's own cells are not marked merely
 because a copy was sent. Self-send copies nothing and the runtime publishes nothing: the
@@ -706,6 +721,34 @@ what protects it: `construct_call_ownership` (src/compiler2/jobs/body.rs) marks
 a send argument `Share` when the continuation retains a name that may alias it,
 and Share publishes the spine before the call on every path. The alias bit
 remains one-way within a heap.
+
+A struct's shared mark is bit 4 of its header word
+(`STRUCT_HEADER_SHARED_MASK`). The schema id sits in the high 32 bits
+(`STRUCT_HEADER_SCHEMA_SHIFT`) and the low nibble is the forwarding marker, so
+neither a schema read nor the collector notices the mark. `Heap::share` is the
+one setter for both kinds: a list marks its spine, a struct its header. It is
+reached wherever a struct can gain a second holder:
+
+- a call argument or tuple field passed `Share` (`fz_mark_published_ref_aliased`
+  natively, `publish_backend_capture` in the interpreter);
+- a closure capture, including the mid-flight continuation a reduction yield
+  builds (`store_closure_capture_ref_word`);
+- a store into a container: a struct or tuple field, a list head, a map key
+  or value (`publish_contained_parts`, and natively `CodegenFn::stored_form`,
+  which marks the header inline);
+- a collection that keeps it (`cheney_trace_struct`), since a kept struct is
+  old;
+- a gift copy (`deep_copy_strict_struct`).
+
+A struct literal native code places in read-only program data
+(`define_static_struct_literal`) carries the mark from birth, so it is only
+ever read. Marking the struct alone is enough: everything it holds was marked
+when it was stored. An unshared struct is therefore young, which
+`fz_struct_reuse_or_copy` asserts. The process counts struct updates in
+`struct_retention_attempts` and the ones that stored into their base in
+`struct_retention_hits`, both reported on `process_exited`; native code bumps
+them inline, at `PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET` and
+`PROCESS_STRUCT_RETENTION_HITS_OFFSET`.
 
 ## GC: Roots, Edges, And Lifetime
 

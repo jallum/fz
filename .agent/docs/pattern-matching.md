@@ -396,7 +396,7 @@ from the body's tables (see [pipeline](pipeline.md#function-local-control-is-an-
 so a decision costs a lookup rather than a search through the body. Unknown overlap stays
 conservative; one-shot captures themselves do not split ownership. Receive arms
 share their traced physical capture layout. The runtime guard and container/copy
-publication rules live in [AnyValue's list ownership section](any-value.md#list-ownership).
+publication rules live in [AnyValue's shared lists and structs section](any-value.md#shared-lists-and-structs).
 
 ## Guards
 
