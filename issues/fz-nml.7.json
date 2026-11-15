@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T05:53:26Z",
   "created": "2026-11-15T03:53:52Z",
   "description": "Measured on bd3edae98: a walk that builds \u003c\u003cc\u003e\u003e from each matched byte costs 1 scalar_box + 1 bitstring per byte on interp and AOT alike (scratchpad b.fz). Per the fz-9x7 owner, the box predates fz-9x7 and comes from scalars handed out as values at an extern boundary (box_scalar_for_any, runtime/src/ir_runtime.rs:281-308). The escape decode boxes 6 per escape on AOT (1 on interp). Closing proves: scalar_box 0 on the copy probe. Proposal page: /Users/j5n/Workspace/fz-json-garbage.html (approved 2026-11-14). Worktree ../fz-json, base bd3edae98.",
   "id": "fz-nml.7",
   "labels": [],
   "parent": "fz-nml",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Building \u003c\u003cc\u003e\u003e from an integer boxes no integer",
   "type": "task",
-  "updated_at": "2026-11-15T03:53:52Z"
+  "updated_at": "2026-11-15T05:53:26Z"
 }
