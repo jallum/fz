@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T02:06:21Z",
+  "description": "Engine cycle groups (crates/fz-engine/src/groups.rs) never drop a member. After an edit removes a cycle, the former members stay grouped, and the stale group recruits members that were never on any cycle (seen: a 10-member group with none on a cycle). Answers stay correct (seven edit cases matched fresh compiles: scratchpad h1/report.md) because a group only gates WHEN an outside reader sees a fact as concluded, never WHAT it is; the cost is extra waiting.\nGoal: group membership tracks the current waits+partner reads, so a group is exactly the jobs that are mutually waiting now. History: dissolve-on-close was refuted before fz-afu.15 because it opened a wait-path hole; group-as-one-node on the wait path has since closed that hole, so the idea must be re-tested.\nMethod: fix-proposal page first, with predictions; signal = the h1 edit cases (fresh-compile answers unchanged, stale group size drops to cycle members) plus distiller instructions and group pins.",
+  "id": "fz-t93.18",
+  "labels": [],
+  "parent": "fz-t93",
+  "priority": 2,
+  "status": "open",
+  "title": "Engine groups shrink when a member leaves its cycle",
+  "type": "bug",
+  "updated_at": "2026-11-15T02:06:21Z"
+}
