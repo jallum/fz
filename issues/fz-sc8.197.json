@@ -15,11 +15,15 @@
     {
       "text": "Generalisation (page version 2): the rule is 'a call splits its caller only when the callee can suspend'. Prompt = extern, or a function all of whose calls are direct calls to prompt callees (least fixpoint from externs, so recursion never concludes prompt; closure calls are not prompt).\nCounted on the distiller's backend dump (#585 base; scratch arith197/dist.backend.txt + prompt.py): 1,375 executables, 115 externs, 495 prompt; 1,073 delivered direct call sites, 552 with a prompt callee (51%); 314 closure-call tails. Static count, not executed share.\nSafety facts read in code: a process is collected only at CollectionBoundary::Yield | Park (runtime/src/process.rs; one call in sched_core), so prompt code never meets a collection. Guards already evaluate inline: PatternGuardExpr::{Binary, Extern, Dispatch}; comparisons map to IrBinOp inline (jobs/native.rs ~5696), also implemented in native_codegen/receive.rs and ir_interp/dispatch_exec.rs.\nSecond general rule: a clause that only tail-calls with its own parameters is its target (call-edge resolution).\nEffectSummary (allocates, observable, halts, calls_opaque) has no reader but the dump: proposed for deletion.",
       "timestamp": "2026-11-15T01:26:21Z"
+    },
+    {
+      "text": "Experiments (predictions written before the data).\nE-trace (done): uncaught integer overflow with the narrow spike off and on prints the same text ('** (ArithmeticError) bad argument in arithmetic expression', exit 1); no stack trace is printed either way. A bad-typed operand is a compile error (spec/violation), so it never reaches run time. Hypothesis 'the raise site changes observable output' is refuted for uncaught errors.\nE-count (running): per-site execution counters in the built distiller (32,000 lines), joined to the prompt classification of the same build's backend dump.\n P1: of executed delivered direct calls, 55-75% have a prompt callee (program text says 51%).\n P2: the narrow spike's shape (extern or forwarder) accounts for at least 60% of those executed prompt calls; the wide rule adds at least 25% more executed calls on top of the narrow one. If the wide rule adds under 10%, it buys the fold but little speed.\n P3: the top 15 call sites by count are dominated by Kernel operators on known types and by the JSON decoder's helpers.\nE-wide (after E-count): spike of prompt functions returning in registers; only worth running if P2 holds.",
+      "timestamp": "2026-11-15T01:30:13Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Arithmetic on known integers does not go through a continuation",
   "type": "task",
-  "updated_at": "2026-11-15T01:26:21Z"
+  "updated_at": "2026-11-15T01:30:13Z"
 }
