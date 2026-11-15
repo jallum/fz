@@ -76,7 +76,7 @@ only the keys below:
   source path to `fz2 run|interp`, to the built binary, and to the `elixir`
   oracle, so `System.argv()` is checked against Elixir on every path. A
   `kind: test` fixture takes none.
-- `timeout.<path>_secs:` — per-path wall-clock hang-guard override.
+- `timeout.<path>_secs:` — per-path CPU-limit override (the wall ceiling is 10x).
 
 Every `fixtures/*.fz` file's stem matches `NNNNN_name` and its number is
 unique across `fixtures/` and `fixtures2/`, checked by the static trial
@@ -215,12 +215,20 @@ expects the *build itself* to fail, so the build outcome is what `check()` judge
 
 Exit code 75 (EX_TEMPFAIL) from a declared path marks it not-yet-wired
 (`RunOutcome::Deferred`): the trial reports the reason on stderr and passes. The
-default per-fixture hang guard is `DEFAULT_FIXTURE_HANG_TIMEOUT` = 20s. It is
-deliberately generous: wall clock varies with machine contention and CI
-coverage instrumentation, so this limit detects nontermination, not compiler
-performance. Performance regressions require deterministic work counters from
-telemetry. `run`/`interp` have two hang phases: a fixed 20s setup guard starts at
-spawn, then each execution-ready byte resets the clock for the execution guard,
+default per-fixture limit is `DEFAULT_FIXTURE_CPU_LIMIT` = 20s **of CPU**: the user
+plus system time of the child and every member of its process group, read about
+every 200 ms while it runs (`/proc/<pid>/stat` on Linux, `proc_pid_rusage` on
+macOS; `tests/fixture_matrix/child_limit.rs`). A child waiting for a core under
+machine load is not charged for the wait, so the limit measures the program, not
+the machine. It is deliberately generous: it detects nontermination, not
+compiler performance. Performance regressions require deterministic work
+counters from telemetry. A hung child spends no CPU, so every limit also has a
+wall-clock ceiling of 10x its CPU limit (200s by default). Every failure names
+both numbers: `<label> exceeded 20s of CPU (wall 31.2s)` or `<label> exceeded the
+200s wall ceiling (CPU 0.3s)`. A descendant that leaves the process group
+(`setsid`) is not charged. `run`/`interp` have two phases: a setup limit starts at
+spawn, then each execution-ready byte opens a new window for the execution limit
+(charged from the CPU the group had spent at that byte),
 so every program a command starts gets its own window. The byte is written by `signal_execution_ready` immediately before the
 root process starts — after parsing, the fixpoint drive, the backend product and
 Cranelift — so the setup guard covers the whole compile and the execution guard
@@ -228,13 +236,13 @@ covers only the running program. The same seam emits
 `fz.runtime.execution_ready`, which is how a test orders the boundary against
 compiler work (see [runtime telemetry](runtime-telemetry.md)).
 `execution_guard_covers_the_program_not_the_compile` pins the byte's position
-end to end: a compile-heavy fixture runs under a two-second execution guard,
+end to end: a compile-heavy fixture runs under a two-second execution CPU limit,
 which only a byte written ahead of the compile can blow.
 
 `kind: test` announces once per test, from inside the child process that runs
 it, so each test's program gets its own execution window. The residual is
 exact: the compile of test N+1 happens inside test N's execution window, under
-the same 20s limit, and only the first test's compile is covered by the setup
+the same 20s CPU limit, and only the first test's compile is covered by the setup
 guard. The parent `fz2 test` runs no program and writes no byte, so a `kind:
 test` command that starts no program at all is caught the same way any other is.
 Ending without starting a program, or holding the pipe open past the setup guard
@@ -264,10 +272,11 @@ An inherited writer cannot conceal a leader that starts no program, and
 capturing stderr never waits for inherited writers.
 
 `build` compilation, including an `expect: diagnostic` build, starts a fixed
-20s nontermination guard at spawn. A successful build's binary then gets its
-own execution guard, also starting at spawn; an Elixir oracle does likewise. A
-`timeout.<path>_secs` entry replaces the 20s execution guard for that path; the
-setup and compilation guards stay at the central 20s policy. Output is captured
+20s CPU limit at spawn. A successful build's binary then gets its own execution
+limit, also starting at spawn; an Elixir oracle does likewise. A
+`timeout.<path>_secs` entry replaces the 20s execution CPU limit for that path
+(its wall ceiling follows at 10x); the setup and compilation limits stay at the
+central 20s policy. Output is captured
 in anonymous temporary regular files, so output collection does not wait for
 inherited descriptors to close. On expiry or a lifecycle error, the runner
 signals its process group, falls back to signaling its owned child directly if
@@ -434,7 +443,7 @@ The shared grammar is intentionally small:
 - `kind:` / `expect:` / `diagnostic.code:` / `defer:` / `oracle:` / `oracle.stamp:` / `args:` —
   behavioural matrix policy knobs, using the same meanings as the old
   directory-shaped fixtures.
-- `timeout.<path>_secs:` — behavioural matrix hang-guard overrides.
+- `timeout.<path>_secs:` — behavioural matrix CPU-limit overrides.
 - `root:` — compiler2 root to drive, written as `name/arity`.
 - `assert.metric.<name>:` — a numeric invariant. The current built-in names are
   `semantic.activations`, `semantic.executables`, `semantic.callsites`,

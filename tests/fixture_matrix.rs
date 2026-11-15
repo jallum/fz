@@ -33,7 +33,7 @@
 //!     args: -- "" "a b"    # program command line: after the source path for
 //!                          # run/interp, to the built binary and to `elixir`;
 //!                          # split on spaces, double quotes keep spaces
-//!     timeout.interp_secs: 30  # path-specific hang-guard override
+//!     timeout.interp_secs: 30  # path-specific CPU-limit override
 //!     #---
 //!
 //! Every program invocation -- each `fz2` command, each built binary, each
@@ -92,9 +92,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+#[path = "fixture_matrix/child_limit.rs"]
+mod child_limit;
+#[path = "fixture_matrix/child_limit_test.rs"]
+mod child_limit_test;
+
+use child_limit::{ChildLimit, SAMPLE_INTERVAL, Window, group_cpu_time};
+
 const FZ2_BIN: &str = env!("CARGO_BIN_EXE_fz2");
 const FZ_EXEC_READY_FD_ENV: &str = "FZ_EXEC_READY_FD";
-const DEFAULT_FIXTURE_HANG_TIMEOUT: Duration = Duration::from_secs(20);
+const DEFAULT_FIXTURE_CPU_LIMIT: Duration = Duration::from_secs(20);
 const MIN_EXECUTION_READY_WRITE_FD: RawFd = 10;
 static AOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -306,6 +313,30 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_receive_timer_is_armed_then_fired_or_cancelled_and_fires_in_deadline_order_on_every_path,
         ),
         ("fixture_hang_guard_policy", fixture_hang_guard_policy),
+        (
+            "a_child_kept_off_the_cpu_is_not_charged_for_waiting",
+            child_limit_test::a_child_kept_off_the_cpu_is_not_charged_for_waiting,
+        ),
+        (
+            "a_child_that_burns_cpu_past_the_limit_is_charged_for_it",
+            child_limit_test::a_child_that_burns_cpu_past_the_limit_is_charged_for_it,
+        ),
+        (
+            "a_descendant_that_burns_cpu_is_charged_to_the_child",
+            child_limit_test::a_descendant_that_burns_cpu_is_charged_to_the_child,
+        ),
+        (
+            "a_child_that_hangs_hits_the_wall_ceiling",
+            child_limit_test::a_child_that_hangs_hits_the_wall_ceiling,
+        ),
+        (
+            "a_failure_names_both_the_cpu_and_the_wall_time",
+            child_limit_test::a_failure_names_both_the_cpu_and_the_wall_time,
+        ),
+        (
+            "a_proc_stat_line_is_charged_to_its_group_by_the_fields_after_the_command_name",
+            child_limit_test::a_proc_stat_line_is_charged_to_its_group_by_the_fields_after_the_command_name,
+        ),
         (
             "execution_ready_writer_uses_multi_digit_descriptor",
             execution_ready_writer_uses_multi_digit_descriptor,
@@ -603,8 +634,8 @@ fn behavior_fixtures_route_via_filename_not_paths_frontmatter() {
             header
                 .path_timeouts
                 .iter()
-                .all(|(_, timeout)| *timeout > DEFAULT_FIXTURE_HANG_TIMEOUT),
-            "{} carries a timeout override no more generous than the shared hang guard; \
+                .all(|(_, timeout)| *timeout > DEFAULT_FIXTURE_CPU_LIMIT),
+            "{} carries a timeout override no more generous than the shared CPU limit; \
              that is a performance stopwatch, not a nontermination backstop",
             path.display()
         );
@@ -667,7 +698,7 @@ impl Header {
         self.path_timeouts
             .iter()
             .find_map(|(timeout_path, timeout)| (*timeout_path == path).then_some(*timeout))
-            .unwrap_or(DEFAULT_FIXTURE_HANG_TIMEOUT)
+            .unwrap_or(DEFAULT_FIXTURE_CPU_LIMIT)
     }
 
     fn defer_for_path(&self, path: FixtureMatrixPath) -> Option<&str> {
@@ -1155,6 +1186,10 @@ fn anonymous_capture(stream: &str) -> Result<File, String> {
     FixtureTempFile::new(stream)?.unlink()
 }
 
+fn default_child_limit() -> ChildLimit {
+    ChildLimit::of_cpu(DEFAULT_FIXTURE_CPU_LIMIT)
+}
+
 fn execution_start(boundary: ExecutionBoundary, now: Instant) -> Option<Instant> {
     matches!(boundary, ExecutionBoundary::Spawn).then_some(now)
 }
@@ -1240,33 +1275,32 @@ fn fixture_command_output(
     boundary: ExecutionBoundary,
     timeout: Duration,
 ) -> Result<Output, String> {
-    fixture_command_output_with_ready_writer_action(cmd, label, boundary, timeout, ReadyWriterAction::Inherit)
+    fixture_command_output_with_ready_writer_action(
+        cmd,
+        label,
+        boundary,
+        ChildLimit::of_cpu(timeout),
+        ReadyWriterAction::Inherit,
+    )
 }
 
 fn fixture_command_output_with_ready_writer_action(
     cmd: &mut Command,
     label: &str,
     boundary: ExecutionBoundary,
-    timeout: Duration,
+    limit: ChildLimit,
     ready_writer_action: ReadyWriterAction,
 ) -> Result<Output, String> {
-    guarded_fixture_command(
-        cmd,
-        label,
-        boundary,
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
-        timeout,
-        ready_writer_action,
-    )
-    .map(|finished| finished.output)
+    guarded_fixture_command(cmd, label, boundary, default_child_limit(), limit, ready_writer_action)
+        .map(|finished| finished.output)
 }
 
 fn guarded_fixture_command(
     cmd: &mut Command,
     label: &str,
     boundary: ExecutionBoundary,
-    setup_timeout: Duration,
-    execution_timeout: Duration,
+    setup_limit: ChildLimit,
+    execution_limit: ChildLimit,
     ready_writer_action: ReadyWriterAction,
 ) -> Result<GuardedOutput, String> {
     let ready_pipe = match boundary {
@@ -1290,8 +1324,8 @@ fn guarded_fixture_command(
         ready_read_fd,
         label,
         boundary,
-        setup_timeout,
-        execution_timeout,
+        setup_limit,
+        execution_limit,
     )
 }
 
@@ -1300,21 +1334,20 @@ fn wait_fixture_command(
     mut ready_read_fd: Option<OwnedFd>,
     label: &str,
     boundary: ExecutionBoundary,
-    setup_timeout: Duration,
-    execution_timeout: Duration,
+    setup_limit: ChildLimit,
+    execution_limit: ChildLimit,
 ) -> Result<GuardedOutput, String> {
     let spawned_at = Instant::now();
-    let mut execution_started = execution_start(boundary, spawned_at);
-    let mut execution_ready_count = 0;
     let mut process = WatchedProcess::start(process, label)?;
+    let mut execution = execution_start(boundary, spawned_at).map(|started| Window::open(started, Duration::ZERO));
+    let mut setup = Window::open(spawned_at, Duration::ZERO);
+    let mut execution_ready_count = 0;
     loop {
-        let deadline = match execution_started {
-            Some(started) => started + execution_timeout,
-            None => spawned_at + setup_timeout,
-        };
-        // The one wait: until the child exits, a readiness byte arrives, or the
-        // hang guard's deadline passes.
-        let exited = process.wait_for_activity(ready_read_fd.as_ref(), deadline);
+        let (window, limit) = active_window(&mut execution, &mut setup, execution_limit, setup_limit);
+        // The one wait: until the child exits, a readiness byte arrives, the
+        // next CPU reading is due, or the wall ceiling passes.
+        let wake = (Instant::now() + SAMPLE_INTERVAL).min(window.started() + limit.wall_ceiling());
+        let exited = process.wait_for_activity(ready_read_fd.as_ref(), wake);
         // Observe exit before draining: an exited child's final ready byte is
         // already in the pipe, even if it arrived after the previous drain.
         let status = if exited { Some(process.exit_status()) } else { None };
@@ -1322,9 +1355,13 @@ fn wait_fixture_command(
             match read_execution_ready(read_fd) {
                 Ok(ExecutionReady::Ready) => {
                     // Every announcement starts an execution window: a command
-                    // that runs several programs in turn gives each its own.
+                    // that runs several programs in turn gives each its own,
+                    // charged from the CPU the group had spent by then.
                     execution_ready_count += 1;
-                    execution_started = Some(Instant::now());
+                    match process.cpu_time() {
+                        Ok(group_cpu) => execution = Some(Window::open(Instant::now(), group_cpu)),
+                        Err(error) => return Err(process.fail(label, error)),
+                    }
                 }
                 Ok(ExecutionReady::Pending) => break,
                 Ok(ExecutionReady::Closed) => {
@@ -1352,29 +1389,38 @@ fn wait_fixture_command(
                     execution_ready_count,
                 });
             }
-            FixtureCommandState::Running
-                if execution_started
-                    .map(|started| started.elapsed() >= execution_timeout)
-                    .unwrap_or_else(|| spawned_at.elapsed() >= setup_timeout) =>
-            {
-                let output = process.finish(label)?;
-                return Err(match execution_started {
-                    None => format!(
-                        "{} did not signal execution ready within {:?}; stderr: {}",
-                        label,
-                        setup_timeout,
-                        String::from_utf8_lossy(&output.stderr).trim_end()
-                    ),
-                    Some(_) => format!(
-                        "{} exceeded {:?}; stderr: {}",
-                        label,
-                        execution_timeout,
-                        String::from_utf8_lossy(&output.stderr).trim_end()
-                    ),
-                });
+            FixtureCommandState::Running => {
+                let (window, limit) = active_window(&mut execution, &mut setup, execution_limit, setup_limit);
+                let group_cpu = match process.cpu_time() {
+                    Ok(group_cpu) => group_cpu,
+                    Err(error) => return Err(process.fail(label, error)),
+                };
+                if let Some(exceeded) = limit.exceeded(window.charge(group_cpu)) {
+                    let output = process.finish(label)?;
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stderr = stderr.trim_end();
+                    return Err(if execution.is_some() {
+                        format!("{label} exceeded {exceeded}; stderr: {stderr}")
+                    } else {
+                        format!("{label} did not signal execution ready within {exceeded}; stderr: {stderr}")
+                    });
+                }
             }
-            FixtureCommandState::Running => {}
         }
+    }
+}
+
+/// The window and limit now in force: the execution window once a program has
+/// started, the setup window before.
+fn active_window<'a>(
+    execution: &'a mut Option<Window>,
+    setup: &'a mut Window,
+    execution_limit: ChildLimit,
+    setup_limit: ChildLimit,
+) -> (&'a mut Window, ChildLimit) {
+    match execution {
+        Some(window) => (window, execution_limit),
+        None => (setup, setup_limit),
     }
 }
 
@@ -1444,6 +1490,11 @@ impl WatchedProcess {
         let millis = remaining.as_millis().saturating_add(1).min(i32::MAX as u128) as i32;
         unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, millis) };
         fds[0].revents & libc::POLLIN != 0
+    }
+
+    /// The CPU the child's process group has spent so far.
+    fn cpu_time(&self) -> Result<Duration, String> {
+        group_cpu_time(self.pid)
     }
 
     /// The status of the child, which has exited.
@@ -1547,15 +1598,15 @@ fn kill_process_group(leader: libc::pid_t) -> Result<(), String> {
 
 fn fixture_hang_guard_policy() {
     assert_eq!(
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        DEFAULT_FIXTURE_CPU_LIMIT,
         Duration::from_secs(20),
-        "the default is the CI-proven hang backstop, not a performance stopwatch"
+        "the default CPU limit is the CI-proven nontermination backstop, not a performance stopwatch"
     );
     let now = Instant::now();
     assert_eq!(
         execution_start(ExecutionBoundary::Announced, now),
         None,
-        "pre-execution work must not arm the execution hang guard"
+        "pre-execution work must not arm the execution limit"
     );
     assert_eq!(
         execution_start(ExecutionBoundary::Refused, now),
@@ -1591,7 +1642,7 @@ fn fixture_command_rejects_missing_readiness() {
         Command::new("sh").args(["-c", "sleep 2"]),
         "unannounced command",
         ExecutionBoundary::Announced,
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        default_child_limit(),
         ReadyWriterAction::CloseBeforeExec,
     )
     .expect_err("a command that ends without starting a program must be reported");
@@ -1604,7 +1655,7 @@ fn fixture_command_rejects_missing_readiness() {
         Command::new("sh").args(["-c", "sleep 2 &"]),
         "pre-ready leader",
         ExecutionBoundary::Announced,
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        DEFAULT_FIXTURE_CPU_LIMIT,
     )
     .expect_err("an inherited writer must not conceal a leader that starts no program");
     assert_eq!(
@@ -1620,14 +1671,14 @@ fn fixture_command_rejects_missing_readiness() {
             .args(["-c", "printf %s $$ > \"$FZ_SETUP_HANG_PID_PATH\"; sleep 2"]),
         "setup-hung fixture",
         ExecutionBoundary::Announced,
-        Duration::from_secs(1),
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        ChildLimit::new(Duration::from_secs(1), Duration::from_secs(1)),
+        default_child_limit(),
         ReadyWriterAction::Inherit,
     )
     .expect_err("a live command that never signals readiness must hit the setup guard");
     assert_eq!(
         error,
-        "setup-hung fixture did not signal execution ready within 1s; stderr: "
+        "setup-hung fixture did not signal execution ready within the 1s wall ceiling (CPU 0.0s); stderr: "
     );
     assert_reaped(read_pid(&pid_path));
     let _ = fs::remove_file(pid_path);
@@ -1654,7 +1705,7 @@ fn fixture_command_verdict_follows_the_fixture_expectation() {
         &mut probe(7),
         "aborting program",
         ExecutionBoundary::Announced,
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        default_child_limit(),
         ReadyWriterAction::Inherit,
     )
     .expect_err("a nonzero exit does not excuse a program that never started");
@@ -1667,7 +1718,7 @@ fn fixture_command_verdict_follows_the_fixture_expectation() {
         &mut probe(7),
         "refused source",
         ExecutionBoundary::Refused,
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        default_child_limit(),
         ReadyWriterAction::Inherit,
     )
     .expect("a refused source starts no program, and its diagnostic is the answer");
@@ -1678,7 +1729,7 @@ fn fixture_command_verdict_follows_the_fixture_expectation() {
         &mut probe(0),
         "refused source",
         ExecutionBoundary::Refused,
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        default_child_limit(),
         ReadyWriterAction::SignalBeforeExec,
     )
     .expect_err("a program that starts under a refusal expectation is the finding");
@@ -1725,8 +1776,8 @@ fn fixture_readiness_drains_an_exited_child() {
             Some(read_fd),
             "exited readiness probe",
             ExecutionBoundary::Announced,
-            DEFAULT_FIXTURE_HANG_TIMEOUT,
-            DEFAULT_FIXTURE_HANG_TIMEOUT,
+            default_child_limit(),
+            default_child_limit(),
         );
         assert_reaped(pid);
         // An exited child's buffered byte is drained and counted before its
@@ -1800,8 +1851,8 @@ fn assert_missing_readiness_observation_order(exit_first: bool) {
         Some(read_fd),
         "missing readiness probe",
         ExecutionBoundary::Announced,
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        default_child_limit(),
+        default_child_limit(),
     )
     .expect_err("both observation orders reject the same missing boundary");
     assert_reaped(pid);
@@ -1864,8 +1915,8 @@ fn assert_execution_ready_count(command: &mut Command, label: &str, expected: us
         command,
         label,
         ExecutionBoundary::Announced,
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        default_child_limit(),
+        default_child_limit(),
         ReadyWriterAction::Inherit,
     )
     .unwrap_or_else(|error| panic!("run `{label}` readiness probe: {error}"));
@@ -1889,8 +1940,8 @@ fn execution_guard_covers_the_program_not_the_compile() {
             Command::new(FZ2_BIN).arg(door).arg(&fixture),
             &label,
             ExecutionBoundary::Announced,
-            DEFAULT_FIXTURE_HANG_TIMEOUT,
-            Duration::from_secs(2),
+            default_child_limit(),
+            ChildLimit::of_cpu(Duration::from_secs(2)),
             ReadyWriterAction::Inherit,
         )
         .unwrap_or_else(|error| panic!("the program runs well inside a two-second window: {error}"));
@@ -1917,7 +1968,10 @@ fn kind_test_timeouts_kill_the_outer_command_and_its_hung_root() {
             Duration::from_secs(1),
         )
         .expect_err("a kind:test root that never returns must time out");
-        assert_eq!(error, format!("{label} exceeded 1s; stderr: "));
+        assert!(
+            error.starts_with(&format!("{label} exceeded 1s of CPU (wall ")),
+            "a root that spins is charged its CPU: {error}"
+        );
     }
 
     let _ = fs::remove_file(fixture);
@@ -1934,7 +1988,11 @@ fn build_output_owner_cleans_timeout_and_error_paths() {
             Duration::from_millis(20),
         )
     });
-    assert!(timeout.unwrap_err().contains("exceeded 20ms"));
+    assert!(
+        timeout
+            .unwrap_err()
+            .contains("exceeded the 200ms wall ceiling (CPU 0.0s)")
+    );
     assert_fz2_build_outputs_absent(&path);
 
     let path = temp_build_output_path("owner_error");
@@ -2055,7 +2113,7 @@ fn run_fz2_build_path_owned(fixture: &FixtureCase, header: &Header, out_path: &P
             .arg(out_path),
         "fz2 build",
         ExecutionBoundary::Spawn,
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        DEFAULT_FIXTURE_CPU_LIMIT,
     ) {
         Ok(o) => o,
         Err(e) => return RunOutcome::Failed(e),
@@ -2461,7 +2519,7 @@ fn build_then_run_logged_to(fixture: &FixtureCase, header: &Header, telemetry_pa
             .arg(&out_path),
         "fz2 build --log-telemetry",
         ExecutionBoundary::Spawn,
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        DEFAULT_FIXTURE_CPU_LIMIT,
     )
     .and_then(|build| {
         if !build.status.success() || header.kind != Kind::Run {
@@ -2660,7 +2718,7 @@ fn run_elixir_oracle(fixture: &FixtureCase, header: &Header, oracle_path: &Path)
         Command::new("elixir").arg(oracle_path).args(&header.args),
         &label,
         ExecutionBoundary::Spawn,
-        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        DEFAULT_FIXTURE_CPU_LIMIT,
     )
     .map_err(|e| {
         format!(
@@ -2947,7 +3005,7 @@ fn fixture_invocations_own_their_working_directory() {
             &mut command,
             "relative file writer",
             ExecutionBoundary::Spawn,
-            DEFAULT_FIXTURE_HANG_TIMEOUT,
+            DEFAULT_FIXTURE_CPU_LIMIT,
         )
         .expect("a fresh working directory holds no earlier run's file");
         assert!(output.status.success());
@@ -2964,14 +3022,15 @@ fn fixture_invocations_own_their_working_directory() {
     }
 
     let dir_file = temp_build_output_path("scratch_dir_name");
-    let error = fixture_command_output(
+    let error = fixture_command_output_with_ready_writer_action(
         Command::new("sh").env("FZ_SCRATCH_DIR_PATH", &dir_file).args([
             "-c",
             "pwd > \"$FZ_SCRATCH_DIR_PATH\"; printf . > /dev/fd/$FZ_EXEC_READY_FD; sleep 2",
         ]),
         "timed-out relative file writer",
         ExecutionBoundary::Announced,
-        Duration::from_millis(500),
+        ChildLimit::new(Duration::from_millis(500), Duration::from_millis(500)),
+        ReadyWriterAction::Inherit,
     )
     .expect_err("the probe outlives its window");
     assert!(error.contains("exceeded"), "{error}");
