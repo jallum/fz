@@ -1,0 +1,22 @@
+#---
+# purpose: "a macro whose body calls a function of the module that invokes it runs while that module is being defined, so the function is not available yet: the one diagnostic says so, naming the call and the macro"
+# expect: diagnostic
+#---
+defmodule Helper do
+  defmacro make() do
+    n = M.seven()
+    quote do
+      def f(), do: unquote(n)
+    end
+  end
+end
+
+defmodule M do
+  import Helper
+  def seven(), do: 7
+  make()
+end
+
+def main() do
+  dbg(M.f())
+end

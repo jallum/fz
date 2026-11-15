@@ -646,10 +646,11 @@ impl super::product_drive::ProductDriveError for String {
     fn no_ready_producer<T: Telemetry>(
         world: &mut World,
         tel: &T,
+        sessions: Option<&mut super::pull::ProductSessions>,
         scope: super::pull::ProductScope,
         fact: &FactUse<FactKey>,
     ) -> Self {
-        super::drive::ExecutionContext::new(world, tel).report_unresolved_waits();
+        super::drive::ExecutionContext::with_optional_product_sessions(world, tel, sessions).report_unresolved_waits();
         format!(
             "compiler2 {scope} product path waited on {} with no ready producer",
             fact.fact().kind_label()

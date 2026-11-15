@@ -1,0 +1,23 @@
+#---
+# purpose: "a macro that captures a function of the module that invokes it and calls the capture runs while that module is being defined, so the function is not available yet: the one diagnostic names the function at the call of the capture"
+# expect: diagnostic
+#---
+defmodule Helper do
+  defmacro make() do
+    f = &M.seven/0
+    n = f.()
+    quote do
+      def f(), do: unquote(n)
+    end
+  end
+end
+
+defmodule M do
+  import Helper
+  def seven(), do: 7
+  make()
+end
+
+def main() do
+  dbg(M.f())
+end

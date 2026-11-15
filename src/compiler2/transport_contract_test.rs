@@ -5816,6 +5816,7 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
     fn no_ready_producer<T: crate::telemetry::Telemetry>(
         _world: &mut World,
         _tel: &T,
+        _sessions: Option<&mut super::pull::ProductSessions>,
         scope: super::pull::ProductScope,
         fact: &FactUse<FactKey>,
     ) -> Self {

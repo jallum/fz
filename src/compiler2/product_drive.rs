@@ -156,6 +156,7 @@ pub(crate) trait ProductDriveError: Sized {
     fn no_ready_producer<T: crate::telemetry::Telemetry>(
         world: &mut World,
         tel: &T,
+        sessions: Option<&mut ProductSessions>,
         scope: ProductScope,
         fact: &FactUse<FactKey>,
     ) -> Self;
@@ -700,7 +701,7 @@ fn drive_program_product<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveE
                     .next()
                     .cloned()
                     .expect("a deferred drive recorded the wait it stalled on");
-                return Err(E::no_ready_producer(world, tel, scope, &stuck));
+                return Err(E::no_ready_producer(world, tel, Some(sessions), scope, &stuck));
             }
         }
     }
@@ -1032,7 +1033,7 @@ fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTe
                     producer_pokes += world.demand_fact_producer(fact.fact(), WorkStartReason::BlockedWaiterExpansion);
                     let Some(job) = world.pop_runnable() else {
                         if may_arbitrate {
-                            return Err(E::no_ready_producer(world, tel, scope, fact));
+                            return Err(E::no_ready_producer(world, tel, sessions.as_deref_mut(), scope, fact));
                         }
                         if let Some(sessions) = sessions.as_deref_mut() {
                             sessions.defer_waits(scope, awaited);

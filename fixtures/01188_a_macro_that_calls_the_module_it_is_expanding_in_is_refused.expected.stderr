@@ -1,0 +1,7 @@
+error[resolve/unknown-function]: function `M.seven/0` is undefined (function not available)
+  --> fixtures/01188_a_macro_that_calls_the_module_it_is_expanding_in_is_refused.fz:3:9
+   |
+3 |     n = M.seven()
+   |         ^^^^^^^^^
+   |
+   = note: expanding macro: `Helper.make/0`
