@@ -1,8 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-t93.3",
-    "fz-t93.4"
+    "fz-t93.3"
   ],
   "blocks": [
     "fz-t93.6"
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "The transport cut asks the engine for the owner's cycle group",
   "type": "task",
-  "updated_at": "2026-11-14T04:26:35Z"
+  "updated_at": "2026-11-15T01:06:20Z"
 }
