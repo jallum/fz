@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-sc8.212"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-sc8.215"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "A guard and a body resolve operators through one table; guard == and != go through Kernel",
   "type": "task",
-  "updated_at": "2026-11-15T02:44:31Z"
+  "updated_at": "2026-11-15T03:32:25Z"
 }
