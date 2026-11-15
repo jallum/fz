@@ -4,14 +4,15 @@
     "fz-t93.19"
   ],
   "blocks": [],
+  "closed_at": "2026-11-15T14:28:23Z",
   "created": "2026-11-15T04:36:34Z",
   "description": "Step of fz-t93. Page (approved 2026-11-15): /Users/j5n/Workspace/fz-t93.21.html (https://claude.ai/artifact/T8g3SUrZGsLA52McMMfdQo). Research: scratch t93_21/r/report.md, probe_AC.diff.\n\njoin_assign reports whether the value changed (all five impls); an unchanged entry ends ContributionMap::apply with no refold and no compare; rebuild runs only when rows changed; the fold over contributors rebuilds once, keeping the activation-input budget check inside the fold. Deletes the free fn join_contributions's per-apply refold path, the clone-and-compare in apply's exact arm, the unconditional rebuild in join_assign, the per-contributor rebuild in the fold. A refold counter joins the completion telemetry (approved) so the red test observes it.\n\nMeasured on develop d032c7368: activation-input block ~335M (2.7%); 6,023 of 9,123 applies had an unchanged entry; distiller 12.278G -\u003e 12.182G (-0.78%, n=3 interleaved), output byte-identical. Predictions: refolds 9,123 -\u003e ~3,100, rebuilds ~18k -\u003e ~6k, no pin moves (watch activation_input_collapses). Bar: byte-identical output, no pin rises without approval.",
   "id": "fz-t93.21",
   "labels": [],
   "parent": "fz-t93",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Activation-input contributions cost the World in proportion to what changed",
   "type": "task",
-  "updated_at": "2026-11-15T13:28:43Z"
+  "updated_at": "2026-11-15T14:28:23Z"
 }
