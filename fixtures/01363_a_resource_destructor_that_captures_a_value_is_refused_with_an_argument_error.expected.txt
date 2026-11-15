@@ -1,0 +1,2 @@
+"a resource destructor captures nothing"
+:after

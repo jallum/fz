@@ -293,13 +293,14 @@ stands. BinRefs and Resource stubs keep separate chains (`mso_head` and
 resources). The sweep (`procbin::mso_sweep`) decides each stub, once, the same way
 after a collection and at exit: a survivor is relinked, a dead BinRef releases
 its SharedBin, and a dead Resource whose last reference this was queues
-`(closure, payload)` on `heap.pending_dtors`. A collection first forwards the
-destructor closure of every unreached, unclaimed resource stub, with what it
-captures, so the closure outlives the from-space; that search walks only the
-resource chains. `GcStats::stub_visits` counts the chain links a collection
-followed in both walks; it is not published on `fz.runtime.gc`.
+`(destructor, payload)` on `heap.pending_dtors`: the destructor is the literal
+closure word the `Resource` holds, outside every heap, and the payload is the
+raw `u64`, so the queue holds no heap word and nothing is forwarded for it.
+`GcStats::stub_visits` counts the chain links the one sweep followed; it is not
+published on `fz.runtime.gc`.
 
-`end_quantum` then drains `pending_dtors` oldest first, calling
+`end_quantum` then drains `pending_dtors` oldest first, boxing each payload as
+an integer on the process heap just before calling
 `Scheduler::run_destructor` for each and counting it in
 `Process::dtors_dispatched`. A destructor runs to completion under a fresh
 reduction budget; one that yielded would overwrite the process's own
@@ -537,8 +538,8 @@ pinned values, the handlers of the `try` bodies the process is inside, the
   the receiver is woken once, and its own heap allocates no list cells for the
   delivery.
 - `runtime/src/sched_core_test.rs` (`end_quantum` tests) — a resource freed by a
-  collection has its destructor closure, captures included, dispatched at the
-  same boundary; a held resource is left alone; a halted process dispatches every
+  collection has its destructor closure dispatched at the same boundary, and a
+  queued raw payload is boxed as an integer only at dispatch; a held resource is left alone; a halted process dispatches every
   destructor without collecting; a claimed resource dispatches none; a
   destructor that yields is a fault.
 - `cargo test --test fixture_matrix a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path`

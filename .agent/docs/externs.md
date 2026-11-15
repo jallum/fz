@@ -735,6 +735,14 @@ extern "fz" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer 
 @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
 ```
 
+The destructor captures nothing. It is a literal closure (`is_literal()` on its
+ref), which the `Resource` keeps as a word outside every heap. `fz_make_resource`
+is the one place that decides this: it answers `nil` (an atom, never a resource
+ref) for a closure that captures, and `Kernel.make_resource` turns that `nil`
+into `ArgumentError` "a resource destructor captures nothing", which the program
+can rescue. No type or spec checks it. A destructor that is not a closure at all
+is a spec violation and an internal assertion in `fz_make_resource`.
+
 `resource(T)` is a real type constructor on the `Types` trait; the variable binds
 from the payload, so `make_resource(42, &close/1)` is `resource(integer)` --
 `fz_make_resource`'s return evidence, like every extern's, is its own

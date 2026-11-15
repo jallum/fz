@@ -11,7 +11,6 @@ use crate::any_value::{
     map_values_ptr, share_struct, struct_field_kind_slot, struct_field_raw_slot, struct_schema_id,
 };
 use crate::procbin::BinView;
-use crate::resource::ResourceStub;
 use std::ptr::{read, write};
 
 pub fn cheney_trace_list(
@@ -99,22 +98,6 @@ pub fn cheney_trace_binview(
     let binref = AnyValue::decode_tagged_heap_bits(view.binref_word()).expect("a view names its BinRef");
     let forwarded = forward_heap_value(binref, from_space, heap, schemas, copied_objects, stats);
     view.binref_word_set(forwarded.heap_object_word().expect("a forwarded BinRef"));
-}
-
-pub fn cheney_trace_resource(
-    obj: *mut u8,
-    from_space: &FromSpace,
-    heap: &mut Heap,
-    schemas: &SchemaRegistry,
-    copied_objects: &mut Vec<CopiedObject>,
-    stats: &mut GcStats,
-) {
-    let resource = unsafe { ResourceStub::from_raw(obj) };
-    let closure = resource.closure_value();
-    if closure.kind().is_heap() {
-        let forwarded = forward_heap_value(closure, from_space, heap, schemas, copied_objects, stats);
-        resource.closure_value_set(forwarded);
-    }
 }
 
 pub fn cheney_trace_map(

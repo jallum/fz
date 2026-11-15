@@ -10,11 +10,14 @@ use crate::heap::StubSite;
 use crate::procbin::{
     BINREF_BYTES, BINVIEW_BYTES, BinRef, BinView, SharedBinHandle, alloc_binref, alloc_buffer_view, alloc_view,
 };
-use crate::resource::{RESOURCE_STUB_SIZE, ResourceHandle, ResourceStub, alloc_resource, fz_resource_destructor_noop};
+use crate::resource::{RESOURCE_STUB_SIZE, ResourceHandle, ResourceStub, alloc_resource};
 use crate::sync::Ordering;
 use std::cell::RefCell;
 use std::ptr::null_mut;
 use std::rc::Rc;
+
+/// A destructor word the test never dispatches: the resource only carries it.
+const TEST_DESTRUCTOR: u64 = 0xD7;
 
 /// A view of `bit_len` bits that starts `byte_offset` bytes into a buffer that
 /// enters the heap with it, as a buffer does when a message copy brings it.
@@ -707,12 +710,7 @@ fn a_gift_keeps_binary_and_resource_stubs_on_their_own_chains() {
         StubSite::FilledBuffer,
     ));
     let resource = heap_object_word(
-        alloc_resource(
-            &mut sender,
-            ResourceHandle::new(1, fz_resource_destructor_noop),
-            AnyValue::nil_atom(),
-        )
-        .as_raw(),
+        alloc_resource(&mut sender, ResourceHandle::new(1, TEST_DESTRUCTOR)).as_raw(),
         ValueKind::RESOURCE,
     );
     let segment = sender.end_gift();

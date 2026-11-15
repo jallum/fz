@@ -3,7 +3,7 @@
 use super::block_pool::{Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pool_alloc, round_up_16};
 use super::gc::{
     CopiedObject, FromSpace, cheney_trace_binview, cheney_trace_closure, cheney_trace_list, cheney_trace_map,
-    cheney_trace_resource, cheney_trace_struct, forward_any_value_ref_root, forward_heap_value,
+    cheney_trace_struct, forward_any_value_ref_root,
 };
 use super::map_view::destination_layout;
 use super::ref_io::{
@@ -24,13 +24,12 @@ use crate::any_value::{
     struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id, struct_size_for_payload,
 };
 use crate::procbin::{
-    BinView, DeadResource, SharedBinHandle, alloc_buffer_view, alloc_view, mso_drop_all, mso_sweep,
-    mso_unreached_closures, shared_bin_append,
+    BinView, SharedBinHandle, alloc_buffer_view, alloc_view, mso_drop_all, mso_sweep, shared_bin_append,
 };
 use crate::process::Node;
 use crate::term::{NumericMode, TermComparator};
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::mem::size_of;
 use std::ptr::{copy, copy_nonoverlapping, read, write, write_bytes};
 use std::rc::Rc;
@@ -1510,26 +1509,6 @@ impl Heap {
             &mut stats,
         );
 
-        // A resource stub nothing reached is dead, but its destructor closure
-        // still has to run. Forward each such closure, with everything it
-        // captures, so it outlives the from-space. A stub a closure captures
-        // is reached by this and survives until a later collection. Only the
-        // stubs of the from-space can be found dead: a minor collection looks
-        // at the young chains alone. Only the resource chains are walked.
-        let unreached = mso_unreached_closures(self, generation, &mut stats.stub_visits);
-        let mut dead_closures: HashMap<usize, AnyValue> = HashMap::with_capacity(unreached.len());
-        for (stub, closure) in unreached {
-            let forwarded = forward_heap_value(closure, &from_space, self, &schemas, &mut copied_objects, &mut stats);
-            dead_closures.insert(stub, forwarded);
-        }
-        cheney_scan(
-            &mut scan_idx,
-            &from_space,
-            self,
-            &schemas,
-            &mut copied_objects,
-            &mut stats,
-        );
         drop(schemas);
 
         // The MSO sweep walks the intrusive chains of the from-space: survivors
@@ -1537,17 +1516,7 @@ impl Heap {
         // dead entries drop their off-heap reference. It must run before the
         // from-space is released because it reads from-space stubs (their
         // `mso_next` link, which Cheney never overwrites).
-        let dead = mso_sweep(
-            self,
-            generation,
-            |stub| {
-                *dead_closures
-                    .get(&(stub.as_raw() as usize))
-                    .expect("a dead unclaimed resource stub had its closure forwarded")
-            },
-            &mut stats.stub_visits,
-            &mut stats.stubs_survived,
-        );
+        mso_sweep(self, generation, &mut stats.stub_visits, &mut stats.stubs_survived);
 
         self.retire_to_space_as_old();
         let kept_objects = copied_objects.len() as u64;
@@ -1576,7 +1545,6 @@ impl Heap {
         for block in from_blocks {
             block.release();
         }
-        self.queue_dead_resources(dead);
         stats
     }
 
@@ -1620,23 +1588,7 @@ impl Heap {
     /// live, so every resource whose last reference this heap held queues its
     /// destructor on `pending_dtors`. Allocates no to-space.
     pub fn release_resources_at_exit(&mut self) {
-        let dead = mso_sweep(
-            self,
-            Generation::Major,
-            |stub| stub.closure_value(),
-            &mut 0,
-            &mut StubCounts::default(),
-        );
-        self.queue_dead_resources(dead);
-    }
-
-    /// Queue each dead resource's closure and a boxed payload for the
-    /// scheduler to dispatch.
-    fn queue_dead_resources(&mut self, dead: Vec<DeadResource>) {
-        for DeadResource { closure, payload } in dead {
-            let payload_ref = self.box_any_value_ref(AnyValue::int(payload as i64)).raw_word();
-            self.pending_dtors.push_back((closure, payload_ref));
-        }
+        mso_sweep(self, Generation::Major, &mut 0, &mut StubCounts::default());
     }
 }
 
@@ -1665,9 +1617,9 @@ fn cheney_scan(
             ValueKind::MAP => cheney_trace_map(copied.ptr, from_space, heap, schemas, copied_objects, stats),
             ValueKind::CLOSURE => cheney_trace_closure(copied.ptr, from_space, heap, schemas, copied_objects, stats),
             ValueKind::STRUCT => cheney_trace_struct(copied.ptr, from_space, heap, schemas, copied_objects, stats),
-            ValueKind::BITSTRING | ValueKind::BINREF => {}
+            // These hold no heap edge for the scan to forward.
+            ValueKind::BITSTRING | ValueKind::BINREF | ValueKind::RESOURCE => {}
             ValueKind::BINVIEW => cheney_trace_binview(copied.ptr, from_space, heap, schemas, copied_objects, stats),
-            ValueKind::RESOURCE => cheney_trace_resource(copied.ptr, from_space, heap, schemas, copied_objects, stats),
             kind => panic!("Cheney scan: invalid copied object kind {kind:?}"),
         }
     }

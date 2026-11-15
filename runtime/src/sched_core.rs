@@ -19,7 +19,7 @@
 //! [`end_quantum`] records. The first halt is the program's end, with its
 //! status, and [`next_runnable`] hands out nothing after it.
 
-use crate::any_value::{AnyValueRef, ValueKind};
+use crate::any_value::AnyValue;
 use crate::clock::Clock;
 use crate::heap::GcStats;
 use crate::process::{Collection, CollectionBoundary, Disposition, PidId, Process, ProcessState};
@@ -200,14 +200,7 @@ pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Proce
 /// overwrite the process's own continuation, so that is a fault.
 pub fn drain_destructors<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Process) {
     while let Some((closure, payload)) = process.heap.pending_dtors.pop_front() {
-        let payload_tag = AnyValueRef::from_raw_word(payload)
-            .expect("a queued destructor payload is a valid value ref")
-            .tag();
-        assert_eq!(
-            payload_tag,
-            ValueKind::INT,
-            "a queued destructor payload stays boxed as an integer"
-        );
+        let payload = process.heap.box_any_value_ref(AnyValue::int(payload as i64)).raw_word();
         let continuation = process.runnable_closure();
         process.reset_reduction_budget();
         scheduler.run_destructor(process, closure, payload);

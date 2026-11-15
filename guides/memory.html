@@ -376,9 +376,8 @@ of that tail. In <code>fixtures/quicksort</code>, the native paths pin
   <code>mso_next</code> with the creating site in its low nibble; 16 bytes
   total.</li>
   <li><strong>Resource:</strong> offset 0 <code>resource_ptr</code>; offset 8
-  resource discriminator; offset 16 destructor closure payload; offset 24
-  destructor closure kind byte plus padding; offset 32 <code>mso_next</code>;
-  48 bytes total.</li>
+  <code>mso_next</code>; 16 bytes total. The destructor lives on the shared
+  off-heap Resource.</li>
 </ul>
 
 <!-- ─────────────────────────────── 2. HEAP ─────────────────────────────── -->
@@ -425,7 +424,7 @@ has its own prefix and size function.</p>
     <tr><td>bitstring (small, inline)</td><td class="size">align16(8 + ⌈bits/8⌉ + 1)</td><td>bit_len header + bytes + trailing zero</td></tr>
     <tr><td>BinView (binary view)</td><td class="size">32 bytes</td><td>8 BinRef pointer + 8 bytes_ptr + 8 bit_len (+ 8 slot padding)</td></tr>
     <tr><td>BinRef</td><td class="size">16 bytes</td><td>8 shared_ptr + 8 mso_next</td></tr>
-    <tr><td>Resource</td><td class="size">48 bytes</td><td>resource ptr + discriminator + destructor closure + mso_next</td></tr>
+    <tr><td>Resource</td><td class="size">16 bytes</td><td>8 resource ptr + 8 mso_next</td></tr>
   </tbody>
 </table>
 
@@ -794,7 +793,7 @@ the same walk with nothing live and no to-space):</p>
             link new_addr into new_head     <span class="note">// survived; rejoin the chain</span>
         else:
             release_payload(cur)            <span class="note">// dead MSO stub; drop its ref;</span>
-                                            <span class="note">// a Resource's last ref queues (closure, payload)</span>
+                                            <span class="note">// a Resource's last ref queues (destructor, payload)</span>
         cur = next
     young head of the kind = null
     old head of the kind = new_head         <span class="note">// survivors are old</span>
@@ -808,13 +807,12 @@ queues its destructor at the next major collection, and a young one at the next
 minor.</p>
 
 <p>A dead Resource's destructor is fz code, so it never runs inside the sweep.
-Its closure lives in the from-space that is about to be released, so before the
-sweep the collector forwards the closure of every unreached, unclaimed Resource
-stub, along with whatever the closure captures. That search walks only the
-Resource chains, so BinRefs are visited once, by the sweep. The sweep then queues
-<code>(closure, payload)</code> on <code>heap.pending_dtors</code> for the
-resource whose last reference it dropped. A stub that a forwarded closure
-captures is reached by that, so it survives until a later collection. A process
+The destructor is a literal closure that captures nothing, held by the shared
+off-heap Resource, so it lives outside every heap and nothing about it is
+forwarded or searched for. Each stub is visited once, by the sweep, which queues
+<code>(destructor, payload)</code> on <code>heap.pending_dtors</code> for the
+resource whose last reference it dropped; the payload is the raw integer, boxed
+on the process heap only when the scheduler dispatches the destructor. A process
 that halts takes the same sweep without a collection:
 <code>Heap::release_resources_at_exit</code> decides every stub on every chain
 with nothing live and copies nothing. <code>Heap::drop</code> releases

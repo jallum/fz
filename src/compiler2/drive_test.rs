@@ -10950,9 +10950,10 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
         vec![AbiValueRepr::RawInt, AbiValueRepr::ValueRef],
         "fz_make_resource/2 must take the payload through the raw integer lane and the destructor closure through the boxed value lane",
     );
-    assert!(
-        make_resource_body.return_reprs.is_empty(),
-        "main discards the resource handle, so fz_make_resource/2's resource return is not transported",
+    assert_eq!(
+        make_resource_body.return_reprs,
+        vec![AbiValueRepr::ValueRef],
+        "make_resource inspects fz_make_resource/2's result for the refusal `nil`, so the return is transported as a value ref",
     );
 
     let native_callable_boundary = program

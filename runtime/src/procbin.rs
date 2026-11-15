@@ -31,7 +31,7 @@
 //! runs through the `crate::sync` abstraction module.
 
 use crate::any_value::{
-    AnyValue, ValueKind, bitstring_bit_len as any_bitstring_bit_len, bitstring_bytes_ptr, heap_kind_from_tagged,
+    ValueKind, bitstring_bit_len as any_bitstring_bit_len, bitstring_bytes_ptr, heap_kind_from_tagged,
     heap_object_word, heap_word_addr,
 };
 use crate::heap::forwarded_target;
@@ -637,45 +637,12 @@ fn chain_stub_addr<S: MsoStub>(link: u64) -> *mut u8 {
 
 // ===== MSO sweep + drop =====================================================
 
-/// A resource whose last reference a sweep dropped: the fz closure that
-/// destroys it and the payload that closure receives. `closure` is the
-/// closure's value-ref word and `payload` the C payload word.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DeadResource {
-    pub closure: u64,
-    pub payload: u64,
-}
-
 /// The head of each chain a collection of `generation` examines: the young
 /// chain, and for a major collection the old chain too. A stub on the other
 /// chain is not examined: a minor collection does not look at an old stub.
 fn examined_chain_heads(young: u64, old: u64, generation: Generation) -> impl Iterator<Item = u64> {
     let old_head = (generation == Generation::Major).then_some(old);
     std::iter::once(young).chain(old_head)
-}
-
-/// The destructor closures of the resource stubs a collection's trace has not
-/// reached, keyed by stub address. Those closures are about to be orphaned
-/// with the from-space, so the collector forwards them before the sweep
-/// decides the stubs. Claimed resources are skipped: their owner cleans up
-/// deterministically and no closure will run. Only the stubs `generation`
-/// examines are considered, and only the resource chains are walked: a binary
-/// stub has no closure. `visits` counts the chain links followed.
-pub(crate) fn mso_unreached_closures(heap: &Heap, generation: Generation, visits: &mut u64) -> Vec<(usize, AnyValue)> {
-    let mut unreached = Vec::new();
-    for head in examined_chain_heads(heap.resource_head, heap.resource_old_head, generation) {
-        let mut cur_bits = head;
-        while cur_bits != 0 {
-            *visits += 1;
-            let cur = chain_stub_addr::<ResourceStub>(cur_bits);
-            let rs = unsafe { ResourceStub::from_raw(cur) };
-            if forwarded_target(cur, ValueKind::RESOURCE).is_none() && !rs.is_claimed() {
-                unreached.push((cur as usize, rs.closure_value()));
-            }
-            cur_bits = rs.mso_next();
-        }
-    }
-    unreached
 }
 
 /// Decide every stub on the chains `generation` examines: the young chains, and
@@ -688,24 +655,15 @@ pub(crate) fn mso_unreached_closures(heap: &Heap, generation: Generation, visits
 /// to-space copy, on the old chain of its kind, which a minor sweep leaves
 /// otherwise untouched and a major sweep rebuilds. Any other stub is dead and
 /// drops its off-heap reference. A dead BinRef releases its SharedBin
-/// synchronously. A dead Resource whose last reference this was returns a
-/// `DeadResource`, unless it was claimed; its destructor is fz code and runs
-/// at the scheduler boundary, never inside the sweep. `closure_of` yields the
-/// destructor closure of a dead resource stub as a value that is valid once
-/// the sweep returns: the forwarded closure after a collection, the closure
-/// as it stands at exit.
+/// synchronously. A dead Resource whose last reference this was pushes its
+/// destructor (a literal closure word) and raw payload onto `pending_dtors`,
+/// unless it was claimed; the destructor is fz code and runs at the scheduler
+/// boundary, never inside the sweep.
 ///
 /// A survivor's from-space word 0 holds a forwarding marker, so its off-heap
 /// pointer is read from the to-space copy. Must run before the
 /// from-space is released, since dead stubs live there.
-pub fn mso_sweep(
-    heap: &mut Heap,
-    generation: Generation,
-    mut closure_of: impl FnMut(&ResourceStub) -> AnyValue,
-    visits: &mut u64,
-    survived: &mut StubCounts,
-) -> Vec<DeadResource> {
-    let mut dead = Vec::new();
+pub fn mso_sweep(heap: &mut Heap, generation: Generation, visits: &mut u64, survived: &mut StubCounts) {
     heap.mso_old_head = sweep_chains::<BinRef>(
         heap.mso_head,
         heap.mso_old_head,
@@ -714,24 +672,21 @@ pub fn mso_sweep(
         |binref| unsafe { shared_bin_release(binref.shared_raw()) },
         |binref| survived.record(binref.site()),
     );
+    let pending_dtors = &mut heap.pending_dtors;
     heap.resource_old_head = sweep_chains::<ResourceStub>(
         heap.resource_head,
         heap.resource_old_head,
         generation,
         visits,
         |rs| {
-            if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
-                dead.push(DeadResource {
-                    closure: closure_of(&rs).ref_word().raw_word(),
-                    payload,
-                });
+            if let Some(dtor) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
+                pending_dtors.push_back(dtor);
             }
         },
         |_| {},
     );
     heap.mso_head = 0;
     heap.resource_head = 0;
-    dead
 }
 
 /// Sweep the chains of `S` stubs `generation` examines and return the new old

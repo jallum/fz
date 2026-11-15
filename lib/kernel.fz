@@ -661,12 +661,20 @@ defmodule Kernel do
 
   `value` is an integer or a C pointer. `dtor` runs once, when the
   resource is garbage-collected, even if the handle has been bound to
-  more than one name.
+  more than one name. A destructor captures nothing: it is a function
+  reference such as `&close/1`, never a closure over local values, and
+  `make_resource` raises `ArgumentError` when given one that captures.
   """
   @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | c_pointer
-  def make_resource(value, dtor), do: fz_make_resource(value, dtor)
+  def make_resource(value, dtor) do
+    case fz_make_resource(value, dtor) do
+      nil -> raise(%ArgumentError{message: "a resource destructor captures nothing"})
+      resource -> resource
+    end
+  end
 
-  extern "fz" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | c_pointer
+  # `fz_make_resource` answers `nil` for a destructor that captures.
+  extern "fz" defp fz_make_resource(t, (t) -> nil) :: resource(t) | nil when t: integer | c_pointer
 
   @doc """
   Claims `resource` for deterministic cleanup.

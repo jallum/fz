@@ -418,7 +418,10 @@ handle = <span class="fn">make_resource</span>(fd, &amp;<span class="fn">close_a
 <p>When the resource gets cleaned up, the body of <code>close_and_log</code>
 runs as ordinary fz code. The <code>dbg(:closed)</code> actually fires.
 You can branch, allocate, even call other externs — the dtor is just a
-function call.</p>
+function call. It captures nothing, though: pass a function reference such as
+<code>&amp;close_and_log/1</code>, not a closure over local values.
+<code>make_resource</code> raises an <code>ArgumentError</code> when given a
+destructor that captures.</p>
 
 <div class="aside">
 <strong>Behind the curtain.</strong> fz doesn't run dtors while the

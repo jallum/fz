@@ -3,51 +3,18 @@ use crate::any_value::{AnyValueRef, heap_kind_from_tagged};
 use crate::heap::{Generation, Heap, SIZE_TABLE, SchemaRegistry};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Barrier, atomic};
 use std::thread;
 
 fn fresh_registry() -> Rc<RefCell<SchemaRegistry>> {
     Rc::new(RefCell::new(SchemaRegistry::new()))
 }
 
-unsafe extern "C" fn observe_destruction(payload: u64) {
-    let drops = unsafe { Arc::from_raw(payload as *const atomic::AtomicUsize) };
-    drops.fetch_add(1, Ordering::Relaxed);
-}
+/// The destructor word every test resource carries; no test dispatches it.
+const DESTRUCTOR: u64 = 0xD7;
+const PAYLOAD: u64 = 0xfeed;
 
-fn observed_resource() -> (ResourceHandle, Arc<atomic::AtomicUsize>) {
-    let drops = Arc::new(atomic::AtomicUsize::new(0));
-    let payload = Arc::into_raw(Arc::clone(&drops)) as u64;
-    (ResourceHandle::new(payload, observe_destruction), drops)
-}
-
-#[test]
-fn independent_allocators_do_not_share_lifetime_observations() {
-    let (own, own_drops) = observed_resource();
-    let barrier = Barrier::new(2);
-    let (observed, (unrelated_drops, before)) = thread::scope(|scope| {
-        let worker = scope.spawn(|| {
-            let (unrelated, drops) = observed_resource();
-            barrier.wait();
-            barrier.wait();
-            let before = drops.load(Ordering::Relaxed);
-            drop(unrelated);
-            (drops, before)
-        });
-        barrier.wait();
-        drop(own);
-        let observed = own_drops.load(Ordering::Relaxed);
-        barrier.wait();
-        (observed, worker.join().unwrap())
-    });
-    assert_eq!(
-        observed, 1,
-        "another allocator cannot change this owner's lifetime observation"
-    );
-    assert_eq!(before, 0, "the independent object remains live after the first release");
-    assert_eq!(unrelated_drops.load(Ordering::Relaxed), 1);
-    assert_eq!(Arc::strong_count(&own_drops), 1);
-    assert_eq!(Arc::strong_count(&unrelated_drops), 1);
+fn resource() -> ResourceHandle {
+    ResourceHandle::new(PAYLOAD, DESTRUCTOR)
 }
 
 #[test]
@@ -56,62 +23,52 @@ fn a_resource_is_16_aligned_so_its_address_is_never_a_forwarding_marker() {
     // an address with a set low nibble would read as forwarded.
     assert_eq!(align_of::<Resource>(), 16);
     assert_eq!(size_of::<Resource>(), RESOURCE_BYTES);
-    let (handle, _drops) = observed_resource();
-    assert_eq!(handle.as_raw() as usize % 16, 0);
+    assert_eq!(resource().as_raw() as usize % 16, 0);
+}
+
+/// The stub is the shared pointer and the chain link and nothing else: the
+/// destructor lives on the shared Resource, so the stub is one 16-byte
+/// allocation unit.
+#[test]
+fn a_resource_stub_is_16_bytes() {
+    assert_eq!(RESOURCE_STUB_SIZE, 16);
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let rs = alloc_resource(&mut heap, resource());
+    let tagged = heap_object_word(rs.as_raw(), ValueKind::RESOURCE);
+    assert_eq!(object_size(tagged), 16);
 }
 
 #[test]
 fn alloc_retain_release_pattern() {
-    let (handle, drops) = observed_resource();
-    let p = handle.into_raw();
+    let p = resource().into_raw();
     unsafe {
-        assert_eq!((*p).payload, Arc::as_ptr(&drops) as u64);
+        assert_eq!((*p).payload, PAYLOAD);
+        assert_eq!((*p).destructor, DESTRUCTOR);
         fz_resource_retain(p);
         fz_resource_retain(p);
         assert_eq!((*p).refcount.load(Ordering::Relaxed), 3);
         fz_resource_release(p);
         fz_resource_release(p);
         assert_eq!((*p).refcount.load(Ordering::Relaxed), 1);
-        assert_eq!(drops.load(Ordering::Relaxed), 0);
         fz_resource_release(p);
     }
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
-    assert_eq!(
-        Arc::strong_count(&drops),
-        1,
-        "the exact payload-owned observer edge is consumed"
-    );
-}
-
-#[test]
-fn alloc_release_immediately_fires_dtor() {
-    let (handle, drops) = observed_resource();
-    unsafe { fz_resource_release(handle.into_raw()) };
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
 }
 
 #[test]
 fn claiming_a_resource_disarms_its_fallback_destructor() {
-    let (handle, drops) = observed_resource();
+    let handle = resource();
     assert!(unsafe { (*handle.as_raw()).claim() });
     assert!(!unsafe { (*handle.as_raw()).claim() }, "claim is one-shot");
-    drop(handle);
     assert_eq!(
-        drops.load(Ordering::Relaxed),
-        0,
-        "claimed resources never run fallback cleanup"
+        unsafe { fz_resource_release_deferred(handle.into_raw()) },
+        None,
+        "a claimed resource queues no destructor"
     );
-    assert_eq!(
-        Arc::strong_count(&drops),
-        2,
-        "the test owns the payload edge because deterministic cleanup now owns it"
-    );
-    drop(unsafe { Arc::from_raw(Arc::as_ptr(&drops)) });
 }
 
 #[test]
 fn an_alias_in_another_thread_observes_the_same_claim() {
-    let (handle, drops) = observed_resource();
+    let handle = resource();
     let alias = handle.clone().into_raw() as usize;
     assert!(unsafe { (*handle.as_raw()).claim() });
     let observed = thread::spawn(move || unsafe { (*(alias as *mut Resource)).claim() })
@@ -119,138 +76,121 @@ fn an_alias_in_another_thread_observes_the_same_claim() {
         .expect("claim observer thread should not panic");
     assert!(!observed, "the shared lifecycle admits exactly one claimant");
     drop(handle);
-    drop(unsafe { ResourceHandle::from_raw_already_retained(alias as *mut Resource) });
-    assert_eq!(drops.load(Ordering::Relaxed), 0);
-    drop(unsafe { Arc::from_raw(Arc::as_ptr(&drops)) });
+    assert_eq!(unsafe { fz_resource_release_deferred(alias as *mut Resource) }, None);
 }
 
 #[test]
-fn handle_drop_releases() {
-    let (handle, drops) = observed_resource();
-    assert_eq!(drops.load(Ordering::Relaxed), 0);
-    drop(handle);
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
-}
-
-#[test]
-fn handle_clone_balanced_drops_fire_once() {
-    let (handle, drops) = observed_resource();
+fn handle_clone_retains_and_drop_releases() {
+    let handle = resource();
     let second = handle.clone();
     assert_eq!(unsafe { (*handle.as_raw()).refcount.load(Ordering::Relaxed) }, 2);
     drop(handle);
-    assert_eq!(drops.load(Ordering::Relaxed), 0);
-    drop(second);
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
+    assert_eq!(unsafe { (*second.as_raw()).refcount.load(Ordering::Relaxed) }, 1);
 }
 
+/// Whichever thread drops the last reference is the one handed the
+/// destructor: it queues exactly once.
 #[test]
-fn last_worker_release_fires_the_resource_destructor_once() {
-    let (handle, drops) = observed_resource();
+fn the_last_release_on_a_worker_hands_back_the_destructor_once() {
+    let handle = resource();
     let address = handle.clone().into_raw() as usize;
-    drop(handle);
-    assert_eq!(drops.load(Ordering::Relaxed), 0);
-    thread::spawn(move || {
-        drop(unsafe { ResourceHandle::from_raw_already_retained(address as *mut Resource) });
-    })
-    .join()
-    .unwrap();
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
-    assert_eq!(Arc::strong_count(&drops), 1);
+    assert_eq!(unsafe { fz_resource_release_deferred(handle.into_raw()) }, None);
+    let queued = thread::spawn(move || unsafe { fz_resource_release_deferred(address as *mut Resource) })
+        .join()
+        .unwrap();
+    assert_eq!(queued, Some((DESTRUCTOR, PAYLOAD)));
 }
 
 #[test]
-fn deferred_release_returns_the_exact_payload_without_running_the_inline_destructor() {
-    let (handle, drops) = observed_resource();
+fn the_final_release_returns_the_destructor_closure_word_and_the_raw_payload() {
+    let handle = resource();
     let second = handle.clone().into_raw();
-    let expected = Arc::as_ptr(&drops) as u64;
     assert_eq!(unsafe { fz_resource_release_deferred(handle.into_raw()) }, None);
     assert_eq!(unsafe { (*second).refcount.load(Ordering::Relaxed) }, 1);
-    assert_eq!(drops.load(Ordering::Relaxed), 0);
-    let payload = unsafe { fz_resource_release_deferred(second) };
-    assert_eq!(payload, Some(expected));
     assert_eq!(
-        drops.load(Ordering::Relaxed),
-        0,
-        "deferred release does not dispatch the inline destructor"
+        unsafe { fz_resource_release_deferred(second) },
+        Some((DESTRUCTOR, PAYLOAD))
     );
-    unsafe { observe_destruction(payload.unwrap()) };
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
-    assert_eq!(Arc::strong_count(&drops), 1);
-}
-
-#[test]
-fn deferred_release_of_a_claimed_resource_enqueues_no_fallback_payload() {
-    let (handle, drops) = observed_resource();
-    let raw = handle.into_raw();
-    assert!(unsafe { (*raw).claim() });
-    assert_eq!(unsafe { fz_resource_release_deferred(raw) }, None);
-    assert_eq!(drops.load(Ordering::Relaxed), 0);
-    drop(unsafe { Arc::from_raw(Arc::as_ptr(&drops)) });
-}
-
-#[test]
-fn noop_dtor_is_safe() {
-    let p = resource_alloc(123, fz_resource_destructor_noop);
-    unsafe {
-        assert_eq!((*p).payload, 123);
-        fz_resource_release(p);
-    }
 }
 
 #[test]
 fn alloc_resource_pushes_into_the_resource_chain() {
-    let (handle, drops) = observed_resource();
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let rs = alloc_resource(&mut heap, handle, AnyValue::nil_atom());
+    let rs = alloc_resource(&mut heap, resource());
     let tagged = heap_object_word(rs.as_raw() as *const u8, ValueKind::RESOURCE);
     assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::RESOURCE));
     assert_eq!(object_size(tagged), RESOURCE_STUB_SIZE);
     assert_eq!(heap.resource_head, tagged);
     assert_eq!(heap.mso_head, 0, "a resource is not on the binary chain");
     assert_eq!(rs.mso_next(), 0);
-    assert_eq!(rs.payload(), Arc::as_ptr(&drops) as u64);
+    assert_eq!(rs.payload(), PAYLOAD);
+    assert_eq!(rs.destructor(), DESTRUCTOR);
     assert_eq!(rs.refcount(), 1);
-    assert_eq!(drops.load(Ordering::Relaxed), 0);
-    drop(heap);
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
 }
 
-/// A resource nothing reaches leaves the MSO chain at a collection and is
-/// handed back to the caller of the sweep with its closure and payload; the
-/// stored C destructor never runs, because the destructor is the closure.
+/// A resource nothing reaches leaves the MSO chain at a collection and queues
+/// its destructor word with its raw payload: the queue holds no heap word, so
+/// it needs no root and no collection can move it.
 #[test]
-fn unrooted_resource_dies_in_gc_and_sweep_queues_its_closure_instead_of_firing_the_c_dtor() {
-    let (handle, drops) = observed_resource();
-    let payload = Arc::as_ptr(&drops) as u64;
+fn a_dead_unclaimed_resource_queues_its_destructor_and_raw_payload() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let closure_bits = heap.alloc_closure(crate::any_value::ClosureDenotationId::user(0), 0, 0, 0, 0x1234, &[]);
-    let closure = AnyValue::heap_ptr(
-        crate::any_value::closure_addr_from_tagged(closure_bits).expect("closure addr"),
-        ValueKind::CLOSURE,
-    );
-    alloc_resource(&mut heap, handle, closure);
+    alloc_resource(&mut heap, resource());
     heap.collect_tagged(&mut null_mut());
     assert_eq!(heap.resource_head, 0, "dead Resource swept from MSO");
-    assert_eq!(heap.pending_dtors.len(), 1, "the dead resource's destructor is queued");
-    assert_eq!(drops.load(Ordering::Relaxed), 0, "the C destructor does not run");
-    let (_, payload_ref) = heap.pending_dtors[0];
-    let queued = crate::any_value::AnyValueRef::from_raw_word(payload_ref).expect("payload ref");
-    assert_eq!(queued.storage_raw().expect("scalar slot"), payload);
-    drop(heap);
-    assert_eq!(
-        drops.load(Ordering::Relaxed),
-        0,
-        "heap drop has no resource left to release"
-    );
-    drop(unsafe { Arc::from_raw(Arc::as_ptr(&drops)) });
+    assert_eq!(heap.pending_dtors, [(DESTRUCTOR, PAYLOAD)]);
 }
 
-fn destructor_closure(heap: &mut Heap) -> AnyValue {
-    let bits = heap.alloc_closure(crate::any_value::ClosureDenotationId::user(0), 0, 0, 0, 0x1234, &[]);
-    AnyValue::heap_ptr(
-        crate::any_value::closure_addr_from_tagged(bits).expect("closure addr"),
-        ValueKind::CLOSURE,
-    )
+/// A resource whose owner claimed it queues nothing when it dies.
+#[test]
+fn a_dead_claimed_resource_queues_nothing() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    assert!(alloc_resource(&mut heap, resource()).claim());
+    heap.collect_tagged(&mut null_mut());
+    assert!(heap.pending_dtors.is_empty());
+}
+
+/// The exit sweep is the collection sweep with nothing live.
+#[test]
+fn the_exit_sweep_queues_each_resource_destructor_newest_first() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    alloc_resource(&mut heap, ResourceHandle::new(1, DESTRUCTOR));
+    alloc_resource(&mut heap, ResourceHandle::new(2, DESTRUCTOR));
+    heap.release_resources_at_exit();
+    assert_eq!(heap.pending_dtors, [(DESTRUCTOR, 2), (DESTRUCTOR, 1)]);
+}
+
+/// A resource that survives a collection keeps the destructor it was made
+/// with, on the one shared Resource its relinked stub points at.
+#[test]
+fn a_resource_that_survives_a_collection_keeps_its_destructor() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let rs = alloc_resource(&mut heap, resource());
+    let mut root = heap_object_word(rs.as_raw() as *const u8, ValueKind::RESOURCE) as *mut u8;
+    heap.collect_tagged(&mut root);
+    let moved = unsafe { ResourceStub::from_raw(resource_addr_from_tagged(root as u64).unwrap()) };
+    assert_eq!(moved.destructor(), DESTRUCTOR);
+    assert_eq!(moved.payload(), PAYLOAD);
+    assert!(heap.pending_dtors.is_empty());
+}
+
+/// A sent resource is a second stub on the same Resource, so the destructor
+/// is the one the sender made, and runs once when the last stub dies.
+#[test]
+fn a_deep_copied_resource_shares_its_resource_and_destructor() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut receiver = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let sent = alloc_resource(&mut sender, resource());
+    let view = sender.view();
+    let src = AnyValueRef::from_heap_object(ValueKind::RESOURCE, sent.as_raw() as *const u8).expect("ref");
+    let copied = crate::heap::deep_copy_any_value_ref(src, &view, &mut receiver, &mut Default::default());
+    let copy = unsafe { ResourceStub::from_raw(copied.resource_addr().expect("resource")) };
+    assert_eq!(copy.shared_raw(), sent.shared_raw());
+    assert_eq!(copy.destructor(), DESTRUCTOR);
+    assert_eq!(copy.refcount(), 2);
+    sender.release_resources_at_exit();
+    assert!(sender.pending_dtors.is_empty(), "the receiver's stub still holds it");
+    receiver.release_resources_at_exit();
+    assert_eq!(receiver.pending_dtors, [(DESTRUCTOR, PAYLOAD)]);
 }
 
 /// A dead resource's destructor is queued by the collection that examines its
@@ -258,20 +198,20 @@ fn destructor_closure(heap: &mut Heap) -> AnyValue {
 /// collection, which is when OTP's full sweep finds an old resource dead.
 #[test]
 fn a_dead_old_resource_queues_its_destructor_at_the_next_major_collection_and_a_young_one_at_a_minor() {
-    let (old_handle, old_drops) = observed_resource();
-    let (young_handle, young_drops) = observed_resource();
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let closure = destructor_closure(&mut heap);
-    let old = alloc_resource(&mut heap, old_handle, closure);
+    let old = alloc_resource(&mut heap, ResourceHandle::new(1, DESTRUCTOR));
     let mut roots = [AnyValueRef::from_raw_word(heap_object_word(old.as_raw(), ValueKind::RESOURCE)).expect("root")];
     assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
     assert!(heap.pending_dtors.is_empty());
 
-    let closure = destructor_closure(&mut heap);
-    alloc_resource(&mut heap, young_handle, closure);
+    alloc_resource(&mut heap, ResourceHandle::new(2, DESTRUCTOR));
     let stats = heap.collect(&mut []);
     assert_eq!(stats.generation, Generation::Minor);
-    assert_eq!(heap.pending_dtors.len(), 1, "the young resource's destructor is queued");
+    assert_eq!(
+        heap.pending_dtors,
+        [(DESTRUCTOR, 2)],
+        "the young resource's destructor is queued"
+    );
 
     let mut cell = heap.alloc_list_cons_slot(AnyValue::int(0), crate::any_value::EMPTY_LIST);
     for head in 1..100 {
@@ -288,25 +228,16 @@ fn a_dead_old_resource_queues_its_destructor_at_the_next_major_collection_and_a_
     let stats = heap.collect(&mut roots);
     assert_eq!(stats.generation, Generation::Major);
     assert_eq!(
-        heap.pending_dtors.len(),
-        2,
+        heap.pending_dtors,
+        [(DESTRUCTOR, 2), (DESTRUCTOR, 1)],
         "the major collection found the old resource dead"
     );
-    assert_eq!(
-        (old_drops.load(Ordering::Relaxed), young_drops.load(Ordering::Relaxed)),
-        (0, 0),
-        "the closure is the destructor; the C destructor does not run"
-    );
-    for drops in [old_drops, young_drops] {
-        drop(unsafe { Arc::from_raw(Arc::as_ptr(&drops)) });
-    }
 }
 
 #[test]
 fn resource_forwarding_marker_through_gc() {
-    let (handle, drops) = observed_resource();
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let rs = alloc_resource(&mut heap, handle, AnyValue::nil_atom());
+    let rs = alloc_resource(&mut heap, resource());
     let from = rs.as_raw();
     let shared = rs.shared_raw();
     let mut root = heap_object_word(from as *const u8, ValueKind::RESOURCE) as *mut u8;
@@ -320,17 +251,13 @@ fn resource_forwarding_marker_through_gc() {
     );
     assert_eq!(heap.resource_head, 0);
     assert_eq!(heap.mso_old_head, 0);
-    assert_eq!(drops.load(Ordering::Relaxed), 0);
-    drop(heap);
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
+    assert!(heap.pending_dtors.is_empty());
 }
 
 #[test]
 fn binrefs_and_resources_keep_separate_chains() {
     use crate::heap::StubSite;
     use crate::procbin::{SharedBinHandle, alloc_buffer_view};
-    let (first, first_drops) = observed_resource();
-    let (second, second_drops) = observed_resource();
     let first_bin = SharedBinHandle::from_bytes(&[1, 2, 3]);
     let second_bin = SharedBinHandle::from_bytes(&[4, 5]);
     {
@@ -341,14 +268,14 @@ fn binrefs_and_resources_keep_separate_chains() {
             first_bin.bytes_len() as u64 * 8,
             StubSite::FilledBuffer,
         );
-        let rs1 = alloc_resource(&mut heap, first, AnyValue::nil_atom());
+        let rs1 = alloc_resource(&mut heap, resource());
         let pb2 = alloc_buffer_view(
             &mut heap,
             second_bin.clone(),
             second_bin.bytes_len() as u64 * 8,
             StubSite::FilledBuffer,
         );
-        let rs2 = alloc_resource(&mut heap, second, AnyValue::nil_atom());
+        let rs2 = alloc_resource(&mut heap, resource());
         let rs2_bits = heap_object_word(rs2.as_raw(), ValueKind::RESOURCE);
         let pb2_bits = pb2.binref().word();
         let pb1_bits = pb1.binref().word();
@@ -360,8 +287,6 @@ fn binrefs_and_resources_keep_separate_chains() {
         assert_eq!(rs2.mso_next(), rs1_bits);
         assert_eq!(rs1.mso_next(), 0);
     }
-    assert_eq!(first_drops.load(Ordering::Relaxed), 1);
-    assert_eq!(second_drops.load(Ordering::Relaxed), 1);
     for bin in [first_bin, second_bin] {
         assert_eq!(
             unsafe { (*bin.as_raw()).refcount.load(Ordering::Relaxed) },

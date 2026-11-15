@@ -231,7 +231,6 @@ impl CopyMeasure<'_> {
                     self.slot(self.src_heap.read_field_slot(sp, field.offset));
                 }
             }
-            ValueKind::RESOURCE => self.slot(unsafe { ResourceStub::from_raw(sp) }.closure_value()),
             _ => {}
         }
     }
@@ -384,14 +383,7 @@ pub fn deep_copy_any_value(
             }
             let src_rs = unsafe { ResourceStub::from_raw(sp) };
             let handle = unsafe { ResourceHandle::retain_from_raw(src_rs.shared_raw()) };
-            forwarding.insert(sp, null_mut());
-            let src_closure = src_rs.closure_value();
-            let dst_closure = if src_closure.kind().is_heap() {
-                deep_copy_any_value(src_closure, src_heap, dst_heap, forwarding)
-            } else {
-                src_closure
-            };
-            let new_p = alloc_resource(dst_heap, handle, dst_closure).as_raw();
+            let new_p = alloc_resource(dst_heap, handle).as_raw();
             forwarding.insert(sp, new_p);
             AnyValue::heap_ptr(new_p, ValueKind::RESOURCE)
         }

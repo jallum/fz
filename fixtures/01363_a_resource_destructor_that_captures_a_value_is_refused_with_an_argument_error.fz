@@ -1,0 +1,26 @@
+#---
+# purpose: "make_resource refuses a destructor that captures a value by raising an ArgumentError the program can rescue; the destructor never runs and the program continues, the same on every path"
+#---
+#
+# A resource keeps its destructor outside every process heap, with the shared
+# resource itself, so the destructor names code and holds no values. `fd` is
+# captured here, so the destructor is not a literal closure and `make_resource`
+# raises. The rescue prints the message, and the line after it still runs.
+defmodule Main do
+  extern "C" defp fz_resource_test_print_dtor(integer) :: nil
+
+  def main() do
+    fd = 7
+
+    try do
+      _r = make_resource(42, fn x -> fz_resource_test_print_dtor(x + fd) end)
+      IO.inspect(:unreachable)
+    rescue
+      e in ArgumentError -> IO.inspect(Exception.message(e))
+    end
+
+    IO.inspect(:after)
+  end
+end
+
+Main.main()
