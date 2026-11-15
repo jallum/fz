@@ -442,6 +442,28 @@ It:
 The returned root is therefore still rooted in the same quoted-source heap as
 the input carrier root.
 
+### Where expanded code is reported
+
+A `quote` writes no span on the nodes it builds (`QuoteLowerer::push_meta`,
+`src/compiler2/jobs/body.rs`). When the macro returns, `stamp_span_fallback`
+(`src/compiler2/quoted_expander.rs`) gives the span of the macro call to every
+node of the result that has none, so a fault in quoted code is reported under
+the call the program wrote. This is Elixir's rule for a quote without
+`location: :keep`, which fz does not have.
+
+An argument spliced in with `unquote` came from the caller's source and
+already has a span, so it keeps it. When a macro's quote calls another macro,
+the inner call node was itself given the outer call's span, so the inner
+macro's result lands there too.
+
+```elixir
+defmacro bad(x), do: quote(do: String.nope(unquote(x)))
+
+bad("x")               # reported under `bad("x")`
+pass(String.nope(1))   # reported under `String.nope`, the argument
+raise NotThere, "x"    # reported under the raise, not inside Kernel
+```
+
 A macro that raises while it runs fails the compile. The failure line is the
 diagnostic's message, its code is `lower/unsupported`, and its span is the
 macro call's (`run_macro_invocation`). `Kernel.apply/3` refuses a call it

@@ -55,11 +55,10 @@ fn submissions_return_stable_owners_backed_by_exact_immutable_versions() {
 }
 
 #[test]
-fn ordinary_quote_metadata_is_identical_in_interpreter_and_native_execution() {
+fn a_quoted_node_carries_no_place_of_its_own_in_interpreter_and_native_execution() {
     let source = r#"def main() do
   {_, meta, _} = quote do: 40 + 2
-  span = meta.__fz_span__
-  span.source_version * 1000000 + span.start * 1000 + span.length
+  if Map.has_key?(meta, :__fz_span__), do: 1, else: 0
 end
 "#;
     let telemetry = ConfiguredTelemetry::new();
@@ -68,14 +67,10 @@ end
     let exits = ProcessExitCapture::new();
     exits.install(&telemetry);
     let mut compiler = Compiler2::new(telemetry);
-    let owner = compiler.submit_code(CodeSubmission {
+    compiler.submit_code(CodeSubmission {
         name: Some("ordinary_quote_metadata.fz".into()),
         text: source.into(),
     });
-    let version = compiler
-        .world()
-        .source_version(owner)
-        .expect("submitted source version");
     let root = compiler.submit_root(super::RootSubmission {
         module_name: None,
         name: "main".into(),
@@ -83,23 +78,17 @@ end
         need: super::ExecutableNeed::Value,
     });
 
-    let expected_start = source.find("40 + 2").expect("quoted expression offset") as i64;
-    let expected_length = "40 + 2".len() as i64;
-    let expected_version = i64::from(version.as_u32());
-    assert!(expected_start < 1000 && expected_length < 1000);
-    let expected = expected_version * 1_000_000 + expected_start * 1_000 + expected_length;
     assert_eq!(
         compiler.run_root_interp(root),
-        Ok(expected),
-        "{:?}",
+        Ok(0),
+        "quoted code takes the place of the call that expands it, so a quote writes none: {:?}",
         diagnostics.events()
     );
     compiler.run_root_jit(root).expect("native quote execution");
-
     assert_eq!(
         exits.last().expect("native root exit").halt_value,
-        expected,
-        "native execution must read the exact typed source version, start, and length from quoted metadata"
+        0,
+        "native execution builds the same metadata the interpreter does, with no place in it"
     );
 }
 

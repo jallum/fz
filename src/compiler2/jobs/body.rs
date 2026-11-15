@@ -193,7 +193,6 @@ enum ExprStep {
     Map {
         value: ValueId,
         entries: Vec<(LoweredMapKey, ValueId)>,
-        quoted_span: Option<Span>,
     },
     /// `%{base | k: v, ...}`. `value` is the updated map when `ok`, which is
     /// false when `base` lacks one of the keys.
@@ -1067,10 +1066,9 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
     }
 
     fn lower_ast_node(&mut self, node: &QuotedAstNode, sources: &SourceMap) -> Result<ValueId, FatalError> {
-        let span = node.span.unwrap_or(Span::DUMMY);
         if node.tail.root().tag() != ValueKind::LIST {
             let name = node.head.atom_name().map_err(|error| self.surface_error(error))?;
-            return self.lower_variable(&name, span);
+            return self.lower_variable(&name);
         }
 
         let args = node.tail.list_items().map_err(|error| self.surface_error(error))?;
@@ -1085,7 +1083,7 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
                 .map(|arg| self.lower(arg, sources))
                 .collect::<Result<Vec<_>, _>>()?;
             let bound = self.resolve_quoted_callable(&name, values.len());
-            return Ok(self.lower_call_node(&name, bound, values, span));
+            return Ok(self.lower_call_node(&name, bound, values));
         }
 
         let head = self.lower(&node.head, sources)?;
@@ -1094,7 +1092,7 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
             .map(|arg| self.lower(arg, sources))
             .collect::<Result<Vec<_>, _>>()?;
         let tail = self.push_list(values, None);
-        Ok(self.push_ast_node(head, tail, span))
+        Ok(self.push_ast_node(head, tail))
     }
 
     /// `unquote(e)` splices `e`'s runtime value in place: `e` was already
@@ -1131,7 +1129,7 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
         }
     }
 
-    fn lower_variable(&mut self, name: &str, span: Span) -> Result<ValueId, FatalError> {
+    fn lower_variable(&mut self, name: &str) -> Result<ValueId, FatalError> {
         let head = self.lowerer.push_const(self.steps, GroundValue::Atom(name.to_string()));
         // Every variable this quote's own body writes is, by construction,
         // written inside this macro's quote. Its tail carries the macro's
@@ -1140,10 +1138,10 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
         // once this expansion's ordinal is known, right after the macro runs.
         let owner = i64::from(self.lowerer.owner.as_u32());
         let tail = self.lowerer.push_const(self.steps, GroundValue::Int(owner));
-        Ok(self.push_ast_node(head, tail, span))
+        Ok(self.push_ast_node(head, tail))
     }
 
-    fn lower_module(&mut self, module: &ModuleDenotation, span: Span) -> ValueId {
+    fn lower_module(&mut self, module: &ModuleDenotation) -> ValueId {
         let head = self
             .lowerer
             .push_const(self.steps, GroundValue::Atom("__aliases__".into()));
@@ -1163,7 +1161,7 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
             value: key,
             literal: Some(GroundValue::Atom(super::super::source::META_MODULE_KEY.into())),
         };
-        let meta = self.push_meta(span, vec![(key, identity)]);
+        let meta = self.push_meta(vec![(key, identity)]);
         self.push_tuple(vec![head, meta, tail])
     }
 
@@ -1176,19 +1174,13 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
 
     /// A call node whose head is display spelling and whose metadata retains
     /// the callable, when the call was classified here.
-    fn lower_call_node(
-        &mut self,
-        spelling: &str,
-        bound: Option<FunctionId>,
-        args: Vec<ValueId>,
-        span: Span,
-    ) -> ValueId {
+    fn lower_call_node(&mut self, spelling: &str, bound: Option<FunctionId>, args: Vec<ValueId>) -> ValueId {
         let head = self
             .lowerer
             .push_const(self.steps, GroundValue::Atom(spelling.to_string()));
         let tail = self.push_list(args, None);
         let entries = self.bound_callable_entries(bound);
-        let meta = self.push_meta(span, entries);
+        let meta = self.push_meta(entries);
         self.push_tuple(vec![head, meta, tail])
     }
 
@@ -1210,18 +1202,14 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
         )]
     }
 
-    fn push_ast_node(&mut self, head: ValueId, tail: ValueId, span: Span) -> ValueId {
-        let meta = self.push_meta(span, Vec::new());
+    fn push_ast_node(&mut self, head: ValueId, tail: ValueId) -> ValueId {
+        let meta = self.push_meta(Vec::new());
         self.push_tuple(vec![head, meta, tail])
     }
 
-    fn push_meta(&mut self, span: Span, entries: Vec<(LoweredMapKey, ValueId)>) -> ValueId {
+    fn push_meta(&mut self, entries: Vec<(LoweredMapKey, ValueId)>) -> ValueId {
         let value = self.lowerer.fresh_value();
-        self.steps.push(ExprStep::Map {
-            value,
-            entries,
-            quoted_span: (!span.is_dummy()).then_some(span),
-        });
+        self.steps.push(ExprStep::Map { value, entries });
         value
     }
 
@@ -1370,7 +1358,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             Expr::Bool(value) => Ok(self.push_const(steps, GroundValue::Bool(*value))),
             Expr::Nil => Ok(self.push_const(steps, GroundValue::Nil)),
             Expr::Alias(alias) => Ok(self.lower_alias(alias, steps)),
-            Expr::Module(module) => Ok(QuoteLowerer::new(self, env, steps, &[]).lower_module(module, expr.span)),
+            Expr::Module(module) => Ok(QuoteLowerer::new(self, env, steps, &[]).lower_module(module)),
             Expr::Var(name) => {
                 if let Some(value) = env.get(name) {
                     return Ok(*value);
@@ -1515,7 +1503,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 steps.push(ExprStep::Map {
                     value,
                     entries: lowered,
-                    quoted_span: None,
                 });
                 Ok(value)
             }
@@ -2878,11 +2865,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         })
         .collect();
         let value = self.fresh_value();
-        steps.push(ExprStep::Map {
-            value,
-            entries,
-            quoted_span: None,
-        });
+        steps.push(ExprStep::Map { value, entries });
         value
     }
 
@@ -3875,15 +3858,7 @@ fn lower_projection_step(step: ExprStep) -> LoweredStep {
             tail,
             retention: None,
         },
-        ExprStep::Map {
-            value,
-            entries,
-            quoted_span,
-        } => LoweredStep::Map {
-            value,
-            entries,
-            quoted_span,
-        },
+        ExprStep::Map { value, entries } => LoweredStep::Map { value, entries },
         ExprStep::MapUpdate {
             value,
             ok,

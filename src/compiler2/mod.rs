@@ -105,7 +105,6 @@ pub use source::{
     Horizon, QuotedAstNode, QuotedSourceBuilder, QuotedSourceCursor, QuotedSourceError, QuotedSourceHeap,
     QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot,
 };
-pub(crate) use source::{META_SPAN_KEY, quoted_span_entries};
 pub(crate) use types::TyCanon;
 pub use types::{
     BuiltinOpaque, CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Sigma, Ty, TypeVarId,

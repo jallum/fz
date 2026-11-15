@@ -1,0 +1,6 @@
+error[lower/unbound]: compiler2 lowering found unresolved direct runtime callee `MyApp.NotThere.exception/1`
+  --> fixtures/01314_raising_a_module_nothing_defines_is_reported_at_the_raise.fz:2:3
+   |
+2 |   raise MyApp.NotThere, "x"
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
