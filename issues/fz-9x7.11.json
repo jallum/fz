@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9x7.8"
+  ],
   "created": "2026-11-15T15:47:21Z",
   "description": "fz promotes every survivor of a collection to old blocks (retire_to_space_as_old, runtime/src/heap/imp.rs) and a major leaves every survivor old. OTP promotes only the mature part of the young heap, below the high-water mark, which already survived one minor (erl_gc.c:1436, 1819), and a fullsweep leaves its survivors young with bin_old_vheap = 0 (erl_gc.c:1954, 3292-3295). Found by the fz-9x7.8 post-mortem (https://claude.ai/artifact/PQXu69Go2gfWdLDfSkoxrW): survive's per-round binaries are live at one minor, become old, and wait for a heap-driven major (72 MB dead).\nDesign (approved page https://claude.ai/artifact/PC7vJ3veeQqqQca2ppEnWp): three block ages fresh / mature / old; a minor's from-space is fresh + mature; a survivor moves up one age; writes in place stay fresh-only; binary and resource stubs get a mature chain; live_baseline = mature + old; gc event gains mature_bytes and old_bytes.\nExperiment first (pre-registered on the page): per-variant release builds V0 / A1 (major places by the same rule) / A2 (OTP: major leaves all survivors mature) / A1G / A2G (gifts grafted mature), round 5's 17 workloads, 9 interleaved runs; rule: survive RSS falls \u003e= 25%, instruction and RSS guards on every workload; lowest geomean instructions among passing variants is built.",
   "id": "fz-9x7.11",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A value becomes old only after it survives two collections",
   "type": "task",
-  "updated_at": "2026-11-15T15:47:21Z"
+  "updated_at": "2026-11-15T15:47:22Z"
 }
