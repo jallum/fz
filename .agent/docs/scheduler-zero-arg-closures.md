@@ -285,12 +285,11 @@ quantum on the JIT and AOT paths, in every state. It reads how the quantum ended
 process (`Process::quantum_end`, a `Disposition`: runnable means `Requeue`, `Blocked`
 means `Parked`, anything else means `Exited`), collects when `Heap::should_gc` holds and the
 process did not exit, clears the quantum's yield reasons, and, for a halted process,
-marks it `Exited` without collecting it and releases every stub on its MSO chains
+marks it `Exited` without collecting it and releases every object on its MSO chain
 with `Heap::release_resources_at_exit`, since nothing is live. Nothing a
 collection would forward is read after the exit, so the heap is released as it
-stands. BinRefs and Resource stubs keep separate chains (`mso_head` and
-`mso_old_head` for binaries, `resource_head` and `resource_old_head` for
-resources). The sweep (`procbin::mso_sweep`) decides each stub, once, the same way
+stands. BinRefs and Resource stubs share one chain per generation (`mso_head`,
+`mso_old_head`), told apart by the kind tag of each link. The sweep (`procbin::mso_sweep`) decides each stub, once, the same way
 after a collection and at exit: a survivor is relinked, a dead BinRef releases
 its SharedBin, and a dead Resource whose last reference this was queues
 `(destructor, payload)` on `heap.pending_dtors`: the destructor is the literal

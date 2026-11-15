@@ -9,7 +9,7 @@
 //!   * `SharedBinHandle` — Arc-shaped owning wrapper. `Drop` releases.
 //!   * `BinRef` — the one object per shared buffer per heap that holds the
 //!     buffer's reference. It is the only binary object on the heap's sweep
-//!     chains, and no language value is a `BinRef`.
+//!     chain, and no language value is a `BinRef`.
 //!   * `BinView` — `#[repr(transparent)]` newtype over the per-heap `u8*`
 //!     object a binary value points at: a window onto the bytes of a buffer,
 //!     reached through its heap's `BinRef`. A view holds no reference and is on
@@ -20,11 +20,10 @@
 //!     constructors. A `BinRef` takes ownership of a `SharedBinHandle`'s
 //!     reference and is pushed onto the heap's intrusive MSO chain through the
 //!     `mso_next` link inside its payload.
-//!   * MSO sweep + drop — post-Cheney sweep walks the binary chains
-//!     (`Heap::mso_head`, `Heap::mso_old_head`) and the resource chains
-//!     (`Heap::resource_head`, `Heap::resource_old_head`), rewriting
-//!     survivors to their to-space copy and releasing dead entries'
-//!     shared_ptrs. `Heap::drop` releases every chain.
+//!   * MSO sweep + drop — post-Cheney sweep walks the one off-heap chain
+//!     (`Heap::mso_head`, `Heap::mso_old_head`), which holds BinRefs and
+//!     resource stubs alike, rewriting survivors to their to-space copy and
+//!     releasing dead entries' shared_ptrs. `Heap::drop` releases every chain.
 //!
 //! Refcount ordering uses the canonical `Arc` pattern (Relaxed on retain,
 //! Release on release, Acquire fence on final drop). Loom verification
@@ -353,7 +352,7 @@ pub const BINREF_BYTES: usize = 16;
 pub const BINVIEW_BYTES: usize = 32;
 
 /// The one object per shared buffer per heap: it holds the heap's single
-/// reference to the buffer and is the only binary object on the sweep chains.
+/// reference to the buffer and is the only binary object on the sweep chain.
 /// `BINREF_BYTES` total:
 ///   offset 0..8    shared_ptr: *mut SharedBin
 ///   offset 8..16   mso_next:   u64 tagged MSO link, or 0, with the site that
@@ -521,7 +520,7 @@ use crate::heap::{Generation, Heap, HeapAllocKind, StubCounts, StubSite};
 
 /// Allocate a BinRef on `heap`, taking ownership of the SharedBin reference
 /// encapsulated in `handle`. The new BinRef is pushed onto `heap.mso_head`, the
-/// young binary chain, as the new chain head. `site` names what is making the
+/// young off-heap chain, as the new chain head. `site` names what is making the
 /// BinRef; the heap counts it and the BinRef remembers it.
 pub fn alloc_binref(heap: &mut Heap, handle: SharedBinHandle, site: StubSite) -> BinRef {
     let p = heap.alloc_kind(HeapAllocKind::BinRef, BINREF_BYTES);
@@ -560,193 +559,156 @@ pub fn alloc_buffer_view(heap: &mut Heap, handle: SharedBinHandle, bit_len: u64,
     alloc_view(heap, binref, bytes_ptr, bit_len, site)
 }
 
-/// An object on an MSO chain. The object's type is its chain's kind: BinRefs
-/// and resource stubs keep separate chains, so a walk over one chain names the
-/// kind once and never inspects a link to learn it.
-pub(crate) trait MsoStub: Copy {
-    /// The heap object kind every link of this stub's chains carries.
-    const KIND: ValueKind;
+/// An object on a heap's one off-heap chain: a BinRef or a resource stub. Both
+/// are 16 bytes with the shared pointer first and the link second, and each
+/// link names its object by the kind tag of its heap object word, as OTP tells
+/// a ProcBin from a magic binary on its one off-heap list.
+#[derive(Clone, Copy)]
+pub(crate) enum OffHeap {
+    BinRef(BinRef),
+    Resource(ResourceStub),
+}
 
+impl OffHeap {
+    /// The object a chain link names. A link is a heap object word: the
+    /// object's kind rides above its address.
+    fn named_by(link: u64) -> Self {
+        let addr = heap_word_addr(link);
+        match heap_kind_from_tagged(link) {
+            Some(ValueKind::BINREF) => Self::BinRef(unsafe { BinRef::from_raw(addr) }),
+            Some(ValueKind::RESOURCE) => Self::Resource(unsafe { ResourceStub::from_raw(addr) }),
+            _ => panic!("MSO chain link {link:#x} names neither a BinRef nor a resource stub"),
+        }
+    }
+
+    fn kind(&self) -> ValueKind {
+        match self {
+            Self::BinRef(_) => ValueKind::BINREF,
+            Self::Resource(_) => ValueKind::RESOURCE,
+        }
+    }
+
+    fn addr(&self) -> *mut u8 {
+        match self {
+            Self::BinRef(binref) => binref.as_raw(),
+            Self::Resource(stub) => stub.as_raw(),
+        }
+    }
+
+    /// The same kind of object at `addr`: where a survivor's to-space copy is.
+    ///
     /// # Safety
-    /// `addr` must point at a live stub of this kind.
-    unsafe fn at(addr: *mut u8) -> Self;
-    fn link(&self) -> u64;
-    fn set_link(&self, next: u64);
-    /// Drop the off-heap reference this stub holds.
-    fn release(&self);
-}
-
-impl MsoStub for BinRef {
-    const KIND: ValueKind = ValueKind::BINREF;
-
-    unsafe fn at(addr: *mut u8) -> Self {
-        unsafe { BinRef::from_raw(addr) }
+    /// `addr` must point at a live object of this kind.
+    unsafe fn same_kind_at(&self, addr: *mut u8) -> Self {
+        match self {
+            Self::BinRef(_) => Self::BinRef(unsafe { BinRef::from_raw(addr) }),
+            Self::Resource(_) => Self::Resource(unsafe { ResourceStub::from_raw(addr) }),
+        }
     }
 
     fn link(&self) -> u64 {
-        self.mso_next()
+        match self {
+            Self::BinRef(binref) => binref.mso_next(),
+            Self::Resource(stub) => stub.mso_next(),
+        }
     }
 
     fn set_link(&self, next: u64) {
-        self.mso_next_set(next)
+        match self {
+            Self::BinRef(binref) => binref.mso_next_set(next),
+            Self::Resource(stub) => stub.mso_next_set(next),
+        }
     }
 
+    /// Drop the off-heap reference this object holds.
     fn release(&self) {
-        unsafe { shared_bin_release(self.shared_raw()) };
+        match self {
+            Self::BinRef(binref) => unsafe { shared_bin_release(binref.shared_raw()) },
+            Self::Resource(stub) => unsafe { fz_resource_release(stub.shared_raw()) },
+        }
     }
 }
 
-impl MsoStub for ResourceStub {
-    const KIND: ValueKind = ValueKind::RESOURCE;
-
-    unsafe fn at(addr: *mut u8) -> Self {
-        unsafe { ResourceStub::from_raw(addr) }
-    }
-
-    fn link(&self) -> u64 {
-        self.mso_next()
-    }
-
-    fn set_link(&self, next: u64) {
-        self.mso_next_set(next)
-    }
-
-    fn release(&self) {
-        unsafe { fz_resource_release(self.shared_raw()) };
-    }
-}
-
-/// Point the link of the stub that `link` names, on a chain of `S` stubs, at
-/// `next`.
-pub(crate) fn mso_set_next<S: MsoStub>(link: u64, next: u64) {
-    unsafe { S::at(chain_stub_addr::<S>(link)) }.set_link(next);
-}
-
-/// The address of the stub a chain link names. A link is a heap object word:
-/// the stub's kind rides above its address, and on a chain of `S` stubs it
-/// is `S::KIND`.
-fn chain_stub_addr<S: MsoStub>(link: u64) -> *mut u8 {
-    debug_assert_eq!(
-        heap_kind_from_tagged(link),
-        Some(S::KIND),
-        "MSO chain link {link:#x} is not a {:?} stub",
-        S::KIND
-    );
-    heap_word_addr(link)
+/// Point the link of the object that `link` names at `next`.
+pub(crate) fn mso_set_next(link: u64, next: u64) {
+    OffHeap::named_by(link).set_link(next);
 }
 
 // ===== MSO sweep + drop =====================================================
 
-/// The head of each chain a collection of `generation` examines: the young
-/// chain, and for a major collection the old chain too. A stub on the other
-/// chain is not examined: a minor collection does not look at an old stub.
-fn examined_chain_heads(young: u64, old: u64, generation: Generation) -> impl Iterator<Item = u64> {
-    let old_head = (generation == Generation::Major).then_some(old);
-    std::iter::once(young).chain(old_head)
-}
-
-/// Decide every stub on the chains `generation` examines: the young chains, and
-/// for a major collection the old chains too. This is the one place a dead
-/// stub is handled, after a collection's trace and when a process exits (a
-/// process exit is a major sweep with nothing live). Each stub is visited
-/// once, `visits` counting the chain links followed.
+/// Decide every object on the chain a collection of `generation` examines: the
+/// young chain, and for a major collection the old chain too. This is the one
+/// place a dead object is handled, after a collection's trace and when a
+/// process exits (a process exit is a major sweep with nothing live). Each
+/// object is visited once, `visits` counting the chain links followed.
 ///
-/// A stub carrying a forwarding marker survived: it is relinked to its
-/// to-space copy, on the old chain of its kind, which a minor sweep leaves
-/// otherwise untouched and a major sweep rebuilds. Any other stub is dead and
-/// drops its off-heap reference. A dead BinRef releases its SharedBin
-/// synchronously. A dead Resource whose last reference this was pushes its
-/// destructor (a literal closure word) and raw payload onto `pending_dtors`,
-/// unless it was claimed; the destructor is fz code and runs at the scheduler
-/// boundary, never inside the sweep.
+/// An object carrying a forwarding marker survived: it is relinked to its
+/// to-space copy, on the old chain, which a minor sweep leaves otherwise
+/// untouched and a major sweep rebuilds. Any other object is dead and drops its
+/// off-heap reference. A dead BinRef releases its SharedBin synchronously. A
+/// dead Resource whose last reference this was pushes its destructor (a literal
+/// closure word) and raw payload onto `pending_dtors`, unless it was claimed;
+/// the destructor is fz code and runs at the scheduler boundary, never inside
+/// the sweep.
 ///
 /// A survivor's from-space word 0 holds a forwarding marker, so its off-heap
-/// pointer is read from the to-space copy. Must run before the
-/// from-space is released, since dead stubs live there.
+/// pointer is read from the to-space copy. Must run before the from-space is
+/// released, since dead objects live there.
 pub fn mso_sweep(heap: &mut Heap, generation: Generation, visits: &mut u64, survived: &mut StubCounts) {
-    heap.mso_old_head = sweep_chains::<BinRef>(
-        heap.mso_head,
-        heap.mso_old_head,
-        generation,
-        visits,
-        |binref| unsafe { shared_bin_release(binref.shared_raw()) },
-        |binref| survived.record(binref.site()),
-    );
-    let pending_dtors = &mut heap.pending_dtors;
-    heap.resource_old_head = sweep_chains::<ResourceStub>(
-        heap.resource_head,
-        heap.resource_old_head,
-        generation,
-        visits,
-        |rs| {
-            if let Some(dtor) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
-                pending_dtors.push_back(dtor);
-            }
-        },
-        |_| {},
-    );
-    heap.mso_head = 0;
-    heap.resource_head = 0;
-}
-
-/// Sweep the chains of `S` stubs `generation` examines and return the new old
-/// chain head: survivors, relinked to their to-space copies, ahead of the old
-/// chain a minor collection leaves alone.
-fn sweep_chains<S: MsoStub>(
-    young: u64,
-    old: u64,
-    generation: Generation,
-    visits: &mut u64,
-    mut on_dead: impl FnMut(S),
-    mut on_survivor: impl FnMut(S),
-) -> u64 {
     let mut new_old_head = match generation {
-        Generation::Minor => old,
+        Generation::Minor => heap.mso_old_head,
         Generation::Major => 0,
     };
-    for head in examined_chain_heads(young, old, generation) {
+    let old_head = (generation == Generation::Major).then_some(heap.mso_old_head);
+    for head in std::iter::once(heap.mso_head).chain(old_head) {
         let mut cur_bits = head;
         while cur_bits != 0 {
             *visits += 1;
-            let cur = chain_stub_addr::<S>(cur_bits);
-            let stub = unsafe { S::at(cur) };
-            let next = stub.link();
-            match forwarded_target(cur, S::KIND) {
+            let object = OffHeap::named_by(cur_bits);
+            let next = object.link();
+            match forwarded_target(object.addr(), object.kind()) {
                 Some(to_p) => {
-                    on_survivor(stub);
-                    unsafe { S::at(to_p) }.set_link(new_old_head);
-                    new_old_head = heap_object_word(to_p, S::KIND);
+                    let copy = unsafe { object.same_kind_at(to_p) };
+                    if let OffHeap::BinRef(binref) = object {
+                        survived.record(binref.site());
+                    }
+                    copy.set_link(new_old_head);
+                    new_old_head = heap_object_word(to_p, object.kind());
                 }
-                None => on_dead(stub),
+                None => match object {
+                    OffHeap::BinRef(binref) => unsafe { shared_bin_release(binref.shared_raw()) },
+                    OffHeap::Resource(stub) => {
+                        if let Some(dtor) = unsafe { fz_resource_release_deferred(stub.shared_raw()) } {
+                            heap.pending_dtors.push_back(dtor);
+                        }
+                    }
+                },
             }
             cur_bits = next;
         }
     }
-    new_old_head
+    heap.mso_old_head = new_old_head;
+    heap.mso_head = 0;
 }
 
-/// Drop every stub on the young and old chains, releasing each off-heap
+/// Drop every object on the young and old chains, releasing each off-heap
 /// reference. Called from `Heap::drop` before pool reclaim.
 pub fn mso_drop_all(heap: &mut Heap) {
-    mso_release_chain::<BinRef>(heap.mso_head);
-    mso_release_chain::<BinRef>(heap.mso_old_head);
-    mso_release_chain::<ResourceStub>(heap.resource_head);
-    mso_release_chain::<ResourceStub>(heap.resource_old_head);
+    mso_release_chain(heap.mso_head);
+    mso_release_chain(heap.mso_old_head);
     heap.mso_head = 0;
     heap.mso_old_head = 0;
-    heap.resource_head = 0;
-    heap.resource_old_head = 0;
 }
 
-/// Release every stub on the chain of `S` stubs that starts at `head_bits`:
-/// each BinRef drops its SharedBin reference and each Resource stub drops its
-/// Resource reference. The chain's memory is left to its owner.
-pub(crate) fn mso_release_chain<S: MsoStub>(head_bits: u64) {
+/// Release every object on the chain that starts at `head_bits`: each BinRef
+/// drops its SharedBin reference and each Resource stub drops its Resource
+/// reference. The chain's memory is left to its owner.
+pub(crate) fn mso_release_chain(head_bits: u64) {
     let mut cur_bits = head_bits;
     while cur_bits != 0 {
-        let stub = unsafe { S::at(chain_stub_addr::<S>(cur_bits)) };
-        cur_bits = stub.link();
-        stub.release();
+        let object = OffHeap::named_by(cur_bits);
+        cur_bits = object.link();
+        object.release();
     }
 }
 
