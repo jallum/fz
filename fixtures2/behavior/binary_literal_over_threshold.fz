@@ -1,7 +1,7 @@
 #---
 # purpose: "several binary literals over the shared-binary threshold can all be matched, and the program still exits cleanly"
-# oracle: oracle.exs
-# oracle.stamp: d4575c6ec3e67ca0
+# oracle: self
+# oracle.stamp: e4411f4bd5e49856
 #---
 #
 # # binary_literal_over_threshold
@@ -28,17 +28,23 @@
 # The fix is the invariant the heap already keeps -- 16-byte alignment, so the
 # low four bits are never part of an address. This fixture is FOUR literals over
 # the threshold, matched, so no single alignment accident can make it pass.
-defp first_byte(<<c, _rest :: binary>>), do: c
-defp first_byte(_b), do: :no_match
+defmodule Main do
+  defp first_byte(<<c, _rest :: binary>>), do: c
 
-defp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
-defp walk(_b, n), do: n
+  defp first_byte(_b), do: :no_match
 
-def main() do
-  dbg(first_byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
-  dbg(first_byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
-  dbg(walk("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0))
-  dbg(walk("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 0))
-  dbg(walk("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", 0))
-  dbg(walk("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", 0))
+  defp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
+
+  defp walk(_b, n), do: n
+
+  def main() do
+    IO.inspect(first_byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+    IO.inspect(first_byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+    IO.inspect(walk("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0))
+    IO.inspect(walk("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 0))
+    IO.inspect(walk("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", 0))
+    IO.inspect(walk("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", 0))
+  end
 end
+
+Main.main()

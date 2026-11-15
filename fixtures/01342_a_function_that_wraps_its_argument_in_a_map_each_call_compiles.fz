@@ -1,16 +1,20 @@
 #---
 # purpose: "A recursion that wraps its argument in a one-key map on every call compiles: the repeated map folds where it grew, and the budget never fires"
 # root: main/0
-# oracle: oracle.exs
-# oracle.stamp: 871682d5995555a4
 # assert.metric.return_type.widened: 0
 # assert.metric.type.clash_folded: 1
+# oracle: self
+# oracle.stamp: 4cb7690f0aa78715
 #---
 defmodule Wrap do
   def m(acc, 0), do: acc
   def m(acc, n), do: m(%{k: acc}, n - 1)
 end
 
-def main() do
-  IO.inspect(Wrap.m(1, 3))
+defmodule Main do
+  def main() do
+    IO.inspect(Wrap.m(1, 3))
+  end
 end
+
+Main.main()

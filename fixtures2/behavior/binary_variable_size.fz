@@ -1,7 +1,7 @@
 #---
 # purpose: "a binary segment's size can be a variable from the enclosing scope, not only one the pattern binds"
-# oracle: oracle.exs
-# oracle.stamp: fe25b79dea589882
+# oracle: self
+# oracle.stamp: 440cc01c62b90d92
 #---
 #
 # # binary_variable_size
@@ -34,22 +34,28 @@
 # WHY IT WAS P1: without it no library function can take a slice of a binary
 # whose length it computed, so every string-building routine has to accumulate
 # one byte at a time.
-defp take(bin, n) do
-  case bin do
-    <<s :: binary-size(n), rest :: binary>> -> {:ok, s, rest}
-    _ -> :error
+defmodule Main do
+  defp take(bin, n) do
+    case bin do
+      <<s :: binary-size(n), rest :: binary>> -> {:ok, s, rest}
+      _ -> :error
+    end
+  end
+
+  defp head_tail(<<s :: binary-size(3), rest :: binary>>), do: {:ok, s, rest}
+
+  defp head_tail(_b), do: :error
+
+  defp inner(<<n, s :: binary-size(n), rest :: binary>>), do: {:ok, s, rest}
+
+  defp inner(_b), do: :error
+
+  def main() do
+    IO.inspect(take("hello world", 5))
+    IO.inspect(take("hi", 5))
+    IO.inspect(head_tail("abcdef"))
+    IO.inspect(inner(<<3, 97, 98, 99, 100>>))
   end
 end
 
-defp head_tail(<<s :: binary-size(3), rest :: binary>>), do: {:ok, s, rest}
-defp head_tail(_b), do: :error
-
-defp inner(<<n, s :: binary-size(n), rest :: binary>>), do: {:ok, s, rest}
-defp inner(_b), do: :error
-
-def main() do
-  dbg(take("hello world", 5))
-  dbg(take("hi", 5))
-  dbg(head_tail("abcdef"))
-  dbg(inner(<<3, 97, 98, 99, 100>>))
-end
+Main.main()

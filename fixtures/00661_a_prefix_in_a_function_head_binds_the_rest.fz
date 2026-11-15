@@ -1,49 +1,60 @@
 #---
 # purpose: "a literal prefix before <> in a function head matches a binary that starts with it and binds the remainder, as in Elixir"
-# oracle: 00661_a_prefix_in_a_function_head_binds_the_rest.oracle.exs
-# oracle.stamp: 44b80d1a6a32c386
+# oracle: self
+# oracle.stamp: 1dc641f8ae10358c
 #---
-def option("--" <> rest), do: {:long, rest}
-def option("-" <> rest), do: {:short, rest}
-def option(_), do: :operand
+defmodule Main do
+  def option("--" <> rest), do: {:long, rest}
 
-def everything("" <> rest), do: rest
+  def option("-" <> rest), do: {:short, rest}
 
-def chained("a" <> "b" <> rest), do: rest
-def chained(_), do: :no
+  def option(_), do: :operand
 
-def whole("a" <> "b"), do: :ab
-def whole(_), do: :no
+  def everything("" <> rest), do: rest
 
-def nothing_after("--" <> ""), do: :exactly_dashes
-def nothing_after(_), do: :no
+  def chained("a" <> "b" <> rest), do: rest
 
-def utf8("é✓" <> rest), do: rest
-def utf8(_), do: :no
+  def chained(_), do: :no
 
-def continued("--" <> <<c, rest::binary>>), do: {c, rest}
-def continued(_), do: :no
+  def whole("a" <> "b"), do: :ab
 
-def main() do
-  dbg(option("--verbose"))
-  dbg(option("-v"))
-  dbg(option("file"))
-  dbg(option("--"))
-  dbg(option(""))
-  dbg(option(7))
-  dbg(option(:atom))
-  dbg(everything("anything"))
-  dbg(everything(""))
-  dbg(chained("abc"))
-  dbg(chained("ab"))
-  dbg(chained("ba"))
-  dbg(whole("ab"))
-  dbg(whole("abcd"))
-  dbg(whole("bc"))
-  dbg(nothing_after("--"))
-  dbg(nothing_after("--x"))
-  dbg(utf8("é✓ok"))
-  dbg(utf8("e✓ok"))
-  dbg(continued("--xyz"))
-  dbg(continued("--"))
+  def whole(_), do: :no
+
+  def nothing_after("--" <> ""), do: :exactly_dashes
+
+  def nothing_after(_), do: :no
+
+  def utf8("é✓" <> rest), do: rest
+
+  def utf8(_), do: :no
+
+  def continued("--" <> <<c, rest::binary>>), do: {c, rest}
+
+  def continued(_), do: :no
+
+  def main() do
+    IO.inspect(option("--verbose"))
+    IO.inspect(option("-v"))
+    IO.inspect(option("file"))
+    IO.inspect(option("--"))
+    IO.inspect(option(""))
+    IO.inspect(option(7))
+    IO.inspect(option(:atom))
+    IO.inspect(everything("anything"))
+    IO.inspect(everything(""))
+    IO.inspect(chained("abc"))
+    IO.inspect(chained("ab"))
+    IO.inspect(chained("ba"))
+    IO.inspect(whole("ab"))
+    IO.inspect(whole("abcd"))
+    IO.inspect(whole("bc"))
+    IO.inspect(nothing_after("--"))
+    IO.inspect(nothing_after("--x"))
+    IO.inspect(utf8("é✓ok"))
+    IO.inspect(utf8("e✓ok"))
+    IO.inspect(continued("--xyz"))
+    IO.inspect(continued("--"))
+  end
 end
+
+Main.main()

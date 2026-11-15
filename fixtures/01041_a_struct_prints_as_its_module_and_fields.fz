@@ -1,7 +1,7 @@
 #---
 # purpose: "a struct prints as %Name{field: value} in defstruct order, whether flat, nil-valued, nested, in a list, in a tuple or in a nested module"
-# oracle: oracle.exs
-# oracle.stamp: 08d9b0f08999d0cf
+# oracle: self
+# oracle.stamp: 0b59f03d43b54ef9
 #---
 #
 # dbg renders a struct the way Elixir's inspect does: the module alias, then
@@ -18,11 +18,15 @@ defmodule Geo.Pt do
   defstruct [:lat, :lon]
 end
 
-def main() do
-  dbg(%Pt{x: 1, y: 2})
-  dbg(%Pt{y: 3})
-  dbg(%Seg{a: %Pt{x: 1, y: 2}, b: %Pt{y: 3}})
-  dbg([%Pt{x: 1, y: 2}, %Pt{x: 3, y: 4}])
-  dbg({%Pt{x: 1, y: 2}, :tag})
-  dbg(%Geo.Pt{lat: 1, lon: 2})
+defmodule Main do
+  def main() do
+    IO.inspect(%Pt{x: 1, y: 2})
+    IO.inspect(%Pt{y: 3})
+    IO.inspect(%Seg{a: %Pt{x: 1, y: 2}, b: %Pt{y: 3}})
+    IO.inspect([%Pt{x: 1, y: 2}, %Pt{x: 3, y: 4}])
+    IO.inspect({%Pt{x: 1, y: 2}, :tag})
+    IO.inspect(%Geo.Pt{lat: 1, lon: 2})
+  end
 end
+
+Main.main()

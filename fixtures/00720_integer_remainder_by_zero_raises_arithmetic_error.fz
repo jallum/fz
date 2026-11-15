@@ -1,7 +1,11 @@
 #---
 # purpose: "rem/2 by zero aborts with ArithmeticError and Elixir's message"
 # expect: abort
-# oracle: 00720_integer_remainder_by_zero_raises_arithmetic_error.oracle.exs
-# oracle.stamp: a238b24c0ad40e0f
+# oracle: self
+# oracle.stamp: 1a2b344b70701ce4
 #---
-def main(), do: Enum.each([0], fn z -> dbg(rem(1, z)) end)
+defmodule Main do
+  def main(), do: Enum.each([0], fn z -> IO.inspect(rem(1, z)) end)
+end
+
+Main.main()

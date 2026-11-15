@@ -1,7 +1,7 @@
 #---
 # purpose: "a binary matches a bitstring pattern the same way whichever storage it is held in"
-# oracle: oracle.exs
-# oracle.stamp: 6cc7907a63366630
+# oracle: self
+# oracle.stamp: ccbd6010833be308
 #---
 #
 # # binary_over_threshold
@@ -25,26 +25,33 @@
 # hits a separate, older defect in the compiler-baked static shared binaries
 # (fz-5xp.60), which this fixture must not be entangled with. What is under test
 # is the representation split, and `<>` crosses it just as well.
-defp first_byte(<<c, _rest :: binary>>), do: c
-defp first_byte(_b), do: :no_match
+defmodule Main do
+  defp first_byte(<<c, _rest :: binary>>), do: c
 
-defp prefixed(<<"aaa", rest :: binary>>), do: {:prefixed, walk(rest, 0)}
-defp prefixed(_b), do: :no_match
+  defp first_byte(_b), do: :no_match
 
-defp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
-defp walk(_b, n), do: n
+  defp prefixed(<<"aaa", rest :: binary>>), do: {:prefixed, walk(rest, 0)}
 
-def main() do
-  small = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  big = small <> small <> small
+  defp prefixed(_b), do: :no_match
 
-  dbg(first_byte(small))
-  dbg(first_byte(big))
+  defp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
 
-  dbg(prefixed(small))
-  dbg(prefixed(big))
+  defp walk(_b, n), do: n
 
-  dbg(walk(small, 0))
-  dbg(walk(big, 0))
-  dbg(walk(big <> big, 0))
+  def main() do
+    small = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    big = small <> small <> small
+
+    IO.inspect(first_byte(small))
+    IO.inspect(first_byte(big))
+
+    IO.inspect(prefixed(small))
+    IO.inspect(prefixed(big))
+
+    IO.inspect(walk(small, 0))
+    IO.inspect(walk(big, 0))
+    IO.inspect(walk(big <> big, 0))
+  end
 end
+
+Main.main()

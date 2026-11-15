@@ -1,34 +1,40 @@
 #---
 # purpose: "JSON.decode/1 rejects every raw C0 control byte in string values and object keys while accepting escaped controls"
-# oracle: json_decode_control_bytes.oracle.exs
-# oracle.stamp: 2ea9e4c86819a47d
+# oracle: self
+# oracle.stamp: 0d1e0e81bc83a60e
 #---
-def main() do
-  raw_values(0)
-  raw_keys(0)
+defmodule Main do
+  def main() do
+    raw_values(0)
+    raw_keys(0)
 
-  # Escapes produce control bytes only after their JSON syntax has been
-  # accepted. Keep both the five short control escapes and \u0000 valid.
-  dbg(JSON.decode(<<34, 92, 98, 92, 102, 92, 110, 92, 114, 92, 116,
-                    92, 117, 48, 48, 48, 48, 34>>))
-end
+    # Escapes produce control bytes only after their JSON syntax has been
+    # accepted. Keep both the five short control escapes and \u0000 valid.
+    IO.inspect(JSON.decode(<<34, 92, 98, 92, 102, 92, 110, 92, 114, 92, 116,
+                      92, 117, 48, 48, 48, 48, 34>>))
+  end
 
-@spec raw_values(integer) :: nil
-defp raw_values(c) do
-  if c < 32 do
-    dbg(JSON.decode(<<34, c, 34>>))
-    raw_values(c + 1)
-  else
-    nil
+  @spec raw_values(integer) :: nil
+
+  defp raw_values(c) do
+    if c < 32 do
+      IO.inspect(JSON.decode(<<34, c, 34>>))
+      raw_values(c + 1)
+    else
+      nil
+    end
+  end
+
+  @spec raw_keys(integer) :: nil
+
+  defp raw_keys(c) do
+    if c < 32 do
+      IO.inspect(JSON.decode(<<123, 34, c, 34, 58, 49, 125>>))
+      raw_keys(c + 1)
+    else
+      nil
+    end
   end
 end
 
-@spec raw_keys(integer) :: nil
-defp raw_keys(c) do
-  if c < 32 do
-    dbg(JSON.decode(<<123, 34, c, 34, 58, 49, 125>>))
-    raw_keys(c + 1)
-  else
-    nil
-  end
-end
+Main.main()

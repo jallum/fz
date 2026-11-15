@@ -1,7 +1,7 @@
 #---
 # purpose: "an imported module is required: its macros are callable qualified"
-# oracle: 01145_an_imported_module_is_required.oracle.exs
-# oracle.stamp: 5b69013871bc3e22
+# oracle: self
+# oracle.stamp: ead8a162d8dac3fe
 #---
 #
 # Importing a module requires it, as in Elixir, so no `require` is written
@@ -28,18 +28,22 @@ defmodule ImportsOne do
   def run(), do: {Twice.thrice(4), twice(4)}
 end
 
-def main() do
-  IO.inspect(Kernel.apply(Kernel, :abs, [-2]))
-  IO.inspect(apply(Kernel, :abs, [-2]))
-  IO.inspect(Kernel.apply(Kernel, :+, [1, 2]))
-  IO.inspect(apply(Kernel, :+, [1, 2]))
-  IO.inspect(Kernel.&&(true, 3))
-  IO.inspect(true && 3)
-  IO.inspect(Kernel.&&(nil, 3))
-  IO.inspect(Kernel.||(nil, 3))
-  IO.inspect(nil || 3)
-  IO.inspect(Kernel.!(nil))
-  IO.inspect(!nil)
-  IO.inspect(ImportsAll.run())
-  IO.inspect(ImportsOne.run())
+defmodule Main do
+  def main() do
+    IO.inspect(Kernel.apply(Kernel, :abs, [-2]))
+    IO.inspect(apply(Kernel, :abs, [-2]))
+    IO.inspect(Kernel.apply(Kernel, :+, [1, 2]))
+    IO.inspect(apply(Kernel, :+, [1, 2]))
+    IO.inspect(Kernel.&&(true, 3))
+    IO.inspect(true && 3)
+    IO.inspect(Kernel.&&(nil, 3))
+    IO.inspect(Kernel.||(nil, 3))
+    IO.inspect(nil || 3)
+    IO.inspect(Kernel.!(nil))
+    IO.inspect(!nil)
+    IO.inspect(ImportsAll.run())
+    IO.inspect(ImportsOne.run())
+  end
 end
+
+Main.main()

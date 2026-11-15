@@ -1,25 +1,29 @@
 #---
 # purpose: "else clauses are a case over the body's value; the first clause that matches gives the try's value"
-# oracle: 00836_an_else_clause_matches_the_value_of_the_body.oracle.exs
-# oracle.stamp: 4a8ca2f20161c725
+# oracle: self
+# oracle.stamp: 296fc968bcd4aef7
 #---
-def main() do
-  a = try do
-    {:ok, 1}
-  rescue
-    _ -> :rescued
-  else
-    {:ok, n} -> {:got, n}
-    other -> other
+defmodule Main do
+  def main() do
+    a = try do
+      {:ok, 1}
+    rescue
+      _ -> :rescued
+    else
+      {:ok, n} -> {:got, n}
+      other -> other
+    end
+    b = try do
+      :plain
+    rescue
+      _ -> :rescued
+    else
+      {:ok, n} -> {:got, n}
+      other -> {:other, other}
+    end
+    IO.inspect(a)
+    IO.inspect(b)
   end
-  b = try do
-    :plain
-  rescue
-    _ -> :rescued
-  else
-    {:ok, n} -> {:got, n}
-    other -> {:other, other}
-  end
-  dbg(a)
-  dbg(b)
 end
+
+Main.main()

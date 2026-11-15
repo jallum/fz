@@ -1,26 +1,30 @@
 #---
 # purpose: "a child's 1ms timeout and its parent's 2ms timeout are pending together; messages order what each prints, so the parent outlives the child however the machine is loaded"
-# oracle: 00691_a_child_and_its_parent_both_time_out_in_order.oracle.exs
-# oracle.stamp: 82fa4037407825e0
+# oracle: self
+# oracle.stamp: 461d4bcd19db6239
 #---
-def main() do
-  parent = self()
-  spawn(fn () ->
-    receive do
-      :never -> :ok
+defmodule Main do
+  def main() do
+    parent = self()
+    spawn(fn () ->
+      receive do
+        :never -> :ok
+      after
+        1 ->
+          IO.inspect(:child_timeout)
+          send(parent, :child_done)
+      end
+    end)
+    timed_out = receive do
+      :never -> false
     after
-      1 ->
-        dbg(:child_timeout)
-        send(parent, :child_done)
+      2 -> true
     end
-  end)
-  timed_out = receive do
-    :never -> false
-  after
-    2 -> true
+    receive do
+      :child_done -> IO.inspect(:joined)
+    end
+    IO.inspect({:main_timeout, timed_out})
   end
-  receive do
-    :child_done -> dbg(:joined)
-  end
-  dbg({:main_timeout, timed_out})
 end
+
+Main.main()

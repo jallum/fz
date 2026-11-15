@@ -1,7 +1,7 @@
 #---
 # purpose: "a map's key order agrees with its key equality, so equal binary keys collide and iteration is content-ordered"
-# oracle: oracle.exs
-# oracle.stamp: 8c83e9a7a0711e71
+# oracle: self
+# oracle.stamp: b63d373bcfb84ae8
 #---
 #
 # # map_binary_keys
@@ -38,17 +38,21 @@
 #   * ITERATION ORDER, which is now by content. It matches Elixir, whose small
 #     maps are term-ordered -- including the prefix case where the shorter key
 #     sorts first.
-def main() do
-  built = "a" <> "b"
+defmodule Main do
+  def main() do
+    built = "a" <> "b"
 
-  dbg(%{"ab" => 1, built => 2})
-  dbg(Enum.count(%{"ab" => 1, built => 2}))
+    IO.inspect(%{"ab" => 1, built => 2})
+    IO.inspect(Enum.count(%{"ab" => 1, built => 2}))
 
-  m = %{"ab" => 1, "cd" => 2, "ef" => 3}
-  dbg(m["ab"])
-  dbg(m[built])
-  dbg(m["zz"])
+    m = %{"ab" => 1, "cd" => 2, "ef" => 3}
+    IO.inspect(m["ab"])
+    IO.inspect(m[built])
+    IO.inspect(m["zz"])
 
-  dbg(Enum.to_list(%{"zebra" => 1, "apple" => 2, "mango" => 3}))
-  dbg(Enum.to_list(%{"aa" => 1, "a" => 2, "ab" => 3}))
+    IO.inspect(Enum.to_list(%{"zebra" => 1, "apple" => 2, "mango" => 3}))
+    IO.inspect(Enum.to_list(%{"aa" => 1, "a" => 2, "ab" => 3}))
+  end
 end
+
+Main.main()

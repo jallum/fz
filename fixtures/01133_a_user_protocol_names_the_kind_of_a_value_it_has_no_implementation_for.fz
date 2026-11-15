@@ -1,7 +1,7 @@
 #---
 # purpose: "A user protocol with one implementation, called with a receiver that may be any of several kinds, raises Protocol.UndefinedError for each kind it does not take; the message names the kind, a struct by its module, and shows the value"
-# oracle: 01133_a_user_protocol_names_the_kind_of_a_value_it_has_no_implementation_for.oracle.exs
-# oracle.stamp: 5b0a713d6203c0d2
+# oracle: self
+# oracle.stamp: 76903540a90d066b
 #---
 defprotocol Sizer do
   def size(value)
@@ -15,21 +15,25 @@ defmodule Foo do
   defstruct [:a]
 end
 
-def describe(value) do
-  try do
-    Sizer.size(value)
-  rescue
-    e -> Exception.message(e)
+defmodule Main do
+  def describe(value) do
+    try do
+      Sizer.size(value)
+    rescue
+      e -> Exception.message(e)
+    end
+  end
+
+  def first_line(value) do
+    [line | _] = String.split(describe(value), "\n")
+    line
+  end
+
+  def main() do
+    values = [7, 1.5, %Foo{a: 1}, :ok, [1, 2], {1, 2}, %{a: 1}, "text"]
+    Enum.each(values, fn value -> IO.puts(describe(value)) end)
+    Enum.each([7, fn -> 1 end, self(), make_ref()], fn value -> IO.puts(first_line(value)) end)
   end
 end
 
-def first_line(value) do
-  [line | _] = String.split(describe(value), "\n")
-  line
-end
-
-def main() do
-  values = [7, 1.5, %Foo{a: 1}, :ok, [1, 2], {1, 2}, %{a: 1}, "text"]
-  Enum.each(values, fn value -> IO.puts(describe(value)) end)
-  Enum.each([7, fn -> 1 end, self(), make_ref()], fn value -> IO.puts(first_line(value)) end)
-end
+Main.main()

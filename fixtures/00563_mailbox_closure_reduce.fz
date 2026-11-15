@@ -1,7 +1,7 @@
 #---
 # purpose: "a closure delivered by the mailbox reduces a list, whatever the accumulator turns out to be"
-# oracle: oracle.exs
-# oracle.stamp: 20feeef1011cf163
+# oracle: self
+# oracle.stamp: 3c4294aabd683e27
 #---
 #
 # fz-kdt.152. `Enum.reduce/3` threads the reducer through `List.reduce_cont/3`,
@@ -16,18 +16,22 @@
 # it), and a reducer holding a capture of its own (the mailbox callable is
 # itself a closure with a lane, not a bare function). The empty list is the
 # control: it never reaches a reducing step at all.
-def main() do
-  send(self(), fn (x, acc) -> acc + x end)
-  sum = receive do f -> f end
-  dbg(Enum.reduce([1, 2, 3], 0, sum))
-  dbg(Enum.reduce([], 7, sum))
+defmodule Main do
+  def main() do
+    send(self(), fn (x, acc) -> acc + x end)
+    sum = receive do f -> f end
+    IO.inspect(Enum.reduce([1, 2, 3], 0, sum))
+    IO.inspect(Enum.reduce([], 7, sum))
 
-  send(self(), fn (x, acc) -> [x | acc] end)
-  prepend = receive do f -> f end
-  dbg(Enum.reduce([1, 2, 3], [], prepend))
+    send(self(), fn (x, acc) -> [x | acc] end)
+    prepend = receive do f -> f end
+    IO.inspect(Enum.reduce([1, 2, 3], [], prepend))
 
-  scale = 10
-  send(self(), fn (x, acc) -> acc + x * scale end)
-  scaled = receive do f -> f end
-  dbg(Enum.reduce([1, 2, 3], 0, scaled))
+    scale = 10
+    send(self(), fn (x, acc) -> acc + x * scale end)
+    scaled = receive do f -> f end
+    IO.inspect(Enum.reduce([1, 2, 3], 0, scaled))
+  end
 end
+
+Main.main()

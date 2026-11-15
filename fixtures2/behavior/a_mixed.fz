@@ -1,7 +1,7 @@
 #---
 # purpose: "one lambda driven by Enum.each both through a grounded call and through the boxed seam settles on one return convention"
-# oracle: oracle.exs
-# oracle.stamp: fe5532d1fd233fc4
+# oracle: self
+# oracle.stamp: 93611da6b4a4b539
 #---
 #
 # fz-kdt.155's two-sided witness. `double` is reached BOTH ways in one program:
@@ -20,12 +20,16 @@
 # after the FIRST boxed element, on JIT and AOT alike.
 #
 # `:done` proves control came back past both halves.
-def main() do
-  double = fn (x) -> dbg(x * 2) end
-  Enum.each([1, 2], double)
+defmodule Main do
+  def main() do
+    double = fn (x) -> IO.inspect(x * 2) end
+    Enum.each([1, 2], double)
 
-  send(self(), double)
-  boxed = receive do f -> f end
-  Enum.each([3, 4], boxed)
-  dbg(:done)
+    send(self(), double)
+    boxed = receive do f -> f end
+    Enum.each([3, 4], boxed)
+    IO.inspect(:done)
+  end
 end
+
+Main.main()

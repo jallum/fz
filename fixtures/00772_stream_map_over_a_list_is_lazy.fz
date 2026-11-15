@@ -1,10 +1,14 @@
 #---
 # purpose: "Stream.map over a list runs nothing until an Enum function pulls: Enum.take(1) runs the function once, and Stream.map alone runs it never"
-# oracle: 00772_stream_map_over_a_list_is_lazy.oracle.exs
-# oracle.stamp: 17f8050b9799a6fa
+# oracle: self
+# oracle.stamp: e0fd78b2d4cac8a1
 #---
-def main() do
-  stream = Stream.map([1, 2, 3], fn x -> dbg(x) end)
-  dbg(:built)
-  dbg(Enum.take(stream, 1))
+defmodule Main do
+  def main() do
+    stream = Stream.map([1, 2, 3], fn x -> IO.inspect(x) end)
+    IO.inspect(:built)
+    IO.inspect(Enum.take(stream, 1))
+  end
 end
+
+Main.main()

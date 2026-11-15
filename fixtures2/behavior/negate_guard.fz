@@ -1,7 +1,7 @@
 #---
 # purpose: "negation inside a guard works for floats as well as integers, on every door"
-# oracle: oracle.exs
-# oracle.stamp: cb75b23150eeac93
+# oracle: self
+# oracle.stamp: 4690fe1f621ea3e1
 #---
 #
 # # negate_guard
@@ -24,18 +24,25 @@
 # whose operand is a union so no door can decide the lane statically. The
 # clause heads carry `is_float`/`is_integer` guards -- without them the first
 # clause claims every integer too, because `-(-5) > 0.0` is true in both languages.
-defp classify(x) when is_float(x) and -x > 0.0, do: :negative_float
-defp classify(x) when is_integer(x) and -x > 0, do: :negative_int
-defp classify(_), do: :other
+defmodule Main do
+  defp classify(x) when is_float(x) and -x > 0.0, do: :negative_float
 
-defp pick(0), do: -4.5
-defp pick(_), do: -9
+  defp classify(x) when is_integer(x) and -x > 0, do: :negative_int
 
-def main() do
-  dbg(classify(-5.5))
-  dbg(classify(5.5))
-  dbg(classify(-5))
-  dbg(classify(5))
-  dbg(classify(pick(0)))
-  dbg(classify(pick(1)))
+  defp classify(_), do: :other
+
+  defp pick(0), do: -4.5
+
+  defp pick(_), do: -9
+
+  def main() do
+    IO.inspect(classify(-5.5))
+    IO.inspect(classify(5.5))
+    IO.inspect(classify(-5))
+    IO.inspect(classify(5))
+    IO.inspect(classify(pick(0)))
+    IO.inspect(classify(pick(1)))
+  end
 end
+
+Main.main()

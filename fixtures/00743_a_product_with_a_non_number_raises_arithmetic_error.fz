@@ -1,7 +1,11 @@
 #---
 # purpose: "* of a string and an integer aborts with ArithmeticError"
 # expect: abort
-# oracle: 00743_a_product_with_a_non_number_raises_arithmetic_error.oracle.exs
-# oracle.stamp: abd30f6af76ce922
+# oracle: self
+# oracle.stamp: 50ee0566b87cb3eb
 #---
-def main(), do: JSON.decode!("\"s\"") * 2
+defmodule Main do
+  def main(), do: JSON.decode!("\"s\"") * 2
+end
+
+Main.main()

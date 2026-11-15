@@ -1,13 +1,17 @@
 #---
 # purpose: "= against a tuple of another size raises MatchError showing the value"
 # expect: abort
-# oracle: 00710_a_tuple_match_of_the_wrong_size_raises_match_error.oracle.exs
-# oracle.stamp: 57916d1f8e4d65a8
+# oracle: self
+# oracle.stamp: 6d8658e52bf4a9fe
 #---
-defp pair(), do: {1, 2}
+defmodule Main do
+  defp pair(), do: {1, 2}
 
-def main() do
-  dbg(:before)
-  {only} = pair()
-  dbg(only)
+  def main() do
+    IO.inspect(:before)
+    {only} = pair()
+    IO.inspect(only)
+  end
 end
+
+Main.main()

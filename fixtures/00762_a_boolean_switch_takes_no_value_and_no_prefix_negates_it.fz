@@ -1,20 +1,24 @@
 #---
 # purpose: "OptionParser.parse/2 sets a boolean switch true without taking the next token, sets it false for --no-name, and accepts =true and =false"
-# oracle: 00762_a_boolean_switch_takes_no_value_and_no_prefix_negates_it.oracle.exs
-# oracle.stamp: 7a74f2b18486118b
 # args: --verbose f
+# oracle: self
+# oracle.stamp: 861d1001fb7b4df7
 #---
-def main() do
-  dbg(OptionParser.parse(System.argv(), strict: [verbose: :boolean]))
-  dbg(OptionParser.parse(["--no-verbose", "f"], strict: [verbose: :boolean]))
-  dbg(OptionParser.parse(["--verbose=true"], strict: [verbose: :boolean]))
-  dbg(OptionParser.parse(["--verbose=false"], strict: [verbose: :boolean]))
-  dbg(OptionParser.parse(["--verbose=x"], strict: [verbose: :boolean]))
-  dbg(OptionParser.parse(["--no-verbose=1"], strict: [verbose: :boolean]))
-  dbg(OptionParser.parse(["--no-verbose", "--verbose"], strict: [verbose: :boolean]))
-  dbg(OptionParser.parse(["--verbose", "--no-verbose"], strict: [verbose: :boolean]))
-  dbg(OptionParser.parse(["--dry-run", "--no-dry-run"], strict: [dry_run: :boolean]))
-  dbg(OptionParser.parse(["--no-dry-run"], strict: [dry_run: :boolean]))
-  dbg(OptionParser.parse(["--no-other"], strict: [verbose: :boolean]))
-  dbg(OptionParser.parse(["--verbose", "--no-verbose"], strict: [verbose: [:boolean, :keep]]))
+defmodule Main do
+  def main() do
+    IO.inspect(OptionParser.parse(System.argv(), strict: [verbose: :boolean]))
+    IO.inspect(OptionParser.parse(["--no-verbose", "f"], strict: [verbose: :boolean]))
+    IO.inspect(OptionParser.parse(["--verbose=true"], strict: [verbose: :boolean]))
+    IO.inspect(OptionParser.parse(["--verbose=false"], strict: [verbose: :boolean]))
+    IO.inspect(OptionParser.parse(["--verbose=x"], strict: [verbose: :boolean]))
+    IO.inspect(OptionParser.parse(["--no-verbose=1"], strict: [verbose: :boolean]))
+    IO.inspect(OptionParser.parse(["--no-verbose", "--verbose"], strict: [verbose: :boolean]))
+    IO.inspect(OptionParser.parse(["--verbose", "--no-verbose"], strict: [verbose: :boolean]))
+    IO.inspect(OptionParser.parse(["--dry-run", "--no-dry-run"], strict: [dry_run: :boolean]))
+    IO.inspect(OptionParser.parse(["--no-dry-run"], strict: [dry_run: :boolean]))
+    IO.inspect(OptionParser.parse(["--no-other"], strict: [verbose: :boolean]))
+    IO.inspect(OptionParser.parse(["--verbose", "--no-verbose"], strict: [verbose: [:boolean, :keep]]))
+  end
 end
+
+Main.main()

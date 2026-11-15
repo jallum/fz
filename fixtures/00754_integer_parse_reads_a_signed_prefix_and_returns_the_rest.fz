@@ -1,27 +1,31 @@
 #---
 # purpose: "Integer.parse/1 reads an optional sign and decimal digits and returns the remaining text untouched, or :error when no digit leads"
-# oracle: 00754_integer_parse_reads_a_signed_prefix_and_returns_the_rest.oracle.exs
-# oracle.stamp: 1bd39472f87061af
+# oracle: self
+# oracle.stamp: c464cd483d7b1238
 #---
-def main() do
-  dbg(Integer.parse("5"))
-  dbg(Integer.parse("-5"))
-  dbg(Integer.parse("+5"))
-  dbg(Integer.parse("5x"))
-  dbg(Integer.parse("1_000"))
-  dbg(Integer.parse("007"))
-  dbg(Integer.parse("-0"))
-  dbg(Integer.parse("1.5"))
-  dbg(Integer.parse("0x1f"))
-  dbg(Integer.parse("12 34"))
-  dbg(Integer.parse(" 5"))
-  dbg(Integer.parse(""))
-  dbg(Integer.parse("-"))
-  dbg(Integer.parse("+"))
-  dbg(Integer.parse("+-5"))
-  dbg(Integer.parse("--5"))
-  dbg(Integer.parse("x5"))
-  dbg(Integer.parse("9223372036854775807"))
-  dbg(Integer.parse("-9223372036854775808"))
-  dbg(Integer.parse("9223372036854775807x"))
+defmodule Main do
+  def main() do
+    IO.inspect(Integer.parse("5"))
+    IO.inspect(Integer.parse("-5"))
+    IO.inspect(Integer.parse("+5"))
+    IO.inspect(Integer.parse("5x"))
+    IO.inspect(Integer.parse("1_000"))
+    IO.inspect(Integer.parse("007"))
+    IO.inspect(Integer.parse("-0"))
+    IO.inspect(Integer.parse("1.5"))
+    IO.inspect(Integer.parse("0x1f"))
+    IO.inspect(Integer.parse("12 34"))
+    IO.inspect(Integer.parse(" 5"))
+    IO.inspect(Integer.parse(""))
+    IO.inspect(Integer.parse("-"))
+    IO.inspect(Integer.parse("+"))
+    IO.inspect(Integer.parse("+-5"))
+    IO.inspect(Integer.parse("--5"))
+    IO.inspect(Integer.parse("x5"))
+    IO.inspect(Integer.parse("9223372036854775807"))
+    IO.inspect(Integer.parse("-9223372036854775808"))
+    IO.inspect(Integer.parse("9223372036854775807x"))
+  end
 end
+
+Main.main()

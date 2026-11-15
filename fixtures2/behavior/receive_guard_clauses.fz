@@ -1,7 +1,7 @@
 #---
 # purpose: "a guard on a receive clause selects the message on every door"
-# oracle: oracle.exs
-# oracle.stamp: ba9c4dad56015d9b
+# oracle: self
+# oracle.stamp: 628972fd3b0d131f
 #---
 #
 # # receive_guard_clauses
@@ -26,50 +26,54 @@
 #     region have to agree before the clause is chosen;
 #   * selective receive: a message that matches no clause stays in the mailbox
 #     and is delivered to a later `receive`, rather than being consumed.
-def main() do
-  send(self(), 5)
-  send(self(), 50)
-  send(self(), 500)
-  dbg(classify())
-  dbg(classify())
-  dbg(classify())
+defmodule Main do
+  def main() do
+    send(self(), 5)
+    send(self(), 50)
+    send(self(), 500)
+    IO.inspect(classify())
+    IO.inspect(classify())
+    IO.inspect(classify())
 
-  send(self(), {:count, 0})
-  send(self(), {:count, 7})
-  dbg(counted())
-  dbg(counted())
+    send(self(), {:count, 0})
+    send(self(), {:count, 7})
+    IO.inspect(counted())
+    IO.inspect(counted())
 
-  # `:skip` matches no clause of `only_tuples/0`, so it is left in the mailbox
-  # and the tuple behind it is taken first.
-  send(self(), :skip)
-  send(self(), {:take, 1})
-  dbg(only_tuples())
-  dbg(anything())
-end
+    # `:skip` matches no clause of `only_tuples/0`, so it is left in the mailbox
+    # and the tuple behind it is taken first.
+    send(self(), :skip)
+    send(self(), {:take, 1})
+    IO.inspect(only_tuples())
+    IO.inspect(anything())
+  end
 
-defp classify() do
-  receive do
-    n when n < 10 -> {:small, n}
-    n when n < 100 -> {:medium, n}
-    n -> {:large, n}
+  defp classify() do
+    receive do
+      n when n < 10 -> {:small, n}
+      n when n < 100 -> {:medium, n}
+      n -> {:large, n}
+    end
+  end
+
+  defp counted() do
+    receive do
+      {:count, n} when n > 0 -> {:positive, n}
+      {:count, n} -> {:zero_or_less, n}
+    end
+  end
+
+  defp only_tuples() do
+    receive do
+      {:take, n} -> {:took, n}
+    end
+  end
+
+  defp anything() do
+    receive do
+      other -> {:leftover, other}
+    end
   end
 end
 
-defp counted() do
-  receive do
-    {:count, n} when n > 0 -> {:positive, n}
-    {:count, n} -> {:zero_or_less, n}
-  end
-end
-
-defp only_tuples() do
-  receive do
-    {:take, n} -> {:took, n}
-  end
-end
-
-defp anything() do
-  receive do
-    other -> {:leftover, other}
-  end
-end
+Main.main()

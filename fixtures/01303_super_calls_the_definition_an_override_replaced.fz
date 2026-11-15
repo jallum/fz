@@ -1,7 +1,7 @@
 #---
 # purpose: "super in a definition that replaces one marked overridable calls the replaced definition: through a chain of overrides, a default a macro defines, a super a macro writes, a super inside an fn, and a defp override; a call by name inside the replaced definition reaches the one that stands"
-# oracle: 01303_super_calls_the_definition_an_override_replaced.oracle.exs
-# oracle.stamp: a1c3d594f2717e2c
+# oracle: self
+# oracle.stamp: 956246688adbbaa3
 #---
 defmodule Defaults do
   defmacro defaults() do
@@ -63,11 +63,15 @@ defmodule Recurse do
   def count(n), do: [:mine | super(n)]
 end
 
-def main() do
-  dbg(Chain.g(1))
-  dbg(Mine.message(3))
-  dbg(Written.g(1))
-  dbg(Nested.g(1))
-  dbg(Hidden.reach(4))
-  dbg(Recurse.count(2))
+defmodule Main do
+  def main() do
+    IO.inspect(Chain.g(1))
+    IO.inspect(Mine.message(3))
+    IO.inspect(Written.g(1))
+    IO.inspect(Nested.g(1))
+    IO.inspect(Hidden.reach(4))
+    IO.inspect(Recurse.count(2))
+  end
 end
+
+Main.main()

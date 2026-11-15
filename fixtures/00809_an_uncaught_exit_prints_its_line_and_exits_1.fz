@@ -1,10 +1,14 @@
 #---
 # purpose: "an exit with a reason other than normal or shutdown fails the main process: it prints the exit line and exits 1"
 # expect: abort
-# oracle: 00809_an_uncaught_exit_prints_its_line_and_exits_1.oracle.exs
-# oracle.stamp: d5ca1271ae1e0f75
+# oracle: self
+# oracle.stamp: 03d7ea1781257766
 #---
-def main() do
-  dbg(:before)
-  exit({:bad, :reason})
+defmodule Main do
+  def main() do
+    IO.inspect(:before)
+    exit({:bad, :reason})
+  end
 end
+
+Main.main()

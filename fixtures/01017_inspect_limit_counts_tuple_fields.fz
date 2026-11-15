@@ -1,13 +1,17 @@
 #---
 # purpose: "inspect/2 limit: shows that many tuple fields and then ..., nested tuples sharing one budget"
-# oracle: 01017_inspect_limit_counts_tuple_fields.oracle.exs
-# oracle.stamp: c9e78245976e96c4
+# oracle: self
+# oracle.stamp: d098a2746dbb0adc
 #---
-def main() do
-  dbg(inspect({1, 2, 3}, limit: 2))
-  dbg(inspect({1, {2, 3}, 4}, limit: 2))
-  dbg(inspect({1, {2, 3}, 4}, limit: 3))
-  dbg(inspect({1, 2}, limit: 2))
-  dbg(inspect({}, limit: 0))
-  dbg(inspect({1}, limit: 0))
+defmodule Main do
+  def main() do
+    IO.inspect(inspect({1, 2, 3}, limit: 2))
+    IO.inspect(inspect({1, {2, 3}, 4}, limit: 2))
+    IO.inspect(inspect({1, {2, 3}, 4}, limit: 3))
+    IO.inspect(inspect({1, 2}, limit: 2))
+    IO.inspect(inspect({}, limit: 0))
+    IO.inspect(inspect({1}, limit: 0))
+  end
 end
+
+Main.main()

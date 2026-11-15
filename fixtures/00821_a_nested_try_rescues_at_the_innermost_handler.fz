@@ -1,17 +1,21 @@
 #---
 # purpose: "a raise inside nested tries is caught by the innermost rescue that matches; the outer one never runs"
-# oracle: 00821_a_nested_try_rescues_at_the_innermost_handler.oracle.exs
-# oracle.stamp: da06bb6f13283c2d
+# oracle: self
+# oracle.stamp: 9e53f7b42e80ee8f
 #---
-def main() do
-  result = try do
-    try do
-      raise ArgumentError, "inner"
+defmodule Main do
+  def main() do
+    result = try do
+      try do
+        raise ArgumentError, "inner"
+      rescue
+        e in ArgumentError -> "inner caught " <> e.message
+      end
     rescue
-      e in ArgumentError -> "inner caught " <> e.message
+      e in ArgumentError -> "outer caught " <> e.message
     end
-  rescue
-    e in ArgumentError -> "outer caught " <> e.message
+    IO.inspect(result)
   end
-  dbg(result)
 end
+
+Main.main()

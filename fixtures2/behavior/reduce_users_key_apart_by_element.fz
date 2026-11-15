@@ -1,7 +1,7 @@
 #---
 # purpose: "two Enum.reduce/3 users over different element types publish their own returns, not one joined return"
-# oracle: oracle.exs
-# oracle.stamp: 213dfa8166953e0f
+# oracle: self
+# oracle.stamp: ceae7432c1e2b917
 #---
 #
 # fz-kdt.122's oracle, and fz-kdt.183's keystone gate.
@@ -24,7 +24,11 @@
 # program with the two statements swapped: at HEAD the published return
 # depended on which user was analysed first, so the pair is what says the
 # answer is the program's and not the schedule's.
-def main() do
-  dbg(Enum.reduce([1, 2], [], fn (x, acc) -> [x + 200 | acc] end))
-  dbg(Enum.reduce(["a", "b"], [], fn (x, acc) -> [x <> "!" | acc] end))
+defmodule Main do
+  def main() do
+    IO.inspect(Enum.reduce([1, 2], [], fn (x, acc) -> [x + 200 | acc] end))
+    IO.inspect(Enum.reduce(["a", "b"], [], fn (x, acc) -> [x <> "!" | acc] end))
+  end
 end
+
+Main.main()

@@ -1,7 +1,11 @@
 #---
 # purpose: "Enum.max/1 of an empty list aborts with Enum.EmptyError and Elixir's message"
 # expect: abort
-# oracle: 00630_enum_max_of_an_empty_list_aborts.oracle.exs
-# oracle.stamp: 6d0865fb0f82f3d9
+# oracle: self
+# oracle.stamp: e490e613993066fc
 #---
-def main(), do: Enum.max([])
+defmodule Main do
+  def main(), do: Enum.max([])
+end
+
+Main.main()

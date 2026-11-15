@@ -1,9 +1,13 @@
 #---
-# purpose: "a panic with a value that is not an exception prints the way Elixir prints a raw Erlang error"
+# purpose: "a raise of a value that is not an exception, `:erlang.error/1` (fz's `panic/1`), prints the way Elixir prints a raw Erlang error"
 # expect: abort
-# oracle: 00705_a_panic_with_a_plain_value_is_an_erlang_error.oracle.exs
-# oracle.stamp: f8da50de00331859
+# oracle: self
+# oracle.stamp: 7d2f38bd1b67872e
 #---
-def main() do
-  panic({:stop, [1, 2]})
+defmodule Main do
+  def main() do
+    :erlang.error({:stop, [1, 2]})
+  end
 end
+
+Main.main()

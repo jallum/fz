@@ -1,9 +1,13 @@
 #---
 # purpose: "JSON.encode!/1 of a reference aborts with Protocol.UndefinedError naming its kind"
 # expect: abort
-# oracle: json_encode_unsupported_reference.oracle.exs
-# oracle.stamp: 942e5ce2f88a2fc2
+# oracle: self
+# oracle.stamp: 8c43e2807f0b7bd3
 #---
-def main() do
-  JSON.encode!(make_ref())
+defmodule Main do
+  def main() do
+    JSON.encode!(make_ref())
+  end
 end
+
+Main.main()

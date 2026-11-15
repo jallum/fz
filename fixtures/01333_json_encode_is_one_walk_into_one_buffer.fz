@@ -1,7 +1,7 @@
 #---
 # purpose: "JSON.encode! escapes at the start, middle and end of a string, beside multi-byte characters, in nested lists and maps, and reports invalid or truncated UTF-8 as Elixir does"
-# oracle: oracle.exs
-# oracle.stamp: f91dd0827ad13672
+# oracle: self
+# oracle.stamp: 3b5a4188806e62a6
 #---
 defmodule Encode do
   def show(value), do: IO.inspect(JSON.encode!(value))
@@ -15,73 +15,77 @@ defmodule Encode do
   end
 end
 
-def main() do
-  # A string with nothing to escape, and the empty containers.
-  Encode.show("")
-  Encode.show("plain ascii ~")
-IO.inspect(JSON.encode!("a" <> <<127>> <> "b") == "\"a" <> <<127>> <> "b\"")
-  Encode.show([])
-  Encode.show(%{})
-  Encode.show([[], %{}, ""])
+defmodule Main do
+  def main() do
+    # A string with nothing to escape, and the empty containers.
+    Encode.show("")
+    Encode.show("plain ascii ~")
+  IO.inspect(JSON.encode!("a" <> <<127>> <> "b") == "\"a" <> <<127>> <> "b\"")
+    Encode.show([])
+    Encode.show(%{})
+    Encode.show([[], %{}, ""])
 
-  # Escapes at the start, the middle, the end, and alone.
-  Encode.show("\"quoted\"")
-  Encode.show("a\"b")
-  Encode.show("ab\"")
-  Encode.show("\"")
-  Encode.show("\\")
-  Encode.show("\\\\")
-  Encode.show("a\\b\"c\\")
-  Encode.show("\n")
-  Encode.show("\ttab\tmiddle\t")
-  Encode.show("line\r\nbreak\b\f")
-  Encode.show(<<0, 1, 31, 65, 31>>)
-  Encode.show("x" <> <<27>> <> "y")
+    # Escapes at the start, the middle, the end, and alone.
+    Encode.show("\"quoted\"")
+    Encode.show("a\"b")
+    Encode.show("ab\"")
+    Encode.show("\"")
+    Encode.show("\\")
+    Encode.show("\\\\")
+    Encode.show("a\\b\"c\\")
+    Encode.show("\n")
+    Encode.show("\ttab\tmiddle\t")
+    Encode.show("line\r\nbreak\b\f")
+    Encode.show(<<0, 1, 31, 65, 31>>)
+    Encode.show("x" <> <<27>> <> "y")
 
-  # Multi-byte characters beside escapes and runs.
-  Encode.show("é")
-  Encode.show("é\"é")
-  Encode.show("\n世界")
-  Encode.show("世界\n")
-  Encode.show("a€b\\c😀d\"")
-  Encode.show("😀😀😀")
-  Encode.show(String.duplicate("世", 40) <> "\"" <> String.duplicate("a", 100) <> "\n" <> String.duplicate("é", 40))
-  Encode.show(String.duplicate("a", 300))
+    # Multi-byte characters beside escapes and runs.
+    Encode.show("é")
+    Encode.show("é\"é")
+    Encode.show("\n世界")
+    Encode.show("世界\n")
+    Encode.show("a€b\\c😀d\"")
+    Encode.show("😀😀😀")
+    Encode.show(String.duplicate("世", 40) <> "\"" <> String.duplicate("a", 100) <> "\n" <> String.duplicate("é", 40))
+    Encode.show(String.duplicate("a", 300))
 
-  # Nested lists and maps share one output.
-  Encode.show([1, [2, [3, [4, []]]], "s", nil, true, false, 1.5])
-  Encode.show(%{"a" => [%{"b" => [%{}]}, "c\"d"], "e" => %{"f" => %{"g" => "h\n"}}})
-  Encode.show([%{id: 1, name: "ann \"a\""}, %{id: 2, name: "bo\\b"}])
-  Encode.show(%{list: [%{}, [], ""], text: "é\n"})
+    # Nested lists and maps share one output.
+    Encode.show([1, [2, [3, [4, []]]], "s", nil, true, false, 1.5])
+    Encode.show(%{"a" => [%{"b" => [%{}]}, "c\"d"], "e" => %{"f" => %{"g" => "h\n"}}})
+    Encode.show([%{id: 1, name: "ann \"a\""}, %{id: 2, name: "bo\\b"}])
+    Encode.show(%{list: [%{}, [], ""], text: "é\n"})
 
-  # Keys of every accepted kind.
-  Encode.show(%{a: 1})
-  Encode.show(%{nil => 1})
-  Encode.show(%{true => 1})
-  Encode.show(%{false => 1})
-  Encode.show(%{42 => 1})
-  Encode.show(%{-45 => 1})
-  Encode.show(%{2.5 => 1})
-  Encode.show(%{"a\"b" => 1})
-  Encode.show(%{"é\n" => 1})
-  Encode.show(%{"k" => %{"j" => 1}})
+    # Keys of every accepted kind.
+    Encode.show(%{a: 1})
+    Encode.show(%{nil => 1})
+    Encode.show(%{true => 1})
+    Encode.show(%{false => 1})
+    Encode.show(%{42 => 1})
+    Encode.show(%{-45 => 1})
+    Encode.show(%{2.5 => 1})
+    Encode.show(%{"a\"b" => 1})
+    Encode.show(%{"é\n" => 1})
+    Encode.show(%{"k" => %{"j" => 1}})
 
-  # Atoms as values.
-  Encode.show([:ok, :"with space", nil, true, false])
+    # Atoms as values.
+    Encode.show([:ok, :"with space", nil, true, false])
 
-  # Invalid input fails at its first impossible byte; a cut sequence is the end of input.
-  Encode.failure(<<255>>)
-  Encode.failure("ab" <> <<255>> <> "cd")
-  Encode.failure("é" <> <<0xC2, 65>>)
-  Encode.failure(<<0xE1, 0x80, 65>>)
-  Encode.failure(<<0xC2>>)
-  Encode.failure("a\"" <> <<0xE1, 0x80>>)
-  Encode.failure(<<0xED, 0xA0, 0x80>>)
-  Encode.failure(<<0xC0, 0x80>>)
-  Encode.failure(<<0xF4, 0x90, 0x80, 0x80>>)
-  Encode.failure(<<0xF0, 0x80, 0x80, 0x80>>)
-  Encode.failure(<<0x80>>)
-  Encode.failure([1, "ok", <<0xF1, 0x80, 0x80>>])
-  Encode.failure(%{<<0xC3>> => 1})
-  Encode.failure(%{"k" => <<200>>})
+    # Invalid input fails at its first impossible byte; a cut sequence is the end of input.
+    Encode.failure(<<255>>)
+    Encode.failure("ab" <> <<255>> <> "cd")
+    Encode.failure("é" <> <<0xC2, 65>>)
+    Encode.failure(<<0xE1, 0x80, 65>>)
+    Encode.failure(<<0xC2>>)
+    Encode.failure("a\"" <> <<0xE1, 0x80>>)
+    Encode.failure(<<0xED, 0xA0, 0x80>>)
+    Encode.failure(<<0xC0, 0x80>>)
+    Encode.failure(<<0xF4, 0x90, 0x80, 0x80>>)
+    Encode.failure(<<0xF0, 0x80, 0x80, 0x80>>)
+    Encode.failure(<<0x80>>)
+    Encode.failure([1, "ok", <<0xF1, 0x80, 0x80>>])
+    Encode.failure(%{<<0xC3>> => 1})
+    Encode.failure(%{"k" => <<200>>})
+  end
 end
+
+Main.main()

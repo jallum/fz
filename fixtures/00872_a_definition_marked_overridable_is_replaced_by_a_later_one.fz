@@ -1,7 +1,7 @@
 #---
 # purpose: "defoverridable marks a function a later definition may replace: with no later definition the first stands; with one the later stands, for callers written before it too; a defp may replace a def; a default a macro defines is replaced by the module that calls the macro"
-# oracle: 00872_a_definition_marked_overridable_is_replaced_by_a_later_one.oracle.exs
-# oracle.stamp: 8c0d153a677e9579
+# oracle: self
+# oracle.stamp: 88177183d93721a3
 #---
 defmodule Defaults do
   defmacro defaults() do
@@ -46,11 +46,15 @@ defmodule Mine do
   def message(_e), do: "mine"
 end
 
-def main() do
-  dbg(Stands.g(1))
-  dbg(Replaced.g(2))
-  dbg(Replaced.caller(3))
-  dbg(Hidden.reach(4))
-  dbg(Plain.message(5))
-  dbg(Mine.message(6))
+defmodule Main do
+  def main() do
+    IO.inspect(Stands.g(1))
+    IO.inspect(Replaced.g(2))
+    IO.inspect(Replaced.caller(3))
+    IO.inspect(Hidden.reach(4))
+    IO.inspect(Plain.message(5))
+    IO.inspect(Mine.message(6))
+  end
 end
+
+Main.main()

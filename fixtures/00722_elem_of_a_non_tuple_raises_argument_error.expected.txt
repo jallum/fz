@@ -1,4 +1,0 @@
-** (ArgumentError) errors were found at the given arguments:
-
-  * 2nd argument: not a tuple
-

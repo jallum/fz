@@ -1,11 +1,15 @@
 #---
 # purpose: "a module name in value position is the atom Elixir.<Name>; it prints as the alias and its name carries the Elixir. prefix"
-# oracle: 00694_a_module_name_is_an_atom.oracle.exs
-# oracle.stamp: f102384b03dc2987
+# oracle: self
+# oracle.stamp: 43086f45de68f6ca
 #---
-def main() do
-  dbg(RuntimeError)
-  dbg(Atom.to_string(RuntimeError))
-  dbg(RuntimeError == :"Elixir.RuntimeError")
-  dbg(is_atom(RuntimeError))
+defmodule Main do
+  def main() do
+    IO.inspect(RuntimeError)
+    IO.inspect(Atom.to_string(RuntimeError))
+    IO.inspect(RuntimeError == :"Elixir.RuntimeError")
+    IO.inspect(is_atom(RuntimeError))
+  end
 end
+
+Main.main()

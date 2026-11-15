@@ -1,7 +1,7 @@
 #---
 # purpose: "After %{s | __struct__: m} a field read answers the field's value and __struct__ answers the new module, with the base a known struct or behind any"
-# oracle: 00856_a_field_is_found_by_name_once_an_update_replaces_the_module.oracle.exs
-# oracle.stamp: 5e1e20273c87ac53
+# oracle: self
+# oracle.stamp: abc7e025782f41ed
 #---
 #
 # A struct's module is what places its fields. Once an update replaces the
@@ -15,21 +15,25 @@ defmodule Far do
   defstruct [:y, :x]
 end
 
-def rename(v, m), do: %{v | __struct__: m}
+defmodule Main do
+  def rename(v, m), do: %{v | __struct__: m}
 
-def main() do
-  p = %Near{x: 1, y: 2}
-  q = %{p | __struct__: Far}
-  dbg(q.x)
-  dbg(q.y)
-  dbg(q.__struct__)
-  r = rename(p, Far)
-  dbg(r.x)
-  dbg(r.__struct__)
-  s = %{p | __struct__: Near, y: 5}
-  dbg(s.x)
-  dbg(s.y)
-  dbg(s.__struct__)
-  dbg(p.x)
-  dbg(p.__struct__)
+  def main() do
+    p = %Near{x: 1, y: 2}
+    q = %{p | __struct__: Far}
+    IO.inspect(q.x)
+    IO.inspect(q.y)
+    IO.inspect(q.__struct__)
+    r = rename(p, Far)
+    IO.inspect(r.x)
+    IO.inspect(r.__struct__)
+    s = %{p | __struct__: Near, y: 5}
+    IO.inspect(s.x)
+    IO.inspect(s.y)
+    IO.inspect(s.__struct__)
+    IO.inspect(p.x)
+    IO.inspect(p.__struct__)
+  end
 end
+
+Main.main()

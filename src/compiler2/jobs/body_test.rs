@@ -1,5 +1,5 @@
 use super::super::drive::Job;
-use super::super::drive_harness::{Drive, Settled, module_name};
+use super::super::drive_harness::{Drive, Settled, module_function_id, module_name};
 use super::super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission, RunFailure};
 use crate::dispatch_matrix::pattern::LastResort;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
@@ -127,7 +127,7 @@ struct TryShape {
 fn try_shape(fixture: u32, name: &str, arity: u64) -> TryShape {
     use super::super::body::{ControlEntryOrigin, LoweredBody, LoweredStep, LoweredTail};
     let settled = Drive::fixture(fixture).settle();
-    let function = settled.function(name, arity);
+    let function = module_function_id(settled.functions(), "Main", name, arity);
     let body = settled.world().lowered_body(function);
     let LoweredBody::Clauses { entries, .. } = &*body;
     let mut shape = TryShape {
@@ -200,7 +200,9 @@ fn else_with_rescue_adds_a_case_after_the_pop_and_no_handler() {
     assert_eq!((shape.tries, shape.handlers, shape.pops), (1, 1, 1));
 
     let settled = Drive::fixture(802).settle();
-    let body = settled.world().lowered_body(settled.function("main", 0));
+    let body = settled
+        .world()
+        .lowered_body(module_function_id(settled.functions(), "Main", "main", 0));
     let LoweredBody::Clauses { entries, .. } = &*body;
     let protected = entries
         .iter()

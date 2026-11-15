@@ -1,8 +1,8 @@
 #---
 # purpose: "a rest that a closure captures, a continuation holds across a call that allocates, or a message carries is the binary it stands for after the heap has moved"
 # kind: run
-# oracle: 01183_a_rest_held_across_a_collection_or_a_message_is_the_binary_it_stands_for.oracle.exs
-# oracle.stamp: 8ad7b7a738dd280d
+# oracle: self
+# oracle.stamp: 9e2d50c64d00d517
 #---
 #
 # A rest is the binary it is read from and a bit position. A collection moves

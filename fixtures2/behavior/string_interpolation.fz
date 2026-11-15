@@ -1,12 +1,12 @@
 #---
 # purpose: "`#{...}` in a string literal evaluates and is rendered, instead of being copied through verbatim"
-# oracle: oracle.exs
-# oracle.stamp: 9bb2db53f4130a4b
+# oracle: self
+# oracle.stamp: 2c6eeba53151c635
 #---
 #
 # # string_interpolation
 #
-#     dbg("a#{1}b")
+#     IO.inspect("a#{1}b")
 #
 #     fz:      "a#{1}b"
 #     Elixir:  "a1b"
@@ -31,21 +31,25 @@
 #
 # `\#{` is an escape, so a literal `#{` can still be written, and `inspect`
 # escapes it back on the way out so the rendering round-trips as source.
-def main() do
-  x = 1
-  name = "ada"
+defmodule Main do
+  def main() do
+    x = 1
+    name = "ada"
 
-  dbg("a#{x}b")
-  dbg("#{x}")
-  dbg("no interp")
-  dbg("sum #{1 + 2} done")
-  dbg("atom #{:hi}")
-  dbg("float #{2.5}")
-  dbg("bool #{true}")
-  dbg("nil #{nil}")
-  dbg("binary #{name}")
-  dbg("two #{x} and #{name}")
-  dbg("nested call #{Kernel.to_string(x)} ok")
-  dbg("list #{Kernel.to_string(x)}#{name}")
-  dbg("escaped \#{x}")
+    IO.inspect("a#{x}b")
+    IO.inspect("#{x}")
+    IO.inspect("no interp")
+    IO.inspect("sum #{1 + 2} done")
+    IO.inspect("atom #{:hi}")
+    IO.inspect("float #{2.5}")
+    IO.inspect("bool #{true}")
+    IO.inspect("nil #{nil}")
+    IO.inspect("binary #{name}")
+    IO.inspect("two #{x} and #{name}")
+    IO.inspect("nested call #{Kernel.to_string(x)} ok")
+    IO.inspect("list #{Kernel.to_string(x)}#{name}")
+    IO.inspect("escaped \#{x}")
+  end
 end
+
+Main.main()

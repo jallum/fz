@@ -1,7 +1,7 @@
 #---
 # purpose: "Clauses guarded on different tuple tags dispatch on the tag, not on the arity"
-# oracle: oracle.exs
-# oracle.stamp: de4548078359824a
+# oracle: self
+# oracle.stamp: 2f20f07781e7f695
 #---
 #
 # fz-kdt.119. Two clauses matching `{:cont, n}` and `{:halt, n}` when `is_integer(n)`,
@@ -16,23 +16,29 @@
 # atom position is one a value passes only by BEING that atom, so the tag is
 # what routes the call. Both clause orders print the same two lines, which is
 # the whole claim: dispatch on tagged tuples means what it says.
-def tag({:cont, n}) when is_integer(n), do: 1
-def tag({:halt, n}) when is_integer(n), do: 2
+defmodule Main do
+  def tag({:cont, n}) when is_integer(n), do: 1
 
-def gat({:halt, n}) when is_integer(n), do: 2
-def gat({:cont, n}) when is_integer(n), do: 1
+  def tag({:halt, n}) when is_integer(n), do: 2
 
-def pick(n) do
-  if n > 0 do
-    {:cont, n}
-  else
-    {:halt, n}
+  def gat({:halt, n}) when is_integer(n), do: 2
+
+  def gat({:cont, n}) when is_integer(n), do: 1
+
+  def pick(n) do
+    if n > 0 do
+      {:cont, n}
+    else
+      {:halt, n}
+    end
+  end
+
+  def main() do
+    IO.inspect(tag(pick(1)))
+    IO.inspect(tag(pick(0)))
+    IO.inspect(gat(pick(1)))
+    IO.inspect(gat(pick(0)))
   end
 end
 
-def main() do
-  dbg(tag(pick(1)))
-  dbg(tag(pick(0)))
-  dbg(gat(pick(1)))
-  dbg(gat(pick(0)))
-end
+Main.main()

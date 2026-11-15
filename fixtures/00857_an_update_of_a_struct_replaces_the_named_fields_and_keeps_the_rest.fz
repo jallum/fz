@@ -1,7 +1,7 @@
 #---
 # purpose: "%{s | field: v, ...} of a struct answers a struct with those fields replaced and every other field kept, whatever kind of value a field holds, with the base type known or through an any-typed parameter, and leaves the base alone"
-# oracle: 00857_an_update_of_a_struct_replaces_the_named_fields_and_keeps_the_rest.oracle.exs
-# oracle.stamp: ed0f39ae4ede8437
+# oracle: self
+# oracle.stamp: e0ce3a1e9891110f
 #---
 #
 # An update names fields the struct already has, so the answer is the same
@@ -19,25 +19,30 @@ defmodule Card do
   defstruct [:name, :corner, :pair, :extra]
 end
 
-def retag(b, tag), do: %{b | tag: tag}
+defmodule Main do
+  def retag(b, tag), do: %{b | tag: tag}
 
-def step(b, 0), do: b
-def step(b, n), do: step(%{b | count: b.count + n, items: [n | b.items]}, n - 1)
+  def step(b, 0), do: b
 
-def main() do
-  b = %Box{count: 1, ratio: 1.5, tag: :new, items: [1, 2]}
-  dbg(%{b | count: 2})
-  dbg(%{b | items: [3], count: 3})
-  dbg(%{b | count: 9, ratio: 9.5, tag: :all, items: []})
-  dbg(retag(b, :any))
-  dbg(retag(%{b | ratio: 0.5}, nil))
-  dbg(step(b, 5))
-  dbg(%{b | tag: :last}.__struct__)
-  dbg(b)
-  c = %Card{name: "ace", corner: %Pt{x: 1, y: 2}, pair: {:a, 1}, extra: %{k: 1}}
-  dbg(%{c | name: "king"})
-  dbg(%{c | corner: %{c.corner | y: 20}, pair: {:b, 2}})
-  dbg(%{c | extra: %{j: 3}, name: ""})
-  dbg(%{c | name: "two", corner: %Pt{x: 9, y: 9}, pair: {}, extra: %{}})
-  dbg(c)
+  def step(b, n), do: step(%{b | count: b.count + n, items: [n | b.items]}, n - 1)
+
+  def main() do
+    b = %Box{count: 1, ratio: 1.5, tag: :new, items: [1, 2]}
+    IO.inspect(%{b | count: 2})
+    IO.inspect(%{b | items: [3], count: 3})
+    IO.inspect(%{b | count: 9, ratio: 9.5, tag: :all, items: []})
+    IO.inspect(retag(b, :any))
+    IO.inspect(retag(%{b | ratio: 0.5}, nil))
+    IO.inspect(step(b, 5))
+    IO.inspect(%{b | tag: :last}.__struct__)
+    IO.inspect(b)
+    c = %Card{name: "ace", corner: %Pt{x: 1, y: 2}, pair: {:a, 1}, extra: %{k: 1}}
+    IO.inspect(%{c | name: "king"})
+    IO.inspect(%{c | corner: %{c.corner | y: 20}, pair: {:b, 2}})
+    IO.inspect(%{c | extra: %{j: 3}, name: ""})
+    IO.inspect(%{c | name: "two", corner: %Pt{x: 9, y: 9}, pair: {}, extra: %{}})
+    IO.inspect(c)
+  end
 end
+
+Main.main()

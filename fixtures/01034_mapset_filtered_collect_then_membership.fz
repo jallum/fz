@@ -1,10 +1,14 @@
 #---
 # purpose: "a comprehension with a filter collects into a MapSet, and a later in test reads it (the distiller's widened-set shape)"
-# oracle: 01034_mapset_filtered_collect_then_membership.oracle.exs
-# oracle.stamp: 68629a00bf86cef0
+# oracle: self
+# oracle.stamp: a1e8177cbd96ab9b
 #---
-def main() do
-  list = [1, 2, 3, 4, 5, 6]
-  widened = for a <- list, rem(a, 2) == 0, into: MapSet.new(), do: a
-  dbg(Enum.map(list, fn a -> if(a in widened, do: "yes", else: "-") end))
+defmodule Main do
+  def main() do
+    list = [1, 2, 3, 4, 5, 6]
+    widened = for a <- list, rem(a, 2) == 0, into: MapSet.new(), do: a
+    IO.inspect(Enum.map(list, fn a -> if(a in widened, do: "yes", else: "-") end))
+  end
 end
+
+Main.main()

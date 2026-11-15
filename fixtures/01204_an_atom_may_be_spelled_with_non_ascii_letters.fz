@@ -1,8 +1,12 @@
 #---
 # purpose: an atom whose name holds a non-ASCII letter keeps its spelling, including an uppercase start
-# oracle: 01204_an_atom_may_be_spelled_with_non_ascii_letters.oracle.exs
-# oracle.stamp: 20f9e45ab5742c3e
+# oracle: self
+# oracle.stamp: 7a50543b3efc3d87
 #---
-def main() do
-  dbg({:café, :Élan, :日本})
+defmodule Main do
+  def main() do
+    IO.inspect({:café, :Élan, :日本})
+  end
 end
+
+Main.main()

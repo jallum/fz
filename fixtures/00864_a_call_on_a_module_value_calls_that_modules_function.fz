@@ -1,7 +1,7 @@
 #---
 # purpose: "m.f(a) on a value that holds one module calls that module's f: a module passed as an argument, bound to a variable, read from a struct's __struct__ field, read from a map, and named by a nested alias; the module is evaluated before the arguments, and a field read without a call stays a field read"
-# oracle: 00864_a_call_on_a_module_value_calls_that_modules_function.oracle.exs
-# oracle.stamp: e986adaf1b2a0340
+# oracle: self
+# oracle.stamp: 4bad34b6eeef0c60
 #---
 #
 # A module is an atom, and a call on a value holding one is a call of that
@@ -20,27 +20,31 @@ defmodule Bank.Frozen do
   def name(), do: :frozen
 end
 
-def pick(m), do: m.exception([])
+defmodule Main do
+  def pick(m), do: m.exception([])
 
-def named(m, attrs), do: {m.name(), m.exception(attrs)}
+  def named(m, attrs), do: {m.name(), m.exception(attrs)}
 
-def note(v) do
-  dbg(v)
-  v
+  def note(v) do
+    IO.inspect(v)
+    v
+  end
+
+  def main() do
+    IO.inspect(pick(Overdrawn))
+    IO.inspect(pick(Bank.Frozen))
+    IO.inspect(named(Bank.Frozen, [1, 2]))
+    m = Overdrawn
+    IO.inspect(m.name())
+    e = %Overdrawn{amount: 7}
+    IO.inspect(e.__struct__.message(e))
+    IO.inspect(e.amount)
+    held = %{first: Overdrawn, second: Bank.Frozen}
+    IO.inspect(held.second.exception(:b))
+    IO.inspect(note(Overdrawn).exception(note(:attrs)))
+    callable = %{name: fn -> :a_field end}
+    IO.inspect(callable.name.())
+  end
 end
 
-def main() do
-  dbg(pick(Overdrawn))
-  dbg(pick(Bank.Frozen))
-  dbg(named(Bank.Frozen, [1, 2]))
-  m = Overdrawn
-  dbg(m.name())
-  e = %Overdrawn{amount: 7}
-  dbg(e.__struct__.message(e))
-  dbg(e.amount)
-  held = %{first: Overdrawn, second: Bank.Frozen}
-  dbg(held.second.exception(:b))
-  dbg(note(Overdrawn).exception(note(:attrs)))
-  callable = %{name: fn -> :a_field end}
-  dbg(callable.name.())
-end
+Main.main()

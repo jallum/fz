@@ -1,17 +1,21 @@
 #---
 # purpose: "try is an expression: its value is passed straight to a call"
-# oracle: 00824_a_try_is_an_expression.oracle.exs
-# oracle.stamp: c0100cea9cc98bd5
+# oracle: self
+# oracle.stamp: ee9d292769c9aaba
 #---
-def main() do
-  dbg(try do
-    raise ArgumentError, "x"
-  rescue
-    ArgumentError -> :rescued
-  end)
-  dbg(try do
-    :completed
-  rescue
-    ArgumentError -> :rescued
-  end)
+defmodule Main do
+  def main() do
+    IO.inspect(try do
+      raise ArgumentError, "x"
+    rescue
+      ArgumentError -> :rescued
+    end)
+    IO.inspect(try do
+      :completed
+    rescue
+      ArgumentError -> :rescued
+    end)
+  end
 end
+
+Main.main()

@@ -1,8 +1,8 @@
 #---
 # purpose: "Enum.map over a list of captures, a list of one capture repeated and a list of anonymous closures returns one result per element"
 # kind: run
-# oracle: 01082_enum_map_over_function_captures_and_anonymous_closures.oracle.exs
-# oracle.stamp: 1078222a210d6c23
+# oracle: self
+# oracle.stamp: 457bb060a05606aa
 #---
 defmodule M do
   def id(x), do: x
@@ -11,11 +11,15 @@ defmodule M do
   def go([h | t]), do: [h.(3) | go(t)]
 end
 
-def main() do
-  dbg(Enum.map([&M.id/1, &M.inc/1], fn h -> h.(3) end))
-  dbg(Enum.map([&M.id/1, &M.id/1, &M.id/1], fn h -> h.(3) end))
-  dbg(M.go([&M.id/1, &M.id/1]))
-  fs = [fn x -> x end, fn x -> x end]
-  dbg(Enum.map(fs, fn h -> h.(3) end))
-  dbg(Enum.count([&M.id/1, &M.id/1]))
+defmodule Main do
+  def main() do
+    IO.inspect(Enum.map([&M.id/1, &M.inc/1], fn h -> h.(3) end))
+    IO.inspect(Enum.map([&M.id/1, &M.id/1, &M.id/1], fn h -> h.(3) end))
+    IO.inspect(M.go([&M.id/1, &M.id/1]))
+    fs = [fn x -> x end, fn x -> x end]
+    IO.inspect(Enum.map(fs, fn h -> h.(3) end))
+    IO.inspect(Enum.count([&M.id/1, &M.id/1]))
+  end
 end
+
+Main.main()

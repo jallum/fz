@@ -1,8 +1,8 @@
 #---
 # purpose: "the byte size of a rest is the bytes that remain after the fields read before it, and asking it never builds the rest"
 # kind: run
-# oracle: 01184_the_size_of_a_rest_is_what_remains_of_its_binary_from_its_position.oracle.exs
-# oracle.stamp: 864ff57851b3c74b
+# oracle: self
+# oracle.stamp: 1264dbdcdd785c15
 #---
 #
 # A rest that is only taken apart travels as the binary it is read from and the

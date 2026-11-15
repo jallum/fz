@@ -1,7 +1,7 @@
 #---
 # purpose: "%{m | k: v} with no k in m raises KeyError with Elixir's message, for a map and a struct, even when the result is unused"
-# oracle: 00852_an_update_naming_a_missing_key_raises_key_error.oracle.exs
-# oracle.stamp: d8a8350b6104ac2f
+# oracle: self
+# oracle.stamp: a948a0f8a3a9881e
 #---
 #
 # An update may only replace keys the map already has. The update itself
@@ -10,36 +10,40 @@ defmodule Pt do
   defstruct [:x, :y]
 end
 
-def grow(v), do: %{v | z: 0}
+defmodule Main do
+  def grow(v), do: %{v | z: 0}
 
-def main() do
-  m = %{a: 1}
-  try do
-    %{m | b: 2}
-  rescue
-    e in KeyError -> dbg(Exception.message(e))
-  end
-  try do
-    %{m | a: 3, c: 4}
-  rescue
-    e in KeyError -> dbg(Exception.message(e))
-  end
-  try do
-    _ = %{m | d: 4}
-    dbg(:unreachable)
-  rescue
-    e in KeyError -> dbg(Exception.message(e))
-  end
-  p = %Pt{x: 1, y: 2}
-  try do
-    grow(p)
-  rescue
-    e in KeyError -> dbg(Exception.message(e))
-  end
-  try do
-    %{p | __struct__: Pt, x: 3}
-    |> dbg()
-  rescue
-    e in KeyError -> dbg(Exception.message(e))
+  def main() do
+    m = %{a: 1}
+    try do
+      %{m | b: 2}
+    rescue
+      e in KeyError -> IO.inspect(Exception.message(e))
+    end
+    try do
+      %{m | a: 3, c: 4}
+    rescue
+      e in KeyError -> IO.inspect(Exception.message(e))
+    end
+    try do
+      _ = %{m | d: 4}
+      IO.inspect(:unreachable)
+    rescue
+      e in KeyError -> IO.inspect(Exception.message(e))
+    end
+    p = %Pt{x: 1, y: 2}
+    try do
+      grow(p)
+    rescue
+      e in KeyError -> IO.inspect(Exception.message(e))
+    end
+    try do
+      %{p | __struct__: Pt, x: 3}
+      |> IO.inspect()
+    rescue
+      e in KeyError -> IO.inspect(Exception.message(e))
+    end
   end
 end
+
+Main.main()
