@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T12:50:03Z",
+  "description": "Probe first. A float segment in a construction, as in \u003c\u003cx::float\u003e\u003e, is written through fz_bs_write_field_ref, which takes a value ref. A raw f64 is therefore boxed (fz_box_float_for_any) just to be written as bytes. fz-nml.7 removed the same boxing for integer and utf segments with fz_bs_write_int, which writes from the raw word. Probe: build \u003c\u003cx::float-64\u003e\u003e 1,000 times from a raw float and count scalar boxes (Process.heap_alloc_stats) on interp, run and build. Prediction: 1,000 boxes on run/build today. Acceptance: a fixture in the fz-nml block shows a scalar_box delta of 0 on all three paths, and the bytes match Elixir (oracle). The fix follows fz_bs_write_int: one raw-word writer per float size and endianness, with no second dispatch.",
+  "id": "fz-nml.8",
+  "labels": [],
+  "parent": "fz-nml",
+  "priority": 3,
+  "status": "open",
+  "title": "Writing a float segment boxes no float",
+  "type": "bug",
+  "updated_at": "2026-11-15T12:50:03Z"
+}
