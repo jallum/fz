@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-11T19:12:00Z",
-  "description": "acc \u003c\u003e \u003c\u003cc\u003e\u003e copies the whole accumulator on every append. Measured on develop e515ae314 (AOT) with Process.heap_alloc_stats(): building a 10,000-byte binary one byte at a time allocates 5,000 off-heap bytes per step (shared_bin_bytes), i.e. quadratic in the result length; heap allocation per step stays constant, which is why heap figures do not show it. Earlier timings (ad21e1635): building by tail-recursive append takes 0.12, 0.40, 1.38 s at 100, 200, 400 KB. BEAM appends in place when the accumulator owns the end of a buffer with spare capacity. Walking a binary is no longer quadratic: the rest of a shared binary is a view (Heap::alloc_bitstring_suffix); what a walk step still allocates is fz-sc8.183. Needs a proposal page. Probe: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/slow/s3.fz.",
+  "description": "Walking a binary is linear: the rest of a shared binary is a view (Heap::alloc_bitstring_suffix), and fz-sc8.208 (cursor) makes a byte walk allocate nothing per step. Appending with a \u003c\u003e b is linear once fz-nml.2 (PR #617) lands: it writes into a's spare room when a ends where its buffer's bytes end and only the owning process appends (acc \u003c\u003e x x1000: 936 buffers / 498,420 B became 4 / 1,972 B). What remains quadratic is the construction form \u003c\u003cacc::binary, x::binary\u003e\u003e: it builds a fresh binary each time and copies the whole accumulator, so a loop building output that way costs O(n^2) off-heap bytes. BEAM appends in place for this form as well, when the first segment is a writable binary that owns its buffer's end. Probe first: build a 10,000-byte binary with \u003c\u003cacc::binary, \u003c\u003cc\u003e\u003e::binary\u003e\u003e and count shared_bin_bytes per step (Process.heap_alloc_stats) on interp, run and build, against the same loop written with \u003c\u003e. Prediction: about 5,000 bytes per step for the construction form, a constant for \u003c\u003e. Acceptance: both forms share one append authority (the fz-nml.2 room path) and an allocation fixture pins them equal. Needs a proposal page. Old probe: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/slow/s3.fz.",
   "id": "fz-sc8.111",
   "labels": [],
   "parent": "fz-sc8",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Walking or building a binary costs time linear in its length",
   "type": "bug",
-  "updated_at": "2026-11-14T04:08:21Z"
+  "updated_at": "2026-11-15T12:50:11Z"
 }
